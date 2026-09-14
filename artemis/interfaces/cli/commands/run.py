@@ -16,6 +16,7 @@
 
 import asyncio
 import os
+import uuid
 from pathlib import Path
 from shutil import which
 from typing import Annotated
@@ -90,10 +91,12 @@ async def execute_task(
             effective session id when omitted.
     """
     effective_sid = (
-        session_id or os.getenv("ARTEMIS_SESSION_ID") or os.getenv("ARTEMIS_CLOUD_SESSION_ID")
+        session_id
+        or os.getenv("ARTEMIS_SESSION_ID")
+        or os.getenv("ARTEMIS_CLOUD_SESSION_ID")
+        or str(uuid.uuid4())
     )
-    if effective_sid:
-        os.environ["ARTEMIS_SESSION_ID"] = str(effective_sid)
+    os.environ["ARTEMIS_SESSION_ID"] = str(effective_sid)
     if not os.environ.get("ARTEMIS_TASK_INGRESS"):
         os.environ["ARTEMIS_TASK_INGRESS"] = "cli"
     publish_startup_progress(
@@ -175,13 +178,12 @@ async def execute_task(
 
     agent: Agent | None = None
     try:
-        if effective_sid:
-            record_attempt_manifest(
-                trace_id=str(effective_sid),
-                checkpoint="launch",
-                llm_config=llm_config,
-                run_id=run_id,
-            )
+        record_attempt_manifest(
+            trace_id=str(effective_sid),
+            checkpoint="launch",
+            llm_config=llm_config,
+            run_id=run_id,
+        )
 
         agent = Agent(config=config.build(), session_id=effective_sid)
         await agent.init(
@@ -208,12 +210,17 @@ async def execute_task(
 
         await agent.run_task(request=task.build())
     finally:
+        # Reconciliation runs regardless of task outcome (success, failed
+        # status, exception, or cancellation) and before cleanup, so an
+        # Agent.clean() failure (e.g. device disconnect) can never suppress
+        # the reconciliation verdict -- mirrors
+        # mcp_server.background.task_runner's finally-block ordering.
+        reconcile_and_store_verdict(trace_id=str(effective_sid), checkpoint="launch", run_id=run_id)
         if agent is not None:
-            await agent.clean()
-        if effective_sid:
-            reconcile_and_store_verdict(
-                trace_id=str(effective_sid), checkpoint="launch", run_id=run_id
-            )
+            try:
+                await agent.clean()
+            except Exception as exc:
+                logger.error(f"Error cleaning agent: {exc}")
 
 
 def run_command(

@@ -1,0 +1,129 @@
+"""Gate 1 evidence regression tests for the daemon-dispatched / direct-CLI
+``execute_task`` path (``artemis.interfaces.cli.commands.run``).
+
+Covers two defects found in independent review of the initial daemon-path
+wiring:
+
+1. The default ``--standalone`` route (no explicit ``--session-id``) must
+   still generate a canonical trace identity so a real inference run is
+   never Gate-1-evidence-free by default.
+2. ``reconcile_and_store_verdict`` must run before -- and regardless of --
+   ``agent.clean()``, since ``Agent.clean()`` can raise (e.g. on device
+   disconnect) and must never be able to suppress the reconciliation
+   verdict for a real completed run.
+"""
+
+from __future__ import annotations
+
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
+from artemis.interfaces.cli.commands import run as run_module
+
+
+def _fake_llm_config():
+    """A real, minimal LLMConfig (AgentProfile validates this via pydantic,
+    so a bare MagicMock is rejected) -- provider/model values don't matter
+    here since record_attempt_manifest/reconcile_and_store_verdict are
+    patched out in every test below."""
+    from artemis.config.llm import LLM, LLMConfig, LLMConfigUtils, LLMWithFallback
+
+    node = LLMWithFallback(
+        provider="google",
+        model="gemini-3.8-flash",
+        fallback=LLM(provider="google", model="gemini-3.8-flash"),
+    )
+    required_nodes = (
+        "planner",
+        "summarizer",
+        "operator",
+        "operator_summarizer",
+        "log_reader_sub_agent",
+        "log_analyzer",
+        "diagnoser",
+        "checker",
+        "planner_avatar",
+        "history_analyzer_expert",
+        "diagnoser_expert",
+        "explorer",
+    )
+    return LLMConfig(
+        **{n: node for n in required_nodes},
+        utils=LLMConfigUtils(outputter=node, hopper=node),
+    )
+
+
+def _fake_agent(clean_side_effect=None):
+    agent = MagicMock()
+    agent.init = AsyncMock()
+    agent.run_task = AsyncMock(return_value="ok")
+    agent.clean = AsyncMock(side_effect=clean_side_effect)
+    task = MagicMock()
+    task.build.return_value = "built-task"
+    agent.new_task.return_value = task
+    return agent
+
+
+@pytest.mark.asyncio
+async def test_execute_task_default_standalone_route_still_records_gate1_evidence(monkeypatch):
+    """No --session-id, no env session vars: execute_task must still record
+    and reconcile a real attempt under a generated trace identity, not skip
+    Gate 1 evidence for the default route."""
+    monkeypatch.delenv("ARTEMIS_SESSION_ID", raising=False)
+    monkeypatch.delenv("ARTEMIS_CLOUD_SESSION_ID", raising=False)
+    monkeypatch.setattr(run_module.settings, "GOOGLE_API_KEY", "fake-test-key")
+
+    recorded = []
+    reconciled = []
+    agent = _fake_agent()
+
+    with (
+        patch.object(run_module, "initialize_llm_config", return_value=_fake_llm_config()),
+        patch.object(run_module, "Agent", return_value=agent),
+        patch.object(
+            run_module,
+            "record_attempt_manifest",
+            side_effect=lambda **kw: recorded.append(kw["trace_id"]),
+        ),
+        patch.object(
+            run_module,
+            "reconcile_and_store_verdict",
+            side_effect=lambda **kw: reconciled.append(kw["trace_id"]),
+        ),
+    ):
+        await run_module.execute_task(goal="do the thing", session_id=None)
+
+    assert len(recorded) == 1
+    assert recorded[0]  # non-empty generated identity
+    assert reconciled == recorded  # same trace_id reconciled as was recorded
+
+
+@pytest.mark.asyncio
+async def test_execute_task_reconciles_before_cleanup_and_survives_cleanup_failure(monkeypatch):
+    """A raising agent.clean() must not prevent reconcile_and_store_verdict
+    from running, and reconciliation must be observed to happen first."""
+    monkeypatch.setattr(run_module.settings, "GOOGLE_API_KEY", "fake-test-key")
+    call_order = []
+    agent = _fake_agent(clean_side_effect=RuntimeError("device disconnected"))
+    agent.clean.side_effect = None  # set below after wrapping to record order
+
+    async def clean_raises():
+        call_order.append("clean")
+        raise RuntimeError("device disconnected")
+
+    agent.clean = AsyncMock(side_effect=clean_raises)
+
+    def reconcile_records(**kw):
+        call_order.append("reconcile")
+
+    with (
+        patch.object(run_module, "initialize_llm_config", return_value=_fake_llm_config()),
+        patch.object(run_module, "Agent", return_value=agent),
+        patch.object(run_module, "record_attempt_manifest"),
+        patch.object(run_module, "reconcile_and_store_verdict", side_effect=reconcile_records),
+    ):
+        # Must not raise: a cleanup failure must not propagate out of execute_task.
+        await run_module.execute_task(goal="do the thing", session_id="fixed-sid")
+
+    assert call_order == ["reconcile", "clean"]
