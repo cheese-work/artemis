@@ -107,8 +107,15 @@ class Settings(BaseSettings):
     API_KEY: SecretStr | None = None
 
     # Custom Provider Endpoints
+    GOOGLE_BASE_URL: str | None = None
+    VERTEX_AI_BASE_URL: str | None = None
     OPENAI_BASE_URL: str | None = None
     ANTHROPIC_BASE_URL: str | None = None
+    OPEN_ROUTER_BASE_URL: str | None = None
+    XAI_BASE_URL: str | None = None
+    OLLAMA_BASE_URL: str | None = None
+    VLLM_BASE_URL: str | None = None
+    CUSTOM_BASE_URL: str | None = None
 
     # Android ADB Connectivity
     ADB_HOST: str | None = Field(default=DEFAULT_ADB_HOST)

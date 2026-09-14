@@ -84,6 +84,27 @@ class ModelProvider(StrEnum):
         return provider
 
 
+_PROVIDER_BASE_URL_SETTINGS = {
+    ModelProvider.GOOGLE: "GOOGLE_BASE_URL",
+    ModelProvider.VERTEX_AI: "VERTEX_AI_BASE_URL",
+    ModelProvider.OPENAI: "OPENAI_BASE_URL",
+    ModelProvider.ANTHROPIC: "ANTHROPIC_BASE_URL",
+    ModelProvider.OPENROUTER: "OPEN_ROUTER_BASE_URL",
+    ModelProvider.XAI: "XAI_BASE_URL",
+    ModelProvider.OLLAMA: "OLLAMA_BASE_URL",
+    ModelProvider.VLLM: "VLLM_BASE_URL",
+    ModelProvider.CUSTOM: "CUSTOM_BASE_URL",
+}
+
+_PROVIDER_DEFAULT_BASE_URLS = {
+    ModelProvider.OPENROUTER: "https://openrouter.ai/api/v1",
+    ModelProvider.XAI: "https://api.x.ai/v1",
+    ModelProvider.OLLAMA: "http://localhost:11434/v1",
+    ModelProvider.VLLM: "http://localhost:8000/v1",
+    ModelProvider.CUSTOM: "http://localhost:8000/v1",
+}
+
+
 class ModelEndpoint(BaseModel):
     """Configuration definition for an LLM/VLM model endpoint."""
 
@@ -131,6 +152,21 @@ class ModelEndpoint(BaseModel):
             self.api_base,
             api_key_digest,
         )
+
+
+def resolve_provider_base_url(endpoint: ModelEndpoint) -> str | None:
+    """Return the endpoint URL with model, settings, then provider-default precedence."""
+
+    def usable_url(value: object) -> str | None:
+        value = str(value).strip() if value is not None else ""
+        return value or None
+
+    provider = ModelProvider.from_string(endpoint.provider)
+    return (
+        usable_url(endpoint.api_base)
+        or usable_url(getattr(settings, _PROVIDER_BASE_URL_SETTINGS[provider]))
+        or _PROVIDER_DEFAULT_BASE_URLS.get(provider)
+    )
 
 
 def _patch_langchain_google_genai():
@@ -245,6 +281,7 @@ class ModelFactory:
                 "temperature": endpoint.temperature,
                 "max_output_tokens": endpoint.max_tokens,
                 "api_key": api_key,
+                "base_url": resolve_provider_base_url(endpoint),
                 "timeout": endpoint.timeout_seconds,
                 "thinking_budget": endpoint.thinking_budget,
                 "thinking_level": thinking_level,
@@ -269,6 +306,7 @@ class ModelFactory:
                 "model_name": endpoint.model_name,
                 "temperature": endpoint.temperature,
                 "max_output_tokens": endpoint.max_tokens,
+                "base_url": resolve_provider_base_url(endpoint),
                 "timeout": endpoint.timeout_seconds,
                 "thinking_budget": endpoint.thinking_budget,
                 "safety_settings": {
@@ -288,9 +326,7 @@ class ModelFactory:
                 or (settings.OPENAI_API_KEY.get_secret_value() if settings.OPENAI_API_KEY else None)
                 or os.environ.get("OPENAI_API_KEY", "EMPTY")
             )
-            base_url = endpoint.api_base or (
-                str(settings.OPENAI_BASE_URL) if settings.OPENAI_BASE_URL else None
-            )
+            base_url = resolve_provider_base_url(endpoint)
             kwargs = {
                 "model": endpoint.model_name,
                 "temperature": endpoint.temperature,
@@ -315,9 +351,7 @@ class ModelFactory:
                 )
                 or os.environ.get("ANTHROPIC_API_KEY")
             )
-            base_url = endpoint.api_base or (
-                str(settings.ANTHROPIC_BASE_URL) if settings.ANTHROPIC_BASE_URL else None
-            )
+            base_url = resolve_provider_base_url(endpoint)
             kwargs = {
                 "model": endpoint.model_name,
                 "temperature": endpoint.temperature,
@@ -350,7 +384,7 @@ class ModelFactory:
                 model=endpoint.model_name,
                 temperature=endpoint.temperature,
                 api_key=api_key,
-                base_url=endpoint.api_base or "https://openrouter.ai/api/v1",
+                base_url=resolve_provider_base_url(endpoint),
                 timeout=endpoint.timeout_seconds,
             )
 
@@ -366,7 +400,7 @@ class ModelFactory:
                 model=endpoint.model_name,
                 temperature=endpoint.temperature,
                 api_key=api_key,
-                base_url=endpoint.api_base or "https://api.x.ai/v1",
+                base_url=resolve_provider_base_url(endpoint),
                 timeout=endpoint.timeout_seconds,
             )
 
@@ -374,9 +408,7 @@ class ModelFactory:
             from langchain_openai import ChatOpenAI
 
             api_key = endpoint.api_key or os.environ.get("OPENAI_API_KEY", "EMPTY")
-            base_url = endpoint.api_base or os.environ.get(
-                "OPENAI_BASE_URL", "http://localhost:8000/v1"
-            )
+            base_url = resolve_provider_base_url(endpoint)
             kwargs = {
                 "model": endpoint.model_name,
                 "temperature": endpoint.temperature,

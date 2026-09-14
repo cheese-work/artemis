@@ -16,7 +16,97 @@
 
 from unittest.mock import patch
 
-from artemis.llm.router import ModelEndpoint, ModelFactory, ModelProvider
+import pytest
+
+from artemis.llm.router import (
+    ModelEndpoint,
+    ModelFactory,
+    ModelProvider,
+    resolve_provider_base_url,
+)
+
+
+@pytest.mark.parametrize(
+    ("provider", "setting", "default_url"),
+    [
+        (ModelProvider.GOOGLE, "GOOGLE_BASE_URL", None),
+        (ModelProvider.VERTEX_AI, "VERTEX_AI_BASE_URL", None),
+        (ModelProvider.OPENAI, "OPENAI_BASE_URL", None),
+        (ModelProvider.ANTHROPIC, "ANTHROPIC_BASE_URL", None),
+        (ModelProvider.OPENROUTER, "OPEN_ROUTER_BASE_URL", "https://openrouter.ai/api/v1"),
+        (ModelProvider.XAI, "XAI_BASE_URL", "https://api.x.ai/v1"),
+        (ModelProvider.OLLAMA, "OLLAMA_BASE_URL", "http://localhost:11434/v1"),
+        (ModelProvider.VLLM, "VLLM_BASE_URL", "http://localhost:8000/v1"),
+        (ModelProvider.CUSTOM, "CUSTOM_BASE_URL", "http://localhost:8000/v1"),
+    ],
+)
+def test_provider_base_url_precedence(monkeypatch, provider, setting, default_url):
+    """Every provider uses model endpoint, provider setting, then its native default."""
+    from artemis.config import settings
+
+    monkeypatch.setattr(settings, setting, "https://provider-config.example")
+    configured = ModelEndpoint(provider=provider, api_base="https://model-config.example")
+    assert resolve_provider_base_url(configured) == "https://model-config.example"
+
+    assert (
+        resolve_provider_base_url(ModelEndpoint(provider=provider))
+        == "https://provider-config.example"
+    )
+
+    monkeypatch.setattr(settings, setting, "  ")
+    assert resolve_provider_base_url(ModelEndpoint(provider=provider)) == default_url
+
+
+@pytest.mark.parametrize(
+    ("provider", "constructor", "setting"),
+    [
+        (ModelProvider.GOOGLE, "langchain_google_genai.ChatGoogleGenerativeAI", "GOOGLE_BASE_URL"),
+        (ModelProvider.VERTEX_AI, "langchain_google_vertexai.ChatVertexAI", "VERTEX_AI_BASE_URL"),
+    ],
+)
+def test_google_provider_constructors_receive_resolved_base_url(
+    monkeypatch, provider, constructor, setting
+):
+    """Gemini and Vertex pass their selected custom service endpoint to LangChain."""
+    from artemis.config import settings
+
+    monkeypatch.setattr(settings, setting, "https://provider-config.example")
+    endpoint = ModelEndpoint(
+        provider=provider,
+        model_name="gemini-test",
+        api_key="test-key",
+        api_base="https://model-config.example",
+    )
+
+    with patch(constructor) as chat_model:
+        ModelFactory.create_model(endpoint)
+
+    assert chat_model.call_args.kwargs["base_url"] == "https://model-config.example"
+
+
+@pytest.mark.parametrize(
+    ("provider", "setting"),
+    [
+        (ModelProvider.OPENROUTER, "OPEN_ROUTER_BASE_URL"),
+        (ModelProvider.XAI, "XAI_BASE_URL"),
+        (ModelProvider.OLLAMA, "OLLAMA_BASE_URL"),
+        (ModelProvider.VLLM, "VLLM_BASE_URL"),
+        (ModelProvider.CUSTOM, "CUSTOM_BASE_URL"),
+    ],
+)
+def test_openai_compatible_provider_constructors_receive_setting_url(
+    monkeypatch, provider, setting
+):
+    """OpenAI-compatible providers pass their provider-specific configured URL."""
+    from artemis.config import settings
+
+    monkeypatch.setattr(settings, setting, "https://provider-config.example/v1")
+    endpoint = ModelEndpoint(provider=provider, model_name="test-model", api_key="test-key")
+
+    with patch("langchain_openai.ChatOpenAI") as chat_model:
+        ModelFactory.create_model(endpoint)
+
+    assert chat_model.call_args.kwargs["base_url"] == "https://provider-config.example/v1"
 
 
 def test_model_factory_anthropic_instantiation():
