@@ -112,7 +112,9 @@ def _record_attempt_manifest(
         print(f"Attempt manifest [{checkpoint}] skipped (best-effort, non-fatal): {exc}")
 
 
-def _reconcile_and_store_verdict(*, trace_id: str, checkpoint: str = "launch") -> None:
+def _reconcile_and_store_verdict(
+    *, trace_id: str, checkpoint: str = "launch", run_id: str | None = None
+) -> None:
     """Best-effort Gate 1 evidence hook: reconcile this attempt's stored
     manifest against its native ``llm_usage`` receipts and preserve the
     verdict beside the trace.
@@ -123,6 +125,17 @@ def _reconcile_and_store_verdict(*, trace_id: str, checkpoint: str = "launch") -
     contract as ``_record_attempt_manifest``). Preserves the original
     ``llm_usage`` receipts unmodified: this only adds a derived verdict file,
     it never rewrites or drops the native rows the DataEngine already wrote.
+
+    When ``run_id`` is given and genuinely differs from ``trace_id`` (i.e.
+    this attempt was launched as part of an explicit multi-attempt batch,
+    not the default 1:1 case), this also runs
+    ``attempt_reconciliation.reconcile_attempt_batch_by_run_id`` across every
+    stored attempt sharing that ``run_id`` and stores that batch verdict as a
+    sibling file, ``attempt_reconciliation_batch_verdict.json``, next to the
+    single-attempt verdict — kept separate so neither file's meaning is
+    ambiguous. The batch call is wrapped in its own best-effort guard so a
+    batch-reconciliation failure can never suppress the single-attempt
+    verdict this function already stored.
     """
     try:
         from artemis.config.attempt_reconciliation import reconcile_finished_attempt
@@ -140,23 +153,52 @@ def _reconcile_and_store_verdict(*, trace_id: str, checkpoint: str = "launch") -
                 f"Attempt reconciliation skipped: no stored manifest for trace {trace_id!r} "
                 f"checkpoint {checkpoint!r}."
             )
-            return
-
-        trace_dir = Path(trace_store.get_trace_dir(trace_id))
-        verdict_path = trace_dir / "attempt_reconciliation_verdict.json"
-        verdict_payload = {
-            "accepted": verdict.accepted,
-            "reason": verdict.reason,
-            "detail": verdict.detail,
-            "invalid_attempt_count": len(verdict.invalid_attempts),
-        }
-        verdict_path.write_text(json.dumps(verdict_payload, indent=2), encoding="utf-8")
-        print(
-            f"Attempt reconciliation verdict stored at {verdict_path}: "
-            f"accepted={verdict.accepted} reason={verdict.reason}."
-        )
+        else:
+            trace_dir = Path(trace_store.get_trace_dir(trace_id))
+            verdict_path = trace_dir / "attempt_reconciliation_verdict.json"
+            verdict_payload = {
+                "accepted": verdict.accepted,
+                "reason": verdict.reason,
+                "detail": verdict.detail,
+                "invalid_attempt_count": len(verdict.invalid_attempts),
+            }
+            verdict_path.write_text(json.dumps(verdict_payload, indent=2), encoding="utf-8")
+            print(
+                f"Attempt reconciliation verdict stored at {verdict_path}: "
+                f"accepted={verdict.accepted} reason={verdict.reason}."
+            )
     except Exception as exc:
         print(f"Attempt reconciliation skipped (best-effort, non-fatal): {exc}")
+
+    if run_id is not None and run_id != trace_id:
+        try:
+            from artemis.config.attempt_reconciliation import reconcile_attempt_batch_by_run_id
+            from artemis.config.paths import get_data_engine_db_path, get_traces_dir
+
+            batch_verdict = reconcile_attempt_batch_by_run_id(
+                run_id=run_id,
+                checkpoint=checkpoint,
+                db_path=get_data_engine_db_path(),
+                traces_dir=get_traces_dir(),
+                traces_root=Path(trace_store.TRACES_DIR),
+            )
+            trace_dir = Path(trace_store.get_trace_dir(trace_id))
+            batch_verdict_path = trace_dir / "attempt_reconciliation_batch_verdict.json"
+            batch_verdict_payload = {
+                "accepted": batch_verdict.accepted,
+                "reason": batch_verdict.reason,
+                "detail": batch_verdict.detail,
+                "invalid_attempt_count": len(batch_verdict.invalid_attempts),
+            }
+            batch_verdict_path.write_text(
+                json.dumps(batch_verdict_payload, indent=2), encoding="utf-8"
+            )
+            print(
+                f"Attempt batch reconciliation verdict stored at {batch_verdict_path}: "
+                f"accepted={batch_verdict.accepted} reason={batch_verdict.reason}."
+            )
+        except Exception as exc:
+            print(f"Attempt batch reconciliation skipped (best-effort, non-fatal): {exc}")
 
 
 async def _initialize_agent(
@@ -554,8 +596,10 @@ async def run_task(
             # failed attempt's usage receipts still need checking against its
             # manifest. Reconciles against the "launch" manifest checkpoint,
             # since that is the one guaranteed to have been stored before any
-            # inference call could have happened.
-            _reconcile_and_store_verdict(trace_id=trace_id, checkpoint="launch")
+            # inference call could have happened. Also runs batch
+            # reconciliation across run_id when a real (non-default) run_id
+            # was passed to this invocation.
+            _reconcile_and_store_verdict(trace_id=trace_id, checkpoint="launch", run_id=run_id)
         if agent:
             try:
                 await agent.clean()
@@ -568,7 +612,13 @@ async def run_task(
         log_file_err.close()
 
 
-if __name__ == "__main__":
+def _build_arg_parser() -> argparse.ArgumentParser:
+    """Builds the CLI parser for this module's ``__main__`` entry point.
+
+    Factored out of ``if __name__ == "__main__":`` so tests can exercise the
+    real CLI surface (e.g. ``--run-id`` acceptance) via ``parse_args()``
+    without spawning a subprocess.
+    """
     parser = argparse.ArgumentParser(description="Artemis Background Task Runner")
     parser.add_argument("--trace-id", required=True, help="Unique trace identifier")
     parser.add_argument("--task-desc", required=True, help="Description of the task to run")
@@ -590,8 +640,22 @@ if __name__ == "__main__":
         "--explorer-pro-mode",
         help="Pro-profile Explorer perception version: 'flash', 'pro' or 'ultra'",
     )
+    parser.add_argument(
+        "--run-id",
+        help=(
+            "Optional Gate 1 batch-grouping identifier shared across multiple "
+            "run_task invocations (e.g. repeated attempts of one journey/device "
+            "cell). Defaults to --trace-id when omitted, preserving today's "
+            "exact 1:1 run_id<->trace_id behavior; see "
+            "attempt_reconciliation.reconcile_attempt_batch_by_run_id."
+        ),
+    )
 
-    args = parser.parse_args()
+    return parser
+
+
+if __name__ == "__main__":
+    args = _build_arg_parser().parse_args()
 
     asyncio.run(
         run_task(
@@ -605,5 +669,6 @@ if __name__ == "__main__":
             device_serial=args.device_serial,
             verification_level=args.verification_level,
             explorer_pro_mode=args.explorer_pro_mode,
+            run_id=args.run_id,
         )
     )
