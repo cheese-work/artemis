@@ -15,6 +15,10 @@ wiring:
    leak into a later default-route call in the same process via the
    process-global ``ARTEMIS_SESSION_ID`` env var -- each attempt must get
    its own identity and its own stored manifest.
+4. An explicit ``--session-id`` on one call must not contaminate a *later*
+   default-route call either -- ``ARTEMIS_SESSION_ID`` must be restored to
+   whatever it held before the call (or cleared), not just skipped for the
+   generated-fallback case.
 """
 
 from __future__ import annotations
@@ -143,6 +147,50 @@ async def test_execute_task_two_default_calls_get_distinct_isolated_identities(m
     assert len(recorded) == 2
     assert recorded[0] and recorded[1]
     assert recorded[0] != recorded[1]  # distinct identities -> distinct manifests stored
+    assert reconciled == recorded
+
+
+@pytest.mark.asyncio
+async def test_execute_task_explicit_session_id_does_not_contaminate_later_default_call(
+    monkeypatch,
+):
+    """An explicit --session-id call followed by a default-route call in the
+    same process must not collide: the first call's explicit identity must
+    not leak via ARTEMIS_SESSION_ID and get picked up as the second call's
+    "default" identity, which would merge two distinct attempts (and their
+    create-only manifests) under one trace id."""
+    monkeypatch.delenv("ARTEMIS_SESSION_ID", raising=False)
+    monkeypatch.delenv("ARTEMIS_CLOUD_SESSION_ID", raising=False)
+    monkeypatch.setattr(run_module.settings, "GOOGLE_API_KEY", "fake-test-key")
+
+    recorded = []
+    reconciled = []
+
+    def _make_agent(*args, **kwargs):
+        return _fake_agent()
+
+    with (
+        patch.object(run_module, "initialize_llm_config", return_value=_fake_llm_config()),
+        patch.object(run_module, "Agent", side_effect=_make_agent),
+        patch.object(
+            run_module,
+            "record_attempt_manifest",
+            side_effect=lambda **kw: recorded.append(kw["trace_id"]),
+        ),
+        patch.object(
+            run_module,
+            "reconcile_and_store_verdict",
+            side_effect=lambda **kw: reconciled.append(kw["trace_id"]),
+        ),
+    ):
+        await run_module.execute_task(goal="explicit attempt", session_id="explicit-sid-123")
+        assert os.environ.get("ARTEMIS_SESSION_ID") is None
+
+        await run_module.execute_task(goal="default attempt", session_id=None)
+        assert os.environ.get("ARTEMIS_SESSION_ID") is None
+
+    assert recorded == ["explicit-sid-123", recorded[1]]
+    assert recorded[1] != "explicit-sid-123"  # default call got its own identity, not the leak
     assert reconciled == recorded
 
 
