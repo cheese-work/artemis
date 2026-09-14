@@ -23,6 +23,10 @@ from typing import Annotated
 from adbutils import AdbClient
 from langchain_core.callbacks.base import Callbacks
 from artemis.config import checker_overrides_for_level, initialize_llm_config, settings
+from artemis.config.attempt_lifecycle_hooks import (
+    record_attempt_manifest,
+    reconcile_and_store_verdict,
+)
 from artemis.runtime import trace_store
 from artemis.utils.startup_progress import publish_startup_progress
 from artemis import Agent, Builders
@@ -60,6 +64,7 @@ async def execute_task(
     explorer_flash_mode: str | None = None,
     explorer_pro_mode: str | None = None,
     verification_level: str | None = None,
+    run_id: str | None = None,
 ) -> None:
     """Executes a single mobile automation task end-to-end.
 
@@ -80,6 +85,9 @@ async def execute_task(
         explorer_pro_mode: Override the Explorer tier for the Pro execution profile.
         verification_level: Coarse Checker preset ('off', 'final', 'checkpoints',
             'strict'); applied before the explicit ``enable_checker`` switch.
+        run_id: Gate 1 batch-grouping key for this attempt's manifest (see
+            ``artemis.config.attempt_lifecycle_hooks``); defaults to the
+            effective session id when omitted.
     """
     effective_sid = (
         session_id or os.getenv("ARTEMIS_SESSION_ID") or os.getenv("ARTEMIS_CLOUD_SESSION_ID")
@@ -167,6 +175,14 @@ async def execute_task(
 
     agent: Agent | None = None
     try:
+        if effective_sid:
+            record_attempt_manifest(
+                trace_id=str(effective_sid),
+                checkpoint="launch",
+                llm_config=llm_config,
+                run_id=run_id,
+            )
+
         agent = Agent(config=config.build(), session_id=effective_sid)
         await agent.init(
             retry_count=int(os.getenv("ARTEMIS_HEALTH_RETRIES", 5)),
@@ -194,6 +210,10 @@ async def execute_task(
     finally:
         if agent is not None:
             await agent.clean()
+        if effective_sid:
+            reconcile_and_store_verdict(
+                trace_id=str(effective_sid), checkpoint="launch", run_id=run_id
+            )
 
 
 def run_command(
@@ -348,6 +368,16 @@ def run_command(
             help="Canonical session UUID for trace and stream telemetry.",
         ),
     ] = None,
+    run_id: Annotated[
+        str | None,
+        typer.Option(
+            "--run-id",
+            help=(
+                "Gate 1 batch-grouping key for this attempt's manifest "
+                "(defaults to the session id when omitted)."
+            ),
+        ),
+    ] = None,
     standalone: Annotated[
         bool,
         typer.Option(
@@ -396,6 +426,7 @@ def run_command(
                     app_path=app_path,
                     session_id=target_sid,
                     ingress="cli",
+                    run_id=run_id,
                     base_url=base_url,
                 )
                 if resp and resp.get("tasks"):
@@ -499,6 +530,7 @@ def run_command(
                 explorer_flash_mode=explorer_flash_mode,
                 explorer_pro_mode=explorer_pro_mode,
                 verification_level=verification_level,
+                run_id=run_id,
             )
         )
     except (KeyboardInterrupt, asyncio.CancelledError):

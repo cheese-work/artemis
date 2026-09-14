@@ -163,6 +163,26 @@ def test_submit_task_to_daemon_pro_tuning_defaults_to_null():
     assert data["explorer_mode"] is None
 
 
+def test_submit_task_to_daemon_forwards_run_id():
+    """A daemon-dispatched attempt must carry its Gate 1 run_id through /api/run,
+    the same way it already carries session_id -- otherwise the worker the
+    Daemon spawns has no batch-grouping key to record its attempt manifest
+    under (see artemis.config.attempt_lifecycle_hooks)."""
+    mock_resp = _daemon_ok_response(b'{"status": "queued", "tasks": [{"session_id": "s1"}]}')
+    with patch("urllib.request.urlopen", return_value=mock_resp) as mock_urlopen:
+        submit_task_to_daemon("goal", profile="flash", session_id="sess-1", run_id="batch-42")
+        data = json.loads(mock_urlopen.call_args[0][0].data.decode("utf-8"))
+    assert data["run_id"] == "batch-42"
+
+
+def test_submit_task_to_daemon_run_id_defaults_to_null():
+    mock_resp = _daemon_ok_response(b'{"status": "queued", "tasks": [{"session_id": "s1"}]}')
+    with patch("urllib.request.urlopen", return_value=mock_resp) as mock_urlopen:
+        submit_task_to_daemon("goal", profile="flash", session_id="sess-1")
+        data = json.loads(mock_urlopen.call_args[0][0].data.decode("utf-8"))
+    assert data["run_id"] is None
+
+
 def test_submit_batch_to_daemon_forwards_pro_tuning_knobs():
     from artemis.runtime.daemon_client import submit_batch_to_daemon
 

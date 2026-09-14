@@ -332,6 +332,7 @@ def mobile_run_task(
                     conversation_id=conversation_id,
                     verification_level=verification_level,
                     explorer_mode=explorer_mode,
+                    run_id=run_id,
                     base_url=base_url,
                 )
                 if resp and resp.get("status") == "rejected":
