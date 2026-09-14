@@ -23,9 +23,12 @@ claim to have run a qualification pilot; see
 from __future__ import annotations
 
 import dataclasses
+import json
+from pathlib import Path
 from typing import Any, Literal
 
-from artemis.config.attempt_manifest import digest_of
+from artemis.config.attempt_manifest import digest_of, read_stored_manifest
+from artemis.config.attempt_usage_reader import read_llm_usage_events
 
 #: Machine-readable batch-reject reasons, verbatim per the Gate 1 spec.
 RejectReason = Literal[
@@ -334,3 +337,48 @@ def validate_batch(attempts: list[AttemptRecord]) -> BatchVerdict:
         )
 
     return BatchVerdict(accepted=True, reason=None, detail=f"{len(attempts)} attempt(s) accepted.")
+
+
+# ==============================================================================
+# Post-run orchestration: stored manifest + native usage receipts -> verdict
+# ==============================================================================
+
+
+def reconcile_finished_attempt(
+    *,
+    trace_id: str,
+    session_id: str,
+    checkpoint: str,
+    db_path: str | Path,
+    traces_dir: str | Path,
+) -> BatchVerdict | None:
+    """Reconciles one finished attempt against its own stored manifest + DB receipts.
+
+    Reads back the manifest :func:`artemis.config.attempt_manifest.store_attempt_manifest`
+    wrote for ``(trace_id, checkpoint)``, reads every native ``llm_usage`` row
+    the DataEngine recorded for ``session_id`` (via
+    :func:`artemis.config.attempt_usage_reader.read_llm_usage_events`, never
+    mutated or summarized), reconciles them, and runs the single-attempt batch
+    rule. Returns ``None`` (not a verdict) when no manifest was stored for
+    this checkpoint — that is a Gate 1 wiring gap to fix, not something to
+    misrepresent as a passing or failing verdict.
+
+    This is intentionally a one-attempt batch: multi-attempt batch validation
+    (e.g. a five-repeat journey/device cell) is the qualification pilot's own
+    concern, not something this per-run hook can see on its own.
+    """
+    stored = read_stored_manifest(trace_id, checkpoint)
+    if stored is None:
+        return None
+    manifest_bytes, stored_digest = stored
+    manifest = json.loads(manifest_bytes.decode("utf-8"))
+
+    usage_events = read_llm_usage_events(db_path, traces_dir, session_id)
+    reconciliation = reconcile_attempt(trace_id, manifest, usage_events)
+    record = AttemptRecord(
+        attempt_id=trace_id,
+        manifest=manifest,
+        reconciliation=reconciliation,
+        stored_digest=stored_digest,
+    )
+    return validate_batch([record])

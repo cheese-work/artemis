@@ -22,14 +22,22 @@ import copy
 
 import pytest
 
-from artemis.config.attempt_manifest import build_attempt_manifest, digest_of
+from artemis.config.attempt_manifest import (
+    build_attempt_manifest,
+    digest_of,
+    store_attempt_manifest,
+)
 from artemis.config.attempt_reconciliation import (
     AttemptRecord,
     REJECT_REASONS,
     reconcile_attempt,
+    reconcile_finished_attempt,
     validate_batch,
 )
 from artemis.config.llm import LLM, LLMConfig, LLMConfigUtils, LLMWithFallback
+from artemis.data_engine.models import SessionMetadata, TraceRecord
+from artemis.data_engine.storage import StorageManager
+from artemis.runtime import trace_store
 
 
 def _llm(provider: str = "openai", model: str = "gpt-5.6-sol") -> LLMWithFallback:
@@ -272,3 +280,127 @@ class TestBatchValidationAllSevenReasons:
         verdict = validate_batch([record])
         assert verdict.invalid_attempts[0].manifest is manifest
         assert verdict.invalid_attempts[0].reconciliation is record.reconciliation
+
+
+@pytest.fixture
+def _isolate_traces_dir(tmp_path, monkeypatch):
+    """Point trace_store at an isolated tmp_path directory for this test only.
+
+    Never touches the process's real TRACES_DIR or the real home directory.
+    """
+    monkeypatch.setattr(trace_store, "TRACES_DIR", str(tmp_path / "traces"))
+
+
+def _seeded_db(tmp_path, session_id: str):
+    db_path = tmp_path / "usage.db"
+    traces_dir = tmp_path / "usage_traces"
+    storage = StorageManager(db_path, traces_dir)
+    storage.create_session(SessionMetadata(session_id=session_id, initial_goal="test goal"))
+    return storage, db_path, traces_dir
+
+
+class TestReconcileFinishedAttempt:
+    """Post-run orchestration: stored manifest + native DB receipts -> verdict.
+
+    Uses only tmp_path-backed trace storage and a tmp_path SQLite DB seeded
+    via a writable StorageManager -- never the real traces directory or the
+    real DataEngine database.
+    """
+
+    def test_no_stored_manifest_returns_none_not_a_verdict(self, tmp_path, _isolate_traces_dir):
+        _storage, db_path, traces_dir = _seeded_db(tmp_path, "trace-no-manifest")
+        result = reconcile_finished_attempt(
+            trace_id="trace-no-manifest",
+            session_id="trace-no-manifest",
+            checkpoint="launch",
+            db_path=db_path,
+            traces_dir=traces_dir,
+        )
+        assert result is None
+
+    def test_matching_usage_accepts_the_attempt(self, tmp_path, _isolate_traces_dir):
+        trace_id = "trace-accept"
+        manifest = _manifest(attempt_id=trace_id, trace_id=trace_id)
+        store_attempt_manifest(manifest)
+
+        storage, db_path, traces_dir = _seeded_db(tmp_path, trace_id)
+        for node in _REQUIRED_NODES:
+            storage.create_trace(
+                TraceRecord(
+                    trace_id=f"usage-{node}",
+                    session_id=trace_id,
+                    type="llm_call",
+                    name="llm_usage",
+                    payload={"node": node, "source": "openai:gpt-5.6-sol"},
+                )
+            )
+
+        verdict = reconcile_finished_attempt(
+            trace_id=trace_id,
+            session_id=trace_id,
+            checkpoint="launch",
+            db_path=db_path,
+            traces_dir=traces_dir,
+        )
+
+        assert verdict is not None
+        assert verdict.accepted is True
+
+    def test_mismatched_usage_rejects_with_original_receipts_preserved(
+        self, tmp_path, _isolate_traces_dir
+    ):
+        trace_id = "trace-reject"
+        manifest = _manifest(attempt_id=trace_id, trace_id=trace_id)
+        store_attempt_manifest(manifest)
+
+        storage, db_path, traces_dir = _seeded_db(tmp_path, trace_id)
+        # planner fires with a model that does not match the manifest's
+        # pinned 'sol' identity -- a leaked/decoy config would look like this.
+        storage.create_trace(
+            TraceRecord(
+                trace_id="usage-planner",
+                session_id=trace_id,
+                type="llm_call",
+                name="llm_usage",
+                payload={"node": "planner", "source": "google:gemini-3.5-flash-lite"},
+            )
+        )
+
+        verdict = reconcile_finished_attempt(
+            trace_id=trace_id,
+            session_id=trace_id,
+            checkpoint="launch",
+            db_path=db_path,
+            traces_dir=traces_dir,
+        )
+
+        assert verdict is not None
+        assert verdict.accepted is False
+        assert verdict.reason == "unexpected_model_or_endpoint"
+        # The original mismatched receipt is retained on the reconciliation
+        # result, not discarded because the batch was rejected.
+        invalid = verdict.invalid_attempts[0]
+        planner_node = next(n for n in invalid.reconciliation.nodes if n.node == "planner")
+        assert planner_node.usage_sources == ("google:gemini-3.5-flash-lite",)
+
+    def test_no_usage_events_at_all_is_not_invoked_not_a_fabricated_match(
+        self, tmp_path, _isolate_traces_dir
+    ):
+        """No DB rows for this session (e.g. the task crashed before any LLM
+        call) must reconcile every node as not_invoked/disabled_not_invoked,
+        never a synthesized match."""
+        trace_id = "trace-no-usage"
+        manifest = _manifest(attempt_id=trace_id, trace_id=trace_id)
+        store_attempt_manifest(manifest)
+        _storage, db_path, traces_dir = _seeded_db(tmp_path, trace_id)
+
+        verdict = reconcile_finished_attempt(
+            trace_id=trace_id,
+            session_id=trace_id,
+            checkpoint="launch",
+            db_path=db_path,
+            traces_dir=traces_dir,
+        )
+
+        assert verdict is not None
+        assert verdict.accepted is True

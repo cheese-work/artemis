@@ -20,6 +20,7 @@ import asyncio
 import json
 import logging
 import os
+from pathlib import Path
 import sys
 import traceback
 
@@ -101,6 +102,53 @@ def _record_attempt_manifest(
         print(f"Attempt manifest [{checkpoint}] skipped: {exc}")
     except Exception as exc:
         print(f"Attempt manifest [{checkpoint}] skipped (best-effort, non-fatal): {exc}")
+
+
+def _reconcile_and_store_verdict(*, trace_id: str, checkpoint: str = "launch") -> None:
+    """Best-effort Gate 1 evidence hook: reconcile this attempt's stored
+    manifest against its native ``llm_usage`` receipts and preserve the
+    verdict beside the trace.
+
+    Runs after ``agent.run_task`` returns, regardless of task outcome —
+    identity verification is orthogonal to whether the mobile task itself
+    passed or failed. Never raises into the task path (same best-effort
+    contract as ``_record_attempt_manifest``). Preserves the original
+    ``llm_usage`` receipts unmodified: this only adds a derived verdict file,
+    it never rewrites or drops the native rows the DataEngine already wrote.
+    """
+    try:
+        from artemis.config.attempt_reconciliation import reconcile_finished_attempt
+        from artemis.config.paths import get_data_engine_db_path, get_traces_dir
+
+        verdict = reconcile_finished_attempt(
+            trace_id=trace_id,
+            session_id=trace_id,
+            checkpoint=checkpoint,
+            db_path=get_data_engine_db_path(),
+            traces_dir=get_traces_dir(),
+        )
+        if verdict is None:
+            print(
+                f"Attempt reconciliation skipped: no stored manifest for trace {trace_id!r} "
+                f"checkpoint {checkpoint!r}."
+            )
+            return
+
+        trace_dir = Path(trace_store.get_trace_dir(trace_id))
+        verdict_path = trace_dir / "attempt_reconciliation_verdict.json"
+        verdict_payload = {
+            "accepted": verdict.accepted,
+            "reason": verdict.reason,
+            "detail": verdict.detail,
+            "invalid_attempt_count": len(verdict.invalid_attempts),
+        }
+        verdict_path.write_text(json.dumps(verdict_payload, indent=2), encoding="utf-8")
+        print(
+            f"Attempt reconciliation verdict stored at {verdict_path}: "
+            f"accepted={verdict.accepted} reason={verdict.reason}."
+        )
+    except Exception as exc:
+        print(f"Attempt reconciliation skipped (best-effort, non-fatal): {exc}")
 
 
 async def _initialize_agent(
@@ -289,7 +337,12 @@ async def run_task(
 
         config = config_builder.build()
 
-        agent = Agent(config=config)
+        # session_id=trace_id links this run's DataEngine session (where
+        # native llm_usage receipts land) to the same identifier the attempt
+        # manifest is keyed and stored by, so post-run reconciliation
+        # (_reconcile_and_store_verdict) can find one attempt's usage events
+        # without inventing a separate cross-process identity mapping.
+        agent = Agent(config=config, session_id=trace_id)
         _record_attempt_manifest(
             trace_id=trace_id, checkpoint="worker_start", llm_config=profile.llm_config
         )
@@ -469,6 +522,14 @@ async def run_task(
             _record_attempt_manifest(
                 trace_id=trace_id, checkpoint="termination", llm_config=attempt_profile.llm_config
             )
+            # Reconciliation runs regardless of task outcome (success, failed
+            # status, exception, or cancellation) — identity verification is
+            # orthogonal to whether the mobile task itself succeeded, and a
+            # failed attempt's usage receipts still need checking against its
+            # manifest. Reconciles against the "launch" manifest checkpoint,
+            # since that is the one guaranteed to have been stored before any
+            # inference call could have happened.
+            _reconcile_and_store_verdict(trace_id=trace_id, checkpoint="launch")
         if agent:
             try:
                 await agent.clean()
