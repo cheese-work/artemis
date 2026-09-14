@@ -82,6 +82,43 @@ TIER_MODELS: dict[Tier, tuple[str, str]] = {
 _RELEVANT_ENV_PREFIXES = ("ARTEMIS_",)
 _FAKE_LLM_ENV_VAR = "ARTEMIS_FAKE_LLM"
 
+# Substrings that mark an ARTEMIS_* variable name as credential-shaped (e.g.
+# ARTEMIS_TENANT_TOKEN, ARTEMIS_LIFECYCLE_TOKEN). Matched case-insensitively
+# against the whole var name. Any ARTEMIS_* var matching one of these must
+# never have its raw value copied into the manifest's env_overrides -- it is
+# reported the same non-secret way as _credential_reference (set + last4)
+# instead. This is deliberately a denylist of credential-shaped substrings,
+# not an allowlist of every non-secret ARTEMIS_* knob, since new resolution
+# knobs are added far more often than new credential-bearing vars.
+_CREDENTIAL_SHAPED_NAME_MARKERS = (
+    "TOKEN",
+    "KEY",
+    "SECRET",
+    "PASSWORD",
+    "CREDENTIAL",
+    "AUTH",
+)
+
+
+def _is_credential_shaped_env_name(name: str) -> bool:
+    """True if ``name`` looks like it carries a secret (by name only)."""
+    upper = name.upper()
+    return any(marker in upper for marker in _CREDENTIAL_SHAPED_NAME_MARKERS)
+
+
+def _sensitive_env_reference(value: str) -> dict[str, Any]:
+    """Non-secret presence reference for one credential-shaped env var value.
+
+    Mirrors :func:`_credential_reference`'s shape exactly: never includes the
+    raw value, and omits ``last4`` entirely when the value is empty or
+    shorter than 4 characters.
+    """
+    ref: dict[str, Any] = {"set": bool(value)}
+    if value and len(value) >= 4:
+        ref["last4"] = value[-4:]
+    return ref
+
+
 # Every LLMConfig field that can carry an LLMWithFallback, in the exact
 # vocabulary of the spec. Fields not present in LLMConfig.model_fields are a
 # programming error (caught by the assertion in build_attempt_manifest).
@@ -157,14 +194,28 @@ def _canonical_repo_sha(repo_root: Path | None) -> tuple[str, str]:
     return "0" * 40, "unknown-not-a-git-checkout"
 
 
-def _relevant_env_snapshot(env: dict[str, str]) -> dict[str, str]:
+def _relevant_env_snapshot(env: dict[str, str]) -> dict[str, Any]:
     """Filters an explicit env mapping down to Artemis-relevant keys only.
 
-    Never includes API key values (only ``ARTEMIS_*`` resolution knobs are
-    relevant here; credentials are reported separately as booleans/masked
-    references by ``_credential_reference``).
+    Never includes raw credential values. Most ``ARTEMIS_*`` vars are
+    resolution knobs (e.g. ``ARTEMIS_FAKE_LLM``, ``ARTEMIS_CONFIG_DIR``) and
+    pass through as-is. Any ``ARTEMIS_*`` var whose *name* is credential-shaped
+    (see ``_CREDENTIAL_SHAPED_NAME_MARKERS`` -- e.g. ``ARTEMIS_TENANT_TOKEN``)
+    is never copied by raw value: it is replaced with the same non-secret
+    ``{"set": bool, "last4": ...}`` shape ``_credential_reference`` already
+    uses for provider API keys, so a manifest can never leak a raw
+    credential into ``env_overrides`` even though provider credentials are
+    also reported separately in the ``credentials`` section.
     """
-    return {k: v for k, v in env.items() if k.startswith(_RELEVANT_ENV_PREFIXES)}
+    out: dict[str, Any] = {}
+    for k, v in env.items():
+        if not k.startswith(_RELEVANT_ENV_PREFIXES):
+            continue
+        if _is_credential_shaped_env_name(k):
+            out[k] = _sensitive_env_reference(v)
+        else:
+            out[k] = v
+    return out
 
 
 def _credential_reference(env: dict[str, str], provider: str) -> dict[str, Any]:

@@ -151,6 +151,38 @@ class TestReconciliation:
         assert others
         assert all(n.verdict == "not_invoked" for n in others)
 
+    def test_aliased_trace_node_name_reconciles_against_manifest_node(self):
+        """validator_pixel_safety_net is traced under "safety_net_pixel_validation"
+        (see artemis.agents.validator.validator._validate_action_precondition_pixel's
+        @trace name), so a usage event recorded with that trace-scope node
+        name must reconcile as a match against the manifest's
+        validator_pixel_safety_net entry, not surface as unmapped_call.
+        """
+        # Enable validator_pixel_safety_net explicitly so it has a real
+        # manifest entry to reconcile against.
+        config = _uniform_config()
+        config = config.model_copy(update={"validator_pixel_safety_net": _llm()})
+        manifest = build_attempt_manifest(
+            run_id="r",
+            attempt_id="a1",
+            trace_id="t1",
+            tier="sol",
+            llm_config=config,
+            env={},
+            checkpoint="launch",
+            now=1.0,
+        )
+        result = reconcile_attempt(
+            "a1",
+            manifest,
+            [_usage("safety_net_pixel_validation", source="openai:gpt-5.6-sol")],
+        )
+        pixel_safety = next(n for n in result.nodes if n.node == "validator_pixel_safety_net")
+        assert pixel_safety.verdict == "match"
+        assert not result.has_unmapped_call
+        # No stray "safety_net_pixel_validation" entry should remain unmapped.
+        assert not any(n.node == "safety_net_pixel_validation" for n in result.nodes)
+
 
 _UNSET = object()
 
@@ -184,6 +216,33 @@ class TestBatchValidationAllSevenReasons:
         broken = copy.deepcopy(manifest)
         broken["source_sha"] = ""
         record = _record(broken, [_usage("planner")], digest=digest_of(broken))
+        verdict = validate_batch([record])
+        assert verdict.accepted is False
+        assert verdict.reason == "missing_identity"
+        assert record in verdict.invalid_attempts
+
+    def test_missing_identity_when_source_sha_is_unverified_sentinel(self):
+        """A truthy but never-git-verified source_sha (the "0"*40 fallback
+        _canonical_repo_sha emits when the tree isn't a real git checkout)
+        must not silently pass as a real identity."""
+        manifest = _manifest()
+        unverified = copy.deepcopy(manifest)
+        unverified["source_sha"] = "0" * 40
+        unverified["source_sha_provenance"] = "unknown-not-a-git-checkout"
+        record = _record(unverified, [_usage("planner")], digest=digest_of(unverified))
+        verdict = validate_batch([record])
+        assert verdict.accepted is False
+        assert verdict.reason == "missing_identity"
+        assert record in verdict.invalid_attempts
+
+    def test_missing_identity_when_untiered_enabled_node_present(self):
+        """An enabled node with no declared tier (custom/unknown-model) must
+        fail batch validation, even though it built successfully and didn't
+        trip the mixed_tier build-time check."""
+        manifest = _manifest()
+        untiered = copy.deepcopy(manifest)
+        untiered["untiered_enabled_nodes"] = ["some_custom_node"]
+        record = _record(untiered, [_usage("planner")], digest=digest_of(untiered))
         verdict = validate_batch([record])
         assert verdict.accepted is False
         assert verdict.reason == "missing_identity"

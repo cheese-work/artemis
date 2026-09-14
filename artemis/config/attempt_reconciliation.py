@@ -51,6 +51,26 @@ REJECT_REASONS: tuple[RejectReason, ...] = (
     "missing_snapshot",
 )
 
+# Maps a usage-side node name (the `node` field a `@trace`-scoped call site
+# actually records via CURRENT_NODE_NAME, see
+# artemis.services.token_meter.record_llm_usage) to the manifest node name it
+# should reconcile against, for the rare cases where the enclosing @trace
+# scope's name legitimately differs from the LLMConfig field name the node
+# resolves through.
+#
+# validator_pixel_safety_net is the one confirmed case today:
+# artemis.agents.validator.validator._validate_action_precondition_pixel is
+# traced as "safety_net_pixel_validation" (see task_tree.py's custom
+# rendering, which depends on that exact trace name for unrelated UI
+# purposes -- do not rename the @trace scope to "fix" this), but internally
+# calls get_llm_fn(ctx, name="validator_pixel_safety_net"), which is the
+# LLMConfig field / manifest node name. Without this alias, a real,
+# correctly-identified LLM call reconciles as unmapped_call purely because
+# the trace scope name and the manifest node name disagree.
+_NODE_ALIASES: dict[str, str] = {
+    "safety_net_pixel_validation": "validator_pixel_safety_net",
+}
+
 
 @dataclasses.dataclass(frozen=True)
 class NodeReconciliation:
@@ -139,7 +159,12 @@ def reconcile_attempt(
             # sentinel so it still surfaces as unmapped rather than being
             # dropped silently.
             node = "<unknown-node>"
-        events_by_node.setdefault(str(node), []).append(event)
+        node = str(node)
+        # Resolve to the manifest node name when the usage-side node is a
+        # known trace-scope alias (see _NODE_ALIASES); otherwise group under
+        # the raw node name as before.
+        resolved_node = _NODE_ALIASES.get(node, node)
+        events_by_node.setdefault(resolved_node, []).append(event)
 
     results: list[NodeReconciliation] = []
     seen_nodes: set[str] = set()
@@ -258,19 +283,28 @@ def validate_batch(attempts: list[AttemptRecord]) -> BatchVerdict:
         return _reject("missing_snapshot", "Batch is empty: no attempt manifests supplied.", ())
 
     # 1. missing_identity: any attempt whose manifest lacks a usable
-    #    source_sha, or whose fake_llm flag/tier is absent entirely.
+    #    source_sha, whose fake_llm flag/tier is absent entirely, whose
+    #    source_sha was never actually verified against a real git checkout
+    #    (source_sha_provenance != "git" -- the "0"*40/"unknown-not-a-git-
+    #    checkout" fallback sentinel is truthy but not a provable identity),
+    #    or that has any enabled node resolving to no declared tier at all
+    #    (untiered_enabled_nodes non-empty -- a model-bearing node that isn't
+    #    pinned to Luna/Terra/Sol).
     missing_identity = [
         a
         for a in attempts
         if not a.manifest.get("source_sha")
         or a.manifest.get("tier") not in ("luna", "terra", "sol")
         or a.manifest.get("fake_llm_enabled") is None
+        or a.manifest.get("source_sha_provenance") != "git"
+        or a.manifest.get("untiered_enabled_nodes")
     ]
     if missing_identity:
         return _reject(
             "missing_identity",
             f"{len(missing_identity)} attempt(s) have an incomplete manifest identity "
-            "(missing source_sha, tier, or fake_llm_enabled).",
+            "(missing source_sha, tier, or fake_llm_enabled; an unverified/non-git "
+            "source_sha; or an enabled node with no declared tier).",
             tuple(missing_identity),
         )
 
@@ -366,6 +400,12 @@ def reconcile_finished_attempt(
     This is intentionally a one-attempt batch: multi-attempt batch validation
     (e.g. a five-repeat journey/device cell) is the qualification pilot's own
     concern, not something this per-run hook can see on its own.
+
+    Because this always validates a batch of exactly one attempt, the
+    ``mixed_tier`` rejection path is not reachable from this function -- it
+    is exercised directly by ``validate_batch`` unit tests and by any future
+    multi-attempt caller (e.g. a qualification-pilot batch orchestrator),
+    which is out of scope here.
     """
     stored = read_stored_manifest(trace_id, checkpoint)
     if stored is None:

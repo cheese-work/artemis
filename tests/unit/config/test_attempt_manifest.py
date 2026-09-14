@@ -235,6 +235,54 @@ class TestNullableNodesRepresentedExplicitly:
         assert manifest["credentials"]["openai"]["set"] is True
         assert manifest["credentials"]["openai"]["last4"] == "1234"
 
+    def test_credential_shaped_artemis_env_vars_never_leak_raw_value(self):
+        """ARTEMIS_TENANT_TOKEN (a real secret-bearing var, see
+        artemis.config.constants.ENV_ARTEMIS_TENANT_TOKEN) must never appear
+        by raw value in env_overrides or the canonical bytes -- only a
+        set/last4 presence reference, exactly like _credential_reference.
+        """
+        manifest = build_attempt_manifest(
+            run_id="r",
+            attempt_id="a",
+            trace_id="t",
+            tier="sol",
+            llm_config=_sol_config(),
+            env={
+                "ARTEMIS_TENANT_TOKEN": "super-secret-tenant-token-value",
+                "ARTEMIS_LIFECYCLE_TOKEN": "another-secret-lifecycle-value",
+                "ARTEMIS_FAKE_LLM": "0",
+                "ARTEMIS_CONFIG_DIR": "/tmp/does-not-matter",
+            },
+            checkpoint="launch",
+            now=1.0,
+        )
+        raw = canonical_bytes(manifest)
+        assert b"super-secret-tenant-token-value" not in raw
+        assert b"another-secret-lifecycle-value" not in raw
+
+        tenant_ref = manifest["env_overrides"]["ARTEMIS_TENANT_TOKEN"]
+        assert tenant_ref == {"set": True, "last4": "alue"}
+        lifecycle_ref = manifest["env_overrides"]["ARTEMIS_LIFECYCLE_TOKEN"]
+        assert lifecycle_ref == {"set": True, "last4": "alue"}
+
+        # Non-sensitive ARTEMIS_* resolution knobs still pass through as raw
+        # values -- this fix must not overcorrect into hashing everything.
+        assert manifest["env_overrides"]["ARTEMIS_CONFIG_DIR"] == "/tmp/does-not-matter"
+        assert manifest["env_overrides"]["ARTEMIS_FAKE_LLM"] == "0"
+
+    def test_unset_credential_shaped_env_var_reports_set_false_without_last4(self):
+        manifest = build_attempt_manifest(
+            run_id="r",
+            attempt_id="a",
+            trace_id="t",
+            tier="sol",
+            llm_config=_sol_config(),
+            env={"ARTEMIS_TENANT_TOKEN": ""},
+            checkpoint="launch",
+            now=1.0,
+        )
+        assert manifest["env_overrides"]["ARTEMIS_TENANT_TOKEN"] == {"set": False}
+
 
 class TestStorageCreateOnly:
     def test_store_and_read_back_bytes_match(self, tmp_path):
