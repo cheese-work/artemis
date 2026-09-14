@@ -52,6 +52,7 @@ def _record_attempt_manifest(
     trace_id: str,
     checkpoint: str,
     llm_config,
+    run_id: str | None = None,
     parent_attempt_id: str | None = None,
 ) -> None:
     """Best-effort Gate 1 evidence hook: resolve, hash and store one attempt
@@ -64,6 +65,13 @@ def _record_attempt_manifest(
     checkpoint that collides with an already-stored one (create-only storage)
     are both recorded as skips, not failures, so a manifest gap is visible in
     the runner's own log without ever aborting a live mobile task.
+
+    ``run_id`` defaults to ``trace_id`` when not given, preserving today's
+    exact 1:1 ``run_id``<->``trace_id`` behavior. A caller that wants several
+    real attempts to be reconcilable together as one batch (see
+    ``attempt_reconciliation.reconcile_attempt_batch_by_run_id``) can pass a
+    ``run_id`` shared across multiple ``run_task``/``_record_attempt_manifest``
+    calls instead.
     """
     try:
         from artemis.config.attempt_manifest import (
@@ -87,7 +95,7 @@ def _record_attempt_manifest(
             return
 
         manifest = build_attempt_manifest(
-            run_id=trace_id,
+            run_id=run_id or trace_id,
             attempt_id=trace_id,
             trace_id=trace_id,
             tier=tier,
@@ -226,6 +234,7 @@ async def run_task(
     device_serial: str | None = None,
     verification_level: str | None = None,
     explorer_pro_mode: str | None = None,
+    run_id: str | None = None,
 ):
     """Executes the mobile automation agent task and logs all actions/results.
 
@@ -233,6 +242,17 @@ async def run_task(
     ``explorer_pro_mode`` ('flash' | 'pro' | 'ultra') are Pro-profile tuning
     knobs mirroring ``artemis run --verification-level / --explorer-pro-mode``;
     the Flash profile ignores them.
+
+    ``run_id`` is plumbing only: when not given, the attempt manifests this
+    call records default to ``run_id=trace_id`` (today's exact behavior, and
+    still the case for every real caller today -- see
+    ``mcp_server.background.task_runner`` module usage). No caller in this
+    codebase currently invokes ``run_task`` more than once for a shared
+    ``run_id``; a future caller that does (e.g. a retry driver re-running the
+    same logical task under multiple ``trace_id``s) can pass one shared
+    ``run_id`` across those invocations so their manifests become
+    reconcilable together as one batch via
+    ``attempt_reconciliation.reconcile_attempt_batch_by_run_id``.
     """
     trace_dir = trace_store.get_trace_dir(trace_id)
     os.makedirs(trace_dir, exist_ok=True)
@@ -319,7 +339,7 @@ async def run_task(
             profile = AgentProfile(name="default", llm_config=initialize_llm_config())
 
         _record_attempt_manifest(
-            trace_id=trace_id, checkpoint="launch", llm_config=profile.llm_config
+            trace_id=trace_id, checkpoint="launch", llm_config=profile.llm_config, run_id=run_id
         )
 
         config_builder = Builders.AgentConfig.with_default_profile(profile)
@@ -344,7 +364,10 @@ async def run_task(
         # without inventing a separate cross-process identity mapping.
         agent = Agent(config=config, session_id=trace_id)
         _record_attempt_manifest(
-            trace_id=trace_id, checkpoint="worker_start", llm_config=profile.llm_config
+            trace_id=trace_id,
+            checkpoint="worker_start",
+            llm_config=profile.llm_config,
+            run_id=run_id,
         )
         await _initialize_agent(
             agent,
@@ -520,7 +543,10 @@ async def run_task(
         attempt_profile = locals().get("profile")
         if attempt_profile is not None:
             _record_attempt_manifest(
-                trace_id=trace_id, checkpoint="termination", llm_config=attempt_profile.llm_config
+                trace_id=trace_id,
+                checkpoint="termination",
+                llm_config=attempt_profile.llm_config,
+                run_id=run_id,
             )
             # Reconciliation runs regardless of task outcome (success, failed
             # status, exception, or cancellation) — identity verification is

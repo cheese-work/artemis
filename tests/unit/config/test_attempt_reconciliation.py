@@ -188,13 +188,18 @@ class TestReconciliation:
     def test_soft_defaulted_node_with_would_resolve_to_match_reconciles_as_match(self):
         """validator_pixel_safety_net left unset (the normal/default state) is
         soft-defaulted by LLMConfig.get_agent() to lightweight_judge_default()
-        (google:gemini-3.5-flash-lite) when actually invoked. The manifest
-        entry is `enabled=False` (correctly recording it wasn't explicitly
-        configured) but carries `would_resolve_to` for exactly this case. A
-        receipt matching `would_resolve_to` is a legitimate, expected
-        production occurrence and must reconcile as "match", not "mismatch".
+        (google:gemini-3.5-flash-lite, a Luna-tier model) when actually
+        invoked. The manifest entry is `enabled=False` (correctly recording it
+        wasn't explicitly configured) but carries `would_resolve_to` for
+        exactly this case. This is the *legitimate* positive case: a manifest
+        whose own declared `tier` genuinely IS "luna" (i.e. its enabled nodes
+        already resolve to Luna-tier models), so the soft default's tier
+        agrees with the attempt's own tier. A receipt matching
+        `would_resolve_to` here is a legitimate, expected production
+        occurrence and must reconcile as "match", not "mismatch".
         """
-        manifest = _manifest()  # validator_pixel_safety_net left None (default).
+        luna_config = _uniform_config(provider="google", model="gemini-3.5-flash-lite")
+        manifest = _manifest(tier="luna", llm_config=luna_config)
         node_entry = manifest["nodes"]["validator_pixel_safety_net"]
         assert node_entry["enabled"] is False
         assert node_entry["would_resolve_to"] == {
@@ -238,6 +243,39 @@ class TestReconciliation:
         )
         verdict = validate_batch([record])
         assert verdict.accepted is True
+
+    def test_soft_defaulted_node_cross_tier_would_resolve_to_is_rejected_not_matched(self):
+        """Negative control for the cross-tier-mixing defect: a `tier="sol"`
+        manifest's soft-defaulted validator_pixel_safety_net still would
+        resolve to a Luna-tier model (google:gemini-3.5-flash-lite) if
+        invoked, since would_resolve_to is a fixed function of the node, not
+        of the attempt's own declared tier. A receipt matching that Luna-tier
+        would_resolve_to must NOT reconcile as "match" against a Sol-pinned
+        attempt -- that would let an attempt pinned to Sol tier silently
+        invoke a Luna-tier model via the soft-default path. It must reconcile
+        as "mismatch", and the batch must be rejected, not accepted.
+        """
+        manifest = _manifest(tier="sol")  # validator_pixel_safety_net left None (default).
+        node_entry = manifest["nodes"]["validator_pixel_safety_net"]
+        assert node_entry["enabled"] is False
+        assert node_entry["would_resolve_to"]["provider"] == "google"
+        assert node_entry["would_resolve_to"]["model"] == "gemini-3.5-flash-lite"
+
+        result = reconcile_attempt(
+            "a1",
+            manifest,
+            [_usage("safety_net_pixel_validation", source="google:gemini-3.5-flash-lite")],
+        )
+        pixel_safety = next(n for n in result.nodes if n.node == "validator_pixel_safety_net")
+        assert pixel_safety.verdict == "mismatch"
+        assert result.has_mismatch
+
+        record = _record(
+            manifest, [_usage("safety_net_pixel_validation", source="google:gemini-3.5-flash-lite")]
+        )
+        verdict = validate_batch([record])
+        assert verdict.accepted is False
+        assert verdict.reason == "unexpected_model_or_endpoint"
 
     def test_soft_defaulted_node_with_mismatched_source_still_reconciles_as_mismatch(self):
         """Negative control: this fix must not turn off legitimate mismatch

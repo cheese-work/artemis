@@ -27,7 +27,7 @@ import json
 from pathlib import Path
 from typing import Any, Literal
 
-from artemis.config.attempt_manifest import digest_of, read_stored_manifest
+from artemis.config.attempt_manifest import TIER_MODELS, Tier, digest_of, read_stored_manifest
 from artemis.config.attempt_usage_reader import read_llm_usage_events
 from artemis.runtime import trace_store
 
@@ -112,7 +112,22 @@ class ReconciliationResult:
         return any(n.verdict == "unmapped_call" for n in self.nodes)
 
 
-def _manifest_expected_source(node_entry: dict[str, Any]) -> str | None:
+def _tier_of_provider_model(provider: str | None, model: str | None) -> Tier | None:
+    """Which declared tier (if any) a raw ``(provider, model)`` pair matches.
+
+    Dict-based counterpart of ``attempt_manifest._node_tier`` (which takes an
+    ``LLM``/``LLMWithFallback`` instance): this module only ever sees the
+    already-serialized ``config``/``would_resolve_to`` dicts a stored manifest
+    carries, never the original ``LLM`` objects, so it re-does the same
+    ``TIER_MODELS`` lookup directly against those two plain strings.
+    """
+    for tier, (tier_provider, tier_model) in TIER_MODELS.items():
+        if provider == tier_provider and model == tier_model:
+            return tier
+    return None
+
+
+def _manifest_expected_source(node_entry: dict[str, Any], manifest_tier: Tier | None) -> str | None:
     """The `provider:model` string a manifest node is expected to produce as `source`.
 
     For an enabled node this is its own ``config``. For a *disabled*
@@ -126,6 +141,27 @@ def _manifest_expected_source(node_entry: dict[str, Any]) -> str | None:
     (no soft default applies; it is simply off) still returns ``None``: an
     unexpected receipt from an entirely-disabled node must still surface as a
     problem, not be silently accepted.
+
+    Tier pinning applies to soft-defaulted nodes exactly as it already applies
+    to enabled ones: an attempt manifest built for ``tier="sol"`` asserts that
+    *every* model-bearing node this attempt can invoke -- including a node
+    that only fires via its soft default, e.g. ``validator_pixel_safety_net``
+    -- resolves within the Sol tier. ``would_resolve_to`` is a fixed function
+    of the node (``lightweight_judge_default()`` or an inherited sibling
+    node), not of ``manifest_tier``, so when its provider/model maps to a
+    *different* declared tier than ``manifest_tier``, trusting it as the
+    "expected" source would let an attempt pinned to one tier silently accept
+    a receipt from another tier's model -- exactly the cross-tier mixing
+    Gate 1 exists to catch. In that case this returns ``None`` (not the
+    would-resolve-to string), which routes the caller's mismatch/match branch
+    in ``reconcile_attempt`` to ``mismatch`` for any receipt, and to
+    ``disabled_not_invoked`` if the node never actually fires -- never to a
+    silent ``match``. A would-resolve-to whose provider/model maps to no
+    declared tier at all is treated the same conservative way, for the same
+    reason ``untiered_enabled_nodes`` is never silently trusted for enabled
+    nodes (see ``attempt_manifest.build_attempt_manifest`` /
+    ``validate_batch``'s ``missing_identity`` check): an unpinned model
+    identity is never assumed safe.
     """
     config = node_entry.get("config")
     if node_entry.get("enabled"):
@@ -133,6 +169,9 @@ def _manifest_expected_source(node_entry: dict[str, Any]) -> str | None:
     else:
         config = node_entry.get("would_resolve_to") or None
         if config is None:
+            return None
+        would_resolve_tier = _tier_of_provider_model(config.get("provider"), config.get("model"))
+        if would_resolve_tier != manifest_tier:
             return None
     provider = config.get("provider")
     model = config.get("model")
@@ -184,12 +223,14 @@ def reconcile_attempt(
         resolved_node = _NODE_ALIASES.get(node, node)
         events_by_node.setdefault(resolved_node, []).append(event)
 
+    manifest_tier: Tier | None = manifest.get("tier")
+
     results: list[NodeReconciliation] = []
     seen_nodes: set[str] = set()
 
     for node, entry in manifest_nodes.items():
         seen_nodes.add(node)
-        expected_source = _manifest_expected_source(entry)
+        expected_source = _manifest_expected_source(entry, manifest_tier)
         events = events_by_node.get(node, [])
         if not events:
             verdict = "not_invoked" if entry.get("enabled") else "disabled_not_invoked"
@@ -212,14 +253,17 @@ def reconcile_attempt(
             verdict = "mismatch"
         elif expected_source is None:
             # Node fired but the manifest has no resolvable provider:model to
-            # expect for it -- either an enabled entry missing config, or a
-            # disabled node with no soft default (see
+            # expect for it -- either an enabled entry missing config, a
+            # disabled node with no soft default, or a soft-defaulted disabled
+            # node whose `would_resolve_to` tier disagrees with (or is
+            # entirely unmapped from) the manifest's own declared `tier` (see
             # `_manifest_expected_source`). A soft-defaulted disabled node
-            # (e.g. validator_pixel_safety_net left unset) still has an
-            # `expected_source` here, derived from `would_resolve_to`, so it
-            # is *not* covered by this branch and can legitimately reach
-            # "match" below. Surface this branch as mismatch rather than
-            # pretending an entirely-disabled node firing is fine.
+            # (e.g. validator_pixel_safety_net left unset) only has a non-None
+            # `expected_source` here when its `would_resolve_to` tier matches
+            # this attempt's own tier -- only that case is *not* covered by
+            # this branch and can legitimately reach "match" below. Surface
+            # this branch as mismatch rather than pretending an entirely- or
+            # cross-tier-defaulted node firing is fine.
             verdict = "mismatch"
         else:
             verdict = "match"
@@ -459,15 +503,23 @@ def reconcile_attempt_batch_by_run_id(
     This is the production-reachable home for cross-attempt validation
     (including the ``mixed_tier`` rejection, which :func:`reconcile_finished_attempt`
     can never exercise since it always validates a batch of exactly one
-    attempt). Today's ``mcp_server.background.task_runner`` still records
-    exactly one attempt manifest per ``run_id`` (``run_id=trace_id`` 1:1, see
-    ``_record_attempt_manifest``), so calling this with today's task runner
-    output degenerates to a one-attempt batch. It is not wired into
-    ``task_runner.py`` and is not currently invoked in production: it exists
-    as a real, tested, importable, general-purpose multi-attempt reconciler
-    that a future caller (e.g. a qualification-pilot orchestrator running
-    repeated attempts of one journey/device cell under a shared ``run_id``)
-    can call without needing new plumbing.
+    attempt). ``mcp_server.background.task_runner.run_task`` accepts an
+    optional ``run_id`` parameter (threaded through to
+    ``_record_attempt_manifest``'s ``run_id=`` argument) that a caller can set
+    to a value shared across multiple real ``run_task`` invocations, so the
+    grouping key this function reads (each stored manifest's own ``"run_id"``
+    field) is real, settable plumbing today, not synthetic test-only state.
+    Today's default remains unchanged when ``run_id`` is not passed:
+    ``run_id=trace_id`` 1:1, so an unmodified caller still produces one
+    attempt manifest per ``run_id`` and this function degenerates to a
+    one-attempt batch for it. No caller in this codebase actually invokes
+    ``run_task`` more than once with a shared ``run_id`` yet -- there is no
+    automatic retry orchestrator wired up, and building one is explicitly out
+    of scope here. This function exists as a real, tested, importable,
+    general-purpose multi-attempt reconciler that a future caller (e.g. a
+    qualification-pilot orchestrator running repeated attempts of one
+    journey/device cell under a shared ``run_id``) can call using the
+    plumbing that already exists, without needing to add any.
 
     Discovers candidate attempts by listing the immediate subdirectories of
     ``traces_root`` (default: :data:`artemis.runtime.trace_store.TRACES_DIR`)
