@@ -29,6 +29,7 @@ from typing import Any, Literal
 
 from artemis.config.attempt_manifest import digest_of, read_stored_manifest
 from artemis.config.attempt_usage_reader import read_llm_usage_events
+from artemis.runtime import trace_store
 
 #: Machine-readable batch-reject reasons, verbatim per the Gate 1 spec.
 RejectReason = Literal[
@@ -112,10 +113,27 @@ class ReconciliationResult:
 
 
 def _manifest_expected_source(node_entry: dict[str, Any]) -> str | None:
-    """The `provider:model` string an enabled manifest node should produce as `source`."""
-    if not node_entry.get("enabled"):
-        return None
-    config = node_entry.get("config") or {}
+    """The `provider:model` string a manifest node is expected to produce as `source`.
+
+    For an enabled node this is its own ``config``. For a *disabled*
+    (soft-defaulted) node -- e.g. ``validator_pixel_safety_net`` /
+    ``planner_validation`` left unset in ``LLMConfig``, which
+    ``LLMConfig.get_agent()`` actually resolves to
+    ``lightweight_judge_default()`` (or an inherited node) when invoked, see
+    ``attempt_manifest._build_node_entry`` -- the expected source is derived
+    from ``would_resolve_to`` instead, since that is what the node will
+    genuinely produce if it fires. A disabled node with no ``would_resolve_to``
+    (no soft default applies; it is simply off) still returns ``None``: an
+    unexpected receipt from an entirely-disabled node must still surface as a
+    problem, not be silently accepted.
+    """
+    config = node_entry.get("config")
+    if node_entry.get("enabled"):
+        config = config or {}
+    else:
+        config = node_entry.get("would_resolve_to") or None
+        if config is None:
+            return None
     provider = config.get("provider")
     model = config.get("model")
     if provider is None or model is None:
@@ -193,10 +211,15 @@ def reconcile_attempt(
         elif expected_source is not None and any(s != expected_source for s in sources):
             verdict = "mismatch"
         elif expected_source is None:
-            # Node fired but the manifest has no enabled entry with a
-            # resolvable provider:model for it (e.g. disabled node somehow
-            # invoked, or a manifest entry missing config) — surface as
-            # mismatch rather than pretending a disabled node is fine.
+            # Node fired but the manifest has no resolvable provider:model to
+            # expect for it -- either an enabled entry missing config, or a
+            # disabled node with no soft default (see
+            # `_manifest_expected_source`). A soft-defaulted disabled node
+            # (e.g. validator_pixel_safety_net left unset) still has an
+            # `expected_source` here, derived from `would_resolve_to`, so it
+            # is *not* covered by this branch and can legitimately reach
+            # "match" below. Surface this branch as mismatch rather than
+            # pretending an entirely-disabled node firing is fine.
             verdict = "mismatch"
         else:
             verdict = "match"
@@ -402,10 +425,9 @@ def reconcile_finished_attempt(
     concern, not something this per-run hook can see on its own.
 
     Because this always validates a batch of exactly one attempt, the
-    ``mixed_tier`` rejection path is not reachable from this function -- it
-    is exercised directly by ``validate_batch`` unit tests and by any future
-    multi-attempt caller (e.g. a qualification-pilot batch orchestrator),
-    which is out of scope here.
+    ``mixed_tier`` rejection path is not reachable from this function; see
+    :func:`reconcile_attempt_batch_by_run_id` for the production-reachable
+    multi-attempt path.
     """
     stored = read_stored_manifest(trace_id, checkpoint)
     if stored is None:
@@ -422,3 +444,88 @@ def reconcile_finished_attempt(
         stored_digest=stored_digest,
     )
     return validate_batch([record])
+
+
+def reconcile_attempt_batch_by_run_id(
+    *,
+    run_id: str,
+    checkpoint: str,
+    db_path: str | Path,
+    traces_dir: str | Path,
+    traces_root: str | Path | None = None,
+) -> BatchVerdict:
+    """Reconciles every stored attempt sharing ``run_id`` as one batch.
+
+    This is the production-reachable home for cross-attempt validation
+    (including the ``mixed_tier`` rejection, which :func:`reconcile_finished_attempt`
+    can never exercise since it always validates a batch of exactly one
+    attempt). Today's ``mcp_server.background.task_runner`` still records
+    exactly one attempt manifest per ``run_id`` (``run_id=trace_id`` 1:1, see
+    ``_record_attempt_manifest``), so calling this with today's task runner
+    output degenerates to a one-attempt batch. It is not wired into
+    ``task_runner.py`` and is not currently invoked in production: it exists
+    as a real, tested, importable, general-purpose multi-attempt reconciler
+    that a future caller (e.g. a qualification-pilot orchestrator running
+    repeated attempts of one journey/device cell under a shared ``run_id``)
+    can call without needing new plumbing.
+
+    Discovers candidate attempts by listing the immediate subdirectories of
+    ``traces_root`` (default: :data:`artemis.runtime.trace_store.TRACES_DIR`)
+    -- each subdirectory name is a ``trace_id``
+    (:func:`artemis.runtime.trace_store.get_trace_dir`) -- reading each one's
+    stored manifest at ``checkpoint`` via
+    :func:`artemis.config.attempt_manifest.read_stored_manifest`, and keeping
+    only the attempts whose manifest ``"run_id"`` field equals the requested
+    ``run_id``. For each matching attempt, native ``llm_usage`` events are
+    read via :func:`artemis.config.attempt_usage_reader.read_llm_usage_events`
+    using the attempt's own ``trace_id`` as ``session_id`` (matching the
+    ``session_id=trace_id`` convention ``_record_attempt_manifest`` /
+    ``Agent(config=config, session_id=trace_id)`` already use), reconciled,
+    and assembled into an :class:`AttemptRecord` exactly as
+    :func:`reconcile_finished_attempt` does per-attempt.
+
+    Read-only: never writes, mutates, or deletes any manifest or trace file.
+    A directory whose stored manifest cannot be parsed as JSON is skipped
+    rather than aborting the whole scan -- one corrupt/unreadable record must
+    not hide every other attempt's evidence, mirroring
+    ``read_llm_usage_events``'s own skip-corrupt-rows behavior.
+
+    ``validate_batch`` is called over the full collected list, which may be
+    empty (no attempt manifests found for ``run_id``); an empty batch
+    correctly hits ``validate_batch``'s existing ``missing_snapshot``
+    rejection rather than being special-cased here.
+    """
+    root = Path(traces_root) if traces_root is not None else Path(trace_store.TRACES_DIR)
+
+    records: list[AttemptRecord] = []
+    if root.is_dir():
+        for trace_dir in sorted(root.iterdir()):
+            if not trace_dir.is_dir():
+                continue
+            trace_id = trace_dir.name
+
+            stored = read_stored_manifest(trace_id, checkpoint)
+            if stored is None:
+                continue
+            manifest_bytes, stored_digest = stored
+            try:
+                manifest = json.loads(manifest_bytes.decode("utf-8"))
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                # A corrupt stored manifest for one attempt must not abort
+                # discovery of every other attempt sharing this run_id.
+                continue
+            if manifest.get("run_id") != run_id:
+                continue
+
+            usage_events = read_llm_usage_events(db_path, traces_dir, trace_id)
+            reconciliation = reconcile_attempt(trace_id, manifest, usage_events)
+            records.append(
+                AttemptRecord(
+                    attempt_id=trace_id,
+                    manifest=manifest,
+                    reconciliation=reconciliation,
+                    stored_digest=stored_digest,
+                )
+            )
+
+    return validate_batch(records)

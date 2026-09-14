@@ -19,6 +19,7 @@ seven-reason batch accept/reject rule.
 from __future__ import annotations
 
 import copy
+from pathlib import Path
 
 import pytest
 
@@ -31,6 +32,7 @@ from artemis.config.attempt_reconciliation import (
     AttemptRecord,
     REJECT_REASONS,
     reconcile_attempt,
+    reconcile_attempt_batch_by_run_id,
     reconcile_finished_attempt,
     validate_batch,
 )
@@ -182,6 +184,74 @@ class TestReconciliation:
         assert not result.has_unmapped_call
         # No stray "safety_net_pixel_validation" entry should remain unmapped.
         assert not any(n.node == "safety_net_pixel_validation" for n in result.nodes)
+
+    def test_soft_defaulted_node_with_would_resolve_to_match_reconciles_as_match(self):
+        """validator_pixel_safety_net left unset (the normal/default state) is
+        soft-defaulted by LLMConfig.get_agent() to lightweight_judge_default()
+        (google:gemini-3.5-flash-lite) when actually invoked. The manifest
+        entry is `enabled=False` (correctly recording it wasn't explicitly
+        configured) but carries `would_resolve_to` for exactly this case. A
+        receipt matching `would_resolve_to` is a legitimate, expected
+        production occurrence and must reconcile as "match", not "mismatch".
+        """
+        manifest = _manifest()  # validator_pixel_safety_net left None (default).
+        node_entry = manifest["nodes"]["validator_pixel_safety_net"]
+        assert node_entry["enabled"] is False
+        assert node_entry["would_resolve_to"] == {
+            "provider": "google",
+            "model": "gemini-3.5-flash-lite",
+            "api_base": None,
+            "temperature": 0.0,
+            "thinking_budget": None,
+            "thinking_level": None,
+            "reasoning_effort": None,
+            "include_thoughts": None,
+            "enable_grounding": None,
+            "fallback": {
+                "provider": "google",
+                "model": "gemini-3.1-flash-lite",
+                "api_base": None,
+                "temperature": 0.0,
+                "thinking_budget": None,
+                "thinking_level": None,
+                "reasoning_effort": None,
+                "include_thoughts": None,
+                "enable_grounding": None,
+            },
+            "fix_model": None,
+            "timeout": None,
+        }
+
+        result = reconcile_attempt(
+            "a1",
+            manifest,
+            [_usage("safety_net_pixel_validation", source="google:gemini-3.5-flash-lite")],
+        )
+        pixel_safety = next(n for n in result.nodes if n.node == "validator_pixel_safety_net")
+        assert pixel_safety.verdict == "match"
+        # The manifest's own `enabled` field must stay honest: this node was
+        # not explicitly configured, even though the receipt matched.
+        assert pixel_safety.manifest_enabled is False
+
+        record = _record(
+            manifest, [_usage("safety_net_pixel_validation", source="google:gemini-3.5-flash-lite")]
+        )
+        verdict = validate_batch([record])
+        assert verdict.accepted is True
+
+    def test_soft_defaulted_node_with_mismatched_source_still_reconciles_as_mismatch(self):
+        """Negative control: this fix must not turn off legitimate mismatch
+        detection for soft-defaulted nodes -- only make the *expected* source
+        honest (derived from would_resolve_to instead of always None)."""
+        manifest = _manifest()  # validator_pixel_safety_net left None (default).
+        result = reconcile_attempt(
+            "a1",
+            manifest,
+            [_usage("safety_net_pixel_validation", source="openai:gpt-5.6-sol")],
+        )
+        pixel_safety = next(n for n in result.nodes if n.node == "validator_pixel_safety_net")
+        assert pixel_safety.verdict == "mismatch"
+        assert result.has_mismatch
 
 
 _UNSET = object()
@@ -463,3 +533,188 @@ class TestReconcileFinishedAttempt:
 
         assert verdict is not None
         assert verdict.accepted is True
+
+
+class TestReconcileAttemptBatchByRunId:
+    """Cross-attempt batch reconciliation grouped by a shared run_id.
+
+    This is the production-reachable home for the mixed_tier rejection path
+    (reconcile_finished_attempt can never exercise it since it always
+    validates a batch of exactly one attempt). Uses only tmp_path-backed
+    trace storage and a tmp_path SQLite DB -- never the real traces
+    directory or the real DataEngine database.
+    """
+
+    def test_two_attempts_same_run_id_same_tier_matching_usage_is_accepted(
+        self, tmp_path, _isolate_traces_dir
+    ):
+        run_id = "run-accept"
+        traces_root = Path(trace_store.TRACES_DIR)
+        db_path = tmp_path / "usage.db"
+        traces_dir = tmp_path / "usage_traces"
+        storage = StorageManager(db_path, traces_dir)
+
+        for trace_id in ("attempt-1", "attempt-2"):
+            storage.create_session(SessionMetadata(session_id=trace_id, initial_goal="test goal"))
+            manifest = _manifest(run_id=run_id, attempt_id=trace_id, trace_id=trace_id)
+            store_attempt_manifest(manifest)
+            for node in _REQUIRED_NODES:
+                storage.create_trace(
+                    TraceRecord(
+                        trace_id=f"usage-{trace_id}-{node}",
+                        session_id=trace_id,
+                        type="llm_call",
+                        name="llm_usage",
+                        payload={"node": node, "source": "openai:gpt-5.6-sol"},
+                    )
+                )
+
+        verdict = reconcile_attempt_batch_by_run_id(
+            run_id=run_id,
+            checkpoint="launch",
+            db_path=db_path,
+            traces_dir=traces_dir,
+            traces_root=traces_root,
+        )
+        assert verdict.accepted is True
+        assert verdict.invalid_attempts == ()
+
+    def test_mixed_tier_across_attempts_sharing_run_id_is_rejected(
+        self, tmp_path, _isolate_traces_dir
+    ):
+        run_id = "run-mixed-tier"
+        traces_root = Path(trace_store.TRACES_DIR)
+        db_path = tmp_path / "usage.db"
+        traces_dir = tmp_path / "usage_traces"
+        storage = StorageManager(db_path, traces_dir)
+
+        sol_trace_id = "attempt-sol"
+        storage.create_session(SessionMetadata(session_id=sol_trace_id, initial_goal="test goal"))
+        sol_manifest = _manifest(run_id=run_id, attempt_id=sol_trace_id, trace_id=sol_trace_id)
+        store_attempt_manifest(sol_manifest)
+        storage.create_trace(
+            TraceRecord(
+                trace_id=f"usage-{sol_trace_id}-planner",
+                session_id=sol_trace_id,
+                type="llm_call",
+                name="llm_usage",
+                payload={"node": "planner", "source": "openai:gpt-5.6-sol"},
+            )
+        )
+
+        terra_trace_id = "attempt-terra"
+        storage.create_session(SessionMetadata(session_id=terra_trace_id, initial_goal="test goal"))
+        terra_config = _uniform_config(provider="google", model="gemini-3.8-flash")
+        terra_manifest = build_attempt_manifest(
+            run_id=run_id,
+            attempt_id=terra_trace_id,
+            trace_id=terra_trace_id,
+            tier="terra",
+            llm_config=terra_config,
+            env={},
+            checkpoint="launch",
+            now=3.0,
+        )
+        store_attempt_manifest(terra_manifest)
+        storage.create_trace(
+            TraceRecord(
+                trace_id=f"usage-{terra_trace_id}-planner",
+                session_id=terra_trace_id,
+                type="llm_call",
+                name="llm_usage",
+                payload={"node": "planner", "source": "google:gemini-3.8-flash"},
+            )
+        )
+
+        verdict = reconcile_attempt_batch_by_run_id(
+            run_id=run_id,
+            checkpoint="launch",
+            db_path=db_path,
+            traces_dir=traces_dir,
+            traces_root=traces_root,
+        )
+        assert verdict.accepted is False
+        assert verdict.reason == "mixed_tier"
+        assert len(verdict.invalid_attempts) == 2
+        invalid_ids = {a.attempt_id for a in verdict.invalid_attempts}
+        assert invalid_ids == {sol_trace_id, terra_trace_id}
+
+    def test_attempt_under_different_run_id_is_excluded_from_batch(
+        self, tmp_path, _isolate_traces_dir
+    ):
+        run_id = "run-target"
+        other_run_id = "run-other"
+        traces_root = Path(trace_store.TRACES_DIR)
+        db_path = tmp_path / "usage.db"
+        traces_dir = tmp_path / "usage_traces"
+        storage = StorageManager(db_path, traces_dir)
+
+        target_trace_id = "attempt-target"
+        storage.create_session(
+            SessionMetadata(session_id=target_trace_id, initial_goal="test goal")
+        )
+        target_manifest = _manifest(
+            run_id=run_id, attempt_id=target_trace_id, trace_id=target_trace_id
+        )
+        store_attempt_manifest(target_manifest)
+        for node in _REQUIRED_NODES:
+            storage.create_trace(
+                TraceRecord(
+                    trace_id=f"usage-{target_trace_id}-{node}",
+                    session_id=target_trace_id,
+                    type="llm_call",
+                    name="llm_usage",
+                    payload={"node": node, "source": "openai:gpt-5.6-sol"},
+                )
+            )
+
+        # A different run_id, deliberately a different tier -- if this leaked
+        # into the target batch it would falsely trip mixed_tier.
+        other_trace_id = "attempt-other-run"
+        storage.create_session(SessionMetadata(session_id=other_trace_id, initial_goal="test goal"))
+        other_config = _uniform_config(provider="google", model="gemini-3.5-flash-lite")
+        other_manifest = build_attempt_manifest(
+            run_id=other_run_id,
+            attempt_id=other_trace_id,
+            trace_id=other_trace_id,
+            tier="luna",
+            llm_config=other_config,
+            env={},
+            checkpoint="launch",
+            now=4.0,
+        )
+        store_attempt_manifest(other_manifest)
+        storage.create_trace(
+            TraceRecord(
+                trace_id=f"usage-{other_trace_id}-planner",
+                session_id=other_trace_id,
+                type="llm_call",
+                name="llm_usage",
+                payload={"node": "planner", "source": "google:gemini-3.5-flash-lite"},
+            )
+        )
+
+        verdict = reconcile_attempt_batch_by_run_id(
+            run_id=run_id,
+            checkpoint="launch",
+            db_path=db_path,
+            traces_dir=traces_dir,
+            traces_root=traces_root,
+        )
+        assert verdict.accepted is True
+        assert len(verdict.invalid_attempts) == 0
+
+    def test_zero_matching_attempts_returns_missing_snapshot(self, tmp_path, _isolate_traces_dir):
+        traces_root = Path(trace_store.TRACES_DIR)
+        db_path = tmp_path / "usage.db"
+        traces_dir = tmp_path / "usage_traces"
+
+        verdict = reconcile_attempt_batch_by_run_id(
+            run_id="run-does-not-exist",
+            checkpoint="launch",
+            db_path=db_path,
+            traces_dir=traces_dir,
+            traces_root=traces_root,
+        )
+        assert verdict.accepted is False
+        assert verdict.reason == "missing_snapshot"
