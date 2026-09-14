@@ -46,6 +46,63 @@ from mcp_server.notifiers import notify
 from mcp_server.utils import device_utils
 
 
+def _record_attempt_manifest(
+    *,
+    trace_id: str,
+    checkpoint: str,
+    llm_config,
+    parent_attempt_id: str | None = None,
+) -> None:
+    """Best-effort Gate 1 evidence hook: resolve, hash and store one attempt
+    manifest checkpoint beside this trace before/after the real inference run.
+
+    Mirrors ``token_meter.record_llm_usage``'s own contract: this must never
+    raise into the task execution path. A tier that cannot be inferred from
+    ``llm_config`` (this fork's ``config/artemis.jsonc`` does not yet declare
+    an explicit tier table — see ``attempt_manifest.TIER_MODELS``) or a
+    checkpoint that collides with an already-stored one (create-only storage)
+    are both recorded as skips, not failures, so a manifest gap is visible in
+    the runner's own log without ever aborting a live mobile task.
+    """
+    try:
+        from artemis.config.attempt_manifest import (
+            TIER_MODELS,
+            ManifestAlreadyExistsError,
+            build_attempt_manifest,
+            store_attempt_manifest,
+        )
+
+        tier = None
+        for candidate_tier, (provider, model_name) in TIER_MODELS.items():
+            if llm_config.planner.provider == provider and llm_config.planner.model == model_name:
+                tier = candidate_tier
+                break
+        if tier is None:
+            print(
+                f"Attempt manifest [{checkpoint}] skipped: planner "
+                f"{llm_config.planner.provider}/{llm_config.planner.model} does not match "
+                "a declared tier in attempt_manifest.TIER_MODELS."
+            )
+            return
+
+        manifest = build_attempt_manifest(
+            run_id=trace_id,
+            attempt_id=trace_id,
+            trace_id=trace_id,
+            tier=tier,
+            llm_config=llm_config,
+            env=dict(os.environ),
+            checkpoint=checkpoint,
+            parent_attempt_id=parent_attempt_id,
+        )
+        manifest_path, digest = store_attempt_manifest(manifest)
+        print(f"Attempt manifest [{checkpoint}] stored at {manifest_path} (sha256={digest}).")
+    except ManifestAlreadyExistsError as exc:
+        print(f"Attempt manifest [{checkpoint}] skipped: {exc}")
+    except Exception as exc:
+        print(f"Attempt manifest [{checkpoint}] skipped (best-effort, non-fatal): {exc}")
+
+
 async def _initialize_agent(
     agent,
     *,
@@ -213,6 +270,10 @@ async def run_task(
         else:
             profile = AgentProfile(name="default", llm_config=initialize_llm_config())
 
+        _record_attempt_manifest(
+            trace_id=trace_id, checkpoint="launch", llm_config=profile.llm_config
+        )
+
         config_builder = Builders.AgentConfig.with_default_profile(profile)
         if verification_level:
             config_builder.with_verification_level(verification_level)
@@ -229,6 +290,9 @@ async def run_task(
         config = config_builder.build()
 
         agent = Agent(config=config)
+        _record_attempt_manifest(
+            trace_id=trace_id, checkpoint="worker_start", llm_config=profile.llm_config
+        )
         await _initialize_agent(
             agent,
             retry_count=int(os.getenv("ARTEMIS_HEALTH_RETRIES", 5)),
@@ -400,6 +464,11 @@ async def run_task(
 
     finally:
         print("Cleaning up resources...")
+        attempt_profile = locals().get("profile")
+        if attempt_profile is not None:
+            _record_attempt_manifest(
+                trace_id=trace_id, checkpoint="termination", llm_config=attempt_profile.llm_config
+            )
         if agent:
             try:
                 await agent.clean()

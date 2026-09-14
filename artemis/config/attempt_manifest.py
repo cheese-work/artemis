@@ -432,16 +432,43 @@ def _manifest_paths(trace_id: str, checkpoint: str) -> tuple[Path, Path]:
     return manifest_path, digest_path
 
 
+def _create_only_write(path: Path, data: bytes) -> None:
+    """Writes ``data`` to ``path`` iff the path does not already exist.
+
+    Uses ``O_CREAT | O_EXCL`` so the existence check and the write are one
+    atomic kernel operation — no TOCTOU window between a prior ``.exists()``
+    check and the write itself. Raises :class:`ManifestAlreadyExistsError` if
+    the path already exists (races included: two concurrent writers targeting
+    the same path always leave exactly one winner and one raised error, never
+    a silent overwrite).
+    """
+    flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
+    try:
+        fd = os.open(path, flags, 0o644)
+    except FileExistsError as e:
+        raise ManifestAlreadyExistsError(
+            f"{path} already exists; refusing to overwrite a prior attempt's record."
+        ) from e
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+    except BaseException:
+        path.unlink(missing_ok=True)
+        raise
+
+
 def store_attempt_manifest(manifest: dict[str, Any]) -> tuple[Path, str]:
     """Writes the manifest JSON bytes + its digest beside the trace directory.
 
-    Create-only: raises :class:`ManifestAlreadyExistsError` if either target
-    path already exists, so a later call can never silently overwrite an
-    earlier attempt's stored manifest (requirement: "never overwrite a prior
-    attempt's manifest/trace file"). One file is written per checkpoint
-    (``launch`` / ``worker_start`` / ``termination``), keyed by
-    ``trace_id``+``checkpoint``, so all three checkpoints for one attempt can
-    coexist and each is independently immutable once written.
+    Create-only under concurrency: both the manifest and digest files are
+    written via ``O_CREAT | O_EXCL`` (:func:`_create_only_write`), so a
+    concurrent writer targeting the same ``(trace_id, checkpoint)`` can never
+    silently overwrite an earlier attempt's stored manifest (requirement:
+    "never overwrite a prior attempt's manifest/trace file") — the loser of
+    the race raises :class:`ManifestAlreadyExistsError` instead. One file is
+    written per checkpoint (``launch`` / ``worker_start`` / ``termination``),
+    keyed by ``trace_id``+``checkpoint``, so all three checkpoints for one
+    attempt can coexist and each is independently immutable once written.
 
     Returns ``(manifest_path, digest_hex)``.
     """
@@ -449,25 +476,21 @@ def store_attempt_manifest(manifest: dict[str, Any]) -> tuple[Path, str]:
     checkpoint = manifest["checkpoint"]
     manifest_path, digest_path = _manifest_paths(trace_id, checkpoint)
 
-    if manifest_path.exists() or digest_path.exists():
-        raise ManifestAlreadyExistsError(
-            f"Attempt manifest for trace {trace_id!r} checkpoint {checkpoint!r} already "
-            f"exists at {manifest_path}; refusing to overwrite a prior attempt's record."
-        )
-
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
     payload = canonical_bytes(manifest)
     digest = hashlib.sha256(payload).hexdigest()
 
-    temp_manifest = manifest_path.with_suffix(manifest_path.suffix + ".tmp")
-    temp_manifest.write_bytes(payload)
+    _create_only_write(manifest_path, payload)
     try:
-        os.replace(temp_manifest, manifest_path)
-    except OSError:
-        temp_manifest.unlink(missing_ok=True)
+        _create_only_write(digest_path, digest.encode("utf-8"))
+    except ManifestAlreadyExistsError:
+        # The manifest write above already won its race and is on disk and
+        # immutable; only the digest file lost its race. Leave both files as
+        # they are — the manifest write must not be undone (a concurrent
+        # reader may already observe it), and re-raising surfaces the
+        # conflict to the caller instead of masking it.
         raise
 
-    digest_path.write_text(digest, encoding="utf-8")
     return manifest_path, digest
 
 

@@ -23,6 +23,7 @@ provider/network call.
 from __future__ import annotations
 
 import json
+import threading
 
 import pytest
 
@@ -269,6 +270,96 @@ class TestStorageCreateOnly:
         store_attempt_manifest(manifest)
         with pytest.raises(ManifestAlreadyExistsError):
             store_attempt_manifest(manifest)
+
+    def test_concurrent_writers_never_overwrite_each_others_bytes(self):
+        """Reproduces the TOCTOU this storage must not have.
+
+        A prior implementation checked ``Path.exists()`` then wrote via
+        ``os.replace()`` — a second writer landing between those two steps
+        silently clobbered the first writer's already-stored bytes instead of
+        raising. This drives two logically different manifests (same
+        trace/checkpoint key, different ``run_id``) through
+        ``store_attempt_manifest`` back-to-back and asserts the file on disk
+        still holds exactly the first writer's bytes, with the second writer
+        observing ``ManifestAlreadyExistsError`` rather than winning a race.
+        """
+        first = build_attempt_manifest(
+            run_id="first-writer",
+            attempt_id="a",
+            trace_id="trace-race-1",
+            tier="sol",
+            llm_config=_sol_config(),
+            env={},
+            checkpoint="launch",
+            now=1.0,
+        )
+        second = build_attempt_manifest(
+            run_id="second-writer",
+            attempt_id="a",
+            trace_id="trace-race-1",
+            tier="sol",
+            llm_config=_sol_config(),
+            env={},
+            checkpoint="launch",
+            now=2.0,
+        )
+        assert canonical_bytes(first) != canonical_bytes(second)
+
+        first_path, first_digest = store_attempt_manifest(first)
+        with pytest.raises(ManifestAlreadyExistsError):
+            store_attempt_manifest(second)
+
+        stored_bytes, stored_digest = read_stored_manifest("trace-race-1", "launch")
+        assert stored_bytes == canonical_bytes(first)
+        assert stored_digest == first_digest
+        assert first_path.read_bytes() == canonical_bytes(first)
+
+    def test_two_threads_racing_the_same_key_leave_exactly_one_winner(self):
+        """True concurrent reproduction: two threads, one (trace_id, checkpoint).
+
+        Exactly one thread's bytes must land on disk and the other must
+        observe ``ManifestAlreadyExistsError`` — never a torn write and never
+        a silent overwrite of the winner by the loser.
+        """
+        manifest_by_run_id = {
+            run_id: build_attempt_manifest(
+                run_id=run_id,
+                attempt_id="a",
+                trace_id="trace-race-2",
+                tier="sol",
+                llm_config=_sol_config(),
+                env={},
+                checkpoint="launch",
+                now=float(i),
+            )
+            for i, run_id in enumerate(("racer-a", "racer-b"))
+        }
+        results: dict[str, tuple[str, str] | Exception] = {}
+        start = threading.Barrier(2)
+
+        def _race(run_id: str) -> None:
+            start.wait()
+            try:
+                results[run_id] = store_attempt_manifest(manifest_by_run_id[run_id])
+            except ManifestAlreadyExistsError as exc:
+                results[run_id] = exc
+
+        threads = [threading.Thread(target=_race, args=(rid,)) for rid in manifest_by_run_id]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        winners = [rid for rid, res in results.items() if not isinstance(res, Exception)]
+        losers = [rid for rid, res in results.items() if isinstance(res, Exception)]
+        assert len(winners) == 1
+        assert len(losers) == 1
+        assert isinstance(results[losers[0]], ManifestAlreadyExistsError)
+
+        winning_manifest = manifest_by_run_id[winners[0]]
+        stored_bytes, stored_digest = read_stored_manifest("trace-race-2", "launch")
+        assert stored_bytes == canonical_bytes(winning_manifest)
+        assert stored_digest == digest_of(winning_manifest)
 
     def test_different_checkpoints_for_same_trace_coexist(self):
         base_kwargs = dict(
