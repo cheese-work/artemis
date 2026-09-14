@@ -78,3 +78,53 @@ async def test_validate_ocr_success():
         is_valid, msg = await validate_api_key("ocr", "valid_ocr_key_12345")
         assert is_valid
         assert "verified successfully" in msg
+
+
+@pytest.mark.parametrize(
+    ("provider", "setting", "configured_url", "base_url", "expected_url"),
+    [
+        (
+            "openai",
+            "OPENAI_BASE_URL",
+            "https://openai-config.example/v1",
+            None,
+            "https://openai-config.example/v1/models",
+        ),
+        (
+            "openai",
+            "OPENAI_BASE_URL",
+            "https://openai-config.example/v1",
+            "https://openai-model.example/v1",
+            "https://openai-model.example/v1/models",
+        ),
+        (
+            "anthropic",
+            "ANTHROPIC_BASE_URL",
+            "https://anthropic-config.example",
+            None,
+            "https://anthropic-config.example/v1/models",
+        ),
+        (
+            "anthropic",
+            "ANTHROPIC_BASE_URL",
+            "https://anthropic-config.example",
+            "https://anthropic-model.example",
+            "https://anthropic-model.example/v1/models",
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_validate_provider_url_precedence(
+    monkeypatch, provider, setting, configured_url, base_url, expected_url
+):
+    from artemis.config import settings
+
+    monkeypatch.setattr(settings, setting, configured_url)
+    with patch("httpx.AsyncClient.get", new_callable=AsyncMock) as mock_get:
+        response = MagicMock(status_code=200)
+        mock_get.return_value = response
+
+        valid, _ = await validate_api_key(provider, "test-key", base_url=base_url)
+
+    assert valid
+    assert mock_get.await_args.args[0] == expected_url

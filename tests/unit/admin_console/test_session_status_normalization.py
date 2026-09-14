@@ -58,3 +58,29 @@ def test_get_session_status_stays_raw_for_queue_reconcile(tmp_path):
     _insert_session(db_path, "legacy", "success")
 
     assert repository.get_session_status("legacy") == "success"
+
+
+def test_create_queued_session_persists_queue_metadata(tmp_path):
+    repository = SessionRepository(tmp_path / "sessions.db")
+
+    assert repository.create_queued_session(
+        "queued-session", "Open settings", "pro", "device-123", start_time=0.0
+    )
+
+    row = repository.get_session_by_id("queued-session")
+    assert row is not None
+    assert row["status"] == "queued"
+    assert row["start_time"] == 0.0
+    assert row["device_info"] == '{"profile": "pro", "device_id": "device-123"}'
+
+
+def test_create_queued_session_preserves_existing_terminal_session(tmp_path):
+    db_path = tmp_path / "sessions.db"
+    repository = SessionRepository(db_path)
+    _insert_session(db_path, "terminal", "completed")
+
+    assert not repository.create_queued_session("terminal", "New goal", "flash", None)
+
+    row = repository.get_session_by_id("terminal")
+    assert row is not None
+    assert row["status"] == "completed"

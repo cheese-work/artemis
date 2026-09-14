@@ -22,8 +22,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from apps.admin_console.core.state import state
+from apps.admin_console.database.repositories.session_repository import SessionRepository
 from apps.admin_console.routers.tasks import get_status
 from apps.admin_console.services.task_queue_service import TaskQueueService, task_queue_service
+from artemis.runtime import trace_store
 from artemis.runtime.device_lock import DeviceLockOwner
 from artemis.runtime.adb_endpoint import AdbEndpoint
 
@@ -52,6 +54,8 @@ def clean_state(tmp_path, monkeypatch):
         "artemis.runtime.cancel_requests.get_temp_dir",
         lambda _subfolder=None: isolated_lock_dir,
     )
+    monkeypatch.setattr(trace_store, "TRACES_DIR", str(tmp_path / "traces"))
+    monkeypatch.setattr(queue_module, "session_repo", SessionRepository(tmp_path / "sessions.db"))
     state.clear_queue()
     state.queue_items.clear()
     state.current_process = None
@@ -130,6 +134,129 @@ async def test_enqueued_task_keeps_its_adb_endpoint_snapshot():
     assert target.endpoint == original
     assert target.serial == "emulator-5554"
     assert target.lock_key == f"{original.identity}/emulator-5554"
+
+
+@pytest.mark.asyncio
+async def test_pre_session_worker_failure_persists_failed_session_and_releases_ticket(tmp_path):
+    async def failed_worker(*_args, **_kwargs):
+        proc = MagicMock()
+        proc.pid = 99999999
+        proc.returncode = 1
+        proc.stdout = None
+        proc.wait = AsyncMock(return_value=1)
+        return proc
+
+    with (
+        patch.object(TaskQueueService, "ensure_worker_running"),
+        patch.object(
+            TaskQueueService, "_reject_unavailable_device", new=AsyncMock(return_value=None)
+        ),
+        patch("asyncio.create_subprocess_exec", side_effect=failed_worker),
+        patch.object(TaskQueueService, "_recover_or_fail_recording", new=AsyncMock()),
+    ):
+        result = await TaskQueueService.enqueue_tasks(
+            ["Configuration fails before session startup"],
+            profile="pro",
+            device_serial="test-device",
+        )
+        task_item = result["tasks"][0]
+        session_id = task_item["session_id"]
+
+        trace = trace_store.read_status(session_id)
+        assert trace["status"] == "running"
+        assert trace["model"] == "pro"
+        assert trace["device_serial"] == "test-device"
+
+        await TaskQueueService._execute_task_item(task_item)
+
+    queue_module = importlib.import_module("apps.admin_console.services.task_queue_service")
+    persisted = queue_module.session_repo.get_session_by_id(session_id)
+    assert persisted is not None
+    assert persisted["status"] == "failed"
+    assert persisted["end_time"] is not None
+    assert trace_store.read_status(session_id)["status"] == "failed"
+    assert state.queue_items == []
+    assert not list((tmp_path / "device-locks" / "artemis-global-device.queue").glob("*.wait"))
+
+
+@pytest.mark.asyncio
+async def test_enqueue_rejects_terminal_trace_without_overwriting_it(tmp_path):
+    session_id = "terminal-session"
+    trace_store.init_trace(session_id, "Finished goal", "flash")
+    trace_store.update_trace_status(session_id, "completed")
+
+    with (
+        patch.object(TaskQueueService, "ensure_worker_running"),
+        patch.object(
+            TaskQueueService, "_reject_unavailable_device", new=AsyncMock(return_value=None)
+        ),
+        pytest.raises(RuntimeError, match="terminal trace"),
+    ):
+        await TaskQueueService.enqueue_tasks(
+            ["Do not overwrite"], session_id=session_id, device_serial="test-device"
+        )
+
+    assert trace_store.read_status(session_id)["status"] == "completed"
+    assert state.queue_items == []
+    assert not list((tmp_path / "device-locks" / "artemis-global-device.queue").glob("*.wait"))
+
+
+@pytest.mark.asyncio
+async def test_enqueue_marks_existing_running_trace_failed_when_db_admission_fails(
+    tmp_path, monkeypatch
+):
+    session_id = "mcp-session"
+    trace_store.init_trace(session_id, "MCP goal", "flash")
+    queue_module = importlib.import_module("apps.admin_console.services.task_queue_service")
+    monkeypatch.setattr(queue_module.session_repo, "create_queued_session", lambda *_args: False)
+
+    with (
+        patch.object(TaskQueueService, "ensure_worker_running"),
+        patch.object(
+            TaskQueueService, "_reject_unavailable_device", new=AsyncMock(return_value=None)
+        ),
+        pytest.raises(RuntimeError, match="Could not persist queued session"),
+    ):
+        await TaskQueueService.enqueue_tasks(
+            ["MCP goal"], session_id=session_id, device_serial="test-device", ingress="mcp"
+        )
+
+    assert trace_store.read_status(session_id)["status"] == "failed"
+    assert state.queue_items == []
+    assert not list((tmp_path / "device-locks" / "artemis-global-device.queue").glob("*.wait"))
+
+
+@pytest.mark.asyncio
+async def test_enqueue_rolls_back_earlier_items_when_later_setup_fails(tmp_path, monkeypatch):
+    queue_module = importlib.import_module("apps.admin_console.services.task_queue_service")
+    repository = queue_module.session_repo
+    create_queued_session = repository.create_queued_session
+    session_ids: list[str] = []
+
+    def fail_second_queued_session(*args, **kwargs):
+        session_ids.append(args[0])
+        if len(session_ids) == 2:
+            return False
+        return create_queued_session(*args, **kwargs)
+
+    monkeypatch.setattr(repository, "create_queued_session", fail_second_queued_session)
+    with (
+        patch.object(TaskQueueService, "ensure_worker_running"),
+        patch.object(
+            TaskQueueService, "_reject_unavailable_device", new=AsyncMock(return_value=None)
+        ),
+        pytest.raises(RuntimeError, match="Could not persist queued session"),
+    ):
+        await TaskQueueService.enqueue_tasks(
+            ["First task", "Second task"], device_serial="test-device"
+        )
+
+    assert len(session_ids) == 2
+    assert repository.get_session_status(session_ids[0]) == "failed"
+    assert trace_store.read_status(session_ids[0])["status"] == "failed"
+    assert trace_store.read_status(session_ids[1])["status"] == "failed"
+    assert state.queue_items == []
+    assert not list((tmp_path / "device-locks" / "artemis-global-device.queue").glob("*.wait"))
 
 
 @pytest.mark.parametrize(

@@ -14,6 +14,8 @@
 
 """Unit tests for ModelFactory instantiation and grounding tool wiring."""
 
+from unittest.mock import patch
+
 from artemis.llm.router import ModelEndpoint, ModelFactory, ModelProvider
 
 
@@ -41,6 +43,63 @@ def test_model_factory_openai_instantiation():
     model = ModelFactory.create_model(oai_ep)
     assert model.model_name == "o3-mini"
     assert getattr(model, "reasoning_effort", None) == "medium"
+
+
+def test_model_factory_openai_endpoint_prefers_model_configuration(monkeypatch):
+    """A model-specific endpoint overrides the configured OpenAI default."""
+    from artemis.config import settings
+
+    monkeypatch.setattr(settings, "OPENAI_BASE_URL", "https://openai-default.example/v1")
+    endpoint = ModelEndpoint(
+        provider=ModelProvider.OPENAI,
+        model_name="gpt-test",
+        api_key="test-key",
+        api_base="https://openai-model.example/v1",
+    )
+
+    with patch("langchain_openai.ChatOpenAI") as chat_openai:
+        ModelFactory.create_model(endpoint)
+
+    assert chat_openai.call_args.kwargs["base_url"] == "https://openai-model.example/v1"
+
+
+def test_model_factory_anthropic_uses_configured_or_model_endpoint(monkeypatch):
+    """Anthropic receives the environment default unless the model specifies one."""
+    from artemis.config import settings
+
+    monkeypatch.setattr(settings, "ANTHROPIC_BASE_URL", "https://anthropic-default.example")
+    default_endpoint = ModelEndpoint(
+        provider=ModelProvider.ANTHROPIC,
+        model_name="claude-test",
+        api_key="test-key",
+    )
+    model_endpoint = default_endpoint.model_copy(
+        update={"api_base": "https://anthropic-model.example"}
+    )
+
+    with patch("langchain_anthropic.ChatAnthropic") as chat_anthropic:
+        ModelFactory.create_model(default_endpoint)
+        ModelFactory.create_model(model_endpoint)
+
+    assert [call.kwargs["base_url"] for call in chat_anthropic.call_args_list] == [
+        "https://anthropic-default.example",
+        "https://anthropic-model.example",
+    ]
+
+
+def test_llm_config_api_base_reaches_model_endpoint():
+    from artemis.config.llm import deep_merge_llm_config, get_default_llm_config
+    from artemis.services.llm import _resolve_endpoint
+
+    endpoint_url = "https://openai-proxy.example/v1"
+    config = deep_merge_llm_config(
+        get_default_llm_config(), {"planner": {"api_base": endpoint_url}}
+    )
+
+    class Context:
+        llm_config = config
+
+    assert _resolve_endpoint(Context(), "planner").api_base == endpoint_url
 
 
 def test_robust_chat_model_wrapper_grounding_google():

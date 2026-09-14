@@ -409,6 +409,37 @@ async def test_credentials_probe_and_dynamic_update():
 
 
 @pytest.mark.asyncio
+async def test_credentials_probe_ignores_placeholder_openai_endpoint(monkeypatch):
+    from artemis.config import settings
+
+    for key in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GOOGLE_API_KEY"):
+        monkeypatch.setattr(settings, key, None)
+    monkeypatch.setenv("OPENAI_BASE_URL", "<custom-openai-endpoint>")
+
+    result = await LLMCredentialsProbe().probe()
+
+    assert not any(
+        entry["raw_key"] == "<custom-openai-endpoint>" for entry in result.metadata["providers"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_credentials_probe_reports_keyless_openai_endpoint(monkeypatch):
+    from artemis.config import settings
+
+    for key in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GOOGLE_API_KEY"):
+        monkeypatch.setattr(settings, key, None)
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://openai-proxy.example/v1")
+
+    result = await LLMCredentialsProbe().probe()
+
+    assert any(
+        entry["provider"] == "custom" and entry["raw_key"] == "https://openai-proxy.example/v1"
+        for entry in result.metadata["providers"]
+    )
+
+
+@pytest.mark.asyncio
 async def test_emulator_manager_lifecycle():
     """Verify EmulatorManager status querying, validation, and dismissal."""
     from artemis.core.diagnostics.emulator_manager import (

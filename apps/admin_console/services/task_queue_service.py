@@ -1066,6 +1066,7 @@ class TaskQueueService:
         cls.ensure_worker_running()
 
         enqueued_tasks = []
+        created_trace_session_ids: set[str] = set()
         now = time.time()
         endpoint = current_adb_endpoint()
 
@@ -1106,6 +1107,62 @@ class TaskQueueService:
                 verification_level=verification_level,
                 explorer_mode=explorer_mode,
             )
+            session_id = str(task_item["session_id"])
+            existing_trace = trace_store.read_status(session_id)
+            trace_created = existing_trace is None
+            existing_trace_is_terminal = bool(
+                existing_trace
+                and existing_trace.get("status") in {"completed", "failed", "cancelled", "success"}
+            )
+            try:
+                if existing_trace_is_terminal:
+                    raise RuntimeError(f"Session {session_id} already has a terminal trace")
+                if trace_created:
+                    trace_store.init_trace(
+                        session_id,
+                        goal,
+                        task_item["profile"],
+                        task_item.get("conversation_id"),
+                        task_item.get("device_serial"),
+                    )
+                    created_trace_session_ids.add(session_id)
+                if not session_repo.create_queued_session(
+                    session_id,
+                    goal,
+                    task_item["profile"],
+                    task_item.get("device_serial"),
+                    task_item.get("start_time"),
+                ):
+                    raise RuntimeError(f"Could not persist queued session {session_id}")
+            except (OSError, RuntimeError) as exc:
+                DeviceExecutionLock.cancel_reservation(task_item.get("queue_ticket"))
+                if trace_created or (
+                    not existing_trace_is_terminal
+                    and session_repo.get_session_by_id(session_id) is None
+                ):
+                    try:
+                        trace_store.update_trace_status(session_id, "failed", error=str(exc))
+                    except OSError:
+                        logger.exception(
+                            "Could not mark queue setup failure for session %s", session_id
+                        )
+                for enqueued_task in enqueued_tasks:
+                    enqueued_session_id = str(enqueued_task["session_id"])
+                    session_repo.update_session_status(enqueued_session_id, "failed", time.time())
+                    if enqueued_session_id in created_trace_session_ids:
+                        try:
+                            trace_store.update_trace_status(
+                                enqueued_session_id,
+                                "failed",
+                                error="Task batch could not be queued.",
+                            )
+                        except OSError:
+                            logger.exception(
+                                "Could not mark rolled-back queue session %s failed",
+                                enqueued_session_id,
+                            )
+                    cls._remove_task(enqueued_session_id)
+                raise
             state.queue_items.append(task_item)
             enqueued_tasks.append(task_item)
             cls._broadcast_startup_progress(

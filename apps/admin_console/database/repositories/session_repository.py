@@ -510,6 +510,40 @@ class SessionRepository:
         except Exception:
             return None
 
+    def create_queued_session(
+        self,
+        session_id: str,
+        goal: str,
+        profile: str,
+        device_serial: str | None,
+        start_time: float | None = None,
+    ) -> bool:
+        """Persist a queue item before its worker starts a session."""
+        try:
+            with db_session(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "INSERT INTO sessions "
+                    "(session_id, initial_goal, start_time, end_time, status, device_info, pid) "
+                    "VALUES (?, ?, ?, NULL, 'queued', ?, NULL)",
+                    (
+                        str(session_id),
+                        goal,
+                        start_time if start_time is not None else time.time(),
+                        json.dumps(
+                            {
+                                "profile": profile,
+                                "device_id": device_serial,
+                            }
+                        ),
+                    ),
+                )
+                conn.commit()
+                return cursor.rowcount > 0
+        except Exception:
+            logger.exception("Could not create queued session %s", session_id)
+            return False
+
     def update_session_status(
         self, session_id: str, status: str, end_time: float | None = None
     ) -> bool:

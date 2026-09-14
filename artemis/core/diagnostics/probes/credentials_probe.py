@@ -82,6 +82,7 @@ class LLMCredentialsProbe(BaseProbe):
                     "masked": self._mask_key(o_val),
                     "raw_key": o_val,
                     "key": o_val,
+                    "base_url": settings.OPENAI_BASE_URL,
                 }
             )
             api_keys_map["openai"] = o_val
@@ -94,6 +95,7 @@ class LLMCredentialsProbe(BaseProbe):
                     "masked": self._mask_key(c_val),
                     "raw_key": c_val,
                     "key": c_val,
+                    "base_url": settings.ANTHROPIC_BASE_URL,
                 }
             )
             api_keys_map["anthropic"] = c_val
@@ -126,7 +128,6 @@ class LLMCredentialsProbe(BaseProbe):
         for env_var, label, prov_id in [
             ("DEEPSEEK_API_KEY", "DeepSeek", "deepseek"),
             ("GROQ_API_KEY", "Groq", "groq"),
-            ("OPENAI_BASE_URL", "Custom OpenAI Endpoint", "custom"),
             ("OLLAMA_BASE_URL", "Local Ollama", "ollama"),
             ("VLLM_BASE_URL", "vLLM Endpoint", "vllm"),
             ("VERTEX_AI_PROJECT", "Google Cloud Vertex AI", "vertexai"),
@@ -143,6 +144,26 @@ class LLMCredentialsProbe(BaseProbe):
                     }
                 )
                 api_keys_map[prov_id] = val.strip()
+
+        # Preserve endpoint-only diagnosis when a compatible URL exists without
+        # its provider key; keyed providers are verified against their own URL above.
+        openai_base_url = os.environ.get("OPENAI_BASE_URL")
+        if (
+            openai_base_url
+            and openai_base_url.strip()
+            and not is_placeholder_key(openai_base_url.strip())
+            and "openai" not in api_keys_map
+        ):
+            configured_providers.append(
+                {
+                    "provider": "custom",
+                    "label": "Custom OpenAI Endpoint",
+                    "masked": self._mask_key(openai_base_url.strip()),
+                    "raw_key": openai_base_url.strip(),
+                    "key": openai_base_url.strip(),
+                }
+            )
+            api_keys_map["custom"] = openai_base_url.strip()
 
         if ocr_key and not is_placeholder_key(ocr_key):
             api_keys_map["ocr"] = ocr_key.get_secret_value()

@@ -315,10 +315,14 @@ class ModelFactory:
                 )
                 or os.environ.get("ANTHROPIC_API_KEY")
             )
+            base_url = endpoint.api_base or (
+                str(settings.ANTHROPIC_BASE_URL) if settings.ANTHROPIC_BASE_URL else None
+            )
             kwargs = {
                 "model": endpoint.model_name,
                 "temperature": endpoint.temperature,
                 "api_key": api_key,
+                "base_url": base_url,
                 "timeout": endpoint.timeout_seconds,
             }
             budget = endpoint.thinking_budget

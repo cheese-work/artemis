@@ -23,6 +23,7 @@ from typing import Annotated
 from adbutils import AdbClient
 from langchain_core.callbacks.base import Callbacks
 from artemis.config import checker_overrides_for_level, initialize_llm_config, settings
+from artemis.runtime import trace_store
 from artemis.utils.startup_progress import publish_startup_progress
 from artemis import Agent, Builders
 from artemis.sdk.types.task import AgentProfile
@@ -93,7 +94,17 @@ async def execute_task(
         session_id=str(effective_sid) if effective_sid else None,
     )
 
-    llm_config = initialize_llm_config()
+    try:
+        llm_config = initialize_llm_config()
+    except Exception as exc:
+        if effective_sid:
+            try:
+                trace_store.update_trace_status(str(effective_sid), "failed", error=str(exc))
+            except OSError:
+                logger.exception(
+                    "Could not record configuration failure for session %s", effective_sid
+                )
+        raise
     agent_profile = AgentProfile(name="default", llm_config=llm_config)
     config = Builders.AgentConfig.with_default_profile(profile=agent_profile)
 

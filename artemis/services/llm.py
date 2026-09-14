@@ -1074,6 +1074,7 @@ def _resolve_endpoint(
         reasoning_effort=_get_val(cfg, "reasoning_effort", str),
         include_thoughts=_get_val(cfg, "include_thoughts", bool),
         enable_grounding=_get_val(cfg, "enable_grounding", bool) or False,
+        api_base=_get_val(cfg, "api_base", str),
     )
 
 
@@ -1084,6 +1085,7 @@ def get_llm(
     *,
     use_fallback: bool = False,
     temperature: float | None = None,
+    model_name: str | None = None,
 ) -> BaseChatModel: ...
 
 
@@ -1094,6 +1096,7 @@ def get_llm(
     *,
     is_utils: Literal[True],
     temperature: float | None = None,
+    model_name: str | None = None,
 ) -> BaseChatModel: ...
 
 
@@ -1105,6 +1108,7 @@ def get_llm(
     is_utils: Literal[True],
     use_fallback: bool = False,
     temperature: float | None = None,
+    model_name: str | None = None,
 ) -> BaseChatModel: ...
 
 
@@ -1114,11 +1118,14 @@ def get_llm(
     is_utils: bool = False,
     use_fallback: bool = False,
     temperature: float | None = None,
+    model_name: str | None = None,
 ) -> BaseChatModel:
     """Resolves and instantiates the appropriate LLM wrapper for the given agent role."""
     endpoint = _resolve_endpoint(ctx, str(name), is_utils=is_utils, use_fallback=use_fallback)
     if temperature is not None:
         endpoint = endpoint.model_copy(update={"temperature": temperature})
+    if model_name is not None:
+        endpoint = endpoint.model_copy(update={"model_name": model_name})
     raw_model = ModelFactory.get_model(endpoint)
 
     handler = DataEngineCallbackHandler(ctx)

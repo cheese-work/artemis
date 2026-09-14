@@ -857,6 +857,32 @@ def test_verify_credentials_calls_endpoint_providers_by_url(temp_trace_env):
     assert "base_url" not in calls["google"].kwargs
 
 
+def test_verify_credentials_uses_provider_base_url(temp_trace_env):
+    validate = AsyncMock(return_value=(True, "verified"))
+    cred = _probe(
+        "gemini_api_key",
+        ProbeStatus.PASS,
+        category=ProbeCategory.CREDENTIALS,
+        metadata={
+            "providers": [
+                {
+                    "provider": "anthropic",
+                    "label": "Claude",
+                    "raw_key": "SECRET-ANTHROPIC",
+                    "base_url": "https://anthropic-proxy.example",
+                }
+            ],
+            "api_keys": {},
+        },
+    )
+    probes = [p for p in _healthy_probes() if p.id != "gemini_api_key"] + [cred]
+    _run(probes, validate=validate, verify_credentials=True)
+
+    call = validate.await_args
+    assert call.args == ("anthropic", "SECRET-ANTHROPIC")
+    assert call.kwargs["base_url"] == "https://anthropic-proxy.example"
+
+
 def test_invalid_primary_credential_blocks_and_redacts_message(temp_trace_env):
     async def _validate(provider, api_key, timeout=12.0):
         if provider == "google":

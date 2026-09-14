@@ -422,9 +422,12 @@ async def get_model_config_and_env():
     anthropic_real = get_real_env_value("ANTHROPIC_API_KEY", "anthropic")
     openrouter_real = get_real_env_value("OPEN_ROUTER_API_KEY", "openrouter")
     xai_real = get_real_env_value("XAI_API_KEY", "xai")
-    base_url_val = settings.OPENAI_BASE_URL or os.environ.get("OPENAI_BASE_URL")
-    if base_url_val and is_placeholder_key(base_url_val):
-        base_url_val = None
+    openai_base_url = settings.OPENAI_BASE_URL or os.environ.get("OPENAI_BASE_URL")
+    anthropic_base_url = settings.ANTHROPIC_BASE_URL or os.environ.get("ANTHROPIC_BASE_URL")
+    if openai_base_url and is_placeholder_key(openai_base_url):
+        openai_base_url = None
+    if anthropic_base_url and is_placeholder_key(anthropic_base_url):
+        anthropic_base_url = None
     ocr_real = get_real_env_value("OCR_API_KEY", "ocr") or get_real_env_value(
         "VISION_API_KEY", "ocr"
     )
@@ -467,10 +470,17 @@ async def get_model_config_and_env():
         },
         {
             "name": "OPENAI_BASE_URL",
-            "provider": "custom",
-            "is_set": bool(base_url_val),
-            "preview": base_url_val,
-            "description": "Custom API endpoint (for local Ollama, vLLM, DeepSeek, or proxies)",
+            "provider": "openai",
+            "is_set": bool(openai_base_url),
+            "preview": openai_base_url,
+            "description": "Custom OpenAI-compatible API endpoint",
+        },
+        {
+            "name": "ANTHROPIC_BASE_URL",
+            "provider": "anthropic",
+            "is_set": bool(anthropic_base_url),
+            "preview": anthropic_base_url,
+            "description": "Custom Anthropic-compatible API endpoint",
         },
         {
             "name": "VISION_API_KEY",

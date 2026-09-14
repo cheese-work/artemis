@@ -15,9 +15,31 @@
 """Unit tests for ARTEMIS Unified CLI application."""
 
 from typer.testing import CliRunner
+import pytest
 from artemis.interfaces.cli.main import app
 
 runner = CliRunner()
+
+
+@pytest.mark.asyncio
+async def test_execute_task_records_configuration_failure_in_existing_trace(tmp_path, monkeypatch):
+    import artemis.interfaces.cli.commands.run as run_module
+    from artemis.runtime import trace_store
+
+    def fail_initialization():
+        raise RuntimeError("Planner requires GOOGLE_API_KEY in .env")
+
+    session_id = "configuration-failure"
+    monkeypatch.setattr(trace_store, "TRACES_DIR", str(tmp_path / "traces"))
+    trace_store.init_trace(session_id, "Open settings", "flash")
+    monkeypatch.setattr(run_module, "initialize_llm_config", fail_initialization)
+
+    with pytest.raises(RuntimeError, match="GOOGLE_API_KEY"):
+        await run_module.execute_task("Open settings", session_id=session_id)
+
+    status = trace_store.read_status(session_id)
+    assert status["status"] == "failed"
+    assert status["error"] == "Planner requires GOOGLE_API_KEY in .env"
 
 
 def test_cli_help():

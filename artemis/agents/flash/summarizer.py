@@ -36,7 +36,7 @@ from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 
 from artemis.context import ArtemisContext
 from artemis.memory.step_memory import JobKey, StepMemoryService
-from artemis.services.llm import RobustChatModelWrapper, get_google_llm, get_llm
+from artemis.services.llm import RobustChatModelWrapper, get_llm
 from artemis.services.token_meter import record_llm_usage
 from artemis.utils.logger import get_logger
 from artemis.utils.task_tree import format_actions_clean
@@ -161,18 +161,22 @@ class VisualStepSummarizer(StepMemoryService):
             flush_timeout_s=flush_timeout_s,
         )
 
-        # Initialize lightweight VLM: prioritize explicit model_name
-        target_model = model_name or "gemini-2.5-flash-lite"
-        self._model_name = target_model
+        # The summarizer role carries the provider and default model. This profile
+        # knob only overrides that model when the caller explicitly supplies one.
+        self._model_name = model_name or ""
+        self._llm = get_llm(
+            ctx,
+            name="summarizer",
+            temperature=0.0,
+            model_name=model_name or None,
+        )
         try:
-            if model_name:
-                self._llm = get_google_llm(model_name=target_model, temperature=0.0)
-            else:
-                self._llm = get_llm(ctx, name="summarizer", is_utils=True)
-        except Exception:
-            self._llm = get_google_llm(model_name=target_model, temperature=0.0)
-        try:
-            configured = getattr(self._llm, "model", None) or getattr(self._llm, "model_name", None)
+            endpoint = getattr(self._llm, "endpoint", None)
+            configured = getattr(endpoint, "model_name", None)
+            if not configured:
+                configured = getattr(self._llm, "model", None) or getattr(
+                    self._llm, "model_name", None
+                )
             if isinstance(configured, str) and configured:
                 self._model_name = configured
         except Exception as exc:

@@ -18,9 +18,13 @@ from typing import IO
 
 
 def strip_json_comments(text: str) -> str:
-    text = re.sub(r"//.*?$", "", text, flags=re.MULTILINE)
-    text = re.sub(r"/\*.*?\*/", "", text, flags=re.DOTALL)
-    return text
+    """Strip JSONC comments while preserving quoted strings and escapes."""
+    pattern = r'//.*?$|/\*.*?\*/|"(?:\\.|[^\\"])*"'
+
+    def replace_comment(match: re.Match[str]) -> str:
+        return "" if match.group(0).startswith("/") else match.group(0)
+
+    return re.sub(pattern, replace_comment, text, flags=re.DOTALL | re.MULTILINE)
 
 
 def load_jsonc(file: IO) -> dict:

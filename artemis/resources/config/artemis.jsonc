@@ -9,6 +9,9 @@
   "default": {
     "provider": "google",
     "model": "gemini-3.8-flash",
+    // For OpenAI/Anthropic models, optional per-model API root. OpenAI-compatible endpoints include /v1;
+    // Anthropic endpoints normally omit /v1 because the SDK appends it.
+    // "api_base": "https://openai-proxy.example/v1",
     "thinking_level": "medium",
     "fallback": {
       "provider": "google",

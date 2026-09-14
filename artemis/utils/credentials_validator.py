@@ -76,6 +76,14 @@ async def validate_api_key(
     clean_provider = provider.strip().lower()
     clean_key = api_key.strip()
 
+    if base_url is None:
+        from artemis.config import settings
+
+        if clean_provider == "openai":
+            base_url = settings.OPENAI_BASE_URL
+        elif clean_provider in ("anthropic", "claude"):
+            base_url = settings.ANTHROPIC_BASE_URL
+
     if not clean_key:
         return False, "API key cannot be empty."
 
@@ -136,7 +144,11 @@ async def validate_api_key(
                 return False, f"OpenAI API verification failed ({resp.status_code}): {err_msg}"
 
             elif clean_provider in ("anthropic", "claude"):
-                url = "https://api.anthropic.com/v1/models"
+                url = (
+                    f"{base_url.rstrip('/')}/v1/models"
+                    if base_url
+                    else "https://api.anthropic.com/v1/models"
+                )
                 resp = await client.get(
                     url,
                     headers={

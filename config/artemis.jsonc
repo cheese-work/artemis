@@ -7,13 +7,14 @@
   // 1. Global Default Model (Applied to all sub-agents unless overridden below)
   // ------------------------------------------------------------------------------
   "default": {
-    "provider": "google",
-    "model": "gemini-3.8-flash",
-    "thinking_level": "medium",
+    "provider": "openai",
+    "model": "gpt-5.6-sol",
+    // API roots come from OPENAI_BASE_URL or ANTHROPIC_BASE_URL in the environment.
+    "reasoning_effort": "medium",
     "fallback": {
-      "provider": "google",
-      "model": "gemini-3.7-flash",
-      "thinking_level": "medium"
+      "provider": "openai",
+      "model": "gpt-5.6-sol",
+      "reasoning_effort": "medium"
     }
   },
 
@@ -71,14 +72,12 @@
     "video_analyzer": {},
 
     // 👁️ Object Detector & Explorer (Flash Mode): Visual coordinates grounding and bounding boxes
-    // CRITICAL REQUIREMENT: Standard LLMs (including standard Gemini Flash, GPT-4o, Claude 3.7) lack sub-pixel spatial coordinate fine-tuning.
-    // To achieve accurate [x, y] point and bounding box localization, this node MUST use specialized Gemini ER (Embodied Reasoning / Robotics) models:
-    // e.g., "gemini-robotics-er-2-preview". Non-ER models will fail spatial coordinate detection.
     "object_detector": {
-      "model": "gemini-robotics-er-2-preview",
+      "provider": "openai",
+      "model": "gpt-5.6-sol",
       "fallback": {
-        "provider": "google",
-        "model": "gemini-robotics-er-2-preview"
+        "provider": "openai",
+        "model": "gpt-5.6-sol"
       }
     },
 
@@ -87,7 +86,7 @@
     //  - "flash" version delegates directly to object_detector (requires Gemini ER model above).
     //  - "pro" / "ultra" versions run multi-turn ReAct loops (supports both Native Gemini and Universal Multi-Model LangChain engines).
     "explorer": {
-      "thinking_level": "medium"
+      "reasoning_effort": "medium"
     },
 
     // 📋 Summarizer: Aggregates step history and generates structured outcome
@@ -95,10 +94,11 @@
 
     // 🔽 Hopper: Fast lightweight package name locator
     "hopper": {
-      "model": "gemini-3.5-flash-lite",
+      "provider": "openai",
+      "model": "gpt-5.6-sol",
       "fallback": {
-        "provider": "google",
-        "model": "gemini-3.1-flash-lite"
+        "provider": "openai",
+        "model": "gpt-5.6-sol"
       }
     },
 
@@ -139,13 +139,13 @@
     // Execution: Observe-Think-Act single LLM reactive loop without graph overhead.
     "flash": {
       "max_turns": 0, // Maximum reactive turns before stopping (0 = unlimited; history is bounded by transcript compression, not by a turn cap)
-      "explorer_mode": "flash", // Explorer tier for the Flash runner: 'flash' | 'pro' | 'ultra' (see top-level "explorer")
+      "explorer_mode": "pro", // Explorer tier for the Flash runner: 'flash' | 'pro' | 'ultra' (see top-level "explorer")
       // 🧠 Step Summarizer: Asynchronous visual context compressor
       // Summarizes intermediate steps in background without blocking the runner,
       // replacing images only after strictly objective, high-density summaries are ready.
       "step_summarizer": {
         "enabled": true, // Whether background step summarization is active
-        "model": "gemini-3.5-flash-lite", // Lightweight model for fast background inference
+        "model": "gpt-5.6-sol", // Lightweight model for fast background inference
         "prune_history_xml": true // Prune outdated heavy XML trees from historical steps
       }
     },
@@ -158,7 +158,7 @@
     "pro": {
       // 🧭 Explorer: Perception sub-agent under Pro profile ('flash', 'pro', or 'ultra')
       "explorer": {
-        "mode": "flash" // Explorer tier for Pro nodes (Operator/Validator): 'flash' | 'pro' | 'ultra'
+        "mode": "pro" // Explorer tier for Pro nodes (Operator/Validator): 'flash' | 'pro' | 'ultra'
       },
       // 🎯 Planner Validation: Async verification when task plan milestones change
       "planner_validation": {
@@ -246,7 +246,7 @@
         // call each); milestone closes are exempt, the hard line waives it.
         "min_steps": 3,
         "target_source_tokens": 2000,
-        "model": "gemini-3.8-flash",
+        "model": "gpt-5.6-sol",
         "max_chunks": 8
         // "max_eras": 8 // independent era cap; omitted = follows max_chunks
       },

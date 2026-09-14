@@ -15,6 +15,7 @@
 """Unit tests for VisualStepSummarizer and Context Compressor in Flash profile."""
 
 from unittest.mock import ANY, AsyncMock, Mock, call
+from types import SimpleNamespace
 from uuid import uuid4
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
@@ -36,6 +37,34 @@ def mock_context():
     ctx = Mock(spec=ArtemisContext)
     ctx.data_engine = None
     return ctx
+
+
+def test_summarizer_uses_configured_role_for_explicit_model(mock_context, monkeypatch):
+    configured_llm = Mock(model_name="gpt-5.6-sol")
+    get_llm = Mock(return_value=configured_llm)
+    monkeypatch.setattr("artemis.agents.flash.summarizer.get_llm", get_llm)
+
+    summarizer = VisualStepSummarizer(mock_context, model_name="gpt-5.6-sol")
+
+    assert summarizer._llm is configured_llm
+    get_llm.assert_called_once_with(
+        mock_context, name="summarizer", temperature=0.0, model_name="gpt-5.6-sol"
+    )
+
+
+@pytest.mark.parametrize("model_name", [None, ""])
+def test_summarizer_uses_role_default_without_model_override(mock_context, monkeypatch, model_name):
+    configured_llm = Mock()
+    configured_llm.endpoint = SimpleNamespace(model_name="gpt-5.6-sol")
+    get_llm = Mock(return_value=configured_llm)
+    monkeypatch.setattr("artemis.agents.flash.summarizer.get_llm", get_llm)
+
+    summarizer = VisualStepSummarizer(mock_context, model_name=model_name)
+
+    assert summarizer._model_name == "gpt-5.6-sol"
+    get_llm.assert_called_once_with(
+        mock_context, name="summarizer", temperature=0.0, model_name=None
+    )
 
 
 @pytest.mark.asyncio
@@ -840,7 +869,7 @@ def test_flash_config_and_builder():
         step_summarizer=True,
         step_summarizer_model="gemini-2.5-flash-lite",
         prune_history_xml=True,
-    ).build()
+    ).build(validate_profiles=False)
 
     assert cfg.flash.max_turns == 25
     assert cfg.flash.explorer_mode == "flash"

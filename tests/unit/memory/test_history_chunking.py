@@ -1005,7 +1005,7 @@ async def test_capsule_outage_without_fallback_exhausts_to_failed():
     assert service.get_summary("chunk:1-2") is None
 
 
-def test_capsule_fallback_model_resolution_google_only_and_not_primary():
+def test_capsule_fallback_model_resolution_uses_configured_provider_and_not_primary():
     mgr = HistoryChunkManager(
         capsule_service=StubCapsuleService(),
         chunking_config=SimpleNamespace(
@@ -1027,8 +1027,7 @@ def test_capsule_fallback_model_resolution_google_only_and_not_primary():
         mgr._resolve_capsule_fallback_model(ctx_with("google", "gemini-3.6-flash"))
         == "gemini-3.6-flash"
     )
-    # Non-google fallbacks cannot ride the raw google model path.
-    assert mgr._resolve_capsule_fallback_model(ctx_with("openai", "gpt-4o-mini")) is None
+    assert mgr._resolve_capsule_fallback_model(ctx_with("openai", "gpt-4o-mini")) == "gpt-4o-mini"
     # A fallback identical to the primary adds nothing.
     assert mgr._resolve_capsule_fallback_model(ctx_with("google", "gemini-3.7-flash")) is None
 
