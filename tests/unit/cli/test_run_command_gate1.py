@@ -1,7 +1,7 @@
 """Gate 1 evidence regression tests for the daemon-dispatched / direct-CLI
 ``execute_task`` path (``artemis.interfaces.cli.commands.run``).
 
-Covers two defects found in independent review of the initial daemon-path
+Covers three defects found in independent review of the initial daemon-path
 wiring:
 
 1. The default ``--standalone`` route (no explicit ``--session-id``) must
@@ -11,10 +11,15 @@ wiring:
    ``agent.clean()``, since ``Agent.clean()`` can raise (e.g. on device
    disconnect) and must never be able to suppress the reconciliation
    verdict for a real completed run.
+3. A generated fallback identity from one default-route call must never
+   leak into a later default-route call in the same process via the
+   process-global ``ARTEMIS_SESSION_ID`` env var -- each attempt must get
+   its own identity and its own stored manifest.
 """
 
 from __future__ import annotations
 
+import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -97,6 +102,48 @@ async def test_execute_task_default_standalone_route_still_records_gate1_evidenc
     assert len(recorded) == 1
     assert recorded[0]  # non-empty generated identity
     assert reconciled == recorded  # same trace_id reconciled as was recorded
+
+
+@pytest.mark.asyncio
+async def test_execute_task_two_default_calls_get_distinct_isolated_identities(monkeypatch):
+    """Two back-to-back default-route calls (no --session-id, no env session
+    vars) in the same process must each get their own generated trace id and
+    each record their own manifest -- a generated fallback identity must
+    never leak into the process env and get reused by a later default call,
+    which would silently merge two attempts under one identity."""
+    monkeypatch.delenv("ARTEMIS_SESSION_ID", raising=False)
+    monkeypatch.delenv("ARTEMIS_CLOUD_SESSION_ID", raising=False)
+    monkeypatch.setattr(run_module.settings, "GOOGLE_API_KEY", "fake-test-key")
+
+    recorded = []
+    reconciled = []
+
+    def _make_agent(*args, **kwargs):
+        return _fake_agent()
+
+    with (
+        patch.object(run_module, "initialize_llm_config", return_value=_fake_llm_config()),
+        patch.object(run_module, "Agent", side_effect=_make_agent),
+        patch.object(
+            run_module,
+            "record_attempt_manifest",
+            side_effect=lambda **kw: recorded.append(kw["trace_id"]),
+        ),
+        patch.object(
+            run_module,
+            "reconcile_and_store_verdict",
+            side_effect=lambda **kw: reconciled.append(kw["trace_id"]),
+        ),
+    ):
+        await run_module.execute_task(goal="first attempt", session_id=None)
+        assert os.environ.get("ARTEMIS_SESSION_ID") is None
+        await run_module.execute_task(goal="second attempt", session_id=None)
+        assert os.environ.get("ARTEMIS_SESSION_ID") is None
+
+    assert len(recorded) == 2
+    assert recorded[0] and recorded[1]
+    assert recorded[0] != recorded[1]  # distinct identities -> distinct manifests stored
+    assert reconciled == recorded
 
 
 @pytest.mark.asyncio

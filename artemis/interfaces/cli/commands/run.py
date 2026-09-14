@@ -96,7 +96,14 @@ async def execute_task(
         or os.getenv("ARTEMIS_CLOUD_SESSION_ID")
         or str(uuid.uuid4())
     )
-    os.environ["ARTEMIS_SESSION_ID"] = str(effective_sid)
+    # Only persist an identity that came from an explicit arg or a
+    # pre-existing env var. A freshly-generated fallback UUID stays local to
+    # this invocation -- writing it to the process-global env would leak it
+    # into any subsequent default-route call in the same process (e.g. a
+    # second execute_task(session_id=None)), corrupting per-attempt identity
+    # isolation instead of just providing a default for this one.
+    if session_id or os.getenv("ARTEMIS_SESSION_ID") or os.getenv("ARTEMIS_CLOUD_SESSION_ID"):
+        os.environ["ARTEMIS_SESSION_ID"] = str(effective_sid)
     if not os.environ.get("ARTEMIS_TASK_INGRESS"):
         os.environ["ARTEMIS_TASK_INGRESS"] = "cli"
     publish_startup_progress(
