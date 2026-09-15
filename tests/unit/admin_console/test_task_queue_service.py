@@ -471,6 +471,60 @@ async def test_queue_worker_cmd_construction():
 
 
 @pytest.mark.asyncio
+async def test_queue_worker_cmd_forwards_run_id():
+    """A daemon-dispatched task carrying a Gate 1 run_id must reach the spawned
+    `artemis.main` worker as `--run-id` -- otherwise the daemon path never
+    records/reconciles an attempt manifest under that batch key (see
+    artemis.config.attempt_lifecycle_hooks and
+    artemis.interfaces.cli.commands.run.execute_task)."""
+    executed_cmds = []
+
+    async def fake_subprocess_exec(*args, **kwargs):
+        executed_cmds.append(list(args))
+        proc = MagicMock()
+        proc.pid = 88889
+        proc.wait = AsyncMock(return_value=0)
+        proc.returncode = 0
+        return proc
+
+    with (
+        patch("asyncio.create_subprocess_exec", side_effect=fake_subprocess_exec),
+        patch("apps.admin_console.services.task_queue_service.session_repo") as mock_repo,
+        patch("apps.admin_console.services.task_queue_service.media_service"),
+        patch(
+            "artemis.runtime.device_pool.device_pool.select_device_async",
+            return_value="emulator-5554",
+        ),
+    ):
+        mock_repo.get_running_session_id.return_value = None
+        mock_repo.get_video_recording_for_session.return_value = {"status": "ready"}
+
+        await task_queue_service.enqueue_tasks(
+            ["Test Goal with run_id"],
+            profile="flash",
+            run_id="daemon-batch-1",
+        )
+
+        for _ in range(30):
+            if len(executed_cmds) == 1 and len(state.queue_items) == 0:
+                break
+            await asyncio.sleep(0.05)
+
+        assert len(executed_cmds) == 1
+        cmd = executed_cmds[0]
+        assert "--run-id" in cmd
+        assert cmd[cmd.index("--run-id") + 1] == "daemon-batch-1"
+
+        task = state.worker_task
+        if task and not task.done():
+            task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
+
+
+@pytest.mark.asyncio
 async def test_forward_worker_output_preserves_split_utf8(capsys):
     stream = asyncio.StreamReader()
     # "worker output: \U0001f600\n" contains a 4-byte UTF-8 emoji (b'\xf0\x9f\x98\x80') starting at byte 15.

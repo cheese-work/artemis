@@ -41,6 +41,12 @@ try:
 except Exception:
     load_dotenv(os.path.join(PROJECT_ROOT, ".env"))
 
+from artemis.config.attempt_lifecycle_hooks import (
+    record_attempt_manifest as _record_attempt_manifest,
+)
+from artemis.config.attempt_lifecycle_hooks import (
+    reconcile_and_store_verdict as _reconcile_and_store_verdict,
+)
 from artemis.runtime import trace_store
 from mcp_server.notifiers import notify
 from mcp_server.utils import device_utils
@@ -121,6 +127,7 @@ async def run_task(
     device_serial: str | None = None,
     verification_level: str | None = None,
     explorer_pro_mode: str | None = None,
+    run_id: str | None = None,
 ):
     """Executes the mobile automation agent task and logs all actions/results.
 
@@ -128,6 +135,17 @@ async def run_task(
     ``explorer_pro_mode`` ('flash' | 'pro' | 'ultra') are Pro-profile tuning
     knobs mirroring ``artemis run --verification-level / --explorer-pro-mode``;
     the Flash profile ignores them.
+
+    ``run_id`` is plumbing only: when not given, the attempt manifests this
+    call records default to ``run_id=trace_id`` (today's exact behavior, and
+    still the case for every real caller today -- see
+    ``mcp_server.background.task_runner`` module usage). No caller in this
+    codebase currently invokes ``run_task`` more than once for a shared
+    ``run_id``; a future caller that does (e.g. a retry driver re-running the
+    same logical task under multiple ``trace_id``s) can pass one shared
+    ``run_id`` across those invocations so their manifests become
+    reconcilable together as one batch via
+    ``attempt_reconciliation.reconcile_attempt_batch_by_run_id``.
     """
     trace_dir = trace_store.get_trace_dir(trace_id)
     os.makedirs(trace_dir, exist_ok=True)
@@ -213,6 +231,10 @@ async def run_task(
         else:
             profile = AgentProfile(name="default", llm_config=initialize_llm_config())
 
+        _record_attempt_manifest(
+            trace_id=trace_id, checkpoint="launch", llm_config=profile.llm_config, run_id=run_id
+        )
+
         config_builder = Builders.AgentConfig.with_default_profile(profile)
         if verification_level:
             config_builder.with_verification_level(verification_level)
@@ -228,7 +250,18 @@ async def run_task(
 
         config = config_builder.build()
 
-        agent = Agent(config=config)
+        # session_id=trace_id links this run's DataEngine session (where
+        # native llm_usage receipts land) to the same identifier the attempt
+        # manifest is keyed and stored by, so post-run reconciliation
+        # (_reconcile_and_store_verdict) can find one attempt's usage events
+        # without inventing a separate cross-process identity mapping.
+        agent = Agent(config=config, session_id=trace_id)
+        _record_attempt_manifest(
+            trace_id=trace_id,
+            checkpoint="worker_start",
+            llm_config=profile.llm_config,
+            run_id=run_id,
+        )
         await _initialize_agent(
             agent,
             retry_count=int(os.getenv("ARTEMIS_HEALTH_RETRIES", 5)),
@@ -400,6 +433,24 @@ async def run_task(
 
     finally:
         print("Cleaning up resources...")
+        attempt_profile = locals().get("profile")
+        if attempt_profile is not None:
+            _record_attempt_manifest(
+                trace_id=trace_id,
+                checkpoint="termination",
+                llm_config=attempt_profile.llm_config,
+                run_id=run_id,
+            )
+            # Reconciliation runs regardless of task outcome (success, failed
+            # status, exception, or cancellation) — identity verification is
+            # orthogonal to whether the mobile task itself succeeded, and a
+            # failed attempt's usage receipts still need checking against its
+            # manifest. Reconciles against the "launch" manifest checkpoint,
+            # since that is the one guaranteed to have been stored before any
+            # inference call could have happened. Also runs batch
+            # reconciliation across run_id when a real (non-default) run_id
+            # was passed to this invocation.
+            _reconcile_and_store_verdict(trace_id=trace_id, checkpoint="launch", run_id=run_id)
         if agent:
             try:
                 await agent.clean()
@@ -412,7 +463,13 @@ async def run_task(
         log_file_err.close()
 
 
-if __name__ == "__main__":
+def _build_arg_parser() -> argparse.ArgumentParser:
+    """Builds the CLI parser for this module's ``__main__`` entry point.
+
+    Factored out of ``if __name__ == "__main__":`` so tests can exercise the
+    real CLI surface (e.g. ``--run-id`` acceptance) via ``parse_args()``
+    without spawning a subprocess.
+    """
     parser = argparse.ArgumentParser(description="Artemis Background Task Runner")
     parser.add_argument("--trace-id", required=True, help="Unique trace identifier")
     parser.add_argument("--task-desc", required=True, help="Description of the task to run")
@@ -434,8 +491,22 @@ if __name__ == "__main__":
         "--explorer-pro-mode",
         help="Pro-profile Explorer perception version: 'flash', 'pro' or 'ultra'",
     )
+    parser.add_argument(
+        "--run-id",
+        help=(
+            "Optional Gate 1 batch-grouping identifier shared across multiple "
+            "run_task invocations (e.g. repeated attempts of one journey/device "
+            "cell). Defaults to --trace-id when omitted, preserving today's "
+            "exact 1:1 run_id<->trace_id behavior; see "
+            "attempt_reconciliation.reconcile_attempt_batch_by_run_id."
+        ),
+    )
 
-    args = parser.parse_args()
+    return parser
+
+
+if __name__ == "__main__":
+    args = _build_arg_parser().parse_args()
 
     asyncio.run(
         run_task(
@@ -449,5 +520,6 @@ if __name__ == "__main__":
             device_serial=args.device_serial,
             verification_level=args.verification_level,
             explorer_pro_mode=args.explorer_pro_mode,
+            run_id=args.run_id,
         )
     )
