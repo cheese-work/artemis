@@ -17,6 +17,8 @@ env:
   UV_NO_PROGRESS: "1"
 
 jobs:
+  # Windows leg removed org-wide per CHE-522 (Cheese: Linux CI only, no
+  # Windows jobs or artifacts).
   python-quality:
     name: Python 3.12 / ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
@@ -26,7 +28,6 @@ jobs:
       matrix:
         os:
           - blacksmith-2vcpu-ubuntu-2404
-          - blacksmith-2vcpu-windows-2025
 
     steps:
       - name: Check out repository
