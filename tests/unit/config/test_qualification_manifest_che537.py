@@ -86,6 +86,19 @@ def test_model_targets_match_gate1_tier_vocabulary():
         assert target["provider_id"] == f"{expected_provider}:{expected_model}"
 
 
+def test_model_targets_are_luna_and_terra_per_che388_plan_not_sol():
+    manifest = _load_manifest()
+    tiers = {t["tier"] for t in manifest["model_targets"]}
+    assert tiers == {"luna", "terra"}, (
+        "CHE-388's plan text says 'compare Luna and Terra model tiers'; "
+        "'sol' resolves to an OpenAI-backed model and the workspace announcement "
+        "bars all OpenAI routing indefinitely, so it must be excluded here, not pinned."
+    )
+    excluded = manifest["sol_tier_excluded"]
+    assert excluded["tier"] == "sol"
+    assert "unblock_condition" in excluded
+
+
 def test_fixture_counts_match_che388_plan_v2():
     manifest = _load_manifest()
     fixture = manifest["fixture"]
@@ -98,7 +111,8 @@ def test_revision_policy_and_review_contract_present():
     assert "rule" in manifest["revision_policy"]
     review = manifest["review_contract"]
     assert review["no_self_review"] is True
-    assert "Opus AND Sol" in review["chain"]
+    assert "Opus AND Sol" in review["chain_as_originally_settled"]
+    assert "mbp-claude-sonnet-5" in review["candidate_reviewer_this_issue"]
 
 
 def test_evidence_schema_declares_verdict_enum_covering_infra_and_device_failures():
