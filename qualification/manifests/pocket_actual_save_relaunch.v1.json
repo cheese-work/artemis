@@ -1,0 +1,103 @@
+{
+  "manifest_version": 1,
+  "$schema_ref": "qualification/evidence_schema.v1.json",
+  "issue": "CHE-537",
+  "coordinating_parent": "CHE-388",
+  "journey": "qualification/journeys/pocket_actual_save_relaunch.md",
+
+  "fork_sha": {
+    "value": "64e1b3226b9553bdf4e5a368f14b8a40c0af6111",
+    "source": "git",
+    "repo": "https://github.com/cheese-work/artemis",
+    "note": "Source baseline observed and pinned per CHE-537 delivery plan. Weekly upstream review and manual pin promotion after qualification -- see FORK_MAINTENANCE.md. This value must be updated (new revision) if the pinned SHA changes; execution stages must re-read it at admission rather than caching an older value."
+  },
+
+  "gate1_manifest_mechanism": {
+    "source": "https://github.com/cheese-work/artemis/pull/1",
+    "head_sha": "2b58709ed00b0015055a99f9e644857ba9d05ee0",
+    "status": "OPEN (draft, not merged) as observed at CHE-537 authoring time",
+    "note": "Reused by reference, not rebuilt or ported here. Per-attempt LLM identity manifests (artemis/config/attempt_manifest.py) and reconciliation (artemis/config/attempt_reconciliation.py) are produced at real-run time by this mechanism once it is merged onto the pinned fork_sha (or its own base is advanced past fork_sha, whichever the executing stage's admitted revision resolves to). This qualification manifest does not claim Gate 1 has passed."
+  },
+
+  "candidate_app": {
+    "app_sha": null,
+    "apk_digest_sha256": null,
+    "package_name": null,
+    "note": "Not pinned by this issue. CHE-537 is scoped to authoring the qualification input contract only -- no device operations, no APK install, no provider calls. The execution stage (CHE-540+) fills these fields for the exact candidate build under test and must not proceed without them; a null value here is a hold, not a default."
+  },
+
+  "dependency_lock": {
+    "file": "uv.lock",
+    "digest_sha256": null,
+    "note": "Populate via `sha256sum uv.lock` at the exact fork_sha checkout used for the qualification run. Left null here since this issue performs no install."
+  },
+
+  "accessibility_helper": {
+    "name": "Artemis Accessibility Helper (UIAutomator2 fallback)",
+    "digest_sha256": null,
+    "note": "Per-host on-device helper referenced in CHE-388's install surface. Digest recorded by the host install stage, not authored here."
+  },
+
+  "model_targets": [
+    {
+      "tier": "terra",
+      "provider": "google",
+      "model": "gemini-3.8-flash",
+      "provider_id": "google:gemini-3.8-flash",
+      "role": "baseline tier under CHE-388's 'at least two model tiers' requirement"
+    },
+    {
+      "tier": "sol",
+      "provider": "openai",
+      "model": "gpt-5.6-sol",
+      "provider_id": "openai:gpt-5.6-sol",
+      "role": "second tier; matches config/artemis.jsonc's current top-level default node"
+    }
+  ],
+  "tier_vocabulary_source": "artemis/config/attempt_manifest.py TIER_MODELS (PR #1 / CHE-491) -- do not diverge from that mapping; if it changes, this manifest must be revised to match rather than declaring a third mapping.",
+
+  "profile": "pro",
+  "profile_note": "Pro selected over Flash for this journey: the assertion step (read back a persisted value against an expected/negative token) needs the Checker's verified-checkpoint path (CHE-388 install-surface note: Flash has no final report and no verification). verification_level left to the execution stage's per-run config, not pinned here.",
+
+  "entry_point": {
+    "route": "mcp",
+    "tool": "mobile_run_task",
+    "fallback_route": "cli",
+    "fallback_command": "artemis run",
+    "note": "CHE-537 plan: 'Prefer the existing MCP route with foreground terminal collection; select native CLI/SDK only where exact installed behavior proves necessary.' mobile_run_task params referenced: task_desc, model (tier profile), locked_app_package, app_path, expected_output_desc, verification_level."
+  },
+
+  "fixture": {
+    "journey_ref": "qualification/journeys/pocket_actual_save_relaunch.md",
+    "reset_procedure": "adb shell am force-stop <package> && adb shell pm clear <package>, cold-start verified before every attempt",
+    "positive_runs_required": 10,
+    "negative_controls_required": 1,
+    "note": "N=10 positive runs per target/tier plus one separate negative control per CHE-388 plan v2. Counts are per (tier, profile) combination in model_targets, not a single global N=10."
+  },
+
+  "evidence_schema": {
+    "file": "qualification/evidence_schema.v1.json",
+    "version": 1
+  },
+
+  "revision_policy": {
+    "rule": "A changed candidate revision (app_sha, apk_digest_sha256) or a changed fork_sha forces a new manifest revision and invalidates all evidence collected against the prior revision. Evidence is not transferable across revisions.",
+    "source": "CHE-388 review contract invariant: 'a changed candidate revision forces fresh step-2 review AND invalidates prior evidence (new run required)'."
+  },
+
+  "review_contract": {
+    "chain": "Terra authors -> one candidate reviewer approves -> Luna executes -> Opus AND Sol independently review the run evidence -> Terra verifies",
+    "candidate_reviewer_this_issue": "x99-codex-5.6-sol (read-only review with native receipts; did not author this candidate, independence holds)",
+    "evidence_reviewers_gated": "Opus AND Sol stages (CHE-540/541/542) remain backlog/gated-human: Opus is under the workspace routing hold pending Cheese lifting it or naming a replacement second evidence reviewer.",
+    "no_self_review": true
+  },
+
+  "out_of_scope_for_this_manifest_authoring": [
+    "host install",
+    "provider calls",
+    "device operations",
+    "binding changes",
+    "agent merge",
+    "claiming Gate 1 or any qualification gate has passed"
+  ]
+}

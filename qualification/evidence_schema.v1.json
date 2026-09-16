@@ -1,0 +1,104 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "cheese-work/artemis/qualification/evidence_schema.v1.json",
+  "title": "Cheese Work Artemis qualification evidence record v1",
+  "description": "One record per qualification attempt (positive run or the negative control). Freeze N=10 positive runs per target/tier plus one negative control per CHE-388 plan v2; each attempt's evidence record must reference the exact qualification_manifest it ran against by digest.",
+  "type": "object",
+  "required": [
+    "evidence_schema_version",
+    "qualification_manifest_digest",
+    "attempt_kind",
+    "target",
+    "tier",
+    "profile",
+    "host",
+    "device_serial",
+    "verdict",
+    "reconciliation",
+    "trace_id",
+    "recorded_at",
+    "cost",
+    "cleanup_verified"
+  ],
+  "properties": {
+    "evidence_schema_version": { "const": 1 },
+    "qualification_manifest_digest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "SHA-256 digest of the pinned qualification manifest this attempt ran against (manifests/pocket_actual_save_relaunch.v1.json canonical_bytes). Never accept an attempt whose digest does not match the manifest under qualification."
+    },
+    "attempt_kind": {
+      "type": "string",
+      "enum": ["positive", "negative_control"]
+    },
+    "target": {
+      "type": "string",
+      "description": "Which model tier target this attempt qualifies, e.g. 'terra' or 'sol'."
+    },
+    "tier": {
+      "type": "string",
+      "enum": ["luna", "terra", "sol"],
+      "description": "Gate 1 tier vocabulary (artemis/config/attempt_manifest.py TIER_MODELS, PR #1 / CHE-491)."
+    },
+    "profile": {
+      "type": "string",
+      "enum": ["flash", "pro"]
+    },
+    "host": {
+      "type": "string",
+      "enum": ["congvc-x99", "congvc-c00"]
+    },
+    "device_serial": { "type": "string" },
+    "per_attempt_manifest_digest": {
+      "type": ["string", "null"],
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "Digest of the Gate 1 per-attempt LLM identity manifest (attempt_manifest.store_attempt_manifest output) for this specific attempt, once PR #1 lands and a real run produces one. Null while the mechanism referenced in PR #1 is not yet merged onto the base this attempt ran from."
+    },
+    "verdict": {
+      "type": "string",
+      "enum": ["pass", "fail_assertion", "fail_infrastructure", "device_unavailable"],
+      "description": "Distinguish test failure, infrastructure failure, and unavailable-device coverage per CHE-388 acceptance criteria."
+    },
+    "reconciliation": {
+      "type": "object",
+      "description": "Gate 1 batch accept/reject outcome for this attempt (artemis/config/attempt_reconciliation.py validate_batch, PR #1 / CHE-491).",
+      "required": ["accepted"],
+      "properties": {
+        "accepted": { "type": "boolean" },
+        "reject_reasons": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "missing_identity",
+              "unmapped_call",
+              "mixed_tier",
+              "unexpected_model_or_endpoint",
+              "fake_mode_enabled",
+              "digest_drift",
+              "missing_snapshot"
+            ]
+          }
+        }
+      }
+    },
+    "trace_id": { "type": "string" },
+    "recorded_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "cost": {
+      "type": "object",
+      "required": ["usd", "step_count"],
+      "properties": {
+        "usd": { "type": "number", "minimum": 0 },
+        "step_count": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "cleanup_verified": {
+      "type": "boolean",
+      "description": "True only if the fixture/reset step (see journeys/pocket_actual_save_relaunch.md) was confirmed to leave the candidate app and device in its pre-attempt state."
+    },
+    "notes": { "type": "string" }
+  }
+}
