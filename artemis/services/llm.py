@@ -45,6 +45,7 @@ from artemis.config import (
 )
 from artemis.context import ArtemisContext
 from artemis.data_engine.trace import CURRENT_TRACE_ID, DataEngineCallbackHandler
+from artemis.llm.anthropic_cache import apply_cache_breakpoints
 from artemis.llm.google import is_google_chat_model, is_google_provider
 from artemis.llm.reliability import (
     CircuitBreaker,
@@ -625,8 +626,26 @@ class RobustChatModelWrapper:
             return f"{self._provider_value()}:{self.endpoint.model_name}"
         return type(self.base_model).__name__
 
+    def _cached_prefix(self, args: tuple) -> tuple:
+        """Anthropic-only: mark the request's stable prefix for prompt caching.
+
+        Every other provider — including the OpenAI and Google defaults, which
+        cache prefixes automatically server-side — gets its arguments back
+        untouched, by identity.
+        """
+        if not args or self._provider_value() != ModelProvider.ANTHROPIC.value:
+            return args
+        messages = args[0]
+        if not isinstance(messages, list):
+            return args
+        marked = apply_cache_breakpoints(messages)
+        if marked is messages:
+            return args
+        return (marked, *args[1:])
+
     def _traced_call(self, args: tuple, kwargs: dict) -> tuple[tuple, dict, Any]:
         trace_id = None
+        args = self._cached_prefix(args)
         if self.ctx and self.ctx.data_engine:
             trace_id = CURRENT_TRACE_ID.get()
         if trace_id:

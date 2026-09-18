@@ -28,22 +28,41 @@ from typing import Any, Callable
 
 from langchain_core.messages import BaseMessage
 
+from artemis.memory.scrub_shape import (
+    ALL_STRIP_MARKERS,
+    HISTORY_SUMMARY_PREFIX,
+    LEGACY_UI_LIST_MARKER,
+    SCREENSHOT_LABEL,
+    SUMMARY_PENDING_PREFIX,
+    SUMMARY_UNAVAILABLE_PREFIX,
+    content_blocks,
+    ephemeral_block_indices,
+    has_image_block,
+    has_strip_marker,
+    text_has_strip_marker,
+)
 from artemis.memory.step_memory import StepMemoryService
 from artemis.memory.transcript import EPHEMERAL_BLOCKS_KEY
 from artemis.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-#: Header written above a resolved visual summary (public: the chunk capsule
-#: lens checks it to avoid repeating a summary already present verbatim).
-HISTORY_SUMMARY_PREFIX = "--- Historical Visual Transition ---\n"
-_HISTORY_SUMMARY_PREFIX = HISTORY_SUMMARY_PREFIX
-_UI_LIST_MARKER = "--- UI Element List ---"
+# The observation shape these edits are written against — the markers, the
+# artefacts they leave behind and the predicates that read them — lives in
+# :mod:`artemis.memory.scrub_shape`, because the Anthropic prompt cache places
+# its breakpoints on exactly the same reading of a message. Re-exported here so
+# the names stay importable from the module that writes them.
+__all__ = [
+    "ALL_STRIP_MARKERS",
+    "HISTORY_SUMMARY_PREFIX",
+    "SCREENSHOT_LABEL",
+    "SUMMARY_PENDING_PREFIX",
+    "SUMMARY_UNAVAILABLE_PREFIX",
+    "ScrubEdgeCompressor",
+]
 
-#: Text of the label block both observation shapes place directly above the
-#: screenshot. It only makes sense next to an image, so it leaves together
-#: with the image it labels (the visual summary carries its own header).
-SCREENSHOT_LABEL = "--- Current Screenshot ---"
+_HISTORY_SUMMARY_PREFIX = HISTORY_SUMMARY_PREFIX
+_UI_LIST_MARKER = LEGACY_UI_LIST_MARKER
 
 #: Sentinel: the screenshot stays for now (summary pending inside the grace
 #: window); the message is revisited for the image swap only.
@@ -168,19 +187,11 @@ class ScrubEdgeCompressor:
             tool_call_id = getattr(msg, "tool_call_id", None)
             if tool_call_id is not None:
                 self._tool_msg_count += 1
-            content = getattr(msg, "content", None)
-            if not isinstance(content, list):
+            if not content_blocks(msg):
                 continue
 
-            has_image = False
-            has_xml = False
-            for block in content:
-                if not isinstance(block, dict):
-                    continue
-                if block.get("type") in ("image_url", "image"):
-                    has_image = True
-                elif block.get("type") == "text" and self._has_strip_marker(block.get("text", "")):
-                    has_xml = True
+            has_image = has_image_block(msg)
+            has_xml = not has_image and has_strip_marker(msg, self._strip_markers)
 
             if has_image:
                 key = str(tool_call_id) if tool_call_id is not None else None
@@ -204,7 +215,7 @@ class ScrubEdgeCompressor:
         self._scanned_until = len(messages)
 
     def _has_strip_marker(self, text: str) -> bool:
-        return any(marker in text for marker in self._strip_markers)
+        return text_has_strip_marker(text, self._strip_markers)
 
     # ------------------------------------------------------------------
     # The edges: text strip + ephemeral deletion (shallow), image swap (K)
@@ -251,14 +262,16 @@ class ScrubEdgeCompressor:
             elif failed:
                 replacement = {
                     "type": "text",
-                    "text": f"[visual summary unavailable; evidence at DataEngine step {step_no}]",
+                    "text": (
+                        f"{SUMMARY_UNAVAILABLE_PREFIX} evidence at DataEngine step {step_no}]"
+                    ),
                 }
             elif pending and depth <= grace_limit:
                 replacement = _KEEP_IMAGE  # grace: text edits now, image swap later
             elif pending:
                 replacement = {
                     "type": "text",
-                    "text": f"[visual summary pending; evidence at DataEngine step {step_no}]",
+                    "text": f"{SUMMARY_PENDING_PREFIX} evidence at DataEngine step {step_no}]",
                 }
             else:
                 replacement = None  # no summary job exists; drop the image silently
@@ -364,7 +377,7 @@ class ScrubEdgeCompressor:
         first_edit = idx not in self._text_scrubbed and text_edits
         ephemeral: set[int] = set()
         if first_edit:
-            ephemeral = self._ephemeral_indices(msg)
+            ephemeral = ephemeral_block_indices(msg)
         keep_image = replacement is _KEEP_IMAGE
 
         new_blocks: list[Any] = []
@@ -437,16 +450,3 @@ class ScrubEdgeCompressor:
             kwargs[EPHEMERAL_BLOCKS_KEY] = remapped
         else:
             kwargs.pop(EPHEMERAL_BLOCKS_KEY, None)
-
-    @staticmethod
-    def _ephemeral_indices(msg: BaseMessage) -> set[int]:
-        kwargs = getattr(msg, "additional_kwargs", None)
-        if not isinstance(kwargs, dict):
-            return set()
-        indices: set[int] = set()
-        for value in kwargs.get(EPHEMERAL_BLOCKS_KEY) or []:
-            try:
-                indices.add(int(value))
-            except (TypeError, ValueError):
-                continue
-        return indices
