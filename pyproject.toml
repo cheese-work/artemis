@@ -133,6 +133,9 @@ exclude = [
     "node_modules",
     "site-packages",
     "venv",
+    # CHE-564: unmodified upstream directory fails the fork's UP ruleset;
+    # excluded to keep the fork's diff against upstream minimal.
+    "playground",
 ]
 
 # Same as Black.
