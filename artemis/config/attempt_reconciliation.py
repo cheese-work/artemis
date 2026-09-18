@@ -356,12 +356,12 @@ def validate_batch(attempts: list[AttemptRecord]) -> BatchVerdict:
     #    checkout" fallback sentinel is truthy but not a provable identity),
     #    or that has any enabled node resolving to no declared tier at all
     #    (untiered_enabled_nodes non-empty -- a model-bearing node that isn't
-    #    pinned to Luna/Terra/Sol).
+    #    pinned to a declared tier).
     missing_identity = [
         a
         for a in attempts
         if not a.manifest.get("source_sha")
-        or a.manifest.get("tier") not in ("luna", "terra", "sol")
+        or a.manifest.get("tier") not in TIER_MODELS
         or a.manifest.get("fake_llm_enabled") is None
         or a.manifest.get("source_sha_provenance") != "git"
         or a.manifest.get("untiered_enabled_nodes")
