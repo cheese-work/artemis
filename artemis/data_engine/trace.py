@@ -688,6 +688,85 @@ class TraceSpan:
             )
 
 
+def record_phase_span(
+    ctx: ArtemisContext | None,
+    name: str,
+    duration: float,
+    payload: dict[str, Any] | None = None,
+    status: str = "success",
+) -> None:
+    """Records one completed ``type="span"`` trace row, non-blocking.
+
+    Minimal sibling of :class:`TraceSpan` for call sites that must control
+    their own start/end points (e.g. a loop with several early-exit
+    branches) rather than wrapping a single lexical block. Unlike
+    ``TraceSpan``, this writes exactly one row — no "running" placeholder on
+    entry — so reaction-time aggregation (see
+    ``artemis/data_engine/reaction_time.py``) always sees one homogeneous
+    row per phase, with ``timestamp`` as the phase's *end* and
+    ``start = timestamp - duration``.
+
+    A no-op when ``ctx`` or ``ctx.data_engine`` is unset (e.g. tests, or a
+    run with tracing disabled) — pure observability, never a hot-path
+    dependency, and writes go through ``DataEngine``'s existing background
+    writer like every other trace.
+    """
+    if not ctx or not ctx.data_engine:
+        return
+    step_id = getattr(ctx.data_engine, "current_step_id", None)
+    ctx.data_engine.record_trace(
+        type="span",
+        name=name,
+        payload=payload or {},
+        status=status,
+        duration=duration,
+        parent_trace_id=CURRENT_TRACE_ID.get(),
+        step_id=step_id,
+    )
+
+
+class PhaseSpan:
+    """Context manager for a single-block reaction-time phase span.
+
+    Sibling of :class:`TraceSpan` that records exactly one completed row at
+    exit (via :func:`record_phase_span`) instead of a "running" row on entry
+    plus a final row on exit — homogeneous rows are what the reaction-time
+    aggregation in ``reaction_time.py`` expects.
+
+    Deliberately does not touch :data:`CURRENT_TRACE_ID`: these phase spans
+    are leaf-level wall-clock measurements, not meant to become the parent
+    of nested LLM/tool traces recorded inside them, so wrapping a block in
+    ``PhaseSpan`` cannot change how any existing trace nests or is
+    attributed — strictly additive/observational.
+
+    Use this for a single lexical block (e.g. one retry loop). For a loop
+    with several distinct early-exit branches, call
+    :func:`record_phase_span` directly at each exit instead (see
+    ``operator.py``'s per-iteration ``phase:operator_iteration`` spans).
+    """
+
+    def __init__(self, name: str, ctx: ArtemisContext | None = None):
+        self.name = name
+        self.ctx = ctx
+        self.start_time: float = 0.0
+        self.payload: dict[str, Any] = {}
+        self.status = "success"
+
+    def __enter__(self) -> "PhaseSpan":
+        self.start_time = time.time()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> bool:
+        duration = time.time() - self.start_time
+        payload = dict(self.payload)
+        status = self.status
+        if exc_type:
+            status = "failed"
+            payload["error"] = serialize_error(exc_val)
+        record_phase_span(self.ctx, self.name, duration, payload=payload, status=status)
+        return False
+
+
 @contextlib.contextmanager
 def detached_trace(node_name: str | None = None):
     """Run a block outside the caller's trace span.
