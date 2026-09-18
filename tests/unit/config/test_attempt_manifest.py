@@ -191,6 +191,64 @@ class TestCanonicalDigestStability:
             )
 
 
+class TestAnthropicTierResolution:
+    """CHE-639: the 'opus' tier maps to anthropic/claude-sonnet-5."""
+
+    def test_anthropic_claude_sonnet_5_config_resolves_to_opus_tier(self):
+        config = _uniform_config(provider="anthropic", model="claude-sonnet-5")
+        manifest = build_attempt_manifest(
+            run_id="r",
+            attempt_id="a",
+            trace_id="t",
+            tier="opus",
+            llm_config=config,
+            env={},
+            checkpoint="launch",
+            now=1.0,
+        )
+        planner_entry = manifest["nodes"]["planner"]
+        assert planner_entry["resolved_tier"] == "opus"
+        assert manifest["tier"] == "opus"
+        assert manifest["untiered_enabled_nodes"] == []
+
+    def test_unmapped_anthropic_model_is_untiered_not_silently_opus(self):
+        # claude-sonnet-4-5 is not in TIER_MODELS (only claude-sonnet-5 is
+        # mapped, for the 'opus' tier) -- every enabled node must resolve to
+        # no tier at all, not silently fall back to 'opus'. Declaring
+        # tier="opus" here without any node actually matching it must not
+        # raise mixed_tier (no *other* declared tier is present either), but
+        # every such node lands in untiered_enabled_nodes.
+        config = _uniform_config(provider="anthropic", model="claude-sonnet-4-5")
+        manifest = build_attempt_manifest(
+            run_id="r",
+            attempt_id="a",
+            trace_id="t",
+            tier="opus",
+            llm_config=config,
+            env={},
+            checkpoint="launch",
+            now=1.0,
+        )
+        assert manifest["nodes"]["planner"]["resolved_tier"] is None
+        assert "planner" in manifest["untiered_enabled_nodes"]
+
+    def test_record_attempt_manifest_hook_infers_opus_tier_from_planner(
+        self, tmp_path, monkeypatch
+    ):
+        # The real skip/store decision lives in attempt_lifecycle_hooks, which
+        # infers the tier from llm_config.planner rather than taking a tier
+        # argument -- this is the exact loop that emitted "does not match a
+        # declared tier" for anthropic/claude-sonnet-4-5 during the CHE-491
+        # pilot. Assert it now resolves for the mapped model.
+        from artemis.config.attempt_lifecycle_hooks import record_attempt_manifest
+
+        monkeypatch.setattr(trace_store, "TRACES_DIR", str(tmp_path / "traces"))
+        config = _uniform_config(provider="anthropic", model="claude-sonnet-5")
+        record_attempt_manifest(trace_id="hook-trace-1", checkpoint="launch", llm_config=config)
+        stored_bytes, _digest = read_stored_manifest("hook-trace-1", "launch")
+        assert json.loads(stored_bytes)["tier"] == "opus"
+
+
 class TestNullableNodesRepresentedExplicitly:
     def test_disabled_nodes_show_would_resolve_default_without_being_active(self):
         manifest = build_attempt_manifest(

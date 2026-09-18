@@ -27,7 +27,13 @@ import json
 from pathlib import Path
 from typing import Any, Literal
 
-from artemis.config.attempt_manifest import TIER_MODELS, Tier, digest_of, read_stored_manifest
+from artemis.config.attempt_manifest import (
+    TIER_MODELS,
+    TIERS,
+    Tier,
+    digest_of,
+    read_stored_manifest,
+)
 from artemis.config.attempt_usage_reader import read_llm_usage_events
 from artemis.runtime import trace_store
 
@@ -356,12 +362,12 @@ def validate_batch(attempts: list[AttemptRecord]) -> BatchVerdict:
     #    checkout" fallback sentinel is truthy but not a provable identity),
     #    or that has any enabled node resolving to no declared tier at all
     #    (untiered_enabled_nodes non-empty -- a model-bearing node that isn't
-    #    pinned to Luna/Terra/Sol).
+    #    pinned to a declared tier).
     missing_identity = [
         a
         for a in attempts
         if not a.manifest.get("source_sha")
-        or a.manifest.get("tier") not in ("luna", "terra", "sol")
+        or a.manifest.get("tier") not in TIERS
         or a.manifest.get("fake_llm_enabled") is None
         or a.manifest.get("source_sha_provenance") != "git"
         or a.manifest.get("untiered_enabled_nodes")
