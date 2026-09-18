@@ -479,7 +479,10 @@ class ManifestAlreadyExistsError(FileExistsError):
 
 
 def _manifest_paths(trace_id: str, checkpoint: str) -> tuple[Path, Path]:
-    trace_dir = Path(trace_store.get_trace_dir(trace_id))
+    # get_existing_trace_dir (not get_trace_dir) so a manifest stored before
+    # the real run path renames the trace directory post-run is still found
+    # by a reader that runs after the rename — see its docstring.
+    trace_dir = Path(trace_store.get_existing_trace_dir(trace_id))
     manifest_path = trace_dir / f"attempt_manifest.{checkpoint}.json"
     digest_path = trace_dir / f"attempt_manifest.{checkpoint}.sha256"
     return manifest_path, digest_path

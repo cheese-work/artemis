@@ -569,11 +569,20 @@ def reconcile_attempt_batch_by_run_id(
             if manifest.get("run_id") != run_id:
                 continue
 
-            usage_events = read_llm_usage_events(db_path, traces_dir, trace_id)
-            reconciliation = reconcile_attempt(trace_id, manifest, usage_events)
+            # The manifest's own trace_id, not trace_dir.name: once the real
+            # run path renames the trace directory post-run (bare trace_id ->
+            # "{trace_id}{status}_{timestamp}", see get_existing_trace_dir),
+            # trace_dir.name carries that suffix. llm_usage rows are recorded
+            # under the true session_id (the bare trace_id) -- querying with
+            # the suffixed directory name silently matches zero rows, so
+            # every node reconciles as not_invoked (never rejecting) and this
+            # attempt is wrongly accepted with no actual evidence checked.
+            attempt_trace_id = manifest.get("trace_id", trace_id)
+            usage_events = read_llm_usage_events(db_path, traces_dir, attempt_trace_id)
+            reconciliation = reconcile_attempt(attempt_trace_id, manifest, usage_events)
             records.append(
                 AttemptRecord(
-                    attempt_id=trace_id,
+                    attempt_id=attempt_trace_id,
                     manifest=manifest,
                     reconciliation=reconciliation,
                     stored_digest=stored_digest,

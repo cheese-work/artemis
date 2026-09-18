@@ -351,6 +351,51 @@ class TestStorageCreateOnly:
         assert stored_bytes == canonical_bytes(manifest)
         assert stored_digest == digest
 
+    def test_read_stored_manifest_finds_manifest_after_trace_dir_renamed(self, tmp_path):
+        """Reproduces the real CLI/worker run path: the manifest is stored
+        beside the bare-trace_id directory, then that directory is renamed to
+        add a `{status}_{timestamp}` suffix (mirrors `agent.py`'s
+        `_finalize_tracing`, which runs before reconciliation reads it back).
+        `read_stored_manifest` must still find it post-rename.
+        """
+        manifest = build_attempt_manifest(
+            run_id="r",
+            attempt_id="a",
+            trace_id="trace-rename-1",
+            tier="sol",
+            llm_config=_sol_config(),
+            env={},
+            checkpoint="launch",
+            now=1.0,
+        )
+        path, digest = store_attempt_manifest(manifest)
+        pre_rename_dir = path.parent
+        renamed_dir = pre_rename_dir.parent / "trace-rename-1_PASS_2026-09-18T23-13-44"
+        pre_rename_dir.rename(renamed_dir)
+
+        stored_bytes, stored_digest = read_stored_manifest("trace-rename-1", "launch")
+        assert stored_bytes == canonical_bytes(manifest)
+        assert stored_digest == digest
+
+    def test_read_stored_manifest_does_not_cross_match_a_different_trace_id(self, tmp_path):
+        """A renamed dir for one trace must never satisfy a lookup for a
+        different trace whose id happens to be a prefix-adjacent string."""
+        manifest = build_attempt_manifest(
+            run_id="r",
+            attempt_id="a",
+            trace_id="trace-rename-2",
+            tier="sol",
+            llm_config=_sol_config(),
+            env={},
+            checkpoint="launch",
+            now=1.0,
+        )
+        path, _ = store_attempt_manifest(manifest)
+        renamed_dir = path.parent.parent / "trace-rename-2_PASS_2026-09-18T23-13-44"
+        path.parent.rename(renamed_dir)
+
+        assert read_stored_manifest("trace-rename-2-other", "launch") is None
+
     def test_second_write_for_same_trace_and_checkpoint_is_rejected(self):
         manifest = build_attempt_manifest(
             run_id="r",
