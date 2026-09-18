@@ -16,6 +16,7 @@
 
 import asyncio
 import os
+import uuid
 from pathlib import Path
 from shutil import which
 from typing import Annotated
@@ -23,6 +24,10 @@ from typing import Annotated
 from adbutils import AdbClient
 from langchain_core.callbacks.base import Callbacks
 from artemis.config import checker_overrides_for_level, initialize_llm_config, settings
+from artemis.config.attempt_lifecycle_hooks import (
+    record_attempt_manifest,
+    reconcile_and_store_verdict,
+)
 from artemis.runtime import trace_store
 from artemis.utils.startup_progress import publish_startup_progress
 from artemis import Agent, Builders
@@ -60,6 +65,7 @@ async def execute_task(
     explorer_flash_mode: str | None = None,
     explorer_pro_mode: str | None = None,
     verification_level: str | None = None,
+    run_id: str | None = None,
 ) -> None:
     """Executes a single mobile automation task end-to-end.
 
@@ -80,120 +86,159 @@ async def execute_task(
         explorer_pro_mode: Override the Explorer tier for the Pro execution profile.
         verification_level: Coarse Checker preset ('off', 'final', 'checkpoints',
             'strict'); applied before the explicit ``enable_checker`` switch.
+        run_id: Gate 1 batch-grouping key for this attempt's manifest (see
+            ``artemis.config.attempt_lifecycle_hooks``); defaults to the
+            effective session id when omitted.
     """
     effective_sid = (
-        session_id or os.getenv("ARTEMIS_SESSION_ID") or os.getenv("ARTEMIS_CLOUD_SESSION_ID")
+        session_id
+        or os.getenv("ARTEMIS_SESSION_ID")
+        or os.getenv("ARTEMIS_CLOUD_SESSION_ID")
+        or str(uuid.uuid4())
     )
-    if effective_sid:
-        os.environ["ARTEMIS_SESSION_ID"] = str(effective_sid)
+    # ARTEMIS_SESSION_ID is a process-global env var, but effective_sid is a
+    # per-invocation identity -- an explicit session_id arg (or a generated
+    # fallback) must never bleed into a later execute_task() call in the same
+    # process. Snapshot whatever was there before this call and restore it
+    # (or delete the key if it wasn't set) in the finally below, which covers
+    # both the initialize_llm_config() failure path and the main run.
+    _prior_session_id_env = os.environ.get("ARTEMIS_SESSION_ID")
+    os.environ["ARTEMIS_SESSION_ID"] = str(effective_sid)
     if not os.environ.get("ARTEMIS_TASK_INGRESS"):
         os.environ["ARTEMIS_TASK_INGRESS"] = "cli"
-    publish_startup_progress(
-        "configuration",
-        "Loading the run configuration",
-        session_id=str(effective_sid) if effective_sid else None,
-    )
-
     try:
-        llm_config = initialize_llm_config()
-    except Exception as exc:
-        if effective_sid:
-            try:
-                trace_store.update_trace_status(str(effective_sid), "failed", error=str(exc))
-            except OSError:
-                logger.exception(
-                    "Could not record configuration failure for session %s", effective_sid
-                )
-        raise
-    agent_profile = AgentProfile(name="default", llm_config=llm_config)
-    config = Builders.AgentConfig.with_default_profile(profile=agent_profile)
-
-    if video_recording_tools_enabled is not None:
-        config.with_video_recording_tools(enabled=video_recording_tools_enabled)
-
-    if enable_planner_validation is not None:
-        config.with_planner_validation(enabled=enable_planner_validation)
-
-    if enable_committee is not None:
-        config.with_committee(enabled=enable_committee)
-
-    if verification_level is not None:
-        config.with_checker(**checker_overrides_for_level(verification_level))
-
-    if enable_checker is not None:
-        config.with_checker(enabled=enable_checker)
-
-    if enable_step_summarizer is not None:
-        config.with_flash_step_summarizer(enabled=enable_step_summarizer)
-
-    if enable_outputter is not None or force_output_synthesis is not None:
-        config.with_outputter(
-            enabled=enable_outputter if enable_outputter is not None else True,
-            force_synthesis=bool(force_output_synthesis),
+        publish_startup_progress(
+            "configuration",
+            "Loading the run configuration",
+            session_id=str(effective_sid) if effective_sid else None,
         )
 
-    if (
-        explorer_version is not None
-        or explorer_flash_mode is not None
-        or explorer_pro_mode is not None
-    ):
-        config.with_explorer(
-            version=explorer_version,
-            flash_mode=explorer_flash_mode,
-            pro_mode=explorer_pro_mode,
-        )
-
-    if settings.ADB_HOST:
-        config.with_adb_server(host=settings.ADB_HOST, port=settings.ADB_PORT)
-
-    target_serial = (
-        device_serial or settings.ADB_DEVICE_SERIAL or os.environ.get("ADB_DEVICE_SERIAL")
-    )
-    if not target_serial:
         try:
-            from artemis.runtime import device_pool
+            llm_config = initialize_llm_config()
+        except Exception as exc:
+            if effective_sid:
+                try:
+                    trace_store.update_trace_status(str(effective_sid), "failed", error=str(exc))
+                except OSError:
+                    logger.exception(
+                        "Could not record configuration failure for session %s", effective_sid
+                    )
+            raise
+        agent_profile = AgentProfile(name="default", llm_config=llm_config)
+        config = Builders.AgentConfig.with_default_profile(profile=agent_profile)
 
-            target_serial = device_pool.select_device()
-        except Exception:
-            target_serial = None
+        if video_recording_tools_enabled is not None:
+            config.with_video_recording_tools(enabled=video_recording_tools_enabled)
 
-    if target_serial:
-        from artemis.context import DevicePlatform
+        if enable_planner_validation is not None:
+            config.with_planner_validation(enabled=enable_planner_validation)
 
-        config.for_device(DevicePlatform.ANDROID, target_serial)
+        if enable_committee is not None:
+            config.with_committee(enabled=enable_committee)
 
-    if graph_config_callbacks:
-        config.with_graph_config_callbacks(graph_config_callbacks)
+        if verification_level is not None:
+            config.with_checker(**checker_overrides_for_level(verification_level))
 
-    agent: Agent | None = None
-    try:
-        agent = Agent(config=config.build(), session_id=effective_sid)
-        await agent.init(
-            retry_count=int(os.getenv("ARTEMIS_HEALTH_RETRIES", 5)),
-            retry_wait_seconds=int(os.getenv("ARTEMIS_HEALTH_DELAY", 2)),
+        if enable_checker is not None:
+            config.with_checker(enabled=enable_checker)
+
+        if enable_step_summarizer is not None:
+            config.with_flash_step_summarizer(enabled=enable_step_summarizer)
+
+        if enable_outputter is not None or force_output_synthesis is not None:
+            config.with_outputter(
+                enabled=enable_outputter if enable_outputter is not None else True,
+                force_synthesis=bool(force_output_synthesis),
+            )
+
+        if (
+            explorer_version is not None
+            or explorer_flash_mode is not None
+            or explorer_pro_mode is not None
+        ):
+            config.with_explorer(
+                version=explorer_version,
+                flash_mode=explorer_flash_mode,
+                pro_mode=explorer_pro_mode,
+            )
+
+        if settings.ADB_HOST:
+            config.with_adb_server(host=settings.ADB_HOST, port=settings.ADB_PORT)
+
+        target_serial = (
+            device_serial or settings.ADB_DEVICE_SERIAL or os.environ.get("ADB_DEVICE_SERIAL")
         )
+        if not target_serial:
+            try:
+                from artemis.runtime import device_pool
 
-        task = agent.new_task(goal)
-        if locked_app_package:
-            task.with_locked_app_package(locked_app_package)
-        if test_name:
-            trace_path = traces_output_path_str or str(settings.TRACES_PATH)
-            task.with_name(test_name).with_trace_recording(path=trace_path)
-        if output_description:
-            task.with_output_description(output_description)
-        if profile:
-            task.using_profile(profile)
-        if app_path:
-            task.with_app_path(Path(app_path))
+                target_serial = device_pool.select_device()
+            except Exception:
+                target_serial = None
 
-        llm_result_path = os.getenv("RESULTS_OUTPUT_PATH", None)
-        if llm_result_path:
-            task.with_llm_output_saving(path=llm_result_path)
+        if target_serial:
+            from artemis.context import DevicePlatform
 
-        await agent.run_task(request=task.build())
+            config.for_device(DevicePlatform.ANDROID, target_serial)
+
+        if graph_config_callbacks:
+            config.with_graph_config_callbacks(graph_config_callbacks)
+
+        agent: Agent | None = None
+        try:
+            record_attempt_manifest(
+                trace_id=str(effective_sid),
+                checkpoint="launch",
+                llm_config=llm_config,
+                run_id=run_id,
+            )
+
+            agent = Agent(config=config.build(), session_id=effective_sid)
+            await agent.init(
+                retry_count=int(os.getenv("ARTEMIS_HEALTH_RETRIES", 5)),
+                retry_wait_seconds=int(os.getenv("ARTEMIS_HEALTH_DELAY", 2)),
+            )
+
+            task = agent.new_task(goal)
+            if locked_app_package:
+                task.with_locked_app_package(locked_app_package)
+            if test_name:
+                trace_path = traces_output_path_str or str(settings.TRACES_PATH)
+                task.with_name(test_name).with_trace_recording(path=trace_path)
+            if output_description:
+                task.with_output_description(output_description)
+            if profile:
+                task.using_profile(profile)
+            if app_path:
+                task.with_app_path(Path(app_path))
+
+            llm_result_path = os.getenv("RESULTS_OUTPUT_PATH", None)
+            if llm_result_path:
+                task.with_llm_output_saving(path=llm_result_path)
+
+            await agent.run_task(request=task.build())
+        finally:
+            # Reconciliation runs regardless of task outcome (success, failed
+            # status, exception, or cancellation) and before cleanup, so an
+            # Agent.clean() failure (e.g. device disconnect) can never
+            # suppress the reconciliation verdict -- mirrors
+            # mcp_server.background.task_runner's finally-block ordering.
+            reconcile_and_store_verdict(
+                trace_id=str(effective_sid), checkpoint="launch", run_id=run_id
+            )
+            if agent is not None:
+                try:
+                    await agent.clean()
+                except Exception as exc:
+                    logger.error(f"Error cleaning agent: {exc}")
     finally:
-        if agent is not None:
-            await agent.clean()
+        # Restore whatever ARTEMIS_SESSION_ID held before this call so an
+        # explicit session_id (or a generated fallback) never bleeds into a
+        # later execute_task() call in the same process.
+        if _prior_session_id_env is None:
+            os.environ.pop("ARTEMIS_SESSION_ID", None)
+        else:
+            os.environ["ARTEMIS_SESSION_ID"] = _prior_session_id_env
 
 
 def run_command(
@@ -348,6 +393,16 @@ def run_command(
             help="Canonical session UUID for trace and stream telemetry.",
         ),
     ] = None,
+    run_id: Annotated[
+        str | None,
+        typer.Option(
+            "--run-id",
+            help=(
+                "Gate 1 batch-grouping key for this attempt's manifest "
+                "(defaults to the session id when omitted)."
+            ),
+        ),
+    ] = None,
     standalone: Annotated[
         bool,
         typer.Option(
@@ -396,6 +451,7 @@ def run_command(
                     app_path=app_path,
                     session_id=target_sid,
                     ingress="cli",
+                    run_id=run_id,
                     base_url=base_url,
                 )
                 if resp and resp.get("tasks"):
@@ -499,6 +555,7 @@ def run_command(
                 explorer_flash_mode=explorer_flash_mode,
                 explorer_pro_mode=explorer_pro_mode,
                 verification_level=verification_level,
+                run_id=run_id,
             )
         )
     except (KeyboardInterrupt, asyncio.CancelledError):

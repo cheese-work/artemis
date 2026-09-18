@@ -178,6 +178,7 @@ async def run_task(request: RunRequest):
         ingress=request.ingress or "frontend",
         session_id=request.session_id,
         conversation_id=request.conversation_id,
+        run_id=request.run_id,
     )
 
 

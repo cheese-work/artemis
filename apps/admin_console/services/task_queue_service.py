@@ -507,6 +507,7 @@ class TaskQueueService:
         explorer_mode = task_item.get("explorer_mode")
         locked_app = task_item.get("locked_app_package") or task_item.get("locked_app")
         app_path = task_item.get("app_path")
+        run_id = task_item.get("run_id")
 
         test_name = f"web_{int(time.time())}_{run_key[:8]}"
         env = os.environ.copy()
@@ -543,6 +544,8 @@ class TaskQueueService:
         ]
         if sess_id:
             cmd.extend(["--session-id", str(sess_id)])
+        if run_id:
+            cmd.extend(["--run-id", str(run_id)])
         if expected_output:
             cmd.extend(["--output-description", str(expected_output)])
         if enable_outputter is not None:
@@ -1004,6 +1007,7 @@ class TaskQueueService:
         conversation_id: str | None,
         verification_level: str | None = None,
         explorer_mode: str | None = None,
+        run_id: str | None = None,
     ) -> dict[str, Any]:
         """Reserve a device slot and build one pending queue item for a goal."""
         sess_id = single_session_id if single_session_id else str(uuid.uuid4())
@@ -1031,6 +1035,7 @@ class TaskQueueService:
             "adb_endpoint": endpoint.to_dict(),
             "ingress": ingress,
             "conversation_id": conversation_id,
+            "run_id": run_id,
             "status": "pending",
             "queue_ticket": queue_ticket,
             "created_at": now + index * 0.001,
@@ -1052,12 +1057,18 @@ class TaskQueueService:
         conversation_id: str | None = None,
         verification_level: str | None = None,
         explorer_mode: str | None = None,
+        run_id: str | None = None,
     ) -> dict[str, Any]:
         """Enqueues one or more goals and wakes up the background worker.
 
         ``verification_level`` and ``explorer_mode`` are Pro-profile tuning knobs
         forwarded to the worker as ``--verification-level`` / ``--explorer-pro-mode``;
         they are normalised here so the queue item and the CLI see one spelling.
+
+        ``run_id`` is the Gate 1 batch-grouping key (see
+        ``artemis.config.attempt_lifecycle_hooks``); it is forwarded to the
+        spawned worker as ``--run-id`` so daemon-dispatched attempts get the
+        same manifest/reconciliation evidence as standalone runs.
         """
         verification_level = (
             str(verification_level).strip().lower() or None if verification_level else None
@@ -1106,6 +1117,7 @@ class TaskQueueService:
                 conversation_id,
                 verification_level=verification_level,
                 explorer_mode=explorer_mode,
+                run_id=run_id,
             )
             session_id = str(task_item["session_id"])
             existing_trace = trace_store.read_status(session_id)

@@ -212,6 +212,7 @@ def mobile_run_task(
     device_serial: str | None = None,
     verification_level: str | None = None,
     explorer_mode: str | None = None,
+    run_id: str | None = None,
 ) -> dict[str, Any]:
     """Starts an autonomous mobile UI automation subagent on a connected Android device.
 
@@ -277,6 +278,12 @@ def mobile_run_task(
           by the Operator: `"flash"` (1-shot detection, the default),
           `"pro"` (3-turn ReAct), `"ultra"` (deep pixel reasoning; slowest).
           Ignored for Flash.
+        run_id: Optional Gate 1 batch-grouping identifier. Plumbing for
+          grouping multiple real attempts (e.g. repeated attempts of one
+          journey/device cell) into one reconcilable batch at termination —
+          no built-in caller sets this today; omit unless you are
+          deliberately re-running the same logical task under a shared
+          identifier across multiple `mobile_run_task` calls.
     """
     # 0. Validate and normalize model
     if model.lower() not in ("flash", "pro"):
@@ -325,6 +332,7 @@ def mobile_run_task(
                     conversation_id=conversation_id,
                     verification_level=verification_level,
                     explorer_mode=explorer_mode,
+                    run_id=run_id,
                     base_url=base_url,
                 )
                 if resp and resp.get("status") == "rejected":
@@ -471,6 +479,8 @@ def mobile_run_task(
             cmd.extend(["--verification-level", verification_level])
         if explorer_mode:
             cmd.extend(["--explorer-pro-mode", explorer_mode])
+        if run_id:
+            cmd.extend(["--run-id", run_id])
 
         env = os.environ.copy()
         env["ARTEMIS_SESSION_ID"] = trace_id

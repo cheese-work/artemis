@@ -221,6 +221,7 @@ def submit_task_to_daemon(
     conversation_id: str | None = None,
     verification_level: str | None = None,
     explorer_mode: str | None = None,
+    run_id: str | None = None,
     base_url: str | None = None,
     timeout: float = 15.0,
 ) -> dict[str, Any] | None:
@@ -229,6 +230,10 @@ def submit_task_to_daemon(
     ``verification_level`` ('off' | 'final' | 'checkpoints' | 'strict') and
     ``explorer_mode`` ('flash' | 'pro' | 'ultra') are the Pro-profile tuning
     knobs of ``/api/run``; they are forwarded verbatim and ignored by Flash.
+
+    ``run_id`` is the Gate 1 batch-grouping key for this attempt's manifest
+    (see ``artemis.config.attempt_lifecycle_hooks``); it defaults to the
+    attempt's own trace/session id when omitted.
 
     Returns the response JSON dict if successfully enqueued, or None on error.
     """
@@ -246,6 +251,7 @@ def submit_task_to_daemon(
         "session_id": session_id,
         "ingress": ingress,
         "conversation_id": conversation_id,
+        "run_id": run_id,
     }
 
     try:
