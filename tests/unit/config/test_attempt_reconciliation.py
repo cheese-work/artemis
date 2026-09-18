@@ -677,6 +677,58 @@ class TestReconcileAttemptBatchByRunId:
         invalid_ids = {a.attempt_id for a in verdict.invalid_attempts}
         assert invalid_ids == {sol_trace_id, terra_trace_id}
 
+    def test_attempt_with_unmapped_call_still_rejected_after_trace_dir_renamed(
+        self, tmp_path, _isolate_traces_dir
+    ):
+        """Reproduces the real CLI/worker run path: the trace directory is
+        renamed from a bare trace_id to `{trace_id}{status}_{timestamp}`
+        (agent.py's `_finalize_tracing`) before this reconciler scans
+        `traces_root`'s subdirectories. Before the fix, the loop used the
+        renamed *directory name* -- not the manifest's own stored trace_id --
+        as the session_id for the llm_usage DB query, so it silently found
+        zero usage rows for this attempt, every node reconciled as
+        `not_invoked`, and the batch was wrongly *accepted* despite an actual
+        unmapped-node call recorded for it. The single-attempt path
+        (`reconcile_finished_attempt`, exercised elsewhere in this file)
+        never had this bug, since it always uses the caller-supplied real
+        trace_id directly -- this test is specifically about the
+        directory-discovery loop in the batch path.
+        """
+        run_id = "run-unmapped-after-rename"
+        traces_root = Path(trace_store.TRACES_DIR)
+        db_path = tmp_path / "usage.db"
+        traces_dir = tmp_path / "usage_traces"
+        storage = StorageManager(db_path, traces_dir)
+
+        trace_id = "attempt-rename-batch-1"
+        storage.create_session(SessionMetadata(session_id=trace_id, initial_goal="test goal"))
+        manifest = _manifest(run_id=run_id, attempt_id=trace_id, trace_id=trace_id)
+        manifest_path, _ = store_attempt_manifest(manifest)
+        # A real llm_usage call to a node the manifest never declared at all
+        # -- must reject as unmapped_call (see TestBatchValidationAllSevenReasons).
+        storage.create_trace(
+            TraceRecord(
+                trace_id=f"usage-{trace_id}-unmapped",
+                session_id=trace_id,
+                type="llm_call",
+                name="llm_usage",
+                payload={"node": "some_new_node_not_in_manifest", "source": "openai:gpt-5.6-sol"},
+            )
+        )
+
+        # Mirror agent.py's post-run compile: rename bare trace_id dir -> suffixed.
+        manifest_path.parent.rename(traces_root / f"{trace_id}_PASS_2026-09-18T23-13-44")
+
+        verdict = reconcile_attempt_batch_by_run_id(
+            run_id=run_id,
+            checkpoint="launch",
+            db_path=db_path,
+            traces_dir=traces_dir,
+            traces_root=traces_root,
+        )
+        assert verdict.accepted is False
+        assert verdict.reason == "unmapped_call"
+
     def test_attempt_under_different_run_id_is_excluded_from_batch(
         self, tmp_path, _isolate_traces_dir
     ):
