@@ -36,7 +36,8 @@ Before every attempt (positive or negative control):
    toward the tier's 10 positives — the same treatment a missing/offline
    device already gets. It must never be scored `fail_assertion`, since an
    attempt that starts this way cannot create an entry to fail an assertion
-   about.
+   about. This is a scripted ADB check, not an Artemis-driven step, and
+   runs outside any budgeted attempt.
 
 `<candidate_package>` and `<device_serial>` are supplied at run time by the
 execution stage (CHE-540+); this journey does not pin them.
