@@ -124,8 +124,13 @@ async def _run_object_detection(
     queries = queries or []
     templates = templates or ["Point to the following objects: {labels_str}"]
     try:
-        llm = get_llm(ctx, name="object_detector")
-    except Exception:
+        llm = get_llm(ctx, name="object_detector", is_utils=True)
+    except (ValueError, AttributeError) as exc:
+        logger.warning(
+            f"object_detector is not configured ({exc}); falling back to the operator "
+            "model, which is slower and more expensive. Configure 'object_detector' "
+            "under the llm utils config to use the intended detector."
+        )
         llm = get_llm(ctx, name="operator")
 
     raw_timeout = getattr(getattr(ctx, "llm_config", None), "timeout", None)

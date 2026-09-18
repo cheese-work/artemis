@@ -55,11 +55,16 @@ _RETRY_DELAY_SECONDS = 0.3
 
 
 def _init_llm_and_prompt(ctx: ArtemisContext, get_llm_fn):
-    """Resolves the VLM and loads the prompt template (once per validation)."""
-    try:
-        llm = get_llm_fn(ctx, name="validator_pixel_safety_net")
-    except Exception:
-        llm = get_llm_fn(ctx, name="validator")
+    """Resolves the VLM and loads the prompt template (once per validation).
+
+    ``validator_pixel_safety_net`` is an optional ``LLMConfig`` field whose
+    ``get_agent`` accessor returns a built-in lightweight-judge default when
+    unset (see ``LLMConfig.get_agent``), so this call never raises for a
+    missing config entry. There is no fallback branch: ``validator`` is not a
+    real ``LLMConfig`` field, so a fallback attempt could only ever raise
+    itself -- it was unreachable dead code.
+    """
+    llm = get_llm_fn(ctx, name="validator_pixel_safety_net")
 
     prompt_path = Path(__file__).parent.joinpath("pixel_safety_net.md")
     prompt = prompt_path.read_text(encoding="utf-8")
