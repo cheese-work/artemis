@@ -104,6 +104,25 @@ _PROVIDER_DEFAULT_BASE_URLS = {
     ModelProvider.CUSTOM: "http://localhost:8000/v1",
 }
 
+# Anthropic model name prefixes that hard-reject the `temperature` sampling
+# parameter (400 invalid_request_error: "temperature is deprecated for this
+# model"), starting with the generational (non-dated) naming scheme. Add new
+# rejecting families here as Anthropic expands the deprecation.
+_ANTHROPIC_TEMPERATURE_REJECTING_PREFIXES = (
+    "claude-sonnet-5",
+    "claude-opus-5",
+    "claude-haiku-4-5",
+    "claude-fable-5",
+    "claude-opus-4-7",
+    "claude-opus-4-8",
+)
+
+
+def anthropic_rejects_temperature(model_name: Any) -> bool:
+    """Whether this Anthropic model 400s on any `temperature` value, including 0.0/1.0."""
+    name = str(model_name).lower()
+    return name.startswith(_ANTHROPIC_TEMPERATURE_REJECTING_PREFIXES)
+
 
 class ModelEndpoint(BaseModel):
     """Configuration definition for an LLM/VLM model endpoint."""
@@ -352,20 +371,23 @@ class ModelFactory:
                 or os.environ.get("ANTHROPIC_API_KEY")
             )
             base_url = resolve_provider_base_url(endpoint)
-            kwargs = {
+            rejects_temperature = anthropic_rejects_temperature(endpoint.model_name)
+            kwargs: dict[str, Any] = {
                 "model": endpoint.model_name,
-                "temperature": endpoint.temperature,
                 "api_key": api_key,
                 "base_url": base_url,
                 "timeout": endpoint.timeout_seconds,
             }
+            if not rejects_temperature:
+                kwargs["temperature"] = endpoint.temperature
             budget = endpoint.thinking_budget
             if not budget and endpoint.reasoning_effort:
                 effort_map = {"low": 2048, "medium": 8192, "high": 32768}
                 budget = effort_map.get(endpoint.reasoning_effort.lower())
             if budget:
                 kwargs["thinking"] = {"type": "enabled", "budget_tokens": budget}
-                kwargs["temperature"] = 1.0
+                if not rejects_temperature:
+                    kwargs["temperature"] = 1.0
             return ChatAnthropic(**{k: v for k, v in kwargs.items() if v is not None})
 
         elif provider == ModelProvider.OPENROUTER:
