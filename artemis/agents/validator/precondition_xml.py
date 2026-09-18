@@ -545,10 +545,16 @@ JEV_TARGET_LABELS: dict[str, str] = {
     "disappeared": "The intended target is no longer on screen at all.",
 }
 
-#: Below this calibrated confidence Jev's verdict is discarded and the
-#: heuristic stands. Jev is trained to report honest probabilities, so a low
-#: confidence is a real signal that the screen is ambiguous -- and an ambiguous
-#: screen is exactly where the conservative heuristic should win.
+#: Below this confidence Jev's verdict is discarded and the heuristic stands.
+#:
+#: This is a population-level cutoff, not a per-call correctness guarantee.
+#: The vendor is explicit that "calibration is measured across groups of
+#: predictions; it does not guarantee that an individual answer is correct."
+#: So the threshold buys a better *rate* of good adjudications across many
+#: runs -- it never certifies the verdict in front of you. That is precisely
+#: why a confident verdict is allowed to adjudicate an already-ambiguous
+#: match and nothing more: the heuristic remains the default, and the blast
+#: radius of any single wrong answer stays one retryable step.
 JEV_MIN_CONFIDENCE = 0.6
 
 
@@ -620,6 +626,25 @@ async def _classify_failure_with_jev(
     malformed -- every one of which means "let the heuristic decide". Only a
     confident verdict is allowed to change the outcome, and only ``present``
     can turn a block into a pass.
+
+    **Design boundary for anyone adding a second Jev call site.** "System One"
+    is Kahneman's fast, intuitive mode, and that is the whole eligibility
+    test: a Jev question must be one a knowledgeable person could answer in a
+    couple of seconds by looking, with the answer space fixed in advance. This
+    call site qualifies -- four labels, no reasoning chain, no explanation
+    needed, and the result is consumed by code rather than read by a human.
+
+    A decision that needs multi-step reasoning, weighs independent factors, or
+    has to justify itself in prose is System Two and does not belong here.
+    That is why the Checker's ``passed``/``failed``/``inconclusive`` verdicts
+    stay on a regular LLM despite looking like a clean three-way Choice: they
+    must quote evidence verbatim and emit a written ``suggestion``, and Jev
+    does not generate text at all. The same rule disqualifies the pixel safety
+    net, which needs images -- Jev accepts text state only.
+
+    If a candidate question fails this test, the vendor's own advice is to
+    decompose it into several narrow questions and combine them in code, not
+    to widen one question until Jev can carry it.
     """
     client = jev.build_client(settings)
     if client is None:

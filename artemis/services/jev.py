@@ -31,6 +31,12 @@ Three question primitives are supported, matching the vendor API:
 ``noul``
     Judge a statement's truth. Answers carry ``noul`` in ``[0, 1]``.
 
+Questions in one request are evaluated in parallel and in isolation against
+the same state, so asking several narrow ones costs about the same as asking
+one and avoids the context bleed of a single compound question. The vendor's
+guidance is to keep each question scoped to one thing and combine the answers
+in your own deterministic code -- decompose rather than widen.
+
 **Every caller must treat this service as optional.** It is reached over the
 network, it is gated on a key we may not hold, and the vendor is early-stage:
 :func:`ask` returns ``None`` for *every* failure mode (disabled, unconfigured,
@@ -71,7 +77,13 @@ class JevError(Exception):
 
 @dataclass(frozen=True)
 class ChoiceAnswer:
-    """One ``choice`` verdict plus its calibrated confidence."""
+    """One ``choice`` verdict plus its confidence.
+
+    ``confidence`` is calibrated across groups of predictions, not per
+    answer: the vendor states it "does not guarantee that an individual
+    answer is correct". Threshold it to improve the rate of good outcomes;
+    never read a single high value as proof this particular answer is right.
+    """
 
     choice: str
     probabilities: dict[str, float]
