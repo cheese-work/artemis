@@ -79,10 +79,15 @@ class ImageProcessor:
 
     @trace(type="agent", name="image_processor")
     async def run(self, instruction: str, target_image_path: str) -> dict:
-        try:
-            llm = get_llm(self.ctx, name="image_processor")
-        except Exception:
-            llm = get_llm(self.ctx, name="operator")
+        # There is no ``image_processor`` node on ``LLMConfig`` or
+        # ``LLMConfigUtils``, so the former ``get_llm(name="image_processor")``
+        # attempt raised ``AttributeError`` on every call and a bare handler
+        # silently resolved the operator model instead. The operator model is
+        # what this agent has always actually used; say so rather than hiding
+        # it behind a lookup that cannot succeed. Giving the image processor
+        # its own configurable node is a config-schema change, tracked
+        # separately.
+        llm = get_llm(self.ctx, name="operator")
 
         base_dir = settings.TRACES_PATH
         image_processor_dir = base_dir / "images" / "image_processor"
