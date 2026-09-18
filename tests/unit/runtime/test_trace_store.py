@@ -228,3 +228,44 @@ def test_trace_paths(temp_trace_env):
     assert trace_store.get_trace_notes_dir(trace_id) == os.path.join(trace_dir, "notes")
     assert trace_store.get_trace_stdout_log_path(trace_id) == os.path.join(trace_dir, "stdout.log")
     assert trace_store.get_trace_stderr_log_path(trace_id) == os.path.join(trace_dir, "stderr.log")
+
+
+def test_get_existing_trace_dir_returns_bare_dir_when_present(temp_trace_env):
+    trace_id = str(uuid.uuid4())
+    bare_dir = trace_store.get_trace_dir(trace_id)
+    os.makedirs(bare_dir)
+
+    assert trace_store.get_existing_trace_dir(trace_id) == bare_dir
+
+
+def test_get_existing_trace_dir_follows_post_run_rename(temp_trace_env):
+    """Reproduces the real CLI/worker run path: a trace's directory is
+    renamed from bare trace_id to `{trace_id}{status}_{timestamp}` once the
+    run's trace is compiled (agent.py's `_finalize_tracing`), before Gate 1's
+    post-run hooks read/write beside it."""
+    trace_id = str(uuid.uuid4())
+    bare_dir = trace_store.get_trace_dir(trace_id)
+    os.makedirs(bare_dir)
+    renamed_dir = f"{bare_dir}_PASS_2026-09-18T23-13-44"
+    os.rename(bare_dir, renamed_dir)
+
+    assert trace_store.get_existing_trace_dir(trace_id) == renamed_dir
+
+
+def test_get_existing_trace_dir_never_cross_matches_a_string_prefix_trace_id(temp_trace_env):
+    """`trace-10`'s renamed dir must never satisfy a lookup for `trace-1`,
+    even though `trace-1` is a literal string prefix of `trace-10` -- the
+    match must require the `_` separator right after the full id, not a bare
+    `startswith`."""
+    other_id = "trace-10"
+    other_bare_dir = trace_store.get_trace_dir(other_id)
+    os.makedirs(other_bare_dir)
+    os.rename(other_bare_dir, f"{other_bare_dir}_PASS_2026-09-18T23-13-44")
+
+    trace_id = "trace-1"
+    assert trace_store.get_existing_trace_dir(trace_id) == trace_store.get_trace_dir(trace_id)
+
+
+def test_get_existing_trace_dir_falls_back_to_bare_dir_when_nothing_exists(temp_trace_env):
+    trace_id = str(uuid.uuid4())
+    assert trace_store.get_existing_trace_dir(trace_id) == trace_store.get_trace_dir(trace_id)

@@ -198,6 +198,32 @@ def get_trace_dir(trace_id: str) -> str:
     return os.path.join(TRACES_DIR, trace_id)
 
 
+def get_existing_trace_dir(trace_id: str) -> str:
+    """Resolves ``trace_id`` to its on-disk trace directory, following the
+    post-run rename if one has already happened.
+
+    A trace's directory is renamed from a bare ``trace_id`` to
+    ``{trace_id}{status}_{timestamp}`` once the real run's trace is compiled
+    (``agent.py``'s ``_finalize_tracing``), which happens before Gate 1's
+    post-run hooks (manifest reconciliation, verdict storage) read/write
+    beside it. Falls back to a ``trace_id + "_"`` prefix match so callers
+    that stored something beside the trace before the rename can still find
+    it after. UUIDs never contain ``_``, so the prefix match cannot cross
+    over into a different attempt's directory. Returns the bare (possibly
+    nonexistent) path when neither form exists, matching ``get_trace_dir``'s
+    existing behavior for a caller that hasn't written anything yet.
+    """
+    bare_dir = get_trace_dir(trace_id)
+    if os.path.isdir(bare_dir):
+        return bare_dir
+    parent = os.path.dirname(bare_dir)
+    try:
+        candidates = sorted(name for name in os.listdir(parent) if name.startswith(f"{trace_id}_"))
+    except OSError:
+        candidates = []
+    return os.path.join(parent, candidates[0]) if candidates else bare_dir
+
+
 def get_status_path(trace_id: str) -> str:
     """Returns the absolute path to the status.json file for a given trace_id."""
     return os.path.join(get_trace_dir(trace_id), "status.json")
