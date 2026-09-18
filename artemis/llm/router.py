@@ -104,6 +104,24 @@ _PROVIDER_DEFAULT_BASE_URLS = {
     ModelProvider.CUSTOM: "http://localhost:8000/v1",
 }
 
+# Anthropic model name prefixes that reject `temperature` outright (HTTP 400
+# `temperature is deprecated for this model`) rather than silently ignoring
+# or clamping it. The 5-generation Claude models (Sonnet 5, Opus 5, Haiku
+# 4.5) dropped it in favor of `top_p`-only sampling control; the model_name
+# string is the only signal available here (no capability flag exists on the
+# ModelEndpoint or in the Anthropic SDK response). Keep every such prefix in
+# this one constant so a future model addition touches one place.
+_ANTHROPIC_TEMPERATURE_REJECTING_PREFIXES: tuple[str, ...] = (
+    "claude-sonnet-5",
+    "claude-opus-5",
+    "claude-haiku-4-5",
+)
+
+
+def _anthropic_model_rejects_temperature(model_name: str) -> bool:
+    """True if ``model_name`` is a known Anthropic model that 400s on `temperature`."""
+    return model_name.startswith(_ANTHROPIC_TEMPERATURE_REJECTING_PREFIXES)
+
 
 class ModelEndpoint(BaseModel):
     """Configuration definition for an LLM/VLM model endpoint."""
@@ -352,9 +370,10 @@ class ModelFactory:
                 or os.environ.get("ANTHROPIC_API_KEY")
             )
             base_url = resolve_provider_base_url(endpoint)
+            rejects_temperature = _anthropic_model_rejects_temperature(endpoint.model_name)
             kwargs = {
                 "model": endpoint.model_name,
-                "temperature": endpoint.temperature,
+                "temperature": None if rejects_temperature else endpoint.temperature,
                 "api_key": api_key,
                 "base_url": base_url,
                 "timeout": endpoint.timeout_seconds,
@@ -365,7 +384,11 @@ class ModelFactory:
                 budget = effort_map.get(endpoint.reasoning_effort.lower())
             if budget:
                 kwargs["thinking"] = {"type": "enabled", "budget_tokens": budget}
-                kwargs["temperature"] = 1.0
+                # Thinking mode normally forces temperature=1.0 (Anthropic's own
+                # requirement), but a model that rejects the parameter outright
+                # would 400 on that too -- leave it omitted for those models.
+                if not rejects_temperature:
+                    kwargs["temperature"] = 1.0
             return ChatAnthropic(**{k: v for k, v in kwargs.items() if v is not None})
 
         elif provider == ModelProvider.OPENROUTER:
