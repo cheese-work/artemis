@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import json
+import time
 from typing import Any
 from uuid import uuid4
 
@@ -21,7 +22,9 @@ from langchain_core.tools import BaseTool
 
 from artemis.core.tool_failure import is_tool_failure
 from artemis.context import ArtemisContext
+from artemis.data_engine.reaction_time import OperatorIterationOutcome, ReactionPhase
 from artemis.data_engine.trace import (
+    record_phase_span,
     TraceSpan,
     trace,
     trace_langchain_tool,
@@ -487,6 +490,11 @@ class OperatorNode:
         plan_gate_bounced = False
 
         for iteration in range(max_iterations):
+            _iteration_start = time.time()
+            # Reset every iteration: classification must reflect *this*
+            # iteration's outcome, never a stale value from a prior one.
+            iteration_outcome = OperatorIterationOutcome.CONTINUED
+
             if iteration == max_iterations - 1:
                 logger.warning(
                     "Operator has reached the maximum number of tool calls. Adding reminder."
@@ -569,6 +577,13 @@ class OperatorNode:
 
             if not response.tool_calls:
                 logger.warning("LLM stopped without calling any tool. Encouraging action.")
+                iteration_outcome = OperatorIterationOutcome.NO_TOOL_CALL
+                record_phase_span(
+                    self.ctx,
+                    ReactionPhase.OPERATOR_ITERATION,
+                    time.time() - _iteration_start,
+                    payload={"iteration": iteration, "outcome": iteration_outcome.value},
+                )
                 break
 
             current_messages.append(response)
@@ -684,6 +699,7 @@ class OperatorNode:
 
                 if other_tool_failed:
                     if action_calls:
+                        iteration_outcome = OperatorIterationOutcome.HELPER_TOOL_FAILURE
                         logger.warning(
                             "Scratchpad/helper tool call failed. Deferring"
                             f" screen actions: {other_tool_failure_msg}"
@@ -715,6 +731,7 @@ class OperatorNode:
                         normalize_name(tc["name"]) in DEFERRING_TOOLS for tc in other_calls
                     )
                     if has_deferring_calls:
+                        iteration_outcome = OperatorIterationOutcome.DEFERRING_TOOL_MIX
                         logger.info(
                             "Operator mixed pre-decision tools"
                             " (memory/exploration) and terminal action calls."
@@ -762,6 +779,7 @@ class OperatorNode:
                 if bounce:
                     plan_gate_bounced = True
                     validation_errors = True
+                    iteration_outcome = OperatorIterationOutcome.PLAN_LEDGER_GATE
                     logger.info(f"Plan ledger gate: bouncing action. {bounce}")
                     for tc in action_calls:
                         tool_outputs.append(
@@ -777,6 +795,7 @@ class OperatorNode:
                     # A multi-action turn is a fast-action burst that the Validator
                     # fires without the safety net; cap its length before it runs.
                     validation_errors = True
+                    iteration_outcome = OperatorIterationOutcome.BURST_LIMIT
                     burst_error = (
                         f"Error: {len(action_calls)} Turn-Ending Actions in one"
                         " turn exceed the fast-action burst limit of"
@@ -837,11 +856,49 @@ class OperatorNode:
                 current_messages.append(tm)
 
             if action_calls and not validation_errors:
+                # Terminal per the brief's exact wording: a translated action
+                # went through with no validation error this iteration. At
+                # this point no more specific label (helper/deferring/plan
+                # gate/burst — all of which clear ``action_calls`` before
+                # this check) could have fired.
+                iteration_outcome = OperatorIterationOutcome.EXECUTED
+                record_phase_span(
+                    self.ctx,
+                    ReactionPhase.OPERATOR_ITERATION,
+                    time.time() - _iteration_start,
+                    payload={"iteration": iteration, "outcome": iteration_outcome.value},
+                )
                 break
 
             if validation_errors:
+                # Generic fallback label — only when no more-specific outcome
+                # (plan_ledger_gate, burst_limit) already claimed this
+                # iteration; per-action translation errors land here.
+                if iteration_outcome is OperatorIterationOutcome.CONTINUED:
+                    iteration_outcome = OperatorIterationOutcome.VALIDATION_ERRORS
                 logger.warning("Some action calls failed validation. Feeding back to LLM.")
+                record_phase_span(
+                    self.ctx,
+                    ReactionPhase.OPERATOR_ITERATION,
+                    time.time() - _iteration_start,
+                    payload={"iteration": iteration, "outcome": iteration_outcome.value},
+                )
                 continue
+
+            # Fell through without breaking or continuing above (e.g. a
+            # helper-tool-failure/deferring-tool-mix turn, or a turn with no
+            # action calls at all): this iteration is either "continued" or,
+            # if it is the very last iteration, equivalent to the
+            # ``for...else`` branch below firing — derive that without
+            # touching the branch itself, so control flow stays untouched.
+            if iteration == max_iterations - 1:
+                iteration_outcome = OperatorIterationOutcome.TOOL_LIMIT_EXCEEDED
+            record_phase_span(
+                self.ctx,
+                ReactionPhase.OPERATOR_ITERATION,
+                time.time() - _iteration_start,
+                payload={"iteration": iteration, "outcome": iteration_outcome.value},
+            )
         else:
             tool_limit_exceeded = True
 
