@@ -153,6 +153,59 @@ def test_model_factory_openai_endpoint_prefers_model_configuration(monkeypatch):
     assert chat_openai.call_args.kwargs["base_url"] == "https://openai-model.example/v1"
 
 
+@pytest.mark.parametrize(
+    "model_name",
+    ["claude-sonnet-5", "claude-opus-5", "claude-haiku-4-5", "claude-fable-5-1"],
+)
+def test_model_factory_anthropic_omits_temperature_for_rejecting_model(model_name):
+    """Models that 400 on `temperature` never receive the parameter, even with thinking."""
+    endpoint = ModelEndpoint(
+        provider=ModelProvider.ANTHROPIC,
+        model_name=model_name,
+        api_key="sk-ant-test-key",
+        reasoning_effort="high",
+    )
+
+    with patch("langchain_anthropic.ChatAnthropic") as chat_anthropic:
+        ModelFactory.create_model(endpoint)
+
+    assert "temperature" not in chat_anthropic.call_args.kwargs
+    assert chat_anthropic.call_args.kwargs["thinking"] == {
+        "type": "enabled",
+        "budget_tokens": 32768,
+    }
+
+
+def test_model_factory_anthropic_keeps_temperature_for_accepting_model():
+    """Models that still accept `temperature` continue to receive the configured value."""
+    endpoint = ModelEndpoint(
+        provider=ModelProvider.ANTHROPIC,
+        model_name="claude-3-7-sonnet-20250219",
+        api_key="sk-ant-test-key",
+        temperature=0.3,
+    )
+
+    with patch("langchain_anthropic.ChatAnthropic") as chat_anthropic:
+        ModelFactory.create_model(endpoint)
+
+    assert chat_anthropic.call_args.kwargs["temperature"] == 0.3
+
+
+def test_model_factory_anthropic_forces_thinking_temperature_when_accepted():
+    """Thinking budget still forces temperature=1.0 on models that accept the parameter."""
+    endpoint = ModelEndpoint(
+        provider=ModelProvider.ANTHROPIC,
+        model_name="claude-3-7-sonnet-20250219",
+        api_key="sk-ant-test-key",
+        reasoning_effort="high",
+    )
+
+    with patch("langchain_anthropic.ChatAnthropic") as chat_anthropic:
+        ModelFactory.create_model(endpoint)
+
+    assert chat_anthropic.call_args.kwargs["temperature"] == 1.0
+
+
 def test_model_factory_anthropic_uses_configured_or_model_endpoint(monkeypatch):
     """Anthropic receives the environment default unless the model specifies one."""
     from artemis.config import settings
