@@ -32,6 +32,7 @@ JOURNEY_PATH = REPO_ROOT / "qualification/journeys/pocket_actual_save_relaunch.m
 EVIDENCE_SCHEMA_PATH = REPO_ROOT / "qualification/evidence_schema.v1.json"
 
 _SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 # Must stay in lockstep with artemis/config/attempt_manifest.py's TIER_MODELS
 # (PR #1 / CHE-491). This test intentionally hardcodes the same tuple rather
@@ -65,12 +66,35 @@ def test_fork_sha_is_a_valid_git_sha_and_matches_source_baseline():
     )
 
 
-def test_candidate_app_fields_are_a_hold_not_a_default():
+def test_candidate_app_fields_are_pinned_by_che540():
+    """CHE-537 left these fields null as a hold; CHE-540 (manifest revision v2)
+    pins the exact pocket-actual build under test. If the pin legitimately
+    moves, this test and the manifest's candidate_app.note must be updated
+    together (revision_policy: a changed app_sha/apk_digest_sha256 forces a
+    new manifest revision and invalidates prior evidence).
+    """
     manifest = _load_manifest()
     candidate = manifest["candidate_app"]
-    assert candidate["app_sha"] is None
-    assert candidate["apk_digest_sha256"] is None
-    assert candidate["package_name"] is None
+    assert _SHA_RE.match(candidate["app_sha"]), (
+        f"app_sha must be a 40-hex-char git SHA, got {candidate['app_sha']!r}"
+    )
+    assert candidate["app_sha"] == "2c42481778e6f9b88a9502f55decdbe4e1a76e83"
+    assert _SHA256_RE.match(candidate["apk_digest_sha256"]), (
+        f"apk_digest_sha256 must be a 64-hex-char sha256 digest, got {candidate['apk_digest_sha256']!r}"
+    )
+    assert candidate["apk_digest_sha256"] == (
+        "04795d5f3995c8e895f6440a9763c8a003c8b6ff955541e3965f5e71564e2e12"
+    )
+    assert candidate["package_name"] == "dev.cheese.pocketactual"
+
+
+def test_dependency_lock_digest_is_pinned_by_che540():
+    manifest = _load_manifest()
+    digest = manifest["dependency_lock"]["digest_sha256"]
+    assert _SHA256_RE.match(digest), (
+        f"digest_sha256 must be a 64-hex-char sha256 digest, got {digest!r}"
+    )
+    assert digest == "2c63863dd5827482d7e206a887219c6438ce61dc494d9cc596f862378decc19a"
 
 
 def test_model_targets_match_gate1_tier_vocabulary():

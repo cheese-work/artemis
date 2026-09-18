@@ -20,16 +20,16 @@
   },
 
   "candidate_app": {
-    "app_sha": null,
-    "apk_digest_sha256": null,
-    "package_name": null,
-    "note": "Not pinned by this issue. CHE-537 is scoped to authoring the qualification input contract only -- no device operations, no APK install, no provider calls. The execution stage (CHE-540+) fills these fields for the exact candidate build under test and must not proceed without them; a null value here is a hold, not a default."
+    "app_sha": "2c42481778e6f9b88a9502f55decdbe4e1a76e83",
+    "apk_digest_sha256": "04795d5f3995c8e895f6440a9763c8a003c8b6ff955541e3965f5e71564e2e12",
+    "package_name": "dev.cheese.pocketactual",
+    "note": "Pinned by CHE-540 (manifest revision v2). Source: https://github.com/cheese-work/pocket-actual at its main HEAD `2c42481778e6f9b88a9502f55decdbe4e1a76e83`, observed and built at authoring time (no device install performed). apk_digest_sha256 is `sha256sum` of `composeApp/build/outputs/apk/debug/composeApp-debug.apk` produced by `./gradlew :composeApp:assembleDebug` at that exact commit on X99. Historical Maestro-era evidence exists on pocket-actual PR #5 (app_sha `29ddf249c573ec6e07effa0c52708b7007d12ea9`) but is superseded, not reused, per revision_policy -- that build predates the Maestro-to-Artemis cutover."
   },
 
   "dependency_lock": {
     "file": "uv.lock",
-    "digest_sha256": null,
-    "note": "Populate via `sha256sum uv.lock` at the exact fork_sha checkout used for the qualification run. Left null here since this issue performs no install."
+    "digest_sha256": "2c63863dd5827482d7e206a887219c6438ce61dc494d9cc596f862378decc19a",
+    "note": "sha256sum of this fork's own uv.lock (the Artemis qualification harness's dependency lock, not the candidate app's) at the pinned fork_sha `64e1b3226b9553bdf4e5a368f14b8a40c0af6111` checkout -- confirmed unchanged between fork_sha and this manifest revision's HEAD via `git diff fork_sha HEAD -- uv.lock` (empty)."
   },
 
   "accessibility_helper": {
