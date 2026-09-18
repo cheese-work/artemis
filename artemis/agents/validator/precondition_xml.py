@@ -29,9 +29,11 @@ import math
 import re
 
 from artemis.agents.validator.categories import ValidationErrorCategory
+from artemis.config.settings import settings
 from artemis.constants import VALIDATOR_UI_HIERARCHY_TIMEOUT
 from artemis.context import ArtemisContext
 from artemis.graph.state import State
+from artemis.services import jev
 from artemis.utils import visualization
 from artemis.utils.logger import get_logger
 
@@ -527,6 +529,170 @@ def _describe_occupation(
     return is_occupied, occupant_desc, occupant_bounds
 
 
+#: Jev's verdict labels for a below-threshold candidate match, and the
+#: ``ValidationErrorCategory`` each maps onto. ``present`` is the label that
+#: overturns the heuristic; the rest agree with it that the action is unsafe
+#: and only refine *why*.
+JEV_TARGET_LABELS: dict[str, str] = {
+    "present": (
+        "The intended target is still on screen at the expected place. Minor"
+        " re-rendering, re-ordering or text changes do not make it absent."
+    ),
+    "shifted": "The same element is still on screen but has moved to a new position.",
+    "occupied": (
+        "A different element (dialog, overlay, ad, tooltip) now covers the expected position."
+    ),
+    "disappeared": "The intended target is no longer on screen at all.",
+}
+
+#: Below this calibrated confidence Jev's verdict is discarded and the
+#: heuristic stands. Jev is trained to report honest probabilities, so a low
+#: confidence is a real signal that the screen is ambiguous -- and an ambiguous
+#: screen is exactly where the conservative heuristic should win.
+JEV_MIN_CONFIDENCE = 0.6
+
+
+def _summarize_element_for_jev(elem: dict) -> str:
+    """Renders one candidate element as a compact line of text state."""
+    return (
+        f"resource_id={elem.get('resource-id') or elem.get('resourceId') or ''!r}"
+        f" text={_aggregate_text(elem).strip()[:120]!r}"
+        f" class={elem.get('class') or ''!r}"
+        f" bounds={elem.get('bounds')}"
+    )
+
+
+def _build_jev_state(
+    action_item: dict,
+    best: dict,
+    elements: list,
+    *,
+    target_text,
+    target_bounds,
+    target_resource_id,
+) -> str:
+    """Builds the text state describing this ambiguous match for Jev.
+
+    Only the target plus the nearest candidates are included: Jev is billed per
+    input token and a full hierarchy is mostly chrome irrelevant to the
+    question. The best candidate is always present, so the state can never be
+    empty of the thing being judged.
+    """
+    lines = [
+        "The automation agent decided to act on a UI element. Before the action"
+        " runs, confirm the element is still there.",
+        "",
+        "Intended target:",
+        f"  resource_id={target_resource_id!r}",
+        f"  text={target_text!r}",
+        f"  bounds={target_bounds}",
+        f"  tap_coordinates={action_item.get('coordinates')}",
+        f"  action={action_item.get('action')!r}",
+        "",
+        "Best match found on the live screen now:",
+        f"  {_summarize_element_for_jev(best.get('element', {}))}",
+        f"  heuristic_similarity_score={best.get('score'):.3f}",
+        f"  distance_from_expected_position={best.get('distance'):.1f}px",
+        "",
+        "Other nearby elements on the live screen:",
+    ]
+
+    others = [e for e in elements if isinstance(e, dict) and e is not best.get("element")]
+    for elem in others[:12]:
+        lines.append(f"  {_summarize_element_for_jev(elem)}")
+    if not others:
+        lines.append("  (none)")
+    return "\n".join(lines)
+
+
+async def _classify_failure_with_jev(
+    elements: list,
+    action_item: dict,
+    best: dict,
+    *,
+    target_text,
+    target_bounds,
+    target_resource_id,
+) -> tuple[bool, ValidationErrorCategory, str] | None:
+    """Asks Jev to adjudicate a match the heuristic scored below threshold.
+
+    Returns ``None`` whenever Jev is unavailable, too slow, unsure, or
+    malformed -- every one of which means "let the heuristic decide". Only a
+    confident verdict is allowed to change the outcome, and only ``present``
+    can turn a block into a pass.
+    """
+    client = jev.build_client(settings)
+    if client is None:
+        return None
+
+    state_text = _build_jev_state(
+        action_item,
+        best,
+        elements,
+        target_text=target_text,
+        target_bounds=target_bounds,
+        target_resource_id=target_resource_id,
+    )
+    questions = {
+        "target_status": jev.choice_question(
+            "What is the current status of the intended target on the live screen?",
+            JEV_TARGET_LABELS,
+        )
+    }
+
+    answers = await jev.ask(client, state_text, questions)
+    if not answers:
+        return None
+
+    verdict = answers.get("target_status")
+    if not isinstance(verdict, jev.ChoiceAnswer):
+        return None
+    if verdict.confidence < JEV_MIN_CONFIDENCE:
+        logger.info(
+            f"Jev verdict '{verdict.choice}' discarded: confidence"
+            f" {verdict.confidence:.2f} < {JEV_MIN_CONFIDENCE}. Using heuristic."
+        )
+        return None
+
+    logger.info(
+        f"Jev adjudicated the safety-net match as '{verdict.choice}'"
+        f" (confidence {verdict.confidence:.2f})."
+    )
+
+    if verdict.choice == "present":
+        # Jev overrules a heuristic false-negative: the element is really
+        # there, so let the action proceed rather than opening an incident.
+        return True, ValidationErrorCategory.NONE, ""
+    if verdict.choice == "shifted":
+        action_item["safety_net_evidence"] = {
+            "new_center": list(best["center"]),
+            "new_bounds": best.get("bounds"),
+        }
+        reason = (
+            f"Target element '{target_text}' ({target_resource_id}) has shifted"
+            f" (Jev, confidence {verdict.confidence:.2f}).\n- New location:"
+            f" {best['center']} (bounds: {best['bounds']})"
+        )
+        return False, ValidationErrorCategory.TARGET_SHIFTED, reason
+    if verdict.choice == "occupied":
+        reason = (
+            f"The expected position {action_item.get('coordinates')} for"
+            f" '{target_text}' ({target_resource_id}) is occupied by a"
+            f" different element (Jev, confidence {verdict.confidence:.2f})."
+        )
+        return False, ValidationErrorCategory.TARGET_OCCUPIED, reason
+    if verdict.choice == "disappeared":
+        reason = (
+            f"Target element '{target_text}' ({target_resource_id}) was not"
+            f" found on the screen (Jev, confidence {verdict.confidence:.2f})."
+        )
+        return False, ValidationErrorCategory.TARGET_DISAPPEARED, reason
+
+    # A label outside the declared set: schema matching is the vendor's
+    # guarantee, not ours to assume. Defer to the heuristic.
+    return None
+
+
 def _classify_failure(
     elements: list,
     action_item: dict,
@@ -658,6 +824,22 @@ async def validate_action_precondition_single(
 
     if best["score"] >= threshold:
         return _handle_match_success(action_item, best, target_text, scale_factor)
+
+    # Below threshold: the weighted heuristic wants to block the action. Give
+    # Jev the ambiguous case first -- it is the one call site where a typed,
+    # sub-second second opinion is affordable on the hot path. It returns None
+    # unless it is both available and confident, so the heuristic below stays
+    # the default and the only behaviour when Jev is disabled.
+    jev_verdict = await _classify_failure_with_jev(
+        elements,
+        action_item,
+        best,
+        target_text=target_text,
+        target_bounds=target_bounds,
+        target_resource_id=target_resource_id,
+    )
+    if jev_verdict is not None:
+        return jev_verdict
 
     return _classify_failure(
         elements,
