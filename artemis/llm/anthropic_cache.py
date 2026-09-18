@@ -6,18 +6,26 @@ then messages). Artemis re-sends the same tool definitions, the same static
 system prompt and a byte-stable transcript prefix on every operator step, so
 without a breakpoint the provider re-reads all of it at full price every turn.
 
-Two breakpoints are placed, both on content that the ledger contract makes
-byte-identical for the rest of the session:
+Up to three breakpoints are placed, all on content that the ledger contract
+makes byte-identical for the rest of the session:
 
 1. **System.** The last message of the leading system run. A breakpoint there
    covers the bound tool definitions and the whole system prompt;
    :meth:`~artemis.memory.transcript.TranscriptLedger.set_static_prefix`
    refuses a second install, so that prefix never changes.
-2. **Transcript.** The newest message that is provably behind the ledger's
-   mutation horizon — see :func:`stable_prefix_index`. A breakpoint inside the
-   mutable tail would force a fresh cache *write* every turn, which is worse
-   than not caching at all, so the anchor is derived conservatively and simply
-   omitted when it cannot be proven.
+2. **Transcript (conservative).** The newest message older than the
+   ``horizon_depths`` newest observations — see :func:`horizon_prefix_index`.
+3. **Transcript (exact).** The newest message before the oldest one the scrub
+   edge can still rewrite — see :func:`frozen_prefix_index`. This is normally
+   far newer than (2) and is what carries the cache: Anthropic matches the
+   longest cached prefix among the breakpoints present, so (2) costs nothing
+   extra (the two write spans partition one range) and is the fallback that
+   bounds the damage if (3) ever turned out to sit inside the mutable region.
+
+A breakpoint inside the mutable tail would force a fresh cache *write* every
+turn, which is worse than not caching at all, so both transcript anchors are
+derived from evidence in the messages themselves and are simply omitted when
+neither derivation applies.
 
 Every other provider gets its own list back by identity: OpenAI and Google
 already do automatic prefix caching and must keep today's request shape.
@@ -35,8 +43,9 @@ import functools
 import os
 from typing import Any, Final
 
-from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
+from langchain_core.messages import BaseMessage, SystemMessage
 
+from artemis.memory.scrub_shape import has_pending_scrub_edits, is_screenshot_observation
 from artemis.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -116,29 +125,76 @@ def leading_system_index(messages: list[BaseMessage]) -> int | None:
     return last
 
 
-def stable_prefix_index(messages: list[BaseMessage], horizon_depths: int) -> int | None:
-    """Index of the newest message provably older than the mutation horizon.
+def frozen_prefix_index(messages: list[BaseMessage]) -> int | None:
+    """Index of the newest message before the oldest one still open to a rewrite.
 
-    The horizon is counted in *observation depths*, not messages, so the index
-    is derived from the ledger's message shape rather than a raw offset: every
-    committed turn contributes exactly one observation ``HumanMessage``
-    (:meth:`~artemis.memory.transcript.TranscriptLedger.commit_staged` keys the
-    turn's step to its first image-bearing message) and at most one result
-    ``HumanMessage``; every other message in a turn is an ``AIMessage`` or a
-    ``ToolMessage``. At least half of the trailing human messages are therefore
-    observations, so leaving ``2 * horizon + 1`` human messages after the anchor
-    puts at least ``horizon`` observations behind it — the anchor sits at
-    observation depth > horizon, past the deepest scrub edge.
+    :func:`~artemis.agents.flash.context_compressor.has_pending_scrub_edits`
+    answers, from the message itself, whether the scrub edge can still rewrite
+    it — each of the edge's three content edits is gated on something the
+    message still carries. The oldest message answering it is therefore the
+    exact frontier of the mutable region, and everything before it is frozen
+    for the rest of the session: the anchor is placed one message earlier.
 
-    Returns None for a conversation too short to prove that, which is the
-    correct answer: those requests have no stable transcript prefix worth a
-    breakpoint yet.
+    This is the anchor that makes the cache *grow*. The frontier only ever
+    moves forward — a resolved message is never revisited and new observations
+    arrive at the tail — so the cached prefix extends by roughly one turn per
+    turn instead of plateauing.
+
+    Returns None when no message is rewritable at all. A message list the scrub
+    edge never touched (any non-ledger caller) carries no evidence of where its
+    mutable region starts, and guessing there is exactly the failure this
+    module must not risk.
     """
-    needed = 2 * max(1, horizon_depths) + 1
-    human_indexes = [idx for idx, m in enumerate(messages) if isinstance(m, HumanMessage)]
-    if len(human_indexes) < needed:
-        return None
-    return human_indexes[-needed]
+    for index, message in enumerate(messages):
+        if has_pending_scrub_edits(message):
+            return index - 1 if index > 0 else None
+    return None
+
+
+def horizon_prefix_index(messages: list[BaseMessage], horizon_depths: int) -> int | None:
+    """Index of the newest message older than the ``horizon_depths`` newest observations.
+
+    Walks back from the tail counting screenshot-edge observations — the same
+    depth ladder :meth:`~artemis.agents.flash.context_compressor.ScrubEdgeCompressor._scrub_edge`
+    counts, recognised through
+    :func:`~artemis.agents.flash.context_compressor.is_screenshot_observation`
+    whether the image is still there or has already been resolved in place —
+    and stops one message before the ``horizon_depths``-th of them. Every
+    message the edge may still rewrite lies at a depth no greater than the
+    horizon, so everything before that message is frozen.
+
+    Returns None for a conversation with fewer than ``horizon_depths``
+    observations: those requests have no proven stable transcript prefix yet.
+    """
+    depths = max(1, horizon_depths)
+    seen = 0
+    for index in range(len(messages) - 1, -1, -1):
+        if not is_screenshot_observation(messages[index]):
+            continue
+        seen += 1
+        if seen >= depths:
+            return index - 1 if index > 0 else None
+    return None
+
+
+def transcript_anchors(messages: list[BaseMessage], horizon_depths: int) -> list[int]:
+    """The transcript breakpoint indexes, oldest first (possibly empty).
+
+    Both derivations must apply before either is used: they are independent
+    arguments for the same conclusion, and a disagreement about whether this
+    list even is a scrubbed transcript is a reason to place nothing.
+    """
+    frozen = frozen_prefix_index(messages)
+    aged = horizon_prefix_index(messages, horizon_depths)
+    if frozen is None or aged is None:
+        return []
+    return [aged, frozen] if aged < frozen else [frozen]
+
+
+def stable_prefix_index(messages: list[BaseMessage], horizon_depths: int) -> int | None:
+    """The oldest (most conservative) transcript anchor, or None if there is none."""
+    anchors = transcript_anchors(messages, horizon_depths)
+    return anchors[0] if anchors else None
 
 
 def _has_cache_control(messages: list[BaseMessage]) -> bool:
@@ -202,9 +258,11 @@ def apply_cache_breakpoints(
     depths = mutation_horizon_depths() if horizon_depths is None else horizon_depths
     system_index = leading_system_index(messages)
     anchors = [] if system_index is None else [system_index]
-    transcript_index = stable_prefix_index(messages, depths)
-    if transcript_index is not None and (system_index is None or transcript_index > system_index):
-        anchors.append(transcript_index)
+    anchors += [
+        index
+        for index in transcript_anchors(messages, depths)
+        if system_index is None or index > system_index
+    ]
 
     marked = list(messages)
     applied = 0
