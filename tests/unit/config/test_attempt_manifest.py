@@ -28,7 +28,9 @@ import threading
 import pytest
 
 from artemis.config.attempt_manifest import (
+    TIER_MODELS,
     ManifestAlreadyExistsError,
+    _node_tier,
     build_attempt_manifest,
     canonical_bytes,
     digest_of,
@@ -184,6 +186,51 @@ class TestCanonicalDigestStability:
                 attempt_id="a",
                 trace_id="t",
                 tier="sol",
+                llm_config=config,
+                env={},
+                checkpoint="launch",
+                now=1.0,
+            )
+
+
+class TestAnthropicTierMatching:
+    """CHE-639: TIER_MODELS declares an Anthropic tier ('nova' -> claude-sonnet-5)."""
+
+    def test_nova_tier_declared_with_expected_provider_and_model(self):
+        assert TIER_MODELS["nova"] == ("anthropic", "claude-sonnet-5")
+
+    def test_anthropic_claude_sonnet_5_node_matches_nova_tier(self):
+        node = _llm(provider="anthropic", model="claude-sonnet-5")
+        assert _node_tier(node) == "nova"
+
+    def test_undeclared_anthropic_model_does_not_match_any_tier(self):
+        node = _llm(provider="anthropic", model="claude-sonnet-4-5")
+        assert _node_tier(node) is None
+
+    def test_build_attempt_manifest_accepts_nova_tier_end_to_end(self):
+        config = _uniform_config(provider="anthropic", model="claude-sonnet-5")
+        manifest = build_attempt_manifest(
+            run_id="r",
+            attempt_id="a",
+            trace_id="t",
+            tier="nova",
+            llm_config=config,
+            env={},
+            checkpoint="launch",
+            now=1.0,
+        )
+        assert manifest["tier"] == "nova"
+        assert manifest["nodes"]["planner"]["resolved_tier"] == "nova"
+        assert manifest["untiered_enabled_nodes"] == []
+
+    def test_build_attempt_manifest_rejects_unknown_tier(self):
+        config = _uniform_config(provider="anthropic", model="claude-sonnet-5")
+        with pytest.raises(ValueError, match="Unknown tier"):
+            build_attempt_manifest(
+                run_id="r",
+                attempt_id="a",
+                trace_id="t",
+                tier="mercury",  # type: ignore[arg-type]
                 llm_config=config,
                 env={},
                 checkpoint="launch",
