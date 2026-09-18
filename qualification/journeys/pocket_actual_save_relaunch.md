@@ -20,6 +20,24 @@ Before every attempt (positive or negative control):
 3. Confirm cold-start state: relaunch once, verify the entry screen shows no
    prior data (empty/default state). This is a scripted ADB check, not an
    Artemis-driven step, and runs outside any budgeted attempt.
+4. Confirm the entry screen is actually reachable and usable, not showing a
+   secure-storage blocking heading ("Secure storage unavailable" / "Your
+   existing recovery data was not opened..."). The candidate's entire entry
+   create/save path runs through an Android Keystore-backed encrypted store
+   (`MainActivity` gates all content behind `AndroidEncryptedRecoverySnapshotStore`
+   load success); there is no independent, unencrypted persistence path. A
+   device or AVD with a degraded Keystore (no configured lock screen, no
+   StrongBox, key generation requiring user authentication that was never
+   set up) will show this screen instead of the entry UI, on every attempt,
+   with no crash and no disconnect. This step catches that before the
+   attempt is budgeted: if the blocking heading is showing after cold
+   start, the attempt is `fail_infrastructure` or `device_unavailable` (per
+   verdict discipline below), is recorded visibly, and does not count
+   toward the tier's 10 positives — the same treatment a missing/offline
+   device already gets. It must never be scored `fail_assertion`, since an
+   attempt that starts this way cannot create an entry to fail an assertion
+   about. This is a scripted ADB check, not an Artemis-driven step, and
+   runs outside any budgeted attempt.
 
 `<candidate_package>` and `<device_serial>` are supplied at run time by the
 execution stage (CHE-540+); this journey does not pin them.
