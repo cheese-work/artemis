@@ -118,7 +118,9 @@ async def test_returns_none_on_unknown_label(monkeypatch):
 @pytest.mark.asyncio
 async def test_present_verdict_overturns_heuristic_block(monkeypatch):
     answer = jev.ChoiceAnswer(choice="present", probabilities={"present": 0.91}, confidence=0.88)
-    passed, category, reason = await _classify(monkeypatch, {"target_status": answer})
+    verdict = await _classify(monkeypatch, {"target_status": answer})
+    assert verdict is not None
+    passed, category, reason = verdict
     assert passed is True
     assert category == ValidationErrorCategory.NONE
     assert reason == ""
@@ -135,7 +137,7 @@ async def test_shifted_verdict_maps_to_category_and_evidence(monkeypatch):
     monkeypatch.setattr(px.jev, "ask", fake_ask)
 
     item = _action_item()
-    passed, category, reason = await px._classify_failure_with_jev(
+    verdict = await px._classify_failure_with_jev(
         _ELEMENTS,
         item,
         _BEST,
@@ -143,6 +145,8 @@ async def test_shifted_verdict_maps_to_category_and_evidence(monkeypatch):
         target_bounds=[100, 200, 300, 260],
         target_resource_id="com.example:id/submit",
     )
+    assert verdict is not None
+    passed, category, reason = verdict
     assert passed is False
     assert category == ValidationErrorCategory.TARGET_SHIFTED
     # The Operator's incident needs the new position, same as the heuristic path.
@@ -152,12 +156,14 @@ async def test_shifted_verdict_maps_to_category_and_evidence(monkeypatch):
 @pytest.mark.asyncio
 async def test_occupied_and_disappeared_map_to_their_categories(monkeypatch):
     occupied = jev.ChoiceAnswer(choice="occupied", probabilities={}, confidence=0.9)
-    _, category, _ = await _classify(monkeypatch, {"target_status": occupied})
-    assert category == ValidationErrorCategory.TARGET_OCCUPIED
+    verdict = await _classify(monkeypatch, {"target_status": occupied})
+    assert verdict is not None
+    assert verdict[1] == ValidationErrorCategory.TARGET_OCCUPIED
 
     gone = jev.ChoiceAnswer(choice="disappeared", probabilities={}, confidence=0.9)
-    _, category, _ = await _classify(monkeypatch, {"target_status": gone})
-    assert category == ValidationErrorCategory.TARGET_DISAPPEARED
+    verdict = await _classify(monkeypatch, {"target_status": gone})
+    assert verdict is not None
+    assert verdict[1] == ValidationErrorCategory.TARGET_DISAPPEARED
 
 
 def test_state_text_includes_target_and_candidates():

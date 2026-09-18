@@ -788,6 +788,9 @@ async def validate_action_precondition_single(
     elements, bypass = await _fetch_live_elements(session)
     if bypass is not None:
         return bypass
+    # _fetch_live_elements returns a list whenever it returns no bypass, but
+    # that invariant lives across a tuple return the checker cannot follow.
+    assert elements is not None
 
     # 4. Matching Heuristics & Scoring
     norm_target_text = _normalize_text(target_text)

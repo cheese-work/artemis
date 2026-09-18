@@ -76,9 +76,13 @@ def test_parse_answers_reads_choice_and_noul():
         }
     }
     answers = jev.parse_answers(payload)
-    assert answers["status"].choice == "present"
-    assert answers["status"].confidence == pytest.approx(0.72)
-    assert answers["urgent"].noul == pytest.approx(0.99)
+    status = answers["status"]
+    urgent = answers["urgent"]
+    assert isinstance(status, jev.ChoiceAnswer)
+    assert isinstance(urgent, jev.NoulAnswer)
+    assert status.choice == "present"
+    assert status.confidence == pytest.approx(0.72)
+    assert urgent.noul == pytest.approx(0.99)
 
 
 def test_parse_answers_drops_choice_without_confidence():
@@ -107,6 +111,51 @@ def test_parse_answers_ignores_unknown_primitive():
 def test_parse_answers_tolerates_non_dict_payload():
     assert jev.parse_answers("not json") == {}
     assert jev.parse_answers({"answers": []}) == {}
+
+
+def test_parse_answers_drops_oversized_confidence_without_raising():
+    # JSON has no integer width limit, so a literal this large satisfies
+    # isinstance(x, int) and then overflows float(). It must be dropped like
+    # any other malformed value, not raised out of the parser.
+    payload = {
+        "answers": {"status": {"type": "choice", "choice": "present", "confidence": 10**400}}
+    }
+    assert jev.parse_answers(payload) == {}
+
+
+def test_parse_answers_drops_non_finite_confidence():
+    # NaN and the infinities parse cleanly but would poison the threshold
+    # comparison every call site gates on.
+    for value in (float("nan"), float("inf"), float("-inf")):
+        payload = {
+            "answers": {"status": {"type": "choice", "choice": "present", "confidence": value}}
+        }
+        assert jev.parse_answers(payload) == {}, value
+
+
+def test_parse_answers_drops_non_finite_noul():
+    payload = {"answers": {"q": {"type": "noul", "noul": float("nan")}}}
+    assert jev.parse_answers(payload) == {}
+
+
+def test_parse_answers_drops_bad_probability_but_keeps_answer():
+    # One unusable probability entry does not invalidate an otherwise good
+    # answer -- confidence is the field call sites actually gate on.
+    payload = {
+        "answers": {
+            "status": {
+                "type": "choice",
+                "choice": "present",
+                "probabilities": {"present": 0.8, "shifted": 10**400},
+                "confidence": 0.9,
+            }
+        }
+    }
+    answers = jev.parse_answers(payload)
+    assert set(answers) == {"status"}
+    answer = answers["status"]
+    assert isinstance(answer, jev.ChoiceAnswer)
+    assert answer.probabilities == {"present": 0.8}
 
 
 def test_parse_noul_rejects_bool():

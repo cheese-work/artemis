@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+import math
 from typing import Any
 
 import httpx
@@ -106,6 +107,24 @@ def noul_question(instructions: str) -> dict[str, Any]:
     return {"type": "noul", "instructions": instructions}
 
 
+def _finite_float(value: Any) -> float | None:
+    """Coerces a JSON number to a finite float, or ``None`` if it is not one.
+
+    ``isinstance(value, (int, float))`` is not enough on its own: JSON has no
+    integer width limit, so a large enough literal passes the type check and
+    then raises ``OverflowError`` in ``float()``. NaN and the infinities parse
+    cleanly but would poison every downstream comparison. Both are malformed
+    input, and this module drops malformed input rather than raising.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        number = float(value)
+    except OverflowError:
+        return None
+    return number if math.isfinite(number) else None
+
+
 def _parse_choice(raw: Any) -> ChoiceAnswer | None:
     """Parses one ``choice`` answer, rejecting anything malformed.
 
@@ -124,13 +143,13 @@ def _parse_choice(raw: Any) -> ChoiceAnswer | None:
     probabilities: dict[str, float] = {}
     if isinstance(probabilities_raw, dict):
         probabilities = {
-            str(label): float(p)
+            str(label): number
             for label, p in probabilities_raw.items()
-            if isinstance(p, (int, float)) and not isinstance(p, bool)
+            if (number := _finite_float(p)) is not None
         }
 
-    confidence_raw = raw.get("confidence")
-    if isinstance(confidence_raw, bool) or not isinstance(confidence_raw, (int, float)):
+    confidence = _finite_float(raw.get("confidence"))
+    if confidence is None:
         # Confidence is what the call sites gate on. Absent it, the answer is
         # unusable -- treat as no answer rather than inventing a default.
         return None
@@ -138,7 +157,7 @@ def _parse_choice(raw: Any) -> ChoiceAnswer | None:
     return ChoiceAnswer(
         choice=choice,
         probabilities=probabilities,
-        confidence=float(confidence_raw),
+        confidence=confidence,
     )
 
 
@@ -146,10 +165,10 @@ def _parse_noul(raw: Any) -> NoulAnswer | None:
     """Parses one ``noul`` answer into a probability in ``[0, 1]``."""
     if not isinstance(raw, dict):
         return None
-    value = raw.get("noul")
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
+    value = _finite_float(raw.get("noul"))
+    if value is None:
         return None
-    return NoulAnswer(noul=float(value))
+    return NoulAnswer(noul=value)
 
 
 def parse_answers(payload: Any) -> dict[str, ChoiceAnswer | NoulAnswer]:
@@ -271,10 +290,15 @@ async def ask(
     state: str,
     questions: dict[str, dict[str, Any]],
 ) -> dict[str, ChoiceAnswer | NoulAnswer] | None:
-    """Best-effort ask: ``None`` on any failure, so callers can fall back.
+    """Best-effort ask: ``None`` on any Jev failure, so callers can fall back.
 
-    This is the function hot paths should use. It never raises and never
-    blocks past the client's timeout.
+    This is the function hot paths should use. Every way this service can
+    fail -- transport, HTTP status, an unparseable body -- reaches here as
+    ``JevError`` and becomes ``None``; the parser drops malformed answers
+    rather than raising, so no other failure mode is expected. It does not
+    blanket-catch ``Exception``: a bug in this module, or a genuinely
+    unexpected error, should surface rather than be silently downgraded to a
+    fallback. ``CancelledError`` propagates so cancellation still works.
     """
     if client is None:
         return None
@@ -284,7 +308,4 @@ async def ask(
         raise
     except JevError as e:
         logger.warning(f"Jev call failed ({e}); falling back to local logic.")
-        return None
-    except Exception as e:
-        logger.warning(f"Unexpected Jev failure ({e!r}); falling back to local logic.")
         return None
