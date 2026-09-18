@@ -22,6 +22,7 @@ Anthropic, OpenRouter, and local Ollama/vLLM endpoints.
 from enum import StrEnum
 import hashlib
 import os
+from types import SimpleNamespace
 from typing import Any
 
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -122,6 +123,50 @@ def anthropic_rejects_temperature(model_name: Any) -> bool:
     """Whether this Anthropic model 400s on any `temperature` value, including 0.0/1.0."""
     name = str(model_name).lower()
     return name.startswith(_ANTHROPIC_TEMPERATURE_REJECTING_PREFIXES)
+
+
+_anthropic_stream_event_patched = False
+
+
+def _patch_anthropic_stream_context_management() -> None:
+    """Works around a langchain-anthropic bug that crashes every stream.
+
+    ``ChatAnthropic._make_message_chunk_from_anthropic_event`` reads
+    ``event.context_management`` off `message_delta` stream events and calls
+    ``.model_dump()`` on it unconditionally. That attribute is declared on
+    `ChatAnthropic` itself as a plain ``dict`` (its own request-side memory/
+    context-management config), not as a typed field on the Anthropic SDK's
+    `RawMessageDeltaEvent`. Because that event's Pydantic model allows extra
+    fields, an API response carrying a top-level `context_management` block
+    (a newer, non-beta feature) arrives as a raw `dict`, not a submodel, and
+    `.model_dump()` raises `AttributeError: 'dict' object has no attribute
+    'model_dump'` mid-stream, discarding the whole response.  Confirmed still
+    present on langchain-anthropic's latest release; upgrading does not fix
+    it. Idempotent — safe to call on every Anthropic model construction.
+    """
+    global _anthropic_stream_event_patched
+    if _anthropic_stream_event_patched:
+        return
+
+    from langchain_anthropic import ChatAnthropic
+
+    original = ChatAnthropic._make_message_chunk_from_anthropic_event
+
+    def _dumpable(value: Any) -> Any:
+        if isinstance(value, dict):
+            return SimpleNamespace(model_dump=lambda mode=None: value)
+        return value
+
+    def _patched(self, event, **kwargs):
+        if getattr(event, "context_management", None) is not None:
+            event.context_management = _dumpable(event.context_management)
+        delta = getattr(event, "delta", None)
+        if delta is not None and getattr(delta, "container", None) is not None:
+            delta.container = _dumpable(delta.container)
+        return original(self, event, **kwargs)
+
+    ChatAnthropic._make_message_chunk_from_anthropic_event = _patched
+    _anthropic_stream_event_patched = True
 
 
 class ModelEndpoint(BaseModel):
@@ -360,6 +405,8 @@ class ModelFactory:
 
         elif provider == ModelProvider.ANTHROPIC:
             from langchain_anthropic import ChatAnthropic
+
+            _patch_anthropic_stream_context_management()
 
             api_key = (
                 endpoint.api_key
