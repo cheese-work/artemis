@@ -132,6 +132,28 @@ class TestReconciliation:
         assert unmapped.verdict == "unmapped_call"
         assert result.has_unmapped_call
 
+    def test_utils_node_usage_reconciles_as_match_not_unmapped_call(self):
+        """outputter/hopper are declared in manifest["utils"], not manifest["nodes"].
+
+        reconcile_attempt merges both dicts by node name before matching, so a
+        real llm_usage event recorded under node="outputter" (e.g. the Flash
+        runner's Outputter synthesis call, which fires on essentially every
+        real run) must reconcile as "match" against the manifest's utils
+        entry -- never as unmapped_call just because it lives under a
+        different top-level manifest key than the twelve agent nodes.
+        """
+        manifest = _manifest()
+        result = reconcile_attempt(
+            "a1",
+            manifest,
+            [_usage("outputter"), _usage("hopper")],
+        )
+        outputter = next(n for n in result.nodes if n.node == "outputter")
+        hopper = next(n for n in result.nodes if n.node == "hopper")
+        assert outputter.verdict == "match"
+        assert hopper.verdict == "match"
+        assert not result.has_unmapped_call
+
     def test_enabled_node_never_invoked_is_not_invoked_informational(self):
         manifest = _manifest()
         result = reconcile_attempt("a1", manifest, [])
