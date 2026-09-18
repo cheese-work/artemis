@@ -59,7 +59,20 @@ REJECT_REASONS: tuple[RejectReason, ...] = (
 # scope's name legitimately differs from the LLMConfig field name the node
 # resolves through.
 #
-# validator_pixel_safety_net is the one confirmed case today:
+# CURRENT_NODE_NAME (artemis.data_engine.trace.CURRENT_NODE_NAME) is a
+# contextvar set by whichever @trace scope is innermost at the moment
+# get_llm()/get_llm_fn() actually resolves the model -- a helper module or
+# tool wrapper with no @trace of its own is transparent and simply inherits
+# whatever scope called it (see e.g. artemis.tools.image_processor_tool's
+# ask_image_processor, which delegates into artemis.agents.image_processor's
+# own "image_processor" @trace scope and is therefore never itself a usage
+# node). A full audit of every @trace(...) call site that can enclose an
+# LLM call was carried out for CHE-657 (prompted by a real Gate-1 rejection
+# on the CHE-491 pilot DB: 4 of 7 sessions recorded llm_usage rows with
+# node="FlashRunner", which is not a manifest node at all) to find every
+# other such divergence. Results:
+#
+# validator_pixel_safety_net is the original confirmed case:
 # artemis.agents.validator.validator._validate_action_precondition_pixel is
 # traced as "safety_net_pixel_validation" (see task_tree.py's custom
 # rendering, which depends on that exact trace name for unrelated UI
@@ -68,8 +81,110 @@ REJECT_REASONS: tuple[RejectReason, ...] = (
 # LLMConfig field / manifest node name. Without this alias, a real,
 # correctly-identified LLM call reconciles as unmapped_call purely because
 # the trace scope name and the manifest node name disagree.
+#
+# FlashRunner -> operator: artemis.agents.flash.runner.FlashRunner.run is
+# traced as "FlashRunner" (runner.py:1028; kept as-is because task_tree.py's
+# rendering and tests/unit/admin_console/test_session_usage_endpoint.py /
+# tests/unit/test_token_meter.py all key off that exact trace name for
+# unrelated purposes), but FlashRunner._init_llm (runner.py:280) resolves its
+# model via get_llm(self.ctx, name="operator") -- the Flash tier deliberately
+# reuses the Operator's configured model rather than having a node of its
+# own. This is the CHE-657 root cause: the CHE-491 pilot DB
+# (traces/data_engine.db, table `traces`, name='llm_usage') shows sessions
+# fe41f781-bca8-4267-aee4-7449dd278cdf, f29bbd6f-fb31-4584-b403-34f5d7d62775,
+# 1a687f69-..., and 86a26168-... each recording one node="FlashRunner" row
+# against source="anthropic:claude-sonnet-5", which a manifest built for the
+# "operator" node could never match without this alias.
+#
+# image_processor -> operator: artemis.agents.image_processor.image_processor
+# .ImageProcessor.run is traced as "image_processor" (image_processor.py:80;
+# also re-entered under that same trace name via
+# artemis.tools.image_processor_tool.run_image_processor_agent,
+# image_processor_tool.py:106, which is why ask_image_processor -- the tool
+# scope one level up in perception_tools.py -- never itself shows up as a
+# usage node), but resolves its model via get_llm(self.ctx, name="operator")
+# (image_processor.py:90). The LLMConfig/LLMConfigUtils schema has no
+# "image_processor" field at all -- see the comment directly above that
+# get_llm call -- so this is not a bug to fix at the call site, only a
+# reconciliation-side divergence to bridge.
+#
+# spawn_sub_agent -> video_analyzer, analyze_audio_only -> video_analyzer:
+# artemis.agents.video_analyzer.video_analyzer.VideoAnalyzer.exec_
+# spawn_sub_agent and .exec_analyze_audio_only are traced as "spawn_sub_agent"
+# / "analyze_audio_only" (video_analyzer.py:615, :746) -- both tool scopes,
+# not the agent's own "video_analyzer" scope (video_analyzer.py:822) -- but
+# both ultimately call self._invoke_universal_model() ->
+# self._get_universal_llm() (video_analyzer.py:216-224), which resolves
+# get_llm(self.ctx, name="video_analyzer", is_utils=True). Neither
+# "spawn_sub_agent" nor "analyze_audio_only" exists as a manifest node name
+# (_UTILS_NODES only has "video_analyzer" itself), so a real chunk/audio
+# sub-agent call would otherwise always be unmapped_call.
+# extract_segment_metadata (video_analyzer.py:516) does the ffprobe/segment
+# bookkeeping for the same tool family but never calls get_llm at all, so it
+# needs no alias -- it simply can never appear as an llm_usage node.
+#
+# Known limitation of this alias mechanism -- NOT fixed here, documented so
+# the gap is visible rather than silently wrong: a handful of @trace scopes
+# resolve to *more than one* possible manifest node depending on which
+# internal branch fires, which a name->name dict cannot express (aliasing
+# the scope to either target would misclassify the other). These are left
+# unaliased; a receipt from one of them still reconciles as unmapped_call,
+# which is the conservative failure mode -- never a silent, possibly-wrong
+# match:
+#   * detect_objects (artemis.agents.explorer.perception_tools, tool scope,
+#     :232) and Explorer's own flash-tier fast path
+#     (artemis.agents.explorer.run_setup.RunSetupMixin._run_flash, called
+#     from Explorer.run under the "explorer" @trace scope when tier=="flash")
+#     both call artemis.agents.object_detector.object_detector.
+#     _run_object_detection, which resolves get_llm(ctx, name="object_detector",
+#     is_utils=True) when that utils node is configured, but falls back to
+#     get_llm(ctx, name="operator") when it is not (object_detector.py:126-
+#     134). So "detect_objects" is ambiguously {object_detector, operator},
+#     and "explorer" is ambiguously {explorer, object_detector, operator}
+#     depending on tier and config -- not just {explorer}.
+#   * "operator" itself is ambiguous beyond its own primary
+#     get_llm(name="operator") call (operator.py:936): several tools bound
+#     only to the Operator have no @trace scope of their own and therefore
+#     run under the inherited "operator" node --
+#     artemis.tools.committee_tool._execute_committee resolves
+#     "planner_avatar" / "history_analyzer_expert" / "diagnoser_expert"
+#     (committee_tool.py:261-266) for the ask_committee tool;
+#     artemis.agents.log_analyzer.output_analyzer.TaskOutputAnalyzerNode.run
+#     resolves "output_analyzer" (output_analyzer.py:47) for the
+#     analyze_task_output tool; and
+#     artemis.agents.planner.planner.run_async_planner_validation resolves
+#     "planner_validation" (planner.py:205) when a task-plan write triggers
+#     ratchet-baseline validation (graph.py:747) -- spawned via
+#     asyncio.create_task() from inside the Operator's own tool-call loop, so
+#     per Python's contextvars semantics it inherits a snapshot of the
+#     "operator" CURRENT_NODE_NAME value at task-creation time and keeps it
+#     for its whole detached lifetime. "operator" therefore genuinely maps to
+#     up to six different manifest nodes depending on which tool/task ran.
+#
+# perception (graph/perception.py:74), safety_net_validation
+# (validator.py:153), ask_perception_tool / get_ocr_list / inspect_region
+# (perception_tools.py:371/524/562), and extract_segment_metadata
+# (video_analyzer.py:516, above) were all audited and confirmed to enclose no
+# get_llm/get_llm_fn call at all (perception's scope wraps a pure file-read
+# helper; the others are XML/OCR/ffprobe-only) -- they can never appear as an
+# llm_usage node, so there is nothing for an alias to bridge. planner,
+# checker, diagnoser, history_analyzer, log_analyzer, log_reader_sub_agent,
+# hopper, outputter, and video_analyzer's own agent scope were all confirmed
+# to call get_llm with the same name as their @trace scope, and
+# ask_image_processor is transparent (see above) -- none of these need an
+# alias either.
+#
+# The durable fix -- recording the LLMConfig node name get_llm() actually
+# resolved as its own receipt field (e.g. `llm_node`) at call time, so
+# reconciliation never needs a name->name guess table at all, and the
+# ambiguous cases above stop being unrepresentable -- is out of scope for
+# this change; see CHE-657.
 _NODE_ALIASES: dict[str, str] = {
     "safety_net_pixel_validation": "validator_pixel_safety_net",
+    "FlashRunner": "operator",
+    "image_processor": "operator",
+    "spawn_sub_agent": "video_analyzer",
+    "analyze_audio_only": "video_analyzer",
 }
 
 
