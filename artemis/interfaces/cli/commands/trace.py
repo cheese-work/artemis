@@ -20,6 +20,8 @@ from pathlib import Path
 from typing import Annotated
 
 from artemis.config import settings
+from artemis.config.constants import DATA_ENGINE_DB_FILENAME
+from artemis.data_engine.reaction_time import read_session_reaction_time
 from artemis.utils.logger import get_logger
 from rich.console import Console
 from rich.table import Table
@@ -109,3 +111,96 @@ def view_trace(
     typer.secho(f"Session files in {session_dir}:", fg=typer.colors.CYAN)
     for f in session_dir.iterdir():
         typer.echo(f"  - {f.name}")
+
+
+def _fmt_seconds(value: float | None) -> str:
+    return f"{value:.2f}" if value is not None else "-"
+
+
+def _fmt_count(value: float | None) -> str:
+    return f"{value:.1f}" if value is not None else "-"
+
+
+def _fmt_ratio_pct(value: float | None) -> str:
+    return f"{value * 100.0:.1f}%" if value is not None else "-"
+
+
+@trace_app.command("timing")
+def timing_trace(
+    session_id: Annotated[
+        str, typer.Argument(help="Session ID (trace directory name) to analyze.")
+    ],
+    traces_path: Annotated[Path | None, typer.Option("--path", "-p")] = None,
+    as_json: Annotated[bool, typer.Option("--json", help="Machine-readable JSON output.")] = False,
+) -> None:
+    """Report per-step reaction time and Operator "re-asking itself" bounces.
+
+    Reaction time per step is the last action-trace end minus the
+    ``phase:perception`` span start (documented fallbacks when a phase is
+    missing — see ``artemis/data_engine/reaction_time.py``). A bounce is any
+    Operator tool-loop iteration whose outcome is neither ``executed`` nor
+    ``no_tool_call`` — the Operator re-asking itself instead of finishing
+    the turn.
+    """
+    base_dir = traces_path or settings.TRACES_PATH
+    db_path = base_dir / DATA_ENGINE_DB_FILENAME
+    if not db_path.exists():
+        typer.secho(f"No trace database found at: {db_path}", fg=typer.colors.YELLOW)
+        raise typer.Exit(1)
+
+    report = read_session_reaction_time(db_path, base_dir, session_id)
+
+    if as_json:
+        typer.echo(json.dumps(report.model_dump(), indent=2))
+        return
+
+    if report.step_count == 0:
+        typer.secho(
+            f"No steps found for session '{session_id}' in {base_dir}", fg=typer.colors.YELLOW
+        )
+        return
+
+    console = Console()
+
+    summary = Table(title=f"Reaction Time Summary: {session_id}")
+    summary.add_column("Metric", style="cyan")
+    summary.add_column("Value", style="white")
+    summary.add_row("Steps", str(report.step_count))
+    summary.add_row("Steps with reaction time", str(report.steps_with_reaction_time))
+    summary.add_row("p50 reaction time (s)", _fmt_seconds(report.p50_reaction_time_s))
+    summary.add_row("p90 reaction time (s)", _fmt_seconds(report.p90_reaction_time_s))
+    summary.add_row(
+        "Median operator iterations/step", _fmt_count(report.median_operator_iterations)
+    )
+    summary.add_row("Steps with >=1 bounce", f"{report.pct_steps_with_bounce:.1f}%")
+    summary.add_row("Total reaction time (s)", f"{report.total_reaction_time_s:.2f}")
+    summary.add_row("Total bounce time (s)", f"{report.total_bounce_time_s:.2f}")
+    summary.add_row(
+        "Bounce share of reaction time", _fmt_ratio_pct(report.bounce_share_of_reaction_time)
+    )
+    console.print(summary)
+
+    phase_table = Table(title="Phase Split by Step")
+    phase_table.add_column("Step", justify="right", style="cyan")
+    phase_table.add_column("Reaction (s)", justify="right")
+    phase_table.add_column("Iterations", justify="right")
+    phase_table.add_column("Bounces", justify="right")
+    phase_table.add_column("Phase breakdown", style="white")
+    for step in report.steps:
+        phases = ", ".join(f"{k}={v:.2f}s" for k, v in sorted(step.phase_breakdown.items()))
+        phase_table.add_row(
+            str(step.step_number),
+            _fmt_seconds(step.reaction_time_s),
+            str(step.operator_iterations),
+            str(step.bounce_count),
+            phases or "-",
+        )
+    console.print(phase_table)
+
+    if report.bounce_histogram:
+        hist_table = Table(title="Operator Iteration Outcome Histogram")
+        hist_table.add_column("Outcome", style="magenta")
+        hist_table.add_column("Count", justify="right")
+        for outcome, count in sorted(report.bounce_histogram.items(), key=lambda kv: -kv[1]):
+            hist_table.add_row(outcome, str(count))
+        console.print(hist_table)
