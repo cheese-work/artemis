@@ -31,6 +31,7 @@ from contextlib import contextmanager
 import json
 import logging
 import os
+import re
 import time
 from typing import Any
 import uuid
@@ -198,30 +199,57 @@ def get_trace_dir(trace_id: str) -> str:
     return os.path.join(TRACES_DIR, trace_id)
 
 
+# Status suffixes ``agent.py``'s ``resolve_trace_suffix`` embeds in the
+# post-run rename (``{trace_id}_{STATUS}_{timestamp}``). Keep in sync with
+# that function.
+_TRACE_RENAME_STATUSES = ("PASS", "FAIL", "TESTFAIL")
+
+_TRACE_RENAME_PATTERN = re.compile(r"_(?:" + "|".join(_TRACE_RENAME_STATUSES) + r")_")
+
+
 def get_existing_trace_dir(trace_id: str) -> str:
     """Resolves ``trace_id`` to its on-disk trace directory, following the
     post-run rename if one has already happened.
 
     A trace's directory is renamed from a bare ``trace_id`` to
-    ``{trace_id}{status}_{timestamp}`` once the real run's trace is compiled
-    (``agent.py``'s ``_finalize_tracing``), which happens before Gate 1's
-    post-run hooks (manifest reconciliation, verdict storage) read/write
-    beside it. Falls back to a ``trace_id + "_"`` prefix match so callers
-    that stored something beside the trace before the rename can still find
-    it after. UUIDs never contain ``_``, so the prefix match cannot cross
-    over into a different attempt's directory. Returns the bare (possibly
-    nonexistent) path when neither form exists, matching ``get_trace_dir``'s
-    existing behavior for a caller that hasn't written anything yet.
+    ``{trace_id}_{STATUS}_{timestamp}`` once the real run's trace is
+    compiled (``agent.py``'s ``_finalize_tracing``), which happens before
+    Gate 1's post-run hooks (manifest reconciliation, verdict storage)
+    read/write beside it. Falls back to matching that exact
+    ``{trace_id}_{STATUS}_`` rename shape (``STATUS`` one of
+    :data:`_TRACE_RENAME_STATUSES`) so callers that stored something beside
+    the trace before the rename can still find it after. A bare
+    ``trace_id + "_"`` prefix match is deliberately NOT used here: caller-
+    supplied session ids (``--session-id`` / ``ARTEMIS_SESSION_ID``) may
+    themselves contain underscores, so a plain prefix match can resolve onto
+    an unrelated trace whose id happens to start with this one plus ``_``
+    (e.g. a lookup for ``run`` matching a sibling ``run_b`` directory).
+    Requiring the known status token closes that off. If more than one
+    renamed directory matches (e.g. a retried run left both a stale ``FAIL``
+    and a fresh ``PASS`` directory), the most recently modified one wins --
+    not lexicographic order, which would put ``FAIL`` before ``PASS``
+    regardless of recency. Returns the bare (possibly nonexistent) path when
+    no form exists, matching ``get_trace_dir``'s existing behavior for a
+    caller that hasn't written anything yet.
     """
     bare_dir = get_trace_dir(trace_id)
     if os.path.isdir(bare_dir):
         return bare_dir
     parent = os.path.dirname(bare_dir)
     try:
-        candidates = sorted(name for name in os.listdir(parent) if name.startswith(f"{trace_id}_"))
+        candidates = [
+            name
+            for name in os.listdir(parent)
+            if name.startswith(f"{trace_id}_")
+            and _TRACE_RENAME_PATTERN.match(name[len(trace_id) :])
+        ]
     except OSError:
         candidates = []
-    return os.path.join(parent, candidates[0]) if candidates else bare_dir
+    if not candidates:
+        return bare_dir
+    if len(candidates) > 1:
+        candidates.sort(key=lambda name: os.path.getmtime(os.path.join(parent, name)))
+    return os.path.join(parent, candidates[-1])
 
 
 def get_status_path(trace_id: str) -> str:

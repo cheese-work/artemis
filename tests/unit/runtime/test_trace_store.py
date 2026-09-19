@@ -269,3 +269,36 @@ def test_get_existing_trace_dir_never_cross_matches_a_string_prefix_trace_id(tem
 def test_get_existing_trace_dir_falls_back_to_bare_dir_when_nothing_exists(temp_trace_env):
     trace_id = str(uuid.uuid4())
     assert trace_store.get_existing_trace_dir(trace_id) == trace_store.get_trace_dir(trace_id)
+
+
+def test_get_existing_trace_dir_never_cross_matches_an_unrelated_bare_session_dir(temp_trace_env):
+    """Caller-supplied session ids (``--session-id`` / ``ARTEMIS_SESSION_ID``)
+    can contain underscores, unlike ``uuid4()``-generated ids. With only
+    `run_b`'s bare (un-renamed) directory on disk, a lookup for `run` must
+    not resolve onto it -- that would be reading a different attempt's
+    evidence."""
+    other_bare_dir = trace_store.get_trace_dir("run_b")
+    os.makedirs(other_bare_dir)
+
+    trace_id = "run"
+    assert trace_store.get_existing_trace_dir(trace_id) == trace_store.get_trace_dir(trace_id)
+
+
+def test_get_existing_trace_dir_prefers_most_recent_when_multiple_renamed_dirs_match(
+    temp_trace_env,
+):
+    """A retried run can leave a stale `_FAIL_` directory alongside a fresh
+    `_PASS_` one for the same trace_id. The most recently modified directory
+    must win, not lexicographic order (`FAIL` < `PASS`)."""
+    trace_id = str(uuid.uuid4())
+    bare_dir = trace_store.get_trace_dir(trace_id)
+
+    fail_dir = f"{bare_dir}_FAIL_2026-09-18T23-13-44"
+    os.makedirs(fail_dir)
+    old_time = os.path.getmtime(fail_dir) - 60
+    os.utime(fail_dir, (old_time, old_time))
+
+    pass_dir = f"{bare_dir}_PASS_2026-09-19T08-00-00"
+    os.makedirs(pass_dir)
+
+    assert trace_store.get_existing_trace_dir(trace_id) == pass_dir
