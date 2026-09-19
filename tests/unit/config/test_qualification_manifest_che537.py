@@ -175,7 +175,11 @@ def test_evidence_schema_host_enum_includes_x99_and_macbook_pro():
 def test_evidence_schema_requires_transport_distinct_from_host():
     schema = json.loads(EVIDENCE_SCHEMA_PATH.read_text(encoding="utf-8"))
     assert "transport" in schema["required"]
-    assert set(schema["properties"]["transport"]["enum"]) == {"usb", "wireless_adb"}
+    assert set(schema["properties"]["transport"]["enum"]) == {"usb", "wireless_adb", "emulator"}, (
+        "CHE-540's X99 AVD lane (e.g. emulator-5556) is neither usb nor "
+        "wireless_adb; 'emulator' must stay representable or every CHE-540 "
+        "evidence record becomes schema-invalid."
+    )
 
 
 def test_journey_defines_fixture_reset_and_negative_control():

@@ -52,8 +52,8 @@
     },
     "transport": {
       "type": "string",
-      "enum": ["usb", "wireless_adb"],
-      "description": "Device attachment/transport, distinct from the controller host. Load-bearing for CHE-541's Pixel 6 Pro, which is wireless-only ADB."
+      "enum": ["usb", "wireless_adb", "emulator"],
+      "description": "Device attachment/transport, distinct from the controller host. 'wireless_adb' is load-bearing for CHE-541's Pixel 6 Pro; 'emulator' covers CHE-540's X99 AVD lane (e.g. emulator-5556), which is attached as neither a USB nor a wireless-adb physical device."
     },
     "device_serial": { "type": "string" },
     "per_attempt_manifest_digest": {
