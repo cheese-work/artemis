@@ -1,15 +1,15 @@
 {
-  "manifest_version": 1,
+  "manifest_version": 2,
   "$schema_ref": "qualification/evidence_schema.v1.json",
   "issue": "CHE-537",
   "coordinating_parent": "CHE-388",
   "journey": "qualification/journeys/pocket_actual_save_relaunch.md",
 
   "fork_sha": {
-    "value": "64e1b3226b9553bdf4e5a368f14b8a40c0af6111",
+    "value": "144006b1b2e6888e31dc8d76887a7da5e8839e99",
     "source": "git",
     "repo": "https://github.com/cheese-work/artemis",
-    "note": "Source baseline observed and pinned per CHE-537 delivery plan. Weekly upstream review and manual pin promotion after qualification -- see FORK_MAINTENANCE.md. This value must be updated (new revision) if the pinned SHA changes; execution stages must re-read it at admission rather than caching an older value."
+    "note": "Source baseline observed and pinned per CHE-537 delivery plan. Weekly upstream review and manual pin promotion after qualification -- see FORK_MAINTENANCE.md. This value must be updated (new revision) if the pinned SHA changes; execution stages must re-read it at admission rather than caching an older value. Promoted by CHE-672 from 64e1b3226b9553bdf4e5a368f14b8a40c0af6111 to cheese-work/artemis main HEAD, carrying CHE-537 (#3), CHE-540 (#12), CHE-643 (#11), CHE-646 (#13) -- every intervening commit verified as a known chain commit via `git log 959313bc5582..144006b1b2e6`. Zero attempts had run against the prior pin, so no evidence is invalidated by this promotion."
   },
 
   "gate1_manifest_mechanism": {

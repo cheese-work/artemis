@@ -12,6 +12,7 @@
     "tier",
     "profile",
     "host",
+    "transport",
     "device_serial",
     "verdict",
     "reconciliation",
@@ -46,7 +47,13 @@
     },
     "host": {
       "type": "string",
-      "enum": ["congvc-x99", "congvc-c00"]
+      "enum": ["congvc-x99", "congvc-c00", "macbook-pro"],
+      "description": "Controller host where Artemis/the driver process runs. 'congvc-c00' is out of scope for new Artemis attempts (CHE-542 cancelled, CHE-388 2026-09-18 scope correction) but is retained for historical/CHE-539 deploy-evidence compatibility."
+    },
+    "transport": {
+      "type": "string",
+      "enum": ["usb", "wireless_adb"],
+      "description": "Device attachment/transport, distinct from the controller host. Load-bearing for CHE-541's Pixel 6 Pro, which is wireless-only ADB."
     },
     "device_serial": { "type": "string" },
     "per_attempt_manifest_digest": {
