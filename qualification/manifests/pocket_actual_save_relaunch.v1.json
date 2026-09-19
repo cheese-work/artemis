@@ -1,22 +1,22 @@
 {
-  "manifest_version": 1,
+  "manifest_version": 2,
   "$schema_ref": "qualification/evidence_schema.v1.json",
   "issue": "CHE-537",
   "coordinating_parent": "CHE-388",
   "journey": "qualification/journeys/pocket_actual_save_relaunch.md",
 
   "fork_sha": {
-    "value": "64e1b3226b9553bdf4e5a368f14b8a40c0af6111",
+    "value": "144006b1b2e6888e31dc8d76887a7da5e8839e99",
     "source": "git",
     "repo": "https://github.com/cheese-work/artemis",
-    "note": "Source baseline observed and pinned per CHE-537 delivery plan. Weekly upstream review and manual pin promotion after qualification -- see FORK_MAINTENANCE.md. This value must be updated (new revision) if the pinned SHA changes; execution stages must re-read it at admission rather than caching an older value."
+    "note": "Source baseline observed and pinned per CHE-537 delivery plan. Weekly upstream review and manual pin promotion after qualification -- see FORK_MAINTENANCE.md. This value must be updated (new revision) if the pinned SHA changes; execution stages must re-read it at admission rather than caching an older value. Promoted by CHE-672 from 64e1b3226b9553bdf4e5a368f14b8a40c0af6111 to cheese-work/artemis main HEAD. Audit range is `git log 64e1b3226b95..144006b1b2e6` (12 commits; `959313bc5582` is PR #1's pre-merge head, not an ancestor of main since PR #1 squash-merged, so it is not a valid audit anchor). All 12 verified as known chain commits: 5eae089 CHE-491 (#1, squash-merge of the per-attempt LLM identity manifest this promotion exists to unblock), 94e56ce merge #5 (fix/che-639-anthropic-tier), 42711c9 merge #6, cb08985 CHE-537 (#3), b87d549 CHE-540 (#12), 01d51c8 CHE-643 (#11), 144006b CHE-646 (#13), plus five CI-only commits reviewed and excluded from qualification scope: 7956a25 + e489766 (CI/CHE-522 Blacksmith runner migration), d44af14 (remove Windows CI leg), 4bd82f9 merge #4 + 17169d7 CHE-564 (ruff lint scope). Zero attempts had run against the prior pin, so no evidence is invalidated by this promotion."
   },
 
   "gate1_manifest_mechanism": {
     "source": "https://github.com/cheese-work/artemis/pull/1",
     "head_sha": "2b58709ed00b0015055a99f9e644857ba9d05ee0",
-    "status": "OPEN (draft, not merged) as observed at CHE-537 authoring time",
-    "note": "Reused by reference, not rebuilt or ported here. Per-attempt LLM identity manifests (artemis/config/attempt_manifest.py) and reconciliation (artemis/config/attempt_reconciliation.py) are produced at real-run time by this mechanism once it is merged onto the pinned fork_sha (or its own base is advanced past fork_sha, whichever the executing stage's admitted revision resolves to). This qualification manifest does not claim Gate 1 has passed."
+    "status": "MERGED to main as 5eae089 (squash-merge; the pre-merge head_sha above never landed as an ancestor of main, so do not diff or ancestor-check against it -- resolved by CHE-672's fork_sha promotion, second branch of the note below).",
+    "note": "Reused by reference, not rebuilt or ported here. Per-attempt LLM identity manifests (artemis/config/attempt_manifest.py) and reconciliation (artemis/config/attempt_reconciliation.py) are confirmed present at the pinned fork_sha `144006b1b2e6888e31dc8d76887a7da5e8839e99` (verified: attempt_manifest.py, attempt_reconciliation.py, attempt_usage_reader.py, attempt_lifecycle_hooks.py all exist at that revision). This qualification manifest does not claim Gate 1 has passed -- mechanism availability at the pin is not a runtime evidence claim."
   },
 
   "candidate_app": {
@@ -29,7 +29,7 @@
   "dependency_lock": {
     "file": "uv.lock",
     "digest_sha256": "2c63863dd5827482d7e206a887219c6438ce61dc494d9cc596f862378decc19a",
-    "note": "sha256sum of this fork's own uv.lock (the Artemis qualification harness's dependency lock, not the candidate app's) at the pinned fork_sha `64e1b3226b9553bdf4e5a368f14b8a40c0af6111` checkout -- confirmed unchanged between fork_sha and this manifest revision's HEAD via `git diff fork_sha HEAD -- uv.lock` (empty)."
+    "note": "sha256sum of this fork's own uv.lock (the Artemis qualification harness's dependency lock, not the candidate app's) at the pinned fork_sha `144006b1b2e6888e31dc8d76887a7da5e8839e99` checkout -- confirmed unchanged across the CHE-672 fork_sha promotion via `git diff 64e1b3226b95 144006b1b2e6 -- uv.lock` (empty)."
   },
 
   "accessibility_helper": {
