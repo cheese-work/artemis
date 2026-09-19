@@ -327,6 +327,86 @@ async def test_tool_limit_exceeded_outcome_on_final_iteration():
 
 
 @pytest.mark.asyncio
+async def test_helper_tool_failure_on_final_iteration_keeps_its_own_label():
+    """Regression: running out of iterations must not stomp a more specific
+    bounce label. A helper-tool failure that lands on the last allowed
+    iteration is still a ``helper_tool_failure`` — mislabelling it
+    ``tool_limit_exceeded`` would hide the bounce class the histogram exists
+    to count."""
+    ctx = _base_ctx()
+    state = _base_state()
+
+    turn_1 = MagicMock()
+    turn_1.tool_calls = [
+        {"name": "read_note", "args": {"key": "progress"}, "id": "call_read"},
+        {
+            "name": "click",
+            "args": {"target": [50, 50], "target_description": "button"},
+            "id": "call_click",
+        },
+    ]
+    mock_llm = MagicMock()
+    mock_llm.ainvoke = AsyncMock(return_value=turn_1)
+    mock_llm.bind_tools.return_value = mock_llm
+
+    read_note_tool = _passthrough_tool("read_note", ToolFailure("Error: note 'progress' not found"))
+
+    with (
+        patch("artemis.agents.operator.operator.get_llm", return_value=mock_llm),
+        patch("artemis.agents.operator.operator.OPERATOR_MAX_TOOL_ITERATIONS", 1),
+        patch(
+            "artemis.agents.operator.operator.trace_langchain_tool",
+            side_effect=lambda t, ctx: t,
+        ),
+    ):
+        node = OperatorNode(ctx, tools=[read_note_tool], transcript_config=LEGACY_TRANSCRIPT)
+        update = await node(state)
+
+    assert _iteration_spans(ctx) == [(0, OperatorIterationOutcome.HELPER_TOOL_FAILURE.value)]
+    # Classification is observation only: the loop still exhausted its budget
+    # and must report that to the graph exactly as before.
+    assert update.get("operator_tool_limit_exceeded") is True
+
+
+@pytest.mark.asyncio
+async def test_deferring_tool_mix_on_final_iteration_keeps_its_own_label():
+    """Same regression for the mix case — this is the exact bounce class the
+    toolset pre-gate decision rests on, so it must survive landing on the
+    last iteration."""
+    ctx = _base_ctx()
+    state = _base_state()
+
+    turn_1 = MagicMock()
+    turn_1.tool_calls = [
+        {"name": "list_notes", "args": {}, "id": "call_list"},
+        {
+            "name": "click",
+            "args": {"target": [50, 50], "target_description": "button"},
+            "id": "call_click",
+        },
+    ]
+    mock_llm = MagicMock()
+    mock_llm.ainvoke = AsyncMock(return_value=turn_1)
+    mock_llm.bind_tools.return_value = mock_llm
+
+    list_notes_tool = _passthrough_tool("list_notes", "note_a\nnote_b")
+
+    with (
+        patch("artemis.agents.operator.operator.get_llm", return_value=mock_llm),
+        patch("artemis.agents.operator.operator.OPERATOR_MAX_TOOL_ITERATIONS", 1),
+        patch(
+            "artemis.agents.operator.operator.trace_langchain_tool",
+            side_effect=lambda t, ctx: t,
+        ),
+    ):
+        node = OperatorNode(ctx, tools=[list_notes_tool], transcript_config=LEGACY_TRANSCRIPT)
+        update = await node(state)
+
+    assert _iteration_spans(ctx) == [(0, OperatorIterationOutcome.DEFERRING_TOOL_MIX.value)]
+    assert update.get("operator_tool_limit_exceeded") is True
+
+
+@pytest.mark.asyncio
 async def test_none_data_engine_never_crashes_classification():
     """``ctx.data_engine`` may legitimately be ``None`` (e.g. tracing
     disabled); classification must still run to completion with no span

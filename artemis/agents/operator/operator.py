@@ -891,7 +891,16 @@ class OperatorNode:
             # if it is the very last iteration, equivalent to the
             # ``for...else`` branch below firing — derive that without
             # touching the branch itself, so control flow stays untouched.
-            if iteration == max_iterations - 1:
+            # Guarded like the ``validation_errors`` block above: a
+            # helper_tool_failure or deferring_tool_mix that lands on the
+            # final iteration keeps its own label. Why it ran out of
+            # iterations is less informative than why this one bounced, and
+            # stomping it would hide exactly the bounce classes this
+            # instrumentation exists to count.
+            if (
+                iteration == max_iterations - 1
+                and iteration_outcome is OperatorIterationOutcome.CONTINUED
+            ):
                 iteration_outcome = OperatorIterationOutcome.TOOL_LIMIT_EXCEEDED
             record_phase_span(
                 self.ctx,
