@@ -20,7 +20,8 @@ from pathlib import Path
 
 from artemis.context import ArtemisContext
 from artemis.controllers.unified_controller import UnifiedMobileController
-from artemis.data_engine.trace import trace
+from artemis.data_engine.reaction_time import ReactionPhase
+from artemis.data_engine.trace import PhaseSpan, trace
 from artemis.graph.state import State
 from artemis.graph.visibility import strict_state
 from artemis.utils.logger import get_logger
@@ -127,94 +128,99 @@ async def perception_node(state: State, ctx: ArtemisContext) -> dict:
         ctx.data_engine.allocate_step_id()
         logger.info(f"Pre-allocated step ID in Perception Node: {ctx.data_engine.current_step_id}")
 
-    # Check for injected instruction without blocking event loop
-    injected_instruction = None
-    user_stop_requested = False
-    if ctx.data_engine and ctx.data_engine.base_dir:
-        injected_payload = await asyncio.to_thread(
-            _check_injected_instruction_file, str(ctx.data_engine.base_dir)
-        )
-        if injected_payload:
-            injected_instruction = injected_payload.get("instruction")
-            user_stop_requested = bool(injected_payload.get("release_loop"))
-            if isinstance(injected_instruction, str) and injected_instruction.strip():
-                # User guidance outranks the plan's declared standards: every
-                # check line that exists right now loses its machine
-                # restoration for the rest of the run (kept on the run context,
-                # not the per-turn State), so the Operator can drop or reword
-                # it in whichever later write it gets to it. Lines added after
-                # this moment stay protected until the next instruction.
-                _unprotect_current_check_lines(ctx)
-
-    controller = UnifiedMobileController(ctx)
-
-    # 1. Capture screenshot with hybrid settling strategy
-    if _should_skip_settling(state):
-        logger.info("Skipping settling. Retrieving screen data directly...")
-        device_data = await controller.get_screen_data()
-        latest_screenshot_b64 = device_data.base64
-        xml_hierarchy = device_data.elements
-    else:
-        logger.info("Screen settling required. Delaying 0.4s and capturing screen data...")
-        await asyncio.sleep(0.4)
-        device_data = await controller.get_screen_data()
-        latest_screenshot_b64 = device_data.base64
-        xml_hierarchy = device_data.elements
-
-    latest_screenshot_bytes = base64.b64decode(latest_screenshot_b64)
-
-    # Update context device dimensions dynamically
-    if ctx.device:
-        ctx.device.device_width = device_data.width
-        ctx.device.device_height = device_data.height
-        logger.info(f"Updated context device dimensions: {device_data.width}x{device_data.height}")
-
-    # 3. Perform OCR (if configured, else fallback to pure XML layout)
-    ocr_results = []
-    if is_ocr_configured():
-        screen_height = device_data.height
-        status_bar_height = _detect_status_bar_height(xml_hierarchy, screen_height)
-        try:
-            if status_bar_height > 0:
-                logger.info(
-                    f"Detected status bar height: {status_bar_height}. Cropping screenshot for OCR."
-                )
-                cropped_b64, _, _ = await asyncio.to_thread(
-                    _crop_image_remove_status_bar,
-                    latest_screenshot_b64,
-                    status_bar_height,
-                )
-                raw_ocr_results = await perform_ocr(cropped_b64)
-                ocr_results = _map_coordinates_back(raw_ocr_results, status_bar_height)
-            else:
-                logger.info("No status bar detected. Performing OCR on full screenshot.")
-                ocr_results = await perform_ocr(latest_screenshot_b64)
-        except Exception as ocr_err:
-            logger.warning(
-                f"Perception OCR execution encountered error: {ocr_err}. Proceeding with XML-only layout."
+    with PhaseSpan(ReactionPhase.PERCEPTION, ctx=ctx):
+        # Check for injected instruction without blocking event loop
+        injected_instruction = None
+        user_stop_requested = False
+        if ctx.data_engine and ctx.data_engine.base_dir:
+            injected_payload = await asyncio.to_thread(
+                _check_injected_instruction_file, str(ctx.data_engine.base_dir)
             )
-            ocr_results = []
-    else:
-        logger.debug("OCR is not configured. Proceeding with XML-only layout.")
+            if injected_payload:
+                injected_instruction = injected_payload.get("instruction")
+                user_stop_requested = bool(injected_payload.get("release_loop"))
+                if isinstance(injected_instruction, str) and injected_instruction.strip():
+                    # User guidance outranks the plan's declared standards: every
+                    # check line that exists right now loses its machine
+                    # restoration for the rest of the run (kept on the run context,
+                    # not the per-turn State), so the Operator can drop or reword
+                    # it in whichever later write it gets to it. Lines added after
+                    # this moment stay protected until the next instruction.
+                    _unprotect_current_check_lines(ctx)
 
-    # 4. Fuse OCR with XML (if ocr_results is empty, returns original xml_hierarchy intact)
-    fused_xml = fuse_ocr_with_xml(xml_hierarchy, ocr_results)
+        controller = UnifiedMobileController(ctx)
 
-    # 5. Save to Data Engine in background thread
-    image_name = None
-    screenshot_path = None
-    if ctx.data_engine:
-        image_name = hashlib.sha256(latest_screenshot_bytes).hexdigest()
-        screenshot_path = str(ctx.data_engine.get_image_path(image_name))
-        asyncio.create_task(
-            asyncio.to_thread(
-                ctx.data_engine.get_or_create_image,
-                latest_screenshot_bytes,
-                ui_tree=xml_hierarchy,
-                ocr_result=ocr_results,
+        # 1. Capture screenshot with hybrid settling strategy
+        if _should_skip_settling(state):
+            logger.info("Skipping settling. Retrieving screen data directly...")
+            device_data = await controller.get_screen_data()
+            latest_screenshot_b64 = device_data.base64
+            xml_hierarchy = device_data.elements
+        else:
+            logger.info("Screen settling required. Delaying 0.4s and capturing screen data...")
+            await asyncio.sleep(0.4)
+            device_data = await controller.get_screen_data()
+            latest_screenshot_b64 = device_data.base64
+            xml_hierarchy = device_data.elements
+
+        latest_screenshot_bytes = base64.b64decode(latest_screenshot_b64)
+
+        # Update context device dimensions dynamically
+        if ctx.device:
+            ctx.device.device_width = device_data.width
+            ctx.device.device_height = device_data.height
+            logger.info(
+                f"Updated context device dimensions: {device_data.width}x{device_data.height}"
             )
-        )
-        logger.info(f"Offloaded perception data saving to background with image_name: {image_name}")
+
+        # 3. Perform OCR (if configured, else fallback to pure XML layout)
+        ocr_results = []
+        if is_ocr_configured():
+            screen_height = device_data.height
+            status_bar_height = _detect_status_bar_height(xml_hierarchy, screen_height)
+            try:
+                if status_bar_height > 0:
+                    logger.info(
+                        f"Detected status bar height: {status_bar_height}. Cropping screenshot for OCR."
+                    )
+                    cropped_b64, _, _ = await asyncio.to_thread(
+                        _crop_image_remove_status_bar,
+                        latest_screenshot_b64,
+                        status_bar_height,
+                    )
+                    raw_ocr_results = await perform_ocr(cropped_b64)
+                    ocr_results = _map_coordinates_back(raw_ocr_results, status_bar_height)
+                else:
+                    logger.info("No status bar detected. Performing OCR on full screenshot.")
+                    ocr_results = await perform_ocr(latest_screenshot_b64)
+            except Exception as ocr_err:
+                logger.warning(
+                    f"Perception OCR execution encountered error: {ocr_err}. Proceeding with XML-only layout."
+                )
+                ocr_results = []
+        else:
+            logger.debug("OCR is not configured. Proceeding with XML-only layout.")
+
+        # 4. Fuse OCR with XML (if ocr_results is empty, returns original xml_hierarchy intact)
+        fused_xml = fuse_ocr_with_xml(xml_hierarchy, ocr_results)
+
+        # 5. Save to Data Engine in background thread
+        image_name = None
+        screenshot_path = None
+        if ctx.data_engine:
+            image_name = hashlib.sha256(latest_screenshot_bytes).hexdigest()
+            screenshot_path = str(ctx.data_engine.get_image_path(image_name))
+            asyncio.create_task(
+                asyncio.to_thread(
+                    ctx.data_engine.get_or_create_image,
+                    latest_screenshot_bytes,
+                    ui_tree=xml_hierarchy,
+                    ocr_result=ocr_results,
+                )
+            )
+            logger.info(
+                f"Offloaded perception data saving to background with image_name: {image_name}"
+            )
 
     # Return state update
     update = {
