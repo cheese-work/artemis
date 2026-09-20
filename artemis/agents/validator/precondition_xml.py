@@ -31,6 +31,8 @@ import re
 from artemis.agents.validator.categories import ValidationErrorCategory
 from artemis.constants import VALIDATOR_UI_HIERARCHY_TIMEOUT
 from artemis.context import ArtemisContext
+from artemis.data_engine.reaction_time import ReactionPhase
+from artemis.data_engine.trace import PhaseSpan
 from artemis.graph.state import State
 from artemis.utils import visualization
 from artemis.utils.logger import get_logger
@@ -68,29 +70,31 @@ async def validate_action_precondition(
     category = ValidationErrorCategory.NONE
     reason = ""
 
-    for pre_attempt in range(1, max_pre_attempts + 1):
-        passed, category, reason = await node._validate_action_precondition_single(
-            session, action_item, state
-        )
-        if passed:
-            return True, category, reason
-
-        if category == ValidationErrorCategory.XML_BYPASSED:
-            # Do not retry on XML bypass/timeout; return immediately
-            # so it falls back to Pixel-based VLM validation
-            return False, category, reason
-
-        if pre_attempt < max_pre_attempts:
-            logger.info(
-                "Pre-execution validation failed on attempt"
-                f" {pre_attempt}/{max_pre_attempts}: {reason}. Retrying in"
-                f" {pre_retry_delay}s..."
+    with PhaseSpan(ReactionPhase.PRECONDITION_XML, ctx=getattr(node, "ctx", None)) as span:
+        for pre_attempt in range(1, max_pre_attempts + 1):
+            passed, category, reason = await node._validate_action_precondition_single(
+                session, action_item, state
             )
-            await asyncio.sleep(pre_retry_delay)
-        else:
-            break
+            span.payload["attempts"] = pre_attempt
+            if passed:
+                return True, category, reason
 
-    return passed, category, reason
+            if category == ValidationErrorCategory.XML_BYPASSED:
+                # Do not retry on XML bypass/timeout; return immediately
+                # so it falls back to Pixel-based VLM validation
+                return False, category, reason
+
+            if pre_attempt < max_pre_attempts:
+                logger.info(
+                    "Pre-execution validation failed on attempt"
+                    f" {pre_attempt}/{max_pre_attempts}: {reason}. Retrying in"
+                    f" {pre_retry_delay}s..."
+                )
+                await asyncio.sleep(pre_retry_delay)
+            else:
+                break
+
+        return passed, category, reason
 
 
 def _resolve_screen_dims(ctx: ArtemisContext, state: State | None) -> tuple[int, int]:

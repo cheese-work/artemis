@@ -37,6 +37,8 @@ from artemis.agents.planner.planner import (
 from artemis.agents.summarizer.summarizer import SummarizerNode
 from artemis.agents.validator.validator import ValidatorNode
 from artemis.context import ArtemisContext
+from artemis.data_engine.reaction_time import ReactionPhase
+from artemis.data_engine.trace import PhaseSpan
 from artemis.graph.checkpoints import (
     append_ledger_record,
     attempt_trace_id,
@@ -187,44 +189,45 @@ async def execution_check_node(state: State, ctx: ArtemisContext):
 
     if hasattr(ctx, "planner_task") and ctx.planner_task:
         logger.info("Waiting for planner validation task to complete...")
-        awaited_planner_task = ctx.planner_task
-        try:
-            planner_result = await awaited_planner_task
-            ctx.planner_task = None
+        with PhaseSpan(ReactionPhase.PLANNER_JOIN, ctx=ctx):
+            awaited_planner_task = ctx.planner_task
+            try:
+                planner_result = await awaited_planner_task
+                ctx.planner_task = None
 
-            flagged = bool(planner_result and planner_result.get("status") == "failed")
-            if flagged:
-                # Advisory outcome: the plan change stays applied and the
-                # turn's actions run. The Operator only receives the concern
-                # and its reason through operator_feedback — the one feedback
-                # channel its next prompt renders.
-                logger.warning("Planner validation flagged the task plan changes.")
-                feedback = planner_result.get(
-                    "feedback", "The reviewer had a concern about this plan change."
-                )
-                check_findings.append(
-                    "[planner] Advisory review of your recent top-level plan"
-                    f" change: {feedback} The change was NOT rolled back —"
-                    " weigh this concern against your own observations and"
-                    " correct the plan only if you agree."
-                )
-                turn_metadata["planner_flagged"] = True
-            else:
-                logger.info("Planner validation approved the task plan changes.")
+                flagged = bool(planner_result and planner_result.get("status") == "failed")
+                if flagged:
+                    # Advisory outcome: the plan change stays applied and the
+                    # turn's actions run. The Operator only receives the concern
+                    # and its reason through operator_feedback — the one feedback
+                    # channel its next prompt renders.
+                    logger.warning("Planner validation flagged the task plan changes.")
+                    feedback = planner_result.get(
+                        "feedback", "The reviewer had a concern about this plan change."
+                    )
+                    check_findings.append(
+                        "[planner] Advisory review of your recent top-level plan"
+                        f" change: {feedback} The change was NOT rolled back —"
+                        " weigh this concern against your own observations and"
+                        " correct the plan only if you agree."
+                    )
+                    turn_metadata["planner_flagged"] = True
+                else:
+                    logger.info("Planner validation approved the task plan changes.")
 
-            # Advance the ratchet baseline either way: the reviewed content is
-            # the new reference, so an already-flagged change is not re-flagged
-            # on every subsequent write.
-            if ctx.pending_validated_plan is not None:
-                ctx.last_validated_plan = ctx.pending_validated_plan
-            ctx.pending_validated_plan = None
-        except asyncio.CancelledError:
-            if not awaited_planner_task.cancelled():
-                raise  # this node itself is being cancelled, not the awaited task
-            logger.info("Planner validation task was superseded by a newer plan write.")
-            ctx.planner_task = None
-        except Exception as e:
-            logger.error(f"Planner validation task failed: {e}")
+                # Advance the ratchet baseline either way: the reviewed content is
+                # the new reference, so an already-flagged change is not re-flagged
+                # on every subsequent write.
+                if ctx.pending_validated_plan is not None:
+                    ctx.last_validated_plan = ctx.pending_validated_plan
+                ctx.pending_validated_plan = None
+            except asyncio.CancelledError:
+                if not awaited_planner_task.cancelled():
+                    raise  # this node itself is being cancelled, not the awaited task
+                logger.info("Planner validation task was superseded by a newer plan write.")
+                ctx.planner_task = None
+            except Exception as e:
+                logger.error(f"Planner validation task failed: {e}")
 
     # Every Operator turn is recorded — verification never gates history.
     current_step_id = _record_turn(turn_metadata)

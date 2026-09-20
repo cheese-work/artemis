@@ -32,6 +32,8 @@ from langchain_core.messages import HumanMessage, SystemMessage
 
 from artemis.agents.validator.categories import ValidationErrorCategory
 from artemis.context import ArtemisContext
+from artemis.data_engine.reaction_time import ReactionPhase
+from artemis.data_engine.trace import PhaseSpan
 from artemis.graph.state import State
 from artemis.services.llm import acomplete_structured
 from artemis.utils import visualization
@@ -295,16 +297,18 @@ async def validate_action_precondition_pixel(
     for attempt in range(1, _MAX_ATTEMPTS + 1):
         logger.info(f"Pre-execution pixel validation: Attempt {attempt}/{_MAX_ATTEMPTS}...")
         try:
-            verdict = await _run_attempt(
-                session,
-                llm,
-                prompt,
-                orig_crop_bytes,
-                current_coords,
-                action_item,
-                state,
-                attempt,
-            )
+            with PhaseSpan(ReactionPhase.PRECONDITION_PIXEL, ctx=ctx) as span:
+                span.payload["attempt"] = attempt
+                verdict = await _run_attempt(
+                    session,
+                    llm,
+                    prompt,
+                    orig_crop_bytes,
+                    current_coords,
+                    action_item,
+                    state,
+                    attempt,
+                )
             if verdict is not None:
                 return verdict
         except Exception as attempt_err:
