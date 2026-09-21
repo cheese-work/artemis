@@ -237,6 +237,30 @@ class TestAnthropicTierMatching:
                 now=1.0,
             )
 
+    def test_enabled_utils_nodes_get_same_tier_matching_as_agent_nodes(self):
+        """outputter/hopper are the two required (non-nullable) utils nodes;
+        configuring them must give them the exact same enabled/tier-matched
+        treatment as a required agent node -- not a second-class entry.
+        """
+        config = _uniform_config(provider="anthropic", model="claude-sonnet-5")
+        manifest = build_attempt_manifest(
+            run_id="r",
+            attempt_id="a",
+            trace_id="t",
+            tier="nova",
+            llm_config=config,
+            env={},
+            checkpoint="launch",
+            now=1.0,
+        )
+        for util in ("outputter", "hopper"):
+            entry = manifest["utils"][util]
+            assert entry["enabled"] is True
+            assert entry["resolved_tier"] == "nova"
+            assert entry["config"]["provider"] == "anthropic"
+            assert entry["config"]["model"] == "claude-sonnet-5"
+        assert manifest["untiered_enabled_nodes"] == []
+
 
 class TestNullableNodesRepresentedExplicitly:
     def test_disabled_nodes_show_would_resolve_default_without_being_active(self):
