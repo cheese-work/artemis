@@ -101,6 +101,10 @@ class Settings(BaseSettings):
     XAI_API_KEY: SecretStr | None = None
     OPEN_ROUTER_API_KEY: SecretStr | None = None
 
+    # TypeSafe AI (Jev / System One) Authentication
+    TYPESAFE_API_KEY: SecretStr | None = None
+    TYPESAFE_BASE_URL: str | None = None
+
     # Google Cloud Vision OCR Authentication
     OCR_API_KEY: SecretStr | None = None
     VISION_API_KEY: SecretStr | None = None
@@ -132,6 +136,14 @@ class Settings(BaseSettings):
     PROJECT_NAME: str | None = None
     ARTEMIS_DEFAULT_PROFILE: str = Field(default=DEFAULT_PROFILE)
     ARTEMIS_DEFAULT_MODEL: str = Field(default=DEFAULT_MODEL)
+
+    # Jev (TypeSafe System One) Safety-Net Settings. Disabled by default: the
+    # XML safety net must keep working on every host, including those with no
+    # TypeSafe access. When enabled without a reachable Jev, the gate silently
+    # falls back to its weighted heuristics.
+    ARTEMIS_JEV_ENABLED: bool = Field(default=False)
+    ARTEMIS_JEV_MODEL: str | None = Field(default=None)
+    ARTEMIS_JEV_TIMEOUT_SECONDS: float = Field(default=2.0)
 
     # Explorer Tool Settings (the tier itself is configured in artemis.jsonc or
     # via ARTEMIS_EXPLORER_VERSION; see artemis.config.agent.ExplorerConfig)
