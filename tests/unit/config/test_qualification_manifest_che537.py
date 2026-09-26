@@ -188,3 +188,19 @@ def test_journey_defines_fixture_reset_and_negative_control():
     assert "force-stop" in text
     assert "Negative control" in text
     assert "WRONG-SUFFIX" in text
+
+
+def test_journey_defines_secure_storage_precondition_che540():
+    """The candidate's entire entry create/save path is gated behind an Android
+    Keystore-backed encrypted store (no independent unencrypted persistence
+    path exists). A device/AVD with a degraded Keystore shows a blocking
+    "Secure storage unavailable" screen instead of the entry UI -- a
+    designed, non-crashing state that verdict-discipline rules alone
+    wouldn't catch. The journey must treat that as fail_infrastructure /
+    device_unavailable, never fail_assertion.
+    """
+    text = JOURNEY_PATH.read_text(encoding="utf-8")
+    assert "Secure storage unavailable" in text
+    assert "fail_infrastructure" in text
+    assert "device_unavailable" in text
+    assert "never be scored `fail_assertion`" in text
