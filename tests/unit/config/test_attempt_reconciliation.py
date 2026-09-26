@@ -23,6 +23,7 @@ from pathlib import Path
 
 import pytest
 
+from artemis.config import attempt_reconciliation
 from artemis.config.attempt_manifest import (
     build_attempt_manifest,
     digest_of,
@@ -206,6 +207,134 @@ class TestReconciliation:
         assert not result.has_unmapped_call
         # No stray "safety_net_pixel_validation" entry should remain unmapped.
         assert not any(n.node == "safety_net_pixel_validation" for n in result.nodes)
+
+    def test_flashrunner_trace_node_aliases_to_operator_and_reconciles_as_match(self):
+        """FlashRunner.run is traced under the "FlashRunner" scope name (see
+        artemis.agents.flash.runner.FlashRunner.run's @trace(name="FlashRunner")
+        at runner.py:1028), but that same run's _init_llm (runner.py:280)
+        resolves its LLM via get_llm(self.ctx, name="operator") --
+        FlashRunner has no LLMConfig field of its own and always borrows the
+        "operator" node's config. Every llm_usage receipt this run emits is
+        therefore recorded with node="FlashRunner", which without the alias
+        below never reconciles against any manifest entry. This reproduces
+        the real CHE-491 pilot failure: 4 of 7 sampled pilot sessions
+        (e.g. fe41f781-bca8-4267-aee4-7449dd278cdf,
+        f29bbd6f-fb31-4584-b403-34f5d7d62775) recorded node="FlashRunner",
+        source="anthropic:claude-sonnet-5" (a Nova-tier model), which Gate 1
+        rejected as unmapped_call even though the run's manifest had a
+        perfectly valid, matching "operator" entry -- hence the Nova-tier
+        manifest built here, matching the pilot's actual shape.
+        """
+        config = _uniform_config(provider="anthropic", model="claude-sonnet-5")
+        manifest = _manifest(tier="nova", llm_config=config)
+        result = reconcile_attempt(
+            "a1", manifest, [_usage("FlashRunner", source="anthropic:claude-sonnet-5")]
+        )
+        operator = next(n for n in result.nodes if n.node == "operator")
+        assert operator.verdict == "match"
+        assert not result.has_unmapped_call
+        assert not any(n.node == "FlashRunner" for n in result.nodes)
+
+        record = _record(manifest, [_usage("FlashRunner", source="anthropic:claude-sonnet-5")])
+        verdict = validate_batch([record])
+        assert verdict.accepted is True
+        assert verdict.reason is None
+
+    def test_flashrunner_receipt_without_the_alias_would_be_unmapped_call(self, monkeypatch):
+        """Proves the FlashRunner -> operator alias exercised above is
+        load-bearing, not incidental: with that one entry removed from
+        _NODE_ALIASES (every other alias left intact), the exact same
+        Nova-tier manifest and usage event from the previous test reconciles
+        as unmapped_call instead of matching "operator", and validate_batch
+        rejects the batch for that reason. This is the CHE-491 regression
+        this alias exists to fix.
+        """
+        monkeypatch.setattr(
+            attempt_reconciliation,
+            "_NODE_ALIASES",
+            {k: v for k, v in attempt_reconciliation._NODE_ALIASES.items() if k != "FlashRunner"},
+        )
+        config = _uniform_config(provider="anthropic", model="claude-sonnet-5")
+        manifest = _manifest(tier="nova", llm_config=config)
+        result = reconcile_attempt(
+            "a1", manifest, [_usage("FlashRunner", source="anthropic:claude-sonnet-5")]
+        )
+        assert result.has_unmapped_call
+        unmapped = next(n for n in result.nodes if n.node == "FlashRunner")
+        assert unmapped.verdict == "unmapped_call"
+
+        record = _record(manifest, [_usage("FlashRunner", source="anthropic:claude-sonnet-5")])
+        verdict = validate_batch([record])
+        assert verdict.accepted is False
+        assert verdict.reason == "unmapped_call"
+
+    def test_image_processor_trace_node_aliases_to_operator(self):
+        """ImageProcessor.run is traced under "image_processor"
+        (image_processor.py:80) but resolves get_llm(self.ctx,
+        name="operator") (image_processor.py:90) -- LLMConfig has no
+        "image_processor" field, so it deliberately borrows the operator
+        node's config (see the explanatory comment at that call site).
+        Every ask_image_processor tool invocation (image_processor_tool.py:106,
+        itself traced under the same "image_processor" name and therefore
+        transparent to this alias) is thus billed under node="operator", and
+        must reconcile as such rather than surfacing as an unmapped
+        "image_processor" node.
+        """
+        manifest = _manifest()
+        result = reconcile_attempt(
+            "a1", manifest, [_usage("image_processor", source="openai:gpt-5.6-sol")]
+        )
+        operator = next(n for n in result.nodes if n.node == "operator")
+        assert operator.verdict == "match"
+        assert not result.has_unmapped_call
+        assert not any(n.node == "image_processor" for n in result.nodes)
+
+    def test_spawn_sub_agent_trace_node_aliases_to_video_analyzer(self):
+        """VideoAnalyzer.spawn_sub_agent is traced under "spawn_sub_agent"
+        (video_analyzer.py:615), but its LLM calls all funnel through
+        _invoke_universal_model, which resolves get_llm(self.ctx,
+        name="video_analyzer", is_utils=True) (video_analyzer.py:216-226) --
+        the same utils node the main video_analyzer scope uses. Usage
+        receipts from this sub-agent spawn path are therefore recorded with
+        node="spawn_sub_agent" and must reconcile against the utils
+        "video_analyzer" manifest entry rather than surfacing as an
+        unmapped "spawn_sub_agent" node.
+        """
+        config = _uniform_config()
+        config = config.model_copy(
+            update={"utils": config.utils.model_copy(update={"video_analyzer": _llm()})}
+        )
+        manifest = _manifest(llm_config=config)
+        result = reconcile_attempt(
+            "a1", manifest, [_usage("spawn_sub_agent", source="openai:gpt-5.6-sol")]
+        )
+        video_analyzer = next(n for n in result.nodes if n.node == "video_analyzer")
+        assert video_analyzer.verdict == "match"
+        assert not result.has_unmapped_call
+        assert not any(n.node == "spawn_sub_agent" for n in result.nodes)
+
+    def test_analyze_audio_only_trace_node_aliases_to_video_analyzer(self):
+        """VideoAnalyzer.analyze_audio_only is traced under
+        "analyze_audio_only" (video_analyzer.py:746), but likewise funnels
+        through _invoke_universal_model's get_llm(..., name="video_analyzer",
+        is_utils=True) (video_analyzer.py:226), whether entered directly or
+        via audio_native.py/universal_engine.py's re-entrant wrappers. Usage
+        receipts from this path must reconcile against the utils
+        "video_analyzer" manifest entry, not surface as an unmapped
+        "analyze_audio_only" node.
+        """
+        config = _uniform_config()
+        config = config.model_copy(
+            update={"utils": config.utils.model_copy(update={"video_analyzer": _llm()})}
+        )
+        manifest = _manifest(llm_config=config)
+        result = reconcile_attempt(
+            "a1", manifest, [_usage("analyze_audio_only", source="openai:gpt-5.6-sol")]
+        )
+        video_analyzer = next(n for n in result.nodes if n.node == "video_analyzer")
+        assert video_analyzer.verdict == "match"
+        assert not result.has_unmapped_call
+        assert not any(n.node == "analyze_audio_only" for n in result.nodes)
 
     def test_soft_defaulted_node_with_would_resolve_to_match_reconciles_as_match(self):
         """validator_pixel_safety_net left unset (the normal/default state) is
