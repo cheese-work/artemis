@@ -59,10 +59,11 @@ def test_fork_sha_is_a_valid_git_sha_and_matches_source_baseline():
     manifest = _load_manifest()
     fork_sha = manifest["fork_sha"]["value"]
     assert _SHA_RE.match(fork_sha), f"fork_sha must be a 40-hex-char git SHA, got {fork_sha!r}"
-    assert fork_sha == "64e1b3226b9553bdf4e5a368f14b8a40c0af6111", (
-        "fork_sha must match the CHE-537 observed source baseline; if the pin "
-        "legitimately moved, this test and FORK_MAINTENANCE.md's promotion "
-        "record must be updated together, not silently."
+    assert fork_sha == "144006b1b2e6888e31dc8d76887a7da5e8839e99", (
+        "fork_sha must match the CHE-672 promoted pin (advanced past CHE-491 "
+        "per the revision_policy); if the pin legitimately moves again, this "
+        "test and FORK_MAINTENANCE.md's promotion record must be updated "
+        "together, not silently."
     )
 
 
@@ -160,6 +161,25 @@ def test_evidence_schema_reject_reasons_match_gate1_reconciliation_vocabulary():
         "digest_drift",
         "missing_snapshot",
     }
+
+
+def test_evidence_schema_host_enum_includes_x99_and_macbook_pro():
+    schema = json.loads(EVIDENCE_SCHEMA_PATH.read_text(encoding="utf-8"))
+    host_enum = set(schema["properties"]["host"]["enum"])
+    assert {"congvc-x99", "macbook-pro"} <= host_enum, (
+        "CHE-388's 2026-09-18 scope correction restricts new Artemis hosts to "
+        "congvc-x99 and macbook-pro (CHE-542/congvc-c00 cancelled)."
+    )
+
+
+def test_evidence_schema_requires_transport_distinct_from_host():
+    schema = json.loads(EVIDENCE_SCHEMA_PATH.read_text(encoding="utf-8"))
+    assert "transport" in schema["required"]
+    assert set(schema["properties"]["transport"]["enum"]) == {"usb", "wireless_adb", "emulator"}, (
+        "CHE-540's X99 AVD lane (e.g. emulator-5556) is neither usb nor "
+        "wireless_adb; 'emulator' must stay representable or every CHE-540 "
+        "evidence record becomes schema-invalid."
+    )
 
 
 def test_journey_defines_fixture_reset_and_negative_control():
