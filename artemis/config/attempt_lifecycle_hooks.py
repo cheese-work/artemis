@@ -138,7 +138,7 @@ def reconcile_and_store_verdict(
                 f"checkpoint {checkpoint!r}."
             )
         else:
-            trace_dir = Path(trace_store.get_trace_dir(trace_id))
+            trace_dir = Path(trace_store.get_existing_trace_dir(trace_id))
             verdict_path = trace_dir / "attempt_reconciliation_verdict.json"
             verdict_payload = {
                 "accepted": verdict.accepted,
@@ -166,7 +166,7 @@ def reconcile_and_store_verdict(
                 traces_dir=get_traces_dir(),
                 traces_root=Path(trace_store.TRACES_DIR),
             )
-            trace_dir = Path(trace_store.get_trace_dir(trace_id))
+            trace_dir = Path(trace_store.get_existing_trace_dir(trace_id))
             batch_verdict_path = trace_dir / "attempt_reconciliation_batch_verdict.json"
             batch_verdict_payload = {
                 "accepted": batch_verdict.accepted,
