@@ -311,7 +311,7 @@ class StepCapsuleLens(StepLens):
         self._fallback_llm = fallback_llm
         try:
             self._prompt = self._PROMPT_PATH.read_text(encoding="utf-8")
-        except Exception:
+        except (OSError, UnicodeError):
             self._prompt = (
                 "You compress one segment of executed steps into a JSON capsule with"
                 " keys doing/did/effect/entry_state/exit_state/verified_facts/"
@@ -459,7 +459,7 @@ class StepCapsuleLens(StepLens):
         """Parse + machine-check one capsule; None on any violation."""
         try:
             parsed = json.loads(_strip_code_fences(text))
-        except Exception:
+        except json.JSONDecodeError:
             return None
         if not isinstance(parsed, dict):
             return None
@@ -1747,7 +1747,7 @@ class HistoryChunkManager:
                 continue
             try:
                 band1 = json.loads(raw)
-            except Exception:
+            except json.JSONDecodeError:
                 continue
             chunk.band1 = band1
             chunk.band2 = render_band2(band1)
