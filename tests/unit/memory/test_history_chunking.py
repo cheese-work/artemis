@@ -338,6 +338,23 @@ def test_capsule_parse_rejects_coverage_gap_and_accepts_full_cover():
     assert lens.parse_capsule("not json", payload) is None
 
 
+@pytest.mark.parametrize(
+    "bad_json",
+    [
+        '{"value": ' + "9" * 4301 + "}",
+        "[" * 10_000 + "0" + "]" * 10_000,
+    ],
+    ids=["oversized-integer", "deep-nesting"],
+)
+def test_capsule_parse_rejects_decoder_limit_inputs(bad_json):
+    lens = StepCapsuleLens(model_name="test", llm=object())
+
+    with pytest.raises((ValueError, RecursionError)):
+        json.loads(bad_json)
+
+    assert lens.parse_capsule(bad_json, {"start_step": 1, "end_step": 1}) is None
+
+
 @pytest.mark.asyncio
 async def test_capsule_lens_render_returns_none_on_gap_so_service_retries():
     class GapLLM:
@@ -939,6 +956,34 @@ async def test_capsule_retry_exhaustion_degrades_to_pending_chunk():
     assert chunker.awaiting_chunks[0].status == "pending"
     assert chunker.chunks == ()
     assert ledger.frozen_blocks == ()
+
+
+@pytest.mark.parametrize(
+    "bad_json",
+    [
+        '{"value": ' + "9" * 4301 + "}",
+        "[" * 10_000 + "0" + "]" * 10_000,
+    ],
+    ids=["oversized-integer", "deep-nesting"],
+)
+def test_capsule_harvest_skips_decoder_limit_summary_and_continues(bad_json):
+    steps = [_step(i) for i in range(1, 13)]
+    ledger, chunker, _, capsule = _make(steps, min_active=2)
+    _run_turns(
+        ledger,
+        chunker,
+        1,
+        12,
+        lambda i: "hash-a" if i <= 4 else "hash-b" if i <= 8 else "hash-c",
+    )
+    first, second = chunker.awaiting_chunks[:2]
+    capsule._summaries[first.capsule_key] = bad_json
+    capsule.resolve(second.capsule_key, _capsule(second.start_step_number, second.end_step_number))
+
+    chunker._harvest_capsules()
+
+    assert first.status == "pending"
+    assert second.status == "ready"
 
 
 # ---------------------------------------------------------------------------

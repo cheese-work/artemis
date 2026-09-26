@@ -459,7 +459,7 @@ class StepCapsuleLens(StepLens):
         """Parse + machine-check one capsule; None on any violation."""
         try:
             parsed = json.loads(_strip_code_fences(text))
-        except json.JSONDecodeError:
+        except (ValueError, RecursionError):
             return None
         if not isinstance(parsed, dict):
             return None
@@ -1747,7 +1747,7 @@ class HistoryChunkManager:
                 continue
             try:
                 band1 = json.loads(raw)
-            except json.JSONDecodeError:
+            except (ValueError, RecursionError):
                 continue
             chunk.band1 = band1
             chunk.band2 = render_band2(band1)
