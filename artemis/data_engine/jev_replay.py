@@ -1,6 +1,7 @@
 """Offline Jev evaluation against recorded, independently verified Operator actions."""
 
 from collections import Counter, defaultdict
+from contextlib import closing
 import json
 import math
 from pathlib import Path
@@ -138,7 +139,11 @@ def metrics(rows: list[dict], cost_per_call: float) -> dict:
 
 def load_steps(db_path: Path, sessions: list[str] | None = None) -> list[dict]:
     """Read an existing trace store without creating or mutating its database."""
-    with sqlite3.connect(f"{db_path.resolve().as_uri()}?mode=ro", uri=True) as connection:
+    if Path(f"{db_path}-wal").exists():
+        connection = sqlite3.connect(f"{db_path.resolve().as_uri()}?mode=ro", uri=True)
+    else:
+        connection = sqlite3.connect(f"{db_path.resolve().as_uri()}?mode=ro&immutable=1", uri=True)
+    with closing(connection):
         connection.row_factory = sqlite3.Row
         stored = connection.execute("SELECT * FROM sessions ORDER BY start_time").fetchall()
         if sessions:
