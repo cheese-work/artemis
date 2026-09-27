@@ -60,3 +60,22 @@ limitation is accepted by the recorded decision. The CHE-819 device evidence
 scope remains Settings/Clock `shadow` on a leased X99 recyclable AVD only.
 Default remains `off`; this implementation and shadow evidence do not qualify
 `on` as a host default.
+# Offline replay
+
+Checkpoint verification can reopen completed milestones directly on disk, outside
+the note traces. Replay interleaves timestamped failed milestone `verify` verdicts
+with note operations to infer those possible resets. The ledger does not record
+whether a failure actually reset the plan (stale results and exhausted repair
+quotas may not), so affected steps remain `unverified`, with
+`plan_reconstruction=inferred_checkpoint_reopen`, until a successful full
+`task_plan` save records the live state. Failed checkpoint verdicts without a
+usable timestamp conservatively mark the session's history as
+`undated_checkpoint_verdict`. These steps retain their action truth, make no Jev
+request, report `reason=unreconstructable_plan` in JSON, and appear in the table's
+unreconstructable-step count; they never enter accuracy denominators.
+
+`artemis jev replay --path ~/.artemis-traces-che645 --sessions dcf43ab9 --runs 3 --threshold 0.9 --json` evaluates recorded actions without controlling a device. Use `--all` instead of `--sessions` for the full X99 store. `--key-file` defaults to `~/.config/artemis/openrouter.key` (owner-only permissions); when using that file, replay uses OpenRouter unless `--base-url` or `TYPESAFE_BASE_URL` is set. `--json` includes per-step choices and gate reasons; without it, replay prints a summary table. The cost uses an estimated $0.00001 per call by default, overridable with `--cost-per-call`.
+
+Only frontier decisions from PASS runs with completed plan milestones and passed milestone `verify` criteria in the independent `check_ledger.jsonl` are graded. A completed checkbox alone is not verification; missing, unchecked, failed, or inconclusive evidence leaves the milestone unverified. Other frontier actions are replayed but remain unverified; Jev decisions are excluded. Neither category enters the fast-lane denominator. Recorded text input, long presses, and other recognized frontier-only actions have `escalate` as truth, so an accepted routine move on those steps counts as confident-wrong. Ambiguous or unavailable action mappings remain ungraded.
+
+Replay reconstructs the `task_plan` note at each step from successful note traces, using the same exact/relaxed/fuzzy matching as the live note tool, and reads the stored pre-action UI tree. It uses the same move, state, and gate functions as the live Operator. Replay is intentionally manual rather than a CI job; attach the JSON results when changing the prompt, move list, gate, or threshold. Older runs derive launchable apps from names in the goal when no `fast_lane` trace row exists. Empty `--sessions` selectors are rejected rather than selecting the whole store. `trace export/import` is deferred.
