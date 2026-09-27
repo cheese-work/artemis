@@ -1,15 +1,15 @@
 {
-  "manifest_version": 2,
+  "manifest_version": 3,
   "$schema_ref": "qualification/evidence_schema.v1.json",
   "issue": "CHE-537",
   "coordinating_parent": "CHE-388",
   "journey": "qualification/journeys/pocket_actual_save_relaunch.md",
 
   "fork_sha": {
-    "value": "144006b1b2e6888e31dc8d76887a7da5e8839e99",
+    "value": "25a2c5b2c839b674994ee4a2a49e79209142bd1d",
     "source": "git",
     "repo": "https://github.com/cheese-work/artemis",
-    "note": "Source baseline observed and pinned per CHE-537 delivery plan. Weekly upstream review and manual pin promotion after qualification -- see FORK_MAINTENANCE.md. This value must be updated (new revision) if the pinned SHA changes; execution stages must re-read it at admission rather than caching an older value. Promoted by CHE-672 from 64e1b3226b9553bdf4e5a368f14b8a40c0af6111 to cheese-work/artemis main HEAD. Audit range is `git log 64e1b3226b95..144006b1b2e6` (12 commits; `959313bc5582` is PR #1's pre-merge head, not an ancestor of main since PR #1 squash-merged, so it is not a valid audit anchor). All 12 verified as known chain commits: 5eae089 CHE-491 (#1, squash-merge of the per-attempt LLM identity manifest this promotion exists to unblock), 94e56ce merge #5 (fix/che-639-anthropic-tier), 42711c9 merge #6, cb08985 CHE-537 (#3), b87d549 CHE-540 (#12), 01d51c8 CHE-643 (#11), 144006b CHE-646 (#13), plus five CI-only commits reviewed and excluded from qualification scope: 7956a25 + e489766 (CI/CHE-522 Blacksmith runner migration), d44af14 (remove Windows CI leg), 4bd82f9 merge #4 + 17169d7 CHE-564 (ruff lint scope). Zero attempts had run against the prior pin, so no evidence is invalidated by this promotion."
+    "note": "Source baseline observed and pinned per CHE-537 delivery plan. Weekly upstream review and manual pin promotion after qualification -- see FORK_MAINTENANCE.md. This value must be updated (new revision) if the pinned SHA changes; execution stages must re-read it at admission rather than caching an older value. Promoted by CHE-672 from 64e1b3226b9553bdf4e5a368f14b8a40c0af6111 to cheese-work/artemis main HEAD. Audit range is `git log 64e1b3226b95..144006b1b2e6` (12 commits; `959313bc5582` is PR #1's pre-merge head, not an ancestor of main since PR #1 squash-merged, so it is not a valid audit anchor). All 12 verified as known chain commits: 5eae089 CHE-491 (#1, squash-merge of the per-attempt LLM identity manifest this promotion exists to unblock), 94e56ce merge #5 (fix/che-639-anthropic-tier), 42711c9 merge #6, cb08985 CHE-537 (#3), b87d549 CHE-540 (#12), 01d51c8 CHE-643 (#11), 144006b CHE-646 (#13), plus five CI-only commits reviewed and excluded from qualification scope: 7956a25 + e489766 (CI/CHE-522 Blacksmith runner migration), d44af14 (remove Windows CI leg), 4bd82f9 merge #4 + 17169d7 CHE-564 (ruff lint scope). Zero attempts had run against the prior pin, so no evidence is invalidated by this promotion. Revision 3 (CHE-541, 2026-09-27) promotes 144006b1b2e6 -> 25a2c5b2c839 (main HEAD) so attempts run with the merged Gate 1 reconciliation fixes #16 (CHE-491), #18 (CHE-657) and #22 (CHE-674) that CHE-491 requires before its runtime evidence can pass; uv.lock is unchanged across the range. Zero attempts had run against revision 2."
   },
 
   "gate1_manifest_mechanism": {
@@ -40,28 +40,24 @@
 
   "model_targets": [
     {
-      "tier": "luna",
-      "provider": "google",
-      "model": "gemini-3.5-flash-lite",
-      "provider_id": "google:gemini-3.5-flash-lite",
-      "role": "cheap tier under CHE-388's 'compare Luna and Terra model tiers' requirement"
+      "tier": "sol",
+      "provider": "openai",
+      "model": "gpt-5.6-sol",
+      "provider_id": "openai:gpt-5.6-sol",
+      "role": "GPT tier; the fork's configured default (config/artemis.jsonc), used as-is"
     },
     {
-      "tier": "terra",
-      "provider": "google",
-      "model": "gemini-3.8-flash",
-      "provider_id": "google:gemini-3.8-flash",
-      "role": "mid tier under CHE-388's 'compare Luna and Terra model tiers' requirement"
+      "tier": "nova",
+      "provider": "anthropic",
+      "model": "claude-sonnet-5",
+      "provider_id": "anthropic:claude-sonnet-5",
+      "role": "Claude tier",
+      "config_file": "qualification/configs/nova.artemis.jsonc",
+      "config_note": "config/artemis.jsonc with every openai/gpt-5.6-sol node swapped to anthropic/claude-sonnet-5 and nothing else changed. Select it with ARTEMIS_ARTEMIS_JSONC=<abs path> (artemis/config/paths.py get_config_path env override). The sol tier uses config/artemis.jsonc unchanged."
     }
   ],
+  "model_targets_note": "Revision 3 (CHE-541, 2026-09-27): retargeted from google luna/terra to sol (GPT) + nova (Claude). Cheese decision 2026-09-26 on CHE-541: Artemis runs on GPT and Claude models only; there is no Gemini key and never will be, so the v2 Gemini targets could never execute. Both tiers already exist in artemis/config/attempt_manifest.py TIER_MODELS at the pinned fork_sha.",
   "tier_vocabulary_source": "artemis/config/attempt_manifest.py TIER_MODELS (PR #1 / CHE-491) -- do not diverge from that mapping; if it changes, this manifest must be revised to match rather than declaring a third mapping.",
-  "sol_tier_excluded": {
-    "tier": "sol",
-    "provider": "openai",
-    "model": "gpt-5.6-sol",
-    "reason": "Excluded from model_targets, not merely deprioritized. The 'sol' Gate 1 tier resolves to an OpenAI-backed model, and the workspace announcement is 'Stop all routing to OpenAI based agents. No set end date' (reaffirmed same-day on this issue: 'no openai based agent runs. they're all dead'). A batch of N=10 positive runs + 1 negative control against this target cannot execute under current policy, so pinning it as an active qualification target would freeze a dead-on-arrival gate.",
-    "unblock_condition": "Add 'sol' back to model_targets only after the OpenAI routing-stop announcement is explicitly lifted or replaced by a routable provider/model pair under the same 'sol' tier label. Until then, config/artemis.jsonc's top-level default node (openai/gpt-5.6-sol) stays unqualified by this manifest even though it is the fork's real configured default -- this is a known, deliberate gap, not an oversight."
-  },
 
   "profile": "pro",
   "profile_note": "Pro selected over Flash for this journey: the assertion step (read back a persisted value against an expected/negative token) needs the Checker's verified-checkpoint path (CHE-388 install-surface note: Flash has no final report and no verification). verification_level left to the execution stage's per-run config, not pinned here.",
