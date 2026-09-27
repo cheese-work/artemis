@@ -19,7 +19,9 @@ from artemis.agents.operator.jev_fast_lane import (
     milestone_text,
 )
 from artemis.data_engine.engine import _derive_foreground_app
+from artemis.graph.checkpoints import read_ledger, resolve_item_status
 from artemis.services.jev import ChoiceAnswer, JevClient, ask, choice_question
+from artemis.utils.notes import replace_note_text
 from artemis.utils.plan_grammar import parse_plan
 from artemis.utils.visualization import format_minimal_list_with_elements
 
@@ -31,32 +33,47 @@ def _json(value: str | None, default: Any) -> Any:
 def plan_at(notes: list[tuple[float, dict]], timestamp: float) -> str:
     """Apply successful note operations, in timestamp order, up to a step."""
     plan = ""
+    operations = {}
     for when, payload in notes:
         if when > timestamp:
             break
         arguments = payload.get("args") or {}
-        if arguments.get("key") != "task_plan" or "result" not in payload:
+        if arguments.get("key") != "task_plan" or not str(payload.get("result", "")).startswith(
+            ("Saved", "Updated")
+        ):
+            continue
+        operation = (payload.get("name"), arguments)
+        duplicate = operations.get(payload.get("parent_trace_id")) == operation
+        if payload.get("trace_id"):
+            operations[payload["trace_id"]] = operation
+        if duplicate:
             continue
         if payload.get("name") == "save_note":
             plan = str(arguments.get("content") or "")
         elif payload.get("name") == "update_note":
             target = arguments.get("target")
             replacement = arguments.get("replacement")
-            if isinstance(target, str) and isinstance(replacement, str) and target in plan:
-                plan = plan.replace(target, replacement, 1)
+            if isinstance(target, str) and isinstance(replacement, str):
+                plan, _ = replace_note_text(plan, "task_plan", target, replacement)
     return plan
 
 
 def truth_move(actions: list[dict], elements: list[dict]) -> str | None:
+    if len(actions) > 1 and all(truth_move([action], elements) for action in actions):
+        return "escalate"
     if len(actions) != 1:
         return None
     action = actions[0]
     kind = action.get("action")
+    if kind in ("focus_and_input_text", "long_press_on", "stop_app", "wait_for_delay"):
+        return "escalate"
     if kind == "launch_app":
         return f"launch_{str(action.get('app_name', '')).lower()}"
     if kind == "press_key":
         key = str(action.get("keycode") or action.get("key") or "").removeprefix("KEYCODE_")
-        return f"press_{key.lower()}" if key in ("BACK", "HOME") else None
+        if key in ("BACK", "HOME"):
+            return f"press_{key.lower()}"
+        return "escalate" if key else None
     if kind == "swipe":
         direction = action.get("direction")
         coordinates = action.get("coordinates")
@@ -65,8 +82,12 @@ def truth_move(actions: list[dict], elements: list[dict]) -> str | None:
             and isinstance(coordinates, list)
             and len(coordinates) >= 4
         ):
+            if coordinates[3] == coordinates[1]:
+                return "escalate"
             direction = "up" if coordinates[3] < coordinates[1] else "down"
-        return {"up": "scroll_down_reveal_below", "down": "scroll_up_reveal_above"}.get(direction)
+        return {"up": "scroll_down_reveal_below", "down": "scroll_up_reveal_above"}.get(
+            str(direction)
+        )
     if kind == "tap":
         bounds = action.get("target_bounds")
         matches = [element for element in elements if element.get("bounds") == bounds]
@@ -87,13 +108,42 @@ def truth_move(actions: list[dict], elements: list[dict]) -> str | None:
     return None
 
 
-def label_step(pass_run: bool, final_plan: str, step_plan: str, source: str | None) -> str:
+def label_step(
+    pass_run: bool,
+    final_plan: str,
+    step_plan: str,
+    source: str | None,
+    ledger: list[dict] | None = None,
+) -> str:
     if source == "jev":
         return "excluded"
     milestone = parse_plan(step_plan).active_milestone()
     if pass_run and source in (None, "frontier") and milestone is not None:
-        completed = parse_plan(final_plan).top_level
-        if any(item.key == milestone.key and item.is_done for item in completed):
+        final = parse_plan(final_plan)
+        checks = [
+            check
+            for check in final.check_items
+            if check.kind == "verify" and check.parent_key == milestone.key
+        ]
+        if (
+            any(item.key == milestone.key and item.is_done for item in final.top_level)
+            and checks
+            and all(
+                resolve_item_status(
+                    "verify",
+                    [
+                        record
+                        for record in ledger or []
+                        if record.get("kind") == "verify"
+                        and record.get("item_text") == check.text
+                        and record.get("when", "on_complete") == check.when
+                        and record.get("checkpoint_id") in (milestone.key, "final")
+                    ],
+                )
+                == "passed"
+                for check in checks
+            )
+        ):
             return "verified"
     return "unverified"
 
@@ -139,6 +189,8 @@ def metrics(rows: list[dict], cost_per_call: float) -> dict:
 
 def load_steps(db_path: Path, sessions: list[str] | None = None) -> list[dict]:
     """Read an existing trace store without creating or mutating its database."""
+    if sessions is not None and (not sessions or any(not value.strip() for value in sessions)):
+        raise ValueError("Session selection must not be empty")
     if Path(f"{db_path}-wal").exists():
         connection = sqlite3.connect(f"{db_path.resolve().as_uri()}?mode=ro", uri=True)
     else:
@@ -161,7 +213,7 @@ def load_steps(db_path: Path, sessions: list[str] | None = None) -> list[dict]:
                 "SELECT * FROM steps WHERE session_id = ? ORDER BY step_number", (session_id,)
             ).fetchall()
             trace_rows = connection.execute(
-                "SELECT step_id, name, timestamp, payload FROM traces WHERE session_id = ? "
+                "SELECT * FROM traces WHERE session_id = ? "
                 "AND (name IN ('save_note', 'update_note', 'fast_lane')) ORDER BY timestamp, rowid",
                 (session_id,),
             ).fetchall()
@@ -173,8 +225,9 @@ def load_steps(db_path: Path, sessions: list[str] | None = None) -> list[dict]:
                     if trace["step_id"]:
                         lanes[trace["step_id"]] = payload.get("launchable_apps") or {}
                 else:
-                    notes.append((trace["timestamp"], {**payload, "name": trace["name"]}))
+                    notes.append((trace["timestamp"], {**dict(trace), **payload}))
             final_plan = plan_at(notes, float("inf"))
+            ledger = read_ledger(db_path.parent / session_id)
             pass_run = session["status"] == "completed" and any(
                 "_PASS_" in path.name and session_id[:8] in path.name
                 for path in db_path.parent.iterdir()
@@ -208,7 +261,7 @@ def load_steps(db_path: Path, sessions: list[str] | None = None) -> list[dict]:
                 record = {
                     "session": session_id,
                     "step": step["step_number"],
-                    "label": label_step(pass_run, final_plan, plan, source),
+                    "label": label_step(pass_run, final_plan, plan, source, ledger),
                     "truth": truth_move(actions, elements),
                     "state": build_state(
                         milestone,

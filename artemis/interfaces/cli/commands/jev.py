@@ -45,6 +45,9 @@ def replay_command(
     """Replay recorded decisions without taking any device actions."""
     if (not all_sessions and not sessions) or (all_sessions and sessions):
         raise typer.BadParameter("Select either --sessions or --all")
+    selected = [part.strip() for part in sessions.split(",") if part.strip()] if sessions else None
+    if selected == []:
+        raise typer.BadParameter("Expected at least one non-empty session ID or prefix")
     if not 0 <= threshold <= 1 or runs < 1 or cost_per_call < 0:
         raise typer.BadParameter("Expected threshold in [0, 1], runs >= 1, cost >= 0")
     db_path = (traces_path or settings.TRACES_PATH) / DATA_ENGINE_DB_FILENAME
@@ -59,7 +62,6 @@ def replay_command(
         secret = key_file.read_text(encoding="utf-8").strip()
     if not secret:
         raise typer.BadParameter("Configure TYPESAFE_API_KEY or provide --key-file")
-    selected = [part.strip() for part in sessions.split(",") if part.strip()] if sessions else None
     rows = load_steps(db_path, selected)
     client = JevClient(
         secret,
