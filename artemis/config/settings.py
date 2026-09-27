@@ -16,6 +16,7 @@
 
 import os
 from pathlib import Path
+from typing import Literal
 
 from dotenv import load_dotenv
 from pydantic import Field, SecretStr, model_validator
@@ -144,6 +145,10 @@ class Settings(BaseSettings):
     ARTEMIS_JEV_ENABLED: bool = Field(default=False)
     ARTEMIS_JEV_MODEL: str | None = Field(default=None)
     ARTEMIS_JEV_TIMEOUT_SECONDS: float = Field(default=2.0)
+    ARTEMIS_JEV_FAST_LANE: Literal["off", "shadow", "on"] = "off"
+    ARTEMIS_JEV_FAST_LANE_MODEL: Literal["jev-1.13"] = "jev-1.13"
+    ARTEMIS_JEV_FAST_LANE_THRESHOLD: float = Field(default=0.9, ge=0.9, le=1.0)
+    ARTEMIS_JEV_FAST_LANE_MAX_STREAK: int = Field(default=3, ge=1, le=3)
 
     # Explorer Tool Settings (the tier itself is configured in artemis.jsonc or
     # via ARTEMIS_EXPLORER_VERSION; see artemis.config.agent.ExplorerConfig)

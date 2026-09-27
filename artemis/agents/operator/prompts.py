@@ -673,6 +673,8 @@ def unwritten_action_streak(steps: list[dict]) -> int:
     """Count trailing action steps since the last ``task_plan`` write."""
     streak = 0
     for step in reversed(steps or []):
+        if (step.get("extra_metadata") or {}).get("decision_source") == "jev":
+            continue
         if step_updated_task_plan(step):
             break
         if step.get("action_taken"):
