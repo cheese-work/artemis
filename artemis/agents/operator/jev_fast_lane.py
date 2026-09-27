@@ -218,7 +218,8 @@ class FastLaneTurn:
         try:
             await self.task
         except asyncio.CancelledError:
-            if asyncio.current_task().cancelling():
+            current_task = asyncio.current_task()
+            if current_task is not None and current_task.cancelling():
                 raise
 
     def record(self, ctx: Any) -> None:

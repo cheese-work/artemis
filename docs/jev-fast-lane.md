@@ -52,9 +52,11 @@ this change does not implement replay.
 
 Enabling either `shadow` or `on` sends milestone text, foreground app, up to 60
 visible text strings, and the last four executed actions to the configured
-third-party endpoint. Local recording is not consent to transmit client data.
-CHE-641 D1/D2 authorizes Cheese Work app runs, including Settings/Clock fixtures
-on a leased X99 recyclable AVD. Do not enable this feature on tevo-studio
-client-app sessions or replay those sessions until Cheese records the separate
-client-data-policy decision. Default remains `off`; this implementation and
-shadow evidence do not qualify `on` as a host default.
+third-party endpoint. CHE-641 D1/D2 authorizes the fast-lane design. Cheese's
+September 27, 2026 client-data decision additionally permits tevo-studio
+client-app screen text for Jev `shadow`/`on` and replay, with no session-origin
+filter. QA, agent, and Cheese sessions are not currently distinguishable; that
+limitation is accepted by the recorded decision. The CHE-819 device evidence
+scope remains Settings/Clock `shadow` on a leased X99 recyclable AVD only.
+Default remains `off`; this implementation and shadow evidence do not qualify
+`on` as a host default.
