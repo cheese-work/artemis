@@ -172,7 +172,7 @@ async def execution_check_node(state: State, ctx: ArtemisContext):
                     "height": raw_data.get("height"),
                     **({"injected_instruction": injected} if injected else {}),
                     **extra_metadata,
-                    "decision_source": state.operator_decision_source,
+                    "decision_source": getattr(state, "operator_decision_source", "frontier"),
                 },
             )
             logger.info(f"Recorded step in DataEngine: {step_id}")
