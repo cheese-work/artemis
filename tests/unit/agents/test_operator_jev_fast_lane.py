@@ -1,5 +1,6 @@
 import asyncio
 import json
+import threading
 from unittest.mock import AsyncMock, MagicMock, Mock
 
 from langchain_core.messages import AIMessage
@@ -64,6 +65,34 @@ async def test_fast_lane_skips_prompt_and_frontier_and_preserves_shape(setup_lan
     sent = json.loads(client.ask.call_args.args[0])
     assert sent["foreground_app"] == "com.android.deskclock"
     assert sent["visible_screen_text"] == ["Alarms"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "clock_nodes",
+    [
+        [{"package": "com.android.deskclock", "text": "Alarms"}],
+        [{"packageName": "com.android.deskclock", "text": "Alarms"}],
+        [
+            {"package": "com.android.launcher3"},
+            {
+                "children": [
+                    {"package": "com.android.deskclock", "text": "Clock"},
+                    {"packageName": "com.android.deskclock", "text": "Alarms"},
+                ]
+            },
+        ],
+    ],
+)
+async def test_fast_lane_foreground_ignores_system_overlay(setup_lane, clock_nodes):
+    node, state, client = setup_lane
+    state.latest_ui_hierarchy = [
+        {"package": "com.android.systemui", "text": "12:00"},
+        *clock_nodes,
+    ]
+    result = await node(state)
+    assert result["operator_decision_source"] == "jev"
+    assert json.loads(client.ask.call_args.args[0])["foreground_app"] == "com.android.deskclock"
 
 
 @pytest.mark.asyncio
@@ -320,3 +349,82 @@ async def test_db_source_streak_and_turn_recording(setup_lane, tmp_path, monkeyp
     await execution_check_node(state, ctx)
     assert engine.get_agent_friendly_steps()[-1]["extra_metadata"]["decision_source"] == "jev"
     await engine.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_fourth_jev_turn_falls_back_while_third_write_is_pending(
+    setup_lane, tmp_path, monkeypatch
+):
+    node, state, client = setup_lane
+    ctx = node.ctx
+    ctx.execution_setup = ExecutionSetup(traces_path=str(tmp_path), disable_checker=True)
+    ctx.device = None
+    ctx.planner_task = None
+    ctx.checkpoint_tasks = {}
+    ctx.pending_checkpoints = []
+    ctx.pending_validated_plan = None
+    monkeypatch.setattr(DataEngine, "_connect_ipc_locked", lambda self, **kwargs: False)
+    engine = DataEngine(ctx)
+    ctx.data_engine = engine
+    engine.start_session("Delayed Jev persistence fixture")
+    release_writer = threading.Event()
+    writer_started = threading.Event()
+    create_step = engine.storage.create_step
+
+    def delayed_create_step(step):
+        if step.step_number == 3:
+            writer_started.set()
+            if not release_writer.wait(10):
+                raise TimeoutError("Jev persistence fixture was not released")
+        create_step(step)
+
+    try:
+        for _ in range(2):
+            engine.allocate_step_id()
+            engine.record_step(
+                action_taken=[{"action": "tap"}], extra_metadata={"decision_source": "jev"}
+            )
+        await asyncio.gather(*engine._pending_tasks)
+        assert len(engine.get_agent_friendly_steps()) == 2
+        plan_dir = engine.base_dir / "notes"
+        plan_dir.mkdir(exist_ok=True)
+        (plan_dir / "task_plan.md").write_text("- [/] Open Clock", encoding="utf-8")
+        node._get_history_and_plan = operator.OperatorNode._get_history_and_plan.__get__(node)
+        monkeypatch.setattr(engine.storage, "create_step", delayed_create_step)
+
+        engine.allocate_step_id()
+        third = await node(state)
+        assert third["operator_decision_source"] == "jev"
+        state = State(**{**state.model_dump(), **third})
+        recorded = await execution_check_node(state, ctx)
+        state = State(**{**state.model_dump(), **recorded})
+        assert await asyncio.to_thread(writer_started.wait, 2)
+        assert engine.current_step_number == 3
+        assert len(engine.get_agent_friendly_steps()) == 2
+
+        fourth_step_id = engine.allocate_step_id()
+        fourth = await asyncio.wait_for(node(state), 1)
+        assert fourth["operator_decision_source"] == "frontier"
+        assert not release_writer.is_set()
+        node._invoke_llm_loop.assert_awaited_once()
+        client.ask.assert_awaited_once()
+
+        release_writer.set()
+        await asyncio.gather(*engine._pending_tasks)
+        assert len(engine.get_agent_friendly_steps()) == 3
+        traces = engine.storage.get_step_traces(fourth_step_id)
+        assert any(
+            trace.name == "fast_lane" and trace.payload["gate_reason"] == "history_pending"
+            for trace in traces
+        )
+
+        assert (await node(state))["operator_decision_source"] == "frontier"
+
+        state = State(**{**state.model_dump(), **fourth})
+        await execution_check_node(state, ctx)
+        await asyncio.gather(*engine._pending_tasks)
+        engine.allocate_step_id()
+        assert (await node(state))["operator_decision_source"] == "jev"
+    finally:
+        release_writer.set()
+        await engine.shutdown()

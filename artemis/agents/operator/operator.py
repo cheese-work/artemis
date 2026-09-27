@@ -22,6 +22,7 @@ from langchain_core.tools import BaseTool
 
 from artemis.core.tool_failure import is_tool_failure
 from artemis.context import ArtemisContext
+from artemis.data_engine.engine import _derive_foreground_app
 from artemis.data_engine.reaction_time import OperatorIterationOutcome, ReactionPhase
 from artemis.data_engine.trace import (
     record_phase_span,
@@ -1053,9 +1054,7 @@ class OperatorNode:
             for node in fused_xml
             if node.get("text") or node.get("content-desc")
         ]
-        foreground_app = next(
-            (node.get("package") for node in fused_xml if node.get("package")), None
-        )
+        foreground_app = _derive_foreground_app(fused_xml)
         recent_actions = [action for step in steps for action in (step.get("action_taken") or [])][
             -4:
         ]
@@ -1073,9 +1072,17 @@ class OperatorNode:
             apps,
             settings.ARTEMIS_JEV_FAST_LANE_MODEL,
         )
+        recorded_step_count = getattr(self.ctx.data_engine, "current_step_number", 0)
         if not milestone:
             lane.client = None
             lane.decision = Decision(False, "no_milestone")
+        elif (
+            mode == "on"
+            and isinstance(recorded_step_count, int)
+            and recorded_step_count > len(steps)
+        ):
+            lane.client = None
+            lane.decision = Decision(False, "history_pending")
         return lane
 
     async def _frontier_turn(
