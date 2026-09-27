@@ -209,12 +209,18 @@ def test_load_steps_reads_verdicts_and_preserves_empty_app_map(tmp_path: Path) -
     }
     for status, expected in (("unchecked", "unverified"), ("passed", "verified")):
         ledger.write_text(json.dumps({**verdict, "status": status}) + "\n", encoding="utf-8")
-        before = {path.name: path.stat() for path in tmp_path.iterdir()}
+        before = {
+            path.name: (path.stat().st_size, path.stat().st_mtime_ns, path.stat().st_ctime_ns)
+            for path in tmp_path.iterdir()
+        }
         rows = load_steps(db_path)
         assert [row["label"] for row in rows] == [expected, expected]
         assert rows[0]["apps"] == {"Settings": "com.android.settings"}
         assert rows[1]["apps"] == {}
-        assert before == {path.name: path.stat() for path in tmp_path.iterdir()}
+        assert before == {
+            path.name: (path.stat().st_size, path.stat().st_mtime_ns, path.stat().st_ctime_ns)
+            for path in tmp_path.iterdir()
+        }
     with pytest.raises(ValueError, match="empty"):
         load_steps(db_path, [])
 

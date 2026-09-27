@@ -32,11 +32,36 @@ def _json(value: str | None, default: Any) -> Any:
 
 def plan_at(notes: list[tuple[float, dict]], timestamp: float) -> str:
     """Apply successful note operations, in timestamp order, up to a step."""
+    return _reconstruct_plan(notes, timestamp)[0]
+
+
+def _reconstruct_plan(notes: list[tuple[float, dict]], timestamp: float) -> tuple[str, bool]:
+    """Infer possible checkpoint resets; only a full note save clears uncertainty."""
     plan = ""
+    uncertain = False
     operations = {}
     for when, payload in notes:
         if when > timestamp:
             break
+        if payload.get("name") == "checkpoint_reopen":
+            snapshot = parse_plan(plan)
+            checkpoint = payload.get("checkpoint_id")
+            if not any(
+                check.kind == "verify"
+                and check.when == "on_complete"
+                and check.parent_key == checkpoint
+                and check.text == payload.get("item_text")
+                for check in snapshot.check_items
+            ):
+                continue
+            for milestone in snapshot.top_level:
+                if milestone.key == checkpoint and milestone.is_done:
+                    lines = plan.split("\n")
+                    lines[milestone.line_no] = lines[milestone.line_no].replace("[x]", "[/]", 1)
+                    plan = "\n".join(lines)
+                    uncertain = True
+                    break
+            continue
         arguments = payload.get("args") or {}
         if arguments.get("key") != "task_plan" or not str(payload.get("result", "")).startswith(
             ("Saved", "Updated")
@@ -50,12 +75,17 @@ def plan_at(notes: list[tuple[float, dict]], timestamp: float) -> str:
             continue
         if payload.get("name") == "save_note":
             plan = str(arguments.get("content") or "")
+            uncertain = False
         elif payload.get("name") == "update_note":
             target = arguments.get("target")
             replacement = arguments.get("replacement")
             if isinstance(target, str) and isinstance(replacement, str):
-                plan, _ = replace_note_text(plan, "task_plan", target, replacement)
-    return plan
+                try:
+                    plan, _ = replace_note_text(plan, "task_plan", target, replacement)
+                except ValueError:
+                    if not uncertain:
+                        raise
+    return plan, uncertain
 
 
 def truth_move(actions: list[dict], elements: list[dict]) -> str | None:
@@ -171,6 +201,9 @@ def metrics(rows: list[dict], cost_per_call: float) -> dict:
     return {
         "steps": len(rows),
         "labels": dict(Counter(row["label"] for row in rows)),
+        "unreconstructable_steps": sum(
+            row.get("reason") == "unreconstructable_plan" for row in rows
+        ),
         "graded": len(graded),
         "fast_laned": len(taken),
         "fast_lane_pct": 100 * len(taken) / len(graded) if graded else 0.0,
@@ -226,8 +259,26 @@ def load_steps(db_path: Path, sessions: list[str] | None = None) -> list[dict]:
                         lanes[trace["step_id"]] = payload.get("launchable_apps") or {}
                 else:
                     notes.append((trace["timestamp"], {**dict(trace), **payload}))
-            final_plan = plan_at(notes, float("inf"))
             ledger = read_ledger(db_path.parent / session_id)
+            failed_checks = [
+                record
+                for record in ledger
+                if record.get("kind") == "verify"
+                and record.get("status") == "failed"
+                and record.get("when", "on_complete") == "on_complete"
+                and record.get("checkpoint_id") not in (None, "final")
+            ]
+            undated_reopen = any(
+                not isinstance(record.get("ts"), (int, float)) or not math.isfinite(record["ts"])
+                for record in failed_checks
+            )
+            notes.extend(
+                (record["ts"], {**record, "name": "checkpoint_reopen"})
+                for record in failed_checks
+                if isinstance(record.get("ts"), (int, float)) and math.isfinite(record["ts"])
+            )
+            notes.sort(key=lambda note: note[0])
+            final_plan = plan_at(notes, float("inf"))
             pass_run = session["status"] == "completed" and any(
                 "_PASS_" in path.name and session_id[:8] in path.name
                 for path in db_path.parent.iterdir()
@@ -243,7 +294,14 @@ def load_steps(db_path: Path, sessions: list[str] | None = None) -> list[dict]:
                 if not actions:
                     continue
                 timestamp = step["timestamp"]
-                plan = plan_at(notes, timestamp)
+                plan, uncertain = _reconstruct_plan(notes, timestamp)
+                reconstruction = (
+                    "undated_checkpoint_verdict"
+                    if undated_reopen
+                    else "inferred_checkpoint_reopen"
+                    if uncertain
+                    else "recorded"
+                )
                 milestone = milestone_text(plan)
                 metadata = _json(step["extra_metadata"], {})
                 source = metadata.get("decision_source")
@@ -261,7 +319,10 @@ def load_steps(db_path: Path, sessions: list[str] | None = None) -> list[dict]:
                 record = {
                     "session": session_id,
                     "step": step["step_number"],
-                    "label": label_step(pass_run, final_plan, plan, source, ledger),
+                    "label": label_step(
+                        pass_run and reconstruction == "recorded", final_plan, plan, source, ledger
+                    ),
+                    "plan_reconstruction": reconstruction,
                     "truth": truth_move(actions, elements),
                     "state": build_state(
                         milestone,
@@ -289,14 +350,22 @@ async def replay(
 ) -> dict:
     results = []
     for row in rows:
+        unreconstructable = row.get("plan_reconstruction", "recorded") != "recorded"
         if (
             row["label"] == "excluded"
             or not row["truth"]
             or not json.loads(row["state"])["current_milestone"]
+            or unreconstructable
         ):
             results.append(
                 {key: row[key] for key in ("session", "step", "label", "truth")}
-                | {"choice": None, "taken": False, "reason": "not_graded", "latency_s": None}
+                | {
+                    "plan_reconstruction": row.get("plan_reconstruction", "recorded"),
+                    "choice": None,
+                    "taken": False,
+                    "reason": "unreconstructable_plan" if unreconstructable else "not_graded",
+                    "latency_s": None,
+                }
             )
             continue
         moves = build_moves(row["elements"], row["apps"])
@@ -319,6 +388,7 @@ async def replay(
                     "session": row["session"],
                     "step": row["step"],
                     "label": row["label"],
+                    "plan_reconstruction": row.get("plan_reconstruction", "recorded"),
                     "truth": row["truth"],
                     "choice": answer.choice if answer else None,
                     "confidence": answer.confidence if answer else None,

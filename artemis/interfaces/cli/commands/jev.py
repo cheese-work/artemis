@@ -88,6 +88,7 @@ def replay_command(
         ),
         ("Latency p50 / p90 (s)", f"{result['latency_p50_s']} / {result['latency_p90_s']}"),
         ("Calls / estimated USD", f"{result['calls']} / ${result['estimated_cost_usd']:.5f}"),
+        ("Unreconstructable steps (not graded)", str(result["unreconstructable_steps"])),
     ):
         table.add_row(name, value)
     for move, counts in result["per_move_type"].items():
