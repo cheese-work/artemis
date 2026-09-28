@@ -318,10 +318,19 @@ class AdbActuator:
                 detail=error_msg or None,
             )
         elif action.lower() == "stop":
-            if hasattr(self.controller, "terminate_app"):
-                res_term = self.controller.terminate_app(target_pkg)
-                if inspect.iscoroutine(res_term):
-                    await res_term
+            if not hasattr(self.controller, "terminate_app"):
+                return ActionResult.failure(
+                    "manage_app",
+                    f"Cannot force-stop app '{app_name}' ({target_pkg}).",
+                )
+            res_term = self.controller.terminate_app(target_pkg)
+            if inspect.iscoroutine(res_term):
+                res_term = await res_term
+            if not res_term:
+                return ActionResult.failure(
+                    "manage_app",
+                    f"Failed to force-stop app '{app_name}' ({target_pkg}).",
+                )
             return ActionResult.success(
                 "manage_app", f"Force-stopped app '{app_name}' ({target_pkg})."
             )

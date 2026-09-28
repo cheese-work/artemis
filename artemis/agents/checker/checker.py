@@ -32,6 +32,7 @@ The release decision is computed by the caller from the verdicts
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import re
 import time
@@ -98,6 +99,7 @@ class CheckVerdict(BaseModel):
 
 class CheckReport(BaseModel):
     verdicts: list[CheckVerdict] = Field(default_factory=list)
+    final_capture_step_id: str | None = None
     unmet_subgoals: list[str] = Field(
         default_factory=list,
         description=(
@@ -458,7 +460,11 @@ def _normalize_report(report: CheckReport, check_items: list) -> CheckReport:
                     evidence="no verdict produced for this item",
                 )
             )
-    return CheckReport(verdicts=verdicts, unmet_subgoals=list(report.unmet_subgoals))
+    return CheckReport(
+        verdicts=verdicts,
+        final_capture_step_id=report.final_capture_step_id,
+        unmet_subgoals=list(report.unmet_subgoals),
+    )
 
 
 async def _run_check_loop(
@@ -741,7 +747,7 @@ async def run_checkpoint_check(
             )
 
 
-async def _capture_final_screen(ctx: ArtemisContext) -> tuple[str | None, str]:
+async def _capture_final_screen(ctx: ArtemisContext) -> tuple[str | None, str, Any | None]:
     """Best-effort capture of the final live screen (final entry only)."""
     try:
         from artemis.controllers.unified_controller import UnifiedMobileController
@@ -770,10 +776,34 @@ async def _capture_final_screen(ctx: ArtemisContext) -> tuple[str | None, str]:
 
         fused_xml = fuse_ocr_with_xml(xml_hierarchy, ocr_results)
         minimal_list, _, _ = format_minimal_list_with_elements(fused_xml, width, height)
-        return screenshot_b64, minimal_list
+        return screenshot_b64, minimal_list, xml_hierarchy
     except Exception as e:
         logger.warning(f"Failed to capture final screen state: {e}")
-        return None, "Final screen state unavailable."
+        return None, "Final screen state unavailable.", None
+
+
+def _record_final_capture(
+    ctx: ArtemisContext, screenshot_b64: str | None, ui_tree: Any | None, attempt_id: str | None
+) -> str | None:
+    if not ctx.data_engine or not screenshot_b64 or ui_tree is None or not attempt_id:
+        return None
+    trace_id = CURRENT_TRACE_ID.get()
+    if trace_id is None:
+        return None
+    try:
+        ctx.data_engine.allocate_step_id()
+        step_id = ctx.data_engine.record_step(
+            pre_screenshot_bytes=base64.b64decode(screenshot_b64, validate=True),
+            ui_tree=ui_tree,
+            action_taken={
+                "action": "checker_final_capture",
+                "attempt_id": attempt_id,
+                "checker_trace_id": str(trace_id),
+            },
+        )
+    except (ValueError, TypeError):
+        return None
+    return str(step_id)
 
 
 def _format_ledger(ledger: list[dict]) -> str:
@@ -822,7 +852,10 @@ async def run_final_check(
         if s
     )
 
-    screenshot_b64, minimal_list = await _capture_final_screen(ctx)
+    captured_screen = await _capture_final_screen(ctx)
+    screenshot_b64, minimal_list = captured_screen[:2]
+    ui_tree = captured_screen[2] if len(captured_screen) > 2 else None
+    final_capture_step_id = _record_final_capture(ctx, screenshot_b64, ui_tree, attempt_id)
     steps = _load_steps(ctx)
 
     human_text = (
@@ -852,7 +885,9 @@ async def run_final_check(
     ]
     with CheckerStreamCapture(ctx) as capture:
         try:
-            return await _run_check_loop(ctx, messages, tools, items)
+            report = await _run_check_loop(ctx, messages, tools, items)
+            report.final_capture_step_id = final_capture_step_id
+            return report
         finally:
             _persist_stream(
                 ctx, capture, attempt_id=attempt_id, phase="final", checkpoint_id="final"

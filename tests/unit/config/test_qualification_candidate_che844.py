@@ -61,10 +61,12 @@ def test_journey_requires_process_death_and_native_negative_control_provenance()
     assert "ARTEMIS_TRACES_DIR=<ledger-root>" in text
     assert "DATA_ENGINE_DB_PATH=<ledger-root>/data_engine.db" in text
     assert "artemis run --standalone" in text
-    assert "native DataEngine `step_id`" in text
+    assert "DataEngine `step_id`" in text
     assert "successful native" in text
     assert "`stop_app` then `launch_app`" in text
-    assert "exact UI\nvalues" in text
+    assert "final Checker itself records a native final-screen\ncapture step" in text
+    assert "It never accepts an executor-selected\ncapture" in text
+    assert "exact UI values" in text
     assert "completed` is not control success" in text
     assert 'observed name was\ncompared with "qual-<run_id>-WRONG-SUFFIX"' in text
     assert "invalid control" in text
@@ -101,26 +103,38 @@ def test_each_lane_retains_the_execution_controls_and_return_contract():
         )
         assert adapter["expected_exit"] == 1
         assert "ARTEMIS_TRACES_DIR/<session-id>/check_ledger.jsonl" in adapter["contract"]
-        assert "native DataEngine" in adapter["contract"]
+        assert "native final capture" in adapter["contract"]
         assert lane["negative_control"]["not_satisfied_by"] == "completed orchestration status"
         assert (
             lane["negative_control"]["invalid_when_missing"]
             == "Invalid control; batch unqualified."
         )
         assert lane["negative_control"]["required_evidence"][-1] == (
-            "native post-relaunch DataEngine step/image proof, ARTEMIS_TRACES_DIR-derived "
-            "latest-final check_ledger.jsonl path, and adapter JSON output with exit 1"
+            "native saved-step and runner-bound final-capture proof, "
+            "ARTEMIS_TRACES_DIR-derived latest-final check_ledger.jsonl path, and adapter "
+            "JSON output with exit 1"
         )
         assert "verified release" in lane["cleanup_contract"]
 
 
+def test_final_checker_persists_the_capture_link_used_by_the_adapter():
+    checker_source = (REPO_ROOT / "artemis/agents/checker/checker.py").read_text(encoding="utf-8")
+    graph_source = (REPO_ROOT / "artemis/graph/graph.py").read_text(encoding="utf-8")
+
+    assert "checker_final_capture" in checker_source
+    assert "final_capture_step_id" in checker_source
+    assert '"final_capture_step_id": report.final_capture_step_id' in graph_source
+
+
 SESSION_ID = "99d9a63b-8f1c-4e5d-98f5-070262adc1ee"
 CHECKER_TRACE_ID = "10000000-0000-4000-8000-000000000001"
-STOP_STEP_ID = "20000000-0000-4000-8000-000000000001"
-LAUNCH_STEP_ID = "30000000-0000-4000-8000-000000000001"
-POST_RELAUNCH_STEP_ID = "40000000-0000-4000-8000-000000000001"
+SAVED_STEP_ID = "20000000-0000-4000-8000-000000000001"
+STOP_STEP_ID = "30000000-0000-4000-8000-000000000001"
+LAUNCH_STEP_ID = "40000000-0000-4000-8000-000000000001"
+FINAL_CAPTURE_STEP_ID = "50000000-0000-4000-8000-000000000001"
 OBSERVED_ACCOUNT = "qual-run-1"
 EXPECTED_ACCOUNT = "qual-run-1-WRONG-SUFFIX"
+EXPECTED_BALANCE = "USD · +123.45"
 PACKAGE_NAME = "dev.cheese.pocketactual"
 
 
@@ -128,8 +142,10 @@ def _native_data_engine(
     tmp_path,
     *,
     observed_account=OBSERVED_ACCOUNT,
-    post_step_number=4,
+    saved_step_number=1,
+    final_capture_step_number=4,
     include_stop_launch=True,
+    checker_session_id=SESSION_ID,
 ):
     traces_dir = tmp_path / "runtime-traces"
     traces_dir.mkdir()
@@ -142,7 +158,8 @@ def _native_data_engine(
             step_id TEXT PRIMARY KEY,
             session_id TEXT,
             step_number INTEGER,
-            pre_image_name TEXT
+            pre_image_name TEXT,
+            action_taken TEXT
         );
         CREATE TABLE traces (
             trace_id TEXT PRIMARY KEY,
@@ -155,22 +172,48 @@ def _native_data_engine(
         );
         """
     )
-    image_name = "native-post-relaunch-image"
-    ui_tree = [
+    saved_image_name = "native-saved-image"
+    final_image_name = "native-final-image"
+    saved_ui_tree = [
+        {"content_desc": "recovery-snapshot"},
+        {"text": observed_account},
+        {"text": EXPECTED_BALANCE},
+    ]
+    final_ui_tree = [
         {"content_desc": "recovery-snapshot"},
         {"text": observed_account},
     ]
-    connection.execute(
+    connection.executemany(
         "INSERT INTO images VALUES (?, ?)",
-        (image_name, json.dumps(ui_tree)),
+        [
+            (saved_image_name, json.dumps(saved_ui_tree)),
+            (final_image_name, json.dumps(final_ui_tree)),
+        ],
     )
     connection.executemany(
-        "INSERT INTO steps VALUES (?, ?, ?, ?)",
+        "INSERT INTO steps VALUES (?, ?, ?, ?, ?)",
         [
-            (STOP_STEP_ID, SESSION_ID, 2, None),
-            (LAUNCH_STEP_ID, SESSION_ID, 3, None),
-            (POST_RELAUNCH_STEP_ID, SESSION_ID, post_step_number, image_name),
+            (SAVED_STEP_ID, SESSION_ID, saved_step_number, saved_image_name, None),
+            (STOP_STEP_ID, SESSION_ID, 2, None, None),
+            (LAUNCH_STEP_ID, SESSION_ID, 3, None, None),
+            (
+                FINAL_CAPTURE_STEP_ID,
+                SESSION_ID,
+                final_capture_step_number,
+                final_image_name,
+                json.dumps(
+                    {
+                        "action": "checker_final_capture",
+                        "attempt_id": "final#1",
+                        "checker_trace_id": CHECKER_TRACE_ID,
+                    }
+                ),
+            ),
         ],
+    )
+    connection.execute(
+        "INSERT INTO traces VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (CHECKER_TRACE_ID, checker_session_id, None, "agent", "checker", "success", "{}"),
     )
     if include_stop_launch:
         for index, (step_id, action) in enumerate(
@@ -202,6 +245,7 @@ def _failed_final(attempt_id="final#1", **changes):
         "item_text": f"The post-relaunch account name must equal {EXPECTED_ACCOUNT}.",
         "trace_id": CHECKER_TRACE_ID,
         "anchor_step_id": None,
+        "final_capture_step_id": FINAL_CAPTURE_STEP_ID,
         "evidence": "Final screen comparison recorded by the Checker.",
         **changes,
     }
@@ -213,7 +257,6 @@ def _adapter_result(
     traces_dir,
     db_path,
     *,
-    post_relaunch_step_id=POST_RELAUNCH_STEP_ID,
     ledger_bytes=None,
     expected_account=EXPECTED_ACCOUNT,
 ):
@@ -237,14 +280,16 @@ def _adapter_result(
             str(db_path),
             "--session-id",
             SESSION_ID,
-            "--post-relaunch-step-id",
-            post_relaunch_step_id,
+            "--saved-step-id",
+            SAVED_STEP_ID,
             "--package-name",
             PACKAGE_NAME,
             "--observed-account",
             OBSERVED_ACCOUNT,
             "--expected-account",
             expected_account,
+            "--expected-balance",
+            EXPECTED_BALANCE,
         ],
         check=False,
         capture_output=True,
@@ -252,7 +297,7 @@ def _adapter_result(
     )
 
 
-def test_negative_control_verdict_adapter_accepts_native_final_and_post_relaunch_capture(tmp_path):
+def test_negative_control_verdict_adapter_accepts_native_final_control_proof(tmp_path):
     traces_dir, db_path = _native_data_engine(tmp_path)
     result = _adapter_result(tmp_path, [_failed_final()], traces_dir, db_path)
 
@@ -260,8 +305,9 @@ def test_negative_control_verdict_adapter_accepts_native_final_and_post_relaunch
     output = json.loads(result.stdout)
     assert output["verdict"] == "fail_assertion"
     assert output["final_attempt_id"] == "final#1"
-    assert output["post_relaunch_step_id"] == POST_RELAUNCH_STEP_ID
-    assert output["post_relaunch_image_name"] == "native-post-relaunch-image"
+    assert output["saved_step_id"] == SAVED_STEP_ID
+    assert output["final_capture_step_id"] == FINAL_CAPTURE_STEP_ID
+    assert output["final_capture_image_name"] == "native-final-image"
 
 
 def test_negative_control_verdict_adapter_rejects_a_stale_final_failure(tmp_path):
@@ -289,8 +335,8 @@ def test_negative_control_verdict_adapter_rejects_the_expected_suffixed_account(
     assert json.loads(result.stdout)["reason"] == "native_capture"
 
 
-def test_negative_control_verdict_adapter_rejects_a_pre_relaunch_capture(tmp_path):
-    traces_dir, db_path = _native_data_engine(tmp_path, post_step_number=1)
+def test_negative_control_verdict_adapter_rejects_a_pre_relaunch_final_capture(tmp_path):
+    traces_dir, db_path = _native_data_engine(tmp_path, final_capture_step_number=1)
     result = _adapter_result(tmp_path, [_failed_final()], traces_dir, db_path)
 
     assert result.returncode == 2
@@ -303,6 +349,42 @@ def test_negative_control_verdict_adapter_requires_native_stop_and_launch(tmp_pa
 
     assert result.returncode == 2
     assert json.loads(result.stdout)["reason"] == "native_capture"
+
+
+def test_negative_control_verdict_adapter_rejects_a_restart_before_the_save(tmp_path):
+    traces_dir, db_path = _native_data_engine(
+        tmp_path,
+        saved_step_number=4,
+        final_capture_step_number=5,
+    )
+    result = _adapter_result(tmp_path, [_failed_final()], traces_dir, db_path)
+
+    assert result.returncode == 2
+    assert json.loads(result.stdout)["reason"] == "native_capture"
+
+
+def test_negative_control_verdict_adapter_rejects_an_unbound_final_checker_trace(tmp_path):
+    traces_dir, db_path = _native_data_engine(
+        tmp_path,
+        checker_session_id="60000000-0000-4000-8000-000000000001",
+    )
+    result = _adapter_result(tmp_path, [_failed_final()], traces_dir, db_path)
+
+    assert result.returncode == 2
+    assert json.loads(result.stdout)["reason"] == "native_capture"
+
+
+def test_negative_control_verdict_adapter_requires_the_final_capture_link(tmp_path):
+    traces_dir, db_path = _native_data_engine(tmp_path)
+    result = _adapter_result(
+        tmp_path,
+        [_failed_final(final_capture_step_id="")],
+        traces_dir,
+        db_path,
+    )
+
+    assert result.returncode == 2
+    assert json.loads(result.stdout)["reason"] == "checker"
 
 
 def test_negative_control_verdict_adapter_requires_the_deliberate_wrong_suffix(tmp_path):
