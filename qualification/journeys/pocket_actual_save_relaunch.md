@@ -116,26 +116,49 @@ the post-relaunch account name was observed, and that observed name was
 compared with "qual-<run_id>-WRONG-SUFFIX". The negative task must state this
 as its final assertion verbatim: `The post-relaunch account name must equal
 qual-<run_id>-WRONG-SUFFIX.` The executor must run with a pinned
-`--traces-path` and `--session-id`, then run:
+`--session-id` and set `ARTEMIS_TRACES_DIR=<ledger-root>` before launching
+the direct CLI. The Checker ledger is written to
+`<ledger-root>/<session-id>/check_ledger.jsonl`; `--traces-path` controls
+trace recording only and is not the Checker ledger location. After the
+post-relaunch read, write the following exact observation JSON to the evidence
+destination:
+
+```json
+{
+  "schema_version": 1,
+  "attempt_kind": "negative_control",
+  "session_id": "<session-id>",
+  "screen_semantics_id": "recovery-snapshot",
+  "after_relaunch": true,
+  "observed_account": "qual-<run_id>",
+  "expected_account": "qual-<run_id>-WRONG-SUFFIX"
+}
+```
+
+Then run:
 
 ```bash
+ARTEMIS_TRACES_DIR=<ledger-root> artemis run --session-id <session-id> ...
 python qualification/tools/checker_verdict_exit.py \
-  --ledger <traces-path>/<session-id>/check_ledger.jsonl \
+  --traces-dir <ledger-root> \
+  --session-id <session-id> \
+  --observation <negative-control-observation.json> \
   --observed-account qual-<run_id> \
   --expected-account qual-<run_id>-WRONG-SUFFIX
 ```
 
-The adapter reads the append-only final Checker ledger record, writes a
-machine-readable verdict, and exits `1` only when that exact final `assert`
-failed. It exits `2` for missing, malformed, unrelated, or non-failed
-evidence; only exit `1` is control success. Record the adapter's JSON output,
-ledger path, and exit code with the observed/expected account evidence. An
-orchestration status such as `completed` is not control success. A missing
-prerequisite, generic checker failure, zero adapter exit, exit `2`, or `pass`
-is an invalid control and unqualifies the entire batch. Record it as its own
-evidence entry (`attempt_kind: "negative_control"`), not folded into the N=10
-positive count (CHE-388 plan v2: "freeze N=10 positive runs per target/tier
-plus one separate negative control").
+The adapter reads only the latest `final#N` Checker ledger attempt, writes a
+machine-readable verdict, and exits `1` only when that attempt contains the
+exact failed final assertion and the observation JSON is valid. It exits `2`
+with JSON for missing, malformed, stale, unrelated, or non-failed evidence;
+only exit `1` is control success. Record the adapter's JSON output, derived
+ledger path, and exit code with the observation JSON. An orchestration status
+such as `completed` is not control success. A missing prerequisite, generic
+checker failure, zero adapter exit, exit `2`, or `pass` is an invalid control
+and unqualifies the entire batch. Record it as its own evidence entry
+(`attempt_kind: "negative_control"`), not folded into the N=10 positive count
+(CHE-388 plan v2: "freeze N=10 positive runs per target/tier plus one separate
+negative control").
 
 ## Bounded execution and cleanup
 
