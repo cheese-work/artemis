@@ -43,7 +43,7 @@ from artemis.data_engine.storage import StorageManager
 from artemis.runtime import trace_store
 
 
-def _llm(provider: str = "openai", model: str = "gpt-5.6-sol") -> LLMWithFallback:
+def _llm(provider: str = "openai", model: str = "gpt-6-sol") -> LLMWithFallback:
     return LLMWithFallback(
         provider=provider, model=model, fallback=LLM(provider=provider, model=model)
     )
@@ -65,7 +65,7 @@ _REQUIRED_NODES = (
 )
 
 
-def _uniform_config(provider: str = "openai", model: str = "gpt-5.6-sol") -> LLMConfig:
+def _uniform_config(provider: str = "openai", model: str = "gpt-6-sol") -> LLMConfig:
     """A fully-populated LLMConfig where every required node resolves to one tier."""
     node = _llm(provider, model)
     return LLMConfig(
@@ -93,7 +93,7 @@ def _manifest(**overrides):
     return build_attempt_manifest(**kwargs)
 
 
-def _usage(node: str, source: str | None = "openai:gpt-5.6-sol") -> dict:
+def _usage(node: str, source: str | None = "openai:gpt-6-sol") -> dict:
     event = {"node": node, "prompt_tokens": 10, "completion_tokens": 5}
     if source is not None:
         event["source"] = source
@@ -127,7 +127,7 @@ class TestReconciliation:
     def test_usage_for_node_absent_from_manifest_is_unmapped_call(self):
         manifest = _manifest()
         result = reconcile_attempt(
-            "a1", manifest, [_usage("some_new_node_not_in_manifest", source="openai:gpt-5.6-sol")]
+            "a1", manifest, [_usage("some_new_node_not_in_manifest", source="openai:gpt-6-sol")]
         )
         unmapped = next(n for n in result.nodes if n.node == "some_new_node_not_in_manifest")
         assert unmapped.verdict == "unmapped_call"
@@ -200,7 +200,7 @@ class TestReconciliation:
         result = reconcile_attempt(
             "a1",
             manifest,
-            [_usage("safety_net_pixel_validation", source="openai:gpt-5.6-sol")],
+            [_usage("safety_net_pixel_validation", source="openai:gpt-6-sol")],
         )
         pixel_safety = next(n for n in result.nodes if n.node == "validator_pixel_safety_net")
         assert pixel_safety.verdict == "match"
@@ -282,7 +282,7 @@ class TestReconciliation:
         """
         manifest = _manifest()
         result = reconcile_attempt(
-            "a1", manifest, [_usage("image_processor", source="openai:gpt-5.6-sol")]
+            "a1", manifest, [_usage("image_processor", source="openai:gpt-6-sol")]
         )
         operator = next(n for n in result.nodes if n.node == "operator")
         assert operator.verdict == "match"
@@ -306,7 +306,7 @@ class TestReconciliation:
         )
         manifest = _manifest(llm_config=config)
         result = reconcile_attempt(
-            "a1", manifest, [_usage("spawn_sub_agent", source="openai:gpt-5.6-sol")]
+            "a1", manifest, [_usage("spawn_sub_agent", source="openai:gpt-6-sol")]
         )
         video_analyzer = next(n for n in result.nodes if n.node == "video_analyzer")
         assert video_analyzer.verdict == "match"
@@ -329,7 +329,7 @@ class TestReconciliation:
         )
         manifest = _manifest(llm_config=config)
         result = reconcile_attempt(
-            "a1", manifest, [_usage("analyze_audio_only", source="openai:gpt-5.6-sol")]
+            "a1", manifest, [_usage("analyze_audio_only", source="openai:gpt-6-sol")]
         )
         video_analyzer = next(n for n in result.nodes if n.node == "video_analyzer")
         assert video_analyzer.verdict == "match"
@@ -436,7 +436,7 @@ class TestReconciliation:
         result = reconcile_attempt(
             "a1",
             manifest,
-            [_usage("safety_net_pixel_validation", source="openai:gpt-5.6-sol")],
+            [_usage("safety_net_pixel_validation", source="openai:gpt-6-sol")],
         )
         pixel_safety = next(n for n in result.nodes if n.node == "validator_pixel_safety_net")
         assert pixel_safety.verdict == "mismatch"
@@ -649,7 +649,7 @@ class TestReconcileFinishedAttempt:
                     session_id=trace_id,
                     type="llm_call",
                     name="llm_usage",
-                    payload={"node": node, "source": "openai:gpt-5.6-sol"},
+                    payload={"node": node, "source": "openai:gpt-6-sol"},
                 )
             )
 
@@ -754,7 +754,7 @@ class TestReconcileAttemptBatchByRunId:
                         session_id=trace_id,
                         type="llm_call",
                         name="llm_usage",
-                        payload={"node": node, "source": "openai:gpt-5.6-sol"},
+                        payload={"node": node, "source": "openai:gpt-6-sol"},
                     )
                 )
 
@@ -787,7 +787,7 @@ class TestReconcileAttemptBatchByRunId:
                 session_id=sol_trace_id,
                 type="llm_call",
                 name="llm_usage",
-                payload={"node": "planner", "source": "openai:gpt-5.6-sol"},
+                payload={"node": "planner", "source": "openai:gpt-6-sol"},
             )
         )
 
@@ -863,7 +863,7 @@ class TestReconcileAttemptBatchByRunId:
                 session_id=trace_id,
                 type="llm_call",
                 name="llm_usage",
-                payload={"node": "some_new_node_not_in_manifest", "source": "openai:gpt-5.6-sol"},
+                payload={"node": "some_new_node_not_in_manifest", "source": "openai:gpt-6-sol"},
             )
         )
 
@@ -905,7 +905,7 @@ class TestReconcileAttemptBatchByRunId:
                     session_id=target_trace_id,
                     type="llm_call",
                     name="llm_usage",
-                    payload={"node": node, "source": "openai:gpt-5.6-sol"},
+                    payload={"node": node, "source": "openai:gpt-6-sol"},
                 )
             )
 
