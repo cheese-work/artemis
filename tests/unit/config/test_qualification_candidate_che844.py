@@ -15,9 +15,22 @@ RECEIPT_PATH = REPO_ROOT / "qualification/candidates/pocket_actual_save_relaunch
 def test_receipt_maps_both_qualification_lanes_to_the_same_pinned_source():
     receipt = json.loads(RECEIPT_PATH.read_text(encoding="utf-8"))
 
-    assert receipt["source_candidate"]["commit_sha"] == "f60e89216c5a2c4429520e68d20d17c8b07ae6b3"
-    assert receipt["source_candidate"]["manifest_version"] == 3
-    assert receipt["source_candidate"]["fork_sha"] == "25a2c5b2c839b674994ee4a2a49e79209142bd1d"
+    assert receipt["source_candidate"]["commit_sha"] == "a6c82bd4f8a49cf80b6bff5a5a61c7adb540004e"
+    assert receipt["source_candidate"]["manifest_version"] == 4
+    assert receipt["source_candidate"]["fork_sha"] == "a6c82bd4f8a49cf80b6bff5a5a61c7adb540004e"
+    assert receipt["source_candidate"]["app_input_source"] == {
+        "pull_request": 26,
+        "commit_sha": "f60e89216c5a2c4429520e68d20d17c8b07ae6b3",
+    }
+    manifest = REPO_ROOT / receipt["source_candidate"]["manifest_path"]
+    assert (
+        hashlib.sha256(manifest.read_bytes()).hexdigest()
+        == receipt["source_candidate"]["manifest_digest_sha256"]
+    )
+    assert (
+        json.loads(manifest.read_text(encoding="utf-8"))["fork_sha"]["value"]
+        == receipt["source_candidate"]["fork_sha"]
+    )
     assert receipt["source_candidate"]["apk_digest_sha256"] == (
         "04795d5f3995c8e895f6440a9763c8a003c8b6ff955541e3965f5e71564e2e12"
     )
@@ -93,7 +106,7 @@ def test_each_lane_retains_the_execution_controls_and_return_contract():
         assert len(lane["assertions"]) == 4
         assert lane["relaunch_proof"]["pass_prerequisite"] is True
         assert "force-stop" in lane["relaunch_proof"]["after_save_stop"]
-        assert "process ended" in lane["relaunch_proof"]["process_ended"]
+        assert "pidof" in lane["relaunch_proof"]["process_ended"]
         assert lane["negative_control"]["expected_verdict"] == "fail_assertion"
         adapter = lane["negative_control"]["verdict_adapter"]
         assert adapter["path"] == "qualification/tools/checker_verdict_exit.py"
@@ -104,13 +117,15 @@ def test_each_lane_retains_the_execution_controls_and_return_contract():
         assert adapter["expected_exit"] == 1
         assert "ARTEMIS_TRACES_DIR/<session-id>/check_ledger.jsonl" in adapter["contract"]
         assert "native final capture" in adapter["contract"]
+        assert "native timestamps" in adapter["contract"]
+        assert "pidof" in adapter["contract"]
         assert lane["negative_control"]["not_satisfied_by"] == "completed orchestration status"
         assert (
             lane["negative_control"]["invalid_when_missing"]
             == "Invalid control; batch unqualified."
         )
         assert lane["negative_control"]["required_evidence"][-1] == (
-            "native saved-step and runner-bound final-capture proof, "
+            "native timestamp-ordered saved-step and runner-bound final-capture proof, "
             "ARTEMIS_TRACES_DIR-derived latest-final check_ledger.jsonl path, and adapter "
             "JSON output with exit 1"
         )

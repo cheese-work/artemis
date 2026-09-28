@@ -56,16 +56,14 @@ def test_manifest_and_companion_files_exist():
     assert EVIDENCE_SCHEMA_PATH.is_file()
 
 
-def test_fork_sha_is_a_valid_git_sha_and_matches_source_baseline():
+def test_fork_sha_is_a_valid_git_sha_and_matches_revision_four_runner():
     manifest = _load_manifest()
     fork_sha = manifest["fork_sha"]["value"]
     assert _SHA_RE.match(fork_sha), f"fork_sha must be a 40-hex-char git SHA, got {fork_sha!r}"
-    assert fork_sha == "25a2c5b2c839b674994ee4a2a49e79209142bd1d", (
-        "fork_sha must match the CHE-541 revision-3 pin (advanced past the Gate 1 "
-        "reconciliation fixes #16/#18/#22 "
-        "per the revision_policy); if the pin legitimately moves again, this "
-        "test and FORK_MAINTENANCE.md's promotion record must be updated "
-        "together, not silently."
+    assert manifest["manifest_version"] == 4
+    assert fork_sha == "a6c82bd4f8a49cf80b6bff5a5a61c7adb540004e", (
+        "fork_sha must match the CHE-844 runner revision that emits final capture "
+        "links and verifies process death; move it only with a new manifest revision."
     )
 
 

@@ -134,7 +134,11 @@ and its runner-generated final capture, whose exact UI values include
 `recovery-snapshot` and `qual-<run_id>`. It never accepts an executor-selected
 capture or generic Checker evidence. This rejects a copied, stale,
 pre-save-restart, pre-relaunch, unrelated-final, or substring-only
-observation.
+observation. The adapter orders the saved snapshot, stop, launch, and final
+capture by their native timestamps, not step numbers, because multiple native
+events may be recorded in one step. A successful stop means `am force-stop`
+returned no output and a subsequent `pidof <candidate_package>` returned no
+PID.
 
 Then run:
 
