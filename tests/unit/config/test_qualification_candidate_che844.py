@@ -1,5 +1,6 @@
 """Structural checks for CHE-844's immutable save/relaunch candidate receipt."""
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -24,12 +25,45 @@ def test_receipt_maps_both_qualification_lanes_to_the_same_pinned_source():
     assert lanes["CHE-541"]["transport"] == "usb_or_wireless_adb"
 
 
+def test_receipt_pins_the_revised_journey_bytes():
+    receipt = json.loads(RECEIPT_PATH.read_text(encoding="utf-8"))
+    journey = REPO_ROOT / receipt["testcase"]["journey_path"]
+
+    assert (
+        hashlib.sha256(journey.read_bytes()).hexdigest()
+        == receipt["testcase"]["journey_digest_sha256"]
+    )
+
+
+def test_journey_requires_process_death_and_negative_control_provenance():
+    receipt = json.loads(RECEIPT_PATH.read_text(encoding="utf-8"))
+    text = (REPO_ROOT / receipt["testcase"]["journey_path"]).read_text(encoding="utf-8")
+
+    assert "`stop_app` / `am force-stop`" in text
+    assert "process ended" in text
+    assert "invalid and cannot pass" in text
+    assert "generic checker failure" in text
+    assert "observed value was compared with" in text
+    assert "control and unqualifies the entire batch" in text
+
+
 def test_each_lane_retains_the_execution_controls_and_return_contract():
     receipt = json.loads(RECEIPT_PATH.read_text(encoding="utf-8"))
 
     for lane in receipt["lanes"]:
         assert lane["evidence_destination"]
         assert "secure-storage" in lane["fixture_reset"]
-        assert len(lane["assertions"]) == 3
-        assert "WRONG-SUFFIX" in lane["negative_control"]
+        assert len(lane["assertions"]) == 4
+        assert lane["relaunch_proof"]["pass_prerequisite"] is True
+        assert "force-stop" in lane["relaunch_proof"]["after_save_stop"]
+        assert "process ended" in lane["relaunch_proof"]["process_ended"]
+        assert lane["negative_control"]["expected_verdict"] == "fail_assertion"
+        assert lane["negative_control"]["invalid_when_missing"] == "Invalid control; batch unqualified."
+        assert lane["negative_control"]["required_evidence"] == [
+            "UI save confirmation for the original token",
+            "recorded post-save process stop and verified process end",
+            "relaunch evidence for the saved entry",
+            "observed post-relaunch value",
+            "recorded mismatch between the observed value and <random_token>-WRONG-SUFFIX",
+        ]
         assert "verified release" in lane["cleanup_contract"]
