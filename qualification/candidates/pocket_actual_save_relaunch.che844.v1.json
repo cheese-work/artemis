@@ -6,8 +6,6 @@
     "repository": "https://github.com/cheese-work/artemis",
     "pull_request": 26,
     "commit_sha": "f60e89216c5a2c4429520e68d20d17c8b07ae6b3",
-    "journey_path": "qualification/journeys/pocket_actual_save_relaunch.md",
-    "journey_digest_sha256": "3164c9b24d323ec41f9758be7f081906d12f94b5f58854535e1bb1d25a39bf13",
     "manifest_path": "qualification/manifests/pocket_actual_save_relaunch.v1.json",
     "manifest_digest_sha256": "71773b017e8d44bc7ce0404ebf39c4d2578bf8fdd7f8f657e837adab7a9b2440",
     "manifest_version": 3,
@@ -26,7 +24,11 @@
       }
     }
   },
-  "shared_testcase_rationale": "PR #26 changes the manifest and model inputs but not the journey. This receipt explicitly maps that exact source commit, journey digest, manifest v3, fork SHA, app SHA, and APK digest to both lanes; it does not infer X99 applicability from the Pixel PR title.",
+  "testcase": {
+    "journey_path": "qualification/journeys/pocket_actual_save_relaunch.md",
+    "journey_digest_sha256": "59133aa96892ac7f1f166e2ddd6acbb0a9190893fe001c139d06000f7c3acf4a"
+  },
+  "shared_testcase_rationale": "PR #26 supplies the pinned manifest and model inputs. This receipt locks the revised journey digest, manifest v3, fork SHA, app SHA, and APK digest to both lanes; it does not infer X99 applicability from the Pixel PR title.",
   "lanes": [
     {
       "issue": "CHE-540",
@@ -36,10 +38,26 @@
       "fixture_reset": "Fresh fixture before every positive or negative attempt; force-stop, clear app data, cold-start, and secure-storage readiness check.",
       "assertions": [
         "The UI confirms save before relaunch.",
+        "A recorded successful post-save force-stop and process-end check precede relaunch.",
         "The relaunch reaches the saved entry.",
         "The value equals the unique attempt token byte-for-byte."
       ],
-      "negative_control": "The saved value is checked against the same token with -WRONG-SUFFIX and must report fail_assertion.",
+      "relaunch_proof": {
+        "pass_prerequisite": true,
+        "after_save_stop": "Record a successful stop_app or am force-stop after UI save and before relaunch.",
+        "process_ended": "Record a process check showing the saved process ended before relaunch."
+      },
+      "negative_control": {
+        "expected_verdict": "fail_assertion",
+        "required_evidence": [
+          "UI save confirmation for the original token",
+          "recorded post-save process stop and verified process end",
+          "relaunch evidence for the saved entry",
+          "observed post-relaunch value",
+          "recorded mismatch between the observed value and <random_token>-WRONG-SUFFIX"
+        ],
+        "invalid_when_missing": "Invalid control; batch unqualified."
+      },
       "cleanup_contract": "After every outcome, restore and confirm the cold fixture before the executor releases its claim; record verified release or leave the target unavailable with a recovery owner."
     },
     {
@@ -50,10 +68,26 @@
       "fixture_reset": "Fresh fixture before every positive or negative attempt; force-stop, clear app data, cold-start, and secure-storage readiness check.",
       "assertions": [
         "The UI confirms save before relaunch.",
+        "A recorded successful post-save force-stop and process-end check precede relaunch.",
         "The relaunch reaches the saved entry.",
         "The value equals the unique attempt token byte-for-byte."
       ],
-      "negative_control": "The saved value is checked against the same token with -WRONG-SUFFIX and must report fail_assertion.",
+      "relaunch_proof": {
+        "pass_prerequisite": true,
+        "after_save_stop": "Record a successful stop_app or am force-stop after UI save and before relaunch.",
+        "process_ended": "Record a process check showing the saved process ended before relaunch."
+      },
+      "negative_control": {
+        "expected_verdict": "fail_assertion",
+        "required_evidence": [
+          "UI save confirmation for the original token",
+          "recorded post-save process stop and verified process end",
+          "relaunch evidence for the saved entry",
+          "observed post-relaunch value",
+          "recorded mismatch between the observed value and <random_token>-WRONG-SUFFIX"
+        ],
+        "invalid_when_missing": "Invalid control; batch unqualified."
+      },
       "cleanup_contract": "After every outcome, restore and confirm the cold fixture before the executor releases its claim; record verified release or leave the target unavailable with a recovery owner."
     }
   ],

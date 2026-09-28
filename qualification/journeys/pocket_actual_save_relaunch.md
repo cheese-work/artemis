@@ -50,9 +50,10 @@ Goal text passed as `task_desc` (MCP `mobile_run_task`) / `goal` (CLI `artemis r
 > value "<random_token>" (substitute the actual run id and a freshly
 > generated random token before dispatch — never reuse a token across
 > attempts, so a stale relaunch can never be mistaken for a fresh save).
-> Save it. Force the app to the background, then fully close it. Relaunch
-> the app from the home screen. Open the same entry and read back its
-> value.
+> Save it. The execution controller must then record a successful
+> `stop_app` / `am force-stop` for the candidate package, verify the saved
+> process ended, and only then relaunch the app from the home screen. Open
+> the same entry and read back its value.
 
 `expected_output_desc` / `output_description`:
 
@@ -64,15 +65,19 @@ Goal text passed as `task_desc` (MCP `mobile_run_task`) / `goal` (CLI `artemis r
 1. **Save succeeded**: the app's own UI confirms the entry was created
    (e.g. a visible list item, a save confirmation) before the
    background/close step begins.
-2. **Relaunch reached the same screen**: after relaunch, the agent
+2. **Process termination is proven**: after UI save and before relaunch,
+   the execution record shows a successful `stop_app` / `am force-stop`
+   and a process check that the saved process ended. Without both records,
+   the attempt is invalid and cannot pass.
+3. **Relaunch reached the same screen**: after relaunch, the agent
    navigates back to the entry (via whatever path the app's UI requires) —
    this is graded as part of the run, not scripted, since the navigation
    path is exactly what a real user would need and is part of what
    qualification is proving.
-3. **Persisted value matches**: the value read back after relaunch equals
+4. **Persisted value matches**: the value read back after relaunch equals
    "<random_token>" byte-for-byte. Anything else (empty, default, a
    different prior value, an app crash) is `fail_assertion`.
-4. **Verdict discipline**: an attempt that never reaches a relaunched,
+5. **Verdict discipline**: an attempt that never reaches a relaunched,
    readable state (app crash, ANR, device disconnect, ADB failure) is
    `fail_infrastructure` or `device_unavailable`, never silently folded
    into `fail_assertion` — see `evidence_schema.v1.json`'s `verdict` enum.
@@ -85,14 +90,16 @@ that provenance guarantees is wrong:
 > ...(identical save/relaunch steps as the positive run)... Open the same
 > entry and confirm its value reads "<random_token>-WRONG-SUFFIX" exactly.
 
-This must produce `fail_assertion` (Checker or Outputter catches the
-mismatch and reports failure) on every run. A negative control that comes
-back `pass` invalidates the entire batch it belongs to — the pipeline is
-not distinguishing true from false, so no positive result in that batch
-can be trusted either. Record it as its own evidence entry
+Count this control only when its record proves all of the following: the UI
+saved the original token, the post-save process stop succeeded and the
+process ended, the app relaunched, the post-relaunch value was observed, and
+that observed value was compared with "<random_token>-WRONG-SUFFIX". The
+control must then produce `fail_assertion` because of that mismatch. A
+missing prerequisite, generic checker failure, or `pass` is an invalid
+control and unqualifies the entire batch. Record it as its own evidence entry
 (`attempt_kind: "negative_control"`), not folded into the N=10 positive
-count (CHE-388 plan v2: "freeze N=10 positive runs per target/tier plus
-one separate negative control").
+count (CHE-388 plan v2: "freeze N=10 positive runs per target/tier plus one
+separate negative control").
 
 ## Bounded execution and cleanup
 
