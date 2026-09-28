@@ -1,0 +1,65 @@
+{
+  "receipt_version": 1,
+  "issue": "CHE-844",
+  "candidate_kind": "testcase",
+  "source_candidate": {
+    "repository": "https://github.com/cheese-work/artemis",
+    "pull_request": 26,
+    "commit_sha": "f60e89216c5a2c4429520e68d20d17c8b07ae6b3",
+    "journey_path": "qualification/journeys/pocket_actual_save_relaunch.md",
+    "journey_digest_sha256": "3164c9b24d323ec41f9758be7f081906d12f94b5f58854535e1bb1d25a39bf13",
+    "manifest_path": "qualification/manifests/pocket_actual_save_relaunch.v1.json",
+    "manifest_digest_sha256": "71773b017e8d44bc7ce0404ebf39c4d2578bf8fdd7f8f657e837adab7a9b2440",
+    "manifest_version": 3,
+    "fork_sha": "25a2c5b2c839b674994ee4a2a49e79209142bd1d",
+    "app_sha": "2c42481778e6f9b88a9502f55decdbe4e1a76e83",
+    "apk_digest_sha256": "04795d5f3995c8e895f6440a9763c8a003c8b6ff955541e3965f5e71564e2e12",
+    "package_name": "dev.cheese.pocketactual",
+    "model_inputs": {
+      "sol": {
+        "config_path": "config/artemis.jsonc",
+        "config_digest_sha256": "06e79b5a8247be79dbb5bb74a28a7151eb557a3f6d7c5fcdd7a343e7a9298aca"
+      },
+      "nova": {
+        "config_path": "qualification/configs/nova.artemis.jsonc",
+        "config_digest_sha256": "f191cd671d6d0d748640386c912bbce98c708a2057c0af74d35277fe1aceff73"
+      }
+    }
+  },
+  "shared_testcase_rationale": "PR #26 changes the manifest and model inputs but not the journey. This receipt explicitly maps that exact source commit, journey digest, manifest v3, fork SHA, app SHA, and APK digest to both lanes; it does not infer X99 applicability from the Pixel PR title.",
+  "lanes": [
+    {
+      "issue": "CHE-540",
+      "target": "X99 recyclable AVD",
+      "transport": "emulator",
+      "evidence_destination": "CHE-540 execution report and attachments",
+      "fixture_reset": "Fresh fixture before every positive or negative attempt; force-stop, clear app data, cold-start, and secure-storage readiness check.",
+      "assertions": [
+        "The UI confirms save before relaunch.",
+        "The relaunch reaches the saved entry.",
+        "The value equals the unique attempt token byte-for-byte."
+      ],
+      "negative_control": "The saved value is checked against the same token with -WRONG-SUFFIX and must report fail_assertion.",
+      "cleanup_contract": "After every outcome, restore and confirm the cold fixture before the executor releases its claim; record verified release or leave the target unavailable with a recovery owner."
+    },
+    {
+      "issue": "CHE-541",
+      "target": "Pixel 6 Pro",
+      "transport": "usb_or_wireless_adb",
+      "evidence_destination": "CHE-541 execution report and attachments",
+      "fixture_reset": "Fresh fixture before every positive or negative attempt; force-stop, clear app data, cold-start, and secure-storage readiness check.",
+      "assertions": [
+        "The UI confirms save before relaunch.",
+        "The relaunch reaches the saved entry.",
+        "The value equals the unique attempt token byte-for-byte."
+      ],
+      "negative_control": "The saved value is checked against the same token with -WRONG-SUFFIX and must report fail_assertion.",
+      "cleanup_contract": "After every outcome, restore and confirm the cold fixture before the executor releases its claim; record verified release or leave the target unavailable with a recovery owner."
+    }
+  ],
+  "review_and_execution_boundary": {
+    "testcase_review": "Two independent non-author reviewers must review this exact receipt revision before a mutating qualification attempt.",
+    "author_role": "CHE-844 author only; no device claim, device command, provider call, fixture reset, execution, or qualification verdict.",
+    "evidence_role": "CHE-656/dev team may produce Gate 1 evidence only from the reviewed, immutable candidate and returned executor artifacts."
+  }
+}
