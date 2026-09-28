@@ -43,7 +43,7 @@
   },
   "testcase": {
     "journey_path": "qualification/journeys/pocket_actual_save_relaunch.md",
-    "journey_digest_sha256": "e4a73c569946b7d8363aff79516488f226c9e2efdbac11aa88d041187e75d188"
+    "journey_digest_sha256": "3f416bfe98c228cf9524c7a0563e7176b307d95c2983b34860a60231903860dd"
   },
   "shared_testcase_rationale": "PR #26 supplies the pinned manifest and model inputs. This receipt locks the revised journey digest, manifest v3, fork SHA, app SHA, and APK digest to both lanes; it does not infer X99 applicability from the Pixel PR title.",
   "lanes": [
@@ -68,8 +68,8 @@
         "expected_verdict": "fail_assertion",
         "verdict_adapter": {
           "path": "qualification/tools/checker_verdict_exit.py",
-          "digest_sha256": "f437ac76677780c85536777585b54c798f6a39d19d1d1180ef62d8d7ae720d59",
-          "contract": "Derives ARTEMIS_TRACES_DIR/<session-id>/check_ledger.jsonl and exits 1 only when the latest final attempt has the exact failed assert plus a hash-verified same-session, same-step recovery-snapshot UI hierarchy manifest and matching Checker evidence; malformed evidence exits 2 with JSON.",
+          "digest_sha256": "aa16f3ab93212785babe479130073eb61f60a6b92b5ef9e1a0feb2ad267edef8",
+          "contract": "Derives ARTEMIS_TRACES_DIR/<session-id>/check_ledger.jsonl and exits 1 only when the latest final attempt has the exact failed assert plus native DataEngine proof of a same-session Recovery snapshot capture with exact UI values after successful stop_app then launch_app traces; malformed evidence exits 2 with JSON.",
           "expected_exit": 1
         },
         "not_satisfied_by": "completed orchestration status",
@@ -79,7 +79,7 @@
           "relaunch evidence for the Recovery snapshot",
           "observed post-relaunch account name",
           "recorded mismatch between the observed account name and qual-<run_id>-WRONG-SUFFIX",
-          "hash-verified post-relaunch recovery-snapshot UI hierarchy and evidence manifest, ARTEMIS_TRACES_DIR-derived latest-final check_ledger.jsonl path, and adapter JSON output with exit 1"
+          "native post-relaunch DataEngine step/image proof, ARTEMIS_TRACES_DIR-derived latest-final check_ledger.jsonl path, and adapter JSON output with exit 1"
         ],
         "invalid_when_missing": "Invalid control; batch unqualified."
       },
@@ -106,8 +106,8 @@
         "expected_verdict": "fail_assertion",
         "verdict_adapter": {
           "path": "qualification/tools/checker_verdict_exit.py",
-          "digest_sha256": "f437ac76677780c85536777585b54c798f6a39d19d1d1180ef62d8d7ae720d59",
-          "contract": "Derives ARTEMIS_TRACES_DIR/<session-id>/check_ledger.jsonl and exits 1 only when the latest final attempt has the exact failed assert plus a hash-verified same-session, same-step recovery-snapshot UI hierarchy manifest and matching Checker evidence; malformed evidence exits 2 with JSON.",
+          "digest_sha256": "aa16f3ab93212785babe479130073eb61f60a6b92b5ef9e1a0feb2ad267edef8",
+          "contract": "Derives ARTEMIS_TRACES_DIR/<session-id>/check_ledger.jsonl and exits 1 only when the latest final attempt has the exact failed assert plus native DataEngine proof of a same-session Recovery snapshot capture with exact UI values after successful stop_app then launch_app traces; malformed evidence exits 2 with JSON.",
           "expected_exit": 1
         },
         "not_satisfied_by": "completed orchestration status",
@@ -117,7 +117,7 @@
           "relaunch evidence for the Recovery snapshot",
           "observed post-relaunch account name",
           "recorded mismatch between the observed account name and qual-<run_id>-WRONG-SUFFIX",
-          "hash-verified post-relaunch recovery-snapshot UI hierarchy and evidence manifest, ARTEMIS_TRACES_DIR-derived latest-final check_ledger.jsonl path, and adapter JSON output with exit 1"
+          "native post-relaunch DataEngine step/image proof, ARTEMIS_TRACES_DIR-derived latest-final check_ledger.jsonl path, and adapter JSON output with exit 1"
         ],
         "invalid_when_missing": "Invalid control; batch unqualified."
       },

@@ -3,6 +3,7 @@
 import hashlib
 import json
 from pathlib import Path
+import sqlite3
 import subprocess
 import sys
 
@@ -49,21 +50,21 @@ def test_receipt_pins_the_revised_journey_bytes():
     )
 
 
-def test_journey_requires_process_death_and_negative_control_provenance():
+def test_journey_requires_process_death_and_native_negative_control_provenance():
     receipt = json.loads(RECEIPT_PATH.read_text(encoding="utf-8"))
     text = (REPO_ROOT / receipt["testcase"]["journey_path"]).read_text(encoding="utf-8")
 
     assert "`stop_app` / `am force-stop`" in text
     assert "process ended" in text
     assert "invalid and cannot pass" in text
-    assert "generic\nchecker failure" in text
     assert "checker_verdict_exit.py" in text
     assert "ARTEMIS_TRACES_DIR=<ledger-root>" in text
+    assert "DATA_ENGINE_DB_PATH=<ledger-root>/data_engine.db" in text
     assert "artemis run --standalone" in text
-    assert "`--traces-path` controls\ntrace recording only" in text
-    assert "latest `final#N` Checker ledger attempt" in text
-    assert "capture a UI hierarchy XML" in text
-    assert "ui_hierarchy_sha256" in text
+    assert "native DataEngine `step_id`" in text
+    assert "successful native" in text
+    assert "`stop_app` then `launch_app`" in text
+    assert "exact UI\nvalues" in text
     assert "completed` is not control success" in text
     assert 'observed name was\ncompared with "qual-<run_id>-WRONG-SUFFIX"' in text
     assert "invalid control" in text
@@ -100,62 +101,122 @@ def test_each_lane_retains_the_execution_controls_and_return_contract():
         )
         assert adapter["expected_exit"] == 1
         assert "ARTEMIS_TRACES_DIR/<session-id>/check_ledger.jsonl" in adapter["contract"]
-        assert "latest final attempt" in adapter["contract"]
+        assert "native DataEngine" in adapter["contract"]
         assert lane["negative_control"]["not_satisfied_by"] == "completed orchestration status"
         assert (
             lane["negative_control"]["invalid_when_missing"]
             == "Invalid control; batch unqualified."
         )
-        assert lane["negative_control"]["required_evidence"] == [
-            "Recovery snapshot confirmation for the original account and USD · +123.45 balance",
-            "recorded post-save process stop and verified process end",
-            "relaunch evidence for the Recovery snapshot",
-            "observed post-relaunch account name",
-            "recorded mismatch between the observed account name and qual-<run_id>-WRONG-SUFFIX",
-            (
-                "hash-verified post-relaunch recovery-snapshot UI hierarchy and evidence "
-                "manifest, ARTEMIS_TRACES_DIR-derived latest-final check_ledger.jsonl path, "
-                "and adapter JSON output with exit 1"
-            ),
-        ]
+        assert lane["negative_control"]["required_evidence"][-1] == (
+            "native post-relaunch DataEngine step/image proof, ARTEMIS_TRACES_DIR-derived "
+            "latest-final check_ledger.jsonl path, and adapter JSON output with exit 1"
+        )
         assert "verified release" in lane["cleanup_contract"]
 
 
 SESSION_ID = "99d9a63b-8f1c-4e5d-98f5-070262adc1ee"
+CHECKER_TRACE_ID = "10000000-0000-4000-8000-000000000001"
+STOP_STEP_ID = "20000000-0000-4000-8000-000000000001"
+LAUNCH_STEP_ID = "30000000-0000-4000-8000-000000000001"
+POST_RELAUNCH_STEP_ID = "40000000-0000-4000-8000-000000000001"
 OBSERVED_ACCOUNT = "qual-run-1"
 EXPECTED_ACCOUNT = "qual-run-1-WRONG-SUFFIX"
-STEP_ID = "step-post-relaunch-42"
+PACKAGE_NAME = "dev.cheese.pocketactual"
 
 
-def _evidence_manifest(tmp_path, **changes):
-    hierarchy = tmp_path / "post-relaunch-ui.xml"
-    hierarchy.write_text(
-        (
-            '<hierarchy><node content-desc="recovery-snapshot" '
-            f'text="{OBSERVED_ACCOUNT}" /></hierarchy>'
-        ),
-        encoding="utf-8",
-    )
-    value = {
-        "schema_version": 2,
-        "attempt_kind": "negative_control",
-        "session_id": SESSION_ID,
-        "screen_semantics_id": "recovery-snapshot",
-        "final_attempt_id": "final#1",
-        "post_relaunch_step_id": STEP_ID,
-        "ui_hierarchy": {
-            "path": hierarchy.name,
-            "sha256": hashlib.sha256(hierarchy.read_bytes()).hexdigest(),
-        },
-    }
-    value.update(changes)
-    manifest = tmp_path / "negative-control-evidence.json"
-    manifest.write_text(json.dumps(value), encoding="utf-8")
-    return manifest, value["ui_hierarchy"]["sha256"]
-
-
-def _adapter_result(tmp_path, records, manifest, *, ledger_bytes=None):
+def _native_data_engine(
+    tmp_path,
+    *,
+    observed_account=OBSERVED_ACCOUNT,
+    post_step_number=4,
+    include_stop_launch=True,
+):
     traces_dir = tmp_path / "runtime-traces"
+    traces_dir.mkdir()
+    db_path = traces_dir / "data_engine.db"
+    connection = sqlite3.connect(db_path)
+    connection.executescript(
+        """
+        CREATE TABLE images (image_name TEXT PRIMARY KEY, ui_tree TEXT);
+        CREATE TABLE steps (
+            step_id TEXT PRIMARY KEY,
+            session_id TEXT,
+            step_number INTEGER,
+            pre_image_name TEXT
+        );
+        CREATE TABLE traces (
+            trace_id TEXT PRIMARY KEY,
+            session_id TEXT,
+            step_id TEXT,
+            type TEXT,
+            name TEXT,
+            status TEXT,
+            payload TEXT
+        );
+        """
+    )
+    image_name = "native-post-relaunch-image"
+    ui_tree = [
+        {"content_desc": "recovery-snapshot"},
+        {"text": observed_account},
+    ]
+    connection.execute(
+        "INSERT INTO images VALUES (?, ?)",
+        (image_name, json.dumps(ui_tree)),
+    )
+    connection.executemany(
+        "INSERT INTO steps VALUES (?, ?, ?, ?)",
+        [
+            (STOP_STEP_ID, SESSION_ID, 2, None),
+            (LAUNCH_STEP_ID, SESSION_ID, 3, None),
+            (POST_RELAUNCH_STEP_ID, SESSION_ID, post_step_number, image_name),
+        ],
+    )
+    if include_stop_launch:
+        for index, (step_id, action) in enumerate(
+            [(STOP_STEP_ID, "stop_app"), (LAUNCH_STEP_ID, "launch_app")],
+            start=1,
+        ):
+            connection.execute(
+                "INSERT INTO traces VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    f"50000000-0000-4000-8000-00000000000{index}",
+                    SESSION_ID,
+                    step_id,
+                    "action",
+                    action,
+                    "success",
+                    json.dumps({"action": {"action": action, "app_name": PACKAGE_NAME}}),
+                ),
+            )
+    connection.commit()
+    connection.close()
+    return traces_dir, db_path
+
+
+def _failed_final(attempt_id="final#1", **changes):
+    return {
+        "attempt_id": attempt_id,
+        "kind": "assert",
+        "status": "failed",
+        "item_text": f"The post-relaunch account name must equal {EXPECTED_ACCOUNT}.",
+        "trace_id": CHECKER_TRACE_ID,
+        "anchor_step_id": None,
+        "evidence": "Final screen comparison recorded by the Checker.",
+        **changes,
+    }
+
+
+def _adapter_result(
+    tmp_path,
+    records,
+    traces_dir,
+    db_path,
+    *,
+    post_relaunch_step_id=POST_RELAUNCH_STEP_ID,
+    ledger_bytes=None,
+    expected_account=EXPECTED_ACCOUNT,
+):
     ledger = traces_dir / SESSION_ID / "check_ledger.jsonl"
     ledger.parent.mkdir(parents=True)
     if ledger_bytes is not None:
@@ -172,14 +233,18 @@ def _adapter_result(tmp_path, records, manifest, *, ledger_bytes=None):
             str(adapter),
             "--traces-dir",
             str(traces_dir),
+            "--data-engine-db",
+            str(db_path),
             "--session-id",
             SESSION_ID,
-            "--evidence-manifest",
-            str(manifest),
+            "--post-relaunch-step-id",
+            post_relaunch_step_id,
+            "--package-name",
+            PACKAGE_NAME,
             "--observed-account",
             OBSERVED_ACCOUNT,
             "--expected-account",
-            EXPECTED_ACCOUNT,
+            expected_account,
         ],
         check=False,
         capture_output=True,
@@ -187,130 +252,80 @@ def _adapter_result(tmp_path, records, manifest, *, ledger_bytes=None):
     )
 
 
-def _failed_final(attempt_id="final#1", *, evidence_digest, **changes):
-    return {
-        "attempt_id": attempt_id,
-        "kind": "assert",
-        "status": "failed",
-        "item_text": f"The post-relaunch account name must equal {EXPECTED_ACCOUNT}.",
-        "trace_id": SESSION_ID,
-        "anchor_step_id": STEP_ID,
-        "evidence": (
-            f"observed_account={OBSERVED_ACCOUNT}; "
-            f"expected_account={EXPECTED_ACCOUNT}; "
-            f"ui_hierarchy_sha256={evidence_digest}"
-        ),
-        **changes,
-    }
-
-
-def test_negative_control_verdict_adapter_exits_one_only_for_latest_exact_assertion(tmp_path):
-    manifest, digest = _evidence_manifest(tmp_path)
-    result = _adapter_result(tmp_path, [_failed_final(evidence_digest=digest)], manifest)
+def test_negative_control_verdict_adapter_accepts_native_final_and_post_relaunch_capture(tmp_path):
+    traces_dir, db_path = _native_data_engine(tmp_path)
+    result = _adapter_result(tmp_path, [_failed_final()], traces_dir, db_path)
 
     assert result.returncode == 1
     output = json.loads(result.stdout)
     assert output["verdict"] == "fail_assertion"
     assert output["final_attempt_id"] == "final#1"
-    assert output["ledger_path"].endswith(f"{SESSION_ID}/check_ledger.jsonl")
+    assert output["post_relaunch_step_id"] == POST_RELAUNCH_STEP_ID
+    assert output["post_relaunch_image_name"] == "native-post-relaunch-image"
 
 
 def test_negative_control_verdict_adapter_rejects_a_stale_final_failure(tmp_path):
-    manifest, digest = _evidence_manifest(tmp_path, final_attempt_id="final#2")
-    latest = _failed_final("final#2", evidence_digest=digest)
-    latest["status"] = "passed"
-    result = _adapter_result(tmp_path, [_failed_final(evidence_digest=digest), latest], manifest)
+    traces_dir, db_path = _native_data_engine(tmp_path)
+    latest = _failed_final("final#2", status="passed")
+    result = _adapter_result(tmp_path, [_failed_final(), latest], traces_dir, db_path)
 
     assert result.returncode == 2
     assert json.loads(result.stdout)["reason"] == "checker"
 
 
-def test_negative_control_verdict_adapter_rejects_checker_non_observation_even_when_named(
-    tmp_path,
-):
-    manifest, digest = _evidence_manifest(tmp_path)
-    result = _adapter_result(
-        tmp_path,
-        [
-            _failed_final(
-                evidence_digest=digest,
-                evidence=(
-                    f"Could not observe {OBSERVED_ACCOUNT} after relaunch; "
-                    f"expected_account={EXPECTED_ACCOUNT}; "
-                    f"ui_hierarchy_sha256={digest}"
-                ),
-            )
-        ],
-        manifest,
-    )
+def test_negative_control_verdict_adapter_rejects_substring_only_account_match(tmp_path):
+    traces_dir, db_path = _native_data_engine(tmp_path, observed_account="qual-run-10")
+    result = _adapter_result(tmp_path, [_failed_final()], traces_dir, db_path)
 
     assert result.returncode == 2
-    assert json.loads(result.stdout)["reason"] == "checker"
+    assert json.loads(result.stdout)["reason"] == "native_capture"
 
 
-def test_negative_control_verdict_adapter_rejects_a_hierarchy_without_the_account(tmp_path):
-    manifest, digest = _evidence_manifest(tmp_path)
-    hierarchy = tmp_path / "post-relaunch-ui.xml"
-    hierarchy.write_text(
-        '<hierarchy><node content-desc="recovery-snapshot" text="missing" /></hierarchy>',
-        encoding="utf-8",
-    )
-    result = _adapter_result(tmp_path, [_failed_final(evidence_digest=digest)], manifest)
+def test_negative_control_verdict_adapter_rejects_the_expected_suffixed_account(tmp_path):
+    traces_dir, db_path = _native_data_engine(tmp_path, observed_account=EXPECTED_ACCOUNT)
+    result = _adapter_result(tmp_path, [_failed_final()], traces_dir, db_path)
 
     assert result.returncode == 2
-    assert json.loads(result.stdout)["reason"] == "evidence_manifest"
+    assert json.loads(result.stdout)["reason"] == "native_capture"
+
+
+def test_negative_control_verdict_adapter_rejects_a_pre_relaunch_capture(tmp_path):
+    traces_dir, db_path = _native_data_engine(tmp_path, post_step_number=1)
+    result = _adapter_result(tmp_path, [_failed_final()], traces_dir, db_path)
+
+    assert result.returncode == 2
+    assert json.loads(result.stdout)["reason"] == "native_capture"
+
+
+def test_negative_control_verdict_adapter_requires_native_stop_and_launch(tmp_path):
+    traces_dir, db_path = _native_data_engine(tmp_path, include_stop_launch=False)
+    result = _adapter_result(tmp_path, [_failed_final()], traces_dir, db_path)
+
+    assert result.returncode == 2
+    assert json.loads(result.stdout)["reason"] == "native_capture"
 
 
 def test_negative_control_verdict_adapter_requires_the_deliberate_wrong_suffix(tmp_path):
-    manifest, digest = _evidence_manifest(tmp_path)
-    adapter = REPO_ROOT / "qualification/tools/checker_verdict_exit.py"
-    traces_dir = tmp_path / "runtime-traces"
-    ledger = traces_dir / SESSION_ID / "check_ledger.jsonl"
-    ledger.parent.mkdir(parents=True)
-    ledger.write_text(json.dumps(_failed_final(evidence_digest=digest)), encoding="utf-8")
-
-    result = subprocess.run(
-        [
-            sys.executable,
-            str(adapter),
-            "--traces-dir",
-            str(traces_dir),
-            "--session-id",
-            SESSION_ID,
-            "--evidence-manifest",
-            str(manifest),
-            "--observed-account",
-            OBSERVED_ACCOUNT,
-            "--expected-account",
-            OBSERVED_ACCOUNT,
-        ],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-
-    assert result.returncode == 2
-    assert json.loads(result.stdout)["reason"] == "evidence_manifest"
-
-
-def test_negative_control_verdict_adapter_rejects_a_mismatched_post_relaunch_step(tmp_path):
-    manifest, digest = _evidence_manifest(tmp_path)
+    traces_dir, db_path = _native_data_engine(tmp_path)
     result = _adapter_result(
         tmp_path,
-        [_failed_final(evidence_digest=digest, anchor_step_id="step-before-relaunch")],
-        manifest,
+        [_failed_final()],
+        traces_dir,
+        db_path,
+        expected_account=OBSERVED_ACCOUNT,
     )
 
     assert result.returncode == 2
-    assert json.loads(result.stdout)["reason"] == "checker"
+    assert json.loads(result.stdout)["reason"] == "account_contract"
 
 
 def test_negative_control_verdict_adapter_rejects_invalid_utf8_ledger(tmp_path):
-    manifest, _ = _evidence_manifest(tmp_path)
+    traces_dir, db_path = _native_data_engine(tmp_path)
     result = _adapter_result(
         tmp_path,
         [],
-        manifest,
+        traces_dir,
+        db_path,
         ledger_bytes=b"\xff",
     )
 
@@ -318,53 +333,14 @@ def test_negative_control_verdict_adapter_rejects_invalid_utf8_ledger(tmp_path):
     assert json.loads(result.stdout)["reason"] == "ledger"
 
 
-def test_negative_control_verdict_adapter_rejects_a_missing_runtime_ledger(tmp_path):
-    manifest, _ = _evidence_manifest(tmp_path)
-    adapter = REPO_ROOT / "qualification/tools/checker_verdict_exit.py"
-
-    result = subprocess.run(
-        [
-            sys.executable,
-            str(adapter),
-            "--traces-dir",
-            str(tmp_path / "runtime-traces"),
-            "--session-id",
-            SESSION_ID,
-            "--evidence-manifest",
-            str(manifest),
-            "--observed-account",
-            OBSERVED_ACCOUNT,
-            "--expected-account",
-            EXPECTED_ACCOUNT,
-        ],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-
-    assert result.returncode == 2
-    assert json.loads(result.stdout)["reason"] == "ledger"
-
-
-def test_negative_control_verdict_adapter_rejects_malformed_later_final_attempt(tmp_path):
-    manifest, digest = _evidence_manifest(tmp_path)
-    result = _adapter_result(
-        tmp_path,
-        [_failed_final(evidence_digest=digest), {"attempt_id": "final#2"}],
-        manifest,
-    )
-
-    assert result.returncode == 2
-    assert json.loads(result.stdout)["reason"] == "checker"
-
-
 def test_negative_control_verdict_adapter_rejects_malformed_later_ledger_record(tmp_path):
-    manifest, digest = _evidence_manifest(tmp_path)
+    traces_dir, db_path = _native_data_engine(tmp_path)
     result = _adapter_result(
         tmp_path,
-        [_failed_final(evidence_digest=digest)],
-        manifest,
-        ledger_bytes=(f"{json.dumps(_failed_final(evidence_digest=digest))}\n[]\n").encode(),
+        [_failed_final()],
+        traces_dir,
+        db_path,
+        ledger_bytes=(f"{json.dumps(_failed_final())}\n[]\n").encode(),
     )
 
     assert result.returncode == 2
