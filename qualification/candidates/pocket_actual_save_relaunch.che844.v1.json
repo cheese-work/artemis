@@ -13,6 +13,22 @@
     "app_sha": "2c42481778e6f9b88a9502f55decdbe4e1a76e83",
     "apk_digest_sha256": "04795d5f3995c8e895f6440a9763c8a003c8b6ff955541e3965f5e71564e2e12",
     "package_name": "dev.cheese.pocketactual",
+    "app_workflow": {
+      "setup": "Build current picture",
+      "setup_semantics_id": "current-picture-setup",
+      "account_action": "Add Account",
+      "account_currency": "USD - US dollar",
+      "account_save_semantics_id": "save-account-action",
+      "balance_semantics_id": "verified-balance-amount-input",
+      "balance_action": "Confirm Verified balance",
+      "snapshot_semantics_id": "recovery-snapshot",
+      "persisted_markers": [
+        "qual-<run_id>",
+        "USD · <unique_decimal>",
+        "History gap",
+        "Recovery adjustment"
+      ]
+    },
     "model_inputs": {
       "sol": {
         "config_path": "config/artemis.jsonc",
@@ -26,7 +42,7 @@
   },
   "testcase": {
     "journey_path": "qualification/journeys/pocket_actual_save_relaunch.md",
-    "journey_digest_sha256": "59133aa96892ac7f1f166e2ddd6acbb0a9190893fe001c139d06000f7c3acf4a"
+    "journey_digest_sha256": "680c14cff8417367ceb7ae2eedc49bd81d7665920839faaf49ffd361c30f3295"
   },
   "shared_testcase_rationale": "PR #26 supplies the pinned manifest and model inputs. This receipt locks the revised journey digest, manifest v3, fork SHA, app SHA, and APK digest to both lanes; it does not infer X99 applicability from the Pixel PR title.",
   "lanes": [
@@ -37,10 +53,10 @@
       "evidence_destination": "CHE-540 execution report and attachments",
       "fixture_reset": "Fresh fixture before every positive or negative attempt; force-stop, clear app data, cold-start, and secure-storage readiness check.",
       "assertions": [
-        "The UI confirms save before relaunch.",
+        "The recovery snapshot confirms the account, USD balance, History gap, and Recovery adjustment before relaunch.",
         "A recorded successful post-save force-stop and process-end check precede relaunch.",
-        "The relaunch reaches the saved entry.",
-        "The value equals the unique attempt token byte-for-byte."
+        "The relaunch reaches the Recovery snapshot.",
+        "The account and USD balance equal the unique attempt values byte-for-byte."
       ],
       "relaunch_proof": {
         "pass_prerequisite": true,
@@ -49,12 +65,14 @@
       },
       "negative_control": {
         "expected_verdict": "fail_assertion",
+        "required_checker_exit": "nonzero",
+        "not_satisfied_by": "completed orchestration status",
         "required_evidence": [
-          "UI save confirmation for the original token",
+          "Recovery snapshot confirmation for the original account and USD balance",
           "recorded post-save process stop and verified process end",
-          "relaunch evidence for the saved entry",
-          "observed post-relaunch value",
-          "recorded mismatch between the observed value and <random_token>-WRONG-SUFFIX"
+          "relaunch evidence for the Recovery snapshot",
+          "observed post-relaunch account name",
+          "recorded mismatch between the observed account name and qual-<run_id>-WRONG-SUFFIX"
         ],
         "invalid_when_missing": "Invalid control; batch unqualified."
       },
@@ -67,10 +85,10 @@
       "evidence_destination": "CHE-541 execution report and attachments",
       "fixture_reset": "Fresh fixture before every positive or negative attempt; force-stop, clear app data, cold-start, and secure-storage readiness check.",
       "assertions": [
-        "The UI confirms save before relaunch.",
+        "The recovery snapshot confirms the account, USD balance, History gap, and Recovery adjustment before relaunch.",
         "A recorded successful post-save force-stop and process-end check precede relaunch.",
-        "The relaunch reaches the saved entry.",
-        "The value equals the unique attempt token byte-for-byte."
+        "The relaunch reaches the Recovery snapshot.",
+        "The account and USD balance equal the unique attempt values byte-for-byte."
       ],
       "relaunch_proof": {
         "pass_prerequisite": true,
@@ -79,12 +97,14 @@
       },
       "negative_control": {
         "expected_verdict": "fail_assertion",
+        "required_checker_exit": "nonzero",
+        "not_satisfied_by": "completed orchestration status",
         "required_evidence": [
-          "UI save confirmation for the original token",
+          "Recovery snapshot confirmation for the original account and USD balance",
           "recorded post-save process stop and verified process end",
-          "relaunch evidence for the saved entry",
-          "observed post-relaunch value",
-          "recorded mismatch between the observed value and <random_token>-WRONG-SUFFIX"
+          "relaunch evidence for the Recovery snapshot",
+          "observed post-relaunch account name",
+          "recorded mismatch between the observed account name and qual-<run_id>-WRONG-SUFFIX"
         ],
         "invalid_when_missing": "Invalid control; batch unqualified."
       },

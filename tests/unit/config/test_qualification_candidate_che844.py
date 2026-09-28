@@ -18,6 +18,17 @@ def test_receipt_maps_both_qualification_lanes_to_the_same_pinned_source():
     assert receipt["source_candidate"]["apk_digest_sha256"] == (
         "04795d5f3995c8e895f6440a9763c8a003c8b6ff955541e3965f5e71564e2e12"
     )
+    workflow = receipt["source_candidate"]["app_workflow"]
+    assert workflow["setup_semantics_id"] == "current-picture-setup"
+    assert workflow["account_save_semantics_id"] == "save-account-action"
+    assert workflow["balance_semantics_id"] == "verified-balance-amount-input"
+    assert workflow["snapshot_semantics_id"] == "recovery-snapshot"
+    assert workflow["persisted_markers"] == [
+        "qual-<run_id>",
+        "USD · <unique_decimal>",
+        "History gap",
+        "Recovery adjustment",
+    ]
 
     lanes = {lane["issue"]: lane for lane in receipt["lanes"]}
     assert set(lanes) == {"CHE-540", "CHE-541"}
@@ -43,8 +54,11 @@ def test_journey_requires_process_death_and_negative_control_provenance():
     assert "process ended" in text
     assert "invalid and cannot pass" in text
     assert "generic checker failure" in text
-    assert "observed value was compared with" in text
-    assert "control and unqualifies the entire batch" in text
+    assert "nonzero checker exit" in text
+    assert "completed` is not control success" in text
+    assert "observed name was compared with" in text
+    assert "invalid control" in text
+    assert "unqualifies the entire batch" in text
 
 
 def test_each_lane_retains_the_execution_controls_and_return_contract():
@@ -58,12 +72,14 @@ def test_each_lane_retains_the_execution_controls_and_return_contract():
         assert "force-stop" in lane["relaunch_proof"]["after_save_stop"]
         assert "process ended" in lane["relaunch_proof"]["process_ended"]
         assert lane["negative_control"]["expected_verdict"] == "fail_assertion"
+        assert lane["negative_control"]["required_checker_exit"] == "nonzero"
+        assert lane["negative_control"]["not_satisfied_by"] == "completed orchestration status"
         assert lane["negative_control"]["invalid_when_missing"] == "Invalid control; batch unqualified."
         assert lane["negative_control"]["required_evidence"] == [
-            "UI save confirmation for the original token",
+            "Recovery snapshot confirmation for the original account and USD balance",
             "recorded post-save process stop and verified process end",
-            "relaunch evidence for the saved entry",
-            "observed post-relaunch value",
-            "recorded mismatch between the observed value and <random_token>-WRONG-SUFFIX",
+            "relaunch evidence for the Recovery snapshot",
+            "observed post-relaunch account name",
+            "recorded mismatch between the observed account name and qual-<run_id>-WRONG-SUFFIX",
         ]
         assert "verified release" in lane["cleanup_contract"]
