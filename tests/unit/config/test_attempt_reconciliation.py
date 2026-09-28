@@ -208,6 +208,42 @@ class TestReconciliation:
         # No stray "safety_net_pixel_validation" entry should remain unmapped.
         assert not any(n.node == "safety_net_pixel_validation" for n in result.nodes)
 
+    @pytest.mark.parametrize(
+        ("node", "call_count"),
+        [("lens:step_capsule", 4), ("lens:visualstepsummarizer", 20)],
+    )
+    def test_background_lens_receipts_match_summarizer_and_are_accepted(self, node, call_count):
+        """CHE-819: both background lenses use the configured summarizer model."""
+        usage = [_usage(node) for _ in range(call_count)]
+        original = copy.deepcopy(usage)
+        record = _record(_manifest(), usage)
+        summarizer = next(n for n in record.reconciliation.nodes if n.node == "summarizer")
+
+        assert summarizer.verdict == "match"
+        assert summarizer.usage_sources == ("openai:gpt-6-sol",) * call_count
+        assert not record.reconciliation.has_unmapped_call
+        assert not any(n.node == node for n in record.reconciliation.nodes)
+        verdict = validate_batch([record])
+        assert verdict.accepted is True
+        assert verdict.reason is None
+        assert usage == original
+
+    def test_unknown_background_lens_is_rejected_even_with_matching_model(self):
+        usage = [
+            _usage("lens:step_capsule"),
+            _usage("lens:visualstepsummarizer"),
+            _usage("lens:unknown"),
+        ]
+        record = _record(_manifest(), usage)
+        unknown = next(n for n in record.reconciliation.nodes if n.node == "lens:unknown")
+
+        assert unknown.verdict == "unmapped_call"
+        assert unknown.usage_sources == ("openai:gpt-6-sol",)
+        verdict = validate_batch([record])
+        assert verdict.accepted is False
+        assert verdict.reason == "unmapped_call"
+        assert verdict.invalid_attempts == (record,)
+
     def test_flashrunner_trace_node_aliases_to_operator_and_reconciles_as_match(self):
         """FlashRunner.run is traced under the "FlashRunner" scope name (see
         artemis.agents.flash.runner.FlashRunner.run's @trace(name="FlashRunner")
