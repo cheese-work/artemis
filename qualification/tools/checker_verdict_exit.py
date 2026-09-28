@@ -44,7 +44,7 @@ def _step_capture(
 ) -> sqlite3.Row | None:
     return connection.execute(
         """
-        SELECT s.step_number, s.pre_image_name, s.action_taken, i.ui_tree
+        SELECT s.step_number, s.timestamp, s.pre_image_name, s.action_taken, i.ui_tree
         FROM steps AS s
         JOIN images AS i ON i.image_name = s.pre_image_name
         WHERE s.session_id = ? AND s.step_id = ?
@@ -96,20 +96,20 @@ def _native_control_proof(
                 return None
             actions = connection.execute(
                 """
-                SELECT s.step_number, t.payload
+                SELECT t.timestamp, t.payload
                 FROM traces AS t
                 JOIN steps AS s ON s.step_id = t.step_id
                 WHERE t.session_id = ? AND s.session_id = ?
                   AND t.type = 'action' AND t.status = 'success'
-                  AND s.step_number < ?
+                  AND t.timestamp < ?
                 """,
-                (str(session_id), str(session_id), capture["step_number"]),
+                (str(session_id), str(session_id), capture["timestamp"]),
             ).fetchall()
     except (OSError, sqlite3.Error, TypeError, ValueError, json.JSONDecodeError):
         return None
 
-    stop_steps: list[int] = []
-    launch_steps: list[int] = []
+    stop_events: list[float] = []
+    launch_events: list[float] = []
     for action in actions:
         try:
             item = json.loads(action["payload"]).get("action")
@@ -118,13 +118,13 @@ def _native_control_proof(
         if not isinstance(item, dict) or item.get("app_name") != package_name:
             continue
         if item.get("action") == "stop_app":
-            stop_steps.append(action["step_number"])
+            stop_events.append(action["timestamp"])
         elif item.get("action") == "launch_app":
-            launch_steps.append(action["step_number"])
+            launch_events.append(action["timestamp"])
     if not any(
-        saved["step_number"] < stop < launch < capture["step_number"]
-        for stop in stop_steps
-        for launch in launch_steps
+        saved["timestamp"] < stop < launch < capture["timestamp"]
+        for stop in stop_events
+        for launch in launch_events
     ):
         return None
     return capture["pre_image_name"]
