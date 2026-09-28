@@ -1,22 +1,22 @@
 {
-  "manifest_version": 4,
+  "manifest_version": 5,
   "$schema_ref": "qualification/evidence_schema.v1.json",
   "issue": "CHE-537",
   "coordinating_parent": "CHE-388",
   "journey": "qualification/journeys/pocket_actual_save_relaunch.md",
 
   "fork_sha": {
-    "value": "a6c82bd4f8a49cf80b6bff5a5a61c7adb540004e",
+    "value": "f011c33d7b747eb48b14667bb790a8b90d1b46bc",
     "source": "git",
     "repo": "https://github.com/cheese-work/artemis",
-    "note": "Revision 4 (CHE-844) pins the qualification runner that writes final_capture_step_id with each final Checker ledger record and accepts a post-save stop only when am force-stop reports no output and pidof reports no remaining process. This value must be updated in a new manifest revision if the runner SHA changes; execution stages must re-read it at admission. No attempts ran against revision 3, so no evidence is transferable."
+    "note": "Revision 5 (CHE-844) pins the qualification runner that writes final_capture_step_id with each final Checker ledger record, rejects non-finite native timestamps, and accepts a post-save stop only when am force-stop reports no output and pidof reports no remaining process. This value must be updated in a new manifest revision if the runner SHA changes; execution stages must re-read it at admission. No attempts ran against revision 4, so no evidence is transferable."
   },
 
   "gate1_manifest_mechanism": {
     "source": "https://github.com/cheese-work/artemis/pull/1",
     "head_sha": "2b58709ed00b0015055a99f9e644857ba9d05ee0",
     "status": "MERGED to main as 5eae089 (squash-merge; the pre-merge head_sha above never landed as an ancestor of main, so do not diff or ancestor-check against it -- resolved by CHE-672's fork_sha promotion, second branch of the note below).",
-    "note": "Reused by reference, not rebuilt or ported here. Per-attempt LLM identity manifests and reconciliation remain present at the revision-4 runner pin. This qualification manifest does not claim Gate 1 has passed -- mechanism availability at the pin is not a runtime evidence claim."
+    "note": "Reused by reference, not rebuilt or ported here. Per-attempt LLM identity manifests and reconciliation remain present at the revision-5 runner pin. This qualification manifest does not claim Gate 1 has passed -- mechanism availability at the pin is not a runtime evidence claim."
   },
 
   "candidate_app": {
@@ -29,7 +29,7 @@
   "dependency_lock": {
     "file": "uv.lock",
     "digest_sha256": "2c63863dd5827482d7e206a887219c6438ce61dc494d9cc596f862378decc19a",
-    "note": "sha256sum of this fork's own uv.lock (the Artemis qualification harness's dependency lock, not the candidate app's) at the revision-4 runner pin."
+    "note": "sha256sum of this fork's own uv.lock (the Artemis qualification harness's dependency lock, not the candidate app's) at the revision-5 runner pin."
   },
 
   "accessibility_helper": {
