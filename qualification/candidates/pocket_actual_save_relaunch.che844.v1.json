@@ -3,13 +3,22 @@
   "issue": "CHE-844",
   "candidate_kind": "testcase",
   "source_candidate": {
-    "repository": "https://github.com/cheese-work/artemis",
-    "pull_request": 29,
-    "commit_sha": "a6c82bd4f8a49cf80b6bff5a5a61c7adb540004e",
-    "manifest_path": "qualification/manifests/pocket_actual_save_relaunch.v1.json",
-    "manifest_digest_sha256": "720482bc0450fe41c728882489f035d0ab87bacc12db7e9fb3ce3284db1023e8",
-    "manifest_version": 4,
-    "fork_sha": "a6c82bd4f8a49cf80b6bff5a5a61c7adb540004e",
+    "runner_source": {
+      "repository": "https://github.com/cheese-work/artemis",
+      "pull_request": 29,
+      "commit_sha": "f011c33d7b747eb48b14667bb790a8b90d1b46bc"
+    },
+    "testcase_source": {
+      "repository": "https://github.com/cheese-work/artemis",
+      "pull_request": 29,
+      "commit_sha": "00e278523067a8fdf8aa3df669045f65e8fbf566",
+      "manifest_path": "qualification/manifests/pocket_actual_save_relaunch.v1.json",
+      "manifest_digest_sha256": "5997a327c5cee07011429f490235056ecf03fe70d3af251b2d27fa7d6b4d16aa",
+      "manifest_version": 5,
+      "fork_sha": "f011c33d7b747eb48b14667bb790a8b90d1b46bc",
+      "journey_path": "qualification/journeys/pocket_actual_save_relaunch.md",
+      "journey_digest_sha256": "13a4f631d5c23d946006fd1fe91f183953efe01afda36cbcbefd4d9d1d090a99"
+    },
     "app_input_source": {
       "pull_request": 26,
       "commit_sha": "f60e89216c5a2c4429520e68d20d17c8b07ae6b3"
@@ -47,9 +56,9 @@
   },
   "testcase": {
     "journey_path": "qualification/journeys/pocket_actual_save_relaunch.md",
-    "journey_digest_sha256": "746c06d7bcf54929adacf45e81d71ac56d129056a1a030e5728904dec24a116e"
+    "journey_digest_sha256": "13a4f631d5c23d946006fd1fe91f183953efe01afda36cbcbefd4d9d1d090a99"
   },
-  "shared_testcase_rationale": "PR #29 commit a6c82bd pins the runner used for qualification, including final Checker capture linkage, timestamp ordering, and process-death verification. PR #26 is retained only as the historical app/config input source. This receipt locks the revised journey digest, manifest v4, runner SHA, app SHA, and APK digest to both lanes; it does not infer X99 applicability from the Pixel PR title.",
+  "shared_testcase_rationale": "PR #29 commit f011c33 pins the runner used for qualification, including final Checker capture linkage, finite timestamp validation, and process-death verification. PR #29 commit 00e2785 is the immutable manifest/journey source and records that runner. PR #26 is retained only as the historical app/config input source. This receipt locks the revised journey digest, manifest v5, runner SHA, app SHA, and APK digest to both lanes; it does not infer X99 applicability from the Pixel PR title.",
   "lanes": [
     {
       "issue": "CHE-540",
@@ -72,8 +81,8 @@
         "expected_verdict": "fail_assertion",
         "verdict_adapter": {
           "path": "qualification/tools/checker_verdict_exit.py",
-          "digest_sha256": "ee5b072f34509da3fa02a91a52b078b38cd50daef7c37baa6127045c1810d054",
-          "contract": "Derives ARTEMIS_TRACES_DIR/<session-id>/check_ledger.jsonl and exits 1 only when the latest final attempt has the exact failed assert, a same-session Checker trace, and its runner-bound native final capture after a saved Recovery snapshot and successful post-save stop_app then launch_app traces ordered by native timestamps. stop_app succeeds only after force-stop has no output and pidof has no PID; malformed evidence exits 2 with JSON.",
+          "digest_sha256": "f8e05b65c1496fcb77ba7cc12dc00283118ecbd623ac420db01d246982edbcc0",
+          "contract": "Derives ARTEMIS_TRACES_DIR/<session-id>/check_ledger.jsonl and exits 1 only when the latest final attempt has the exact failed assert, a same-session Checker trace, and its runner-bound native final capture after a saved Recovery snapshot and successful post-save stop_app then launch_app traces ordered by finite native timestamps. stop_app succeeds only after force-stop has no output and pidof has no PID; malformed evidence exits 2 with JSON.",
           "expected_exit": 1
         },
         "not_satisfied_by": "completed orchestration status",
@@ -83,7 +92,7 @@
           "relaunch evidence for the Recovery snapshot",
           "observed post-relaunch account name",
           "recorded mismatch between the observed account name and qual-<run_id>-WRONG-SUFFIX",
-          "native timestamp-ordered saved-step and runner-bound final-capture proof, ARTEMIS_TRACES_DIR-derived latest-final check_ledger.jsonl path, and adapter JSON output with exit 1"
+          "finite native timestamp-ordered saved-step and runner-bound final-capture proof, ARTEMIS_TRACES_DIR-derived latest-final check_ledger.jsonl path, and adapter JSON output with exit 1"
         ],
         "invalid_when_missing": "Invalid control; batch unqualified."
       },
@@ -110,8 +119,8 @@
         "expected_verdict": "fail_assertion",
         "verdict_adapter": {
           "path": "qualification/tools/checker_verdict_exit.py",
-          "digest_sha256": "ee5b072f34509da3fa02a91a52b078b38cd50daef7c37baa6127045c1810d054",
-          "contract": "Derives ARTEMIS_TRACES_DIR/<session-id>/check_ledger.jsonl and exits 1 only when the latest final attempt has the exact failed assert, a same-session Checker trace, and its runner-bound native final capture after a saved Recovery snapshot and successful post-save stop_app then launch_app traces ordered by native timestamps. stop_app succeeds only after force-stop has no output and pidof has no PID; malformed evidence exits 2 with JSON.",
+          "digest_sha256": "f8e05b65c1496fcb77ba7cc12dc00283118ecbd623ac420db01d246982edbcc0",
+          "contract": "Derives ARTEMIS_TRACES_DIR/<session-id>/check_ledger.jsonl and exits 1 only when the latest final attempt has the exact failed assert, a same-session Checker trace, and its runner-bound native final capture after a saved Recovery snapshot and successful post-save stop_app then launch_app traces ordered by finite native timestamps. stop_app succeeds only after force-stop has no output and pidof has no PID; malformed evidence exits 2 with JSON.",
           "expected_exit": 1
         },
         "not_satisfied_by": "completed orchestration status",
@@ -121,7 +130,7 @@
           "relaunch evidence for the Recovery snapshot",
           "observed post-relaunch account name",
           "recorded mismatch between the observed account name and qual-<run_id>-WRONG-SUFFIX",
-          "native timestamp-ordered saved-step and runner-bound final-capture proof, ARTEMIS_TRACES_DIR-derived latest-final check_ledger.jsonl path, and adapter JSON output with exit 1"
+          "finite native timestamp-ordered saved-step and runner-bound final-capture proof, ARTEMIS_TRACES_DIR-derived latest-final check_ledger.jsonl path, and adapter JSON output with exit 1"
         ],
         "invalid_when_missing": "Invalid control; batch unqualified."
       },

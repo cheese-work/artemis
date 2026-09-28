@@ -14,29 +14,46 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 RECEIPT_PATH = REPO_ROOT / "qualification/candidates/pocket_actual_save_relaunch.che844.v1.json"
 
 
+def _source_bytes(commit_sha: str, path: str) -> bytes:
+    result = subprocess.run(
+        ["git", "show", f"{commit_sha}:{path}"],
+        cwd=REPO_ROOT,
+        check=False,
+        capture_output=True,
+    )
+    assert result.returncode == 0, result.stderr.decode("utf-8")
+    return result.stdout
+
+
 def test_receipt_maps_both_qualification_lanes_to_the_same_pinned_source():
     receipt = json.loads(RECEIPT_PATH.read_text(encoding="utf-8"))
 
-    assert receipt["source_candidate"]["commit_sha"] == "a6c82bd4f8a49cf80b6bff5a5a61c7adb540004e"
-    assert receipt["source_candidate"]["manifest_version"] == 4
-    assert receipt["source_candidate"]["fork_sha"] == "a6c82bd4f8a49cf80b6bff5a5a61c7adb540004e"
-    assert receipt["source_candidate"]["app_input_source"] == {
+    source = receipt["source_candidate"]
+    runner = source["runner_source"]
+    testcase = source["testcase_source"]
+    assert runner["commit_sha"] == "f011c33d7b747eb48b14667bb790a8b90d1b46bc"
+    assert testcase["commit_sha"] == "00e278523067a8fdf8aa3df669045f65e8fbf566"
+    assert testcase["manifest_version"] == 5
+    assert testcase["fork_sha"] == runner["commit_sha"]
+    assert source["app_input_source"] == {
         "pull_request": 26,
         "commit_sha": "f60e89216c5a2c4429520e68d20d17c8b07ae6b3",
     }
-    manifest = REPO_ROOT / receipt["source_candidate"]["manifest_path"]
-    assert (
-        hashlib.sha256(manifest.read_bytes()).hexdigest()
-        == receipt["source_candidate"]["manifest_digest_sha256"]
+    manifest_bytes = _source_bytes(testcase["commit_sha"], testcase["manifest_path"])
+    assert hashlib.sha256(manifest_bytes).hexdigest() == testcase["manifest_digest_sha256"]
+    assert json.loads(manifest_bytes)["fork_sha"]["value"] == runner["commit_sha"]
+    journey_bytes = _source_bytes(testcase["commit_sha"], testcase["journey_path"])
+    assert hashlib.sha256(journey_bytes).hexdigest() == testcase["journey_digest_sha256"]
+    assert (REPO_ROOT / testcase["manifest_path"]).read_bytes() == manifest_bytes
+    assert (REPO_ROOT / testcase["journey_path"]).read_bytes() == journey_bytes
+    runner_adapter = _source_bytes(
+        runner["commit_sha"], "qualification/tools/checker_verdict_exit.py"
     )
-    assert (
-        json.loads(manifest.read_text(encoding="utf-8"))["fork_sha"]["value"]
-        == receipt["source_candidate"]["fork_sha"]
-    )
-    assert receipt["source_candidate"]["apk_digest_sha256"] == (
+    assert b"_finite_timestamp" in runner_adapter
+    assert source["apk_digest_sha256"] == (
         "04795d5f3995c8e895f6440a9763c8a003c8b6ff955541e3965f5e71564e2e12"
     )
-    workflow = receipt["source_candidate"]["app_workflow"]
+    workflow = source["app_workflow"]
     assert workflow["setup_semantics_id"] == "current-picture-setup"
     assert workflow["account_save_semantics_id"] == "save-account-action"
     assert workflow["balance_semantics_id"] == "verified-balance-amount-input"
@@ -119,7 +136,7 @@ def test_each_lane_retains_the_execution_controls_and_return_contract():
         assert adapter["expected_exit"] == 1
         assert "ARTEMIS_TRACES_DIR/<session-id>/check_ledger.jsonl" in adapter["contract"]
         assert "native final capture" in adapter["contract"]
-        assert "native timestamps" in adapter["contract"]
+        assert "finite native timestamps" in adapter["contract"]
         assert "pidof" in adapter["contract"]
         assert lane["negative_control"]["not_satisfied_by"] == "completed orchestration status"
         assert (
@@ -127,7 +144,7 @@ def test_each_lane_retains_the_execution_controls_and_return_contract():
             == "Invalid control; batch unqualified."
         )
         assert lane["negative_control"]["required_evidence"][-1] == (
-            "native timestamp-ordered saved-step and runner-bound final-capture proof, "
+            "finite native timestamp-ordered saved-step and runner-bound final-capture proof, "
             "ARTEMIS_TRACES_DIR-derived latest-final check_ledger.jsonl path, and adapter "
             "JSON output with exit 1"
         )
