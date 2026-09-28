@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 from pathlib import Path
 import re
 import sqlite3
@@ -35,6 +36,12 @@ def _has_exact_value(value: object, expected: str) -> bool:
     if isinstance(value, list):
         return any(_has_exact_value(child, expected) for child in value)
     return False
+
+
+def _finite_timestamp(value: object) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        return None
+    return float(value)
 
 
 def _step_capture(
@@ -79,6 +86,10 @@ def _native_control_proof(
             ).fetchone()
             if saved is None or capture is None or checker is None:
                 return None
+            saved_timestamp = _finite_timestamp(saved["timestamp"])
+            capture_timestamp = _finite_timestamp(capture["timestamp"])
+            if saved_timestamp is None or capture_timestamp is None:
+                return None
             if not (
                 _has_exact_value(json.loads(saved["ui_tree"]), "recovery-snapshot")
                 and _has_exact_value(json.loads(saved["ui_tree"]), observed_account)
@@ -101,9 +112,8 @@ def _native_control_proof(
                 JOIN steps AS s ON s.step_id = t.step_id
                 WHERE t.session_id = ? AND s.session_id = ?
                   AND t.type = 'action' AND t.status = 'success'
-                  AND t.timestamp < ?
                 """,
-                (str(session_id), str(session_id), capture["timestamp"]),
+                (str(session_id), str(session_id)),
             ).fetchall()
     except (OSError, sqlite3.Error, TypeError, ValueError, json.JSONDecodeError):
         return None
@@ -117,12 +127,15 @@ def _native_control_proof(
             return None
         if not isinstance(item, dict) or item.get("app_name") != package_name:
             continue
+        timestamp = _finite_timestamp(action["timestamp"])
+        if timestamp is None:
+            return None
         if item.get("action") == "stop_app":
-            stop_events.append(action["timestamp"])
+            stop_events.append(timestamp)
         elif item.get("action") == "launch_app":
-            launch_events.append(action["timestamp"])
+            launch_events.append(timestamp)
     if not any(
-        saved["timestamp"] < stop < launch < capture["timestamp"]
+        saved_timestamp < stop < launch < capture_timestamp
         for stop in stop_events
         for launch in launch_events
     ):

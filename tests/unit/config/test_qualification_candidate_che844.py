@@ -7,6 +7,8 @@ import sqlite3
 import subprocess
 import sys
 
+import pytest
+
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 RECEIPT_PATH = REPO_ROOT / "qualification/candidates/pocket_actual_save_relaunch.che844.v1.json"
@@ -402,6 +404,33 @@ def test_negative_control_verdict_adapter_accepts_stop_launch_and_capture_in_one
     result = _adapter_result(tmp_path, [_failed_final()], traces_dir, db_path)
 
     assert result.returncode == 1
+
+
+@pytest.mark.parametrize(
+    ("table", "where", "value"),
+    [
+        ("steps", "step_id = ?", None),
+        ("steps", "step_id = ?", "not-a-time"),
+        ("steps", "step_id = ?", float("-inf")),
+        ("traces", "name = ?", None),
+        ("traces", "name = ?", "not-a-time"),
+        ("traces", "name = ?", float("-inf")),
+    ],
+)
+def test_negative_control_verdict_adapter_rejects_non_finite_native_timestamps(
+    tmp_path, table, where, value
+):
+    traces_dir, db_path = _native_data_engine(tmp_path)
+    connection = sqlite3.connect(db_path)
+    identifier = SAVED_STEP_ID if table == "steps" else "stop_app"
+    connection.execute(f"UPDATE {table} SET timestamp = ? WHERE {where}", (value, identifier))
+    connection.commit()
+    connection.close()
+
+    result = _adapter_result(tmp_path, [_failed_final()], traces_dir, db_path)
+
+    assert result.returncode == 2
+    assert json.loads(result.stdout)["reason"] == "native_capture"
 
 
 def test_negative_control_verdict_adapter_rejects_an_unbound_final_checker_trace(tmp_path):
