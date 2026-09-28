@@ -99,6 +99,7 @@ NODE_VISIBILITY: dict[str, NodeVisibility] = {
         },
         writes={
             "structured_decisions",
+            "operator_decision_source",
             "operator_raw_thinking",
             "operator_native_thinking",
             "indexed_points",
@@ -110,6 +111,7 @@ NODE_VISIBILITY: dict[str, NodeVisibility] = {
     ),
     "execution_check": _vis(
         reads={
+            "operator_decision_source",
             "operator_raw_data",
             "structured_decisions",
             "operator_raw_thinking",

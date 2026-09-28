@@ -41,7 +41,7 @@ _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _KNOWN_TIER_MODELS = {
     "luna": ("google", "gemini-3.5-flash-lite"),
     "terra": ("google", "gemini-3.8-flash"),
-    "sol": ("openai", "gpt-5.6-sol"),
+    "sol": ("openai", "gpt-6-sol"),
 }
 
 

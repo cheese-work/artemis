@@ -297,20 +297,10 @@ def apply_replacement(content: str, start_idx: int, end_idx: int, replacement: s
     return content[:start_idx] + actual_replacement + content[end_idx:]
 
 
-def update_note_content(
-    base_dir: str | Path, key: str, target: str, replacement: str
-) -> str | None:
-    """Replaces target content in a note using hierarchical exact, relaxed, or fuzzy match.
-
-    Returns a warning message if relaxed/fuzzy match was used, otherwise None.
-    Raises ValueError if target is not found or if the match is ambiguous/not
-    unique.
-    """
-    file_path = get_note_file_path(base_dir, key)
-    if not file_path.exists():
-        raise FileNotFoundError(f"Note '{key}' not found.")
-
-    content = file_path.read_text(encoding="utf-8")
+def replace_note_text(
+    content: str, key: str, target: str, replacement: str
+) -> tuple[str, str | None]:
+    """Apply the live note matching rules without filesystem writes."""
     new_content_to_write = None
     warning = None
 
@@ -349,22 +339,31 @@ def update_note_content(
                 " Double check if the edit applied is what you intended."
             )
 
-    # Phase 4: Write and Return, or Not Found Error
     if new_content_to_write is not None:
-        file_path.write_text(new_content_to_write, encoding="utf-8")
-        if key == "task_plan":
-            try:
-                record_subgoal_hash_chain(base_dir, content, new_content_to_write)
-            except Exception as exc:
-                # Hash-chain bookkeeping must never break a note edit, but a
-                # missed record can later confuse plan ratchet validation.
-                logger.warning("Failed to record subgoal hash chain for task_plan: %s", exc)
-        return warning
+        return new_content_to_write, warning
 
     raise ValueError(
         f"Target string '{target}' not found in note '{key}'. Please re-read"
         " the note and ensure spelling, spacing, and indentation are close."
     )
+
+
+def update_note_content(
+    base_dir: str | Path, key: str, target: str, replacement: str
+) -> str | None:
+    """Write an exact, relaxed, or fuzzy replacement, returning any match warning."""
+    file_path = get_note_file_path(base_dir, key)
+    if not file_path.exists():
+        raise FileNotFoundError(f"Note '{key}' not found.")
+    content = file_path.read_text(encoding="utf-8")
+    updated, warning = replace_note_text(content, key, target, replacement)
+    file_path.write_text(updated, encoding="utf-8")
+    if key == "task_plan":
+        try:
+            record_subgoal_hash_chain(base_dir, content, updated)
+        except Exception as exc:
+            logger.warning(f"Failed to record subgoal hash chain for task_plan: {exc}")
+    return warning
 
 
 # Shared Formatting Functions for Tool Outputs

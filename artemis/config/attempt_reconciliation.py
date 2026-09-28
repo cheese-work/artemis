@@ -185,6 +185,9 @@ _NODE_ALIASES: dict[str, str] = {
     "image_processor": "operator",
     "spawn_sub_agent": "video_analyzer",
     "analyze_audio_only": "video_analyzer",
+    # Background lens trace scopes both resolve get_llm(name="summarizer").
+    "lens:step_capsule": "summarizer",
+    "lens:visualstepsummarizer": "summarizer",
 }
 
 

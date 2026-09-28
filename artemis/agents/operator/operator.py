@@ -17,11 +17,12 @@ import time
 from typing import Any
 from uuid import uuid4
 
-from langchain_core.messages import SystemMessage, ToolMessage
+from langchain_core.messages import AIMessage, SystemMessage, ToolMessage
 from langchain_core.tools import BaseTool
 
 from artemis.core.tool_failure import is_tool_failure
 from artemis.context import ArtemisContext
+from artemis.data_engine.engine import _derive_foreground_app
 from artemis.data_engine.reaction_time import OperatorIterationOutcome, ReactionPhase
 from artemis.data_engine.trace import (
     record_phase_span,
@@ -34,6 +35,18 @@ from artemis.graph.visibility import strict_state
 from artemis.mcp.action_specs import OPERATOR_SHELL_ORDER, operator_shell_tool
 from artemis.llm.google import usage_from_message
 from artemis.services.llm import acomplete, get_llm, invoke_llm_with_timeout_message
+from artemis.services.jev import build_client
+from artemis.config.settings import settings
+from artemis.agents.operator.jev_fast_lane import (
+    Decision,
+    FastLaneTurn,
+    GateContext,
+    build_moves,
+    build_state,
+    launchable_apps,
+    milestone_text,
+    move_tool_call,
+)
 from artemis.tools.command_tool import (
     analyze_task_output_wrapper,
     get_adb_task_registry,
@@ -148,6 +161,8 @@ class OperatorNode:
         # model call). Legacy-path fallback only: with a transcript ledger the
         # ledger's own ``last_turn_silent`` is authoritative.
         self._previous_turn_silent: bool = False
+        self._jev_launch_milestone: str | None = None
+        self._jev_launch_apps: dict[str, str] = {}
 
     def _previous_turn_was_silent(self) -> bool:
         """Whether the previous turn carried no visible reasoning text.
@@ -348,34 +363,8 @@ class OperatorNode:
             pass
         return ledger
 
-    async def _build_prompt_transcript(
-        self,
-        state: State,
-        latest_screenshot_b64: str,
-        minimal_list: str,
-        current_step_num: int,
-        steps: list[dict],
-        task_plan: str,
-        active_background_tasks: list[dict] = None,
-        newly_finished_tasks: list[dict] = None,
-    ) -> list:
-        """Build ``S + F + A + tail`` from the session transcript ledger.
-
-        The static system message renders once per session (byte-stable S
-        region); the previous turn is committed into the append-only active
-        region together with its step key and validator result; the fresh tail
-        carries the current observation plus the task-plan recitation.
-        """
-        from langchain_core.messages import HumanMessage
-
-        from artemis.memory.transcript import mark_ephemeral
-
+    def _prepare_transcript_history(self, state, steps, task_plan):
         ledger = self._ensure_transcript_ledger(state)
-
-        # 1. S region: rendered exactly once per session.
-        if not ledger.has_static_prefix:
-            static_text = render_transcript_static_system(self.prompts, self.ctx, state)
-            ledger.set_static_prefix([SystemMessage(content=static_text)])
 
         # 2. F region cold start: an empty ledger over an existing step record
         # trail means the process restarted — freeze the compiled history once.
@@ -414,6 +403,28 @@ class OperatorNode:
             step_key=getattr(state, "current_step_id", None),
             validator_result=validator_result,
         )
+        return ledger
+
+    async def _build_prompt_transcript(
+        self,
+        state: State,
+        latest_screenshot_b64: str,
+        minimal_list: str,
+        current_step_num: int,
+        steps: list[dict],
+        task_plan: str,
+        active_background_tasks: list[dict] = None,
+        newly_finished_tasks: list[dict] = None,
+    ) -> list:
+        """Build ``S + F + A + tail`` from the session transcript ledger."""
+        from langchain_core.messages import HumanMessage
+
+        from artemis.memory.transcript import mark_ephemeral
+
+        ledger = self._prepare_transcript_history(state, steps, task_plan)
+        if not ledger.has_static_prefix:
+            static_text = render_transcript_static_system(self.prompts, self.ctx, state)
+            ledger.set_static_prefix([SystemMessage(content=static_text)])
 
         # 4. Current tail: observation + plan recitation + injected components.
         builder = PromptBuilder()
@@ -974,6 +985,117 @@ class OperatorNode:
         state.indexed_elements = elements
 
         current_step_num = len(steps) + 1
+        lane = self._fast_lane_turn(elements, fused_xml, steps, task_plan)
+        if (
+            lane is not None
+            and lane.context.mode == "on"
+            and (
+                state.user_stop_requested
+                or state.injected_instruction
+                or state.open_incident
+                or state.operator_feedback
+            )
+        ):
+            lane.client = None
+            lane.decision = Decision(False, "frontier_required")
+        if lane is not None and lane.context.mode == "on":
+            await lane.query()
+            if lane.decision.taken and lane.answer is not None:
+                tool_call = move_tool_call(lane.answer.choice, lane.apps)
+                if tool_call["name"] not in self._available_device_actions():
+                    lane.decision = Decision(False, "unsupported_tool")
+                else:
+                    actions, error = self._translate_and_validate_tool(tool_call, state)
+                    if error or not actions:
+                        lane.decision = Decision(False, "validation_error")
+                    else:
+                        thinking = f"Fast lane (Jev {lane.answer.confidence:.2f}): {lane.context.moves[lane.answer.choice]}"
+                        self._previous_turn_silent = False
+                        if self._transcript_cfg.enabled:
+                            self._prepare_transcript_history(state, steps, task_plan)
+                            self._transcript_turn_base = 0
+                            self._stage_transcript_turn([AIMessage(content=thinking)])
+                        lane.record(self.ctx)
+                        return {
+                            "structured_decisions": json.dumps(actions),
+                            "operator_raw_thinking": thinking,
+                            "operator_native_thinking": None,
+                            "operator_decision_source": "jev",
+                            "indexed_points": state.indexed_points,
+                            "indexed_elements": state.indexed_elements,
+                            "current_step_id": state.current_step_id,
+                            "subagent_calls": state.subagent_calls or [],
+                            "operator_tool_limit_exceeded": False,
+                        }
+
+        return await self._frontier_turn(
+            state,
+            latest_screenshot_b64,
+            fused_xml,
+            minimal_list,
+            current_step_num,
+            steps,
+            task_plan,
+            lane,
+        )
+
+    def _fast_lane_turn(self, elements, fused_xml, steps, task_plan) -> FastLaneTurn | None:
+        mode = settings.ARTEMIS_JEV_FAST_LANE
+        if mode == "off":
+            return None
+        milestone = milestone_text(task_plan)
+        if milestone != self._jev_launch_milestone:
+            self._jev_launch_milestone = milestone
+            self._jev_launch_apps = launchable_apps(milestone, self.ctx.package_cache)
+        apps = self._jev_launch_apps
+        moves = build_moves(elements, apps)
+        screen_text = [
+            str(node.get("text") or node.get("content-desc"))
+            for node in fused_xml
+            if node.get("text") or node.get("content-desc")
+        ]
+        foreground_app = _derive_foreground_app(fused_xml)
+        recent_actions = [action for step in steps for action in (step.get("action_taken") or [])][
+            -4:
+        ]
+        lane = FastLaneTurn(
+            build_client(settings, fast_lane=True),
+            GateContext(
+                mode,
+                moves,
+                elements,
+                steps,
+                settings.ARTEMIS_JEV_FAST_LANE_THRESHOLD,
+                settings.ARTEMIS_JEV_FAST_LANE_MAX_STREAK,
+            ),
+            build_state(milestone, foreground_app, screen_text, recent_actions),
+            apps,
+            settings.ARTEMIS_JEV_FAST_LANE_MODEL,
+        )
+        recorded_step_count = getattr(self.ctx.data_engine, "current_step_number", 0)
+        if not milestone:
+            lane.client = None
+            lane.decision = Decision(False, "no_milestone")
+        elif (
+            mode == "on"
+            and isinstance(recorded_step_count, int)
+            and recorded_step_count > len(steps)
+        ):
+            lane.client = None
+            lane.decision = Decision(False, "history_pending")
+        return lane
+
+    async def _frontier_turn(
+        self,
+        state,
+        latest_screenshot_b64,
+        fused_xml,
+        minimal_list,
+        current_step_num,
+        steps,
+        task_plan,
+        lane,
+    ):
 
         # 5. Prepare Tools. Device-action shells come from the canonical manifest
         # (artemis/mcp/action_specs.py) and are assembled against the installed
@@ -1016,18 +1138,25 @@ class OperatorNode:
 
         # 8. Invoke LLM Loop
         new_subagent_calls = []
-        (
-            action_result,
-            raw_thinking,
-            native_thinking,
-            tool_limit_exceeded,
-        ) = await self._invoke_llm_loop(
-            base_llm=llm,
-            current_messages=messages,
-            traced_tools=traced_tools,
-            new_subagent_calls=new_subagent_calls,
-            state=state,
-        )
+        if lane is not None and lane.context.mode == "shadow":
+            lane.start_shadow()
+        try:
+            (
+                action_result,
+                raw_thinking,
+                native_thinking,
+                tool_limit_exceeded,
+            ) = await self._invoke_llm_loop(
+                base_llm=llm,
+                current_messages=messages,
+                traced_tools=traced_tools,
+                new_subagent_calls=new_subagent_calls,
+                state=state,
+            )
+        finally:
+            if lane is not None:
+                await lane.finish_shadow()
+                lane.record(self.ctx)
         self._previous_turn_silent = not (raw_thinking and raw_thinking.strip())
 
         # 8b. Transcript path: hold this turn's messages (observation tail +
@@ -1042,6 +1171,7 @@ class OperatorNode:
             "structured_decisions": structured_decisions,
             "operator_raw_thinking": raw_thinking,
             "operator_native_thinking": native_thinking,
+            "operator_decision_source": "frontier",
             "indexed_points": state.indexed_points,
             "indexed_elements": state.indexed_elements,
             "current_step_id": state.current_step_id,
