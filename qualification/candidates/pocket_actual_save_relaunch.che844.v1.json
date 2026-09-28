@@ -22,9 +22,10 @@
       "balance_semantics_id": "verified-balance-amount-input",
       "balance_action": "Confirm Verified balance",
       "snapshot_semantics_id": "recovery-snapshot",
+      "verified_balance_input": "+123.45",
       "persisted_markers": [
         "qual-<run_id>",
-        "USD · <unique_decimal>",
+        "USD · +123.45",
         "History gap",
         "Recovery adjustment"
       ]
@@ -42,7 +43,7 @@
   },
   "testcase": {
     "journey_path": "qualification/journeys/pocket_actual_save_relaunch.md",
-    "journey_digest_sha256": "680c14cff8417367ceb7ae2eedc49bd81d7665920839faaf49ffd361c30f3295"
+    "journey_digest_sha256": "2e3f6a210e1f155c75bc91ec12873adadd4cd5c18d3820c33433074c355d19c9"
   },
   "shared_testcase_rationale": "PR #26 supplies the pinned manifest and model inputs. This receipt locks the revised journey digest, manifest v3, fork SHA, app SHA, and APK digest to both lanes; it does not infer X99 applicability from the Pixel PR title.",
   "lanes": [
@@ -53,10 +54,10 @@
       "evidence_destination": "CHE-540 execution report and attachments",
       "fixture_reset": "Fresh fixture before every positive or negative attempt; force-stop, clear app data, cold-start, and secure-storage readiness check.",
       "assertions": [
-        "The recovery snapshot confirms the account, USD balance, History gap, and Recovery adjustment before relaunch.",
+        "The recovery snapshot confirms qual-<run_id>, USD · +123.45, History gap, and Recovery adjustment before relaunch.",
         "A recorded successful post-save force-stop and process-end check precede relaunch.",
         "The relaunch reaches the Recovery snapshot.",
-        "The account and USD balance equal the unique attempt values byte-for-byte."
+        "The account and USD balance equal qual-<run_id> and USD · +123.45 byte-for-byte."
       ],
       "relaunch_proof": {
         "pass_prerequisite": true,
@@ -65,14 +66,20 @@
       },
       "negative_control": {
         "expected_verdict": "fail_assertion",
-        "required_checker_exit": "nonzero",
+        "verdict_adapter": {
+          "path": "qualification/tools/checker_verdict_exit.py",
+          "digest_sha256": "17ba6b70e61e88f00db05833b06d5db835622f14db4fc6860ea0fbec580d0162",
+          "contract": "Reads the final Checker's check_ledger.jsonl record and exits 1 only for the expected failed assert; exits 2 for invalid evidence.",
+          "expected_exit": 1
+        },
         "not_satisfied_by": "completed orchestration status",
         "required_evidence": [
-          "Recovery snapshot confirmation for the original account and USD balance",
+          "Recovery snapshot confirmation for the original account and USD · +123.45 balance",
           "recorded post-save process stop and verified process end",
           "relaunch evidence for the Recovery snapshot",
           "observed post-relaunch account name",
-          "recorded mismatch between the observed account name and qual-<run_id>-WRONG-SUFFIX"
+          "recorded mismatch between the observed account name and qual-<run_id>-WRONG-SUFFIX",
+          "final Checker check_ledger.jsonl path and adapter JSON output with exit 1"
         ],
         "invalid_when_missing": "Invalid control; batch unqualified."
       },
@@ -85,10 +92,10 @@
       "evidence_destination": "CHE-541 execution report and attachments",
       "fixture_reset": "Fresh fixture before every positive or negative attempt; force-stop, clear app data, cold-start, and secure-storage readiness check.",
       "assertions": [
-        "The recovery snapshot confirms the account, USD balance, History gap, and Recovery adjustment before relaunch.",
+        "The recovery snapshot confirms qual-<run_id>, USD · +123.45, History gap, and Recovery adjustment before relaunch.",
         "A recorded successful post-save force-stop and process-end check precede relaunch.",
         "The relaunch reaches the Recovery snapshot.",
-        "The account and USD balance equal the unique attempt values byte-for-byte."
+        "The account and USD balance equal qual-<run_id> and USD · +123.45 byte-for-byte."
       ],
       "relaunch_proof": {
         "pass_prerequisite": true,
@@ -97,14 +104,20 @@
       },
       "negative_control": {
         "expected_verdict": "fail_assertion",
-        "required_checker_exit": "nonzero",
+        "verdict_adapter": {
+          "path": "qualification/tools/checker_verdict_exit.py",
+          "digest_sha256": "17ba6b70e61e88f00db05833b06d5db835622f14db4fc6860ea0fbec580d0162",
+          "contract": "Reads the final Checker's check_ledger.jsonl record and exits 1 only for the expected failed assert; exits 2 for invalid evidence.",
+          "expected_exit": 1
+        },
         "not_satisfied_by": "completed orchestration status",
         "required_evidence": [
-          "Recovery snapshot confirmation for the original account and USD balance",
+          "Recovery snapshot confirmation for the original account and USD · +123.45 balance",
           "recorded post-save process stop and verified process end",
           "relaunch evidence for the Recovery snapshot",
           "observed post-relaunch account name",
-          "recorded mismatch between the observed account name and qual-<run_id>-WRONG-SUFFIX"
+          "recorded mismatch between the observed account name and qual-<run_id>-WRONG-SUFFIX",
+          "final Checker check_ledger.jsonl path and adapter JSON output with exit 1"
         ],
         "invalid_when_missing": "Invalid control; batch unqualified."
       },
