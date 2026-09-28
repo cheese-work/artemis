@@ -16,7 +16,7 @@
 
 import base64
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, call
 
 import pytest
 
@@ -99,6 +99,23 @@ async def test_android_driver_with_mock_adb():
     # Test press key
     await driver.press_key(KeyCode.BACK)
     mock_adb_device.shell.assert_called_with("input keyevent 4")
+
+
+@pytest.mark.asyncio
+async def test_android_driver_stop_app_requires_no_shell_error_or_remaining_pid():
+    mock_adb_client = MagicMock()
+    mock_adb_device = MagicMock()
+    mock_adb_device.shell.side_effect = ["", ""]
+    mock_adb_client.device.return_value = mock_adb_device
+    driver = AndroidAdbDriver(device_id="emulator-5554", adb_client=mock_adb_client)
+
+    assert await driver.stop_app("dev.cheese.pocketactual") is True
+    mock_adb_device.shell.assert_has_calls(
+        [call("am force-stop dev.cheese.pocketactual"), call("pidof dev.cheese.pocketactual")]
+    )
+
+    mock_adb_device.shell.side_effect = ["", "1234"]
+    assert await driver.stop_app("dev.cheese.pocketactual") is False
 
 
 @pytest.mark.asyncio

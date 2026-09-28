@@ -144,6 +144,8 @@ def _native_data_engine(
     observed_account=OBSERVED_ACCOUNT,
     saved_step_number=1,
     final_capture_step_number=4,
+    saved_timestamp=1.0,
+    final_capture_timestamp=4.0,
     include_stop_launch=True,
     checker_session_id=SESSION_ID,
 ):
@@ -158,6 +160,7 @@ def _native_data_engine(
             step_id TEXT PRIMARY KEY,
             session_id TEXT,
             step_number INTEGER,
+            timestamp REAL,
             pre_image_name TEXT,
             action_taken TEXT
         );
@@ -168,6 +171,7 @@ def _native_data_engine(
             type TEXT,
             name TEXT,
             status TEXT,
+            timestamp REAL,
             payload TEXT
         );
         """
@@ -191,15 +195,23 @@ def _native_data_engine(
         ],
     )
     connection.executemany(
-        "INSERT INTO steps VALUES (?, ?, ?, ?, ?)",
+        "INSERT INTO steps VALUES (?, ?, ?, ?, ?, ?)",
         [
-            (SAVED_STEP_ID, SESSION_ID, saved_step_number, saved_image_name, None),
-            (STOP_STEP_ID, SESSION_ID, 2, None, None),
-            (LAUNCH_STEP_ID, SESSION_ID, 3, None, None),
+            (
+                SAVED_STEP_ID,
+                SESSION_ID,
+                saved_step_number,
+                saved_timestamp,
+                saved_image_name,
+                None,
+            ),
+            (STOP_STEP_ID, SESSION_ID, 2, 1.0, None, None),
+            (LAUNCH_STEP_ID, SESSION_ID, 3, 1.0, None, None),
             (
                 FINAL_CAPTURE_STEP_ID,
                 SESSION_ID,
                 final_capture_step_number,
+                final_capture_timestamp,
                 final_image_name,
                 json.dumps(
                     {
@@ -212,8 +224,8 @@ def _native_data_engine(
         ],
     )
     connection.execute(
-        "INSERT INTO traces VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (CHECKER_TRACE_ID, checker_session_id, None, "agent", "checker", "success", "{}"),
+        "INSERT INTO traces VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (CHECKER_TRACE_ID, checker_session_id, None, "agent", "checker", "success", 4.1, "{}"),
     )
     if include_stop_launch:
         for index, (step_id, action) in enumerate(
@@ -221,7 +233,7 @@ def _native_data_engine(
             start=1,
         ):
             connection.execute(
-                "INSERT INTO traces VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO traces VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     f"50000000-0000-4000-8000-00000000000{index}",
                     SESSION_ID,
@@ -229,6 +241,7 @@ def _native_data_engine(
                     "action",
                     action,
                     "success",
+                    float(index + 1),
                     json.dumps({"action": {"action": action, "app_name": PACKAGE_NAME}}),
                 ),
             )
@@ -336,7 +349,7 @@ def test_negative_control_verdict_adapter_rejects_the_expected_suffixed_account(
 
 
 def test_negative_control_verdict_adapter_rejects_a_pre_relaunch_final_capture(tmp_path):
-    traces_dir, db_path = _native_data_engine(tmp_path, final_capture_step_number=1)
+    traces_dir, db_path = _native_data_engine(tmp_path, final_capture_timestamp=1.5)
     result = _adapter_result(tmp_path, [_failed_final()], traces_dir, db_path)
 
     assert result.returncode == 2
@@ -354,13 +367,26 @@ def test_negative_control_verdict_adapter_requires_native_stop_and_launch(tmp_pa
 def test_negative_control_verdict_adapter_rejects_a_restart_before_the_save(tmp_path):
     traces_dir, db_path = _native_data_engine(
         tmp_path,
-        saved_step_number=4,
-        final_capture_step_number=5,
+        saved_timestamp=3.5,
     )
     result = _adapter_result(tmp_path, [_failed_final()], traces_dir, db_path)
 
     assert result.returncode == 2
     assert json.loads(result.stdout)["reason"] == "native_capture"
+
+
+def test_negative_control_verdict_adapter_accepts_stop_launch_and_capture_in_one_step(tmp_path):
+    traces_dir, db_path = _native_data_engine(tmp_path)
+    connection = sqlite3.connect(db_path)
+    connection.execute(
+        "UPDATE steps SET step_number = 2 WHERE step_id IN (?, ?, ?)",
+        (STOP_STEP_ID, LAUNCH_STEP_ID, FINAL_CAPTURE_STEP_ID),
+    )
+    connection.commit()
+    connection.close()
+    result = _adapter_result(tmp_path, [_failed_final()], traces_dir, db_path)
+
+    assert result.returncode == 1
 
 
 def test_negative_control_verdict_adapter_rejects_an_unbound_final_checker_trace(tmp_path):
