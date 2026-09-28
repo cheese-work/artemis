@@ -56,13 +56,25 @@ def test_journey_requires_process_death_and_negative_control_provenance():
     assert "`stop_app` / `am force-stop`" in text
     assert "process ended" in text
     assert "invalid and cannot pass" in text
-    assert "generic checker failure" in text
+    assert "generic\nchecker failure" in text
     assert "checker_verdict_exit.py" in text
-    assert "exits `1` only when that exact final `assert`\nfailed" in text
+    assert "ARTEMIS_TRACES_DIR=<ledger-root>" in text
+    assert "`--traces-path` controls\ntrace recording only" in text
+    assert "latest `final#N` Checker ledger attempt" in text
     assert "completed` is not control success" in text
     assert 'observed name was\ncompared with "qual-<run_id>-WRONG-SUFFIX"' in text
     assert "invalid control" in text
     assert "unqualifies the entire batch" in text
+
+
+def test_ledger_collection_recipe_matches_the_direct_cli_data_engine_path():
+    cli_source = (REPO_ROOT / "artemis/interfaces/cli/commands/run.py").read_text(encoding="utf-8")
+    agent_source = (REPO_ROOT / "artemis/sdk/agent.py").read_text(encoding="utf-8")
+
+    assert "if test_name:" in cli_source
+    assert "trace_path = traces_output_path_str or str(settings.TRACES_PATH)" in cli_source
+    assert "self._tmp_traces_dir = Path(settings.TRACES_PATH)" in agent_source
+    assert "traces_path=self._tmp_traces_dir" in agent_source
 
 
 def test_each_lane_retains_the_execution_controls_and_return_contract():
@@ -83,7 +95,8 @@ def test_each_lane_retains_the_execution_controls_and_return_contract():
             == hashlib.sha256((REPO_ROOT / adapter["path"]).read_bytes()).hexdigest()
         )
         assert adapter["expected_exit"] == 1
-        assert "check_ledger.jsonl" in adapter["contract"]
+        assert "ARTEMIS_TRACES_DIR/<session-id>/check_ledger.jsonl" in adapter["contract"]
+        assert "latest final attempt" in adapter["contract"]
         assert lane["negative_control"]["not_satisfied_by"] == "completed orchestration status"
         assert (
             lane["negative_control"]["invalid_when_missing"]
@@ -95,77 +108,154 @@ def test_each_lane_retains_the_execution_controls_and_return_contract():
             "relaunch evidence for the Recovery snapshot",
             "observed post-relaunch account name",
             "recorded mismatch between the observed account name and qual-<run_id>-WRONG-SUFFIX",
-            "final Checker check_ledger.jsonl path and adapter JSON output with exit 1",
+            (
+                "recovery-snapshot observation JSON, ARTEMIS_TRACES_DIR-derived "
+                "latest-final check_ledger.jsonl path, and adapter JSON output with exit 1"
+            ),
         ]
         assert "verified release" in lane["cleanup_contract"]
 
 
-def test_negative_control_verdict_adapter_exits_one_only_for_the_expected_assertion(tmp_path):
-    ledger = tmp_path / "check_ledger.jsonl"
-    ledger.write_text(
-        json.dumps(
-            {
-                "attempt_id": "final#1",
-                "kind": "assert",
-                "status": "failed",
-                "item_text": ("The post-relaunch account name must equal qual-run-1-WRONG-SUFFIX."),
-                "evidence": "Observed qual-run-1 after relaunch.",
-            }
+SESSION_ID = "99d9a63b-8f1c-4e5d-98f5-070262adc1ee"
+OBSERVED_ACCOUNT = "qual-run-1"
+EXPECTED_ACCOUNT = "qual-run-1-WRONG-SUFFIX"
+
+
+def _observation(**changes):
+    value = {
+        "schema_version": 1,
+        "attempt_kind": "negative_control",
+        "session_id": SESSION_ID,
+        "screen_semantics_id": "recovery-snapshot",
+        "after_relaunch": True,
+        "observed_account": OBSERVED_ACCOUNT,
+        "expected_account": EXPECTED_ACCOUNT,
+    }
+    value.update(changes)
+    return value
+
+
+def _adapter_result(tmp_path, records, observation, *, ledger_bytes=None, observation_bytes=None):
+    traces_dir = tmp_path / "runtime-traces"
+    ledger = traces_dir / SESSION_ID / "check_ledger.jsonl"
+    ledger.parent.mkdir(parents=True)
+    if ledger_bytes is not None:
+        ledger.write_bytes(ledger_bytes)
+    else:
+        ledger.write_text(
+            "".join(f"{json.dumps(record)}\n" for record in records), encoding="utf-8"
         )
-        + "\n",
-        encoding="utf-8",
-    )
+    observation_path = tmp_path / "negative-control-observation.json"
+    if observation_bytes is not None:
+        observation_path.write_bytes(observation_bytes)
+    else:
+        observation_path.write_text(json.dumps(observation), encoding="utf-8")
     adapter = REPO_ROOT / "qualification/tools/checker_verdict_exit.py"
 
-    result = subprocess.run(
+    return subprocess.run(
         [
             sys.executable,
             str(adapter),
-            "--ledger",
-            str(ledger),
+            "--traces-dir",
+            str(traces_dir),
+            "--session-id",
+            SESSION_ID,
+            "--observation",
+            str(observation_path),
             "--observed-account",
-            "qual-run-1",
+            OBSERVED_ACCOUNT,
             "--expected-account",
-            "qual-run-1-WRONG-SUFFIX",
+            EXPECTED_ACCOUNT,
         ],
         check=False,
         capture_output=True,
         text=True,
     )
 
+
+def _failed_final(attempt_id="final#1"):
+    return {
+        "attempt_id": attempt_id,
+        "kind": "assert",
+        "status": "failed",
+        "item_text": f"The post-relaunch account name must equal {EXPECTED_ACCOUNT}.",
+        "evidence": "Structured observation is stored separately.",
+    }
+
+
+def test_negative_control_verdict_adapter_exits_one_only_for_latest_exact_assertion(tmp_path):
+    result = _adapter_result(tmp_path, [_failed_final()], _observation())
+
     assert result.returncode == 1
-    assert json.loads(result.stdout)["verdict"] == "fail_assertion"
+    output = json.loads(result.stdout)
+    assert output["verdict"] == "fail_assertion"
+    assert output["final_attempt_id"] == "final#1"
+    assert output["ledger_path"].endswith(f"{SESSION_ID}/check_ledger.jsonl")
 
 
-def test_negative_control_verdict_adapter_rejects_a_failed_assertion_without_observed_account(
-    tmp_path,
-):
-    ledger = tmp_path / "check_ledger.jsonl"
-    ledger.write_text(
-        json.dumps(
-            {
-                "attempt_id": "final#1",
-                "kind": "assert",
-                "status": "failed",
-                "item_text": ("The post-relaunch account name must equal qual-run-1-WRONG-SUFFIX."),
-                "evidence": "The account could not be observed after relaunch.",
-            }
-        )
-        + "\n",
-        encoding="utf-8",
+def test_negative_control_verdict_adapter_rejects_a_stale_final_failure(tmp_path):
+    latest = _failed_final("final#2")
+    latest["status"] = "passed"
+    result = _adapter_result(tmp_path, [_failed_final(), latest], _observation())
+
+    assert result.returncode == 2
+    assert json.loads(result.stdout)["reason"] == "checker"
+
+
+def test_negative_control_verdict_adapter_rejects_non_observation_even_when_named(tmp_path):
+    result = _adapter_result(
+        tmp_path,
+        [_failed_final()],
+        _observation(after_relaunch=False),
     )
+
+    assert result.returncode == 2
+    assert json.loads(result.stdout)["reason"] == "observation"
+
+
+def test_negative_control_verdict_adapter_rejects_invalid_utf8_observation(tmp_path):
+    result = _adapter_result(
+        tmp_path,
+        [_failed_final()],
+        _observation(),
+        observation_bytes=b"\xff",
+    )
+
+    assert result.returncode == 2
+    assert json.loads(result.stdout)["verdict"] == "invalid_control"
+
+
+def test_negative_control_verdict_adapter_rejects_invalid_utf8_ledger(tmp_path):
+    result = _adapter_result(
+        tmp_path,
+        [_failed_final()],
+        _observation(),
+        ledger_bytes=b"\xff",
+    )
+
+    assert result.returncode == 2
+    assert json.loads(result.stdout)["reason"] == "ledger"
+
+
+def test_negative_control_verdict_adapter_rejects_a_missing_runtime_ledger(tmp_path):
+    observation_path = tmp_path / "negative-control-observation.json"
+    observation_path.write_text(json.dumps(_observation()), encoding="utf-8")
     adapter = REPO_ROOT / "qualification/tools/checker_verdict_exit.py"
 
     result = subprocess.run(
         [
             sys.executable,
             str(adapter),
-            "--ledger",
-            str(ledger),
+            "--traces-dir",
+            str(tmp_path / "runtime-traces"),
+            "--session-id",
+            SESSION_ID,
+            "--observation",
+            str(observation_path),
             "--observed-account",
-            "qual-run-1",
+            OBSERVED_ACCOUNT,
             "--expected-account",
-            "qual-run-1-WRONG-SUFFIX",
+            EXPECTED_ACCOUNT,
         ],
         check=False,
         capture_output=True,
@@ -173,4 +263,4 @@ def test_negative_control_verdict_adapter_rejects_a_failed_assertion_without_obs
     )
 
     assert result.returncode == 2
-    assert json.loads(result.stdout)["verdict"] == "invalid_control"
+    assert json.loads(result.stdout)["reason"] == "ledger"
