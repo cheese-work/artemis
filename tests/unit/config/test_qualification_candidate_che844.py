@@ -59,8 +59,11 @@ def test_journey_requires_process_death_and_negative_control_provenance():
     assert "generic\nchecker failure" in text
     assert "checker_verdict_exit.py" in text
     assert "ARTEMIS_TRACES_DIR=<ledger-root>" in text
+    assert "artemis run --standalone" in text
     assert "`--traces-path` controls\ntrace recording only" in text
     assert "latest `final#N` Checker ledger attempt" in text
+    assert "capture a UI hierarchy XML" in text
+    assert "ui_hierarchy_sha256" in text
     assert "completed` is not control success" in text
     assert 'observed name was\ncompared with "qual-<run_id>-WRONG-SUFFIX"' in text
     assert "invalid control" in text
@@ -75,6 +78,7 @@ def test_ledger_collection_recipe_matches_the_direct_cli_data_engine_path():
     assert "trace_path = traces_output_path_str or str(settings.TRACES_PATH)" in cli_source
     assert "self._tmp_traces_dir = Path(settings.TRACES_PATH)" in agent_source
     assert "traces_path=self._tmp_traces_dir" in agent_source
+    assert "is_standalone = standalone or" in cli_source
 
 
 def test_each_lane_retains_the_execution_controls_and_return_contract():
@@ -109,8 +113,9 @@ def test_each_lane_retains_the_execution_controls_and_return_contract():
             "observed post-relaunch account name",
             "recorded mismatch between the observed account name and qual-<run_id>-WRONG-SUFFIX",
             (
-                "recovery-snapshot observation JSON, ARTEMIS_TRACES_DIR-derived "
-                "latest-final check_ledger.jsonl path, and adapter JSON output with exit 1"
+                "hash-verified post-relaunch recovery-snapshot UI hierarchy and evidence "
+                "manifest, ARTEMIS_TRACES_DIR-derived latest-final check_ledger.jsonl path, "
+                "and adapter JSON output with exit 1"
             ),
         ]
         assert "verified release" in lane["cleanup_contract"]
@@ -119,23 +124,37 @@ def test_each_lane_retains_the_execution_controls_and_return_contract():
 SESSION_ID = "99d9a63b-8f1c-4e5d-98f5-070262adc1ee"
 OBSERVED_ACCOUNT = "qual-run-1"
 EXPECTED_ACCOUNT = "qual-run-1-WRONG-SUFFIX"
+STEP_ID = "step-post-relaunch-42"
 
 
-def _observation(**changes):
+def _evidence_manifest(tmp_path, **changes):
+    hierarchy = tmp_path / "post-relaunch-ui.xml"
+    hierarchy.write_text(
+        (
+            '<hierarchy><node content-desc="recovery-snapshot" '
+            f'text="{OBSERVED_ACCOUNT}" /></hierarchy>'
+        ),
+        encoding="utf-8",
+    )
     value = {
-        "schema_version": 1,
+        "schema_version": 2,
         "attempt_kind": "negative_control",
         "session_id": SESSION_ID,
         "screen_semantics_id": "recovery-snapshot",
-        "after_relaunch": True,
-        "observed_account": OBSERVED_ACCOUNT,
-        "expected_account": EXPECTED_ACCOUNT,
+        "final_attempt_id": "final#1",
+        "post_relaunch_step_id": STEP_ID,
+        "ui_hierarchy": {
+            "path": hierarchy.name,
+            "sha256": hashlib.sha256(hierarchy.read_bytes()).hexdigest(),
+        },
     }
     value.update(changes)
-    return value
+    manifest = tmp_path / "negative-control-evidence.json"
+    manifest.write_text(json.dumps(value), encoding="utf-8")
+    return manifest, value["ui_hierarchy"]["sha256"]
 
 
-def _adapter_result(tmp_path, records, observation, *, ledger_bytes=None, observation_bytes=None):
+def _adapter_result(tmp_path, records, manifest, *, ledger_bytes=None):
     traces_dir = tmp_path / "runtime-traces"
     ledger = traces_dir / SESSION_ID / "check_ledger.jsonl"
     ledger.parent.mkdir(parents=True)
@@ -145,11 +164,6 @@ def _adapter_result(tmp_path, records, observation, *, ledger_bytes=None, observ
         ledger.write_text(
             "".join(f"{json.dumps(record)}\n" for record in records), encoding="utf-8"
         )
-    observation_path = tmp_path / "negative-control-observation.json"
-    if observation_bytes is not None:
-        observation_path.write_bytes(observation_bytes)
-    else:
-        observation_path.write_text(json.dumps(observation), encoding="utf-8")
     adapter = REPO_ROOT / "qualification/tools/checker_verdict_exit.py"
 
     return subprocess.run(
@@ -160,8 +174,8 @@ def _adapter_result(tmp_path, records, observation, *, ledger_bytes=None, observ
             str(traces_dir),
             "--session-id",
             SESSION_ID,
-            "--observation",
-            str(observation_path),
+            "--evidence-manifest",
+            str(manifest),
             "--observed-account",
             OBSERVED_ACCOUNT,
             "--expected-account",
@@ -173,18 +187,26 @@ def _adapter_result(tmp_path, records, observation, *, ledger_bytes=None, observ
     )
 
 
-def _failed_final(attempt_id="final#1"):
+def _failed_final(attempt_id="final#1", *, evidence_digest, **changes):
     return {
         "attempt_id": attempt_id,
         "kind": "assert",
         "status": "failed",
         "item_text": f"The post-relaunch account name must equal {EXPECTED_ACCOUNT}.",
-        "evidence": "Structured observation is stored separately.",
+        "trace_id": SESSION_ID,
+        "anchor_step_id": STEP_ID,
+        "evidence": (
+            f"observed_account={OBSERVED_ACCOUNT}; "
+            f"expected_account={EXPECTED_ACCOUNT}; "
+            f"ui_hierarchy_sha256={evidence_digest}"
+        ),
+        **changes,
     }
 
 
 def test_negative_control_verdict_adapter_exits_one_only_for_latest_exact_assertion(tmp_path):
-    result = _adapter_result(tmp_path, [_failed_final()], _observation())
+    manifest, digest = _evidence_manifest(tmp_path)
+    result = _adapter_result(tmp_path, [_failed_final(evidence_digest=digest)], manifest)
 
     assert result.returncode == 1
     output = json.loads(result.stdout)
@@ -194,42 +216,101 @@ def test_negative_control_verdict_adapter_exits_one_only_for_latest_exact_assert
 
 
 def test_negative_control_verdict_adapter_rejects_a_stale_final_failure(tmp_path):
-    latest = _failed_final("final#2")
+    manifest, digest = _evidence_manifest(tmp_path, final_attempt_id="final#2")
+    latest = _failed_final("final#2", evidence_digest=digest)
     latest["status"] = "passed"
-    result = _adapter_result(tmp_path, [_failed_final(), latest], _observation())
+    result = _adapter_result(tmp_path, [_failed_final(evidence_digest=digest), latest], manifest)
 
     assert result.returncode == 2
     assert json.loads(result.stdout)["reason"] == "checker"
 
 
-def test_negative_control_verdict_adapter_rejects_non_observation_even_when_named(tmp_path):
+def test_negative_control_verdict_adapter_rejects_checker_non_observation_even_when_named(
+    tmp_path,
+):
+    manifest, digest = _evidence_manifest(tmp_path)
     result = _adapter_result(
         tmp_path,
-        [_failed_final()],
-        _observation(after_relaunch=False),
+        [
+            _failed_final(
+                evidence_digest=digest,
+                evidence=(
+                    f"Could not observe {OBSERVED_ACCOUNT} after relaunch; "
+                    f"expected_account={EXPECTED_ACCOUNT}; "
+                    f"ui_hierarchy_sha256={digest}"
+                ),
+            )
+        ],
+        manifest,
     )
 
     assert result.returncode == 2
-    assert json.loads(result.stdout)["reason"] == "observation"
+    assert json.loads(result.stdout)["reason"] == "checker"
 
 
-def test_negative_control_verdict_adapter_rejects_invalid_utf8_observation(tmp_path):
-    result = _adapter_result(
-        tmp_path,
-        [_failed_final()],
-        _observation(),
-        observation_bytes=b"\xff",
+def test_negative_control_verdict_adapter_rejects_a_hierarchy_without_the_account(tmp_path):
+    manifest, digest = _evidence_manifest(tmp_path)
+    hierarchy = tmp_path / "post-relaunch-ui.xml"
+    hierarchy.write_text(
+        '<hierarchy><node content-desc="recovery-snapshot" text="missing" /></hierarchy>',
+        encoding="utf-8",
+    )
+    result = _adapter_result(tmp_path, [_failed_final(evidence_digest=digest)], manifest)
+
+    assert result.returncode == 2
+    assert json.loads(result.stdout)["reason"] == "evidence_manifest"
+
+
+def test_negative_control_verdict_adapter_requires_the_deliberate_wrong_suffix(tmp_path):
+    manifest, digest = _evidence_manifest(tmp_path)
+    adapter = REPO_ROOT / "qualification/tools/checker_verdict_exit.py"
+    traces_dir = tmp_path / "runtime-traces"
+    ledger = traces_dir / SESSION_ID / "check_ledger.jsonl"
+    ledger.parent.mkdir(parents=True)
+    ledger.write_text(json.dumps(_failed_final(evidence_digest=digest)), encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(adapter),
+            "--traces-dir",
+            str(traces_dir),
+            "--session-id",
+            SESSION_ID,
+            "--evidence-manifest",
+            str(manifest),
+            "--observed-account",
+            OBSERVED_ACCOUNT,
+            "--expected-account",
+            OBSERVED_ACCOUNT,
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
     )
 
     assert result.returncode == 2
-    assert json.loads(result.stdout)["verdict"] == "invalid_control"
+    assert json.loads(result.stdout)["reason"] == "evidence_manifest"
+
+
+def test_negative_control_verdict_adapter_rejects_a_mismatched_post_relaunch_step(tmp_path):
+    manifest, digest = _evidence_manifest(tmp_path)
+    result = _adapter_result(
+        tmp_path,
+        [_failed_final(evidence_digest=digest, anchor_step_id="step-before-relaunch")],
+        manifest,
+    )
+
+    assert result.returncode == 2
+    assert json.loads(result.stdout)["reason"] == "checker"
 
 
 def test_negative_control_verdict_adapter_rejects_invalid_utf8_ledger(tmp_path):
+    manifest, _ = _evidence_manifest(tmp_path)
     result = _adapter_result(
         tmp_path,
-        [_failed_final()],
-        _observation(),
+        [],
+        manifest,
         ledger_bytes=b"\xff",
     )
 
@@ -238,8 +319,7 @@ def test_negative_control_verdict_adapter_rejects_invalid_utf8_ledger(tmp_path):
 
 
 def test_negative_control_verdict_adapter_rejects_a_missing_runtime_ledger(tmp_path):
-    observation_path = tmp_path / "negative-control-observation.json"
-    observation_path.write_text(json.dumps(_observation()), encoding="utf-8")
+    manifest, _ = _evidence_manifest(tmp_path)
     adapter = REPO_ROOT / "qualification/tools/checker_verdict_exit.py"
 
     result = subprocess.run(
@@ -250,8 +330,8 @@ def test_negative_control_verdict_adapter_rejects_a_missing_runtime_ledger(tmp_p
             str(tmp_path / "runtime-traces"),
             "--session-id",
             SESSION_ID,
-            "--observation",
-            str(observation_path),
+            "--evidence-manifest",
+            str(manifest),
             "--observed-account",
             OBSERVED_ACCOUNT,
             "--expected-account",
@@ -260,6 +340,31 @@ def test_negative_control_verdict_adapter_rejects_a_missing_runtime_ledger(tmp_p
         check=False,
         capture_output=True,
         text=True,
+    )
+
+    assert result.returncode == 2
+    assert json.loads(result.stdout)["reason"] == "ledger"
+
+
+def test_negative_control_verdict_adapter_rejects_malformed_later_final_attempt(tmp_path):
+    manifest, digest = _evidence_manifest(tmp_path)
+    result = _adapter_result(
+        tmp_path,
+        [_failed_final(evidence_digest=digest), {"attempt_id": "final#2"}],
+        manifest,
+    )
+
+    assert result.returncode == 2
+    assert json.loads(result.stdout)["reason"] == "checker"
+
+
+def test_negative_control_verdict_adapter_rejects_malformed_later_ledger_record(tmp_path):
+    manifest, digest = _evidence_manifest(tmp_path)
+    result = _adapter_result(
+        tmp_path,
+        [_failed_final(evidence_digest=digest)],
+        manifest,
+        ledger_bytes=(f"{json.dumps(_failed_final(evidence_digest=digest))}\n[]\n").encode(),
     )
 
     assert result.returncode == 2

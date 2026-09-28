@@ -117,42 +117,59 @@ compared with "qual-<run_id>-WRONG-SUFFIX". The negative task must state this
 as its final assertion verbatim: `The post-relaunch account name must equal
 qual-<run_id>-WRONG-SUFFIX.` The executor must run with a pinned
 `--session-id` and set `ARTEMIS_TRACES_DIR=<ledger-root>` before launching
-the direct CLI. The Checker ledger is written to
+the direct CLI with `--standalone`; this prevents an existing daemon from
+choosing another data directory. The Checker ledger is written to
 `<ledger-root>/<session-id>/check_ledger.jsonl`; `--traces-path` controls
 trace recording only and is not the Checker ledger location. After the
-post-relaunch read, write the following exact observation JSON to the evidence
-destination:
+post-relaunch read, capture a UI hierarchy XML in the evidence destination and
+write this evidence manifest beside it. Its relative `ui_hierarchy.path` is
+resolved from the manifest directory; its SHA-256 must match the captured XML.
+The XML must contain `recovery-snapshot` and the observed
+`qual-<run_id>` account. Use the final Checker's actual attempt ID and
+post-relaunch anchor step ID:
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "attempt_kind": "negative_control",
   "session_id": "<session-id>",
+  "final_attempt_id": "final#<n>",
+  "post_relaunch_step_id": "<post-relaunch-step-id>",
   "screen_semantics_id": "recovery-snapshot",
-  "after_relaunch": true,
-  "observed_account": "qual-<run_id>",
-  "expected_account": "qual-<run_id>-WRONG-SUFFIX"
+  "ui_hierarchy": {
+    "path": "post-relaunch-ui.xml",
+    "sha256": "<sha256-of-post-relaunch-ui.xml>"
+  }
 }
 ```
+
+The exact failed Checker ledger record must have matching `trace_id`,
+`anchor_step_id`, and evidence containing all three tokens:
+`observed_account=qual-<run_id>`,
+`expected_account=qual-<run_id>-WRONG-SUFFIX`, and
+`ui_hierarchy_sha256=<sha256-of-post-relaunch-ui.xml>`. An unavailable,
+generic, or self-asserted observation does not meet this contract.
 
 Then run:
 
 ```bash
-ARTEMIS_TRACES_DIR=<ledger-root> artemis run --session-id <session-id> ...
+ARTEMIS_TRACES_DIR=<ledger-root> artemis run --standalone --session-id <session-id> ...
 python qualification/tools/checker_verdict_exit.py \
   --traces-dir <ledger-root> \
   --session-id <session-id> \
-  --observation <negative-control-observation.json> \
+  --evidence-manifest <negative-control-evidence.json> \
   --observed-account qual-<run_id> \
   --expected-account qual-<run_id>-WRONG-SUFFIX
 ```
 
 The adapter reads only the latest `final#N` Checker ledger attempt, writes a
 machine-readable verdict, and exits `1` only when that attempt contains the
-exact failed final assertion and the observation JSON is valid. It exits `2`
-with JSON for missing, malformed, stale, unrelated, or non-failed evidence;
-only exit `1` is control success. Record the adapter's JSON output, derived
-ledger path, and exit code with the observation JSON. An orchestration status
+exact failed final assertion and the hash-verified hierarchy manifest binds
+the same session, attempt, step, observed account, expected mismatch, and
+Checker evidence. Any malformed ledger line, later malformed final attempt,
+missing, stale, unrelated, or non-failed evidence exits `2` with JSON; only
+exit `1` is control success. Record the adapter's JSON output, derived ledger
+path, and evidence manifest with the hierarchy XML. An orchestration status
 such as `completed` is not control success. A missing prerequisite, generic
 checker failure, zero adapter exit, exit `2`, or `pass` is an invalid control
 and unqualifies the entire batch. Record it as its own evidence entry
