@@ -4,12 +4,16 @@
   "candidate_kind": "testcase",
   "source_candidate": {
     "repository": "https://github.com/cheese-work/artemis",
-    "pull_request": 26,
-    "commit_sha": "f60e89216c5a2c4429520e68d20d17c8b07ae6b3",
+    "pull_request": 29,
+    "commit_sha": "a6c82bd4f8a49cf80b6bff5a5a61c7adb540004e",
     "manifest_path": "qualification/manifests/pocket_actual_save_relaunch.v1.json",
-    "manifest_digest_sha256": "71773b017e8d44bc7ce0404ebf39c4d2578bf8fdd7f8f657e837adab7a9b2440",
-    "manifest_version": 3,
-    "fork_sha": "25a2c5b2c839b674994ee4a2a49e79209142bd1d",
+    "manifest_digest_sha256": "720482bc0450fe41c728882489f035d0ab87bacc12db7e9fb3ce3284db1023e8",
+    "manifest_version": 4,
+    "fork_sha": "a6c82bd4f8a49cf80b6bff5a5a61c7adb540004e",
+    "app_input_source": {
+      "pull_request": 26,
+      "commit_sha": "f60e89216c5a2c4429520e68d20d17c8b07ae6b3"
+    },
     "app_sha": "2c42481778e6f9b88a9502f55decdbe4e1a76e83",
     "apk_digest_sha256": "04795d5f3995c8e895f6440a9763c8a003c8b6ff955541e3965f5e71564e2e12",
     "package_name": "dev.cheese.pocketactual",
@@ -43,9 +47,9 @@
   },
   "testcase": {
     "journey_path": "qualification/journeys/pocket_actual_save_relaunch.md",
-    "journey_digest_sha256": "d9534d04a4f83f019667194c6197bc1f7660da9fa4e179f8768175d63b02ab38"
+    "journey_digest_sha256": "746c06d7bcf54929adacf45e81d71ac56d129056a1a030e5728904dec24a116e"
   },
-  "shared_testcase_rationale": "PR #26 supplies the pinned manifest and model inputs. This receipt locks the revised journey digest, manifest v3, fork SHA, app SHA, and APK digest to both lanes; it does not infer X99 applicability from the Pixel PR title.",
+  "shared_testcase_rationale": "PR #29 commit a6c82bd pins the runner used for qualification, including final Checker capture linkage, timestamp ordering, and process-death verification. PR #26 is retained only as the historical app/config input source. This receipt locks the revised journey digest, manifest v4, runner SHA, app SHA, and APK digest to both lanes; it does not infer X99 applicability from the Pixel PR title.",
   "lanes": [
     {
       "issue": "CHE-540",
@@ -55,31 +59,31 @@
       "fixture_reset": "Fresh fixture before every positive or negative attempt; force-stop, clear app data, cold-start, and secure-storage readiness check.",
       "assertions": [
         "The recovery snapshot confirms qual-<run_id>, USD · +123.45, History gap, and Recovery adjustment before relaunch.",
-        "A recorded successful post-save force-stop and process-end check precede relaunch.",
+        "A recorded successful post-save force-stop with empty output and pidof process-end check precede relaunch.",
         "The relaunch reaches the Recovery snapshot.",
         "The account and USD balance equal qual-<run_id> and USD · +123.45 byte-for-byte."
       ],
       "relaunch_proof": {
         "pass_prerequisite": true,
         "after_save_stop": "Record a successful stop_app or am force-stop after UI save and before relaunch.",
-        "process_ended": "Record a process check showing the saved process ended before relaunch."
+        "process_ended": "Record a successful pidof check with no PID for the saved process before relaunch."
       },
       "negative_control": {
         "expected_verdict": "fail_assertion",
         "verdict_adapter": {
           "path": "qualification/tools/checker_verdict_exit.py",
-          "digest_sha256": "11ded28f3ecaa858b7de383ad7669bbc3870db467bcfe4a28de0e171eb953430",
-          "contract": "Derives ARTEMIS_TRACES_DIR/<session-id>/check_ledger.jsonl and exits 1 only when the latest final attempt has the exact failed assert, a same-session Checker trace, and its runner-bound native final capture after a saved Recovery snapshot and successful post-save stop_app then launch_app traces; malformed evidence exits 2 with JSON.",
+          "digest_sha256": "ee5b072f34509da3fa02a91a52b078b38cd50daef7c37baa6127045c1810d054",
+          "contract": "Derives ARTEMIS_TRACES_DIR/<session-id>/check_ledger.jsonl and exits 1 only when the latest final attempt has the exact failed assert, a same-session Checker trace, and its runner-bound native final capture after a saved Recovery snapshot and successful post-save stop_app then launch_app traces ordered by native timestamps. stop_app succeeds only after force-stop has no output and pidof has no PID; malformed evidence exits 2 with JSON.",
           "expected_exit": 1
         },
         "not_satisfied_by": "completed orchestration status",
         "required_evidence": [
           "Recovery snapshot confirmation for the original account and USD · +123.45 balance",
-          "recorded post-save process stop and verified process end",
+          "recorded post-save process stop with empty force-stop output and pidof-confirmed process end",
           "relaunch evidence for the Recovery snapshot",
           "observed post-relaunch account name",
           "recorded mismatch between the observed account name and qual-<run_id>-WRONG-SUFFIX",
-          "native saved-step and runner-bound final-capture proof, ARTEMIS_TRACES_DIR-derived latest-final check_ledger.jsonl path, and adapter JSON output with exit 1"
+          "native timestamp-ordered saved-step and runner-bound final-capture proof, ARTEMIS_TRACES_DIR-derived latest-final check_ledger.jsonl path, and adapter JSON output with exit 1"
         ],
         "invalid_when_missing": "Invalid control; batch unqualified."
       },
@@ -93,31 +97,31 @@
       "fixture_reset": "Fresh fixture before every positive or negative attempt; force-stop, clear app data, cold-start, and secure-storage readiness check.",
       "assertions": [
         "The recovery snapshot confirms qual-<run_id>, USD · +123.45, History gap, and Recovery adjustment before relaunch.",
-        "A recorded successful post-save force-stop and process-end check precede relaunch.",
+        "A recorded successful post-save force-stop with empty output and pidof process-end check precede relaunch.",
         "The relaunch reaches the Recovery snapshot.",
         "The account and USD balance equal qual-<run_id> and USD · +123.45 byte-for-byte."
       ],
       "relaunch_proof": {
         "pass_prerequisite": true,
         "after_save_stop": "Record a successful stop_app or am force-stop after UI save and before relaunch.",
-        "process_ended": "Record a process check showing the saved process ended before relaunch."
+        "process_ended": "Record a successful pidof check with no PID for the saved process before relaunch."
       },
       "negative_control": {
         "expected_verdict": "fail_assertion",
         "verdict_adapter": {
           "path": "qualification/tools/checker_verdict_exit.py",
-          "digest_sha256": "11ded28f3ecaa858b7de383ad7669bbc3870db467bcfe4a28de0e171eb953430",
-          "contract": "Derives ARTEMIS_TRACES_DIR/<session-id>/check_ledger.jsonl and exits 1 only when the latest final attempt has the exact failed assert, a same-session Checker trace, and its runner-bound native final capture after a saved Recovery snapshot and successful post-save stop_app then launch_app traces; malformed evidence exits 2 with JSON.",
+          "digest_sha256": "ee5b072f34509da3fa02a91a52b078b38cd50daef7c37baa6127045c1810d054",
+          "contract": "Derives ARTEMIS_TRACES_DIR/<session-id>/check_ledger.jsonl and exits 1 only when the latest final attempt has the exact failed assert, a same-session Checker trace, and its runner-bound native final capture after a saved Recovery snapshot and successful post-save stop_app then launch_app traces ordered by native timestamps. stop_app succeeds only after force-stop has no output and pidof has no PID; malformed evidence exits 2 with JSON.",
           "expected_exit": 1
         },
         "not_satisfied_by": "completed orchestration status",
         "required_evidence": [
           "Recovery snapshot confirmation for the original account and USD · +123.45 balance",
-          "recorded post-save process stop and verified process end",
+          "recorded post-save process stop with empty force-stop output and pidof-confirmed process end",
           "relaunch evidence for the Recovery snapshot",
           "observed post-relaunch account name",
           "recorded mismatch between the observed account name and qual-<run_id>-WRONG-SUFFIX",
-          "native saved-step and runner-bound final-capture proof, ARTEMIS_TRACES_DIR-derived latest-final check_ledger.jsonl path, and adapter JSON output with exit 1"
+          "native timestamp-ordered saved-step and runner-bound final-capture proof, ARTEMIS_TRACES_DIR-derived latest-final check_ledger.jsonl path, and adapter JSON output with exit 1"
         ],
         "invalid_when_missing": "Invalid control; batch unqualified."
       },
