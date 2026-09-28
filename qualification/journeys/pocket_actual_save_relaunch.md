@@ -138,7 +138,9 @@ observation. The adapter orders the saved snapshot, stop, launch, and final
 capture by their native timestamps, not step numbers, because multiple native
 events may be recorded in one step. A successful stop means `am force-stop`
 returned no output and a subsequent `pidof <candidate_package>` returned no
-PID.
+PID. Every saved, stop, launch, and final-capture timestamp must be a finite
+number; a missing, text, NaN, or infinite timestamp is invalid control
+evidence and the adapter exits `2`.
 
 Then run:
 
