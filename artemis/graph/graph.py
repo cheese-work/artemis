@@ -379,6 +379,7 @@ async def exit_settlement_node(state: State, ctx: ArtemisContext):
                         "evidence": v.evidence,
                         "suggestion": v.suggestion,
                         "anchor_step_id": None,
+                        "final_capture_step_id": report.final_capture_step_id,
                     },
                 )
 

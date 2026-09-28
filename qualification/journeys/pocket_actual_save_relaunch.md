@@ -122,16 +122,19 @@ choosing another data directory. Also set
 `DATA_ENGINE_DB_PATH=<ledger-root>/data_engine.db` so the native step and
 action records use the same evidence root. The Checker ledger is written to
 `<ledger-root>/<session-id>/check_ledger.jsonl`; `--traces-path` controls
-trace recording only and is not the Checker ledger location. After relaunch,
-record the native DataEngine `step_id` for the Recovery snapshot capture. The
-adapter reads `<ledger-root>/data_engine.db` read-only and accepts that step
-only when it belongs to this session, its stored UI tree contains exact UI
-values `recovery-snapshot` and `qual-<run_id>`, and successful native
-`stop_app` then `launch_app` action traces for the candidate package precede
-the capture. This rejects a copied, stale, pre-relaunch, or substring-only
-observation. A final Checker ledger record naturally has its own Checker
-`trace_id` and a null `anchor_step_id`; neither is a substitute for the
-native capture proof.
+trace recording only and is not the Checker ledger location. Record the native
+DataEngine `step_id` for the saved Recovery snapshot before force-stop. The
+adapter reads `<ledger-root>/data_engine.db` read-only and requires that saved
+step's exact `recovery-snapshot`, `qual-<run_id>`, and `USD · +123.45` values,
+followed by successful native `stop_app` then `launch_app` action traces for
+the candidate package. The final Checker itself records a native final-screen
+capture step and writes its ID plus its own Checker `trace_id` into the latest
+final ledger record. The adapter accepts only that same-session Checker trace
+and its runner-generated final capture, whose exact UI values include
+`recovery-snapshot` and `qual-<run_id>`. It never accepts an executor-selected
+capture or generic Checker evidence. This rejects a copied, stale,
+pre-save-restart, pre-relaunch, unrelated-final, or substring-only
+observation.
 
 Then run:
 
@@ -142,20 +145,22 @@ python qualification/tools/checker_verdict_exit.py \
   --traces-dir <ledger-root> \
   --data-engine-db <ledger-root>/data_engine.db \
   --session-id <session-id> \
-  --post-relaunch-step-id <native-post-relaunch-step-id> \
+  --saved-step-id <native-saved-recovery-snapshot-step-id> \
   --package-name <candidate_package> \
   --observed-account qual-<run_id> \
-  --expected-account qual-<run_id>-WRONG-SUFFIX
+  --expected-account qual-<run_id>-WRONG-SUFFIX \
+  --expected-balance "USD · +123.45"
 ```
 
 The adapter reads only the latest `final#N` Checker ledger attempt, writes a
 machine-readable verdict, and exits `1` only when that attempt contains the
-exact failed final assertion and the native post-relaunch capture satisfies
-the session, exact UI-value, and stop/relaunch-sequence checks. Any malformed
-ledger line, later malformed final attempt, missing, stale, unrelated, or
-non-failed evidence exits `2` with JSON; only exit `1` is control success.
-Record the adapter's JSON output, derived ledger path, and native step/image
-identity. An orchestration status
+exact failed final assertion and the runner-bound final capture satisfies the
+same-session Checker-trace, exact UI-value, saved-state, and post-save
+stop/relaunch-sequence checks. Any malformed ledger line, later malformed
+final attempt, missing, stale, unrelated, or non-failed evidence exits `2`
+with JSON; only exit `1` is control success. Record the adapter's JSON output,
+derived ledger path, saved step identity, and final-capture step/image identity.
+An orchestration status
 such as `completed` is not control success. A missing prerequisite, generic
 checker failure, zero adapter exit, exit `2`, or `pass` is an invalid control
 and unqualifies the entire batch. Record it as its own evidence entry

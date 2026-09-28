@@ -37,33 +37,62 @@ def _has_exact_value(value: object, expected: str) -> bool:
     return False
 
 
-def _native_post_relaunch_image(
-    db_path: Path,
+def _step_capture(
+    connection: sqlite3.Connection,
     session_id: UUID,
     step_id: UUID,
+) -> sqlite3.Row | None:
+    return connection.execute(
+        """
+        SELECT s.step_number, s.pre_image_name, s.action_taken, i.ui_tree
+        FROM steps AS s
+        JOIN images AS i ON i.image_name = s.pre_image_name
+        WHERE s.session_id = ? AND s.step_id = ?
+        """,
+        (str(session_id), str(step_id)),
+    ).fetchone()
+
+
+def _native_control_proof(
+    db_path: Path,
+    session_id: UUID,
+    saved_step_id: UUID,
     package_name: str,
     observed_account: str,
+    expected_balance: str,
+    attempt_id: str,
+    checker_trace_id: str,
+    final_capture_step_id: UUID,
 ) -> str | None:
     try:
         connection = sqlite3.connect(f"{db_path.resolve().as_uri()}?mode=ro", uri=True)
         connection.row_factory = sqlite3.Row
         with connection:
-            capture = connection.execute(
+            saved = _step_capture(connection, session_id, saved_step_id)
+            capture = _step_capture(connection, session_id, final_capture_step_id)
+            checker = connection.execute(
                 """
-                SELECT s.step_number, s.pre_image_name, i.ui_tree
-                FROM steps AS s
-                JOIN images AS i ON i.image_name = s.pre_image_name
-                WHERE s.session_id = ? AND s.step_id = ?
+                SELECT 1 FROM traces
+                WHERE trace_id = ? AND session_id = ? AND type = 'agent' AND name = 'checker'
                 """,
-                (str(session_id), str(step_id)),
+                (checker_trace_id, str(session_id)),
             ).fetchone()
-            if capture is None:
+            if saved is None or capture is None or checker is None:
                 return None
-            ui_tree = json.loads(capture["ui_tree"])
             if not (
-                _has_exact_value(ui_tree, "recovery-snapshot")
-                and _has_exact_value(ui_tree, observed_account)
+                _has_exact_value(json.loads(saved["ui_tree"]), "recovery-snapshot")
+                and _has_exact_value(json.loads(saved["ui_tree"]), observed_account)
+                and _has_exact_value(json.loads(saved["ui_tree"]), expected_balance)
+                and _has_exact_value(json.loads(capture["ui_tree"]), "recovery-snapshot")
+                and _has_exact_value(json.loads(capture["ui_tree"]), observed_account)
             ):
+                return None
+            capture_action = json.loads(capture["action_taken"])
+            if capture_action != {
+                "action": "checker_final_capture",
+                "attempt_id": attempt_id,
+                "checker_trace_id": checker_trace_id,
+            }:
                 return None
             actions = connection.execute(
                 """
@@ -92,7 +121,11 @@ def _native_post_relaunch_image(
             stop_steps.append(action["step_number"])
         elif item.get("action") == "launch_app":
             launch_steps.append(action["step_number"])
-    if not any(stop < launch for stop in stop_steps for launch in launch_steps):
+    if not any(
+        saved["step_number"] < stop < launch < capture["step_number"]
+        for stop in stop_steps
+        for launch in launch_steps
+    ):
         return None
     return capture["pre_image_name"]
 
@@ -126,6 +159,14 @@ def _latest_final_record(
     return latest_attempt, matches[0]
 
 
+def _final_capture_step_id(record: dict[str, object]) -> UUID | None:
+    value = record.get("final_capture_step_id")
+    try:
+        return UUID(value) if isinstance(value, str) else None
+    except ValueError:
+        return None
+
+
 def _ledger_path(traces_dir: Path, session_id: UUID) -> Path:
     return traces_dir / str(session_id) / LEDGER_FILENAME
 
@@ -135,10 +176,11 @@ def main() -> int:
     parser.add_argument("--traces-dir", type=Path, required=True)
     parser.add_argument("--data-engine-db", type=Path, required=True)
     parser.add_argument("--session-id", type=UUID, required=True)
-    parser.add_argument("--post-relaunch-step-id", type=UUID, required=True)
+    parser.add_argument("--saved-step-id", type=UUID, required=True)
     parser.add_argument("--package-name", required=True)
     parser.add_argument("--observed-account", required=True)
     parser.add_argument("--expected-account", required=True)
+    parser.add_argument("--expected-balance", required=True)
     args = parser.parse_args()
 
     original_account = args.expected_account.removesuffix("-WRONG-SUFFIX")
@@ -154,12 +196,20 @@ def main() -> int:
     if final is None:
         return _invalid("checker")
     attempt_id, record = final
-    image_name = _native_post_relaunch_image(
+    final_capture_step_id = _final_capture_step_id(record)
+    checker_trace_id = record.get("trace_id")
+    if final_capture_step_id is None or not isinstance(checker_trace_id, str):
+        return _invalid("checker")
+    image_name = _native_control_proof(
         args.data_engine_db,
         args.session_id,
-        args.post_relaunch_step_id,
+        args.saved_step_id,
         args.package_name,
         args.observed_account,
+        args.expected_balance,
+        attempt_id,
+        checker_trace_id,
+        final_capture_step_id,
     )
     if image_name is None:
         return _invalid("native_capture")
@@ -172,8 +222,9 @@ def main() -> int:
                 "expected_account": args.expected_account,
                 "ledger_path": str(ledger),
                 "final_attempt_id": attempt_id,
-                "post_relaunch_step_id": str(args.post_relaunch_step_id),
-                "post_relaunch_image_name": image_name,
+                "saved_step_id": str(args.saved_step_id),
+                "final_capture_step_id": str(final_capture_step_id),
+                "final_capture_image_name": image_name,
                 "checker_record": record,
             }
         )
