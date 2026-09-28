@@ -43,7 +43,7 @@
   },
   "testcase": {
     "journey_path": "qualification/journeys/pocket_actual_save_relaunch.md",
-    "journey_digest_sha256": "44f0711dc014f6ff29f9e9e352feb47c7206d00e14e5a4c9c8f3b42e571902ef"
+    "journey_digest_sha256": "e4a73c569946b7d8363aff79516488f226c9e2efdbac11aa88d041187e75d188"
   },
   "shared_testcase_rationale": "PR #26 supplies the pinned manifest and model inputs. This receipt locks the revised journey digest, manifest v3, fork SHA, app SHA, and APK digest to both lanes; it does not infer X99 applicability from the Pixel PR title.",
   "lanes": [
@@ -68,8 +68,8 @@
         "expected_verdict": "fail_assertion",
         "verdict_adapter": {
           "path": "qualification/tools/checker_verdict_exit.py",
-          "digest_sha256": "a7a349315c3970786bbd4121f737bd1ca19d0b01ea26e156c46faea0339457ed",
-          "contract": "Derives ARTEMIS_TRACES_DIR/<session-id>/check_ledger.jsonl and exits 1 only when the latest final attempt has the exact failed assert plus valid recovery-snapshot observation JSON; exits 2 with JSON for invalid evidence.",
+          "digest_sha256": "f437ac76677780c85536777585b54c798f6a39d19d1d1180ef62d8d7ae720d59",
+          "contract": "Derives ARTEMIS_TRACES_DIR/<session-id>/check_ledger.jsonl and exits 1 only when the latest final attempt has the exact failed assert plus a hash-verified same-session, same-step recovery-snapshot UI hierarchy manifest and matching Checker evidence; malformed evidence exits 2 with JSON.",
           "expected_exit": 1
         },
         "not_satisfied_by": "completed orchestration status",
@@ -79,7 +79,7 @@
           "relaunch evidence for the Recovery snapshot",
           "observed post-relaunch account name",
           "recorded mismatch between the observed account name and qual-<run_id>-WRONG-SUFFIX",
-          "recovery-snapshot observation JSON, ARTEMIS_TRACES_DIR-derived latest-final check_ledger.jsonl path, and adapter JSON output with exit 1"
+          "hash-verified post-relaunch recovery-snapshot UI hierarchy and evidence manifest, ARTEMIS_TRACES_DIR-derived latest-final check_ledger.jsonl path, and adapter JSON output with exit 1"
         ],
         "invalid_when_missing": "Invalid control; batch unqualified."
       },
@@ -106,8 +106,8 @@
         "expected_verdict": "fail_assertion",
         "verdict_adapter": {
           "path": "qualification/tools/checker_verdict_exit.py",
-          "digest_sha256": "a7a349315c3970786bbd4121f737bd1ca19d0b01ea26e156c46faea0339457ed",
-          "contract": "Derives ARTEMIS_TRACES_DIR/<session-id>/check_ledger.jsonl and exits 1 only when the latest final attempt has the exact failed assert plus valid recovery-snapshot observation JSON; exits 2 with JSON for invalid evidence.",
+          "digest_sha256": "f437ac76677780c85536777585b54c798f6a39d19d1d1180ef62d8d7ae720d59",
+          "contract": "Derives ARTEMIS_TRACES_DIR/<session-id>/check_ledger.jsonl and exits 1 only when the latest final attempt has the exact failed assert plus a hash-verified same-session, same-step recovery-snapshot UI hierarchy manifest and matching Checker evidence; malformed evidence exits 2 with JSON.",
           "expected_exit": 1
         },
         "not_satisfied_by": "completed orchestration status",
@@ -117,7 +117,7 @@
           "relaunch evidence for the Recovery snapshot",
           "observed post-relaunch account name",
           "recorded mismatch between the observed account name and qual-<run_id>-WRONG-SUFFIX",
-          "recovery-snapshot observation JSON, ARTEMIS_TRACES_DIR-derived latest-final check_ledger.jsonl path, and adapter JSON output with exit 1"
+          "hash-verified post-relaunch recovery-snapshot UI hierarchy and evidence manifest, ARTEMIS_TRACES_DIR-derived latest-final check_ledger.jsonl path, and adapter JSON output with exit 1"
         ],
         "invalid_when_missing": "Invalid control; batch unqualified."
       },
