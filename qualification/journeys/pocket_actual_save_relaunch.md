@@ -51,11 +51,11 @@ evidence:
 1. Tap **Build current picture** and reach `current-picture-setup`.
 2. Tap **Add Account**, enter account name `qual-<run_id>`, choose
    **USD - US dollar**, and save with `save-account-action`.
-3. At `verified-balance`, enter the unique valid decimal
-   `<unique_decimal>` in `verified-balance-amount-input`, then tap
+3. At `verified-balance`, enter the signed two-decimal value `+123.45` in
+   `verified-balance-amount-input`, then tap
    **Confirm Verified balance**.
 4. Reach `recovery-snapshot` and record `qual-<run_id>`,
-   `USD · <unique_decimal>`, **History gap**, and **Recovery adjustment**.
+   `USD · +123.45`, **History gap**, and **Recovery adjustment**.
 
 ## Positive run — natural language task instructions
 
@@ -63,7 +63,7 @@ Goal text passed as `task_desc` (MCP `mobile_run_task`) / `goal` (CLI `artemis r
 
 > Open the app. Build the current picture. Add an Account named
 > "qual-<run_id>", choose USD - US dollar, and record the valid decimal
-> "<unique_decimal>" as its Verified balance. Reach the Recovery snapshot and
+> "+123.45" as its Verified balance. Reach the Recovery snapshot and
 > confirm its account, USD balance, History gap, and Recovery adjustment
 > markers. The execution controller must then record a successful
 > `stop_app` / `am force-stop` for the candidate package, verify the saved
@@ -74,13 +74,13 @@ Goal text passed as `task_desc` (MCP `mobile_run_task`) / `goal` (CLI `artemis r
 `expected_output_desc` / `output_description`:
 
 > Report the exact post-relaunch `qual-<run_id>` account name and
-> `USD · <unique_decimal>` balance, plus the History gap and Recovery
+> `USD · +123.45` balance, plus the History gap and Recovery
 > adjustment markers, with the process-stop and process-end records.
 
 ### Assertions (positive run)
 
 1. **Save succeeded**: the recovery snapshot shows `qual-<run_id>`,
-   `USD · <unique_decimal>`, **History gap**, and **Recovery adjustment**
+   `USD · +123.45`, **History gap**, and **Recovery adjustment**
    before the stop/relaunch interval begins.
 2. **Process termination is proven**: after UI save and before relaunch,
    the execution record shows a successful `stop_app` / `am force-stop`
@@ -91,7 +91,7 @@ Goal text passed as `task_desc` (MCP `mobile_run_task`) / `goal` (CLI `artemis r
    since the navigation path is exactly what a real user would need and is
    part of what qualification is proving.
 4. **Persisted state matches**: the post-relaunch account name and USD
-   balance equal `qual-<run_id>` and `USD · <unique_decimal>` byte-for-byte,
+   balance equal `qual-<run_id>` and `USD · +123.45` byte-for-byte,
    and **History gap** plus **Recovery adjustment** remain visible. Anything
    else (empty, default, a different prior value, an app crash) is
    `fail_assertion`.
@@ -110,17 +110,32 @@ name that provenance guarantees is wrong:
 > "qual-<run_id>-WRONG-SUFFIX" exactly.
 
 Count this control only when its record proves all of the following: the UI
-saved the original `qual-<run_id>` account and balance, the post-save process
-stop succeeded and the process ended, the app relaunched, the post-relaunch
-account name was observed, and that observed name was compared with
-"qual-<run_id>-WRONG-SUFFIX". The control must then emit machine verdict
-`fail_assertion` for that mismatch and a nonzero checker exit. An orchestration
-status such as `completed` is not control success. A missing prerequisite,
-generic checker failure, zero checker exit, or `pass` is an invalid control
-and unqualifies the entire batch. Record it as its own evidence entry
-(`attempt_kind: "negative_control"`), not folded into the N=10 positive count
-(CHE-388 plan v2: "freeze N=10 positive runs per target/tier plus one separate
-negative control").
+saved the original `qual-<run_id>` account and `USD · +123.45` balance, the
+post-save process stop succeeded and the process ended, the app relaunched,
+the post-relaunch account name was observed, and that observed name was
+compared with "qual-<run_id>-WRONG-SUFFIX". The negative task must state this
+as its final assertion verbatim: `The post-relaunch account name must equal
+qual-<run_id>-WRONG-SUFFIX.` The executor must run with a pinned
+`--traces-path` and `--session-id`, then run:
+
+```bash
+python qualification/tools/checker_verdict_exit.py \
+  --ledger <traces-path>/<session-id>/check_ledger.jsonl \
+  --observed-account qual-<run_id> \
+  --expected-account qual-<run_id>-WRONG-SUFFIX
+```
+
+The adapter reads the append-only final Checker ledger record, writes a
+machine-readable verdict, and exits `1` only when that exact final `assert`
+failed. It exits `2` for missing, malformed, unrelated, or non-failed
+evidence; only exit `1` is control success. Record the adapter's JSON output,
+ledger path, and exit code with the observed/expected account evidence. An
+orchestration status such as `completed` is not control success. A missing
+prerequisite, generic checker failure, zero adapter exit, exit `2`, or `pass`
+is an invalid control and unqualifies the entire batch. Record it as its own
+evidence entry (`attempt_kind: "negative_control"`), not folded into the N=10
+positive count (CHE-388 plan v2: "freeze N=10 positive runs per target/tier
+plus one separate negative control").
 
 ## Bounded execution and cleanup
 
