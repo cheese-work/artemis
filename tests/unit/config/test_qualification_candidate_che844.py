@@ -72,6 +72,24 @@ def test_receipt_maps_both_qualification_lanes_to_the_same_pinned_source():
     assert lanes["CHE-541"]["transport"] == "usb_or_wireless_adb"
 
 
+def test_ci_fetches_receipt_sources_before_the_manual_receipt_tests():
+    receipt = json.loads(RECEIPT_PATH.read_text(encoding="utf-8"))
+    workflow = (REPO_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+    runner_sha = receipt["source_candidate"]["runner_source"]["commit_sha"]
+    testcase_sha = receipt["source_candidate"]["testcase_source"]["commit_sha"]
+
+    assert "name: Fetch CHE-844 receipt sources" in workflow
+    assert (
+        f"git fetch --no-tags --depth=1 origin \\\n            {runner_sha} \\\n"
+        f"            {testcase_sha}"
+    ) in workflow
+    assert f"git cat-file -e {runner_sha}^{{commit}}" in workflow
+    assert f"git cat-file -e {testcase_sha}^{{commit}}" in workflow
+    assert workflow.index("name: Fetch CHE-844 receipt sources") < workflow.index(
+        "name: Run deterministic Python tests"
+    )
+
+
 def test_receipt_pins_the_revised_journey_bytes():
     receipt = json.loads(RECEIPT_PATH.read_text(encoding="utf-8"))
     journey = REPO_ROOT / receipt["testcase"]["journey_path"]
