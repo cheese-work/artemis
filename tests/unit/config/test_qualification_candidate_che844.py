@@ -532,3 +532,42 @@ def test_negative_control_verdict_adapter_rejects_malformed_later_ledger_record(
 
     assert result.returncode == 2
     assert json.loads(result.stdout)["reason"] == "ledger"
+
+
+def test_negative_control_verdict_adapter_accepts_checker_paraphrases_of_the_wrong_token(tmp_path):
+    """CHE-541 Pixel n01 (1799b176): the Checker rewrote the verbatim assertion,
+    so every final item failed against the wrong token but none matched the
+    exact sentence. Item wording is LLM-generated; the unique token is not."""
+    traces_dir, db_path = _native_data_engine(tmp_path)
+    records = [
+        _failed_final(item_text=f'the account name reads "{EXPECTED_ACCOUNT}" exactly'),
+        _failed_final(
+            item_text=f"the post-relaunch account name must equal {EXPECTED_ACCOUNT} "
+            "(ordering audited post-hoc)"
+        ),
+    ]
+    result = _adapter_result(tmp_path, records, traces_dir, db_path)
+
+    assert result.returncode == 1
+    assert json.loads(result.stdout)["verdict"] == "fail_assertion"
+
+
+def test_negative_control_verdict_adapter_rejects_a_passed_item_naming_the_wrong_token(tmp_path):
+    traces_dir, db_path = _native_data_engine(tmp_path)
+    records = [
+        _failed_final(),
+        _failed_final(item_text=f"account reads {EXPECTED_ACCOUNT}", status="passed"),
+    ]
+    result = _adapter_result(tmp_path, records, traces_dir, db_path)
+
+    assert result.returncode == 2
+    assert json.loads(result.stdout)["reason"] == "checker"
+
+
+def test_negative_control_verdict_adapter_rejects_a_longer_token_that_only_contains_it(tmp_path):
+    traces_dir, db_path = _native_data_engine(tmp_path)
+    records = [_failed_final(item_text=f"account must equal {EXPECTED_ACCOUNT}2")]
+    result = _adapter_result(tmp_path, records, traces_dir, db_path)
+
+    assert result.returncode == 2
+    assert json.loads(result.stdout)["reason"] == "checker"
