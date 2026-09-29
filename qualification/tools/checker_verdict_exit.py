@@ -144,7 +144,7 @@ def _native_control_proof(
 
 
 def _latest_final_record(
-    records: list[dict[str, object]], expected_assertion: str
+    records: list[dict[str, object]], expected_account: str
 ) -> tuple[str, dict[str, object]] | None:
     final_attempts: dict[int, str] = {}
     for record in records:
@@ -160,14 +160,19 @@ def _latest_final_record(
         return None
 
     latest_attempt = final_attempts[max(final_attempts)]
+    # The Checker words its own items, so match the unique wrong token as a whole
+    # word rather than a fixed sentence (CHE-541 n01). Every final assert naming
+    # it must have failed; one that passed means the wrong name was "seen".
+    token = re.compile(rf"(?<![\w-]){re.escape(expected_account)}(?![\w-])")
     matches = [
         record
         for record in records
         if record["attempt_id"] == latest_attempt
         and record.get("kind") == "assert"
-        and record.get("item_text") == expected_assertion
+        and isinstance(record.get("item_text"), str)
+        and token.search(record["item_text"])
     ]
-    if len(matches) != 1 or matches[0].get("status") != "failed":
+    if not matches or any(record.get("status") != "failed" for record in matches):
         return None
     return latest_attempt, matches[0]
 
@@ -204,8 +209,7 @@ def main() -> int:
     records = _read_records(ledger)
     if records is None:
         return _invalid("ledger")
-    expected_assertion = f"The post-relaunch account name must equal {args.expected_account}."
-    final = _latest_final_record(records, expected_assertion)
+    final = _latest_final_record(records, args.expected_account)
     if final is None:
         return _invalid("checker")
     attempt_id, record = final

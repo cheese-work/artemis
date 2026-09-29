@@ -114,6 +114,8 @@ def test_journey_requires_process_death_and_native_negative_control_provenance()
     assert "DataEngine `step_id`" in text
     assert "successful native" in text
     assert "`stop_app` then `launch_app`" in text
+    assert "native `manage_app` stop action" in text
+    assert "never\nwith `run_adb_command`" in text
     assert "final Checker itself records a native final-screen\ncapture step" in text
     assert "It never accepts an executor-selected\ncapture" in text
     assert "exact UI values" in text
