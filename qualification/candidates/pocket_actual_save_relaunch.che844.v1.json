@@ -5,19 +5,19 @@
   "source_candidate": {
     "runner_source": {
       "repository": "https://github.com/cheese-work/artemis",
-      "pull_request": 29,
-      "commit_sha": "8b6c047283183c17f1235991982f43ac68b52833"
+      "pull_request": 33,
+      "commit_sha": "feefd94c72dbce0fa1afc109ffe3d8254f565d6b"
     },
     "testcase_source": {
       "repository": "https://github.com/cheese-work/artemis",
-      "pull_request": 29,
-      "commit_sha": "4de12c3af520567fe39e516e42e86263c99d32be",
+      "pull_request": 33,
+      "commit_sha": "096411113522abc37964256833fecbbac4778af4",
       "manifest_path": "qualification/manifests/pocket_actual_save_relaunch.v1.json",
-      "manifest_digest_sha256": "b083f30a4ebd6902610f5c86621574c373ff482910d265ae78410652899817c7",
-      "manifest_version": 8,
-      "fork_sha": "8b6c047283183c17f1235991982f43ac68b52833",
+      "manifest_digest_sha256": "ed0dbaefeabb2a86c752dd94fcd5f61c4446e918836f3ecbc03ab1bada8cd6e9",
+      "manifest_version": 9,
+      "fork_sha": "feefd94c72dbce0fa1afc109ffe3d8254f565d6b",
       "journey_path": "qualification/journeys/pocket_actual_save_relaunch.md",
-      "journey_digest_sha256": "453106322780a1cc366d726753c1fc5bfd3a7335c7685aecef73ed4639370eac"
+      "journey_digest_sha256": "6470edd3ebb2f8276812ebb7e9900589e6e715656a5b76a370400601d4c232c2"
     },
     "app_input_source": {
       "pull_request": 26,
@@ -56,9 +56,9 @@
   },
   "testcase": {
     "journey_path": "qualification/journeys/pocket_actual_save_relaunch.md",
-    "journey_digest_sha256": "453106322780a1cc366d726753c1fc5bfd3a7335c7685aecef73ed4639370eac"
+    "journey_digest_sha256": "6470edd3ebb2f8276812ebb7e9900589e6e715656a5b76a370400601d4c232c2"
   },
-  "shared_testcase_rationale": "PR #29 commit 8b6c047 (CHE-541 lens-alias, detect_objects and negative-control fixes on top of f011c33) pins the runner used for qualification, including final Checker capture linkage, finite timestamp validation, and process-death verification. PR #29 commit 4de12c3 is the immutable manifest/journey source and records that runner. PR #26 is retained only as the historical app/config input source. This receipt locks the revised journey digest, manifest v8, runner SHA, app SHA, and APK digest to both lanes; it does not infer X99 applicability from the Pixel PR title.",
+  "shared_testcase_rationale": "PR #33 commit feefd94 (CHE-541 lens-alias, detect_objects, negative-control and Home-snapshot fixes on top of f011c33) pins the runner used for qualification, including final Checker capture linkage, finite timestamp validation, and process-death verification. PR #33 commit 0964111 is the immutable manifest/journey source and records that runner. PR #26 is retained only as the historical app/config input source. This receipt locks the revised journey digest, manifest v8, runner SHA, app SHA, and APK digest to both lanes; it does not infer X99 applicability from the Pixel PR title.",
   "lanes": [
     {
       "issue": "CHE-540",
@@ -81,8 +81,8 @@
         "expected_verdict": "fail_assertion",
         "verdict_adapter": {
           "path": "qualification/tools/checker_verdict_exit.py",
-          "digest_sha256": "0624326dd3fed44c6d501ea3b3b057dd78bdfd3e28d6346cf7309fa366d7dde3",
-          "contract": "Derives ARTEMIS_TRACES_DIR/<session-id>/check_ledger.jsonl and exits 1 only when the latest final attempt has the exact failed assert, a same-session Checker trace, and its runner-bound native final capture after a saved Recovery snapshot and successful post-save stop_app then launch_app traces ordered by finite native timestamps. stop_app succeeds only after force-stop has no output and pidof has no PID; malformed evidence exits 2 with JSON.",
+          "digest_sha256": "1ff08e1e9cec00703d145714c9e7576d0be006d11c0de4d86ef7c83b3a63080a",
+          "contract": "Derives ARTEMIS_TRACES_DIR/<session-id>/check_ledger.jsonl and exits 1 only when the latest final attempt has a failed assert naming the wrong token and no non-failed item naming it, a same-session Checker trace, and its runner-bound native final capture showing the recovery-snapshot or home route tag, account and balance after a saved Recovery snapshot and successful post-save stop_app then launch_app traces ordered by finite native timestamps. stop_app succeeds only after force-stop has no output and pidof has no PID; malformed evidence exits 2 with JSON.",
           "expected_exit": 1
         },
         "not_satisfied_by": "completed orchestration status",
@@ -119,8 +119,8 @@
         "expected_verdict": "fail_assertion",
         "verdict_adapter": {
           "path": "qualification/tools/checker_verdict_exit.py",
-          "digest_sha256": "0624326dd3fed44c6d501ea3b3b057dd78bdfd3e28d6346cf7309fa366d7dde3",
-          "contract": "Derives ARTEMIS_TRACES_DIR/<session-id>/check_ledger.jsonl and exits 1 only when the latest final attempt has the exact failed assert, a same-session Checker trace, and its runner-bound native final capture after a saved Recovery snapshot and successful post-save stop_app then launch_app traces ordered by finite native timestamps. stop_app succeeds only after force-stop has no output and pidof has no PID; malformed evidence exits 2 with JSON.",
+          "digest_sha256": "1ff08e1e9cec00703d145714c9e7576d0be006d11c0de4d86ef7c83b3a63080a",
+          "contract": "Derives ARTEMIS_TRACES_DIR/<session-id>/check_ledger.jsonl and exits 1 only when the latest final attempt has a failed assert naming the wrong token and no non-failed item naming it, a same-session Checker trace, and its runner-bound native final capture showing the recovery-snapshot or home route tag, account and balance after a saved Recovery snapshot and successful post-save stop_app then launch_app traces ordered by finite native timestamps. stop_app succeeds only after force-stop has no output and pidof has no PID; malformed evidence exits 2 with JSON.",
           "expected_exit": 1
         },
         "not_satisfied_by": "completed orchestration status",

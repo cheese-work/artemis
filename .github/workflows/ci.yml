@@ -70,10 +70,10 @@ jobs:
         if: github.event_name == 'workflow_dispatch'
         run: |
           git fetch --no-tags --depth=1 origin \
-            8b6c047283183c17f1235991982f43ac68b52833 \
-            4de12c3af520567fe39e516e42e86263c99d32be
-          git cat-file -e 8b6c047283183c17f1235991982f43ac68b52833^{commit}
-          git cat-file -e 4de12c3af520567fe39e516e42e86263c99d32be^{commit}
+            feefd94c72dbce0fa1afc109ffe3d8254f565d6b \
+            096411113522abc37964256833fecbbac4778af4
+          git cat-file -e feefd94c72dbce0fa1afc109ffe3d8254f565d6b^{commit}
+          git cat-file -e 096411113522abc37964256833fecbbac4778af4^{commit}
 
       - name: Run deterministic Python tests
         if: github.event_name == 'workflow_dispatch'
