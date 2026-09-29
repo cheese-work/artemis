@@ -119,6 +119,7 @@ def test_journey_requires_process_death_and_native_negative_control_provenance()
     assert "final Checker itself records a native final-screen\ncapture step" in text
     assert "It never accepts an executor-selected\ncapture" in text
     assert "exact UI values" in text
+    assert "`recovery-snapshot` or `home` route tag" in text
     assert "completed` is not control success" in text
     assert 'observed name was\ncompared with "qual-<run_id>-WRONG-SUFFIX"' in text
     assert "invalid control" in text
