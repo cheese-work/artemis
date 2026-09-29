@@ -240,6 +240,32 @@ class TestReconciliation:
         assert verdict.accepted is True
         assert verdict.reason is None
 
+    @pytest.mark.parametrize("lens_node", ["lens:visualstepsummarizer", "lens:step_capsule"])
+    def test_step_memory_lens_nodes_alias_to_summarizer_and_reconcile_as_match(self, lens_node):
+        """CHE-541 Pixel attempt 098922a6: the async step summarizer
+        (VisualStepSummarizer) and chunk capsule lens record llm_usage under
+        their lens:<name> trace label, but both resolve their model via
+        get_llm(ctx, name="summarizer", ...). Without the alias the batch is
+        rejected as unmapped_call although every call used the manifest tier.
+        """
+        config = _uniform_config(provider="anthropic", model="claude-sonnet-5")
+        manifest = _manifest(tier="nova", llm_config=config)
+        events = [_usage(lens_node, source="anthropic:claude-sonnet-5")]
+        result = reconcile_attempt("a1", manifest, events)
+        summarizer = next(n for n in result.nodes if n.node == "summarizer")
+        assert summarizer.verdict == "match"
+        assert not result.has_unmapped_call
+        assert validate_batch([_record(manifest, events)]).accepted is True
+
+    def test_step_memory_lens_on_a_different_model_is_rejected_not_matched(self):
+        """A profile knob (flash.step_summarizer.model / pro.chunking.model) can
+        override the summarizer model; a lens call on another model must still
+        fail reconciliation rather than being accepted through the alias."""
+        config = _uniform_config(provider="anthropic", model="claude-sonnet-5")
+        manifest = _manifest(tier="nova", llm_config=config)
+        events = [_usage("lens:step_capsule", source="openai:gpt-5.6-sol")]
+        assert validate_batch([_record(manifest, events)]).accepted is False
+
     def test_flashrunner_receipt_without_the_alias_would_be_unmapped_call(self, monkeypatch):
         """Proves the FlashRunner -> operator alias exercised above is
         load-bearing, not incidental: with that one entry removed from
