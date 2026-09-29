@@ -131,7 +131,9 @@ REJECT_REASONS: tuple[RejectReason, ...] = (
 # unaliased; a receipt from one of them still reconciles as unmapped_call,
 # which is the conservative failure mode -- never a silent, possibly-wrong
 # match:
-#   * detect_objects (artemis.agents.explorer.perception_tools, tool scope,
+#   * [detect_objects alone is now resolved from the manifest's object_detector
+#     enabled flag in reconcile_attempt (CHE-541); the explorer case remains.]
+#     detect_objects (artemis.agents.explorer.perception_tools, tool scope,
 #     :232) and Explorer's own flash-tier fast path
 #     (artemis.agents.explorer.run_setup.RunSetupMixin._run_flash, called
 #     from Explorer.run under the "explorer" @trace scope when tier=="flash")
@@ -342,6 +344,12 @@ def reconcile_attempt(
         # known trace-scope alias (see _NODE_ALIASES); otherwise group under
         # the raw node name as before.
         resolved_node = _NODE_ALIASES.get(node, node)
+        if node == "detect_objects":
+            # Not ambiguous once the manifest is known (CHE-541):
+            # _run_object_detection uses the object_detector utils node when it
+            # is configured, else falls back to operator (object_detector.py:126-134).
+            detector = manifest_nodes.get("object_detector", {})
+            resolved_node = "object_detector" if detector.get("enabled") else "operator"
         events_by_node.setdefault(resolved_node, []).append(event)
 
     manifest_tier: Tier | None = manifest.get("tier")
