@@ -185,6 +185,12 @@ _NODE_ALIASES: dict[str, str] = {
     "image_processor": "operator",
     "spawn_sub_agent": "video_analyzer",
     "analyze_audio_only": "video_analyzer",
+    # Step-memory lenses (CHE-541): VisualStepSummarizer and the chunk capsule
+    # lens trace as lens:<name> but resolve get_llm(ctx, name="summarizer").
+    # A profile-knob model override that differs from the summarizer node
+    # still surfaces as a mismatch, never a silent match.
+    "lens:visualstepsummarizer": "summarizer",
+    "lens:step_capsule": "summarizer",
 }
 
 
