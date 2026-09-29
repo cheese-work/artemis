@@ -5,12 +5,12 @@
   "source_candidate": {
     "runner_source": {
       "repository": "https://github.com/cheese-work/artemis",
-      "pull_request": 33,
+      "pull_request": 34,
       "commit_sha": "feefd94c72dbce0fa1afc109ffe3d8254f565d6b"
     },
     "testcase_source": {
       "repository": "https://github.com/cheese-work/artemis",
-      "pull_request": 33,
+      "pull_request": 34,
       "commit_sha": "096411113522abc37964256833fecbbac4778af4",
       "manifest_path": "qualification/manifests/pocket_actual_save_relaunch.v1.json",
       "manifest_digest_sha256": "ed0dbaefeabb2a86c752dd94fcd5f61c4446e918836f3ecbc03ab1bada8cd6e9",
@@ -58,7 +58,7 @@
     "journey_path": "qualification/journeys/pocket_actual_save_relaunch.md",
     "journey_digest_sha256": "6470edd3ebb2f8276812ebb7e9900589e6e715656a5b76a370400601d4c232c2"
   },
-  "shared_testcase_rationale": "PR #33 commit feefd94 (CHE-541 lens-alias, detect_objects, negative-control and Home-snapshot fixes on top of f011c33) pins the runner used for qualification, including final Checker capture linkage, finite timestamp validation, and process-death verification. PR #33 commit 0964111 is the immutable manifest/journey source and records that runner. PR #26 is retained only as the historical app/config input source. This receipt locks the revised journey digest, manifest v8, runner SHA, app SHA, and APK digest to both lanes; it does not infer X99 applicability from the Pixel PR title.",
+  "shared_testcase_rationale": "PR #34 commit feefd94 (CHE-541 lens-alias, detect_objects, negative-control and Home-snapshot fixes on top of f011c33) pins the runner used for qualification, including final Checker capture linkage, finite timestamp validation, and process-death verification. PR #34 commit 0964111 is the immutable manifest/journey source and records that runner. PR #26 is retained only as the historical app/config input source. This receipt locks the revised journey digest, manifest v8, runner SHA, app SHA, and APK digest to both lanes; it does not infer X99 applicability from the Pixel PR title.",
   "lanes": [
     {
       "issue": "CHE-540",
