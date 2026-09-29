@@ -1,15 +1,15 @@
 {
-  "manifest_version": 7,
+  "manifest_version": 8,
   "$schema_ref": "qualification/evidence_schema.v1.json",
   "issue": "CHE-537",
   "coordinating_parent": "CHE-388",
   "journey": "qualification/journeys/pocket_actual_save_relaunch.md",
 
   "fork_sha": {
-    "value": "49964e18781bdd16814e6fb74e7443e415c77012",
+    "value": "8b6c047283183c17f1235991982f43ac68b52833",
     "source": "git",
     "repo": "https://github.com/cheese-work/artemis",
-    "note": "Revision 5 (CHE-844) pins the qualification runner that writes final_capture_step_id with each final Checker ledger record, rejects non-finite native timestamps, and accepts a post-save stop only when am force-stop reports no output and pidof reports no remaining process. This value must be updated in a new manifest revision if the runner SHA changes; execution stages must re-read it at admission. No attempts ran against revision 4, so no evidence is transferable. Revision 6 (CHE-541) pins runner c432fcd71395a197d673af6c7cbb6db17e70f87f, which adds the lens:visualstepsummarizer and lens:step_capsule -> summarizer reconciliation aliases; the single revision-5 Pixel attempt (098922a6) was rejected as unmapped_call for exactly that gap and is not transferable. Revision 7 (CHE-541) pins runner 49964e18781bdd16814e6fb74e7443e415c77012, which resolves the detect_objects tool scope to object_detector or operator from this manifest's object_detector enabled flag; revision-6 batch che541-nova-pos-batch2 (6 accepted, p07 e6ef1ee9 rejected unmapped_call on detect_objects) is not transferable."
+    "note": "Revision 5 (CHE-844) pins the qualification runner that writes final_capture_step_id with each final Checker ledger record, rejects non-finite native timestamps, and accepts a post-save stop only when am force-stop reports no output and pidof reports no remaining process. This value must be updated in a new manifest revision if the runner SHA changes; execution stages must re-read it at admission. No attempts ran against revision 4, so no evidence is transferable. Revision 6 (CHE-541) pins runner c432fcd71395a197d673af6c7cbb6db17e70f87f, which adds the lens:visualstepsummarizer and lens:step_capsule -> summarizer reconciliation aliases; the single revision-5 Pixel attempt (098922a6) was rejected as unmapped_call for exactly that gap and is not transferable. Revision 7 (CHE-541) pins runner 49964e18781bdd16814e6fb74e7443e415c77012, which resolves the detect_objects tool scope to object_detector or operator from this manifest's object_detector enabled flag; revision-6 batch che541-nova-pos-batch2 (6 accepted, p07 e6ef1ee9 rejected unmapped_call on detect_objects) is not transferable. Revision 8 (CHE-541) pins runner 8b6c047283183c17f1235991982f43ac68b52833: the negative-control adapter matches the whole wrong token in any final assert item (all naming it must fail) and the journey requires the native manage_app stop for the control; revision-7 batch che541-nova-pos-batch3 (10 accepted positives, control n01 1799b176 invalid_control/checker) is not transferable."
   },
 
   "gate1_manifest_mechanism": {
