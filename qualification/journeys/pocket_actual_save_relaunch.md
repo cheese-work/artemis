@@ -115,7 +115,13 @@ post-save process stop succeeded and the process ended, the app relaunched,
 the post-relaunch account name was observed, and that observed name was
 compared with "qual-<run_id>-WRONG-SUFFIX". The negative task must state this
 as its final assertion verbatim: `The post-relaunch account name must equal
-qual-<run_id>-WRONG-SUFFIX.` The executor must run with a pinned
+qual-<run_id>-WRONG-SUFFIX.` The Checker may reword its own items, so the
+adapter matches the whole token `qual-<run_id>-WRONG-SUFFIX` in the latest
+final assert items: at least one must name it, and every item that names it
+must have failed. The negative task must also tell the Operator to stop the
+app with the native `manage_app` stop action (recorded as `stop_app`), never
+with `run_adb_command`; the follow-up `pidof` check may use `run_adb_command`.
+The executor must run with a pinned
 `--session-id` and set `ARTEMIS_TRACES_DIR=<ledger-root>` before launching
 the direct CLI with `--standalone`; this prevents an existing daemon from
 choosing another data directory. Also set
