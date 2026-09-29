@@ -1,15 +1,15 @@
 {
-  "manifest_version": 5,
+  "manifest_version": 6,
   "$schema_ref": "qualification/evidence_schema.v1.json",
   "issue": "CHE-537",
   "coordinating_parent": "CHE-388",
   "journey": "qualification/journeys/pocket_actual_save_relaunch.md",
 
   "fork_sha": {
-    "value": "f011c33d7b747eb48b14667bb790a8b90d1b46bc",
+    "value": "c432fcd71395a197d673af6c7cbb6db17e70f87f",
     "source": "git",
     "repo": "https://github.com/cheese-work/artemis",
-    "note": "Revision 5 (CHE-844) pins the qualification runner that writes final_capture_step_id with each final Checker ledger record, rejects non-finite native timestamps, and accepts a post-save stop only when am force-stop reports no output and pidof reports no remaining process. This value must be updated in a new manifest revision if the runner SHA changes; execution stages must re-read it at admission. No attempts ran against revision 4, so no evidence is transferable."
+    "note": "Revision 5 (CHE-844) pins the qualification runner that writes final_capture_step_id with each final Checker ledger record, rejects non-finite native timestamps, and accepts a post-save stop only when am force-stop reports no output and pidof reports no remaining process. This value must be updated in a new manifest revision if the runner SHA changes; execution stages must re-read it at admission. No attempts ran against revision 4, so no evidence is transferable. Revision 6 (CHE-541) pins runner c432fcd71395a197d673af6c7cbb6db17e70f87f, which adds the lens:visualstepsummarizer and lens:step_capsule -> summarizer reconciliation aliases; the single revision-5 Pixel attempt (098922a6) was rejected as unmapped_call for exactly that gap and is not transferable."
   },
 
   "gate1_manifest_mechanism": {
