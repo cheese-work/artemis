@@ -31,9 +31,9 @@ def test_receipt_maps_both_qualification_lanes_to_the_same_pinned_source():
     source = receipt["source_candidate"]
     runner = source["runner_source"]
     testcase = source["testcase_source"]
-    assert runner["commit_sha"] == "f011c33d7b747eb48b14667bb790a8b90d1b46bc"
-    assert testcase["commit_sha"] == "00e278523067a8fdf8aa3df669045f65e8fbf566"
-    assert testcase["manifest_version"] == 5
+    assert runner["commit_sha"] == "c432fcd71395a197d673af6c7cbb6db17e70f87f"
+    assert testcase["commit_sha"] == "0787202a49dd3ab3c370cc2f0a5280d190bfdeb9"
+    assert testcase["manifest_version"] == 6
     assert testcase["fork_sha"] == runner["commit_sha"]
     assert source["app_input_source"] == {
         "pull_request": 26,
