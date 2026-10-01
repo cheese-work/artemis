@@ -10,7 +10,7 @@
     },
     "testcase_source": {
       "path": "qualification/journeys/che656_flash_ac4_pilot.md",
-      "digest_sha256": "27596faa9d7691f0d9b8f6aaeb1e33f55d1d2d60972a0bc8f4fa85841243e7d6"
+      "digest_sha256": "b01d8b8f2f4460dc7b8ed1231bf16ed445104673ad33bd2b39042d1a8c419176"
     },
     "config_source": {
       "issue": "CHE-656",
@@ -35,6 +35,52 @@
     "standalone": true,
     "attempt_count": 1,
     "retry_count": 0
+  },
+  "attempt_identity": {
+    "session_id_argument": "--session-id",
+    "run_id_argument": "--run-id",
+    "fresh_uuidv4_values_required": true,
+    "values_must_differ": true,
+    "record_both_in_returned_evidence": true,
+    "session_id_binds_manifest_and_native_usage": true,
+    "run_id_scopes_batch_verdict_to_attempt": true
+  },
+  "execution_preflight": {
+    "must_pass_before_device_boot_or_provider_activity": true,
+    "loaded_settings_google_keys_absent": [
+      "GOOGLE_API_KEY",
+      "GEMINI_API_KEY",
+      "GCP_API_KEY"
+    ],
+    "fake_mode_environment_variable": "ARTEMIS_FAKE_LLM",
+    "fake_mode_enabled_value": "1",
+    "offline_route_source_comment_id": "01a0f55e-b366-78a3-bad8-982de49f1eaa",
+    "offline_route_script_attachment_id": "01a0f55e-b0df-72a5-a0be-36f0e3e3bca8",
+    "offline_route_script_digest_sha256": "3d963ad481f894f9955b10a46f88b5c0d8b265836c2a0758875e1d91f62b922a",
+    "offline_route_verdict": "FLASH_ALL_CLAUDE_SONNET_5",
+    "record_secret_values": false,
+    "failure_action": "stop_before_boot"
+  },
+  "execution_limits": {
+    "boot_and_unlocked_ui_readiness_timeout_seconds": 300,
+    "whole_attempt_timeout_seconds": 900,
+    "timeout_outcome": "failed_or_invalid_no_retry"
+  },
+  "battery_oracle": {
+    "required_page": "Settings > Battery",
+    "required_field": "current-charge percentage",
+    "same_attempt_privacy_safe_page_evidence_required": true,
+    "successful_task_result_required": true,
+    "reported_value_must_match_page_field": true,
+    "status_bar_only_is_sufficient": false
+  },
+  "cleanup_contract": {
+    "preserve_available_evidence_before_cleanup": true,
+    "stop_only_recorded_run_owned_processes": true,
+    "restore_settings_changed_by_run": true,
+    "verify_release_before_marking_device_available": true,
+    "release_evidence_return_owner": "Android Terra",
+    "unverified_cleanup_disposition": "leave_device_unavailable_with_named_recovery_owner"
   },
   "summary_verdict_expectations": [
     {
