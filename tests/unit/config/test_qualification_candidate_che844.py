@@ -205,6 +205,7 @@ def _native_data_engine(
     checker_session_id=SESSION_ID,
     final_route_tag="recovery-snapshot",
     final_balance=EXPECTED_BALANCE,
+    final_extra_nodes=(),
 ):
     traces_dir = tmp_path / "runtime-traces"
     traces_dir.mkdir()
@@ -236,14 +237,15 @@ def _native_data_engine(
     saved_image_name = "native-saved-image"
     final_image_name = "native-final-image"
     saved_ui_tree = [
-        {"content_desc": "recovery-snapshot"},
+        {"resource_id": "recovery-snapshot"},
         {"text": observed_account},
         {"text": EXPECTED_BALANCE},
     ]
     final_ui_tree = [
-        {"content_desc": final_route_tag},
+        {"resource_id": final_route_tag},
         {"text": observed_account},
         {"text": final_balance},
+        *final_extra_nodes,
     ]
     connection.executemany(
         "INSERT INTO images VALUES (?, ?)",
@@ -602,3 +604,35 @@ def test_negative_control_verdict_adapter_requires_the_balance_in_the_final_capt
 
     assert result.returncode == 2
     assert json.loads(result.stdout)["reason"] == "native_capture"
+
+
+def test_negative_control_verdict_adapter_rejects_a_home_text_decoy_on_another_route(tmp_path):
+    # Bottom-nav "Home" label/content-desc is not the route tag (resource-id).
+    decoys = [{"text": "home"}, {"content_desc": "home"}, {"resource_id": "bottom-nav", "text": "home"}]
+    traces_dir, db_path = _native_data_engine(
+        tmp_path, final_route_tag="accounts", final_extra_nodes=decoys
+    )
+    result = _adapter_result(tmp_path, [_failed_final()], traces_dir, db_path)
+
+    assert result.returncode == 2
+    assert json.loads(result.stdout)["reason"] == "native_capture"
+
+
+def test_negative_control_verdict_adapter_rejects_matches_with_a_different_capture_step(tmp_path):
+    traces_dir, db_path = _native_data_engine(tmp_path)
+    other = "50000000-0000-4000-8000-0000000000ff"
+    records = [_failed_final(), _failed_final(final_capture_step_id=other)]
+    result = _adapter_result(tmp_path, records, traces_dir, db_path)
+
+    assert result.returncode == 2
+    assert json.loads(result.stdout)["reason"] == "checker"
+
+
+def test_negative_control_verdict_adapter_rejects_matches_with_a_different_checker_trace(tmp_path):
+    traces_dir, db_path = _native_data_engine(tmp_path)
+    other = "10000000-0000-4000-8000-0000000000ff"
+    records = [_failed_final(), _failed_final(trace_id=other)]
+    result = _adapter_result(tmp_path, records, traces_dir, db_path)
+
+    assert result.returncode == 2
+    assert json.loads(result.stdout)["reason"] == "checker"
