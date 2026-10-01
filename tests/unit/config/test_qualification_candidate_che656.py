@@ -41,7 +41,11 @@ def test_receipt_pins_the_flash_pilot_inputs_and_match_evidence():
     assert receipt["node_match_evidence"]["expected_node_verdict"] == "match"
 
     reviewer_ids = {
-        reviewer["agent_id"] for reviewer in receipt["review_scope"]["required_reviewers"]
+        reviewer["name"]: reviewer["agent_id"]
+        for reviewer in receipt["review_scope"]["required_reviewers"]
     }
-    assert len(reviewer_ids) == 2
-    assert "2c5c2f6c-7697-4f84-9ce6-3273fa45538c" not in reviewer_ids
+    assert reviewer_ids == {
+        "x99-codex-sol": "5cd75ce5-d323-4004-9779-7e2ccf16bde4",
+        "x99-gpt-6-astra": "2e486c8c-88fb-4daf-829e-e96be9c645b3",
+    }
+    assert "2c5c2f6c-7697-4f84-9ce6-3273fa45538c" not in reviewer_ids.values()

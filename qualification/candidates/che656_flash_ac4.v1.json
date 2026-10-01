@@ -10,7 +10,7 @@
     },
     "testcase_source": {
       "path": "qualification/journeys/che656_flash_ac4_pilot.md",
-      "digest_sha256": "1e034fbc963b64590ad8fc2f690805021a5969ef78be48cb87ebe828fb49b8b1"
+      "digest_sha256": "27596faa9d7691f0d9b8f6aaeb1e33f55d1d2d60972a0bc8f4fa85841243e7d6"
     },
     "config_source": {
       "issue": "CHE-656",
@@ -80,7 +80,7 @@
       },
       {
         "name": "x99-gpt-6-astra",
-        "agent_id": "2e486c8c-88fb-4daf-b84a-9d26d75b33c7"
+        "agent_id": "2e486c8c-88fb-4daf-829e-e96be9c645b3"
       }
     ],
     "same_revision_required": true,

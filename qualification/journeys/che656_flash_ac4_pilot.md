@@ -28,7 +28,7 @@ Any missing/malformed output, unexpected model/provider, non-matching or unverif
 
 ## Review Scope
 
-Required independent OpenAI reviewers for this revision are `x99-codex-sol` (`5cd75ce5-d323-4004-9779-7e2ccf16bde4`) and `x99-gpt-6-astra` (`2e486c8c-88fb-4daf-b84a-9d26d75b33c7`). Each reviewer must inspect this same testcase digest and verify:
+Required independent OpenAI reviewers for this revision are `x99-codex-sol` (`5cd75ce5-d323-4004-9779-7e2ccf16bde4`) and `x99-gpt-6-astra` (`2e486c8c-88fb-4daf-829e-e96be9c645b3`). Each reviewer must inspect this same testcase digest and verify:
 
 - The prompt, Flash profile, pinned v2 config, route evidence, runner SHA, device class, serial, and one-attempt boundary agree.
 - The Settings observation can be checked without assuming a fixed battery percentage, and the cold-boot/no-fixture procedure is bounded to the later admitted target.
