@@ -608,7 +608,11 @@ def test_negative_control_verdict_adapter_requires_the_balance_in_the_final_capt
 
 def test_negative_control_verdict_adapter_rejects_a_home_text_decoy_on_another_route(tmp_path):
     # Bottom-nav "Home" label/content-desc is not the route tag (resource-id).
-    decoys = [{"text": "home"}, {"content_desc": "home"}, {"resource_id": "bottom-nav", "text": "home"}]
+    decoys = [
+        {"text": "home"},
+        {"content_desc": "home"},
+        {"resource_id": "bottom-nav", "text": "home"},
+    ]
     traces_dir, db_path = _native_data_engine(
         tmp_path, final_route_tag="accounts", final_extra_nodes=decoys
     )
