@@ -167,6 +167,7 @@ class BridgeSessionService:
                     )
                 except Exception:
                     logger.exception("Failed to close device bridge stream %s", session.serial)
+                    session.writer.transport.abort()
             if session.listener is not None:
                 try:
                     await asyncio.wait_for(

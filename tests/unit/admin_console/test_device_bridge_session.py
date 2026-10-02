@@ -412,6 +412,52 @@ def test_failed_disconnect_closes_accepted_writer_before_waiting_for_listener(mo
     asyncio.run(scenario())
 
 
+def test_failed_disconnect_force_closes_buffered_accepted_socket(monkeypatch):
+    disconnect_calls = []
+
+    async def failed_disconnect(*arguments):
+        disconnect_calls.append(arguments)
+        raise RuntimeError("offline injected disconnect failure")
+
+    async def scenario():
+        service = BridgeSessionService()
+        session = await service.create_session()
+        _peer_reader, peer_writer = await asyncio.open_connection("127.0.0.1", session.port)
+        await asyncio.wait_for(session.connected.wait(), 1)
+        session.adb_connect_attempted = True
+        accepted_socket = session.writer.get_extra_info("socket")
+        peer_socket = peer_writer.get_extra_info("socket")
+        accepted_socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 4096)
+        peer_socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4096)
+        session.writer.write(_adb_packet(b"CNXN", b"x" * (1024 * 1024)))
+        await asyncio.sleep(0.05)
+        assert session.writer.transport.get_write_buffer_size() > 0
+        monkeypatch.setattr(
+            bridge_session_service_module,
+            "_run_adb_command",
+            failed_disconnect,
+        )
+
+        try:
+            await asyncio.wait_for(
+                service.revoke(session.session_id),
+                bridge_session_service_module.STREAM_CLOSE_TIMEOUT_SECONDS * 2 + 1,
+            )
+            assert disconnect_calls == [("disconnect", session.serial)]
+            assert accepted_socket.fileno() == -1
+            assert await service.get(session.session_id) is None
+        finally:
+            session.listener.close()
+            session.writer.transport.abort()
+            peer_writer.close()
+            await asyncio.wait_for(
+                asyncio.gather(session.listener.wait_closed(), peer_writer.wait_closed()),
+                1,
+            )
+
+    asyncio.run(scenario())
+
+
 def test_failed_adb_connect_disconnects_and_releases_listener(
     loopback_client, monkeypatch, _mock_adb
 ):
