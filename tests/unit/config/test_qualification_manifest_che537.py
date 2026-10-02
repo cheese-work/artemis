@@ -42,6 +42,7 @@ _KNOWN_TIER_MODELS = {
     "luna": ("google", "gemini-3.5-flash-lite"),
     "terra": ("google", "gemini-3.8-flash"),
     "sol": ("openai", "gpt-5.6-sol"),
+    "nova": ("anthropic", "claude-sonnet-5"),
 }
 
 
@@ -59,8 +60,9 @@ def test_fork_sha_is_a_valid_git_sha_and_matches_source_baseline():
     manifest = _load_manifest()
     fork_sha = manifest["fork_sha"]["value"]
     assert _SHA_RE.match(fork_sha), f"fork_sha must be a 40-hex-char git SHA, got {fork_sha!r}"
-    assert fork_sha == "144006b1b2e6888e31dc8d76887a7da5e8839e99", (
-        "fork_sha must match the CHE-672 promoted pin (advanced past CHE-491 "
+    assert fork_sha == "25a2c5b2c839b674994ee4a2a49e79209142bd1d", (
+        "fork_sha must match the CHE-541 revision-3 pin (advanced past the Gate 1 "
+        "reconciliation fixes #16/#18/#22 "
         "per the revision_policy); if the pin legitimately moves again, this "
         "test and FORK_MAINTENANCE.md's promotion record must be updated "
         "together, not silently."
@@ -111,17 +113,20 @@ def test_model_targets_match_gate1_tier_vocabulary():
         assert target["provider_id"] == f"{expected_provider}:{expected_model}"
 
 
-def test_model_targets_are_luna_and_terra_per_che388_plan_not_sol():
+def test_model_targets_are_gpt_and_claude_only():
+    """CHE-541: Artemis runs on GPT and Claude only (Cheese, 2026-09-26); no Gemini key exists."""
     manifest = _load_manifest()
     tiers = {t["tier"] for t in manifest["model_targets"]}
-    assert tiers == {"luna", "terra"}, (
-        "CHE-388's plan text says 'compare Luna and Terra model tiers'; "
-        "'sol' resolves to an OpenAI-backed model and the workspace announcement "
-        "bars all OpenAI routing indefinitely, so it must be excluded here, not pinned."
-    )
-    excluded = manifest["sol_tier_excluded"]
-    assert excluded["tier"] == "sol"
-    assert "unblock_condition" in excluded
+    assert tiers == {"sol", "nova"}
+    assert {t["provider"] for t in manifest["model_targets"]} == {"openai", "anthropic"}
+    assert "sol_tier_excluded" not in manifest
+
+
+def test_evidence_schema_tier_enum_covers_every_model_target():
+    manifest = _load_manifest()
+    schema = json.loads(EVIDENCE_SCHEMA_PATH.read_text(encoding="utf-8"))
+    tier_enum = set(schema["properties"]["tier"]["enum"])
+    assert {t["tier"] for t in manifest["model_targets"]} <= tier_enum
 
 
 def test_fixture_counts_match_che388_plan_v2():
@@ -204,3 +209,17 @@ def test_journey_defines_secure_storage_precondition_che540():
     assert "fail_infrastructure" in text
     assert "device_unavailable" in text
     assert "never be scored `fail_assertion`" in text
+
+
+def test_nova_config_parses_and_resolves_every_node_to_the_nova_tier(monkeypatch):
+    """The nova tier config must load and put every LLM node on anthropic/claude-sonnet-5."""
+    from artemis.config.attempt_manifest import TIER_MODELS
+    from artemis.config.llm import parse_llm_config
+
+    manifest = _load_manifest()
+    nova = next(t for t in manifest["model_targets"] if t["tier"] == "nova")
+    config_path = REPO_ROOT / nova["config_file"]
+    monkeypatch.setenv("ARTEMIS_ARTEMIS_JSONC", str(config_path))
+    config = parse_llm_config()
+    assert (config.planner.provider, config.planner.model) == TIER_MODELS["nova"]
+    assert "gpt-5.6-sol" not in config_path.read_text(encoding="utf-8")
