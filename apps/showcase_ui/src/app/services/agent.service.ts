@@ -16,13 +16,14 @@
 
 import { Injectable, signal, inject, computed, DestroyRef, NgZone } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
-import { Observable } from 'rxjs';
+import { Observable, catchError, map, of, switchMap } from 'rxjs';
 
 import { Session, ModelInfo, TaskQueueItem, AgentStatusResponse, SessionUsage } from '../core/models/session.model';
 import { ProTuningDefaults, ProTuningOptions } from '../core/models/pro-tuning.model';
 import { StepItemData, StepReplayFrame, LLMStreamResetEventData, StreamResetNotice, DEFAULT_STREAM_RESET_MESSAGE, PersistedCheckerStream, StreamSegment } from '../core/models/stream.model';
 import { extractStepReplayFrames } from '../utils/action-formatter.util';
 import { persistedStreamToSegments } from '../utils/stream-aggregator.util';
+import { SELECTED_DEVICE_SERIAL_KEY } from './system.service';
 export type { Session, ModelInfo, TaskQueueItem, AgentStatusResponse, StepItemData, StepReplayFrame, LLMStreamResetEventData, StreamResetNotice };
 
 const SESSION_CACHE_KEY = 'artemis.sessions.v1';
@@ -443,8 +444,35 @@ export class AgentService {
         payload.explorer_mode = proTuning.explorerMode;
       }
       this.clearUserPinnedSession();
-      this.http.post<any>('/api/run', payload).subscribe({
+      let submissionSettled = false;
+      const selectedDeviceSerial = this.getSelectedDeviceSerial();
+      const selectedDevice$ = selectedDeviceSerial
+        ? this.http.get<{ devices?: { serial?: string; state?: string }[] }>('/api/devices').pipe(
+          map((response) => response.devices?.some((device) =>
+            device.serial === selectedDeviceSerial && device.state === 'device'
+          )
+            ? selectedDeviceSerial
+            : null),
+          catchError(() => of(null))
+        )
+        : of(null);
+      const submission = selectedDevice$.pipe(
+        switchMap((serial) => {
+          const runPayload = serial ? { ...payload, device_serial: serial } : payload;
+          return this.http.post<any>('/api/run', runPayload).pipe(
+            switchMap((res) => serial && res?.status === 'rejected'
+              ? this.http.post<any>('/api/run', payload)
+              : of(res))
+          );
+        })
+      ).subscribe({
         next: (res) => {
+          submissionSettled = true;
+          if (res?.status === 'rejected') {
+            this.pendingStartupProgress.set([]);
+            obs.error({ error: { detail: res.error || 'Task submission was rejected' } });
+            return;
+          }
           if (res && res.tasks && res.tasks.length > 0) {
             const newSessionId = res.tasks[0].session_id;
             if (newSessionId) {
@@ -471,11 +499,26 @@ export class AgentService {
           obs.complete();
         },
         error: (err) => {
+          submissionSettled = true;
           this.pendingStartupProgress.set([]);
           obs.error(err);
         }
       });
+      return () => {
+        submission.unsubscribe();
+        if (!submissionSettled) {
+          this.pendingStartupProgress.set([]);
+        }
+      };
     });
+  }
+
+  private getSelectedDeviceSerial(): string | null {
+    try {
+      return localStorage.getItem(SELECTED_DEVICE_SERIAL_KEY);
+    } catch {
+      return null;
+    }
   }
 
   /**

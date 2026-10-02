@@ -1,5 +1,5 @@
 import { signal, computed } from '@angular/core';
-import { of } from 'rxjs';
+import { of, Subject } from 'rxjs';
 
 import { AgentService } from './agent.service';
 
@@ -15,6 +15,17 @@ describe('AgentService live LLM retry timeline', () => {
     (service as any).sessionSnapshotAppliedId = 0;
     (service as any).pendingSnapshotRequests = new Set<number>();
     return service;
+  }
+
+  function createRunService(devices: { serial: string; state: string }[]) {
+    const service = createServiceWithoutPolling();
+    service.userPinnedSessionId = signal<string | null>(null);
+    const post = jasmine.createSpy('post').and.returnValue(of({}));
+    (service as any).http = {
+      get: () => of({ devices }),
+      post
+    };
+    return { service, post };
   }
 
   it('orders startup milestones and replaces duplicate stages', () => {
@@ -162,6 +173,7 @@ describe('AgentService live LLM retry timeline', () => {
   });
 
   it('follows a just-started task even when status polling saw it first', () => {
+    spyOn(localStorage, 'getItem').and.returnValue(null);
     const service = createServiceWithoutPolling();
     (service as any).http = {
       post: () => of({ tasks: [{ session_id: 'new-session' }] })
@@ -178,6 +190,128 @@ describe('AgentService live LLM retry timeline', () => {
     service.runTask('test goal').subscribe();
 
     expect(selectSpy).toHaveBeenCalledWith('new-session', false);
+  });
+
+  it('submits each browser remembered device when that device is connected', () => {
+    let browserDeviceSerial = 'phone-a';
+    spyOn(localStorage, 'getItem').and.callFake((key) =>
+      key === 'artemis.selected_device_serial' ? browserDeviceSerial : null
+    );
+    const readyPhones = [
+      { serial: 'phone-a', state: 'device' },
+      { serial: 'phone-b', state: 'device' }
+    ];
+    const firstBrowser = createRunService(readyPhones);
+    const secondBrowser = createRunService(readyPhones);
+
+    firstBrowser.service.runTask('first browser task').subscribe();
+    browserDeviceSerial = 'phone-b';
+    secondBrowser.service.runTask('second browser task').subscribe();
+
+    expect(firstBrowser.post).toHaveBeenCalledWith('/api/run', jasmine.objectContaining({
+      goal: 'first browser task',
+      device_serial: 'phone-a'
+    }));
+    expect(secondBrowser.post).toHaveBeenCalledWith('/api/run', jasmine.objectContaining({
+      goal: 'second browser task',
+      device_serial: 'phone-b'
+    }));
+  });
+
+  it('omits a remembered device serial when it is no longer connected', () => {
+    spyOn(localStorage, 'getItem').and.returnValue('stale-phone');
+    const { service, post } = createRunService([
+      { serial: 'current-phone', state: 'device' }
+    ]);
+
+    service.runTask('auto-pick task').subscribe();
+
+    expect(post).toHaveBeenCalledWith('/api/run', {
+      goal: 'auto-pick task',
+      profile: 'flash'
+    });
+  });
+
+  it('auto-picks when the remembered phone is offline and another phone is ready', () => {
+    spyOn(localStorage, 'getItem').and.returnValue('offline-phone');
+    const { service, post } = createRunService([
+      { serial: 'offline-phone', state: 'offline' },
+      { serial: 'ready-phone', state: 'device' }
+    ]);
+
+    service.runTask('offline fallback task').subscribe();
+
+    expect(post).toHaveBeenCalledWith('/api/run', {
+      goal: 'offline fallback task',
+      profile: 'flash'
+    });
+  });
+
+  it('auto-picks when the remembered phone is unauthorized and another phone is ready', () => {
+    spyOn(localStorage, 'getItem').and.returnValue('unauthorized-phone');
+    const { service, post } = createRunService([
+      { serial: 'unauthorized-phone', state: 'unauthorized' },
+      { serial: 'ready-phone', state: 'device' }
+    ]);
+
+    service.runTask('unauthorized fallback task').subscribe();
+
+    expect(post).toHaveBeenCalledWith('/api/run', {
+      goal: 'unauthorized fallback task',
+      profile: 'flash'
+    });
+  });
+
+  it('retries without the selected device when the backend rejects it', () => {
+    spyOn(localStorage, 'getItem').and.returnValue('phone-a');
+    const { service, post } = createRunService([
+      { serial: 'phone-a', state: 'device' }
+    ]);
+    post.and.returnValues(
+      of({ status: 'rejected', error: 'device is no longer ready' }),
+      of({ tasks: [] })
+    );
+
+    service.runTask('fallback task').subscribe();
+
+    expect(post).toHaveBeenCalledTimes(2);
+    expect(post.calls.argsFor(0)).toEqual(['/api/run', {
+      goal: 'fallback task',
+      profile: 'flash',
+      device_serial: 'phone-a'
+    }]);
+    expect(post.calls.argsFor(1)).toEqual(['/api/run', {
+      goal: 'fallback task',
+      profile: 'flash'
+    }]);
+  });
+
+  it('reports a rejected auto-picked run instead of silently completing', () => {
+    spyOn(localStorage, 'getItem').and.returnValue(null);
+    const { service, post } = createRunService([]);
+    post.and.returnValue(of({ status: 'rejected', error: 'no ready device' }));
+    const error = jasmine.createSpy('error');
+
+    service.runTask('rejected task').subscribe({ error });
+
+    expect(error).toHaveBeenCalledWith({ error: { detail: 'no ready device' } });
+    expect((service as any).pendingStartupProgress()).toEqual([]);
+  });
+
+  it('does not submit a run after cancellation during the device lookup', () => {
+    spyOn(localStorage, 'getItem').and.returnValue('phone-a');
+    const service = createServiceWithoutPolling();
+    service.userPinnedSessionId = signal<string | null>(null);
+    const devices = new Subject<{ devices: { serial: string; state: string }[] }>();
+    const post = jasmine.createSpy('post').and.returnValue(of({}));
+    (service as any).http = { get: () => devices, post };
+
+    const subscription = service.runTask('cancelled task').subscribe();
+    subscription.unsubscribe();
+    devices.next({ devices: [{ serial: 'phone-a', state: 'device' }] });
+
+    expect(post).not.toHaveBeenCalled();
+    expect((service as any).pendingStartupProgress()).toEqual([]);
   });
 
   it('keeps the paused state when the backend says there is nothing to resume', () => {
