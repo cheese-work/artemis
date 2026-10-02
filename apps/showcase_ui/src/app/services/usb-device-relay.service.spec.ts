@@ -21,6 +21,14 @@ class FakeSocket {
   public onerror: ((event: Event) => void) | null = null;
   public onclose: ((event: CloseEvent) => void) | null = null;
   public sent: Array<string | ArrayBufferLike | Blob | ArrayBufferView> = [];
+  public readonly firstBinaryFrame: Promise<ArrayBuffer>;
+  private resolveFirstBinaryFrame!: (frame: ArrayBuffer) => void;
+
+  public constructor() {
+    this.firstBinaryFrame = new Promise(resolve => {
+      this.resolveFirstBinaryFrame = resolve;
+    });
+  }
 
   public open(): void {
     this.readyState = 1;
@@ -38,6 +46,9 @@ class FakeSocket {
 
   public send(data: string | ArrayBufferLike | Blob | ArrayBufferView): void {
     this.sent.push(data);
+    if (data instanceof ArrayBuffer) {
+      this.resolveFirstBinaryFrame(data);
+    }
   }
 
   public close(): void {
@@ -176,9 +187,9 @@ describe('UsbDeviceRelayService', () => {
       magic: (AdbCommand.Okay ^ 0xffffffff) >>> 0
     } as AdbPacketData;
     packetController.enqueue(devicePacket);
-    await flushMicrotasks();
-    expect(new Uint8Array(socket.sent[0] as ArrayBuffer)).toEqual(
-      AdbPacket.serialize(devicePacket as AdbPacketInit)
+    const outgoingFrame = await socket.firstBinaryFrame;
+    expect(Array.from(new Uint8Array(outgoingFrame))).toEqual(
+      Array.from(AdbPacket.serialize(devicePacket as AdbPacketInit))
     );
 
     const bridgePacket = AdbPacket.serialize({
