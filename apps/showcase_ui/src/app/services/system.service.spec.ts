@@ -75,10 +75,24 @@ describe('SystemService readiness polling', () => {
 
     service.selectDevice('phone-a').subscribe();
 
-    expect(storageSpy).toHaveBeenCalledWith('artemis.selected_device_serial', 'phone-a');
     const request = http.expectOne('/api/system/devices/select');
     expect(request.request.body).toEqual({ serial: 'phone-a' });
     request.flush({});
+    expect(storageSpy).toHaveBeenCalledWith('artemis.selected_device_serial', 'phone-a');
+  });
+
+  it('does not remember a device when the selection request fails', () => {
+    const storageSpy = spyOn(localStorage, 'setItem');
+    spyOn(console, 'error');
+    const errorSpy = jasmine.createSpy('error');
+
+    service.selectDevice('phone-a').subscribe({ error: errorSpy });
+
+    const request = http.expectOne('/api/system/devices/select');
+    request.flush({}, { status: 500, statusText: 'Server Error' });
+
+    expect(storageSpy).not.toHaveBeenCalled();
+    expect(errorSpy).toHaveBeenCalled();
   });
 
   it('loads the active ADB server endpoint', () => {

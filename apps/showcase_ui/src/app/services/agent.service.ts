@@ -446,14 +446,16 @@ export class AgentService {
       this.clearUserPinnedSession();
       const selectedDeviceSerial = this.getSelectedDeviceSerial();
       const selectedDevice$ = selectedDeviceSerial
-        ? this.http.get<{ devices?: { serial?: string }[] }>('/api/devices').pipe(
-          map((response) => response.devices?.some((device) => device.serial === selectedDeviceSerial)
+        ? this.http.get<{ devices?: { serial?: string; state?: string }[] }>('/api/devices').pipe(
+          map((response) => response.devices?.some((device) =>
+            device.serial === selectedDeviceSerial && device.state === 'device'
+          )
             ? selectedDeviceSerial
             : null),
           catchError(() => of(null))
         )
         : of(null);
-      selectedDevice$.pipe(
+      const submission = selectedDevice$.pipe(
         switchMap((serial) => {
           if (serial) {
             payload.device_serial = serial;
@@ -492,6 +494,7 @@ export class AgentService {
           obs.error(err);
         }
       });
+      return () => submission.unsubscribe();
     });
   }
 

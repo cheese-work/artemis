@@ -502,14 +502,14 @@ export class SystemService {
    */
   public selectDevice(serial: string): Observable<any> {
     this.isLoading.set(true);
-    try {
-      localStorage.setItem(SELECTED_DEVICE_SERIAL_KEY, serial);
-    } catch (error) {
-      console.warn('Unable to remember selected device in this browser:', error);
-    }
     return this.http.post<any>('/api/system/devices/select', { serial }).pipe(
       tap({
         next: (res) => {
+          try {
+            localStorage.setItem(SELECTED_DEVICE_SERIAL_KEY, serial);
+          } catch (error) {
+            console.warn('Unable to remember selected device in this browser:', error);
+          }
           if (res?.report) {
             this.applyReadinessReport(res.report);
           }

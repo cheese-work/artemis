@@ -1,5 +1,5 @@
 import { signal, computed } from '@angular/core';
-import { of } from 'rxjs';
+import { of, Subject } from 'rxjs';
 
 import { AgentService } from './agent.service';
 
@@ -15,6 +15,17 @@ describe('AgentService live LLM retry timeline', () => {
     (service as any).sessionSnapshotAppliedId = 0;
     (service as any).pendingSnapshotRequests = new Set<number>();
     return service;
+  }
+
+  function createRunService(devices: { serial: string; state: string }[]) {
+    const service = createServiceWithoutPolling();
+    service.userPinnedSessionId = signal<string | null>(null);
+    const post = jasmine.createSpy('post').and.returnValue(of({}));
+    (service as any).http = {
+      get: () => of({ devices }),
+      post
+    };
+    return { service, post };
   }
 
   it('orders startup milestones and replaces duplicate stages', () => {
@@ -162,6 +173,7 @@ describe('AgentService live LLM retry timeline', () => {
   });
 
   it('follows a just-started task even when status polling saw it first', () => {
+    spyOn(localStorage, 'getItem').and.returnValue(null);
     const service = createServiceWithoutPolling();
     (service as any).http = {
       post: () => of({ tasks: [{ session_id: 'new-session' }] })
@@ -185,18 +197,12 @@ describe('AgentService live LLM retry timeline', () => {
     spyOn(localStorage, 'getItem').and.callFake((key) =>
       key === 'artemis.selected_device_serial' ? browserDeviceSerial : null
     );
-    const createRunService = () => {
-      const service = createServiceWithoutPolling();
-      service.userPinnedSessionId = signal<string | null>(null);
-      const post = jasmine.createSpy('post').and.returnValue(of({}));
-      (service as any).http = {
-        get: () => of({ devices: [{ serial: 'phone-a' }, { serial: 'phone-b' }] }),
-        post
-      };
-      return { service, post };
-    };
-    const firstBrowser = createRunService();
-    const secondBrowser = createRunService();
+    const readyPhones = [
+      { serial: 'phone-a', state: 'device' },
+      { serial: 'phone-b', state: 'device' }
+    ];
+    const firstBrowser = createRunService(readyPhones);
+    const secondBrowser = createRunService(readyPhones);
 
     firstBrowser.service.runTask('first browser task').subscribe();
     browserDeviceSerial = 'phone-b';
@@ -214,13 +220,9 @@ describe('AgentService live LLM retry timeline', () => {
 
   it('omits a remembered device serial when it is no longer connected', () => {
     spyOn(localStorage, 'getItem').and.returnValue('stale-phone');
-    const service = createServiceWithoutPolling();
-    service.userPinnedSessionId = signal<string | null>(null);
-    const post = jasmine.createSpy('post').and.returnValue(of({}));
-    (service as any).http = {
-      get: () => of({ devices: [{ serial: 'current-phone' }] }),
-      post
-    };
+    const { service, post } = createRunService([
+      { serial: 'current-phone', state: 'device' }
+    ]);
 
     service.runTask('auto-pick task').subscribe();
 
@@ -228,6 +230,51 @@ describe('AgentService live LLM retry timeline', () => {
       goal: 'auto-pick task',
       profile: 'flash'
     });
+  });
+
+  it('auto-picks when the remembered phone is offline and another phone is ready', () => {
+    spyOn(localStorage, 'getItem').and.returnValue('offline-phone');
+    const { service, post } = createRunService([
+      { serial: 'offline-phone', state: 'offline' },
+      { serial: 'ready-phone', state: 'device' }
+    ]);
+
+    service.runTask('offline fallback task').subscribe();
+
+    expect(post).toHaveBeenCalledWith('/api/run', {
+      goal: 'offline fallback task',
+      profile: 'flash'
+    });
+  });
+
+  it('auto-picks when the remembered phone is unauthorized and another phone is ready', () => {
+    spyOn(localStorage, 'getItem').and.returnValue('unauthorized-phone');
+    const { service, post } = createRunService([
+      { serial: 'unauthorized-phone', state: 'unauthorized' },
+      { serial: 'ready-phone', state: 'device' }
+    ]);
+
+    service.runTask('unauthorized fallback task').subscribe();
+
+    expect(post).toHaveBeenCalledWith('/api/run', {
+      goal: 'unauthorized fallback task',
+      profile: 'flash'
+    });
+  });
+
+  it('does not submit a run after cancellation during the device lookup', () => {
+    spyOn(localStorage, 'getItem').and.returnValue('phone-a');
+    const service = createServiceWithoutPolling();
+    service.userPinnedSessionId = signal<string | null>(null);
+    const devices = new Subject<{ devices: { serial: string; state: string }[] }>();
+    const post = jasmine.createSpy('post').and.returnValue(of({}));
+    (service as any).http = { get: () => devices, post };
+
+    const subscription = service.runTask('cancelled task').subscribe();
+    subscription.unsubscribe();
+    devices.next({ devices: [{ serial: 'phone-a', state: 'device' }] });
+
+    expect(post).not.toHaveBeenCalled();
   });
 
   it('keeps the paused state when the backend says there is nothing to resume', () => {
