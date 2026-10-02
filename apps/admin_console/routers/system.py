@@ -105,7 +105,8 @@ async def get_system_readiness(force: bool = False) -> SystemReadinessReport:
 
 
 @router.get("/service-readiness")
-async def get_service_readiness() -> dict[str, bool]:
+async def get_service_readiness(request: Request) -> dict[str, bool]:
+    _require_loopback_request(request, "Service readiness is local-only.")
     return {"service_ready": True}
 
 
