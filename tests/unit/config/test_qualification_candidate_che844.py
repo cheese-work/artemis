@@ -640,3 +640,30 @@ def test_negative_control_verdict_adapter_rejects_matches_with_a_different_check
 
     assert result.returncode == 2
     assert json.loads(result.stdout)["reason"] == "checker"
+
+
+@pytest.mark.parametrize(
+    ("reference_field", "malformed_reference"),
+    [
+        ("final_capture_step_id", {}),
+        ("final_capture_step_id", []),
+        ("trace_id", {}),
+        ("trace_id", []),
+    ],
+)
+def test_negative_control_verdict_adapter_rejects_malformed_later_reference(
+    tmp_path, reference_field, malformed_reference
+):
+    traces_dir, db_path = _native_data_engine(tmp_path)
+    records = [
+        _failed_final(),
+        _failed_final(**{reference_field: malformed_reference}),
+    ]
+
+    result = _adapter_result(tmp_path, records, traces_dir, db_path)
+
+    assert result.returncode == 2
+    assert json.loads(result.stdout) == {
+        "verdict": "invalid_control",
+        "reason": "checker",
+    }

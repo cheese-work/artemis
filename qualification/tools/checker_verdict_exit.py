@@ -193,7 +193,14 @@ def _latest_final_record(
     if not matches or any(record.get("status") != "failed" for record in matches):
         return None
     # main() trusts one record's capture/trace refs, so all matches must agree on them.
-    if len({(r.get("final_capture_step_id"), r.get("trace_id")) for r in matches}) != 1:
+    reference_pairs = []
+    for record in matches:
+        final_capture_step_id = record.get("final_capture_step_id")
+        trace_id = record.get("trace_id")
+        if not isinstance(final_capture_step_id, str) or not isinstance(trace_id, str):
+            return None
+        reference_pairs.append((final_capture_step_id, trace_id))
+    if len(set(reference_pairs)) != 1:
         return None
     return latest_attempt, matches[0]
 
