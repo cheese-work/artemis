@@ -12,23 +12,24 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Tests for the authenticated WSS device-bridge session-lease stub (CHE-786).
+"""Tests for the loopback WebSocket device-bridge ADB relay.
 
-Covers: unauthorized rejection, loopback-only binding, expiration/disconnect
-cleanup, and no leaked listener after the connection ends.
+Covers: relay forwarding, same-origin boundaries, and session cleanup.
 """
 
 import asyncio
 import socket
+import struct
+import threading
 
 import pytest
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
+import apps.admin_console.services.bridge_session_service as bridge_session_service_module
 from apps.admin_console.server import app
 from apps.admin_console.services.bridge_session_service import bridge_session_service
 
-TOKEN = "test-lifecycle-token"
 PATH = "/api/device-bridge/session"
 
 # starlette's TestClient.websocket_connect always dials "ws://testserver"
@@ -38,16 +39,31 @@ PATH = "/api/device-bridge/session"
 _HOST_HEADER = {"Host": "127.0.0.1"}
 
 
-def _auth_headers(token: str = TOKEN) -> dict[str, str]:
-    return {**_HOST_HEADER, "Authorization": f"Bearer {token}"}
+def _adb_packet(command: bytes, payload: bytes = b"", checksum: int = 0) -> bytes:
+    command_word = int.from_bytes(command, "little")
+    header = struct.pack(
+        "<6I", command_word, 0, 0, len(payload), checksum, command_word ^ 0xFFFFFFFF
+    )
+    return header + payload
+
+
+def _assert_listener_closed(port: int) -> None:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.settimeout(1.0)
+        with pytest.raises(OSError):
+            probe.connect(("127.0.0.1", port))
 
 
 @pytest.fixture(autouse=True)
-def _lifecycle_token():
-    previous = getattr(app.state, "lifecycle_token", None)
-    app.state.lifecycle_token = TOKEN
-    yield
-    app.state.lifecycle_token = previous
+def _mock_adb(monkeypatch):
+    calls = []
+
+    async def fake_adb_command(*arguments):
+        calls.append(arguments)
+        return f"connected to {arguments[1]}" if arguments[0] == "connect" else "disconnected"
+
+    monkeypatch.setattr(bridge_session_service_module, "_run_adb_command", fake_adb_command)
+    return calls
 
 
 @pytest.fixture
@@ -60,29 +76,83 @@ def remote_client():
     return TestClient(app, client=("203.0.113.5", 50000))
 
 
-def test_missing_bearer_token_is_rejected(loopback_client):
+def test_loopback_session_does_not_require_lifecycle_bearer(loopback_client):
+    with loopback_client.websocket_connect(PATH, headers=_HOST_HEADER) as ws:
+        assert ws.receive_json()["type"] == "session_leased"
+        assert ws.receive_json()["type"] == "device_attached"
+        ws.send_text("close")
+
+
+def test_non_loopback_client_is_rejected(remote_client):
     with pytest.raises(WebSocketDisconnect) as exc_info:
-        with loopback_client.websocket_connect(PATH, headers=_HOST_HEADER):
-            pass
-    assert exc_info.value.code == 4001
-
-
-def test_wrong_bearer_token_is_rejected(loopback_client):
-    with pytest.raises(WebSocketDisconnect) as exc_info:
-        with loopback_client.websocket_connect(PATH, headers=_auth_headers("not-the-token")):
-            pass
-    assert exc_info.value.code == 4001
-
-
-def test_non_loopback_client_is_rejected_even_with_valid_token(remote_client):
-    with pytest.raises(WebSocketDisconnect) as exc_info:
-        with remote_client.websocket_connect(PATH, headers=_auth_headers()):
+        with remote_client.websocket_connect(PATH, headers=_HOST_HEADER):
             pass
     assert exc_info.value.code == 4003
 
 
-def test_authorized_loopback_session_binds_loopback_only_listener(loopback_client):
-    with loopback_client.websocket_connect(PATH, headers=_auth_headers()) as ws:
+def test_bad_host_and_origin_are_rejected(loopback_client):
+    with pytest.raises(WebSocketDisconnect) as host_error:
+        with loopback_client.websocket_connect(PATH, headers={"Host": "attacker.invalid"}):
+            pass
+    assert host_error.value.code == 1008
+
+    with pytest.raises(WebSocketDisconnect) as origin_error:
+        with loopback_client.websocket_connect(
+            PATH, headers={**_HOST_HEADER, "Origin": "https://attacker.invalid"}
+        ):
+            pass
+    assert origin_error.value.code == 1008
+
+
+def test_lease_connect_packet_relay_and_close(loopback_client, monkeypatch, _mock_adb):
+    peer = {}
+    server_packet = _adb_packet(b"CNXN", b"server-banner", checksum=0)
+    client_packet = _adb_packet(b"CNXN", b"client-banner", checksum=0)
+
+    async def fake_adb_command(*arguments):
+        _mock_adb.append(arguments)
+        if arguments[0] == "connect":
+            host, port = arguments[1].split(":")
+            reader, writer = await asyncio.open_connection(host, int(port))
+            peer["reader"] = reader
+            peer["writer"] = writer
+            writer.write(server_packet[:7])
+            await writer.drain()
+            writer.write(server_packet[7:])
+            await writer.drain()
+            received = await asyncio.wait_for(reader.readexactly(len(client_packet)), 1)
+            assert received == client_packet
+            return f"connected to {arguments[1]}"
+        writer = peer.get("writer")
+        if writer is not None:
+            writer.close()
+            await writer.wait_closed()
+        return "disconnected"
+
+    monkeypatch.setattr(bridge_session_service_module, "_run_adb_command", fake_adb_command)
+
+    with loopback_client.websocket_connect(PATH, headers=_HOST_HEADER) as ws:
+        leased = ws.receive_json()
+        assert leased["type"] == "session_leased"
+        session_id = leased["session_id"]
+        assert leased["listener"]["host"] == "127.0.0.1"
+        port = leased["listener"]["port"]
+        assert isinstance(port, int) and port > 0
+
+        ws.send_bytes(b"")
+        assert ws.receive_bytes() == server_packet
+        ws.send_bytes(client_packet)
+        attached = ws.receive_json()
+        assert attached == {"type": "device_attached", "serial": f"127.0.0.1:{port}"}
+        ws.send_text("close")
+
+    assert _mock_adb == [("connect", f"127.0.0.1:{port}"), ("disconnect", f"127.0.0.1:{port}")]
+    assert asyncio.run(bridge_session_service.get(session_id)) is None
+    _assert_listener_closed(port)
+
+
+def test_loopback_session_binds_listener_and_closes(loopback_client, _mock_adb):
+    with loopback_client.websocket_connect(PATH, headers=_HOST_HEADER) as ws:
         payload = ws.receive_json()
         assert payload["type"] == "session_leased"
         session_id = payload["session_id"]
@@ -90,58 +160,92 @@ def test_authorized_loopback_session_binds_loopback_only_listener(loopback_clien
         port = payload["listener"]["port"]
         assert isinstance(port, int) and port > 0
 
-        # Binding on 127.0.0.1 (not 0.0.0.0) leaves no wildcard/external
-        # interface to assert against, so confirm the listener is reachable
-        # on loopback rather than trying to prove a negative over the network.
+        ws.receive_json()
+
         probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        try:
-            probe.settimeout(1.0)
-            probe.connect(("127.0.0.1", port))
-            connected = True
-        except OSError:
-            connected = False
-        finally:
-            probe.close()
-        assert connected, "expected the leased loopback listener to accept a local connection"
-
+        probe.settimeout(1.0)
+        probe.connect(("127.0.0.1", port))
         ws.send_text("close")
+        probe.close()
 
-    # Session must be revoked (and its listener closed) once the socket closes.
     assert asyncio.run(bridge_session_service.get(session_id)) is None
+    _assert_listener_closed(port)
 
 
-def test_disconnect_without_close_message_still_revokes_session(loopback_client):
-    with loopback_client.websocket_connect(PATH, headers=_auth_headers()) as ws:
+def test_disconnect_without_close_message_still_revokes_session(
+    loopback_client, monkeypatch, _mock_adb
+):
+    revoked = threading.Event()
+    revoke = bridge_session_service.revoke
+
+    async def observe_revoke(session_id):
+        await revoke(session_id)
+        revoked.set()
+
+    monkeypatch.setattr(bridge_session_service, "revoke", observe_revoke)
+    with loopback_client.websocket_connect(PATH, headers=_HOST_HEADER) as ws:
         payload = ws.receive_json()
         session_id = payload["session_id"]
-        # Exit the context without sending "close" — simulates an abrupt
-        # client-side socket drop rather than a graceful close handshake.
+        port = payload["listener"]["port"]
+        ws.receive_json()
+        ws.close()
+        assert revoked.wait(1.0)
 
     assert asyncio.run(bridge_session_service.get(session_id)) is None
+    assert [call[0] for call in _mock_adb] == ["connect", "disconnect"]
+    _assert_listener_closed(port)
 
 
-def test_no_listener_survives_after_multiple_sessions_open_and_close(loopback_client):
+def test_no_listener_survives_after_multiple_sessions_open_and_close(loopback_client, _mock_adb):
+    ports = []
     for _ in range(3):
-        with loopback_client.websocket_connect(PATH, headers=_auth_headers()) as ws:
+        with loopback_client.websocket_connect(PATH, headers=_HOST_HEADER) as ws:
+            ports.append(ws.receive_json()["listener"]["port"])
             ws.receive_json()
             ws.send_text("close")
 
     active = asyncio.run(bridge_session_service.active_session_ids())
     assert active == set()
+    assert [call[0] for call in _mock_adb] == ["connect", "disconnect"] * 3
+    for port in ports:
+        _assert_listener_closed(port)
 
 
-def test_expired_session_times_out_the_websocket_handler(loopback_client, monkeypatch):
-    """The handler closes with the expiry code once the lease's TTL elapses,
-    without needing the client to send anything."""
+def test_expired_session_times_out_and_disconnects_adb(loopback_client, monkeypatch, _mock_adb):
     monkeypatch.setenv("ARTEMIS_BRIDGE_SESSION_TTL_SECONDS", "0.05")
 
-    with loopback_client.websocket_connect(PATH, headers=_auth_headers()) as ws:
+    with loopback_client.websocket_connect(PATH, headers=_HOST_HEADER) as ws:
         payload = ws.receive_json()
         session_id = payload["session_id"]
+        port = payload["listener"]["port"]
+        ws.receive_json()
 
         with pytest.raises(WebSocketDisconnect) as exc_info:
             ws.receive_text()
     assert exc_info.value.code == 4008
 
-    # Revocation still runs on the timeout exit path: no leftover lease.
+    assert _mock_adb[0][0] == "connect"
+    assert _mock_adb[1][0] == "disconnect"
     assert asyncio.run(bridge_session_service.get(session_id)) is None
+    _assert_listener_closed(port)
+
+
+def test_failed_adb_connect_disconnects_and_releases_listener(
+    loopback_client, monkeypatch, _mock_adb
+):
+    async def failed_adb_command(*arguments):
+        _mock_adb.append(arguments)
+        return "failed to connect" if arguments[0] == "connect" else "disconnected"
+
+    monkeypatch.setattr(bridge_session_service_module, "_run_adb_command", failed_adb_command)
+
+    with loopback_client.websocket_connect(PATH, headers=_HOST_HEADER) as ws:
+        payload = ws.receive_json()
+        session_id = payload["session_id"]
+        port = payload["listener"]["port"]
+        with pytest.raises(WebSocketDisconnect):
+            ws.receive_json()
+
+    assert [call[0] for call in _mock_adb] == ["connect", "disconnect"]
+    assert asyncio.run(bridge_session_service.get(session_id)) is None
+    _assert_listener_closed(port)

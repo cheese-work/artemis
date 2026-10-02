@@ -12,26 +12,25 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Session-lease bookkeeping for the browser device-bridge WSS stub.
-
-This is only the security/lifecycle substrate for a future browser-side
-WebUSB/ADB bridge (CHE-481, CHE-784). It does not parse or emulate ADB, does
-not enumerate a device, and never invokes ``adb`` — it leases an opaque,
-bounded-lifetime session and an ephemeral loopback TCP listener that a later
-protocol client would attach to. The listener here never accepts real ADB
-traffic; it exists so the lease/cleanup contract can be exercised end to end.
-"""
+"""Session and ADB transport lifecycle for the browser device bridge."""
 
 from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
+import logging
 import os
 import socket
 import time
 import uuid
 
+from artemis.toolchain import find_adb
+
 DEFAULT_SESSION_TTL_SECONDS = 300
+ADB_COMMAND_TIMEOUT_SECONDS = 15
+MAX_ADB_PACKET_BYTES = 1024 * 1024 + 24
+
+logger = logging.getLogger(__name__)
 
 
 def _session_ttl_seconds() -> float:
@@ -45,70 +44,125 @@ def _session_ttl_seconds() -> float:
     return ttl if ttl > 0 else DEFAULT_SESSION_TTL_SECONDS
 
 
+async def _run_adb_command(*arguments: str) -> str:
+    process = await asyncio.create_subprocess_exec(
+        find_adb(),
+        *arguments,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        stdout, stderr = await asyncio.wait_for(
+            process.communicate(), timeout=ADB_COMMAND_TIMEOUT_SECONDS
+        )
+    except TimeoutError as error:
+        if process.returncode is None:
+            process.kill()
+        await process.communicate()
+        raise RuntimeError("adb command timed out") from error
+    except asyncio.CancelledError:
+        if process.returncode is None:
+            process.kill()
+        await process.communicate()
+        raise
+
+    output = (stdout + stderr).decode("utf-8", errors="replace").strip()
+    if process.returncode:
+        raise RuntimeError(f"adb {arguments[0]} failed: {output}")
+    return output
+
+
 @dataclass
 class BridgeSession:
-    """One leased, loopback-only listener bound to a single WSS connection."""
+    """One loopback listener and ADB serial leased to a WebSocket."""
 
     session_id: str
-    listener: socket.socket
-    port: int
+    port: int = 0
+    listener: asyncio.AbstractServer | None = None
+    reader: asyncio.StreamReader | None = None
+    writer: asyncio.StreamWriter | None = None
+    connected: asyncio.Event = field(default_factory=asyncio.Event)
     created_at: float = field(default_factory=time.monotonic)
     expires_at: float = 0.0
+    adb_connect_attempted: bool = False
+    revoked: bool = False
+
+    @property
+    def serial(self) -> str:
+        return f"127.0.0.1:{self.port}"
 
     @property
     def is_expired(self) -> bool:
         return time.monotonic() >= self.expires_at
 
     def remaining_seconds(self) -> float:
-        """Seconds left in this lease's lifetime, floored at 0."""
         return max(0.0, self.expires_at - time.monotonic())
 
 
 class BridgeSessionService:
-    """Authorizes and tracks device-bridge session leases.
-
-    One listener per session: a session is created, bound, and torn down as a
-    unit. Cleanup is idempotent so it can safely run from close, disconnect,
-    and timeout paths without double-closing a socket.
-    """
+    """Create, track, connect, and tear down device-bridge sessions."""
 
     def __init__(self) -> None:
         self._sessions: dict[str, BridgeSession] = {}
         self._lock = asyncio.Lock()
 
     async def create_session(self) -> BridgeSession:
-        """Bind a fresh loopback listener and register its lease.
-
-        Binds on port 0 so the OS picks a free ephemeral port; the socket is
-        never exposed beyond 127.0.0.1.
-        """
-        listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        try:
-            listener.bind(("127.0.0.1", 0))
-            listener.listen(1)
-        except Exception:
-            listener.close()
-            raise
-        listener.setblocking(False)
-
-        session = BridgeSession(
-            session_id=uuid.uuid4().hex,
-            listener=listener,
-            port=listener.getsockname()[1],
+        session = BridgeSession(session_id=uuid.uuid4().hex)
+        listener = await asyncio.start_server(
+            lambda reader, writer: self._accept_connection(session, reader, writer),
+            "127.0.0.1",
+            0,
+            limit=MAX_ADB_PACKET_BYTES,
         )
-        session.expires_at = time.monotonic() + _session_ttl_seconds()
+        registered = False
+        try:
+            sockets = listener.sockets or []
+            if not sockets:
+                raise RuntimeError("failed to bind device bridge listener")
 
-        async with self._lock:
-            self._sessions[session.session_id] = session
-        return session
+            session.listener = listener
+            session.port = int(sockets[0].getsockname()[1])
+            session.expires_at = time.monotonic() + _session_ttl_seconds()
+            async with self._lock:
+                self._sessions[session.session_id] = session
+            registered = True
+            return session
+        finally:
+            if not registered:
+                listener.close()
+                await listener.wait_closed()
+
+    async def connect(self, session: BridgeSession) -> str:
+        session.adb_connect_attempted = True
+        output = await _run_adb_command("connect", session.serial)
+        success = (f"connected to {session.serial}", f"already connected to {session.serial}")
+        if not output.lower().startswith(tuple(message.lower() for message in success)):
+            raise RuntimeError(f"adb connect failed: {output}")
+        return session.serial
 
     async def revoke(self, session_id: str) -> None:
-        """Tear down and forget a session. Safe to call more than once."""
+        """Disconnect ADB and release the listener and accepted stream."""
         async with self._lock:
             session = self._sessions.pop(session_id, None)
-        if session is not None:
-            _close_listener(session.listener)
+        if session is None:
+            return
+
+        session.revoked = True
+        try:
+            if session.adb_connect_attempted:
+                await _run_adb_command("disconnect", session.serial)
+        except Exception:
+            logger.exception("Failed to disconnect device bridge serial %s", session.serial)
+        finally:
+            if session.listener is not None:
+                session.listener.close()
+                await session.listener.wait_closed()
+            if session.writer is not None:
+                session.writer.close()
+                try:
+                    await session.writer.wait_closed()
+                except OSError:
+                    pass
 
     async def get(self, session_id: str) -> BridgeSession | None:
         async with self._lock:
@@ -118,13 +172,22 @@ class BridgeSessionService:
         async with self._lock:
             return set(self._sessions.keys())
 
+    @staticmethod
+    async def _accept_connection(
+        session: BridgeSession,
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+    ) -> None:
+        if session.revoked or session.writer is not None:
+            writer.close()
+            try:
+                await writer.wait_closed()
+            except OSError:
+                pass
+            return
+        session.reader = reader
+        session.writer = writer
+        session.connected.set()
 
-def _close_listener(listener: socket.socket) -> None:
-    try:
-        listener.close()
-    except OSError:
-        pass
 
-
-# Process-wide instance, mirroring the other admin_console services.
 bridge_session_service = BridgeSessionService()
