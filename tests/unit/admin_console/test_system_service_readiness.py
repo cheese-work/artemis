@@ -44,9 +44,7 @@ def test_service_readiness_accepts_only_loopback_effective_peers(monkeypatch):
     async def verify():
         loopback = await request(app, "127.0.0.1")
         remote = await request(app, "198.51.100.23")
-        spoofed_loopback = await request(
-            app, "198.51.100.23", {"X-Forwarded-For": "127.0.0.1"}
-        )
+        spoofed_loopback = await request(app, "198.51.100.23", {"X-Forwarded-For": "127.0.0.1"})
         forwarded_remote = await request(
             proxy_app, "127.0.0.1", {"X-Forwarded-For": "198.51.100.23"}
         )
