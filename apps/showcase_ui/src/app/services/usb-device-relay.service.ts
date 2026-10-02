@@ -6,8 +6,10 @@ import {
   calculateChecksum
 } from '@yume-chan/adb';
 import type { AdbPacketData, AdbPacketInit } from '@yume-chan/adb';
-import { AdbDaemonWebUsbDeviceManager } from '@yume-chan/adb-daemon-webusb';
-import type { AdbDaemonWebUsbDevice } from '@yume-chan/adb-daemon-webusb';
+import {
+  AdbDaemonWebUsbDevice,
+  AdbDaemonWebUsbDeviceManager
+} from '@yume-chan/adb-daemon-webusb';
 import {
   Consumable,
   ReadableStream,
@@ -383,6 +385,10 @@ export class UsbDeviceRelayService implements OnDestroy {
   }
 
   private toUserMessage(error: unknown): string {
+    if (error instanceof AdbDaemonWebUsbDevice.DeviceBusyError) {
+      return 'The phone is busy. Close other ADB tools using its USB connection, then retry.';
+    }
+
     const name = error instanceof Error ? error.name : '';
     switch (name) {
       case 'WebUsbUnsupportedError':
@@ -392,8 +398,6 @@ export class UsbDeviceRelayService implements OnDestroy {
       case 'DeviceSelectionCancelledError':
       case 'NotFoundError':
         return 'No phone was selected. Choose an Android phone and try again.';
-      case 'DeviceBusyError':
-        return 'The phone is busy. Close other ADB tools using its USB connection, then retry.';
       case 'DeviceBridgeConnectionError':
         return 'Could not reach the device bridge. Check this page connection and try again.';
       case 'DeviceBridgeDroppedError':

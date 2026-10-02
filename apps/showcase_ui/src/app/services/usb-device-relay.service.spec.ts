@@ -5,7 +5,10 @@ import {
   AdbPacketData,
   AdbPacketInit
 } from '@yume-chan/adb';
-import { AdbDaemonWebUsbDeviceManager } from '@yume-chan/adb-daemon-webusb';
+import {
+  AdbDaemonWebUsbDevice,
+  AdbDaemonWebUsbDeviceManager
+} from '@yume-chan/adb-daemon-webusb';
 import { Consumable } from '@yume-chan/stream-extra';
 import {
   DEVICE_BRIDGE_SOCKET_FACTORY,
@@ -148,7 +151,7 @@ describe('UsbDeviceRelayService', () => {
   });
 
   it('reports a device claimed by another ADB process', async () => {
-    const busy = Object.assign(new Error('busy'), { name: 'DeviceBusyError' });
+    const busy = new AdbDaemonWebUsbDevice.DeviceBusyError(new Error('busy'));
     device.connect.and.rejectWith(busy);
     service = TestBed.inject(UsbDeviceRelayService);
 
