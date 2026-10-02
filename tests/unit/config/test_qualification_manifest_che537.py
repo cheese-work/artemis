@@ -60,8 +60,8 @@ def test_fork_sha_is_a_valid_git_sha_and_matches_revision_five_runner():
     manifest = _load_manifest()
     fork_sha = manifest["fork_sha"]["value"]
     assert _SHA_RE.match(fork_sha), f"fork_sha must be a 40-hex-char git SHA, got {fork_sha!r}"
-    assert manifest["manifest_version"] == 7
-    assert fork_sha == "49964e18781bdd16814e6fb74e7443e415c77012", (
+    assert manifest["manifest_version"] == 8
+    assert fork_sha == "8b6c047283183c17f1235991982f43ac68b52833", (
         "fork_sha must match the CHE-844 runner revision that emits final capture "
         "links, validates timestamps, and verifies process death; move it only with "
         "a new manifest revision."
