@@ -104,6 +104,11 @@ async def get_system_readiness(force: bool = False) -> SystemReadinessReport:
     return await readiness_engine.run_all(force_refresh=force)
 
 
+@router.get("/service-readiness")
+async def get_service_readiness() -> dict[str, bool]:
+    return {"service_ready": True}
+
+
 @router.post("/devices/select")
 async def select_active_device(request: SelectDeviceRequest):
     """Select the active Android device or emulator for subsequent automated tasks."""
