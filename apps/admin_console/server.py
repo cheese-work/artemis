@@ -48,6 +48,7 @@ for _p in (str(_workspace_root), str(_apps_dir), str(_admin_console_dir), str(_c
 from fastapi import FastAPI
 from fastapi.responses import FileResponse, HTMLResponse
 import uvicorn
+from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
 from artemis.runtime import (
     DeviceExecutionLock,
@@ -134,6 +135,22 @@ app.state.lifecycle_token = LIFECYCLE_TOKEN
 # exist at all; the boundary middleware rejects cross-origin browser traffic
 # and unrecognized Host headers (DNS rebinding) instead.
 app.add_middleware(SameOriginBoundaryMiddleware)
+
+
+class TransportPeerProxyHeadersMiddleware:
+    def __init__(self, app):
+        self.app = ProxyHeadersMiddleware(
+            app,
+            trusted_hosts=os.environ.get("FORWARDED_ALLOW_IPS", "127.0.0.1"),
+        )
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "websocket":
+            scope = {**scope, "artemis.transport_peer": scope.get("client")}
+        await self.app(scope, receive, send)
+
+
+proxy_aware_app = TransportPeerProxyHeadersMiddleware(app)
 
 
 async def on_startup():
@@ -480,18 +497,20 @@ def run_ui_server(host: str, port: int, reload: bool = False) -> None:
     try:
         if reload:
             uvicorn.run(
-                "apps.admin_console.server:app",
+                "apps.admin_console.server:proxy_aware_app",
                 host=host,
                 port=port,
                 reload=True,
+                proxy_headers=False,
                 timeout_graceful_shutdown=5,
             )
             return
 
         config = uvicorn.Config(
-            app,
+            proxy_aware_app,
             host=host,
             port=port,
+            proxy_headers=False,
             timeout_graceful_shutdown=5,
         )
         server = ArtemisUvicornServer(config)
