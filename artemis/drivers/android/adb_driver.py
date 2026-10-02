@@ -393,7 +393,18 @@ class AndroidAdbDriver(BaseDeviceDriver):
 
     async def stop_app(self, package_name: str) -> bool:
         try:
-            await asyncio.to_thread(self.device.shell, f"am force-stop {package_name}")
+            stop_output = await asyncio.to_thread(
+                self.device.shell, f"am force-stop {package_name}"
+            )
+            if str(stop_output or "").strip():
+                logger.error(f"Force-stop reported an error for '{package_name}': {stop_output}")
+                return False
+            process_ids = await asyncio.to_thread(self.device.shell, f"pidof {package_name}")
+            if str(process_ids or "").strip():
+                logger.error(
+                    f"Force-stop left process(es) running for '{package_name}': {process_ids}"
+                )
+                return False
             return True
         except Exception as e:
             logger.error(f"Stop app failed for '{package_name}': {e}")

@@ -32,6 +32,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
 
       - name: Set up Python 3.12
         uses: actions/setup-python@v5
@@ -64,6 +66,15 @@ jobs:
 
       # Device, cloud, manual, and end-to-end suites require dedicated
       # infrastructure and intentionally do not run on GitHub-hosted runners.
+      - name: Fetch CHE-844 receipt sources
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          git fetch --no-tags --depth=1 origin \
+            f011c33d7b747eb48b14667bb790a8b90d1b46bc \
+            00e278523067a8fdf8aa3df669045f65e8fbf566
+          git cat-file -e f011c33d7b747eb48b14667bb790a8b90d1b46bc^{commit}
+          git cat-file -e 00e278523067a8fdf8aa3df669045f65e8fbf566^{commit}
+
       - name: Run deterministic Python tests
         if: github.event_name == 'workflow_dispatch'
         run: >-
