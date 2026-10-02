@@ -136,8 +136,10 @@ followed by successful native `stop_app` then `launch_app` action traces for
 the candidate package. The final Checker itself records a native final-screen
 capture step and writes its ID plus its own Checker `trace_id` into the latest
 final ledger record. The adapter accepts only that same-session Checker trace
-and its runner-generated final capture, whose exact UI values include
-`recovery-snapshot` and `qual-<run_id>`. It never accepts an executor-selected
+and its runner-generated final capture, whose exact UI values include the
+`recovery-snapshot` or `home` route tag, `qual-<run_id>`, and `USD · +123.45`.
+The relaunched app restores to Home, which renders the same Recovery snapshot
+under the `home` tag. It never accepts an executor-selected
 capture or generic Checker evidence. This rejects a copied, stale,
 pre-save-restart, pre-relaunch, unrelated-final, or substring-only
 observation. The adapter orders the saved snapshot, stop, launch, and final

@@ -31,9 +31,9 @@ def test_receipt_maps_both_qualification_lanes_to_the_same_pinned_source():
     source = receipt["source_candidate"]
     runner = source["runner_source"]
     testcase = source["testcase_source"]
-    assert runner["commit_sha"] == "8b6c047283183c17f1235991982f43ac68b52833"
-    assert testcase["commit_sha"] == "4de12c3af520567fe39e516e42e86263c99d32be"
-    assert testcase["manifest_version"] == 8
+    assert runner["commit_sha"] == "feefd94c72dbce0fa1afc109ffe3d8254f565d6b"
+    assert testcase["commit_sha"] == "096411113522abc37964256833fecbbac4778af4"
+    assert testcase["manifest_version"] == 9
     assert testcase["fork_sha"] == runner["commit_sha"]
     assert source["app_input_source"] == {
         "pull_request": 26,
@@ -119,6 +119,7 @@ def test_journey_requires_process_death_and_native_negative_control_provenance()
     assert "final Checker itself records a native final-screen\ncapture step" in text
     assert "It never accepts an executor-selected\ncapture" in text
     assert "exact UI values" in text
+    assert "`recovery-snapshot` or `home` route tag" in text
     assert "completed` is not control success" in text
     assert 'observed name was\ncompared with "qual-<run_id>-WRONG-SUFFIX"' in text
     assert "invalid control" in text
@@ -202,6 +203,8 @@ def _native_data_engine(
     final_capture_timestamp=4.0,
     include_stop_launch=True,
     checker_session_id=SESSION_ID,
+    final_route_tag="recovery-snapshot",
+    final_balance=EXPECTED_BALANCE,
 ):
     traces_dir = tmp_path / "runtime-traces"
     traces_dir.mkdir()
@@ -238,8 +241,9 @@ def _native_data_engine(
         {"text": EXPECTED_BALANCE},
     ]
     final_ui_tree = [
-        {"content_desc": "recovery-snapshot"},
+        {"content_desc": final_route_tag},
         {"text": observed_account},
+        {"text": final_balance},
     ]
     connection.executemany(
         "INSERT INTO images VALUES (?, ?)",
@@ -573,3 +577,28 @@ def test_negative_control_verdict_adapter_rejects_a_longer_token_that_only_conta
 
     assert result.returncode == 2
     assert json.loads(result.stdout)["reason"] == "checker"
+
+
+def test_negative_control_verdict_adapter_accepts_the_relaunched_home_snapshot(tmp_path):
+    # Pocket Actual restores to Home, which renders the same Recovery snapshot (CHE-541 n01).
+    traces_dir, db_path = _native_data_engine(tmp_path, final_route_tag="home")
+    result = _adapter_result(tmp_path, [_failed_final()], traces_dir, db_path)
+
+    assert result.returncode == 1
+    assert json.loads(result.stdout)["verdict"] == "fail_assertion"
+
+
+def test_negative_control_verdict_adapter_rejects_a_final_capture_on_another_route(tmp_path):
+    traces_dir, db_path = _native_data_engine(tmp_path, final_route_tag="accounts")
+    result = _adapter_result(tmp_path, [_failed_final()], traces_dir, db_path)
+
+    assert result.returncode == 2
+    assert json.loads(result.stdout)["reason"] == "native_capture"
+
+
+def test_negative_control_verdict_adapter_requires_the_balance_in_the_final_capture(tmp_path):
+    traces_dir, db_path = _native_data_engine(tmp_path, final_balance="USD · +0.00")
+    result = _adapter_result(tmp_path, [_failed_final()], traces_dir, db_path)
+
+    assert result.returncode == 2
+    assert json.loads(result.stdout)["reason"] == "native_capture"

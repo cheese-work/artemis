@@ -12,6 +12,9 @@ from uuid import UUID
 
 FINAL_ATTEMPT = re.compile(r"final#([1-9]\d*)")
 LEDGER_FILENAME = "check_ledger.jsonl"
+# Pocket Actual restores a saved picture to Home, which renders the same Recovery
+# snapshot composable under its own route tag (CHE-541 batch-4 n01).
+SNAPSHOT_ROUTE_TAGS = ("recovery-snapshot", "home")
 
 
 def _invalid(reason: str) -> int:
@@ -90,12 +93,15 @@ def _native_control_proof(
             capture_timestamp = _finite_timestamp(capture["timestamp"])
             if saved_timestamp is None or capture_timestamp is None:
                 return None
+            saved_tree = json.loads(saved["ui_tree"])
+            capture_tree = json.loads(capture["ui_tree"])
             if not (
-                _has_exact_value(json.loads(saved["ui_tree"]), "recovery-snapshot")
-                and _has_exact_value(json.loads(saved["ui_tree"]), observed_account)
-                and _has_exact_value(json.loads(saved["ui_tree"]), expected_balance)
-                and _has_exact_value(json.loads(capture["ui_tree"]), "recovery-snapshot")
-                and _has_exact_value(json.loads(capture["ui_tree"]), observed_account)
+                _has_exact_value(saved_tree, "recovery-snapshot")
+                and _has_exact_value(saved_tree, observed_account)
+                and _has_exact_value(saved_tree, expected_balance)
+                and any(_has_exact_value(capture_tree, tag) for tag in SNAPSHOT_ROUTE_TAGS)
+                and _has_exact_value(capture_tree, observed_account)
+                and _has_exact_value(capture_tree, expected_balance)
             ):
                 return None
             capture_action = json.loads(capture["action_taken"])
