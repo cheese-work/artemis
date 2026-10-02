@@ -37,6 +37,41 @@
               box-shadow 0.25s cubic-bezier(0.4, 0, 0.2, 1),
               border-color 0.25s cubic-bezier(0.4, 0, 0.2, 1);
 
+  .usb-relay-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    min-width: 0;
+    margin-left: 5px;
+    padding: 0 8px 0 11px;
+    border-left: 1px solid #dbe3ee;
+    color: #166534;
+    font-size: 11px;
+    white-space: nowrap;
+
+    .badge-icon {
+      font-size: 16px;
+    }
+
+    code {
+      color: #475569;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 10px;
+    }
+
+    button {
+      min-height: 26px;
+      padding: 0 9px;
+      border: 1px solid #bbf7d0;
+      border-radius: 13px;
+      background: #f0fdf4;
+      color: #166534;
+      font: inherit;
+      font-weight: 600;
+      cursor: pointer;
+    }
+  }
+
   &:hover {
     background: rgba(255, 255, 255, 0.85);
     box-shadow: 0 4px 14px -2px rgba(15, 23, 42, 0.1), 0 2px 4px rgba(0, 0, 0, 0.03), inset 0 1px 1px rgba(255, 255, 255, 1);
@@ -110,6 +145,26 @@
 
     &:active {
       transform: scale(0.97);
+    }
+  }
+}
+
+@media (max-width: 760px) {
+  .floating-nav-switcher {
+    left: 12px;
+    right: 12px;
+    width: max-content;
+    max-width: calc(100vw - 24px);
+    flex-wrap: wrap;
+    height: auto;
+
+    .usb-relay-badge {
+      flex-basis: 100%;
+      justify-content: center;
+      margin: 3px 0 0;
+      padding: 5px 0 2px;
+      border-top: 1px solid #dbe3ee;
+      border-left: 0;
     }
   }
 }

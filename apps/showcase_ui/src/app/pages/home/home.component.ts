@@ -31,6 +31,7 @@ import {
   SuggestionCategory
 } from '../../core/data/smart-tasks.data';
 import { TaskRecommendationService } from '../../core/services/task-recommendation.service';
+import { UsbPhoneConnectionComponent } from '../../components/usb-phone-connection/usb-phone-connection.component';
 import {
   DEFAULT_EXPLORER_MODE,
   DEFAULT_VERIFICATION_LEVEL,
@@ -103,7 +104,7 @@ type AdbGuideTab = 'emulator' | 'usb' | 'wifi' | 'remote';
 @Component({
   selector: 'app-home',
   standalone: true,
-  imports: [FormsModule],
+  imports: [FormsModule, UsbPhoneConnectionComponent],
   templateUrl: './home.component.html',
   changeDetection: ChangeDetectionStrategy.Eager,
   styleUrl: './home.component.scss'

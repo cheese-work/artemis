@@ -14,9 +14,10 @@
  * limitations under the License.
  */
 
-import { Component, ChangeDetectionStrategy } from '@angular/core';
+import { Component, ChangeDetectionStrategy, inject } from '@angular/core';
 
 import { RouterLink, RouterLinkActive } from '@angular/router';
+import { UsbDeviceRelayService } from '../../services/usb-device-relay.service';
 
 @Component({
   selector: 'app-nav-switcher',
@@ -43,9 +44,23 @@ import { RouterLink, RouterLinkActive } from '@angular/router';
         <span class="material-symbols-outlined tab-icon">space_dashboard</span>
         <span class="tab-label">Workspace</span>
       </a>
+      @if (usbRelay.state().status === 'connected') {
+        <div class="usb-relay-badge" aria-live="polite">
+          <span class="material-symbols-outlined badge-icon" aria-hidden="true">smartphone</span>
+          <span class="badge-label" role="status">Phone connected via this browser</span>
+          <code>{{ usbRelay.state().serial }}</code>
+          <button type="button" (click)="disconnectPhone()">Disconnect</button>
+        </div>
+      }
     </nav>
   `,
   changeDetection: ChangeDetectionStrategy.Eager,
   styleUrls: ['./nav-switcher.component.scss']
 })
-export class NavSwitcherComponent {}
+export class NavSwitcherComponent {
+  public readonly usbRelay = inject(UsbDeviceRelayService);
+
+  public disconnectPhone(): void {
+    void this.usbRelay.disconnect();
+  }
+}
