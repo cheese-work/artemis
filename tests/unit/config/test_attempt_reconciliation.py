@@ -266,6 +266,39 @@ class TestReconciliation:
         events = [_usage("lens:step_capsule", source="openai:gpt-5.6-sol")]
         assert validate_batch([_record(manifest, events)]).accepted is False
 
+    def test_detect_objects_resolves_to_object_detector_when_that_utils_node_is_configured(self):
+        """CHE-541 Pixel attempt e6ef1ee9: _run_object_detection uses
+        get_llm(name="object_detector", is_utils=True) when that utils node is
+        configured (object_detector.py:127). The manifest records whether it is,
+        so the detect_objects tool scope resolves exactly, not by guess."""
+        node = _llm("anthropic", "claude-sonnet-5")
+        config = _uniform_config(provider="anthropic", model="claude-sonnet-5")
+        config.utils.object_detector = node
+        manifest = _manifest(tier="nova", llm_config=config)
+        events = [_usage("detect_objects", source="anthropic:claude-sonnet-5")]
+        result = reconcile_attempt("a1", manifest, events)
+        assert next(n for n in result.nodes if n.node == "object_detector").verdict == "match"
+        assert not result.has_unmapped_call
+        assert validate_batch([_record(manifest, events)]).accepted is True
+
+    def test_detect_objects_falls_back_to_operator_when_object_detector_is_not_configured(self):
+        """Same call site falls back to get_llm(name="operator") when the
+        object_detector utils node is absent (object_detector.py:134)."""
+        config = _uniform_config(provider="anthropic", model="claude-sonnet-5")
+        manifest = _manifest(tier="nova", llm_config=config)
+        events = [_usage("detect_objects", source="anthropic:claude-sonnet-5")]
+        result = reconcile_attempt("a1", manifest, events)
+        assert next(n for n in result.nodes if n.node == "operator").verdict == "match"
+        assert not result.has_unmapped_call
+
+    def test_detect_objects_on_a_model_other_than_the_resolved_node_is_rejected(self):
+        node = _llm("anthropic", "claude-sonnet-5")
+        config = _uniform_config(provider="anthropic", model="claude-sonnet-5")
+        config.utils.object_detector = node
+        manifest = _manifest(tier="nova", llm_config=config)
+        events = [_usage("detect_objects", source="openai:gpt-5.6-sol")]
+        assert validate_batch([_record(manifest, events)]).accepted is False
+
     def test_flashrunner_receipt_without_the_alias_would_be_unmapped_call(self, monkeypatch):
         """Proves the FlashRunner -> operator alias exercised above is
         load-bearing, not incidental: with that one entry removed from

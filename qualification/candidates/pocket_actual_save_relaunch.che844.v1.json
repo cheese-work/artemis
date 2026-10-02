@@ -6,16 +6,16 @@
     "runner_source": {
       "repository": "https://github.com/cheese-work/artemis",
       "pull_request": 29,
-      "commit_sha": "c432fcd71395a197d673af6c7cbb6db17e70f87f"
+      "commit_sha": "49964e18781bdd16814e6fb74e7443e415c77012"
     },
     "testcase_source": {
       "repository": "https://github.com/cheese-work/artemis",
       "pull_request": 29,
-      "commit_sha": "0787202a49dd3ab3c370cc2f0a5280d190bfdeb9",
+      "commit_sha": "7fb324bb5f8a9d0e50c00879f59ae6838cd74a27",
       "manifest_path": "qualification/manifests/pocket_actual_save_relaunch.v1.json",
-      "manifest_digest_sha256": "697c27fbb7aaf659b00cd50de40fbc3dca84b1addf1ac9cdbdaee8ebc6a3f250",
-      "manifest_version": 6,
-      "fork_sha": "c432fcd71395a197d673af6c7cbb6db17e70f87f",
+      "manifest_digest_sha256": "64bae072b395a446bd9b5ee2d49e312ba812e177b3e8d7c4e87c1b94d1481de2",
+      "manifest_version": 7,
+      "fork_sha": "49964e18781bdd16814e6fb74e7443e415c77012",
       "journey_path": "qualification/journeys/pocket_actual_save_relaunch.md",
       "journey_digest_sha256": "13a4f631d5c23d946006fd1fe91f183953efe01afda36cbcbefd4d9d1d090a99"
     },
@@ -58,7 +58,7 @@
     "journey_path": "qualification/journeys/pocket_actual_save_relaunch.md",
     "journey_digest_sha256": "13a4f631d5c23d946006fd1fe91f183953efe01afda36cbcbefd4d9d1d090a99"
   },
-  "shared_testcase_rationale": "PR #29 commit c432fcd (CHE-541 lens-alias fix on top of f011c33) pins the runner used for qualification, including final Checker capture linkage, finite timestamp validation, and process-death verification. PR #29 commit 0787202 is the immutable manifest/journey source and records that runner. PR #26 is retained only as the historical app/config input source. This receipt locks the revised journey digest, manifest v6, runner SHA, app SHA, and APK digest to both lanes; it does not infer X99 applicability from the Pixel PR title.",
+  "shared_testcase_rationale": "PR #29 commit 49964e1 (CHE-541 lens-alias and detect_objects fixes on top of f011c33) pins the runner used for qualification, including final Checker capture linkage, finite timestamp validation, and process-death verification. PR #29 commit 7fb324b is the immutable manifest/journey source and records that runner. PR #26 is retained only as the historical app/config input source. This receipt locks the revised journey digest, manifest v7, runner SHA, app SHA, and APK digest to both lanes; it does not infer X99 applicability from the Pixel PR title.",
   "lanes": [
     {
       "issue": "CHE-540",
