@@ -444,6 +444,7 @@ export class AgentService {
         payload.explorer_mode = proTuning.explorerMode;
       }
       this.clearUserPinnedSession();
+      let submissionSettled = false;
       const selectedDeviceSerial = this.getSelectedDeviceSerial();
       const selectedDevice$ = selectedDeviceSerial
         ? this.http.get<{ devices?: { serial?: string; state?: string }[] }>('/api/devices').pipe(
@@ -457,13 +458,21 @@ export class AgentService {
         : of(null);
       const submission = selectedDevice$.pipe(
         switchMap((serial) => {
-          if (serial) {
-            payload.device_serial = serial;
-          }
-          return this.http.post<any>('/api/run', payload);
+          const runPayload = serial ? { ...payload, device_serial: serial } : payload;
+          return this.http.post<any>('/api/run', runPayload).pipe(
+            switchMap((res) => serial && res?.status === 'rejected'
+              ? this.http.post<any>('/api/run', payload)
+              : of(res))
+          );
         })
       ).subscribe({
         next: (res) => {
+          submissionSettled = true;
+          if (res?.status === 'rejected') {
+            this.pendingStartupProgress.set([]);
+            obs.error(res.error || new Error('Task submission was rejected'));
+            return;
+          }
           if (res && res.tasks && res.tasks.length > 0) {
             const newSessionId = res.tasks[0].session_id;
             if (newSessionId) {
@@ -490,11 +499,17 @@ export class AgentService {
           obs.complete();
         },
         error: (err) => {
+          submissionSettled = true;
           this.pendingStartupProgress.set([]);
           obs.error(err);
         }
       });
-      return () => submission.unsubscribe();
+      return () => {
+        submission.unsubscribe();
+        if (!submissionSettled) {
+          this.pendingStartupProgress.set([]);
+        }
+      };
     });
   }
 

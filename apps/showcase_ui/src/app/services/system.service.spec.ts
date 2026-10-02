@@ -81,6 +81,18 @@ describe('SystemService readiness polling', () => {
     expect(storageSpy).toHaveBeenCalledWith('artemis.selected_device_serial', 'phone-a');
   });
 
+  it('remembers the backend-normalized serial returned by device selection', () => {
+    const storageSpy = spyOn(localStorage, 'setItem');
+
+    service.selectDevice(' phone-a ').subscribe();
+
+    const request = http.expectOne('/api/system/devices/select');
+    expect(request.request.body).toEqual({ serial: ' phone-a ' });
+    request.flush({ selected_serial: 'phone-a' });
+
+    expect(storageSpy).toHaveBeenCalledWith('artemis.selected_device_serial', 'phone-a');
+  });
+
   it('does not remember a device when the selection request fails', () => {
     const storageSpy = spyOn(localStorage, 'setItem');
     spyOn(console, 'error');

@@ -262,6 +262,42 @@ describe('AgentService live LLM retry timeline', () => {
     });
   });
 
+  it('retries without the selected device when the backend rejects it', () => {
+    spyOn(localStorage, 'getItem').and.returnValue('phone-a');
+    const { service, post } = createRunService([
+      { serial: 'phone-a', state: 'device' }
+    ]);
+    post.and.returnValues(
+      of({ status: 'rejected', error: 'device is no longer ready' }),
+      of({ tasks: [] })
+    );
+
+    service.runTask('fallback task').subscribe();
+
+    expect(post).toHaveBeenCalledTimes(2);
+    expect(post.calls.argsFor(0)).toEqual(['/api/run', {
+      goal: 'fallback task',
+      profile: 'flash',
+      device_serial: 'phone-a'
+    }]);
+    expect(post.calls.argsFor(1)).toEqual(['/api/run', {
+      goal: 'fallback task',
+      profile: 'flash'
+    }]);
+  });
+
+  it('reports a rejected auto-picked run instead of silently completing', () => {
+    spyOn(localStorage, 'getItem').and.returnValue(null);
+    const { service, post } = createRunService([]);
+    post.and.returnValue(of({ status: 'rejected', error: 'no ready device' }));
+    const error = jasmine.createSpy('error');
+
+    service.runTask('rejected task').subscribe({ error });
+
+    expect(error).toHaveBeenCalledWith('no ready device');
+    expect((service as any).pendingStartupProgress()).toEqual([]);
+  });
+
   it('does not submit a run after cancellation during the device lookup', () => {
     spyOn(localStorage, 'getItem').and.returnValue('phone-a');
     const service = createServiceWithoutPolling();
@@ -275,6 +311,7 @@ describe('AgentService live LLM retry timeline', () => {
     devices.next({ devices: [{ serial: 'phone-a', state: 'device' }] });
 
     expect(post).not.toHaveBeenCalled();
+    expect((service as any).pendingStartupProgress()).toEqual([]);
   });
 
   it('keeps the paused state when the backend says there is nothing to resume', () => {

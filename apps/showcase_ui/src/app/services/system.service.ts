@@ -506,7 +506,10 @@ export class SystemService {
       tap({
         next: (res) => {
           try {
-            localStorage.setItem(SELECTED_DEVICE_SERIAL_KEY, serial);
+            localStorage.setItem(
+              SELECTED_DEVICE_SERIAL_KEY,
+              typeof res?.selected_serial === 'string' ? res.selected_serial : serial
+            );
           } catch (error) {
             console.warn('Unable to remember selected device in this browser:', error);
           }
