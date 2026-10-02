@@ -27,6 +27,8 @@ import {
   EmulatorLaunchStage
 } from '../core/models/system.model';
 
+export const SELECTED_DEVICE_SERIAL_KEY = 'artemis.selected_device_serial';
+
 @Injectable({
   providedIn: 'root'
 })
@@ -500,6 +502,11 @@ export class SystemService {
    */
   public selectDevice(serial: string): Observable<any> {
     this.isLoading.set(true);
+    try {
+      localStorage.setItem(SELECTED_DEVICE_SERIAL_KEY, serial);
+    } catch (error) {
+      console.warn('Unable to remember selected device in this browser:', error);
+    }
     return this.http.post<any>('/api/system/devices/select', { serial }).pipe(
       tap({
         next: (res) => {
@@ -607,4 +614,3 @@ export interface ModelConfigEnvResponse {
     description: string;
   }>;
 }
-

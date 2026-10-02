@@ -16,13 +16,14 @@
 
 import { Injectable, signal, inject, computed, DestroyRef, NgZone } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
-import { Observable } from 'rxjs';
+import { Observable, catchError, map, of, switchMap } from 'rxjs';
 
 import { Session, ModelInfo, TaskQueueItem, AgentStatusResponse, SessionUsage } from '../core/models/session.model';
 import { ProTuningDefaults, ProTuningOptions } from '../core/models/pro-tuning.model';
 import { StepItemData, StepReplayFrame, LLMStreamResetEventData, StreamResetNotice, DEFAULT_STREAM_RESET_MESSAGE, PersistedCheckerStream, StreamSegment } from '../core/models/stream.model';
 import { extractStepReplayFrames } from '../utils/action-formatter.util';
 import { persistedStreamToSegments } from '../utils/stream-aggregator.util';
+import { SELECTED_DEVICE_SERIAL_KEY } from './system.service';
 export type { Session, ModelInfo, TaskQueueItem, AgentStatusResponse, StepItemData, StepReplayFrame, LLMStreamResetEventData, StreamResetNotice };
 
 const SESSION_CACHE_KEY = 'artemis.sessions.v1';
@@ -443,7 +444,23 @@ export class AgentService {
         payload.explorer_mode = proTuning.explorerMode;
       }
       this.clearUserPinnedSession();
-      this.http.post<any>('/api/run', payload).subscribe({
+      const selectedDeviceSerial = this.getSelectedDeviceSerial();
+      const selectedDevice$ = selectedDeviceSerial
+        ? this.http.get<{ devices?: { serial?: string }[] }>('/api/devices').pipe(
+          map((response) => response.devices?.some((device) => device.serial === selectedDeviceSerial)
+            ? selectedDeviceSerial
+            : null),
+          catchError(() => of(null))
+        )
+        : of(null);
+      selectedDevice$.pipe(
+        switchMap((serial) => {
+          if (serial) {
+            payload.device_serial = serial;
+          }
+          return this.http.post<any>('/api/run', payload);
+        })
+      ).subscribe({
         next: (res) => {
           if (res && res.tasks && res.tasks.length > 0) {
             const newSessionId = res.tasks[0].session_id;
@@ -476,6 +493,14 @@ export class AgentService {
         }
       });
     });
+  }
+
+  private getSelectedDeviceSerial(): string | null {
+    try {
+      return localStorage.getItem(SELECTED_DEVICE_SERIAL_KEY);
+    } catch {
+      return null;
+    }
   }
 
   /**

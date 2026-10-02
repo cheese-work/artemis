@@ -180,6 +180,56 @@ describe('AgentService live LLM retry timeline', () => {
     expect(selectSpy).toHaveBeenCalledWith('new-session', false);
   });
 
+  it('submits each browser remembered device when that device is connected', () => {
+    let browserDeviceSerial = 'phone-a';
+    spyOn(localStorage, 'getItem').and.callFake((key) =>
+      key === 'artemis.selected_device_serial' ? browserDeviceSerial : null
+    );
+    const createRunService = () => {
+      const service = createServiceWithoutPolling();
+      service.userPinnedSessionId = signal<string | null>(null);
+      const post = jasmine.createSpy('post').and.returnValue(of({}));
+      (service as any).http = {
+        get: () => of({ devices: [{ serial: 'phone-a' }, { serial: 'phone-b' }] }),
+        post
+      };
+      return { service, post };
+    };
+    const firstBrowser = createRunService();
+    const secondBrowser = createRunService();
+
+    firstBrowser.service.runTask('first browser task').subscribe();
+    browserDeviceSerial = 'phone-b';
+    secondBrowser.service.runTask('second browser task').subscribe();
+
+    expect(firstBrowser.post).toHaveBeenCalledWith('/api/run', jasmine.objectContaining({
+      goal: 'first browser task',
+      device_serial: 'phone-a'
+    }));
+    expect(secondBrowser.post).toHaveBeenCalledWith('/api/run', jasmine.objectContaining({
+      goal: 'second browser task',
+      device_serial: 'phone-b'
+    }));
+  });
+
+  it('omits a remembered device serial when it is no longer connected', () => {
+    spyOn(localStorage, 'getItem').and.returnValue('stale-phone');
+    const service = createServiceWithoutPolling();
+    service.userPinnedSessionId = signal<string | null>(null);
+    const post = jasmine.createSpy('post').and.returnValue(of({}));
+    (service as any).http = {
+      get: () => of({ devices: [{ serial: 'current-phone' }] }),
+      post
+    };
+
+    service.runTask('auto-pick task').subscribe();
+
+    expect(post).toHaveBeenCalledWith('/api/run', {
+      goal: 'auto-pick task',
+      profile: 'flash'
+    });
+  });
+
   it('keeps the paused state when the backend says there is nothing to resume', () => {
     const service = createServiceWithoutPolling();
     (service as any).http = { post: () => of({ status: 'not_paused' }) };

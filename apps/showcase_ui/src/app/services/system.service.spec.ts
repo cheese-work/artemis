@@ -70,6 +70,17 @@ describe('SystemService readiness polling', () => {
     request.flush(report(30));
   });
 
+  it('remembers the selected device in this browser and posts the selection', () => {
+    const storageSpy = spyOn(localStorage, 'setItem');
+
+    service.selectDevice('phone-a').subscribe();
+
+    expect(storageSpy).toHaveBeenCalledWith('artemis.selected_device_serial', 'phone-a');
+    const request = http.expectOne('/api/system/devices/select');
+    expect(request.request.body).toEqual({ serial: 'phone-a' });
+    request.flush({});
+  });
+
   it('loads the active ADB server endpoint', () => {
     service.fetchAdbServerStatus().subscribe();
 
