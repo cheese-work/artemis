@@ -470,7 +470,7 @@ export class AgentService {
           submissionSettled = true;
           if (res?.status === 'rejected') {
             this.pendingStartupProgress.set([]);
-            obs.error(res.error || new Error('Task submission was rejected'));
+            obs.error({ error: { detail: res.error || 'Task submission was rejected' } });
             return;
           }
           if (res && res.tasks && res.tasks.length > 0) {

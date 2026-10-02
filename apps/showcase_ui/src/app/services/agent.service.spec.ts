@@ -294,7 +294,7 @@ describe('AgentService live LLM retry timeline', () => {
 
     service.runTask('rejected task').subscribe({ error });
 
-    expect(error).toHaveBeenCalledWith('no ready device');
+    expect(error).toHaveBeenCalledWith({ error: { detail: 'no ready device' } });
     expect((service as any).pendingStartupProgress()).toEqual([]);
   });
 
