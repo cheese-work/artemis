@@ -51,17 +51,24 @@ describe('UsbDeviceRelayService', () => {
   let socket: FakeSocket;
   let socketUrl: string | undefined;
   let manager: { requestDevice: jasmine.Spy };
+  let webUsbDeviceManager: AdbDaemonWebUsbDeviceManager | undefined;
   let device: {
     connect: jasmine.Spy;
     raw: { close: jasmine.Spy };
   };
   let packetController: ReadableStreamDefaultController<AdbPacketData>;
   let receivedPackets: AdbPacketInit[];
+  let packetWriteCompleted: Promise<void>;
+  let resolvePacketWrite!: () => void;
 
   beforeEach(() => {
+    service = null;
     socket = new FakeSocket();
     socketUrl = undefined;
     receivedPackets = [];
+    packetWriteCompleted = new Promise(resolve => {
+      resolvePacketWrite = resolve;
+    });
 
     const readable = new ReadableStream<AdbPacketData>({
       start(controller) {
@@ -71,6 +78,7 @@ describe('UsbDeviceRelayService', () => {
     const writable = new WritableStream<Consumable<AdbPacketInit>>({
       write(packet) {
         receivedPackets.push(packet.value);
+        resolvePacketWrite();
       }
     });
     device = {
@@ -80,13 +88,14 @@ describe('UsbDeviceRelayService', () => {
     manager = {
       requestDevice: jasmine.createSpy('requestDevice').and.resolveTo(device)
     };
+    webUsbDeviceManager = manager as unknown as AdbDaemonWebUsbDeviceManager;
 
     TestBed.configureTestingModule({
       providers: [
         UsbDeviceRelayService,
         {
           provide: WEBUSB_DEVICE_MANAGER,
-          useValue: manager as unknown as AdbDaemonWebUsbDeviceManager
+          useFactory: () => webUsbDeviceManager
         },
         {
           provide: DEVICE_BRIDGE_SOCKET_FACTORY,
@@ -107,7 +116,7 @@ describe('UsbDeviceRelayService', () => {
   });
 
   it('reports unsupported browsers without requesting USB permission', async () => {
-    TestBed.overrideProvider(WEBUSB_DEVICE_MANAGER, { useValue: undefined });
+    webUsbDeviceManager = undefined;
     service = TestBed.inject(UsbDeviceRelayService);
 
     await service.connect();
@@ -142,7 +151,10 @@ describe('UsbDeviceRelayService', () => {
     service = TestBed.inject(UsbDeviceRelayService);
     const connecting = service.connect();
     await flushMicrotasks();
-    expect(socketUrl).toBe('ws://localhost/api/device-bridge/session');
+    const expectedProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    expect(socketUrl).toBe(
+      `${expectedProtocol}//${window.location.host}/api/device-bridge/session`
+    );
     expect(device.connect).toHaveBeenCalled();
 
     socket.open();
@@ -178,7 +190,7 @@ describe('UsbDeviceRelayService', () => {
       payload: new Uint8Array([7, 8])
     });
     socket.message(bridgePacket);
-    await flushMicrotasks();
+    await packetWriteCompleted;
     expect(receivedPackets.length).toBe(1);
     expect(receivedPackets[0]).toEqual(jasmine.objectContaining({
       command: AdbCommand.Write,
@@ -235,6 +247,20 @@ describe('UsbDeviceRelayService', () => {
   });
 
   it('warns before leaving while the bridge is active', async () => {
+    let beforeUnloadHandler: ((event: BeforeUnloadEvent) => void) | undefined;
+    const addEventListener = window.addEventListener.bind(window);
+    spyOn(window, 'addEventListener').and.callFake((
+      type: string,
+      listener: EventListenerOrEventListenerObject,
+      options?: boolean | AddEventListenerOptions
+    ) => {
+      if (type === 'beforeunload') {
+        beforeUnloadHandler = listener as unknown as (event: BeforeUnloadEvent) => void;
+      } else {
+        addEventListener(type, listener, options);
+      }
+    });
+
     service = TestBed.inject(UsbDeviceRelayService);
     const connecting = service.connect();
     await flushMicrotasks();
@@ -248,7 +274,8 @@ describe('UsbDeviceRelayService', () => {
     socket.message(JSON.stringify({ type: 'device_attached', serial: 'R58M123' }));
 
     const event = new Event('beforeunload', { cancelable: true });
-    window.dispatchEvent(event);
+    expect(beforeUnloadHandler).toBeDefined();
+    beforeUnloadHandler?.(event as BeforeUnloadEvent);
 
     expect(event.defaultPrevented).toBeTrue();
   });
