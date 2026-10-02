@@ -187,6 +187,23 @@ describe('UsbDeviceRelayService', () => {
     expect(service.state().error).toContain('Another program on this computer is using the phone');
   });
 
+  it('shows transfer details instead of USB contention for a mid-session network error', async () => {
+    service = TestBed.inject(UsbDeviceRelayService);
+    const connecting = service.connect();
+    await flushMicrotasks();
+    socket.open();
+    await connecting;
+
+    packetController.error(new DOMException('USB transfer failed.', 'NetworkError'));
+    await new Promise<void>(resolve => setTimeout(resolve, 0));
+    await flushMicrotasks();
+
+    expect(service.state().error).toBe(
+      'Could not connect the phone. Check its cable and USB Debugging, then retry.\n' +
+      'Details: NetworkError: USB transfer failed.'
+    );
+  });
+
   it('shows and logs unexpected WebUSB error details', async () => {
     const originalError = new DOMException('The interface is unavailable.', 'InvalidStateError');
     const consoleError = spyOn(console, 'error');

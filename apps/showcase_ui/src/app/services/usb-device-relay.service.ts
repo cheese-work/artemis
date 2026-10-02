@@ -385,20 +385,17 @@ export class UsbDeviceRelayService implements OnDestroy {
   }
 
   private toUserMessage(error: unknown): string {
-    const errorObject = typeof error === 'object' && error !== null ? error : null;
-    const name = error instanceof Error
-      ? error.name
-      : errorObject && 'name' in errorObject && typeof errorObject.name === 'string'
-        ? errorObject.name
-        : '';
-    const message = error instanceof Error
-      ? error.message
-      : errorObject && 'message' in errorObject && typeof errorObject.message === 'string'
-        ? errorObject.message
+    const errorObject = typeof error === 'object' && error !== null
+      ? error as { name?: unknown; message?: unknown }
+      : {};
+    const name = typeof errorObject.name === 'string' ? errorObject.name : '';
+    const message = typeof errorObject.message === 'string'
+      ? errorObject.message
+      : typeof error === 'string'
+        ? error
         : '';
     if (
       error instanceof AdbDaemonWebUsbDevice.DeviceBusyError ||
-      name === 'NetworkError' ||
       /claim(?:ing)? interface/i.test(message)
     ) {
       return 'Another program on this computer is using the phone (adb, Android Studio, scrcpy). ' +

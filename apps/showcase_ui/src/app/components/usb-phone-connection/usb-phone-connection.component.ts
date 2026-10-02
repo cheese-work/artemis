@@ -102,6 +102,7 @@ import { UsbDeviceRelayService } from '../../services/usb-device-relay.service';
       margin-top: 4px;
       font-size: 11px;
       font-weight: normal;
+      white-space: pre-line;
     }
   `],
   changeDetection: ChangeDetectionStrategy.Eager
