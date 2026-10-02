@@ -50,8 +50,10 @@ logger = logging.getLogger(__name__)
 
 
 def _client_is_loopback(websocket: WebSocket) -> bool:
-    client = websocket.client
-    host = client.host if client else None
+    client = websocket.scope.get("artemis.transport_peer", websocket.client)
+    if not client:
+        return False
+    host = getattr(client, "host", None) or client[0]
     if not host:
         return False
     try:
@@ -263,6 +265,9 @@ async def open_bridge_session(websocket: WebSocket) -> None:
         done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
         if expiry_task in done:
             return
+        if relay_task in done:
+            relay_task.result()
+            return
         if connect_task in done:
             serial = connect_task.result()
             await _send_json(
@@ -270,8 +275,11 @@ async def open_bridge_session(websocket: WebSocket) -> None:
                 {"type": "device_attached", "serial": serial},
                 send_lock,
             )
-            await relay_task
-        else:
+            done, _ = await asyncio.wait(
+                (relay_task, expiry_task), return_when=asyncio.FIRST_COMPLETED
+            )
+            if expiry_task in done:
+                return
             relay_task.result()
     except Exception:
         logger.exception("Device bridge session failed")

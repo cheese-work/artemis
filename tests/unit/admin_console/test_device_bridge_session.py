@@ -21,14 +21,20 @@ import asyncio
 import socket
 import struct
 import threading
+import time
 
 import pytest
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
+from apps.admin_console.routers import device_bridge
 import apps.admin_console.services.bridge_session_service as bridge_session_service_module
-from apps.admin_console.server import app
-from apps.admin_console.services.bridge_session_service import bridge_session_service
+from apps.admin_console.server import proxy_aware_app
+from apps.admin_console.services.bridge_session_service import (
+    BridgeSession,
+    BridgeSessionService,
+    bridge_session_service,
+)
 
 PATH = "/api/device-bridge/session"
 
@@ -54,7 +60,7 @@ def _assert_listener_closed(port: int) -> None:
             probe.connect(("127.0.0.1", port))
 
 
-@pytest.fixture(autouse=True)
+@pytest.fixture
 def _mock_adb(monkeypatch):
     calls = []
 
@@ -68,15 +74,15 @@ def _mock_adb(monkeypatch):
 
 @pytest.fixture
 def loopback_client():
-    return TestClient(app, client=("127.0.0.1", 50000))
+    return TestClient(proxy_aware_app, client=("127.0.0.1", 50000))
 
 
 @pytest.fixture
 def remote_client():
-    return TestClient(app, client=("203.0.113.5", 50000))
+    return TestClient(proxy_aware_app, client=("203.0.113.5", 50000))
 
 
-def test_loopback_session_does_not_require_lifecycle_bearer(loopback_client):
+def test_loopback_session_does_not_require_lifecycle_bearer(loopback_client, _mock_adb):
     with loopback_client.websocket_connect(PATH, headers=_HOST_HEADER) as ws:
         assert ws.receive_json()["type"] == "session_leased"
         assert ws.receive_json()["type"] == "device_attached"
@@ -88,6 +94,19 @@ def test_non_loopback_client_is_rejected(remote_client):
         with remote_client.websocket_connect(PATH, headers=_HOST_HEADER):
             pass
     assert exc_info.value.code == 4003
+
+
+def test_forwarded_client_keeps_loopback_transport_peer(loopback_client, _mock_adb):
+    headers = {
+        **_HOST_HEADER,
+        "Origin": "https://127.0.0.1",
+        "X-Forwarded-For": "203.0.113.7",
+        "X-Forwarded-Proto": "https",
+    }
+    with loopback_client.websocket_connect(PATH, headers=headers) as ws:
+        assert ws.receive_json()["type"] == "session_leased"
+        assert ws.receive_json()["type"] == "device_attached"
+        ws.send_text("close")
 
 
 def test_bad_host_and_origin_are_rejected(loopback_client):
@@ -228,6 +247,169 @@ def test_expired_session_times_out_and_disconnects_adb(loopback_client, monkeypa
     assert _mock_adb[1][0] == "disconnect"
     assert asyncio.run(bridge_session_service.get(session_id)) is None
     _assert_listener_closed(port)
+
+
+def test_expired_session_revokes_when_tcp_drain_is_backpressured(monkeypatch):
+    class BackpressuredWriter:
+        def __init__(self):
+            self.draining = asyncio.Event()
+
+        def write(self, _packet):
+            pass
+
+        async def drain(self):
+            self.draining.set()
+            await asyncio.Event().wait()
+
+    class FakeWebSocket:
+        def __init__(self):
+            self.scope = {"client": ("127.0.0.1", 50000)}
+            self.client = ("127.0.0.1", 50000)
+            self.messages = asyncio.Queue()
+            self.closed = asyncio.Event()
+
+        async def accept(self):
+            pass
+
+        async def send_json(self, _message):
+            pass
+
+        async def send_bytes(self, _message):
+            pass
+
+        async def receive(self):
+            return await self.messages.get()
+
+        async def close(self, code):
+            self.messages.put_nowait({"type": "websocket.disconnect", "code": code})
+            self.closed.set()
+
+    class FakeSessionService:
+        def __init__(self, session):
+            self.session = session
+            self.revoked = []
+
+        async def create_session(self):
+            return self.session
+
+        async def connect(self, session):
+            return session.serial
+
+        async def revoke(self, session_id):
+            self.revoked.append(session_id)
+
+    async def scenario():
+        websocket = FakeWebSocket()
+        writer = BackpressuredWriter()
+        session = BridgeSession(
+            session_id="backpressured-relay",
+            port=43210,
+            reader=asyncio.StreamReader(),
+            writer=writer,
+            expires_at=time.monotonic() + 0.05,
+        )
+        session.connected.set()
+        websocket.messages.put_nowait({"type": "websocket.receive", "bytes": _adb_packet(b"CNXN")})
+        service = FakeSessionService(session)
+        monkeypatch.setattr(device_bridge, "bridge_session_service", service)
+
+        route_task = asyncio.create_task(device_bridge.open_bridge_session(websocket))
+        try:
+            await asyncio.wait_for(writer.draining.wait(), 1)
+            await asyncio.wait_for(websocket.closed.wait(), 1)
+            done, _ = await asyncio.wait((route_task,), timeout=0.1)
+            assert route_task in done
+            assert service.revoked == [session.session_id]
+        finally:
+            if not route_task.done():
+                route_task.cancel()
+            await asyncio.gather(route_task, return_exceptions=True)
+
+    asyncio.run(scenario())
+
+
+def test_adb_commands_are_pinned_to_the_local_server(monkeypatch):
+    invocations = []
+
+    class FakeProcess:
+        returncode = 0
+
+        async def communicate(self):
+            return b"connected to 127.0.0.1:43210", b""
+
+    async def fake_subprocess(*arguments, **keywords):
+        invocations.append((arguments, keywords["env"]))
+        return FakeProcess()
+
+    monkeypatch.setenv("ADB_SERVER_SOCKET", "tcp:203.0.113.9:5037")
+    monkeypatch.setattr(
+        bridge_session_service_module,
+        "find_adb",
+        lambda: "offline-adb-sentinel",
+    )
+    monkeypatch.setattr(
+        bridge_session_service_module.asyncio,
+        "create_subprocess_exec",
+        fake_subprocess,
+    )
+
+    async def scenario():
+        await bridge_session_service_module._run_adb_command("connect", "127.0.0.1:43210")
+        await bridge_session_service_module._run_adb_command("disconnect", "127.0.0.1:43210")
+
+    asyncio.run(scenario())
+
+    assert len(invocations) == 2
+    for arguments, environment in invocations:
+        assert arguments[:5] == (
+            "offline-adb-sentinel",
+            "-H",
+            "127.0.0.1",
+            "-P",
+            "5037",
+        )
+        assert arguments[5] in {"connect", "disconnect"}
+        assert arguments[6] == "127.0.0.1:43210"
+        assert environment["ADB_SERVER_SOCKET"] == "tcp:127.0.0.1:5037"
+
+
+def test_failed_disconnect_closes_accepted_writer_before_waiting_for_listener(monkeypatch):
+    async def failed_disconnect(*_arguments):
+        raise RuntimeError("offline injected disconnect failure")
+
+    async def scenario():
+        service = BridgeSessionService()
+        session = await service.create_session()
+        _peer_reader, peer_writer = await asyncio.open_connection("127.0.0.1", session.port)
+        await asyncio.wait_for(session.connected.wait(), 1)
+        session.adb_connect_attempted = True
+        monkeypatch.setattr(
+            bridge_session_service_module,
+            "_run_adb_command",
+            failed_disconnect,
+        )
+
+        try:
+            await asyncio.wait_for(service.revoke(session.session_id), 1)
+            assert session.writer.is_closing()
+            assert not session.listener.is_serving()
+            assert await service.get(session.session_id) is None
+        finally:
+            session.listener.close()
+            if session.writer is not None and not session.writer.is_closing():
+                session.writer.close()
+            if not peer_writer.is_closing():
+                peer_writer.close()
+            await asyncio.wait_for(
+                asyncio.gather(
+                    session.listener.wait_closed(),
+                    session.writer.wait_closed(),
+                    peer_writer.wait_closed(),
+                ),
+                1,
+            )
+
+    asyncio.run(scenario())
 
 
 def test_failed_adb_connect_disconnects_and_releases_listener(

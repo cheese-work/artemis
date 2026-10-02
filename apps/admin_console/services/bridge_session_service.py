@@ -20,14 +20,15 @@ import asyncio
 from dataclasses import dataclass, field
 import logging
 import os
-import socket
 import time
 import uuid
 
+from artemis.runtime.adb_endpoint import AdbEndpoint, AdbSession
 from artemis.toolchain import find_adb
 
 DEFAULT_SESSION_TTL_SECONDS = 300
 ADB_COMMAND_TIMEOUT_SECONDS = 15
+STREAM_CLOSE_TIMEOUT_SECONDS = 1
 MAX_ADB_PACKET_BYTES = 1024 * 1024 + 24
 
 logger = logging.getLogger(__name__)
@@ -45,11 +46,12 @@ def _session_ttl_seconds() -> float:
 
 
 async def _run_adb_command(*arguments: str) -> str:
+    adb_session = AdbSession(AdbEndpoint.local(), adb_path=find_adb())
     process = await asyncio.create_subprocess_exec(
-        find_adb(),
-        *arguments,
+        *adb_session.command(arguments),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        env=adb_session.environment(),
     )
     try:
         stdout, stderr = await asyncio.wait_for(
@@ -156,13 +158,23 @@ class BridgeSessionService:
         finally:
             if session.listener is not None:
                 session.listener.close()
-                await session.listener.wait_closed()
             if session.writer is not None:
-                session.writer.close()
                 try:
-                    await session.writer.wait_closed()
-                except OSError:
-                    pass
+                    session.writer.close()
+                    await asyncio.wait_for(
+                        session.writer.wait_closed(),
+                        timeout=STREAM_CLOSE_TIMEOUT_SECONDS,
+                    )
+                except Exception:
+                    logger.exception("Failed to close device bridge stream %s", session.serial)
+            if session.listener is not None:
+                try:
+                    await asyncio.wait_for(
+                        session.listener.wait_closed(),
+                        timeout=STREAM_CLOSE_TIMEOUT_SECONDS,
+                    )
+                except Exception:
+                    logger.exception("Failed to close device bridge listener %s", session.serial)
 
     async def get(self, session_id: str) -> BridgeSession | None:
         async with self._lock:
