@@ -154,6 +154,9 @@ def test_each_lane_retains_the_execution_controls_and_return_contract():
             adapter["digest_sha256"]
             == hashlib.sha256((REPO_ROOT / adapter["path"]).read_bytes()).hexdigest()
         )
+        assert adapter["digest_sha256"] == (
+            "4f6fbe56571547f9cc1fbb875bd94eeb70c21a7de6388137625cd8be4c60aeee"
+        )
         assert adapter["expected_exit"] == 1
         assert "ARTEMIS_TRACES_DIR/<session-id>/check_ledger.jsonl" in adapter["contract"]
         assert "native final capture" in adapter["contract"]
