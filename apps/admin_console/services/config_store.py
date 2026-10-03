@@ -178,8 +178,8 @@ def _atomic_write(path: Path, contents: bytes, mode: int | None = None) -> None:
     existing_mode = path.stat().st_mode & 0o777 if path.exists() else 0o600
     fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     try:
-        os.fchmod(fd, mode if mode is not None else existing_mode)
         with os.fdopen(fd, "wb") as stream:
+            os.fchmod(stream.fileno(), mode if mode is not None else existing_mode)
             stream.write(contents)
             stream.flush()
             os.fsync(stream.fileno())
@@ -189,7 +189,7 @@ def _atomic_write(path: Path, contents: bytes, mode: int | None = None) -> None:
             os.fsync(directory_fd)
         finally:
             os.close(directory_fd)
-    except Exception:
+    except OSError:
         try:
             os.unlink(temp_name)
         except FileNotFoundError:
@@ -519,12 +519,12 @@ class ConfigStore:
                     environment[key] = value
             fd, name = tempfile.mkstemp(prefix="artemis-run-config-", suffix=".jsonc")
             try:
-                os.fchmod(fd, 0o600)
                 with os.fdopen(fd, "wb") as stream:
+                    os.fchmod(stream.fileno(), 0o600)
                     stream.write(config_bytes)
                     stream.flush()
                     os.fsync(stream.fileno())
-            except Exception:
+            except OSError:
                 Path(name).unlink(missing_ok=True)
                 raise
             config_path = Path(name)
