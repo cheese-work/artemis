@@ -1570,6 +1570,7 @@ export class AgentService {
     const requestSequence = ++this.statusRequestSequence;
     this.http.get<any>('/api/status').subscribe({
       next: (data) => {
+        if (requestSequence !== this.statusRequestSequence) return;
         if (data && data.status) {
           const oldStatus = this.agentStatus();
           const oldRunningSessionId = this.runningSessionId();
@@ -1655,6 +1656,7 @@ export class AgentService {
         }
       },
       error: (err) => {
+        if (requestSequence !== this.statusRequestSequence) return;
         console.error('Failed to fetch status from backend:', err);
         this.agentStatus.set('offline');
         this.runningSessionId.set(null);

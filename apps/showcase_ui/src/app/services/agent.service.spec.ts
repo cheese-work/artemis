@@ -245,6 +245,47 @@ describe('AgentService live LLM retry timeline', () => {
     expect(service.whatsNewAcceptedRunHandoffs()).toBe(0);
   });
 
+  it('ignores an older status response that arrives after a newer response', () => {
+    const { service, get } = createRunService([]);
+    service.agentStatus = signal('idle');
+    service.runningSessionId = signal<string | null>(null);
+    service.runningGoal = signal<string | null>(null);
+    service.activeModel = signal<any>(null);
+    service.isPaused = signal(false);
+    service.pausedError = signal<string | null>(null);
+    service.isRetrying = signal(false);
+    service.activeTasks = signal<any[]>([]);
+    service.hasFetchedStatus = signal(false);
+    service.currentSessionId = signal<string | null>(null);
+    service.userPinnedSessionId = signal<string | null>(null);
+    (service as any).pendingQueue = signal<any[]>([]);
+    (service as any).sessions = signal<any[]>([]);
+    spyOn(service, 'selectSession');
+    spyOn(service, 'fetchSessions');
+    const olderResponse = new Subject<any>();
+    const newerResponse = new Subject<any>();
+    let statusRequestIndex = 0;
+    get.and.callFake((url: string) => url === '/api/status'
+      ? [olderResponse, newerResponse][statusRequestIndex++].asObservable()
+      : of({ devices: [] }));
+
+    service.fetchStatus();
+    service.fetchStatus();
+    newerResponse.next({
+      status: 'running',
+      session_id: 'new-session',
+      queue: [],
+      active_tasks: [{ session_id: 'new-session', status: 'running' }]
+    });
+    newerResponse.complete();
+
+    olderResponse.next({ status: 'idle', queue: [], active_tasks: [] });
+    olderResponse.complete();
+
+    expect(service.agentStatus()).toBe('running');
+    expect(service.runningSessionId()).toBe('new-session');
+  });
+
   it('does not let an older workspace error release a newer error suppression', () => {
     const service = createServiceWithoutPolling();
     const olderWorkspace = Symbol('older-workspace');

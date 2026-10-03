@@ -116,6 +116,9 @@ jobs:
       - name: Build frontend for production
         run: npm run build
 
+      - name: Build frontend from Docker stage inputs
+        run: npm run test:docker-build-inputs
+
   package:
     name: Build and smoke-test Python packages
     runs-on: blacksmith-2vcpu-ubuntu-2404

@@ -106,4 +106,78 @@ describe('buildRunSummary', () => {
     expect(summary).toContain('- Failing step: Step 4: swipe');
     expect(summary).not.toContain('Step 3:');
   });
+
+  it('preserves failed step fields across native partial SSE updates', () => {
+    const logs = [
+      {
+        type: 'step_recorded',
+        data: {
+          step_id: 'native-step-3',
+          step_number: 3,
+          status: 'failed',
+          action_taken: { action: 'tap', status: 'failed' },
+          last_execution_result: { status: 'failed' },
+          generic_tools: []
+        }
+      },
+      {
+        type: 'step_updated',
+        data: {
+          step_id: 'native-step-3',
+          step_number: 3,
+          summary: 'The target did not respond',
+          generic_tools: []
+        }
+      }
+    ];
+
+    const summary = buildRunSummary(session, 'failed', logs, null);
+
+    expect(summary).toContain('- Failing step: Step 3: tap');
+  });
+
+  it('correlates ID-bearing failures with later number-only updates', () => {
+    const logs = [
+      {
+        type: 'step_recorded',
+        data: {
+          step_id: 'native-step-3',
+          step_number: 3,
+          status: 'failed',
+          action_taken: { action: 'tap', status: 'failed' }
+        }
+      },
+      {
+        type: 'step_updated',
+        data: {
+          step_number: 3,
+          status: 'completed',
+          action_taken: { action: 'tap', status: 'success' }
+        }
+      }
+    ];
+
+    const summary = buildRunSummary(session, 'completed', logs, null);
+
+    expect(summary).toContain('- Failing step: Not reported');
+  });
+
+  it('uses the failed tool rather than a successful tool on a failed step', () => {
+    const logs = [{
+      type: 'step_updated',
+      data: {
+        step_id: 'native-step-3',
+        step_number: 3,
+        status: 'failed',
+        generic_tools: [
+          { trace_id: 'tool-1', type: 'tool', name: 'read_note', status: 'success' },
+          { trace_id: 'tool-2', type: 'tool', name: 'tap', status: 'failed' }
+        ]
+      }
+    }];
+
+    const summary = buildRunSummary(session, 'failed', logs, null);
+
+    expect(summary).toContain('- Failing step: Step 3: tap');
+  });
 });

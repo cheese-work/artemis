@@ -21,7 +21,9 @@ export function buildRunSummary(
 }
 
 function findFailingStep(logs: unknown[]): string {
-  const latestSteps = new Map<string, { step: Record<string, unknown>; index: number }>();
+  const latestSteps: { step: Record<string, unknown>; index: number }[] = [];
+  const stepsById = new Map<string, { step: Record<string, unknown>; index: number }>();
+  const stepsByNumber = new Map<number, { step: Record<string, unknown>; index: number }>();
   logs.forEach((log, index) => {
     if (!log || typeof log !== 'object') return;
     const event = log as Record<string, unknown>;
@@ -29,15 +31,15 @@ function findFailingStep(logs: unknown[]): string {
     if (['step_updated', 'step_recorded', 'step'].includes(String(event['type']))
       && data && typeof data === 'object') {
       const step = data as Record<string, unknown>;
-      latestSteps.set(stepKey(step, index), { step, index });
+      mergeStep(step, index, latestSteps, stepsById, stepsByNumber);
       return;
     }
     if (event['step_number'] !== undefined || event['step_id'] !== undefined) {
-      latestSteps.set(stepKey(event, index), { step: event, index });
+      mergeStep(event, index, latestSteps, stepsById, stepsByNumber);
     }
   });
 
-  const failingEntry = Array.from(latestSteps.values())
+  const failingEntry = latestSteps
     .sort((left, right) => right.index - left.index)
     .find(({ step }) => isUnresolvedFailure(step));
   if (!failingEntry) return 'Not reported';
@@ -50,16 +52,57 @@ function findFailingStep(logs: unknown[]): string {
   return `${prefix}: ${singleLine(typeof actionName === 'string' ? actionName : 'Action failed')}`;
 }
 
-function stepKey(step: Record<string, unknown>, index: number): string {
-  const stepId = step['step_id'];
-  if (stepId !== undefined && stepId !== null && String(stepId).trim()) {
-    return `id:${String(stepId)}`;
+function mergeStep(
+  step: Record<string, unknown>,
+  index: number,
+  latestSteps: { step: Record<string, unknown>; index: number }[],
+  stepsById: Map<string, { step: Record<string, unknown>; index: number }>,
+  stepsByNumber: Map<number, { step: Record<string, unknown>; index: number }>
+): void {
+  const stepId = step['step_id'] === undefined || step['step_id'] === null
+    ? ''
+    : String(step['step_id']).trim();
+  const rawNumber = step['step_number'];
+  const stepNumber = rawNumber === undefined || rawNumber === null || String(rawNumber).trim() === ''
+    ? null
+    : Number(rawNumber);
+  const existing = (stepId && stepsById.get(stepId))
+    || (stepNumber !== null && Number.isFinite(stepNumber) ? stepsByNumber.get(stepNumber) : undefined);
+
+  if (existing) {
+    existing.step = {
+      ...existing.step,
+      ...step,
+      generic_tools: mergeGenericTools(existing.step['generic_tools'], step['generic_tools'])
+    };
+    existing.index = index;
+  } else {
+    latestSteps.push({ step: { ...step }, index });
   }
-  const stepNumber = step['step_number'];
-  if (stepNumber !== undefined && stepNumber !== null && String(stepNumber).trim()) {
-    return `number:${String(stepNumber)}`;
+
+  const target = existing || latestSteps[latestSteps.length - 1];
+  if (stepId) stepsById.set(stepId, target);
+  if (stepNumber !== null && Number.isFinite(stepNumber)) stepsByNumber.set(stepNumber, target);
+}
+
+function mergeGenericTools(existing: unknown, incoming: unknown): unknown[] {
+  const merged = Array.isArray(existing) ? [...existing] : [];
+  if (!Array.isArray(incoming)) return merged;
+  for (const tool of incoming) {
+    const traceId = tool && typeof tool === 'object'
+      ? String((tool as Record<string, unknown>)['trace_id'] ?? '')
+      : '';
+    const existingIndex = traceId
+      ? merged.findIndex((item) => item && typeof item === 'object'
+        && String((item as Record<string, unknown>)['trace_id'] ?? '') === traceId)
+      : -1;
+    if (existingIndex === -1) {
+      merged.push(tool);
+    } else {
+      merged[existingIndex] = { ...(merged[existingIndex] as object), ...(tool as object) };
+    }
   }
-  return `index:${index}`;
+  return merged;
 }
 
 function isUnresolvedFailure(step: Record<string, unknown>): boolean {
@@ -104,9 +147,9 @@ function actionForStep(step: Record<string, unknown>): Record<string, unknown> |
   }
 
   if (Array.isArray(step['generic_tools'])) {
-    const failedTool = step['generic_tools'].find(tool => {
-      return !!tool && typeof tool === 'object' && isActionFailed(tool, step);
-    });
+    const failedTool = [...step['generic_tools']].reverse().find(tool =>
+      !!tool && typeof tool === 'object' && isActionFailed(tool)
+    );
     if (failedTool && typeof failedTool === 'object') {
       return failedTool as Record<string, unknown>;
     }
