@@ -126,7 +126,7 @@ async def test_adb_server_manifest_matches_fixture():
     tools = await _adb_server_tools()
     generated = {
         name: {
-            "description": cleandoc(t.description) if t.description else t.description,
+            "description": cleandoc(t.description) + "\n" if t.description else t.description,
             "inputSchema": t.inputSchema,
         }
         for name, t in tools.items()

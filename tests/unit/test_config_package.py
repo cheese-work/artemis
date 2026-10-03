@@ -172,7 +172,8 @@ def test_agent_config_loading(tmp_path):
     """Test AgentGlobalConfig parsing from an explicit artemis.jsonc fixture."""
     config_path = tmp_path / "artemis.jsonc"
     config_path.write_text(
-        '{"agent": {"explorer": {"flash_mode": "pro", "pro_mode": "pro"}}}',
+        '{"agent": {"explorer": {"flash_mode": "pro", "pro_mode": "pro"}, '
+        '"denylisted_tools": {"explorer": []}}}',
         encoding="utf-8",
     )
     agent_cfg = load_agent_config(config_path)
