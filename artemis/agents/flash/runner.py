@@ -96,6 +96,19 @@ from artemis.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
+
+def _is_browser_bridge_disconnect(serial: str | None, message: str) -> bool:
+    if not isinstance(serial, str) or not re.fullmatch(r"127\.0\.0\.1:\d+", serial):
+        return False
+    return bool(
+        re.search(
+            rf"\bdevice\s+['\"]?{re.escape(serial)}['\"]?\s+(?:not found|offline|unauthorized)\b",
+            message,
+            re.IGNORECASE,
+        )
+    )
+
+
 _NO_TOOL_CALL_NOTICE = (
     "You did not call any tools last turn. Please make progress by calling an"
     " action tool or 'report_task_status'."
@@ -774,20 +787,33 @@ class FlashRunner:
         ``index_elements`` is the turn's element snapshot index targets
         resolve against (see :meth:`_process_tool_calls`); ``None`` resolves
         against the state's current list. Returns the (possibly updated)
-        pre_screenshot_bytes, xml_list, and action_sequence for the next
-        iteration.
+        pre_screenshot_bytes, xml_list, action_sequence, and whether the
+        selected browser-bridge device disappeared.
         """
         # Dynamic dispatch set: manifest device actions plus any backend
         # extension tools, so extension steps are recorded like actions.
         action_names = self.executor.action_tool_names
+        device_disconnected = False
         try:
             exec_result = await self.executor.execute(
                 name, args, tc_id, state, index_elements=index_elements
             )
-
-            post_img_bytes = await self._capture_post_screenshot(
-                exec_result, name, action_names, state
+            device_serial = getattr(getattr(self.ctx, "device", None), "device_id", None)
+            device_disconnected = (
+                name in action_names
+                and exec_result.status == "error"
+                and _is_browser_bridge_disconnect(device_serial, exec_result.text_summary)
             )
+            if device_disconnected:
+                exec_result.text_summary = (
+                    "Phone disconnected from the browser bridge; the run stopped after "
+                    "the first failed device action."
+                )
+                post_img_bytes = None
+            else:
+                post_img_bytes = await self._capture_post_screenshot(
+                    exec_result, name, action_names, state
+                )
 
             # One record shape for the DataEngine step and the visual lens.
             action_dict = (
@@ -816,7 +842,7 @@ class FlashRunner:
                 turn.actions.append((name, exec_result.status, exec_result.text_summary))
 
             # ⚡ Non-blocking dispatch of objective visual transition summarizer
-            if self.summarizer and name in action_names:
+            if self.summarizer and name in action_names and not device_disconnected:
                 action_sequence += 1
                 self.summarizer.dispatch(
                     step_number=action_sequence,
@@ -872,7 +898,7 @@ class FlashRunner:
                     status="error",
                 )
             )
-        return pre_screenshot_bytes, xml_list, action_sequence
+        return pre_screenshot_bytes, xml_list, action_sequence, device_disconnected
 
     async def _invoke_model(self, llm, current_tools: list, messages: list[BaseMessage]):
         """Binds the active tools and invokes the model through the LLM gateway."""
@@ -947,7 +973,12 @@ class FlashRunner:
 
             elements_before = getattr(state, "indexed_elements", None)
             before_len = len(elements_before) if isinstance(elements_before, list) else 0
-            pre_screenshot_bytes, xml_list, action_sequence = await self._execute_and_record_action(
+            (
+                pre_screenshot_bytes,
+                xml_list,
+                action_sequence,
+                device_disconnected,
+            ) = await self._execute_and_record_action(
                 name,
                 args,
                 tc_id,
@@ -963,6 +994,19 @@ class FlashRunner:
                 native_text=native_text,
                 index_elements=index_elements,
             )
+            if device_disconnected:
+                return (
+                    {
+                        "status": "failed",
+                        "explanation": (
+                            "Phone disconnected from the browser bridge; the run stopped after "
+                            "the first failed device action. Reconnect the phone before retrying."
+                        ),
+                    },
+                    pre_screenshot_bytes,
+                    xml_list,
+                    action_sequence,
+                )
             if name not in action_names:
                 index_elements = self._extend_index_snapshot(state, index_elements, before_len)
         return None, pre_screenshot_bytes, xml_list, action_sequence

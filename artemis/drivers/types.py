@@ -25,6 +25,13 @@ class TapOutput(BaseModel):
     success: bool = Field(default=True, description="Whether the tap was successfully dispatched")
 
 
+class DeviceDisconnectedError(RuntimeError):
+    def __init__(self, device_id: str, reason: Literal["not found", "offline", "unauthorized"]):
+        self.device_id = device_id
+        self.reason = reason
+        super().__init__(f"device '{device_id}' {reason}")
+
+
 class CoordinatesSelectorRequest(BaseModel):
     """Absolute pixel coordinate pair."""
 

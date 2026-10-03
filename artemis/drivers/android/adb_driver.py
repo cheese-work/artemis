@@ -18,15 +18,17 @@ import asyncio
 import base64
 from io import BytesIO
 from pathlib import Path
+import re
 from typing import Any, Literal
 
-from adbutils import AdbClient, AdbDevice
+from adbutils import AdbClient, AdbDevice, AdbError
 from artemis.clients.ui_automator_client import (
     UIAutomatorClient,
     _parse_hierarchy_xml_to_elements,
 )
 from artemis.config.paths import get_temp_dir
 from artemis.drivers.base import BaseDeviceDriver, KeyCode, ScreenData, SwipeDirection
+from artemis.drivers.types import DeviceDisconnectedError
 from artemis.toolchain import find_ffmpeg, find_scrcpy
 from artemis.utils.video import build_scrcpy_record_command
 from artemis.utils.ui_filter import filter_ui_hierarchy
@@ -67,6 +69,30 @@ def _escape_for_adb_text(s: str) -> str:
         .replace("~", "\\~")
         .replace(" ", "%s")
     )
+
+
+def _browser_bridge_disconnect_reason(
+    device_id: str, error: AdbError
+) -> Literal["not found", "offline", "unauthorized"] | None:
+    if not re.fullmatch(r"127\.0\.0\.1:\d+", device_id):
+        return None
+
+    message = " ".join(str(error).split())
+    known_disconnects: tuple[tuple[str, Literal["not found", "offline", "unauthorized"]], ...] = (
+        (
+            rf"(?:error:\s*)?device\s+['\"]{re.escape(device_id)}['\"]\s+not found\.?",
+            "not found",
+        ),
+        (r"(?:error:\s*)?device offline\.?", "offline"),
+        (
+            r"(?:error:\s*)?device unauthorized(?:\. Please check the confirmation dialog on your device\.)?",
+            "unauthorized",
+        ),
+    )
+    for pattern, reason in known_disconnects:
+        if re.fullmatch(pattern, message, re.IGNORECASE):
+            return reason
+    return None
 
 
 class AndroidAdbDriver(BaseDeviceDriver):
@@ -247,6 +273,12 @@ class AndroidAdbDriver(BaseDeviceDriver):
             logger.info(f"[ADB] {cmd}")
             await asyncio.to_thread(self.device.shell, cmd)
             return True
+        except AdbError as e:
+            reason = _browser_bridge_disconnect_reason(self._device_id, e)
+            if reason is not None:
+                raise DeviceDisconnectedError(self._device_id, reason) from e
+            logger.error(f"Tap failed at ({x}, {y}): {e}")
+            return False
         except Exception as e:
             logger.error(f"Tap failed at ({x}, {y}): {e}")
             return False
