@@ -247,8 +247,7 @@ async def _expire_session(
     session.close_code = _CLOSE_SESSION_EXPIRED
     session.close_reason = "lease_ttl_expired"
     logger.info(
-        "event=bridge_lease_expired session_id=%s serial=%s close_code=%d "
-        "close_reason=%s",
+        "event=bridge_lease_expired session_id=%s serial=%s close_code=%d close_reason=%s",
         session.session_id,
         session.serial,
         _CLOSE_SESSION_EXPIRED,

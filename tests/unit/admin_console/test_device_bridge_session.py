@@ -194,9 +194,7 @@ def test_tcp_relay_forwards_multi_megabyte_transfer_as_whole_packets():
         reader.feed_eof()
         websocket = CapturingWebSocket()
         with pytest.raises(asyncio.IncompleteReadError):
-            await device_bridge._forward_tcp_packets(
-                reader, websocket, asyncio.Lock(), session
-            )
+            await device_bridge._forward_tcp_packets(reader, websocket, asyncio.Lock(), session)
         return websocket.frame_sizes
 
     frame_sizes = asyncio.run(scenario())

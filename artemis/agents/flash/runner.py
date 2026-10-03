@@ -108,6 +108,7 @@ def _is_browser_bridge_disconnect(serial: str | None, message: str) -> bool:
         )
     )
 
+
 _NO_TOOL_CALL_NOTICE = (
     "You did not call any tools last turn. Please make progress by calling an"
     " action tool or 'report_task_status'."
