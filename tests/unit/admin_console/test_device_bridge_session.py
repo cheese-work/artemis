@@ -89,24 +89,24 @@ def test_loopback_session_does_not_require_lifecycle_bearer(loopback_client, _mo
         ws.send_text("close")
 
 
-def test_non_loopback_client_is_rejected(remote_client):
+def test_non_loopback_client_without_admin_is_rejected(remote_client):
     with pytest.raises(WebSocketDisconnect) as exc_info:
         with remote_client.websocket_connect(PATH, headers=_HOST_HEADER):
             pass
-    assert exc_info.value.code == 4003
+    assert exc_info.value.code == 1008
 
 
-def test_forwarded_client_keeps_loopback_transport_peer(loopback_client, _mock_adb):
+def test_forwarded_client_without_cloudflare_jwt_is_read_only(loopback_client):
     headers = {
         **_HOST_HEADER,
         "Origin": "https://127.0.0.1",
         "X-Forwarded-For": "203.0.113.7",
         "X-Forwarded-Proto": "https",
     }
-    with loopback_client.websocket_connect(PATH, headers=headers) as ws:
-        assert ws.receive_json()["type"] == "session_leased"
-        assert ws.receive_json()["type"] == "device_attached"
-        ws.send_text("close")
+    with pytest.raises(WebSocketDisconnect) as exc_info:
+        with loopback_client.websocket_connect(PATH, headers=headers):
+            pass
+    assert exc_info.value.code == 1008
 
 
 def test_bad_host_and_origin_are_rejected(loopback_client):

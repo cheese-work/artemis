@@ -16,7 +16,7 @@
 
 import { Injectable, signal, computed, inject, DestroyRef, NgZone } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
-import { Observable, finalize, shareReplay, tap } from 'rxjs';
+import { Observable, finalize, map, shareReplay, tap } from 'rxjs';
 import {
   AdbServerConnectionResponse,
   AdbServerStatus,
@@ -530,7 +530,8 @@ export class SystemService {
   public modelConfigEnv = signal<ModelConfigEnvResponse | null>(null);
 
   public fetchCredentialStatus(): Observable<{ config_writes_locked: boolean }> {
-    return this.http.get<{ config_writes_locked: boolean }>('/api/system/credentials').pipe(
+    return this.http.get<{ admin: boolean }>('/api/system/whoami').pipe(
+      map((identity) => ({ config_writes_locked: !identity.admin })),
       tap({
         next: (data) => this.configWritesLocked.set(data.config_writes_locked !== false),
         error: () => this.configWritesLocked.set(true)

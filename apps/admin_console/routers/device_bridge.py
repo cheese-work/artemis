@@ -21,8 +21,10 @@ import ipaddress
 import logging
 import struct
 
-from fastapi import APIRouter, WebSocket
+from fastapi import APIRouter, Depends, WebSocket
 from starlette.websockets import WebSocketDisconnect
+
+from apps.admin_console.core.access_control import require_websocket_admin
 
 try:
     from admin_console.services.bridge_session_service import (
@@ -234,7 +236,7 @@ async def _close_websocket(
         pass
 
 
-@router.websocket("/session")
+@router.websocket("/session", dependencies=[Depends(require_websocket_admin)])
 async def open_bridge_session(websocket: WebSocket) -> None:
     if not _client_is_loopback(websocket):
         await websocket.close(code=_CLOSE_FORBIDDEN_REMOTE)

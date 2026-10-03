@@ -16,8 +16,9 @@ import asyncio
 from contextlib import suppress
 import json
 from typing import Any
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
+from apps.admin_console.core.access_control import require_admin
 from artemis.core.diagnostics import readiness_engine
 from artemis.runtime import DeviceExecutionLock, device_pool
 
@@ -66,7 +67,7 @@ async def get_task_catalog():
     }
 
 
-@router.post("/api/run")
+@router.post("/api/run", dependencies=[Depends(require_admin)])
 async def run_task(request: RunRequest):
     incoming_goals = []
     if request.goals:
@@ -205,7 +206,7 @@ async def list_devices():
     return {"devices": [d.to_dict() for d in devices]}
 
 
-@router.post("/api/stop")
+@router.post("/api/stop", dependencies=[Depends(require_admin)])
 async def stop_task(
     request: Request,
     all: bool = False,
@@ -240,7 +241,7 @@ async def stop_task(
     return {"status": "no_running_task"}
 
 
-@router.post("/api/resume")
+@router.post("/api/resume", dependencies=[Depends(require_admin)])
 async def resume_task():
     resumed = task_queue_service.resume_task()
     if resumed:

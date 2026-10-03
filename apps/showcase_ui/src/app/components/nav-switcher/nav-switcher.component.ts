@@ -18,11 +18,12 @@ import { Component, ChangeDetectionStrategy, inject } from '@angular/core';
 
 import { RouterLink, RouterLinkActive } from '@angular/router';
 import { UsbDeviceRelayService } from '../../services/usb-device-relay.service';
+import { AdminIdentityIndicatorComponent } from '../admin-identity-indicator/admin-identity-indicator.component';
 
 @Component({
   selector: 'app-nav-switcher',
   standalone: true,
-  imports: [RouterLink, RouterLinkActive],
+  imports: [RouterLink, RouterLinkActive, AdminIdentityIndicatorComponent],
   template: `
     <nav class="floating-nav-switcher" aria-label="Main Navigation">
       <a 
@@ -44,6 +45,10 @@ import { UsbDeviceRelayService } from '../../services/usb-device-relay.service';
         <span class="material-symbols-outlined tab-icon">space_dashboard</span>
         <span class="tab-label">Workspace</span>
       </a>
+      <a routerLink="/provider-setup" routerLinkActive="active" class="nav-tab-btn" title="Configure providers">
+        <span class="material-symbols-outlined tab-icon">settings</span>
+        <span class="tab-label">Providers</span>
+      </a>
       @if (usbRelay.state().status === 'connected') {
         <div class="usb-relay-badge" aria-live="polite">
           <span class="material-symbols-outlined badge-icon" aria-hidden="true">smartphone</span>
@@ -52,6 +57,7 @@ import { UsbDeviceRelayService } from '../../services/usb-device-relay.service';
           <button type="button" (click)="disconnectPhone()">Disconnect</button>
         </div>
       }
+      <app-admin-identity-indicator></app-admin-identity-indicator>
     </nav>
   `,
   changeDetection: ChangeDetectionStrategy.Eager,

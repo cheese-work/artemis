@@ -386,6 +386,40 @@ async def test_llm_credentials_probe_structure(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_credentials_probe_checks_only_configured_provider_keys(monkeypatch):
+    from pydantic import SecretStr
+
+    from artemis.config import settings
+
+    _clear_credential_inputs(monkeypatch)
+    monkeypatch.setattr(
+        "artemis.core.diagnostics.probes.credentials_probe.parse_llm_config",
+        lambda: {
+            "default": {
+                "provider": "google",
+                "model": "gemini-test",
+                "fallback": {"provider": "google", "model": "gemini-test-fallback"},
+            }
+        },
+    )
+    monkeypatch.setattr(
+        type(settings),
+        "get_api_key",
+        lambda _settings, provider: (
+            SecretStr("unrelated-openai-key") if provider == "openai" else None
+        ),
+    )
+
+    result = await LLMCredentialsProbe().probe()
+
+    assert result.status == ProbeStatus.FAIL
+    assert result.metadata["configured_count"] == 1
+    assert result.metadata["providers"] == [
+        {"provider": "google", "label": "Google", "is_set": False, "masked": None}
+    ]
+
+
+@pytest.mark.asyncio
 async def test_toolchain_probe_structure():
     """Verify ToolchainProbe returns valid probe category, metadata, and schema."""
     probe = ToolchainProbe()

@@ -46,6 +46,8 @@ from artemis.config.paths import (
 )
 from artemis.utils.logger import get_logger
 
+SERVICE_ENVIRONMENT_KEYS = frozenset(os.environ)
+
 # Installed wheels load .env from the user directory, outside site-packages.
 _canonical_env = get_env_file()
 load_dotenv(dotenv_path=_canonical_env, verbose=True)
@@ -241,90 +243,74 @@ class Settings(BaseSettings):
             key: Secret API key string.
             persist_to_env: Whether to save the key to the app directory's .env file.
         """
-        secret = SecretStr(key)
         from artemis.llm.google.provider import is_google_family_provider
 
         provider_lower = provider.lower()
-        env_key_name = None
-
+        env_keys = []
         if is_google_family_provider(provider_lower):
-            self.GOOGLE_API_KEY = secret
-            self.GEMINI_API_KEY = secret
-            self.GCP_API_KEY = secret
-            env_key_name = ENV_GEMINI_API_KEY
-            os.environ[ENV_GOOGLE_API_KEY] = key
-            os.environ[ENV_GEMINI_API_KEY] = key
-            os.environ[ENV_GCP_API_KEY] = key
+            fields = ("GOOGLE_API_KEY", "GEMINI_API_KEY", "GCP_API_KEY")
+            env_keys = [ENV_GEMINI_API_KEY, ENV_GOOGLE_API_KEY, ENV_GCP_API_KEY]
         elif provider_lower == "openai":
-            self.OPENAI_API_KEY = secret
-            env_key_name = ENV_OPENAI_API_KEY
-            os.environ[ENV_OPENAI_API_KEY] = key
+            fields = ("OPENAI_API_KEY",)
+            env_keys = [ENV_OPENAI_API_KEY]
         elif provider_lower in ("anthropic", "claude"):
-            self.ANTHROPIC_API_KEY = secret
-            env_key_name = ENV_ANTHROPIC_API_KEY
-            os.environ[ENV_ANTHROPIC_API_KEY] = key
+            fields = ("ANTHROPIC_API_KEY",)
+            env_keys = [ENV_ANTHROPIC_API_KEY]
         elif provider_lower == "openrouter":
-            self.OPEN_ROUTER_API_KEY = secret
-            env_key_name = ENV_OPEN_ROUTER_API_KEY
-            os.environ[ENV_OPEN_ROUTER_API_KEY] = key
+            fields = ("OPEN_ROUTER_API_KEY",)
+            env_keys = [ENV_OPEN_ROUTER_API_KEY]
         elif provider_lower == "xai":
-            self.XAI_API_KEY = secret
-            env_key_name = ENV_XAI_API_KEY
-            os.environ[ENV_XAI_API_KEY] = key
+            fields = ("XAI_API_KEY",)
+            env_keys = [ENV_XAI_API_KEY]
         elif provider_lower in ("ocr", "vision", "google_vision"):
-            self.OCR_API_KEY = secret
-            self.VISION_API_KEY = secret
-            env_key_name = ENV_OCR_API_KEY
-            os.environ[ENV_OCR_API_KEY] = key
-            os.environ[ENV_VISION_API_KEY] = key
+            fields = ("OCR_API_KEY", "VISION_API_KEY")
+            env_keys = [ENV_OCR_API_KEY, ENV_VISION_API_KEY]
+        else:
+            raise ValueError(f"Unsupported API key provider: {provider}")
 
-        if persist_to_env and env_key_name:
-            target_env_files = [get_env_file()]
-            seen_paths = set()
-            for env_file in target_env_files:
-                try:
-                    env_file.parent.mkdir(parents=True, exist_ok=True)
-                    resolved = env_file.resolve()
-                    if resolved in seen_paths:
-                        continue
-                    seen_paths.add(resolved)
+        if persist_to_env:
+            env_file = get_env_file()
+            original = env_file.read_bytes() if env_file.exists() else b""
+            lines = original.decode("utf-8").splitlines()
+            keys_to_update = set(env_keys)
+            next_lines = [
+                line
+                for line in lines
+                if not any(
+                    line.lstrip().removeprefix("export ").startswith(f"{env_key}=")
+                    for env_key in keys_to_update
+                )
+            ]
+            if key:
+                escaped = key.replace("\\", "\\\\").replace("'", "\\'")
+                next_lines.extend(f"{env_key}='{escaped}'" for env_key in env_keys)
+            content = ("\n".join(next_lines) + "\n").encode("utf-8")
+            env_file.parent.mkdir(parents=True, exist_ok=True)
+            temp_path = None
+            try:
+                import tempfile
 
-                    lines = []
-                    if env_file.exists():
-                        lines = env_file.read_text(encoding="utf-8").splitlines()
+                fd, temp_name = tempfile.mkstemp(prefix=f".{env_file.name}.", dir=env_file.parent)
+                temp_path = Path(temp_name)
+                os.fchmod(fd, 0o600)
+                with os.fdopen(fd, "wb") as stream:
+                    stream.write(content)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                os.replace(temp_path, env_file)
+            except OSError as exc:
+                if temp_path is not None:
+                    temp_path.unlink(missing_ok=True)
+                raise OSError(f"Could not persist {env_keys[0]} to {env_file}.") from exc
 
-                    # Determine keys to update
-                    keys_to_update = [env_key_name]
-                    if is_google_family_provider(provider_lower):
-                        keys_to_update = [ENV_GEMINI_API_KEY, ENV_GOOGLE_API_KEY, ENV_GCP_API_KEY]
-                    elif provider_lower in ("ocr", "vision", "google_vision"):
-                        keys_to_update = [ENV_OCR_API_KEY, ENV_VISION_API_KEY]
-
-                    new_lines = []
-                    updated_set = set()
-                    for line in lines:
-                        replaced = False
-                        for k in keys_to_update:
-                            if (
-                                line.startswith(f"{k}=")
-                                or line.startswith(f"#{k}=")
-                                or line.startswith(f"# {k}=")
-                            ):
-                                new_lines.append(f"{k}={key}")
-                                updated_set.add(k)
-                                replaced = True
-                                break
-                        if not replaced:
-                            new_lines.append(line)
-
-                    # Ensure the primary key is present if not replaced
-                    primary_key = keys_to_update[0]
-                    if primary_key not in updated_set:
-                        new_lines.append(f"{primary_key}={key}")
-
-                    env_file.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
-                except Exception as e:
-                    logger.warning(f"Could not persist {env_key_name} to {env_file}: {e}")
+        secret = SecretStr(key)
+        for field_name in fields:
+            setattr(self, field_name, secret)
+        for env_key in env_keys:
+            if key:
+                os.environ[env_key] = key
+            else:
+                os.environ.pop(env_key, None)
 
 
 # Singleton instance

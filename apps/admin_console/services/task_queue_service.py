@@ -841,6 +841,7 @@ class TaskQueueService:
         profile = task_item.get("profile", "flash")
         proc: asyncio.subprocess.Process | None = None
         output_task: asyncio.Task[None] | None = None
+        config_snapshot = None
         try:
             if not isinstance(goal, str) or not goal.strip():
                 raise ValueError("Queued task must contain a non-empty string goal.")
@@ -850,6 +851,10 @@ class TaskQueueService:
             cmd, env = cls._build_worker_invocation(
                 task_item, run_key, sess_id, goal, profile, target
             )
+            from apps.admin_console.services.config_store import get_config_store
+
+            config_snapshot = await get_config_store().snapshot_for_spawn()
+            env.update(config_snapshot.environment)
 
             device_serial = task_item.get("device_serial")
             print(
@@ -901,6 +906,11 @@ class TaskQueueService:
                     )
         finally:
             await cls._finish_output_forwarder(output_task)
+            if config_snapshot is not None:
+                try:
+                    config_snapshot.config_path.unlink(missing_ok=True)
+                except OSError:
+                    logger.warning("Could not remove temporary run config snapshot")
             # 5. Clean up the finished task and release this run's scheduling slot
             cls._release_run_slot(sess_id, run_key, proc)
 
