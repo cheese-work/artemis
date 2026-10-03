@@ -35,6 +35,7 @@ from uuid import UUID
 import cv2
 from pydantic import BaseModel, ConfigDict
 
+from artemis.toolchain.scrcpy import read_scrcpy_version
 from artemis.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -83,25 +84,7 @@ def scrcpy_recording_flags(version_output: str) -> tuple[str, str]:
 
 def detect_scrcpy_version(scrcpy_executable: str) -> str:
     """Probe and validate the installed scrcpy before starting a recording."""
-    try:
-        result = subprocess.run(
-            [scrcpy_executable, "--version"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-            check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        raise ValueError(
-            f"No compatible scrcpy version found using {scrcpy_executable!r} --version: {exc}"
-        ) from exc
-
-    version_output = "\n".join(part for part in (result.stdout, result.stderr) if part)
-    if result.returncode != 0:
-        raise ValueError(
-            f"No compatible scrcpy version found: {scrcpy_executable!r} --version exited "
-            f"with {result.returncode}: {version_output.strip() or 'no version output'}"
-        )
+    version_output = read_scrcpy_version(scrcpy_executable)
     scrcpy_recording_flags(version_output)
     return version_output
 
