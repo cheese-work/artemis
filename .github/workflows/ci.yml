@@ -68,7 +68,7 @@ jobs:
       # infrastructure and intentionally do not run on GitHub-hosted runners.
       - name: Fetch CHE-844 receipt sources
         run: |
-          git fetch --no-tags --depth=1 origin \
+          git fetch --no-tags --unshallow origin \
             feefd94c72dbce0fa1afc109ffe3d8254f565d6b \
             096411113522abc37964256833fecbbac4778af4
           git cat-file -e feefd94c72dbce0fa1afc109ffe3d8254f565d6b^{commit}

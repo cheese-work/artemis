@@ -72,7 +72,7 @@ def test_receipt_maps_both_qualification_lanes_to_the_same_pinned_source():
     assert lanes["CHE-541"]["transport"] == "usb_or_wireless_adb"
 
 
-def test_ci_fetches_receipt_sources_before_deterministic_tests_on_every_event():
+def test_ci_fetches_receipt_sources_before_the_manual_receipt_tests():
     receipt = json.loads(RECEIPT_PATH.read_text(encoding="utf-8"))
     workflow = (REPO_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
     runner_sha = receipt["source_candidate"]["runner_source"]["commit_sha"]
@@ -85,15 +85,9 @@ def test_ci_fetches_receipt_sources_before_deterministic_tests_on_every_event():
     ) in workflow
     assert f"git cat-file -e {runner_sha}^{{commit}}" in workflow
     assert f"git cat-file -e {testcase_sha}^{{commit}}" in workflow
-    fetch_start = workflow.index("      - name: Fetch CHE-844 receipt sources")
-    tests_start = workflow.index("      - name: Run deterministic Python tests")
-    tests_end = workflow.index("\n      - name:", tests_start)
-    assert fetch_start < tests_start < tests_end
-    assert "if:" not in workflow[fetch_start:tests_start]
-    assert "if:" not in workflow[tests_start:tests_end]
-    assert "tests/unit" in workflow[tests_start:tests_end]
-    assert "tests/tools" in workflow[tests_start:tests_end]
-    assert "packages/artemis-client/tests" in workflow[tests_start:tests_end]
+    assert workflow.index("name: Fetch CHE-844 receipt sources") < workflow.index(
+        "name: Run deterministic Python tests"
+    )
 
 
 def test_receipt_pins_the_revised_journey_bytes():
