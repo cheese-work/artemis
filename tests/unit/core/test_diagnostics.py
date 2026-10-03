@@ -386,8 +386,12 @@ async def test_llm_credentials_probe_structure(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_toolchain_probe_structure():
+async def test_toolchain_probe_structure(monkeypatch):
     """Verify ToolchainProbe returns valid probe category, metadata, and schema."""
+    monkeypatch.setattr(
+        "artemis.core.diagnostics.probes.toolchain_probe.toolchain.resolve",
+        lambda _: None,
+    )
     probe = ToolchainProbe()
     assert probe.probe_id == "toolchain"
     assert probe.category == ProbeCategory.TOOLCHAIN
@@ -398,6 +402,47 @@ async def test_toolchain_probe_structure():
     assert result.status in (ProbeStatus.PASS, ProbeStatus.FAIL)
     assert "ffmpeg" in result.metadata
     assert "scrcpy" in result.metadata
+
+
+@pytest.mark.asyncio
+async def test_toolchain_probe_reports_installed_scrcpy_version(monkeypatch):
+    version_output = "scrcpy 1.25 <https://github.com/Genymobile/scrcpy>"
+    paths = {"ffmpeg": "/usr/bin/ffmpeg", "scrcpy": "/usr/bin/scrcpy"}
+    version_command = Mock(return_value=Mock(returncode=0, stdout=version_output, stderr=""))
+    monkeypatch.setattr(
+        "artemis.core.diagnostics.probes.toolchain_probe.toolchain.resolve",
+        paths.__getitem__,
+    )
+    monkeypatch.setattr("artemis.toolchain.scrcpy.subprocess.run", version_command)
+
+    result = await ToolchainProbe().probe()
+
+    assert result.metadata["scrcpy_version"] == version_output
+    assert "scrcpy 1.25" in result.summary
+    version_command.assert_called_once_with(
+        ["/usr/bin/scrcpy", "--version"],
+        capture_output=True,
+        text=True,
+        timeout=5,
+        check=False,
+    )
+
+
+@pytest.mark.asyncio
+async def test_toolchain_probe_reports_when_scrcpy_version_is_unavailable(monkeypatch):
+    paths = {"ffmpeg": "/usr/bin/ffmpeg", "scrcpy": "/usr/bin/scrcpy"}
+    version_command = Mock(return_value=Mock(returncode=1, stdout="", stderr="not executable"))
+    monkeypatch.setattr(
+        "artemis.core.diagnostics.probes.toolchain_probe.toolchain.resolve",
+        paths.__getitem__,
+    )
+    monkeypatch.setattr("artemis.toolchain.scrcpy.subprocess.run", version_command)
+
+    result = await ToolchainProbe().probe()
+
+    assert result.metadata["scrcpy_version"] is None
+    assert "not executable" in result.metadata["scrcpy_version_error"]
+    assert "version unavailable" in result.summary
 
 
 @pytest.mark.asyncio

@@ -14,6 +14,8 @@
 
 """Toolchain and Video Recording Auxiliary Probe."""
 
+import asyncio
+
 from artemis.core.diagnostics.probes.base import BaseProbe
 from artemis.core.diagnostics.schema import (
     ProbeAction,
@@ -23,6 +25,7 @@ from artemis.core.diagnostics.schema import (
 )
 from artemis.platform import OSType, platform
 from artemis.toolchain import toolchain
+from artemis.toolchain.scrcpy import read_scrcpy_version
 
 
 class ToolchainProbe(BaseProbe):
@@ -43,6 +46,20 @@ class ToolchainProbe(BaseProbe):
     async def probe(self) -> ProbeResult:
         ffmpeg_path = toolchain.resolve("ffmpeg")
         scrcpy_path = toolchain.resolve("scrcpy")
+        scrcpy_version = None
+        scrcpy_version_error = None
+        if scrcpy_path:
+            try:
+                version_output = await asyncio.to_thread(read_scrcpy_version, scrcpy_path)
+                scrcpy_version = next(
+                    (line.strip() for line in version_output.splitlines() if line.strip()), None
+                )
+                if scrcpy_version is None:
+                    scrcpy_version_error = "scrcpy --version returned no version output"
+            except ValueError as exc:
+                scrcpy_version_error = str(exc)
+
+        scrcpy_version_label = " ".join(scrcpy_version.split()[:2]) if scrcpy_version else None
 
         tools_installed = []
         tools_missing = []
@@ -61,19 +78,27 @@ class ToolchainProbe(BaseProbe):
             "scrcpy": scrcpy_path is not None,
             "ffmpeg_path": ffmpeg_path,
             "scrcpy_path": scrcpy_path,
+            "scrcpy_version": scrcpy_version,
+            "scrcpy_version_error": scrcpy_version_error,
             "tools_installed": tools_installed,
             "tools_missing": tools_missing,
         }
 
         if ffmpeg_path and scrcpy_path:
+            scrcpy_description = (
+                f"{scrcpy_version} ({scrcpy_path})"
+                if scrcpy_version
+                else f"scrcpy ({scrcpy_path}; version unavailable)"
+            )
+            scrcpy_summary = scrcpy_version_label or "scrcpy; version unavailable"
             return ProbeResult(
                 id=self.probe_id,
                 category=self.category,
                 title="Video Recording Toolchain",
                 status=ProbeStatus.PASS,
                 is_blocker=self.is_blocker,
-                summary="Ready (FFmpeg + scrcpy)",
-                description=f"FFmpeg ({ffmpeg_path}) and scrcpy ({scrcpy_path}) are available. Live stream and high-speed video replays are active.",
+                summary=f"Ready (FFmpeg + {scrcpy_summary})",
+                description=f"FFmpeg ({ffmpeg_path}) and {scrcpy_description} are available. Live stream and high-speed video replays are active.",
                 metadata=metadata,
                 actions=[
                     ProbeAction(
@@ -85,6 +110,13 @@ class ToolchainProbe(BaseProbe):
             )
 
         missing_str = " & ".join(tools_missing)
+        summary = f"Missing {missing_str}"
+        if scrcpy_path:
+            summary += (
+                f"; {scrcpy_version_label} installed"
+                if scrcpy_version_label
+                else "; scrcpy version unavailable"
+            )
         actions = []
 
         if platform.os_type == OSType.WINDOWS:
@@ -132,7 +164,7 @@ class ToolchainProbe(BaseProbe):
             title="Video Recording Toolchain",
             status=ProbeStatus.FAIL,
             is_blocker=self.is_blocker,
-            summary=f"Missing {missing_str}",
+            summary=summary,
             description=f"Video toolchain is required for screen streaming and test replay recording. Missing: {missing_str}.",
             metadata=metadata,
             actions=actions,

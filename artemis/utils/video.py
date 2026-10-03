@@ -35,6 +35,7 @@ from uuid import UUID
 import cv2
 from pydantic import BaseModel, ConfigDict
 
+from artemis.toolchain.scrcpy import read_scrcpy_version
 from artemis.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -56,6 +57,36 @@ TIMELINE_GAP_EPSILON_SECONDS = 0.05
 # Target 100MB to allow 3-5min crisp video and prevent blurring for long durations.
 MAX_VIDEO_SIZE_MB = 500
 MAX_VIDEO_SIZE_BYTES = MAX_VIDEO_SIZE_MB * 1024 * 1024
+MINIMUM_SCRCPY_VERSION = (1, 25)
+
+
+def scrcpy_recording_flags(version_output: str) -> tuple[str, str]:
+    """Return the headless and orientation flags supported by scrcpy."""
+    match = re.search(r"\bscrcpy\s+v?(\d+)\.(\d+)(?:\.(\d+))?\b", version_output, re.IGNORECASE)
+    if not match:
+        raise ValueError(
+            f"No compatible scrcpy version found in --version output: {version_output!r}"
+        )
+
+    version = tuple(int(part or 0) for part in match.groups())
+    if version[:2] < MINIMUM_SCRCPY_VERSION:
+        detected = ".".join(str(part) for part in version)
+        minimum = ".".join(str(part) for part in MINIMUM_SCRCPY_VERSION)
+        raise ValueError(
+            f"No compatible scrcpy version found: minimum supported version is {minimum}; "
+            f"detected {detected}"
+        )
+
+    if version[0] >= 3:
+        return "--no-window", "--capture-orientation=@"
+    return "--no-display", "--lock-video-orientation"
+
+
+def detect_scrcpy_version(scrcpy_executable: str) -> str:
+    """Probe and validate the installed scrcpy before starting a recording."""
+    version_output = read_scrcpy_version(scrcpy_executable)
+    scrcpy_recording_flags(version_output)
+    return version_output
 
 
 def build_scrcpy_record_command(
@@ -64,6 +95,8 @@ def build_scrcpy_record_command(
     output_path: Path,
     video_bit_rate: str = "2M",
     lock_capture_orientation: bool = True,
+    *,
+    scrcpy_version: str,
 ) -> list[str]:
     """Build the shared scrcpy command used by all recording paths.
 
@@ -72,20 +105,21 @@ def build_scrcpy_record_command(
     segment never contains multiple coded sizes while still displaying the app
     in its natural orientation.
     """
+    no_window_flag, orientation_flag = scrcpy_recording_flags(scrcpy_version)
     command = [
         scrcpy_executable,
         "--serial",
         device_id,
-        "--no-window",
+        no_window_flag,
         "--record",
         str(output_path),
         "--record-format",
         "mkv",
-        "--video-bit-rate",
+        "-b",
         video_bit_rate,
     ]
     if lock_capture_orientation:
-        command.append("--capture-orientation=@")
+        command.append(orientation_flag)
     return command
 
 
@@ -152,6 +186,8 @@ class RecordingSession(BaseModel):
     video_id: UUID
     device_id: str
     start_time: float
+    scrcpy_executable: str | None = None
+    scrcpy_version: str | None = None
     process: Any = None
     data_engine_start_time: float | None = None
     local_video_path: Path | None = None
