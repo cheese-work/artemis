@@ -141,11 +141,6 @@ function parseExecutionResult(value: unknown): Record<string, unknown> | null {
 }
 
 function actionForStep(step: Record<string, unknown>): Record<string, unknown> | null {
-  const action = step['action_taken'];
-  if (action && typeof action === 'object') {
-    return action as Record<string, unknown>;
-  }
-
   if (Array.isArray(step['generic_tools'])) {
     const failedTool = [...step['generic_tools']].reverse().find(tool =>
       !!tool && typeof tool === 'object' && isActionFailed(tool)
@@ -153,6 +148,11 @@ function actionForStep(step: Record<string, unknown>): Record<string, unknown> |
     if (failedTool && typeof failedTool === 'object') {
       return failedTool as Record<string, unknown>;
     }
+  }
+
+  const action = step['action_taken'];
+  if (action && typeof action === 'object') {
+    return action as Record<string, unknown>;
   }
   return null;
 }

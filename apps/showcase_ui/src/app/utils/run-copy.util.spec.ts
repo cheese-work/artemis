@@ -162,22 +162,64 @@ describe('buildRunSummary', () => {
     expect(summary).toContain('- Failing step: Not reported');
   });
 
-  it('uses the failed tool rather than a successful tool on a failed step', () => {
-    const logs = [{
-      type: 'step_updated',
-      data: {
-        step_id: 'native-step-3',
-        step_number: 3,
-        status: 'failed',
-        generic_tools: [
-          { trace_id: 'tool-1', type: 'tool', name: 'read_note', status: 'success' },
-          { trace_id: 'tool-2', type: 'tool', name: 'tap', status: 'failed' }
-        ]
+  it('reports a failed generic tool despite an action in a partial native SSE update', () => {
+    const logs = [
+      {
+        type: 'step_recorded',
+        data: {
+          step_id: 'native-step-3',
+          step_number: 3,
+          action_taken: { action: 'tap' },
+          generic_tools: [
+            { trace_id: 'tool-1', type: 'tool', name: 'read_note', status: 'success' }
+          ]
+        }
+      },
+      {
+        type: 'step_updated',
+        data: {
+          step_id: 'native-step-3',
+          step_number: 3,
+          action_taken: { action: 'tap' },
+          generic_tools: [
+            { trace_id: 'tool-1', type: 'tool', name: 'read_note', status: 'success' },
+            { trace_id: 'tool-2', type: 'tool', name: 'failed_tool', status: 'failed' }
+          ]
+        }
       }
-    }];
+    ];
 
     const summary = buildRunSummary(session, 'failed', logs, null);
 
-    expect(summary).toContain('- Failing step: Step 3: tap');
+    expect(summary).toContain('- Failing step: Step 3: failed_tool');
+  });
+
+  it('does not report a generic tool after a later update supersedes its failure', () => {
+    const logs = [
+      {
+        type: 'step_updated',
+        data: {
+          step_id: 'native-step-3',
+          step_number: 3,
+          generic_tools: [
+            { trace_id: 'tool-2', type: 'tool', name: 'failed_tool', status: 'failed' }
+          ]
+        }
+      },
+      {
+        type: 'step_updated',
+        data: {
+          step_id: 'native-step-3',
+          step_number: 3,
+          generic_tools: [
+            { trace_id: 'tool-2', type: 'tool', name: 'failed_tool', status: 'success' }
+          ]
+        }
+      }
+    ];
+
+    const summary = buildRunSummary({ ...session, status: 'completed' }, 'completed', logs, null);
+
+    expect(summary).toContain('- Failing step: Not reported');
   });
 });

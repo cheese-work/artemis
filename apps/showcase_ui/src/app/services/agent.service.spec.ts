@@ -13,6 +13,7 @@ describe('AgentService live LLM retry timeline', () => {
     service.whatsNewErrorVisible = signal(false);
     (service as any).whatsNewErrorOwners = new Set<symbol>();
     (service as any).statusRequestSequence = 0;
+    (service as any).statusAppliedSequence = 0;
     (service as any).whatsNewHandoffRequestBoundaries = [];
     (service as any).pendingStartupProgress = signal<any[]>([]);
     (service as any).sessionLoadGeneration = 0;
@@ -34,6 +35,30 @@ describe('AgentService live LLM retry timeline', () => {
       post
     };
     return { service, get, post };
+  }
+
+  function createStatusService() {
+    const { service, get } = createRunService([]);
+    service.agentStatus = signal('offline');
+    service.runningSessionId = signal<string | null>(null);
+    service.runningGoal = signal<string | null>(null);
+    service.activeModel = signal<any>(null);
+    service.isPaused = signal(false);
+    service.pausedError = signal<string | null>(null);
+    service.isRetrying = signal(false);
+    service.activeTasks = signal<any[]>([]);
+    service.hasFetchedStatus = signal(false);
+    service.currentSessionId = signal<string | null>(null);
+    service.userPinnedSessionId = signal<string | null>(null);
+    (service as any).pendingQueue = signal<any[]>([]);
+    (service as any).sessions = signal<any[]>([]);
+    (service as any).zone = { runOutsideAngular: (work: () => void) => work() };
+    (service as any).pollCounter = 0;
+    (service as any).lastQueueSignature = null;
+    (service as any).lastActiveTasksSignature = null;
+    spyOn(service, 'selectSession');
+    spyOn(service, 'fetchSessions');
+    return { service, get };
   }
 
   it('orders startup milestones and replaces duplicate stages', () => {
@@ -284,6 +309,129 @@ describe('AgentService live LLM retry timeline', () => {
 
     expect(service.agentStatus()).toBe('running');
     expect(service.runningSessionId()).toBe('new-session');
+  });
+
+  it('applies slow status replies across multiple polling intervals and resolves run handoffs', () => {
+    jasmine.clock().install();
+    const { service, get } = createStatusService();
+    const responses: Subject<any>[] = [];
+    get.and.callFake((url: string) => {
+      if (url !== '/api/status') return of({ devices: [] });
+      const response = new Subject<any>();
+      responses.push(response);
+      return response.asObservable();
+    });
+
+    try {
+      (service as any).startStatusPolling();
+      service.whatsNewAcceptedRunHandoffs.set(1);
+      (service as any).whatsNewHandoffRequestBoundaries.push(1);
+
+      jasmine.clock().tick(2000);
+      jasmine.clock().tick(800);
+      responses[0].next({ status: 'idle', queue: [], active_tasks: [] });
+      responses[0].complete();
+      expect(service.agentStatus()).toBe('idle');
+      expect(service.hasFetchedStatus()).toBeTrue();
+      expect(service.whatsNewAcceptedRunHandoffs()).toBe(1);
+
+      jasmine.clock().tick(1200);
+      jasmine.clock().tick(800);
+      responses[1].next({
+        status: 'running',
+        session_id: 'slow-session',
+        queue: [],
+        active_tasks: [{ session_id: 'slow-session', status: 'running' }]
+      });
+      responses[1].complete();
+      expect(service.agentStatus()).toBe('running');
+      expect(service.whatsNewAcceptedRunHandoffs()).toBe(0);
+
+      jasmine.clock().tick(1200);
+      jasmine.clock().tick(800);
+      responses[2].next({
+        status: 'running',
+        session_id: 'slow-session',
+        queue: [],
+        active_tasks: [{ session_id: 'slow-session', status: 'running' }]
+      });
+      responses[2].complete();
+      expect(service.runningSessionId()).toBe('slow-session');
+      expect(responses.length).toBe(4);
+    } finally {
+      clearInterval((service as any).statusInterval);
+      jasmine.clock().uninstall();
+    }
+  });
+
+  it('keeps reversed success/error responses ordered by applied request sequence', () => {
+    const first = createStatusService();
+    const olderFailure = new Subject<any>();
+    const newerSuccess = new Subject<any>();
+    let firstRequest = 0;
+    first.get.and.callFake((url: string) => url === '/api/status'
+      ? [olderFailure, newerSuccess][firstRequest++].asObservable()
+      : of({ devices: [] }));
+    first.service.fetchStatus();
+    first.service.fetchStatus();
+    newerSuccess.next({ status: 'running', session_id: 'newer-session', queue: [], active_tasks: [] });
+    newerSuccess.complete();
+    olderFailure.error(new Error('stale status failure'));
+    expect(first.service.agentStatus()).toBe('running');
+
+    const second = createStatusService();
+    const olderSuccess = new Subject<any>();
+    const newerFailure = new Subject<any>();
+    let secondRequest = 0;
+    second.get.and.callFake((url: string) => url === '/api/status'
+      ? [olderSuccess, newerFailure][secondRequest++].asObservable()
+      : of({ devices: [] }));
+    second.service.fetchStatus();
+    second.service.fetchStatus();
+    newerFailure.error(new Error('newer status failure'));
+    olderSuccess.next({ status: 'running', session_id: 'older-session', queue: [], active_tasks: [] });
+    olderSuccess.complete();
+    expect(second.service.agentStatus()).toBe('offline');
+  });
+
+  it('does not let an in-flight poll overwrite a newer session-start SSE event', () => {
+    const { service, get } = createStatusService();
+    const response = new Subject<any>();
+    get.and.callFake((url: string) => url === '/api/status'
+      ? response.asObservable()
+      : of({ devices: [] }));
+    const listeners = new Map<string, (event: any) => void>();
+    const originalEventSource = Object.getOwnPropertyDescriptor(window, 'EventSource');
+    class TestEventSource {
+      public addEventListener(type: string, listener: (event: any) => void): void {
+        listeners.set(type, listener);
+      }
+
+      public close(): void {}
+    }
+
+    try {
+      Object.defineProperty(window, 'EventSource', {
+        configurable: true,
+        value: TestEventSource
+      });
+      service.ensureLiveStream();
+      service.fetchStatus();
+      listeners.get('session_started')!({
+        data: JSON.stringify({ session_id: 'sse-session', initial_goal: 'fixture' })
+      });
+      response.next({ status: 'idle', queue: [], active_tasks: [] });
+      response.complete();
+      expect(service.agentStatus()).toBe('running');
+      expect(service.runningSessionId()).toBe('sse-session');
+    } finally {
+      (service as any).eventSource = null;
+      if (originalEventSource) {
+        Object.defineProperty(window, 'EventSource', originalEventSource);
+      } else {
+        delete (window as any).EventSource;
+      }
+    }
   });
 
   it('does not let an older workspace error release a newer error suppression', () => {

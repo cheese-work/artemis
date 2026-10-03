@@ -84,6 +84,7 @@ export class AgentService {
   public whatsNewAcceptedRunHandoffs = signal(0);
   private whatsNewErrorOwners = new Set<symbol>();
   private statusRequestSequence = 0;
+  private statusAppliedSequence = 0;
   private whatsNewHandoffRequestBoundaries: number[] = [];
   // Persistent tracking of active/pending sessions across polling boundaries
   private activeSessionTracking = new Map<string, Session>();
@@ -577,6 +578,7 @@ export class AgentService {
       (s) => (s.status === 'running' || s.status === 'paused') && s.session_id !== targetSessionId
     );
 
+    this.invalidatePendingStatusResponses();
     // Apply optimistic updates: only set idle if effectiveStopAll is true or no other tasks are running
     if (effectiveStopAll || otherRunningSessions.length === 0) {
       this.agentStatus.set('idle');
@@ -652,6 +654,7 @@ export class AgentService {
           return;
         }
         const resumedSessionId = this.runningSessionId();
+        this.invalidatePendingStatusResponses();
         this.isPaused.set(false);
         this.pausedError.set(null);
         this.agentStatus.set('running');
@@ -904,6 +907,7 @@ export class AgentService {
           }
 
           if (eventType === 'session_started') {
+            this.invalidatePendingStatusResponses();
             this.agentStatus.set('running');
             if (parsedData?.session_id) {
               this.runningSessionId.set(parsedData.session_id);
@@ -921,6 +925,7 @@ export class AgentService {
           }
 
           if (eventType === 'session_ended') {
+            this.invalidatePendingStatusResponses();
             const endedId = evtSessionId || this.runningSessionId();
             if (endedId) {
               this.applySessionEndedStatus(endedId, parsedData);
@@ -973,6 +978,7 @@ export class AgentService {
                 !this.userPinnedSessionId() &&
                 (!curId || String(targetSid).trim().toLowerCase() !== String(curId).trim().toLowerCase())
               ) {
+                this.invalidatePendingStatusResponses();
                 this.agentStatus.set('running');
                 this.runningSessionId.set(targetSid);
                 this.selectSession(targetSid, false);
@@ -1002,6 +1008,7 @@ export class AgentService {
           }
 
           if (eventType === 'task_paused') {
+            this.invalidatePendingStatusResponses();
             this.isPaused.set(true);
             this.isRetrying.set(false);
             this.agentStatus.set('paused');
@@ -1022,6 +1029,7 @@ export class AgentService {
           }
 
           if (eventType === 'task_resumed') {
+            this.invalidatePendingStatusResponses();
             this.isPaused.set(false);
             this.isRetrying.set(false);
             this.pausedError.set(null);
@@ -1563,6 +1571,10 @@ export class AgentService {
     this.lastActiveTasksSignature = null;
   }
 
+  private invalidatePendingStatusResponses(): void {
+    this.statusAppliedSequence = this.statusRequestSequence;
+  }
+
   /**
    * Fetch current agent runner process status
    */
@@ -1570,8 +1582,9 @@ export class AgentService {
     const requestSequence = ++this.statusRequestSequence;
     this.http.get<any>('/api/status').subscribe({
       next: (data) => {
-        if (requestSequence !== this.statusRequestSequence) return;
+        if (requestSequence <= this.statusAppliedSequence) return;
         if (data && data.status) {
+          this.statusAppliedSequence = requestSequence;
           const oldStatus = this.agentStatus();
           const oldRunningSessionId = this.runningSessionId();
           const isActive = data.status === 'running' || data.status === 'paused';
@@ -1656,7 +1669,8 @@ export class AgentService {
         }
       },
       error: (err) => {
-        if (requestSequence !== this.statusRequestSequence) return;
+        if (requestSequence <= this.statusAppliedSequence) return;
+        this.statusAppliedSequence = requestSequence;
         console.error('Failed to fetch status from backend:', err);
         this.agentStatus.set('offline');
         this.runningSessionId.set(null);
