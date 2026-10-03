@@ -385,11 +385,23 @@ export class UsbDeviceRelayService implements OnDestroy {
   }
 
   private toUserMessage(error: unknown): string {
-    if (error instanceof AdbDaemonWebUsbDevice.DeviceBusyError) {
-      return 'The phone is busy. Close other ADB tools using its USB connection, then retry.';
+    const errorObject = typeof error === 'object' && error !== null
+      ? error as { name?: unknown; message?: unknown }
+      : {};
+    const name = typeof errorObject.name === 'string' ? errorObject.name : '';
+    const message = typeof errorObject.message === 'string'
+      ? errorObject.message
+      : typeof error === 'string'
+        ? error
+        : '';
+    if (
+      error instanceof AdbDaemonWebUsbDevice.DeviceBusyError ||
+      /claim(?:ing)? interface/i.test(message)
+    ) {
+      return 'Another program on this computer is using the phone (adb, Android Studio, scrcpy). ' +
+        'Quit it or run adb kill-server, unplug and replug, then retry.';
     }
 
-    const name = error instanceof Error ? error.name : '';
     switch (name) {
       case 'WebUsbUnsupportedError':
         return 'WebUSB is unavailable here. Use desktop Chromium over HTTPS or localhost.';
@@ -409,7 +421,9 @@ export class UsbDeviceRelayService implements OnDestroy {
       case 'UsbDeviceDisconnectedError':
         return 'The phone disconnected. Reconnect it to continue.';
       default:
-        return 'Could not connect the phone. Check its cable and USB Debugging, then retry.';
+        console.error(error);
+        return 'Could not connect the phone. Check its cable and USB Debugging, then retry.\n' +
+          `Details: ${name || 'Unknown error'}${message ? `: ${message}` : ''}`;
     }
   }
 }
