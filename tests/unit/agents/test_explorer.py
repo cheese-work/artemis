@@ -51,6 +51,7 @@ async def test_explorer_run():
     mock_ctx.llm_config = MagicMock()
     mock_ctx.llm_config.explorer = MagicMock()
     mock_ctx.llm_config.explorer.model = "gemini-3.7-flash"
+    mock_ctx.llm_config.explorer.provider = "google"
 
     mock_state = MagicMock(spec=State)
     mock_state.latest_screenshot = "/tmp/test_screenshot.jpg"
@@ -139,6 +140,7 @@ async def test_explorer_submit_answer():
     mock_ctx.llm_config = MagicMock()
     mock_ctx.llm_config.explorer = MagicMock()
     mock_ctx.llm_config.explorer.model = "gemini-3.7-flash"
+    mock_ctx.llm_config.explorer.provider = "google"
 
     mock_state = MagicMock(spec=State)
     mock_state.latest_screenshot = "/tmp/test_screenshot.jpg"
@@ -227,6 +229,7 @@ async def test_explorer_submit_answer_self_correction():
     mock_ctx.llm_config = MagicMock()
     mock_ctx.llm_config.explorer = MagicMock()
     mock_ctx.llm_config.explorer.model = "gemini-3.7-flash"
+    mock_ctx.llm_config.explorer.provider = "google"
 
     mock_state = MagicMock(spec=State)
     mock_state.latest_screenshot = "/tmp/test_screenshot.jpg"
@@ -381,6 +384,7 @@ async def test_explorer_initial_visual_marking():
     mock_ctx.llm_config = MagicMock()
     mock_ctx.llm_config.explorer = MagicMock()
     mock_ctx.llm_config.explorer.model = "gemini-3.7-flash"
+    mock_ctx.llm_config.explorer.provider = "google"
 
     mock_state = MagicMock(spec=State)
     mock_state.latest_screenshot = "/tmp/test_screenshot.jpg"
@@ -467,6 +471,7 @@ async def test_explorer_initial_visual_marking_previous_screenshot():
     mock_ctx.llm_config = MagicMock()
     mock_ctx.llm_config.explorer = MagicMock()
     mock_ctx.llm_config.explorer.model = "gemini-3.7-flash"
+    mock_ctx.llm_config.explorer.provider = "google"
 
     mock_state = MagicMock(spec=State)
     # current screenshot is different
@@ -560,6 +565,7 @@ async def test_explorer_initial_visual_marking_previous_screenshot_no_ui_tree():
     mock_ctx.llm_config = MagicMock()
     mock_ctx.llm_config.explorer = MagicMock()
     mock_ctx.llm_config.explorer.model = "gemini-3.7-flash"
+    mock_ctx.llm_config.explorer.provider = "google"
 
     mock_state = MagicMock(spec=State)
     mock_state.latest_screenshot = "/tmp/current_screenshot.jpg"
@@ -642,6 +648,7 @@ async def test_explorer_initial_visual_marking_previous_screenshot_ocr_fusion():
     mock_ctx.llm_config = MagicMock()
     mock_ctx.llm_config.explorer = MagicMock()
     mock_ctx.llm_config.explorer.model = "gemini-3.7-flash"
+    mock_ctx.llm_config.explorer.provider = "google"
 
     mock_state = MagicMock(spec=State)
     mock_state.latest_screenshot = "/tmp/current_screenshot.jpg"
@@ -744,6 +751,7 @@ async def test_explorer_initial_visual_marking_previous_screenshot_on_the_fly_oc
     mock_ctx.llm_config = MagicMock()
     mock_ctx.llm_config.explorer = MagicMock()
     mock_ctx.llm_config.explorer.model = "gemini-3.7-flash"
+    mock_ctx.llm_config.explorer.provider = "google"
 
     mock_state = MagicMock(spec=State)
     mock_state.latest_screenshot = "/tmp/current_screenshot.jpg"
@@ -858,6 +866,7 @@ async def test_explorer_denylisted_tool():
     mock_ctx.llm_config = MagicMock()
     mock_ctx.llm_config.explorer = MagicMock()
     mock_ctx.llm_config.explorer.model = "gemini-3.7-flash"
+    mock_ctx.llm_config.explorer.provider = "google"
     mock_ctx.agent_config = MagicMock()
     mock_ctx.agent_config.denylisted_tools = {"explorer": ["search_xml_ocr"]}
 
@@ -1051,6 +1060,7 @@ async def test_explorer_final_turn_tool_stripping():
     mock_ctx.llm_config = MagicMock()
     mock_ctx.llm_config.explorer = MagicMock()
     mock_ctx.llm_config.explorer.model = "gemini-3.7-flash"
+    mock_ctx.llm_config.explorer.provider = "google"
 
     # A client already shared on the context selects the native engine and is
     # reused lazily by ``run`` (no ``genai.Client`` construction).

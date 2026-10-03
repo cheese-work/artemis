@@ -22,8 +22,55 @@ markers here so callers can select them without relying on filename patterns.
 from pathlib import Path
 
 import pytest
+from pydantic import SecretStr
 
 from artemis.drivers.mock.mock_driver import MockDeviceDriver
+
+PROVIDER_CREDENTIAL_FIELDS = (
+    "OPENAI_API_KEY",
+    "GOOGLE_API_KEY",
+    "GEMINI_API_KEY",
+    "GCP_API_KEY",
+    "ANTHROPIC_API_KEY",
+    "XAI_API_KEY",
+    "OPEN_ROUTER_API_KEY",
+    "OCR_API_KEY",
+    "VISION_API_KEY",
+    "API_KEY",
+    "TYPESAFE_API_KEY",
+)
+FAKE_PROVIDER_CREDENTIAL_FIELDS = (
+    "OPENAI_API_KEY",
+    "GOOGLE_API_KEY",
+    "GEMINI_API_KEY",
+    "GCP_API_KEY",
+    "ANTHROPIC_API_KEY",
+    "XAI_API_KEY",
+    "OPEN_ROUTER_API_KEY",
+)
+
+
+@pytest.fixture(autouse=True)
+def isolate_provider_credentials(monkeypatch):
+    """Keep the deterministic suite independent of ambient credentials."""
+    from artemis.config.settings import settings
+
+    for field in PROVIDER_CREDENTIAL_FIELDS:
+        monkeypatch.delenv(field, raising=False)
+        if hasattr(settings, field):
+            monkeypatch.setattr(settings, field, None)
+
+
+@pytest.fixture
+def fake_provider_credentials(monkeypatch):
+    """Configure clients with synthetic credentials and never live keys."""
+    from artemis.config.settings import settings
+
+    for field in FAKE_PROVIDER_CREDENTIAL_FIELDS:
+        value = f"unit-test-{field.lower()}"
+        monkeypatch.setenv(field, value)
+        if hasattr(settings, field):
+            monkeypatch.setattr(settings, field, SecretStr(value))
 
 
 @pytest.fixture

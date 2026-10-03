@@ -35,6 +35,7 @@ def mock_context():
     ctx.llm_config = Mock()
     mock_llm_cfg = Mock()
     mock_llm_cfg.model = "gemini-2.5-flash"
+    mock_llm_cfg.provider = "google"
     mock_llm_cfg.temperature = 0.1
     ctx.llm_config.get_agent.return_value = mock_llm_cfg
 
