@@ -633,6 +633,8 @@ async def render_timeline_clip(
             "23",
             "-movflags",
             "+faststart",
+            "-r",
+            str(fps),
             str(output_path),
         ]
     )
