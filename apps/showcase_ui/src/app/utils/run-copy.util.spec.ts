@@ -222,4 +222,100 @@ describe('buildRunSummary', () => {
 
     expect(summary).toContain('- Failing step: Not reported');
   });
+
+  it('includes a failed native trace before any step snapshot repeats it', () => {
+    const failedTrace = {
+      trace_id: 'trace-failure',
+      step_id: 'native-step-3',
+      type: 'tool',
+      name: 'failed_tool',
+      status: 'failed',
+      payload: { error: 'Fixture terminal tool failure' }
+    };
+    const logs = [
+      {
+        type: 'step_updated',
+        data: {
+          step_id: 'native-step-3',
+          step_number: 3,
+          action_taken: { action: 'tap' }
+        }
+      },
+      { type: 'trace_recorded', data: failedTrace }
+    ];
+
+    const traceOnlySummary = buildRunSummary(session, 'failed', logs, null);
+    expect(traceOnlySummary).toContain('- Failing step: Step 3: failed_tool');
+    expect(traceOnlySummary).not.toContain('Fixture terminal tool failure');
+    expect(buildRunSummary(session, 'failed', [
+      ...logs,
+      { type: 'step_updated', data: { step_id: 'native-step-3', step_number: 3, generic_tools: [failedTrace] } }
+    ], null)).toContain('- Failing step: Step 3: failed_tool');
+  });
+
+  it('keeps a failed trace attached to its native step and clears that failure after trace recovery', () => {
+    const failedTrace = {
+      trace_id: 'trace-failure',
+      step_id: 'native-step-3',
+      type: 'tool',
+      name: 'failed_tool',
+      status: 'failed',
+      payload: { error: 'Fixture terminal tool failure' }
+    };
+    const logs = [
+      { type: 'step_updated', data: { step_id: 'native-step-3', step_number: 3 } },
+      { type: 'step_updated', data: { step_id: 'native-step-4', step_number: 4, status: 'completed' } },
+      { type: 'trace_recorded', data: failedTrace },
+      {
+        type: 'trace_recorded',
+        data: { ...failedTrace, status: 'success', payload: { result: 'Recovered' } }
+      }
+    ];
+
+    expect(buildRunSummary(session, 'failed', logs.slice(0, 3), null)).toContain('- Failing step: Step 3: failed_tool');
+    const summary = buildRunSummary({ ...session, status: 'completed' }, 'completed', logs, null);
+
+    expect(summary).toContain('- Failing step: Not reported');
+  });
+
+  it('preserves repaired and newer-step precedence over an earlier failed trace', () => {
+    const failedTrace = {
+      trace_id: 'trace-failure',
+      step_id: 'native-step-3',
+      type: 'tool',
+      name: 'failed_tool',
+      status: 'failed',
+      payload: { error: 'Fixture terminal tool failure' }
+    };
+    const logs = [
+      {
+        type: 'step_updated',
+        data: { step_id: 'native-step-3', step_number: 3, action_taken: { action: 'tap' } }
+      },
+      { type: 'trace_recorded', data: failedTrace },
+      {
+        type: 'step_updated',
+        data: {
+          step_id: 'native-step-3',
+          step_number: 3,
+          status: 'completed',
+          last_execution_result: { status: 'success', repair_status: 'fixed' }
+        }
+      },
+      {
+        type: 'step_updated',
+        data: {
+          step_id: 'native-step-4',
+          step_number: 4,
+          status: 'failed',
+          action_taken: { action: 'swipe', status: 'failed' }
+        }
+      }
+    ];
+
+    const summary = buildRunSummary(session, 'failed', logs, null);
+
+    expect(summary).toContain('- Failing step: Step 4: swipe');
+    expect(summary).not.toContain('Step 3:');
+  });
 });

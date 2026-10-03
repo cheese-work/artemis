@@ -1,5 +1,6 @@
 import { Session } from '../core/models/session.model';
 import { isActionFailed } from './action-formatter.util';
+import { consolidateLogsToBlocks } from './stream-aggregator.util';
 
 export function buildRunSummary(
   session: Session,
@@ -24,6 +25,7 @@ function findFailingStep(logs: unknown[]): string {
   const latestSteps: { step: Record<string, unknown>; index: number }[] = [];
   const stepsById = new Map<string, { step: Record<string, unknown>; index: number }>();
   const stepsByNumber = new Map<number, { step: Record<string, unknown>; index: number }>();
+  const eventIndices = getSummaryEventIndices(logs);
   logs.forEach((log, index) => {
     if (!log || typeof log !== 'object') return;
     const event = log as Record<string, unknown>;
@@ -38,6 +40,18 @@ function findFailingStep(logs: unknown[]): string {
       mergeStep(event, index, latestSteps, stepsById, stepsByNumber);
     }
   });
+
+  const streamEvents = logs.filter(log => {
+    if (!log || typeof log !== 'object' || Array.isArray(log)) return false;
+    const data = (log as Record<string, unknown>)['data'];
+    return !!data && typeof data === 'object' && !Array.isArray(data);
+  });
+  for (const block of consolidateLogsToBlocks(streamEvents as any[])) {
+    if (block.type !== 'step' || !block.data || typeof block.data !== 'object') continue;
+    const step = block.data as Record<string, unknown>;
+    const index = getSummaryStepEventIndex(step, eventIndices);
+    if (index >= 0) mergeStep(step, index, latestSteps, stepsById, stepsByNumber);
+  }
 
   const failingEntry = latestSteps
     .sort((left, right) => right.index - left.index)
@@ -103,6 +117,75 @@ function mergeGenericTools(existing: unknown, incoming: unknown): unknown[] {
     }
   }
   return merged;
+}
+
+interface SummaryEventIndices {
+  stepIds: Map<string, number>;
+  stepNumbers: Map<number, number>;
+  traceIds: Map<string, number>;
+}
+
+function getSummaryEventIndices(logs: unknown[]): SummaryEventIndices {
+  const indices: SummaryEventIndices = {
+    stepIds: new Map(),
+    stepNumbers: new Map(),
+    traceIds: new Map()
+  };
+  logs.forEach((log, index) => {
+    if (!log || typeof log !== 'object' || Array.isArray(log)) return;
+    const event = log as Record<string, unknown>;
+    const data = event['data'] && typeof event['data'] === 'object'
+      ? event['data'] as Record<string, unknown>
+      : event;
+    const type = String(event['type'] ?? '');
+    if (['step_updated', 'step_recorded', 'step'].includes(type)
+      || data['step_id'] !== undefined || data['step_number'] !== undefined) {
+      const stepId = data['step_id'] === undefined || data['step_id'] === null
+        ? ''
+        : String(data['step_id']).trim();
+      const stepNumber = parseStepNumber(data['step_number']);
+      if (stepId) indices.stepIds.set(stepId, index);
+      if (stepNumber !== null) indices.stepNumbers.set(stepNumber, index);
+    }
+    if (type === 'trace_recorded') {
+      const traceId = data['trace_id'] === undefined || data['trace_id'] === null
+        ? ''
+        : String(data['trace_id']).trim();
+      const stepId = data['step_id'] === undefined || data['step_id'] === null
+        ? ''
+        : String(data['step_id']).trim();
+      const stepNumber = parseStepNumber(data['step_number']);
+      if (traceId) indices.traceIds.set(traceId, index);
+      if (stepId) indices.stepIds.set(stepId, index);
+      if (stepNumber !== null) indices.stepNumbers.set(stepNumber, index);
+    }
+  });
+  return indices;
+}
+
+function getSummaryStepEventIndex(step: Record<string, unknown>, indices: SummaryEventIndices): number {
+  const stepId = step['step_id'] === undefined || step['step_id'] === null
+    ? ''
+    : String(step['step_id']).trim();
+  const stepNumber = parseStepNumber(step['step_number']);
+  let latestIndex = Math.max(
+    stepId ? indices.stepIds.get(stepId) ?? -1 : -1,
+    stepNumber !== null ? indices.stepNumbers.get(stepNumber) ?? -1 : -1
+  );
+  if (Array.isArray(step['generic_tools'])) {
+    for (const tool of step['generic_tools']) {
+      if (!tool || typeof tool !== 'object') continue;
+      const traceId = String((tool as Record<string, unknown>)['trace_id'] ?? '').trim();
+      if (traceId) latestIndex = Math.max(latestIndex, indices.traceIds.get(traceId) ?? -1);
+    }
+  }
+  return latestIndex;
+}
+
+function parseStepNumber(value: unknown): number | null {
+  if (value === undefined || value === null || String(value).trim() === '') return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
 }
 
 function isUnresolvedFailure(step: Record<string, unknown>): boolean {
