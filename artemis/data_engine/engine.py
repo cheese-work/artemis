@@ -416,6 +416,7 @@ class DataEngine:
         self._trace_counter = 0
         self._pending_tasks = set()
         self._pending_threads = []
+        self._pending_threads_lock = threading.Lock()
         self._accumulated_logs = {}
         self._bg_task_to_trace_id = {}
         self._trace_name_cache = {}
@@ -1083,10 +1084,9 @@ class DataEngine:
 
     def has_pending_operations(self) -> bool:
         """Check if there are any pending background tasks or threads."""
-        return (
-            len(self._pending_tasks) > 0
-            or len([t for t in self._pending_threads if t.is_alive()]) > 0
-        )
+        with self._pending_threads_lock:
+            has_pending_threads = any(thread.is_alive() for thread in self._pending_threads)
+        return len(self._pending_tasks) > 0 or has_pending_threads
 
     async def shutdown(self):
         """Wait for all pending background tasks and threads to complete."""
@@ -1096,9 +1096,10 @@ class DataEngine:
             )
             await asyncio.gather(*self._pending_tasks, return_exceptions=True)
 
-        if self._pending_threads:
-            logger.info(f"Waiting for {len(self._pending_threads)} pending threads to complete...")
+        with self._pending_threads_lock:
             threads_to_join = list(self._pending_threads)
+        if threads_to_join:
+            logger.info(f"Waiting for {len(threads_to_join)} pending threads to complete...")
             for thread in threads_to_join:
                 if thread.is_alive():
                     await asyncio.to_thread(thread.join)
@@ -1222,12 +1223,14 @@ class DataEngine:
                     logger.error(f"Background storage operation failed: {exc}", exc_info=exc)
                 finally:
                     curr_thread = threading.current_thread()
-                    if curr_thread in self._pending_threads:
-                        self._pending_threads.remove(curr_thread)
+                    with self._pending_threads_lock:
+                        if curr_thread in self._pending_threads:
+                            self._pending_threads.remove(curr_thread)
 
             thread = threading.Thread(target=run_and_cleanup, name="artemis-storage", daemon=True)
-            self._pending_threads.append(thread)
-            thread.start()
+            with self._pending_threads_lock:
+                thread.start()
+                self._pending_threads.append(thread)
         else:
             task = loop.create_task(asyncio.to_thread(fn, *args))
             self._pending_tasks.add(task)

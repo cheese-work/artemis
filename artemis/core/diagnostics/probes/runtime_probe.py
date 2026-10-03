@@ -144,11 +144,10 @@ class SystemConfigProbe(BaseProbe):
                     )
                 ],
             )
-        except Exception as e:
+        except Exception:
             metadata = {
                 "valid": False,
                 "config_file": "config/artemis.jsonc",
-                "error": str(e),
             }
             return ProbeResult(
                 id=self.probe_id,
@@ -157,7 +156,7 @@ class SystemConfigProbe(BaseProbe):
                 status=ProbeStatus.FAIL,
                 is_blocker=self.is_blocker,
                 summary="Config Error",
-                description=f"Failed to parse config/artemis.jsonc: {e}",
+                description="Failed to load or validate config/artemis.jsonc.",
                 metadata=metadata,
                 actions=[
                     ProbeAction(

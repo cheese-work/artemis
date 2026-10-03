@@ -22,15 +22,21 @@ Covers the invariants the no-auth security model depends on:
 - lifecycle controls stay loopback-only.
 """
 
+import json
 import secrets as py_secrets
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from httpx import ASGITransport, AsyncClient
 from pydantic import SecretStr
 
+from apps.admin_console.routers import system
 from apps.admin_console.server import app
 from artemis.config import TRACES_PATH, WORKSPACE_ROOT
+from artemis.core.diagnostics.adb_server_connection import AdbServerConnectionManager
+from artemis.core.diagnostics.engine import ReadinessEngine
+from artemis.core.diagnostics.probes.credentials_probe import LLMCredentialsProbe
+from artemis.core.diagnostics.probes.runtime_probe import SystemConfigProbe
 
 
 def _client(**transport_kwargs) -> AsyncClient:
@@ -48,6 +54,7 @@ def _client(**transport_kwargs) -> AsyncClient:
 async def test_credentials_endpoint_never_returns_key_material(monkeypatch):
     from artemis.config import settings
 
+    monkeypatch.delenv("ARTEMIS_CONFIG_WRITES", raising=False)
     honeytoken = f"sk-honeytoken-{py_secrets.token_hex(16)}"
     monkeypatch.setattr(type(settings), "get_api_key", lambda self, provider: SecretStr(honeytoken))
 
@@ -58,6 +65,137 @@ async def test_credentials_endpoint_never_returns_key_material(monkeypatch):
     assert honeytoken not in res.text
     providers = {entry["name"]: entry["configured"] for entry in res.json()["providers"]}
     assert providers.get("google") is True
+    assert res.json()["config_writes_locked"] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("path", "payload"),
+    [
+        (
+            "/api/system/credentials",
+            {"provider": "google", "api_key": "FAKE-CREDENTIAL-ONLY"},
+        ),
+        (
+            "/api/system/credentials/test",
+            {"provider": "google", "api_key": "FAKE-CREDENTIAL-ONLY"},
+        ),
+    ],
+)
+@pytest.mark.parametrize("lock_value", [None, "locked"])
+async def test_locked_credential_writes_return_403_without_side_effects(
+    monkeypatch, path, payload, lock_value
+):
+    from artemis.config import settings
+    from artemis.utils import credentials_validator
+
+    if lock_value is None:
+        monkeypatch.delenv("ARTEMIS_CONFIG_WRITES", raising=False)
+    else:
+        monkeypatch.setenv("ARTEMIS_CONFIG_WRITES", lock_value)
+
+    validate_api_key = AsyncMock(return_value=(True, "valid"))
+    set_api_key = MagicMock()
+    monkeypatch.setattr(credentials_validator, "validate_api_key", validate_api_key)
+    monkeypatch.setattr(type(settings), "set_api_key", set_api_key)
+
+    async with _client() as ac:
+        res = await ac.post(path, json=payload)
+
+    assert res.status_code == 403
+    assert res.json()["detail"]["code"] == "CONFIG_WRITES_LOCKED"
+    assert "FAKE-CREDENTIAL-ONLY" not in res.text
+    validate_api_key.assert_not_awaited()
+    set_api_key.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("path", "payload"),
+    [
+        (
+            "/api/system/adb/server/connect",
+            {"host": "192.0.2.5", "port": 5037, "persist": True},
+        ),
+        ("/api/system/adb/server/local", None),
+    ],
+)
+async def test_locked_adb_server_writes_return_403_without_side_effects(
+    monkeypatch, tmp_path, path, payload
+):
+    monkeypatch.setenv("ARTEMIS_CONFIG_WRITES", "locked")
+    env_file = tmp_path / ".env"
+    env_file.write_text("EXISTING=unchanged\n", encoding="utf-8")
+    manager = AdbServerConnectionManager(env_files=[env_file])
+    manager._activate = MagicMock()
+    manager.probe = AsyncMock(return_value={"success": True, "message": "offline probe"})
+    readiness = MagicMock()
+    readiness.run_all = AsyncMock()
+    monkeypatch.setattr(system, "adb_server_connection", manager)
+    monkeypatch.setattr(system, "readiness_engine", readiness)
+
+    async with _client(client=("127.0.0.1", 1234)) as ac:
+        if payload is None:
+            response = await ac.post(path)
+        else:
+            response = await ac.post(path, json=payload)
+
+    assert response.status_code == 403
+    assert response.json()["detail"]["code"] == "CONFIG_WRITES_LOCKED"
+    assert env_file.read_text(encoding="utf-8") == "EXISTING=unchanged\n"
+    manager._activate.assert_not_called()
+    manager.probe.assert_not_awaited()
+    readiness.set_probe_target_serial.assert_not_called()
+    readiness.invalidate_cache.assert_not_called()
+    readiness.run_all.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure_path", ["config_validation", "crashed_probe"])
+async def test_readiness_failure_responses_redact_exception_text(
+    monkeypatch, tmp_path, caplog, failure_path
+):
+    from artemis.config import llm, settings
+    from mcp_server.tools.diagnose import _render_check
+
+    fake_secret = "FAKE-S0-REVIEW-SECRET-9876"
+    engine = ReadinessEngine()
+    if failure_path == "config_validation":
+        config_path = tmp_path / "artemis.jsonc"
+        config_path.write_text(
+            json.dumps(
+                {
+                    "default": {
+                        "provider": "openai",
+                        "model": "offline-review-model",
+                        "api_base": {"key": fake_secret},
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(llm, "get_config_path", lambda *_args: config_path)
+        probe = SystemConfigProbe()
+    else:
+        probe = LLMCredentialsProbe()
+
+        def fail(_settings, _provider):
+            raise ValueError(f"Rejected credential {fake_secret}")
+
+        monkeypatch.setattr(type(settings), "get_api_key", fail)
+
+    engine._probes = {probe.probe_id: probe}
+    monkeypatch.setattr(system, "readiness_engine", engine)
+    report = await engine.run_all(force_refresh=True)
+
+    async with _client(client=("127.0.0.1", 1234)) as ac:
+        response = await ac.get("/api/system/readiness", params={"force": "true"})
+
+    assert response.status_code == 200
+    assert fake_secret not in response.text
+    assert "Rejected credential" not in response.text
+    assert fake_secret not in json.dumps(_render_check(report.probes[0]))
+    assert fake_secret not in caplog.text
 
 
 @pytest.mark.asyncio

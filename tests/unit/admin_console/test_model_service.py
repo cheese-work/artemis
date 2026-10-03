@@ -13,11 +13,23 @@
 # limitations under the License.
 
 import json
-from unittest.mock import patch, MagicMock
+from types import SimpleNamespace
 
 import pytest
 
 from apps.admin_console.services.model_service import ModelService
+
+
+@pytest.fixture(autouse=True)
+def isolate_llm_model_config(monkeypatch):
+    monkeypatch.setattr(ModelService, "_llm_info_cache", None)
+    monkeypatch.setattr(
+        "artemis.config.parse_llm_config",
+        lambda: SimpleNamespace(
+            operator=SimpleNamespace(provider="google", model="gemini-3.7-flash"),
+            default=None,
+        ),
+    )
 
 
 def test_get_active_model_info_pro_architecture():

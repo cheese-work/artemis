@@ -357,6 +357,9 @@
 
     <!-- Dynamic Panel Based on Choice -->
     @if (modelSetupMode() === 'gemini') {
+    @if (configWritesLocked()) {
+    <p class="choice-desc" role="status">Credentials are read-only. Admin changes coming soon.</p>
+    }
     <!-- 1. Gemini API Key Box -->
     <div class="credentials-input-box">
       <div class="input-box-header">
@@ -377,11 +380,11 @@
           <input [type]="showGeminiKey() ? 'text' : 'password'" class="unified-key-input"
             [class.is-masked]="!showGeminiKey()" [ngModel]="geminiKeyInput()"
             (ngModelChange)="onGeminiKeyChange($event)" placeholder="Enter Gemini API Key (e.g. AIzaSy...)"
-            spellcheck="false" autocomplete="off" />
+            spellcheck="false" autocomplete="off" [disabled]="configWritesLocked()" />
 
           <!-- Visibility Toggle -->
           <button type="button" class="btn-icon-action" [title]="showGeminiKey() ? 'Mask Key' : 'Show Plaintext'"
-            (click)="toggleGeminiKeyVisibility()">
+            [disabled]="configWritesLocked()" (click)="toggleGeminiKeyVisibility()">
             <span class="material-symbols-outlined">
               {{ showGeminiKey() ? 'visibility_off' : 'visibility' }}
             </span>
@@ -390,7 +393,7 @@
           <!-- Copy Button -->
           @if (geminiKeyInput()) {
           <button type="button" class="btn-icon-action" title="Copy API Key"
-            (click)="copyToClipboard(geminiKeyInput(), 'gemini_key_field')">
+            [disabled]="configWritesLocked()" (click)="copyToClipboard(geminiKeyInput(), 'gemini_key_field')">
             <span class="material-symbols-outlined" [class.text-emerald]="copiedId() === 'gemini_key_field'">
               {{ copiedId() === 'gemini_key_field' ? 'check' : 'content_copy' }}
             </span>
@@ -399,20 +402,21 @@
         </div>
 
         <!-- Save Button -->
-        <button type="button" class="btn-unified-save" [class.btn-dirty]="isGeminiModified()"
-          [disabled]="isSavingGeminiKey() || isTestingGeminiKey() || (!isGeminiModified() && !geminiKeyInput().trim())" (click)="saveGeminiKey()">
+        <button type="button" class="btn-unified-save" [class.btn-dirty]="hasGeminiKeyInput()"
+          [disabled]="configWritesLocked() || isSavingGeminiKey() || isTestingGeminiKey() || (!hasGeminiKeyInput() && !isGeminiConfigured())"
+          (click)="hasGeminiKeyInput() ? saveGeminiKey() : clearGeminiKey()">
           @if (isSavingGeminiKey()) {
           <span class="material-symbols-outlined spin">sync</span>
-          <span>{{ geminiKeyInput().trim() ? 'Verifying & Saving...' : 'Clearing...' }}</span>
+          <span>{{ hasGeminiKeyInput() ? 'Verifying & Saving...' : 'Clearing...' }}</span>
           } @else {
-          <span class="material-symbols-outlined">{{ geminiKeyInput().trim() ? 'save' : 'delete_outline' }}</span>
-          <span>{{ !geminiKeyInput().trim() ? 'Clear Key' : (isGeminiModified() ? 'Save & Apply' : 'Save Key') }}</span>
+          <span class="material-symbols-outlined">{{ hasGeminiKeyInput() ? 'save' : 'delete_outline' }}</span>
+          <span>{{ hasGeminiKeyInput() ? 'Save & Apply' : (isGeminiConfigured() ? 'Clear Key' : 'Save Key') }}</span>
           }
         </button>
 
         <!-- Test Button -->
         <button type="button" class="btn-unified-test" title="Test if Gemini API key is valid"
-          [disabled]="isTestingGeminiKey() || isSavingGeminiKey() || !geminiKeyInput().trim()" (click)="testGeminiKey()">
+          [disabled]="configWritesLocked() || isTestingGeminiKey() || isSavingGeminiKey() || !geminiKeyInput().trim()" (click)="testGeminiKey()">
           @if (isTestingGeminiKey()) {
           <span class="material-symbols-outlined spin">sync</span>
           <span>Testing...</span>
@@ -477,11 +481,12 @@
               <span class="material-symbols-outlined key-prefix-icon">key</span>
               <input [type]="showOcrKey() ? 'text' : 'password'" class="unified-key-input" [class.is-masked]="!showOcrKey()"
                 [ngModel]="ocrKeyInput()" (ngModelChange)="onOcrKeyChange($event)"
-                placeholder="Enter Vision OCR API Key (e.g. AIzaSy...)" spellcheck="false" autocomplete="off" />
+                placeholder="Enter Vision OCR API Key (e.g. AIzaSy...)" spellcheck="false" autocomplete="off"
+                [disabled]="configWritesLocked()" />
           
               <!-- Visibility Toggle -->
               <button type="button" class="btn-icon-action" [title]="showOcrKey() ? 'Mask Key' : 'Show Plaintext'"
-                (click)="toggleOcrKeyVisibility()">
+                [disabled]="configWritesLocked()" (click)="toggleOcrKeyVisibility()">
                 <span class="material-symbols-outlined">
                   {{ showOcrKey() ? 'visibility_off' : 'visibility' }}
                 </span>
@@ -490,7 +495,7 @@
               <!-- Copy Button -->
               @if (ocrKeyInput()) {
               <button type="button" class="btn-icon-action" title="Copy API Key"
-                (click)="copyToClipboard(ocrKeyInput(), 'ocr_key_field')">
+                [disabled]="configWritesLocked()" (click)="copyToClipboard(ocrKeyInput(), 'ocr_key_field')">
                 <span class="material-symbols-outlined" [class.text-emerald]="copiedId() === 'ocr_key_field'">
                   {{ copiedId() === 'ocr_key_field' ? 'check' : 'content_copy' }}
                 </span>
@@ -499,20 +504,21 @@
             </div>
             
             <!-- Save Button -->
-            <button type="button" class="btn-unified-save" [class.btn-dirty]="isOcrModified()"
-              [disabled]="isSavingOcrKey() || isTestingOcrKey() || (!isOcrModified() && !ocrKeyInput().trim())" (click)="saveOcrKey()">
+            <button type="button" class="btn-unified-save" [class.btn-dirty]="hasOcrKeyInput()"
+              [disabled]="configWritesLocked() || isSavingOcrKey() || isTestingOcrKey() || (!hasOcrKeyInput() && !isOcrConfigured())"
+              (click)="hasOcrKeyInput() ? saveOcrKey() : clearOcrKey()">
               @if (isSavingOcrKey()) {
               <span class="material-symbols-outlined spin">sync</span>
-              <span>{{ ocrKeyInput().trim() ? 'Verifying & Saving...' : 'Clearing...' }}</span>
+              <span>{{ hasOcrKeyInput() ? 'Verifying & Saving...' : 'Clearing...' }}</span>
               } @else {
-              <span class="material-symbols-outlined">{{ ocrKeyInput().trim() ? 'save' : 'delete_outline' }}</span>
-              <span>{{ !ocrKeyInput().trim() ? 'Clear Key' : (isOcrModified() ? 'Save & Apply' : 'Save Key') }}</span>
+              <span class="material-symbols-outlined">{{ hasOcrKeyInput() ? 'save' : 'delete_outline' }}</span>
+              <span>{{ hasOcrKeyInput() ? 'Save & Apply' : (isOcrConfigured() ? 'Clear Key' : 'Save Key') }}</span>
               }
             </button>
 
             <!-- Test Button -->
             <button type="button" class="btn-unified-test" title="Test if Vision OCR key is valid"
-              [disabled]="isTestingOcrKey() || isSavingOcrKey() || !ocrKeyInput().trim()" (click)="testOcrKey()">
+              [disabled]="configWritesLocked() || isTestingOcrKey() || isSavingOcrKey() || !ocrKeyInput().trim()" (click)="testOcrKey()">
               @if (isTestingOcrKey()) {
               <span class="material-symbols-outlined spin">sync</span>
               <span>Testing...</span>
@@ -540,6 +546,9 @@
       }
     </div>
     } @else {
+    @if (configWritesLocked()) {
+    <p class="choice-desc" role="status">Model and environment configuration are read-only. Admin changes coming soon.</p>
+    }
           <!-- CUSTOM CONFIGURATION & .ENV INSPECTOR (NO OCR HERE) -->
           <div class="custom-config-inspector">
 

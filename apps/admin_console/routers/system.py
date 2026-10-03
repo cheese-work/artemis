@@ -78,6 +78,21 @@ def _require_loopback_request(request: Request, detail: str) -> None:
         raise HTTPException(status_code=403, detail=detail)
 
 
+def _config_writes_locked() -> bool:
+    return os.getenv("ARTEMIS_CONFIG_WRITES", "locked").strip().casefold() != "unlocked"
+
+
+def _require_config_writes_unlocked() -> None:
+    if _config_writes_locked():
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "code": "CONFIG_WRITES_LOCKED",
+                "message": "Credential and environment writes are locked until admin access is available.",
+            },
+        )
+
+
 def _require_local_lifecycle_request(request: Request) -> None:
     """Authorize a process-lifecycle request from the local CLI only."""
     _require_loopback_request(request, "Server lifecycle controls are local-only.")
@@ -181,6 +196,7 @@ async def get_adb_server_status():
 async def connect_adb_server(payload: ConnectAdbServerRequest, request: Request):
     """Validate and activate an ADB server endpoint."""
     _require_local_admin_request(request)
+    _require_config_writes_unlocked()
     try:
         connection_result = await adb_server_connection.connect(
             payload.host,
@@ -213,6 +229,7 @@ async def probe_adb_server(payload: ConnectAdbServerRequest, request: Request):
 async def use_local_adb_server(request: Request, persist: bool = True):
     """Restore the standard local ADB server without touching a remote daemon."""
     _require_local_admin_request(request)
+    _require_config_writes_unlocked()
     connection_result = await adb_server_connection.use_local_server(persist=persist)
     readiness_engine.set_probe_target_serial(None)
     readiness_engine.invalidate_cache()
@@ -300,13 +317,16 @@ async def get_credentials():
     return {
         "providers": [
             {"name": name, "configured": configured} for name, configured in status.items()
-        ]
+        ],
+        "config_writes_locked": _config_writes_locked(),
     }
 
 
 @router.post("/credentials/test")
 async def test_credentials(request: ValidateCredentialsRequest):
     """Test and verify whether an API key is valid and usable with the corresponding provider endpoint."""
+    _require_config_writes_unlocked()
+
     from artemis.utils.credentials_validator import validate_api_key
 
     provider = request.provider.strip().lower()
@@ -333,6 +353,8 @@ async def test_credentials(request: ValidateCredentialsRequest):
 @router.post("/credentials")
 async def update_credentials(request: UpdateCredentialsRequest):
     """Dynamically configure and persist LLM or Vision API key, returning updated readiness report."""
+    _require_config_writes_unlocked()
+
     from artemis.utils.credentials_validator import validate_api_key
 
     provider = request.provider.strip().lower()
