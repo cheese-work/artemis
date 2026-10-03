@@ -18,11 +18,12 @@ import { Component, ChangeDetectionStrategy, EventEmitter, inject, Input, Output
 
 import { RouterLink, RouterLinkActive } from '@angular/router';
 import { UsbDeviceRelayService } from '../../services/usb-device-relay.service';
+import { AdminIdentityIndicatorComponent } from '../admin-identity-indicator/admin-identity-indicator.component';
 
 @Component({
   selector: 'app-nav-switcher',
   standalone: true,
-  imports: [RouterLink, RouterLinkActive],
+  imports: [RouterLink, RouterLinkActive, AdminIdentityIndicatorComponent],
   template: `
     <nav class="floating-nav-switcher" aria-label="Primary navigation">
       <span class="brand-wordmark">SmartQA</span>
@@ -61,6 +62,7 @@ import { UsbDeviceRelayService } from '../../services/usb-device-relay.service';
           <button type="button" (click)="disconnectPhone()">Disconnect</button>
         </div>
       }
+      <app-admin-identity-indicator></app-admin-identity-indicator>
     </nav>
   `,
   changeDetection: ChangeDetectionStrategy.Eager,

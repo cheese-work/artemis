@@ -1,0 +1,144 @@
+<section class="setup-page" [class.setup-embedded]="embedded" [attr.role]="embedded ? null : 'main'">
+  @if (!embedded) {
+    <header class="setup-header">
+      <div>
+        <p class="eyebrow">SmartQA · Admin</p>
+        <h1>Provider setup</h1>
+        <p class="subtitle">Choose the active model and configure credentials for the next run.</p>
+      </div>
+      @if (snapshot(); as current) {
+        <span class="version-chip">Config {{ current.version.slice(0, 10) }}</span>
+      }
+    </header>
+  }
+
+  @if (loading()) {
+    <p class="notice" role="status">Loading provider settings…</p>
+  } @else if (!snapshot()) {
+    <section class="notice error" role="alert">
+      <p>{{ message() }}</p>
+      <button type="button" class="secondary-button" (click)="load()">Retry</button>
+    </section>
+  } @else {
+    @if (!canEdit()) {
+      <section class="notice read-only" role="status">
+        <strong>Admin only</strong>
+        <p>Settings are read-only for this identity.</p>
+        @if (identity()?.auth_mode === 'cloudflare' && !identity()?.email) {
+          <p>Read-only (not signed in) — open <a href="https://smart-qa.tevo.vn">SmartQA</a> to sign in.</p>
+        }
+      </section>
+    }
+
+    @if (message()) {
+      <section class="notice" [class.error]="conflict() || message().startsWith('Admin only')" [attr.role]="conflict() ? 'alert' : 'status'">
+        <p>{{ message() }}</p>
+        @if (conflict()) {
+          <button type="button" class="secondary-button" (click)="load()">Reload settings</button>
+        }
+      </section>
+    }
+
+    <form class="setup-grid" (ngSubmit)="save()">
+      <section class="panel model-panel" aria-labelledby="model-heading">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">Step 2</p>
+            <h2 id="model-heading">Active models</h2>
+          </div>
+          <span class="source-label">Source: {{ snapshot()?.sources?.default }}</span>
+        </div>
+
+        <div class="field-grid">
+          <label>
+            <span>Default provider</span>
+            <select name="default-provider" [(ngModel)]="primaryProvider" [disabled]="!canEdit() || saving()">
+              @for (provider of modelProviders(); track provider.name) {
+                <option [value]="provider.name">{{ provider.name }}</option>
+              }
+            </select>
+          </label>
+          <label>
+            <span>Default model</span>
+            <input name="default-model" [(ngModel)]="primaryModel" [readonly]="!canEdit()" [disabled]="saving()" autocomplete="off" />
+          </label>
+          <label>
+            <span>Fallback provider</span>
+            <select name="fallback-provider" [(ngModel)]="fallbackProvider" [disabled]="!canEdit() || saving()">
+              @for (provider of modelProviders(); track provider.name) {
+                <option [value]="provider.name">{{ provider.name }}</option>
+              }
+            </select>
+          </label>
+          <label>
+            <span>Fallback model</span>
+            <input name="fallback-model" [(ngModel)]="fallbackModel" [readonly]="!canEdit()" [disabled]="saving()" autocomplete="off" />
+          </label>
+        </div>
+      </section>
+
+      <section class="panel provider-panel" aria-labelledby="provider-heading">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">Credentials</p>
+            <h2 id="provider-heading">Provider access</h2>
+          </div>
+          <span class="source-label">Source: {{ snapshot()?.sources?.env }}</span>
+        </div>
+
+        @for (provider of snapshot()?.providers ?? []; track provider.name) {
+          <article class="provider-row">
+            <div class="provider-heading">
+              <h3>{{ provider.name }}</h3>
+              <span class="configured" [class.not-configured]="!provider.configured">
+                {{ provider.configured ? 'Set' : 'Not set' }}
+                @if (provider.key_preview) { ({{ provider.key_preview }}) }
+              </span>
+            </div>
+            <label class="key-field">
+              <span>{{ provider.name }} API key</span>
+              <input
+                [name]="'credential-' + provider.name"
+                type="password"
+                [(ngModel)]="credentialInputs[provider.name]"
+                (input)="onCredentialInput(provider.name, $any($event.target).value)"
+                [placeholder]="provider.configured ? 'Enter a new key to replace' : 'Enter API key'"
+                [readonly]="!canEdit() || saving() || provider.key_source === 'service environment (read-only)'"
+                autocomplete="new-password"
+                spellcheck="false"
+              />
+            </label>
+            @if (provider.configured && canEdit()) {
+              <button type="button" class="text-button" (click)="clearCredential(provider.name)" [disabled]="saving() || provider.key_source === 'service environment (read-only)'">
+                Clear saved key
+              </button>
+            }
+            @if (provider.name === 'openai' || provider.name === 'anthropic') {
+              <label class="key-field">
+                <span>{{ provider.name }} base URL</span>
+                <input
+                  [name]="'base-url-' + provider.name"
+                  type="url"
+                  [(ngModel)]="baseUrls[provider.name]"
+                  [readonly]="!canEdit() || saving() || provider.base_url_source === 'service environment (read-only)'"
+                  placeholder="https://"
+                  autocomplete="url"
+                />
+              </label>
+            }
+            <p class="source-note">Credential source: {{ provider.key_source }} · Base URL source: {{ provider.base_url_source }}</p>
+          </article>
+        }
+      </section>
+
+      <footer class="form-footer">
+        <span class="save-hint">Changes apply to runs started after saving.</span>
+        @if (canEdit()) {
+          <button type="submit" class="primary-button" [disabled]="saving()">
+            {{ saving() ? 'Saving…' : 'Save settings' }}
+          </button>
+        }
+      </footer>
+    </form>
+  }
+</section>
