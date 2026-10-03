@@ -237,6 +237,17 @@ async def require_admin(identity: AccessIdentity = Depends(public_tier)) -> Acce
     )
 
 
+async def require_qa(identity: AccessIdentity = Depends(public_tier)) -> AccessIdentity:
+    if identity.email is not None or identity.admin:
+        return identity
+    raise AdminAPIError(
+        401,
+        "Sign in through Cloudflare Access before using this QA action.",
+        "not_signed_in",
+        "Open the protected SmartQA URL and sign in, then retry.",
+    )
+
+
 async def require_websocket_admin(identity: AccessIdentity = Depends(public_tier)) -> None:
     if not identity.admin:
         reason = "not_signed_in" if identity.email is None else "admin_required"
@@ -308,14 +319,12 @@ _PUBLIC_GET_PATHS = {
 _ADMIN_MUTATING_PATHS = {
     "/api/system/devices/select",
     "/api/system/adb/restart",
-    "/api/system/adb/heal-keys",
     "/api/system/adb/connect",
     "/api/system/adb/server/connect",
     "/api/system/adb/server/probe",
     "/api/system/adb/server/local",
     "/api/system/emulator/launch",
     "/api/system/emulator/stop",
-    "/api/system/emulator/dismiss",
     "/api/system/credentials/test",
     "/api/system/credentials",
     "/api/system/config",
@@ -323,6 +332,11 @@ _ADMIN_MUTATING_PATHS = {
     "/api/cleanup",
     "/api/sessions/{session_id}/delete",
     "/api/sessions/{session_id}/steps/{step_number}/replay",
+}
+
+_QA_MUTATING_PATHS = {
+    "/api/system/adb/heal-keys",
+    "/api/system/emulator/dismiss",
 }
 
 _PUBLIC_MUTATING_PATHS = {
@@ -343,6 +357,8 @@ def route_tier(path: str, methods: set[str], is_websocket: bool = False) -> str 
         return "public"
     if methods == {"POST"} and path in _PUBLIC_MUTATING_PATHS:
         return "public"
+    if methods == {"POST"} and path in _QA_MUTATING_PATHS:
+        return "qa"
     if methods in ({"POST"}, {"PUT"}) and path in _ADMIN_MUTATING_PATHS:
         return "admin"
     return None

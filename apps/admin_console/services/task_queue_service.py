@@ -512,6 +512,7 @@ class TaskQueueService:
 
         test_name = f"web_{int(time.time())}_{run_key[:8]}"
         env = dict(base_environment) if base_environment is not None else os.environ.copy()
+        env["PYTHON_DOTENV_DISABLED"] = "1"
         pythonpath_parts = [
             str(WORKSPACE_ROOT),
             str(WORKSPACE_ROOT / "apps" / "admin_console"),

@@ -237,25 +237,32 @@ def _set_dotenv_values(original: bytes, updates: dict[str, str | None]) -> bytes
 def _atomic_write(path: Path, contents: bytes, mode: int | None = None) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     existing_mode = path.stat().st_mode & 0o777 if path.exists() else 0o600
+    write_mode = mode if mode is not None else existing_mode
     fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     try:
         with os.fdopen(fd, "wb") as stream:
-            os.fchmod(stream.fileno(), mode if mode is not None else existing_mode)
             stream.write(contents)
             stream.flush()
             os.fsync(stream.fileno())
+        os.chmod(temp_name, write_mode)
         os.replace(temp_name, path)
-        directory_fd = os.open(path.parent, os.O_RDONLY)
-        try:
-            os.fsync(directory_fd)
-        finally:
-            os.close(directory_fd)
+        _fsync_directory(path.parent)
     except OSError:
         try:
             os.unlink(temp_name)
         except FileNotFoundError:
             pass
         raise
+
+
+def _fsync_directory(path: Path) -> None:
+    if os.name == "nt":
+        return
+    directory_fd = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
 
 
 def _mask(value: str | None) -> str | None:

@@ -4,7 +4,9 @@ import asyncio
 import builtins
 import importlib.util
 import json
+import os
 from pathlib import Path
+import subprocess
 import sys
 from unittest.mock import MagicMock
 
@@ -227,6 +229,58 @@ async def test_spawn_snapshot_is_stable_across_a_later_save(tmp_path, monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_worker_settings_do_not_reload_dotenv_after_config_snapshot(tmp_path, monkeypatch):
+    from apps.admin_console.services.task_queue_service import TaskQueueService
+
+    monkeypatch.setattr(config_store_module, "SERVICE_ENVIRONMENT_KEYS", frozenset())
+    monkeypatch.setenv("ARTEMIS_APP_DIR", str(tmp_path))
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    store = make_store(tmp_path)
+    store.config_path.write_text(config_text("old-live"), encoding="utf-8")
+    before = await store.read()
+    snapshot = await store.snapshot_for_spawn()
+
+    try:
+        assert snapshot.config_path.read_text(encoding="utf-8") == config_text("old-live")
+        await store.save(
+            expected_version=before["version"],
+            default={**before["default"], "model": "later-model"},
+            credentials={"openai": "SYNTHETIC-LATER-KEY"},
+            base_urls={"openai": "https://later.example.test/v1"},
+            actor_email="synthetic@example.test",
+        )
+        _, worker_environment = TaskQueueService._build_worker_invocation(
+            {},
+            "synthetic-run",
+            None,
+            "synthetic",
+            "flash",
+            MagicMock(lock_scope="synthetic"),
+            base_environment=snapshot.environment,
+        )
+        script = (
+            "import json, os; from artemis.config.settings import settings; "
+            "print(json.dumps({'base': settings.OPENAI_BASE_URL, "
+            "'key_set': settings.OPENAI_API_KEY is not None}))"
+        )
+        worker = subprocess.run(
+            [sys.executable, "-B", "-c", script],
+            env=worker_environment,
+            capture_output=True,
+            text=True,
+        )
+
+        assert worker.returncode == 0, worker.stderr
+        assert json.loads(worker.stdout.strip().splitlines()[-1]) == {
+            "base": None,
+            "key_set": False,
+        }
+    finally:
+        store.cleanup_snapshot(snapshot)
+
+
+@pytest.mark.asyncio
 async def test_spawn_snapshot_uses_current_managed_environment_after_clear(tmp_path, monkeypatch):
     monkeypatch.setattr(config_store_module, "SERVICE_ENVIRONMENT_KEYS", frozenset())
     monkeypatch.setenv("PATH", "synthetic-path")
@@ -252,6 +306,49 @@ async def test_spawn_snapshot_uses_current_managed_environment_after_clear(tmp_p
         assert "OPENAI_BASE_URL" not in snapshot.environment
     finally:
         store.cleanup_snapshot(snapshot)
+
+
+@pytest.mark.asyncio
+async def test_config_save_works_without_os_fchmod(tmp_path, monkeypatch):
+    monkeypatch.setattr(config_store_module, "SERVICE_ENVIRONMENT_KEYS", frozenset())
+    store = make_store(tmp_path)
+    current = await store.read()
+    monkeypatch.delattr(config_store_module.os, "fchmod")
+
+    saved = await store.save(
+        expected_version=current["version"],
+        default={**current["default"], "model": "windows-save"},
+        credentials={},
+        base_urls={},
+        actor_email="synthetic@example.test",
+    )
+
+    assert saved["default"]["model"] == "windows-save"
+    assert '"model": "windows-save"' in store.config_path.read_text(encoding="utf-8")
+
+
+def test_directory_fsync_is_skipped_on_windows(tmp_path, monkeypatch):
+    monkeypatch.setattr(config_store_module.os, "name", "nt")
+    monkeypatch.setattr(
+        config_store_module.os,
+        "open",
+        lambda *_args, **_kwargs: pytest.fail("directory open is unavailable on Windows"),
+    )
+
+    config_store_module._fsync_directory(tmp_path)
+
+
+def test_settings_key_save_works_without_os_fchmod(tmp_path, monkeypatch):
+    settings_module = importlib.import_module("artemis.config.settings")
+
+    env_file = tmp_path / ".env"
+    monkeypatch.setattr(settings_module, "get_env_file", lambda: env_file)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delattr(settings_module.os, "fchmod")
+
+    settings_module.Settings().set_api_key("openai", "SYNTHETIC-WINDOWS-KEY", persist_to_env=True)
+
+    assert "OPENAI_API_KEY='SYNTHETIC-WINDOWS-KEY'" in env_file.read_text(encoding="utf-8")
 
 
 @pytest.mark.asyncio

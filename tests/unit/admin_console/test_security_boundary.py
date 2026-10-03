@@ -398,6 +398,111 @@ async def test_nonadmin_can_use_public_task_controls(monkeypatch):
     resume_task.assert_called_once_with()
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["/api/system/adb/heal-keys", "/api/system/emulator/dismiss"])
+async def test_signed_nonadmin_can_use_approved_qa_recovery_actions_without_device_io(
+    monkeypatch, path
+):
+    from apps.admin_console.core.access_control import AccessConfig
+
+    monkeypatch.setattr(
+        app.state,
+        "access_config",
+        AccessConfig(
+            auth_mode="cloudflare",
+            audience="test-audience",
+            issuer="https://team.cloudflareaccess.com",
+            admin_emails=frozenset({"admin@example.com"}),
+        ),
+    )
+    verifier = MagicMock()
+    verifier.verify = AsyncMock(return_value={"email": "qa@example.com"})
+    monkeypatch.setattr(app.state, "access_verifier", verifier)
+    heal = AsyncMock(return_value={"success": True})
+    dismiss = MagicMock(return_value={"success": True})
+    readiness = AsyncMock(return_value={"status": "ready"})
+    monkeypatch.setattr(system.readiness_engine, "heal_adb_keys", heal)
+    monkeypatch.setattr(system.readiness_engine, "dismiss_emulator", dismiss)
+    monkeypatch.setattr(system.readiness_engine, "run_all", readiness)
+
+    async with _client(client=("203.0.113.9", 51000)) as ac:
+        response = await ac.post(
+            path, headers={"Cf-Access-Jwt-Assertion": "synthetic-fixture-token"}
+        )
+
+    assert response.status_code == 200
+    if path.endswith("heal-keys"):
+        heal.assert_awaited_once()
+        readiness.assert_awaited_once()
+    else:
+        dismiss.assert_called_once()
+    verifier.verify.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["/api/system/adb/heal-keys", "/api/system/emulator/dismiss"])
+async def test_anonymous_cannot_use_qa_recovery_actions_without_side_effects(monkeypatch, path):
+    from apps.admin_console.core.access_control import AccessConfig
+
+    monkeypatch.setattr(
+        app.state,
+        "access_config",
+        AccessConfig(
+            auth_mode="cloudflare",
+            audience="test-audience",
+            issuer="https://team.cloudflareaccess.com",
+            admin_emails=frozenset({"admin@example.com"}),
+        ),
+    )
+    verifier = MagicMock()
+    verifier.verify = AsyncMock(return_value={"email": "qa@example.com"})
+    monkeypatch.setattr(app.state, "access_verifier", verifier)
+    heal = AsyncMock()
+    dismiss = MagicMock()
+    monkeypatch.setattr(system.readiness_engine, "heal_adb_keys", heal)
+    monkeypatch.setattr(system.readiness_engine, "dismiss_emulator", dismiss)
+
+    async with _client(client=("203.0.113.9", 51000)) as ac:
+        response = await ac.post(path)
+
+    assert response.status_code == 401
+    assert response.json()["code"] == "not_signed_in"
+    verifier.verify.assert_not_awaited()
+    heal.assert_not_awaited()
+    dismiss.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_nonadmin_cannot_restart_shared_adb_server_without_side_effects(monkeypatch):
+    from apps.admin_console.core.access_control import AccessConfig
+
+    monkeypatch.setattr(
+        app.state,
+        "access_config",
+        AccessConfig(
+            auth_mode="cloudflare",
+            audience="test-audience",
+            issuer="https://team.cloudflareaccess.com",
+            admin_emails=frozenset({"admin@example.com"}),
+        ),
+    )
+    verifier = MagicMock()
+    verifier.verify = AsyncMock(return_value={"email": "qa@example.com"})
+    monkeypatch.setattr(app.state, "access_verifier", verifier)
+    restart = AsyncMock()
+    monkeypatch.setattr(system.readiness_engine, "restart_adb_server", restart)
+
+    async with _client(client=("203.0.113.9", 51000)) as ac:
+        response = await ac.post(
+            "/api/system/adb/restart",
+            headers={"Cf-Access-Jwt-Assertion": "synthetic-fixture-token"},
+        )
+
+    assert response.status_code == 403
+    assert response.json()["code"] == "admin_required"
+    restart.assert_not_awaited()
+
+
 def test_device_bridge_remote_peer_denial_has_no_side_effects(monkeypatch):
     from apps.admin_console.core.access_control import AccessConfig, CloudflareAccessVerifier
     from apps.admin_console.routers import device_bridge

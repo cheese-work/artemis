@@ -292,11 +292,11 @@ class Settings(BaseSettings):
 
                 fd, temp_name = tempfile.mkstemp(prefix=f".{env_file.name}.", dir=env_file.parent)
                 temp_path = Path(temp_name)
-                os.fchmod(fd, 0o600)
                 with os.fdopen(fd, "wb") as stream:
                     stream.write(content)
                     stream.flush()
                     os.fsync(stream.fileno())
+                os.chmod(temp_path, 0o600)
                 os.replace(temp_path, env_file)
             except OSError as exc:
                 if temp_path is not None:

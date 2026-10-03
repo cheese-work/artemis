@@ -6,6 +6,7 @@ from apps.admin_console.core.access_control import (
     public_tier,
     require_admin,
     require_lifecycle_token,
+    require_qa,
     require_websocket_admin,
     route_tier,
 )
@@ -48,6 +49,8 @@ def test_every_registered_route_has_a_declared_tier_and_guard():
         if tier == "admin":
             guard = require_websocket_admin if is_websocket else require_admin
             assert guard in dependency_calls, f"Missing admin guard: {route.path}"
+        if tier == "qa":
+            assert require_qa in dependency_calls, f"Missing QA guard: {route.path}"
         if tier == "lifecycle":
             assert require_lifecycle_token in dependency_calls, (
                 f"Missing lifecycle guard: {route.path}"
@@ -59,7 +62,7 @@ def test_every_registered_route_has_a_declared_tier_and_guard():
                 )
             else:
                 public_task_controls = {"/api/run", "/api/stop", "/api/resume"}
-                assert tier in {"admin", "lifecycle"} or (
+                assert tier in {"admin", "qa", "lifecycle"} or (
                     tier == "public" and route.path in public_task_controls
                 ), f"Unprotected mutation: {route.path}"
 
@@ -69,4 +72,11 @@ def test_approved_task_controls_and_bridge_keep_public_tier():
         assert route_tier(path, {"POST"}) == "public"
 
     assert route_tier("/api/device-bridge/session", set(), is_websocket=True) == "public"
+    assert route_tier("/api/system/adb/restart", {"POST"}) == "admin"
+
+
+def test_approved_device_recovery_actions_require_a_signed_qa_identity():
+    for path in ("/api/system/adb/heal-keys", "/api/system/emulator/dismiss"):
+        assert route_tier(path, {"POST"}) == "qa"
+
     assert route_tier("/api/system/adb/restart", {"POST"}) == "admin"

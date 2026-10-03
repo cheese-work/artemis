@@ -36,6 +36,7 @@ from apps.admin_console.core.access_control import (
     public_tier,
     require_admin,
     require_lifecycle_token,
+    require_qa,
 )
 from apps.admin_console.services.config_store import (
     ConfigStoreError,
@@ -197,7 +198,7 @@ async def restart_adb_server():
     }
 
 
-@router.post("/adb/heal-keys", dependencies=[Depends(require_admin)])
+@router.post("/adb/heal-keys", dependencies=[Depends(require_qa)])
 async def heal_adb_keys():
     """Auto-heal corrupted ADB authentication RSA keys and return updated readiness."""
     heal_result = await readiness_engine.heal_adb_keys()
@@ -324,7 +325,7 @@ async def stop_emulator():
     return await readiness_engine.stop_emulator()
 
 
-@router.post("/emulator/dismiss", dependencies=[Depends(require_admin)])
+@router.post("/emulator/dismiss", dependencies=[Depends(require_qa)])
 async def dismiss_emulator():
     """Dismiss emulator launch tracking state."""
     return readiness_engine.dismiss_emulator()
