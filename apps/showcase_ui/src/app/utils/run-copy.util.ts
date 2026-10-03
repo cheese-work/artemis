@@ -25,6 +25,7 @@ function findFailingStep(logs: unknown[]): string {
   const latestSteps: { step: Record<string, unknown>; index: number }[] = [];
   const stepsById = new Map<string, { step: Record<string, unknown>; index: number }>();
   const stepsByNumber = new Map<number, { step: Record<string, unknown>; index: number }>();
+  const ambiguousStepNumbers = new Set<number>();
   const eventIndices = getSummaryEventIndices(logs);
   logs.forEach((log, index) => {
     if (!log || typeof log !== 'object') return;
@@ -33,11 +34,11 @@ function findFailingStep(logs: unknown[]): string {
     if (['step_updated', 'step_recorded', 'step'].includes(String(event['type']))
       && data && typeof data === 'object') {
       const step = data as Record<string, unknown>;
-      mergeStep(step, index, latestSteps, stepsById, stepsByNumber);
+      mergeStep(step, index, latestSteps, stepsById, stepsByNumber, ambiguousStepNumbers);
       return;
     }
     if (event['step_number'] !== undefined || event['step_id'] !== undefined) {
-      mergeStep(event, index, latestSteps, stepsById, stepsByNumber);
+      mergeStep(event, index, latestSteps, stepsById, stepsByNumber, ambiguousStepNumbers);
     }
   });
 
@@ -50,7 +51,7 @@ function findFailingStep(logs: unknown[]): string {
     if (block.type !== 'step' || !block.data || typeof block.data !== 'object') continue;
     const step = block.data as Record<string, unknown>;
     const index = getSummaryStepEventIndex(step, eventIndices);
-    if (index >= 0) mergeStep(step, index, latestSteps, stepsById, stepsByNumber);
+    if (index >= 0) mergeStep(step, index, latestSteps, stepsById, stepsByNumber, ambiguousStepNumbers);
   }
 
   const failingEntry = latestSteps
@@ -71,7 +72,8 @@ function mergeStep(
   index: number,
   latestSteps: { step: Record<string, unknown>; index: number }[],
   stepsById: Map<string, { step: Record<string, unknown>; index: number }>,
-  stepsByNumber: Map<number, { step: Record<string, unknown>; index: number }>
+  stepsByNumber: Map<number, { step: Record<string, unknown>; index: number }>,
+  ambiguousStepNumbers: Set<number>
 ): void {
   const stepId = step['step_id'] === undefined || step['step_id'] === null
     ? ''
@@ -80,8 +82,25 @@ function mergeStep(
   const stepNumber = rawNumber === undefined || rawNumber === null || String(rawNumber).trim() === ''
     ? null
     : Number(rawNumber);
-  const existing = (stepId && stepsById.get(stepId))
-    || (stepNumber !== null && Number.isFinite(stepNumber) ? stepsByNumber.get(stepNumber) : undefined);
+  const validStepNumber = stepNumber !== null && Number.isFinite(stepNumber) ? stepNumber : null;
+  const existingById = stepId ? stepsById.get(stepId) : undefined;
+  let existingByNumber = validStepNumber !== null && !ambiguousStepNumbers.has(validStepNumber)
+    ? stepsByNumber.get(validStepNumber)
+    : undefined;
+
+  if (stepId && existingByNumber) {
+    const numberStepId = getStepId(existingByNumber.step);
+    if (numberStepId && numberStepId !== stepId) {
+      ambiguousStepNumbers.add(validStepNumber!);
+      stepsByNumber.delete(validStepNumber!);
+      existingByNumber = undefined;
+    } else if (existingById && existingById !== existingByNumber) {
+      coalesceStepEntries(existingById, existingByNumber, latestSteps, stepsById, stepsByNumber);
+      existingByNumber = existingById;
+    }
+  }
+
+  const existing = existingById || existingByNumber;
 
   if (existing) {
     existing.step = {
@@ -96,7 +115,46 @@ function mergeStep(
 
   const target = existing || latestSteps[latestSteps.length - 1];
   if (stepId) stepsById.set(stepId, target);
-  if (stepNumber !== null && Number.isFinite(stepNumber)) stepsByNumber.set(stepNumber, target);
+  if (validStepNumber !== null && !ambiguousStepNumbers.has(validStepNumber)) {
+    const numberEntry = stepsByNumber.get(validStepNumber);
+    const numberStepId = numberEntry ? getStepId(numberEntry.step) : '';
+    if (numberEntry && numberEntry !== target && numberStepId && stepId && numberStepId !== stepId) {
+      ambiguousStepNumbers.add(validStepNumber);
+      stepsByNumber.delete(validStepNumber);
+    } else {
+      stepsByNumber.set(validStepNumber, target);
+    }
+  }
+}
+
+function coalesceStepEntries(
+  target: { step: Record<string, unknown>; index: number },
+  alias: { step: Record<string, unknown>; index: number },
+  latestSteps: { step: Record<string, unknown>; index: number }[],
+  stepsById: Map<string, { step: Record<string, unknown>; index: number }>,
+  stepsByNumber: Map<number, { step: Record<string, unknown>; index: number }>
+): void {
+  const [older, newer] = target.index <= alias.index ? [target, alias] : [alias, target];
+  target.step = {
+    ...older.step,
+    ...newer.step,
+    generic_tools: mergeGenericTools(older.step['generic_tools'], newer.step['generic_tools'])
+  };
+  target.index = Math.max(target.index, alias.index);
+  const aliasIndex = latestSteps.indexOf(alias);
+  if (aliasIndex !== -1) latestSteps.splice(aliasIndex, 1);
+  for (const [stepId, entry] of stepsById) {
+    if (entry === alias) stepsById.set(stepId, target);
+  }
+  for (const [stepNumber, entry] of stepsByNumber) {
+    if (entry === alias) stepsByNumber.set(stepNumber, target);
+  }
+}
+
+function getStepId(step: Record<string, unknown>): string {
+  return step['step_id'] === undefined || step['step_id'] === null
+    ? ''
+    : String(step['step_id']).trim();
 }
 
 function mergeGenericTools(existing: unknown, incoming: unknown): unknown[] {

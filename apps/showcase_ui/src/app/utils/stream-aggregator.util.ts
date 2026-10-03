@@ -262,8 +262,9 @@ export function consolidateLogsToBlocks(rawLogs: any[]): StepBlock[] {
   if (!rawLogs || rawLogs.length === 0) return [];
 
   const blocks: StepBlock[] = [];
+  const lastUpdateOrder = new WeakMap<StepBlock, number>();
 
-  rawLogs.forEach(log => {
+  rawLogs.forEach((log, eventIndex) => {
     if (!log) return;
 
     if (log.type === 'checker_event') {
@@ -387,10 +388,12 @@ export function consolidateLogsToBlocks(rawLogs: any[]): StepBlock[] {
           updatedData.stream_resets = updatedData.stream_resets.map((r: any) => ({ ...r, isWaiting: false }));
         }
 
-        blocks[existingIndex] = {
+        const updatedBlock = {
           ...existing,
           data: updatedData
         };
+        blocks[existingIndex] = updatedBlock;
+        lastUpdateOrder.set(updatedBlock, eventIndex);
       } else {
         const blockId = stepId ? `step-${stepId}` : `stream-${execId}`;
         const blockData: any = {
@@ -415,30 +418,57 @@ export function consolidateLogsToBlocks(rawLogs: any[]): StepBlock[] {
           blockData.operator_raw_thinking_timestamp = log.timestamp;
         }
 
-        blocks.push({
+        const block: StepBlock = {
           id: blockId,
           type: stepId ? 'step' : 'llm_stream',
           timestamp: log.timestamp,
           data: blockData
-        });
+        };
+        blocks.push(block);
+        lastUpdateOrder.set(block, eventIndex);
       }
     } else if (log.type === 'step_recorded' || log.type === 'step_updated') {
-      const stepId = log.data.step_id || log.data.step_number || 'unknown';
+      const explicitStepId = log.data.step_id === undefined || log.data.step_id === null
+        ? ''
+        : String(log.data.step_id).trim();
+      const stepId = explicitStepId || log.data.step_number || 'unknown';
       const stepNumber = Number(log.data.step_number);
       const hasStepNumber = log.data.step_number !== undefined
         && log.data.step_number !== null
         && String(log.data.step_number).trim() !== ''
         && Number.isFinite(stepNumber);
-      // Find if there is an existing block for this step or an unattached stream block from this turn
-      let existingIndex = blocks.findIndex(b =>
-        b.id === `step-${stepId}`
-        || b.data?.step_id === stepId
-        || (hasStepNumber
-          && b.data?.step_number !== undefined
-          && b.data?.step_number !== null
-          && String(b.data.step_number).trim() !== ''
-          && Number(b.data.step_number) === stepNumber)
-      );
+      const numberMatches = hasStepNumber
+        ? blocks.map((block, index) => ({ block, index })).filter(({ block }) =>
+          block.data?.step_number !== undefined
+          && block.data.step_number !== null
+          && String(block.data.step_number).trim() !== ''
+          && Number(block.data.step_number) === stepNumber)
+        : [];
+      const explicitIdIndex = explicitStepId
+        ? blocks.findIndex(block => block.id === `step-${explicitStepId}` || block.data?.step_id === explicitStepId)
+        : -1;
+      const compatibleNumberMatches = numberMatches.filter(({ block }) => {
+        const blockStepId = block.data?.step_id === undefined || block.data.step_id === null
+          ? ''
+          : String(block.data.step_id).trim();
+        return !explicitStepId || !blockStepId || blockStepId === explicitStepId;
+      });
+      const numberIdentities = new Set(numberMatches.map(({ block }) => {
+        const blockStepId = block.data?.step_id === undefined || block.data.step_id === null
+          ? ''
+          : String(block.data.step_id).trim();
+        return blockStepId || `number:${stepNumber}`;
+      }));
+      const matchingIndices = new Set<number>();
+      if (explicitIdIndex > -1) matchingIndices.add(explicitIdIndex);
+      if (explicitStepId) {
+        compatibleNumberMatches.forEach(({ index }) => matchingIndices.add(index));
+      } else if (numberIdentities.size <= 1) {
+        numberMatches.forEach(({ index }) => matchingIndices.add(index));
+      }
+      const primaryIndex = explicitIdIndex > -1
+        ? explicitIdIndex
+        : matchingIndices.values().next().value ?? -1;
 
       // No adoption of untagged stream blocks here: the Operator's streams
       // always carry the step id (Perception / the Flash turn pre-allocate it
@@ -447,9 +477,26 @@ export function consolidateLogsToBlocks(rawLogs: any[]): StepBlock[] {
       // and no text used to steal the latest such block -- typically the
       // Planner's -- and render its action inside it at the top of the timeline.
 
-      if (existingIndex > -1) {
-        const existingBlock = blocks[existingIndex];
-        const existingTools = existingBlock.data.generic_tools || [];
+      if (primaryIndex > -1) {
+        const orderedExistingBlocks = [...matchingIndices]
+          .sort((left, right) => (lastUpdateOrder.get(blocks[left]) ?? left) - (lastUpdateOrder.get(blocks[right]) ?? right))
+          .map(index => blocks[index]);
+        const mergedExistingData: any = {};
+        const existingTools: any[] = [];
+        orderedExistingBlocks.forEach(block => {
+          Object.assign(mergedExistingData, block.data);
+          (block.data.generic_tools || []).forEach((tool: any) => {
+            const matchIndex = tool.trace_id
+              ? existingTools.findIndex(existingTool => existingTool.trace_id === tool.trace_id)
+              : -1;
+            if (matchIndex > -1) {
+              existingTools[matchIndex] = { ...existingTools[matchIndex], ...tool };
+            } else {
+              existingTools.push(tool);
+            }
+          });
+        });
+        const existingBlock = { ...blocks[primaryIndex], data: mergedExistingData };
         const newTools = log.data.generic_tools || [];
         const mergedTools = [...existingTools];
         newTools.forEach((nt: any) => {
@@ -481,15 +528,22 @@ export function consolidateLogsToBlocks(rawLogs: any[]): StepBlock[] {
           mergedData.stream_resets = mergedData.stream_resets.map((r: any) => ({ ...r, isWaiting: false }));
         }
 
-        blocks[existingIndex] = {
+        const updatedBlock: StepBlock = {
           ...existingBlock,
           id: `step-${stepId}`,
           type: 'step',
           timestamp: existingBlock.timestamp || log.timestamp,
           data: mergedData
         };
+        const duplicateIndices = [...matchingIndices]
+          .filter(index => index !== primaryIndex)
+          .sort((left, right) => right - left);
+        duplicateIndices.forEach(index => blocks.splice(index, 1));
+        const adjustedPrimaryIndex = primaryIndex - duplicateIndices.filter(index => index < primaryIndex).length;
+        blocks[adjustedPrimaryIndex] = updatedBlock;
+        lastUpdateOrder.set(updatedBlock, eventIndex);
       } else {
-        blocks.push({
+        const block: StepBlock = {
           id: `step-${stepId}`,
           type: 'step',
           timestamp: log.timestamp,
@@ -502,7 +556,9 @@ export function consolidateLogsToBlocks(rawLogs: any[]): StepBlock[] {
               || (log.data.operator_raw_thinking ? log.timestamp : undefined),
             generic_tools: log.data.generic_tools || []
           }
-        });
+        };
+        blocks.push(block);
+        lastUpdateOrder.set(block, eventIndex);
       }
     } else if (log.type === 'trace_recorded') {
       const isAction = log.data.type === 'action';
@@ -576,16 +632,18 @@ export function consolidateLogsToBlocks(rawLogs: any[]): StepBlock[] {
           genericTools.push(log.data);
         }
 
-        blocks[existingIndex] = {
+        const updatedBlock = {
           ...blocks[existingIndex],
           data: {
             ...stepData,
             generic_tools: genericTools
           }
         };
+        blocks[existingIndex] = updatedBlock;
+        lastUpdateOrder.set(updatedBlock, eventIndex);
       } else {
         const fallbackStepId = stepId || 'pre-planning';
-        blocks.push({
+        const block: StepBlock = {
           id: `step-${fallbackStepId}`,
           type: 'step',
           timestamp: log.timestamp,
@@ -594,7 +652,9 @@ export function consolidateLogsToBlocks(rawLogs: any[]): StepBlock[] {
             isCompleted: true,
             generic_tools: [log.data]
           }
-        });
+        };
+        blocks.push(block);
+        lastUpdateOrder.set(block, eventIndex);
       }
     }
   });

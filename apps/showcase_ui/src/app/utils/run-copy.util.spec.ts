@@ -264,6 +264,72 @@ describe('buildRunSummary', () => {
     expect(recovered).not.toContain('PRIVATE_ERROR_SENTINEL');
   });
 
+  it('joins bridged step aliases in either order and honors the latest recovery or repair', () => {
+    const failedTool = {
+      trace_id: 'tool-3',
+      step_id: 'native-step-3',
+      type: 'tool',
+      name: 'failed_tool',
+      status: 'failed',
+      payload: { error: 'PRIVATE_ERROR_SENTINEL' }
+    };
+    const recoveredTool = { ...failedTool, status: 'success', payload: { result: 'Recovered' } };
+    const idFirst = [
+      { type: 'step_updated', data: { step_id: 'native-step-3', action_taken: { action: 'tap' } } },
+      { type: 'step_updated', data: { step_number: 3, generic_tools: [failedTool] } },
+      { type: 'step_updated', data: { step_id: 'native-step-3', step_number: 3, generic_tools: [recoveredTool] } }
+    ];
+    const numberFirst = [
+      { type: 'step_updated', data: { step_number: 3, generic_tools: [failedTool] } },
+      { type: 'step_updated', data: { step_id: 'native-step-3', action_taken: { action: 'tap' } } },
+      { type: 'step_updated', data: { step_id: 'native-step-3', step_number: 3, generic_tools: [recoveredTool] } }
+    ];
+    const fixed = [
+      { type: 'step_updated', data: { step_id: 'native-step-3', action_taken: { action: 'tap' } } },
+      {
+        type: 'step_updated',
+        data: { step_number: 3, last_execution_result: { status: 'failed', repair_status: 'cannot_fix' } }
+      },
+      {
+        type: 'step_updated',
+        data: { step_id: 'native-step-3', step_number: 3, last_execution_result: { status: 'success', repair_status: 'fixed' } }
+      }
+    ];
+    const fixedNumberFirst = [
+      {
+        type: 'step_updated',
+        data: { step_number: 3, last_execution_result: { status: 'failed', repair_status: 'cannot_fix' } }
+      },
+      { type: 'step_updated', data: { step_id: 'native-step-3', action_taken: { action: 'tap' } } },
+      {
+        type: 'step_updated',
+        data: { step_id: 'native-step-3', step_number: 3, last_execution_result: { status: 'success', repair_status: 'fixed' } }
+      }
+    ];
+
+    for (const logs of [idFirst, numberFirst, fixed, fixedNumberFirst]) {
+      const summary = buildRunSummary({ ...session, status: 'completed' }, 'completed', logs, null);
+
+      expect(summary).toContain('- Failing step: Not reported');
+      expect(summary).not.toContain('PRIVATE_ERROR_SENTINEL');
+    }
+  });
+
+  it('keeps same-number steps with different explicit IDs separate', () => {
+    const summary = buildRunSummary(session, 'failed', [
+      {
+        type: 'step_updated',
+        data: { step_id: 'native-step-3a', step_number: 3, status: 'failed', action_taken: { action: 'tap', status: 'failed' } }
+      },
+      {
+        type: 'step_updated',
+        data: { step_id: 'native-step-3b', step_number: 3, status: 'completed', action_taken: { action: 'swipe', status: 'success' } }
+      }
+    ], null);
+
+    expect(summary).toContain('- Failing step: Step 3: tap');
+  });
+
   it('includes a failed native trace before any step snapshot repeats it', () => {
     const failedTrace = {
       trace_id: 'trace-failure',
