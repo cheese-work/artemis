@@ -415,6 +415,35 @@ describe('stream aggregator step ownership', () => {
     expect(steps.map((step) => step.data.step_id).sort()).toEqual(['id-3a', 'id-3b']);
   });
 
+  it('recovers an anonymous trace without merging explicit steps that share its number', () => {
+    const failedTool = {
+      trace_id: 'anonymous-trace',
+      type: 'tool',
+      name: 'anonymous_tool',
+      status: 'failed',
+      payload: { error: 'PRIVATE_ERROR_SENTINEL' }
+    };
+    const logs = [
+      { type: 'step_updated', data: { step_id: 'A', step_number: 3, action_taken: { action: 'tap' } } },
+      { type: 'step_updated', data: { step_id: 'B', step_number: 3, action_taken: { action: 'swipe' } } },
+      { type: 'step_updated', data: { step_number: 3, generic_tools: [failedTool] } },
+      {
+        type: 'step_updated',
+        data: { step_number: 3, generic_tools: [{ ...failedTool, status: 'success', payload: { result: 'ok' } }] }
+      }
+    ];
+
+    const steps = consolidateLogsToBlocks(logs).filter((block) => block.type === 'step');
+
+    expect(steps.map((step) => step.id)).toEqual(['step-A', 'step-B', 'step-3']);
+    expect(steps[0].data.action_taken.action).toBe('tap');
+    expect(steps[1].data.action_taken.action).toBe('swipe');
+    expect(steps[2].data.generic_tools).toEqual([
+      jasmine.objectContaining({ trace_id: 'anonymous-trace', status: 'success' })
+    ]);
+    expect(JSON.stringify(steps)).not.toContain('PRIVATE_ERROR_SENTINEL');
+  });
+
   it('does not fold a step without streamed text into an earlier untagged stream block', () => {
     const blocks = consolidateLogsToBlocks([
       plannerStream,

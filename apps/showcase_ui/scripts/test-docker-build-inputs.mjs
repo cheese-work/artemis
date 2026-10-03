@@ -10,8 +10,14 @@ const stages = dockerfile.split(/^FROM\s+/m);
 const frontendStage = stages.find((stage) => stage.startsWith('node:') && stage.includes('AS frontend-builder'));
 if (!frontendStage) throw new Error('Dockerfile frontend-builder stage was not found');
 
-const copyInstructions = frontendStage.split('\n')
-  .map((line) => line.trim())
+const frontendLines = frontendStage.split('\n').map((line) => line.trim());
+const installIndex = frontendLines.findIndex((line) => /^RUN\s+npm ci(?:\s|$)/.test(line));
+const earlyScriptsCopyIndex = frontendLines.findIndex((line) => line === 'COPY apps/showcase_ui/scripts/ ./scripts/');
+if (installIndex === -1 || earlyScriptsCopyIndex === -1 || earlyScriptsCopyIndex > installIndex) {
+  throw new Error('Dockerfile frontend-builder stage must copy apps/showcase_ui/scripts/ before npm ci');
+}
+
+const copyInstructions = frontendLines
   .filter((line) => line.startsWith('COPY '))
   .map((line) => line.slice('COPY '.length).split(/\s+/));
 const buildInstruction = frontendStage.split('\n')

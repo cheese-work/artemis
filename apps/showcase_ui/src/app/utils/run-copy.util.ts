@@ -1,6 +1,12 @@
 import { Session } from '../core/models/session.model';
 import { isActionFailed } from './action-formatter.util';
 import { consolidateLogsToBlocks } from './stream-aggregator.util';
+import { compareStepIdentity, getStepTraceIds } from './step-identity.util';
+
+interface SummaryStepEntry {
+  step: Record<string, unknown>;
+  index: number;
+}
 
 export function buildRunSummary(
   session: Session,
@@ -22,9 +28,10 @@ export function buildRunSummary(
 }
 
 function findFailingStep(logs: unknown[]): string {
-  const latestSteps: { step: Record<string, unknown>; index: number }[] = [];
-  const stepsById = new Map<string, { step: Record<string, unknown>; index: number }>();
-  const stepsByNumber = new Map<number, { step: Record<string, unknown>; index: number }>();
+  const latestSteps: SummaryStepEntry[] = [];
+  const stepsById = new Map<string, SummaryStepEntry>();
+  const stepsByNumber = new Map<number, SummaryStepEntry>();
+  const stepsByTraceId = new Map<string, SummaryStepEntry>();
   const ambiguousStepNumbers = new Set<number>();
   const eventIndices = getSummaryEventIndices(logs);
   logs.forEach((log, index) => {
@@ -34,11 +41,11 @@ function findFailingStep(logs: unknown[]): string {
     if (['step_updated', 'step_recorded', 'step'].includes(String(event['type']))
       && data && typeof data === 'object') {
       const step = data as Record<string, unknown>;
-      mergeStep(step, index, latestSteps, stepsById, stepsByNumber, ambiguousStepNumbers);
+      mergeStep(step, index, latestSteps, stepsById, stepsByNumber, stepsByTraceId, ambiguousStepNumbers);
       return;
     }
     if (event['step_number'] !== undefined || event['step_id'] !== undefined) {
-      mergeStep(event, index, latestSteps, stepsById, stepsByNumber, ambiguousStepNumbers);
+      mergeStep(event, index, latestSteps, stepsById, stepsByNumber, stepsByTraceId, ambiguousStepNumbers);
     }
   });
 
@@ -51,7 +58,9 @@ function findFailingStep(logs: unknown[]): string {
     if (block.type !== 'step' || !block.data || typeof block.data !== 'object') continue;
     const step = block.data as Record<string, unknown>;
     const index = getSummaryStepEventIndex(step, eventIndices);
-    if (index >= 0) mergeStep(step, index, latestSteps, stepsById, stepsByNumber, ambiguousStepNumbers);
+    if (index >= 0) {
+      mergeStep(step, index, latestSteps, stepsById, stepsByNumber, stepsByTraceId, ambiguousStepNumbers);
+    }
   }
 
   const failingEntry = latestSteps
@@ -70,9 +79,10 @@ function findFailingStep(logs: unknown[]): string {
 function mergeStep(
   step: Record<string, unknown>,
   index: number,
-  latestSteps: { step: Record<string, unknown>; index: number }[],
-  stepsById: Map<string, { step: Record<string, unknown>; index: number }>,
-  stepsByNumber: Map<number, { step: Record<string, unknown>; index: number }>,
+  latestSteps: SummaryStepEntry[],
+  stepsById: Map<string, SummaryStepEntry>,
+  stepsByNumber: Map<number, SummaryStepEntry>,
+  stepsByTraceId: Map<string, SummaryStepEntry>,
   ambiguousStepNumbers: Set<number>
 ): void {
   const stepId = step['step_id'] === undefined || step['step_id'] === null
@@ -84,6 +94,10 @@ function mergeStep(
     : Number(rawNumber);
   const validStepNumber = stepNumber !== null && Number.isFinite(stepNumber) ? stepNumber : null;
   const existingById = stepId ? stepsById.get(stepId) : undefined;
+  const existingByTrace = getStepTraceIds(step)
+    .map(traceId => stepsByTraceId.get(traceId))
+    .find((entry): entry is SummaryStepEntry =>
+      !!entry && compareStepIdentity(entry.step, step) === 'same');
   let existingByNumber = validStepNumber !== null && !ambiguousStepNumbers.has(validStepNumber)
     ? stepsByNumber.get(validStepNumber)
     : undefined;
@@ -95,12 +109,20 @@ function mergeStep(
       stepsByNumber.delete(validStepNumber!);
       existingByNumber = undefined;
     } else if (existingById && existingById !== existingByNumber) {
-      coalesceStepEntries(existingById, existingByNumber, latestSteps, stepsById, stepsByNumber);
+      coalesceStepEntries(existingById, existingByNumber, latestSteps, stepsById, stepsByNumber, stepsByTraceId);
       existingByNumber = existingById;
     }
   }
 
-  const existing = existingById || existingByNumber;
+  const candidates = [existingById, existingByTrace, existingByNumber]
+    .filter((entry, index, entries): entry is SummaryStepEntry => !!entry && entries.indexOf(entry) === index);
+  const existing = candidates.shift();
+  if (existing) {
+    for (const alias of candidates) {
+      if (compareStepIdentity(existing.step, alias.step) === 'conflict') continue;
+      coalesceStepEntries(existing, alias, latestSteps, stepsById, stepsByNumber, stepsByTraceId);
+    }
+  }
 
   if (existing) {
     existing.step = {
@@ -115,6 +137,7 @@ function mergeStep(
 
   const target = existing || latestSteps[latestSteps.length - 1];
   if (stepId) stepsById.set(stepId, target);
+  for (const traceId of getStepTraceIds(target.step)) stepsByTraceId.set(traceId, target);
   if (validStepNumber !== null && !ambiguousStepNumbers.has(validStepNumber)) {
     const numberEntry = stepsByNumber.get(validStepNumber);
     const numberStepId = numberEntry ? getStepId(numberEntry.step) : '';
@@ -128,11 +151,12 @@ function mergeStep(
 }
 
 function coalesceStepEntries(
-  target: { step: Record<string, unknown>; index: number },
-  alias: { step: Record<string, unknown>; index: number },
-  latestSteps: { step: Record<string, unknown>; index: number }[],
-  stepsById: Map<string, { step: Record<string, unknown>; index: number }>,
-  stepsByNumber: Map<number, { step: Record<string, unknown>; index: number }>
+  target: SummaryStepEntry,
+  alias: SummaryStepEntry,
+  latestSteps: SummaryStepEntry[],
+  stepsById: Map<string, SummaryStepEntry>,
+  stepsByNumber: Map<number, SummaryStepEntry>,
+  stepsByTraceId: Map<string, SummaryStepEntry>
 ): void {
   const [older, newer] = target.index <= alias.index ? [target, alias] : [alias, target];
   target.step = {
@@ -148,6 +172,9 @@ function coalesceStepEntries(
   }
   for (const [stepNumber, entry] of stepsByNumber) {
     if (entry === alias) stepsByNumber.set(stepNumber, target);
+  }
+  for (const [traceId, entry] of stepsByTraceId) {
+    if (entry === alias) stepsByTraceId.set(traceId, target);
   }
 }
 

@@ -17,6 +17,7 @@
 import { StepBlock, PhaseBlock, StepEvent, StreamSegment, StreamResetNotice, DEFAULT_STREAM_RESET_MESSAGE, PersistedCheckerStream } from '../core/models/stream.model';
 import { isAndroidAction, isReportStatusAction, getReportStatusExplanation, getReportStatusValue, getActionObject } from './action-formatter.util';
 import { getUniqueGenericTools, isInternalPlumbingTool } from './tool-formatter.util';
+import { compareStepIdentity } from './step-identity.util';
 
 /**
  * Helper to safely extract milliseconds timestamp
@@ -444,31 +445,27 @@ export function consolidateLogsToBlocks(rawLogs: any[]): StepBlock[] {
           && String(block.data.step_number).trim() !== ''
           && Number(block.data.step_number) === stepNumber)
         : [];
+      const stableMatches = blocks.map((block, index) => ({ block, index }))
+        .filter(({ block }) => block.type === 'step'
+          && compareStepIdentity(block.data, log.data) === 'same');
       const explicitIdIndex = explicitStepId
-        ? blocks.findIndex(block => block.id === `step-${explicitStepId}` || block.data?.step_id === explicitStepId)
+        ? stableMatches.find(({ block }) => block.id === `step-${explicitStepId}` || block.data?.step_id === explicitStepId)?.index ?? -1
         : -1;
-      const compatibleNumberMatches = numberMatches.filter(({ block }) => {
-        const blockStepId = block.data?.step_id === undefined || block.data.step_id === null
-          ? ''
-          : String(block.data.step_id).trim();
-        return !explicitStepId || !blockStepId || blockStepId === explicitStepId;
-      });
       const numberIdentities = new Set(numberMatches.map(({ block }) => {
         const blockStepId = block.data?.step_id === undefined || block.data.step_id === null
           ? ''
           : String(block.data.step_id).trim();
         return blockStepId || `number:${stepNumber}`;
       }));
-      const matchingIndices = new Set<number>();
-      if (explicitIdIndex > -1) matchingIndices.add(explicitIdIndex);
-      if (explicitStepId) {
-        compatibleNumberMatches.forEach(({ index }) => matchingIndices.add(index));
-      } else if (numberIdentities.size <= 1) {
-        numberMatches.forEach(({ index }) => matchingIndices.add(index));
+      const matchingIndices = new Set<number>(stableMatches.map(({ index }) => index));
+      if (numberIdentities.size <= 1) {
+        numberMatches.forEach(({ block, index }) => {
+          if (compareStepIdentity(block.data, log.data) !== 'conflict') matchingIndices.add(index);
+        });
       }
       const primaryIndex = explicitIdIndex > -1
         ? explicitIdIndex
-        : matchingIndices.values().next().value ?? -1;
+        : stableMatches[0]?.index ?? matchingIndices.values().next().value ?? -1;
 
       // No adoption of untagged stream blocks here: the Operator's streams
       // always carry the step id (Perception / the Flash turn pre-allocate it

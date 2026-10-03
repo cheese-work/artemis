@@ -223,6 +223,30 @@ describe('buildRunSummary', () => {
     expect(summary).toContain('- Failing step: Not reported');
   });
 
+  it('recovers an anonymous trace when explicit IDs make its step number ambiguous', () => {
+    const failedTool = {
+      trace_id: 'anonymous-trace',
+      type: 'tool',
+      name: 'anonymous_tool',
+      status: 'failed',
+      payload: { error: 'PRIVATE_ERROR_SENTINEL' }
+    };
+    const logs = [
+      { type: 'step_updated', data: { step_id: 'A', step_number: 3, action_taken: { action: 'tap' } } },
+      { type: 'step_updated', data: { step_id: 'B', step_number: 3, action_taken: { action: 'swipe' } } },
+      { type: 'step_updated', data: { step_number: 3, generic_tools: [failedTool] } },
+      {
+        type: 'step_updated',
+        data: { step_number: 3, generic_tools: [{ ...failedTool, status: 'success', payload: { result: 'ok' } }] }
+      }
+    ];
+
+    const summary = buildRunSummary({ ...session, status: 'completed' }, 'completed', logs, null);
+
+    expect(summary).toContain('- Failing step: Not reported');
+    expect(summary).not.toContain('PRIVATE_ERROR_SENTINEL');
+  });
+
   it('keeps the newest failure state across number-only and ID-bearing updates', () => {
     const failedTool = {
       trace_id: 'tool-3',
