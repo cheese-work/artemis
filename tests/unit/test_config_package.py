@@ -168,6 +168,7 @@ def test_llm_config_parsing_and_merging():
     assert merged.planner.temperature == 0.7
 
 
+@pytest.mark.usefixtures("dummy_llm_keys")
 def test_agent_config_loading():
     """Test AgentGlobalConfig parsing from agent_config.json / artemis.jsonc."""
     agent_cfg = load_agent_config()
@@ -176,8 +177,10 @@ def test_agent_config_loading():
     # ships unset so each tier applies its own default (off pro, on ultra).
     assert agent_cfg.explorer_versions == {}
     assert agent_cfg.explorer.default_version == "flash"
-    assert agent_cfg.explorer.flash_mode == "flash"
-    assert agent_cfg.explorer.pro_mode == "flash"
+    # Shipped tiers: the fork's artemis.jsonc runs every role on one model, so both
+    # profile knobs ship as "pro" (changed from "flash" in ee1f18e).
+    assert agent_cfg.explorer.flash_mode == "pro"
+    assert agent_cfg.explorer.pro_mode == "pro"
     assert agent_cfg.explorer.caching is None
     assert "explorer" in agent_cfg.denylisted_tools
     assert agent_cfg.video_analyzer.enable_ledger is True
@@ -193,8 +196,8 @@ def test_agent_config_loading():
     assert agent_cfg.outputter.enabled is True
     assert agent_cfg.outputter.force_synthesis is False
     assert agent_cfg.flash.max_turns == 0
-    assert agent_cfg.flash.explorer_mode == "flash"
-    assert agent_cfg.pro.explorer.mode == "flash"
+    assert agent_cfg.flash.explorer_mode == "pro"
+    assert agent_cfg.pro.explorer.mode == "pro"
     assert agent_cfg.pro.checker.enabled is True
     assert agent_cfg.pro.committee.enabled is False
     assert agent_cfg.pro.planner_validation.enabled is True
@@ -251,6 +254,7 @@ def test_runtime_state_and_ipc(tmp_path, monkeypatch):
     assert not test_temp_file.exists()
 
 
+@pytest.mark.usefixtures("dummy_llm_keys")
 def test_planner_validation_builder_and_milestones():
     """Test AgentConfigBuilder methods for planner validation and milestone drift detection."""
     from artemis.sdk.builders.agent_config_builder import AgentConfigBuilder
@@ -282,6 +286,7 @@ def test_planner_validation_builder_and_milestones():
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("dummy_llm_keys")
 async def test_committee_builder_and_graph_mounting():
     """Test AgentConfigBuilder committee methods and graph mounting."""
     from artemis.context import ArtemisContext, DeviceContext, DevicePlatform, ExecutionSetup
@@ -330,6 +335,7 @@ async def test_committee_builder_and_graph_mounting():
     assert "ask_committee" not in op_tools_enabled
 
 
+@pytest.mark.usefixtures("dummy_llm_keys")
 def test_checker_builder_and_context_propagation():
     """Test AgentConfigBuilder methods and context propagation for checker."""
     from unittest.mock import MagicMock
@@ -401,6 +407,7 @@ def test_checker_builder_and_context_propagation():
     assert ctx.execution_setup.final_check_enabled is False
 
 
+@pytest.mark.usefixtures("dummy_llm_keys")
 def test_factory_default_verification_layering():
     """Contract: out of the box, the verification stack is layered as
     final check ON / planner validation (ratchet) ON / midway checks OFF."""
@@ -442,6 +449,7 @@ def test_factory_default_verification_layering():
     assert AgentGlobalConfig().checker.enabled is True
 
 
+@pytest.mark.usefixtures("dummy_llm_keys")
 def test_explorer_builder_and_resolution(monkeypatch):
     """Test AgentConfigBuilder explorer methods and multi-tier resolution logic."""
     from artemis.context import ArtemisContext, DeviceContext, DevicePlatform
@@ -451,13 +459,13 @@ def test_explorer_builder_and_resolution(monkeypatch):
 
     monkeypatch.delenv("ARTEMIS_EXPLORER_VERSION", raising=False)
 
-    # Default builder inherits from artemis.jsonc (default="flash", flash_mode="flash",
-    # pro_mode="flash", caching unset, no per-agent override).
+    # Default builder inherits from artemis.jsonc (default="flash", flash_mode="pro",
+    # pro_mode="pro", caching unset, no per-agent override).
     builder = AgentConfigBuilder()
     cfg = builder.build()
     assert cfg.explorer.default_version == "flash"
-    assert cfg.explorer.flash_mode == "flash"
-    assert cfg.explorer.pro_mode == "flash"
+    assert cfg.explorer.flash_mode == "pro"
+    assert cfg.explorer.pro_mode == "pro"
     assert cfg.explorer.caching is None
     assert cfg.explorer_versions == {}
 
@@ -466,10 +474,11 @@ def test_explorer_builder_and_resolution(monkeypatch):
     cfg_pro_ultra = AgentConfigBuilder().with_explorer(pro_mode="ultra").build()
     assert cfg_pro_ultra.get_explorer_version(agent_name="operator") == "ultra"
     assert cfg_pro_ultra.get_explorer_version(agent_name="validator") == "ultra"
-    assert cfg_pro_ultra.get_explorer_version(agent_name="flash") == "flash"
-    cfg_flash_pro = AgentConfigBuilder().with_explorer(flash_mode="pro").build()
-    assert cfg_flash_pro.get_explorer_version(agent_name="flash") == "pro"
-    assert cfg_flash_pro.get_explorer_version(agent_name="operator") == "flash"
+    assert cfg_pro_ultra.get_explorer_version(agent_name="flash") == "pro"  # shipped default
+    # Use a non-default value so the knob's independence is actually exercised.
+    cfg_flash_only = AgentConfigBuilder().with_explorer(flash_mode="flash").build()
+    assert cfg_flash_only.get_explorer_version(agent_name="flash") == "flash"
+    assert cfg_flash_only.get_explorer_version(agent_name="operator") == "pro"  # shipped default
 
     # Fluent configuration with with_explorer
     cfg_custom = (
@@ -547,6 +556,7 @@ def test_explorer_builder_and_resolution(monkeypatch):
     assert ctx.execution_setup.explorer_caching is False
 
 
+@pytest.mark.usefixtures("dummy_llm_keys")
 def test_outputter_builder_and_context_propagation():
     """Test AgentConfigBuilder outputter methods and propagation to ExecutionSetup."""
     from artemis.context import ArtemisContext, DeviceContext, DevicePlatform
@@ -596,6 +606,7 @@ def test_outputter_builder_and_context_propagation():
     assert ctx.execution_setup.outputter.force_synthesis is True
 
 
+@pytest.mark.usefixtures("dummy_llm_keys")
 def test_categorized_flash_and_pro_profile_builders():
     """Test with_flash_config and with_pro_config fluent builders and bidirectional sync."""
     from artemis.config.agent import AgentGlobalConfig

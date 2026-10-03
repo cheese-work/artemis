@@ -22,7 +22,9 @@ markers here so callers can select them without relying on filename patterns.
 from pathlib import Path
 
 import pytest
+from pydantic import SecretStr
 
+from artemis.config.settings import settings
 from artemis.drivers.mock.mock_driver import MockDeviceDriver
 
 
@@ -30,6 +32,18 @@ from artemis.drivers.mock.mock_driver import MockDeviceDriver
 def mock_driver():
     """Provide an isolated mock mobile driver."""
     return MockDeviceDriver(device_id="fixture-mock-device", width=1080, height=2400)
+
+
+@pytest.fixture
+def dummy_llm_keys(monkeypatch):
+    """Opt-in placeholder provider keys for tests that build real LLM clients offline.
+
+    Constructing a client (no network call) needs a key to be present. Use via
+    `pytestmark = pytest.mark.usefixtures("dummy_llm_keys")`. It is deliberately not
+    autouse so missing-key negative tests keep exercising the real validation.
+    """
+    for name in ("GOOGLE_API_KEY", "OPENAI_API_KEY"):
+        monkeypatch.setattr(settings, name, SecretStr("test-dummy-not-a-real-key"))
 
 
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
