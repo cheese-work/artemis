@@ -19,6 +19,7 @@ describe('WhatsNewComponent', () => {
     whatsNewHasUnread: ReturnType<typeof signal<boolean>>;
     whatsNewPromptDraft: ReturnType<typeof signal<boolean>>;
     whatsNewErrorVisible: ReturnType<typeof signal<boolean>>;
+    whatsNewAcceptedRunHandoffs: ReturnType<typeof signal<number>>;
   };
   let response: unknown;
 
@@ -32,7 +33,8 @@ describe('WhatsNewComponent', () => {
       whatsNewHasUpdates: signal(false),
       whatsNewHasUnread: signal(false),
       whatsNewPromptDraft: signal(false),
-      whatsNewErrorVisible: signal(false)
+      whatsNewErrorVisible: signal(false),
+      whatsNewAcceptedRunHandoffs: signal(0)
     };
 
     TestBed.configureTestingModule({
@@ -80,6 +82,24 @@ describe('WhatsNewComponent', () => {
     await fixture.whenStable();
 
     expect(dialog.open).toBeTrue();
+  });
+
+  it('keeps auto-open suppressed between accepted submission and active status', async () => {
+    agentService.whatsNewAcceptedRunHandoffs.set(1);
+    const fixture = TestBed.createComponent(WhatsNewComponent);
+    fixture.detectChanges();
+    await fixture.whenStable();
+
+    const dialog = fixture.nativeElement.querySelector('dialog') as HTMLDialogElement;
+    expect(dialog.open).toBeFalse();
+
+    agentService.agentStatus.set('running');
+    agentService.activeTasks.set([{ session_id: 'accepted-run', status: 'running' }]);
+    agentService.whatsNewAcceptedRunHandoffs.set(0);
+    fixture.detectChanges();
+    await fixture.whenStable();
+
+    expect(dialog.open).toBeFalse();
   });
 
   it('defers auto-open while a prompt draft exists and opens after it is cleared', async () => {

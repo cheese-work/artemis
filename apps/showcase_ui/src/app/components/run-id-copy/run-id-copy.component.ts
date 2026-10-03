@@ -19,7 +19,7 @@ import { ElementRef, ViewChild } from '@angular/core';
         <span class="copy-feedback" role="status" aria-live="polite">{{ feedback() }}</span>
       }
       @if (copyFailed()) {
-        <span class="copy-fallback">
+        <span class="copy-fallback" (click)="$event.stopPropagation()">
           <input #fallbackInput type="text" [value]="runId" readonly aria-label="Full run ID to copy manually">
           <span>Press Ctrl+C to copy the full ID.</span>
         </span>

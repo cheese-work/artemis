@@ -154,9 +154,10 @@ export class WhatsNewComponent {
         return;
       }
       const isRunActive = this.isRunActive();
+      const hasAcceptedRunHandoff = this.agentService.whatsNewAcceptedRunHandoffs() > 0;
       const hasPromptDraft = this.agentService.whatsNewPromptDraft();
       const hasError = this.agentService.whatsNewErrorVisible();
-      if (isRunActive || hasPromptDraft || hasError) return;
+      if (isRunActive || hasAcceptedRunHandoff || hasPromptDraft || hasError) return;
 
       this.autoOpenConsidered = true;
       if (shouldAutoOpenWhatsNew(entries, this.readLastSeenId(), isRunActive, hasPromptDraft, hasError)) {

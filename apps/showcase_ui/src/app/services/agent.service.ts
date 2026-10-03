@@ -81,8 +81,21 @@ export class AgentService {
   public whatsNewHasUnread = signal(false);
   public whatsNewPromptDraft = signal(false);
   public whatsNewErrorVisible = signal(false);
+  public whatsNewAcceptedRunHandoffs = signal(0);
+  private whatsNewErrorOwners = new Set<symbol>();
+  private statusRequestSequence = 0;
+  private whatsNewHandoffRequestBoundaries: number[] = [];
   // Persistent tracking of active/pending sessions across polling boundaries
   private activeSessionTracking = new Map<string, Session>();
+
+  public updateWhatsNewErrorVisibility(owner: symbol, visible: boolean): void {
+    if (visible) {
+      this.whatsNewErrorOwners.add(owner);
+    } else {
+      this.whatsNewErrorOwners.delete(owner);
+    }
+    this.whatsNewErrorVisible.set(this.whatsNewErrorOwners.size > 0);
+  }
 
   public sessions = computed(() => {
     const raw = this.rawSessions();
@@ -478,6 +491,8 @@ export class AgentService {
             obs.error({ error: { detail: res.error || 'Task submission was rejected' } });
             return;
           }
+          this.whatsNewHandoffRequestBoundaries.push(this.statusRequestSequence);
+          this.whatsNewAcceptedRunHandoffs.update(count => count + 1);
           if (res && res.tasks && res.tasks.length > 0) {
             const newSessionId = res.tasks[0].session_id;
             if (newSessionId) {
@@ -1552,6 +1567,7 @@ export class AgentService {
    * Fetch current agent runner process status
    */
   public fetchStatus(): void {
+    const requestSequence = ++this.statusRequestSequence;
     this.http.get<any>('/api/status').subscribe({
       next: (data) => {
         if (data && data.status) {
@@ -1635,6 +1651,7 @@ export class AgentService {
             }
           }
           this.hasFetchedStatus.set(true);
+          this.resolveWhatsNewRunHandoffs(requestSequence);
         }
       },
       error: (err) => {
@@ -1644,6 +1661,20 @@ export class AgentService {
         this.runningGoal.set(null);
       }
     });
+  }
+
+  private resolveWhatsNewRunHandoffs(requestSequence: number): void {
+    let resolvedCount = 0;
+    while (
+      this.whatsNewHandoffRequestBoundaries.length > 0
+      && this.whatsNewHandoffRequestBoundaries[0] < requestSequence
+    ) {
+      this.whatsNewHandoffRequestBoundaries.shift();
+      resolvedCount++;
+    }
+    if (resolvedCount > 0) {
+      this.whatsNewAcceptedRunHandoffs.update(count => Math.max(0, count - resolvedCount));
+    }
   }
 
   /**

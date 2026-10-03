@@ -109,4 +109,32 @@ describe('RunIdCopyComponent', () => {
     expect(fixture.nativeElement.textContent).toContain('Copied');
     expect(fixture.componentInstance.selected).toBeFalse();
   });
+
+  it('keeps the compact menu and manual-copy field open when the field is clicked', async () => {
+    const writeText = jasmine.createSpy('writeText').and.rejectWith(new DOMException('Denied', 'NotAllowedError'));
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText }
+    });
+
+    await TestBed.configureTestingModule({ imports: [RunIdCopyHostComponent] }).compileComponents();
+    const fixture = TestBed.createComponent(RunIdCopyHostComponent);
+    fixture.detectChanges();
+    const component = fixture.debugElement.query(By.directive(RunIdCopyComponent)).componentInstance as RunIdCopyComponent;
+    const copyRunId = spyOn(component, 'copyRunId').and.callThrough();
+    (fixture.nativeElement.querySelector('.task-dropdown button') as HTMLButtonElement).click();
+    await copyRunId.calls.mostRecent().returnValue;
+    fixture.detectChanges();
+    await new Promise(resolve => setTimeout(resolve, 0));
+    fixture.detectChanges();
+
+    const fallback = fixture.nativeElement.querySelector('.copy-fallback input') as HTMLInputElement;
+    fallback.click();
+    fixture.detectChanges();
+
+    expect(fixture.nativeElement.querySelector('.task-dropdown')).not.toBeNull();
+    expect(fallback.isConnected).toBeTrue();
+    expect(fixture.componentInstance.menuOpen).toBeTrue();
+    expect(fixture.componentInstance.selected).toBeFalse();
+  });
 });

@@ -52,4 +52,58 @@ describe('buildRunSummary', () => {
 
     expect(summary).toContain(`[Open recording](${window.location.origin}/videos/fixture-run.mp4)`);
   });
+
+  it('does not report a successfully repaired step as failing', () => {
+    const logs = [{
+      type: 'step_updated',
+      data: {
+        step_id: 'step-3',
+        step_number: 3,
+        status: 'completed',
+        action_taken: { action: 'tap', status: 'success' },
+        last_execution_result: { status: 'success', repair_status: 'fixed' }
+      }
+    }];
+
+    const summary = buildRunSummary({ ...session, status: 'completed' }, 'completed', logs, null);
+
+    expect(summary).toContain('- Failing step: Not reported');
+  });
+
+  it('uses the latest state for each step when earlier failures are superseded', () => {
+    const logs = [
+      {
+        type: 'step_updated',
+        data: {
+          step_id: 'step-3',
+          step_number: 3,
+          status: 'failed',
+          action_taken: { action: 'tap', status: 'failed' }
+        }
+      },
+      {
+        type: 'step_updated',
+        data: {
+          step_id: 'step-3',
+          step_number: 3,
+          status: 'completed',
+          action_taken: { action: 'tap', status: 'success' }
+        }
+      },
+      {
+        type: 'step_updated',
+        data: {
+          step_id: 'step-4',
+          step_number: 4,
+          status: 'failed',
+          action_taken: { action: 'swipe', status: 'failed' }
+        }
+      }
+    ];
+
+    const summary = buildRunSummary(session, 'failed', logs, null);
+
+    expect(summary).toContain('- Failing step: Step 4: swipe');
+    expect(summary).not.toContain('Step 3:');
+  });
 });

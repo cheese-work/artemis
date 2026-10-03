@@ -39,6 +39,8 @@ export class WorkspaceComponent implements OnInit {
   public agentService = inject(AgentService);
   private zone = inject(NgZone);
   private destroyRef = inject(DestroyRef);
+  private readonly whatsNewErrorOwner = Symbol('workspace-error');
+  private errorTimeout: ReturnType<typeof setTimeout> | null = null;
 
   // Default right panel width to 1/3 of the screen (or 450px as fallback)
   public rightPanelWidth = signal<number>(
@@ -68,14 +70,23 @@ export class WorkspaceComponent implements OnInit {
 
   constructor() {
     this.destroyRef.onDestroy(() => {
+      if (this.errorTimeout) clearTimeout(this.errorTimeout);
       this.agentService.whatsNewPromptDraft.set(false);
-      this.agentService.whatsNewErrorVisible.set(false);
+      this.agentService.updateWhatsNewErrorVisibility(this.whatsNewErrorOwner, false);
     });
   }
 
   public setErrorMessage(message: string | null): void {
+    if (this.errorTimeout) clearTimeout(this.errorTimeout);
+    this.errorTimeout = null;
     this.errorMessage.set(message);
-    this.agentService.whatsNewErrorVisible.set(!!message);
+    this.agentService.updateWhatsNewErrorVisibility(this.whatsNewErrorOwner, !!message);
+    if (message) {
+      this.errorTimeout = setTimeout(() => {
+        this.errorTimeout = null;
+        this.setErrorMessage(null);
+      }, 5000);
+    }
   }
 
   public clearErrorMessage(): void {
@@ -264,9 +275,6 @@ export class WorkspaceComponent implements OnInit {
         console.error('Failed to submit task:', err);
         this.isSubmitting.set(false);
         this.setErrorMessage(err.error?.detail || 'The runner is busy. Please wait for current task to finish.');
-        setTimeout(() => {
-          this.setErrorMessage(null);
-        }, 5000);
       }
     });
   }

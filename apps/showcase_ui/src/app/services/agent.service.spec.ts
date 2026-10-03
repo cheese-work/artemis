@@ -9,6 +9,11 @@ describe('AgentService live LLM retry timeline', () => {
     service.sessionLogs = signal<any[]>([]);
     service.isSessionContentLoading = signal(false);
     service.startupProgressBySession = signal({});
+    service.whatsNewAcceptedRunHandoffs = signal(0);
+    service.whatsNewErrorVisible = signal(false);
+    (service as any).whatsNewErrorOwners = new Set<symbol>();
+    (service as any).statusRequestSequence = 0;
+    (service as any).whatsNewHandoffRequestBoundaries = [];
     (service as any).pendingStartupProgress = signal<any[]>([]);
     (service as any).sessionLoadGeneration = 0;
     (service as any).sessionSnapshotRequestId = 0;
@@ -20,12 +25,15 @@ describe('AgentService live LLM retry timeline', () => {
   function createRunService(devices: { serial: string; state: string }[]) {
     const service = createServiceWithoutPolling();
     service.userPinnedSessionId = signal<string | null>(null);
+    const get = jasmine.createSpy('get').and.callFake((url: string) =>
+      of(url === '/api/devices' ? { devices } : {})
+    );
     const post = jasmine.createSpy('post').and.returnValue(of({}));
     (service as any).http = {
-      get: () => of({ devices }),
+      get,
       post
     };
-    return { service, post };
+    return { service, get, post };
   }
 
   it('orders startup milestones and replaces duplicate stages', () => {
@@ -190,6 +198,65 @@ describe('AgentService live LLM retry timeline', () => {
     service.runTask('test goal').subscribe();
 
     expect(selectSpy).toHaveBeenCalledWith('new-session', false);
+    expect(service.whatsNewAcceptedRunHandoffs()).toBe(1);
+  });
+
+  it('releases accepted-run suppression only after the follow-up status response', () => {
+    spyOn(localStorage, 'getItem').and.returnValue(null);
+    const { service, get, post } = createRunService([]);
+    post.and.returnValue(of({ tasks: [{ session_id: 'accepted-session' }] }));
+    service.agentStatus = signal('idle');
+    service.runningSessionId = signal<string | null>(null);
+    service.runningGoal = signal<string | null>(null);
+    service.activeModel = signal<any>(null);
+    service.isPaused = signal(false);
+    service.pausedError = signal<string | null>(null);
+    service.activeTasks = signal<any[]>([]);
+    service.hasFetchedStatus = signal(false);
+    service.currentSessionId = signal<string | null>(null);
+    service.userPinnedSessionId = signal<string | null>(null);
+    (service as any).pendingQueue = signal<any[]>([]);
+    (service as any).sessions = signal<any[]>([]);
+    spyOn(service, 'selectSession');
+    spyOn(service, 'fetchSessions');
+    const earlierStatus = new Subject<any>();
+    get.and.callFake((url: string) =>
+      url === '/api/status' ? earlierStatus.asObservable() : of({ devices: [] })
+    );
+
+    service.fetchStatus();
+
+    service.runTask('accepted goal').subscribe();
+
+    expect(service.whatsNewAcceptedRunHandoffs()).toBe(1);
+    earlierStatus.next({ status: 'idle', queue: [], active_tasks: [] });
+    earlierStatus.complete();
+    expect(service.whatsNewAcceptedRunHandoffs()).toBe(1);
+
+    get.and.returnValue(of({
+      status: 'running',
+      session_id: 'accepted-session',
+      queue: [],
+      active_tasks: [{ session_id: 'accepted-session', status: 'running' }]
+    }));
+    service.fetchStatus();
+
+    expect(service.agentStatus()).toBe('running');
+    expect(service.whatsNewAcceptedRunHandoffs()).toBe(0);
+  });
+
+  it('does not let an older workspace error release a newer error suppression', () => {
+    const service = createServiceWithoutPolling();
+    const olderWorkspace = Symbol('older-workspace');
+    const newerWorkspace = Symbol('newer-workspace');
+
+    service.updateWhatsNewErrorVisibility(olderWorkspace, true);
+    service.updateWhatsNewErrorVisibility(newerWorkspace, true);
+    service.updateWhatsNewErrorVisibility(olderWorkspace, false);
+
+    expect(service.whatsNewErrorVisible()).toBeTrue();
+    service.updateWhatsNewErrorVisibility(newerWorkspace, false);
+    expect(service.whatsNewErrorVisible()).toBeFalse();
   });
 
   it('submits each browser remembered device when that device is connected', () => {

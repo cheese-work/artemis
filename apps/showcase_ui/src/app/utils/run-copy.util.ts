@@ -21,31 +21,80 @@ export function buildRunSummary(
 }
 
 function findFailingStep(logs: unknown[]): string {
-  const steps = logs.flatMap(log => {
-    if (!log || typeof log !== 'object') return [];
+  const latestSteps = new Map<string, { step: Record<string, unknown>; index: number }>();
+  logs.forEach((log, index) => {
+    if (!log || typeof log !== 'object') return;
     const event = log as Record<string, unknown>;
     const data = event['data'];
     if (['step_updated', 'step_recorded', 'step'].includes(String(event['type']))
       && data && typeof data === 'object') {
-      return [data as Record<string, unknown>];
+      const step = data as Record<string, unknown>;
+      latestSteps.set(stepKey(step, index), { step, index });
+      return;
     }
     if (event['step_number'] !== undefined || event['step_id'] !== undefined) {
-      return [event];
+      latestSteps.set(stepKey(event, index), { step: event, index });
     }
-    return [];
   });
 
-  const failedStep = steps.reverse().find(step => {
-    const action = actionForStep(step);
-    return isActionFailed(action, step);
-  });
-  if (!failedStep) return 'Not reported';
+  const failingEntry = Array.from(latestSteps.values())
+    .sort((left, right) => right.index - left.index)
+    .find(({ step }) => isUnresolvedFailure(step));
+  if (!failingEntry) return 'Not reported';
 
+  const failedStep = failingEntry.step;
   const action = actionForStep(failedStep);
   const actionName = action && (action['action'] || action['name'] || action['type']);
   const stepNumber = Number(failedStep['step_number']);
   const prefix = Number.isFinite(stepNumber) ? `Step ${stepNumber}` : 'Step';
   return `${prefix}: ${singleLine(typeof actionName === 'string' ? actionName : 'Action failed')}`;
+}
+
+function stepKey(step: Record<string, unknown>, index: number): string {
+  const stepId = step['step_id'];
+  if (stepId !== undefined && stepId !== null && String(stepId).trim()) {
+    return `id:${String(stepId)}`;
+  }
+  const stepNumber = step['step_number'];
+  if (stepNumber !== undefined && stepNumber !== null && String(stepNumber).trim()) {
+    return `number:${String(stepNumber)}`;
+  }
+  return `index:${index}`;
+}
+
+function isUnresolvedFailure(step: Record<string, unknown>): boolean {
+  const status = String(step['status'] ?? '').toLowerCase();
+  if (['completed', 'complete', 'success', 'succeeded', 'fixed'].includes(status)) return false;
+
+  const result = parseExecutionResult(step['last_execution_result']);
+  const resultStatus = String(result?.['status'] ?? '').toLowerCase();
+  if (
+    result?.['repair_status'] === 'fixed'
+    || ['completed', 'complete', 'success', 'succeeded'].includes(resultStatus)
+    || result?.['success'] === true
+    || result?.['is_successful'] === true
+  ) {
+    return false;
+  }
+
+  const action = actionForStep(step);
+  const actionStatus = String(action?.['status'] ?? '').toLowerCase();
+  if (['completed', 'complete', 'success', 'succeeded'].includes(actionStatus) || action?.['success'] === true) {
+    return false;
+  }
+  return isActionFailed(action, step);
+}
+
+function parseExecutionResult(value: unknown): Record<string, unknown> | null {
+  if (typeof value === 'string') {
+    try {
+      const parsed = JSON.parse(value);
+      return parsed && typeof parsed === 'object' ? parsed as Record<string, unknown> : null;
+    } catch {
+      return null;
+    }
+  }
+  return value && typeof value === 'object' ? value as Record<string, unknown> : null;
 }
 
 function actionForStep(step: Record<string, unknown>): Record<string, unknown> | null {
