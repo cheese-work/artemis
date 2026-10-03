@@ -5,18 +5,28 @@ export interface WhatsNewEntry {
   body?: string;
 }
 
-export function parseWhatsNewEntries(value: unknown): WhatsNewEntry[] {
-  if (!Array.isArray(value)) return [];
+function isWhatsNewEntry(value: unknown): value is WhatsNewEntry {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const candidate = value as Record<string, unknown>;
+  if (typeof candidate['id'] !== 'string' || !candidate['id'].trim()
+    || typeof candidate['date'] !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(candidate['date'])
+    || typeof candidate['title'] !== 'string' || !candidate['title'].trim()
+    || (candidate['body'] !== undefined && typeof candidate['body'] !== 'string')) {
+    return false;
+  }
 
-  return value.filter((entry): entry is WhatsNewEntry => {
-    if (!entry || typeof entry !== 'object') return false;
-    const candidate = entry as Record<string, unknown>;
-    return typeof candidate['id'] === 'string'
-      && candidate['id'].length > 0
-      && typeof candidate['date'] === 'string'
-      && typeof candidate['title'] === 'string'
-      && (candidate['body'] === undefined || typeof candidate['body'] === 'string');
-  });
+  const parsedDate = new Date(`${candidate['date']}T00:00:00.000Z`);
+  return !Number.isNaN(parsedDate.valueOf()) && parsedDate.toISOString().slice(0, 10) === candidate['date'];
+}
+
+export function parseWhatsNewEntries(value: unknown): WhatsNewEntry[] {
+  if (!Array.isArray(value) || !value.every(isWhatsNewEntry)) return [];
+
+  const entries = value as WhatsNewEntry[];
+  const ids = new Set(entries.map(entry => entry.id));
+  if (ids.size !== entries.length) return [];
+  if (entries.some((entry, index) => index > 0 && entry.date > entries[index - 1].date)) return [];
+  return entries;
 }
 
 export function hasUnseenWhatsNewEntries(
@@ -26,14 +36,15 @@ export function hasUnseenWhatsNewEntries(
   if (entries.length === 0) return false;
   if (!lastSeenId) return true;
 
-  const lastSeenIndex = entries.findIndex(entry => entry.id === lastSeenId);
-  return lastSeenIndex === -1 || lastSeenIndex < entries.length - 1;
+  return entries[0].id !== lastSeenId;
 }
 
 export function shouldAutoOpenWhatsNew(
   entries: WhatsNewEntry[],
   lastSeenId: string | null,
-  isRunActive: boolean
+  isRunActive: boolean,
+  hasPromptDraft = false,
+  hasError = false
 ): boolean {
-  return !isRunActive && hasUnseenWhatsNewEntries(entries, lastSeenId);
+  return !isRunActive && !hasPromptDraft && !hasError && hasUnseenWhatsNewEntries(entries, lastSeenId);
 }

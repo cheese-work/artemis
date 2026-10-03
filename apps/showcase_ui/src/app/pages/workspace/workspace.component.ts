@@ -52,7 +52,10 @@ export class WorkspaceComponent implements OnInit {
   // expressions (isBarExpanded) genuinely track it under OnPush.
   private taskInputSignal = signal<string>('');
   public get taskInput(): string { return this.taskInputSignal(); }
-  public set taskInput(value: string) { this.taskInputSignal.set(value); }
+  public set taskInput(value: string) {
+    this.taskInputSignal.set(value);
+    this.agentService.whatsNewPromptDraft.set(value.trim().length > 0);
+  }
   public isSubmitting = signal<boolean>(false);
   public errorMessage = signal<string | null>(null);
   public selectedProfile = signal<'flash' | 'pro'>('flash');
@@ -62,6 +65,22 @@ export class WorkspaceComponent implements OnInit {
   public isInputFocused = signal<boolean>(false);
 
   @ViewChild('dockInput') public dockInputRef?: ElementRef<HTMLTextAreaElement>;
+
+  constructor() {
+    this.destroyRef.onDestroy(() => {
+      this.agentService.whatsNewPromptDraft.set(false);
+      this.agentService.whatsNewErrorVisible.set(false);
+    });
+  }
+
+  public setErrorMessage(message: string | null): void {
+    this.errorMessage.set(message);
+    this.agentService.whatsNewErrorVisible.set(!!message);
+  }
+
+  public clearErrorMessage(): void {
+    this.setErrorMessage(null);
+  }
 
   ngOnInit(): void {
     if (typeof localStorage !== 'undefined') {
@@ -225,7 +244,7 @@ export class WorkspaceComponent implements OnInit {
     }
 
     this.isSubmitting.set(true);
-    this.errorMessage.set(null);
+    this.setErrorMessage(null);
 
     if (this.dockInputRef?.nativeElement) {
       this.dockInputRef.nativeElement.blur();
@@ -244,9 +263,9 @@ export class WorkspaceComponent implements OnInit {
       error: (err) => {
         console.error('Failed to submit task:', err);
         this.isSubmitting.set(false);
-        this.errorMessage.set(err.error?.detail || 'The runner is busy. Please wait for current task to finish.');
+        this.setErrorMessage(err.error?.detail || 'The runner is busy. Please wait for current task to finish.');
         setTimeout(() => {
-          this.errorMessage.set(null);
+          this.setErrorMessage(null);
         }, 5000);
       }
     });
@@ -264,7 +283,7 @@ export class WorkspaceComponent implements OnInit {
     }
     const targetSessionId = this.agentService.currentSessionId();
     this.isSubmitting.set(true);
-    this.errorMessage.set(null);
+    this.setErrorMessage(null);
     this.agentService.stopTask(targetSessionId, false);
     setTimeout(() => {
       this.isSubmitting.set(false);

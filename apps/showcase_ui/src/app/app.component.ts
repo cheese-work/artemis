@@ -14,10 +14,11 @@
  * limitations under the License.
  */
 
-import { Component, ChangeDetectionStrategy, ViewChild } from '@angular/core';
+import { Component, ChangeDetectionStrategy, inject, ViewChild } from '@angular/core';
 import { RouterOutlet } from '@angular/router';
 import { NavSwitcherComponent } from './components/nav-switcher/nav-switcher.component';
 import { WhatsNewComponent } from './components/whats-new/whats-new.component';
+import { AgentService } from './services/agent.service';
 
 @Component({
   selector: 'app-root',
@@ -28,6 +29,7 @@ import { WhatsNewComponent } from './components/whats-new/whats-new.component';
 })
 export class AppComponent {
   public title = 'SmartQA';
+  public readonly agentService = inject(AgentService);
 
   @ViewChild(WhatsNewComponent) private whatsNew?: WhatsNewComponent;
 

@@ -92,11 +92,13 @@ function safeRecordingUrl(value: string | null | undefined): string | null {
   const trimmed = value.trim();
   if (!trimmed || /[\r\n]/.test(trimmed)) return null;
 
-  const isRelativePath = trimmed.startsWith('/') && !trimmed.startsWith('//');
-  const isHttpUrl = /^https?:\/\//i.test(trimmed);
-  if (!isRelativePath && !isHttpUrl) return null;
-
-  return trimmed.replace(/[\s()]/g, character => encodeURIComponent(character));
+  try {
+    const url = new URL(trimmed, window.location.origin);
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
+    return url.href.replace(/[()]/g, character => encodeURIComponent(character));
+  } catch {
+    return null;
+  }
 }
 
 function singleLine(value: string): string {

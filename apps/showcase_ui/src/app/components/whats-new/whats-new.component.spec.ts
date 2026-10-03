@@ -7,28 +7,38 @@ import { WhatsNewComponent, WHATS_NEW_LAST_SEEN_KEY } from './whats-new.componen
 
 describe('WhatsNewComponent', () => {
   const entries = [
-    { id: 'first', date: '2026-10-02', title: 'First update', body: 'First body' },
-    { id: 'second', date: '2026-10-03', title: 'Second update', body: 'Second body' }
+    { id: 'second', date: '2026-10-03', title: 'Second update', body: 'Second body' },
+    { id: 'first', date: '2026-10-02', title: 'First update', body: 'First body' }
   ];
 
   let agentService: {
     agentStatus: ReturnType<typeof signal<string>>;
     activeTasks: ReturnType<typeof signal<any[]>>;
     hasFetchedStatus: ReturnType<typeof signal<boolean>>;
+    whatsNewHasUpdates: ReturnType<typeof signal<boolean>>;
+    whatsNewHasUnread: ReturnType<typeof signal<boolean>>;
+    whatsNewPromptDraft: ReturnType<typeof signal<boolean>>;
+    whatsNewErrorVisible: ReturnType<typeof signal<boolean>>;
   };
+  let response: unknown;
 
   beforeEach(() => {
     localStorage.removeItem(WHATS_NEW_LAST_SEEN_KEY);
+    response = entries;
     agentService = {
       agentStatus: signal('idle'),
       activeTasks: signal([]),
-      hasFetchedStatus: signal(true)
+      hasFetchedStatus: signal(true),
+      whatsNewHasUpdates: signal(false),
+      whatsNewHasUnread: signal(false),
+      whatsNewPromptDraft: signal(false),
+      whatsNewErrorVisible: signal(false)
     };
 
     TestBed.configureTestingModule({
       imports: [WhatsNewComponent],
       providers: [
-        { provide: HttpClient, useValue: { get: () => of(entries) } },
+        { provide: HttpClient, useValue: { get: () => of(response) } },
         { provide: AgentService, useValue: agentService }
       ]
     });
@@ -72,6 +82,47 @@ describe('WhatsNewComponent', () => {
     expect(dialog.open).toBeTrue();
   });
 
+  it('defers auto-open while a prompt draft exists and opens after it is cleared', async () => {
+    agentService.whatsNewPromptDraft.set(true);
+    const fixture = TestBed.createComponent(WhatsNewComponent);
+    fixture.detectChanges();
+    await fixture.whenStable();
+
+    const dialog = fixture.nativeElement.querySelector('dialog') as HTMLDialogElement;
+    expect(dialog.open).toBeFalse();
+    agentService.whatsNewPromptDraft.set(false);
+    fixture.detectChanges();
+    await fixture.whenStable();
+
+    expect(dialog.open).toBeTrue();
+  });
+
+  it('defers auto-open while a submission error is visible', async () => {
+    agentService.whatsNewErrorVisible.set(true);
+    const fixture = TestBed.createComponent(WhatsNewComponent);
+    fixture.detectChanges();
+    await fixture.whenStable();
+
+    const dialog = fixture.nativeElement.querySelector('dialog') as HTMLDialogElement;
+    expect(dialog.open).toBeFalse();
+    agentService.whatsNewErrorVisible.set(false);
+    fixture.detectChanges();
+    await fixture.whenStable();
+
+    expect(dialog.open).toBeTrue();
+  });
+
+  it('keeps the nav hidden when the shipped update list is empty', async () => {
+    response = [];
+    const fixture = TestBed.createComponent(WhatsNewComponent);
+    fixture.detectChanges();
+    await fixture.whenStable();
+
+    expect(agentService.whatsNewHasUpdates()).toBeFalse();
+    expect(agentService.whatsNewHasUnread()).toBeFalse();
+    expect((fixture.nativeElement.querySelector('dialog') as HTMLDialogElement).open).toBeFalse();
+  });
+
   it('stores the latest entry id after closing the side sheet', async () => {
     const fixture = TestBed.createComponent(WhatsNewComponent);
     fixture.detectChanges();
@@ -84,6 +135,7 @@ describe('WhatsNewComponent', () => {
     await closed;
 
     expect(localStorage.getItem(WHATS_NEW_LAST_SEEN_KEY)).toBe('second');
+    expect(agentService.whatsNewHasUnread()).toBeFalse();
   });
 
   it('keeps Tab and Shift+Tab inside the open side sheet', async () => {

@@ -62,7 +62,7 @@ describe('RunSummaryCopyComponent', () => {
     expect(copiedSummary).toContain('- Device: pixel-qa-01');
     expect(copiedSummary).toContain('- Outcome: Failed');
     expect(copiedSummary).toContain('- Failing step: Step 3: tap');
-    expect(copiedSummary).toContain('[Open recording](/recordings/run.mp4)');
+    expect(copiedSummary).toContain(`[Open recording](${window.location.origin}/recordings/run.mp4)`);
     expect(copiedSummary).not.toContain('unredacted goal');
     expect(fixture.nativeElement.textContent).toContain('Copied');
   });

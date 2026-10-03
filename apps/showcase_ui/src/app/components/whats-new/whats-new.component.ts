@@ -139,8 +139,12 @@ export class WhatsNewComponent {
       next: value => {
         this.entries.set(parseWhatsNewEntries(value));
         this.entriesLoaded.set(true);
+        this.updateNavState();
       },
-      error: () => this.entriesLoaded.set(true)
+      error: () => {
+        this.entriesLoaded.set(true);
+        this.updateNavState();
+      }
     });
 
     effect(() => {
@@ -149,10 +153,13 @@ export class WhatsNewComponent {
       if (!dialog || !this.entriesLoaded() || !this.agentService.hasFetchedStatus() || this.autoOpenConsidered) {
         return;
       }
-      if (this.isRunActive()) return;
+      const isRunActive = this.isRunActive();
+      const hasPromptDraft = this.agentService.whatsNewPromptDraft();
+      const hasError = this.agentService.whatsNewErrorVisible();
+      if (isRunActive || hasPromptDraft || hasError) return;
 
       this.autoOpenConsidered = true;
-      if (shouldAutoOpenWhatsNew(entries, this.readLastSeenId(), false)) {
+      if (shouldAutoOpenWhatsNew(entries, this.readLastSeenId(), isRunActive, hasPromptDraft, hasError)) {
         this.showDialog(dialog);
       }
     });
@@ -196,13 +203,23 @@ export class WhatsNewComponent {
   }
 
   public onDialogClosed(): void {
-    const latestEntry = this.entries().at(-1);
+    const latestEntry = this.entries()[0];
     if (latestEntry) {
       try {
         localStorage.setItem(WHATS_NEW_LAST_SEEN_KEY, latestEntry.id);
       } catch {
       }
     }
+    this.agentService.whatsNewHasUnread.set(false);
+  }
+
+  private updateNavState(): void {
+    const entries = this.entries();
+    const hasEntries = this.entriesLoaded() && entries.length > 0;
+    this.agentService.whatsNewHasUpdates.set(hasEntries);
+    this.agentService.whatsNewHasUnread.set(
+      hasEntries && hasUnseenWhatsNewEntries(entries, this.readLastSeenId())
+    );
   }
 
   private showDialog(dialog: HTMLDialogElement): void {

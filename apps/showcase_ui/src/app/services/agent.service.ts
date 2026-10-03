@@ -77,6 +77,10 @@ export class AgentService {
   private rawSessions = signal<Session[]>([]);
   private pendingQueue = signal<Session[]>([]);
   public activeTasks = signal<any[]>([]);
+  public whatsNewHasUpdates = signal(false);
+  public whatsNewHasUnread = signal(false);
+  public whatsNewPromptDraft = signal(false);
+  public whatsNewErrorVisible = signal(false);
   // Persistent tracking of active/pending sessions across polling boundaries
   private activeSessionTracking = new Map<string, Session>();
 

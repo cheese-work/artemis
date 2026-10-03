@@ -2,10 +2,12 @@
   "name": "artemis-showcase-ui",
   "version": "1.0.0",
   "scripts": {
+    "prebuild": "node scripts/validate-whats-new.mjs",
     "ng": "ng",
     "start": "ng serve --proxy-config proxy.conf.json",
     "build": "ng build",
     "watch": "ng build --watch --configuration development",
+    "pretest": "node scripts/validate-whats-new.mjs",
     "test": "ng test"
   },
   "private": true,

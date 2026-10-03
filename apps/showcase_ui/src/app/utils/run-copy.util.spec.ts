@@ -28,7 +28,7 @@ describe('buildRunSummary', () => {
     expect(summary).toContain('- Device: pixel-qa-01');
     expect(summary).toContain('- Outcome: Failed');
     expect(summary).toContain('- Failing step: Step 4: tap');
-    expect(summary).toContain('[Open recording](/recordings/run-123.mp4)');
+    expect(summary).toContain(`[Open recording](${new URL('/recordings/run-123.mp4', window.location.origin).href})`);
     expect(summary).not.toContain('unredacted goal');
     expect(summary).not.toContain('Goal:');
   });
@@ -45,5 +45,11 @@ describe('buildRunSummary', () => {
     const summary = buildRunSummary(session, 'failed', [], 'javascript:alert(1)');
 
     expect(summary).toContain('- Recording: Not available');
+  });
+
+  it('resolves root-relative recordings against the SmartQA origin', () => {
+    const summary = buildRunSummary(session, 'failed', [], '/videos/fixture-run.mp4');
+
+    expect(summary).toContain(`[Open recording](${window.location.origin}/videos/fixture-run.mp4)`);
   });
 });

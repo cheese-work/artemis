@@ -14,6 +14,10 @@
  limitations under the License.
 -->
 
-<app-nav-switcher (showWhatsNew)="openWhatsNew()"></app-nav-switcher>
+<app-nav-switcher
+  [hasWhatsNew]="agentService.whatsNewHasUpdates()"
+  [hasUnreadWhatsNew]="agentService.whatsNewHasUnread()"
+  (showWhatsNew)="openWhatsNew()"
+></app-nav-switcher>
 <app-whats-new></app-whats-new>
 <router-outlet></router-outlet>

@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import { Component, ChangeDetectionStrategy, EventEmitter, inject, Output } from '@angular/core';
+import { Component, ChangeDetectionStrategy, EventEmitter, inject, Input, Output } from '@angular/core';
 
 import { RouterLink, RouterLinkActive } from '@angular/router';
 import { UsbDeviceRelayService } from '../../services/usb-device-relay.service';
@@ -44,10 +44,15 @@ import { UsbDeviceRelayService } from '../../services/usb-device-relay.service';
         <span class="material-symbols-outlined tab-icon" aria-hidden="true">tune</span>
         <span class="tab-label">System Setup</span>
       </a>
-      <button type="button" class="nav-tab-btn" aria-label="Open What's New" (click)="showWhatsNew.emit()">
-        <span class="material-symbols-outlined tab-icon" aria-hidden="true">campaign</span>
-        <span class="tab-label">What's New</span>
-      </button>
+      @if (hasWhatsNew) {
+        <button type="button" class="nav-tab-btn" [attr.aria-label]="whatsNewLabel" (click)="showWhatsNew.emit()">
+          <span class="material-symbols-outlined tab-icon" aria-hidden="true">campaign</span>
+          <span class="tab-label">What's New</span>
+          @if (hasUnreadWhatsNew) {
+            <span class="nav-unread-indicator" aria-hidden="true"></span>
+          }
+        </button>
+      }
       @if (usbRelay.state().status === 'connected') {
         <div class="usb-relay-badge" aria-live="polite">
           <span class="material-symbols-outlined badge-icon" aria-hidden="true">smartphone</span>
@@ -62,9 +67,14 @@ import { UsbDeviceRelayService } from '../../services/usb-device-relay.service';
   styleUrls: ['./nav-switcher.component.scss']
 })
 export class NavSwitcherComponent {
+  @Input() public hasWhatsNew = false;
+  @Input() public hasUnreadWhatsNew = false;
   @Output() public showWhatsNew = new EventEmitter<void>();
 
   public readonly usbRelay = inject(UsbDeviceRelayService);
+  public get whatsNewLabel(): string {
+    return this.hasUnreadWhatsNew ? "Open What's New, unread updates" : "Open What's New";
+  }
 
   public disconnectPhone(): void {
     void this.usbRelay.disconnect();
