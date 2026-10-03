@@ -4,7 +4,8 @@
 
 `ARTEMIS_AUTH_MODE` defaults to `open`. In this mode, only direct loopback
 requests without forwarded-client headers receive admin access; non-loopback
-clients are read-only. For SmartQA behind Cloudflare Access, set
+clients do not receive admin access. Route tiers still determine which public
+and QA operations they can use. For SmartQA behind Cloudflare Access, set
 `ARTEMIS_AUTH_MODE=cloudflare`, `ARTEMIS_CF_ACCESS_TEAM_DOMAIN`,
 `ARTEMIS_CF_ACCESS_AUD`, and a comma-separated `ARTEMIS_ADMIN_EMAILS` allowlist.
 If unset, the initial allowlist contains `congvc.dev@gmail.com`; setting the
@@ -14,17 +15,21 @@ JWKS, issuer, and audience before using its email claim. Forwarded email headers
 are not trusted.
 
 Requests without a valid Cloudflare JWT, including tailnet requests that bypass
-Cloudflare Access, remain read-only. This includes task submission, stop/resume,
-provider/device mutations, replay, and the ADB WebSocket bridge. Granting admin
-access to a remote tailnet client requires an explicitly approved authenticated
-route; do not treat network reachability as identity. Server shutdown remains
-a separate loopback-only lifecycle-token operation.
+Cloudflare Access, do not receive an authenticated identity. The `/api/run`,
+`/api/stop`, and `/api/resume` task controls and the ADB WebSocket bridge remain
+public-tier. Provider and device mutations, including replay, require admin
+identity; the approved ADB key-healing and emulator-dismissal recovery actions
+require a signed QA identity. Granting admin access to a remote tailnet client
+requires an explicitly approved authenticated route; do not treat network
+reachability as identity. Server shutdown remains a separate loopback-only
+lifecycle-token operation.
 Optional `/api/v1/*` cloud routes retain their tenant bearer-token auth and are
 classified separately from Cloudflare admin routes.
 
-Every registered HTTP and WebSocket route has an explicit tier. Read routes are
-public-tier; task controls, configuration, device, cleanup, restart, delete,
-replay, and the ADB WebSocket bridge require an admin identity. Keep route-tier
+Every registered HTTP and WebSocket route has an explicit tier. Read routes,
+task controls, and the ADB WebSocket bridge are public-tier. Configuration,
+provider/device mutations, replay, and shared ADB restart require admin identity;
+ADB key healing and emulator dismissal require QA identity. Keep route-tier
 tests current when adding routes.
 
 ## Provider Configuration

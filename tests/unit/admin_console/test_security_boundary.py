@@ -608,6 +608,72 @@ async def test_config_write_denial_has_no_side_effects(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_anonymous_live_config_allowlists_runtime_fields(tmp_path, monkeypatch):
+    from apps.admin_console.core.access_control import AccessConfig, CloudflareAccessVerifier
+    from apps.admin_console.services.config_store import ConfigStore
+
+    config_path = tmp_path / "artemis.jsonc"
+    secret_fields = {
+        "OPENAI_API_KEY": "SYNTHETIC-SECRET-OPENAI-UPPER",
+        "openai_api_key": "SYNTHETIC-SECRET-OPENAI-LOWER",
+        "api_secret": "SYNTHETIC-SECRET-API",
+        "client_secret": "SYNTHETIC-SECRET-CLIENT",
+        "bearer": "SYNTHETIC-SECRET-BEARER",
+        "credentials": {"value": "SYNTHETIC-SECRET-CREDENTIALS"},
+        "access_key": "SYNTHETIC-SECRET-ACCESS",
+        "headers": {"X-Api-Key": "SYNTHETIC-SECRET-HEADER"},
+    }
+    config_path.write_text(
+        json.dumps(
+            {
+                "default": {
+                    "provider": "openai",
+                    "model": "fixture-model",
+                    "api_base": "https://models.example.test/v1?api-version=synthetic-version",
+                    "fallback": {"provider": "openai", "model": "fallback-model"},
+                    **secret_fields,
+                },
+                "nodes": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        app.state,
+        "access_config",
+        AccessConfig(
+            auth_mode="cloudflare",
+            audience="test-audience",
+            issuer="https://team.cloudflareaccess.com",
+            admin_emails=frozenset({"admin@example.com"}),
+        ),
+    )
+    monkeypatch.setattr(app.state, "access_verifier", CloudflareAccessVerifier())
+    monkeypatch.setattr(
+        system,
+        "get_config_store",
+        lambda: ConfigStore(config_path, tmp_path / ".env"),
+    )
+
+    async with _client() as ac:
+        response = await ac.get("/api/system/config")
+
+    assert response.status_code == 200
+    returned_default = response.json()["default"]
+    assert returned_default["provider"] == "openai"
+    assert returned_default["model"] == "fixture-model"
+    assert returned_default["fallback"]["model"] == "fallback-model"
+    assert returned_default["api_base"] == "https://models.example.test/v1"
+    assert all(key not in returned_default for key in secret_fields)
+    assert all(
+        value not in response.text for value in secret_fields.values() if isinstance(value, str)
+    )
+    assert "SYNTHETIC-SECRET-CREDENTIALS" not in response.text
+    assert "SYNTHETIC-SECRET-HEADER" not in response.text
+    assert "synthetic-version" not in response.text
+
+
+@pytest.mark.asyncio
 async def test_legacy_public_config_response_redacts_inline_secrets(tmp_path, monkeypatch):
     from apps.admin_console.core.access_control import AccessConfig
 

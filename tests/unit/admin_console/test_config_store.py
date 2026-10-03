@@ -107,6 +107,47 @@ async def test_config_snapshot_hides_secret_fields_and_url_credentials(tmp_path,
 
 
 @pytest.mark.asyncio
+async def test_model_save_preserves_jsonc_comments_and_api_version_query(tmp_path, monkeypatch):
+    monkeypatch.setattr(config_store_module, "SERVICE_ENVIRONMENT_KEYS", frozenset())
+    store = make_store(tmp_path)
+    store.config_path.write_text(
+        """{
+  "default": {
+    "provider": "openai",
+    // Preserve this explanation when the model changes.
+    "model": "gpt-4o",
+    "api_base": "https://models.example.test/v1?api-version=2024-10-21",
+    "fallback": {
+      "provider": "openai",
+      "model": "gpt-4o-mini",
+      /* Preserve nested notes too. */
+      "temperature": 0
+    }
+  },
+  "nodes": {}
+}
+""",
+        encoding="utf-8",
+    )
+    current = await store.read()
+    changed_default = {**current["default"], "model": "gpt-4.1-mini"}
+
+    saved = await store.save(
+        expected_version=current["version"],
+        default=changed_default,
+        credentials={},
+        base_urls={},
+        actor_email="admin@example.test",
+    )
+
+    raw_config = store.config_path.read_text(encoding="utf-8")
+    assert saved["default"]["model"] == "gpt-4.1-mini"
+    assert "api-version=2024-10-21" in raw_config
+    assert "Preserve this explanation" in raw_config
+    assert "Preserve nested notes" in raw_config
+
+
+@pytest.mark.asyncio
 async def test_config_store_saves_and_clears_credentials_without_exposing_them(
     tmp_path, monkeypatch
 ):

@@ -16,7 +16,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 from dotenv import dotenv_values
 
-from artemis.config.llm import LLMConfig, _expand_default_into_nodes
+from artemis.config.llm import LLM, LLMConfig, LLMWithFallback, _expand_default_into_nodes
 from artemis.config.paths import ROOT_DIR, get_config_path, get_env_file
 from artemis.config.settings import SERVICE_ENVIRONMENT_KEYS, settings
 from artemis.utils.file import load_jsonc
@@ -36,17 +36,6 @@ PROVIDER_BASE_URL_ENV = {
     "anthropic": "ANTHROPIC_BASE_URL",
 }
 PROVIDERS = ("openai", "google", "anthropic", "openrouter", "xai", "vertexai", "ocr")
-_SENSITIVE_CONFIG_KEYS = {
-    "key",
-    "apikey",
-    "secret",
-    "password",
-    "token",
-    "authorization",
-    "privatekey",
-    "accesstoken",
-    "refreshtoken",
-}
 
 
 class ConfigStoreError(Exception):
@@ -119,7 +108,7 @@ def _jsonc_string_end(text: str, start: int) -> int:
     raise ConfigStoreError("config_invalid", "artemis.jsonc has an unterminated string.")
 
 
-def _matching_object_end(text: str, start: int) -> int:
+def _matching_object_end(text: str, start: int) -> tuple[int, int]:
     depth = 0
     index = start
     while index < len(text):
@@ -197,6 +186,145 @@ def _find_default_block(text: str) -> tuple[int, int]:
     raise ConfigStoreError("config_invalid", "artemis.jsonc must contain a default object.")
 
 
+def _jsonc_value_end(text: str, start: int) -> int:
+    if start >= len(text):
+        raise ConfigStoreError("config_invalid", "artemis.jsonc contains a missing value.")
+    if text[start] == "{":
+        return _matching_object_end(text, start)[1]
+    if text[start] == "[":
+        closing = {"[": "]", "{": "}"}
+        containers = ["]"]
+        index = start + 1
+        while index < len(text):
+            if text.startswith("//", index):
+                newline = text.find("\n", index + 2)
+                index = len(text) if newline < 0 else newline + 1
+                continue
+            if text.startswith("/*", index):
+                comment_end = text.find("*/", index + 2)
+                if comment_end < 0:
+                    break
+                index = comment_end + 2
+                continue
+            char = text[index]
+            if char == '"':
+                index = _jsonc_string_end(text, index) + 1
+                continue
+            if char in "[{":
+                containers.append(closing[char])
+            elif char in "]}":
+                if not containers or containers.pop() != char:
+                    raise ConfigStoreError("config_invalid", "artemis.jsonc has invalid nesting.")
+                if not containers:
+                    return index + 1
+            index += 1
+        raise ConfigStoreError("config_invalid", "artemis.jsonc array is not closed.")
+    if text[start] == '"':
+        return _jsonc_string_end(text, start) + 1
+    index = start
+    while index < len(text):
+        if text[index].isspace() or text[index] in ",}]":
+            break
+        if text.startswith(("//", "/*"), index):
+            break
+        index += 1
+    if index == start:
+        raise ConfigStoreError("config_invalid", "artemis.jsonc contains an invalid value.")
+    return index
+
+
+def _jsonc_object_members(text: str, start: int, end: int) -> dict[str, tuple[int, int, int]]:
+    members = {}
+    index = _skip_jsonc_trivia(text, start + 1)
+    close = end - 1
+    while index < close:
+        if text[index] == ",":
+            index = _skip_jsonc_trivia(text, index + 1)
+            continue
+        if text[index] == "}":
+            break
+        if text[index] != '"':
+            raise ConfigStoreError("config_invalid", "artemis.jsonc has an invalid object key.")
+        key_start = index
+        key_end = _jsonc_string_end(text, key_start) + 1
+        try:
+            key = json.loads(text[key_start:key_end])
+        except json.JSONDecodeError as exc:
+            raise ConfigStoreError("config_invalid", "artemis.jsonc has an invalid key.") from exc
+        separator = _skip_jsonc_trivia(text, key_end)
+        if separator >= close or text[separator] != ":":
+            raise ConfigStoreError("config_invalid", "artemis.jsonc object value is invalid.")
+        value_start = _skip_jsonc_trivia(text, separator + 1)
+        value_end = _jsonc_value_end(text, value_start)
+        members[key] = (key_start, value_start, value_end)
+        index = _skip_jsonc_trivia(text, value_end)
+        if index < close and text[index] == ",":
+            index = _skip_jsonc_trivia(text, index + 1)
+        elif index < close and text[index] != "}":
+            raise ConfigStoreError("config_invalid", "artemis.jsonc object separator is invalid.")
+    return members
+
+
+def _jsonc_object_indent(text: str, start: int) -> str:
+    line_start = text.rfind("\n", 0, start) + 1
+    return re.match(r"[ \t]*", text[line_start:start]).group(0)
+
+
+def _jsonc_object_patches(
+    text: str, start: int, end: int, updates: dict[str, Any]
+) -> list[tuple[int, int, str]]:
+    members = _jsonc_object_members(text, start, end)
+    patches = []
+    missing = {}
+    for key, value in updates.items():
+        member = members.get(key)
+        if member is None:
+            missing[key] = value
+            continue
+        _, value_start, value_end = member
+        if key == "fallback" and isinstance(value, dict) and text[value_start] == "{":
+            patches.extend(_jsonc_object_patches(text, value_start, value_end, value))
+        else:
+            patches.append(
+                (
+                    value_start,
+                    value_end,
+                    json.dumps(value, ensure_ascii=False, separators=(",", ":")),
+                )
+            )
+    if missing:
+        close = end - 1
+        object_indent = _jsonc_object_indent(text, start)
+        if members:
+            last_member = max(members.values(), key=lambda member: member[2])
+            cursor = _skip_jsonc_trivia(text, last_member[2])
+            if cursor < close and text[cursor] == ",":
+                insertion = cursor + 1
+                prefix = "\n" + object_indent + "  "
+            else:
+                insertion = last_member[2]
+                prefix = ",\n" + object_indent + "  "
+        else:
+            insertion = start + 1
+            prefix = "\n" + object_indent + "  "
+        serialized = (",\n" + object_indent + "  ").join(
+            f"{json.dumps(key)}: {json.dumps(value, ensure_ascii=False, separators=(',', ':'))}"
+            for key, value in missing.items()
+        )
+        patches.append((insertion, insertion, prefix + serialized))
+    return patches
+
+
+def _update_default_jsonc(text: str, updates: dict[str, Any]) -> str:
+    if not updates:
+        return text
+    start, end = _find_default_block(text)
+    patches = _jsonc_object_patches(text, start, end, updates)
+    for patch_start, patch_end, replacement in sorted(patches, reverse=True):
+        text = text[:patch_start] + replacement + text[patch_end:]
+    return text
+
+
 def _replace_default(text: str, default_config: dict[str, Any]) -> str:
     start, end = _find_default_block(text)
     line_start = text.rfind("\n", 0, start) + 1
@@ -271,21 +399,62 @@ def _mask(value: str | None) -> str | None:
     return f"****{value[-4:]}" if len(value) >= 4 else "****"
 
 
-def _safe_config_value(value: Any) -> Any:
-    if isinstance(value, dict):
-        safe = {}
-        for key, item in value.items():
-            normalized_key = re.sub(r"[^a-z0-9]", "", str(key).casefold())
-            if normalized_key in _SENSITIVE_CONFIG_KEYS:
-                continue
-            if normalized_key in {"apibase", "baseurl"} and isinstance(item, str):
+def _safe_config_value(value: Any, *, fallback: bool = False) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    allowed_fields = LLM.model_fields if fallback else LLMWithFallback.model_fields
+    safe = {}
+    for key, item in value.items():
+        if key not in allowed_fields:
+            continue
+        if key == "fallback":
+            if isinstance(item, dict):
+                safe[key] = _safe_config_value(item, fallback=True)
+        elif key == "api_base":
+            if item is None or isinstance(item, str):
                 safe[key] = _safe_base_url(item)
-            else:
-                safe[key] = _safe_config_value(item)
-        return safe
-    if isinstance(value, list):
-        return [_safe_config_value(item) for item in value]
-    return value
+        elif not isinstance(item, (dict, list)):
+            safe[key] = item
+    return safe
+
+
+def _merge_runtime_config(
+    raw_config: dict[str, Any],
+    safe_config: dict[str, Any],
+    requested_config: dict[str, Any],
+    *,
+    fallback: bool = False,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    if not isinstance(requested_config, dict):
+        raise ConfigStoreError("config_invalid", "The model configuration is invalid.")
+    allowed_fields = LLM.model_fields if fallback else LLMWithFallback.model_fields
+    merged = dict(raw_config)
+    updates = {}
+    for key, value in requested_config.items():
+        if key not in allowed_fields:
+            continue
+        if key == "fallback" and isinstance(value, dict):
+            raw_fallback = raw_config.get(key, {})
+            safe_fallback = safe_config.get(key, {})
+            if not isinstance(raw_fallback, dict):
+                raw_fallback = {}
+            merged_fallback, fallback_updates = _merge_runtime_config(
+                raw_fallback,
+                safe_fallback if isinstance(safe_fallback, dict) else {},
+                value,
+                fallback=True,
+            )
+            if fallback_updates:
+                merged[key] = merged_fallback
+                updates[key] = fallback_updates
+        elif key in safe_config and value == safe_config[key]:
+            continue
+        elif key not in safe_config and value is None:
+            continue
+        else:
+            merged[key] = value
+            updates[key] = value
+    return merged, updates
 
 
 def _safe_base_url(value: str | None) -> str | None:
@@ -492,7 +661,14 @@ class ConfigStore:
                 )
             config_text = old_config.decode("utf-8")
             config_dict = _validate_config_text(config_text)
-            _validate_config_text(_replace_default(config_text, default))
+            current_default = config_dict.get("default", {})
+            safe_default = _safe_config_value(current_default)
+            merged_default, default_updates = _merge_runtime_config(
+                current_default,
+                safe_default,
+                default,
+            )
+            _validate_config_text(_replace_default(config_text, merged_default))
 
             env_updates: dict[str, str | None] = {}
             for provider, value in credentials.items():
@@ -528,7 +704,7 @@ class ConfigStore:
                 env_updates[env_key] = value.strip() if value and value.strip() else None
                 audit_changes.append(f"base_url:{provider}")
 
-            new_config = _replace_default(config_text, default).encode("utf-8")
+            new_config = _update_default_jsonc(config_text, default_updates).encode("utf-8")
             new_env = _set_dotenv_values(old_env, env_updates)
             old_version = current_version
             new_version = _sha(new_config, new_env)
