@@ -17,13 +17,29 @@
 import { TestBed } from '@angular/core/testing';
 import { provideRouter } from '@angular/router';
 import { provideHttpClient, withXhr } from '@angular/common/http';
+import { HttpClient } from '@angular/common/http';
+import { signal } from '@angular/core';
+import { of } from 'rxjs';
+import { AgentService } from './services/agent.service';
 import { AppComponent } from './app.component';
 
 describe('AppComponent', () => {
   beforeEach(async () => {
     await TestBed.configureTestingModule({
       imports: [AppComponent],
-      providers: [provideRouter([]), provideHttpClient(withXhr())]
+      providers: [
+        provideRouter([]),
+        provideHttpClient(withXhr()),
+        { provide: HttpClient, useValue: { get: () => of([]) } },
+        {
+          provide: AgentService,
+          useValue: {
+            agentStatus: signal('idle'),
+            activeTasks: signal([]),
+            hasFetchedStatus: signal(true)
+          }
+        }
+      ]
     }).compileComponents();
   });
 
@@ -33,10 +49,10 @@ describe('AppComponent', () => {
     expect(app).toBeTruthy();
   });
 
-  it(`should have the 'frontend' title`, () => {
+  it(`should have the 'SmartQA' title`, () => {
     const fixture = TestBed.createComponent(AppComponent);
     const app = fixture.componentInstance;
-    expect(app.title).toEqual('frontend');
+    expect(app.title).toEqual('SmartQA');
   });
 
 });
