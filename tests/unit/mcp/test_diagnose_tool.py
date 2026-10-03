@@ -524,8 +524,18 @@ def test_failing_checks_keep_scrubbed_facts_and_fix_list(temp_trace_env):
     creds = next(c for c in result["checks"] if c["id"] == "gemini_api_key")
     assert creds["category"] == "auth"
     assert creds["facts"]["providers"] == [
-        {"provider": "google", "label": "Gemini", "masked": "****abcd"},
-        {"provider": "openai", "label": "ChatGPT", "masked": "****wxyz"},
+        {
+            "provider": "google",
+            "label": "Gemini",
+            "is_set": True,
+            "masked": "****abcd",
+        },
+        {
+            "provider": "openai",
+            "label": "ChatGPT",
+            "is_set": True,
+            "masked": "****wxyz",
+        },
     ]
     assert "api_keys" not in creds["facts"]
     assert creds["fix"] == []
