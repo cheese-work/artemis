@@ -88,6 +88,10 @@ class BridgeSession:
     expires_at: float = 0.0
     adb_connect_attempted: bool = False
     revoked: bool = False
+    bytes_browser_to_device: int = 0
+    bytes_device_to_browser: int = 0
+    close_code: int | None = None
+    close_reason: str = "session_cleanup"
 
     @property
     def serial(self) -> str:
@@ -128,6 +132,12 @@ class BridgeSessionService:
             async with self._lock:
                 self._sessions[session.session_id] = session
             registered = True
+            logger.info(
+                "event=bridge_lease_created session_id=%s serial=%s ttl_seconds=%.3f",
+                session.session_id,
+                session.serial,
+                session.remaining_seconds(),
+            )
             return session
         finally:
             if not registered:
@@ -136,10 +146,28 @@ class BridgeSessionService:
 
     async def connect(self, session: BridgeSession) -> str:
         session.adb_connect_attempted = True
-        output = await _run_adb_command("connect", session.serial)
-        success = (f"connected to {session.serial}", f"already connected to {session.serial}")
-        if not output.lower().startswith(tuple(message.lower() for message in success)):
-            raise RuntimeError(f"adb connect failed: {output}")
+        started_at = time.monotonic()
+        try:
+            output = await _run_adb_command("connect", session.serial)
+            success = (f"connected to {session.serial}", f"already connected to {session.serial}")
+            if not output.lower().startswith(tuple(message.lower() for message in success)):
+                raise RuntimeError("adb connect returned an unsuccessful status")
+        except Exception as error:
+            logger.warning(
+                "event=bridge_adb_connect session_id=%s serial=%s result=failed "
+                "error_type=%s duration_ms=%d",
+                session.session_id,
+                session.serial,
+                type(error).__name__,
+                round((time.monotonic() - started_at) * 1000),
+            )
+            raise
+        logger.info(
+            "event=bridge_adb_connect session_id=%s serial=%s result=connected duration_ms=%d",
+            session.session_id,
+            session.serial,
+            round((time.monotonic() - started_at) * 1000),
+        )
         return session.serial
 
     async def revoke(self, session_id: str) -> None:
@@ -152,9 +180,26 @@ class BridgeSessionService:
         session.revoked = True
         try:
             if session.adb_connect_attempted:
-                await _run_adb_command("disconnect", session.serial)
-        except Exception:
-            logger.exception("Failed to disconnect device bridge serial %s", session.serial)
+                started_at = time.monotonic()
+                try:
+                    await _run_adb_command("disconnect", session.serial)
+                except Exception as error:
+                    logger.warning(
+                        "event=bridge_adb_disconnect session_id=%s serial=%s result=failed "
+                        "error_type=%s duration_ms=%d",
+                        session.session_id,
+                        session.serial,
+                        type(error).__name__,
+                        round((time.monotonic() - started_at) * 1000),
+                    )
+                else:
+                    logger.info(
+                        "event=bridge_adb_disconnect session_id=%s serial=%s "
+                        "result=disconnected duration_ms=%d",
+                        session.session_id,
+                        session.serial,
+                        round((time.monotonic() - started_at) * 1000),
+                    )
         finally:
             if session.listener is not None:
                 session.listener.close()
@@ -165,8 +210,13 @@ class BridgeSessionService:
                         session.writer.wait_closed(),
                         timeout=STREAM_CLOSE_TIMEOUT_SECONDS,
                     )
-                except Exception:
-                    logger.exception("Failed to close device bridge stream %s", session.serial)
+                except Exception as error:
+                    logger.warning(
+                        "event=bridge_stream_close_failed session_id=%s serial=%s error_type=%s",
+                        session.session_id,
+                        session.serial,
+                        type(error).__name__,
+                    )
                     session.writer.transport.abort()
             if session.listener is not None:
                 try:
@@ -174,8 +224,23 @@ class BridgeSessionService:
                         session.listener.wait_closed(),
                         timeout=STREAM_CLOSE_TIMEOUT_SECONDS,
                     )
-                except Exception:
-                    logger.exception("Failed to close device bridge listener %s", session.serial)
+                except Exception as error:
+                    logger.warning(
+                        "event=bridge_listener_close_failed session_id=%s serial=%s error_type=%s",
+                        session.session_id,
+                        session.serial,
+                        type(error).__name__,
+                    )
+            logger.info(
+                "event=bridge_session_revoked session_id=%s serial=%s close_code=%s "
+                "close_reason=%s bytes_browser_to_device=%d bytes_device_to_browser=%d",
+                session.session_id,
+                session.serial,
+                session.close_code,
+                session.close_reason,
+                session.bytes_browser_to_device,
+                session.bytes_device_to_browser,
+            )
 
     async def get(self, session_id: str) -> BridgeSession | None:
         async with self._lock:

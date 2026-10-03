@@ -467,6 +467,76 @@ async def test_visual_lens_receives_the_recorded_action_shape(mock_context):
     )
 
 
+@pytest.mark.parametrize(
+    ("serial", "message", "expected"),
+    [
+        (
+            "127.0.0.1:35409",
+            "Error during tap: device '127.0.0.1:35409' not found",
+            True,
+        ),
+        (
+            "R58M123",
+            "Error during tap: device 'R58M123' not found",
+            False,
+        ),
+        (
+            "127.0.0.1:35409",
+            "Error during tap: UI element not found",
+            False,
+        ),
+    ],
+)
+def test_browser_bridge_disconnect_error_detection(serial, message, expected):
+    from artemis.agents.flash.runner import _is_browser_bridge_disconnect
+
+    assert _is_browser_bridge_disconnect(serial, message) is expected
+
+
+@pytest.mark.asyncio
+async def test_flash_stops_after_first_browser_bridge_disconnect():
+    from artemis.agents.flash.runner import _TurnRecord
+
+    runner = FlashRunner.__new__(FlashRunner)
+    runner.executor = SimpleNamespace(
+        action_tool_names=frozenset({"tap"}),
+        execute=AsyncMock(
+            return_value=ToolExecutionResult(
+                tool_call_id="first",
+                tool_name="tap",
+                status="error",
+                text_summary="Error during tap: device '127.0.0.1:35409' not found",
+            )
+        ),
+    )
+    runner.ctx = SimpleNamespace(
+        device=SimpleNamespace(device_id="127.0.0.1:35409"), data_engine=None
+    )
+    runner.summarizer = None
+    runner.goal = "g"
+    tool_calls = [
+        {"id": "first", "name": "tap", "args": {"target": [1, 2]}},
+        {"id": "second", "name": "tap", "args": {"target": [3, 4]}},
+    ]
+
+    with patch("artemis.agents.flash.runner.tool_result_messages", return_value=[]):
+        report, *_ = await runner._process_tool_calls(
+            tool_calls,
+            SimpleNamespace(indexed_elements=[]),
+            [],
+            "",
+            {},
+            None,
+            None,
+            0,
+            _TurnRecord(),
+        )
+
+    assert report["status"] == "failed"
+    assert "phone disconnected" in report["explanation"].lower()
+    assert runner.executor.execute.await_count == 1
+
+
 # --- Native thinking (thought summaries) reach the step record ----------------------
 
 
