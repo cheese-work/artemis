@@ -1085,13 +1085,8 @@ class DataEngine:
     def has_pending_operations(self) -> bool:
         """Check if there are any pending background tasks or threads."""
         with self._pending_threads_lock:
-            has_pending_threads = any(
-                thread.is_alive() for thread in self._pending_threads
-            )
-        return (
-            len(self._pending_tasks) > 0
-            or has_pending_threads
-        )
+            has_pending_threads = any(thread.is_alive() for thread in self._pending_threads)
+        return len(self._pending_tasks) > 0 or has_pending_threads
 
     async def shutdown(self):
         """Wait for all pending background tasks and threads to complete."""
