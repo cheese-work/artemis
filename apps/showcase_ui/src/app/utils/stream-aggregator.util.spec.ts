@@ -353,6 +353,30 @@ describe('stream aggregator step ownership', () => {
   };
   const tap = { trace_id: 'trace-tap-3', type: 'action', name: 'tap', timestamp: 1788374289.37, payload: { args: { action: 'tap' } } };
 
+  it('merges number-only updates into the step identity they previously introduced', () => {
+    const failedTool = { trace_id: 'tool-3', name: 'failed_tool', status: 'failed' };
+    const blocks = consolidateLogsToBlocks([
+      {
+        type: 'step_updated',
+        data: { step_id: 'step-3', step_number: 3, action_taken: { action: 'tap' } }
+      },
+      {
+        type: 'step_updated',
+        data: { step_number: 3, generic_tools: [failedTool] }
+      },
+      {
+        type: 'step_updated',
+        data: { step_id: 'step-3', step_number: 3, status: 'completed', generic_tools: [{ ...failedTool, status: 'success' }] }
+      }
+    ]);
+
+    const steps = blocks.filter((block) => block.type === 'step');
+    expect(steps.length).toBe(1);
+    expect(steps[0].data.step_id).toBe('step-3');
+    expect(steps[0].data.status).toBe('completed');
+    expect(steps[0].data.generic_tools[0].status).toBe('success');
+  });
+
   it('does not fold a step without streamed text into an earlier untagged stream block', () => {
     const blocks = consolidateLogsToBlocks([
       plannerStream,
@@ -637,4 +661,3 @@ describe('stream aggregator single source of truth (Option A)', () => {
     expect(updatedBlocks[0].data.isCompleted).toBeTrue();
   });
 });
-

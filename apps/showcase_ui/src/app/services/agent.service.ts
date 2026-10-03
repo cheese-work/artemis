@@ -1141,9 +1141,10 @@ export class AgentService {
                   && log.data?.trace_id === parsedData.trace_id
                 );
                 if (existingTraceIndex > -1) {
-                  const deduplicatedLogs = [...updatedLogs];
-                  deduplicatedLogs[existingTraceIndex] = nextLog;
-                  return deduplicatedLogs;
+                  return [
+                    ...updatedLogs.filter((_, index) => index !== existingTraceIndex),
+                    nextLog
+                  ];
                 }
               }
 
@@ -1435,9 +1436,7 @@ export class AgentService {
       };
       if (existingIndex < 0) return [...logs, retryLog];
 
-      const updatedLogs = [...logs];
-      updatedLogs[existingIndex] = retryLog;
-      return updatedLogs;
+      return [...logs.filter((_, index) => index !== existingIndex), retryLog];
     });
   }
 

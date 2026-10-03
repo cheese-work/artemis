@@ -2,6 +2,7 @@ import { signal, computed } from '@angular/core';
 import { of, Subject } from 'rxjs';
 
 import { AgentService } from './agent.service';
+import { buildRunSummary } from '../utils/run-copy.util';
 
 describe('AgentService live LLM retry timeline', () => {
   function createServiceWithoutPolling(): AgentService {
@@ -137,10 +138,11 @@ describe('AgentService live LLM retry timeline', () => {
     };
 
     (service as any).appendLiveLLMRetryTrace(event, 'session-1');
+    service.sessionLogs.update((logs) => [...logs, { type: 'step_updated', data: { step_number: 3 } }]);
     (service as any).appendLiveLLMRetryTrace({ ...event, error: 'updated 503' }, 'session-1');
 
-    expect(service.sessionLogs().length).toBe(1);
-    expect(service.sessionLogs()[0].data.payload.error).toBe('updated 503');
+    expect(service.sessionLogs().map((log) => log.type)).toEqual(['step_updated', 'trace_recorded']);
+    expect(service.sessionLogs()[1].data.payload.error).toBe('updated 503');
   });
 
   it('replaces an old history snapshot while preserving live retry events', () => {
@@ -424,6 +426,69 @@ describe('AgentService live LLM retry timeline', () => {
       response.complete();
       expect(service.agentStatus()).toBe('running');
       expect(service.runningSessionId()).toBe('sse-session');
+    } finally {
+      (service as any).eventSource = null;
+      if (originalEventSource) {
+        Object.defineProperty(window, 'EventSource', originalEventSource);
+      } else {
+        delete (window as any).EventSource;
+      }
+    }
+  });
+
+  it('keeps a later native trace recovery after a repeated step snapshot', () => {
+    const service = createServiceWithoutPolling();
+    service.currentSessionId = signal<string | null>('session-1');
+    service.isRetrying = signal(false);
+    (service as any).zone = { runOutsideAngular: (work: () => void) => work() };
+    const listeners = new Map<string, (event: any) => void>();
+    const originalEventSource = Object.getOwnPropertyDescriptor(window, 'EventSource');
+    class TestEventSource {
+      public addEventListener(type: string, listener: (event: any) => void): void {
+        listeners.set(type, listener);
+      }
+
+      public close(): void {}
+    }
+
+    try {
+      Object.defineProperty(window, 'EventSource', {
+        configurable: true,
+        value: TestEventSource
+      });
+      service.ensureLiveStream();
+      const emit = (type: string, data: Record<string, unknown>) => listeners.get(type)!({
+        data: JSON.stringify({ session_id: 'session-1', ...data })
+      });
+      const failedTrace = {
+        trace_id: 'trace-3',
+        step_id: 'step-3',
+        type: 'tool',
+        name: 'failed_tool',
+        status: 'failed',
+        timestamp: 1_791_000_001,
+        payload: { error: 'PRIVATE_ERROR_SENTINEL' }
+      };
+      emit('step_updated', { step_id: 'step-3', step_number: 3, action_taken: { action: 'tap' } });
+      emit('trace_recorded', failedTrace);
+      emit('step_updated', { step_id: 'step-3', step_number: 3, generic_tools: [failedTrace] });
+      emit('trace_recorded', { ...failedTrace, status: 'success', timestamp: 1_791_000_003, payload: { result: 'Recovered' } });
+
+      const summary = buildRunSummary({
+        session_id: 'session-1',
+        initial_goal: 'PRIVATE_GOAL_SENTINEL',
+        start_time: 1_791_000_000,
+        status: 'completed',
+        device_serial: 'pixel-qa-01'
+      }, 'completed', service.sessionLogs(), null);
+
+      expect(service.sessionLogs().map((log) => log.type)).toEqual([
+        'step_updated', 'step_updated', 'trace_recorded'
+      ]);
+      expect(service.sessionLogs()[2].data.status).toBe('success');
+      expect(summary).toContain('- Failing step: Not reported');
+      expect(summary).not.toContain('PRIVATE_ERROR_SENTINEL');
+      expect(summary).not.toContain('PRIVATE_GOAL_SENTINEL');
     } finally {
       (service as any).eventSource = null;
       if (originalEventSource) {

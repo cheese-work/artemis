@@ -223,6 +223,47 @@ describe('buildRunSummary', () => {
     expect(summary).toContain('- Failing step: Not reported');
   });
 
+  it('keeps the newest failure state across number-only and ID-bearing updates', () => {
+    const failedTool = {
+      trace_id: 'tool-3',
+      step_id: 'native-step-3',
+      type: 'tool',
+      name: 'failed_tool',
+      status: 'failed',
+      payload: { error: 'PRIVATE_ERROR_SENTINEL' }
+    };
+    const recoveredTool = { ...failedTool, status: 'success', payload: { result: 'Recovered' } };
+    const recovered = buildRunSummary(session, 'completed', [
+      {
+        type: 'step_updated',
+        data: { step_id: 'native-step-3', step_number: 3, action_taken: { action: 'tap' } }
+      },
+      {
+        type: 'step_updated',
+        data: { step_number: 3, generic_tools: [failedTool] }
+      },
+      {
+        type: 'step_updated',
+        data: { step_id: 'native-step-3', step_number: 3, status: 'completed', generic_tools: [recoveredTool] }
+      }
+    ], null);
+    const repaired = buildRunSummary(session, 'completed', [
+      { type: 'step_updated', data: { step_id: 'native-step-3', step_number: 3, action_taken: { action: 'tap' } } },
+      {
+        type: 'step_updated',
+        data: { step_number: 3, last_execution_result: { status: 'failed', repair_status: 'cannot_fix' } }
+      },
+      {
+        type: 'step_updated',
+        data: { step_id: 'native-step-3', step_number: 3, last_execution_result: { status: 'success', repair_status: 'fixed' } }
+      }
+    ], null);
+
+    expect(recovered).toContain('- Failing step: Not reported');
+    expect(repaired).toContain('- Failing step: Not reported');
+    expect(recovered).not.toContain('PRIVATE_ERROR_SENTINEL');
+  });
+
   it('includes a failed native trace before any step snapshot repeats it', () => {
     const failedTrace = {
       trace_id: 'trace-failure',

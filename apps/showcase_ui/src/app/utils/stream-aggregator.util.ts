@@ -424,8 +424,21 @@ export function consolidateLogsToBlocks(rawLogs: any[]): StepBlock[] {
       }
     } else if (log.type === 'step_recorded' || log.type === 'step_updated') {
       const stepId = log.data.step_id || log.data.step_number || 'unknown';
+      const stepNumber = Number(log.data.step_number);
+      const hasStepNumber = log.data.step_number !== undefined
+        && log.data.step_number !== null
+        && String(log.data.step_number).trim() !== ''
+        && Number.isFinite(stepNumber);
       // Find if there is an existing block for this step or an unattached stream block from this turn
-      let existingIndex = blocks.findIndex(b => b.id === `step-${stepId}` || b.data?.step_id === stepId);
+      let existingIndex = blocks.findIndex(b =>
+        b.id === `step-${stepId}`
+        || b.data?.step_id === stepId
+        || (hasStepNumber
+          && b.data?.step_number !== undefined
+          && b.data?.step_number !== null
+          && String(b.data.step_number).trim() !== ''
+          && Number(b.data.step_number) === stepNumber)
+      );
 
       // No adoption of untagged stream blocks here: the Operator's streams
       // always carry the step id (Perception / the Flash turn pre-allocate it
