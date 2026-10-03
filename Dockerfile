@@ -16,6 +16,7 @@ FROM node:22-bookworm-slim AS frontend-builder
 
 WORKDIR /build/apps/showcase_ui
 COPY apps/showcase_ui/package.json apps/showcase_ui/package-lock.json ./
+COPY apps/showcase_ui/scripts/ ./scripts/
 RUN npm ci
 COPY apps/showcase_ui/angular.json apps/showcase_ui/tsconfig*.json ./
 COPY apps/showcase_ui/public/ ./public/
