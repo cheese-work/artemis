@@ -29,8 +29,52 @@ describe('NavSwitcherComponent', () => {
 
     expect(fixture.nativeElement.textContent).toContain('Phone connected via this browser');
     expect(fixture.nativeElement.querySelector('code')?.textContent).toBe('R58M123');
-    (fixture.nativeElement.querySelector('button') as HTMLButtonElement).click();
+    (fixture.nativeElement.querySelector('.usb-relay-badge button') as HTMLButtonElement).click();
     expect(relay.disconnect).toHaveBeenCalled();
+  });
+
+  it("hides What's New navigation when there are no entries", async () => {
+    const relay = {
+      state: signal<UsbDeviceRelayState>({ status: 'idle', serial: null, error: null }),
+      disconnect: jasmine.createSpy('disconnect').and.resolveTo(undefined)
+    };
+
+    await TestBed.configureTestingModule({
+      imports: [NavSwitcherComponent],
+      providers: [provideRouter([]), { provide: UsbDeviceRelayService, useValue: relay }]
+    }).compileComponents();
+
+    const fixture = TestBed.createComponent(NavSwitcherComponent);
+    fixture.detectChanges();
+
+    expect(fixture.nativeElement.querySelector('[aria-label="Open What\'s New"]')).toBeNull();
+  });
+
+  it('announces unread updates in the navigation', async () => {
+    const relay = {
+      state: signal<UsbDeviceRelayState>({ status: 'idle', serial: null, error: null }),
+      disconnect: jasmine.createSpy('disconnect').and.resolveTo(undefined)
+    };
+
+    await TestBed.configureTestingModule({
+      imports: [NavSwitcherComponent],
+      providers: [provideRouter([]), { provide: UsbDeviceRelayService, useValue: relay }]
+    }).compileComponents();
+
+    const fixture = TestBed.createComponent(NavSwitcherComponent);
+    const showWhatsNew = jasmine.createSpy('showWhatsNew');
+    fixture.componentRef.setInput('hasWhatsNew', true);
+    fixture.componentRef.setInput('hasUnreadWhatsNew', true);
+    fixture.componentInstance.showWhatsNew.subscribe(showWhatsNew);
+    fixture.detectChanges();
+
+    const button = fixture.nativeElement.querySelector(
+      '[aria-label="Open What\'s New, unread updates"]'
+    ) as HTMLButtonElement;
+    expect(button).not.toBeNull();
+    expect(fixture.nativeElement.querySelector('.nav-unread-indicator')).not.toBeNull();
+    button.click();
+    expect(showWhatsNew).toHaveBeenCalled();
   });
 
   it("retains System Setup and unread What's New navigation with admin identity", async () => {

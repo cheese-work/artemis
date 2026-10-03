@@ -2,12 +2,14 @@
   "name": "artemis-showcase-ui",
   "version": "1.0.0",
   "scripts": {
+    "prebuild": "node scripts/validate-whats-new.mjs",
     "ng": "ng",
     "start": "ng serve --proxy-config proxy.conf.json",
     "build": "ng build",
+    "test:docker-build-inputs": "node scripts/test-docker-build-inputs.mjs",
     "watch": "ng build --watch --configuration development",
     "test": "ng test",
-    "pretest": "npm run test:tango-stream-extra",
+    "pretest": "node scripts/validate-whats-new.mjs && npm run test:tango-stream-extra",
     "test:tango-stream-extra": "node --test scripts/tango-stream-extra.test.mjs",
     "postinstall": "node scripts/patch-tango.mjs"
   },

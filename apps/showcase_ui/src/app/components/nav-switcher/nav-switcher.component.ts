@@ -74,6 +74,9 @@ export class NavSwitcherComponent {
   @Output() public showWhatsNew = new EventEmitter<void>();
 
   public readonly usbRelay = inject(UsbDeviceRelayService);
+  public get whatsNewLabel(): string {
+    return this.hasUnreadWhatsNew ? "Open What's New, unread updates" : "Open What's New";
+  }
 
   public get whatsNewLabel(): string {
     return this.hasUnreadWhatsNew ? "Open What's New, unread updates" : "Open What's New";
