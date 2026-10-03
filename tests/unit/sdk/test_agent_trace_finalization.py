@@ -64,6 +64,7 @@ async def test_device_context_uses_adb_size_without_starting_ui_client():
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("dummy_llm_keys")
 async def test_task_that_never_acquires_queue_does_not_create_trace_session():
     agent = Agent()
     agent._initialized = True
@@ -114,6 +115,7 @@ async def test_locked_work_profile_does_not_block_unlocked_device_owner():
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("dummy_llm_keys")
 async def test_agent_inherits_session_id_from_env_and_propagates_to_tracing(monkeypatch):
     import uuid
 

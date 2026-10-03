@@ -35,6 +35,9 @@ from artemis.mcp.action_executor import McpActionExecutor, _ArgError
 from artemis.mcp.action_types import ActionResult, ObserveResult
 
 
+pytestmark = pytest.mark.usefixtures("dummy_llm_keys")
+
+
 def _el(index: int, text: str, cx: int, cy: int) -> dict:
     return {
         "index": index,
@@ -89,6 +92,7 @@ def mock_context():
     llm_cfg = Mock()
     llm_cfg.model = "gemini-2.5-flash"
     llm_cfg.temperature = 0.1
+    llm_cfg.provider = "google"
     ctx.llm_config.get_agent.return_value = llm_cfg
     ctx.device = Mock()
     ctx.device.device_width = 1080

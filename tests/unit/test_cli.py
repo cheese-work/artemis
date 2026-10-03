@@ -21,6 +21,19 @@ from artemis.interfaces.cli.main import app
 runner = CliRunner()
 
 
+@pytest.fixture(autouse=True)
+def _plain_cli_output(monkeypatch):
+    """Keep help/output assertions independent of the host's colour settings.
+
+    Rich treats GITHUB_ACTIONS (and FORCE_COLOR) as a colour-capable terminal and
+    interleaves ANSI codes with option names (e.g. "--" and "profile"), so substring
+    assertions miss them on CI runners.
+    """
+    for name in ("GITHUB_ACTIONS", "FORCE_COLOR"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("NO_COLOR", "1")
+
+
 @pytest.mark.asyncio
 async def test_execute_task_records_configuration_failure_in_existing_trace(tmp_path, monkeypatch):
     import artemis.interfaces.cli.commands.run as run_module
