@@ -30,6 +30,7 @@ from artemis.drivers.mock.mock_driver import MockDeviceDriver
 from artemis.utils.video import (
     RecordingSession,
     build_scrcpy_record_command,
+    detect_scrcpy_version,
     extract_audio_from_video,
     extract_frames_at_timestamps,
     get_ffmpeg_path,
@@ -38,6 +39,7 @@ from artemis.utils.video import (
     plan_timeline_pieces,
     render_timeline_clip,
     remove_active_session,
+    scrcpy_recording_flags,
     set_active_session,
 )
 
@@ -72,10 +74,59 @@ def test_targeted_frame_extraction_uses_requested_timestamps():
 def test_scrcpy_recording_locks_each_segment_orientation(tmp_path):
     output_path = tmp_path / "recording.mkv"
 
-    command = build_scrcpy_record_command("scrcpy", "device-1", output_path)
+    command = build_scrcpy_record_command(
+        "scrcpy", "device-1", output_path, scrcpy_version="scrcpy 3.0"
+    )
 
     assert "--capture-orientation=@" in command
+    assert "--no-window" in command
     assert command[command.index("--record") + 1] == str(output_path)
+
+
+@pytest.mark.parametrize(
+    ("version", "display_flag", "orientation_flag"),
+    [
+        (
+            "scrcpy 1.25 <https://github.com/Genymobile/scrcpy>",
+            "--no-display",
+            "--lock-video-orientation",
+        ),
+        (
+            "scrcpy 2.7 <https://github.com/Genymobile/scrcpy>",
+            "--no-display",
+            "--lock-video-orientation",
+        ),
+        (
+            "scrcpy 3.0 <https://github.com/Genymobile/scrcpy>",
+            "--no-window",
+            "--capture-orientation=@",
+        ),
+    ],
+)
+def test_scrcpy_recording_flags_match_version(version, display_flag, orientation_flag):
+    assert scrcpy_recording_flags(version) == (display_flag, orientation_flag)
+
+
+@pytest.mark.parametrize("version", ["scrcpy 1.24", "scrcpy unknown"])
+def test_scrcpy_recording_flags_reject_unsupported_versions(version):
+    with pytest.raises(ValueError, match="compatible scrcpy"):
+        scrcpy_recording_flags(version)
+
+
+def test_detect_scrcpy_version_runs_version_probe():
+    version_output = "scrcpy 1.25 <https://github.com/Genymobile/scrcpy>"
+    result = MagicMock(returncode=0, stdout=version_output, stderr="")
+
+    with patch("artemis.utils.video.subprocess.run", return_value=result) as run:
+        assert detect_scrcpy_version("/usr/bin/scrcpy") == version_output
+
+    run.assert_called_once_with(
+        ["/usr/bin/scrcpy", "--version"],
+        capture_output=True,
+        text=True,
+        timeout=5,
+        check=False,
+    )
 
 
 @pytest.mark.asyncio
@@ -672,6 +723,11 @@ async def test_start_recording_anchors_timeline_to_first_frame(mock_ctx, tmp_pat
             "artemis.controllers.unified_controller.get_android_display_state",
             AsyncMock(return_value=(0, 1080, 2424)),
         ),
+        patch("artemis.controllers.unified_controller.find_scrcpy", return_value="scrcpy"),
+        patch(
+            "artemis.controllers.unified_controller.detect_scrcpy_version",
+            return_value="scrcpy 3.0",
+        ),
     ):
         res = await controller.start_video_recording(output_dir=tmp_path)
 
@@ -699,6 +755,8 @@ async def test_next_segment_anchors_at_first_frame(mock_ctx, tmp_path):
         start_time=time.time() - 30.0,
         data_engine_start_time=time.time() - 30.0,
         local_video_path=tmp_path / "recording.mkv",
+        scrcpy_executable="scrcpy",
+        scrcpy_version="scrcpy 3.0",
     )
     proc = _FakeScrcpyProcess([b"INFO: Recording started to matroska file: y.mkv\n"])
     before = time.time()
@@ -710,6 +768,34 @@ async def test_next_segment_anchors_at_first_frame(mock_ctx, tmp_path):
     assert session.android_segment_started_at >= before
     assert session.android_rotation == 1
     assert session.local_video_path == tmp_path / "recording_001.mkv"
+
+
+@pytest.mark.asyncio
+async def test_incompatible_scrcpy_marks_recording_unavailable(mock_ctx, tmp_path):
+    controller = UnifiedMobileController(mock_ctx)
+    remove_active_session("emulator-5554")
+
+    with (
+        patch(
+            "artemis.controllers.unified_controller.get_android_display_state",
+            AsyncMock(return_value=(0, 1080, 2424)),
+        ),
+        patch("artemis.controllers.unified_controller.find_scrcpy", return_value="scrcpy"),
+        patch(
+            "artemis.controllers.unified_controller.detect_scrcpy_version",
+            side_effect=ValueError(
+                "No compatible scrcpy version found: minimum supported version is 1.25; detected 1.24"
+            ),
+        ),
+        patch("asyncio.create_subprocess_exec", AsyncMock()) as spawn,
+    ):
+        result = await controller.start_video_recording(output_dir=tmp_path)
+
+    assert result.success is False
+    assert "No compatible scrcpy version found" in result.message
+    mock_ctx.data_engine.record_video_start.assert_called_once()
+    mock_ctx.data_engine.record_video_failure.assert_called_once()
+    spawn.assert_not_awaited()
 
 
 @pytest.mark.asyncio
