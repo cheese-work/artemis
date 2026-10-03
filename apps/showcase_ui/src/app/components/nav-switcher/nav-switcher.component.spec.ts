@@ -27,7 +27,7 @@ describe('NavSwitcherComponent USB relay badge', () => {
 
     expect(fixture.nativeElement.textContent).toContain('Phone connected via this browser');
     expect(fixture.nativeElement.querySelector('code')?.textContent).toBe('R58M123');
-    (fixture.nativeElement.querySelector('button') as HTMLButtonElement).click();
+    (fixture.nativeElement.querySelector('.usb-relay-badge button') as HTMLButtonElement).click();
     expect(relay.disconnect).toHaveBeenCalled();
   });
 });

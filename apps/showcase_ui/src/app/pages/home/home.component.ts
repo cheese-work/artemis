@@ -16,8 +16,6 @@
 
 import { Component, signal, computed, effect, inject, OnInit, OnDestroy, ChangeDetectionStrategy } from '@angular/core';
 import { FormsModule } from '@angular/forms';
-import { Router, RouterLink } from '@angular/router';
-import { AgentService } from '../../services/agent.service';
 import { SystemService } from '../../services/system.service';
 import {
   AdbServerConnectionResult,
@@ -25,78 +23,7 @@ import {
   DeviceInfo,
   ProbeResult
 } from '../../core/models/system.model';
-import {
-  AppReference,
-  SmartSuggestion,
-  SuggestionCategory
-} from '../../core/data/smart-tasks.data';
-import { TaskRecommendationService } from '../../core/services/task-recommendation.service';
 import { UsbPhoneConnectionComponent } from '../../components/usb-phone-connection/usb-phone-connection.component';
-import {
-  DEFAULT_EXPLORER_MODE,
-  DEFAULT_VERIFICATION_LEVEL,
-  EXPLORER_MODES,
-  ExplorerModeId,
-  TuningLevel,
-  VERIFICATION_LEVELS,
-  VerificationLevelId,
-  levelIndex,
-  notchPercent
-} from '../../core/models/pro-tuning.model';
-
-export type TuningKind = 'verify' | 'explore';
-
-/** One 2x2 px square of the "maxed out" dither texture drawn over a slider rail. */
-export interface DitherPixel {
-  /** Horizontal position as a percentage of the rail width. */
-  x: number;
-  /** Row offset in px (rail is 6 px tall, three 2 px rows). */
-  y: number;
-  /** Resting opacity; squares near the thumb are stronger. */
-  opacity: number;
-  /** Animation delay in ms so the texture spreads leftwards from the thumb. */
-  delay: number;
-}
-
-/**
- * Seeded pixels keep the slider texture stable across renders.
- * Delays increase with distance from the thumb to animate from right to left.
- */
-function buildDitherPixels(count = 260, seed = 7): DitherPixel[] {
-  let state = seed >>> 0;
-  const rand = (): number => {
-    state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
-    return state / 0x100000000;
-  };
-  const pixels: DitherPixel[] = [];
-  for (let i = 0; i < count; i++) {
-    const x = rand() * 100;
-    const y = Math.floor(rand() * 3) * 2;
-    pixels.push({
-      x: Math.round(x * 10) / 10,
-      y,
-      opacity: Math.round((0.35 + 0.4 * rand()) * 100) / 100,
-      // 8 ms per percent: the front takes ~0.8 s to reach the left end.
-      delay: Math.round((100 - x) * 8)
-    });
-  }
-  return pixels;
-}
-
-/** Shared view model for the verification and screen-reading sliders. */
-export interface TuningSliderVm {
-  kind: TuningKind;
-  name: string;
-  /** One-word meaning of each end of the track, e.g. ["Off", "Strict"]. */
-  ends: readonly [string, string];
-  ladder: readonly TuningLevel[];
-  index: number;
-  level: TuningLevel;
-  /** 0..1 position of the thumb along the track. */
-  fraction: number;
-}
-
-export type { AppReference, SmartSuggestion, SuggestionCategory };
 
 type AdbGuideTab = 'emulator' | 'usb' | 'wifi' | 'remote';
 
@@ -110,13 +37,7 @@ type AdbGuideTab = 'emulator' | 'usb' | 'wifi' | 'remote';
   styleUrl: './home.component.scss'
 })
 export class HomeComponent implements OnInit, OnDestroy {
-  public agentService = inject(AgentService);
   public systemService = inject(SystemService);
-  public taskRecService = inject(TaskRecommendationService);
-  private router = inject(Router);
-
-  // High-level navigation mode: 'diagnostics' (System Setup Guide) vs 'launcher' (Task Execution)
-  public activeTab = signal<'diagnostics' | 'launcher'>('launcher');
 
   // Interactive guide sub-tab inside the ADB section
   public activeAdbGuideTab = signal<AdbGuideTab>('emulator');
@@ -189,159 +110,6 @@ export class HomeComponent implements OnInit, OnDestroy {
     const h = this.wifiHost().trim() || '<phone-ip>';
     const p = this.wifiPort().trim() || '5555';
     return `adb connect ${h}:${p}`;
-  });
-
-  // Task execution parameters
-  public selectedProfile = signal<'flash' | 'pro'>('flash');
-  public taskGoal = signal<string>('');
-  public isSubmitting = signal<boolean>(false);
-  public errorMessage = signal<string | null>(null);
-
-  // Pro Mode Outputter & Structured Output Configuration
-  public expectedOutput = signal<string>('');
-  public enableOutputter = signal<boolean>(true);
-  public showOutputterDrawer = signal<boolean>(false);
-
-  // Slider indexes map to the API ids in VERIFICATION_LEVELS / EXPLORER_MODES.
-  public readonly verificationLevels = VERIFICATION_LEVELS;
-  public readonly explorerModes = EXPLORER_MODES;
-  public verificationIndex = signal<number>(
-    levelIndex(VERIFICATION_LEVELS, DEFAULT_VERIFICATION_LEVEL, DEFAULT_VERIFICATION_LEVEL)
-  );
-  public explorerIndex = signal<number>(
-    levelIndex(EXPLORER_MODES, DEFAULT_EXPLORER_MODE, DEFAULT_EXPLORER_MODE)
-  );
-  /** Effective defaults from the backend config (`GET /api/run/defaults`). */
-  private tuningDefaults = signal<{ verification: VerificationLevelId; explorer: ExplorerModeId }>({
-    verification: DEFAULT_VERIFICATION_LEVEL,
-    explorer: DEFAULT_EXPLORER_MODE
-  });
-  /** True once the user moved a slider; backend defaults then stop overriding it. */
-  private tuningTouched = signal<boolean>(false);
-  /** Which slider's hover card is open (while hovering, dragging, or focused). */
-  public activeTuningTip = signal<TuningKind | null>(null);
-  /** Pixel cloud drawn over a rail once its slider reaches the last notch. */
-  public readonly ditherPixels: readonly DitherPixel[] = buildDitherPixels();
-
-  public verificationLevel = computed<TuningLevel<VerificationLevelId>>(
-    () => VERIFICATION_LEVELS[this.verificationIndex()]
-  );
-  public explorerMode = computed<TuningLevel<ExplorerModeId>>(
-    () => EXPLORER_MODES[this.explorerIndex()]
-  );
-  public isTuningDefault = computed<boolean>(() => {
-    const d = this.tuningDefaults();
-    return this.verificationLevel().id === d.verification && this.explorerMode().id === d.explorer;
-  });
-  public tuningSliders = computed<TuningSliderVm[]>(() => {
-    const vi = this.verificationIndex();
-    const ei = this.explorerIndex();
-    return [
-      {
-        kind: 'verify',
-        name: 'Result check',
-        ends: ['Off', 'Strict'],
-        ladder: VERIFICATION_LEVELS,
-        index: vi,
-        level: VERIFICATION_LEVELS[vi],
-        fraction: notchPercent(vi, VERIFICATION_LEVELS.length) / 100
-      },
-      {
-        kind: 'explore',
-        name: 'Screen reading',
-        ends: ['Faster', 'Sharper'],
-        ladder: EXPLORER_MODES,
-        index: ei,
-        level: EXPLORER_MODES[ei],
-        fraction: notchPercent(ei, EXPLORER_MODES.length) / 100
-      }
-    ];
-  });
-
-  public notchFraction(index: number, count: number): number {
-    return notchPercent(index, count) / 100;
-  }
-
-  public setTuningIndex(kind: TuningKind, raw: number | string): void {
-    const idx = Math.round(Number(raw));
-    if (!Number.isFinite(idx)) return;
-    const ladder = kind === 'verify' ? VERIFICATION_LEVELS : EXPLORER_MODES;
-    const clamped = Math.min(Math.max(idx, 0), ladder.length - 1);
-    this.tuningTouched.set(true);
-    if (kind === 'verify') {
-      this.verificationIndex.set(clamped);
-    } else {
-      this.explorerIndex.set(clamped);
-    }
-    // Keyboard nudges and drags should keep the explanation visible.
-    this.activeTuningTip.set(kind);
-  }
-
-  public showTuningTip(kind: TuningKind): void {
-    this.activeTuningTip.set(kind);
-  }
-
-  public hideTuningTip(kind: TuningKind): void {
-    if (this.activeTuningTip() === kind) {
-      this.activeTuningTip.set(null);
-    }
-  }
-
-  public resetTuning(): void {
-    const d = this.tuningDefaults();
-    this.verificationIndex.set(levelIndex(VERIFICATION_LEVELS, d.verification, DEFAULT_VERIFICATION_LEVEL));
-    this.explorerIndex.set(levelIndex(EXPLORER_MODES, d.explorer, DEFAULT_EXPLORER_MODE));
-    this.tuningTouched.set(false);
-  }
-
-  /** Pull the effective config defaults so the sliders start where artemis.jsonc is. */
-  private loadProTuningDefaults(): void {
-    this.agentService.getProTuningDefaults().subscribe({
-      next: (res) => {
-        const vIdx = levelIndex(VERIFICATION_LEVELS, res?.verification_level, DEFAULT_VERIFICATION_LEVEL);
-        const eIdx = levelIndex(EXPLORER_MODES, res?.explorer_mode, DEFAULT_EXPLORER_MODE);
-        this.tuningDefaults.set({
-          verification: VERIFICATION_LEVELS[vIdx].id,
-          explorer: EXPLORER_MODES[eIdx].id
-        });
-        if (!this.tuningTouched()) {
-          this.verificationIndex.set(vIdx);
-          this.explorerIndex.set(eIdx);
-        }
-      },
-      // Defaults are a convenience; the built-in ladder defaults already apply.
-      error: () => undefined
-    });
-  }
-
-  public toggleOutputterDrawer(): void {
-    this.showOutputterDrawer.update((v) => !v);
-  }
-
-  public applyOutputPreset(preset: string): void {
-    if (this.expectedOutput() === preset) {
-      this.expectedOutput.set('');
-    } else {
-      this.expectedOutput.set(preset);
-      this.showOutputterDrawer.set(true);
-    }
-  }
-
-  // Smart intent detection for model recommendation
-  public isIntentSuggestingPro = computed<boolean>(() => {
-    const text = this.taskGoal().toLowerCase();
-    if (!text.trim()) return false;
-    const keywords = [
-      'monitor', 'polling', 'poll', 'wait until', 'loop', 'keep watching',
-      'crash', 'logcat', 'troubleshoot', 'diagnose', 'debug', 'investigate',
-      'compare', 'extract', 'summarize', 'report',
-      '监控', '轮询', '等待', '一直', '直到', '崩溃', '闪退', '排查', '分析日志', '对比', '总结'
-    ];
-    return keywords.some(k => text.includes(k));
-  });
-
-  public showIntentSuggestion = computed<boolean>(() => {
-    return this.isIntentSuggestingPro() && this.selectedProfile() === 'flash';
   });
 
   // Computed helper states delegating to SystemService
@@ -489,33 +257,6 @@ export class HomeComponent implements OnInit, OnDestroy {
     return this.ocrKeyInput().trim() !== this.savedOcrKey().trim();
   });
 
-  // Rich Smart Suggestions Library (Device-Aware, Flash vs Pro Tailored)
-  public readonly allSuggestions = this.taskRecService.allTasks;
-
-  // Suggestion category filter & shuffle state
-  public selectedCategory = signal<SuggestionCategory>('all');
-  public shuffleOffset = signal<number>(0);
-
-  // Set of installed package strings from active device
-  public installedPackages = computed<Set<string>>(() => {
-    const pkgs = this.activeDevice()?.installed_packages;
-    if (pkgs && Array.isArray(pkgs)) {
-      return new Set(pkgs);
-    }
-    return new Set();
-  });
-
-  public filteredSuggestions = computed<SmartSuggestion[]>(() => {
-    return this.taskRecService.filterAndRankTasks(
-      this.installedPackages(),
-      this.selectedCategory(),
-      this.shuffleOffset()
-    );
-  });
-
-
-
-
   private focusListener = () => {
     // Silently re-check environment when user returns to the browser tab
     this.systemService.fetchReadiness().subscribe();
@@ -538,7 +279,6 @@ export class HomeComponent implements OnInit, OnDestroy {
 
   ngOnInit(): void {
 
-    this.loadProTuningDefaults();
     // Initial fetch of system readiness & model configuration
     this.systemService.fetchReadiness().subscribe();
     this.systemService.fetchModelConfigEnv().subscribe();
@@ -558,14 +298,6 @@ export class HomeComponent implements OnInit, OnDestroy {
 
   ngOnDestroy(): void {
     window.removeEventListener('focus', this.focusListener);
-  }
-
-  public setTab(tab: 'diagnostics' | 'launcher'): void {
-    this.activeTab.set(tab);
-    if (tab === 'diagnostics') {
-      this.systemService.fetchReadiness().subscribe();
-      this.systemService.fetchModelConfigEnv().subscribe();
-    }
   }
 
   public setSelectedOs(os: 'linux' | 'darwin' | 'windows'): void {
@@ -781,7 +513,7 @@ export class HomeComponent implements OnInit, OnDestroy {
   public getProviderHint(tab: string): string {
     switch (tab) {
       case 'gemini':
-        return 'For a quick start, Google Gemini provides a free API key. Artemis also supports other models (OpenAI, Claude, OpenRouter, etc.)—you can configure your own API keys directly in .env or your environment.';
+        return 'For a quick start, Google Gemini provides a free API key. SmartQA also supports other models (OpenAI, Claude, OpenRouter, etc.)—you can configure your own API keys directly in .env or your environment.';
       case 'ocr':
         return 'Google Cloud Vision API key for on-screen OCR text detection and UI grounding.';
       default:
@@ -1032,81 +764,4 @@ export class HomeComponent implements OnInit, OnDestroy {
     }
   }
 
-  public setProfile(profile: 'flash' | 'pro'): void {
-    this.selectedProfile.set(profile);
-  }
-
-  public setCategory(cat: SuggestionCategory): void {
-    this.selectedCategory.set(cat);
-  }
-
-  public shuffleSuggestions(): void {
-    this.shuffleOffset.update(v => v + 3);
-  }
-
-  public getAppNamesDisplay(apps: AppReference[]): string {
-    return apps.map(a => a.name).join(' + ');
-  }
-
-  public applySuggestion(item: SmartSuggestion): void {
-    this.taskGoal.set(item.goal);
-    this.selectedProfile.set(item.profile);
-    this.errorMessage.set(null);
-  }
-
-  public applyQuickPrompt(promptGoal: string, profile?: 'flash' | 'pro'): void {
-    this.taskGoal.set(promptGoal);
-    if (profile) {
-      this.selectedProfile.set(profile);
-    }
-    this.errorMessage.set(null);
-  }
-
-
-  public proceedToLauncher(): void {
-    this.activeTab.set('launcher');
-  }
-
-  public runTask(): void {
-    const goal = this.taskGoal().trim();
-    if (!goal) {
-      this.errorMessage.set('Please enter a task goal before running.');
-      return;
-    }
-
-    if (!this.isReady()) {
-      this.errorMessage.set('System prerequisites are not satisfied. Please review System Setup first.');
-      this.activeTab.set('diagnostics');
-      return;
-    }
-
-    this.isSubmitting.set(true);
-    this.errorMessage.set(null);
-
-    this.agentService
-      .runTask(
-        goal,
-        this.selectedProfile(),
-        this.selectedProfile() === 'pro' && this.expectedOutput().trim()
-          ? this.expectedOutput().trim()
-          : undefined,
-        this.selectedProfile() === 'pro' ? this.enableOutputter() : undefined,
-        this.selectedProfile() === 'pro'
-          ? { verificationLevel: this.verificationLevel().id, explorerMode: this.explorerMode().id }
-          : undefined
-      )
-      .subscribe({
-        next: () => {
-          this.isSubmitting.set(false);
-          this.router.navigate(['/workspace']);
-        },
-        error: (err) => {
-          console.error('Failed to submit task from home page:', err);
-          this.isSubmitting.set(false);
-          this.errorMessage.set(
-            err?.error?.detail || 'Failed to submit task. Please check server connection.'
-          );
-        }
-      });
-  }
 }

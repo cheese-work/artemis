@@ -20,8 +20,9 @@ import { WorkspaceComponent } from './pages/workspace/workspace.component';
 import { LegacyWorkspaceComponent } from './pages/legacy-workspace/legacy-workspace.component';
 
 export const routes: Routes = [
-  { path: '', component: HomeComponent },
+  { path: '', pathMatch: 'full', redirectTo: 'workspace' },
+  { path: 'setup', component: HomeComponent },
   { path: 'workspace', component: WorkspaceComponent },
   { path: 'check', component: LegacyWorkspaceComponent },
-  { path: '**', redirectTo: '' }
+  { path: '**', redirectTo: 'workspace' }
 ];

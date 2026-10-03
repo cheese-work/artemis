@@ -119,7 +119,7 @@ limitations under the License.
             {{ session.initial_goal || 'Unnamed Task' }}
           </div>
           <div class="task-card-footer">
-            <span class="task-id" [title]="session.session_id">ID: {{ session.session_id }}</span>
+            <app-run-id-copy [runId]="session.session_id"></app-run-id-copy>
             <span class="task-date">{{ session.start_time * 1000 | date:'MM/dd/yy' }}</span>
           </div>
         </div>
@@ -178,7 +178,7 @@ limitations under the License.
                 {{ session.initial_goal || 'Unnamed Task' }}
               </div>
               <div class="task-card-footer">
-                <span class="task-id" [title]="session.session_id">ID: {{ session.session_id }}</span>
+                <app-run-id-copy [runId]="session.session_id"></app-run-id-copy>
                 <span class="task-date">{{ session.start_time * 1000 | date:'MM/dd/yy' }}</span>
               </div>
             </div>
@@ -377,4 +377,3 @@ limitations under the License.
     }
   </main>
 </div>
-

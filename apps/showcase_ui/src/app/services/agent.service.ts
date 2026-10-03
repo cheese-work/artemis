@@ -202,6 +202,7 @@ export class AgentService {
   public sessionLogs = signal<any[]>([]); // Dynamic array of all raw events received
   public isSessionContentLoading = signal<boolean>(false);
   public agentStatus = signal<string>('idle'); // Status of the agent runner process
+  public hasFetchedStatus = signal<boolean>(false);
   public runningSessionId = signal<string | null>(null);
   public runningGoal = signal<string | null>(null);
   public isPaused = signal<boolean>(false);
@@ -1629,6 +1630,7 @@ export class AgentService {
               this.selectSession(data.session_id, false);
             }
           }
+          this.hasFetchedStatus.set(true);
         }
       },
       error: (err) => {

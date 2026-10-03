@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import { Component, ChangeDetectionStrategy, inject } from '@angular/core';
+import { Component, ChangeDetectionStrategy, EventEmitter, inject, Output } from '@angular/core';
 
 import { RouterLink, RouterLinkActive } from '@angular/router';
 import { UsbDeviceRelayService } from '../../services/usb-device-relay.service';
@@ -24,26 +24,30 @@ import { UsbDeviceRelayService } from '../../services/usb-device-relay.service';
   standalone: true,
   imports: [RouterLink, RouterLinkActive],
   template: `
-    <nav class="floating-nav-switcher" aria-label="Main Navigation">
-      <a 
-        routerLink="/" 
-        routerLinkActive="active" 
-        [routerLinkActiveOptions]="{exact: true}"
-        class="nav-tab-btn"
-        title="Return to Home Launcher to start a new task"
-      >
-        <span class="material-symbols-outlined tab-icon">add_task</span>
-        <span class="tab-label">New / Home</span>
-      </a>
-      <a 
-        routerLink="/workspace" 
-        routerLinkActive="active" 
+    <nav class="floating-nav-switcher" aria-label="Primary navigation">
+      <span class="brand-wordmark">SmartQA</span>
+      <a
+        routerLink="/workspace"
+        routerLinkActive="active"
         class="nav-tab-btn"
         title="Open Workspace"
       >
-        <span class="material-symbols-outlined tab-icon">space_dashboard</span>
+        <span class="material-symbols-outlined tab-icon" aria-hidden="true">space_dashboard</span>
         <span class="tab-label">Workspace</span>
       </a>
+      <a
+        routerLink="/setup"
+        routerLinkActive="active"
+        class="nav-tab-btn"
+        title="System Setup"
+      >
+        <span class="material-symbols-outlined tab-icon" aria-hidden="true">tune</span>
+        <span class="tab-label">System Setup</span>
+      </a>
+      <button type="button" class="nav-tab-btn" aria-label="Open What's New" (click)="showWhatsNew.emit()">
+        <span class="material-symbols-outlined tab-icon" aria-hidden="true">campaign</span>
+        <span class="tab-label">What's New</span>
+      </button>
       @if (usbRelay.state().status === 'connected') {
         <div class="usb-relay-badge" aria-live="polite">
           <span class="material-symbols-outlined badge-icon" aria-hidden="true">smartphone</span>
@@ -58,6 +62,8 @@ import { UsbDeviceRelayService } from '../../services/usb-device-relay.service';
   styleUrls: ['./nav-switcher.component.scss']
 })
 export class NavSwitcherComponent {
+  @Output() public showWhatsNew = new EventEmitter<void>();
+
   public readonly usbRelay = inject(UsbDeviceRelayService);
 
   public disconnectPhone(): void {
