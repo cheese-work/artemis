@@ -58,4 +58,15 @@ def test_every_registered_route_has_a_declared_tier_and_guard():
                     f"Cloud API mutation lacks tenant-token auth: {route.path}"
                 )
             else:
-                assert tier in {"admin", "lifecycle"}, f"Unprotected mutation: {route.path}"
+                public_task_controls = {"/api/run", "/api/stop", "/api/resume"}
+                assert tier in {"admin", "lifecycle"} or (
+                    tier == "public" and route.path in public_task_controls
+                ), f"Unprotected mutation: {route.path}"
+
+
+def test_approved_task_controls_and_bridge_keep_public_tier():
+    for path in ("/api/run", "/api/stop", "/api/resume"):
+        assert route_tier(path, {"POST"}) == "public"
+
+    assert route_tier("/api/device-bridge/session", set(), is_websocket=True) == "public"
+    assert route_tier("/api/system/adb/restart", {"POST"}) == "admin"

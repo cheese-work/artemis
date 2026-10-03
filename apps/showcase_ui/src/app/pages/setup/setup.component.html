@@ -1,14 +1,16 @@
-<main class="setup-page">
-  <header class="setup-header">
-    <div>
-      <p class="eyebrow">SmartQA · Admin</p>
-      <h1>Provider setup</h1>
-      <p class="subtitle">Choose the active model and configure credentials for the next run.</p>
-    </div>
-    @if (snapshot(); as current) {
-      <span class="version-chip">Config {{ current.version.slice(0, 10) }}</span>
-    }
-  </header>
+<section class="setup-page" [class.setup-embedded]="embedded" [attr.role]="embedded ? null : 'main'">
+  @if (!embedded) {
+    <header class="setup-header">
+      <div>
+        <p class="eyebrow">SmartQA · Admin</p>
+        <h1>Provider setup</h1>
+        <p class="subtitle">Choose the active model and configure credentials for the next run.</p>
+      </div>
+      @if (snapshot(); as current) {
+        <span class="version-chip">Config {{ current.version.slice(0, 10) }}</span>
+      }
+    </header>
+  }
 
   @if (loading()) {
     <p class="notice" role="status">Loading provider settings…</p>
@@ -99,14 +101,15 @@
                 [name]="'credential-' + provider.name"
                 type="password"
                 [(ngModel)]="credentialInputs[provider.name]"
+                (input)="onCredentialInput(provider.name, $any($event.target).value)"
                 [placeholder]="provider.configured ? 'Enter a new key to replace' : 'Enter API key'"
-                [disabled]="!canEdit() || saving()"
+                [readonly]="!canEdit() || saving() || provider.key_source === 'service environment (read-only)'"
                 autocomplete="new-password"
                 spellcheck="false"
               />
             </label>
             @if (provider.configured && canEdit()) {
-              <button type="button" class="text-button" (click)="clearCredential(provider.name)" [disabled]="saving()">
+              <button type="button" class="text-button" (click)="clearCredential(provider.name)" [disabled]="saving() || provider.key_source === 'service environment (read-only)'">
                 Clear saved key
               </button>
             }
@@ -117,8 +120,7 @@
                   [name]="'base-url-' + provider.name"
                   type="url"
                   [(ngModel)]="baseUrls[provider.name]"
-                  [readonly]="!canEdit()"
-                  [disabled]="saving()"
+                  [readonly]="!canEdit() || saving() || provider.base_url_source === 'service environment (read-only)'"
                   placeholder="https://"
                   autocomplete="url"
                 />
@@ -139,4 +141,4 @@
       </footer>
     </form>
   }
-</main>
+</section>

@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 from contextlib import contextmanager
 from dataclasses import dataclass
-import fcntl
 import hashlib
 import io
 import json
@@ -90,50 +89,112 @@ def _sha(config_bytes: bytes, env_bytes: bytes) -> str:
     return digest.hexdigest()
 
 
-def _find_default_block(text: str) -> tuple[int, int]:
-    match = re.search(r'"default"\s*:\s*\{', text)
-    if not match:
-        raise ConfigStoreError("config_invalid", "artemis.jsonc must contain a default object.")
-    open_brace = text.find("{", match.start())
-    depth = 0
-    quoted = False
+def _skip_jsonc_trivia(text: str, index: int) -> int:
+    while index < len(text):
+        if text[index].isspace():
+            index += 1
+        elif text.startswith("//", index):
+            newline = text.find("\n", index + 2)
+            index = len(text) if newline < 0 else newline + 1
+        elif text.startswith("/*", index):
+            end = text.find("*/", index + 2)
+            if end < 0:
+                raise ConfigStoreError("config_invalid", "artemis.jsonc has an unclosed comment.")
+            index = end + 2
+        else:
+            return index
+    return index
+
+
+def _jsonc_string_end(text: str, start: int) -> int:
     escaped = False
-    line_comment = False
-    block_comment = False
-    index = open_brace
+    for index in range(start + 1, len(text)):
+        char = text[index]
+        if escaped:
+            escaped = False
+        elif char == "\\":
+            escaped = True
+        elif char == '"':
+            return index
+    raise ConfigStoreError("config_invalid", "artemis.jsonc has an unterminated string.")
+
+
+def _matching_object_end(text: str, start: int) -> int:
+    depth = 0
+    index = start
     while index < len(text):
         char = text[index]
-        next_char = text[index + 1] if index + 1 < len(text) else ""
-        if line_comment:
-            if char == "\n":
-                line_comment = False
-        elif block_comment:
-            if char == "*" and next_char == "/":
-                block_comment = False
-                index += 1
-        elif quoted:
-            if escaped:
-                escaped = False
-            elif char == "\\":
-                escaped = True
-            elif char == '"':
-                quoted = False
-        elif char == "/" and next_char == "/":
-            line_comment = True
-            index += 1
-        elif char == "/" and next_char == "*":
-            block_comment = True
-            index += 1
-        elif char == '"':
-            quoted = True
-        elif char == "{":
+        if text.startswith("//", index):
+            newline = text.find("\n", index + 2)
+            index = len(text) if newline < 0 else newline + 1
+            continue
+        if text.startswith("/*", index):
+            end = text.find("*/", index + 2)
+            if end < 0:
+                break
+            index = end + 2
+            continue
+        if char == '"':
+            index = _jsonc_string_end(text, index) + 1
+            continue
+        if char == "{":
             depth += 1
         elif char == "}":
             depth -= 1
             if depth == 0:
-                return open_brace, index + 1
+                return start, index + 1
         index += 1
     raise ConfigStoreError("config_invalid", "artemis.jsonc default object is not closed.")
+
+
+def _find_default_block(text: str) -> tuple[int, int]:
+    root = _skip_jsonc_trivia(text, 0)
+    if root == len(text) or text[root] != "{":
+        raise ConfigStoreError("config_invalid", "artemis.jsonc must contain a default object.")
+
+    containers = ["{"]
+    previous = "{"
+    index = root + 1
+    while index < len(text):
+        index = _skip_jsonc_trivia(text, index)
+        if index >= len(text):
+            break
+        char = text[index]
+        if char == '"':
+            end = _jsonc_string_end(text, index)
+            if len(containers) == 1 and previous in {"{", ","}:
+                try:
+                    key = json.loads(text[index : end + 1])
+                except json.JSONDecodeError as exc:
+                    raise ConfigStoreError(
+                        "config_invalid", "artemis.jsonc has an invalid key."
+                    ) from exc
+                if key == "default":
+                    separator = _skip_jsonc_trivia(text, end + 1)
+                    value = _skip_jsonc_trivia(text, separator + 1)
+                    if separator >= len(text) or text[separator] != ":":
+                        raise ConfigStoreError(
+                            "config_invalid", "artemis.jsonc default value is invalid."
+                        )
+                    if value >= len(text) or text[value] != "{":
+                        raise ConfigStoreError(
+                            "config_invalid", "artemis.jsonc default must be an object."
+                        )
+                    return _matching_object_end(text, value)
+            index = end + 1
+            previous = '"'
+            continue
+        if char in "{[":
+            containers.append(char)
+        elif char in "}]":
+            if containers:
+                containers.pop()
+            if not containers:
+                break
+        previous = char
+        index += 1
+
+    raise ConfigStoreError("config_invalid", "artemis.jsonc must contain a default object.")
 
 
 def _replace_default(text: str, default_config: dict[str, Any]) -> str:
@@ -280,11 +341,28 @@ class ConfigStore:
     def _file_lock(self):
         self.lock_path.parent.mkdir(parents=True, exist_ok=True)
         with self.lock_path.open("a+b") as lock_file:
-            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
-            try:
-                yield
-            finally:
-                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+            if os.name == "nt":
+                import msvcrt
+
+                lock_file.seek(0, os.SEEK_END)
+                if lock_file.tell() == 0:
+                    lock_file.write(b"\0")
+                    lock_file.flush()
+                lock_file.seek(0)
+                msvcrt.locking(lock_file.fileno(), msvcrt.LK_LOCK, 1)
+                try:
+                    yield
+                finally:
+                    lock_file.seek(0)
+                    msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+                try:
+                    yield
+                finally:
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
     def _read_bytes(self) -> tuple[bytes, bytes]:
         try:
@@ -513,14 +591,22 @@ class ConfigStore:
         with self._file_lock():
             config_bytes, env_bytes = self._read_bytes()
             env_values = dotenv_values(stream=io.StringIO(env_bytes.decode("utf-8")))
-            environment: dict[str, str] = {}
+            environment = os.environ.copy()
+            managed_keys = {key for keys in PROVIDER_KEY_ENV.values() for key in keys} | set(
+                PROVIDER_BASE_URL_ENV.values()
+            )
+            for key in managed_keys - SERVICE_ENVIRONMENT_KEYS:
+                environment.pop(key, None)
             for key, value in env_values.items():
                 if value is not None and key not in SERVICE_ENVIRONMENT_KEYS:
                     environment[key] = value
             fd, name = tempfile.mkstemp(prefix="artemis-run-config-", suffix=".jsonc")
             try:
                 with os.fdopen(fd, "wb") as stream:
-                    os.fchmod(stream.fileno(), 0o600)
+                    if hasattr(os, "fchmod"):
+                        os.fchmod(stream.fileno(), 0o600)
+                    else:
+                        os.chmod(name, 0o600)
                     stream.write(config_bytes)
                     stream.flush()
                     os.fsync(stream.fileno())

@@ -108,7 +108,7 @@ class LLMCredentialsProbe(BaseProbe):
             elif provider in {"ollama", "vllm", "custom"}:
                 is_set = has_endpoint
             elif provider == "openai":
-                is_set = bool(credential_value or has_endpoint)
+                is_set = bool(credential_value)
             else:
                 is_set = bool(credential_value)
 
@@ -120,17 +120,6 @@ class LLMCredentialsProbe(BaseProbe):
                     "masked": self._mask_key(credential_value) if credential_value else None,
                 }
             )
-            if provider == "openai" and not credential_value and has_endpoint:
-                endpoint = next(iter(bases), base_url or "")
-                provider_status.append(
-                    {
-                        "provider": "custom",
-                        "label": "OpenAI-compatible endpoint",
-                        "is_set": True,
-                        "masked": self._mask_key(endpoint),
-                    }
-                )
-
         missing = [item["label"] for item in provider_status if not item["is_set"]]
         is_set = bool(provider_status) and not missing
         description = (

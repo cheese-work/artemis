@@ -320,23 +320,28 @@ _ADMIN_MUTATING_PATHS = {
     "/api/system/credentials",
     "/api/system/config",
     "/api/system/restart",
-    "/api/run",
-    "/api/stop",
-    "/api/resume",
     "/api/cleanup",
     "/api/sessions/{session_id}/delete",
     "/api/sessions/{session_id}/steps/{step_number}/replay",
 }
 
+_PUBLIC_MUTATING_PATHS = {
+    "/api/run",
+    "/api/stop",
+    "/api/resume",
+}
+
 
 def route_tier(path: str, methods: set[str], is_websocket: bool = False) -> str | None:
     if is_websocket:
-        return "admin" if path == "/api/device-bridge/session" else None
+        return "public" if path == "/api/device-bridge/session" else None
     if path == "/api/system/shutdown" and methods == {"POST"}:
         return "lifecycle"
     if path == "/api/v1" or path.startswith("/api/v1/"):
         return "public"
     if methods == {"GET"} and path in _PUBLIC_GET_PATHS:
+        return "public"
+    if methods == {"POST"} and path in _PUBLIC_MUTATING_PATHS:
         return "public"
     if methods in ({"POST"}, {"PUT"}) and path in _ADMIN_MUTATING_PATHS:
         return "admin"

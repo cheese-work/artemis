@@ -84,7 +84,7 @@ async def test_credentials_endpoint_never_returns_key_material(monkeypatch):
     ],
 )
 async def test_locked_credential_writes_return_403_without_side_effects(monkeypatch, path, payload):
-    from apps.admin_console.core.access_control import AccessConfig, CloudflareAccessVerifier
+    from apps.admin_console.core.access_control import AccessConfig
     from apps.admin_console.server import app
     from artemis.config import settings
     from artemis.utils import credentials_validator
@@ -99,7 +99,9 @@ async def test_locked_credential_writes_return_403_without_side_effects(monkeypa
             admin_emails=frozenset({"admin@example.com"}),
         ),
     )
-    monkeypatch.setattr(app.state, "access_verifier", CloudflareAccessVerifier())
+    verifier = MagicMock()
+    verifier.verify = AsyncMock(return_value={"email": "qa@example.com"})
+    monkeypatch.setattr(app.state, "access_verifier", verifier)
 
     validate_api_key = AsyncMock(return_value=(True, "valid"))
     set_api_key = MagicMock()
@@ -353,8 +355,8 @@ async def test_security_headers_present_and_api_responses_uncacheable():
 
 
 @pytest.mark.asyncio
-async def test_task_submission_denial_has_no_side_effects(monkeypatch):
-    from apps.admin_console.core.access_control import AccessConfig, CloudflareAccessVerifier
+async def test_nonadmin_can_use_public_task_controls(monkeypatch):
+    from apps.admin_console.core.access_control import AccessConfig
     from apps.admin_console.routers import tasks as task_router
 
     monkeypatch.setattr(
@@ -367,24 +369,36 @@ async def test_task_submission_denial_has_no_side_effects(monkeypatch):
             admin_emails=frozenset({"admin@example.com"}),
         ),
     )
-    monkeypatch.setattr(app.state, "access_verifier", CloudflareAccessVerifier())
-    enqueue = AsyncMock()
+    verifier = MagicMock()
+    verifier.verify = AsyncMock(return_value={"email": "qa@example.com"})
+    monkeypatch.setattr(app.state, "access_verifier", verifier)
+    enqueue = AsyncMock(return_value={"status": "queued", "tasks": []})
     readiness_probe = AsyncMock(return_value=None)
+    stop_tasks = MagicMock(return_value=True)
+    resume_task = MagicMock(return_value=True)
     monkeypatch.setattr(task_router.task_queue_service, "enqueue_tasks", enqueue)
     monkeypatch.setattr(
         task_router.readiness_engine, "run_device_submission_probe", readiness_probe
     )
+    monkeypatch.setattr(task_router.task_queue_service, "stop_tasks", stop_tasks)
+    monkeypatch.setattr(task_router.task_queue_service, "resume_task", resume_task)
 
+    headers = {"Cf-Access-Jwt-Assertion": "synthetic-fixture-token"}
     async with _client(client=("203.0.113.9", 51000)) as ac:
-        response = await ac.post("/api/run", json={"goal": "must not enqueue"})
+        run_response = await ac.post("/api/run", json={"goal": "synthetic"}, headers=headers)
+        stop_response = await ac.post("/api/stop", json={"all": True}, headers=headers)
+        resume_response = await ac.post("/api/resume", headers=headers)
 
-    assert response.status_code == 401
-    assert response.json()["code"] == "not_signed_in"
-    enqueue.assert_not_awaited()
-    readiness_probe.assert_not_awaited()
+    assert run_response.status_code == 200
+    assert stop_response.status_code == 200
+    assert resume_response.status_code == 200
+    enqueue.assert_awaited_once()
+    readiness_probe.assert_awaited_once()
+    stop_tasks.assert_called_once_with(clear_all=True, session_id=None, device_id=None)
+    resume_task.assert_called_once_with()
 
 
-def test_device_bridge_denial_has_no_side_effects(monkeypatch):
+def test_device_bridge_remote_peer_denial_has_no_side_effects(monkeypatch):
     from apps.admin_console.core.access_control import AccessConfig, CloudflareAccessVerifier
     from apps.admin_console.routers import device_bridge
 
@@ -402,13 +416,13 @@ def test_device_bridge_denial_has_no_side_effects(monkeypatch):
     service = MagicMock()
     service.create_session = AsyncMock()
     monkeypatch.setattr(device_bridge, "bridge_session_service", service)
-    client = TestClient(proxy_aware_app, client=("127.0.0.1", 51000))
+    client = TestClient(proxy_aware_app, client=("192.0.2.20", 51000))
 
     with pytest.raises(WebSocketDisconnect) as raised:
         with client.websocket_connect("/api/device-bridge/session", headers={"Host": "127.0.0.1"}):
             pass
 
-    assert raised.value.code == 1008
+    assert raised.value.code == 4003
     service.create_session.assert_not_awaited()
 
 
@@ -424,6 +438,32 @@ async def test_restart_requires_admin_before_starting_worker():
 
         assert res.status_code == 401
         mock_thread.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_shared_adb_restart_requires_admin_without_side_effects(monkeypatch):
+    from apps.admin_console.core.access_control import AccessConfig, CloudflareAccessVerifier
+
+    monkeypatch.setattr(
+        app.state,
+        "access_config",
+        AccessConfig(
+            auth_mode="cloudflare",
+            audience="test-audience",
+            issuer="https://team.cloudflareaccess.com",
+            admin_emails=frozenset({"admin@example.com"}),
+        ),
+    )
+    monkeypatch.setattr(app.state, "access_verifier", CloudflareAccessVerifier())
+    restart = AsyncMock()
+    monkeypatch.setattr(system.readiness_engine, "restart_adb_server", restart)
+
+    async with _client() as ac:
+        response = await ac.post("/api/system/adb/restart")
+
+    assert response.status_code == 401
+    assert response.json()["code"] == "not_signed_in"
+    restart.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -460,3 +500,43 @@ async def test_config_write_denial_has_no_side_effects(monkeypatch):
     assert response.json()["code"] == "not_signed_in"
     assert "FAKE-SECRET-MUST-NOT-ECHO" not in response.text
     config_store_factory.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_legacy_public_config_response_redacts_inline_secrets(tmp_path, monkeypatch):
+    from apps.admin_console.core.access_control import AccessConfig
+
+    config_path = tmp_path / "artemis.jsonc"
+    config_path.write_text(
+        '{"default":{"provider":"openai","model":"fixture",'
+        '"api_key":"SYNTHETIC-INLINE-SECRET",'
+        '"api_base":"https://example.test/v1?token=SYNTHETIC-URL-SECRET"},'
+        '"presets":{}}',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("ARTEMIS_ARTEMIS_JSONC", str(config_path))
+    monkeypatch.setattr(
+        app.state,
+        "access_config",
+        AccessConfig(
+            auth_mode="cloudflare",
+            audience="test-audience",
+            issuer="https://team.cloudflareaccess.com",
+            admin_emails=frozenset({"admin@example.com"}),
+        ),
+    )
+    verifier = MagicMock()
+    verifier.verify = AsyncMock(return_value={"email": "qa@example.com"})
+    monkeypatch.setattr(app.state, "access_verifier", verifier)
+
+    async with _client() as ac:
+        response = await ac.get(
+            "/api/system/model-config-env",
+            headers={"Cf-Access-Jwt-Assertion": "synthetic-fixture-token"},
+        )
+
+    assert response.status_code == 200
+    assert "SYNTHETIC-INLINE-SECRET" not in response.text
+    assert "SYNTHETIC-URL-SECRET" not in response.text
+    assert "example.test" in response.text
+    assert "https://example.test" not in response.text

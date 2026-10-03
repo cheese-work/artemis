@@ -32,6 +32,7 @@ import {
 } from '../../core/data/smart-tasks.data';
 import { TaskRecommendationService } from '../../core/services/task-recommendation.service';
 import { UsbPhoneConnectionComponent } from '../../components/usb-phone-connection/usb-phone-connection.component';
+import { SetupComponent } from '../setup/setup.component';
 import {
   DEFAULT_EXPLORER_MODE,
   DEFAULT_VERIFICATION_LEVEL,
@@ -104,7 +105,7 @@ type AdbGuideTab = 'emulator' | 'usb' | 'wifi' | 'remote';
 @Component({
   selector: 'app-home',
   standalone: true,
-  imports: [FormsModule, UsbPhoneConnectionComponent],
+  imports: [FormsModule, UsbPhoneConnectionComponent, SetupComponent],
   templateUrl: './home.component.html',
   changeDetection: ChangeDetectionStrategy.Eager,
   styleUrl: './home.component.scss'
@@ -116,7 +117,7 @@ export class HomeComponent implements OnInit, OnDestroy {
   private router = inject(Router);
 
   // High-level navigation mode: 'diagnostics' (System Setup Guide) vs 'launcher' (Task Execution)
-  public activeTab = signal<'diagnostics' | 'launcher'>('launcher');
+  public activeTab = signal<'diagnostics' | 'launcher'>('diagnostics');
 
   // Interactive guide sub-tab inside the ADB section
   public activeAdbGuideTab = signal<AdbGuideTab>('emulator');

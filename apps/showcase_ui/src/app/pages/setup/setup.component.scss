@@ -5,10 +5,22 @@
   background: #0b1020;
 }
 
+:host(.embedded) {
+  min-height: 0;
+  color: inherit;
+  background: transparent;
+}
+
 .setup-page {
   width: min(1040px, calc(100% - 2rem));
   margin: 0 auto;
   padding: 3rem 0 5rem;
+}
+
+.setup-page.setup-embedded {
+  width: 100%;
+  margin: 0;
+  padding: 0;
 }
 
 .setup-header,

@@ -583,16 +583,24 @@ async def test_credentials_probe_ignores_placeholder_openai_endpoint(monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_credentials_probe_reports_keyless_openai_endpoint(monkeypatch):
+async def test_credentials_probe_requires_key_for_openai_endpoint(monkeypatch):
     _clear_credential_inputs(monkeypatch)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.setenv("OPENAI_BASE_URL", "https://openai-proxy.local/v1")
+    from artemis.core.diagnostics.probes import credentials_probe
+
+    monkeypatch.setattr(
+        credentials_probe,
+        "parse_llm_config",
+        lambda: {"default": {"provider": "openai", "model": "fixture"}},
+    )
 
     result = await LLMCredentialsProbe().probe()
 
-    assert any(
-        entry["provider"] == "custom" and entry["is_set"] is True and entry["masked"] == "****l/v1"
-        for entry in result.metadata["providers"]
-    )
+    assert result.status is ProbeStatus.FAIL
+    assert result.metadata["providers"] == [
+        {"provider": "openai", "label": "OpenAI", "is_set": False, "masked": None}
+    ]
     assert "https://openai-proxy.local/v1" not in result.model_dump_json()
 
 

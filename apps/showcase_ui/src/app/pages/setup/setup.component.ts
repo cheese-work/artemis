@@ -1,4 +1,4 @@
-import { Component, ChangeDetectionStrategy, OnInit, computed, inject, signal } from '@angular/core';
+import { Component, ChangeDetectionStrategy, Input, OnInit, computed, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { finalize, forkJoin } from 'rxjs';
 import { AdminConfigService, AdminIdentity, ConfigSnapshot, ModelSelection } from '../../services/admin-config.service';
@@ -9,9 +9,11 @@ import { AdminConfigService, AdminIdentity, ConfigSnapshot, ModelSelection } fro
   imports: [FormsModule],
   templateUrl: './setup.component.html',
   styleUrl: './setup.component.scss',
+  host: { '[class.embedded]': 'embedded' },
   changeDetection: ChangeDetectionStrategy.Eager
 })
 export class SetupComponent implements OnInit {
+  @Input() public embedded = false;
   private readonly adminConfig = inject(AdminConfigService);
   public readonly identity = signal<AdminIdentity | null>(null);
   public readonly snapshot = signal<ConfigSnapshot | null>(null);
@@ -73,6 +75,13 @@ export class SetupComponent implements OnInit {
     this.credentialsToClear.add(provider);
   }
 
+  public onCredentialInput(provider: string, value: string): void {
+    this.credentialInputs[provider] = value;
+    if (value.trim()) {
+      this.credentialsToClear.delete(provider);
+    }
+  }
+
   public save(): void {
     const current = this.snapshot();
     if (!current || !this.canEdit() || this.saving()) {
@@ -92,10 +101,10 @@ export class SetupComponent implements OnInit {
     };
     const credentials: Record<string, string | null> = {};
     for (const provider of current.providers) {
-      if (this.credentialsToClear.has(provider.name)) {
-        credentials[provider.name] = null;
-      } else if (this.credentialInputs[provider.name]?.trim()) {
+      if (this.credentialInputs[provider.name]?.trim()) {
         credentials[provider.name] = this.credentialInputs[provider.name].trim();
+      } else if (this.credentialsToClear.has(provider.name)) {
+        credentials[provider.name] = null;
       }
     }
     const baseUrls = Object.fromEntries(
@@ -125,7 +134,7 @@ export class SetupComponent implements OnInit {
         this.message.set('Saved. Changes apply to your next run.');
       },
       error: (error) => {
-        this.conflict.set(error?.status === 409);
+        this.conflict.set(error?.status === 409 && error?.error?.code === 'config_conflict');
         this.message.set(this.errorMessage(error));
       }
     });
@@ -138,7 +147,11 @@ export class SetupComponent implements OnInit {
     if (error?.status === 403) {
       return 'Admin only. Sign in with an allowlisted Cloudflare Access account to save settings.';
     }
-    if (error?.status === 409) {
+    const code = error?.error?.code;
+    if (code === 'config_source_conflict' || code === 'config_unwritable') {
+      return [error?.error?.detail, error?.error?.fix].filter(Boolean).join(' ');
+    }
+    if (code === 'config_conflict' || error?.status === 409) {
       return 'Settings changed elsewhere. Reload to review.';
     }
     return typeof error?.error?.detail === 'string'

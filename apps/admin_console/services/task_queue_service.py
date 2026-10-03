@@ -499,6 +499,7 @@ class TaskQueueService:
         goal: str,
         profile: str,
         target: AdbTarget,
+        base_environment: dict[str, str] | None = None,
     ) -> tuple[list[str], dict[str, str]]:
         """Assemble the worker subprocess command line and environment."""
         expected_output = task_item.get("expected_output")
@@ -510,7 +511,7 @@ class TaskQueueService:
         run_id = task_item.get("run_id")
 
         test_name = f"web_{int(time.time())}_{run_key[:8]}"
-        env = os.environ.copy()
+        env = dict(base_environment) if base_environment is not None else os.environ.copy()
         pythonpath_parts = [
             str(WORKSPACE_ROOT),
             str(WORKSPACE_ROOT / "apps" / "admin_console"),
@@ -848,13 +849,18 @@ class TaskQueueService:
             cls._begin_task_run(task_item, run_key, sess_id, goal, profile)
 
             target = cls._task_target(task_item)
-            cmd, env = cls._build_worker_invocation(
-                task_item, run_key, sess_id, goal, profile, target
-            )
             from apps.admin_console.services.config_store import get_config_store
 
             config_snapshot = await get_config_store().snapshot_for_spawn()
-            env.update(config_snapshot.environment)
+            cmd, env = cls._build_worker_invocation(
+                task_item,
+                run_key,
+                sess_id,
+                goal,
+                profile,
+                target,
+                base_environment=config_snapshot.environment,
+            )
 
             device_serial = task_item.get("device_serial")
             print(

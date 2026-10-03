@@ -18,12 +18,11 @@ import { Routes } from '@angular/router';
 import { HomeComponent } from './pages/home/home.component';
 import { WorkspaceComponent } from './pages/workspace/workspace.component';
 import { LegacyWorkspaceComponent } from './pages/legacy-workspace/legacy-workspace.component';
-import { SetupComponent } from './pages/setup/setup.component';
 
 export const routes: Routes = [
-  { path: '', component: HomeComponent },
+  { path: '', pathMatch: 'full', redirectTo: 'workspace' },
+  { path: 'setup', component: HomeComponent },
   { path: 'workspace', component: WorkspaceComponent },
-  { path: 'provider-setup', component: SetupComponent },
   { path: 'check', component: LegacyWorkspaceComponent },
-  { path: '**', redirectTo: '' }
+  { path: '**', redirectTo: 'workspace' }
 ];

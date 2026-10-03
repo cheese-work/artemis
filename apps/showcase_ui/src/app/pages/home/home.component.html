@@ -284,6 +284,7 @@
 <!-- =================================================================== -->
 <!-- STEP 2: AI MODEL SETUP                                              -->
 <!-- =================================================================== -->
+@if (false) {
 <div class="guide-card" [class.card-pass]="isCredentialsReady()" [class.card-warn]="!isCredentialsReady()">
 
   <div class="guide-card-header">
@@ -665,6 +666,8 @@
     }
     </div>
     </div>
+}
+<app-setup [embedded]="true"></app-setup>
 
         <!-- =================================================================== -->
         <!-- STEP 3: ANDROID DEVICE & EMULATOR CONNECTION                        -->

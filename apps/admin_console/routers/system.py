@@ -37,7 +37,10 @@ from apps.admin_console.core.access_control import (
     require_admin,
     require_lifecycle_token,
 )
-from apps.admin_console.services.config_store import ConfigStoreError, get_config_store
+from apps.admin_console.services.config_store import (
+    ConfigStoreError,
+    get_config_store,
+)
 
 router = APIRouter(prefix="/api/system", tags=["system"])
 
@@ -238,10 +241,12 @@ async def get_adb_server_status():
     return adb_server_connection.status()
 
 
-@router.post("/adb/server/connect", dependencies=[Depends(require_admin)])
-async def connect_adb_server(payload: ConnectAdbServerRequest, request: Request):
+@router.post(
+    "/adb/server/connect",
+    dependencies=[Depends(_require_local_admin_request), Depends(require_admin)],
+)
+async def connect_adb_server(payload: ConnectAdbServerRequest):
     """Validate and activate an ADB server endpoint."""
-    _require_local_admin_request(request)
     try:
         connection_result = await adb_server_connection.connect(
             payload.host,
@@ -259,10 +264,12 @@ async def connect_adb_server(payload: ConnectAdbServerRequest, request: Request)
     return response
 
 
-@router.post("/adb/server/probe", dependencies=[Depends(require_admin)])
-async def probe_adb_server(payload: ConnectAdbServerRequest, request: Request):
+@router.post(
+    "/adb/server/probe",
+    dependencies=[Depends(_require_local_admin_request), Depends(require_admin)],
+)
+async def probe_adb_server(payload: ConnectAdbServerRequest):
     """Test an ADB server endpoint without changing the active endpoint."""
-    _require_local_admin_request(request)
     try:
         connection_result = await adb_server_connection.probe(payload.host, payload.port)
     except InvalidAdbServerEndpoint as exc:
@@ -270,10 +277,12 @@ async def probe_adb_server(payload: ConnectAdbServerRequest, request: Request):
     return {"connection_result": connection_result}
 
 
-@router.post("/adb/server/local", dependencies=[Depends(require_admin)])
-async def use_local_adb_server(request: Request, persist: bool = True):
+@router.post(
+    "/adb/server/local",
+    dependencies=[Depends(_require_local_admin_request), Depends(require_admin)],
+)
+async def use_local_adb_server(persist: bool = True):
     """Restore the standard local ADB server without touching a remote daemon."""
-    _require_local_admin_request(request)
     connection_result = await adb_server_connection.use_local_server(persist=persist)
     readiness_engine.set_probe_target_serial(None)
     readiness_engine.invalidate_cache()
@@ -439,7 +448,7 @@ async def update_credentials(request: UpdateCredentialsRequest, http_request: Re
 
 
 @router.get("/model-config-env")
-async def get_model_config_and_env():
+async def get_model_config_and_env(identity: AccessIdentity = Depends(public_tier)):
     """Retrieve the current active artemis.jsonc configuration and .env status for custom setup."""
     import os
     from artemis.config.paths import get_config_path, get_env_file
@@ -559,12 +568,63 @@ async def get_model_config_and_env():
         },
     ]
 
+    if not identity.admin:
+
+        def public_model(value: Any) -> dict[str, Any]:
+            if not isinstance(value, dict):
+                return {}
+            result = {
+                key: value[key] for key in ("provider", "model") if isinstance(value.get(key), str)
+            }
+            if isinstance(value.get("fallback"), dict):
+                result["fallback"] = public_model(value["fallback"])
+            base = value.get("api_base")
+            if isinstance(base, str):
+                try:
+                    hostname = urlsplit(base).hostname
+                except ValueError:
+                    hostname = None
+                if hostname:
+                    result["api_base_host"] = hostname
+            return result
+
+        parsed_default = public_model(parsed_config.get("default", {}))
+        raw_presets = parsed_config.get("presets", {})
+        presets = (
+            {name: public_model(value) for name, value in raw_presets.items()}
+            if isinstance(raw_presets, dict)
+            else {}
+        )
+        base_url_names = {"OPENAI_BASE_URL", "ANTHROPIC_BASE_URL"}
+        public_env_vars = []
+        for item in env_vars:
+            safe_item = {
+                key: item[key]
+                for key in ("name", "provider", "is_set", "description")
+                if key in item
+            }
+            if item.get("name") in base_url_names:
+                try:
+                    host = urlsplit(item.get("preview") or "").hostname
+                except ValueError:
+                    host = None
+                if host:
+                    safe_item["host"] = host
+            public_env_vars.append(safe_item)
+        config_content = ""
+        env_vars = public_env_vars
+        config_path = "artemis.jsonc"
+        env_path = ".env"
+    else:
+        parsed_default = parsed_config.get("default", {})
+        presets = parsed_config.get("presets", {})
+
     return {
         "config_path": config_path or "config/artemis.jsonc",
         "config_filename": "artemis.jsonc",
         "config_content": config_content,
-        "default_model": parsed_config.get("default", {}),
-        "presets": parsed_config.get("presets", {}),
+        "default_model": parsed_default,
+        "presets": presets,
         "env_path": str(env_path),
         "env_filename": ".env",
         "env_vars": env_vars,

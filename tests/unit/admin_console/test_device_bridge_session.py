@@ -22,6 +22,7 @@ import socket
 import struct
 import threading
 import time
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastapi.testclient import TestClient
@@ -89,11 +90,50 @@ def test_loopback_session_does_not_require_lifecycle_bearer(loopback_client, _mo
         ws.send_text("close")
 
 
-def test_non_loopback_client_without_admin_is_rejected(remote_client):
+def test_verified_nonadmin_can_open_local_bridge(loopback_client, monkeypatch, _mock_adb):
+    from apps.admin_console.services.bridge_session_service import bridge_session_service
+    from apps.admin_console.core.access_control import AccessConfig
+    from apps.admin_console.server import app
+
+    revoked = threading.Event()
+    revoke = bridge_session_service.revoke
+
+    async def observe_revoke(session_id):
+        await revoke(session_id)
+        revoked.set()
+
+    monkeypatch.setattr(bridge_session_service, "revoke", observe_revoke)
+
+    monkeypatch.setattr(
+        app.state,
+        "access_config",
+        AccessConfig(
+            auth_mode="cloudflare",
+            audience="test-audience",
+            issuer="https://team.cloudflareaccess.com",
+            admin_emails=frozenset({"admin@example.com"}),
+        ),
+    )
+    verifier = MagicMock()
+    verifier.verify = AsyncMock(return_value={"email": "qa@example.com"})
+    monkeypatch.setattr(app.state, "access_verifier", verifier)
+
+    with loopback_client.websocket_connect(
+        PATH,
+        headers={**_HOST_HEADER, "Cf-Access-Jwt-Assertion": "synthetic-fixture-token"},
+    ) as ws:
+        assert ws.receive_json()["type"] == "session_leased"
+        assert ws.receive_json()["type"] == "device_attached"
+        ws.send_text("close")
+
+    assert revoked.wait(1.0)
+
+
+def test_non_loopback_client_is_rejected(remote_client):
     with pytest.raises(WebSocketDisconnect) as exc_info:
         with remote_client.websocket_connect(PATH, headers=_HOST_HEADER):
             pass
-    assert exc_info.value.code == 1008
+    assert exc_info.value.code == 4003
 
 
 def test_forwarded_client_without_cloudflare_jwt_is_read_only(loopback_client):

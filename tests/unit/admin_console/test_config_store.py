@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import builtins
+import importlib.util
 import json
 from pathlib import Path
+import sys
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -220,6 +224,91 @@ async def test_spawn_snapshot_is_stable_across_a_later_save(tmp_path, monkeypatc
     assert store.config_path.read_bytes() != old_config
     ConfigStore.cleanup_snapshot(snapshot)
     assert not snapshot.config_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_spawn_snapshot_uses_current_managed_environment_after_clear(tmp_path, monkeypatch):
+    monkeypatch.setattr(config_store_module, "SERVICE_ENVIRONMENT_KEYS", frozenset())
+    monkeypatch.setenv("PATH", "synthetic-path")
+    monkeypatch.setenv("OPENAI_API_KEY", "SYNTHETIC-OLD-KEY")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://old.example.test/v1")
+    store = make_store(
+        tmp_path,
+        b"OPENAI_API_KEY=SYNTHETIC-OLD-KEY\nOPENAI_BASE_URL=https://old.example.test/v1\n",
+    )
+    current = await store.read()
+    await store.save(
+        expected_version=current["version"],
+        default=current["default"],
+        credentials={"openai": None},
+        base_urls={"openai": None},
+        actor_email="admin@example.test",
+    )
+
+    snapshot = await store.snapshot_for_spawn()
+    try:
+        assert snapshot.environment["PATH"] == "synthetic-path"
+        assert "OPENAI_API_KEY" not in snapshot.environment
+        assert "OPENAI_BASE_URL" not in snapshot.environment
+    finally:
+        store.cleanup_snapshot(snapshot)
+
+
+@pytest.mark.asyncio
+async def test_default_update_skips_comment_examples(tmp_path, monkeypatch):
+    monkeypatch.setattr(config_store_module, "SERVICE_ENVIRONMENT_KEYS", frozenset())
+    store = make_store(tmp_path)
+    store.config_path.write_text(
+        '/* Example: "default": {"provider":"google","model":"example"} */\n'
+        '{"default":{"provider":"openai","model":"old-live",'
+        '"fallback":{"provider":"openai","model":"fallback"}},"nodes":{}}',
+        encoding="utf-8",
+    )
+    current = await store.read()
+    updated = {**current["default"], "model": "new-choice"}
+
+    saved = await store.save(
+        expected_version=current["version"],
+        default=updated,
+        credentials={},
+        base_urls={},
+        actor_email="admin@example.test",
+    )
+
+    assert saved["default"]["model"] == "new-choice"
+    assert '"model": "old-live"' not in store.config_path.read_text(encoding="utf-8")
+
+
+def test_config_store_import_does_not_require_fcntl(monkeypatch):
+    real_import = builtins.__import__
+
+    def windows_import(name, *args, **kwargs):
+        if name == "fcntl":
+            raise ModuleNotFoundError("No module named 'fcntl'")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", windows_import)
+    module_name = "review_windows_config_store"
+    spec = importlib.util.spec_from_file_location(module_name, config_store_module.__file__)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    try:
+        spec.loader.exec_module(module)
+        assert module.ConfigStore
+    finally:
+        sys.modules.pop(module_name, None)
+
+
+def test_config_store_uses_windows_file_lock(tmp_path, monkeypatch):
+    store = make_store(tmp_path)
+    windows_lock = MagicMock(LK_LOCK=1, LK_UNLCK=2)
+    monkeypatch.setitem(sys.modules, "msvcrt", windows_lock)
+    monkeypatch.setattr(config_store_module.os, "name", "nt")
+
+    with store._file_lock():
+        pass
+
+    assert [call.args[1:] for call in windows_lock.locking.call_args_list] == [(1, 1), (2, 1)]
 
 
 def test_config_path_override_is_authoritative(tmp_path, monkeypatch):
