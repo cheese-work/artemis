@@ -132,7 +132,7 @@ def build_scrcpy_record_command(
         str(output_path),
         "--record-format",
         "mkv",
-        "--video-bit-rate",
+        "-b",
         video_bit_rate,
     ]
     if lock_capture_orientation:

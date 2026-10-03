@@ -107,6 +107,48 @@ def test_scrcpy_recording_flags_match_version(version, display_flag, orientation
     assert scrcpy_recording_flags(version) == (display_flag, orientation_flag)
 
 
+@pytest.mark.parametrize(
+    ("version", "display_flag", "orientation_flag"),
+    [
+        (
+            "scrcpy 1.25 <https://github.com/Genymobile/scrcpy>",
+            "--no-display",
+            "--lock-video-orientation",
+        ),
+        (
+            "scrcpy 2.7 <https://github.com/Genymobile/scrcpy>",
+            "--no-display",
+            "--lock-video-orientation",
+        ),
+        (
+            "scrcpy 3.0 <https://github.com/Genymobile/scrcpy>",
+            "--no-window",
+            "--capture-orientation=@",
+        ),
+    ],
+)
+def test_scrcpy_record_command_matches_supported_version_argv(
+    tmp_path, version, display_flag, orientation_flag
+):
+    output_path = tmp_path / "recording.mkv"
+
+    assert build_scrcpy_record_command(
+        "scrcpy", "device-1", output_path, scrcpy_version=version
+    ) == [
+        "scrcpy",
+        "--serial",
+        "device-1",
+        display_flag,
+        "--record",
+        str(output_path),
+        "--record-format",
+        "mkv",
+        "-b",
+        "2M",
+        orientation_flag,
+    ]
+
+
 @pytest.mark.parametrize("version", ["scrcpy 1.24", "scrcpy unknown"])
 def test_scrcpy_recording_flags_reject_unsupported_versions(version):
     with pytest.raises(ValueError, match="compatible scrcpy"):
