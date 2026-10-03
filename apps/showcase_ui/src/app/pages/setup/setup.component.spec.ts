@@ -76,6 +76,69 @@ describe('SetupComponent', () => {
     expect(routes.some((route) => route.path === 'provider-setup')).toBeFalse();
   });
 
+  it('shows equal provider choices and the configured default and fallback models', async () => {
+    createComponent();
+    await fixture.whenStable();
+    fixture.detectChanges();
+    expect(fixture.componentInstance.primaryProvider).toBe('openai');
+    expect(fixture.componentInstance.primaryModel).toBe('gpt-test');
+    expect(fixture.componentInstance.fallbackProvider).toBe('google');
+    expect(fixture.componentInstance.fallbackModel).toBe('gemini-test');
+
+    const defaultProvider = fixture.nativeElement.querySelector(
+      '[name="default-provider"]'
+    ) as HTMLSelectElement;
+    const defaultModel = fixture.nativeElement.querySelector(
+      '[name="default-model"]'
+    ) as HTMLInputElement;
+    const fallbackProvider = fixture.nativeElement.querySelector(
+      '[name="fallback-provider"]'
+    ) as HTMLSelectElement;
+    const fallbackModel = fixture.nativeElement.querySelector(
+      '[name="fallback-model"]'
+    ) as HTMLInputElement;
+
+    expect(Array.from(defaultProvider.options).map((option) => option.value)).toEqual([
+      'openai',
+      'google'
+    ]);
+    expect(Array.from(fallbackProvider.options).map((option) => option.value)).toEqual([
+      'openai',
+      'google'
+    ]);
+    expect(defaultProvider.value).toBe('openai');
+    expect(defaultModel.value).toBe('gpt-test');
+    expect(fallbackProvider.value).toBe('google');
+    expect(fallbackModel.value).toBe('gemini-test');
+    expect(fixture.nativeElement.textContent).not.toContain('Recommended');
+    expect(fixture.nativeElement.querySelectorAll('.field-grid label').length).toBe(4);
+  });
+
+  it('keeps credential inputs blank and allows editing a file-owned OpenAI base URL', async () => {
+    const syntheticSecret = 'SYNTHETIC-PREFILL-SECRET';
+    adminConfig.getConfig.and.returnValue(of({
+      ...config,
+      providers: config.providers.map((provider) => provider.name === 'openai'
+        ? { ...provider, base_url_source: 'artemis.jsonc', api_key: syntheticSecret } as typeof provider
+        : provider)
+    }));
+    createComponent();
+    await fixture.whenStable();
+    fixture.detectChanges();
+    expect(fixture.componentInstance.snapshot()).not.toBeNull();
+
+    const openaiRow = Array.from(
+      fixture.nativeElement.querySelectorAll('.provider-row') as NodeListOf<HTMLElement>
+    ).find((row) => row.querySelector('h3')?.textContent?.trim() === 'openai');
+    const keyInput = openaiRow?.querySelector('input[type="password"]') as HTMLInputElement;
+    const baseUrlInput = openaiRow?.querySelector('input[type="url"]') as HTMLInputElement;
+
+    expect(keyInput?.value).toBe('');
+    expect(baseUrlInput?.readOnly).toBeFalse();
+    expect(baseUrlInput?.labels?.length).toBe(1);
+    expect(fixture.nativeElement.textContent).not.toContain(syntheticSecret);
+  });
+
   it('clears the loading state when settings fail to load', () => {
     adminConfig.getConfig.and.returnValue(throwError(() => ({ status: 500 })));
     createComponent();

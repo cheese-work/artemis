@@ -123,31 +123,6 @@ export class HomeComponent implements OnInit, OnDestroy {
   public activeAdbGuideTab = signal<AdbGuideTab>('emulator');
   public emulatorSetupMode = signal<'studio' | 'cli'>('studio');
 
-  // Interactive guide tab for LLM / OCR credentials: 'gemini' | 'ocr'
-  public modelSetupMode = signal<'gemini' | 'custom'>('gemini');
-  public showOcrConfig = signal<boolean>(false);
-  public showFullConfigFile = signal<boolean>(false);
-
-  // Model & Environment configuration from backend
-  public modelConfigEnv = computed(() => this.systemService.modelConfigEnv());
-  public configWritesLocked = computed(() => this.systemService.configWritesLocked());
-
-  // Google Gemini API Key State
-  public geminiKeyInput = signal<string>('');
-  public showGeminiKey = signal<boolean>(false);
-  public isSavingGeminiKey = signal<boolean>(false);
-  public isTestingGeminiKey = signal<boolean>(false);
-  public geminiSaveMessage = signal<string | null>(null);
-  public geminiSaveError = signal<string | null>(null);
-
-  // Vision OCR API Key State
-  public ocrKeyInput = signal<string>('');
-  public showOcrKey = signal<boolean>(false);
-  public isSavingOcrKey = signal<boolean>(false);
-  public isTestingOcrKey = signal<boolean>(false);
-  public ocrSaveMessage = signal<string | null>(null);
-  public ocrSaveError = signal<string | null>(null);
-
   // Clipboard copy state tracker for interactive feedback
   public copiedId = signal<string | null>(null);
 
@@ -358,15 +333,10 @@ export class HomeComponent implements OnInit, OnDestroy {
   public pythonProbe = computed(() => this.systemService.pythonProbe());
   public configProbe = computed(() => this.systemService.configProbe());
   public adbProbe = computed(() => this.systemService.adbProbe());
-  public llmProbe = computed(() => this.systemService.llmProbe());
-  public geminiProbe = computed(() => this.systemService.geminiProbe());
-  public ocrProbe = computed(() => this.systemService.ocrProbe());
   public toolchainProbe = computed(() => this.systemService.toolchainProbe());
 
   // Step-level readiness
   public isEnvironmentReady = computed(() => this.systemService.isEnvironmentReady());
-  public isCredentialsReady = computed(() => this.systemService.isCredentialsReady());
-  public isSkipCredentialsCheck = computed(() => this.systemService.isSkipCredentialsCheck());
   public isDeviceReady = computed(() => this.systemService.isDeviceReady());
 
   // Device information
@@ -379,15 +349,6 @@ export class HomeComponent implements OnInit, OnDestroy {
   public passedStepCount = computed(() => this.systemService.passedStepCount());
   public blockerCount = computed(() => this.systemService.blockerCount());
   public passedBlockerCount = computed(() => this.systemService.passedBlockerCount());
-
-  // Configured LLM providers from probe metadata
-  public configuredLlmProviders = computed<any[]>(() => {
-    const meta = this.llmProbe()?.metadata;
-    if (meta && Array.isArray(meta['providers'])) {
-      return meta['providers'];
-    }
-    return [];
-  });
 
   // Multi-OS detection & active OS selection
   public selectedOs = signal<'linux' | 'darwin' | 'windows' | null>(null);
@@ -462,19 +423,6 @@ export class HomeComponent implements OnInit, OnDestroy {
     return 'avdmanager create avd -n Pixel_8_API_34 -k "system-images;android-34;google_apis;x86_64" --device "pixel_8"';
   });
 
-  // Flag indicating whether Google Cloud Vision OCR is configured
-  public isOcrConfigured = computed<boolean>(() => {
-    const meta = this.ocrProbe()?.metadata;
-    return meta?.['is_set'] === true;
-  });
-
-  public isGeminiConfigured = computed<boolean>(() =>
-    this.configuredLlmProviders().some(provider => provider.provider === 'google' && provider.is_set === true)
-  );
-
-  public hasGeminiKeyInput = computed<boolean>(() => this.geminiKeyInput().trim().length > 0);
-  public hasOcrKeyInput = computed<boolean>(() => this.ocrKeyInput().trim().length > 0);
-
   // Rich Smart Suggestions Library (Device-Aware, Flash vs Pro Tailored)
   public readonly allSuggestions = this.taskRecService.allTasks;
 
@@ -510,10 +458,8 @@ export class HomeComponent implements OnInit, OnDestroy {
   ngOnInit(): void {
 
     this.loadProTuningDefaults();
-    // Initial fetch of system readiness & model configuration
+    // Initial fetch of system readiness
     this.systemService.fetchReadiness().subscribe();
-    this.systemService.fetchModelConfigEnv().subscribe();
-    this.systemService.fetchCredentialStatus().subscribe();
     this.systemService.fetchAdbServerStatus().subscribe({
       next: status => {
         if (status.endpoint.mode === 'remote') {
@@ -536,7 +482,6 @@ export class HomeComponent implements OnInit, OnDestroy {
     this.activeTab.set(tab);
     if (tab === 'diagnostics') {
       this.systemService.fetchReadiness().subscribe();
-      this.systemService.fetchModelConfigEnv().subscribe();
     }
   }
 
@@ -554,239 +499,10 @@ export class HomeComponent implements OnInit, OnDestroy {
     this.emulatorSetupMode.set(mode);
   }
 
-  public setModelSetupMode(mode: 'gemini' | 'custom'): void {
-    this.modelSetupMode.set(mode);
-    if (mode === 'custom') {
-      this.systemService.setSkipCredentialsCheck(true);
-      this.systemService.fetchModelConfigEnv().subscribe();
-    } else {
-      this.systemService.setSkipCredentialsCheck(false);
-    }
-  }
-
-  public toggleFullConfigFile(): void {
-    this.showFullConfigFile.update(v => !v);
-  }
-
-  public toggleGeminiKeyVisibility(): void {
-    this.showGeminiKey.update(v => !v);
-  }
-
-  public toggleOcrKeyVisibility(): void {
-    this.showOcrKey.update(v => !v);
-  }
-
-  public toggleOcrConfig(): void {
-    this.showOcrConfig.update(v => !v);
-  }
-
-  public onGeminiKeyChange(val: string): void {
-    this.geminiKeyInput.set(val);
-    this.geminiSaveError.set(null);
-    this.geminiSaveMessage.set(null);
-  }
-
-  public onOcrKeyChange(val: string): void {
-    this.ocrKeyInput.set(val);
-    this.ocrSaveError.set(null);
-    this.ocrSaveMessage.set(null);
-  }
-
-  public saveGeminiKey(): void {
-    const key = this.geminiKeyInput().trim();
-    if (!key) return;
-    this.isSavingGeminiKey.set(true);
-    this.geminiSaveError.set(null);
-    this.geminiSaveMessage.set(null);
-
-    this.systemService.updateApiKey('google', key, true).subscribe({
-      next: (res) => {
-        this.isSavingGeminiKey.set(false);
-        this.geminiSaveMessage.set(res?.message || '✓ Gemini API key verified & saved successfully.');
-        setTimeout(() => this.geminiSaveMessage.set(null), 5000);
-      },
-      error: (err) => {
-        this.isSavingGeminiKey.set(false);
-        this.geminiSaveError.set(err?.error?.detail || err?.message || 'Failed to update Gemini API key.');
-      }
-    });
-  }
-
-  public clearGeminiKey(): void {
-    this.geminiKeyInput.set('');
-    this.geminiSaveError.set(null);
-    this.geminiSaveMessage.set(null);
-
-    if (this.isGeminiConfigured()) {
-      this.isSavingGeminiKey.set(true);
-      this.systemService.updateApiKey('google', '', true).subscribe({
-        next: (res) => {
-          this.isSavingGeminiKey.set(false);
-          this.geminiSaveMessage.set(res?.message || '✓ Gemini API key cleared.');
-          setTimeout(() => this.geminiSaveMessage.set(null), 5000);
-        },
-        error: (err) => {
-          this.isSavingGeminiKey.set(false);
-          this.geminiSaveError.set(err?.error?.detail || err?.message || 'Failed to clear Gemini API key.');
-        }
-      });
-    } else {
-      this.geminiSaveMessage.set('✓ Gemini API key cleared.');
-      setTimeout(() => this.geminiSaveMessage.set(null), 3000);
-    }
-  }
-
-  public saveOcrKey(): void {
-    const key = this.ocrKeyInput().trim();
-    if (!key) return;
-    this.isSavingOcrKey.set(true);
-    this.ocrSaveError.set(null);
-    this.ocrSaveMessage.set(null);
-
-    this.systemService.updateApiKey('ocr', key, true).subscribe({
-      next: (res) => {
-        this.isSavingOcrKey.set(false);
-        this.ocrSaveMessage.set(res?.message || '✓ Vision OCR API key verified & saved.');
-        setTimeout(() => this.ocrSaveMessage.set(null), 5000);
-      },
-      error: (err) => {
-        this.isSavingOcrKey.set(false);
-        this.ocrSaveError.set(err?.error?.detail || err?.message || 'Failed to update Vision OCR key.');
-      }
-    });
-  }
-
-  public clearOcrKey(): void {
-    this.ocrKeyInput.set('');
-    this.ocrSaveError.set(null);
-    this.ocrSaveMessage.set(null);
-
-    if (this.isOcrConfigured()) {
-      this.isSavingOcrKey.set(true);
-      this.systemService.updateApiKey('ocr', '', true).subscribe({
-        next: (res) => {
-          this.isSavingOcrKey.set(false);
-          this.ocrSaveMessage.set(res?.message || '✓ Vision OCR API key cleared.');
-          setTimeout(() => this.ocrSaveMessage.set(null), 5000);
-        },
-        error: (err) => {
-          this.isSavingOcrKey.set(false);
-          this.ocrSaveError.set(err?.error?.detail || err?.message || 'Failed to clear Vision OCR key.');
-        }
-      });
-    } else {
-      this.ocrSaveMessage.set('✓ Vision OCR API key cleared.');
-      setTimeout(() => this.ocrSaveMessage.set(null), 3000);
-    }
-  }
-
-  public testGeminiKey(): void {
-    const key = this.geminiKeyInput().trim();
-    if (!key) return;
-    this.isTestingGeminiKey.set(true);
-    this.geminiSaveError.set(null);
-    this.geminiSaveMessage.set(null);
-
-    this.systemService.testApiKey('google', key).subscribe({
-      next: (res) => {
-        this.isTestingGeminiKey.set(false);
-        if (res?.valid) {
-          this.geminiSaveMessage.set(res?.message || '✓ Gemini API key is valid!');
-        } else {
-          this.geminiSaveError.set(res?.message || 'Gemini API key verification failed.');
-        }
-        setTimeout(() => this.geminiSaveMessage.set(null), 5000);
-      },
-      error: (err) => {
-        this.isTestingGeminiKey.set(false);
-        this.geminiSaveError.set(err?.error?.detail || err?.message || 'Gemini API key test failed.');
-      }
-    });
-  }
-
-  public testOcrKey(): void {
-    const key = this.ocrKeyInput().trim();
-    if (!key) return;
-    this.isTestingOcrKey.set(true);
-    this.ocrSaveError.set(null);
-    this.ocrSaveMessage.set(null);
-
-    this.systemService.testApiKey('ocr', key).subscribe({
-      next: (res) => {
-        this.isTestingOcrKey.set(false);
-        if (res?.valid) {
-          this.ocrSaveMessage.set(res?.message || '✓ Vision OCR API key is valid!');
-        } else {
-          this.ocrSaveError.set(res?.message || 'Vision OCR API key verification failed.');
-        }
-        setTimeout(() => this.ocrSaveMessage.set(null), 5000);
-      },
-      error: (err) => {
-        this.isTestingOcrKey.set(false);
-        this.ocrSaveError.set(err?.error?.detail || err?.message || 'Vision OCR API key test failed.');
-      }
-    });
-  }
-
-  public getProviderDisplayName(tab: string): string {
-    switch (tab) {
-      case 'gemini': return 'Gemini';
-      case 'ocr': return 'Vision OCR';
-      default: return tab;
-    }
-  }
-
-  public getProviderEnvVar(tab: string): string {
-    switch (tab) {
-      case 'gemini': return 'GEMINI_API_KEY';
-      case 'ocr': return 'GOOGLE_VISION_API_KEY';
-      default: return 'API_KEY';
-    }
-  }
-
-  public getProviderHint(tab: string): string {
-    switch (tab) {
-      case 'gemini':
-        return 'For a quick start, Google Gemini provides a free API key. Artemis also supports other models (OpenAI, Claude, OpenRouter, etc.)—you can configure your own API keys directly in .env or your environment.';
-      case 'ocr':
-        return 'Google Cloud Vision API key for on-screen OCR text detection and UI grounding.';
-      default:
-        return 'Configure your API key or use environment definitions.';
-    }
-  }
-
-  public skipCredentialsCheck(): void {
-    this.systemService.skipCredentialsCheck();
-  }
-
-  public getApiKeyPlaceholder(tab: string): string {
-    switch (tab) {
-      case 'gemini': return 'Enter Gemini API Key (e.g. AIzaSy...)';
-      case 'ocr': return 'Enter Vision OCR API Key (e.g. AIzaSy...)';
-      default: return 'Enter API Key...';
-    }
-  }
-
-  public isTabProviderActive(tab: string): boolean {
-    if (tab === 'ocr') {
-      return this.isOcrConfigured();
-    }
-    const targetProvider = tab === 'gemini' ? 'google' : tab;
-    const providers = this.configuredLlmProviders();
-    return providers.some(p => p.provider === targetProvider);
-  }
-
   public refreshReadiness(): void {
     this.isRefreshingDiagnostics.set(true);
     this.systemService.fetchReadiness(false, true).subscribe({
-      next: () => {
-        this.systemService.fetchModelConfigEnv().subscribe({
-          next: () => {
-            setTimeout(() => this.isRefreshingDiagnostics.set(false), 450);
-          },
-          error: () => this.isRefreshingDiagnostics.set(false)
-        });
-      },
+      next: () => setTimeout(() => this.isRefreshingDiagnostics.set(false), 450),
       error: () => this.isRefreshingDiagnostics.set(false)
     });
   }

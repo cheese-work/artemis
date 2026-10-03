@@ -1,13 +1,15 @@
 import { TestBed } from '@angular/core/testing';
 import { provideRouter } from '@angular/router';
 import { signal } from '@angular/core';
+import { of } from 'rxjs';
+import { AdminConfigService } from '../../services/admin-config.service';
 import {
   UsbDeviceRelayService,
   UsbDeviceRelayState
 } from '../../services/usb-device-relay.service';
 import { NavSwitcherComponent } from './nav-switcher.component';
 
-describe('NavSwitcherComponent USB relay badge', () => {
+describe('NavSwitcherComponent', () => {
   it('shows the browser phone and disconnect action while connected', async () => {
     const relay = {
       state: signal<UsbDeviceRelayState>({ status: 'connected', serial: 'R58M123', error: null }),
@@ -31,31 +33,45 @@ describe('NavSwitcherComponent USB relay badge', () => {
     expect(relay.disconnect).toHaveBeenCalled();
   });
 
-  it("retains System Setup and unread What's New navigation inputs", async () => {
+  it("retains System Setup and unread What's New navigation with admin identity", async () => {
     const relay = {
       state: signal<UsbDeviceRelayState>({ status: 'idle', serial: null, error: null }),
       disconnect: jasmine.createSpy('disconnect').and.resolveTo(undefined)
+    };
+    const adminConfig = {
+      getIdentity: () => of({
+        email: 'admin@example.test',
+        admin: true,
+        auth_mode: 'cloudflare' as const,
+        reason: null
+      })
     };
 
     await TestBed.configureTestingModule({
       imports: [NavSwitcherComponent],
       providers: [
         provideRouter([]),
-        { provide: UsbDeviceRelayService, useValue: relay }
+        { provide: UsbDeviceRelayService, useValue: relay },
+        { provide: AdminConfigService, useValue: adminConfig }
       ]
     }).compileComponents();
 
     const fixture = TestBed.createComponent(NavSwitcherComponent);
-    const inputs = fixture.componentInstance as unknown as {
-      hasWhatsNew: boolean;
-      hasUnreadWhatsNew: boolean;
-    };
-    inputs.hasWhatsNew = true;
-    inputs.hasUnreadWhatsNew = true;
+    const showWhatsNew = jasmine.createSpy('showWhatsNew');
+    fixture.componentInstance.hasWhatsNew = true;
+    fixture.componentInstance.hasUnreadWhatsNew = true;
+    fixture.componentInstance.showWhatsNew.subscribe(showWhatsNew);
     fixture.detectChanges();
 
+    expect(fixture.nativeElement.querySelector('.brand-wordmark')?.textContent).toContain('SmartQA');
     expect(fixture.nativeElement.querySelector('a[href="/setup"]')?.textContent).toContain('System Setup');
-    expect(fixture.nativeElement.querySelector('[aria-label="Open What\'s New, unread updates"]')).not.toBeNull();
+    const whatsNewButton = fixture.nativeElement.querySelector(
+      `[aria-label="Open What's New, unread updates"]`
+    ) as HTMLButtonElement;
+    expect(whatsNewButton).not.toBeNull();
     expect(fixture.nativeElement.querySelector('.nav-unread-indicator')).not.toBeNull();
+    whatsNewButton.click();
+    expect(showWhatsNew).toHaveBeenCalled();
+    expect(fixture.nativeElement.querySelector('app-admin-identity-indicator')?.textContent).toContain('Admin');
   });
 });
