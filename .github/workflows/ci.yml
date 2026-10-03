@@ -52,6 +52,21 @@ jobs:
       - name: Install locked development environment
         run: uv sync --dev --locked
 
+      - name: Test readiness credential redaction
+        run: >-
+          uv run pytest -q
+          tests/unit/admin_console/test_security_boundary.py::test_locked_credential_writes_return_403_without_side_effects
+          tests/unit/core/test_diagnostics.py::test_llm_credentials_probe_structure
+          tests/unit/core/test_diagnostics.py::test_credentials_probe_and_dynamic_update
+          tests/unit/core/test_diagnostics.py::test_every_registered_probe_serializes_without_sensitive_metadata
+          tests/unit/core/test_diagnostics.py::test_credentials_probe_ignores_placeholder_openai_endpoint
+          tests/unit/core/test_diagnostics.py::test_credentials_probe_reports_keyless_openai_endpoint
+          tests/unit/mcp/test_diagnose_tool.py::test_verify_credentials_reports_every_provider_without_leaking_keys
+          tests/unit/mcp/test_diagnose_tool.py::test_verify_credentials_calls_endpoint_providers_by_url
+          tests/unit/mcp/test_diagnose_tool.py::test_verify_credentials_uses_provider_base_url
+          tests/unit/mcp/test_diagnose_tool.py::test_invalid_primary_credential_blocks_and_redacts_message
+          tests/unit/mcp/test_diagnose_tool.py::test_invalid_secondary_credential_only_degrades
+
       - name: Check Python formatting
         run: uv run ruff format --check .
 

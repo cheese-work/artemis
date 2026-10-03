@@ -23,7 +23,7 @@ Covers the invariants the no-auth security model depends on:
 """
 
 import secrets as py_secrets
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -48,6 +48,7 @@ def _client(**transport_kwargs) -> AsyncClient:
 async def test_credentials_endpoint_never_returns_key_material(monkeypatch):
     from artemis.config import settings
 
+    monkeypatch.delenv("ARTEMIS_CONFIG_WRITES", raising=False)
     honeytoken = f"sk-honeytoken-{py_secrets.token_hex(16)}"
     monkeypatch.setattr(type(settings), "get_api_key", lambda self, provider: SecretStr(honeytoken))
 
@@ -58,6 +59,48 @@ async def test_credentials_endpoint_never_returns_key_material(monkeypatch):
     assert honeytoken not in res.text
     providers = {entry["name"]: entry["configured"] for entry in res.json()["providers"]}
     assert providers.get("google") is True
+    assert res.json()["config_writes_locked"] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("path", "payload"),
+    [
+        (
+            "/api/system/credentials",
+            {"provider": "google", "api_key": "FAKE-CREDENTIAL-ONLY"},
+        ),
+        (
+            "/api/system/credentials/test",
+            {"provider": "google", "api_key": "FAKE-CREDENTIAL-ONLY"},
+        ),
+    ],
+)
+@pytest.mark.parametrize("lock_value", [None, "locked"])
+async def test_locked_credential_writes_return_403_without_side_effects(
+    monkeypatch, path, payload, lock_value
+):
+    from artemis.config import settings
+    from artemis.utils import credentials_validator
+
+    if lock_value is None:
+        monkeypatch.delenv("ARTEMIS_CONFIG_WRITES", raising=False)
+    else:
+        monkeypatch.setenv("ARTEMIS_CONFIG_WRITES", lock_value)
+
+    validate_api_key = AsyncMock(return_value=(True, "valid"))
+    set_api_key = MagicMock()
+    monkeypatch.setattr(credentials_validator, "validate_api_key", validate_api_key)
+    monkeypatch.setattr(type(settings), "set_api_key", set_api_key)
+
+    async with _client() as ac:
+        res = await ac.post(path, json=payload)
+
+    assert res.status_code == 403
+    assert res.json()["detail"]["code"] == "CONFIG_WRITES_LOCKED"
+    assert "FAKE-CREDENTIAL-ONLY" not in res.text
+    validate_api_key.assert_not_awaited()
+    set_api_key.assert_not_called()
 
 
 @pytest.mark.asyncio

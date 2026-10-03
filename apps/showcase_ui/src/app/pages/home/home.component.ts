@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import { Component, signal, computed, effect, inject, OnInit, OnDestroy, ChangeDetectionStrategy } from '@angular/core';
+import { Component, signal, computed, inject, OnInit, OnDestroy, ChangeDetectionStrategy } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { Router, RouterLink } from '@angular/router';
 import { AgentService } from '../../services/agent.service';
@@ -129,6 +129,7 @@ export class HomeComponent implements OnInit, OnDestroy {
 
   // Model & Environment configuration from backend
   public modelConfigEnv = computed(() => this.systemService.modelConfigEnv());
+  public configWritesLocked = computed(() => this.systemService.configWritesLocked());
 
   // Google Gemini API Key State
   public geminiKeyInput = signal<string>('');
@@ -137,7 +138,6 @@ export class HomeComponent implements OnInit, OnDestroy {
   public isTestingGeminiKey = signal<boolean>(false);
   public geminiSaveMessage = signal<string | null>(null);
   public geminiSaveError = signal<string | null>(null);
-  public isGeminiKeyEdited = signal<boolean>(false);
 
   // Vision OCR API Key State
   public ocrKeyInput = signal<string>('');
@@ -146,7 +146,6 @@ export class HomeComponent implements OnInit, OnDestroy {
   public isTestingOcrKey = signal<boolean>(false);
   public ocrSaveMessage = signal<string | null>(null);
   public ocrSaveError = signal<string | null>(null);
-  public isOcrKeyEdited = signal<boolean>(false);
 
   // Clipboard copy state tracker for interactive feedback
   public copiedId = signal<string | null>(null);
@@ -465,29 +464,15 @@ export class HomeComponent implements OnInit, OnDestroy {
   // Flag indicating whether Google Cloud Vision OCR is configured
   public isOcrConfigured = computed<boolean>(() => {
     const meta = this.ocrProbe()?.metadata;
-    return meta?.['configured'] === true;
+    return meta?.['is_set'] === true;
   });
 
-  public currentApiKey = computed<string>(() => this.systemService.currentApiKey());
-  public apiKeysMap = computed<Record<string, string>>(() => this.systemService.apiKeysMap());
+  public isGeminiConfigured = computed<boolean>(() =>
+    this.configuredLlmProviders().some(provider => provider.provider === 'google' && provider.is_set === true)
+  );
 
-  public savedGeminiKey = computed<string>(() => {
-    const keys = this.apiKeysMap();
-    return keys['google'] || this.currentApiKey() || '';
-  });
-
-  public isGeminiModified = computed<boolean>(() => {
-    return this.geminiKeyInput().trim() !== this.savedGeminiKey().trim();
-  });
-
-  public savedOcrKey = computed<string>(() => {
-    const keys = this.apiKeysMap();
-    return keys['ocr'] || '';
-  });
-
-  public isOcrModified = computed<boolean>(() => {
-    return this.ocrKeyInput().trim() !== this.savedOcrKey().trim();
-  });
+  public hasGeminiKeyInput = computed<boolean>(() => this.geminiKeyInput().trim().length > 0);
+  public hasOcrKeyInput = computed<boolean>(() => this.ocrKeyInput().trim().length > 0);
 
   // Rich Smart Suggestions Library (Device-Aware, Flash vs Pro Tailored)
   public readonly allSuggestions = this.taskRecService.allTasks;
@@ -521,27 +506,13 @@ export class HomeComponent implements OnInit, OnDestroy {
     this.systemService.fetchReadiness().subscribe();
   };
 
-  constructor() {
-    effect(() => {
-      const keys = this.systemService.apiKeysMap();
-      const current = this.systemService.currentApiKey();
-      const googleKey = keys['google'] || current || '';
-      const ocrKey = keys['ocr'] || '';
-      if (!this.isGeminiKeyEdited()) {
-        this.geminiKeyInput.set(googleKey);
-      }
-      if (!this.isOcrKeyEdited()) {
-        this.ocrKeyInput.set(ocrKey);
-      }
-    });
-  }
-
   ngOnInit(): void {
 
     this.loadProTuningDefaults();
     // Initial fetch of system readiness & model configuration
     this.systemService.fetchReadiness().subscribe();
     this.systemService.fetchModelConfigEnv().subscribe();
+    this.systemService.fetchCredentialStatus().subscribe();
     this.systemService.fetchAdbServerStatus().subscribe({
       next: status => {
         if (status.endpoint.mode === 'remote') {
@@ -610,14 +581,12 @@ export class HomeComponent implements OnInit, OnDestroy {
 
   public onGeminiKeyChange(val: string): void {
     this.geminiKeyInput.set(val);
-    this.isGeminiKeyEdited.set(true);
     this.geminiSaveError.set(null);
     this.geminiSaveMessage.set(null);
   }
 
   public onOcrKeyChange(val: string): void {
     this.ocrKeyInput.set(val);
-    this.isOcrKeyEdited.set(true);
     this.ocrSaveError.set(null);
     this.ocrSaveMessage.set(null);
   }
@@ -632,7 +601,6 @@ export class HomeComponent implements OnInit, OnDestroy {
     this.systemService.updateApiKey('google', key, true).subscribe({
       next: (res) => {
         this.isSavingGeminiKey.set(false);
-        this.isGeminiKeyEdited.set(false);
         this.geminiSaveMessage.set(res?.message || '✓ Gemini API key verified & saved successfully.');
         setTimeout(() => this.geminiSaveMessage.set(null), 5000);
       },
@@ -645,11 +613,10 @@ export class HomeComponent implements OnInit, OnDestroy {
 
   public clearGeminiKey(): void {
     this.geminiKeyInput.set('');
-    this.isGeminiKeyEdited.set(false);
     this.geminiSaveError.set(null);
     this.geminiSaveMessage.set(null);
 
-    if (this.savedGeminiKey().trim()) {
+    if (this.isGeminiConfigured()) {
       this.isSavingGeminiKey.set(true);
       this.systemService.updateApiKey('google', '', true).subscribe({
         next: (res) => {
@@ -678,7 +645,6 @@ export class HomeComponent implements OnInit, OnDestroy {
     this.systemService.updateApiKey('ocr', key, true).subscribe({
       next: (res) => {
         this.isSavingOcrKey.set(false);
-        this.isOcrKeyEdited.set(false);
         this.ocrSaveMessage.set(res?.message || '✓ Vision OCR API key verified & saved.');
         setTimeout(() => this.ocrSaveMessage.set(null), 5000);
       },
@@ -691,11 +657,10 @@ export class HomeComponent implements OnInit, OnDestroy {
 
   public clearOcrKey(): void {
     this.ocrKeyInput.set('');
-    this.isOcrKeyEdited.set(false);
     this.ocrSaveError.set(null);
     this.ocrSaveMessage.set(null);
 
-    if (this.savedOcrKey().trim()) {
+    if (this.isOcrConfigured()) {
       this.isSavingOcrKey.set(true);
       this.systemService.updateApiKey('ocr', '', true).subscribe({
         next: (res) => {

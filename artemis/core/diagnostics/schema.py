@@ -16,7 +16,23 @@
 
 from enum import Enum
 from typing import Any, Literal
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+_SENSITIVE_METADATA_KEYS = frozenset(
+    {"raw_key", "key", "api_keys", "current_key", "current_gemini_key"}
+)
+
+
+def _redact_sensitive_metadata(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: _redact_sensitive_metadata(item)
+            for key, item in value.items()
+            if not isinstance(key, str) or key.casefold() not in _SENSITIVE_METADATA_KEYS
+        }
+    if isinstance(value, list):
+        return [_redact_sensitive_metadata(item) for item in value]
+    return value
 
 
 class ProbeStatus(str, Enum):
@@ -96,6 +112,11 @@ class ProbeResult(BaseModel):
     actions: list[ProbeAction] = Field(
         default_factory=list, description="List of actionable remediation steps"
     )
+
+    @field_validator("metadata", mode="before")
+    @classmethod
+    def redact_sensitive_metadata(cls, value: Any) -> Any:
+        return _redact_sensitive_metadata(value)
 
 
 class SystemReadinessReport(BaseModel):

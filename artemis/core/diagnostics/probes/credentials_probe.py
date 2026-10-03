@@ -42,9 +42,7 @@ class LLMCredentialsProbe(BaseProbe):
 
     def _mask_key(self, key_str: str) -> str:
         """Helper to safely mask an API credential for display."""
-        if len(key_str) > 10:
-            return f"{key_str[:6]}...{key_str[-4:]}"
-        return "***"
+        return f"****{key_str[-4:]}" if len(key_str) > 4 else "****"
 
     async def probe(self) -> ProbeResult:
         import os
@@ -59,70 +57,56 @@ class LLMCredentialsProbe(BaseProbe):
         ocr_key = settings.get_api_key("ocr")
 
         configured_providers: list[dict[str, Any]] = []
-        api_keys_map: dict[str, str] = {}
         if gemini_key and not is_placeholder_key(gemini_key):
             g_val = gemini_key.get_secret_value()
             configured_providers.append(
                 {
                     "provider": "google",
                     "label": "Gemini",
+                    "is_set": True,
                     "masked": self._mask_key(g_val),
-                    "raw_key": g_val,
-                    "key": g_val,
                 }
             )
-            api_keys_map["google"] = g_val
-            api_keys_map["gemini"] = g_val
         if openai_key and not is_placeholder_key(openai_key):
             o_val = openai_key.get_secret_value()
             configured_providers.append(
                 {
                     "provider": "openai",
                     "label": "ChatGPT",
+                    "is_set": True,
                     "masked": self._mask_key(o_val),
-                    "raw_key": o_val,
-                    "key": o_val,
-                    "base_url": settings.OPENAI_BASE_URL,
                 }
             )
-            api_keys_map["openai"] = o_val
         if claude_key and not is_placeholder_key(claude_key):
             c_val = claude_key.get_secret_value()
             configured_providers.append(
                 {
                     "provider": "anthropic",
                     "label": "Claude",
+                    "is_set": True,
                     "masked": self._mask_key(c_val),
-                    "raw_key": c_val,
-                    "key": c_val,
-                    "base_url": settings.ANTHROPIC_BASE_URL,
                 }
             )
-            api_keys_map["anthropic"] = c_val
         if openrouter_key and not is_placeholder_key(openrouter_key):
             or_val = openrouter_key.get_secret_value()
             configured_providers.append(
                 {
                     "provider": "openrouter",
                     "label": "OpenRouter",
+                    "is_set": True,
                     "masked": self._mask_key(or_val),
-                    "raw_key": or_val,
-                    "key": or_val,
                 }
             )
-            api_keys_map["openrouter"] = or_val
         if xai_key and not is_placeholder_key(xai_key):
             x_val = xai_key.get_secret_value()
             configured_providers.append(
                 {
                     "provider": "xai",
                     "label": "xAI (Grok)",
+                    "is_set": True,
                     "masked": self._mask_key(x_val),
-                    "raw_key": x_val,
-                    "key": x_val,
                 }
             )
-            api_keys_map["xai"] = x_val
 
         # Detect any custom model endpoints or environment variables defined in files
         for env_var, label, prov_id in [
@@ -138,12 +122,10 @@ class LLMCredentialsProbe(BaseProbe):
                     {
                         "provider": prov_id,
                         "label": label,
+                        "is_set": True,
                         "masked": self._mask_key(val.strip()),
-                        "raw_key": val.strip(),
-                        "key": val.strip(),
                     }
                 )
-                api_keys_map[prov_id] = val.strip()
 
         # Preserve endpoint-only diagnosis when a compatible URL exists without
         # its provider key; keyed providers are verified against their own URL above.
@@ -152,39 +134,25 @@ class LLMCredentialsProbe(BaseProbe):
             openai_base_url
             and openai_base_url.strip()
             and not is_placeholder_key(openai_base_url.strip())
-            and "openai" not in api_keys_map
+            and not openai_key
         ):
             configured_providers.append(
                 {
                     "provider": "custom",
                     "label": "Custom OpenAI Endpoint",
+                    "is_set": True,
                     "masked": self._mask_key(openai_base_url.strip()),
-                    "raw_key": openai_base_url.strip(),
-                    "key": openai_base_url.strip(),
                 }
             )
-            api_keys_map["custom"] = openai_base_url.strip()
-
-        if ocr_key and not is_placeholder_key(ocr_key):
-            api_keys_map["ocr"] = ocr_key.get_secret_value()
-
-        current_active_key = (
-            gemini_key.get_secret_value()
-            if gemini_key
-            else (configured_providers[0]["key"] if configured_providers else "")
-        )
 
         metadata = {
             "configured_count": len(configured_providers),
             "providers": configured_providers,
-            "has_ocr_key": ocr_key is not None,
-            "current_key": current_active_key,
-            "current_gemini_key": gemini_key.get_secret_value() if gemini_key else "",
-            "api_keys": api_keys_map,
+            "is_set": bool(configured_providers),
         }
 
         # Case 1: Gemini API Key configured (Standard / Recommended)
-        if gemini_key:
+        if gemini_key and not is_placeholder_key(gemini_key):
             masked = self._mask_key(gemini_key.get_secret_value())
             return ProbeResult(
                 id=self.probe_id,
@@ -267,15 +235,17 @@ class VisionOCRProbe(BaseProbe):
 
     def _mask_key(self, key_str: str) -> str:
         """Helper to safely mask an API credential for display."""
-        if len(key_str) > 10:
-            return f"{key_str[:6]}...{key_str[-4:]}"
-        return "***"
+        return f"****{key_str[-4:]}" if len(key_str) > 4 else "****"
 
     async def probe(self) -> ProbeResult:
         from artemis.utils.ocr_api import is_ocr_configured
 
         ocr_key = settings.get_api_key("ocr")
-        is_configured = is_ocr_configured() and ocr_key is not None
+        from artemis.config.settings import is_placeholder_key
+
+        is_configured = (
+            is_ocr_configured() and ocr_key is not None and not is_placeholder_key(ocr_key)
+        )
 
         if is_configured and ocr_key:
             val = ocr_key.get_secret_value()
@@ -288,7 +258,7 @@ class VisionOCRProbe(BaseProbe):
                 is_blocker=False,
                 summary="Active & Configured",
                 description=f"Google Cloud Vision OCR ({masked}) is active for image text recognition.",
-                metadata={"configured": True, "masked_key": masked, "key": val, "raw_key": val},
+                metadata={"is_set": True, "masked": masked},
                 actions=[
                     ProbeAction(
                         action_type="hint",
@@ -306,7 +276,7 @@ class VisionOCRProbe(BaseProbe):
             is_blocker=False,
             summary="Not Configured (Optional)",
             description="OCR_API_KEY is not set. Perception uses the UI XML hierarchy without OCR.",
-            metadata={"configured": False},
+            metadata={"is_set": False, "masked": None},
             actions=[
                 ProbeAction(
                     action_type="hint",
