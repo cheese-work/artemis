@@ -74,6 +74,13 @@ def fake_provider_credentials(monkeypatch):
 
 
 @pytest.fixture
+def default_agent_config(monkeypatch, tmp_path):
+    config_path = tmp_path / "artemis.jsonc"
+    config_path.write_text('{"agent": {}}', encoding="utf-8")
+    monkeypatch.setenv("ARTEMIS_ARTEMIS_JSONC", str(config_path))
+
+
+@pytest.fixture
 def mock_driver():
     """Provide an isolated mock mobile driver."""
     return MockDeviceDriver(device_id="fixture-mock-device", width=1080, height=2400)

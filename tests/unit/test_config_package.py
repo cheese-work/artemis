@@ -168,9 +168,14 @@ def test_llm_config_parsing_and_merging():
     assert merged.planner.temperature == 0.7
 
 
-def test_agent_config_loading():
-    """Test AgentGlobalConfig parsing from agent_config.json / artemis.jsonc."""
-    agent_cfg = load_agent_config()
+def test_agent_config_loading(tmp_path):
+    """Test AgentGlobalConfig parsing from an explicit artemis.jsonc fixture."""
+    config_path = tmp_path / "artemis.jsonc"
+    config_path.write_text(
+        '{"agent": {"explorer": {"flash_mode": "pro", "pro_mode": "pro"}}}',
+        encoding="utf-8",
+    )
+    agent_cfg = load_agent_config(config_path)
     assert isinstance(agent_cfg, AgentGlobalConfig)
     # The per-agent override ships empty so the profile knobs decide; caching
     # ships unset so each tier applies its own default (off pro, on ultra).
@@ -442,7 +447,9 @@ def test_factory_default_verification_layering(fake_provider_credentials):
     assert AgentGlobalConfig().checker.enabled is True
 
 
-def test_explorer_builder_and_resolution(monkeypatch, fake_provider_credentials):
+def test_explorer_builder_and_resolution(
+    monkeypatch, fake_provider_credentials, default_agent_config
+):
     """Test AgentConfigBuilder explorer methods and multi-tier resolution logic."""
     from artemis.context import ArtemisContext, DeviceContext, DevicePlatform
     from artemis.sdk.agent import Agent
@@ -451,8 +458,7 @@ def test_explorer_builder_and_resolution(monkeypatch, fake_provider_credentials)
 
     monkeypatch.delenv("ARTEMIS_EXPLORER_VERSION", raising=False)
 
-    # Default builder inherits from artemis.jsonc (default="flash", flash_mode="flash",
-    # pro_mode="flash", caching unset, no per-agent override).
+    # Default builder uses schema defaults with no per-agent override.
     builder = AgentConfigBuilder()
     cfg = builder.build()
     assert cfg.explorer.default_version == "flash"

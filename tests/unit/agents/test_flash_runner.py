@@ -28,6 +28,8 @@ from artemis.agents.validator.tool_declarations import (
 )
 from artemis.context import ArtemisContext
 
+pytestmark = pytest.mark.usefixtures("fake_provider_credentials")
+
 
 @pytest.fixture
 def mock_context():

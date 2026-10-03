@@ -24,6 +24,8 @@ from artemis.agents.explorer.explorer import Explorer
 from artemis.context import ArtemisContext
 from artemis.graph.state import State
 
+pytestmark = pytest.mark.usefixtures("fake_provider_credentials")
+
 MOCK_PROMPT_JSON = """{
   "IDENTITY": "You are the agentic UI Explorer designed to identify objects, scan text, and extract UI attributes on a phone screen.",
   "OPERATING PRINCIPLES": [

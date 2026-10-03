@@ -34,6 +34,8 @@ from artemis.graph.state import State
 from artemis.mcp.action_executor import McpActionExecutor, _ArgError
 from artemis.mcp.action_types import ActionResult, ObserveResult
 
+pytestmark = pytest.mark.usefixtures("fake_provider_credentials")
+
 
 def _el(index: int, text: str, cx: int, cy: int) -> dict:
     return {

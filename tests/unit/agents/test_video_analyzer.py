@@ -31,6 +31,8 @@ from artemis.context import ArtemisContext
 from google.genai import types
 import pytest
 
+pytestmark = pytest.mark.usefixtures("fake_provider_credentials")
+
 
 @pytest.mark.asyncio
 async def test_video_analyzer_run():

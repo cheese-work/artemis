@@ -50,6 +50,8 @@ from artemis.memory.transcript import (
     TranscriptLedger,
 )
 
+pytestmark = pytest.mark.usefixtures("fake_provider_credentials")
+
 OBSERVATION_HEADER_RE = re.compile(r"^# CURRENT OBSERVATION \[T\+\d{2,}:\d{2}\]$")
 FAILED_RESULT_RE = re.compile(
     rf"^{re.escape(EXECUTION_RESULT_MARKER)} \(T\+\d{{2,}}:\d{{2}}\) ---\nStatus: failed\n"

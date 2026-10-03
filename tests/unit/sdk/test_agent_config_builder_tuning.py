@@ -76,7 +76,7 @@ def test_with_verification_level_is_chainable_and_explicit_checker_wins():
     assert cfg.assert_failure_policy == "halt"
 
 
-def test_with_pro_config_carries_both_knobs():
+def test_with_pro_config_carries_both_knobs(default_agent_config):
     cfg = (
         AgentConfigBuilder()
         .with_pro_config(verification_level="checkpoints", explorer_mode="ultra")
@@ -104,7 +104,9 @@ def test_with_explorer_pro_mode_is_the_explorer_mode_knob(monkeypatch):
     assert cfg.get_explorer_version(agent_name="validator") == "pro"
 
 
-def test_with_flash_config_explorer_mode_is_the_flash_profile_knob(monkeypatch):
+def test_with_flash_config_explorer_mode_is_the_flash_profile_knob(
+    monkeypatch, default_agent_config
+):
     monkeypatch.delenv("ARTEMIS_EXPLORER_VERSION", raising=False)
     cfg = AgentConfigBuilder().with_flash_config(explorer_mode="pro").build()
     assert cfg.flash.explorer_mode == "pro"
