@@ -65,6 +65,24 @@ describe('UsbPhoneConnectionComponent', () => {
     );
   });
 
+  it('shows unexpected error details on a separate small alert line', () => {
+    relay.state.set({
+      status: 'error',
+      serial: null,
+      error: 'Could not connect the phone. Check its cable and USB Debugging, then retry.\n' +
+        'Details: InvalidStateError: The interface is unavailable.\nUSB transfer failed.'
+    });
+    fixture.detectChanges();
+
+    const alert = fixture.nativeElement.querySelector('[role="alert"]') as HTMLElement;
+    const details = alert.querySelector('small') as HTMLElement;
+    expect(alert.textContent).toContain('Could not connect the phone');
+    expect(details.textContent).toBe(
+      'Details: InvalidStateError: The interface is unavailable.\nUSB transfer failed.'
+    );
+    expect(getComputedStyle(details).whiteSpace).toBe('pre-line');
+  });
+
   it('shows the attached phone serial and tab-lifetime warning', () => {
     relay.state.set({ status: 'connected', serial: 'R58M123', error: null });
     fixture.detectChanges();
