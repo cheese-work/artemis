@@ -78,10 +78,6 @@ export class NavSwitcherComponent {
     return this.hasUnreadWhatsNew ? "Open What's New, unread updates" : "Open What's New";
   }
 
-  public get whatsNewLabel(): string {
-    return this.hasUnreadWhatsNew ? "Open What's New, unread updates" : "Open What's New";
-  }
-
   public disconnectPhone(): void {
     void this.usbRelay.disconnect();
   }
