@@ -150,15 +150,73 @@ describe('UsbDeviceRelayService', () => {
     expect(socketUrl).toBeUndefined();
   });
 
-  it('reports a device claimed by another ADB process', async () => {
-    const busy = new AdbDaemonWebUsbDevice.DeviceBusyError(new Error('busy'));
+  it('explains when another ADB process has claimed the device interface', async () => {
+    const busy = new AdbDaemonWebUsbDevice.DeviceBusyError(
+      new DOMException('Unable to claim interface.', 'NetworkError')
+    );
     device.connect.and.rejectWith(busy);
     service = TestBed.inject(UsbDeviceRelayService);
 
     await service.connect();
 
-    expect(service.state().error).toContain('phone is busy');
+    expect(service.state().error).toBe(
+      'Another program on this computer is using the phone (adb, Android Studio, scrcpy). ' +
+      'Quit it or run adb kill-server, unplug and replug, then retry.'
+    );
     expect(device.raw.close).toHaveBeenCalled();
+  });
+
+  it('explains a WebUSB network error as a competing USB program', async () => {
+    device.connect.and.rejectWith(new DOMException('Unable to claim interface.', 'NetworkError'));
+    service = TestBed.inject(UsbDeviceRelayService);
+
+    await service.connect();
+
+    expect(service.state().error).toBe(
+      'Another program on this computer is using the phone (adb, Android Studio, scrcpy). ' +
+      'Quit it or run adb kill-server, unplug and replug, then retry.'
+    );
+  });
+
+  it('explains an interface claim message even with a different browser error name', async () => {
+    device.connect.and.rejectWith(new DOMException('Unable to claim interface.', 'InvalidStateError'));
+    service = TestBed.inject(UsbDeviceRelayService);
+
+    await service.connect();
+
+    expect(service.state().error).toContain('Another program on this computer is using the phone');
+  });
+
+  it('shows transfer details instead of USB contention for a mid-session network error', async () => {
+    service = TestBed.inject(UsbDeviceRelayService);
+    const connecting = service.connect();
+    await flushMicrotasks();
+    socket.open();
+    await connecting;
+
+    packetController.error(new DOMException('USB transfer failed.', 'NetworkError'));
+    await new Promise<void>(resolve => setTimeout(resolve, 0));
+    await flushMicrotasks();
+
+    expect(service.state().error).toBe(
+      'Could not connect the phone. Check its cable and USB Debugging, then retry.\n' +
+      'Details: NetworkError: USB transfer failed.'
+    );
+  });
+
+  it('shows and logs unexpected WebUSB error details', async () => {
+    const originalError = new DOMException('The interface is unavailable.', 'InvalidStateError');
+    const consoleError = spyOn(console, 'error');
+    device.connect.and.rejectWith(originalError);
+    service = TestBed.inject(UsbDeviceRelayService);
+
+    await service.connect();
+
+    expect(service.state().error).toBe(
+      'Could not connect the phone. Check its cable and USB Debugging, then retry.\n' +
+      'Details: InvalidStateError: The interface is unavailable.'
+    );
+    expect(consoleError).toHaveBeenCalledWith(originalError);
   });
 
   it('relays complete ADB packets in both directions and shows the attached serial', async () => {
