@@ -36,6 +36,7 @@ surface and the canonical manifest impossible in either direction.
 
 import json
 from pathlib import Path
+from textwrap import dedent
 
 import pytest
 
@@ -124,7 +125,10 @@ async def test_adb_server_manifest_matches_fixture():
     expected = json.loads((FIXTURES / "adb_server_manifest.json").read_text(encoding="utf-8"))
     tools = await _adb_server_tools()
     generated = {
-        name: {"description": t.description, "inputSchema": t.inputSchema}
+        name: {
+            "description": dedent(t.description) if t.description else t.description,
+            "inputSchema": t.inputSchema,
+        }
         for name, t in tools.items()
     }
     assert set(generated) == set(expected), FIXTURE_HINT

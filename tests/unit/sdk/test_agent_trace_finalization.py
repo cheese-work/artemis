@@ -21,6 +21,7 @@ from artemis.context import DeviceContext, DevicePlatform
 from artemis.runtime.device_lock import DeviceBusyError
 from artemis.sdk.types.exceptions import AgentError
 
+
 @pytest.mark.asyncio
 async def test_trace_finalization_failure_does_not_escape():
     agent = object.__new__(Agent)

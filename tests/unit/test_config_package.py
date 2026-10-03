@@ -46,6 +46,7 @@ from artemis.config import (
     write_ls_address,
 )
 
+
 def test_paths_and_directories():
     """Verify central path resolution."""
     assert ROOT_DIR.exists()
@@ -175,8 +176,8 @@ def test_agent_config_loading():
     # ships unset so each tier applies its own default (off pro, on ultra).
     assert agent_cfg.explorer_versions == {}
     assert agent_cfg.explorer.default_version == "flash"
-    assert agent_cfg.explorer.flash_mode == "flash"
-    assert agent_cfg.explorer.pro_mode == "flash"
+    assert agent_cfg.explorer.flash_mode == "pro"
+    assert agent_cfg.explorer.pro_mode == "pro"
     assert agent_cfg.explorer.caching is None
     assert "explorer" in agent_cfg.denylisted_tools
     assert agent_cfg.video_analyzer.enable_ledger is True
