@@ -111,6 +111,13 @@ async def _adb_server_tools() -> dict:
     return {t.name: t for t in tools}
 
 
+def _normalized_description(description: str | None) -> str | None:
+    if description is None:
+        return None
+    normalized = cleandoc(description)
+    return f"{normalized}\n" if "\n" in normalized else normalized
+
+
 def _prop(tool, name: str) -> dict:
     props = tool.inputSchema.get("properties", {})
     assert name in props, f"tool '{tool.name}' lost parameter '{name}'"
@@ -126,7 +133,7 @@ async def test_adb_server_manifest_matches_fixture():
     tools = await _adb_server_tools()
     generated = {
         name: {
-            "description": cleandoc(t.description) + "\n" if t.description else t.description,
+            "description": _normalized_description(t.description),
             "inputSchema": t.inputSchema,
         }
         for name, t in tools.items()
