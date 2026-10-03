@@ -281,7 +281,7 @@ class ReadinessEngine:
             is_blocker=probe.is_blocker,
             summary="Probe crashed",
             description=(
-                f"The '{probe.probe_id}' check failed unexpectedly. "
+                f"The '{probe.probe_id}' check failed unexpectedly ({type(exc).__name__}). "
                 "Review the local Artemis configuration and logs."
             ),
             metadata={"exception_type": type(exc).__name__},

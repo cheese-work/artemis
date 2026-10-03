@@ -15,6 +15,7 @@
 """Unit tests for Artemis System Diagnostics & Readiness Engine."""
 
 import asyncio
+import json
 from unittest.mock import AsyncMock, Mock
 
 import pytest
@@ -112,7 +113,8 @@ async def test_vision_ocr_probe_structure():
     result: ProbeResult = await probe.probe()
     assert isinstance(result, ProbeResult)
     assert result.status == ProbeStatus.PASS
-    assert "configured" in result.metadata
+    assert "is_set" in result.metadata
+    assert "configured" not in result.metadata
 
 
 @pytest.mark.asyncio
@@ -513,6 +515,29 @@ def test_every_registered_probe_serializes_without_sensitive_metadata():
         )
 
 
+@pytest.mark.parametrize("mutate_after_construction", [False, True])
+def test_probe_result_redacts_sensitive_metadata_during_serialization(
+    mutate_after_construction,
+):
+    fake_secret = "FAKE-S0-REVIEW-SECRET-9876"
+    result = ProbeResult(
+        id="review",
+        category=ProbeCategory.CREDENTIALS,
+        title="Review",
+        status=ProbeStatus.FAIL,
+        summary="Failed",
+        description="Check failed.",
+        metadata={"nested": ({"raw_key": fake_secret},), "error": fake_secret},
+    )
+    if mutate_after_construction:
+        result.metadata["nested_after_mutation"] = ({"api_keys": [fake_secret]},)
+        result.metadata["exception"] = fake_secret
+
+    serialized = json.dumps(result.model_dump(mode="json"))
+
+    assert fake_secret not in serialized
+
+
 @pytest.mark.asyncio
 async def test_credentials_probe_ignores_placeholder_openai_endpoint(monkeypatch):
     _clear_credential_inputs(monkeypatch)
@@ -598,7 +623,8 @@ async def test_build_report_turns_crashing_probe_into_fail_result():
     assert crashed.category is ProbeCategory.RUNTIME
     assert crashed.summary == "Probe crashed"
     assert "PermissionError" in crashed.description
-    assert "Permission denied" in crashed.description
+    assert "Permission denied" not in crashed.description
+    assert "/ro/traces" not in crashed.description
     assert crashed.metadata["exception_type"] == "PermissionError"
 
 
