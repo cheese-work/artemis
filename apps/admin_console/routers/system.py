@@ -196,6 +196,7 @@ async def get_adb_server_status():
 async def connect_adb_server(payload: ConnectAdbServerRequest, request: Request):
     """Validate and activate an ADB server endpoint."""
     _require_local_admin_request(request)
+    _require_config_writes_unlocked()
     try:
         connection_result = await adb_server_connection.connect(
             payload.host,
@@ -228,6 +229,7 @@ async def probe_adb_server(payload: ConnectAdbServerRequest, request: Request):
 async def use_local_adb_server(request: Request, persist: bool = True):
     """Restore the standard local ADB server without touching a remote daemon."""
     _require_local_admin_request(request)
+    _require_config_writes_unlocked()
     connection_result = await adb_server_connection.use_local_server(persist=persist)
     readiness_engine.set_probe_target_serial(None)
     readiness_engine.invalidate_cache()

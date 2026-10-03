@@ -15,6 +15,7 @@
 """Unit tests for Artemis System Diagnostics & Readiness Engine."""
 
 import asyncio
+import json
 from unittest.mock import AsyncMock, Mock
 
 import pytest
@@ -511,6 +512,29 @@ def test_every_registered_probe_serializes_without_sensitive_metadata():
             "raw_key" not in provider and "key" not in provider
             for provider in probe.metadata["providers"]
         )
+
+
+@pytest.mark.parametrize("mutate_after_construction", [False, True])
+def test_probe_result_redacts_sensitive_metadata_during_serialization(
+    mutate_after_construction,
+):
+    fake_secret = "FAKE-S0-REVIEW-SECRET-9876"
+    result = ProbeResult(
+        id="review",
+        category=ProbeCategory.CREDENTIALS,
+        title="Review",
+        status=ProbeStatus.FAIL,
+        summary="Failed",
+        description="Check failed.",
+        metadata={"nested": ({"raw_key": fake_secret},), "error": fake_secret},
+    )
+    if mutate_after_construction:
+        result.metadata["nested_after_mutation"] = ({"api_keys": [fake_secret]},)
+        result.metadata["exception"] = fake_secret
+
+    serialized = json.dumps(result.model_dump(mode="json"))
+
+    assert fake_secret not in serialized
 
 
 @pytest.mark.asyncio

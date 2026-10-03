@@ -16,10 +16,18 @@
 
 from enum import Enum
 from typing import Any, Literal
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_serializer, field_validator
 
 _SENSITIVE_METADATA_KEYS = frozenset(
-    {"raw_key", "key", "api_keys", "current_key", "current_gemini_key"}
+    {
+        "raw_key",
+        "key",
+        "api_keys",
+        "current_key",
+        "current_gemini_key",
+        "error",
+        "exception",
+    }
 )
 
 
@@ -32,6 +40,8 @@ def _redact_sensitive_metadata(value: Any) -> Any:
         }
     if isinstance(value, list):
         return [_redact_sensitive_metadata(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_redact_sensitive_metadata(item) for item in value)
     return value
 
 
@@ -116,6 +126,10 @@ class ProbeResult(BaseModel):
     @field_validator("metadata", mode="before")
     @classmethod
     def redact_sensitive_metadata(cls, value: Any) -> Any:
+        return _redact_sensitive_metadata(value)
+
+    @field_serializer("metadata")
+    def serialize_metadata(self, value: dict[str, Any]) -> dict[str, Any]:
         return _redact_sensitive_metadata(value)
 
 

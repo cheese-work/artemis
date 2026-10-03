@@ -64,7 +64,15 @@ _ENDPOINT_PROVIDERS = frozenset({"custom", "ollama", "vllm"})
 
 #: Metadata keys that carry credential material and must never reach an MCP caller.
 _SECRET_METADATA_KEYS = frozenset(
-    {"raw_key", "key", "api_keys", "current_key", "current_gemini_key"}
+    {
+        "raw_key",
+        "key",
+        "api_keys",
+        "current_key",
+        "current_gemini_key",
+        "error",
+        "exception",
+    }
 )
 
 _ERROR_MARKERS = ("traceback", "error", "exception", "failed", "critical")
@@ -91,14 +99,14 @@ def _scrub(value: Any) -> Any:
     if isinstance(value, dict):
         cleaned: dict[str, Any] = {}
         for key, item in value.items():
-            if key in _SECRET_METADATA_KEYS:
+            if isinstance(key, str) and key.casefold() in _SECRET_METADATA_KEYS:
                 continue
             if key == "installed_packages" and isinstance(item, list):
                 cleaned["installed_package_count"] = len(item)
                 continue
             cleaned[key] = _scrub(item)
         return cleaned
-    if isinstance(value, list):
+    if isinstance(value, (list, tuple)):
         return [_scrub(item) for item in value]
     return value
 

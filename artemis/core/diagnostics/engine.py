@@ -270,8 +270,8 @@ class ReadinessEngine:
                 },
             )
         logger.warning(
-            f"[ReadinessEngine] Probe '{probe.probe_id}' crashed; reporting it as FAIL: "
-            f"{type(exc).__name__}: {exc}"
+            f"[ReadinessEngine] Probe '{probe.probe_id}' crashed; reporting it as FAIL "
+            f"({type(exc).__name__})."
         )
         return ProbeResult(
             id=probe.probe_id,
@@ -281,10 +281,10 @@ class ReadinessEngine:
             is_blocker=probe.is_blocker,
             summary="Probe crashed",
             description=(
-                f"The '{probe.probe_id}' check raised {type(exc).__name__}: {exc}. "
-                "This is a diagnostics bug or a host permission problem, not a device fault."
+                f"The '{probe.probe_id}' check failed unexpectedly. "
+                "Review the local Artemis configuration and logs."
             ),
-            metadata={"exception_type": type(exc).__name__, "exception": str(exc)},
+            metadata={"exception_type": type(exc).__name__},
         )
 
     async def heal_adb_keys(self, force: bool = False) -> dict[str, Any]:
