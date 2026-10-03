@@ -410,22 +410,29 @@ async def test_unified_controller_start_recording(mock_ctx, tmp_path):
     mock_proc = MagicMock()
     mock_proc.returncode = None
 
-    with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=mock_proc)):
-        with patch(
+    with (
+        patch("asyncio.create_subprocess_exec", AsyncMock(return_value=mock_proc)),
+        patch(
             "artemis.controllers.unified_controller.get_android_display_state",
             AsyncMock(return_value=(0, 1080, 2424)),
-        ):
-            with patch("asyncio.sleep", AsyncMock()):
-                res = await controller.start_video_recording(output_dir=tmp_path)
+        ),
+        patch("artemis.controllers.unified_controller.find_scrcpy", return_value="scrcpy"),
+        patch(
+            "artemis.controllers.unified_controller.detect_scrcpy_version",
+            return_value="scrcpy 3.0",
+        ),
+        patch("asyncio.sleep", AsyncMock()),
+    ):
+        res = await controller.start_video_recording(output_dir=tmp_path)
 
-                assert res.success is True
-                assert get_active_session("emulator-5554") is not None
-                assert mock_ctx.data_engine.record_video_start.called
+        assert res.success is True
+        assert get_active_session("emulator-5554") is not None
+        assert mock_ctx.data_engine.record_video_start.called
 
-                # Calling start again should report already in progress
-                res2 = await controller.start_video_recording(output_dir=tmp_path)
-                assert res2.success is False
-                assert "already in progress" in res2.message
+        # Calling start again should report already in progress
+        res2 = await controller.start_video_recording(output_dir=tmp_path)
+        assert res2.success is False
+        assert "already in progress" in res2.message
 
     remove_active_session("emulator-5554")
 
