@@ -28,6 +28,7 @@ router = APIRouter(prefix="/api/agent", tags=["agent"])
 
 HELLO_TIMEOUT_SECONDS = 10
 DEAD_AFTER_SECONDS = 50  # agents ping every 20 s
+MIN_WAIT_SECONDS = 0.05
 
 
 def _audience(headers: Any) -> str:
@@ -132,23 +133,31 @@ async def connect(ws: WebSocket) -> None:
                 "min_supported": hr.MIN_SUPPORTED,
             }
         )
+        deadline = session["expires_at"]
         while True:
             # Idle sockets die at the token deadline too, not only when a frame arrives.
-            wait = min(DEAD_AFTER_SECONDS, max(0.0, session["expires_at"] - host_registry.clock()))
+            wait = min(DEAD_AFTER_SECONDS, max(MIN_WAIT_SECONDS, deadline - host_registry.clock()))
+            timed_out = False
+            message: Any = None
             try:
                 message = await asyncio.wait_for(ws.receive_json(), wait)
             except TimeoutError:
-                if host_registry.clock() < session["expires_at"]:
-                    raise
-                message = {}
-            # Every frame needs a live session: expired, revoked or superseded ends it.
-            if host_registry.validate_token(session["token"], "connect") is None:
+                timed_out = True
+            # Every wake-up needs a live session; the stored expiry is the one authority,
+            # so an HTTP renewal moves this socket's deadline too.
+            live = host_registry.validate_token(session["token"], "connect")
+            if live is None:
                 reason = "auth_expired"
                 if ws.application_state != WebSocketState.CONNECTED:
                     return  # revoked or superseded: the hub already closed this socket
                 await ws.send_json({"type": "error", "code": "auth_expired"})
                 await ws.close(code=4401)
                 return
+            deadline = live["token_expires_at"]
+            if timed_out:
+                if wait >= DEAD_AFTER_SECONDS:
+                    raise TimeoutError  # silent for the full dead interval
+                continue  # woke at an outdated deadline; recompute from the stored one
             kind = message.get("type") if isinstance(message, dict) else None
             if kind == "ping":
                 await ws.send_json({"type": "pong"})
@@ -159,7 +168,7 @@ async def connect(ws: WebSocket) -> None:
                     await ws.send_json({"type": "error", "code": "auth_expired"})
                     await ws.close(code=4401)
                     return
-                session["expires_at"] = expires_at
+                deadline = expires_at
                 await ws.send_json({"type": "renewed", "expires_at": expires_at})
             elif kind == "devices":
                 host_registry.set_devices(host_id, generation, message.get("devices"))

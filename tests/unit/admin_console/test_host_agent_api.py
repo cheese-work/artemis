@@ -565,6 +565,56 @@ def test_idle_socket_is_closed_when_its_token_expires(admin, clock, monkeypatch)
     assert admin.get("/api/hosts").json()["hosts"][0]["reason"] == "auth_expired"
 
 
+def test_http_renewal_moves_the_socket_deadline_without_spinning(admin, clock, monkeypatch):
+    calls = {"n": 0}
+    real = host_registry.validate_token
+
+    def counting(token, scope):
+        calls["n"] += 1
+        return real(token, scope)
+
+    monkeypatch.setattr(host_registry, "validate_token", counting)
+    key, host_id = _enrolled(admin)
+    context, ws, reply = _handshake(admin, key, host_id)
+    try:
+        clock["now"] += 3600
+        auth = {"Authorization": f"Bearer {reply['token']}"}
+        assert admin.post("/api/agent/renew", headers=auth).status_code == 200
+        clock["now"] = reply["expires_at"] + 1  # past the original deadline, inside the renewed one
+        ws.send_json({"type": "ping"})
+        assert ws.receive_json()["type"] == "pong"
+        before = calls["n"]
+        time.sleep(0.4)  # a stale deadline makes the handler re-validate in a tight loop
+        assert calls["n"] - before < 10, calls["n"] - before
+        ws.send_json({"type": "ping"})
+        assert ws.receive_json()["type"] == "pong"
+        # Still ends at the renewed deadline.
+        clock["now"] += 3600 + 1
+        ws.send_json({"type": "ping"})
+        assert ws.receive_json() == {"type": "error", "code": "auth_expired"}
+    finally:
+        clock["now"] += 10 * 3600  # releases a spinning handler so the test can exit
+        context.__exit__(None, None, None)
+
+
+def test_reenrolling_an_offline_computer_is_enrolled_until_a_new_handshake(admin):
+    key, host_id = _enrolled(admin)
+    context, _ws, first = _handshake(admin, key, host_id)
+    context.__exit__(None, None, None)
+    assert first["type"] == "connected"
+    assert admin.get("/api/hosts").json()["hosts"][0]["status"] == "offline"
+
+    second = _new_code(admin)
+    assert _enroll(admin, second["code"], key).status_code == 200
+    path = f"/api/hosts/enrollment-codes/{second['code_id']}"
+    assert admin.get(path).json()["status"] == "enrolled"  # historical generation 1 must not count
+
+    context, _ws, again = _handshake(admin, key, host_id)
+    context.__exit__(None, None, None)
+    assert again["generation"] == 2
+    assert admin.get(path).json()["status"] == "connected"
+
+
 def test_superseded_socket_cannot_publish_devices(admin):
     key, host_id = _enrolled(admin)
     first_context, first_ws, _first = _handshake(admin, key, host_id)

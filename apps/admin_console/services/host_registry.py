@@ -50,7 +50,7 @@ _SCHEMA = """
 CREATE TABLE IF NOT EXISTS host_enrollment_codes (
     id TEXT PRIMARY KEY, code_hash TEXT NOT NULL UNIQUE, created_by TEXT NOT NULL,
     created_at REAL NOT NULL, expires_at REAL NOT NULL,
-    key_hash TEXT, host_id TEXT, used_at REAL
+    key_hash TEXT, host_id TEXT, used_at REAL, enroll_generation INTEGER
 );
 CREATE TABLE IF NOT EXISTS hosts (
     id TEXT PRIMARY KEY, name TEXT NOT NULL, os TEXT, agent_version TEXT,
@@ -212,16 +212,18 @@ class HostRegistry:
     def code_status(self, code_id: str) -> dict[str, Any] | None:
         with self._db() as conn:
             row = conn.execute(
-                "SELECT c.expires_at, c.host_id, h.name, h.generation FROM host_enrollment_codes c "
+                "SELECT c.expires_at, c.host_id, c.enroll_generation, h.name, h.generation FROM host_enrollment_codes c "
                 "LEFT JOIN hosts h ON h.id = c.host_id WHERE c.id=?",
                 (code_id,),
             ).fetchone()
         if row is None:
             return None
         if row["host_id"]:
-            # Enrolled is not connected: only an authenticated handshake bumps generation.
+            # Enrolled is not connected: only a handshake after this enrollment bumps generation.
             return {
-                "status": "connected" if row["generation"] else "enrolled",
+                "status": "connected"
+                if row["generation"] > (row["enroll_generation"] or 0)
+                else "enrolled",
                 "computer_name": row["name"],
                 "computer_id": row["host_id"],
             }
@@ -258,11 +260,6 @@ class HostRegistry:
             if existing is not None and existing["revoked_at"] is not None:
                 raise RegistryError("host_revoked", 409)
             conn.execute(
-                "UPDATE host_enrollment_codes SET key_hash=?, host_id=?, used_at=COALESCE(used_at, ?)"
-                " WHERE id=?",
-                (key_hash, host_id, now, row["id"]),
-            )
-            conn.execute(
                 "INSERT INTO hosts (id, name, os, agent_version, protocol_version, public_key, "
                 "key_hash, created_by, created_at, status, reason, since) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'offline', 'never_connected', ?) "
@@ -280,6 +277,13 @@ class HostRegistry:
                     now,
                     now,
                 ),
+            )
+            # Remember how many connections existed at enrollment: only a later one counts.
+            conn.execute(
+                "UPDATE host_enrollment_codes SET key_hash=?, host_id=?, used_at=COALESCE(used_at, ?),"
+                " enroll_generation=COALESCE(enroll_generation,"
+                " (SELECT generation FROM hosts WHERE id=?)) WHERE id=?",
+                (key_hash, host_id, now, host_id, row["id"]),
             )
         return {
             "host_id": host_id,
