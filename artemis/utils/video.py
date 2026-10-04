@@ -81,7 +81,8 @@ def scrcpy_recording_flags(version_output: str) -> tuple[str, str, str]:
     if version[0] == 1:
         return "--no-display", "--bit-rate", "--lock-video-orientation"
     if version[0] == 2:
-        return "--no-display", "--video-bit-rate", "--lock-video-orientation"
+        headless_flag = "--no-display" if version[1] < 5 else "--no-window"
+        return headless_flag, "--video-bit-rate", "--lock-video-orientation"
     return "--no-window", "--video-bit-rate", "--capture-orientation=@"
 
 

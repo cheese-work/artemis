@@ -116,14 +116,18 @@ is_node_compatible() {
     return 1
 }
 
+SCRCPY_VERSION=""
+
 scrcpy_is_supported() {
     local version_output major minor
+    SCRCPY_VERSION=""
     version_output="$(scrcpy --version 2>&1)" || return 1
     if [[ ! "${version_output}" =~ [Ss]crcpy[[:space:]]+v?([0-9]+)\.([0-9]+) ]]; then
         return 1
     fi
     major="${BASH_REMATCH[1]}"
     minor="${BASH_REMATCH[2]}"
+    SCRCPY_VERSION="${major}.${minor}"
     if (( major > 1 || (major == 1 && minor >= 25) )); then
         return 0
     fi
@@ -257,6 +261,15 @@ if [ ${#MISSING_CORE[@]} -gt 0 ] || [ "${SCRCPY_NEEDS_FALLBACK}" = true ]; then
                 fi
             fi
         fi
+    fi
+fi
+
+if command -v scrcpy >/dev/null 2>&1; then
+    scrcpy_is_supported || true
+    if [ -n "${SCRCPY_VERSION}" ]; then
+        echo -e "   ${CYAN}ℹ️ Detected scrcpy version: ${SCRCPY_VERSION}.${NC}"
+    else
+        echo -e "   ${YELLOW}⚠️ Could not determine scrcpy version.${NC}"
     fi
 fi
 

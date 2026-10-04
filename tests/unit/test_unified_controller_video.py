@@ -29,6 +29,7 @@ from artemis.controllers.unified_controller import UnifiedMobileController
 from artemis.drivers.mock.mock_driver import MockDeviceDriver
 from artemis.utils.video import (
     RecordingSession,
+    _parse_scrcpy_version,
     build_scrcpy_record_command,
     extract_audio_from_video,
     extract_frames_at_timestamps,
@@ -90,8 +91,16 @@ def test_scrcpy_recording_locks_each_segment_orientation(tmp_path):
             ("--no-display", "--bit-rate", "--lock-video-orientation"),
         ),
         (
-            "scrcpy 2.7 <https://github.com/Genymobile/scrcpy>",
+            "scrcpy 2.4 <https://github.com/Genymobile/scrcpy>",
             ("--no-display", "--video-bit-rate", "--lock-video-orientation"),
+        ),
+        (
+            "scrcpy 2.5 <https://github.com/Genymobile/scrcpy>",
+            ("--no-window", "--video-bit-rate", "--lock-video-orientation"),
+        ),
+        (
+            "scrcpy 2.7 <https://github.com/Genymobile/scrcpy>",
+            ("--no-window", "--video-bit-rate", "--lock-video-orientation"),
         ),
         (
             "scrcpy 3.0 <https://github.com/Genymobile/scrcpy>",
@@ -105,6 +114,16 @@ def test_scrcpy_recording_locks_each_segment_orientation(tmp_path):
 )
 def test_scrcpy_recording_flags_follow_installed_version(version, expected_flags):
     assert scrcpy_recording_flags(version) == expected_flags
+
+
+def test_scrcpy_recording_flags_reject_versions_below_minimum():
+    with pytest.raises(ValueError, match="Unsupported scrcpy 1.24"):
+        scrcpy_recording_flags("scrcpy 1.24")
+
+
+def test_parse_scrcpy_version_rejects_unreadable_output():
+    with pytest.raises(ValueError, match="Could not parse scrcpy version"):
+        _parse_scrcpy_version("scrcpy version unavailable")
 
 
 def test_scrcpy_record_command_uses_125_compatible_flags(tmp_path):

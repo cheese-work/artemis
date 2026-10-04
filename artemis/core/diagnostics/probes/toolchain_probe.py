@@ -144,11 +144,14 @@ class ToolchainProbe(BaseProbe):
                 )
             )
 
-        summary = (
-            f"Unsupported scrcpy version ({scrcpy_version})"
-            if scrcpy_path and not scrcpy_supported and scrcpy_error
-            else f"Missing {missing_str}"
-        )
+        if scrcpy_path and not scrcpy_supported and scrcpy_error:
+            summary = (
+                f"Unsupported scrcpy version ({scrcpy_version})"
+                if scrcpy_version is not None
+                else "Could not determine scrcpy version"
+            )
+        else:
+            summary = f"Missing {missing_str}"
         description = (
             f"{scrcpy_error}. Recording requires a supported scrcpy version."
             if scrcpy_path and not scrcpy_supported and scrcpy_error
