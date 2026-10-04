@@ -212,15 +212,16 @@ class HostRegistry:
     def code_status(self, code_id: str) -> dict[str, Any] | None:
         with self._db() as conn:
             row = conn.execute(
-                "SELECT c.expires_at, c.host_id, h.name FROM host_enrollment_codes c "
+                "SELECT c.expires_at, c.host_id, h.name, h.generation FROM host_enrollment_codes c "
                 "LEFT JOIN hosts h ON h.id = c.host_id WHERE c.id=?",
                 (code_id,),
             ).fetchone()
         if row is None:
             return None
         if row["host_id"]:
+            # Enrolled is not connected: only an authenticated handshake bumps generation.
             return {
-                "status": "connected",
+                "status": "connected" if row["generation"] else "enrolled",
                 "computer_name": row["name"],
                 "computer_id": row["host_id"],
             }
@@ -442,7 +443,8 @@ class HostRegistry:
 
     # -- devices and listing --------------------------------------------------------
 
-    def set_devices(self, host_id: str, devices: object) -> None:
+    def set_devices(self, host_id: str, generation: int, devices: object) -> bool:
+        """Replace the computer's phones; refused unless this is its current, unrevoked connection."""
         rows = []
         for item in devices if isinstance(devices, list) else []:
             if isinstance(item, dict) and _SERIAL.match(str(item.get("serial", ""))):
@@ -456,11 +458,19 @@ class HostRegistry:
                     )
                 )
         with self._db() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            current = conn.execute(
+                "SELECT 1 FROM hosts WHERE id=? AND generation=? AND revoked_at IS NULL",
+                (host_id, generation),
+            ).fetchone()
+            if current is None:
+                return False
             conn.execute("DELETE FROM host_devices WHERE host_id=?", (host_id,))
             conn.executemany(
                 "INSERT OR REPLACE INTO host_devices VALUES (?,?,?,?,?)",
                 rows[:MAX_DEVICES_PER_HOST],
             )
+        return True
 
     def list_hosts(self) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         """Return (computers, phones that computers share)."""

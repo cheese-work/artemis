@@ -122,6 +122,14 @@ describe('ComputersComponent', () => {
     expect(text()).toContain('2 min ago');
   });
 
+  it('explains an offline computer whose session expired', () => {
+    hosts.list.and.returnValue(
+      of(response([computer({ status: 'offline', reason: 'auth_expired', since: Date.now() / 1000 })]))
+    );
+    create();
+    expect(text()).toContain('Its session expired. Restart the computer software to reconnect.');
+  });
+
   it('shows update required with the next step', () => {
     hosts.list.and.returnValue(
       of(response([computer({ status: 'update_required', reason: 'update_required' })]))
@@ -261,6 +269,26 @@ describe('ComputersComponent', () => {
       expect(dialog.textContent).toContain('Desk PC connected');
       expect(dialog.textContent).not.toContain('SECRETCODE');
       expect(hosts.list.calls.count()).toBeGreaterThan(1);
+      discardPeriodicTasks();
+    }));
+
+    it('keeps waiting, with the code visible, when the computer only enrolled', fakeAsync(() => {
+      create();
+      button('Connect a computer')!.click();
+      tick(0);
+      hosts.codeStatus.and.returnValue(of({ status: 'enrolled', computer_name: 'Desk PC' }));
+      tick(2000);
+      fixture.detectChanges();
+      const dialog = (fixture.nativeElement as HTMLElement).querySelector('[role="dialog"]')!;
+      expect(dialog.textContent).not.toContain('Desk PC connected');
+      expect(dialog.textContent).toContain('Desk PC enrolled. Waiting for it to connect…');
+      expect(dialog.textContent).toContain('SECRETCODE');
+      expect(hosts.list).toHaveBeenCalledTimes(1);
+      // Only the authenticated handshake produces the success state.
+      hosts.codeStatus.and.returnValue(of({ status: 'connected', computer_name: 'Desk PC' }));
+      tick(2000);
+      fixture.detectChanges();
+      expect(dialog.textContent).toContain('Desk PC connected');
       discardPeriodicTasks();
     }));
 

@@ -46,6 +46,7 @@ export class ComputersComponent implements OnInit {
   public readonly dialog = signal<DialogState>('closed');
   public readonly code = signal<EnrollmentCode | null>(null);
   public readonly connectedName = signal('');
+  public readonly enrolledName = signal('');
   public readonly dialogError = signal('');
   public readonly copied = signal(false);
   public readonly nowMs = signal(Date.now());
@@ -138,6 +139,7 @@ export class ComputersComponent implements OnInit {
   public openConnect(event: Event): void {
     this.opener = event.currentTarget as HTMLElement;
     this.code.set(null);
+    this.enrolledName.set('');
     this.copied.set(false);
     this.dialogError.set('');
     this.dialog.set('creating');
@@ -189,7 +191,9 @@ export class ComputersComponent implements OnInit {
         takeUntilDestroyed(this.destroyRef)
       )
       .subscribe((status) => {
-        if (status.status === 'connected') {
+        if (status.status === 'enrolled') {
+          this.enrolledName.set(status.computer_name ?? 'The computer');
+        } else if (status.status === 'connected') {
           this.connectedName.set(status.computer_name ?? 'The computer');
           this.code.set(null); // shown once
           this.dialog.set('connected');

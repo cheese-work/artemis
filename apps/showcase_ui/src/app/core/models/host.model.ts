@@ -42,6 +42,7 @@ export interface EnrollmentCode {
 }
 
 export interface EnrollmentCodeStatus {
-  status: 'waiting' | 'connected' | 'expired';
+  /** `enrolled` = the computer registered but has not yet authenticated a connection. */
+  status: 'waiting' | 'enrolled' | 'connected' | 'expired';
   computer_name: string | null;
 }

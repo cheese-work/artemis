@@ -37,6 +37,7 @@ const REASONS: Record<string, string> = {
   disconnected: 'The computer disconnected.',
   timeout: 'Lost its connection.',
   server_restarted: 'SmartQA restarted. Waiting for the computer to reconnect.',
+  auth_expired: 'Its session expired. Restart the computer software to reconnect.',
   update_required: 'Needs a software update before it can connect.',
   revoked: 'Removed by an administrator.'
 };
@@ -51,6 +52,8 @@ export function offlineText(name: string, reason: string | null): string {
       return `${name} lost its connection.`;
     case 'disconnected':
       return `${name} disconnected.`;
+    case 'auth_expired':
+      return `${name}'s session expired. Restart its software to reconnect.`;
     case 'server_restarted':
       return `SmartQA restarted. Waiting for ${name} to reconnect.`;
     case 'never_connected':

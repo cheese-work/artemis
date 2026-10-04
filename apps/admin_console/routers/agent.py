@@ -8,7 +8,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, Request, WebSocket
 from pydantic import BaseModel, Field
-from starlette.websockets import WebSocketDisconnect
+from starlette.websockets import WebSocketDisconnect, WebSocketState
 
 from apps.admin_console.core.access_control import AdminAPIError, public_tier
 from apps.admin_console.core.agent_auth import (
@@ -133,19 +133,36 @@ async def connect(ws: WebSocket) -> None:
             }
         )
         while True:
-            message = await asyncio.wait_for(ws.receive_json(), DEAD_AFTER_SECONDS)
+            # Idle sockets die at the token deadline too, not only when a frame arrives.
+            wait = min(DEAD_AFTER_SECONDS, max(0.0, session["expires_at"] - host_registry.clock()))
+            try:
+                message = await asyncio.wait_for(ws.receive_json(), wait)
+            except TimeoutError:
+                if host_registry.clock() < session["expires_at"]:
+                    raise
+                message = {}
+            # Every frame needs a live session: expired, revoked or superseded ends it.
+            if host_registry.validate_token(session["token"], "connect") is None:
+                reason = "auth_expired"
+                if ws.application_state != WebSocketState.CONNECTED:
+                    return  # revoked or superseded: the hub already closed this socket
+                await ws.send_json({"type": "error", "code": "auth_expired"})
+                await ws.close(code=4401)
+                return
             kind = message.get("type") if isinstance(message, dict) else None
             if kind == "ping":
                 await ws.send_json({"type": "pong"})
             elif kind == "renew":
                 expires_at = host_registry.renew(session["token"])
                 if expires_at is None:
-                    await ws.send_json({"type": "error", "code": "token_invalid"})
+                    reason = "auth_expired"
+                    await ws.send_json({"type": "error", "code": "auth_expired"})
                     await ws.close(code=4401)
                     return
+                session["expires_at"] = expires_at
                 await ws.send_json({"type": "renewed", "expires_at": expires_at})
             elif kind == "devices":
-                host_registry.set_devices(host_id, message.get("devices"))
+                host_registry.set_devices(host_id, generation, message.get("devices"))
     except TimeoutError:
         reason = "timeout"
     except (WebSocketDisconnect, ValueError):

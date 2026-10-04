@@ -118,7 +118,9 @@
             <button type="button" class="secondary-button" (click)="copyInstallMessage()">
               {{ copied() ? strings.copied : strings.copyMessage }}
             </button>
-            <p role="status" class="waiting">{{ strings.waiting }}</p>
+            <p role="status" class="waiting">
+              {{ enrolledName() ? enrolledName() + ' enrolled. Waiting for it to connect…' : strings.waiting }}
+            </p>
           }
           @case ('connected') {
             <p role="status" class="connected">{{ connectedName() }} connected</p>

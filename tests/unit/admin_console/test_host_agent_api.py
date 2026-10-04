@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import base64
 import sqlite3
+import time
 
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -18,6 +19,7 @@ import pytest
 from starlette.websockets import WebSocketDisconnect
 
 from apps.admin_console.core import agent_auth
+from apps.admin_console.routers import agent as agent_router
 from apps.admin_console.core.access_control import AdminAPIError, admin_api_error_handler
 from apps.admin_console.server import proxy_aware_app
 from apps.admin_console.services import host_registry as hr
@@ -504,18 +506,99 @@ def test_installer_and_artifacts_need_a_valid_enrollment_code(admin):
 # -- polling the dialog ----------------------------------------------------------
 
 
-def test_code_status_goes_from_waiting_to_connected(admin, clock):
+def test_code_status_waits_for_an_authenticated_handshake_before_connected(admin, clock):
     created = _new_code(admin)
     path = f"/api/hosts/enrollment-codes/{created['code_id']}"
     assert admin.get(path).json()["status"] == "waiting"
-    _enroll(admin, created["code"], Ed25519PrivateKey.generate(), name="Desk PC")
+
+    key = Ed25519PrivateKey.generate()
+    host_id = _enroll(admin, created["code"], key, name="Desk PC").json()["host_id"]
+    body = admin.get(path).json()  # enrolled, but nothing has authenticated yet
+    assert (body["status"], body["computer_name"]) == ("enrolled", "Desk PC")
+
+    context, _ws, reply = _handshake(admin, key, host_id)
+    context.__exit__(None, None, None)
+    assert reply["type"] == "connected"
     body = admin.get(path).json()
     assert (body["status"], body["computer_name"]) == ("connected", "Desk PC")
+
     other = _new_code(admin)
     clock["now"] += 15 * 60 + 1
     assert (
         admin.get(f"/api/hosts/enrollment-codes/{other['code_id']}").json()["status"] == "expired"
     )
+
+
+def test_expired_session_stops_pong_and_device_publishing(admin, clock):
+    key, host_id = _enrolled(admin)
+    context, ws, reply = _handshake(admin, key, host_id)
+    try:
+        clock["now"] += 24 * 3600 + 1
+        assert (
+            admin.post(
+                "/api/agent/renew", headers={"Authorization": f"Bearer {reply['token']}"}
+            ).status_code
+            == 401
+        )
+        ws.send_json({"type": "devices", "devices": [{"serial": "AFTER-EXPIRY", "shared": True}]})
+        ws.send_json({"type": "ping"})
+        assert ws.receive_json() == {"type": "error", "code": "auth_expired"}
+        with pytest.raises(WebSocketDisconnect) as closed:
+            ws.receive_json()
+        assert closed.value.code == 4401
+    finally:
+        context.__exit__(None, None, None)
+    body = admin.get("/api/hosts").json()
+    assert body["devices"] == []
+    assert (body["hosts"][0]["status"], body["hosts"][0]["reason"]) == ("offline", "auth_expired")
+
+
+def test_idle_socket_is_closed_when_its_token_expires(admin, clock, monkeypatch):
+    monkeypatch.setattr(agent_router, "DEAD_AFTER_SECONDS", 1)
+    key, host_id = _enrolled(admin)
+    context, ws, _reply = _handshake(admin, key, host_id)
+    try:
+        clock["now"] += 24 * 3600 + 1  # the socket sends nothing at all
+        assert ws.receive_json() == {"type": "error", "code": "auth_expired"}
+    finally:
+        context.__exit__(None, None, None)
+    assert admin.get("/api/hosts").json()["hosts"][0]["reason"] == "auth_expired"
+
+
+def test_superseded_socket_cannot_publish_devices(admin):
+    key, host_id = _enrolled(admin)
+    first_context, first_ws, _first = _handshake(admin, key, host_id)
+    second_context, second_ws, _second = _handshake(admin, key, host_id)
+    try:
+        with pytest.raises(WebSocketDisconnect) as closed:
+            first_ws.receive_json()
+        assert closed.value.code == 4409
+        # A frame already in flight on the old socket arrives after the 4409 close.
+        first_ws.send_json({"type": "devices", "devices": [{"serial": "STALE", "shared": True}]})
+        time.sleep(0.3)
+        second_ws.send_json({"type": "devices", "devices": [{"serial": "CURRENT", "shared": True}]})
+        second_ws.send_json({"type": "ping"})
+        assert second_ws.receive_json()["type"] == "pong"
+        serials = [d["serial"] for d in admin.get("/api/hosts").json()["devices"]]
+        assert serials == ["CURRENT"]
+    finally:
+        second_context.__exit__(None, None, None)
+        first_context.__exit__(None, None, None)
+
+
+def test_registry_refuses_device_writes_from_a_stale_generation_or_revoked_host(admin):
+    key, host_id = _enrolled(admin)
+    first_context, _ws1, first = _handshake(admin, key, host_id)
+    second_context, _ws2, second = _handshake(admin, key, host_id)
+    try:
+        devices = [{"serial": "X1", "shared": True}]
+        assert host_registry.set_devices(host_id, first["generation"], devices) is False
+        assert host_registry.set_devices(host_id, second["generation"], devices) is True
+        admin.post(f"/api/hosts/{host_id}/revoke")
+        assert host_registry.set_devices(host_id, second["generation"], devices) is False
+    finally:
+        second_context.__exit__(None, None, None)
+        first_context.__exit__(None, None, None)
 
 
 def test_connect_message_golden_vector():
