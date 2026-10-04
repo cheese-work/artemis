@@ -386,6 +386,40 @@ async def test_llm_credentials_probe_structure(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_credentials_probe_checks_only_configured_provider_keys(monkeypatch):
+    from pydantic import SecretStr
+
+    from artemis.config import settings
+
+    _clear_credential_inputs(monkeypatch)
+    monkeypatch.setattr(
+        "artemis.core.diagnostics.probes.credentials_probe.parse_llm_config",
+        lambda: {
+            "default": {
+                "provider": "google",
+                "model": "gemini-test",
+                "fallback": {"provider": "google", "model": "gemini-test-fallback"},
+            }
+        },
+    )
+    monkeypatch.setattr(
+        type(settings),
+        "get_api_key",
+        lambda _settings, provider: (
+            SecretStr("unrelated-openai-key") if provider == "openai" else None
+        ),
+    )
+
+    result = await LLMCredentialsProbe().probe()
+
+    assert result.status == ProbeStatus.FAIL
+    assert result.metadata["configured_count"] == 1
+    assert result.metadata["providers"] == [
+        {"provider": "google", "label": "Google", "is_set": False, "masked": None}
+    ]
+
+
+@pytest.mark.asyncio
 async def test_toolchain_probe_structure():
     """Verify ToolchainProbe returns valid probe category, metadata, and schema."""
     probe = ToolchainProbe()
@@ -549,16 +583,24 @@ async def test_credentials_probe_ignores_placeholder_openai_endpoint(monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_credentials_probe_reports_keyless_openai_endpoint(monkeypatch):
+async def test_credentials_probe_requires_key_for_openai_endpoint(monkeypatch):
     _clear_credential_inputs(monkeypatch)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.setenv("OPENAI_BASE_URL", "https://openai-proxy.local/v1")
+    from artemis.core.diagnostics.probes import credentials_probe
+
+    monkeypatch.setattr(
+        credentials_probe,
+        "parse_llm_config",
+        lambda: {"default": {"provider": "openai", "model": "fixture"}},
+    )
 
     result = await LLMCredentialsProbe().probe()
 
-    assert any(
-        entry["provider"] == "custom" and entry["is_set"] is True and entry["masked"] == "****l/v1"
-        for entry in result.metadata["providers"]
-    )
+    assert result.status is ProbeStatus.FAIL
+    assert result.metadata["providers"] == [
+        {"provider": "openai", "label": "OpenAI", "is_set": False, "masked": None}
+    ]
     assert "https://openai-proxy.local/v1" not in result.model_dump_json()
 
 

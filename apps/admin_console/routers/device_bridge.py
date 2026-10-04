@@ -21,8 +21,11 @@ import ipaddress
 import logging
 import struct
 
-from fastapi import APIRouter, WebSocket
+from fastapi import APIRouter, Depends, WebSocket, WebSocketException
 from starlette.websockets import WebSocketDisconnect
+
+from apps.admin_console.core.access_control import AccessIdentity, public_tier
+
 
 try:
     from admin_console.services.bridge_session_service import (
@@ -47,6 +50,14 @@ _MAX_PENDING_BYTES = MAX_ADB_PACKET_BYTES * 4
 _WEBSOCKET_SEND_TIMEOUT_SECONDS = 2
 
 logger = logging.getLogger(__name__)
+
+
+async def require_bridge_access(
+    websocket: WebSocket,
+    identity: AccessIdentity = Depends(public_tier),
+) -> None:
+    if websocket.headers.get("x-forwarded-for") and not identity.email:
+        raise WebSocketException(code=1008, reason="not_signed_in")
 
 
 def _client_is_loopback(websocket: WebSocket) -> bool:
@@ -234,7 +245,7 @@ async def _close_websocket(
         pass
 
 
-@router.websocket("/session")
+@router.websocket("/session", dependencies=[Depends(require_bridge_access)])
 async def open_bridge_session(websocket: WebSocket) -> None:
     if not _client_is_loopback(websocket):
         await websocket.close(code=_CLOSE_FORBIDDEN_REMOTE)

@@ -20,6 +20,7 @@ Modular entrypoint for full trace inspection, step replay, and task execution ma
 import argparse
 import asyncio
 from contextlib import asynccontextmanager
+import logging
 import os
 from pathlib import Path
 import secrets
@@ -45,7 +46,7 @@ for _p in (str(_workspace_root), str(_apps_dir), str(_admin_console_dir), str(_c
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.responses import FileResponse, HTMLResponse
 import uvicorn
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
@@ -70,6 +71,13 @@ from artemis.config import (
     init_ls_address,
 )
 from artemis.resources import get_bundled_showcase_dist
+from apps.admin_console.core.access_control import (
+    AdminAPIError,
+    CloudflareAccessVerifier,
+    admin_api_error_handler,
+    config_from_environment,
+    public_tier,
+)
 
 try:
     from admin_console.core.security import SameOriginBoundaryMiddleware
@@ -127,7 +135,21 @@ async def _lifespan(_app: "FastAPI"):
 
 
 # Initialize FastAPI application
-app = FastAPI(title="Artemis Admin & Trace Console", lifespan=_lifespan)
+app = FastAPI(
+    title="Artemis Admin & Trace Console",
+    lifespan=_lifespan,
+    dependencies=[Depends(public_tier)],
+)
+app.add_exception_handler(AdminAPIError, admin_api_error_handler)
+app.state.access_config = config_from_environment()
+app.state.access_verifier = CloudflareAccessVerifier()
+logging.getLogger(__name__).info(
+    "Admin access configured: mode=%s issuer=%s audience=%s admin_count=%d",
+    app.state.access_config.auth_mode,
+    app.state.access_config.issuer or "none",
+    app.state.access_config.audience or "none",
+    len(app.state.access_config.admin_emails),
+)
 LIFECYCLE_TOKEN = os.environ.get("ARTEMIS_LIFECYCLE_TOKEN") or secrets.token_urlsafe(32)
 app.state.lifecycle_token = LIFECYCLE_TOKEN
 
@@ -308,13 +330,13 @@ def _resolve_static_file(root: Path, relative_path: str) -> Path | None:
     return None
 
 
-@app.get("/", include_in_schema=False)
+@app.get("/", include_in_schema=False, dependencies=[Depends(public_tier)])
 async def serve_showcase_root():
     """Explicitly serve the Showcase UI at the root path by default."""
     return await serve_showcase_spa("")
 
 
-@app.get("/{full_path:path}", include_in_schema=False)
+@app.get("/{full_path:path}", include_in_schema=False, dependencies=[Depends(public_tier)])
 async def serve_showcase_spa(full_path: str):
     # Do not intercept API, media, or replay paths
     if (

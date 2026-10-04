@@ -16,10 +16,11 @@ import asyncio
 import json
 import time
 from uuid import UUID
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
 from artemis.config import DB_PATH, TRACES_PATH
 from artemis.runtime import trace_store
+from apps.admin_console.core.access_control import require_admin
 
 try:
     from admin_console.core.state import state
@@ -209,7 +210,7 @@ async def get_session_startup_progress(session_id: str):
         return []
 
 
-@router.post("/api/cleanup")
+@router.post("/api/cleanup", dependencies=[Depends(require_admin)])
 async def cleanup_history_endpoint():
     try:
         from artemis.data_engine.storage import StorageManager
@@ -224,7 +225,7 @@ async def cleanup_history_endpoint():
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/api/sessions/{session_id}/delete")
+@router.post("/api/sessions/{session_id}/delete", dependencies=[Depends(require_admin)])
 async def delete_session_endpoint(session_id: str):
     try:
         from artemis.data_engine.storage import StorageManager
