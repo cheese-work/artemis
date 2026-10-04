@@ -20,7 +20,13 @@ from artemis_client.errors import (
     TaskRejectedError,
     TaskTimeoutError,
 )
-from artemis_client.models import Capabilities, Device, TaskHandle, TaskResult
+from artemis_client.models import (
+    Capabilities,
+    Device,
+    InterruptReason,
+    TaskHandle,
+    TaskResult,
+)
 from artemis_client.transport import JsonTransport
 
 __version__ = "0.1.0"
@@ -33,6 +39,7 @@ __all__ = [
     "Capabilities",
     "ConflictError",
     "Device",
+    "InterruptReason",
     "JsonTransport",
     "NetworkError",
     "NotFoundError",

@@ -31,6 +31,8 @@ from artemis.context import ArtemisContext
 from google.genai import types
 import pytest
 
+pytestmark = pytest.mark.usefixtures("fake_provider_credentials")
+
 
 pytestmark = pytest.mark.usefixtures("dummy_llm_keys")
 
@@ -44,6 +46,8 @@ async def test_video_analyzer_run():
     mock_ctx.llm_config.get_utils.return_value.provider = "google"
     mock_ctx.llm_config.utils.video_analyzer = MagicMock()
     mock_ctx.llm_config.utils.video_analyzer.model = "gemini-3.7-flash"
+    mock_ctx.llm_config.utils.video_analyzer.provider = "google"
+    mock_ctx.llm_config.get_utils.return_value = mock_ctx.llm_config.utils.video_analyzer
     mock_ctx.agent_config = SimpleNamespace(video_analyzer=SimpleNamespace(processing="static"))
 
     # Mock Gemini Client
@@ -97,6 +101,8 @@ async def test_video_analyzer_preserves_thought_signature():
     mock_ctx.llm_config.get_utils.return_value.provider = "google"
     mock_ctx.llm_config.utils.video_analyzer = MagicMock()
     mock_ctx.llm_config.utils.video_analyzer.model = "gemini-3.7-flash"
+    mock_ctx.llm_config.utils.video_analyzer.provider = "google"
+    mock_ctx.llm_config.get_utils.return_value = mock_ctx.llm_config.utils.video_analyzer
     mock_ctx.agent_config = SimpleNamespace(video_analyzer=SimpleNamespace(processing="static"))
 
     # Mock MobileDeviceController
@@ -275,6 +281,8 @@ async def test_video_analyzer_sub_agent_confidence_validation():
     mock_ctx.llm_config.get_utils.return_value.provider = "google"
     mock_ctx.llm_config.utils.video_analyzer = MagicMock()
     mock_ctx.llm_config.utils.video_analyzer.model = "gemini-3.7-flash"
+    mock_ctx.llm_config.utils.video_analyzer.provider = "google"
+    mock_ctx.llm_config.get_utils.return_value = mock_ctx.llm_config.utils.video_analyzer
     mock_ctx.agent_config = SimpleNamespace(video_analyzer=SimpleNamespace(processing="static"))
 
     # Mock MobileDeviceController

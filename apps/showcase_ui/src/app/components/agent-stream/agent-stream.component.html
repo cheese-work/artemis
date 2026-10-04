@@ -121,7 +121,7 @@ limitations under the License.
               {{ session.initial_goal || 'Unnamed Task' }}
             </div>
             <div class="item-footer">
-              <span class="item-id" [title]="session.session_id">ID: {{ session.session_id }}</span>
+              <app-run-id-copy [runId]="session.session_id"></app-run-id-copy>
               <span class="item-date">{{ session.start_time * 1000 | date:'MM/dd/yy' }}</span>
             </div>
           </div>
@@ -178,7 +178,7 @@ limitations under the License.
                 {{ session.initial_goal || 'Unnamed Task' }}
               </div>
               <div class="item-footer">
-                <span class="item-id" [title]="session.session_id">ID: {{ session.session_id }}</span>
+                <app-run-id-copy [runId]="session.session_id"></app-run-id-copy>
                 <span class="item-date">{{ session.start_time * 1000 | date:'MM/dd/yy' }}</span>
               </div>
             </div>
@@ -387,6 +387,16 @@ limitations under the License.
   <!-- Floating Top-Right Badges & Toolbar (Pinned overlay, hidden in empty/initial state) -->
   @if (consolidatedBlocks().length > 0 || showPlanningLoader()) {
     <div class="stream-floating-toolbar">
+      @if (agentService.currentSession()) {
+        @if (agentService.currentSession(); as session) {
+          <app-run-summary-copy
+            [session]="session"
+            [currentStatus]="agentService.agentStatus()"
+            [logs]="agentService.sessionLogs()"
+            [recordingUrl]="session.video_url"
+          />
+        }
+      }
       <!-- Active Architecture Chip: click opens the run info popover -->
       @if (agentService.viewedModel(); as model) {
         <button

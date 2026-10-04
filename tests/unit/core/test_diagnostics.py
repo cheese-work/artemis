@@ -15,6 +15,7 @@
 """Unit tests for Artemis System Diagnostics & Readiness Engine."""
 
 import asyncio
+import json
 from unittest.mock import AsyncMock, Mock
 
 import pytest
@@ -35,6 +36,21 @@ from artemis.core.diagnostics.schema import (
     ProbeStatus,
     SystemReadinessReport,
 )
+
+
+def _clear_credential_inputs(monkeypatch):
+    from artemis.config import settings
+
+    monkeypatch.setattr(type(settings), "get_api_key", lambda _settings, _provider: None)
+    for env_name in (
+        "DEEPSEEK_API_KEY",
+        "GROQ_API_KEY",
+        "OLLAMA_BASE_URL",
+        "VLLM_BASE_URL",
+        "VERTEX_AI_PROJECT",
+        "OPENAI_BASE_URL",
+    ):
+        monkeypatch.delenv(env_name, raising=False)
 
 
 @pytest.mark.asyncio
@@ -97,7 +113,8 @@ async def test_vision_ocr_probe_structure():
     result: ProbeResult = await probe.probe()
     assert isinstance(result, ProbeResult)
     assert result.status == ProbeStatus.PASS
-    assert "configured" in result.metadata
+    assert "is_set" in result.metadata
+    assert "configured" not in result.metadata
 
 
 @pytest.mark.asyncio
@@ -354,8 +371,9 @@ async def test_adb_probe_prefers_unlocked_device_when_one_is_locked(monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_llm_credentials_probe_structure():
+async def test_llm_credentials_probe_structure(monkeypatch):
     """Verify LLMCredentialsProbe returns correct category and schema."""
+    _clear_credential_inputs(monkeypatch)
     probe = LLMCredentialsProbe()
     assert probe.probe_id == "gemini_api_key"
     assert probe.category == ProbeCategory.CREDENTIALS
@@ -365,6 +383,40 @@ async def test_llm_credentials_probe_structure():
     assert isinstance(result, ProbeResult)
     assert result.status in (ProbeStatus.PASS, ProbeStatus.FAIL)
     assert "configured_count" in result.metadata
+
+
+@pytest.mark.asyncio
+async def test_credentials_probe_checks_only_configured_provider_keys(monkeypatch):
+    from pydantic import SecretStr
+
+    from artemis.config import settings
+
+    _clear_credential_inputs(monkeypatch)
+    monkeypatch.setattr(
+        "artemis.core.diagnostics.probes.credentials_probe.parse_llm_config",
+        lambda: {
+            "default": {
+                "provider": "google",
+                "model": "gemini-test",
+                "fallback": {"provider": "google", "model": "gemini-test-fallback"},
+            }
+        },
+    )
+    monkeypatch.setattr(
+        type(settings),
+        "get_api_key",
+        lambda _settings, provider: (
+            SecretStr("unrelated-openai-key") if provider == "openai" else None
+        ),
+    )
+
+    result = await LLMCredentialsProbe().probe()
+
+    assert result.status == ProbeStatus.FAIL
+    assert result.metadata["configured_count"] == 1
+    assert result.metadata["providers"] == [
+        {"provider": "google", "label": "Google", "is_set": False, "masked": None}
+    ]
 
 
 @pytest.mark.asyncio
@@ -393,50 +445,163 @@ async def test_probe_target_serial_forwards_to_adb_probe():
 
 
 @pytest.mark.asyncio
-async def test_credentials_probe_and_dynamic_update():
-    """Verify dynamic API key updates and metadata reflection."""
+async def test_credentials_probe_and_dynamic_update(monkeypatch):
+    """Credential probe responses expose presence and masked previews only."""
+    from pydantic import SecretStr
+
     from artemis.config import settings
 
-    settings.set_api_key("google", "test_gemini_key_1234567890", persist_to_env=False)
+    fake_keys = {
+        "google": "FAKE-SECRET-GOOGLE-1234",
+        "openai": "FAKE-SECRET-OPENAI-2345",
+        "anthropic": "FAKE-SECRET-ANTHROPIC-3456",
+        "openrouter": "FAKE-SECRET-OPENROUTER-4567",
+        "xai": "FAKE-SECRET-XAI-5678",
+        "ocr": "FAKE-SECRET-OCR-6789",
+    }
+    _clear_credential_inputs(monkeypatch)
+    monkeypatch.setattr(
+        type(settings),
+        "get_api_key",
+        lambda _settings, provider: (
+            SecretStr(fake_keys[provider]) if provider in fake_keys else None
+        ),
+    )
+    monkeypatch.setattr("artemis.utils.ocr_api.is_ocr_configured", lambda: True)
 
-    probe = LLMCredentialsProbe()
-    result = await probe.probe()
-    assert result.status == ProbeStatus.PASS
-    assert "current_key" in result.metadata
-    assert result.metadata["current_key"] == "test_gemini_key_1234567890"
-    assert "api_keys" in result.metadata
-    assert result.metadata["api_keys"]["google"] == "test_gemini_key_1234567890"
+    results = [await LLMCredentialsProbe().probe(), await VisionOCRProbe().probe()]
+    report = SystemReadinessReport(
+        overall_ready=True,
+        blocker_count=1,
+        passed_blocker_count=1,
+        probes=results,
+        timestamp=0,
+    )
+    serialized = report.model_dump_json()
+
+    for fake_key in fake_keys.values():
+        assert fake_key not in serialized
+    llm_result, ocr_result = results
+    assert llm_result.metadata["is_set"] is True
+    assert all(provider["is_set"] is True for provider in llm_result.metadata["providers"])
+    assert all("****" in provider["masked"] for provider in llm_result.metadata["providers"])
+    assert ocr_result.metadata["is_set"] is True
+    assert ocr_result.metadata["masked"] == "****6789"
+    for result in results:
+        assert "api_keys" not in result.metadata
+        assert "current_key" not in result.metadata
+        assert "current_gemini_key" not in result.metadata
+        assert all(
+            "raw_key" not in provider and "key" not in provider
+            for provider in result.metadata.get("providers", [])
+        )
+
+
+def test_every_registered_probe_serializes_without_sensitive_metadata():
+    fake_secret = "FAKE-READINESS-SECRET-DO-NOT-RETURN"
+    engine = ReadinessEngine()
+    results = [
+        ProbeResult(
+            id=probe.probe_id,
+            category=probe.category,
+            title=probe.probe_id,
+            status=ProbeStatus.PASS,
+            is_blocker=probe.is_blocker,
+            summary="ready",
+            description="ready",
+            metadata={
+                "is_set": True,
+                "masked": "****TURN",
+                "providers": [
+                    {
+                        "is_set": True,
+                        "masked": "****TURN",
+                        "raw_key": fake_secret,
+                        "key": fake_secret,
+                    }
+                ],
+                "api_keys": {"google": fake_secret},
+                "current_key": fake_secret,
+                "current_gemini_key": fake_secret,
+            },
+        )
+        for probe in engine._probes.values()
+    ]
+    report = SystemReadinessReport(
+        overall_ready=True,
+        blocker_count=1,
+        passed_blocker_count=1,
+        probes=results,
+        timestamp=0,
+    )
+
+    serialized = report.model_dump_json()
+
+    assert fake_secret not in serialized
+    assert {probe.id for probe in report.probes} == set(engine._probes)
+    for probe in report.probes:
+        assert "api_keys" not in probe.metadata
+        assert "current_key" not in probe.metadata
+        assert "current_gemini_key" not in probe.metadata
+        assert all(
+            "raw_key" not in provider and "key" not in provider
+            for provider in probe.metadata["providers"]
+        )
+
+
+@pytest.mark.parametrize("mutate_after_construction", [False, True])
+def test_probe_result_redacts_sensitive_metadata_during_serialization(
+    mutate_after_construction,
+):
+    fake_secret = "FAKE-S0-REVIEW-SECRET-9876"
+    result = ProbeResult(
+        id="review",
+        category=ProbeCategory.CREDENTIALS,
+        title="Review",
+        status=ProbeStatus.FAIL,
+        summary="Failed",
+        description="Check failed.",
+        metadata={"nested": ({"raw_key": fake_secret},), "error": fake_secret},
+    )
+    if mutate_after_construction:
+        result.metadata["nested_after_mutation"] = ({"api_keys": [fake_secret]},)
+        result.metadata["exception"] = fake_secret
+
+    serialized = json.dumps(result.model_dump(mode="json"))
+
+    assert fake_secret not in serialized
 
 
 @pytest.mark.asyncio
 async def test_credentials_probe_ignores_placeholder_openai_endpoint(monkeypatch):
-    from artemis.config import settings
-
-    for key in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GOOGLE_API_KEY"):
-        monkeypatch.setattr(settings, key, None)
+    _clear_credential_inputs(monkeypatch)
     monkeypatch.setenv("OPENAI_BASE_URL", "<custom-openai-endpoint>")
 
     result = await LLMCredentialsProbe().probe()
 
-    assert not any(
-        entry["raw_key"] == "<custom-openai-endpoint>" for entry in result.metadata["providers"]
-    )
+    assert not any(entry["provider"] == "custom" for entry in result.metadata["providers"])
 
 
 @pytest.mark.asyncio
-async def test_credentials_probe_reports_keyless_openai_endpoint(monkeypatch):
-    from artemis.config import settings
+async def test_credentials_probe_requires_key_for_openai_endpoint(monkeypatch):
+    _clear_credential_inputs(monkeypatch)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://openai-proxy.local/v1")
+    from artemis.core.diagnostics.probes import credentials_probe
 
-    for key in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GOOGLE_API_KEY"):
-        monkeypatch.setattr(settings, key, None)
-    monkeypatch.setenv("OPENAI_BASE_URL", "https://openai-proxy.example/v1")
+    monkeypatch.setattr(
+        credentials_probe,
+        "parse_llm_config",
+        lambda: {"default": {"provider": "openai", "model": "fixture"}},
+    )
 
     result = await LLMCredentialsProbe().probe()
 
-    assert any(
-        entry["provider"] == "custom" and entry["raw_key"] == "https://openai-proxy.example/v1"
-        for entry in result.metadata["providers"]
-    )
+    assert result.status is ProbeStatus.FAIL
+    assert result.metadata["providers"] == [
+        {"provider": "openai", "label": "OpenAI", "is_set": False, "masked": None}
+    ]
+    assert "https://openai-proxy.local/v1" not in result.model_dump_json()
 
 
 @pytest.mark.asyncio
@@ -500,7 +665,8 @@ async def test_build_report_turns_crashing_probe_into_fail_result():
     assert crashed.category is ProbeCategory.RUNTIME
     assert crashed.summary == "Probe crashed"
     assert "PermissionError" in crashed.description
-    assert "Permission denied" in crashed.description
+    assert "Permission denied" not in crashed.description
+    assert "/ro/traces" not in crashed.description
     assert crashed.metadata["exception_type"] == "PermissionError"
 
 

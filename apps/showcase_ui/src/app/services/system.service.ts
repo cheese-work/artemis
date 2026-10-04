@@ -16,7 +16,7 @@
 
 import { Injectable, signal, computed, inject, DestroyRef, NgZone } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
-import { Observable, finalize, shareReplay, tap } from 'rxjs';
+import { Observable, finalize, map, shareReplay, tap } from 'rxjs';
 import {
   AdbServerConnectionResponse,
   AdbServerStatus,
@@ -34,6 +34,7 @@ export const SELECTED_DEVICE_SERIAL_KEY = 'artemis.selected_device_serial';
 })
 export class SystemService {
   private http = inject(HttpClient);
+  public configWritesLocked = signal<boolean>(true);
 
   // Core reactive signals
   public readinessReport = signal<SystemReadinessReport | null>(null);
@@ -526,15 +527,17 @@ export class SystemService {
     );
   }
 
-  public currentApiKey = computed<string>(() => {
-    return (this.llmProbe()?.metadata?.['current_key'] as string) || '';
-  });
-
-  public apiKeysMap = computed<Record<string, string>>(() => {
-    return (this.llmProbe()?.metadata?.['api_keys'] as Record<string, string>) || {};
-  });
-
   public modelConfigEnv = signal<ModelConfigEnvResponse | null>(null);
+
+  public fetchCredentialStatus(): Observable<{ config_writes_locked: boolean }> {
+    return this.http.get<{ admin: boolean }>('/api/system/whoami').pipe(
+      map((identity) => ({ config_writes_locked: !identity.admin })),
+      tap({
+        next: (data) => this.configWritesLocked.set(data.config_writes_locked !== false),
+        error: () => this.configWritesLocked.set(true)
+      })
+    );
+  }
 
   /**
    * Fetch current model configuration (artemis.jsonc) and environment (.env) status
@@ -579,6 +582,7 @@ export class SystemService {
           }
           // Refresh model config & env after updating key
           this.fetchModelConfigEnv().subscribe();
+          this.fetchCredentialStatus().subscribe();
         },
         error: (err) => {
           console.error(`Failed to update credentials for ${provider}:`, err);

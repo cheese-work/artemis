@@ -14,17 +14,26 @@
  * limitations under the License.
  */
 
-import { Component, ChangeDetectionStrategy } from '@angular/core';
+import { Component, ChangeDetectionStrategy, inject, ViewChild } from '@angular/core';
 import { RouterOutlet } from '@angular/router';
 import { NavSwitcherComponent } from './components/nav-switcher/nav-switcher.component';
+import { WhatsNewComponent } from './components/whats-new/whats-new.component';
+import { AgentService } from './services/agent.service';
 
 @Component({
   selector: 'app-root',
-  imports: [RouterOutlet, NavSwitcherComponent],
+  imports: [RouterOutlet, NavSwitcherComponent, WhatsNewComponent],
   templateUrl: './app.component.html',
   changeDetection: ChangeDetectionStrategy.Eager,
   styleUrl: './app.component.scss'
 })
 export class AppComponent {
-  title = 'frontend';
+  public title = 'SmartQA';
+  public readonly agentService = inject(AgentService);
+
+  @ViewChild(WhatsNewComponent) private whatsNew?: WhatsNewComponent;
+
+  public openWhatsNew(): void {
+    this.whatsNew?.open();
+  }
 }

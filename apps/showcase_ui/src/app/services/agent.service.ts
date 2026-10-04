@@ -77,8 +77,26 @@ export class AgentService {
   private rawSessions = signal<Session[]>([]);
   private pendingQueue = signal<Session[]>([]);
   public activeTasks = signal<any[]>([]);
+  public whatsNewHasUpdates = signal(false);
+  public whatsNewHasUnread = signal(false);
+  public whatsNewPromptDraft = signal(false);
+  public whatsNewErrorVisible = signal(false);
+  public whatsNewAcceptedRunHandoffs = signal(0);
+  private whatsNewErrorOwners = new Set<symbol>();
+  private statusRequestSequence = 0;
+  private statusAppliedSequence = 0;
+  private whatsNewHandoffRequestBoundaries: number[] = [];
   // Persistent tracking of active/pending sessions across polling boundaries
   private activeSessionTracking = new Map<string, Session>();
+
+  public updateWhatsNewErrorVisibility(owner: symbol, visible: boolean): void {
+    if (visible) {
+      this.whatsNewErrorOwners.add(owner);
+    } else {
+      this.whatsNewErrorOwners.delete(owner);
+    }
+    this.whatsNewErrorVisible.set(this.whatsNewErrorOwners.size > 0);
+  }
 
   public sessions = computed(() => {
     const raw = this.rawSessions();
@@ -202,6 +220,7 @@ export class AgentService {
   public sessionLogs = signal<any[]>([]); // Dynamic array of all raw events received
   public isSessionContentLoading = signal<boolean>(false);
   public agentStatus = signal<string>('idle'); // Status of the agent runner process
+  public hasFetchedStatus = signal<boolean>(false);
   public runningSessionId = signal<string | null>(null);
   public runningGoal = signal<string | null>(null);
   public isPaused = signal<boolean>(false);
@@ -473,6 +492,8 @@ export class AgentService {
             obs.error({ error: { detail: res.error || 'Task submission was rejected' } });
             return;
           }
+          this.whatsNewHandoffRequestBoundaries.push(this.statusRequestSequence);
+          this.whatsNewAcceptedRunHandoffs.update(count => count + 1);
           if (res && res.tasks && res.tasks.length > 0) {
             const newSessionId = res.tasks[0].session_id;
             if (newSessionId) {
@@ -557,6 +578,7 @@ export class AgentService {
       (s) => (s.status === 'running' || s.status === 'paused') && s.session_id !== targetSessionId
     );
 
+    this.invalidatePendingStatusResponses();
     // Apply optimistic updates: only set idle if effectiveStopAll is true or no other tasks are running
     if (effectiveStopAll || otherRunningSessions.length === 0) {
       this.agentStatus.set('idle');
@@ -632,6 +654,7 @@ export class AgentService {
           return;
         }
         const resumedSessionId = this.runningSessionId();
+        this.invalidatePendingStatusResponses();
         this.isPaused.set(false);
         this.pausedError.set(null);
         this.agentStatus.set('running');
@@ -884,6 +907,7 @@ export class AgentService {
           }
 
           if (eventType === 'session_started') {
+            this.invalidatePendingStatusResponses();
             this.agentStatus.set('running');
             if (parsedData?.session_id) {
               this.runningSessionId.set(parsedData.session_id);
@@ -901,6 +925,7 @@ export class AgentService {
           }
 
           if (eventType === 'session_ended') {
+            this.invalidatePendingStatusResponses();
             const endedId = evtSessionId || this.runningSessionId();
             if (endedId) {
               this.applySessionEndedStatus(endedId, parsedData);
@@ -953,6 +978,7 @@ export class AgentService {
                 !this.userPinnedSessionId() &&
                 (!curId || String(targetSid).trim().toLowerCase() !== String(curId).trim().toLowerCase())
               ) {
+                this.invalidatePendingStatusResponses();
                 this.agentStatus.set('running');
                 this.runningSessionId.set(targetSid);
                 this.selectSession(targetSid, false);
@@ -982,6 +1008,7 @@ export class AgentService {
           }
 
           if (eventType === 'task_paused') {
+            this.invalidatePendingStatusResponses();
             this.isPaused.set(true);
             this.isRetrying.set(false);
             this.agentStatus.set('paused');
@@ -1002,6 +1029,7 @@ export class AgentService {
           }
 
           if (eventType === 'task_resumed') {
+            this.invalidatePendingStatusResponses();
             this.isPaused.set(false);
             this.isRetrying.set(false);
             this.pausedError.set(null);
@@ -1113,9 +1141,10 @@ export class AgentService {
                   && log.data?.trace_id === parsedData.trace_id
                 );
                 if (existingTraceIndex > -1) {
-                  const deduplicatedLogs = [...updatedLogs];
-                  deduplicatedLogs[existingTraceIndex] = nextLog;
-                  return deduplicatedLogs;
+                  return [
+                    ...updatedLogs.filter((_, index) => index !== existingTraceIndex),
+                    nextLog
+                  ];
                 }
               }
 
@@ -1407,9 +1436,7 @@ export class AgentService {
       };
       if (existingIndex < 0) return [...logs, retryLog];
 
-      const updatedLogs = [...logs];
-      updatedLogs[existingIndex] = retryLog;
-      return updatedLogs;
+      return [...logs.filter((_, index) => index !== existingIndex), retryLog];
     });
   }
 
@@ -1543,13 +1570,20 @@ export class AgentService {
     this.lastActiveTasksSignature = null;
   }
 
+  private invalidatePendingStatusResponses(): void {
+    this.statusAppliedSequence = this.statusRequestSequence;
+  }
+
   /**
    * Fetch current agent runner process status
    */
   public fetchStatus(): void {
+    const requestSequence = ++this.statusRequestSequence;
     this.http.get<any>('/api/status').subscribe({
       next: (data) => {
+        if (requestSequence <= this.statusAppliedSequence) return;
         if (data && data.status) {
+          this.statusAppliedSequence = requestSequence;
           const oldStatus = this.agentStatus();
           const oldRunningSessionId = this.runningSessionId();
           const isActive = data.status === 'running' || data.status === 'paused';
@@ -1629,15 +1663,33 @@ export class AgentService {
               this.selectSession(data.session_id, false);
             }
           }
+          this.hasFetchedStatus.set(true);
+          this.resolveWhatsNewRunHandoffs(requestSequence);
         }
       },
       error: (err) => {
+        if (requestSequence <= this.statusAppliedSequence) return;
+        this.statusAppliedSequence = requestSequence;
         console.error('Failed to fetch status from backend:', err);
         this.agentStatus.set('offline');
         this.runningSessionId.set(null);
         this.runningGoal.set(null);
       }
     });
+  }
+
+  private resolveWhatsNewRunHandoffs(requestSequence: number): void {
+    let resolvedCount = 0;
+    while (
+      this.whatsNewHandoffRequestBoundaries.length > 0
+      && this.whatsNewHandoffRequestBoundaries[0] < requestSequence
+    ) {
+      this.whatsNewHandoffRequestBoundaries.shift();
+      resolvedCount++;
+    }
+    if (resolvedCount > 0) {
+      this.whatsNewAcceptedRunHandoffs.update(count => Math.max(0, count - resolvedCount));
+    }
   }
 
   /**

@@ -353,6 +353,97 @@ describe('stream aggregator step ownership', () => {
   };
   const tap = { trace_id: 'trace-tap-3', type: 'action', name: 'tap', timestamp: 1788374289.37, payload: { args: { action: 'tap' } } };
 
+  it('merges number-only updates into the step identity they previously introduced', () => {
+    const failedTool = { trace_id: 'tool-3', name: 'failed_tool', status: 'failed' };
+    const blocks = consolidateLogsToBlocks([
+      {
+        type: 'step_updated',
+        data: { step_id: 'step-3', step_number: 3, action_taken: { action: 'tap' } }
+      },
+      {
+        type: 'step_updated',
+        data: { step_number: 3, generic_tools: [failedTool] }
+      },
+      {
+        type: 'step_updated',
+        data: { step_id: 'step-3', step_number: 3, status: 'completed', generic_tools: [{ ...failedTool, status: 'success' }] }
+      }
+    ]);
+
+    const steps = blocks.filter((block) => block.type === 'step');
+    expect(steps.length).toBe(1);
+    expect(steps[0].data.step_id).toBe('step-3');
+    expect(steps[0].data.status).toBe('completed');
+    expect(steps[0].data.generic_tools[0].status).toBe('success');
+  });
+
+  it('joins ID-only and number-only blocks when a later update bridges them in either order', () => {
+    const failedTool = { trace_id: 'tool-3', name: 'failed_tool', status: 'failed' };
+    const recoveredTool = { ...failedTool, status: 'success' };
+    const bridge = { step_id: 'id-3', step_number: 3, generic_tools: [recoveredTool] };
+    const arrivals = [
+      [
+        { type: 'step_updated', data: { step_id: 'id-3', action_taken: { action: 'tap' } } },
+        { type: 'step_updated', data: { step_number: 3, generic_tools: [failedTool] } },
+        { type: 'step_updated', data: bridge }
+      ],
+      [
+        { type: 'step_updated', data: { step_number: 3, generic_tools: [failedTool] } },
+        { type: 'step_updated', data: { step_id: 'id-3', action_taken: { action: 'tap' } } },
+        { type: 'step_updated', data: bridge }
+      ]
+    ];
+
+    for (const logs of arrivals) {
+      const steps = consolidateLogsToBlocks(logs).filter((block) => block.type === 'step');
+
+      expect(steps.length).toBe(1);
+      expect(steps[0].data.step_id).toBe('id-3');
+      expect(steps[0].data.step_number).toBe(3);
+      expect(steps[0].data.generic_tools[0].status).toBe('success');
+    }
+  });
+
+  it('does not join different explicit step IDs just because their numbers match', () => {
+    const blocks = consolidateLogsToBlocks([
+      { type: 'step_updated', data: { step_id: 'id-3a', step_number: 3, action_taken: { action: 'tap' } } },
+      { type: 'step_updated', data: { step_id: 'id-3b', step_number: 3, action_taken: { action: 'swipe' } } }
+    ]);
+    const steps = blocks.filter((block) => block.type === 'step');
+
+    expect(steps.length).toBe(2);
+    expect(steps.map((step) => step.data.step_id).sort()).toEqual(['id-3a', 'id-3b']);
+  });
+
+  it('recovers an anonymous trace without merging explicit steps that share its number', () => {
+    const failedTool = {
+      trace_id: 'anonymous-trace',
+      type: 'tool',
+      name: 'anonymous_tool',
+      status: 'failed',
+      payload: { error: 'PRIVATE_ERROR_SENTINEL' }
+    };
+    const logs = [
+      { type: 'step_updated', data: { step_id: 'A', step_number: 3, action_taken: { action: 'tap' } } },
+      { type: 'step_updated', data: { step_id: 'B', step_number: 3, action_taken: { action: 'swipe' } } },
+      { type: 'step_updated', data: { step_number: 3, generic_tools: [failedTool] } },
+      {
+        type: 'step_updated',
+        data: { step_number: 3, generic_tools: [{ ...failedTool, status: 'success', payload: { result: 'ok' } }] }
+      }
+    ];
+
+    const steps = consolidateLogsToBlocks(logs).filter((block) => block.type === 'step');
+
+    expect(steps.map((step) => step.id)).toEqual(['step-A', 'step-B', 'step-3']);
+    expect(steps[0].data.action_taken.action).toBe('tap');
+    expect(steps[1].data.action_taken.action).toBe('swipe');
+    expect(steps[2].data.generic_tools).toEqual([
+      jasmine.objectContaining({ trace_id: 'anonymous-trace', status: 'success' })
+    ]);
+    expect(JSON.stringify(steps)).not.toContain('PRIVATE_ERROR_SENTINEL');
+  });
+
   it('does not fold a step without streamed text into an earlier untagged stream block', () => {
     const blocks = consolidateLogsToBlocks([
       plannerStream,
@@ -637,4 +728,3 @@ describe('stream aggregator single source of truth (Option A)', () => {
     expect(updatedBlocks[0].data.isCompleted).toBeTrue();
   });
 });
-

@@ -14,12 +14,12 @@
 
 import asyncio
 import json
-import time
+import sqlite3
 from uuid import UUID
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
 from artemis.config import DB_PATH, TRACES_PATH
-from artemis.runtime import trace_store
+from apps.admin_console.core.access_control import require_admin
 
 try:
     from admin_console.core.state import state
@@ -51,6 +51,8 @@ async def list_sessions():
 
 
 def _list_sessions_sync():
+    # Pure read: run outcomes are owned by the lifecycle authority, which a
+    # listing never calls (a vanished worker is swept by the queue worker).
     rows = session_repo.get_all_sessions()
     video_rec_map = session_repo.get_video_recordings_map()
     latest_recordings = session_repo.get_latest_video_recordings_map()
@@ -58,19 +60,8 @@ def _list_sessions_sync():
     video_idx = media_service.build_video_index()
     default_model_info = model_service.get_active_model_info()
 
-    orphaned_ids = []
     unresolved_profiles = []
     result = []
-
-    try:
-        from artemis.runtime import DeviceExecutionLock
-
-        active_owners = DeviceExecutionLock.get_active_owners()
-        active_owner_sids = {
-            str(owner.session_id) for owner in active_owners.values() if owner.session_id
-        }
-    except Exception:
-        active_owner_sids = set()
 
     for row_dict in rows:
         s_id = str(row_dict.get("session_id"))
@@ -89,18 +80,6 @@ def _list_sessions_sync():
             device_id = recording.get("device_id")
         row_dict["device_id"] = device_id
         row_dict["device_serial"] = device_id
-
-        if row_dict.get("status") == "running":
-            is_active = (
-                s_id in active_owner_sids
-                or s_id in state.active_connections
-                or (state.is_running and s_id == str(state.active_session_id))
-            )
-            worker_is_alive = session_repo.process_is_alive(row_dict.get("pid"))
-            if not is_active and not worker_is_alive:
-                row_dict["status"] = "failed"
-                row_dict["end_time"] = time.time()
-                orphaned_ids.append(s_id)
 
         recording_status = str((recording or {}).get("status") or "unavailable")
         resolved_v_url = (
@@ -145,25 +124,6 @@ def _list_sessions_sync():
             if sess_profile:
                 row_dict["model_info"] = model_service.get_active_model_info(sess_profile)
 
-    if orphaned_ids:
-        try:
-            harvested = session_repo.harvest_orphaned_sessions(orphaned_ids)
-            print(f"[list_sessions] Auto-harvested {harvested} orphaned running session(s).")
-            try:
-                for o_id in orphaned_ids:
-                    if trace_store.read_status(str(o_id)):
-                        trace_store.update_trace_status(
-                            str(o_id),
-                            "failed",
-                            error="Process terminated unexpectedly (auto-harvested).",
-                        )
-            except OSError as e:
-                # read_status never raises; this guards the lock/write side
-                # of update_trace_status.
-                print(f"[list_sessions] Could not mark harvested traces failed: {e}")
-        except Exception as e:
-            print(f"[list_sessions] Failed to update orphaned sessions: {e}")
-
     return result
 
 
@@ -174,6 +134,19 @@ async def get_session_details(session_id: str):
     if not row:
         raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
     return dict(row)
+
+
+@router.get("/api/sessions/{session_id}/events")
+async def get_session_events(session_id: str):
+    """Lifecycle events recorded for a session (``session_ended``, ``run_interrupted``).
+
+    The durable record behind the live stream: a client that was offline when an
+    event was broadcast replays it from here, keyed by ``event_id``.
+    """
+    try:
+        return await asyncio.to_thread(session_repo.lifecycle.events, session_id)
+    except sqlite3.Error as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
 @router.get("/api/sessions/{session_id}/usage")
@@ -209,7 +182,7 @@ async def get_session_startup_progress(session_id: str):
         return []
 
 
-@router.post("/api/cleanup")
+@router.post("/api/cleanup", dependencies=[Depends(require_admin)])
 async def cleanup_history_endpoint():
     try:
         from artemis.data_engine.storage import StorageManager
@@ -224,7 +197,7 @@ async def cleanup_history_endpoint():
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/api/sessions/{session_id}/delete")
+@router.post("/api/sessions/{session_id}/delete", dependencies=[Depends(require_admin)])
 async def delete_session_endpoint(session_id: str):
     try:
         from artemis.data_engine.storage import StorageManager

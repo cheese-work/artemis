@@ -16,7 +16,7 @@ import asyncio
 from contextlib import suppress
 import json
 from typing import Any
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from artemis.core.diagnostics import readiness_engine
 from artemis.runtime import DeviceExecutionLock, device_pool
@@ -28,7 +28,7 @@ try:
     from admin_console.services.ipc_service import ipc_service
     from admin_console.services.model_service import model_service
     from admin_console.services.task_preset_catalog import task_recommendation_engine
-    from admin_console.services.task_queue_service import task_queue_service
+    from admin_console.services.task_queue_service import ServerDraining, task_queue_service
 except ImportError:
     from apps.admin_console.core.state import state
     from apps.admin_console.database.repositories.session_repository import session_repo
@@ -36,10 +36,18 @@ except ImportError:
     from apps.admin_console.services.ipc_service import ipc_service
     from apps.admin_console.services.model_service import model_service
     from apps.admin_console.services.task_preset_catalog import task_recommendation_engine
-    from apps.admin_console.services.task_queue_service import task_queue_service
+    from apps.admin_console.services.task_queue_service import ServerDraining, task_queue_service
 
 
 router = APIRouter(tags=["tasks"])
+
+
+def _draining_error(exc: ServerDraining) -> HTTPException:
+    return HTTPException(
+        status_code=503,
+        detail={"code": exc.code, "message": str(exc)},
+        headers={"Retry-After": str(exc.retry_after_seconds)},
+    )
 
 
 @router.get("/api/tasks/presets")
@@ -113,6 +121,14 @@ async def run_task(request: RunRequest):
                 "total_queued": len(state.queue_tasks),
             }
 
+    # Accepted retries returned above; anything past this point is new work.
+    # Refuse before spending device probes on it. enqueue_tasks re-checks after
+    # its own awaits, which is the authoritative admission point.
+    try:
+        task_queue_service.require_admission_open()
+    except ServerDraining as exc:
+        raise _draining_error(exc) from exc
+
     # Reject an explicit unknown/offline target before running the more
     # expensive readiness probe. Besides producing a stable SDK response,
     # this avoids probing the currently active device for a serial that can
@@ -165,21 +181,24 @@ async def run_task(request: RunRequest):
         if verified_serial and not request.device_serial:
             target_serial = verified_serial
 
-    return await task_queue_service.enqueue_tasks(
-        incoming_goals,
-        profile=request.profile or "flash",
-        expected_output=request.expected_output,
-        enable_outputter=request.enable_outputter,
-        verification_level=request.verification_level,
-        explorer_mode=request.explorer_mode,
-        locked_app_package=request.locked_app_package,
-        app_path=request.app_path,
-        device_serial=target_serial,
-        ingress=request.ingress or "frontend",
-        session_id=request.session_id,
-        conversation_id=request.conversation_id,
-        run_id=request.run_id,
-    )
+    try:
+        return await task_queue_service.enqueue_tasks(
+            incoming_goals,
+            profile=request.profile or "flash",
+            expected_output=request.expected_output,
+            enable_outputter=request.enable_outputter,
+            verification_level=request.verification_level,
+            explorer_mode=request.explorer_mode,
+            locked_app_package=request.locked_app_package,
+            app_path=request.app_path,
+            device_serial=target_serial,
+            ingress=request.ingress or "frontend",
+            session_id=request.session_id,
+            conversation_id=request.conversation_id,
+            run_id=request.run_id,
+        )
+    except ServerDraining as exc:
+        raise _draining_error(exc) from exc
 
 
 @router.get("/api/run/defaults")

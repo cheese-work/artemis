@@ -29,6 +29,7 @@ from artemis.config.paths import get_temp_dir
 from artemis.context import ArtemisContext
 from artemis.drivers.factory import get_driver
 from artemis.drivers.base import BaseDeviceDriver
+from artemis.drivers.types import DeviceDisconnectedError, device_disconnect_reason
 from artemis.controllers.device_controller import ScreenDataResponse
 from artemis.controllers.types import (
     SwipeRequest,
@@ -248,7 +249,14 @@ class UnifiedMobileController:
                 "input keycombination 113 29 && input keyevent 67 && "
                 "input keyevent 67 67 67 67 67 67 67 67 67 67 67 67 67 67 67 67 67 67 67 67"
             )
-            await self._driver.execute_shell(clear_cmd)
+            output = await self._driver.execute_shell(clear_cmd)
+            # execute_shell reports failures as "Error: ..." text; a lost device
+            # must stop the run, not fall back to 30 more doomed key presses.
+            reason = device_disconnect_reason(self._driver.device_id, str(output))
+            if reason is not None:
+                raise DeviceDisconnectedError(self._driver.device_id, reason)
+        except DeviceDisconnectedError:
+            raise
         except Exception:
             for _ in range(30):
                 await self._driver.press_key("delete")

@@ -59,17 +59,20 @@ DIAGNOSIS_TIMEOUT_SECONDS = 40.0
 #: Per-provider budget for a live API key verification request.
 CREDENTIAL_CHECK_TIMEOUT_SECONDS = 12.0
 
-#: Providers the credentials probe lists by their *endpoint URL* rather than a
-#: key (``OPENAI_BASE_URL`` / ``OLLAMA_BASE_URL`` / ``VLLM_BASE_URL``). Their
-#: "raw_key" is that URL: verification must call the endpoint, not treat the
-#: URL as an API key.
+#: Providers verified by their configured endpoint URL rather than an API key.
 _ENDPOINT_PROVIDERS = frozenset({"custom", "ollama", "vllm"})
 
-#: Metadata keys that carry credential material. The console UI needs them to
-#: prefill its settings form; an MCP caller is an LLM context and must never
-#: see them.
+#: Metadata keys that carry credential material and must never reach an MCP caller.
 _SECRET_METADATA_KEYS = frozenset(
-    {"raw_key", "key", "api_keys", "current_key", "current_gemini_key"}
+    {
+        "raw_key",
+        "key",
+        "api_keys",
+        "current_key",
+        "current_gemini_key",
+        "error",
+        "exception",
+    }
 )
 
 _ERROR_MARKERS = ("traceback", "error", "exception", "failed", "critical")
@@ -96,14 +99,14 @@ def _scrub(value: Any) -> Any:
     if isinstance(value, dict):
         cleaned: dict[str, Any] = {}
         for key, item in value.items():
-            if key in _SECRET_METADATA_KEYS:
+            if isinstance(key, str) and key.casefold() in _SECRET_METADATA_KEYS:
                 continue
             if key == "installed_packages" and isinstance(item, list):
                 cleaned["installed_package_count"] = len(item)
                 continue
             cleaned[key] = _scrub(item)
         return cleaned
-    if isinstance(value, list):
+    if isinstance(value, (list, tuple)):
         return [_scrub(item) for item in value]
     return value
 
@@ -371,28 +374,53 @@ async def _handle_launch_avd(
 
 
 async def _verify_credentials(cred_result: ProbeResult | None) -> list[dict[str, Any]]:
-    """Check every configured key against its provider; the keys never leave this function."""
+    """Check configured credentials from process settings, never probe metadata."""
     if cred_result is None:
         return []
-    metadata = cred_result.metadata
-    api_keys = metadata.get("api_keys") or {}
+    from artemis.config import settings
+
+    endpoint_settings = {
+        "custom": settings.OPENAI_BASE_URL or os.environ.get("OPENAI_BASE_URL"),
+        "ollama": settings.OLLAMA_BASE_URL or os.environ.get("OLLAMA_BASE_URL"),
+        "vllm": settings.VLLM_BASE_URL or os.environ.get("VLLM_BASE_URL"),
+    }
+    environment_keys = {
+        "deepseek": "DEEPSEEK_API_KEY",
+        "groq": "GROQ_API_KEY",
+        "vertexai": "VERTEX_AI_PROJECT",
+    }
     targets: list[tuple[str, str, str, str | None]] = []
-    for entry in metadata.get("providers") or []:
+    for entry in cred_result.metadata.get("providers") or []:
         provider = str(entry.get("provider") or "").strip()
-        raw_key = entry.get("raw_key") or api_keys.get(provider) or ""
-        if not provider or not raw_key:
+        if not provider or not entry.get("is_set"):
             continue
-        base_url = entry.get("base_url")
+        if provider in _ENDPOINT_PROVIDERS:
+            credential_value = endpoint_settings.get(provider)
+            base_url = None
+        else:
+            secret = settings.get_api_key(provider)
+            credential_value = (
+                secret.get_secret_value()
+                if secret
+                else os.environ.get(environment_keys.get(provider, ""))
+            )
+            base_url = {
+                "openai": settings.OPENAI_BASE_URL,
+                "anthropic": settings.ANTHROPIC_BASE_URL,
+            }.get(provider)
+        if not credential_value:
+            continue
         targets.append(
             (
                 provider,
                 str(entry.get("label") or provider),
-                str(raw_key),
+                str(credential_value),
                 str(base_url) if base_url else None,
             )
         )
-    if api_keys.get("ocr"):
-        targets.append(("ocr", "Vision OCR", str(api_keys["ocr"]), None))
+    ocr_secret = settings.get_api_key("ocr")
+    if ocr_secret:
+        targets.append(("ocr", "Vision OCR", ocr_secret.get_secret_value(), None))
     if not targets:
         return []
 

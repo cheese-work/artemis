@@ -34,8 +34,8 @@ Together the two guards make silent drift between the second declaration
 surface and the canonical manifest impossible in either direction.
 """
 
-import inspect
 import json
+from inspect import cleandoc
 from pathlib import Path
 
 import pytest
@@ -111,6 +111,13 @@ async def _adb_server_tools() -> dict:
     return {t.name: t for t in tools}
 
 
+def _normalized_description(description: str | None) -> str | None:
+    if description is None:
+        return None
+    normalized = cleandoc(description)
+    return f"{normalized}\n" if "\n" in normalized else normalized
+
+
 def _prop(tool, name: str) -> dict:
     props = tool.inputSchema.get("properties", {})
     assert name in props, f"tool '{tool.name}' lost parameter '{name}'"
@@ -120,22 +127,17 @@ def _prop(tool, name: str) -> dict:
 # --- Fixture pin -----------------------------------------------------------------------
 
 
-def _pinned_form(description: str | None, input_schema: dict) -> dict:
-    """Schema as pinned in the fixture, independent of the interpreter's docstring handling.
-
-    Python 3.13 strips docstring indentation at compile time; 3.12 keeps it, so the same
-    tool description differs in leading whitespace between interpreters. ``cleandoc``
-    gives both the identical canonical text; every other schema field is compared as-is.
-    """
-    return {"description": inspect.cleandoc(description or ""), "inputSchema": input_schema}
-
-
 @pytest.mark.asyncio
 async def test_adb_server_manifest_matches_fixture():
-    raw = json.loads((FIXTURES / "adb_server_manifest.json").read_text(encoding="utf-8"))
-    expected = {n: _pinned_form(v["description"], v["inputSchema"]) for n, v in raw.items()}
+    expected = json.loads((FIXTURES / "adb_server_manifest.json").read_text(encoding="utf-8"))
     tools = await _adb_server_tools()
-    generated = {name: _pinned_form(t.description, t.inputSchema) for name, t in tools.items()}
+    generated = {
+        name: {
+            "description": _normalized_description(t.description),
+            "inputSchema": t.inputSchema,
+        }
+        for name, t in tools.items()
+    }
     assert set(generated) == set(expected), FIXTURE_HINT
     for name in expected:
         assert generated[name] == expected[name], f"adb_server tool '{name}': {FIXTURE_HINT}"

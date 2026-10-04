@@ -1,6 +1,6 @@
-# ✨ Artemis Showcase & User Workspace UI
+# ✨ SmartQA Workspace UI
 
-A modern, highly aesthetic presentation and interaction frontend built with **Angular 19** and **SCSS** for showcasing the Artemis mobile autonomous agent.
+The browser interface for SmartQA, built with **Angular 22** and **SCSS**. The repository, packages, CLI, backend, and API remain Artemis.
 
 ## 🎨 Visual Design Highlights
 
@@ -13,7 +13,8 @@ A modern, highly aesthetic presentation and interaction frontend built with **An
 ## 🚀 How to Run
 
 ### Prerequisites
-- Node.js (>= 18)
+- Node.js `^22.22.3`, `^24.15.0`, or `^26.0.0`
+- TypeScript `>=6.0.0 <6.1.0`
 - Backend API running on `http://localhost:8000` (via `apps/admin_console` or `artemis ui`)
 
 ### Development Server

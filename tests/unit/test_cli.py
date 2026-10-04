@@ -14,6 +14,7 @@
 
 """Unit tests for ARTEMIS Unified CLI application."""
 
+from click import unstyle
 from typer.testing import CliRunner
 import pytest
 from artemis.interfaces.cli.main import app
@@ -78,21 +79,21 @@ def test_cli_run_help():
     """Verify 'artemis run --help' displays execution options."""
     result = runner.invoke(app, ["run", "--help"])
     assert result.exit_code == 0
-    assert "--profile" in result.output
-    assert "--locked-app" in result.output
-    assert "--traces-path" in result.output
-    assert "--verification-level" in result.output
-    assert "--explorer-pro-mode" in result.output
+    assert "--profile" in unstyle(result.output)
+    assert "--locked-app" in unstyle(result.output)
+    assert "--traces-path" in unstyle(result.output)
+    assert "--verification-level" in unstyle(result.output)
+    assert "--explorer-pro-mode" in unstyle(result.output)
 
 
 def test_cli_batch_help():
     """Verify 'artemis batch --help' displays batch options."""
     result = runner.invoke(app, ["batch", "--help"])
     assert result.exit_code == 0
-    assert "--file" in result.output
-    assert "--delay" in result.output
-    assert "--verification-level" in result.output
-    assert "--explorer-pro-mode" in result.output
+    assert "--file" in unstyle(result.output)
+    assert "--delay" in unstyle(result.output)
+    assert "--verification-level" in unstyle(result.output)
+    assert "--explorer-pro-mode" in unstyle(result.output)
 
 
 def test_cli_batch_forwards_pro_tuning_in_standalone_mode(monkeypatch):
@@ -200,8 +201,8 @@ def test_cli_mcp_help():
     """Verify 'artemis mcp --help' lists server options."""
     result = runner.invoke(app, ["mcp", "--help"])
     assert result.exit_code == 0
-    assert "--type" in result.output
-    assert "--generate-config" in result.output
+    assert "--type" in unstyle(result.output)
+    assert "--generate-config" in unstyle(result.output)
 
 
 def test_cli_mcp_generate_config():
@@ -564,26 +565,26 @@ def test_cli_restart_help():
     """Verify 'artemis restart --help' displays lifecycle options."""
     result = runner.invoke(app, ["restart", "--help"])
     assert result.exit_code == 0
-    assert "--port" in result.output
-    assert "--host" in result.output
-    assert "--force" in result.output
-    assert "--daemon" in result.output
-    assert "--open" in result.output
+    assert "--port" in unstyle(result.output)
+    assert "--host" in unstyle(result.output)
+    assert "--force" in unstyle(result.output)
+    assert "--daemon" in unstyle(result.output)
+    assert "--open" in unstyle(result.output)
 
 
 def test_cli_stop_help():
     """Verify 'artemis stop --help' displays stop options."""
     result = runner.invoke(app, ["stop", "--help"])
     assert result.exit_code == 0
-    assert "--port" in result.output
-    assert "--force" in result.output
+    assert "--port" in unstyle(result.output)
+    assert "--force" in unstyle(result.output)
 
 
 def test_cli_status_help():
     """Verify 'artemis status --help' displays status options."""
     result = runner.invoke(app, ["status", "--help"])
     assert result.exit_code == 0
-    assert "--port" in result.output
+    assert "--port" in unstyle(result.output)
 
 
 def test_cli_status_offline(monkeypatch):
