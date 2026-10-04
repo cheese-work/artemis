@@ -270,6 +270,23 @@ async def require_lifecycle_token(request: Request) -> None:
         )
 
 
+_FORWARDING_HEADERS = (b"x-forwarded-for", b"forwarded", b"x-real-ip", b"cf-connecting-ip")
+
+
+async def require_effective_loopback(request: Request) -> None:
+    """Admit only a direct local caller: loopback peer, no proxy forwarding."""
+    forwarded = any(
+        name.lower() in _FORWARDING_HEADERS for name, _value in request.scope.get("headers", ())
+    )
+    if forwarded or not _is_loopback_request(request):
+        raise AdminAPIError(
+            403,
+            "Deploy drain controls are local-only.",
+            "loopback_required",
+            "Call the drain endpoint directly from the server host.",
+        )
+
+
 _PUBLIC_GET_PATHS = {
     "/api/system/readiness",
     "/api/system/adb/server",
@@ -352,6 +369,8 @@ def route_tier(path: str, methods: set[str], is_websocket: bool = False) -> str 
         return "public" if path == "/api/device-bridge/session" else None
     if path == "/api/system/shutdown" and methods == {"POST"}:
         return "lifecycle"
+    if path == "/api/system/drain" and methods in ({"GET"}, {"POST"}, {"DELETE"}):
+        return "loopback"
     if path == "/api/v1" or path.startswith("/api/v1/"):
         return "public"
     if methods == {"GET"} and path in _PUBLIC_GET_PATHS:

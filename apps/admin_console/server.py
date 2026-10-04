@@ -90,6 +90,7 @@ try:
     from admin_console.database.repositories.trace_repository import trace_repo
     from admin_console.routers import (
         device_bridge,
+        drain,
         media,
         replay,
         sessions,
@@ -109,6 +110,7 @@ except ImportError:
     from apps.admin_console.database.repositories.session_repository import session_repo
     from apps.admin_console.routers import (
         device_bridge,
+        drain,
         media,
         replay,
         sessions,
@@ -296,6 +298,7 @@ app.include_router(steps.router)
 app.include_router(tasks.router)
 app.include_router(replay.router)
 app.include_router(system.router)
+app.include_router(drain.router)
 app.include_router(device_bridge.router)
 
 # Mount cloud gateway router for Frappe / Cloud integration if present
