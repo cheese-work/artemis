@@ -5,6 +5,7 @@ import { EMPTY, Subscription, catchError, switchMap, timer } from 'rxjs';
 import { Computer, EnrollmentCode, HostsResponse } from '../../core/models/host.model';
 import { AdminConfigService } from '../../services/admin-config.service';
 import { HostsService } from '../../services/hosts.service';
+import { UsbDeviceRelayService } from '../../services/usb-device-relay.service';
 import {
   COMPUTER_STRINGS,
   STATUS_LABEL,
@@ -30,6 +31,7 @@ export class ComputersComponent implements OnInit {
   private readonly hosts = inject(HostsService);
   private readonly adminConfig = inject(AdminConfigService);
   private readonly destroyRef = inject(DestroyRef);
+  public readonly relay = inject(UsbDeviceRelayService);
 
   public readonly strings = COMPUTER_STRINGS;
   public readonly statusLabel = STATUS_LABEL;

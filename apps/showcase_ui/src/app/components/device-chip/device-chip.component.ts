@@ -31,5 +31,9 @@ import { deviceChipView } from '../../utils/device-chip.util';
 export class DeviceChipComponent {
   public readonly device = input.required<RegistryDevice>();
   public readonly computers = input<Computer[]>([]);
-  public readonly view = computed(() => deviceChipView(this.device(), this.computers()));
+  /** The bridge serial this browser tab holds, if any. */
+  public readonly ownBrowserSerial = input<string | null>(null);
+  public readonly view = computed(() =>
+    deviceChipView(this.device(), this.computers(), this.ownBrowserSerial())
+  );
 }

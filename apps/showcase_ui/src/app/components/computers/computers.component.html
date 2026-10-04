@@ -85,7 +85,7 @@
         <h3 class="phones-heading">Phones</h3>
         <ul class="phone-list">
           @for (device of current.devices; track device.computer_id + ':' + device.serial) {
-            <li><app-device-chip [device]="device" [computers]="current.hosts" /></li>
+            <li><app-device-chip [device]="device" [computers]="current.hosts" [ownBrowserSerial]="relay.state().serial" /></li>
           }
         </ul>
       }

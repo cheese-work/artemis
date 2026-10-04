@@ -29,7 +29,8 @@ export const COMPUTER_STRINGS = {
   confirmRevoke: 'Revoke computer',
   cancel: 'Cancel',
   noPhones: 'No phones found on this computer.',
-  thisBrowser: 'This browser'
+  thisBrowser: 'This browser',
+  aBrowser: 'A browser'
 } as const;
 
 const REASONS: Record<string, string> = {

@@ -2,6 +2,7 @@ import { ChangeDetectionStrategy, Component, DestroyRef, OnInit, inject, signal 
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { HostsResponse } from '../../core/models/host.model';
 import { HostsService } from '../../services/hosts.service';
+import { UsbDeviceRelayService } from '../../services/usb-device-relay.service';
 import { DeviceChipComponent } from '../device-chip/device-chip.component';
 
 /** Phones people can use: shared by a computer or plugged into this browser. Silent when computers are off. */
@@ -16,7 +17,7 @@ import { DeviceChipComponent } from '../device-chip/device-chip.component';
           <h4>Phones shared with SmartQA</h4>
           <ul>
             @for (device of current.devices; track device.computer_id + ':' + device.serial) {
-              <li><app-device-chip [device]="device" [computers]="current.hosts" /></li>
+              <li><app-device-chip [device]="device" [computers]="current.hosts" [ownBrowserSerial]="relay.state().serial" /></li>
             }
           </ul>
         </section>
@@ -34,6 +35,7 @@ import { DeviceChipComponent } from '../device-chip/device-chip.component';
 export class RegistryPhonesComponent implements OnInit {
   private readonly hosts = inject(HostsService);
   private readonly destroyRef = inject(DestroyRef);
+  protected readonly relay = inject(UsbDeviceRelayService);
   public readonly registry = signal<HostsResponse | null>(null);
 
   public ngOnInit(): void {

@@ -1,9 +1,11 @@
+import { signal } from '@angular/core';
 import { ComponentFixture, TestBed, discardPeriodicTasks, fakeAsync, flush, flushMicrotasks, tick } from '@angular/core/testing';
 import { HttpErrorResponse } from '@angular/common/http';
 import { of, throwError } from 'rxjs';
 import { Computer, HostsResponse, RegistryDevice } from '../../core/models/host.model';
 import { AdminConfigService, AdminIdentity } from '../../services/admin-config.service';
 import { HostsService } from '../../services/hosts.service';
+import { UsbDeviceRelayService } from '../../services/usb-device-relay.service';
 import { ComputersComponent } from './computers.component';
 
 const NOW = 1_800_000_000;
@@ -54,7 +56,11 @@ describe('ComputersComponent', () => {
       imports: [ComputersComponent],
       providers: [
         { provide: HostsService, useValue: hosts },
-        { provide: AdminConfigService, useValue: adminConfig }
+        { provide: AdminConfigService, useValue: adminConfig },
+        {
+          provide: UsbDeviceRelayService,
+          useValue: { state: signal({ status: 'connected', serial: '127.0.0.1:5000', error: null }) }
+        }
       ]
     }).compileComponents();
   });

@@ -31,12 +31,21 @@ const phone = (over: Partial<RegistryDevice> = {}): RegistryDevice => ({
 });
 
 describe('deviceChipView', () => {
-  it('shows a browser phone as ready from This browser', () => {
-    const view = deviceChipView(
-      phone({ source: 'browser', computer_id: null, computer_name: null }),
-      []
-    );
+  it('shows this tab\'s own browser phone as ready from This browser', () => {
+    const own = phone({ source: 'browser', computer_id: null, computer_name: null, serial: '127.0.0.1:5000' });
+    const view = deviceChipView(own, [], '127.0.0.1:5000');
     expect(view).toEqual(jasmine.objectContaining({ state: 'Ready', source: 'This browser' }));
+    expect(view.detail).toContain('Keep this browser tab open');
+  });
+
+  it('calls another browser\'s phone "A browser" with no current-tab instruction', () => {
+    const other = phone({ source: 'browser', computer_id: null, computer_name: null, serial: '127.0.0.1:6000' });
+    for (const own of ['127.0.0.1:5000', null]) {
+      const view = deviceChipView(other, [], own);
+      expect(view.source).toBe('A browser');
+      expect(view.detail).not.toContain('this browser tab');
+      expect(view.detail).not.toContain('Keep');
+    }
   });
 
   it('shows the computer name as the source of a phone on an online computer', () => {

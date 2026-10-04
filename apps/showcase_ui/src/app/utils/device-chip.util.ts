@@ -14,14 +14,25 @@ export interface DeviceChipView {
   since: number | null;
 }
 
-export function deviceChipView(device: RegistryDevice, computers: Computer[]): DeviceChipView {
+/**
+ * `ownBrowserSerial` is the bridge serial this tab holds. The server lists every browser
+ * session, so only that one may be called "This browser".
+ */
+export function deviceChipView(
+  device: RegistryDevice,
+  computers: Computer[],
+  ownBrowserSerial: string | null = null
+): DeviceChipView {
   const label = device.model || device.serial;
   if (device.source === 'browser') {
+    const own = ownBrowserSerial !== null && device.serial === ownBrowserSerial;
     return {
       state: 'Ready',
-      source: COMPUTER_STRINGS.thisBrowser,
+      source: own ? COMPUTER_STRINGS.thisBrowser : COMPUTER_STRINGS.aBrowser,
       label,
-      detail: 'Keep this browser tab open while using the phone.',
+      detail: own
+        ? 'Keep this browser tab open while using the phone.'
+        : 'A phone attached from another browser.',
       icon: 'check_circle',
       since: device.since
     };

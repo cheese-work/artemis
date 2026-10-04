@@ -1,8 +1,10 @@
+import { signal } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { of, throwError } from 'rxjs';
 import { HttpErrorResponse } from '@angular/common/http';
 import { Computer, HostsResponse, RegistryDevice } from '../../core/models/host.model';
 import { HostsService } from '../../services/hosts.service';
+import { UsbDeviceRelayService } from '../../services/usb-device-relay.service';
 import { RegistryPhonesComponent } from './registry-phones.component';
 
 const computer: Computer = {
@@ -59,7 +61,13 @@ describe('RegistryPhonesComponent', () => {
     hosts = jasmine.createSpyObj<HostsService>('HostsService', ['list']);
     await TestBed.configureTestingModule({
       imports: [RegistryPhonesComponent],
-      providers: [{ provide: HostsService, useValue: hosts }]
+      providers: [
+        { provide: HostsService, useValue: hosts },
+        {
+          provide: UsbDeviceRelayService,
+          useValue: { state: signal({ status: 'connected', serial: '127.0.0.1:5000', error: null }) }
+        }
+      ]
     }).compileComponents();
   });
 
@@ -70,6 +78,19 @@ describe('RegistryPhonesComponent', () => {
     expect(chips[0].textContent).toContain('Pixel 8');
     expect(chips[0].textContent).toContain('Lab Mac');
     expect(chips[1].textContent).toContain('This browser');
+  });
+
+  it('does not call another browser\'s phone "This browser"', () => {
+    create({
+      enabled: true,
+      hosts: [],
+      devices: [browserPhone, { ...browserPhone, serial: '127.0.0.1:6000' }]
+    });
+    const chips = root().querySelectorAll('app-device-chip');
+    expect(chips[0].textContent).toContain('This browser');
+    expect(chips[1].textContent).toContain('A browser');
+    expect(chips[1].textContent).not.toContain('This browser');
+    expect(chips[1].textContent).not.toContain('Keep this browser tab open');
   });
 
   it('shows an offline computer\'s phone as offline with the reason, not as selectable', () => {
