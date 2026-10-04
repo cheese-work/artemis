@@ -178,11 +178,17 @@ def ensure_schema(conn: sqlite3.Connection) -> bool:
     ):
         return True
     conn.executescript(_TABLES_DDL)
-    if fts:
-        conn.execute("CREATE VIRTUAL TABLE IF NOT EXISTS runs_fts USING fts5(prompt, meta)")
+    promoting = fts and not _has(conn, "table", "runs_fts")
+    if promoting:
+        conn.execute("CREATE VIRTUAL TABLE runs_fts USING fts5(prompt, meta)")
+    # Replace, never keep: triggers from a substring-mode install lack the index upkeep.
+    for name in dict.fromkeys(_TRIGGERS_FTS + _TRIGGERS_PLAIN):
+        conn.execute(f"DROP TRIGGER IF EXISTS {name}")
     for statement in _trigger_ddl(fts):
         conn.execute(statement)
     conn.commit()
+    if promoting:
+        rebuild(conn)  # index the runs created while search was substring-only
     return True
 
 

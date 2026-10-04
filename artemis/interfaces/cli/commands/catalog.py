@@ -28,16 +28,30 @@ console = Console()
 DbOption = Annotated[Path, typer.Option("--db", help="Path to data_engine.db.")]
 
 
+def _fail(message: str) -> typer.Exit:
+    console.print(message)
+    return typer.Exit(1)
+
+
+def _require_database(db: Path) -> None:
+    """Never let sqlite create an empty file for a misspelled --db."""
+    if not db.is_file():
+        raise _fail(f"Database not found: {db}")
+
+
 def _require_catalog(conn: sqlite3.Connection) -> None:
     if not run_catalog.catalog_ready(conn):
-        console.print("Catalog not installed; run `artemis catalog migrate`.")
-        raise typer.Exit(1)
+        raise _fail("Catalog not installed; run `artemis catalog migrate`.")
 
 
 @catalog_app.command("migrate")
 def migrate(db: DbOption = DB_PATH) -> None:
     """Install the catalog (online backup first, then schema and backfill). Safe to repeat."""
+    _require_database(db)
     report = run_catalog.migrate(db)
+    with sqlite3.connect(db) as conn:
+        if not run_catalog.catalog_ready(conn):
+            raise _fail(f"No sessions table in {db}: nothing to catalog.")
     backup = f", backup {report.backup_path}" if report.backup_path else ""
     console.print(
         f"Catalog ready: {report.backfilled} runs backfilled{backup}, search={report.search_mode}"
@@ -47,6 +61,7 @@ def migrate(db: DbOption = DB_PATH) -> None:
 @catalog_app.command("backfill")
 def backfill(db: DbOption = DB_PATH) -> None:
     """Create catalog rows for sessions that have none."""
+    _require_database(db)
     with sqlite3.connect(db, timeout=30.0) as conn:
         _require_catalog(conn)
         console.print(f"{run_catalog.backfill(conn)} runs backfilled")
@@ -55,6 +70,7 @@ def backfill(db: DbOption = DB_PATH) -> None:
 @catalog_app.command("rebuild")
 def rebuild(db: DbOption = DB_PATH) -> None:
     """Drop and rebuild the search index from the catalog tables."""
+    _require_database(db)
     with sqlite3.connect(db, timeout=30.0) as conn:
         _require_catalog(conn)
         console.print(

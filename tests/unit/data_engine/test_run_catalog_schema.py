@@ -357,3 +357,15 @@ def test_catalog_cli_rejects_a_missing_database_without_creating_it(tmp_path, co
 
     assert result.exit_code != 0, result.output
     assert not db.exists()
+
+
+def test_catalog_cli_migrate_refuses_a_database_without_sessions(tmp_path):
+    from typer.testing import CliRunner
+
+    from artemis.interfaces.cli.commands.catalog import catalog_app
+
+    db = tmp_path / "other.db"
+    with sqlite3.connect(db) as conn:
+        conn.execute("CREATE TABLE unrelated (x)")
+    result = CliRunner().invoke(catalog_app, ["migrate", "--db", str(db)])
+    assert result.exit_code != 0 and "Catalog ready" not in result.output

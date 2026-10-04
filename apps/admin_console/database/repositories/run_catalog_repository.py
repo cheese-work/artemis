@@ -32,7 +32,7 @@ except ImportError:
     from apps.admin_console.database.connection import db_session
 
 _COLUMNS = (
-    "s.session_id, s.initial_goal, s.start_time, s.end_time, s.status, s.interrupt_reason, "
+    "m.session_id, s.initial_goal, s.start_time, s.end_time, s.status, s.interrupt_reason, "
     "m.host_id, m.device_ref, m.requested_by, m.pinned, m.deleted_at, m.deleted_reason"
 )
 _PREFIX = re.compile(r"[0-9a-fA-F]{8}")
@@ -170,9 +170,11 @@ class RunCatalogRepository:
             if cursor and cursor[0] is None:
                 where.append("s.session_id < ?")
                 params.append(cursor[1])
-        elif cursor:
-            where.append("(s.start_time, s.session_id) < (?, ?)")
-            params += [cursor[0], cursor[1]]
+        else:
+            where.append("s.start_time IS NOT NULL")
+            if cursor:
+                where.append("(s.start_time, s.session_id) < (?, ?)")
+                params += [cursor[0], cursor[1]]
         sql = (
             f"SELECT {_COLUMNS} FROM sessions s JOIN run_meta m ON m.session_id = s.session_id "
             f"WHERE {' AND '.join(where)} ORDER BY s.start_time DESC, s.session_id DESC LIMIT ?"
@@ -225,15 +227,15 @@ class RunCatalogRepository:
         session_id = run_catalog.validate_session_id(session_id, base_dir=self.traces_dir)
         with db_session(self.db_path) as conn:
             self._require_ready(conn)
-            rows = self._fetch(conn, "m.session_id = ?", [session_id])
-            if not rows and _PREFIX.fullmatch(session_id):
+            where, params = "m.session_id = ?", [session_id]
+            if _PREFIX.fullmatch(session_id) and not self._exists(conn, session_id):
                 prefix = session_id.lower()
                 upper = prefix[:-1] + chr(ord(prefix[-1]) + 1)
-                rows = self._fetch(conn, "m.session_id >= ? AND m.session_id < ?", [prefix, upper])
-            live = [r for r in rows if r["deleted_at"] is None]
+                where, params = "m.session_id >= ? AND m.session_id < ?", [prefix, upper]
+            live = self._fetch(conn, where, params, removed=False)
             if not live:
-                removed = next(iter(rows), None)
-                return RunLookup(removed=_removal(removed) if removed else None)
+                gone = self._fetch(conn, where, params, removed=True)
+                return RunLookup(removed=_removal(gone[0]) if gone else None)
             runs = [_run_from_row(row) for row in live]
             if len(runs) > 1:
                 return RunLookup(candidates=runs[:_MAX_CANDIDATES])
@@ -314,10 +316,21 @@ class RunCatalogRepository:
         return run_catalog.search_mode(conn)
 
     @staticmethod
-    def _fetch(conn: sqlite3.Connection, where: str, params: list[Any]) -> list[sqlite3.Row]:
+    def _exists(conn: sqlite3.Connection, session_id: str) -> bool:
+        return (
+            conn.execute("SELECT 1 FROM run_meta WHERE session_id = ?", (session_id,)).fetchone()
+            is not None
+        )
+
+    @staticmethod
+    def _fetch(
+        conn: sqlite3.Connection, where: str, params: list[Any], *, removed: bool
+    ) -> list[sqlite3.Row]:
+        """Live or tombstoned rows, filtered in SQL so the cap never hides the wanted kind."""
+        state = "IS NOT NULL" if removed else "IS NULL"
         return conn.execute(
             f"SELECT {_COLUMNS} FROM run_meta m LEFT JOIN sessions s "
-            f"ON s.session_id = m.session_id WHERE {where} "
+            f"ON s.session_id = m.session_id WHERE {where} AND m.deleted_at {state} "
             f"ORDER BY s.start_time DESC, m.session_id DESC LIMIT {_MAX_CANDIDATES + 1}",
             params,
         ).fetchall()
