@@ -296,6 +296,8 @@ _PUBLIC_GET_PATHS = {
     "/api/system/server-status",
     "/api/system/whoami",
     "/api/system/config",
+    "/api/runs",
+    "/api/runs/{session_id}",
     "/api/sessions",
     "/api/sessions/{session_id}",
     "/api/sessions/{session_id}/usage",

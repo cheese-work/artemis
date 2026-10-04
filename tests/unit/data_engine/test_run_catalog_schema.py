@@ -1,3 +1,17 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """Run catalog storage: migration, backfill, triggers and rebuild (CHE-1091).
 
 The catalog lives in side tables of the unified sessions database
@@ -128,12 +142,16 @@ def test_triggers_keep_the_index_in_step_with_sessions_and_run_meta(tmp_path, rc
     assert _search(rc, db, "rotate") == [sid]  # insert trigger made run_meta + index row
 
     with sqlite3.connect(db) as conn:
-        conn.execute("UPDATE sessions SET initial_goal = 'mute the volume' WHERE session_id = ?", (sid,))
+        conn.execute(
+            "UPDATE sessions SET initial_goal = 'mute the volume' WHERE session_id = ?", (sid,)
+        )
     assert _search(rc, db, "rotate") == []
     assert _search(rc, db, "volume") == [sid]
 
     with sqlite3.connect(db) as conn:
-        conn.execute("UPDATE run_meta SET requested_by = 'dana@example.com' WHERE session_id = ?", (sid,))
+        conn.execute(
+            "UPDATE run_meta SET requested_by = 'dana@example.com' WHERE session_id = ?", (sid,)
+        )
     assert _search(rc, db, "dana") == [sid]  # run_meta text is searchable too
 
     with sqlite3.connect(db) as conn:
@@ -148,7 +166,9 @@ def test_triggers_keep_the_index_in_step_with_sessions_and_run_meta(tmp_path, rc
 def test_rebuild_restores_a_wiped_index_and_drops_stale_rows(tmp_path, rc):
     db = tmp_path / "data_engine.db"
     a, b = str(uuid.uuid4()), str(uuid.uuid4())
-    _legacy_db(db, [(a, "alpha task", 1.0, "completed", None), (b, "beta task", 2.0, "completed", None)])
+    _legacy_db(
+        db, [(a, "alpha task", 1.0, "completed", None), (b, "beta task", 2.0, "completed", None)]
+    )
     rc.migrate(db)
     with sqlite3.connect(db) as conn:
         conn.execute("DELETE FROM runs_fts")
@@ -220,7 +240,18 @@ def test_missing_fts5_degrades_to_substring_search(tmp_path, rc, monkeypatch):
 
 @pytest.mark.parametrize(
     "raw",
-    ["foo OR bar", "NEAR(a b)", '"unbalanced', "col:foo", "foo*", "-bar", "(a", "a'b", "^x", "a AND NOT b"],
+    [
+        "foo OR bar",
+        "NEAR(a b)",
+        '"unbalanced',
+        "col:foo",
+        "foo*",
+        "-bar",
+        "(a",
+        "a'b",
+        "^x",
+        "a AND NOT b",
+    ],
 )
 def test_search_text_is_quoted_so_raw_fts_syntax_never_reaches_match(tmp_path, rc, raw):
     match = rc.build_match_query(raw)
@@ -236,3 +267,27 @@ def test_search_text_is_quoted_so_raw_fts_syntax_never_reaches_match(tmp_path, r
 def test_search_text_without_terms_matches_nothing(tmp_path, rc):
     assert rc.build_match_query("") is None
     assert rc.build_match_query('!!! "" ---') is None
+
+
+def test_catalog_cli_migrates_backfills_and_rebuilds(tmp_path):
+    from typer.testing import CliRunner
+
+    from artemis.interfaces.cli.main import app
+
+    db = tmp_path / "data_engine.db"
+    sid = str(uuid.uuid4())
+    _legacy_db(db, [(sid, "toggle dark mode", 1.0, "completed", None)])
+    runner = CliRunner()
+
+    migrated = runner.invoke(app, ["catalog", "migrate", "--db", str(db)])
+    with sqlite3.connect(db) as conn:
+        conn.execute("DELETE FROM runs_fts")
+    rebuilt = runner.invoke(app, ["catalog", "rebuild", "--db", str(db)])
+    backfilled = runner.invoke(app, ["catalog", "backfill", "--db", str(db)])
+
+    assert migrated.exit_code == 0 and "1 runs backfilled" in migrated.output
+    assert rebuilt.exit_code == 0 and "1 runs indexed" in rebuilt.output
+    assert backfilled.exit_code == 0 and "0 runs backfilled" in backfilled.output
+    from artemis.data_engine import run_catalog
+
+    assert _search(run_catalog, db, "dark") == [sid]

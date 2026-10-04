@@ -1,3 +1,17 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """Run catalog at the server API seam: `GET /api/runs` and `/api/runs/{id}` (CHE-1091).
 
 Search, keyset paging, id resolution and tombstones are asserted through HTTP;
@@ -145,8 +159,10 @@ async def test_list_query_is_served_by_an_index(env):
     sql, params = run_catalog_repo.list_query(limit=5, cursor=(10.0, "z"))
     with sqlite3.connect(env) as conn:
         plan = " | ".join(r[3] for r in conn.execute("EXPLAIN QUERY PLAN " + sql, params))
-    assert "SCAN s" not in plan and "SCAN sessions" not in plan, plan
-    assert "USING" in plan and "INDEX" in plan, plan
+    assert "SEARCH s USING" in plan and "idx_sessions_start_order" in plan, (
+        plan
+    )  # seeks past the cursor
+    assert "TEMP B-TREE" not in plan, plan  # served in index order, no sort
 
 
 # -- filters and search -------------------------------------------------------
@@ -187,7 +203,9 @@ async def test_search_finds_prompt_and_run_meta_text_and_pages(env):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("q", ['"', "NEAR(", "col:x", "wifi OR", "(((", "'; DROP TABLE run_meta;--", "*"])
+@pytest.mark.parametrize(
+    "q", ['"', "NEAR(", "col:x", "wifi OR", "(((", "'; DROP TABLE run_meta;--", "*"]
+)
 async def test_raw_fts_syntax_never_reaches_the_index(env, q):
     _seed(env, "enable wifi")
     response = await _get("/api/runs", q=q)
@@ -304,7 +322,13 @@ def test_id_validation_rules(tmp_path):
             validate_session_id(bad)
     with pytest.raises(ValueError):
         validate_session_id("escape", base_dir=traces)  # realpath leaves the traces dir
-    for non_canonical in ["legacy-1", sid.upper(), sid.replace("-", ""), f"{{{sid}}}", f"urn:uuid:{sid}"]:
+    for non_canonical in [
+        "legacy-1",
+        sid.upper(),
+        sid.replace("-", ""),
+        f"{{{sid}}}",
+        f"urn:uuid:{sid}",
+    ]:
         with pytest.raises(ValueError):
             validate_session_id(non_canonical, strict=True)
 
@@ -391,12 +415,35 @@ async def test_first_tombstone_reason_is_kept_and_hard_delete_is_removed_not_mis
 
 @pytest.mark.asyncio
 async def test_catalog_not_ready_is_a_503_not_a_crash(tmp_path, monkeypatch):
+    from apps.admin_console.database import connection
     from apps.admin_console.database.repositories.run_catalog_repository import run_catalog_repo
 
     db = tmp_path / "bare.db"
     with sqlite3.connect(db) as conn:
         conn.execute("CREATE TABLE unrelated (x)")
     monkeypatch.setattr(run_catalog_repo, "db_path", db)
-    monkeypatch.setattr(run_catalog_repo, "ensure_schema", lambda: None)  # bootstrap skipped
+    monkeypatch.setattr(connection, "_initialized_dbs", {str(db)})  # skip schema bootstrap
     response = await _get("/api/runs")
     assert response.status_code == 503 and response.json()["error"] == "catalog_not_ready"
+
+
+@pytest.mark.asyncio
+async def test_recording_states_are_stored_per_recording_and_listed(env):
+    from apps.admin_console.database.repositories.run_catalog_repository import run_catalog_repo
+
+    sid = _seed(env, "with video")
+    assert run_catalog_repo.set_recording_state(sid, "rec-1", capture="recording")
+    assert run_catalog_repo.set_recording_state(sid, "rec-1", capture="stopped")
+    assert run_catalog_repo.set_recording_state(sid, "rec-1", transfer="uploading")  # keeps capture
+    assert run_catalog_repo.set_recording_state(sid, "rec-2", capture="missing:spool_full")
+    assert not run_catalog_repo.set_recording_state(str(uuid.uuid4()), "rec-1", capture="pending")
+    for bad in [{"capture": "ready"}, {"transfer": "ready"}, {"capture": "missing"}]:
+        with pytest.raises(ValueError):
+            run_catalog_repo.set_recording_state(sid, "rec-1", **bad)
+
+    run = (await _get(f"/api/runs/{sid}")).json()
+    assert run["recordings"] == [
+        {"recording_id": "rec-1", "capture": "stopped", "transfer": "uploading"},
+        {"recording_id": "rec-2", "capture": "missing:spool_full", "transfer": None},
+    ]
+    assert (await _get("/api/runs")).json()["runs"][0]["recordings"] == run["recordings"]
