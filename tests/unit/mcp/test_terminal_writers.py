@@ -132,3 +132,64 @@ def test_completion_during_the_liveness_probe_wins_at_the_mcp_seam(traces, monke
     status = trace_store.read_status(trace_id)
     assert status["status"] == "completed"
     assert status.get("error") is None
+
+
+def test_stop_reports_the_outcome_the_authority_committed(traces, monkeypatch):
+    import mcp_server.tools.task_manager as task_manager
+
+    trace_id = _running_task(traces, pid=987655)
+    db_path = os.path.join(traces, "data_engine.db")
+
+    def complete_during_stop(pid, signal_number):
+        LifecycleAuthority(db_path).finish(trace_id, "completed")
+
+    monkeypatch.setattr(task_manager, "_pid_alive", lambda pid: True)
+    monkeypatch.setattr(task_manager.os, "kill", complete_during_stop)
+
+    result = mobile_manage_task(action="stop", trace_id=trace_id)
+
+    assert result["status"] == "completed"
+    assert "cancelled" not in result["message"].lower() or "before" in result["message"].lower()
+    assert _db_status(traces, trace_id) == "completed"
+    assert trace_store.read_status(trace_id)["status"] == "completed"
+
+
+def test_failed_projection_write_does_not_make_mcp_report_failed_over_a_completed_row(
+    traces, monkeypatch
+):
+    import mcp_server.tools.task_manager as task_manager
+
+    trace_id = _running_task(traces, pid=987656)
+    db_path = os.path.join(traces, "data_engine.db")
+
+    def complete_during_probe(pid):
+        LifecycleAuthority(db_path).finish(trace_id, "completed")
+        return False
+
+    def cannot_publish(*_args, **_kwargs):
+        raise OSError("projection storage temporarily unavailable")
+
+    monkeypatch.setattr(trace_store, "publish_outcome", cannot_publish)
+    monkeypatch.setattr("artemis.runtime.lifecycle.time.sleep", lambda _s: None)
+    monkeypatch.setattr(task_manager, "_pid_alive", complete_during_probe)
+    monkeypatch.setattr(task_manager, "_session_tracked_by_lock", lambda _tid: False)
+    notices = []
+    monkeypatch.setattr(task_manager, "notify", lambda **payload: notices.append(payload))
+
+    result = mobile_manage_task(action="status", trace_id=trace_id)
+
+    assert result["status"] == "completed"
+    assert _db_status(traces, trace_id) == "completed"
+    assert notices == []
+
+
+def test_a_stale_projection_cannot_revert_an_adopted_terminal_status(traces):
+    import mcp_server.tools.task_manager as task_manager
+    from artemis.runtime.lifecycle import Outcome
+
+    trace_id = _running_task(traces)  # status.json still says running
+    status_data = trace_store.read_status(trace_id)
+
+    task_manager._adopt_outcome(trace_id, status_data, Outcome(trace_id, "completed", None, True))
+
+    assert status_data["status"] == "completed"

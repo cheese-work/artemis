@@ -387,26 +387,43 @@ def _emitted(events, session_id):
     return [e[1] for e in _ended(events, session_id)]
 
 
+def _interrupt(db_path, session_id, reason=InterruptReason.BRIDGE_CLOSED):
+    LifecycleAuthority(db_path).interrupt(session_id, reason)
+
+
 @pytest.mark.asyncio
-async def test_crash_before_delivery_is_recovered_by_the_next_drain(env, monkeypatch):
+async def test_process_exit_before_the_send_is_still_delivered_after_restart(env):
+    import subprocess
+    import sys
+
     db_path, events = env
     session_id = _add_running_session(db_path)
-    LifecycleAuthority(db_path).interrupt(session_id, InterruptReason.BRIDGE_CLOSED)
-
-    original = TaskQueueService._broadcast_event.__func__
-
-    def crash(cls, event_type, data):
-        raise RuntimeError("process died mid-broadcast")
-
-    monkeypatch.setattr(TaskQueueService, "_broadcast_event", classmethod(crash))
-    TaskQueueService._deliver_outcome(session_id, {}, "goal")
+    _interrupt(db_path, session_id)
+    child_code = """
+import os, sys
+from apps.admin_console.database.repositories.session_repository import SessionRepository
+from apps.admin_console.services import task_queue_service as queue_module
+from apps.admin_console.services.task_queue_service import TaskQueueService
+queue_module.session_repo = SessionRepository(sys.argv[1])
+def die_before_the_send(cls, event):
+    os._exit(79)
+TaskQueueService._broadcast_outcome = classmethod(die_before_the_send)
+TaskQueueService._deliver_outcome(sys.argv[2], {}, "goal")
+os._exit(80)
+"""
+    child = subprocess.run(
+        [sys.executable, "-c", child_code, str(db_path), session_id],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert child.returncode == 79, child.stderr
     assert events == [] and _outbox_pending(db_path) == 1
 
-    monkeypatch.setattr(TaskQueueService, "_broadcast_event", classmethod(original))
-    TaskQueueService._drain_outcome_events()
+    TaskQueueService._drain_outcome_events()  # the restarted server
 
-    assert [p["event_id"] for p in _emitted(events, session_id)] == [f"{session_id}:outcome"]
     assert len(_interrupted(events, session_id)) == 1
+    assert len(_ended(events, session_id)) == 1
     assert _outbox_pending(db_path) == 0
 
 
@@ -418,8 +435,8 @@ async def test_crash_after_broadcast_before_ack_delivers_exactly_once_across_a_r
 
     db_path, events = env
     session_id = _add_running_session(db_path)
-    LifecycleAuthority(db_path).interrupt(session_id, InterruptReason.BRIDGE_CLOSED)
-    notify = MagicMock()
+    _interrupt(db_path, session_id)
+    notify = MagicMock(return_value=True)
     monkeypatch.setattr("mcp_server.notifiers.notify", notify)
     task_item = {"session_id": session_id, "conversation_id": "conv-1", "ingress": "mcp"}
 
@@ -431,11 +448,7 @@ async def test_crash_after_broadcast_before_ack_delivers_exactly_once_across_a_r
         TaskQueueService._deliver_outcome(session_id, task_item, "goal")
     assert len(_interrupted(events, session_id)) == 1 and _outbox_pending(db_path) == 1
 
-    # "Restart": nothing in this process remembers the delivery; the drain must
-    # still not deliver it again, whoever is listening.
-    for attr in list(vars(TaskQueueService)):
-        if attr.startswith("_emitted"):
-            monkeypatch.setattr(TaskQueueService, attr, set())
+    TaskQueueService._forget_delivery_memory()  # a restart: nothing in memory survives
     TaskQueueService._drain_outcome_events()
     TaskQueueService._deliver_outcome(session_id, task_item, "goal")
 
@@ -446,27 +459,76 @@ async def test_crash_after_broadcast_before_ack_delivers_exactly_once_across_a_r
 
 
 @pytest.mark.asyncio
-async def test_a_failed_broadcast_releases_its_claim_so_the_retry_delivers(env, monkeypatch):
+async def test_a_failed_notification_is_retried_and_only_then_acknowledged(env, monkeypatch):
+    from unittest.mock import MagicMock
+
     db_path, events = env
     session_id = _add_running_session(db_path)
-    LifecycleAuthority(db_path).interrupt(session_id, InterruptReason.BRIDGE_CLOSED)
-    original = TaskQueueService._broadcast_event.__func__
-    calls = {"n": 0}
+    _interrupt(db_path, session_id)
+    notify = MagicMock(side_effect=[False, True])
+    monkeypatch.setattr("mcp_server.notifiers.notify", notify)
+    task_item = {"session_id": session_id, "conversation_id": "conv-1", "ingress": "mcp"}
 
-    def flaky(cls, event_type, data):
-        calls["n"] += 1
-        if calls["n"] == 1:
-            raise RuntimeError("socket died mid-broadcast")
-        return original(cls, event_type, data)
+    TaskQueueService._deliver_outcome(session_id, task_item, "goal")
+    assert notify.call_count == 1 and _outbox_pending(db_path) == 1  # False: not acknowledged
 
-    monkeypatch.setattr(TaskQueueService, "_broadcast_event", classmethod(flaky))
-    TaskQueueService._deliver_outcome(session_id, {}, "goal")
-    assert events == [] and _outbox_pending(db_path) == 1
+    TaskQueueService._deliver_outcome(session_id, task_item, "goal")
 
-    TaskQueueService._drain_outcome_events()
-
-    assert len(_ended(events, session_id)) == 1
+    assert notify.call_count == 2 and _outbox_pending(db_path) == 0
+    # the UI broadcast already succeeded, so the retry does not repeat it
     assert len(_interrupted(events, session_id)) == 1
+    assert len(_ended(events, session_id)) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_subscriber_that_fails_once_is_retried_without_repeating_for_the_others(env):
+    db_path, events = env
+    session_id = _add_running_session(db_path)
+    _interrupt(db_path, session_id)
+    seen: list[str] = []
+    flaky_calls = {"n": 0}
+
+    def flaky(event_type, payload):
+        if event_type == "run_interrupted":
+            flaky_calls["n"] += 1
+            if flaky_calls["n"] == 1:
+                raise RuntimeError("consumer temporarily unavailable")
+            seen.append(event_type)
+
+    state.ipc_subscribers.append(flaky)
+    try:
+        TaskQueueService._deliver_outcome(session_id, {}, "goal")
+        assert _outbox_pending(db_path) == 1  # the failure left it pending
+        TaskQueueService._drain_outcome_events()
+    finally:
+        state.ipc_subscribers.remove(flaky)
+
+    assert seen == ["run_interrupted"]  # the flaky subscriber got it on the retry
+    assert len(_interrupted(events, session_id)) == 1  # the healthy one never saw a repeat
+    assert _outbox_pending(db_path) == 0
+
+
+@pytest.mark.asyncio
+async def test_a_permanently_failing_subscriber_is_given_up_on_after_bounded_attempts(env):
+    db_path, events = env
+    session_id = _add_running_session(db_path)
+    _interrupt(db_path, session_id)
+    attempts: list[str] = []
+
+    def broken(event_type, payload):
+        if event_type == "run_interrupted":
+            attempts.append(event_type)
+            raise RuntimeError("never works")
+
+    state.ipc_subscribers.append(broken)
+    try:
+        for _ in range(20):
+            TaskQueueService._drain_outcome_events()
+    finally:
+        state.ipc_subscribers.remove(broken)
+
+    assert 1 < len(attempts) <= TaskQueueService._MAX_DELIVERY_ATTEMPTS
+    assert len(_interrupted(events, session_id)) == 1  # healthy subscriber: exactly once
     assert _outbox_pending(db_path) == 0
 
 

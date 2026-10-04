@@ -232,20 +232,35 @@ class TaskQueueService:
         return AdbTarget(endpoint=endpoint, serial=str(serial) if serial else None)
 
     @classmethod
-    def _broadcast_event(cls, event_type: str, data: Any):
-        """Broadcasts an event safely to all registered subscribers."""
+    def _broadcast_event(
+        cls, event_type: str, data: Any, delivered: set[tuple[int, str]] | None = None
+    ) -> bool:
+        """Broadcasts an event safely to all registered subscribers.
+
+        With ``delivered`` (outcome events), subscribers already recorded there
+        are skipped and each success is recorded, so a retry reaches only the
+        subscribers that failed. Returns False if any subscriber failed.
+        """
+        all_ok = True
         for cb in list(state.ipc_subscribers):
+            if delivered is not None and (id(cb), event_type) in delivered:
+                continue
             try:
                 cb(event_type, data)
             except Exception:
                 # One broken subscriber must not block the others, but a
                 # silent drop hides it entirely.
+                all_ok = False
                 logger.warning(
                     "Event subscriber %r failed for event %s",
                     cb,
                     event_type,
                     exc_info=True,
                 )
+            else:
+                if delivered is not None:
+                    delivered.add((id(cb), event_type))
+        return all_ok
 
     @classmethod
     def _broadcast_startup_progress(cls, session_id: str | None, stage: str, message: str) -> None:
@@ -764,12 +779,26 @@ class TaskQueueService:
                 {"session_id": sess_id, "error": recording_error},
             )
 
-    # Each consumer of an outcome event (UI broadcast, external notification)
-    # claims its delivery durably in the outbox before acting, so a crash after
-    # the effect but before the final acknowledgement is not repeated by the
-    # drain of a restarted server. A failed effect releases its claim and the
-    # event stays pending for the next drain.
+    # Outcome events are delivered at-least-once from the durable outbox. A
+    # consumer (UI broadcast, external notification) is marked delivered in the
+    # outbox only after its effect succeeded, and the row is acknowledged only
+    # once every consumer is done, so a failure or crash leaves the event
+    # pending for the next drain. Effects are idempotent by ``event_id``: the
+    # durable marks skip consumers that already succeeded (across restarts),
+    # in-process memory covers a mark that failed to write, and every effect
+    # carries the stable ``event_id`` for downstream dedupe.
+    _MAX_DELIVERY_ATTEMPTS = 5
     _delivery_lock = threading.Lock()
+    _delivered_to: dict[str, set[tuple[int, str]]] = {}  # event_id -> (subscriber, event type)
+    _effect_done: set[tuple[str, str]] = set()  # (event_id, consumer) succeeded this process
+    _attempts: dict[tuple[str, str], int] = {}
+
+    @classmethod
+    def _forget_delivery_memory(cls) -> None:
+        """Drop in-process delivery memory (what a restart does)."""
+        cls._delivered_to.clear()
+        cls._effect_done.clear()
+        cls._attempts.clear()
 
     @classmethod
     def _deliver_outcome(
@@ -799,40 +828,51 @@ class TaskQueueService:
                 lifecycle.acknowledge(delivered)
             except sqlite3.Error:
                 logger.warning("Could not acknowledge outcome events", exc_info=True)
+                return
+            for event_id in delivered:
+                cls._delivered_to.pop(event_id, None)
+                cls._effect_done.discard((event_id, "broadcast"))
+                cls._effect_done.discard((event_id, "notify"))
+                cls._attempts.pop((event_id, "broadcast"), None)
+                cls._attempts.pop((event_id, "notify"), None)
 
     @classmethod
     def _deliver_event(
         cls, lifecycle: Any, event: dict[str, Any], task_item: dict[str, Any], goal: str | None
     ) -> bool:
-        """Run each consumer's claimed delivery; False leaves the event pending."""
+        """Run each consumer not yet delivered; False leaves the event pending."""
         event_id = event["dedupe_id"]
         steps = (
-            ("broadcast", lambda: cls._broadcast_outcome(event)),
+            ("broadcast", "broadcast_at", lambda: cls._broadcast_outcome(event)),
             (
                 "notify",
+                "notified_at",
                 lambda: cls._notify_session_end(
                     task_item, event["session_id"], goal, event["status"], event_id
                 ),
             ),
         )
-        for consumer, effect in steps:
-            try:
-                if not lifecycle.claim_delivery(event_id, consumer):
-                    continue  # already delivered, possibly before a restart
-            except sqlite3.Error:
-                logger.warning("Could not claim %s of %s", consumer, event_id, exc_info=True)
-                return False
-            try:
-                effect()
-            except (OSError, RuntimeError, ValueError, KeyError, TypeError):
-                logger.warning(
-                    "Could not %s %s; it stays pending", consumer, event_id, exc_info=True
-                )
+        for consumer, column, effect in steps:
+            key = (event_id, consumer)
+            if event.get(column) is None:
+                if key not in cls._effect_done:
+                    cls._attempts[key] = cls._attempts.get(key, 0) + 1
+                    if cls._attempts[key] > cls._MAX_DELIVERY_ATTEMPTS:
+                        logger.error("Giving up on %s of %s after repeated failures", *key[::-1])
+                        return False
+                    try:
+                        ok = effect()
+                    except (OSError, RuntimeError, ValueError, KeyError, TypeError):
+                        logger.warning("Could not %s %s", consumer, event_id, exc_info=True)
+                        ok = False
+                    if not ok:
+                        return False
+                    cls._effect_done.add(key)
                 try:
-                    lifecycle.release_delivery(event_id, consumer)
+                    lifecycle.mark_delivered(event_id, consumer)
                 except sqlite3.Error:
-                    logger.warning("Could not release %s of %s", consumer, event_id, exc_info=True)
-                return False
+                    logger.warning("Could not record %s of %s", consumer, event_id, exc_info=True)
+                    return False
         return True
 
     @classmethod
@@ -852,27 +892,40 @@ class TaskQueueService:
         )
 
     @classmethod
-    def _broadcast_outcome(cls, event: dict[str, Any]) -> None:
+    def _broadcast_outcome(cls, event: dict[str, Any]) -> bool:
+        """Broadcast the event; True when every subscriber took it (or was given up on)."""
+        event_id = event["dedupe_id"]
         sess_id, status, reason = event["session_id"], event["status"], event["interrupt_reason"]
-        payload = {
-            "event_id": event["dedupe_id"],
-            "session_id": sess_id,
-            "status": status,
-            "was_stopped_manually": status == "cancelled",
-        }
-        if reason:
-            payload["interrupt_reason"] = reason
-        cls._broadcast_event("session_ended", payload)
+        done = cls._delivered_to.setdefault(event_id, set())
+        ok = cls._broadcast_event(
+            "session_ended",
+            {
+                "event_id": event_id,
+                "session_id": sess_id,
+                "status": status,
+                "was_stopped_manually": status == "cancelled",
+                **({"interrupt_reason": reason} if reason else {}),
+            },
+            delivered=done,
+        )
         if status == "interrupted":
-            cls._broadcast_event(
-                "run_interrupted",
-                {
-                    "event_id": event["dedupe_id"],
-                    "session_id": sess_id,
-                    "interrupt_reason": reason,
-                    "interrupted_at": event["created_at"],
-                },
+            ok = (
+                cls._broadcast_event(
+                    "run_interrupted",
+                    {
+                        "event_id": event_id,
+                        "session_id": sess_id,
+                        "interrupt_reason": reason,
+                        "interrupted_at": event["created_at"],
+                    },
+                    delivered=done,
+                )
+                and ok
             )
+        if not ok and cls._attempts.get((event_id, "broadcast"), 0) >= cls._MAX_DELIVERY_ATTEMPTS:
+            logger.error("Abandoning failing subscribers for %s", event_id)
+            return True  # healthy subscribers got it; a permanently broken one must not block
+        return ok
 
     @classmethod
     def _notify_session_end(
@@ -882,30 +935,33 @@ class TaskQueueService:
         goal: str | None,
         status: str,
         event_id: str | None = None,
-    ) -> None:
-        """Dispatch the external completion notification for a delivered outcome."""
+    ) -> bool:
+        """Dispatch the external notification; False when the notifier did not take it."""
         conversation_id = task_item.get("conversation_id") if task_item else None
         if not (conversation_id or task_item.get("ingress") == "mcp"):
-            return
+            return True  # nobody to notify
         goal = goal or task_item.get("goal") or ""
         try:
             from mcp_server.notifiers import notify
 
-            notify(
-                conversation_id=conversation_id or "",
-                message=f"Artemis autonomous task '{goal}' finished with status '{status}'.\nTrace ID: {sess_id}",
-                title=f"Task {status.capitalize()}: {goal[:40]}",
-                event_type=status,
-                payload={
-                    "event_id": event_id,
-                    "trace_id": sess_id,
-                    "session_id": sess_id,
-                    "status": status,
-                    "goal": goal,
-                },
+            return bool(
+                notify(
+                    conversation_id=conversation_id or "",
+                    message=f"Artemis autonomous task '{goal}' finished with status '{status}'.\nTrace ID: {sess_id}",
+                    title=f"Task {status.capitalize()}: {goal[:40]}",
+                    event_type=status,
+                    payload={
+                        "event_id": event_id,
+                        "trace_id": sess_id,
+                        "session_id": sess_id,
+                        "status": status,
+                        "goal": goal,
+                    },
+                )
             )
         except Exception as notif_err:
             print(f"[QueueWorker] Notification dispatch notice: {notif_err}")
+            return False
 
     @classmethod
     def _release_run_slot(

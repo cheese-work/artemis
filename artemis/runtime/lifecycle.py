@@ -75,7 +75,7 @@ CREATE TABLE IF NOT EXISTS lifecycle_outbox (
     notified_at REAL
 )
 """
-# Durable per-consumer delivery claims on an outbox row (column per consumer).
+# Durable per-consumer "delivered" marks on an outbox row (column per consumer).
 _DELIVERY_COLUMNS = {"broadcast": "broadcast_at", "notify": "notified_at"}
 
 
@@ -438,29 +438,31 @@ class LifecycleAuthority:
         """Outcome events not yet acknowledged, oldest first.
 
         Reading does not acknowledge: a crash before delivery leaves the event
-        pending for the next drain. Consumers claim their delivery durably
-        (``claim_delivery``), so a drain after a crash repeats no side effect.
+        pending for the next drain; consumers that already succeeded carry a
+        ``broadcast_at``/``notified_at`` mark (``mark_delivered``).
         """
         where, args = ("AND session_id = ?", (str(session_id),)) if session_id else ("", ())
         with self._connect() as conn:
             rows = conn.execute(
-                "SELECT dedupe_id, session_id, status, interrupt_reason, created_at "
+                "SELECT dedupe_id, session_id, status, interrupt_reason, created_at, "
+                "broadcast_at, notified_at "
                 f"FROM lifecycle_outbox WHERE delivered_at IS NULL {where} ORDER BY created_at",
                 args,
             ).fetchall()
         return [dict(r) for r in rows]
 
-    def claim_delivery(self, dedupe_id: str, consumer: str) -> bool:
-        """Durably claim one consumer's delivery of an event; True for exactly one caller.
+    def mark_delivered(self, dedupe_id: str, consumer: str) -> bool:
+        """Durably record that one consumer's delivery of an event succeeded.
 
-        Call before the side effect and ``release_delivery`` if it fails. A
-        claim that survives a crash means the effect already happened (or was
-        about to), so a restarted drain never repeats it. The one window this
-        trades away: a crash between claiming and sending loses that effect.
+        Written after the side effect. A drain after a crash skips a marked
+        consumer, so effects repeat only when the crash falls between the
+        effect and this write (consumers also get the stable ``dedupe_id``).
+        A crash before the effect leaves the mark unset, so the event is
+        delivered on restart. Idempotent; True when this call set the mark.
         """
-        column = _DELIVERY_COLUMNS[consumer] if consumer in _DELIVERY_COLUMNS else None
-        if column is None:
+        if consumer not in _DELIVERY_COLUMNS:
             raise ValueError(f"unknown delivery consumer {consumer!r}")
+        column = _DELIVERY_COLUMNS[consumer]
         with self._txn() as conn:
             return (
                 conn.execute(
@@ -469,14 +471,6 @@ class LifecycleAuthority:
                     (self._clock(), dedupe_id),
                 ).rowcount
                 > 0
-            )
-
-    def release_delivery(self, dedupe_id: str, consumer: str) -> None:
-        """Undo a claim whose side effect did not happen, so a later drain retries it."""
-        column = _DELIVERY_COLUMNS[consumer]
-        with self._txn() as conn:
-            conn.execute(
-                f"UPDATE lifecycle_outbox SET {column} = NULL WHERE dedupe_id = ?", (dedupe_id,)
             )
 
     def acknowledge(self, dedupe_ids: list[str]) -> int:

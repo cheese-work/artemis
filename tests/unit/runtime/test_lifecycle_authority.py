@@ -430,24 +430,23 @@ def test_ack_is_idempotent_and_a_redelivery_keeps_its_dedupe_id(db_path):
     assert len(_outbox(db_path, sid)) == 1
 
 
-def test_delivery_claims_are_durable_once_per_consumer_and_releasable(db_path):
+def test_delivery_marks_are_durable_idempotent_and_per_consumer(db_path):
     sid = _add_session(db_path)
     authority = LifecycleAuthority(db_path)
     authority.finish(sid, "completed")
     event_id = f"{sid}:outcome"
+    assert authority.pending_events()[0]["broadcast_at"] is None
 
-    assert authority.claim_delivery(event_id, "broadcast") is True
-    assert authority.claim_delivery(event_id, "broadcast") is False  # also from a new process
-    assert LifecycleAuthority(db_path).claim_delivery(event_id, "broadcast") is False
-    assert authority.claim_delivery(event_id, "notify") is True  # consumers are independent
-
-    authority.release_delivery(event_id, "broadcast")
-    assert authority.claim_delivery(event_id, "broadcast") is True
+    assert authority.mark_delivered(event_id, "broadcast") is True
+    assert authority.mark_delivered(event_id, "broadcast") is False  # idempotent
+    event = LifecycleAuthority(db_path).pending_events()[0]  # a new process still sees it
+    assert event["broadcast_at"] is not None and event["notified_at"] is None
+    assert authority.mark_delivered(event_id, "notify") is True  # consumers are independent
     with pytest.raises(ValueError):
-        authority.claim_delivery(event_id, "carrier-pigeon")
+        authority.mark_delivered(event_id, "carrier-pigeon")
 
 
-def test_an_outbox_created_before_the_claim_columns_is_migrated(tmp_path):
+def test_an_outbox_created_before_the_delivery_columns_is_migrated(tmp_path):
     path = tmp_path / "old.db"
     StorageManager(path, tmp_path)
     with sqlite3.connect(path) as conn:
@@ -461,4 +460,4 @@ def test_an_outbox_created_before_the_claim_columns_is_migrated(tmp_path):
     authority = LifecycleAuthority(path)
     authority.finish(sid, "failed")
 
-    assert authority.claim_delivery(f"{sid}:outcome", "broadcast") is True
+    assert authority.mark_delivered(f"{sid}:outcome", "broadcast") is True

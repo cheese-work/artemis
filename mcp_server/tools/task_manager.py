@@ -60,7 +60,15 @@ def _finish(trace_id: str, status: str, **fields: Any) -> Outcome:
 
 
 def _adopt_outcome(trace_id: str, status_data: dict[str, Any], outcome: Outcome) -> None:
-    """Make ``status_data`` reflect the authority's published outcome, never a cached one."""
+    """Make ``status_data`` reflect the authority's outcome.
+
+    The published projection only supplies the other fields (result, error, ...);
+    it can be stale or missing after a projection failure, so the returned
+    outcome always has the last word on the status.
+    """
+    published = trace_store.read_status(trace_id)
+    if published:
+        status_data.update(published)
     if outcome.status:
         status_data["status"] = outcome.status
         status_data["interrupt_reason"] = (
@@ -68,9 +76,6 @@ def _adopt_outcome(trace_id: str, status_data: dict[str, Any], outcome: Outcome)
         )
         if not status_data.get("end_time"):
             status_data["end_time"] = time.time()
-    published = trace_store.read_status(trace_id)
-    if published:
-        status_data.update(published)
 
 
 def _pid_alive(pid: int | None) -> bool:
@@ -607,7 +612,18 @@ def mobile_manage_task(
                         "message": f"Failed to terminate process {pid}: {e}",
                     }
 
-        _finish(trace_id, "cancelled", error="Task aborted by user request.")
+        outcome = _finish(trace_id, "cancelled", error="Task aborted by user request.")
+        if outcome.status not in (None, "cancelled"):
+            # The task finished (or was lost) before the stop landed; the first
+            # committed outcome stands, so report that, not a cancellation.
+            return {
+                "trace_id": trace_id,
+                "status": outcome.status,
+                "message": (
+                    f"Task '{trace_id}' had already finished as '{outcome.status}' "
+                    "before it could be stopped."
+                ),
+            }
         return {
             "trace_id": trace_id,
             "status": "cancelled",
