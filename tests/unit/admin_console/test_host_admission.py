@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import sqlite3
 import threading
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 from httpx import ASGITransport, AsyncClient
@@ -692,3 +693,222 @@ async def test_api_stop_stays_the_only_way_to_stop_a_running_run(runs):
 
     assert response.json() == {"status": "stopped", "session_id": "q1"}
     assert state.queue_items == []
+
+
+# -- review round 1: NACK arbitration, external lock owners, host-scoped debounce --
+
+
+async def _spawned_worker(tmp_path, monkeypatch, ticket):
+    """Dispatch r1 through the real run path with a fake worker process."""
+    worker = MagicMock(pid=os.getpid(), returncode=None)
+    snapshot = SimpleNamespace(environment={}, config_path=tmp_path / "snapshot.json")
+    store = SimpleNamespace(snapshot_for_spawn=AsyncMock(return_value=snapshot))
+    monkeypatch.setattr("apps.admin_console.services.config_store.get_config_store", lambda: store)
+    monkeypatch.setattr("asyncio.create_subprocess_exec", AsyncMock(return_value=worker))
+    monkeypatch.setattr(TaskQueueService, "_start_output_forwarder", lambda *_a: None)
+    hanging = asyncio.Event()
+
+    async def wait_for_exit(_worker):
+        await hanging.wait()
+
+    monkeypatch.setattr(TaskQueueService, "_wait_for_worker_process", wait_for_exit)
+    state.queue_items.append(_row("r1", ticket=ticket))
+    TaskQueueService._dispatch_pending_tasks()
+    await asyncio.sleep(0)
+    assert "r1" in state.active_runs
+    return worker
+
+
+def _worker_lock(ticket):
+    return DeviceExecutionLock(
+        description="worker",
+        device_id="d1",
+        session_id="r1",
+        queue_ticket=ticket,
+        lock_scope=f"host:{HOST_A}",
+        concurrency_mode="per_device",
+    )
+
+
+def _ticket_files(ticket):
+    queue_dir = device_lock.get_temp_dir("device-locks") / "artemis-global-device.queue"
+    return list(queue_dir.glob(f"*-{ticket}.wait"))
+
+
+@pytest.mark.asyncio
+async def test_nack_never_kills_a_worker_that_acquires_the_lock_during_the_nack(
+    tmp_path, monkeypatch
+):
+    """The worker may win the lock at any point inside the NACK; the kill must not hit it."""
+    _host_agent()
+    ticket = DeviceExecutionLock.reserve("t", "d1", session_id="r1", lock_scope=f"host:{HOST_A}")
+    worker = await _spawned_worker(tmp_path, monkeypatch, ticket)
+    lock = _worker_lock(ticket)
+    killed_while_locked: list[bool] = []
+    worker.kill.side_effect = lambda: killed_while_locked.append(lock._acquired)
+    real_snapshot = TaskQueueService._held_lock_session_ids.__func__
+
+    def snapshot_then_worker_acquires(cls):
+        observed = real_snapshot(cls)
+        try:
+            lock.acquire(blocking=False)  # the worker's acquisition races the NACK
+        except device_lock.DeviceBusyError:
+            pass  # the NACK already fenced it: it aborted without the lock
+        return observed
+
+    monkeypatch.setattr(
+        TaskQueueService,
+        "_held_lock_session_ids",
+        classmethod(snapshot_then_worker_acquires),
+    )
+    try:
+        await TaskQueueService.requeue_starting("r1")
+    finally:
+        lock.release()
+
+    assert True not in killed_while_locked
+
+
+@pytest.mark.asyncio
+async def test_nack_is_refused_when_the_worker_already_holds_the_lock(tmp_path, monkeypatch):
+    _host_agent()
+    ticket = DeviceExecutionLock.reserve("t", "d1", session_id="r1", lock_scope=f"host:{HOST_A}")
+    worker = await _spawned_worker(tmp_path, monkeypatch, ticket)
+    lock = _worker_lock(ticket)
+    lock.acquire(blocking=False)  # lock held; the dispatcher has not promoted the row yet
+    try:
+        assert await TaskQueueService.requeue_starting("r1") is False
+    finally:
+        lock.release()
+
+    worker.kill.assert_not_called()
+    assert _statuses() == {"r1": "starting"}
+
+
+@pytest.mark.asyncio
+async def test_nack_fails_closed_and_keeps_the_ticket_when_lock_state_is_unreadable(
+    tmp_path, monkeypatch
+):
+    _host_agent()
+    ticket = DeviceExecutionLock.reserve("t", "d1", session_id="r1", lock_scope=f"host:{HOST_A}")
+    worker = await _spawned_worker(tmp_path, monkeypatch, ticket)
+    monkeypatch.setattr(
+        DeviceExecutionLock, "get_active_owners", MagicMock(side_effect=OSError("unreadable"))
+    )
+
+    assert await TaskQueueService.requeue_starting("r1") is False
+
+    worker.kill.assert_not_called()
+    assert _statuses() == {"r1": "starting"}
+    assert len(_ticket_files(ticket)) == 1  # original ticket, original timestamp
+    monkeypatch.undo()
+
+
+@pytest.mark.asyncio
+async def test_nack_of_a_lock_holding_worker_with_unreadable_state_keeps_it_running(
+    tmp_path, monkeypatch
+):
+    _host_agent()
+    ticket = DeviceExecutionLock.reserve("t", "d1", session_id="r1", lock_scope=f"host:{HOST_A}")
+    worker = await _spawned_worker(tmp_path, monkeypatch, ticket)
+    lock = _worker_lock(ticket)
+    lock.acquire(blocking=False)
+    monkeypatch.setattr(
+        DeviceExecutionLock, "get_active_owners", MagicMock(side_effect=OSError("unreadable"))
+    )
+    try:
+        assert await TaskQueueService.requeue_starting("r1") is False
+    finally:
+        lock.release()
+
+    worker.kill.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_busy_device_owned_outside_server_state_does_not_take_the_last_host_slot(monkeypatch):
+    _host_agent(max_runs=2)
+    assert host_admission.try_reserve(HOST_A, "external", "d1") is None
+    host_admission.mark("external", RunPhase.RUNNING)
+    external = DeviceExecutionLock(
+        description="other ingress",
+        device_id="d1",
+        session_id="external",
+        lock_scope=f"host:{HOST_A}",
+        concurrency_mode="per_device",
+    )
+    external.acquire(blocking=False)
+    started: list[str] = []
+    hanging = asyncio.Event()
+
+    async def fake_execute(item):
+        started.append(item["session_id"])
+        await hanging.wait()
+
+    monkeypatch.setattr(TaskQueueService, "_execute_task_item", fake_execute)
+    state.queue_items.extend([_row("busy-d1", "d1"), _row("idle-d2", "d2")])
+    try:
+        TaskQueueService._dispatch_pending_tasks()
+        await asyncio.sleep(0)
+    finally:
+        external.release()
+        hanging.set()
+
+    assert started == ["idle-d2"]
+    assert state.queue_items[0]["wait_reason"] == "device_busy"
+    assert host_admission.snapshot(HOST_A, [])["starting"] == 1  # d1 reserved nothing
+
+
+@pytest.mark.asyncio
+async def test_row_behind_another_ingress_ticket_holds_no_slot_until_it_is_head(runs):
+    _host_agent(max_runs=2)
+    DeviceExecutionLock.reserve("other", "d1", session_id="sdk-1", lock_scope=f"host:{HOST_A}")
+    own = DeviceExecutionLock.reserve("t", "d1", session_id="r1", lock_scope=f"host:{HOST_A}")
+    state.queue_items.extend([_row("r1", "d1", ticket=own), _row("r2", "d2")])
+
+    await runs.tick()
+
+    assert runs.started == ["r2"]  # r1 waits behind the other ingress; it took no slot
+    assert state.queue_items[0]["wait_reason"] == "device_busy"
+    assert host_admission.snapshot(HOST_A, [])["starting"] == 1
+
+
+@pytest.mark.asyncio
+async def test_unreadable_lock_state_keeps_host_rows_waiting(runs, monkeypatch):
+    _host_agent()
+    state.queue_items.append(_row("r1"))
+    monkeypatch.setattr(
+        DeviceExecutionLock, "get_active_owner", MagicMock(side_effect=OSError("unreadable"))
+    )
+
+    await runs.tick()
+
+    assert runs.started == []
+    assert host_admission.snapshot(HOST_A, [])["starting"] == 0
+
+
+@pytest.mark.asyncio
+async def test_distinct_hosts_do_not_debounce_each_others_submissions():
+    _host_agent(devices=("d1",))
+    _host_agent(HOST_B, devices=("d1",))
+    host_admission.different_phones("d1")
+
+    first = await TaskQueueService.enqueue_tasks(["same"], host_id=HOST_A, device_serial="d1")
+    second = await TaskQueueService.enqueue_tasks(["same"], host_id=HOST_B, device_serial="d1")
+    again = await TaskQueueService.enqueue_tasks(["same"], host_id=HOST_B, device_serial="d1")
+
+    assert (first["enqueued_count"], second["enqueued_count"]) == (1, 1)
+    assert second["tasks"][0]["host_id"] == HOST_B
+    assert again["enqueued_count"] == 0  # the same computer's double-click is still debounced
+
+
+@pytest.mark.asyncio
+async def test_a_local_submission_is_not_debounced_into_a_host_run(monkeypatch):
+    _host_agent(devices=("d1",))
+    monkeypatch.setattr(
+        "artemis.runtime.device_pool.device_pool.select_device_async",
+        AsyncMock(return_value="d1"),
+    )
+    host_run = await TaskQueueService.enqueue_tasks(["same"], host_id=HOST_A, device_serial="d1")
+    local = await TaskQueueService.enqueue_tasks(["same"], device_serial="d1")
+
+    assert host_run["enqueued_count"] == local["enqueued_count"] == 1
