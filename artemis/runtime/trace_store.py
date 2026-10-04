@@ -336,6 +336,38 @@ def write_status(trace_id: str, data: dict[str, Any]) -> None:
     _atomic_write_json(get_status_path(trace_id), data)
 
 
+_TERMINAL_STATUSES = ("completed", "failed", "cancelled", "interrupted")
+
+
+def publish_outcome(
+    trace_id: str,
+    status: str,
+    *,
+    end_time: float | None = None,
+    error: str | None = None,
+    interrupt_reason: str | None = None,
+) -> dict[str, Any] | None:
+    """Mirror a committed run outcome into status.json.
+
+    Only the lifecycle authority calls this; it is the one writer allowed to
+    set a terminal status over whatever the file currently holds.
+    """
+    path = get_status_path(trace_id)
+    if not os.path.exists(path):
+        return None
+    with _status_lock(path):
+        data = read_status(trace_id)
+        if not data:
+            return None
+        data["status"] = status
+        data["end_time"] = end_time or time.time()
+        data["interrupt_reason"] = interrupt_reason
+        if error is not None:
+            data["error"] = error
+        write_status(trace_id, data)
+        return data
+
+
 def update_trace_status(
     trace_id: str,
     status: str,
@@ -365,8 +397,16 @@ def update_trace_status(
         if status == "success":
             status = "completed"
 
+        # A published outcome is final; only the lifecycle authority
+        # (publish_outcome) may set one, so a late writer cannot rewrite it.
+        if data.get("status") in _TERMINAL_STATUSES and status != data["status"]:
+            logger.debug(
+                f"Ignoring {status!r} for trace {trace_id}: outcome already {data['status']!r}"
+            )
+            return data
+
         data["status"] = status
-        if status in ("completed", "failed", "cancelled"):
+        if status in _TERMINAL_STATUSES:
             data["end_time"] = time.time()
 
         if error is not None:

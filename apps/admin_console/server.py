@@ -71,6 +71,7 @@ from artemis.config import (
     init_ls_address,
 )
 from artemis.resources import get_bundled_showcase_dist
+from artemis.runtime.lifecycle import InterruptReason
 from apps.admin_console.core.access_control import (
     AdminAPIError,
     CloudflareAccessVerifier,
@@ -209,7 +210,7 @@ async def on_startup():
 
     cleaned = session_repo.cleanup_orphans_on_startup()
     if cleaned > 0:
-        print(f"[ServerStartup] Marked {cleaned} orphaned running session(s) as failed.")
+        print(f"[ServerStartup] Marked {cleaned} orphaned running session(s) as interrupted.")
     # Workers killed together with a previous daemon never remuxed their
     # recordings; publish whatever raw files they left behind.
     asyncio.create_task(asyncio.to_thread(task_queue_service.recover_orphaned_recordings_on_launch))
@@ -262,7 +263,8 @@ async def on_shutdown():
     state.current_process = None
     state.queue_items.clear()
     for session_id in owned_session_ids:
-        session_repo.update_session_status(session_id, "cancelled")
+        # The runs were cut short by this server stopping, not by a user.
+        session_repo.lifecycle.interrupt(session_id, InterruptReason.SERVER_RESTARTED)
 
     await ipc_service.stop_server()
     state.ipc_subscribers.clear()

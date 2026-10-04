@@ -41,6 +41,7 @@ from artemis.data_engine.models import (
 )
 from artemis.data_engine.storage import StorageManager
 from artemis.data_engine.trace import CURRENT_TRACE_ID
+from artemis.runtime.lifecycle import InterruptReason, LifecycleAuthority
 from artemis.utils.coordinates import (
     normalize_any_structure,
     normalize_step_actions,
@@ -642,16 +643,18 @@ class DataEngine:
         self._publish("session_started", session.model_dump())
         return session_id
 
-    def end_session(self, status: str = "completed"):
-        """End the current session, updating its status and end time."""
+    def end_session(
+        self,
+        status: str = "completed",
+        interrupt_reason: InterruptReason | str | None = None,
+    ):
+        """End the current session through the lifecycle authority.
+
+        The authority commits the first outcome only; a later call (or a
+        cancel/loss that already won) is a no-op and publishes nothing.
+        """
         if not self.current_session_id:
             return
-
-        # Session-level terminal statuses are canonically "completed" /
-        # "failed" / "cancelled"; "success" is a legacy alias some callers
-        # still pass and must never reach the sessions table.
-        if status == "success":
-            status = "completed"
 
         # Clear pause file if it exists
         pause_file = PAUSE_FILE
@@ -663,9 +666,14 @@ class DataEngine:
                 logger.error(f"Failed to delete pause file on session end: {e}")
 
         session_id = self.current_session_id
-        end_time = time.time()
-        session = self.storage.get_session(session_id)
-        if session and session.end_time is not None and session.status not in ("running", "paused"):
+        try:
+            outcome = LifecycleAuthority(self.storage.db_path).finish(
+                str(session_id), status, reason=interrupt_reason
+            )
+        except (OSError, ValueError, sqlite3.Error) as e:
+            logger.error(f"Failed to end session in DataEngine: {e}")
+            return
+        if not outcome.committed:
             logger.debug(f"Session end already published for {session_id}; skipping duplicate")
             return
         # Session-level LLM usage line (cache-hit ratios per source), best-effort.
@@ -675,27 +683,10 @@ class DataEngine:
             log_session_summary(session_id)
         except Exception as e:
             logger.debug(f"Session usage summary skipped: {e}")
+        session = self.storage.get_session(session_id)
         if session:
-            session.end_time = end_time
-            session.status = status
-        else:
-            session = SessionMetadata(
-                session_id=session_id,
-                initial_goal="",
-                start_time=self.session_start_time or end_time,
-                end_time=end_time,
-                status=status,
-                device_info=self.ctx.device.model_dump()
-                if getattr(self, "ctx", None) and self.ctx.device
-                else {},
-            )
-
-        try:
-            self.storage.update_session(session)
-            logger.info(f"Session ended: {session_id} with status: {status}")
+            logger.info(f"Session ended: {session_id} with status: {outcome.status}")
             self._publish("session_ended", session.model_dump())
-        except Exception as e:
-            logger.error(f"Failed to end session in DataEngine: {e}")
 
     def record_video_start(
         self,

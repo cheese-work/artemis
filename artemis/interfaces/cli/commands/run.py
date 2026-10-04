@@ -484,6 +484,8 @@ def run_command(
                             return
                         else:
                             err = final_res.get("error") or final_res.get("explanation") or ""
+                            if final_st == "interrupted":
+                                err = f"{final_res.get('interrupt_reason') or 'unknown'} {err}".strip()
                             console.print(f"\n[bold red]✖ Task {final_st}[/bold red]: {err}")
                             raise SystemExit(1)
                     except KeyboardInterrupt:

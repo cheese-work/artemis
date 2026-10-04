@@ -66,14 +66,30 @@ def test_update_trace_status(temp_trace_env):
     assert updated["result"] == {"success": True}
     assert updated["end_time"] is not None
 
-    failed = trace_store.update_trace_status(
+    # A published outcome is final: a late writer cannot rewrite it.
+    late = trace_store.update_trace_status(
         trace_id=trace_id,
         status="failed",
         error="App crashed",
     )
-    assert failed is not None
-    assert failed["status"] == "failed"
-    assert failed["error"] == "App crashed"
+    assert late is not None
+    assert late["status"] == "completed"
+    assert late["error"] is None
+
+
+def test_publish_outcome_is_the_only_terminal_override(temp_trace_env):
+    trace_id = str(uuid.uuid4())
+    trace_store.init_trace(trace_id, "Test task", "Pro", "conv-456")
+
+    published = trace_store.publish_outcome(
+        trace_id, "interrupted", end_time=12.5, interrupt_reason="device_offline"
+    )
+    assert published is not None
+    assert published["status"] == "interrupted"
+    assert published["end_time"] == 12.5
+    assert published["interrupt_reason"] == "device_offline"
+    assert trace_store.update_trace_status(trace_id, "failed")["status"] == "interrupted"
+    assert trace_store.publish_outcome(str(uuid.uuid4()), "failed") is None
 
 
 def test_update_trace_status_normalizes_success_alias(temp_trace_env):

@@ -115,6 +115,7 @@ def _reconcile_task_state(
 
     db_status: str | None = None
     db_pid: int | None = None
+    db_interrupt_reason: str | None = None
     db_path = _find_data_engine_db()
     if db_path:
         try:
@@ -124,10 +125,17 @@ def _reconcile_task_state(
                 "SELECT status, pid FROM sessions WHERE session_id = ? ORDER BY start_time DESC LIMIT 1",
                 (trace_id,),
             ).fetchone()
-            conn.close()
             if row:
                 db_status = row["status"]
                 db_pid = row["pid"]
+                if db_status == "interrupted":
+                    reason_row = conn.execute(
+                        "SELECT interrupt_reason FROM sessions WHERE session_id = ? "
+                        "ORDER BY start_time DESC LIMIT 1",
+                        (trace_id,),
+                    ).fetchone()
+                    db_interrupt_reason = reason_row["interrupt_reason"] if reason_row else None
+            conn.close()
         except sqlite3.Error as exc:
             # Reconciliation then relies on status.json and lock evidence only.
             print(f"Could not read DB session row for {trace_id}: {exc}", file=sys.stderr)
@@ -143,7 +151,7 @@ def _reconcile_task_state(
     liveness_failed = (
         current_status == "failed" and status_data.get("error") == _LIVENESS_FAILURE_ERROR
     )
-    if db_status in ("completed", "success", "failed", "cancelled") and (
+    if db_status in ("completed", "success", "failed", "cancelled", "interrupted") and (
         current_status in ("running", "pending") or liveness_failed
     ):
         canonical = "completed" if db_status in ("completed", "success") else db_status
@@ -154,6 +162,12 @@ def _reconcile_task_state(
                 status_data["error"] = None
             if not status_data.get("end_time"):
                 status_data["end_time"] = time.time()
+            dirty = True
+        if (
+            canonical == "interrupted"
+            and status_data.get("interrupt_reason") != db_interrupt_reason
+        ):
+            status_data["interrupt_reason"] = db_interrupt_reason
             dirty = True
         is_alive = False
     elif current_status in ("running", "pending"):
@@ -344,6 +358,11 @@ def mobile_manage_task(
             response["notes_dir"] = os.path.join(trace_dir, "notes")
 
         if current_status == "failed":
+            response["error"] = status_data.get("error")
+        elif current_status == "interrupted":
+            # Terminal, like failed/cancelled: stop polling. The run lost its
+            # phone or server; the reason says which and what to do next.
+            response["interrupt_reason"] = status_data.get("interrupt_reason")
             response["error"] = status_data.get("error")
         elif current_status == "completed":
             response["result"] = status_data.get("result")

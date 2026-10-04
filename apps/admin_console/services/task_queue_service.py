@@ -18,6 +18,7 @@ import logging
 import os
 from pathlib import Path
 import shutil
+import sqlite3
 import sys
 import threading
 import time
@@ -54,6 +55,10 @@ from artemis.runtime import (
 )
 
 logger = logging.getLogger(__name__)
+
+_STOPPED_FROM_FRONTEND = "Task stopped from the Artemis frontend."
+# Cadence of the sweep that fails running sessions whose worker vanished.
+_VANISHED_WORKER_SWEEP_SECONDS = 15.0
 
 
 class TaskQueueService:
@@ -281,31 +286,6 @@ class TaskQueueService:
             if not (isinstance(t, dict) and t.get("session_id") == session_id)
         ]
 
-    @staticmethod
-    def _resolve_terminal_status(
-        current_status: str | None,
-        returncode: int,
-        was_stopped_manually: bool,
-    ) -> tuple[str, bool]:
-        """Resolve final status while preserving an authoritative task result.
-
-        The worker exit code is only a fallback for sessions that have not
-        reached a terminal state. ``success`` is the DataEngine alias for the
-        UI-facing ``completed`` status and is normalized here.
-
-        Returns:
-            A tuple of ``(resolved_status, should_persist)``.
-        """
-        if was_stopped_manually:
-            return "cancelled", True
-
-        normalized = current_status.lower().strip() if isinstance(current_status, str) else None
-        if normalized == "success":
-            return "completed", True
-        if normalized in {"completed", "failed", "cancelled"}:
-            return normalized, False
-        return ("completed" if returncode == 0 else "failed"), True
-
     # Worker subprocess I/O plumbing lives in worker_process_io; the historical
     # private names stay bound here so callers and tests keep working unchanged.
     _subprocess_creation_kwargs = staticmethod(worker_process_io.subprocess_creation_kwargs)
@@ -348,6 +328,43 @@ class TaskQueueService:
         return DeviceExecutionLock.resolve_env_concurrency()
 
     @classmethod
+    def _reap_vanished_workers(cls) -> list[str]:
+        """Fail running sessions that no live worker, lock or run owns.
+
+        This is the writer-side replacement for the repair that used to run
+        inside ``GET /api/sessions``; it covers workers started outside this
+        server (CLI, MCP) that died without finalizing.
+        """
+        try:
+            owner_sids = {
+                str(owner.session_id)
+                for owner in DeviceExecutionLock.get_active_owners().values()
+                if owner.session_id
+            }
+        except Exception:
+            return []  # lock state unknown: never declare a worker dead on a guess
+        in_flight = {
+            str(i.get("session_id"))
+            for i in state.queue_items
+            if isinstance(i, dict) and i.get("status") == "running"
+        }
+
+        def owned(sid: str) -> bool:
+            return (
+                sid in owner_sids
+                or sid in in_flight
+                or sid in state.active_runs
+                or sid in state.active_connections
+                or (state.is_running and sid == str(state.active_session_id))
+            )
+
+        swept = session_repo.lifecycle.fail_vanished_workers(session_repo.process_is_alive, owned)
+        for sid in swept:
+            print(f"[QueueWorker] Failed vanished running session {sid}")
+            cls._deliver_outcome(sid)
+        return swept
+
+    @classmethod
     async def queue_worker(cls):
         """Persistent dispatcher scheduling pending tasks onto devices.
 
@@ -366,12 +383,19 @@ class TaskQueueService:
         except Exception as exc:
             print(f"[QueueWorker] Initial stale lock cleanup notice: {exc}")
 
+        next_sweep = time.monotonic()
         try:
             while True:
                 try:
                     cls._dispatch_pending_tasks()
                 except Exception as exc:
                     print(f"[QueueWorker] Dispatch error: {exc}")
+                if time.monotonic() >= next_sweep:
+                    next_sweep = time.monotonic() + _VANISHED_WORKER_SWEEP_SECONDS
+                    try:
+                        cls._reap_vanished_workers()
+                    except Exception as exc:
+                        print(f"[QueueWorker] Vanished-worker sweep error: {exc}")
                 try:
                     await asyncio.wait_for(state.wake_event.wait(), timeout=0.3)
                     state.wake_event.clear()
@@ -650,53 +674,28 @@ class TaskQueueService:
     async def _persist_terminal_session_status(
         cls, sess_id: Any, returncode: int, manual_stop: bool
     ) -> str:
-        """Resolve and persist the session's terminal status in the DB and trace store."""
-        current_status = session_repo.get_session_status(sess_id)
-        new_status, should_persist = cls._resolve_terminal_status(
-            current_status,
-            returncode,
-            manual_stop,
+        """Settle the session after its worker exits and return the published status.
+
+        The worker's exit code is only a fallback: the lifecycle authority keeps
+        any outcome already committed (completed, cancelled, interrupted, ...).
+        """
+        try:
+            outcome = await asyncio.to_thread(
+                session_repo.lifecycle.settle_worker_exit, str(sess_id), returncode, manual_stop
+            )
+        except Exception:
+            logger.exception("[QueueWorker] Could not settle terminal status for %s", sess_id)
+            outcome = None
+        if outcome is not None and outcome.status:
+            print(f"[QueueWorker] Session {sess_id} outcome '{outcome.status}'")
+            return outcome.status
+        fallback = "cancelled" if manual_stop else ("completed" if returncode == 0 else "failed")
+        logger.error(
+            "[QueueWorker] Could not persist terminal DB status '%s' for session %s",
+            fallback,
+            sess_id,
         )
-        if should_persist:
-            if session_repo.update_session_status(sess_id, new_status, time.time()):
-                print(f"[QueueWorker] Updated session {sess_id} status to '{new_status}'")
-            else:
-                # The DB row is the fallback MCP pollers reconcile
-                # against when status.json is stale, so a failed DB
-                # write must not pass silently.
-                logger.error(
-                    "[QueueWorker] Could not persist terminal DB status '%s' for session %s",
-                    new_status,
-                    sess_id,
-                )
-        else:
-            print(f"[QueueWorker] Preserved authoritative session {sess_id} status '{new_status}'")
-        # A stale status.json would leave MCP pollers seeing "running"
-        # until their next DB reconcile, so retry transient write
-        # failures before giving up.
-        for attempt in range(3):
-            try:
-                if trace_store.read_status(str(sess_id)):
-                    canonical_mcp_status = (
-                        "completed" if new_status in ("completed", "success") else new_status
-                    )
-                    trace_store.update_trace_status(
-                        str(sess_id),
-                        canonical_mcp_status,
-                    )
-                break
-            except OSError as exc:
-                if attempt < 2:
-                    await asyncio.sleep(0.5 * (attempt + 1))
-                    continue
-                logger.error(
-                    "[QueueWorker] Could not persist terminal MCP status "
-                    "for %s after %d attempts: %s",
-                    sess_id,
-                    attempt + 1,
-                    exc,
-                )
-        return new_status
+        return fallback
 
     @classmethod
     async def _recover_or_fail_recording(cls, sess_id: Any) -> None:
@@ -764,44 +763,77 @@ class TaskQueueService:
             )
 
     @classmethod
-    def _announce_session_end(
-        cls,
-        task_item: dict[str, Any],
-        sess_id: Any,
-        goal: str,
-        new_status: str,
-        manual_stop: bool,
+    def _deliver_outcome(
+        cls, sess_id: Any, task_item: dict[str, Any] | None = None, goal: str | None = None
     ) -> None:
-        """Broadcast session_ended and dispatch the external completion notification."""
+        """Announce the session's committed outcome; each outcome is delivered once.
+
+        Every finalizer (worker exit, stop, sweep) may call this: only the one
+        that claims the outbox row broadcasts and notifies, so a session never
+        produces duplicate ``session_ended`` / ``run_interrupted`` events.
+        """
         state.active_connections.pop(sess_id, None)
-        cls._broadcast_event(
-            "session_ended",
-            {
+        if task_item is None:
+            task_item = next(
+                (
+                    i
+                    for i in state.queue_items
+                    if isinstance(i, dict) and str(i.get("session_id")) == str(sess_id)
+                ),
+                {},
+            )
+        try:
+            events = session_repo.lifecycle.claim_events(str(sess_id))
+        except sqlite3.Error:
+            logger.warning("Could not claim outcome events for session %s", sess_id, exc_info=True)
+            return
+        for event in events:
+            status, reason = event["status"], event["interrupt_reason"]
+            payload = {
                 "session_id": sess_id,
-                "status": new_status,
-                "was_stopped_manually": manual_stop,
-            },
-        )
-
-        conversation_id = task_item.get("conversation_id") if task_item else None
-        if conversation_id or task_item.get("ingress") == "mcp":
-            try:
-                from mcp_server.notifiers import notify
-
-                notify(
-                    conversation_id=conversation_id or "",
-                    message=f"Artemis autonomous task '{goal}' finished with status '{new_status}'.\nTrace ID: {sess_id}",
-                    title=f"Task {new_status.capitalize()}: {goal[:40]}",
-                    event_type=new_status,
-                    payload={
-                        "trace_id": sess_id,
+                "status": status,
+                "was_stopped_manually": status == "cancelled",
+            }
+            if reason:
+                payload["interrupt_reason"] = reason
+            cls._broadcast_event("session_ended", payload)
+            if status == "interrupted":
+                cls._broadcast_event(
+                    "run_interrupted",
+                    {
                         "session_id": sess_id,
-                        "status": new_status,
-                        "goal": goal,
+                        "interrupt_reason": reason,
+                        "interrupted_at": event["created_at"],
                     },
                 )
-            except Exception as notif_err:
-                print(f"[QueueWorker] Notification dispatch notice: {notif_err}")
+            cls._notify_session_end(task_item, sess_id, goal, status)
+
+    @classmethod
+    def _notify_session_end(
+        cls, task_item: dict[str, Any], sess_id: Any, goal: str | None, status: str
+    ) -> None:
+        """Dispatch the external completion notification for a delivered outcome."""
+        conversation_id = task_item.get("conversation_id") if task_item else None
+        if not (conversation_id or task_item.get("ingress") == "mcp"):
+            return
+        goal = goal or task_item.get("goal") or ""
+        try:
+            from mcp_server.notifiers import notify
+
+            notify(
+                conversation_id=conversation_id or "",
+                message=f"Artemis autonomous task '{goal}' finished with status '{status}'.\nTrace ID: {sess_id}",
+                title=f"Task {status.capitalize()}: {goal[:40]}",
+                event_type=status,
+                payload={
+                    "trace_id": sess_id,
+                    "session_id": sess_id,
+                    "status": status,
+                    "goal": goal,
+                },
+            )
+        except Exception as notif_err:
+            print(f"[QueueWorker] Notification dispatch notice: {notif_err}")
 
     @classmethod
     def _release_run_slot(
@@ -887,11 +919,9 @@ class TaskQueueService:
 
             # 4. Perform fallback database status update and notification
             if sess_id:
-                new_status = await cls._persist_terminal_session_status(
-                    sess_id, returncode, manual_stop
-                )
+                await cls._persist_terminal_session_status(sess_id, returncode, manual_stop)
                 await cls._recover_or_fail_recording(sess_id)
-                cls._announce_session_end(task_item, sess_id, goal, new_status, manual_stop)
+                cls._deliver_outcome(sess_id, task_item, goal)
 
         except asyncio.CancelledError:
             print(f"[QueueWorker] Task [{sess_id}] received cancellation signal.")
@@ -903,10 +933,10 @@ class TaskQueueService:
             # A spawn failure must also leave a terminal session status.
             if sess_id:
                 try:
-                    new_status = await cls._persist_terminal_session_status(
+                    await cls._persist_terminal_session_status(
                         sess_id, returncode=1, manual_stop=False
                     )
-                    cls._announce_session_end(task_item, sess_id, goal or "", new_status, False)
+                    cls._deliver_outcome(sess_id, task_item, goal)
                 except (OSError, RuntimeError, ValueError):
                     logger.exception(
                         f"[QueueWorker] Could not persist failure status for [{sess_id}]"
@@ -1094,7 +1124,6 @@ class TaskQueueService:
         cls.ensure_worker_running()
 
         enqueued_tasks = []
-        created_trace_session_ids: set[str] = set()
         now = time.time()
         endpoint = current_adb_endpoint()
 
@@ -1154,7 +1183,6 @@ class TaskQueueService:
                         task_item.get("conversation_id"),
                         task_item.get("device_serial"),
                     )
-                    created_trace_session_ids.add(session_id)
                 if not session_repo.create_queued_session(
                     session_id,
                     goal,
@@ -1177,19 +1205,12 @@ class TaskQueueService:
                         )
                 for enqueued_task in enqueued_tasks:
                     enqueued_session_id = str(enqueued_task["session_id"])
-                    session_repo.update_session_status(enqueued_session_id, "failed", time.time())
-                    if enqueued_session_id in created_trace_session_ids:
-                        try:
-                            trace_store.update_trace_status(
-                                enqueued_session_id,
-                                "failed",
-                                error="Task batch could not be queued.",
-                            )
-                        except OSError:
-                            logger.exception(
-                                "Could not mark rolled-back queue session %s failed",
-                                enqueued_session_id,
-                            )
+                    session_repo.update_session_status(
+                        enqueued_session_id,
+                        "failed",
+                        time.time(),
+                        error="Task batch could not be queued.",
+                    )
                     cls._remove_task(enqueued_session_id)
                 raise
             state.queue_items.append(task_item)
@@ -1242,27 +1263,10 @@ class TaskQueueService:
                 DeviceExecutionLock.cleanup_stale_locks(dev_owner.device_id)
                 sid = dev_owner.session_id
                 if sid:
-                    session_repo.update_session_status(str(sid), "cancelled", time.time())
-                    try:
-                        is_mcp = bool(dev_owner and dev_owner.ingress == "mcp")
-                        if is_mcp or trace_store.read_status(str(sid)):
-                            trace_store.update_trace_status(
-                                str(sid),
-                                "cancelled",
-                                error="Task stopped from the Artemis frontend.",
-                            )
-                    except OSError as exc:
-                        print(
-                            f"[stop_tasks] Could not persist cancelled MCP status for {sid}: {exc}"
-                        )
-                    cls._broadcast_event(
-                        "session_ended",
-                        {
-                            "session_id": sid,
-                            "status": "cancelled",
-                            "was_stopped_manually": True,
-                        },
+                    session_repo.update_session_status(
+                        str(sid), "cancelled", time.time(), error=_STOPPED_FROM_FRONTEND
                     )
+                    cls._deliver_outcome(sid)
 
     @classmethod
     def _kill_all_local_runs(cls) -> None:
@@ -1578,25 +1582,10 @@ class TaskQueueService:
                 state.active_connections.pop(sid, None)
 
         if stopped_session_id:
-            session_repo.update_session_status(str(stopped_session_id), "cancelled", time.time())
-            try:
-                is_mcp = bool(owner and owner.ingress == "mcp")
-                if is_mcp or trace_store.read_status(str(stopped_session_id)):
-                    trace_store.update_trace_status(
-                        str(stopped_session_id),
-                        "cancelled",
-                        error="Task stopped from the Artemis frontend.",
-                    )
-            except Exception as exc:
-                print(f"Failed to update MCP cancellation status: {exc}")
-            cls._broadcast_event(
-                "session_ended",
-                {
-                    "session_id": stopped_session_id,
-                    "status": "cancelled",
-                    "was_stopped_manually": True,
-                },
+            session_repo.update_session_status(
+                str(stopped_session_id), "cancelled", time.time(), error=_STOPPED_FROM_FRONTEND
             )
+            cls._deliver_outcome(stopped_session_id)
 
         if state.active_session_id and (
             not stopped_session_id or str(state.active_session_id) == str(stopped_session_id)

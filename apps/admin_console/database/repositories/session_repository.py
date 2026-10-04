@@ -19,7 +19,7 @@ import sqlite3
 import time
 from typing import Any
 
-from artemis.runtime import trace_store
+from artemis.runtime.lifecycle import LifecycleAuthority
 
 logger = logging.getLogger(__name__)
 
@@ -398,70 +398,19 @@ class SessionRepository:
         except Exception:
             return None
 
-    def harvest_orphaned_sessions(self, orphaned_ids: list[str]) -> int:
-        if not orphaned_ids:
-            return 0
-        with db_session(self.db_path) as conn:
-            cursor = conn.cursor()
-            now = time.time()
-            count = 0
-            for s_id in orphaned_ids:
-                row = cursor.execute(
-                    "SELECT pid FROM sessions WHERE session_id = ? AND status = ?",
-                    (s_id, "running"),
-                ).fetchone()
-                if row is None or self.process_is_alive(row["pid"]):
-                    continue
-                cursor.execute(
-                    "UPDATE sessions SET status = ?, end_time = ? "
-                    "WHERE session_id = ? AND status = ?",
-                    ("failed", now, s_id, "running"),
-                )
-                count += cursor.rowcount
-            conn.commit()
-            return count
+    @property
+    def lifecycle(self) -> LifecycleAuthority:
+        """The single owner of this database's run outcomes."""
+        return LifecycleAuthority(self.db_path)
 
     def reconcile_orphaned_sessions(self) -> int:
-        """Mark running sessions with no live worker process as failed.
+        """Interrupt running sessions whose worker did not survive a server restart.
 
-        This is safe to call both during startup and immediately after a
-        forced server stop: live workers, including workers owned by another
-        server instance, are left untouched.
+        Safe at startup and right after a forced stop: live workers, including
+        workers owned by another server instance, are left untouched.
         """
         try:
-            with db_session(self.db_path) as conn:
-                cursor = conn.cursor()
-                rows = cursor.execute(
-                    "SELECT session_id, pid FROM sessions WHERE status = ?", ("running",)
-                ).fetchall()
-                count = 0
-                now = time.time()
-                for row in rows:
-                    if self.process_is_alive(row["pid"]):
-                        continue
-                    cursor.execute(
-                        "UPDATE sessions SET status = ?, end_time = ? "
-                        "WHERE session_id = ? AND status = ?",
-                        ("failed", now, row["session_id"], "running"),
-                    )
-                    count += cursor.rowcount
-                    try:
-                        if trace_store.read_status(str(row["session_id"])):
-                            trace_store.update_trace_status(
-                                str(row["session_id"]),
-                                "failed",
-                                error="Process terminated prior to server startup.",
-                            )
-                    except OSError as exc:
-                        # read_status itself never raises; this guards the
-                        # lock/write side of update_trace_status.
-                        logger.warning(
-                            "Could not mark trace %s failed during orphan reconciliation: %s",
-                            row["session_id"],
-                            exc,
-                        )
-                conn.commit()
-                return count
+            return len(self.lifecycle.interrupt_running_after_restart(self.process_is_alive))
         except Exception:
             # Reconciliation is best-effort at startup, but a silent abort
             # would leave every orphaned "running" row untouched -- log it.
@@ -545,32 +494,31 @@ class SessionRepository:
             return False
 
     def update_session_status(
-        self, session_id: str, status: str, end_time: float | None = None
+        self,
+        session_id: str,
+        status: str,
+        end_time: float | None = None,
+        error: str | None = None,
     ) -> bool:
+        """Request a terminal outcome; True only when this call published it."""
         try:
-            with db_session(self.db_path) as conn:
-                cursor = conn.cursor()
-                t = end_time or time.time()
-                cursor.execute(
-                    "UPDATE sessions SET status = ?, end_time = ? WHERE session_id = ?",
-                    (status, t, str(session_id)),
-                )
-                conn.commit()
-                return cursor.rowcount > 0
+            return self.lifecycle.finish(
+                session_id, status, end_time=end_time, error=error
+            ).committed
         except Exception:
+            logger.exception("Could not commit %s outcome for session %s", status, session_id)
             return False
 
     def mark_all_running_cancelled(self) -> int:
         try:
             with db_session(self.db_path) as conn:
-                cursor = conn.cursor()
-                cursor.execute(
-                    "UPDATE sessions SET status = ?, end_time = ? WHERE status = ?",
-                    ("cancelled", time.time(), "running"),
-                )
-                count = cursor.rowcount
-                conn.commit()
-                return count
+                running = [
+                    r["session_id"]
+                    for r in conn.execute(
+                        "SELECT session_id FROM sessions WHERE status = 'running'"
+                    )
+                ]
+            return sum(self.update_session_status(sid, "cancelled") for sid in running)
         except Exception:
             return 0
 
