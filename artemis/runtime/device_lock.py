@@ -416,9 +416,13 @@ class DeviceExecutionLock:
 
         The server uses this as the arbiter of a NACK: while it holds the lock a
         worker cannot acquire, and a worker that already holds it makes this fail.
-        Release with :meth:`release`.
+        Never reaps: an existing lock file means "held" unless it is ours, so an
+        unreadable, partially published or aged record of a live worker is left
+        alone (unknown ownership refuses). A stale lock of a dead owner only
+        makes a NACK refuse; the normal acquire path clears it. Release with
+        :meth:`release`.
         """
-        return self._try_acquire_owner_lock()
+        return self._try_acquire_owner_lock(reap_stale=False)
 
     @classmethod
     def queue_head_token(cls, device_id: str, lock_scope: str | None) -> str | None:
@@ -559,7 +563,7 @@ class DeviceExecutionLock:
                 pass
         return removed
 
-    def _try_acquire_owner_lock(self) -> bool:
+    def _try_acquire_owner_lock(self, *, reap_stale: bool = True) -> bool:
         owner_payload = self._owner_payload(
             self.token,
             self.device_id,
@@ -582,7 +586,8 @@ class DeviceExecutionLock:
             ):
                 self._acquired = True
                 return True
-            self._remove_stale_lock()
+            if reap_stale:
+                self._remove_stale_lock()
             return False
         try:
             os.write(fd, json.dumps(owner_payload, ensure_ascii=False).encode("utf-8"))
