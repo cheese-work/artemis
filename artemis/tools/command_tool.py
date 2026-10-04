@@ -55,6 +55,7 @@ from artemis.controllers.platform_specific_commands_controller import (
 )
 from artemis.data_engine.trace import trace_langchain_tool
 from artemis.drivers.base import BaseDeviceDriver
+from artemis.runtime.adb_endpoint import AdbEndpoint, InvalidAdbEndpoint
 from artemis.runtime.endpoint_transport import EndpointTransport
 from artemis.tools.base import ArtemisTool
 from artemis.tools.tool_wrapper import ToolWrapper
@@ -104,6 +105,28 @@ _PERSISTENT_ENV_EXCLUDE_PREFIXES = (
     "SYSTEMSERVER",
     "STANDALONE_",
 )
+
+
+def context_transport(ctx: ArtemisContext | None) -> EndpointTransport:
+    """adb access for the endpoint the run's context is bound to.
+
+    The context's ``adb_client`` is the run's own adb server: a client built by the
+    transport remembers its endpoint (host identity included); any other adbutils
+    client names one by host and port. Only a context with no client follows the
+    process's endpoint, which for a worker is the same thing.
+    """
+    client = getattr(ctx, "adb_client", None) if ctx is not None else None
+    endpoint = getattr(client, "artemis_endpoint", None)
+    if isinstance(endpoint, AdbEndpoint):
+        return EndpointTransport.shared(endpoint)
+    host, port = getattr(client, "host", None), getattr(client, "port", None)
+    if isinstance(host, str) and isinstance(port, int):
+        try:
+            return EndpointTransport.shared(AdbEndpoint.create(host, port))
+        except InvalidAdbEndpoint:
+            pass
+    return EndpointTransport.shared(None)
+
 
 #: Guidance shared by the tool descriptions: the commands that hang an
 #: ``adb shell`` and how to bound them.
@@ -725,7 +748,7 @@ class RunAdbCommandTool(ArtemisTool):
         # The script travels as an argument so the remote shell exits with it;
         # stdin is closed unless the caller wants to feed input later.
         try:
-            process = await EndpointTransport.shared(None).create_subprocess(
+            process = await context_transport(ctx).create_subprocess(
                 ["-s", device_id, "shell", phone_script],
                 cwd=os.getcwd(),
                 stdout=asyncio.subprocess.PIPE,
@@ -1085,7 +1108,7 @@ class RunShortAdbCommandTool(ArtemisTool):
                 return ToolFailure(f"Error running command: {e}")
 
         try:
-            process = await EndpointTransport.shared(None).create_subprocess(
+            process = await context_transport(ctx).create_subprocess(
                 ["-s", device_id, "shell", phone_script],
                 cwd=os.getcwd(),
                 stdout=asyncio.subprocess.PIPE,

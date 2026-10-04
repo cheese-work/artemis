@@ -276,7 +276,9 @@ def _build_client(endpoint: AdbEndpoint, *, spawn_allowed: bool) -> AdbClient:
     from adbutils.errors import AdbTimeout
 
     if spawn_allowed:
-        return AdbClient(host=endpoint.host, port=endpoint.port)
+        client = AdbClient(host=endpoint.host, port=endpoint.port)
+        client.artemis_endpoint = endpoint
+        return client
 
     class _NoSpawnConnection(AdbConnection):
         def _safe_connect(self):  # adbutils would start a local server here
@@ -292,4 +294,6 @@ def _build_client(endpoint: AdbEndpoint, *, spawn_allowed: bool) -> AdbClient:
             except TimeoutError as error:
                 raise AdbTimeout("connect to adb server timeout") from error
 
-    return _NoSpawnClient(host=endpoint.host, port=endpoint.port)
+    client = _NoSpawnClient(host=endpoint.host, port=endpoint.port)
+    client.artemis_endpoint = endpoint
+    return client
