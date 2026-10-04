@@ -1,0 +1,136 @@
+<section class="computers" aria-labelledby="computers-heading">
+  <div class="section-heading">
+    <div>
+      <h2 id="computers-heading">{{ strings.title }}</h2>
+      <p class="intro">{{ strings.intro }}</p>
+    </div>
+    @if (isAdmin() && data()?.enabled) {
+      <button type="button" class="primary-button" (click)="openConnect($event)">{{ strings.connect }}</button>
+    }
+  </div>
+
+  @if (loading()) {
+    <p class="notice" role="status">{{ strings.loading }}</p>
+  } @else if (failed()) {
+    <div class="notice error" role="alert">
+      <p>{{ strings.loadFailed }}</p>
+      <button type="button" class="secondary-button" (click)="load()">Retry</button>
+    </div>
+  } @else if (data(); as current) {
+    @if (!current.enabled) {
+      <div class="notice" role="status">
+        <strong>{{ strings.disabled }}</strong>
+        <p>{{ strings.disabledHint }}</p>
+      </div>
+    } @else if (current.hosts.length === 0) {
+      <div class="notice" role="status">
+        <p>{{ strings.empty }}</p>
+        @if (isAdmin()) {
+          <button type="button" class="primary-button" (click)="openConnect($event)">{{ strings.connect }}</button>
+        }
+      </div>
+    } @else {
+      <ul class="computer-list">
+        @for (host of current.hosts; track host.id) {
+          <li class="computer-row">
+            <div class="computer-main">
+              @if (renaming() === host.id) {
+                <input
+                  class="rename-input"
+                  [value]="host.name"
+                  aria-label="Computer name"
+                  (keydown.enter)="saveRename(host, $any($event.target).value)"
+                  (keydown.escape)="renaming.set(null)"
+                  (blur)="saveRename(host, $any($event.target).value)"
+                />
+              } @else {
+                <h3>{{ host.name }}</h3>
+              }
+              <span class="meta">{{ host.os }} · agent {{ host.agent_version }}</span>
+            </div>
+            <div class="computer-status">
+              <span class="status" [class.online]="host.status === 'online'" [class.attention]="host.status === 'update_required'">
+                {{ statusLabel[host.status] }}
+              </span>
+              @if (host.status !== 'online') {
+                <span class="reason">{{ reasonText(host.reason) }}</span>
+              }
+              <span class="since">{{ since(host.since) }}</span>
+            </div>
+            <div class="computer-phones">
+              <span>{{ phonesSummary(host.phones_shared, host.phones_not_shared) }}</span>
+              @if (host.phones_shared + host.phones_not_shared === 0 && host.status === 'online') {
+                <span class="hint">{{ strings.noPhones }}</span>
+              } @else if (host.phones_not_shared > 0) {
+                <code class="share-command">{{ shareCommand(host) }}</code>
+              }
+            </div>
+            @if (isAdmin() && host.status !== 'revoked') {
+              <div class="computer-actions">
+                <button type="button" class="text-button" (click)="startRename(host)">{{ strings.rename }}</button>
+                <button type="button" class="text-button danger" (click)="askRevoke(host)">{{ strings.revoke }}</button>
+              </div>
+            }
+            @if (revoking()?.id === host.id) {
+              <div class="confirm" role="alertdialog" aria-label="Revoke {{ host.name }}">
+                <p>{{ revokeText() }}</p>
+                <button type="button" class="primary-button danger" (click)="confirmRevoke()">{{ strings.confirmRevoke }}</button>
+                <button type="button" class="secondary-button" (click)="cancelRevoke()">{{ strings.cancel }}</button>
+              </div>
+            }
+          </li>
+        }
+      </ul>
+      @if (current.devices.length > 0) {
+        <h3 class="phones-heading">Phones</h3>
+        <ul class="phone-list">
+          @for (device of current.devices; track device.computer_id + ':' + device.serial) {
+            <li><app-device-chip [device]="device" [computers]="current.hosts" /></li>
+          }
+        </ul>
+      }
+    }
+  }
+
+  @if (dialog() !== 'closed') {
+    <div class="backdrop">
+      <div
+        #dialogBox
+        class="dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="connect-heading"
+        tabindex="-1"
+        (keydown)="onDialogKey($event)"
+      >
+        <h3 id="connect-heading">{{ strings.dialogTitle }}</h3>
+        @switch (dialog()) {
+          @case ('creating') {
+            <p role="status">{{ strings.loading }}</p>
+          }
+          @case ('failed') {
+            <p role="alert">{{ dialogError() }}</p>
+          }
+          @case ('waiting') {
+            <p>{{ strings.codeOnce }}</p>
+            <code class="code">{{ code()?.code }}</code>
+            <p class="countdown">Expires in <strong>{{ countdown() }}</strong></p>
+            <button type="button" class="secondary-button" (click)="copyInstallMessage()">
+              {{ copied() ? strings.copied : strings.copyMessage }}
+            </button>
+            <p role="status" class="waiting">{{ strings.waiting }}</p>
+          }
+          @case ('connected') {
+            <p role="status" class="connected">{{ connectedName() }} connected</p>
+          }
+          @case ('expired') {
+            <p role="alert">{{ strings.expired }}</p>
+          }
+        }
+        <div class="dialog-actions">
+          <button type="button" class="secondary-button" (click)="closeDialog()">{{ strings.close }}</button>
+        </div>
+      </div>
+    </div>
+  }
+</section>
