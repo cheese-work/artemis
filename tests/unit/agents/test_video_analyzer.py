@@ -34,16 +34,12 @@ import pytest
 pytestmark = pytest.mark.usefixtures("fake_provider_credentials")
 
 
-pytestmark = pytest.mark.usefixtures("dummy_llm_keys")
-
-
 @pytest.mark.asyncio
 async def test_video_analyzer_run():
     # Mock context
     mock_ctx = MagicMock(spec=ArtemisContext)
     mock_ctx.data_engine = None
     mock_ctx.llm_config = MagicMock()
-    mock_ctx.llm_config.get_utils.return_value.provider = "google"
     mock_ctx.llm_config.utils.video_analyzer = MagicMock()
     mock_ctx.llm_config.utils.video_analyzer.model = "gemini-3.7-flash"
     mock_ctx.llm_config.utils.video_analyzer.provider = "google"
@@ -98,7 +94,6 @@ async def test_video_analyzer_preserves_thought_signature():
     mock_ctx = MagicMock(spec=ArtemisContext)
     mock_ctx.data_engine = None
     mock_ctx.llm_config = MagicMock()
-    mock_ctx.llm_config.get_utils.return_value.provider = "google"
     mock_ctx.llm_config.utils.video_analyzer = MagicMock()
     mock_ctx.llm_config.utils.video_analyzer.model = "gemini-3.7-flash"
     mock_ctx.llm_config.utils.video_analyzer.provider = "google"
@@ -278,7 +273,6 @@ async def test_video_analyzer_sub_agent_confidence_validation():
     mock_ctx = MagicMock(spec=ArtemisContext)
     mock_ctx.data_engine = None
     mock_ctx.llm_config = MagicMock()
-    mock_ctx.llm_config.get_utils.return_value.provider = "google"
     mock_ctx.llm_config.utils.video_analyzer = MagicMock()
     mock_ctx.llm_config.utils.video_analyzer.model = "gemini-3.7-flash"
     mock_ctx.llm_config.utils.video_analyzer.provider = "google"

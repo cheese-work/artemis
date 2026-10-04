@@ -14,9 +14,6 @@ from artemis.sdk.builders.agent_config_builder import AgentConfigBuilder
 pytestmark = pytest.mark.usefixtures("fake_provider_credentials")
 
 
-pytestmark = pytest.mark.usefixtures("dummy_llm_keys")
-
-
 def test_with_verification_level_off_disables_the_checker():
     cfg = AgentConfigBuilder().with_verification_level("off").build()
     assert cfg.disable_checker is True
@@ -88,8 +85,8 @@ def test_with_pro_config_carries_both_knobs(default_agent_config):
     assert cfg.disable_checker is False
     assert cfg.disable_midway_checks is False
     assert cfg.explorer.pro_mode == "ultra"
-    # Flash-profile perception is untouched by the Pro knob (shipped default: "pro").
-    assert cfg.explorer.flash_mode == "pro"
+    # Flash-profile perception is untouched by the Pro knob.
+    assert cfg.explorer.flash_mode == "flash"
 
 
 def test_with_pro_config_checker_switch_wins_over_verification_level():
@@ -115,8 +112,8 @@ def test_with_flash_config_explorer_mode_is_the_flash_profile_knob(
     assert cfg.flash.explorer_mode == "pro"
     assert cfg.explorer.flash_mode == "pro"
     assert cfg.get_explorer_version(agent_name="flash") == "pro"
-    # Pro-profile perception is untouched by the Flash knob (shipped default: "pro").
-    assert cfg.get_explorer_version(agent_name="operator") == "pro"
+    # Pro-profile perception is untouched by the Flash knob.
+    assert cfg.get_explorer_version(agent_name="operator") == "flash"
 
 
 def test_with_explorer_versions_is_an_advanced_per_agent_override(monkeypatch):

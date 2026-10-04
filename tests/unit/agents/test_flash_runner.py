@@ -31,9 +31,6 @@ from artemis.context import ArtemisContext
 pytestmark = pytest.mark.usefixtures("fake_provider_credentials")
 
 
-pytestmark = pytest.mark.usefixtures("dummy_llm_keys")
-
-
 @pytest.fixture
 def mock_context():
     ctx = Mock(spec=ArtemisContext)
@@ -42,7 +39,6 @@ def mock_context():
     mock_llm_cfg.model = "gemini-2.5-flash"
     mock_llm_cfg.provider = "google"
     mock_llm_cfg.temperature = 0.1
-    mock_llm_cfg.provider = "google"
     ctx.llm_config.get_agent.return_value = mock_llm_cfg
 
     ctx.device = Mock()
