@@ -83,11 +83,14 @@ def remote_client():
     return TestClient(proxy_aware_app, client=("203.0.113.5", 50000))
 
 
-def test_loopback_session_does_not_require_lifecycle_bearer(loopback_client, _mock_adb):
+def test_loopback_session_does_not_require_lifecycle_bearer(loopback_client, _mock_adb, caplog):
     with loopback_client.websocket_connect(PATH, headers=_HOST_HEADER) as ws:
         assert ws.receive_json()["type"] == "session_leased"
         assert ws.receive_json()["type"] == "device_attached"
         ws.send_text("close")
+
+    assert "event=bridge_close" in caplog.text
+    assert "reason=client" in caplog.text
 
 
 def test_verified_nonadmin_can_open_local_bridge(loopback_client, monkeypatch, _mock_adb):
@@ -270,7 +273,9 @@ def test_no_listener_survives_after_multiple_sessions_open_and_close(loopback_cl
         _assert_listener_closed(port)
 
 
-def test_expired_session_times_out_and_disconnects_adb(loopback_client, monkeypatch, _mock_adb):
+def test_expired_session_times_out_and_disconnects_adb(
+    loopback_client, monkeypatch, _mock_adb, caplog
+):
     monkeypatch.setenv("ARTEMIS_BRIDGE_SESSION_TTL_SECONDS", "0.05")
 
     with loopback_client.websocket_connect(PATH, headers=_HOST_HEADER) as ws:
@@ -287,6 +292,8 @@ def test_expired_session_times_out_and_disconnects_adb(loopback_client, monkeypa
     assert _mock_adb[1][0] == "disconnect"
     assert asyncio.run(bridge_session_service.get(session_id)) is None
     _assert_listener_closed(port)
+    assert "event=bridge_close" in caplog.text
+    assert "reason=idle" in caplog.text
 
 
 def test_expired_session_revokes_when_tcp_drain_is_backpressured(monkeypatch):
@@ -499,7 +506,7 @@ def test_failed_disconnect_force_closes_buffered_accepted_socket(monkeypatch):
 
 
 def test_failed_adb_connect_disconnects_and_releases_listener(
-    loopback_client, monkeypatch, _mock_adb
+    loopback_client, monkeypatch, _mock_adb, caplog
 ):
     async def failed_adb_command(*arguments):
         _mock_adb.append(arguments)
@@ -517,3 +524,211 @@ def test_failed_adb_connect_disconnects_and_releases_listener(
     assert [call[0] for call in _mock_adb] == ["connect", "disconnect"]
     assert asyncio.run(bridge_session_service.get(session_id)) is None
     _assert_listener_closed(port)
+    assert "event=bridge_close" in caplog.text
+    assert "reason=error" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_browser_relay_survives_more_than_five_minutes_with_traffic(monkeypatch):
+    class FakeClock:
+        def __init__(self):
+            self.current = 1000.0
+            self.changed = asyncio.Event()
+            self.sleep_started = asyncio.Event()
+
+        def monotonic(self):
+            return self.current
+
+        def advance(self, seconds):
+            self.current += seconds
+            self.changed.set()
+            self.changed = asyncio.Event()
+
+        async def sleep(self, seconds):
+            deadline = self.current + seconds
+            self.sleep_started.set()
+            while self.current < deadline:
+                await self.changed.wait()
+
+    class FakeWriter:
+        def __init__(self):
+            self.frames = []
+            self.drained = asyncio.Queue()
+
+        def write(self, frame):
+            self.frames.append(frame)
+
+        async def drain(self):
+            await self.drained.put(None)
+
+    class FakeWebSocket:
+        def __init__(self):
+            self.scope = {"client": ("127.0.0.1", 50000)}
+            self.client = ("127.0.0.1", 50000)
+            self.messages = asyncio.Queue()
+            self.sent_json = asyncio.Queue()
+            self.sent_bytes = asyncio.Queue()
+            self.closed = asyncio.Event()
+
+        async def accept(self):
+            pass
+
+        async def send_json(self, message):
+            await self.sent_json.put(message)
+
+        async def send_bytes(self, message):
+            await self.sent_bytes.put(message)
+
+        async def receive(self):
+            return await self.messages.get()
+
+        async def close(self, code):
+            self.closed.set()
+            await self.messages.put({"type": "websocket.disconnect", "code": code})
+
+    class FakeSessionService:
+        def __init__(self, session):
+            self.session = session
+
+        async def create_session(self):
+            return self.session
+
+        async def connect(self, session):
+            return session.serial
+
+        async def revoke(self, _session_id):
+            pass
+
+    clock = FakeClock()
+    monkeypatch.setattr(
+        bridge_session_service_module,
+        "time",
+        type("FakeTime", (), {"monotonic": staticmethod(clock.monotonic)}),
+    )
+    monkeypatch.setattr(device_bridge, "_sleep", clock.sleep)
+    session = BridgeSession(
+        session_id="long-running-relay",
+        port=43210,
+        reader=asyncio.StreamReader(),
+        writer=FakeWriter(),
+        created_at=clock.monotonic(),
+        expires_at=clock.monotonic() + 300,
+    )
+    session.connected.set()
+    websocket = FakeWebSocket()
+    monkeypatch.setattr(
+        device_bridge,
+        "bridge_session_service",
+        FakeSessionService(session),
+    )
+
+    route_task = asyncio.create_task(device_bridge.open_bridge_session(websocket))
+    try:
+        await websocket.sent_json.get()
+        await websocket.sent_json.get()
+        await asyncio.wait_for(clock.sleep_started.wait(), 1)
+        packet = _adb_packet(b"CNXN")
+        await websocket.messages.put({"type": "websocket.receive", "bytes": packet})
+        await asyncio.wait_for(session.writer.drained.get(), 1)
+        clock.advance(240)
+        session.reader.feed_data(packet)
+        assert await asyncio.wait_for(websocket.sent_bytes.get(), 1) == packet
+        clock.advance(61)
+        await asyncio.sleep(0)
+
+        assert clock.monotonic() - session.created_at > 300
+        assert not websocket.closed.is_set()
+        assert session.expires_at > clock.monotonic()
+    finally:
+        if not route_task.done():
+            await websocket.messages.put({"type": "websocket.receive", "text": "close"})
+        await asyncio.gather(route_task, return_exceptions=True)
+
+
+def test_bridge_session_renews_idle_deadline_and_enforces_lifetime_cap(monkeypatch):
+    class FakeTime:
+        current = 1000.0
+
+        @staticmethod
+        def monotonic():
+            return FakeTime.current
+
+    monkeypatch.setattr(bridge_session_service_module, "time", FakeTime)
+    idle_session = BridgeSession(
+        session_id="idle-deadline",
+        created_at=FakeTime.current,
+        expires_at=1300,
+        idle_timeout_seconds=300,
+        max_expires_at=5000,
+    )
+
+    FakeTime.current = 1240
+    assert idle_session.renew()
+    assert idle_session.expires_at == 1540
+    FakeTime.current = 1540
+    assert idle_session.is_expired
+    assert idle_session.expiration_reason() == "idle"
+
+    FakeTime.current = 1000
+    capped_session = BridgeSession(
+        session_id="maximum-lifetime",
+        created_at=FakeTime.current,
+        expires_at=1300,
+        idle_timeout_seconds=300,
+        max_expires_at=1300,
+    )
+    FakeTime.current = 1299
+    assert capped_session.renew()
+    assert capped_session.expires_at == 1300
+    FakeTime.current = 1300
+    assert not capped_session.renew()
+    assert capped_session.is_expired
+    assert capped_session.expiration_reason() == "cap"
+
+
+def test_bridge_expiry_timer_closes_at_maximum_lifetime(monkeypatch):
+    current_time = [100.0]
+
+    class FakeWebSocket:
+        def __init__(self):
+            self.closed_code = None
+
+        async def close(self, code):
+            self.closed_code = code
+
+    async def fake_sleep(seconds):
+        current_time[0] += seconds
+
+    monkeypatch.setattr(
+        bridge_session_service_module,
+        "time",
+        type("FakeTime", (), {"monotonic": staticmethod(lambda: current_time[0])}),
+    )
+    monkeypatch.setattr(device_bridge, "_sleep", fake_sleep)
+    session = BridgeSession(
+        session_id="capped-relay",
+        created_at=current_time[0],
+        expires_at=1000,
+        idle_timeout_seconds=900,
+        max_expires_at=400,
+    )
+    websocket = FakeWebSocket()
+
+    asyncio.run(device_bridge._expire_session(websocket, session, asyncio.Lock()))
+
+    assert websocket.closed_code == 4008
+    assert session.close_reason == "cap"
+
+
+@pytest.mark.parametrize("reason", ["idle", "cap", "client", "error", "revoked"])
+def test_bridge_close_logs_sanitized_reason(reason, caplog):
+    async def scenario():
+        service = BridgeSessionService()
+        session = await service.create_session()
+        session.close_reason = None if reason == "revoked" else reason
+        await service.revoke(session.session_id)
+
+    asyncio.run(scenario())
+
+    assert "event=bridge_close" in caplog.text
+    assert f"reason={reason}" in caplog.text
