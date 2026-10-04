@@ -595,11 +595,10 @@ async def test_nack_after_the_worker_spawned_kills_it_and_hands_the_ticket_back(
 
 
 @pytest.mark.asyncio
-async def test_requeue_is_refused_once_the_worker_holds_its_lock(runs, monkeypatch):
+async def test_requeue_is_refused_without_a_ticket_to_keep(runs):
     _host_agent()
     state.queue_items.append(_row("r1"))
     await runs.tick()
-    monkeypatch.setattr(TaskQueueService, "_held_lock_session_ids", classmethod(lambda cls: {"r1"}))
 
     assert await TaskQueueService.requeue_starting("r1") is False
     assert _statuses() == {"r1": "starting"}
@@ -736,40 +735,6 @@ def _ticket_files(ticket):
 
 
 @pytest.mark.asyncio
-async def test_nack_never_kills_a_worker_that_acquires_the_lock_during_the_nack(
-    tmp_path, monkeypatch
-):
-    """The worker may win the lock at any point inside the NACK; the kill must not hit it."""
-    _host_agent()
-    ticket = DeviceExecutionLock.reserve("t", "d1", session_id="r1", lock_scope=f"host:{HOST_A}")
-    worker = await _spawned_worker(tmp_path, monkeypatch, ticket)
-    lock = _worker_lock(ticket)
-    killed_while_locked: list[bool] = []
-    worker.kill.side_effect = lambda: killed_while_locked.append(lock._acquired)
-    real_snapshot = TaskQueueService._held_lock_session_ids.__func__
-
-    def snapshot_then_worker_acquires(cls):
-        observed = real_snapshot(cls)
-        try:
-            lock.acquire(blocking=False)  # the worker's acquisition races the NACK
-        except device_lock.DeviceBusyError:
-            pass  # the NACK already fenced it: it aborted without the lock
-        return observed
-
-    monkeypatch.setattr(
-        TaskQueueService,
-        "_held_lock_session_ids",
-        classmethod(snapshot_then_worker_acquires),
-    )
-    try:
-        await TaskQueueService.requeue_starting("r1")
-    finally:
-        lock.release()
-
-    assert True not in killed_while_locked
-
-
-@pytest.mark.asyncio
 async def test_nack_is_refused_when_the_worker_already_holds_the_lock(tmp_path, monkeypatch):
     _host_agent()
     ticket = DeviceExecutionLock.reserve("t", "d1", session_id="r1", lock_scope=f"host:{HOST_A}")
@@ -783,25 +748,6 @@ async def test_nack_is_refused_when_the_worker_already_holds_the_lock(tmp_path, 
 
     worker.kill.assert_not_called()
     assert _statuses() == {"r1": "starting"}
-
-
-@pytest.mark.asyncio
-async def test_nack_fails_closed_and_keeps_the_ticket_when_lock_state_is_unreadable(
-    tmp_path, monkeypatch
-):
-    _host_agent()
-    ticket = DeviceExecutionLock.reserve("t", "d1", session_id="r1", lock_scope=f"host:{HOST_A}")
-    worker = await _spawned_worker(tmp_path, monkeypatch, ticket)
-    monkeypatch.setattr(
-        DeviceExecutionLock, "get_active_owners", MagicMock(side_effect=OSError("unreadable"))
-    )
-
-    assert await TaskQueueService.requeue_starting("r1") is False
-
-    worker.kill.assert_not_called()
-    assert _statuses() == {"r1": "starting"}
-    assert len(_ticket_files(ticket)) == 1  # original ticket, original timestamp
-    monkeypatch.undo()
 
 
 @pytest.mark.asyncio

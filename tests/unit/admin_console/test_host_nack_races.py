@@ -99,158 +99,163 @@ def worker_lock(ticket):
     )
 
 
+def _ticket_files(ticket):
+    queue_dir = device_lock.get_temp_dir("device-locks") / "artemis-global-device.queue"
+    return list(queue_dir.glob(f"*-{ticket}.wait"))
+
+
+class ControlledAcquisition:
+    """Hold a real, blocking worker acquire at named points inside the lock take.
+
+    Like the real worker, it waits in the FIFO queue until it owns the device.
+    """
+
+    def __init__(self, lock, monkeypatch):
+        self.lock = lock
+        self.before_take = threading.Event()
+        self.allow_take = threading.Event()
+        self.attempted = threading.Event()
+        self.allow_return = threading.Event()
+        self.done = threading.Event()
+        self.cancel = threading.Event()
+        self.took = False
+        self.errors: list[BaseException] = []
+        real_take = lock._try_acquire_owner_lock
+
+        def controlled_take():
+            self.before_take.set()
+            assert self.allow_take.wait(5)
+            self.took = real_take()
+            self.attempted.set()
+            assert self.allow_return.wait(5)
+            return self.took
+
+        monkeypatch.setattr(lock, "_try_acquire_owner_lock", controlled_take)
+        self.thread = threading.Thread(target=self._acquire)
+
+    def _acquire(self):
+        try:
+            self.lock.acquire(cancel_event=self.cancel)
+        except BaseException as error:  # noqa: BLE001 - recorded for the assertions
+            self.errors.append(error)
+        finally:
+            self.done.set()
+
+    def start(self):
+        self.thread.start()
+        assert self.before_take.wait(5)
+
+    def stop(self):
+        self.cancel.set()
+        self.allow_take.set()
+        self.allow_return.set()
+        self.thread.join(5)
+        assert not self.thread.is_alive()
+        self.lock.release()
+
+
 @pytest.mark.asyncio
-async def test_kill_cannot_land_between_owner_acquisition_and_post_fence_check(
+async def test_nack_landing_while_a_worker_is_mid_acquisition_kills_it_only_without_the_lock(
     tmp_path, monkeypatch
 ):
+    """Re-review probe A: the worker is released into the acquisition mid-NACK.
+
+    The server holds the device lock for the whole NACK, so the worker's attempt
+    fails; the kill lands only after that, and the worker never owns the device.
+    """
     host()
     ticket = DeviceExecutionLock.reserve("probe", "d1", session_id="r1", lock_scope="host:host-a")
+    assert session_repo.create_queued_session("r1", "probe", "flash", "d1", 1.0, None)
     worker = await spawned_worker(tmp_path, monkeypatch, ticket, asyncio.Event())
     lock = worker_lock(ticket)
-    reached_acquisition = threading.Event()
-    allow_acquisition = threading.Event()
-    owner_acquired = threading.Event()
-    allow_post_check = threading.Event()
-    worker_done = threading.Event()
-    errors = []
-    kills_while_locked = []
-    real_take = lock._try_acquire_owner_lock
-
-    def controlled_take():
-        reached_acquisition.set()
-        assert allow_acquisition.wait(5)
-        acquired = real_take()
-        assert acquired
-        owner_acquired.set()
-        assert allow_post_check.wait(5)
-        return acquired
-
-    monkeypatch.setattr(lock, "_try_acquire_owner_lock", controlled_take)
-
-    def acquire():
-        try:
-            lock.acquire(blocking=False)
-        except BaseException as error:
-            errors.append(error)
-        finally:
-            worker_done.set()
-
-    thread = threading.Thread(target=acquire)
-    thread.start()
-    assert reached_acquisition.wait(5)
-    real_snapshot = TaskQueueService._held_lock_session_ids
-
-    def snapshot_then_owner_acquires(_cls):
-        observed = real_snapshot()
-        assert "r1" not in observed
-        allow_acquisition.set()
-        assert owner_acquired.wait(5)
-        assert lock._acquired
-        return observed
-
-    monkeypatch.setattr(
-        TaskQueueService, "_held_lock_session_ids", classmethod(snapshot_then_owner_acquires)
-    )
+    acquisition = ControlledAcquisition(lock, monkeypatch)
+    acquisition.start()
+    kills_while_locked: list[bool] = []
 
     def kill():
+        acquisition.allow_take.set()  # the worker's take lands inside the NACK
+        assert acquisition.attempted.wait(5)
         kills_while_locked.append(lock._acquired)
-        allow_post_check.set()
-        assert worker_done.wait(5)
 
     worker.kill.side_effect = kill
     try:
         requeued = await TaskQueueService.requeue_starting("r1")
-        print(f"FENCE GAP: requeued={requeued}, kills_while_locked={kills_while_locked}")
-        assert True not in kills_while_locked
+        ticket_kept = len(_ticket_files(ticket))  # before the test's own thread gives up
     finally:
-        allow_acquisition.set()
-        allow_post_check.set()
-        thread.join(5)
-        assert not thread.is_alive()
-        lock.release()
+        acquisition.stop()
+
+    assert requeued is True
+    assert ticket_kept == 1
+    assert kills_while_locked == [False]
+    assert acquisition.took is False  # the worker's take failed against the server's hold
+    assert DeviceExecutionLock.get_active_owner("d1", "host:host-a") is None
+    assert state.queue_items[0]["status"] == "pending"
+    assert session_repo.get_session_by_id("r1")["status"] == "queued"
 
 
 @pytest.mark.asyncio
-async def test_refused_nack_after_fence_abort_must_remain_queued_not_fail(tmp_path, monkeypatch):
+async def test_nack_after_the_worker_took_the_lock_is_refused_and_kills_nothing(
+    tmp_path, monkeypatch
+):
+    """The mirror order: the worker owns the device before the NACK arrives."""
+    host()
+    ticket = DeviceExecutionLock.reserve("probe", "d1", session_id="r1", lock_scope="host:host-a")
+    assert session_repo.create_queued_session("r1", "probe", "flash", "d1", 1.0, None)
+    worker = await spawned_worker(tmp_path, monkeypatch, ticket, asyncio.Event())
+    lock = worker_lock(ticket)
+    acquisition = ControlledAcquisition(lock, monkeypatch)
+    acquisition.start()
+    acquisition.allow_take.set()
+    assert acquisition.attempted.wait(5)  # owns the lock, has not returned from acquire yet
+    assert acquisition.took
+    try:
+        requeued = await TaskQueueService.requeue_starting("r1")
+        acquisition.allow_return.set()
+        assert acquisition.done.wait(5)
+    finally:
+        acquisition.stop()
+
+    assert requeued is False
+    worker.kill.assert_not_called()
+    assert acquisition.errors == []  # the worker went on to execute
+    assert state.queue_items[0]["status"] == "starting"
+    assert session_repo.get_session_by_id("r1")["status"] == "queued"
+
+
+@pytest.mark.asyncio
+async def test_nacked_run_stays_queued_with_its_ticket_even_if_the_worker_then_exits(
+    tmp_path, monkeypatch
+):
+    """Re-review probe B: a start the host refused is never settled as failed."""
     host()
     ticket = DeviceExecutionLock.reserve("probe", "d1", session_id="r1", lock_scope="host:host-a")
     assert session_repo.create_queued_session("r1", "probe", "flash", "d1", 1.0, None)
     exited = asyncio.Event()
     worker = await spawned_worker(tmp_path, monkeypatch, ticket, exited)
     run_task = TaskQueueService._run_tasks_by_session["r1"]
-    lock = worker_lock(ticket)
-    owner_acquired = threading.Event()
-    allow_post_check = threading.Event()
-    marker_seen = threading.Event()
-    allow_abort = threading.Event()
-    worker_done = threading.Event()
-    errors = []
-    real_take = lock._try_acquire_owner_lock
-    real_nacked = lock._nacked
 
-    def controlled_take():
-        taken = real_take()
-        assert taken
-        owner_acquired.set()
-        assert allow_post_check.wait(5)
-        return taken
+    assert await TaskQueueService.requeue_starting("r1") is True
+    worker.returncode = 1  # the killed worker's exit must not settle the session
+    exited.set()
+    await asyncio.gather(run_task, return_exceptions=True)
+    await asyncio.sleep(0)
 
-    def controlled_nacked():
-        observed = real_nacked()
-        if lock._acquired and observed:
-            marker_seen.set()
-            assert allow_abort.wait(5)
-        return observed
+    assert session_repo.get_session_by_id("r1")["status"] == "queued"
+    assert [(i["session_id"], i["status"]) for i in state.queue_items] == [("r1", "pending")]
+    assert len(_ticket_files(ticket)) == 1
 
-    monkeypatch.setattr(lock, "_try_acquire_owner_lock", controlled_take)
-    monkeypatch.setattr(lock, "_nacked", controlled_nacked)
 
-    def acquire():
-        try:
-            lock.acquire(blocking=False)
-        except BaseException as error:
-            errors.append(error)
-        finally:
-            worker_done.set()
-
-    thread = threading.Thread(target=acquire)
-    thread.start()
-    assert owner_acquired.wait(5)
-    real_snapshot = TaskQueueService._held_lock_session_ids
-
-    def snapshot_after_worker_observes_marker(_cls):
-        allow_post_check.set()
-        assert marker_seen.wait(5)
-        observed = real_snapshot()
-        assert "r1" in observed
-        return observed
-
+@pytest.mark.asyncio
+async def test_nack_is_refused_when_the_arbiter_cannot_read_lock_state(tmp_path, monkeypatch):
+    host()
+    ticket = DeviceExecutionLock.reserve("probe", "d1", session_id="r1", lock_scope="host:host-a")
+    worker = await spawned_worker(tmp_path, monkeypatch, ticket, asyncio.Event())
     monkeypatch.setattr(
-        TaskQueueService,
-        "_held_lock_session_ids",
-        classmethod(snapshot_after_worker_observes_marker),
+        DeviceExecutionLock, "try_hold", MagicMock(side_effect=OSError("unreadable"))
     )
-    try:
-        requeued = await TaskQueueService.requeue_starting("r1")
-        assert requeued is False
-        worker.kill.assert_not_called()
-        allow_abort.set()
-        assert worker_done.wait(5)
-        assert len(errors) == 1 and isinstance(errors[0], device_lock.DeviceBusyError)
-        assert not lock._acquired
-        worker.returncode = 1
-        exited.set()
-        await asyncio.gather(run_task)
-        persisted = session_repo.get_session_by_id("r1")
-        print(
-            f"REFUSED NACK: requeued={requeued}, status={persisted['status']}, "
-            f"queue_ids={[item['session_id'] for item in state.queue_items]}"
-        )
-        assert persisted["status"] == "queued"
-        assert state.queue_items[0]["status"] == "pending"
-    finally:
-        allow_post_check.set()
-        allow_abort.set()
-        thread.join(5)
-        assert not thread.is_alive()
-        lock.release()
+
+    assert await TaskQueueService.requeue_starting("r1") is False
+
+    worker.kill.assert_not_called()
+    assert state.queue_items[0]["status"] == "starting"
+    assert len(_ticket_files(ticket)) == 1

@@ -2050,34 +2050,39 @@ class TaskQueueService:
     async def requeue_starting(cls, session_id: str) -> bool:
         """The host agent NACKed a start that raced its barrier: wait again, in place.
 
-        The NACK is arbitrated with the worker through the ticket: the fence goes
-        up first, then the lock state is read, so a worker is only ever stopped
-        while it provably does not hold the device. Unreadable lock state, a held
-        lock, or a missing ticket refuse the NACK and leave the run untouched.
-        On success the row keeps its list position and its ticket keeps its
-        original timestamp. False when the run is not a not-yet-executing one.
+        The device lock is the single arbiter. The server takes it (non-blocking)
+        for the whole decide, requeue and kill sequence: a worker that already
+        holds it makes this refuse and kill nothing; a worker that does not hold
+        it cannot acquire until the server lets go, by which time it is dead.
+        Unreadable lock state, a held lock or a missing ticket refuse the NACK
+        and leave the run untouched. On success the row keeps its list position,
+        its ticket keeps its original timestamp, and its session stays queued.
+        False when the run is not a not-yet-executing one.
         """
         sid = str(session_id)
         item = cls._queue_item_for(sid)
         run = state.active_runs.get(sid)
         proc = run.get("process") if run else None
-        ticket = item.get("queue_ticket")
         if (
             item.get("status") != "starting"
-            or not ticket
+            or not item.get("queue_ticket")
             or (proc is not None and proc.returncode is not None)
         ):
             return False
+        arbiter = DeviceExecutionLock(
+            str(item.get("device_serial")),
+            f"requeue of {sid}",
+            session_id=f"requeue:{sid}",
+            lock_scope=cls._task_target(item).lock_scope,
+        )
         try:
-            DeviceExecutionLock.mark_nack(str(ticket))
+            if not arbiter.try_hold():
+                return False
         except OSError:
             return False
-        held = cls._held_lock_session_ids()
-        if held is None or sid in held:
-            DeviceExecutionLock.clear_nack(str(ticket))
-            return False
-        item["requeue"] = True
         try:
+            # No await between the decision and the cancel: the run cannot move.
+            item["requeue"] = True
             # Hold the ticket as the server before the worker dies: a dead owner's
             # ticket is swept as stale by the next waiting worker.
             cls._reclaim_ticket(item)
@@ -2095,7 +2100,7 @@ class TaskQueueService:
             state.wake_event.set()
             return True
         finally:
-            DeviceExecutionLock.clear_nack(str(ticket))
+            arbiter.release()
 
     @classmethod
     def stop_tasks(

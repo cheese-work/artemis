@@ -424,44 +424,31 @@ def _queue_files(tmp_path):
     return sorted((tmp_path / "artemis-global-device.queue").glob("*.wait"))
 
 
-def test_nacked_start_aborts_before_the_lock_and_keeps_its_ticket(tmp_path):
-    ticket = DeviceExecutionLock.reserve("t", "d1", session_id="s1", lock_scope="host:a")
-    DeviceExecutionLock.mark_nack(ticket)
-    lock = DeviceExecutionLock("d1", "t", queue_ticket=ticket, session_id="s1", lock_scope="host:a")
+def test_held_device_lock_keeps_a_waiting_worker_out():
+    arbiter = DeviceExecutionLock("d1", "arbiter", session_id="requeue:s1", lock_scope="host:a")
+    worker = DeviceExecutionLock("d1", "t", session_id="s1", lock_scope="host:a")
+    assert arbiter.try_hold() is True
 
-    with pytest.raises(DeviceBusyError, match="NACK"):
-        lock.acquire(blocking=False)
+    with pytest.raises(DeviceBusyError):
+        worker.acquire(timeout=0.3)  # a blocking worker keeps waiting until it gives up
+    assert not worker._acquired
 
-    assert DeviceExecutionLock.get_active_owner("d1", "host:a") is None
-    assert len(_queue_files(tmp_path)) == 1  # ticket and its position are intact
-
-    DeviceExecutionLock.clear_nack(ticket)
-    retry = DeviceExecutionLock(
-        "d1", "t", queue_ticket=ticket, session_id="s1", lock_scope="host:a"
-    )
+    arbiter.release()
+    retry = DeviceExecutionLock("d1", "t", session_id="s1", lock_scope="host:a")
     retry.acquire(blocking=False)
     retry.release()
 
 
-def test_nack_landing_while_the_lock_is_taken_releases_it_and_keeps_the_ticket(
-    tmp_path, monkeypatch
-):
-    ticket = DeviceExecutionLock.reserve("t", "d1", session_id="s1", lock_scope="host:a")
-    lock = DeviceExecutionLock("d1", "t", queue_ticket=ticket, session_id="s1", lock_scope="host:a")
-    take = lock._try_acquire_owner_lock
-
-    def take_then_nack():
-        taken = take()
-        DeviceExecutionLock.mark_nack(ticket)
-        return taken
-
-    monkeypatch.setattr(lock, "_try_acquire_owner_lock", take_then_nack)
-
-    with pytest.raises(DeviceBusyError, match="NACK"):
-        lock.acquire(blocking=False)
-
-    assert DeviceExecutionLock.get_active_owner("d1", "host:a") is None
-    assert len(_queue_files(tmp_path)) == 1
+def test_try_hold_fails_while_a_worker_owns_the_device():
+    worker = DeviceExecutionLock("d1", "t", session_id="s1", lock_scope="host:a")
+    arbiter = DeviceExecutionLock("d1", "arbiter", session_id="requeue:s1", lock_scope="host:a")
+    worker.acquire(blocking=False)
+    try:
+        assert arbiter.try_hold() is False
+    finally:
+        worker.release()
+    assert arbiter.try_hold() is True
+    arbiter.release()
 
 
 def test_queue_head_token_skips_dead_owners_and_other_scopes():
