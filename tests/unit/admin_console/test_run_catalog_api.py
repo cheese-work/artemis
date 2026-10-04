@@ -447,3 +447,58 @@ async def test_recording_states_are_stored_per_recording_and_listed(env):
         {"recording_id": "rec-2", "capture": "missing:spool_full", "transfer": None},
     ]
     assert (await _get("/api/runs")).json()["runs"][0]["recordings"] == run["recordings"]
+
+
+# -- review round 1 (Sol): R1, R2, R4 -----------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_first_page_lists_an_unstarted_run_once(env):
+    dated = _seed(env, "dated", start=1.0)
+    unstarted = _seed(env, "unstarted", start=None)
+    assert await _ids(limit=50) == [dated, unstarted]
+
+
+@pytest.mark.asyncio
+async def test_dated_and_unstarted_runs_page_without_repeats_at_every_limit(env):
+    ids = [_seed(env, f"d{i}", start=float(i + 1)) for i in range(3)]
+    ids += [_seed(env, f"u{i}", start=None) for i in range(3)]
+    for limit in (1, 2, 3, 4, 6, 50):
+        seen, cursor = [], None
+        for _ in range(10):
+            body = (
+                await _get("/api/runs", limit=limit, **({"cursor": cursor} if cursor else {}))
+            ).json()
+            seen += [r["session_id"] for r in body["runs"]]
+            cursor = body["next_cursor"]
+            if cursor is None:
+                break
+        assert len(seen) == len(set(seen)) == 6 and set(seen) == set(ids), (limit, seen)
+        assert seen[:3] == list(reversed(ids[:3]))  # dated first, newest first
+
+
+@pytest.mark.asyncio
+async def test_prefix_resolves_live_rows_behind_many_newer_tombstones(env):
+    from apps.admin_console.database.repositories.run_catalog_repository import run_catalog_repo
+
+    live = [
+        _seed(env, "live", start=1.0, sid=f"abcd1234-0000-4000-8000-{i:012d}") for i in range(2)
+    ]
+    for i in range(2, 30):  # more tombstones than any candidate cap, all newer
+        gone = _seed(env, "gone", start=100.0, sid=f"abcd1234-0000-4000-8000-{i:012d}")
+        assert run_catalog_repo.tombstone(gone, "retention")
+
+    response = await _get("/api/runs/abcd1234")
+
+    assert response.status_code == 409, response.json()
+    assert {c["session_id"] for c in response.json()["candidates"]} == set(live)
+
+
+@pytest.mark.asyncio
+async def test_removed_response_after_hard_delete_names_the_run(env):
+    sid = _seed(env)
+    with sqlite3.connect(env) as conn:
+        conn.execute("DELETE FROM sessions WHERE session_id = ?", (sid,))
+    response = await _get(f"/api/runs/{sid}")
+    assert response.status_code == 410
+    assert response.json()["session_id"] == sid

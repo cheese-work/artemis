@@ -291,3 +291,69 @@ def test_catalog_cli_migrates_backfills_and_rebuilds(tmp_path):
     from artemis.data_engine import run_catalog
 
     assert _search(run_catalog, db, "dark") == [sid]
+
+
+# -- review round 1 (Sol): R3, R5 -----------------------------------------------
+
+
+def _fallback_database(tmp_path, monkeypatch, rc) -> Path:
+    """A catalog created while FTS5 was unavailable, then FTS5 comes back."""
+    from artemis.data_engine.storage import StorageManager
+
+    db = tmp_path / "data_engine.db"
+    available = rc.fts5_available
+    monkeypatch.setattr(rc, "fts5_available", lambda conn: False)
+    StorageManager(db, tmp_path)
+    monkeypatch.setattr(rc, "_test_restore_fts", available, raising=False)
+    return db
+
+
+def _insert(db: Path, goal: str, sid: str | None = None, start: float = 1.0, replace=False) -> str:
+    sid = sid or str(uuid.uuid4())
+    verb = "INSERT OR REPLACE" if replace else "INSERT"
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            f"{verb} INTO sessions (session_id, initial_goal, start_time, status) "
+            "VALUES (?, ?, ?, 'completed')",
+            (sid, goal, start),
+        )
+    return sid
+
+
+def test_promotion_to_fts_indexes_runs_created_in_substring_mode(tmp_path, rc, monkeypatch):
+    db = _fallback_database(tmp_path, monkeypatch, rc)
+    existing = _insert(db, "review wifi")
+    monkeypatch.setattr(rc, "fts5_available", rc._test_restore_fts)
+
+    report = rc.migrate(db)
+    created_later = _insert(db, "review wifi again", start=2.0)
+
+    assert report.search_mode == "fts"
+    assert set(_search(rc, db, "wifi")) == {existing, created_later}
+
+
+def test_promotion_to_fts_replaces_the_plain_triggers(tmp_path, rc, monkeypatch):
+    db = _fallback_database(tmp_path, monkeypatch, rc)
+    sid = _insert(db, "review wifi")
+    monkeypatch.setattr(rc, "fts5_available", rc._test_restore_fts)
+    rc.migrate(db)
+    with sqlite3.connect(db) as conn:
+        rc.rebuild(conn)
+
+    _insert(db, "replacement bluetooth", sid=sid, start=2.0, replace=True)
+
+    assert _search(rc, db, "bluetooth") == [sid]
+    assert _search(rc, db, "wifi") == []  # no stale text from before the rewrite
+
+
+@pytest.mark.parametrize("command", ["migrate", "backfill", "rebuild"])
+def test_catalog_cli_rejects_a_missing_database_without_creating_it(tmp_path, command):
+    from typer.testing import CliRunner
+
+    from artemis.interfaces.cli.commands.catalog import catalog_app
+
+    db = tmp_path / "misspelled.db"
+    result = CliRunner().invoke(catalog_app, [command, "--db", str(db)])
+
+    assert result.exit_code != 0, result.output
+    assert not db.exists()
