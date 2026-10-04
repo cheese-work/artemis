@@ -352,7 +352,7 @@ class AccessibilityHelperManager:
         if self._token:
             return self._token
         path = self._token_path or (get_temp_dir("helper-token") / TOKEN_FILE_NAME)
-        with self._provision_mutex(f"host-token:{path.resolve()}"):
+        with self._file_mutex(f"host-token:{path.resolve()}", "the host session token"):
             return self._load_or_create_token(path)
 
     def _load_or_create_token(self, path: Path) -> str:
@@ -547,12 +547,23 @@ class AccessibilityHelperManager:
     # Provision: install / upgrade / enable (persistent device state)
     # ------------------------------------------------------------------ #
 
-    @contextmanager
     def _provision_mutex(self, serial: str):
-        """Serialise installs across Artemis processes sharing one device."""
+        """Serialise installs across Artemis processes sharing one device.
+
+        A device is an (adb endpoint, serial) pair: the same serial behind two servers is
+        two phones and must not share a mutex. The local default server keeps the bare
+        serial key, so processes from before endpoint scoping still exclude each other.
+        """
+        endpoint = self.transport.endpoint
+        key = serial if endpoint.is_local_default else f"{endpoint.identity}/{serial}"
+        return self._file_mutex(key, f"the accessibility helper on {serial}")
+
+    @contextmanager
+    def _file_mutex(self, key: str, label: str):
+        """Cross-process mutex file named by a hash of ``key``."""
         root = get_temp_dir("helper-provision")
         root.mkdir(parents=True, exist_ok=True)
-        digest = hashlib.sha256(serial.encode("utf-8")).hexdigest()[:16]
+        digest = hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
         path = root / f"{digest}.mutex"
         started = time.monotonic()
         while True:
@@ -563,9 +574,7 @@ class AccessibilityHelperManager:
                 if isinstance(exc, PermissionError) and os.name != "nt":
                     raise
                 if time.monotonic() - started > _PROVISION_MUTEX_TIMEOUT_SECONDS:
-                    raise TimeoutError(
-                        f"Timed out waiting for the accessibility helper lock on {serial}."
-                    ) from exc
+                    raise TimeoutError(f"Timed out waiting for the lock on {label}.") from exc
                 try:
                     age = time.time() - path.stat().st_mtime
                 except OSError:
@@ -576,8 +585,7 @@ class AccessibilityHelperManager:
                     continue
                 if time.monotonic() - started > _PROVISION_MUTEX_TIMEOUT_SECONDS:
                     raise TimeoutError(
-                        f"Timed out waiting for another process to finish installing the "
-                        f"accessibility helper on {serial}."
+                        f"Timed out waiting for another process to finish with {label}."
                     )
                 self._sleep(0.1)
             else:
