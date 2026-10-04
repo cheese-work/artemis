@@ -81,6 +81,27 @@ def default_agent_config(monkeypatch, tmp_path):
 
 
 @pytest.fixture
+def fake_adb_server_factory():
+    """Start fake adb servers on ephemeral loopback ports; all stop at teardown.
+
+    Every client under test must be pointed at ``server.endpoint`` explicitly:
+    the fake never replaces, and is never reachable as, the machine's adb server.
+    """
+    from tests.support.fake_adb import FakeAdbServer
+
+    servers: list[FakeAdbServer] = []
+
+    def make(name: str = "fake-adb", **kwargs) -> FakeAdbServer:
+        server = FakeAdbServer(name, **kwargs).start()
+        servers.append(server)
+        return server
+
+    yield make
+    for server in servers:
+        server.stop()
+
+
+@pytest.fixture
 def mock_driver():
     """Provide an isolated mock mobile driver."""
     return MockDeviceDriver(device_id="fixture-mock-device", width=1080, height=2400)
