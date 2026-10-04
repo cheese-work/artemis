@@ -17,6 +17,9 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 import subprocess
 import threading
@@ -62,6 +65,11 @@ class DeviceStatus:
 
 
 RawDevice = tuple[str, str, str | None, str | None]
+
+#: ``(pool id, endpoint)`` an enumeration is pinned to. A task or coroutine started inside
+#: the pin inherits it, so the query, the cache write, the stale fallback and the busy-state
+#: scope of one listing all name the endpoint the listing began on.
+_PINNED: ContextVar[tuple[int, AdbEndpoint] | None] = ContextVar("device_pool_pinned", default=None)
 
 
 @dataclass
@@ -125,7 +133,22 @@ class DevicePool:
         return self.for_endpoint(endpoint)
 
     def _endpoint(self) -> AdbEndpoint:
-        return self._bound_endpoint or current_adb_endpoint()
+        if self._bound_endpoint is not None:
+            return self._bound_endpoint
+        pinned = _PINNED.get()
+        if pinned is not None and pinned[0] == id(self):
+            return pinned[1]
+        return current_adb_endpoint()
+
+    @contextmanager
+    def _pinned(self) -> Iterator[AdbEndpoint]:
+        """Resolve the endpoint once for a whole listing (nested pins reuse the outer one)."""
+        endpoint = self._endpoint()
+        token = _PINNED.set((id(self), endpoint))
+        try:
+            yield endpoint
+        finally:
+            _PINNED.reset(token)
 
     def _transport(self) -> EndpointTransport:
         endpoint = self._endpoint()
@@ -259,6 +282,10 @@ class DevicePool:
             snapshot.warmed = True
 
     def _enumerate_sync(self) -> list[tuple[str, str, str | None, str | None]] | None:
+        with self._pinned():
+            return self._enumerate_sync_pinned()
+
+    def _enumerate_sync_pinned(self) -> list[tuple[str, str, str | None, str | None]] | None:
         """Return the raw enumeration, or None when the query failed and no
         usable snapshot exists -- never an ambiguous empty list on failure."""
         cached = self._cached_snapshot(allow_stale=False)
@@ -277,6 +304,12 @@ class DevicePool:
             return raw
 
     async def _enumerate_async(self) -> list[tuple[str, str, str | None, str | None]] | None:
+        with self._pinned():
+            return await self._enumerate_async_pinned()
+
+    async def _enumerate_async_pinned(
+        self,
+    ) -> list[tuple[str, str, str | None, str | None]] | None:
         cached = self._cached_snapshot(allow_stale=False)
         if cached is not None:
             return cached
@@ -347,6 +380,12 @@ class DevicePool:
         ready state (or the window closes). Returns True once any enumeration
         succeeded -- zero attached devices is still a warm pool.
         """
+        with self._pinned():
+            return await self._warm_up_pinned(server_timeout, settle_timeout, poll_interval)
+
+    async def _warm_up_pinned(
+        self, server_timeout: float, settle_timeout: float, poll_interval: float
+    ) -> bool:
         if self._resolve_adb() is None:
             return False
         await self._start_adb_server(timeout=server_timeout)
@@ -416,7 +455,8 @@ class DevicePool:
         to an empty list -- use try_list_devices when the caller must tell the
         two apart.
         """
-        return self._build_statuses(self._enumerate_sync() or [])
+        with self._pinned():
+            return self._build_statuses(self._enumerate_sync() or [])
 
     async def list_devices_async(self) -> list[DeviceStatus]:
         """Asynchronously list all connected devices along with their active lock state.
@@ -426,19 +466,22 @@ class DevicePool:
         to an empty list -- use try_list_devices_async when the caller must tell
         the two apart.
         """
-        return self._build_statuses(await self._enumerate_async() or [])
+        with self._pinned():
+            return self._build_statuses(await self._enumerate_async() or [])
 
     def try_list_devices(self) -> list[DeviceStatus] | None:
         """Like list_devices, but returns None when enumeration failed and no
         usable snapshot exists, so callers can distinguish "could not ask adb"
         from "adb answered: no devices attached"."""
-        raw = self._enumerate_sync()
-        return None if raw is None else self._build_statuses(raw)
+        with self._pinned():
+            raw = self._enumerate_sync()
+            return None if raw is None else self._build_statuses(raw)
 
     async def try_list_devices_async(self) -> list[DeviceStatus] | None:
         """Async variant of try_list_devices."""
-        raw = await self._enumerate_async()
-        return None if raw is None else self._build_statuses(raw)
+        with self._pinned():
+            raw = await self._enumerate_async()
+            return None if raw is None else self._build_statuses(raw)
 
     @staticmethod
     def _explicit_serial_error(
