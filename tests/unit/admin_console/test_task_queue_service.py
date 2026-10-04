@@ -16,16 +16,21 @@ import asyncio
 import importlib
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from apps.admin_console.core.state import state
-from apps.admin_console.database.repositories.session_repository import SessionRepository
+from apps.admin_console.database.repositories.session_repository import (
+    SessionRepository,
+    session_repo,
+)
 from apps.admin_console.routers.tasks import get_status
 from apps.admin_console.services.task_queue_service import TaskQueueService, task_queue_service
 from artemis.runtime import trace_store
+from artemis.runtime.lifecycle import finish_trace
 from artemis.runtime.device_lock import DeviceLockOwner
 from artemis.runtime.adb_endpoint import AdbEndpoint
 
@@ -183,7 +188,7 @@ async def test_pre_session_worker_failure_persists_failed_session_and_releases_t
 async def test_enqueue_rejects_terminal_trace_without_overwriting_it(tmp_path):
     session_id = "terminal-session"
     trace_store.init_trace(session_id, "Finished goal", "flash")
-    trace_store.update_trace_status(session_id, "completed")
+    finish_trace(session_id, "completed")
 
     with (
         patch.object(TaskQueueService, "ensure_worker_running"),
@@ -227,6 +232,50 @@ async def test_enqueue_marks_existing_running_trace_failed_when_db_admission_fai
 
 
 @pytest.mark.asyncio
+async def test_enqueue_rollback_survives_a_locked_database_and_keeps_the_original_error(
+    monkeypatch,
+):
+    import sqlite3
+
+    from artemis.runtime.lifecycle import LifecycleAuthority
+
+    queue_module = importlib.import_module("apps.admin_console.services.task_queue_service")
+    repository = queue_module.session_repo
+    create_queued_session = repository.create_queued_session
+    session_ids: list[str] = []
+
+    def fail_second_queued_session(*args, **kwargs):
+        session_ids.append(args[0])
+        if len(session_ids) == 2:
+            return False
+        return create_queued_session(*args, **kwargs)
+
+    real_finish = LifecycleAuthority.finish
+
+    def finish_locked_for_the_second_task(self, session_id, *args, **kwargs):
+        if len(session_ids) == 2 and session_id == session_ids[1]:
+            raise sqlite3.OperationalError("database is locked")
+        return real_finish(self, session_id, *args, **kwargs)
+
+    monkeypatch.setattr(repository, "create_queued_session", fail_second_queued_session)
+    monkeypatch.setattr(LifecycleAuthority, "finish", finish_locked_for_the_second_task)
+    with (
+        patch.object(TaskQueueService, "ensure_worker_running"),
+        patch.object(
+            TaskQueueService, "_reject_unavailable_device", new=AsyncMock(return_value=None)
+        ),
+        pytest.raises(RuntimeError, match="Could not persist queued session"),
+    ):
+        await TaskQueueService.enqueue_tasks(
+            ["First task", "Second task"], device_serial="test-device"
+        )
+
+    # the first task was failed and removed even though recording the second failure raised
+    assert repository.get_session_status(session_ids[0]) == "failed"
+    assert state.queue_items == []
+
+
+@pytest.mark.asyncio
 async def test_enqueue_rolls_back_earlier_items_when_later_setup_fails(tmp_path, monkeypatch):
     queue_module = importlib.import_module("apps.admin_console.services.task_queue_service")
     repository = queue_module.session_repo
@@ -257,26 +306,6 @@ async def test_enqueue_rolls_back_earlier_items_when_later_setup_fails(tmp_path,
     assert trace_store.read_status(session_ids[1])["status"] == "failed"
     assert state.queue_items == []
     assert not list((tmp_path / "device-locks" / "artemis-global-device.queue").glob("*.wait"))
-
-
-@pytest.mark.parametrize(
-    ("current_status", "returncode", "stopped", "expected"),
-    [
-        ("completed", 1, False, ("completed", False)),
-        ("failed", 0, False, ("failed", False)),
-        ("cancelled", 0, False, ("cancelled", False)),
-        ("success", 1, False, ("completed", True)),
-        ("running", 0, False, ("completed", True)),
-        ("running", 1, False, ("failed", True)),
-        ("completed", 0, True, ("cancelled", True)),
-    ],
-)
-def test_resolve_terminal_status_preserves_authoritative_result(
-    current_status, returncode, stopped, expected
-):
-    assert (
-        TaskQueueService._resolve_terminal_status(current_status, returncode, stopped) == expected
-    )
 
 
 @pytest.mark.asyncio
@@ -626,7 +655,6 @@ def test_stop_tasks_terminates_external_global_owner_and_preserves_local_waiter(
         patch(
             "apps.admin_console.services.task_queue_service.session_repo.update_session_status"
         ) as update_status,
-        patch("artemis.runtime.trace_store.update_trace_status") as update_trace_status,
     ):
         assert task_queue_service.stop_tasks(clear_all=False) is True
 
@@ -639,11 +667,8 @@ def test_stop_tasks_terminates_external_global_owner_and_preserves_local_waiter(
     assert "mcp-session" not in state.active_connections
     update_status.assert_called_once()
     assert update_status.call_args.args[:2] == ("mcp-session", "cancelled")
-    update_trace_status.assert_called_once_with(
-        "mcp-session",
-        "cancelled",
-        error="Task stopped from the Artemis frontend.",
-    )
+    # The lifecycle authority projects status.json from the committed outcome.
+    assert update_status.call_args.kwargs["error"] == "Task stopped from the Artemis frontend."
 
 
 def test_stop_tasks_does_not_kill_stale_reused_pid():
@@ -970,6 +995,19 @@ async def test_queue_worker_notifies_conversation():
         ),
     ):
         mock_repo.get_running_session_id.return_value = None
+        mock_repo.lifecycle.pending_events.side_effect = lambda sid=None: (
+            [
+                {
+                    "dedupe_id": f"{sid}:outcome",
+                    "session_id": sid,
+                    "status": "completed",
+                    "interrupt_reason": None,
+                    "created_at": 1.0,
+                }
+            ]
+            if sid
+            else []
+        )
 
         await task_queue_service.enqueue_tasks(
             ["Notify goal"],
@@ -1040,7 +1078,6 @@ def test_stop_tasks_by_session_id_targets_correct_task_among_multiple():
         patch(
             "apps.admin_console.services.task_queue_service.session_repo.update_session_status"
         ) as update_status,
-        patch("artemis.runtime.trace_store.update_trace_status") as update_trace,
     ):
         # Explicitly stop session-b
         assert task_queue_service.stop_tasks(clear_all=False, session_id="session-b") is True
@@ -1051,11 +1088,7 @@ def test_stop_tasks_by_session_id_targets_correct_task_among_multiple():
         update_status.assert_called_once()
         assert update_status.call_args[0][0] == "session-b"
         assert update_status.call_args[0][1] == "cancelled"
-        update_trace.assert_called_once_with(
-            "session-b",
-            "cancelled",
-            error="Task stopped from the Artemis frontend.",
-        )
+        assert update_status.call_args.kwargs["error"] == "Task stopped from the Artemis frontend."
 
 
 def test_stop_tasks_by_device_id_targets_specific_device():
@@ -1160,7 +1193,7 @@ async def test_enqueue_tasks_deduplicates_by_session_id():
 
 
 @pytest.mark.asyncio
-async def test_manual_stop_of_one_run_does_not_pollute_concurrent_run():
+async def test_manual_stop_of_one_run_does_not_pollute_concurrent_run(tmp_path, monkeypatch):
     """Stopping run A must not flip run B's terminal status or its payload.
 
     Regression test for the process-global ``was_stopped_manually`` flag that
@@ -1169,9 +1202,15 @@ async def test_manual_stop_of_one_run_does_not_pollute_concurrent_run():
     then finishes normally and must still be reported as completed.
     """
     ended_payloads: dict[str, dict] = {}
+    monkeypatch.setattr(session_repo, "db_path", tmp_path / "sessions.db")
+    for sid in ("run-a", "run-b"):
+        session_repo.create_queued_session(sid, "goal", "flash", None)
+        with sqlite3.connect(session_repo.db_path) as conn:
+            conn.execute("UPDATE sessions SET status = 'running' WHERE session_id = ?", (sid,))
 
     def capture(event_type, data):
         if event_type == "session_ended":
+            assert str(data.get("session_id")) not in ended_payloads, "duplicate session_ended"
             ended_payloads[str(data.get("session_id"))] = dict(data)
 
     class FakeProc:
@@ -1219,16 +1258,12 @@ async def test_manual_stop_of_one_run_does_not_pollute_concurrent_run():
     try:
         with (
             patch("asyncio.create_subprocess_exec", side_effect=fake_subprocess_exec),
-            patch("apps.admin_console.services.task_queue_service.session_repo") as mock_repo,
             patch("apps.admin_console.services.task_queue_service.media_service"),
             patch(
                 "apps.admin_console.services.task_queue_service.process_supervisor.terminate_tree",
                 return_value=True,
             ),
         ):
-            mock_repo.get_session_status.return_value = "running"
-            mock_repo.get_video_recording_for_session.return_value = {"status": "ready"}
-
             task_a = asyncio.create_task(TaskQueueService._execute_task_item(item_a))
             task_b = asyncio.create_task(TaskQueueService._execute_task_item(item_b))
             for _ in range(40):
@@ -1252,11 +1287,8 @@ async def test_manual_stop_of_one_run_does_not_pollute_concurrent_run():
         assert ended_payloads["run-b"]["status"] == "completed"
         assert ended_payloads["run-b"]["was_stopped_manually"] is False
 
-        persisted = {
-            call.args[0]: call.args[1] for call in mock_repo.update_session_status.call_args_list
-        }
-        assert persisted.get("run-a") == "cancelled"
-        assert persisted.get("run-b") == "completed"
+        assert session_repo.get_session_status("run-a") == "cancelled"
+        assert session_repo.get_session_status("run-b") == "completed"
         assert "run-b" not in state.cancelled_session_ids
         assert "run-b" not in state.manually_stopped_run_ids
     finally:

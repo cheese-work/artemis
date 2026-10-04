@@ -40,13 +40,21 @@ def no_persistence(monkeypatch):
     monkeypatch.setattr(task_manager, "notify", lambda *_a, **_k: None)
 
 
-def _db_with_session(tmp_path, trace_id: str, status: str, pid: int | None = 4242):
+def _db_with_session(
+    tmp_path, trace_id: str, status: str, pid: int | None = 4242, interrupt_reason=None
+):
     db_path = tmp_path / "artemis.db"
     conn = sqlite3.connect(db_path)
     conn.execute(
-        "CREATE TABLE sessions (session_id TEXT, status TEXT, pid INTEGER, start_time REAL)"
+        "CREATE TABLE sessions "
+        "(session_id TEXT, status TEXT, pid INTEGER, start_time REAL, end_time REAL,"
+        " interrupt_reason TEXT)"
     )
-    conn.execute("INSERT INTO sessions VALUES (?, ?, ?, ?)", (trace_id, status, pid, time.time()))
+    conn.execute(
+        "INSERT INTO sessions (session_id, status, pid, start_time, interrupt_reason)"
+        " VALUES (?, ?, ?, ?, ?)",
+        (trace_id, status, pid, time.time(), interrupt_reason),
+    )
     conn.commit()
     conn.close()
     return str(db_path)
@@ -54,8 +62,8 @@ def _db_with_session(tmp_path, trace_id: str, status: str, pid: int | None = 424
 
 @pytest.fixture
 def use_db(tmp_path, monkeypatch, no_persistence):
-    def _install(trace_id: str, status: str, pid: int | None = 4242):
-        db_path = _db_with_session(tmp_path, trace_id, status, pid)
+    def _install(trace_id: str, status: str, pid: int | None = 4242, interrupt_reason=None):
+        db_path = _db_with_session(tmp_path, trace_id, status, pid, interrupt_reason)
         monkeypatch.setattr(task_manager, "_find_data_engine_db", lambda: db_path)
 
     return _install
@@ -90,6 +98,27 @@ def test_db_never_overrides_user_cancellation(use_db):
     current_status, _pid, _is_alive = _reconcile_task_state("t3", status_data)
 
     assert current_status == "cancelled"
+
+
+def test_db_interrupted_verdict_is_terminal_with_its_reason(use_db):
+    use_db("t9", "interrupted", interrupt_reason="device_offline")
+    status_data = {"status": "running", "pid": 111}
+
+    current_status, _pid, is_alive = _reconcile_task_state("t9", status_data)
+
+    assert current_status == "interrupted"
+    assert status_data["status"] == "interrupted"
+    assert status_data["interrupt_reason"] == "device_offline"
+    assert is_alive is False
+
+
+def test_interrupted_status_json_stays_interrupted_and_dead(no_persistence):
+    status_data = {"status": "interrupted", "interrupt_reason": "bridge_closed", "pid": 111}
+
+    current_status, _pid, is_alive = _reconcile_task_state("t10", status_data)
+
+    assert current_status == "interrupted"
+    assert is_alive is False
 
 
 def test_legacy_success_status_is_normalized_to_completed(no_persistence):
@@ -148,3 +177,38 @@ def test_dead_pid_within_grace_is_assumed_alive(no_persistence, monkeypatch):
 
     assert current_status == "running"
     assert is_alive is True
+
+
+def test_db_connection_is_closed_even_when_the_reason_query_fails(use_db, monkeypatch):
+    use_db("t11", "interrupted", interrupt_reason="device_offline")
+    real_connect = sqlite3.connect
+    closed = []
+
+    class FlakyConnection:
+        def __init__(self, path):
+            self._conn = real_connect(path)
+            self._queries = 0
+
+        @property
+        def row_factory(self):
+            return self._conn.row_factory
+
+        @row_factory.setter
+        def row_factory(self, value):
+            self._conn.row_factory = value
+
+        def execute(self, *args):
+            self._queries += 1
+            if self._queries > 1:
+                raise sqlite3.OperationalError("disk I/O error")
+            return self._conn.execute(*args)
+
+        def close(self):
+            closed.append(True)
+            self._conn.close()
+
+    monkeypatch.setattr(task_manager.sqlite3, "connect", FlakyConnection)
+
+    _reconcile_task_state("t11", {"status": "running", "pid": 111})
+
+    assert closed == [True]

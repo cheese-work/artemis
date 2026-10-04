@@ -35,6 +35,7 @@ from artemis.core.diagnostics.schema import (
     SystemReadinessReport,
 )
 from artemis.runtime import trace_store
+from artemis.runtime.lifecycle import finish_trace
 from artemis.runtime.device_lock import DeviceLockOwner
 from mcp_server.tools import diagnose
 from mcp_server.tools.diagnose import mobile_diagnose
@@ -1232,9 +1233,9 @@ def test_logs_surface_recent_errors_and_last_failed_task(temp_trace_env, monkeyp
         encoding="utf-8",
     )
     trace_store.init_trace("ok-trace", "fine", "Flash", None)
-    trace_store.update_trace_status("ok-trace", "completed")
+    finish_trace("ok-trace", "completed")
     trace_store.init_trace("bad-trace", "broken", "Flash", None)
-    trace_store.update_trace_status("bad-trace", "failed", error="adb: device offline")
+    finish_trace("bad-trace", "failed", error="adb: device offline")
     with open(trace_store.get_trace_stderr_log_path("bad-trace"), "w", encoding="utf-8") as fh:
         fh.write("starting runner\n")
         fh.write("ERROR adb: device offline\n")

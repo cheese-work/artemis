@@ -393,7 +393,11 @@ def wait_for_daemon_task(
     poll_interval: float = 1.0,
     on_status_update: Any = None,
 ) -> dict[str, Any]:
-    """Poll the Daemon until the task reaches a terminal status (completed, failed, cancelled)."""
+    """Poll the Daemon until the task reaches a terminal status.
+
+    Terminal: completed, failed, cancelled, interrupted (the latter carries a typed
+    ``interrupt_reason``).
+    """
     started = time.monotonic()
     last_status = None
 
@@ -406,7 +410,7 @@ def wait_for_daemon_task(
                 if callable(on_status_update):
                     on_status_update(sess)
 
-            if status in ("completed", "success", "failed", "cancelled"):
+            if status in ("completed", "success", "failed", "cancelled", "interrupted"):
                 return sess
         else:
             # Check if task is queued in daemon status
