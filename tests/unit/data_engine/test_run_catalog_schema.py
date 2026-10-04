@@ -1,0 +1,238 @@
+"""Run catalog storage: migration, backfill, triggers and rebuild (CHE-1091).
+
+The catalog lives in side tables of the unified sessions database
+(`run_meta`, `run_recording_state`, `runs_fts`). Sessions are rewritten by
+upserts, so nothing the catalog owns may live in a `sessions` column.
+"""
+
+import json
+from pathlib import Path
+import sqlite3
+import uuid
+
+import pytest
+
+
+@pytest.fixture
+def rc():
+    from artemis.data_engine import run_catalog
+
+    return run_catalog
+
+
+def _legacy_db(path: Path, rows: list[tuple]) -> None:
+    """A database as it exists today, before the catalog: bare sessions table."""
+    with sqlite3.connect(path) as conn:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute(
+            "CREATE TABLE sessions (session_id TEXT PRIMARY KEY, initial_goal TEXT, "
+            "start_time REAL, end_time REAL, status TEXT, device_info TEXT, video_filepath TEXT)"
+        )
+        conn.executemany(
+            "INSERT INTO sessions (session_id, initial_goal, start_time, status, device_info) "
+            "VALUES (?, ?, ?, ?, ?)",
+            rows,
+        )
+
+
+def _search(rc, db: Path, text: str) -> list[str]:
+    with sqlite3.connect(db) as conn:
+        return rc.search_session_ids(conn, text)
+
+
+def test_migrate_backfills_legacy_rows_and_leaves_sessions_untouched(tmp_path, rc):
+    db = tmp_path / "data_engine.db"
+    ids = [str(uuid.uuid4()) for _ in range(3)]
+    _legacy_db(
+        db,
+        [
+            (ids[0], "open settings and enable wifi", 1.0, "completed", '{"device_id": "emu-1"}'),
+            (ids[1], "send a message", 2.0, "success", None),
+            ("legacy-run_1.0", "legacy id run", 3.0, "failed", "not json"),
+        ],
+    )
+    with sqlite3.connect(db) as conn:
+        before = conn.execute("SELECT * FROM sessions ORDER BY session_id").fetchall()
+
+    report = rc.migrate(db)
+
+    with sqlite3.connect(db) as conn:
+        conn.row_factory = sqlite3.Row
+        after = [tuple(r) for r in conn.execute("SELECT * FROM sessions ORDER BY session_id")]
+        assert after == before
+        meta = {r["session_id"]: r for r in conn.execute("SELECT * FROM run_meta")}
+    assert set(meta) == {ids[0], ids[1], "legacy-run_1.0"}
+    assert json.loads(meta[ids[0]]["device_ref"]) == {"host_id": None, "serial": "emu-1"}
+    assert meta[ids[1]]["device_ref"] is None  # no device_info, nothing invented
+    assert meta[ids[0]]["deleted_at"] is None and meta[ids[0]]["pinned"] == 0
+    assert report.backfilled == 3
+    assert _search(rc, db, "wifi") == [ids[0]]
+
+
+def test_migrate_takes_an_online_backup_that_includes_uncheckpointed_wal(tmp_path, rc):
+    db = tmp_path / "data_engine.db"
+    _legacy_db(db, [])
+    live = sqlite3.connect(db)
+    live.execute("PRAGMA wal_autocheckpoint=0")
+    live.executemany(
+        "INSERT INTO sessions (session_id, initial_goal, start_time, status) VALUES (?,?,?,?)",
+        [(str(uuid.uuid4()), f"goal {i}", float(i), "completed") for i in range(5)],
+    )
+    live.commit()
+    assert Path(f"{db}-wal").stat().st_size > 0  # rows exist only in the WAL
+
+    report = rc.migrate(db)
+    live.close()
+
+    assert report.backup_path is not None and report.backup_path.exists()
+    with sqlite3.connect(report.backup_path) as backup:
+        assert backup.execute("SELECT count(*) FROM sessions").fetchone()[0] == 5
+        # the backup is the pre-migration state: no catalog tables yet
+        names = {r[0] for r in backup.execute("SELECT name FROM sqlite_master")}
+    assert "run_meta" not in names
+
+
+def test_migrate_is_idempotent_and_backs_up_once(tmp_path, rc):
+    db = tmp_path / "data_engine.db"
+    _legacy_db(db, [(str(uuid.uuid4()), "goal", 1.0, "completed", None)])
+
+    first = rc.migrate(db)
+    second = rc.migrate(db)
+
+    assert first.backup_path is not None
+    assert second.backup_path is None and second.backfilled == 0
+    assert len(list(tmp_path.glob("data_engine.db.pre-run-catalog.*"))) == 1
+    with sqlite3.connect(db) as conn:
+        assert conn.execute("SELECT count(*) FROM run_meta").fetchone()[0] == 1
+
+
+def test_migrate_of_an_empty_database_makes_no_backup(tmp_path, rc):
+    db = tmp_path / "data_engine.db"
+    _legacy_db(db, [])
+    assert rc.migrate(db).backup_path is None
+    assert not list(tmp_path.glob("*.pre-run-catalog.*"))
+
+
+def test_triggers_keep_the_index_in_step_with_sessions_and_run_meta(tmp_path, rc):
+    db = tmp_path / "data_engine.db"
+    _legacy_db(db, [])
+    rc.migrate(db)
+    sid = str(uuid.uuid4())
+
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            "INSERT INTO sessions (session_id, initial_goal, start_time, status) "
+            "VALUES (?, 'rotate the screen', 1.0, 'running')",
+            (sid,),
+        )
+    assert _search(rc, db, "rotate") == [sid]  # insert trigger made run_meta + index row
+
+    with sqlite3.connect(db) as conn:
+        conn.execute("UPDATE sessions SET initial_goal = 'mute the volume' WHERE session_id = ?", (sid,))
+    assert _search(rc, db, "rotate") == []
+    assert _search(rc, db, "volume") == [sid]
+
+    with sqlite3.connect(db) as conn:
+        conn.execute("UPDATE run_meta SET requested_by = 'dana@example.com' WHERE session_id = ?", (sid,))
+    assert _search(rc, db, "dana") == [sid]  # run_meta text is searchable too
+
+    with sqlite3.connect(db) as conn:
+        conn.execute("DELETE FROM sessions WHERE session_id = ?", (sid,))
+        row = conn.execute(
+            "SELECT deleted_at, deleted_reason FROM run_meta WHERE session_id = ?", (sid,)
+        ).fetchone()
+    assert _search(rc, db, "volume") == []
+    assert row[0] is not None and row[1] == "session_deleted"  # hard delete leaves a tombstone
+
+
+def test_rebuild_restores_a_wiped_index_and_drops_stale_rows(tmp_path, rc):
+    db = tmp_path / "data_engine.db"
+    a, b = str(uuid.uuid4()), str(uuid.uuid4())
+    _legacy_db(db, [(a, "alpha task", 1.0, "completed", None), (b, "beta task", 2.0, "completed", None)])
+    rc.migrate(db)
+    with sqlite3.connect(db) as conn:
+        conn.execute("DELETE FROM runs_fts")
+        conn.execute("INSERT INTO runs_fts(rowid, prompt, meta) VALUES (9999, 'ghost', '')")
+    assert _search(rc, db, "alpha") == []
+
+    with sqlite3.connect(db) as conn:
+        count = rc.rebuild(conn)
+
+    assert count == 2
+    assert _search(rc, db, "alpha") == [a]
+    assert _search(rc, db, "beta") == [b]
+    assert _search(rc, db, "ghost") == []
+
+
+def test_session_upsert_does_not_reset_run_meta(tmp_path, rc):
+    """The hazard behind side tables: StorageManager upserts rewrite session rows."""
+    from artemis.data_engine.storage import StorageManager
+    from artemis.data_engine.models import SessionMetadata
+
+    db = tmp_path / "data_engine.db"
+    manager = StorageManager(db, tmp_path)
+    sid = uuid.uuid4()
+    meta = SessionMetadata(
+        session_id=sid, initial_goal="first goal", start_time=1.0, status="running", device_info={}
+    )
+    manager.create_session(meta)
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            "UPDATE run_meta SET pinned = 1, requested_by = 'ops' WHERE session_id = ?", (str(sid),)
+        )
+
+    meta.initial_goal = "second goal"
+    manager.create_session(meta)  # ON CONFLICT upsert of the same session id
+
+    with sqlite3.connect(db) as conn:
+        pinned, requester = conn.execute(
+            "SELECT pinned, requested_by FROM run_meta WHERE session_id = ?", (str(sid),)
+        ).fetchone()
+    assert (pinned, requester) == (1, "ops")
+    assert _search(rc, db, "second") == [str(sid)]
+    assert _search(rc, db, "first") == []
+
+
+def test_storage_manager_installs_the_catalog_on_a_fresh_database(tmp_path, rc):
+    from artemis.data_engine.storage import StorageManager
+
+    db = tmp_path / "data_engine.db"
+    StorageManager(db, tmp_path)
+    with sqlite3.connect(db) as conn:
+        assert rc.catalog_ready(conn)
+        assert rc.search_mode(conn) == "fts"
+
+
+def test_missing_fts5_degrades_to_substring_search(tmp_path, rc, monkeypatch):
+    db = tmp_path / "data_engine.db"
+    sid = str(uuid.uuid4())
+    _legacy_db(db, [(sid, "check battery saver", 1.0, "completed", None)])
+    monkeypatch.setattr(rc, "fts5_available", lambda conn: False)
+
+    rc.migrate(db)
+
+    with sqlite3.connect(db) as conn:
+        names = {r[0] for r in conn.execute("SELECT name FROM sqlite_master")}
+        assert "runs_fts" not in names and "run_meta" in names
+        assert rc.search_mode(conn) == "substring"
+    assert _search(rc, db, "battery") == [sid]  # substring fallback still finds it
+
+
+@pytest.mark.parametrize(
+    "raw",
+    ["foo OR bar", "NEAR(a b)", '"unbalanced', "col:foo", "foo*", "-bar", "(a", "a'b", "^x", "a AND NOT b"],
+)
+def test_search_text_is_quoted_so_raw_fts_syntax_never_reaches_match(tmp_path, rc, raw):
+    match = rc.build_match_query(raw)
+    # every term is a double-quoted literal joined by implicit AND: no operators survive
+    assert match is not None
+    assert all(part.startswith('"') and part.rstrip("*").endswith('"') for part in match.split(" "))
+    db = tmp_path / "data_engine.db"
+    _legacy_db(db, [(str(uuid.uuid4()), "foo bar baz", 1.0, "completed", None)])
+    rc.migrate(db)
+    _search(rc, db, raw)  # must not raise sqlite3.OperationalError
+
+
+def test_search_text_without_terms_matches_nothing(tmp_path, rc):
+    assert rc.build_match_query("") is None
+    assert rc.build_match_query('!!! "" ---') is None
