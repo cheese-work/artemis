@@ -41,6 +41,7 @@ _SETTABLE = {"host_id", "requested_by", "pinned", "device_ref"}
 _CAPTURE = {"pending", "recording", "stopped", "partial"}
 _TRANSFER = {"waiting_for_computer", "uploading", "uploaded", "failed"}
 _MAX_CANDIDATES = 20
+_MAX_CURSOR_LEN = 512  # a safe-id (128) + a float, base64-encoded, fits with room
 
 
 class CatalogNotReady(Exception):
@@ -73,6 +74,9 @@ def encode_cursor(start_time: float | None, session_id: str) -> str:
 
 
 def decode_cursor(cursor: str) -> tuple[float | None, str]:
+    # Our own cursors are ~120 chars; the bound keeps hostile input away from the parser.
+    if len(cursor) > _MAX_CURSOR_LEN:
+        raise InvalidCursor("malformed cursor")
     try:
         value = json.loads(base64.urlsafe_b64decode(cursor.encode()))
     except (ValueError, binascii.Error, UnicodeError) as exc:

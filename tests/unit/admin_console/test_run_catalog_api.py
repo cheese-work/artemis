@@ -525,7 +525,7 @@ async def test_numeric_cursor_that_is_not_a_finite_float_is_a_400(env, value):
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "payload",
-    ["[" * 10000 + "0" + "]" * 10000, '[1, "' + "x" * 100_000 + '"]'],
+    ["[" * 10000 + "0" + "]" * 10000, '[1, "' + "x" * 3000 + '"]'],
     ids=["deeply_nested", "oversized"],
 )
 async def test_hostile_cursor_text_is_a_400_not_a_500(env, payload):
