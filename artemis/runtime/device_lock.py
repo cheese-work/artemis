@@ -412,6 +412,52 @@ class DeviceExecutionLock:
         raise DeviceBusyError("Could not reserve a position in the Artemis device queue.")
 
     @classmethod
+    def _nack_marker(cls, token: str) -> Path:
+        return get_temp_dir("device-locks") / "artemis-global-device.queue" / f"{token}.nack"
+
+    @classmethod
+    def mark_nack(cls, token: str) -> None:
+        """Fence a reserved start: its worker refuses the lock from now on.
+
+        The worker checks the marker before and after it takes the device lock,
+        so a NACK either lands before the acquisition (the worker aborts without
+        the lock) or after it (the NACKing side then finds the lock held and must
+        leave the worker alone). The ticket itself is never touched.
+        """
+        marker = cls._nack_marker(token)
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.touch()
+
+    @classmethod
+    def clear_nack(cls, token: str) -> None:
+        cls._nack_marker(token).unlink(missing_ok=True)
+
+    def _nacked(self) -> bool:
+        return bool(self.queue_ticket) and self._nack_marker(self.queue_ticket).exists()
+
+    def _abort_nacked(self) -> None:
+        """Give up a NACKed start; the ticket stays so its owner can requeue it in place."""
+        self._queue_path = None
+        raise DeviceBusyError("The host refused this start (NACK); it stays queued.")
+
+    @classmethod
+    def queue_head_token(cls, device_id: str, lock_scope: str | None) -> str | None:
+        """Ticket token of the live head of one device's FIFO queue, if any."""
+        queue_dir = get_temp_dir("device-locks") / "artemis-global-device.queue"
+        if not queue_dir.exists():
+            return None
+        queue = cls._build_device_queue(
+            sorted(queue_dir.glob("*.wait")),
+            target_lock_id=cls._normalize_lock_id(device_id, lock_scope),
+            target_scope=lock_scope,
+        )
+        for path in queue:
+            owner = cls._read_owner(path)
+            if owner is not None and cls._owner_is_alive(owner):
+                return owner.token
+        return None
+
+    @classmethod
     def cancel_reservation(cls, token: str | None) -> bool:
         """Remove a pending queue ticket. Active execution leases are untouched."""
         if not token:
@@ -615,6 +661,8 @@ class DeviceExecutionLock:
             while True:
                 if cancel_event is not None and cancel_event.is_set():
                     raise DeviceBusyError("Waiting for the Artemis device queue was cancelled.")
+                if self._nacked():
+                    self._abort_nacked()
                 self._remove_stale_queue_entries()
 
                 if not self._queue_path.exists():
@@ -680,6 +728,9 @@ class DeviceExecutionLock:
                     is_eligible = bool(device_queue and device_queue[0] == self._queue_path)
 
                 if is_eligible and self._try_acquire_owner_lock():
+                    if self._nacked():  # the NACK landed while we took the lock
+                        self.release()
+                        self._abort_nacked()
                     self._safe_unlink(self._queue_path)
                     self._queue_path = None
                     return

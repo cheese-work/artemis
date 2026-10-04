@@ -902,12 +902,8 @@ async def test_distinct_hosts_do_not_debounce_each_others_submissions():
 
 
 @pytest.mark.asyncio
-async def test_a_local_submission_is_not_debounced_into_a_host_run(monkeypatch):
+async def test_a_local_submission_is_not_debounced_into_a_host_run():
     _host_agent(devices=("d1",))
-    monkeypatch.setattr(
-        "artemis.runtime.device_pool.device_pool.select_device_async",
-        AsyncMock(return_value="d1"),
-    )
     host_run = await TaskQueueService.enqueue_tasks(["same"], host_id=HOST_A, device_serial="d1")
     local = await TaskQueueService.enqueue_tasks(["same"], device_serial="d1")
 

@@ -51,6 +51,7 @@ class WaitReason(StrEnum):
     HOST_MAINTENANCE = "host_maintenance"
     HOST_UPDATE_REQUIRED = "host_update_required"
     HOST_FULL = "host_full"
+    DEVICE_BUSY = "device_busy"  # another owner holds the lock or is ahead in its queue
     DEVICE_NOT_SHARED = "device_not_shared"
     DEVICE_NEEDS_ATTENTION = "device_needs_attention"
 

@@ -29,14 +29,14 @@ try:
     from admin_console.core.state import IN_FLIGHT_STATUSES, state
     from admin_console.database.repositories.session_repository import session_repo
     from admin_console.services import worker_process_io
-    from admin_console.services.host_admission import RunPhase, host_admission
+    from admin_console.services.host_admission import RunPhase, WaitReason, host_admission
     from admin_console.services.host_admission import enabled as host_agent_enabled
     from admin_console.services.media_service import media_service
 except ImportError:
     from apps.admin_console.core.state import IN_FLIGHT_STATUSES, state
     from apps.admin_console.database.repositories.session_repository import session_repo
     from apps.admin_console.services import worker_process_io
-    from apps.admin_console.services.host_admission import RunPhase, host_admission
+    from apps.admin_console.services.host_admission import RunPhase, WaitReason, host_admission
     from apps.admin_console.services.host_admission import enabled as host_agent_enabled
     from apps.admin_console.services.media_service import media_service
 
@@ -505,6 +505,11 @@ class TaskQueueService:
                 # A second worker for this device would wait on its lock.
                 continue
 
+            if item.get("host_id") and host_agent_enabled() and not cls._host_device_eligible(item):
+                # Another owner holds the device lock or is ahead in its queue (any
+                # ingress): waiting here must not hold one of the host's run slots.
+                item["wait_reason"] = str(WaitReason.DEVICE_BUSY)
+                continue
             # The single host-admission hook: a host that is not active, is full or
             # shares an ambiguous device keeps the row waiting, in place.
             if (reason := host_admission.admit(item)) is not None:
@@ -554,6 +559,20 @@ class TaskQueueService:
             }
         except OSError:
             return None
+
+    @classmethod
+    def _host_device_eligible(cls, item: dict[str, Any]) -> bool:
+        """The authoritative lock and FIFO state lets this row start now; unknown means no."""
+        target = cls._task_target(item)
+        device = str(item.get("device_serial"))
+        try:
+            if DeviceExecutionLock.get_active_owner(device, target.lock_scope) is not None:
+                return False
+            head = DeviceExecutionLock.queue_head_token(device, target.lock_scope)
+        except OSError:
+            return False
+        ticket = item.get("queue_ticket")
+        return not (ticket and head and head != ticket)
 
     @classmethod
     def _promote_started_runs(cls) -> None:
@@ -1235,6 +1254,7 @@ class TaskQueueService:
         device_serial: str | None,
         endpoint: AdbEndpoint,
         now: float,
+        host_id: str | None = None,
     ) -> dict[str, Any] | None:
         """Return the short-circuit response for a duplicate submission, if any."""
         # 1. Deduplication by session_id: if session_id is already running or queued, do not re-enqueue
@@ -1275,6 +1295,7 @@ class TaskQueueService:
                     and item.get("goal") == first_goal
                     and (not device_serial or item.get("device_serial") == device_serial)
                     and item.get("adb_endpoint", {}).get("identity") == endpoint.identity
+                    and item.get("host_id") == host_id
                     and (now - float(item.get("created_at", 0))) < 1.0
                 ),
                 None,
@@ -1415,7 +1436,7 @@ class TaskQueueService:
         endpoint = current_adb_endpoint()
 
         duplicate_response = cls._find_duplicate_submission(
-            goals, session_id, device_serial, endpoint, now
+            goals, session_id, device_serial, endpoint, now, host_id
         )
         if duplicate_response is not None:
             return duplicate_response
@@ -2011,48 +2032,70 @@ class TaskQueueService:
         return "cancelled"
 
     @classmethod
+    def _reclaim_ticket(cls, item: dict[str, Any]) -> None:
+        """Re-own a run's queue ticket (same file, same timestamp) as the server."""
+        if not item.get("queue_ticket"):
+            return
+        DeviceExecutionLock.transfer_reservation(
+            str(item["queue_ticket"]),
+            os.getpid(),
+            description=f"{item.get('ingress')} task: {str(item.get('goal'))[:120]}",
+            device_id=item.get("device_serial") or "pending",
+            session_id=str(item.get("session_id")),
+            ingress=str(item.get("ingress")),
+            lock_scope=cls._task_target(item).lock_scope,
+        )
+
+    @classmethod
     async def requeue_starting(cls, session_id: str) -> bool:
         """The host agent NACKed a start that raced its barrier: wait again, in place.
 
-        The row keeps its list position and its ticket keeps its original
-        timestamp, so the run goes back to the same place in its device queue.
-        False when the run no longer is a not-yet-executing "starting" one.
+        The NACK is arbitrated with the worker through the ticket: the fence goes
+        up first, then the lock state is read, so a worker is only ever stopped
+        while it provably does not hold the device. Unreadable lock state, a held
+        lock, or a missing ticket refuse the NACK and leave the run untouched.
+        On success the row keeps its list position and its ticket keeps its
+        original timestamp. False when the run is not a not-yet-executing one.
         """
         sid = str(session_id)
         item = cls._queue_item_for(sid)
         run = state.active_runs.get(sid)
         proc = run.get("process") if run else None
+        ticket = item.get("queue_ticket")
         if (
             item.get("status") != "starting"
-            or sid in (cls._held_lock_session_ids() or ())
+            or not ticket
             or (proc is not None and proc.returncode is not None)
         ):
             return False
+        try:
+            DeviceExecutionLock.mark_nack(str(ticket))
+        except OSError:
+            return False
+        held = cls._held_lock_session_ids()
+        if held is None or sid in held:
+            DeviceExecutionLock.clear_nack(str(ticket))
+            return False
         item["requeue"] = True
-        run_task = cls._run_tasks_by_session.get(sid)
-        if run_task is not None:
-            run_task.cancel()
-            await asyncio.gather(run_task, return_exceptions=True)
-        host_admission.release(sid)
-        if item not in state.queue_items:  # stopped while we waited
+        try:
+            # Hold the ticket as the server before the worker dies: a dead owner's
+            # ticket is swept as stale by the next waiting worker.
+            cls._reclaim_ticket(item)
+            run_task = cls._run_tasks_by_session.get(sid)
+            if run_task is not None:
+                run_task.cancel()
+                await asyncio.gather(run_task, return_exceptions=True)
+            host_admission.release(sid)
+            if item not in state.queue_items:  # stopped while we waited
+                return True
+            cls._reclaim_ticket(item)
+            for key in ("requeue", "pid"):
+                item.pop(key, None)
+            item["status"] = "pending"
+            state.wake_event.set()
             return True
-        if item.get("queue_ticket"):
-            # A spawned worker owned the ticket and is gone; take it back unchanged.
-            target = cls._task_target(item)
-            DeviceExecutionLock.transfer_reservation(
-                str(item["queue_ticket"]),
-                os.getpid(),
-                description=f"{item.get('ingress')} task: {str(item.get('goal'))[:120]}",
-                device_id=item.get("device_serial") or "pending",
-                session_id=sid,
-                ingress=str(item.get("ingress")),
-                lock_scope=target.lock_scope,
-            )
-        for key in ("requeue", "pid"):
-            item.pop(key, None)
-        item["status"] = "pending"
-        state.wake_event.set()
-        return True
+        finally:
+            DeviceExecutionLock.clear_nack(str(ticket))
 
     @classmethod
     def stop_tasks(

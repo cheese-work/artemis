@@ -418,3 +418,60 @@ def test_safe_unlink_and_replace_retry(tmp_path):
     src.write_text("world")
     assert DeviceExecutionLock._safe_replace(src, dst) is True
     assert dst.read_text() == "world"
+
+
+def _queue_files(tmp_path):
+    return sorted((tmp_path / "artemis-global-device.queue").glob("*.wait"))
+
+
+def test_nacked_start_aborts_before_the_lock_and_keeps_its_ticket(tmp_path):
+    ticket = DeviceExecutionLock.reserve("t", "d1", session_id="s1", lock_scope="host:a")
+    DeviceExecutionLock.mark_nack(ticket)
+    lock = DeviceExecutionLock("d1", "t", queue_ticket=ticket, session_id="s1", lock_scope="host:a")
+
+    with pytest.raises(DeviceBusyError, match="NACK"):
+        lock.acquire(blocking=False)
+
+    assert DeviceExecutionLock.get_active_owner("d1", "host:a") is None
+    assert len(_queue_files(tmp_path)) == 1  # ticket and its position are intact
+
+    DeviceExecutionLock.clear_nack(ticket)
+    retry = DeviceExecutionLock(
+        "d1", "t", queue_ticket=ticket, session_id="s1", lock_scope="host:a"
+    )
+    retry.acquire(blocking=False)
+    retry.release()
+
+
+def test_nack_landing_while_the_lock_is_taken_releases_it_and_keeps_the_ticket(
+    tmp_path, monkeypatch
+):
+    ticket = DeviceExecutionLock.reserve("t", "d1", session_id="s1", lock_scope="host:a")
+    lock = DeviceExecutionLock("d1", "t", queue_ticket=ticket, session_id="s1", lock_scope="host:a")
+    take = lock._try_acquire_owner_lock
+
+    def take_then_nack():
+        taken = take()
+        DeviceExecutionLock.mark_nack(ticket)
+        return taken
+
+    monkeypatch.setattr(lock, "_try_acquire_owner_lock", take_then_nack)
+
+    with pytest.raises(DeviceBusyError, match="NACK"):
+        lock.acquire(blocking=False)
+
+    assert DeviceExecutionLock.get_active_owner("d1", "host:a") is None
+    assert len(_queue_files(tmp_path)) == 1
+
+
+def test_queue_head_token_skips_dead_owners_and_other_scopes():
+    first = DeviceExecutionLock.reserve("t", "d1", session_id="a", lock_scope="host:a")
+    DeviceExecutionLock.reserve("t", "d1", session_id="b", lock_scope="host:a")
+    DeviceExecutionLock.reserve("t", "d1", session_id="x", lock_scope="host:other")
+
+    assert DeviceExecutionLock.queue_head_token("d1", "host:a") == first
+    assert DeviceExecutionLock.queue_head_token("d9", "host:a") is None
+
+    DeviceExecutionLock.cancel_reservation(first)
+    head = DeviceExecutionLock.queue_head_token("d1", "host:a")
+    assert head is not None and head != first
