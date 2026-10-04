@@ -175,3 +175,38 @@ def test_dead_pid_within_grace_is_assumed_alive(no_persistence, monkeypatch):
 
     assert current_status == "running"
     assert is_alive is True
+
+
+def test_db_connection_is_closed_even_when_the_reason_query_fails(use_db, monkeypatch):
+    use_db("t11", "interrupted", interrupt_reason="device_offline")
+    real_connect = sqlite3.connect
+    closed = []
+
+    class FlakyConnection:
+        def __init__(self, path):
+            self._conn = real_connect(path)
+            self._queries = 0
+
+        @property
+        def row_factory(self):
+            return self._conn.row_factory
+
+        @row_factory.setter
+        def row_factory(self, value):
+            self._conn.row_factory = value
+
+        def execute(self, *args):
+            self._queries += 1
+            if self._queries > 1:
+                raise sqlite3.OperationalError("disk I/O error")
+            return self._conn.execute(*args)
+
+        def close(self):
+            closed.append(True)
+            self._conn.close()
+
+    monkeypatch.setattr(task_manager.sqlite3, "connect", FlakyConnection)
+
+    _reconcile_task_state("t11", {"status": "running", "pid": 111})
+
+    assert closed == [True]

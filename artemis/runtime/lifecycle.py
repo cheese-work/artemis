@@ -202,8 +202,16 @@ class LifecycleAuthority:
         error: str | None = None,
         exit_cause: str | None = None,
         end_time: float | None = None,
+        result: Any = None,
+        device_serial: str | None = None,
     ) -> Outcome:
-        """Commit ``status`` unless the session already has a final outcome."""
+        """Commit ``status`` unless the run already has a final outcome.
+
+        ``error``/``result``/``device_serial`` describe the requested outcome
+        and reach ``status.json`` only when that outcome is the published one.
+        A run with no sessions row (an MCP task that never started a session)
+        is arbitrated on its ``status.json`` alone, with the same first-wins rule.
+        """
         session_id = str(session_id)
         status = canonical_status(status) or ""
         if status not in TERMINAL_STATUSES:
@@ -211,36 +219,82 @@ class LifecycleAuthority:
         reason = _reason(reason)
         if (status == "interrupted") != (reason is not None):
             raise ValueError("interrupt reason is required for, and only for, interrupted")
+        metadata = {"error": error, "result": result, "device_serial": device_serial}
 
-        with self._txn() as conn:
-            row = conn.execute(
-                "SELECT status, interrupt_reason, pending_loss_reason FROM sessions "
-                "WHERE session_id = ?",
-                (session_id,),
-            ).fetchone()
-            if row is None:
-                return Outcome(session_id, None)
-            self._pause("after_read")
-            if exit_cause is not None:
-                conn.execute(
-                    "UPDATE sessions SET exit_cause = COALESCE(exit_cause, ?) WHERE session_id = ?",
-                    (exit_cause, session_id),
-                )
-            current = canonical_status(row["status"])
-            if can_transition(current, status):
+        outcome = self._commit_row(session_id, status, reason, exit_cause, end_time)
+        if outcome is None:
+            return self._finish_trace_only(session_id, status, reason, end_time, metadata)
+        # Project after commit. A crash or write failure here leaves status.json
+        # stale; any later finish() for the session re-projects from the row.
+        if outcome.status in TERMINAL_STATUSES:
+            self.project(session_id, requested=status, **metadata)
+        return outcome
+
+    def _commit_row(
+        self,
+        session_id: str,
+        status: str,
+        reason: InterruptReason | None,
+        exit_cause: str | None,
+        end_time: float | None,
+    ) -> Outcome | None:
+        """Arbitrate and commit on the sessions row; ``None`` when there is no row."""
+        if not self.db_path.exists():
+            return None  # never create a database just to look for a row
+        try:
+            with self._txn() as conn:
+                row = conn.execute(
+                    "SELECT status, interrupt_reason, pending_loss_reason FROM sessions "
+                    "WHERE session_id = ?",
+                    (session_id,),
+                ).fetchone()
+                if row is None:
+                    return None
+                self._pause("after_read")
+                if exit_cause is not None:
+                    conn.execute(
+                        "UPDATE sessions SET exit_cause = COALESCE(exit_cause, ?) "
+                        "WHERE session_id = ?",
+                        (exit_cause, session_id),
+                    )
+                current = canonical_status(row["status"])
+                if not can_transition(current, status):
+                    return Outcome(session_id, current, _reason(row["interrupt_reason"]))
                 final, final_reason = resolve_outcome(
                     status, reason, _reason(row["pending_loss_reason"])
                 )
                 self._commit(conn, session_id, final, final_reason, end_time or self._clock())
                 self._pause("before_commit")
-                outcome = Outcome(session_id, final, final_reason, committed=True)
-            else:
-                outcome = Outcome(session_id, current, _reason(row["interrupt_reason"]))
-        # Project after commit. A crash or write failure here leaves status.json
-        # stale; any later finish() for the session re-projects from the row.
-        if outcome.status in TERMINAL_STATUSES:
-            self.project(session_id, error=error if outcome.committed else None)
-        return outcome
+                return Outcome(session_id, final, final_reason, committed=True)
+        except sqlite3.OperationalError as exc:
+            if "no such table" in str(exc):
+                return None
+            raise
+
+    def _finish_trace_only(
+        self,
+        session_id: str,
+        status: str,
+        reason: InterruptReason | None,
+        end_time: float | None,
+        metadata: dict[str, Any],
+    ) -> Outcome:
+        written = trace_store.publish_outcome(
+            session_id,
+            status,
+            end_time=end_time or self._clock(),
+            interrupt_reason=reason.value if reason else None,
+            only_if_not_terminal=True,
+            **metadata,
+        )
+        if written is not None:
+            return Outcome(session_id, status, reason, committed=True)
+        current = trace_store.read_status(session_id) or {}
+        return Outcome(
+            session_id,
+            canonical_status(current.get("status")),
+            _reason(current.get("interrupt_reason")),
+        )
 
     @staticmethod
     def _commit(
@@ -321,8 +375,20 @@ class LifecycleAuthority:
 
     # -- projection and delivery -----------------------------------------
 
-    def project(self, session_id: str, *, error: str | None = None) -> None:
-        """Mirror the committed outcome into status.json (when the trace has one)."""
+    def project(
+        self,
+        session_id: str,
+        *,
+        requested: str | None = None,
+        error: str | None = None,
+        result: Any = None,
+        device_serial: str | None = None,
+    ) -> None:
+        """Mirror the committed outcome into status.json (when the trace has one).
+
+        The caller's ``error``/``result``/``device_serial`` are applied only
+        when ``requested`` is the status that won; they describe that outcome.
+        """
         with self._connect() as conn:
             row = conn.execute(
                 "SELECT status, end_time, interrupt_reason FROM sessions WHERE session_id = ?",
@@ -331,14 +397,17 @@ class LifecycleAuthority:
         status = canonical_status(row["status"]) if row else None
         if status not in TERMINAL_STATUSES:
             return
+        own = requested == status
         for attempt in range(_PROJECT_ATTEMPTS):
             try:
                 trace_store.publish_outcome(
                     str(session_id),
                     status,
                     end_time=row["end_time"],
-                    error=error,
                     interrupt_reason=row["interrupt_reason"],
+                    error=error if own else None,
+                    result=result if own else None,
+                    device_serial=device_serial if own else None,
                 )
                 return
             except OSError as exc:
@@ -354,17 +423,56 @@ class LifecycleAuthority:
                 else:
                     time.sleep(0.5 * (attempt + 1))
 
-    def claim_events(self, session_id: str | None = None) -> list[dict[str, Any]]:
-        """Return and mark delivered the undelivered outcome events, exactly once."""
+    def pending_events(self, session_id: str | None = None) -> list[dict[str, Any]]:
+        """Outcome events not yet acknowledged, oldest first.
+
+        Reading does not acknowledge: a crash before delivery leaves the event
+        pending for the next drain. Delivery is therefore at-least-once; every
+        redelivery carries the same ``dedupe_id`` so consumers can drop repeats.
+        """
         where, args = ("AND session_id = ?", (str(session_id),)) if session_id else ("", ())
-        with self._txn() as conn:
+        with self._connect() as conn:
             rows = conn.execute(
-                f"SELECT dedupe_id, session_id, status, interrupt_reason, created_at "
+                "SELECT dedupe_id, session_id, status, interrupt_reason, created_at "
                 f"FROM lifecycle_outbox WHERE delivered_at IS NULL {where} ORDER BY created_at",
                 args,
             ).fetchall()
-            conn.executemany(
-                "UPDATE lifecycle_outbox SET delivered_at = ? WHERE dedupe_id = ?",
-                [(self._clock(), r["dedupe_id"]) for r in rows],
+        return [dict(r) for r in rows]
+
+    def acknowledge(self, dedupe_ids: list[str]) -> int:
+        """Mark delivered events done; idempotent. Returns how many were newly acknowledged."""
+        if not dedupe_ids:
+            return 0
+        with self._txn() as conn:
+            now = self._clock()
+            return sum(
+                conn.execute(
+                    "UPDATE lifecycle_outbox SET delivered_at = ? "
+                    "WHERE dedupe_id = ? AND delivered_at IS NULL",
+                    (now, dedupe_id),
+                ).rowcount
+                for dedupe_id in dedupe_ids
             )
-            return [dict(r) for r in rows]
+
+
+def finish_trace(
+    trace_id: str,
+    status: str,
+    *,
+    error: str | None = None,
+    result: Any = None,
+    device_serial: str | None = None,
+    reason: InterruptReason | str | None = None,
+) -> Outcome:
+    """``LifecycleAuthority.finish`` for callers that only know a trace id (MCP, CLI).
+
+    Finds the sessions database next to the trace store, else the default one;
+    with neither, the outcome is arbitrated on ``status.json`` alone.
+    """
+    from artemis.config import DB_PATH
+
+    candidates = [Path(trace_store.TRACES_DIR) / "data_engine.db", Path(DB_PATH)]
+    db_path = next((p for p in candidates if p.exists()), candidates[0])
+    return LifecycleAuthority(db_path).finish(
+        trace_id, status, reason=reason, error=error, result=result, device_serial=device_serial
+    )

@@ -52,57 +52,58 @@ def test_init_and_read_status(temp_trace_env):
     assert status_data["conversation_id"] == conv_id
 
 
-def test_update_trace_status(temp_trace_env):
+def test_update_trace_status_updates_non_terminal_fields(temp_trace_env):
     trace_id = str(uuid.uuid4())
     trace_store.init_trace(trace_id, "Test task", "Pro", "conv-456")
 
     updated = trace_store.update_trace_status(
-        trace_id=trace_id,
-        status="completed",
-        result={"success": True},
+        trace_id=trace_id, status="running", error="transient", device_serial="emulator-5554"
     )
+
     assert updated is not None
-    assert updated["status"] == "completed"
-    assert updated["result"] == {"success": True}
-    assert updated["end_time"] is not None
-
-    # A published outcome is final: a late writer cannot rewrite it.
-    late = trace_store.update_trace_status(
-        trace_id=trace_id,
-        status="failed",
-        error="App crashed",
-    )
-    assert late is not None
-    assert late["status"] == "completed"
-    assert late["error"] is None
+    assert updated["status"] == "running"
+    assert updated["error"] == "transient"
+    assert updated["device_serial"] == "emulator-5554"
 
 
-def test_publish_outcome_is_the_only_terminal_override(temp_trace_env):
+@pytest.mark.parametrize("status", ["completed", "success", "failed", "cancelled", "interrupted"])
+def test_update_trace_status_rejects_run_outcomes(temp_trace_env, status):
+    trace_id = str(uuid.uuid4())
+    trace_store.init_trace(trace_id, "Test task", "Flash", "conv-789")
+
+    with pytest.raises(ValueError, match="LifecycleAuthority"):
+        trace_store.update_trace_status(trace_id=trace_id, status=status)
+
+    assert trace_store.read_status(trace_id)["status"] == "running"
+
+
+def test_publish_outcome_is_the_only_terminal_writer(temp_trace_env):
     trace_id = str(uuid.uuid4())
     trace_store.init_trace(trace_id, "Test task", "Pro", "conv-456")
 
     published = trace_store.publish_outcome(
-        trace_id, "interrupted", end_time=12.5, interrupt_reason="device_offline"
+        trace_id,
+        "interrupted",
+        end_time=12.5,
+        interrupt_reason="device_offline",
+        result={"r": 1},
+        device_serial="d",
     )
     assert published is not None
     assert published["status"] == "interrupted"
     assert published["end_time"] == 12.5
     assert published["interrupt_reason"] == "device_offline"
-    assert trace_store.update_trace_status(trace_id, "failed")["status"] == "interrupted"
+    assert (published["result"], published["device_serial"]) == ({"r": 1}, "d")
     assert trace_store.publish_outcome(str(uuid.uuid4()), "failed") is None
 
 
-def test_update_trace_status_normalizes_success_alias(temp_trace_env):
+def test_publish_outcome_first_wins_when_asked(temp_trace_env):
     trace_id = str(uuid.uuid4())
-    trace_store.init_trace(trace_id, "Test task", "Flash", "conv-789")
+    trace_store.init_trace(trace_id, "Test task", "Pro", "conv-456")
 
-    updated = trace_store.update_trace_status(trace_id=trace_id, status="success")
-    assert updated is not None
-    assert updated["status"] == "completed"
-    assert updated["end_time"] is not None
-
-    persisted = trace_store.read_status(trace_id)
-    assert persisted["status"] == "completed"
+    assert trace_store.publish_outcome(trace_id, "cancelled", only_if_not_terminal=True)
+    assert trace_store.publish_outcome(trace_id, "failed", only_if_not_terminal=True) is None
+    assert trace_store.read_status(trace_id)["status"] == "cancelled"
 
 
 def test_read_nonexistent_status(temp_trace_env):
@@ -178,13 +179,13 @@ def test_update_on_corrupt_status_logs_and_drops(temp_trace_env, caplog):
         f.write("not json at all")
 
     with caplog.at_level(logging.WARNING, logger="artemis.runtime.trace_store"):
-        assert trace_store.update_trace_status(trace_id, "completed") is None
+        assert trace_store.update_trace_status(trace_id, "running") is None
 
     assert any("Dropping status update" in rec.message for rec in caplog.records)
     # Updating a trace that never existed stays a silent no-op.
     caplog.clear()
     with caplog.at_level(logging.WARNING, logger="artemis.runtime.trace_store"):
-        assert trace_store.update_trace_status(str(uuid.uuid4()), "completed") is None
+        assert trace_store.update_trace_status(str(uuid.uuid4()), "running") is None
     assert not any("Dropping status update" in rec.message for rec in caplog.records)
 
 

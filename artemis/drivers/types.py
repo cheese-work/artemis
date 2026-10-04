@@ -47,7 +47,9 @@ def device_disconnect_reason(
     When ``serial`` is known, another device's "not found" does not count.
     """
     text = " ".join(str(message).split())
-    device = rf"""['"]?{re.escape(serial)}['"]?""" if serial else _ANY_DEVICE
+    device = (
+        rf"""['"]?{re.escape(serial)}['"]?""" if isinstance(serial, str) and serial else _ANY_DEVICE
+    )
     if re.search(rf"\bdevice\s+{device}\s+not found\b", text, re.IGNORECASE):
         return "not found"
     if re.search(rf"\bdevice\s+(?:{device}\s+)?offline\b", text, re.IGNORECASE):

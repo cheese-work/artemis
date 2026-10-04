@@ -30,6 +30,7 @@ from apps.admin_console.database.repositories.session_repository import (
 from apps.admin_console.routers.tasks import get_status
 from apps.admin_console.services.task_queue_service import TaskQueueService, task_queue_service
 from artemis.runtime import trace_store
+from artemis.runtime.lifecycle import finish_trace
 from artemis.runtime.device_lock import DeviceLockOwner
 from artemis.runtime.adb_endpoint import AdbEndpoint
 
@@ -187,7 +188,7 @@ async def test_pre_session_worker_failure_persists_failed_session_and_releases_t
 async def test_enqueue_rejects_terminal_trace_without_overwriting_it(tmp_path):
     session_id = "terminal-session"
     trace_store.init_trace(session_id, "Finished goal", "flash")
-    trace_store.update_trace_status(session_id, "completed")
+    finish_trace(session_id, "completed")
 
     with (
         patch.object(TaskQueueService, "ensure_worker_running"),
@@ -950,8 +951,14 @@ async def test_queue_worker_notifies_conversation():
         ),
     ):
         mock_repo.get_running_session_id.return_value = None
-        mock_repo.lifecycle.claim_events.return_value = [
-            {"status": "completed", "interrupt_reason": None, "created_at": 1.0}
+        mock_repo.lifecycle.pending_events.side_effect = lambda sid=None: [
+            {
+                "dedupe_id": f"{sid}:outcome",
+                "session_id": sid,
+                "status": "completed",
+                "interrupt_reason": None,
+                "created_at": 1.0,
+            }
         ]
 
         await task_queue_service.enqueue_tasks(

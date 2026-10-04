@@ -21,6 +21,7 @@ import signal
 import sqlite3
 import sys
 import time
+from contextlib import closing
 from typing import Any
 
 from mcp_server.base import mcp
@@ -33,6 +34,7 @@ from artemis.runtime import (
     stop_task_on_daemon,
     trace_store,
 )
+from artemis.runtime.lifecycle import finish_trace
 from artemis.runtime.process_probe import pid_is_alive
 
 logger = logging.getLogger(__name__)
@@ -119,23 +121,23 @@ def _reconcile_task_state(
     db_path = _find_data_engine_db()
     if db_path:
         try:
-            conn = sqlite3.connect(db_path)
-            conn.row_factory = sqlite3.Row
-            row = conn.execute(
-                "SELECT status, pid FROM sessions WHERE session_id = ? ORDER BY start_time DESC LIMIT 1",
-                (trace_id,),
-            ).fetchone()
-            if row:
-                db_status = row["status"]
-                db_pid = row["pid"]
-                if db_status == "interrupted":
-                    reason_row = conn.execute(
-                        "SELECT interrupt_reason FROM sessions WHERE session_id = ? "
-                        "ORDER BY start_time DESC LIMIT 1",
-                        (trace_id,),
-                    ).fetchone()
-                    db_interrupt_reason = reason_row["interrupt_reason"] if reason_row else None
-            conn.close()
+            with closing(sqlite3.connect(db_path)) as conn:
+                conn.row_factory = sqlite3.Row
+                row = conn.execute(
+                    "SELECT status, pid FROM sessions WHERE session_id = ? "
+                    "ORDER BY start_time DESC LIMIT 1",
+                    (trace_id,),
+                ).fetchone()
+                if row:
+                    db_status = row["status"]
+                    db_pid = row["pid"]
+                    if db_status == "interrupted":
+                        reason_row = conn.execute(
+                            "SELECT interrupt_reason FROM sessions WHERE session_id = ? "
+                            "ORDER BY start_time DESC LIMIT 1",
+                            (trace_id,),
+                        ).fetchone()
+                        db_interrupt_reason = reason_row["interrupt_reason"] if reason_row else None
         except sqlite3.Error as exc:
             # Reconciliation then relies on status.json and lock evidence only.
             print(f"Could not read DB session row for {trace_id}: {exc}", file=sys.stderr)
@@ -203,7 +205,7 @@ def _reconcile_task_state(
 
 
 def _mark_liveness_failure(trace_id: str, status_data: dict[str, Any]) -> None:
-    trace_store.update_trace_status(trace_id, "failed", error=_LIVENESS_FAILURE_ERROR)
+    finish_trace(trace_id, "failed", error=_LIVENESS_FAILURE_ERROR)
     status_data["status"] = "failed"
     status_data["error"] = _LIVENESS_FAILURE_ERROR
     conv_id = status_data.get("conversation_id")
@@ -576,9 +578,7 @@ def mobile_manage_task(
                         "message": f"Failed to terminate process {pid}: {e}",
                     }
 
-        trace_store.update_trace_status(
-            trace_id, "cancelled", error="Task aborted by user request."
-        )
+        finish_trace(trace_id, "cancelled", error="Task aborted by user request.")
         return {
             "trace_id": trace_id,
             "status": "cancelled",

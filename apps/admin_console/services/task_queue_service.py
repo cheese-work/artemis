@@ -333,8 +333,10 @@ class TaskQueueService:
 
         This is the writer-side replacement for the repair that used to run
         inside ``GET /api/sessions``; it covers workers started outside this
-        server (CLI, MCP) that died without finalizing.
+        server (CLI, MCP) that died without finalizing. It also redelivers any
+        outcome event left pending by a crash or an earlier delivery failure.
         """
+        cls._drain_outcome_events()
         try:
             owner_sids = {
                 str(owner.session_id)
@@ -762,55 +764,105 @@ class TaskQueueService:
                 {"session_id": sess_id, "error": recording_error},
             )
 
+    # Outcome events are delivered at-least-once: an event is acknowledged in
+    # the outbox only after it was broadcast, so a crash in between redelivers
+    # it with the same ``event_id``. This memo drops repeats inside one process.
+    _emitted_event_ids: set[str] = set()
+    _delivery_lock = threading.Lock()
+
     @classmethod
     def _deliver_outcome(
-        cls, sess_id: Any, task_item: dict[str, Any] | None = None, goal: str | None = None
+        cls, sess_id: Any = None, task_item: dict[str, Any] | None = None, goal: str | None = None
     ) -> None:
-        """Announce the session's committed outcome; each outcome is delivered once.
+        """Deliver the pending outcome event of ``sess_id`` (every session when None).
 
-        Every finalizer (worker exit, stop, sweep) may call this: only the one
-        that claims the outbox row broadcasts and notifies, so a session never
-        produces duplicate ``session_ended`` / ``run_interrupted`` events.
+        Every finalizer (worker exit, stop, sweep, startup, shutdown) may call
+        this: the lock plus the memo keep a session from being announced twice,
+        and an event whose delivery failed stays pending for the next drain.
         """
-        state.active_connections.pop(sess_id, None)
-        if task_item is None:
-            task_item = next(
-                (
-                    i
-                    for i in state.queue_items
-                    if isinstance(i, dict) and str(i.get("session_id")) == str(sess_id)
-                ),
-                {},
-            )
-        try:
-            events = session_repo.lifecycle.claim_events(str(sess_id))
-        except sqlite3.Error:
-            logger.warning("Could not claim outcome events for session %s", sess_id, exc_info=True)
-            return
-        for event in events:
-            status, reason = event["status"], event["interrupt_reason"]
-            payload = {
-                "session_id": sess_id,
-                "status": status,
-                "was_stopped_manually": status == "cancelled",
-            }
-            if reason:
-                payload["interrupt_reason"] = reason
-            cls._broadcast_event("session_ended", payload)
-            if status == "interrupted":
-                cls._broadcast_event(
-                    "run_interrupted",
-                    {
-                        "session_id": sess_id,
-                        "interrupt_reason": reason,
-                        "interrupted_at": event["created_at"],
-                    },
+        if sess_id is not None:
+            state.active_connections.pop(sess_id, None)
+        with cls._delivery_lock:
+            try:
+                events = session_repo.lifecycle.pending_events(
+                    str(sess_id) if sess_id is not None else None
                 )
-            cls._notify_session_end(task_item, sess_id, goal, status)
+            except sqlite3.Error:
+                logger.warning("Could not read pending outcome events", exc_info=True)
+                return
+            delivered: list[str] = []
+            for event in events:
+                event_id = event["dedupe_id"]
+                if event_id not in cls._emitted_event_ids:
+                    item = task_item
+                    if item is None or str(item.get("session_id")) != str(event["session_id"]):
+                        item = cls._queue_item_for(event["session_id"])
+                    try:
+                        cls._emit_outcome(event, item, goal)
+                    except (OSError, RuntimeError, ValueError, KeyError, TypeError):
+                        logger.warning(
+                            "Could not deliver outcome event %s; it stays pending",
+                            event_id,
+                            exc_info=True,
+                        )
+                        continue
+                    if len(cls._emitted_event_ids) > 1000:
+                        cls._emitted_event_ids.clear()
+                    cls._emitted_event_ids.add(event_id)
+                delivered.append(event_id)
+            try:
+                session_repo.lifecycle.acknowledge(delivered)
+            except sqlite3.Error:
+                logger.warning("Could not acknowledge outcome events", exc_info=True)
+
+    @classmethod
+    def _drain_outcome_events(cls) -> None:
+        """Deliver every pending outcome event (startup, shutdown and the periodic sweep)."""
+        cls._deliver_outcome(None)
+
+    @staticmethod
+    def _queue_item_for(session_id: Any) -> dict[str, Any]:
+        return next(
+            (
+                i
+                for i in state.queue_items
+                if isinstance(i, dict) and str(i.get("session_id")) == str(session_id)
+            ),
+            {},
+        )
+
+    @classmethod
+    def _emit_outcome(cls, event: dict[str, Any], task_item: dict[str, Any], goal: str | None):
+        sess_id, status, reason = event["session_id"], event["status"], event["interrupt_reason"]
+        payload = {
+            "event_id": event["dedupe_id"],
+            "session_id": sess_id,
+            "status": status,
+            "was_stopped_manually": status == "cancelled",
+        }
+        if reason:
+            payload["interrupt_reason"] = reason
+        cls._broadcast_event("session_ended", payload)
+        if status == "interrupted":
+            cls._broadcast_event(
+                "run_interrupted",
+                {
+                    "event_id": event["dedupe_id"],
+                    "session_id": sess_id,
+                    "interrupt_reason": reason,
+                    "interrupted_at": event["created_at"],
+                },
+            )
+        cls._notify_session_end(task_item, sess_id, goal, status, event["dedupe_id"])
 
     @classmethod
     def _notify_session_end(
-        cls, task_item: dict[str, Any], sess_id: Any, goal: str | None, status: str
+        cls,
+        task_item: dict[str, Any],
+        sess_id: Any,
+        goal: str | None,
+        status: str,
+        event_id: str | None = None,
     ) -> None:
         """Dispatch the external completion notification for a delivered outcome."""
         conversation_id = task_item.get("conversation_id") if task_item else None
@@ -826,6 +878,7 @@ class TaskQueueService:
                 title=f"Task {status.capitalize()}: {goal[:40]}",
                 event_type=status,
                 payload={
+                    "event_id": event_id,
                     "trace_id": sess_id,
                     "session_id": sess_id,
                     "status": status,
@@ -1198,7 +1251,7 @@ class TaskQueueService:
                     and session_repo.get_session_by_id(session_id) is None
                 ):
                     try:
-                        trace_store.update_trace_status(session_id, "failed", error=str(exc))
+                        session_repo.lifecycle.finish(session_id, "failed", error=str(exc))
                     except OSError:
                         logger.exception(
                             "Could not mark queue setup failure for session %s", session_id

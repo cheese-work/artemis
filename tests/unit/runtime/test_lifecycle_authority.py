@@ -241,37 +241,6 @@ def test_one_outbox_row_per_first_committed_outcome(db_path):
     assert [(r["dedupe_id"], r["status"]) for r in rows] == [(f"{sid}:outcome", "failed")]
 
 
-def test_claim_events_delivers_each_outcome_exactly_once(db_path):
-    sid = _add_session(db_path)
-    authority = LifecycleAuthority(db_path)
-    authority.interrupt(sid, InterruptReason.BRIDGE_CLOSED)
-
-    first = authority.claim_events(sid)
-    second = authority.claim_events(sid)
-
-    assert [(e["status"], e["interrupt_reason"]) for e in first] == [
-        ("interrupted", "bridge_closed")
-    ]
-    assert second == []
-
-
-def test_concurrent_claims_deliver_once(db_path):
-    sid = _add_session(db_path)
-    LifecycleAuthority(db_path).finish(sid, "completed")
-    claimed: list[list[dict]] = []
-    barrier = threading.Barrier(6)
-
-    def claim():
-        barrier.wait()
-        claimed.append(LifecycleAuthority(db_path).claim_events(sid))
-
-    threads = [threading.Thread(target=claim) for _ in range(6)]
-    [t.start() for t in threads]
-    [t.join() for t in threads]
-
-    assert sorted(len(c) for c in claimed) == [0, 0, 0, 0, 0, 1]
-
-
 # -- controlled-pause interleavings ----------------------------------------
 
 
@@ -339,7 +308,7 @@ def test_interleaving_exactly_one_outcome_and_one_event(db_path, first_call, sec
     assert first.status == second.status == winner
     assert _row(db_path, sid)["status"] == winner
     assert len(_outbox(db_path, sid)) == 1
-    assert len(LifecycleAuthority(db_path).claim_events(sid)) == 1
+    assert len(LifecycleAuthority(db_path).pending_events(sid)) == 1
 
 
 def test_noted_loss_races_with_worker_exit(db_path):
@@ -391,3 +360,71 @@ def test_deleting_a_session_clears_its_outbox_row_so_a_reused_id_announces_again
     assert len(_outbox(db_path)) == 1
     storage.clear_all_data()
     assert _outbox(db_path) == []
+
+
+# -- trace-only outcomes (traces that have no sessions row) -------------------
+
+
+def test_finish_without_a_session_row_publishes_to_status_json_once(tmp_path, traces):
+    authority = LifecycleAuthority(tmp_path / "missing.db")
+    sid = str(uuid.uuid4())
+    trace_store.init_trace(sid, "goal", "flash")
+
+    first = authority.finish(sid, "cancelled", error="stopped", result={"r": 1}, device_serial="d")
+    second = authority.finish(sid, "failed", error="late")
+
+    assert (first.status, first.committed) == ("cancelled", True)
+    assert (second.status, second.committed) == ("cancelled", False)
+    status = trace_store.read_status(sid)
+    assert (status["status"], status["error"], status["result"]) == (
+        "cancelled",
+        "stopped",
+        {"r": 1},
+    )
+    assert status["device_serial"] == "d"
+    assert not (tmp_path / "missing.db").exists()
+
+
+def test_projection_carries_caller_metadata_only_when_its_status_won(db_path, traces):
+    sid = _add_session(db_path)
+    trace_store.init_trace(sid, "goal", "flash")
+    authority = LifecycleAuthority(db_path)
+    authority.finish(sid, "cancelled", error="stopped by user")
+
+    authority.finish(sid, "failed", error="worker crashed")
+
+    status = trace_store.read_status(sid)
+    assert (status["status"], status["error"]) == ("cancelled", "stopped by user")
+
+
+# -- recoverable outbox ------------------------------------------------------
+
+
+def test_pending_events_are_not_acknowledged_until_acked(db_path):
+    sid = _add_session(db_path)
+    authority = LifecycleAuthority(db_path)
+    authority.interrupt(sid, InterruptReason.BRIDGE_CLOSED)
+
+    first = authority.pending_events()
+    again = authority.pending_events()  # a crash before delivery: still pending
+
+    assert [e["dedupe_id"] for e in first] == [f"{sid}:outcome"]
+    assert again == first
+    assert authority.acknowledge([e["dedupe_id"] for e in first]) == 1
+    assert authority.pending_events() == []
+
+
+def test_ack_is_idempotent_and_a_redelivery_keeps_its_dedupe_id(db_path):
+    sid = _add_session(db_path)
+    authority = LifecycleAuthority(db_path)
+    authority.finish(sid, "completed")
+
+    delivered = authority.pending_events(sid)
+    # a crash after delivery but before the ack: the same event comes back
+    redelivered = authority.pending_events(sid)
+    assert redelivered[0]["dedupe_id"] == delivered[0]["dedupe_id"]
+
+    assert authority.acknowledge([delivered[0]["dedupe_id"]]) == 1
+    assert authority.acknowledge([delivered[0]["dedupe_id"]]) == 0
+    assert authority.pending_events(sid) == []
+    assert len(_outbox(db_path, sid)) == 1

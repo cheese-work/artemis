@@ -29,6 +29,7 @@ from artemis.config.attempt_lifecycle_hooks import (
     reconcile_and_store_verdict,
 )
 from artemis.runtime import trace_store
+from artemis.runtime.lifecycle import finish_trace
 from artemis.utils.startup_progress import publish_startup_progress
 from artemis import Agent, Builders
 from artemis.sdk.types.task import AgentProfile
@@ -118,7 +119,7 @@ async def execute_task(
         except Exception as exc:
             if effective_sid:
                 try:
-                    trace_store.update_trace_status(str(effective_sid), "failed", error=str(exc))
+                    finish_trace(str(effective_sid), "failed", error=str(exc))
                 except OSError:
                     logger.exception(
                         "Could not record configuration failure for session %s", effective_sid

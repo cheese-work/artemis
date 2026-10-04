@@ -876,7 +876,9 @@ class FlashRunner:
             )
 
         except Exception as e:
-            device_disconnected = isinstance(e, DeviceDisconnectedError)
+            # Latch: a disconnect seen before this failure (recording, message
+            # construction) must survive it.
+            device_disconnected = device_disconnected or isinstance(e, DeviceDisconnectedError)
             logger.error(f"Error executing tool {name}: {e}")
             if name in action_names:
                 turn.step_keys.append(str(tc_id))

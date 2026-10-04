@@ -39,8 +39,10 @@ def env(tmp_path, monkeypatch):
     state.ipc_subscribers.append(subscriber)
     state.queue_items.clear()
     state.active_connections.clear()
+    TaskQueueService._emitted_event_ids.clear()
     yield db_path, events
-    state.ipc_subscribers.remove(subscriber)
+    if subscriber in state.ipc_subscribers:  # on_shutdown clears the list itself
+        state.ipc_subscribers.remove(subscriber)
     state.queue_items.clear()
 
 
@@ -285,3 +287,167 @@ def test_data_engine_end_session_records_interrupt_reason(tmp_path):
         outbox = conn.execute("SELECT COUNT(*) FROM lifecycle_outbox").fetchone()[0]
     assert tuple(row) == ("interrupted", "device_offline")
     assert outbox == 1
+
+
+# -- restart/shutdown interruptions are delivered through the real paths -----
+
+
+@pytest.fixture
+def server_stubs(monkeypatch):
+    """Stub only what the real startup/shutdown hooks reach outside the lifecycle."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    from apps.admin_console import server
+
+    calls = MagicMock()
+    for name in ("write_server_info", "start_awake_service", "shutdown_awake_service"):
+        monkeypatch.setattr(server, name, getattr(calls, name))
+    monkeypatch.setattr(server, "clear_server_info", calls.clear_server_info)
+    monkeypatch.setattr(server.DeviceExecutionLock, "cleanup_stale_locks", lambda *a: 0)
+    monkeypatch.setattr(server.device_pool, "warm_up_async", AsyncMock(return_value=True))
+    monkeypatch.setattr(server.ipc_service, "start_server", AsyncMock())
+    calls.stop_server_async = AsyncMock()
+    monkeypatch.setattr(server.ipc_service, "stop_server", calls.stop_server_async)
+    for name in (
+        "archive_older_replays_on_launch",
+        "verify_chunks_exist_on_launch",
+        "recover_orphaned_recordings_on_launch",
+    ):
+        monkeypatch.setattr(server.task_queue_service, name, lambda *a, **k: None)
+    monkeypatch.setattr(server.task_queue_service, "queue_worker", AsyncMock())
+    return server, calls
+
+
+def _outbox_pending(db_path) -> int:
+    with sqlite3.connect(db_path) as conn:
+        return conn.execute(
+            "SELECT COUNT(*) FROM lifecycle_outbox WHERE delivered_at IS NULL"
+        ).fetchone()[0]
+
+
+@pytest.mark.asyncio
+async def test_real_startup_delivers_and_drains_restart_interruptions(env, server_stubs):
+    db_path, events = env
+    server, _calls = server_stubs
+    session_id = _add_running_session(db_path, with_status_file=True)
+
+    await server.on_startup()
+    await asyncio.sleep(0)
+
+    assert [e[1]["status"] for e in _ended(events, session_id)] == ["interrupted"]
+    assert _ended(events, session_id)[0][1]["interrupt_reason"] == "server_restarted"
+    assert [e[1]["interrupt_reason"] for e in _interrupted(events, session_id)] == [
+        "server_restarted"
+    ]
+    assert _outbox_pending(db_path) == 0
+
+
+@pytest.mark.asyncio
+async def test_real_shutdown_delivers_and_drains_its_interruptions(env, server_stubs):
+    db_path, events = env
+    server, calls = server_stubs
+    session_id = _add_running_session(db_path, pid=4242, with_status_file=True)
+    state.queue_items[:] = [{"session_id": session_id, "status": "running"}]
+    state.worker_task = None
+
+    await server.on_shutdown()
+
+    assert session_repo.get_session_by_id(session_id)["interrupt_reason"] == "server_restarted"
+    assert len(_ended(events, session_id)) == 1
+    assert len(_interrupted(events, session_id)) == 1
+    assert _outbox_pending(db_path) == 0
+    calls.stop_server_async.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_a_locked_database_cannot_skip_the_rest_of_shutdown(env, server_stubs, monkeypatch):
+    db_path, events = env
+    server, calls = server_stubs
+    session_id = _add_running_session(db_path, pid=4242)
+    state.queue_items[:] = [{"session_id": session_id, "status": "running"}]
+    state.worker_task = None
+
+    def locked(*_args, **_kwargs):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(LifecycleAuthority, "interrupt", locked)
+    monkeypatch.setattr(LifecycleAuthority, "pending_events", locked)
+
+    await server.on_shutdown()
+
+    calls.stop_server_async.assert_awaited_once()
+    calls.shutdown_awake_service.assert_called_once()
+    calls.clear_server_info.assert_called_once()
+    assert events and all(e[0] == "server_shutdown" for e in events)
+
+
+# -- the outbox survives crashes around delivery ---------------------------
+
+
+def _emitted(events, session_id):
+    return [e[1] for e in _ended(events, session_id)]
+
+
+@pytest.mark.asyncio
+async def test_crash_before_delivery_is_recovered_by_the_next_drain(env, monkeypatch):
+    db_path, events = env
+    session_id = _add_running_session(db_path)
+    LifecycleAuthority(db_path).interrupt(session_id, InterruptReason.BRIDGE_CLOSED)
+
+    original = TaskQueueService._broadcast_event.__func__
+
+    def crash(cls, event_type, data):
+        raise RuntimeError("process died mid-broadcast")
+
+    monkeypatch.setattr(TaskQueueService, "_broadcast_event", classmethod(crash))
+    TaskQueueService._deliver_outcome(session_id, {}, "goal")
+    assert events == [] and _outbox_pending(db_path) == 1
+
+    monkeypatch.setattr(TaskQueueService, "_broadcast_event", classmethod(original))
+    TaskQueueService._drain_outcome_events()
+
+    assert [p["event_id"] for p in _emitted(events, session_id)] == [f"{session_id}:outcome"]
+    assert len(_interrupted(events, session_id)) == 1
+    assert _outbox_pending(db_path) == 0
+
+
+@pytest.mark.asyncio
+async def test_crash_after_delivery_redelivers_with_the_same_event_id(env, monkeypatch):
+    db_path, events = env
+    session_id = _add_running_session(db_path)
+    LifecycleAuthority(db_path).interrupt(session_id, InterruptReason.BRIDGE_CLOSED)
+
+    def die(*_args, **_kwargs):
+        raise sqlite3.OperationalError("database is locked")
+
+    with monkeypatch.context() as patched:
+        patched.setattr(LifecycleAuthority, "acknowledge", die)
+        TaskQueueService._deliver_outcome(session_id, {}, "goal")
+    assert len(_emitted(events, session_id)) == 1 and _outbox_pending(db_path) == 1
+
+    # Same process: the in-memory memo suppresses the duplicate broadcast.
+    TaskQueueService._drain_outcome_events()
+    assert len(_emitted(events, session_id)) == 1 and _outbox_pending(db_path) == 0
+
+    # After a restart the memo is gone: a redelivery reuses the dedupe id.
+    LifecycleAuthority(db_path).interrupt(session_id, InterruptReason.AUTH_EXPIRED)  # no-op
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("UPDATE lifecycle_outbox SET delivered_at = NULL")
+    TaskQueueService._emitted_event_ids.clear()
+    TaskQueueService._drain_outcome_events()
+    ids = [p["event_id"] for p in _emitted(events, session_id)]
+    assert ids == [f"{session_id}:outcome"] * 2
+    assert _outbox_pending(db_path) == 0
+
+
+@pytest.mark.asyncio
+async def test_the_periodic_sweep_drains_events_left_pending(env):
+    db_path, events = env
+    session_id = _add_running_session(db_path)
+    LifecycleAuthority(db_path).interrupt(session_id, InterruptReason.SERVER_RESTARTED)
+    assert _outbox_pending(db_path) == 1
+
+    TaskQueueService._reap_vanished_workers()
+
+    assert len(_emitted(events, session_id)) == 1
+    assert _outbox_pending(db_path) == 0

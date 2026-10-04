@@ -35,6 +35,7 @@ from artemis.runtime import (
     submit_task_to_daemon,
     trace_store,
 )
+from artemis.runtime.lifecycle import finish_trace
 
 # Seconds the spawned runner gets to finish its imports and open its log files
 # before the spawn is declared dead. Normal startup creates stdout.log within a
@@ -108,7 +109,7 @@ def _watch_spawn(
     )
     _kill_process_tree(pid)
     DeviceExecutionLock.cancel_reservation(queue_ticket)
-    trace_store.update_trace_status(trace_id, "failed", error=error_text)
+    finish_trace(trace_id, "failed", error=error_text)
     if conversation_id:
         try:
             notify(
@@ -312,7 +313,7 @@ def mobile_run_task(
     if device_serial:
         rejection = _validate_device_serial(device_serial)
         if rejection:
-            trace_store.update_trace_status(trace_id, "failed", error=rejection["error"])
+            finish_trace(trace_id, "failed", error=rejection["error"])
             return {"trace_id": trace_id, **rejection}
 
     # 3. Dispatch via unified Artemis Daemon scheduler if available (unless standalone forced)
@@ -337,7 +338,7 @@ def mobile_run_task(
                 )
                 if resp and resp.get("status") == "rejected":
                     rejection_error = resp.get("error") or "Task rejected by Artemis Daemon."
-                    trace_store.update_trace_status(trace_id, "failed", error=rejection_error)
+                    finish_trace(trace_id, "failed", error=rejection_error)
                     return {
                         "trace_id": trace_id,
                         "status": "failed",
@@ -548,9 +549,7 @@ def mobile_run_task(
 
     except Exception as e:
         DeviceExecutionLock.cancel_reservation(queue_ticket)
-        trace_store.update_trace_status(
-            trace_id, "failed", error=f"Failed to spawn background runner: {e}"
-        )
+        finish_trace(trace_id, "failed", error=f"Failed to spawn background runner: {e}")
         return {
             "trace_id": trace_id,
             "status": "failed",
