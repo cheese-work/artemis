@@ -38,6 +38,7 @@ from artemis.utils.video import (
     plan_timeline_pieces,
     render_timeline_clip,
     remove_active_session,
+    scrcpy_recording_flags,
     set_active_session,
 )
 
@@ -72,10 +73,53 @@ def test_targeted_frame_extraction_uses_requested_timestamps():
 def test_scrcpy_recording_locks_each_segment_orientation(tmp_path):
     output_path = tmp_path / "recording.mkv"
 
-    command = build_scrcpy_record_command("scrcpy", "device-1", output_path)
+    command = build_scrcpy_record_command(
+        "scrcpy", "device-1", output_path, scrcpy_version="scrcpy 3.0"
+    )
 
     assert "--capture-orientation=@" in command
+    assert "--no-window" in command
     assert command[command.index("--record") + 1] == str(output_path)
+
+
+@pytest.mark.parametrize(
+    ("version", "expected_flags"),
+    [
+        (
+            "scrcpy 1.25 <https://github.com/Genymobile/scrcpy>",
+            ("--no-display", "--bit-rate", "--lock-video-orientation"),
+        ),
+        (
+            "scrcpy 2.7 <https://github.com/Genymobile/scrcpy>",
+            ("--no-display", "--video-bit-rate", "--lock-video-orientation"),
+        ),
+        (
+            "scrcpy 3.0 <https://github.com/Genymobile/scrcpy>",
+            ("--no-window", "--video-bit-rate", "--capture-orientation=@"),
+        ),
+        (
+            "scrcpy 4.1 <https://github.com/Genymobile/scrcpy>",
+            ("--no-window", "--video-bit-rate", "--capture-orientation=@"),
+        ),
+    ],
+)
+def test_scrcpy_recording_flags_follow_installed_version(version, expected_flags):
+    assert scrcpy_recording_flags(version) == expected_flags
+
+
+def test_scrcpy_record_command_uses_125_compatible_flags(tmp_path):
+    output_path = tmp_path / "recording.mkv"
+
+    command = build_scrcpy_record_command(
+        "scrcpy", "device-1", output_path, scrcpy_version="scrcpy 1.25"
+    )
+
+    assert "--no-display" in command
+    assert "--no-window" not in command
+    assert command[command.index("--bit-rate") + 1] == "2M"
+    assert "--video-bit-rate" not in command
+    assert "--lock-video-orientation" in command
+    assert "--capture-orientation=@" not in command
 
 
 @pytest.mark.asyncio

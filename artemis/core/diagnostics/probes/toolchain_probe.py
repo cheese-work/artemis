@@ -14,6 +14,8 @@
 
 """Toolchain and Video Recording Auxiliary Probe."""
 
+import asyncio
+
 from artemis.core.diagnostics.probes.base import BaseProbe
 from artemis.core.diagnostics.schema import (
     ProbeAction,
@@ -23,6 +25,7 @@ from artemis.core.diagnostics.schema import (
 )
 from artemis.platform import OSType, platform
 from artemis.toolchain import toolchain
+from artemis.utils.video import detect_scrcpy_version, scrcpy_recording_flags
 
 
 class ToolchainProbe(BaseProbe):
@@ -43,6 +46,16 @@ class ToolchainProbe(BaseProbe):
     async def probe(self) -> ProbeResult:
         ffmpeg_path = toolchain.resolve("ffmpeg")
         scrcpy_path = toolchain.resolve("scrcpy")
+        scrcpy_version = None
+        scrcpy_error = None
+        scrcpy_supported = False
+        if scrcpy_path:
+            try:
+                scrcpy_version = await asyncio.to_thread(detect_scrcpy_version, scrcpy_path)
+                scrcpy_recording_flags(scrcpy_version)
+                scrcpy_supported = True
+            except ValueError as exc:
+                scrcpy_error = str(exc)
 
         tools_installed = []
         tools_missing = []
@@ -51,8 +64,10 @@ class ToolchainProbe(BaseProbe):
         else:
             tools_missing.append("FFmpeg")
 
-        if scrcpy_path:
-            tools_installed.append("scrcpy")
+        if scrcpy_supported:
+            tools_installed.append(f"scrcpy {scrcpy_version}")
+        elif scrcpy_path:
+            tools_missing.append("compatible scrcpy")
         else:
             tools_missing.append("scrcpy")
 
@@ -61,25 +76,28 @@ class ToolchainProbe(BaseProbe):
             "scrcpy": scrcpy_path is not None,
             "ffmpeg_path": ffmpeg_path,
             "scrcpy_path": scrcpy_path,
+            "scrcpy_version": scrcpy_version,
+            "scrcpy_supported": scrcpy_supported,
+            "scrcpy_error": scrcpy_error,
             "tools_installed": tools_installed,
             "tools_missing": tools_missing,
         }
 
-        if ffmpeg_path and scrcpy_path:
+        if ffmpeg_path and scrcpy_supported:
             return ProbeResult(
                 id=self.probe_id,
                 category=self.category,
                 title="Video Recording Toolchain",
                 status=ProbeStatus.PASS,
                 is_blocker=self.is_blocker,
-                summary="Ready (FFmpeg + scrcpy)",
-                description=f"FFmpeg ({ffmpeg_path}) and scrcpy ({scrcpy_path}) are available. Live stream and high-speed video replays are active.",
+                summary=f"Ready (FFmpeg + scrcpy {scrcpy_version})",
+                description=f"FFmpeg ({ffmpeg_path}) and scrcpy {scrcpy_version} ({scrcpy_path}) are available. Live stream and high-speed video replays are active.",
                 metadata=metadata,
                 actions=[
                     ProbeAction(
                         action_type="hint",
                         label="Toolchain Active",
-                        payload="FFmpeg and scrcpy are installed and active.",
+                        payload=f"FFmpeg and scrcpy {scrcpy_version} are installed and active.",
                     )
                 ],
             )
@@ -126,14 +144,24 @@ class ToolchainProbe(BaseProbe):
                 )
             )
 
+        summary = (
+            f"Unsupported scrcpy version ({scrcpy_version})"
+            if scrcpy_path and not scrcpy_supported and scrcpy_error
+            else f"Missing {missing_str}"
+        )
+        description = (
+            f"{scrcpy_error}. Recording requires a supported scrcpy version."
+            if scrcpy_path and not scrcpy_supported and scrcpy_error
+            else f"Video toolchain is required for screen streaming and test replay recording. Missing: {missing_str}."
+        )
         return ProbeResult(
             id=self.probe_id,
             category=self.category,
             title="Video Recording Toolchain",
             status=ProbeStatus.FAIL,
             is_blocker=self.is_blocker,
-            summary=f"Missing {missing_str}",
-            description=f"Video toolchain is required for screen streaming and test replay recording. Missing: {missing_str}.",
+            summary=summary,
+            description=description,
             metadata=metadata,
             actions=actions,
         )

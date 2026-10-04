@@ -116,6 +116,20 @@ is_node_compatible() {
     return 1
 }
 
+scrcpy_is_supported() {
+    local version_output major minor
+    version_output="$(scrcpy --version 2>&1)" || return 1
+    if [[ ! "${version_output}" =~ [Ss]crcpy[[:space:]]+v?([0-9]+)\.([0-9]+) ]]; then
+        return 1
+    fi
+    major="${BASH_REMATCH[1]}"
+    minor="${BASH_REMATCH[2]}"
+    if (( major > 1 || (major == 1 && minor >= 25) )); then
+        return 0
+    fi
+    return 1
+}
+
 # 2. Check or install uv (Fast Python package manager)
 if ! command -v uv >/dev/null 2>&1; then
     echo -e "${YELLOW}⚡ uv not found. Installing Astral uv...${NC}"
@@ -144,9 +158,14 @@ fi
 MISSING_CORE=()
 if ! command -v adb >/dev/null 2>&1; then MISSING_CORE+=("adb"); fi
 if ! command -v ffmpeg >/dev/null 2>&1; then MISSING_CORE+=("ffmpeg"); fi
-if ! command -v scrcpy >/dev/null 2>&1; then MISSING_CORE+=("scrcpy"); fi
+SCRCPY_NEEDS_FALLBACK=false
+if ! command -v scrcpy >/dev/null 2>&1; then
+    MISSING_CORE+=("scrcpy")
+elif [ "$(uname -s)" = "Linux" ] && ! scrcpy_is_supported; then
+    SCRCPY_NEEDS_FALLBACK=true
+fi
 
-if [ ${#MISSING_CORE[@]} -gt 0 ]; then
+if [ ${#MISSING_CORE[@]} -gt 0 ] || [ "${SCRCPY_NEEDS_FALLBACK}" = true ]; then
     OS_NAME="$(uname -s)"
     if [ "${OS_NAME}" = "Darwin" ]; then
         export HOMEBREW_NO_AUTO_UPDATE=1
@@ -174,7 +193,7 @@ if [ ${#MISSING_CORE[@]} -gt 0 ]; then
             fi
         fi
     elif [ "${OS_NAME}" = "Linux" ]; then
-        if request_sudo "install missing system components (${MISSING_CORE[*]})"; then
+        if [ ${#MISSING_CORE[@]} -gt 0 ] && request_sudo "install missing system components (${MISSING_CORE[*]})"; then
             SUDO_PREFIX=""
             if [ "$(id -u)" -ne 0 ]; then SUDO_PREFIX="sudo"; fi
             if command -v apt-get >/dev/null 2>&1; then
@@ -188,7 +207,7 @@ if [ ${#MISSING_CORE[@]} -gt 0 ]; then
         fi
 
         # Fallback: if scrcpy is still missing, install official precompiled portable scrcpy in user space
-        if ! command -v scrcpy >/dev/null 2>&1; then
+        if ! command -v scrcpy >/dev/null 2>&1 || ! scrcpy_is_supported; then
             ARCH="$(uname -m)"
             SCRCPY_ARCH=""
             case "${ARCH}" in
@@ -198,7 +217,7 @@ if [ ${#MISSING_CORE[@]} -gt 0 ]; then
             if [ -n "${SCRCPY_ARCH}" ]; then
                 SCRCPY_DIR="${HOME}/.local/share/scrcpy"
                 if [ ! -x "${SCRCPY_DIR}/scrcpy" ]; then
-                    echo -e "   ${CYAN}📦 Installing portable scrcpy in user space (~/.local)...${NC}"
+                    echo -e "   ${CYAN}📦 Installing compatible portable scrcpy 4.1 in user space (~/.local)...${NC}"
                     mkdir -p "${SCRCPY_DIR}" "${HOME}/.local/bin"
                     SCRCPY_URL="https://github.com/Genymobile/scrcpy/releases/download/v4.1/scrcpy-linux-${SCRCPY_ARCH}-v4.1.tar.gz"
                     if curl -fsSL --connect-timeout 5 --max-time 30 "${SCRCPY_URL}" | tar -xz -C "${SCRCPY_DIR}" --strip-components=1 2>/dev/null; then
