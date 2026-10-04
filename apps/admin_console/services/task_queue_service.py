@@ -779,26 +779,25 @@ class TaskQueueService:
                 {"session_id": sess_id, "error": recording_error},
             )
 
-    # Outcome events are delivered at-least-once from the durable outbox. A
-    # consumer (UI broadcast, external notification) is marked delivered in the
-    # outbox only after its effect succeeded, and the row is acknowledged only
-    # once every consumer is done, so a failure or crash leaves the event
-    # pending for the next drain. Effects are idempotent by ``event_id``: the
-    # durable marks skip consumers that already succeeded (across restarts),
-    # in-process memory covers a mark that failed to write, and every effect
-    # carries the stable ``event_id`` for downstream dedupe.
+    # Outcome events are delivered at-least-once from the durable outbox, and
+    # every effect is idempotent by ``event_id`` where it lands: the broadcast
+    # step first records the event (``record_event``, insert-if-absent) and fans
+    # out live only for a new record; the notifiers write-if-absent by event id
+    # (FileNotifier) or pass it as an idempotency key (webhook, script). A
+    # consumer is marked delivered after its effect, the row is acknowledged
+    # once every consumer is done, and a replay after a crash is a no-op. A
+    # failing consumer is retried with a persisted attempt count and, after the
+    # cap, abandoned durably so the row still acknowledges.
     _MAX_DELIVERY_ATTEMPTS = 5
     _delivery_lock = threading.Lock()
     _delivered_to: dict[str, set[tuple[int, str]]] = {}  # event_id -> (subscriber, event type)
-    _effect_done: set[tuple[str, str]] = set()  # (event_id, consumer) succeeded this process
-    _attempts: dict[tuple[str, str], int] = {}
+    _fanout_pending: set[str] = set()  # event ids whose live fanout still needs a retry
 
     @classmethod
     def _forget_delivery_memory(cls) -> None:
         """Drop in-process delivery memory (what a restart does)."""
         cls._delivered_to.clear()
-        cls._effect_done.clear()
-        cls._attempts.clear()
+        cls._fanout_pending.clear()
 
     @classmethod
     def _deliver_outcome(
@@ -831,10 +830,7 @@ class TaskQueueService:
                 return
             for event_id in delivered:
                 cls._delivered_to.pop(event_id, None)
-                cls._effect_done.discard((event_id, "broadcast"))
-                cls._effect_done.discard((event_id, "notify"))
-                cls._attempts.pop((event_id, "broadcast"), None)
-                cls._attempts.pop((event_id, "notify"), None)
+                cls._fanout_pending.discard(event_id)
 
     @classmethod
     def _deliver_event(
@@ -843,36 +839,37 @@ class TaskQueueService:
         """Run each consumer not yet delivered; False leaves the event pending."""
         event_id = event["dedupe_id"]
         steps = (
-            ("broadcast", "broadcast_at", lambda: cls._broadcast_outcome(event)),
+            ("broadcast", "broadcast_at", lambda: cls._broadcast_outcome(lifecycle, event)),
             (
                 "notify",
                 "notified_at",
                 lambda: cls._notify_session_end(
-                    task_item, event["session_id"], goal, event["status"], event_id
+                    lifecycle, task_item, event["session_id"], goal, event["status"], event_id
                 ),
             ),
         )
         for consumer, column, effect in steps:
-            key = (event_id, consumer)
-            if event.get(column) is None:
-                if key not in cls._effect_done:
-                    cls._attempts[key] = cls._attempts.get(key, 0) + 1
-                    if cls._attempts[key] > cls._MAX_DELIVERY_ATTEMPTS:
-                        logger.error("Giving up on %s of %s after repeated failures", *key[::-1])
-                        return False
-                    try:
-                        ok = effect()
-                    except (OSError, RuntimeError, ValueError, KeyError, TypeError):
-                        logger.warning("Could not %s %s", consumer, event_id, exc_info=True)
-                        ok = False
-                    if not ok:
-                        return False
-                    cls._effect_done.add(key)
-                try:
+            if event.get(column) is not None:
+                continue  # delivered earlier, possibly before a restart
+            try:
+                ok = effect()
+            except (OSError, RuntimeError, ValueError, KeyError, TypeError, sqlite3.Error):
+                logger.warning("Could not %s %s", consumer, event_id, exc_info=True)
+                ok = False
+            try:
+                if ok:
                     lifecycle.mark_delivered(event_id, consumer)
-                except sqlite3.Error:
-                    logger.warning("Could not record %s of %s", consumer, event_id, exc_info=True)
+                    continue
+                failures = lifecycle.note_failed_attempt(event_id, consumer)
+                if failures < cls._MAX_DELIVERY_ATTEMPTS:
                     return False
+                logger.error(
+                    "Abandoning %s of %s after %d failed attempts", consumer, event_id, failures
+                )
+                lifecycle.mark_delivered(event_id, consumer, abandoned=True)
+            except sqlite3.Error:
+                logger.warning("Could not record %s of %s", consumer, event_id, exc_info=True)
+                return False
         return True
 
     @classmethod
@@ -892,25 +889,30 @@ class TaskQueueService:
         )
 
     @classmethod
-    def _broadcast_outcome(cls, event: dict[str, Any]) -> bool:
-        """Broadcast the event; True when every subscriber took it (or was given up on)."""
+    def _broadcast_outcome(cls, lifecycle: Any, event: dict[str, Any]) -> bool:
+        """Record the event durably, then fan it out live; True once every subscriber took it.
+
+        Recording is insert-if-absent by event id, so only the first delivery
+        fans out; a replay after a crash finds the record and does nothing.
+        Clients that missed the live fanout replay from ``/api/sessions/{id}/events``.
+        """
         event_id = event["dedupe_id"]
         sess_id, status, reason = event["session_id"], event["status"], event["interrupt_reason"]
-        done = cls._delivered_to.setdefault(event_id, set())
-        ok = cls._broadcast_event(
-            "session_ended",
-            {
-                "event_id": event_id,
-                "session_id": sess_id,
-                "status": status,
-                "was_stopped_manually": status == "cancelled",
-                **({"interrupt_reason": reason} if reason else {}),
-            },
-            delivered=done,
-        )
+        messages: list[tuple[str, dict[str, Any]]] = [
+            (
+                "session_ended",
+                {
+                    "event_id": event_id,
+                    "session_id": sess_id,
+                    "status": status,
+                    "was_stopped_manually": status == "cancelled",
+                    **({"interrupt_reason": reason} if reason else {}),
+                },
+            )
+        ]
         if status == "interrupted":
-            ok = (
-                cls._broadcast_event(
+            messages.append(
+                (
                     "run_interrupted",
                     {
                         "event_id": event_id,
@@ -918,29 +920,45 @@ class TaskQueueService:
                         "interrupt_reason": reason,
                         "interrupted_at": event["created_at"],
                     },
-                    delivered=done,
                 )
-                and ok
             )
-        if not ok and cls._attempts.get((event_id, "broadcast"), 0) >= cls._MAX_DELIVERY_ATTEMPTS:
-            logger.error("Abandoning failing subscribers for %s", event_id)
-            return True  # healthy subscribers got it; a permanently broken one must not block
+        fanout = event_id in cls._fanout_pending
+        for event_type, data in messages:
+            if lifecycle.record_event(event_id, event_type, sess_id, data):
+                fanout = True
+        if not fanout:
+            return True
+        done = cls._delivered_to.setdefault(event_id, set())
+        ok = all([cls._broadcast_event(t, d, delivered=done) for t, d in messages])
+        if ok:
+            cls._fanout_pending.discard(event_id)
+        else:
+            cls._fanout_pending.add(event_id)
         return ok
 
     @classmethod
     def _notify_session_end(
         cls,
+        lifecycle: Any,
         task_item: dict[str, Any],
         sess_id: Any,
         goal: str | None,
         status: str,
         event_id: str | None = None,
     ) -> bool:
-        """Dispatch the external notification; False when the notifier did not take it."""
-        conversation_id = task_item.get("conversation_id") if task_item else None
-        if not (conversation_id or task_item.get("ingress") == "mcp"):
+        """Dispatch the external notification; False when the notifier did not take it.
+
+        Who to notify comes from the in-memory queue item, else from the context
+        persisted with the session, so a restarted server still notifies.
+        """
+        context = task_item if task_item and task_item.get("conversation_id") else None
+        if context is None and not (task_item and task_item.get("ingress") == "mcp"):
+            context = lifecycle.get_notify_context(str(sess_id)) or task_item or {}
+        context = context or task_item or {}
+        conversation_id = context.get("conversation_id")
+        if not (conversation_id or context.get("ingress") == "mcp"):
             return True  # nobody to notify
-        goal = goal or task_item.get("goal") or ""
+        goal = goal or context.get("goal") or ""
         try:
             from mcp_server.notifiers import notify
 
@@ -1311,12 +1329,22 @@ class TaskQueueService:
                         task_item.get("conversation_id"),
                         task_item.get("device_serial"),
                     )
+                notify_context = (
+                    {
+                        "conversation_id": task_item.get("conversation_id"),
+                        "ingress": task_item.get("ingress"),
+                        "goal": goal,
+                    }
+                    if task_item.get("conversation_id") or task_item.get("ingress") == "mcp"
+                    else None
+                )
                 if not session_repo.create_queued_session(
                     session_id,
                     goal,
                     task_item["profile"],
                     task_item.get("device_serial"),
                     task_item.get("start_time"),
+                    notify_context,
                 ):
                     raise RuntimeError(f"Could not persist queued session {session_id}")
             except (OSError, RuntimeError) as exc:

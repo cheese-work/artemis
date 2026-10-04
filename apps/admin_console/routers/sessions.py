@@ -14,6 +14,7 @@
 
 import asyncio
 import json
+import sqlite3
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException
 
@@ -133,6 +134,19 @@ async def get_session_details(session_id: str):
     if not row:
         raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
     return dict(row)
+
+
+@router.get("/api/sessions/{session_id}/events")
+async def get_session_events(session_id: str):
+    """Lifecycle events recorded for a session (``session_ended``, ``run_interrupted``).
+
+    The durable record behind the live stream: a client that was offline when an
+    event was broadcast replays it from here, keyed by ``event_id``.
+    """
+    try:
+        return await asyncio.to_thread(session_repo.lifecycle.events, session_id)
+    except sqlite3.Error as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
 @router.get("/api/sessions/{session_id}/usage")

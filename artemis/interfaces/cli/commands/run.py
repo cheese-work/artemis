@@ -29,7 +29,6 @@ from artemis.config.attempt_lifecycle_hooks import (
     record_attempt_manifest,
     reconcile_and_store_verdict,
 )
-from artemis.runtime import trace_store
 from artemis.runtime.lifecycle import finish_trace
 from artemis.utils.startup_progress import publish_startup_progress
 from artemis import Agent, Builders

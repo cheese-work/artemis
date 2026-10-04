@@ -86,6 +86,79 @@ def test_file_notifier():
         shutil.rmtree(temp_dir, ignore_errors=True)
 
 
+def test_file_notifier_is_idempotent_by_event_id(tmp_path, monkeypatch):
+    monkeypatch.setattr(trace_store, "TRACES_DIR", str(tmp_path))
+    notifier = FileNotifier()
+
+    def send(event_id):
+        return notifier.notify(
+            conversation_id="conv-1",
+            message="Task finished",
+            event_type="interrupted",
+            payload={"trace_id": "t-1", "event_id": event_id},
+        )
+
+    assert send("t-1:outcome") is True
+    assert send("t-1:outcome") is True  # a replay is a successful no-op
+    assert send("t-1:other") is True
+
+    lines = (tmp_path / "t-1" / "notifications.jsonl").read_text().splitlines()
+    assert [json.loads(line)["payload"]["event_id"] for line in lines] == [
+        "t-1:outcome",
+        "t-1:other",
+    ]
+
+
+def test_file_notifier_without_event_id_still_appends_every_call(tmp_path, monkeypatch):
+    monkeypatch.setattr(trace_store, "TRACES_DIR", str(tmp_path))
+    notifier = FileNotifier()
+    for _ in range(2):
+        assert notifier.notify("c", "m", payload={"trace_id": "t-2"}) is True
+
+    assert len((tmp_path / "t-2" / "notifications.jsonl").read_text().splitlines()) == 2
+
+
+def test_file_notifier_concurrent_replays_write_once(tmp_path, monkeypatch):
+    import threading
+
+    monkeypatch.setattr(trace_store, "TRACES_DIR", str(tmp_path))
+    notifier = FileNotifier()
+    barrier = threading.Barrier(6)
+
+    def send():
+        barrier.wait()
+        notifier.notify("c", "m", payload={"trace_id": "t-3", "event_id": "t-3:outcome"})
+
+    threads = [threading.Thread(target=send) for _ in range(6)]
+    [t.start() for t in threads]
+    [t.join() for t in threads]
+
+    assert len((tmp_path / "t-3" / "notifications.jsonl").read_text().splitlines()) == 1
+
+
+def test_webhook_notifier_sends_the_event_id_as_an_idempotency_key(monkeypatch):
+    monkeypatch.setenv("ARTEMIS_WEBHOOK_URL", "https://hooks.example.test/x")
+    sent = {}
+
+    class _Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    def fake_urlopen(request, timeout=0):
+        sent["headers"] = {k.lower(): v for k, v in request.header_items()}
+        return _Response()
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    assert WebhookNotifier().notify("c", "m", payload={"event_id": "s:outcome"}) is True
+    assert sent["headers"]["idempotency-key"] == "s:outcome"
+
+
 def test_webhook_notifier_not_configured(monkeypatch):
     for var in WebhookNotifier.ENV_VARS:
         monkeypatch.delenv(var, raising=False)

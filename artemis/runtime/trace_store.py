@@ -86,6 +86,11 @@ def _replace_with_retry(src: str, dst: str) -> None:
     raise last_error  # type: ignore[misc]
 
 
+def exclusive_file_lock(path: str):
+    """Cross-process mutex for read-modify-write of ``path`` (see ``_status_lock``)."""
+    return _status_lock(path)
+
+
 def _atomic_write_json(path: str, data: dict[str, Any]) -> None:
     """Write JSON atomically: temp file in the same directory + fsync + replace."""
     os.makedirs(os.path.dirname(path), exist_ok=True)

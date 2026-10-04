@@ -466,15 +466,21 @@ class SessionRepository:
         profile: str,
         device_serial: str | None,
         start_time: float | None = None,
+        notify_context: dict[str, Any] | None = None,
     ) -> bool:
-        """Persist a queue item before its worker starts a session."""
+        """Persist a queue item before its worker starts a session.
+
+        ``notify_context`` (conversation id, ingress, goal) is stored with the
+        session so the outcome notification survives a server restart.
+        """
         try:
             with db_session(self.db_path) as conn:
                 cursor = conn.cursor()
                 cursor.execute(
                     "INSERT INTO sessions "
-                    "(session_id, initial_goal, start_time, end_time, status, device_info, pid) "
-                    "VALUES (?, ?, ?, NULL, 'queued', ?, NULL)",
+                    "(session_id, initial_goal, start_time, end_time, status, device_info, pid, "
+                    "notify_context) "
+                    "VALUES (?, ?, ?, NULL, 'queued', ?, NULL, ?)",
                     (
                         str(session_id),
                         goal,
@@ -485,6 +491,7 @@ class SessionRepository:
                                 "device_id": device_serial,
                             }
                         ),
+                        json.dumps(notify_context) if notify_context else None,
                     ),
                 )
                 conn.commit()

@@ -282,6 +282,7 @@ _PUBLIC_GET_PATHS = {
     "/api/sessions",
     "/api/sessions/{session_id}",
     "/api/sessions/{session_id}/usage",
+    "/api/sessions/{session_id}/events",
     "/api/sessions/{session_id}/tree",
     "/api/sessions/{session_id}/background_tasks",
     "/api/sessions/{session_id}/startup_progress",

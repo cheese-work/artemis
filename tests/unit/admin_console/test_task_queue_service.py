@@ -995,15 +995,19 @@ async def test_queue_worker_notifies_conversation():
         ),
     ):
         mock_repo.get_running_session_id.return_value = None
-        mock_repo.lifecycle.pending_events.side_effect = lambda sid=None: [
-            {
-                "dedupe_id": f"{sid}:outcome",
-                "session_id": sid,
-                "status": "completed",
-                "interrupt_reason": None,
-                "created_at": 1.0,
-            }
-        ]
+        mock_repo.lifecycle.pending_events.side_effect = lambda sid=None: (
+            [
+                {
+                    "dedupe_id": f"{sid}:outcome",
+                    "session_id": sid,
+                    "status": "completed",
+                    "interrupt_reason": None,
+                    "created_at": 1.0,
+                }
+            ]
+            if sid
+            else []
+        )
 
         await task_queue_service.enqueue_tasks(
             ["Notify goal"],

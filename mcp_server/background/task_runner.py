@@ -387,16 +387,19 @@ async def run_task(
 
     except asyncio.CancelledError:
         print("Task was cancelled (asyncio.CancelledError)", file=sys.stderr)
-        finish_trace(trace_id, "cancelled", error="Task was cancelled", device_serial=target_serial)
-        device_info_line = f"Device Serial: `{target_serial}`\n" if target_serial else ""
-        cancel_msg = f"Artemis background task was cancelled.\n\nTrace ID: {trace_id}\n{device_info_line}Goal: {task_desc}\n"
-        notify(
-            conversation_id=conversation_id,
-            message=cancel_msg,
-            title="Artemis Task Cancelled",
-            event_type="cancelled",
-            payload={"trace_id": trace_id, "device_serial": target_serial, "goal": task_desc},
+        outcome = finish_trace(
+            trace_id, "cancelled", error="Task was cancelled", device_serial=target_serial
         )
+        if outcome.status in (None, "cancelled"):
+            device_info_line = f"Device Serial: `{target_serial}`\n" if target_serial else ""
+            cancel_msg = f"Artemis background task was cancelled.\n\nTrace ID: {trace_id}\n{device_info_line}Goal: {task_desc}\n"
+            notify(
+                conversation_id=conversation_id,
+                message=cancel_msg,
+                title="Artemis Task Cancelled",
+                event_type="cancelled",
+                payload={"trace_id": trace_id, "device_serial": target_serial, "goal": task_desc},
+            )
         raise
 
     except Exception as e:
@@ -414,7 +417,14 @@ async def run_task(
         frame_summary = f" (at {tb.tb_frame.f_code.co_name}:{tb.tb_lineno})" if tb else ""
         full_error_desc = f"{error_type}: {raw_error_msg}{frame_summary}"
 
-        finish_trace(trace_id, "failed", error=full_error_desc, device_serial=target_serial)
+        outcome = finish_trace(
+            trace_id, "failed", error=full_error_desc, device_serial=target_serial
+        )
+        if outcome.status not in (None, "failed"):
+            # Another outcome (e.g. the completion this error followed) is already
+            # published; a failure notice would contradict it.
+            print(f"Task outcome already published as {outcome.status}", file=sys.stderr)
+            return
 
         device_info_line = f"Device Serial: `{target_serial}`\n" if target_serial else ""
         failure_msg = (

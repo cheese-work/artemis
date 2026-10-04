@@ -33,6 +33,7 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import StrEnum
+import json
 import logging
 from pathlib import Path
 import sqlite3
@@ -62,6 +63,7 @@ _SCHEMA_COLUMNS = (
     ("interrupt_reason", "TEXT"),
     ("exit_cause", "TEXT"),
     ("pending_loss_reason", "TEXT"),
+    ("notify_context", "TEXT"),  # JSON: who to notify (conversation id, ingress, goal)
 )
 _OUTBOX_DDL = """
 CREATE TABLE IF NOT EXISTS lifecycle_outbox (
@@ -72,9 +74,30 @@ CREATE TABLE IF NOT EXISTS lifecycle_outbox (
     created_at REAL NOT NULL,
     delivered_at REAL,
     broadcast_at REAL,
-    notified_at REAL
+    notified_at REAL,
+    broadcast_attempts INTEGER NOT NULL DEFAULT 0,
+    notify_attempts INTEGER NOT NULL DEFAULT 0,
+    abandoned TEXT
 )
 """
+# The durable record of announced events: the idempotent landing point of delivery.
+_EVENTS_DDL = """
+CREATE TABLE IF NOT EXISTS lifecycle_events (
+    event_id TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    payload TEXT NOT NULL,
+    recorded_at REAL NOT NULL,
+    PRIMARY KEY (event_id, event_type)
+)
+"""
+_OUTBOX_COLUMNS = (
+    ("broadcast_at", "REAL"),
+    ("notified_at", "REAL"),
+    ("broadcast_attempts", "INTEGER NOT NULL DEFAULT 0"),
+    ("notify_attempts", "INTEGER NOT NULL DEFAULT 0"),
+    ("abandoned", "TEXT"),
+)
 # Durable per-consumer "delivered" marks on an outbox row (column per consumer).
 _DELIVERY_COLUMNS = {"broadcast": "broadcast_at", "notify": "notified_at"}
 
@@ -127,12 +150,13 @@ def ensure_lifecycle_schema(conn: sqlite3.Connection) -> bool:
                 pass  # another process added it first
     conn.execute(_OUTBOX_DDL)
     outbox_columns = {row[1] for row in conn.execute("PRAGMA table_info(lifecycle_outbox)")}
-    for column in _DELIVERY_COLUMNS.values():
+    for column, decl in _OUTBOX_COLUMNS:
         if column not in outbox_columns:
             try:
-                conn.execute(f"ALTER TABLE lifecycle_outbox ADD COLUMN {column} REAL")
+                conn.execute(f"ALTER TABLE lifecycle_outbox ADD COLUMN {column} {decl}")
             except sqlite3.OperationalError:
                 pass  # another process added it first
+    conn.execute(_EVENTS_DDL)
     conn.commit()
     return True
 
@@ -445,26 +469,27 @@ class LifecycleAuthority:
         with self._connect() as conn:
             rows = conn.execute(
                 "SELECT dedupe_id, session_id, status, interrupt_reason, created_at, "
-                "broadcast_at, notified_at "
+                "broadcast_at, notified_at, broadcast_attempts, notify_attempts, abandoned "
                 f"FROM lifecycle_outbox WHERE delivered_at IS NULL {where} ORDER BY created_at",
                 args,
             ).fetchall()
         return [dict(r) for r in rows]
 
-    def mark_delivered(self, dedupe_id: str, consumer: str) -> bool:
-        """Durably record that one consumer's delivery of an event succeeded.
+    def mark_delivered(self, dedupe_id: str, consumer: str, *, abandoned: bool = False) -> bool:
+        """Durably record that one consumer is done with an event.
 
-        Written after the side effect. A drain after a crash skips a marked
-        consumer, so effects repeat only when the crash falls between the
-        effect and this write (consumers also get the stable ``dedupe_id``).
-        A crash before the effect leaves the mark unset, so the event is
-        delivered on restart. Idempotent; True when this call set the mark.
+        Written after the side effect, which is itself idempotent by event id
+        (``record_event``, the notifiers), so a crash between the effect and
+        this write replays harmlessly. A crash before the effect leaves the
+        mark unset and the event is delivered on restart. ``abandoned`` marks
+        a consumer given up on after repeated failures (it is listed in the
+        row's ``abandoned`` column). Idempotent; True when this call set the mark.
         """
         if consumer not in _DELIVERY_COLUMNS:
             raise ValueError(f"unknown delivery consumer {consumer!r}")
         column = _DELIVERY_COLUMNS[consumer]
         with self._txn() as conn:
-            return (
+            changed = (
                 conn.execute(
                     f"UPDATE lifecycle_outbox SET {column} = ? "
                     f"WHERE dedupe_id = ? AND {column} IS NULL",
@@ -472,6 +497,74 @@ class LifecycleAuthority:
                 ).rowcount
                 > 0
             )
+            if changed and abandoned:
+                conn.execute(
+                    "UPDATE lifecycle_outbox SET abandoned = "
+                    "CASE WHEN abandoned IS NULL THEN ? ELSE abandoned || ',' || ? END "
+                    "WHERE dedupe_id = ?",
+                    (consumer, consumer, dedupe_id),
+                )
+            return changed
+
+    def note_failed_attempt(self, dedupe_id: str, consumer: str) -> int:
+        """Count one failed delivery attempt durably; returns the new total."""
+        if consumer not in _DELIVERY_COLUMNS:
+            raise ValueError(f"unknown delivery consumer {consumer!r}")
+        column = f"{consumer}_attempts"
+        with self._txn() as conn:
+            conn.execute(
+                f"UPDATE lifecycle_outbox SET {column} = {column} + 1 WHERE dedupe_id = ?",
+                (dedupe_id,),
+            )
+            row = conn.execute(
+                f"SELECT {column} FROM lifecycle_outbox WHERE dedupe_id = ?", (dedupe_id,)
+            ).fetchone()
+            return int(row[0]) if row else 0
+
+    def record_event(
+        self, event_id: str, event_type: str, session_id: str, payload: dict[str, Any]
+    ) -> bool:
+        """Record an announced event, insert-if-absent by (event_id, type).
+
+        This is where the idempotency key is enforced, atomically: True only
+        for the one call that created the record, so replays (restart, retry)
+        are no-ops and callers fan out live only for a new record.
+        """
+        with self._txn() as conn:
+            return (
+                conn.execute(
+                    "INSERT OR IGNORE INTO lifecycle_events "
+                    "(event_id, event_type, session_id, payload, recorded_at) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (event_id, event_type, str(session_id), json.dumps(payload), self._clock()),
+                ).rowcount
+                > 0
+            )
+
+    def events(self, session_id: str) -> list[dict[str, Any]]:
+        """The recorded events of a session, oldest first (what a reconnecting client replays)."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT event_id, event_type, session_id, payload, recorded_at "
+                "FROM lifecycle_events WHERE session_id = ? ORDER BY recorded_at, event_type",
+                (str(session_id),),
+            ).fetchall()
+        return [{**dict(r), "payload": json.loads(r["payload"])} for r in rows]
+
+    def set_notify_context(self, session_id: str, context: dict[str, Any]) -> None:
+        """Persist who to notify for this session, so a restarted server still can."""
+        with self._txn() as conn:
+            conn.execute(
+                "UPDATE sessions SET notify_context = ? WHERE session_id = ?",
+                (json.dumps(context), str(session_id)),
+            )
+
+    def get_notify_context(self, session_id: str) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT notify_context FROM sessions WHERE session_id = ?", (str(session_id),)
+            ).fetchone()
+        return json.loads(row[0]) if row and row[0] else None
 
     def acknowledge(self, dedupe_ids: list[str]) -> int:
         """Mark delivered events done; idempotent. Returns how many were newly acknowledged."""

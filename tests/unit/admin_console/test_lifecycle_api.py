@@ -6,6 +6,7 @@ reach API clients.
 """
 
 import asyncio
+import json
 import sqlite3
 import uuid
 from unittest.mock import MagicMock
@@ -49,9 +50,11 @@ def _client() -> AsyncClient:
     return AsyncClient(transport=ASGITransport(app=app), base_url="http://localhost")
 
 
-def _add_running_session(db_path, pid=DEAD_PID, with_status_file=False) -> str:
+def _add_running_session(db_path, pid=DEAD_PID, with_status_file=False, notify_context=None) -> str:
     session_id = str(uuid.uuid4())
-    assert session_repo.create_queued_session(session_id, "goal", "flash", "emulator-5554")
+    assert session_repo.create_queued_session(
+        session_id, "goal", "flash", "emulator-5554", None, notify_context
+    )
     with sqlite3.connect(db_path) as conn:
         conn.execute(
             "UPDATE sessions SET status = 'running', pid = ? WHERE session_id = ?",
@@ -405,7 +408,7 @@ from apps.admin_console.database.repositories.session_repository import SessionR
 from apps.admin_console.services import task_queue_service as queue_module
 from apps.admin_console.services.task_queue_service import TaskQueueService
 queue_module.session_repo = SessionRepository(sys.argv[1])
-def die_before_the_send(cls, event):
+def die_before_the_send(cls, *args):
     os._exit(79)
 TaskQueueService._broadcast_outcome = classmethod(die_before_the_send)
 TaskQueueService._deliver_outcome(sys.argv[2], {}, "goal")
@@ -530,6 +533,220 @@ async def test_a_permanently_failing_subscriber_is_given_up_on_after_bounded_att
     assert 1 < len(attempts) <= TaskQueueService._MAX_DELIVERY_ATTEMPTS
     assert len(_interrupted(events, session_id)) == 1  # healthy subscriber: exactly once
     assert _outbox_pending(db_path) == 0
+
+
+_CRASH_CHILD = """
+import json, os, sys
+from apps.admin_console.core.state import state
+from apps.admin_console.database.repositories.session_repository import SessionRepository
+from apps.admin_console.services import task_queue_service as queue_module
+from apps.admin_console.services.task_queue_service import TaskQueueService
+from artemis.runtime import trace_store
+from artemis.runtime.lifecycle import LifecycleAuthority
+import mcp_server.notifiers as notifiers
+from mcp_server.notifiers import CompositeNotifier, FileNotifier
+db, session_id, sink, traces, mode = sys.argv[1:6]
+queue_module.session_repo = SessionRepository(db)
+trace_store.TRACES_DIR = traces
+notifiers._default_notifier = CompositeNotifier([FileNotifier()])
+def capture(event_type, payload):
+    with open(sink, "a", encoding="utf-8") as out:
+        out.write(json.dumps({"t": event_type, "id": payload.get("event_id")}) + "\\n")
+        out.flush()
+        os.fsync(out.fileno())
+state.ipc_subscribers[:] = [capture]
+original_mark = LifecycleAuthority.mark_delivered
+def die_before_mark(self, event_id, consumer, **kw):
+    if mode == "after_send_before_mark" and consumer == "broadcast":
+        os._exit(79)
+    if mode == "after_notify_before_mark" and consumer == "notify":
+        os._exit(79)
+    return original_mark(self, event_id, consumer, **kw)
+LifecycleAuthority.mark_delivered = die_before_mark
+item = {"session_id": session_id, "conversation_id": "conv-1", "ingress": "mcp"}
+if mode == "restart":
+    TaskQueueService._drain_outcome_events()
+else:
+    TaskQueueService._deliver_outcome(session_id, item, "goal")
+"""
+
+
+def _crash_run(tmp_path, db_path, session_id, mode):
+    import subprocess
+    import sys
+
+    return subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            _CRASH_CHILD,
+            str(db_path),
+            session_id,
+            str(tmp_path / "sink.jsonl"),
+            str(tmp_path / "traces"),
+            mode,
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+
+def _sink(tmp_path):
+    path = tmp_path / "sink.jsonl"
+    return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
+
+
+def _notifications(tmp_path, session_id):
+    path = tmp_path / "traces" / session_id / "notifications.jsonl"
+    return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
+
+
+@pytest.mark.asyncio
+async def test_real_crash_after_send_before_mark_leaves_one_effect_per_consumer(env, tmp_path):
+    db_path, _events = env
+    session_id = _add_running_session(
+        db_path, notify_context={"conversation_id": "conv-1", "ingress": "mcp", "goal": "goal"}
+    )
+    _interrupt(db_path, session_id)
+
+    first = _crash_run(tmp_path, db_path, session_id, "after_send_before_mark")
+    assert first.returncode == 79, first.stderr
+    assert [e["t"] for e in _sink(tmp_path)] == ["session_ended", "run_interrupted"]
+    second = _crash_run(tmp_path, db_path, session_id, "restart")
+    assert second.returncode == 0, second.stderr
+
+    sink = _sink(tmp_path)
+    assert sorted(e["t"] for e in sink) == ["run_interrupted", "session_ended"]  # no replay
+    assert {e["id"] for e in sink} == {f"{session_id}:outcome"}
+    recorded = LifecycleAuthority(db_path).events(session_id)
+    assert sorted(e["event_type"] for e in recorded) == ["run_interrupted", "session_ended"]
+    assert len(_notifications(tmp_path, session_id)) == 1  # the restart notified once
+    assert _outbox_pending(db_path) == 0
+
+
+@pytest.mark.asyncio
+async def test_real_crash_after_notify_before_mark_writes_one_notification(env, tmp_path):
+    db_path, _events = env
+    session_id = _add_running_session(
+        db_path, notify_context={"conversation_id": "conv-1", "ingress": "mcp", "goal": "goal"}
+    )
+    _interrupt(db_path, session_id)
+
+    first = _crash_run(tmp_path, db_path, session_id, "after_notify_before_mark")
+    assert first.returncode == 79, first.stderr
+    assert len(_notifications(tmp_path, session_id)) == 1
+    second = _crash_run(tmp_path, db_path, session_id, "restart")
+    assert second.returncode == 0, second.stderr
+
+    records = _notifications(tmp_path, session_id)
+    assert len(records) == 1
+    assert records[0]["payload"]["event_id"] == f"{session_id}:outcome"
+    assert _outbox_pending(db_path) == 0
+
+
+@pytest.mark.asyncio
+async def test_restart_drain_notifies_from_the_persisted_context_with_no_queue_item(
+    env, tmp_path, monkeypatch
+):
+    from unittest.mock import MagicMock
+
+    db_path, _events = env
+    session_id = _add_running_session(
+        db_path, notify_context={"conversation_id": "conv-9", "ingress": "mcp", "goal": "Open X"}
+    )
+    _interrupt(db_path, session_id)
+    notify = MagicMock(return_value=True)
+    monkeypatch.setattr("mcp_server.notifiers.notify", notify)
+    state.queue_items.clear()  # a restarted server remembers no queue item
+
+    TaskQueueService._drain_outcome_events()
+
+    notify.assert_called_once()
+    assert notify.call_args.kwargs["conversation_id"] == "conv-9"
+    assert "Open X" in notify.call_args.kwargs["message"]
+    assert _outbox_pending(db_path) == 0
+
+
+@pytest.mark.asyncio
+async def test_enqueue_persists_the_notify_context(env):
+    from unittest.mock import AsyncMock, patch
+
+    db_path, _events = env
+    with (
+        patch.object(TaskQueueService, "ensure_worker_running"),
+        patch.object(
+            TaskQueueService, "_reject_unavailable_device", new=AsyncMock(return_value=None)
+        ),
+    ):
+        result = await TaskQueueService.enqueue_tasks(
+            ["Persist me"], device_serial="test-device", ingress="mcp", conversation_id="conv-3"
+        )
+    session_id = result["tasks"][0]["session_id"]
+
+    assert LifecycleAuthority(db_path).get_notify_context(session_id) == {
+        "conversation_id": "conv-3",
+        "ingress": "mcp",
+        "goal": "Persist me",
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("consumer", ["notify", "broadcast"])
+async def test_attempts_are_persisted_and_the_consumer_is_abandoned_durably(
+    env, monkeypatch, consumer
+):
+    from unittest.mock import MagicMock
+
+    db_path, events = env
+    session_id = _add_running_session(
+        db_path, notify_context={"conversation_id": "conv-1", "ingress": "mcp", "goal": "goal"}
+    )
+    _interrupt(db_path, session_id)
+    notify = MagicMock(return_value=consumer != "notify")
+    monkeypatch.setattr("mcp_server.notifiers.notify", notify)
+    attempts: list[str] = []
+
+    def broken(event_type, payload):
+        attempts.append(event_type)
+        raise RuntimeError("never works")
+
+    if consumer == "broadcast":
+        state.ipc_subscribers.append(broken)
+    try:
+        for _ in range(TaskQueueService._MAX_DELIVERY_ATTEMPTS + 3):
+            if consumer == "notify":
+                # every notify drain is a "restart": only the persisted count remains
+                TaskQueueService._forget_delivery_memory()
+            TaskQueueService._drain_outcome_events()
+    finally:
+        if broken in state.ipc_subscribers:
+            state.ipc_subscribers.remove(broken)
+
+    # the persisted cap stopped the retries and the row acknowledged
+    assert _outbox_pending(db_path) == 0
+    with sqlite3.connect(db_path) as conn:
+        abandoned = conn.execute("SELECT abandoned FROM lifecycle_outbox").fetchone()[0]
+    assert abandoned == consumer
+    if consumer == "notify":
+        assert notify.call_count == TaskQueueService._MAX_DELIVERY_ATTEMPTS
+    else:
+        assert len(attempts) <= 2 * TaskQueueService._MAX_DELIVERY_ATTEMPTS
+        assert len(_interrupted(events, session_id)) == 1
+
+
+@pytest.mark.asyncio
+async def test_recorded_events_are_served_to_reconnecting_clients(env):
+    db_path, _events = env
+    session_id = _add_running_session(db_path)
+    _interrupt(db_path, session_id)
+    TaskQueueService._drain_outcome_events()
+
+    async with _client() as client:
+        served = (await client.get(f"/api/sessions/{session_id}/events")).json()
+
+    assert sorted(e["event_type"] for e in served) == ["run_interrupted", "session_ended"]
+    assert {e["event_id"] for e in served} == {f"{session_id}:outcome"}
 
 
 @pytest.mark.asyncio

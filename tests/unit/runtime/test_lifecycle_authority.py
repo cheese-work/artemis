@@ -461,3 +461,57 @@ def test_an_outbox_created_before_the_delivery_columns_is_migrated(tmp_path):
     authority.finish(sid, "failed")
 
     assert authority.mark_delivered(f"{sid}:outcome", "broadcast") is True
+
+
+# -- durable event record, persisted attempts, notify context ------------------
+
+
+def test_record_event_is_insert_if_absent_keyed_by_event_id_and_type(db_path):
+    sid = _add_session(db_path)
+    authority = LifecycleAuthority(db_path)
+    authority.interrupt(sid, InterruptReason.BRIDGE_CLOSED)
+    event_id = f"{sid}:outcome"
+
+    assert authority.record_event(event_id, "run_interrupted", sid, {"a": 1}) is True
+    assert authority.record_event(event_id, "run_interrupted", sid, {"a": 2}) is False
+    assert LifecycleAuthority(db_path).record_event(event_id, "run_interrupted", sid, {}) is False
+    assert authority.record_event(event_id, "session_ended", sid, {"b": 1}) is True
+
+    events = authority.events(sid)
+    assert [(e["event_id"], e["event_type"]) for e in events] == [
+        (event_id, "run_interrupted"),
+        (event_id, "session_ended"),
+    ]
+    assert events[0]["payload"] == {"a": 1}  # the first write stands
+
+
+def test_failed_attempts_are_persisted_and_abandonment_is_durable(db_path):
+    sid = _add_session(db_path)
+    authority = LifecycleAuthority(db_path)
+    authority.finish(sid, "failed")
+    event_id = f"{sid}:outcome"
+
+    assert authority.note_failed_attempt(event_id, "notify") == 1
+    assert LifecycleAuthority(db_path).note_failed_attempt(event_id, "notify") == 2
+    assert authority.note_failed_attempt(event_id, "broadcast") == 1  # independent counters
+    event = authority.pending_events()[0]
+    assert (event["notify_attempts"], event["broadcast_attempts"]) == (2, 1)
+
+    assert authority.mark_delivered(event_id, "notify", abandoned=True) is True
+    event = LifecycleAuthority(db_path).pending_events()[0]
+    assert event["notified_at"] is not None
+    assert event["abandoned"] == "notify"
+
+
+def test_notify_context_is_persisted_with_the_session(db_path):
+    sid = _add_session(db_path)
+    authority = LifecycleAuthority(db_path)
+    assert authority.get_notify_context(sid) is None
+
+    authority.set_notify_context(sid, {"conversation_id": "c1", "ingress": "mcp", "goal": "g"})
+
+    assert LifecycleAuthority(db_path).get_notify_context(sid) == {
+        "conversation_id": "c1",
+        "ingress": "mcp",
+        "goal": "g",
+    }
