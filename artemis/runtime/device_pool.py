@@ -118,6 +118,12 @@ class DevicePool:
                 pool = cls._bound_pools[endpoint] = cls(endpoint=endpoint)
             return pool
 
+    def pool_for(self, endpoint: AdbEndpoint) -> DevicePool:
+        """This pool when it already serves ``endpoint``, else the shared pool bound to it."""
+        if self._endpoint() == endpoint:
+            return self
+        return self.for_endpoint(endpoint)
+
     def _endpoint(self) -> AdbEndpoint:
         return self._bound_endpoint or current_adb_endpoint()
 

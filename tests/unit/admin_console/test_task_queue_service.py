@@ -121,7 +121,7 @@ async def test_enqueued_task_keeps_its_adb_endpoint_snapshot():
             return_value=original,
         ),
         patch(
-            "artemis.runtime.device_pool.device_pool.select_device_async",
+            "artemis.runtime.device_pool.DevicePool.select_device_async",
             return_value="emulator-5554",
         ),
     ):

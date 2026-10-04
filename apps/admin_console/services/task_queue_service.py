@@ -53,6 +53,7 @@ from artemis.runtime import (
     request_cancel,
     trace_store,
 )
+from artemis.runtime.host_endpoints import host_endpoints
 
 logger = logging.getLogger(__name__)
 
@@ -231,13 +232,22 @@ class TaskQueueService:
         ).start()
 
     @staticmethod
-    def _task_target(task_item: dict[str, Any]) -> AdbTarget:
+    def _task_target(task_item: dict[str, Any], *, resolve_host: bool = False) -> AdbTarget:
+        """The task's adb target from its queued snapshot.
+
+        A host endpoint is snapshotted by host id; its tunnel port is only valid *now*, so
+        ``resolve_host=True`` (used when the worker launches) swaps in the host's live
+        endpoint and raises :class:`HostOffline` when it has none. The scheduler keeps
+        the snapshot: host-scoped lock keys do not depend on the port.
+        """
         endpoint_data = task_item.get("adb_endpoint")
         endpoint = (
             AdbEndpoint.from_mapping(endpoint_data)
             if isinstance(endpoint_data, dict)
             else current_adb_endpoint()
         )
+        if resolve_host and endpoint.is_host:
+            endpoint = host_endpoints.resolve(str(endpoint.host_id))
         serial = task_item.get("device_serial")
         return AdbTarget(endpoint=endpoint, serial=str(serial) if serial else None)
 
@@ -1045,7 +1055,7 @@ class TaskQueueService:
                 raise ValueError("Queued task must contain a non-empty string goal.")
             cls._begin_task_run(task_item, run_key, sess_id, goal, profile)
 
-            target = cls._task_target(task_item)
+            target = cls._task_target(task_item, resolve_host=True)
             from apps.admin_console.services.config_store import get_config_store
 
             config_snapshot = await get_config_store().snapshot_for_spawn()
@@ -1211,7 +1221,9 @@ class TaskQueueService:
         return None
 
     @classmethod
-    async def _reject_unavailable_device(cls, device_serial: str | None) -> dict[str, Any] | None:
+    async def _reject_unavailable_device(
+        cls, device_serial: str | None, endpoint: AdbEndpoint | None = None
+    ) -> dict[str, Any] | None:
         """Return the rejection response for an unattached explicit serial, if any."""
         # Strict device binding: reject an explicitly requested serial that is not
         # attached and authorized, instead of silently running on another device.
@@ -1221,7 +1233,8 @@ class TaskQueueService:
             try:
                 from artemis.runtime import device_pool
 
-                rejection = await device_pool.validate_explicit_serial_async(device_serial)
+                pool = device_pool.pool_for(endpoint) if endpoint else device_pool
+                rejection = await pool.validate_explicit_serial_async(device_serial)
             except Exception:
                 rejection = None
             if rejection:
@@ -1334,7 +1347,7 @@ class TaskQueueService:
         # Cheap early refusal; the authoritative check follows the last await.
         cls.require_admission_open()
 
-        rejection_response = await cls._reject_unavailable_device(device_serial)
+        rejection_response = await cls._reject_unavailable_device(device_serial, endpoint)
         if rejection_response is not None:
             return rejection_response
 
@@ -1344,7 +1357,7 @@ class TaskQueueService:
             from artemis.runtime import device_pool
 
             try:
-                device_serial = await device_pool.select_device_async()
+                device_serial = await device_pool.pool_for(endpoint).select_device_async()
             except Exception:
                 device_serial = None
         # Last await is behind us: from here to the queue append nothing yields,
