@@ -502,3 +502,18 @@ async def test_removed_response_after_hard_delete_names_the_run(env):
     response = await _get(f"/api/runs/{sid}")
     assert response.status_code == 410
     assert response.json()["session_id"] == sid
+
+
+# -- review round 2 (Sol): R7 -------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("value", [10**400, float("nan"), float("inf"), float("-inf"), 1e999])
+async def test_numeric_cursor_that_is_not_a_finite_float_is_a_400(env, value):
+    import base64
+
+    _seed(env)
+    cursor = base64.urlsafe_b64encode(json.dumps([value, "safe-id"]).encode()).decode()
+    response = await _get("/api/runs", cursor=cursor)
+    assert response.status_code == 400, response.text
+    assert response.json()["error"] == "invalid_cursor"

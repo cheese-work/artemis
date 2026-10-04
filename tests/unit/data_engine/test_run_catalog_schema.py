@@ -369,3 +369,69 @@ def test_catalog_cli_migrate_refuses_a_database_without_sessions(tmp_path):
         conn.execute("CREATE TABLE unrelated (x)")
     result = CliRunner().invoke(catalog_app, ["migrate", "--db", str(db)])
     assert result.exit_code != 0 and "Catalog ready" not in result.output
+
+
+# -- review round 2 (Sol): R6 -----------------------------------------------------
+
+
+def _substring_mode_database(tmp_path, rc) -> Path:
+    from unittest.mock import patch
+
+    from artemis.data_engine.storage import StorageManager
+
+    db = tmp_path / "data_engine.db"
+    with patch.object(rc, "fts5_available", return_value=False):
+        StorageManager(db, tmp_path)
+    return db
+
+
+def test_failed_promotion_leaves_nothing_behind_and_a_retry_indexes_old_runs(tmp_path, rc):
+    from unittest.mock import patch
+
+    db = _substring_mode_database(tmp_path, rc)
+    sid = _insert(db, "review wifi")
+
+    with patch.object(rc, "rebuild", side_effect=sqlite3.OperationalError("injected")):
+        with pytest.raises(sqlite3.OperationalError):
+            rc.migrate(db)
+    with sqlite3.connect(db) as conn:
+        assert rc.search_mode(conn) == "substring"  # nothing half-published
+
+    report = rc.migrate(db)
+
+    assert report.search_mode == "fts"
+    assert _search(rc, db, "wifi") == [sid]  # the pre-existing run is in the index
+
+
+def test_promotion_is_one_transaction_that_excludes_a_concurrent_delete(tmp_path, rc):
+    db = _substring_mode_database(tmp_path, rc)
+    sid = _insert(db, "review wifi")
+    seen: dict = {}
+
+    class Interleaving(sqlite3.Connection):
+        def execute(self, statement, parameters=()):
+            result = super().execute(statement, parameters)
+            if statement.startswith("DROP TRIGGER") and "writer" not in seen:
+                seen["in_transaction"] = self.in_transaction
+                try:  # a second connection tries to delete inside the drop/recreate gap
+                    with sqlite3.connect(db, timeout=0.2) as writer:
+                        writer.execute("DELETE FROM sessions WHERE session_id = ?", (sid,))
+                    seen["writer"] = "committed"
+                except sqlite3.OperationalError:
+                    seen["writer"] = "blocked"
+            return result
+
+    with sqlite3.connect(db, factory=Interleaving) as conn:
+        rc.ensure_schema(conn)
+
+    assert seen["in_transaction"] is True
+    assert seen["writer"] == "blocked"  # serialized behind the promotion
+    with sqlite3.connect(db) as conn:
+        # either way the invariant holds: a missing session always has a tombstone
+        conn.execute("DELETE FROM sessions WHERE session_id = ?", (sid,))
+        assert (
+            conn.execute("SELECT deleted_at FROM run_meta WHERE session_id = ?", (sid,)).fetchone()[
+                0
+            ]
+            is not None
+        )
