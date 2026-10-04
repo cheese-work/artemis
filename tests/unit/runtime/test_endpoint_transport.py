@@ -252,3 +252,52 @@ def test_local_default_transport_may_start_the_local_server(monkeypatch):
     EndpointTransport(AdbEndpoint.local(), adb_path="adb-sentinel").start_server()
 
     assert calls == [["adb-sentinel", "-H", "127.0.0.1", "-P", "5037", "start-server"]]
+
+
+# --------------------------------------------------------------------------- #
+# adbutils never starts a server for an endpoint that is not the local default
+# --------------------------------------------------------------------------- #
+
+
+@pytest.fixture
+def failing_adbutils_connect(monkeypatch):
+    """Every adbutils socket connect fails; record any ``adb start-server`` it then tries."""
+    import adbutils._adb as adbutils_adb
+    from adbutils.errors import AdbConnectionError
+
+    def refuse(self):
+        raise AdbConnectionError("connect to adb server failed")
+
+    spawned: list[list[str]] = []
+    monkeypatch.setattr(adbutils_adb.AdbConnection, "_create_socket", refuse)
+    monkeypatch.setattr(adbutils_adb, "adb_path", lambda: "/fake/adb")
+    monkeypatch.setattr(
+        adbutils_adb.subprocess,
+        "run",
+        lambda argv, *a, **k: spawned.append(list(argv)),
+    )
+    return spawned
+
+
+@pytest.mark.parametrize(
+    ("host", "port"),
+    [("remote.example", 12345), ("192.0.2.7", 5037), ("127.0.0.2", 12345), ("127.0.0.1", 12345)],
+)
+def test_a_failed_adbutils_connection_never_starts_a_local_server_for_another_endpoint(
+    failing_adbutils_connect, host, port
+):
+    transport = EndpointTransport(AdbEndpoint.create(host, port), adb_path="/fake/adb")
+
+    with pytest.raises(Exception):  # the connection error, whichever adbutils raises
+        transport.device_list()
+
+    assert failing_adbutils_connect == []
+
+
+def test_the_local_default_endpoint_keeps_adbutils_server_startup(failing_adbutils_connect):
+    transport = EndpointTransport(AdbEndpoint.local(), adb_path="/fake/adb")
+
+    with pytest.raises(Exception):
+        transport.device_list()
+
+    assert failing_adbutils_connect == [["/fake/adb", "start-server"]]
