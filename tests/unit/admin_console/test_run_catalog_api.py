@@ -517,3 +517,22 @@ async def test_numeric_cursor_that_is_not_a_finite_float_is_a_400(env, value):
     response = await _get("/api/runs", cursor=cursor)
     assert response.status_code == 400, response.text
     assert response.json()["error"] == "invalid_cursor"
+
+
+# -- review round 3 (Sol): R8 ---------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "payload",
+    ["[" * 10000 + "0" + "]" * 10000, '[1, "' + "x" * 100_000 + '"]'],
+    ids=["deeply_nested", "oversized"],
+)
+async def test_hostile_cursor_text_is_a_400_not_a_500(env, payload):
+    import base64
+
+    _seed(env)
+    cursor = base64.urlsafe_b64encode(payload.encode()).decode()
+    response = await _get("/api/runs", cursor=cursor)
+    assert response.status_code == 400, response.text[:200]
+    assert response.json()["error"] == "invalid_cursor"
