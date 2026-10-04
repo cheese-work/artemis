@@ -47,7 +47,8 @@ _TRIGGERS_FTS = (
 )
 _TRIGGERS_PLAIN = ("run_catalog_sessions_ai", "run_catalog_sessions_ad")
 
-_TABLES_DDL = """
+_TABLES_DDL = (
+    """
 CREATE TABLE IF NOT EXISTS run_meta (
     rid INTEGER PRIMARY KEY AUTOINCREMENT,
     session_id TEXT NOT NULL UNIQUE,
@@ -57,7 +58,8 @@ CREATE TABLE IF NOT EXISTS run_meta (
     pinned INTEGER NOT NULL DEFAULT 0,
     deleted_at REAL,
     deleted_reason TEXT
-);
+)""",
+    """
 CREATE TABLE IF NOT EXISTS run_recording_state (
     session_id TEXT NOT NULL,
     recording_id TEXT NOT NULL,
@@ -65,10 +67,9 @@ CREATE TABLE IF NOT EXISTS run_recording_state (
     transfer TEXT,
     updated_at REAL,
     PRIMARY KEY (session_id, recording_id)
-);
-CREATE INDEX IF NOT EXISTS idx_sessions_start_order
-    ON sessions (start_time DESC, session_id DESC);
-"""
+)""",
+    "CREATE INDEX IF NOT EXISTS idx_sessions_start_order ON sessions (start_time DESC, session_id DESC)",
+)
 
 # Searchable run_meta text, shared by the index and the substring fallback.
 META_TEXT = (
@@ -165,30 +166,52 @@ def search_mode(conn: sqlite3.Connection) -> str:
     return "fts" if _has(conn, "table", "runs_fts") else "substring"
 
 
-def ensure_schema(conn: sqlite3.Connection) -> bool:
-    """Idempotent: tables, index, triggers. False when there is no sessions table yet."""
-    if not _has(conn, "table", "sessions"):
-        return False
-    fts = _has(conn, "table", "runs_fts") or fts5_available(conn)
+def _complete(conn: sqlite3.Connection, fts: bool) -> bool:
     wanted = _TRIGGERS_FTS if fts else _TRIGGERS_PLAIN
-    if (
+    return (
         _has(conn, "table", "run_meta")
         and _has(conn, "index", "idx_sessions_start_order")
         and all(_has(conn, "trigger", name) for name in wanted)
-    ):
+    )
+
+
+def ensure_schema(conn: sqlite3.Connection) -> bool:
+    """Idempotent: tables, index, triggers. False when there is no sessions table yet.
+
+    Publication (tables, trigger replacement, first index build) is one write
+    transaction: a concurrent writer waits for it, and a failure rolls back
+    everything, so a retry starts from the old consistent state.
+    """
+    if not _has(conn, "table", "sessions"):
+        return False
+    fts = _has(conn, "table", "runs_fts") or fts5_available(conn)
+    if _complete(conn, fts):
         return True
-    conn.executescript(_TABLES_DDL)
-    promoting = fts and not _has(conn, "table", "runs_fts")
-    if promoting:
-        conn.execute("CREATE VIRTUAL TABLE runs_fts USING fts5(prompt, meta)")
-    # Replace, never keep: triggers from a substring-mode install lack the index upkeep.
-    for name in dict.fromkeys(_TRIGGERS_FTS + _TRIGGERS_PLAIN):
-        conn.execute(f"DROP TRIGGER IF EXISTS {name}")
-    for statement in _trigger_ddl(fts):
-        conn.execute(statement)
-    conn.commit()
-    if promoting:
-        rebuild(conn)  # index the runs created while search was substring-only
+    if not conn.in_transaction:
+        conn.execute("BEGIN IMMEDIATE")
+    published = False
+    try:
+        # Another process may have finished while this one waited for the lock.
+        fts = _has(conn, "table", "runs_fts") or fts5_available(conn)
+        if _complete(conn, fts):
+            return True
+        for statement in _TABLES_DDL:
+            conn.execute(statement)
+        promoting = fts and not _has(conn, "table", "runs_fts")
+        if promoting:
+            conn.execute("CREATE VIRTUAL TABLE runs_fts USING fts5(prompt, meta)")
+        # Replace, never keep: triggers from a substring-mode install lack the index upkeep.
+        for name in dict.fromkeys(_TRIGGERS_FTS + _TRIGGERS_PLAIN):
+            conn.execute(f"DROP TRIGGER IF EXISTS {name}")
+        for statement in _trigger_ddl(fts):
+            conn.execute(statement)
+        if promoting:
+            rebuild(conn)  # index the runs created while search was substring-only
+        conn.commit()
+        published = True
+    finally:
+        if not published:
+            conn.rollback()
     return True
 
 

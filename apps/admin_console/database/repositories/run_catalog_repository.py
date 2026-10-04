@@ -18,6 +18,7 @@ import base64
 import binascii
 from dataclasses import dataclass, field
 import json
+import math
 from pathlib import Path
 import re
 import sqlite3
@@ -76,15 +77,20 @@ def decode_cursor(cursor: str) -> tuple[float | None, str]:
         value = json.loads(base64.urlsafe_b64decode(cursor.encode()))
     except (ValueError, binascii.Error, UnicodeError) as exc:
         raise InvalidCursor("malformed cursor") from exc
-    if (
-        not isinstance(value, list)
-        or len(value) != 2
-        or isinstance(value[0], bool)
-        or not isinstance(value[0], int | float | None)
-        or not isinstance(value[1], str)
-    ):
+    if not isinstance(value, list) or len(value) != 2 or not isinstance(value[1], str):
         raise InvalidCursor("malformed cursor")
-    return (None if value[0] is None else float(value[0])), value[1]
+    start = value[0]
+    if start is None:
+        return None, value[1]
+    if isinstance(start, bool) or not isinstance(start, int | float):
+        raise InvalidCursor("malformed cursor")
+    try:
+        start = float(start)  # OverflowError for huge ints
+    except OverflowError as exc:
+        raise InvalidCursor("malformed cursor") from exc
+    if not math.isfinite(start):  # json accepts NaN/Infinity
+        raise InvalidCursor("malformed cursor")
+    return start, value[1]
 
 
 def _run_from_row(row: sqlite3.Row) -> dict[str, Any]:
