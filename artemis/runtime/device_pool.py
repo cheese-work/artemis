@@ -17,15 +17,16 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
-import os
+from dataclasses import dataclass, field
 import shutil
 import subprocess
 import threading
 import time
 from typing import Any
 
+from artemis.runtime.adb_endpoint import AdbEndpoint, current_adb_endpoint
 from artemis.runtime.device_lock import DeviceExecutionLock
+from artemis.runtime.endpoint_transport import EndpointTransport
 from artemis.toolchain import toolchain
 from artemis.utils.logger import get_logger
 
@@ -62,8 +63,29 @@ class DeviceStatus:
         }
 
 
+RawDevice = tuple[str, str, str | None, str | None]
+
+
+@dataclass
+class _Snapshot:
+    """Discovery state of one adb endpoint: cache, warm flag, in-flight query."""
+
+    raw: list[RawDevice] | None = None
+    at: float = 0.0
+    warmed: bool = False
+    inflight: tuple[asyncio.AbstractEventLoop, asyncio.Task] | None = field(default=None)
+
+
 class DevicePool:
-    """Manages discovery and assignment across all connected Android devices."""
+    """Manages discovery and assignment across the devices of one adb endpoint.
+
+    A pool bound to an endpoint (:meth:`for_endpoint`) always talks to that adb server.
+    An unbound pool, like the module-level :data:`device_pool`, follows the process's
+    adb endpoint and keeps a separate snapshot per endpoint, so switching the adb
+    server preference never answers with the previous server's devices. Every query
+    names its server explicitly (``-H``/``-P``); busy state is matched against the
+    endpoint's lock scope, so a serial in use on one server is not busy on another.
+    """
 
     # A snapshot younger than this is returned without touching adb, so a burst
     # of concurrent enumerations (UI polling, readiness probes, submissions)
@@ -79,14 +101,57 @@ class DevicePool:
     HOT_QUERY_TIMEOUT = 2.0
     COLD_QUERY_TIMEOUT = 8.0
 
-    def __init__(self, adb_path: str | None = None):
+    _bound_pools: dict[AdbEndpoint, DevicePool] = {}
+    _bound_pools_lock = threading.Lock()
+
+    def __init__(self, adb_path: str | None = None, endpoint: AdbEndpoint | None = None):
         self._adb_path = adb_path
+        self._bound_endpoint = endpoint
         self._cache_lock = threading.Lock()
-        self._cached_raw: list[tuple[str, str, str | None, str | None]] | None = None
-        self._cached_at = 0.0
-        self._warmed = False
+        self._snapshots: dict[str, _Snapshot] = {}
         self._sync_query_gate = threading.Lock()
-        self._async_inflight: tuple[asyncio.AbstractEventLoop, asyncio.Task] | None = None
+
+    @classmethod
+    def for_endpoint(cls, endpoint: AdbEndpoint) -> DevicePool:
+        """The pool of one adb endpoint (one instance per endpoint, shared)."""
+        with cls._bound_pools_lock:
+            pool = cls._bound_pools.get(endpoint)
+            if pool is None:
+                pool = cls._bound_pools[endpoint] = cls(endpoint=endpoint)
+            return pool
+
+    def _endpoint(self) -> AdbEndpoint:
+        return self._bound_endpoint or current_adb_endpoint()
+
+    def _transport(self) -> EndpointTransport:
+        endpoint = self._endpoint()
+        if self._adb_path:
+            return EndpointTransport(endpoint, adb_path=self._adb_path)
+        return EndpointTransport.shared(endpoint)
+
+    def _snapshot(self) -> _Snapshot:
+        """Snapshot of the current endpoint. Callers hold ``_cache_lock`` to mutate it."""
+        identity = self._endpoint().identity
+        snapshot = self._snapshots.get(identity)
+        if snapshot is None:
+            snapshot = self._snapshots[identity] = _Snapshot()
+        return snapshot
+
+    @property
+    def _cached_raw(self) -> list[RawDevice] | None:
+        return self._snapshot().raw
+
+    @property
+    def _warmed(self) -> bool:
+        return self._snapshot().warmed
+
+    @property
+    def _async_inflight(self) -> tuple[asyncio.AbstractEventLoop, asyncio.Task] | None:
+        return self._snapshot().inflight
+
+    @_async_inflight.setter
+    def _async_inflight(self, value: tuple[asyncio.AbstractEventLoop, asyncio.Task] | None) -> None:
+        self._snapshot().inflight = value
 
     def _resolve_adb(self) -> str | None:
         if self._adb_path:
@@ -104,12 +169,11 @@ class DevicePool:
     ) -> list[tuple[str, str, str | None, str | None]] | None:
         """Run `adb devices -l` synchronously. Returns None when the query
         itself failed, as opposed to an empty list of attached devices."""
-        adb = self._resolve_adb()
-        if not adb:
+        if not self._resolve_adb():
             return None
         try:
-            res = subprocess.run(
-                [adb, "devices", "-l"],
+            res = self._transport().run(
+                ["devices", "-l"],
                 stdin=subprocess.DEVNULL,
                 capture_output=True,
                 text=True,
@@ -128,15 +192,12 @@ class DevicePool:
     ) -> list[tuple[str, str, str | None, str | None]] | None:
         """Run `adb devices -l` asynchronously. Returns None when the query
         itself failed, as opposed to an empty list of attached devices."""
-        adb = self._resolve_adb()
-        if not adb:
+        if not self._resolve_adb():
             return None
         proc = None
         try:
-            proc = await asyncio.create_subprocess_exec(
-                adb,
-                "devices",
-                "-l",
+            proc = await self._transport().create_subprocess(
+                ["devices", "-l"],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
             )
@@ -183,18 +244,20 @@ class DevicePool:
         self, *, allow_stale: bool
     ) -> list[tuple[str, str, str | None, str | None]] | None:
         with self._cache_lock:
-            if self._cached_raw is None:
+            snapshot = self._snapshot()
+            if snapshot.raw is None:
                 return None
-            age = time.monotonic() - self._cached_at
+            age = time.monotonic() - snapshot.at
             if age <= self.CACHE_TTL or (allow_stale and age <= self.STALE_ON_ERROR_TTL):
-                return list(self._cached_raw)
+                return list(snapshot.raw)
         return None
 
     def _store_snapshot(self, raw: list[tuple[str, str, str | None, str | None]]) -> None:
         with self._cache_lock:
-            self._cached_raw = list(raw)
-            self._cached_at = time.monotonic()
-            self._warmed = True
+            snapshot = self._snapshot()
+            snapshot.raw = list(raw)
+            snapshot.at = time.monotonic()
+            snapshot.warmed = True
 
     def _enumerate_sync(self) -> list[tuple[str, str, str | None, str | None]] | None:
         """Return the raw enumeration, or None when the query failed and no
@@ -241,20 +304,23 @@ class DevicePool:
         return raw
 
     async def _start_adb_server(self, timeout: float) -> None:
-        """Best-effort bounded `adb start-server` so later queries hit a warm daemon."""
-        adb = self._resolve_adb()
-        if not adb:
+        """Best-effort bounded `adb start-server` so later queries hit a warm daemon.
+
+        Local-only: it starts *this* machine's server, so it never runs for a remote
+        or host endpoint (whose server is not ours to start).
+        """
+        if not self._resolve_adb():
+            return
+        transport = self._transport()
+        if not transport.is_local:
+            logger.debug(f"Not starting an adb server for {transport.endpoint.identity}")
             return
         proc = None
         try:
-            clean_env = os.environ.copy()
-            clean_env.pop("ADB_SERVER_SOCKET", None)
-            proc = await asyncio.create_subprocess_exec(
-                adb,
-                "start-server",
+            proc = await transport.create_subprocess(
+                ["start-server"],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                env=clean_env,
             )
             await asyncio.wait_for(proc.communicate(), timeout=timeout)
         except Exception as exc:
@@ -302,19 +368,14 @@ class DevicePool:
         self, raw_devices: list[tuple[str, str, str | None, str | None]]
     ) -> list[DeviceStatus]:
         active_owners = DeviceExecutionLock.get_active_owners()
+        lock_scope = self._endpoint().lock_scope
 
         devices: list[DeviceStatus] = []
         for serial, state, model, product in raw_devices:
             is_emu = (
                 serial.startswith("emulator-") or "127.0.0.1" in serial or "localhost" in serial
             )
-            clean_id = DeviceExecutionLock._normalize_lock_id(
-                serial,
-                os.getenv(DeviceExecutionLock.LOCK_SCOPE_ENV) or None,
-            )
-            owner = active_owners.get(clean_id) or active_owners.get(
-                DeviceExecutionLock._normalize_device_id(serial)
-            )
+            owner = self._owner_on_endpoint(active_owners, serial, lock_scope)
 
             status = DeviceStatus(
                 serial=serial,
@@ -330,6 +391,23 @@ class DevicePool:
             )
             devices.append(status)
         return devices
+
+    @staticmethod
+    def _owner_on_endpoint(active_owners: dict, serial: str, lock_scope: str):
+        """The lock owner of ``serial`` on the endpoint scoped by ``lock_scope``.
+
+        A device is a (server, serial) pair, so an owner that holds the same serial on a
+        different adb server does not make this one busy. Owners without a recorded
+        scope (written before scoping existed) match any endpoint.
+        """
+        normalize = DeviceExecutionLock._normalize_device_id
+        owner = active_owners.get(DeviceExecutionLock._normalize_lock_id(serial, lock_scope))
+        if owner is None:
+            owner = active_owners.get(normalize(serial))
+            if owner is not None and owner.lock_scope:
+                if normalize(owner.lock_scope) != normalize(lock_scope):
+                    owner = None
+        return owner
 
     def list_devices(self) -> list[DeviceStatus]:
         """Synchronously list all connected devices along with their active lock state.
@@ -415,13 +493,21 @@ class DevicePool:
         queue metadata, without any adb traffic.
         """
         claimed: set[str] = set()
+        scope = DeviceExecutionLock._normalize_device_id(self._endpoint().lock_scope)
+
+        def on_endpoint(recorded_scope: object) -> bool:
+            # Unscoped records predate scoping and count for every endpoint.
+            if not recorded_scope:
+                return True
+            return DeviceExecutionLock._normalize_device_id(str(recorded_scope)) == scope
+
         try:
             for owner in DeviceExecutionLock.get_active_owners().values():
-                if owner.device_id:
+                if owner.device_id and on_endpoint(owner.lock_scope):
                     claimed.add(str(owner.device_id))
             for item in DeviceExecutionLock.get_queued_tasks():
                 serial = item.get("device_serial")
-                if serial:
+                if serial and on_endpoint(item.get("lock_scope")):
                     claimed.add(str(serial))
         except Exception as exc:
             logger.debug(f"Could not compute claimed device serials: {exc}")

@@ -44,7 +44,7 @@ from PIL import Image
 from artemis.clients.accessibility_client import AccessibilityClient, HelperUnavailable
 from artemis.clients.ui_automator_client import UIAutomatorClient, UIAutomatorScreenData
 from artemis.config.constants import ENV_ARTEMIS_HIERARCHY_BACKEND
-from artemis.runtime.adb_endpoint import adb_command
+from artemis.runtime.endpoint_transport import EndpointTransport
 from artemis.runtime.helper_manager import ProvisionEvent
 from artemis.utils.logger import get_logger
 
@@ -72,11 +72,13 @@ class DeviceOfflineError(RuntimeError):
         )
 
 
-def device_state(device_id: str, timeout: float = 5.0) -> str | None:
+def device_state(
+    device_id: str, timeout: float = 5.0, transport: EndpointTransport | None = None
+) -> str | None:
     """``adb get-state`` for one serial: 'device', 'offline', 'unauthorized', or None."""
     try:
-        result = subprocess.run(
-            adb_command(["-s", device_id, "get-state"]),
+        result = (transport or EndpointTransport.shared(None)).run(
+            ["-s", device_id, "get-state"],
             stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
@@ -143,15 +145,20 @@ class FallbackScreenClient:
         *,
         retry_after: float = 30.0,
         clock: Callable[[], float] = time.monotonic,
-        state_probe: Callable[[str], str | None] = device_state,
+        state_probe: Callable[[str], str | None] | None = None,
+        transport: EndpointTransport | None = None,
     ) -> None:
         self._device_id = device_id
-        self._helper = helper or AccessibilityClient(device_id)
-        self._uiautomator_factory = uiautomator_factory or (lambda: UIAutomatorClient(device_id))
+        self._helper = helper or AccessibilityClient(device_id, transport=transport)
+        self._uiautomator_factory = uiautomator_factory or (
+            lambda: UIAutomatorClient(device_id, transport=transport)
+        )
         self._uiautomator: UIAutomatorClient | None = None
         self._retry_after = retry_after
         self._clock = clock
-        self._state_probe = state_probe
+        self._state_probe = state_probe or (
+            lambda serial: device_state(serial, transport=transport)
+        )
         self._helper_down_until: float | None = None
         self._active_backend: str | None = None
         self._last_failure: str | None = None
@@ -314,15 +321,22 @@ ScreenClient = AccessibilityClient | UIAutomatorClient | FallbackScreenClient
 
 
 def create_screen_client(
-    device_id: str, backend: str | HierarchyBackend | None = None
+    device_id: str,
+    backend: str | HierarchyBackend | None = None,
+    *,
+    transport: EndpointTransport | None = None,
 ) -> ScreenClient:
-    """Build the screen client for ``device_id`` according to the configured backend."""
+    """Build the screen client for ``device_id`` according to the configured backend.
+
+    ``transport`` pins every adb call of the client to one endpoint; without it the
+    client follows the process's own adb endpoint.
+    """
     resolved = resolve_backend(backend)
     if resolved is HierarchyBackend.UIAUTOMATOR:
-        return UIAutomatorClient(device_id=device_id)
+        return UIAutomatorClient(device_id=device_id, transport=transport)
     if resolved is HierarchyBackend.HELPER:
-        return AccessibilityClient(device_id)
-    return FallbackScreenClient(device_id)
+        return AccessibilityClient(device_id, transport=transport)
+    return FallbackScreenClient(device_id, transport=transport)
 
 
 def describe_backend(client: Any) -> str | None:

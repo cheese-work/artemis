@@ -147,9 +147,9 @@ def _call_awake_command() -> None:
 
 
 def _call_helper_default_runner() -> None:
-    from artemis.runtime import helper_manager
+    from artemis.runtime.helper_manager import AccessibilityHelperManager
 
-    helper_manager._default_run_adb(["-s", "emulator-5554", "get-state"])
+    AccessibilityHelperManager()._run_adb(["-s", "emulator-5554", "get-state"])
 
 
 def _call_accessibility_press_key() -> None:

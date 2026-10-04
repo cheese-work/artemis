@@ -24,18 +24,21 @@ This module owns everything *around* that HTTP API, split by lifetime:
   ``DeviceExecutionLock`` boundary, ``artemis helper install``,
   ``mobile_diagnose(attempt_fix=True)``) provision; read-only observers never
   install anything. A cross-process file mutex serialises concurrent installs.
-* **Attach** (one process, one device, one session): an ``adb forward`` from a
-  host port that adb allocates (``tcp:0``) to the fixed device port. Existing
-  forwards for the same serial are reused so two Artemis processes share one
-  tunnel; the local port is the identity of the tunnel, never a fixed number,
-  which is what keeps several devices on one host apart.
-* **Serve** (per request): handled by :class:`AccessibilityClient`; on a
-  transport error it calls :meth:`AccessibilityHelperManager.reattach` once.
-* **Detach / evict**: forwards this process created are removed on detach.
-  A physical unplug needs no host work at all: adb drops the forward with the
-  transport and the on-device service keeps running. The ``transport_id`` that
-  ``adb devices -l`` reports changes on every replug, so a session records it
-  and :meth:`attach` treats a changed id as "stale, rebuild the tunnel".
+* **Attach** (one process, one device, one session): a health check
+  (``/ping``) over an adb-server ``tcp:PORT`` stream to the fixed device port
+  (:mod:`artemis.runtime.helper_stream`). There is no ``adb forward`` and no
+  host port: a stream follows whichever adb server the manager's endpoint names,
+  so the helper is reachable the same way through a local server or a host
+  agent's tunnel. A session is identified by endpoint plus serial, so the same
+  serial behind two adb servers never shares state.
+* **Serve** (per request): handled by :class:`AccessibilityClient`, one stream
+  per request, closed before it returns; on a transport error it calls
+  :meth:`AccessibilityHelperManager.reattach` once.
+* **Detach / evict**: nothing is held open between requests, so detaching only
+  forgets the session. A physical unplug needs no host work at all and the
+  on-device service keeps running. The ``transport_id`` that ``adb devices -l``
+  reports changes on every replug, so a session records it and :meth:`attach`
+  treats a changed id as "stale, re-check the helper".
 * **Token**: the loopback port is reachable by every app on the phone, so the
   helper serves nothing (except ``/ping``) without the session token this host
   pushed. The token is one random secret per host, kept in a file under the
@@ -75,11 +78,12 @@ import threading
 import time
 from typing import Any
 import urllib.error
-import urllib.request
 
 from artemis.config.constants import ENV_ARTEMIS_HELPER_AUTO_INSTALL
 from artemis.config.paths import get_temp_dir
-from artemis.runtime.adb_endpoint import adb_command
+from artemis.runtime import helper_stream
+from artemis.runtime.adb_endpoint import AdbEndpoint
+from artemis.runtime.endpoint_transport import EndpointTransport, EndpointUnreachable
 from artemis.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -117,7 +121,8 @@ _ENABLE_SETTLE_SECONDS = 0.4
 _REVIVE_SETTLE_SECONDS = 0.3
 
 AdbRunner = Callable[[list[str]], subprocess.CompletedProcess]
-Pinger = Callable[[int], dict[str, Any] | None]
+#: Health check for one device: ``serial -> /ping answer`` (``None`` when silent).
+Pinger = Callable[[str], dict[str, Any] | None]
 #: Progress callback: ``(event, details)`` with events ``installing`` / ``upgrading`` /
 #: ``enabling`` fired *before* the slow step so a UI can show what is happening.
 ProvisionEvent = Callable[[str, dict[str, Any]], None]
@@ -204,24 +209,19 @@ class HelperSession:
     """One process's live tunnel to the helper on one device."""
 
     serial: str
-    local_port: int
     transport_id: str | None
     version_code: int | None
     version_name: str
-    owns_forward: bool
+    #: Identity of the adb endpoint the session lives on (``AdbEndpoint.identity``).
+    endpoint: str = ""
     attached_at: float = field(default_factory=time.time)
     #: Session token the helper expects in ``X-Artemis-Token``; None for pre-token helpers.
     token: str | None = field(default=None, repr=False)
     protocol_version: int = 1
 
-    @property
-    def base_url(self) -> str:
-        return f"http://127.0.0.1:{self.local_port}"
-
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
         data.pop("token", None)
-        data["base_url"] = self.base_url
         return data
 
 
@@ -238,30 +238,13 @@ class ProvisionResult:
         return asdict(self)
 
 
-def _default_run_adb(args: list[str], timeout: float = 30.0) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        adb_command(args),
-        stdin=subprocess.DEVNULL,
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-        check=False,
-    )
-
-
-def _default_ping(local_port: int, timeout: float = 2.0) -> dict[str, Any] | None:
-    try:
-        with urllib.request.urlopen(f"http://127.0.0.1:{local_port}/ping", timeout=timeout) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-    except (urllib.error.URLError, OSError, ValueError, TimeoutError):
-        return None
-    if not isinstance(data, dict) or not data.get("success"):
-        return None
-    return data
-
-
 class AccessibilityHelperManager:
-    """Process-wide registry of helper sessions, keyed by device serial."""
+    """Registry of helper sessions for one adb endpoint, keyed by device serial.
+
+    Bound to ``transport`` when given; otherwise to the process's adb endpoint,
+    resolved on every call so a worker (whose environment names its run's
+    endpoint) and a long-lived server both reach the right adb server.
+    """
 
     def __init__(
         self,
@@ -271,26 +254,81 @@ class AccessibilityHelperManager:
         sleep: Callable[[float], None] = time.sleep,
         token_path: Path | None = None,
         auto_install: Callable[[], bool] = auto_install_allowed,
+        transport: EndpointTransport | None = None,
     ) -> None:
-        self._run_adb = run_adb or _default_run_adb
-        self._ping = ping or _default_ping
+        self._transport_override = transport
+        self._run_adb = run_adb or self._default_run_adb
+        self._ping = ping or self._default_ping
         self._bundled_source = bundled
         self._sleep = sleep
         self._token_path = token_path
         self._auto_install = auto_install
         self._token: str | None = None
-        self._sessions: dict[str, HelperSession] = {}
+        self._sessions: dict[tuple[str, str], HelperSession] = {}
         #: Guards the session registry and the per-device lock table only.
         self._registry_lock = threading.Lock()
-        self._device_locks: dict[str, threading.RLock] = {}
+        self._device_locks: dict[tuple[str, str], threading.RLock] = {}
+
+    @property
+    def transport(self) -> EndpointTransport:
+        return self._transport_override or EndpointTransport.shared(None)
+
+    def _key(self, serial: str) -> tuple[str, str]:
+        return (self.transport.endpoint.identity, serial)
 
     def _device_lock(self, serial: str) -> threading.RLock:
         """One re-entrant lock per device, so devices provision and attach in parallel."""
+        key = self._key(serial)
         with self._registry_lock:
-            lock = self._device_locks.get(serial)
+            lock = self._device_locks.get(key)
             if lock is None:
-                lock = self._device_locks[serial] = threading.RLock()
+                lock = self._device_locks[key] = threading.RLock()
             return lock
+
+    def _default_run_adb(
+        self, args: list[str], timeout: float = 30.0
+    ) -> subprocess.CompletedProcess:
+        try:
+            return self.transport.run(
+                args,
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                check=False,
+            )
+        except EndpointUnreachable as exc:
+            return subprocess.CompletedProcess(args, 255, stdout="", stderr=str(exc))
+
+    def _default_ping(self, serial: str, timeout: float = 2.0) -> dict[str, Any] | None:
+        try:
+            raw = self.http(serial, "/ping", timeout=timeout)
+            data = json.loads(raw.decode("utf-8"))
+        except (urllib.error.URLError, OSError, ValueError, TimeoutError):
+            return None
+        if not isinstance(data, dict) or not data.get("success"):
+            return None
+        return data
+
+    def http(
+        self,
+        serial: str,
+        path: str,
+        payload: bytes | None = None,
+        headers: dict[str, str] | None = None,
+        timeout: float = 6.0,
+    ) -> bytes:
+        """One request to the helper on ``serial`` over an adb stream (see ``helper_stream``)."""
+        return helper_stream.request(
+            self.transport,
+            serial,
+            DEVICE_PORT,
+            "GET" if payload is None else "POST",
+            path,
+            body=payload,
+            headers=headers,
+            timeout=timeout,
+        )
 
     # ------------------------------------------------------------------ #
     # Bundled artifact
@@ -410,23 +448,8 @@ class AccessibilityHelperManager:
         enabled = (result.stdout or "").strip()
         return SERVICE_NAME in enabled.split(":") if enabled and enabled != "null" else False
 
-    def existing_forward(self, serial: str) -> int | None:
-        """Host port of an adb forward that already targets the helper on ``serial``."""
-        result = self._run_adb(["forward", "--list"])
-        for line in (result.stdout or "").splitlines():
-            parts = line.split()
-            if len(parts) != 3 or parts[0] != serial:
-                continue
-            local, remote = parts[1], parts[2]
-            if remote == f"tcp:{DEVICE_PORT}" and local.startswith("tcp:"):
-                try:
-                    return int(local[4:])
-                except ValueError:
-                    continue
-        return None
-
-    def ping(self, local_port: int) -> dict[str, Any] | None:
-        return self._ping(local_port)
+    def ping(self, serial: str) -> dict[str, Any] | None:
+        return self._ping(serial)
 
     def uiautomation_holders(self, serial: str) -> dict[str, list[int]]:
         """Processes on ``serial`` holding a UiAutomation connection that mutes the helper.
@@ -476,32 +499,24 @@ class AccessibilityHelperManager:
 
     def session(self, serial: str) -> HelperSession | None:
         with self._registry_lock:
-            return self._sessions.get(serial)
+            return self._sessions.get(self._key(serial))
 
     def status(self, serial: str) -> dict[str, Any]:
         """Everything a diagnostic wants to know, without changing the device.
 
         ``reachable`` answers "is the service alive on the phone", not "does
-        this process have a tunnel": when no forward exists yet a temporary one
-        is created for the probe and removed again. ``tunnel`` says which it was.
+        this process hold a session". ``tunnel`` says which: ``session`` when this
+        process has attached, ``probe`` when the answer came from a one-off stream.
         """
         bundled = self.bundled
         installed = self.installed_version(serial)
         enabled = self.is_service_enabled(serial) if installed is not None else False
         session = self.session(serial)
-        tunnel: str | None
-        forward_port: int | None
-        if session is not None:
-            forward_port, tunnel = session.local_port, "session"
-        else:
-            forward_port = self.existing_forward(serial)
-            tunnel = "shared" if forward_port is not None else None
+        tunnel: str | None = "session" if session is not None else None
         ping = None
-        if forward_port is not None:
-            ping = self.ping(forward_port)
-        elif installed is not None and enabled:
-            ping = self._probe_with_temporary_forward(serial)
-            tunnel = "probe"
+        if installed is not None and enabled:
+            ping = self.ping(serial)
+            tunnel = tunnel or "probe"
         return {
             "package": PACKAGE_NAME,
             "installed": installed is not None,
@@ -515,7 +530,6 @@ class AccessibilityHelperManager:
                 bundled and installed is not None and installed > bundled.version_code
             ),
             "enabled": enabled,
-            "forward_port": forward_port,
             "tunnel": tunnel,
             "reachable": ping is not None,
             "reported_version": ping.get("version_code") if ping else None,
@@ -528,16 +542,6 @@ class AccessibilityHelperManager:
             "transport_id": self.transport_id(serial),
             "session": session.to_dict() if session else None,
         }
-
-    def _probe_with_temporary_forward(self, serial: str) -> dict[str, Any] | None:
-        try:
-            port = self._create_forward(serial)
-        except HelperUnavailable:
-            return None
-        try:
-            return self.ping(port)
-        finally:
-            self._remove_forward(serial, port)
 
     # ------------------------------------------------------------------ #
     # Provision: install / upgrade / enable (persistent device state)
@@ -810,33 +814,9 @@ class AccessibilityHelperManager:
     # Attach / detach (host-side tunnel)
     # ------------------------------------------------------------------ #
 
-    def _create_forward(self, serial: str) -> int:
-        result = self._adb(serial, "forward", "--no-rebind", "tcp:0", f"tcp:{DEVICE_PORT}")
-        if result.returncode != 0:
-            raise HelperUnavailable(
-                f"adb forward to the accessibility helper on {serial} failed: "
-                f"{(result.stderr or result.stdout or '').strip()}"
-            )
-        text = (result.stdout or "").strip()
-        match = re.search(r"\b(\d{2,5})\b", text)
-        if match is not None:
-            return int(match.group(1))
-        existing = self.existing_forward(serial)
-        if existing is None:
-            raise HelperUnavailable(
-                f"adb forward on {serial} did not report the allocated host port (output: {text!r})."
-            )
-        return existing
-
-    def _remove_forward(self, serial: str, local_port: int) -> None:
-        try:
-            self._adb(serial, "forward", "--remove", f"tcp:{local_port}")
-        except (OSError, subprocess.SubprocessError) as exc:
-            logger.debug(f"Removing adb forward tcp:{local_port} on {serial} failed: {exc}")
-
-    def _wait_for_ping(self, local_port: int, attempts: int) -> dict[str, Any] | None:
+    def _wait_for_ping(self, serial: str, attempts: int) -> dict[str, Any] | None:
         for attempt in range(attempts):
-            info = self.ping(local_port)
+            info = self.ping(serial)
             if info is not None:
                 return info
             if attempt + 1 < attempts:
@@ -866,25 +846,21 @@ class AccessibilityHelperManager:
             transport = self.transport_id(serial)
             existing = self.session(serial)
             if existing is not None:
-                if existing.transport_id == transport and self.ping(existing.local_port):
+                if existing.transport_id == transport and self.ping(serial):
                     return existing
                 logger.info(
                     f"Accessibility helper session on {serial} is stale "
-                    f"(transport {existing.transport_id} -> {transport}); rebuilding the tunnel."
+                    f"(transport {existing.transport_id} -> {transport}); re-checking the helper."
                 )
-                self._drop_session(serial, remove_forward=existing.transport_id == transport)
+                self._drop_session(serial)
 
             if provision:
                 result = self.provision(serial, on_event=on_event, install=self._auto_install())
                 if not result.ok:
                     raise HelperUnavailable(result.error or "Provisioning the helper failed.")
 
-            reused_port = self.existing_forward(serial)
-            owns_forward = reused_port is None
-            local_port = reused_port if reused_port is not None else self._create_forward(serial)
-
             attempts = _PING_ATTEMPTS_AFTER_PROVISION if provision else _PING_ATTEMPTS_LAZY
-            info = self._wait_for_ping(local_port, attempts)
+            info = self._wait_for_ping(serial, attempts)
             suppressed_by: str | None = None
             if info is None and self.installed_version(serial) is not None:
                 # Silent although installed. The usual cause is a UiAutomation
@@ -893,7 +869,7 @@ class AccessibilityHelperManager:
                 holders = self.uiautomation_holders(serial)
                 if holders["uiautomator2"] and revive:
                     self.stop_uiautomator2_server(serial, holders["uiautomator2"])
-                    info = self._wait_for_ping(local_port, _PING_ATTEMPTS_AFTER_PROVISION)
+                    info = self._wait_for_ping(serial, _PING_ATTEMPTS_AFTER_PROVISION)
                 elif holders["uiautomator2"]:
                     suppressed_by = "uiautomator2's device server"
                 if info is None and holders["appium"]:
@@ -906,10 +882,8 @@ class AccessibilityHelperManager:
                         self._revive_service(serial)
                     else:
                         self._enable_service(serial)
-                    info = self._wait_for_ping(local_port, _PING_ATTEMPTS_AFTER_PROVISION)
+                    info = self._wait_for_ping(serial, _PING_ATTEMPTS_AFTER_PROVISION)
             if info is None:
-                if owns_forward:
-                    self._remove_forward(serial, local_port)
                 if suppressed_by:
                     raise HelperUnavailable(
                         f"The accessibility helper on {serial} is suppressed by {suppressed_by}: "
@@ -920,7 +894,7 @@ class AccessibilityHelperManager:
                     )
                 raise HelperUnavailable(
                     f"The accessibility helper on {serial} is not answering on "
-                    f"127.0.0.1:{local_port} (device port {DEVICE_PORT})."
+                    f"device port {DEVICE_PORT} via {self.transport.endpoint.identity}."
                 )
 
             protocol = _protocol_of(info)
@@ -938,11 +912,9 @@ class AccessibilityHelperManager:
                     result = self.provision(serial, force=True, on_event=on_event)
                     if not result.ok:
                         raise HelperUnavailable(result.error or "Reinstalling the helper failed.")
-                    info = self._wait_for_ping(local_port, _PING_ATTEMPTS_AFTER_PROVISION)
+                    info = self._wait_for_ping(serial, _PING_ATTEMPTS_AFTER_PROVISION)
                     protocol = _protocol_of(info) if info else 0
                 if protocol < MIN_PROTOCOL_VERSION:
-                    if owns_forward:
-                        self._remove_forward(serial, local_port)
                     raise HelperUnavailable(
                         f"The accessibility helper on {serial} speaks protocol {protocol}, "
                         f"this host needs {MIN_PROTOCOL_VERSION} or newer. Reinstall it with: "
@@ -957,48 +929,41 @@ class AccessibilityHelperManager:
             version = info.get("version_code")
             session = HelperSession(
                 serial=serial,
-                local_port=local_port,
                 transport_id=transport,
                 version_code=int(version) if isinstance(version, (int, float)) else None,
                 version_name=str(info.get("version_name") or ""),
-                owns_forward=owns_forward,
+                endpoint=self.transport.endpoint.identity,
                 token=token,
                 protocol_version=protocol,
             )
             with self._registry_lock:
-                self._sessions[serial] = session
+                self._sessions[self._key(serial)] = session
             logger.info(
-                f"Accessibility helper attached on {serial}: 127.0.0.1:{local_port} "
+                f"Accessibility helper attached on {serial} via {session.endpoint} "
                 f"(v{session.version_name or '?'}, protocol {protocol}, transport {transport})"
             )
             return session
 
     def reattach(self, serial: str) -> HelperSession:
-        """Rebuild the tunnel after a request failed; never installs anything.
+        """Re-check the helper after a request failed; never installs anything.
 
         The caller had a working session, so a dead service is re-bound.
         """
         with self._device_lock(serial):
-            self._drop_session(serial, remove_forward=True)
+            self._drop_session(serial)
             return self.attach(serial, provision=False, revive=True)
 
     def detach(self, serial: str) -> None:
         with self._device_lock(serial):
-            self._drop_session(serial, remove_forward=True)
+            self._drop_session(serial)
 
-    def _drop_session(self, serial: str, *, remove_forward: bool) -> None:
+    def _drop_session(self, serial: str) -> None:
         with self._registry_lock:
-            session = self._sessions.pop(serial, None)
-        if session is None:
-            return
-        if remove_forward and session.owns_forward:
-            self._remove_forward(serial, session.local_port)
+            self._sessions.pop(self._key(serial), None)
 
     def detach_all(self) -> None:
         with self._registry_lock:
-            serials = list(self._sessions)
-        for serial in serials:
-            self.detach(serial)
+            self._sessions.clear()
 
 
 def _protocol_of(info: dict[str, Any] | None) -> int:
@@ -1009,6 +974,23 @@ def _protocol_of(info: dict[str, Any] | None) -> int:
 
 
 helper_manager = AccessibilityHelperManager()
+
+_managers: dict[AdbEndpoint, AccessibilityHelperManager] = {}
+_managers_lock = threading.Lock()
+
+
+def helper_manager_for(endpoint: AdbEndpoint | None) -> AccessibilityHelperManager:
+    """The manager bound to ``endpoint`` (one per endpoint); the process-wide one for ``None``."""
+    if endpoint is None:
+        return helper_manager
+    with _managers_lock:
+        manager = _managers.get(endpoint)
+        if manager is None:
+            manager = _managers[endpoint] = AccessibilityHelperManager(
+                transport=EndpointTransport.shared(endpoint)
+            )
+        return manager
+
 
 __all__ = [
     "AccessibilityHelperManager",
@@ -1026,5 +1008,6 @@ __all__ = [
     "TOKEN_RECEIVER",
     "auto_install_allowed",
     "helper_manager",
+    "helper_manager_for",
     "load_bundled_helper",
 ]
