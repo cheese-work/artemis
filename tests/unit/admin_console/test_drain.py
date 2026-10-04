@@ -162,6 +162,51 @@ async def test_run_counts_until_cleanup_completes(env):
     assert state.executing_run_keys == set()
 
 
+@pytest.mark.asyncio
+async def test_dispatched_run_counts_after_stop_removes_row_before_it_starts(env):
+    """A targeted stop drops the queue row while the coroutine has not run yet."""
+    state.queue_items.append(_item("a"))
+    release = asyncio.Event()
+
+    async def fake_execute(task_item):
+        await release.wait()
+
+    with patch.object(TaskQueueService, "_execute_task_item", fake_execute):
+        TaskQueueService._dispatch_pending_tasks()
+        # Dispatched, coroutine not yet started: the stop removes the row now.
+        state.queue_items.clear()
+
+        assert TaskQueueService.active_run_count() == 1
+        await asyncio.sleep(0)
+        assert TaskQueueService.active_run_count() == 1
+
+        release.set()
+        await asyncio.gather(*TaskQueueService._run_tasks)
+
+    assert TaskQueueService.active_run_count() == 0
+
+
+@pytest.mark.asyncio
+async def test_run_cancelled_before_it_starts_counts_until_the_task_is_done(env):
+    state.queue_items.append(_item("a"))
+
+    async def fake_execute(task_item):
+        raise AssertionError("never reached: cancelled before the first step")
+
+    with patch.object(TaskQueueService, "_execute_task_item", fake_execute):
+        TaskQueueService._dispatch_pending_tasks()
+        (run_task,) = TaskQueueService._run_tasks
+        state.queue_items.clear()
+        run_task.cancel()
+
+        assert TaskQueueService.active_run_count() == 1
+        await asyncio.gather(run_task, return_exceptions=True)
+        await asyncio.sleep(0)
+
+    assert TaskQueueService.active_run_count() == 0
+    assert state.executing_run_keys == set()
+
+
 # -- admission closes, execution does not ---------------------------------
 
 

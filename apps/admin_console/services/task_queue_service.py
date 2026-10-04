@@ -495,7 +495,14 @@ class TaskQueueService:
             dispatched_any = True
             if device is not None:
                 busy_devices.add(target.lock_key)
+            # Count from scheduling, not from the coroutine's first step: a stop
+            # can drop the queue row, or cancel the task, before it ever runs.
+            run_key = str(sess_id) if sess_id else uuid.uuid4().hex
+            state.executing_run_keys.add(run_key)
             run_task = loop.create_task(cls._execute_task_item(item))
+            run_task.add_done_callback(
+                lambda _t, key=run_key: state.executing_run_keys.discard(key)
+            )
             # Hold a strong reference: asyncio keeps only weak refs to running
             # tasks, and a collected run would strand its queue item forever.
             cls._run_tasks.add(run_task)
