@@ -7,6 +7,7 @@ DeviceExecutionLock.acquire while the real server NACK path runs.
 import asyncio
 import os
 import threading
+import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -259,3 +260,105 @@ async def test_nack_is_refused_when_the_arbiter_cannot_read_lock_state(tmp_path,
     worker.kill.assert_not_called()
     assert state.queue_items[0]["status"] == "starting"
     assert len(_ticket_files(ticket)) == 1
+
+
+# -- third review: the arbiter must never revoke a lease it cannot prove dead --
+
+
+@pytest.mark.asyncio
+async def test_nack_cannot_reap_an_unreadable_live_worker_lock(tmp_path, monkeypatch):
+    host()
+    ticket = DeviceExecutionLock.reserve("probe", "d1", session_id="r1", lock_scope="host:host-a")
+    worker = await spawned_worker(tmp_path, monkeypatch, ticket, asyncio.Event())
+    lock = worker_lock(ticket)
+    lock.acquire(blocking=False)
+    old_time = time.time() - DeviceExecutionLock._MALFORMED_LOCK_GRACE_SECONDS - 1
+    os.utime(lock.path, (old_time, old_time))
+    lock.path.chmod(0)
+    kills_while_locked = []
+    worker.kill.side_effect = lambda: kills_while_locked.append(lock._acquired)
+    try:
+        with pytest.raises(PermissionError):
+            lock.path.read_text()
+        first_decision = await TaskQueueService.requeue_starting("r1")
+        file_kept_after_refusal = lock.path.exists()
+        second_decision = await TaskQueueService.requeue_starting("r1")
+        print(
+            f"UNREADABLE LIVE LOCK: decisions={[first_decision, second_decision]}, "
+            f"file_kept_after_refusal={file_kept_after_refusal}, "
+            f"kills_while_locked={kills_while_locked}"
+        )
+        assert kills_while_locked == []
+        assert file_kept_after_refusal
+        assert first_decision is False
+        assert second_decision is False
+    finally:
+        if lock.path.exists():
+            lock.path.chmod(0o600)
+        lock.release()
+
+
+@pytest.mark.asyncio
+async def test_nack_preserves_a_worker_paused_before_owner_metadata_write(tmp_path, monkeypatch):
+    host()
+    ticket = DeviceExecutionLock.reserve("probe", "d1", session_id="r1", lock_scope="host:host-a")
+    worker = await spawned_worker(tmp_path, monkeypatch, ticket, asyncio.Event())
+    lock = worker_lock(ticket)
+    lease_created = threading.Event()
+    allow_write = threading.Event()
+    acquired = threading.Event()
+    allow_return = threading.Event()
+    errors = []
+    real_write = os.write
+    real_take = lock._try_acquire_owner_lock
+
+    def controlled_write(descriptor, payload):
+        if lock.token.encode() in payload:
+            lease_created.set()
+            assert allow_write.wait(5)
+        return real_write(descriptor, payload)
+
+    def controlled_take():
+        taken = real_take()
+        if taken:
+            acquired.set()
+            assert allow_return.wait(5)
+        return taken
+
+    def acquire():
+        try:
+            lock.acquire(blocking=False)
+        except BaseException as error:
+            errors.append(error)
+
+    monkeypatch.setattr(os, "write", controlled_write)
+    monkeypatch.setattr(lock, "_try_acquire_owner_lock", controlled_take)
+    thread = threading.Thread(target=acquire)
+    thread.start()
+    assert lease_created.wait(5)
+    old_time = time.time() - DeviceExecutionLock._MALFORMED_LOCK_GRACE_SECONDS - 1
+    os.utime(lock.path, (old_time, old_time))
+    kills_while_locked = []
+    worker.kill.side_effect = lambda: kills_while_locked.append(lock._acquired)
+    try:
+        first_decision = await TaskQueueService.requeue_starting("r1")
+        file_kept_after_refusal = lock.path.exists()
+        allow_write.set()
+        assert acquired.wait(5)
+        assert lock._acquired
+        second_decision = await TaskQueueService.requeue_starting("r1")
+        print(
+            f"PAUSED METADATA WRITE: decisions={[first_decision, second_decision]}, "
+            f"file_kept_after_refusal={file_kept_after_refusal}, "
+            f"kills_while_locked={kills_while_locked}"
+        )
+        assert kills_while_locked == []
+        assert file_kept_after_refusal
+        assert first_decision is False
+        assert second_decision is False
+    finally:
+        allow_write.set()
+        allow_return.set()
+        thread.join(5)
+        assert not thread.is_alive()
+        lock.release()
