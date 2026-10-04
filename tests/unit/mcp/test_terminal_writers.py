@@ -92,3 +92,43 @@ def test_trace_store_update_still_serves_non_terminal_metadata(traces):
     updated = trace_store.update_trace_status(trace_id, "running", device_serial="emulator-5554")
 
     assert updated["device_serial"] == "emulator-5554"
+
+
+def test_late_progress_update_cannot_roll_back_a_published_outcome(traces):
+    trace_id = _running_task(traces)
+    LifecycleAuthority(os.path.join(traces, "data_engine.db")).finish(trace_id, "cancelled")
+    assert trace_store.read_status(trace_id)["status"] == "cancelled"
+
+    # the MCP startup path reports "running" late, with a device serial
+    updated = trace_store.update_trace_status(trace_id, "running", device_serial="emulator-5554")
+
+    status = trace_store.read_status(trace_id)
+    assert (status["status"], updated["status"]) == ("cancelled", "cancelled")
+    assert status["device_serial"] == "emulator-5554"  # metadata still lands
+
+
+def test_completion_during_the_liveness_probe_wins_at_the_mcp_seam(traces, monkeypatch):
+    import mcp_server.tools.task_manager as task_manager
+
+    trace_id = _running_task(traces, pid=987654)  # a pid unknown to status.json: hydration is dirty
+    db_path = os.path.join(traces, "data_engine.db")
+
+    def worker_completes_during_the_probe(pid):
+        LifecycleAuthority(db_path).finish(trace_id, "completed")
+        return False  # the probe then reports the worker dead
+
+    monkeypatch.setattr(task_manager, "_pid_alive", worker_completes_during_the_probe)
+    monkeypatch.setattr(task_manager, "_session_tracked_by_lock", lambda _tid: False)
+    monkeypatch.setattr(
+        task_manager,
+        "notify",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("no failure notice")),
+    )
+
+    result = mobile_manage_task(action="status", trace_id=trace_id)
+
+    assert result["status"] == "completed"
+    assert _db_status(traces, trace_id) == "completed"
+    status = trace_store.read_status(trace_id)
+    assert status["status"] == "completed"
+    assert status.get("error") is None

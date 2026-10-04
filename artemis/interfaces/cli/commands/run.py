@@ -16,6 +16,7 @@
 
 import asyncio
 import os
+import sqlite3
 import uuid
 from pathlib import Path
 from shutil import which
@@ -120,7 +121,7 @@ async def execute_task(
             if effective_sid:
                 try:
                     finish_trace(str(effective_sid), "failed", error=str(exc))
-                except OSError:
+                except (OSError, ValueError, sqlite3.Error):
                     logger.exception(
                         "Could not record configuration failure for session %s", effective_sid
                     )

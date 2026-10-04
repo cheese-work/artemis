@@ -39,7 +39,6 @@ def env(tmp_path, monkeypatch):
     state.ipc_subscribers.append(subscriber)
     state.queue_items.clear()
     state.active_connections.clear()
-    TaskQueueService._emitted_event_ids.clear()
     yield db_path, events
     if subscriber in state.ipc_subscribers:  # on_shutdown clears the list itself
         state.ipc_subscribers.remove(subscriber)
@@ -412,31 +411,62 @@ async def test_crash_before_delivery_is_recovered_by_the_next_drain(env, monkeyp
 
 
 @pytest.mark.asyncio
-async def test_crash_after_delivery_redelivers_with_the_same_event_id(env, monkeypatch):
+async def test_crash_after_broadcast_before_ack_delivers_exactly_once_across_a_restart(
+    env, monkeypatch
+):
+    from unittest.mock import MagicMock
+
     db_path, events = env
     session_id = _add_running_session(db_path)
     LifecycleAuthority(db_path).interrupt(session_id, InterruptReason.BRIDGE_CLOSED)
+    notify = MagicMock()
+    monkeypatch.setattr("mcp_server.notifiers.notify", notify)
+    task_item = {"session_id": session_id, "conversation_id": "conv-1", "ingress": "mcp"}
 
     def die(*_args, **_kwargs):
         raise sqlite3.OperationalError("database is locked")
 
     with monkeypatch.context() as patched:
         patched.setattr(LifecycleAuthority, "acknowledge", die)
-        TaskQueueService._deliver_outcome(session_id, {}, "goal")
-    assert len(_emitted(events, session_id)) == 1 and _outbox_pending(db_path) == 1
+        TaskQueueService._deliver_outcome(session_id, task_item, "goal")
+    assert len(_interrupted(events, session_id)) == 1 and _outbox_pending(db_path) == 1
 
-    # Same process: the in-memory memo suppresses the duplicate broadcast.
+    # "Restart": nothing in this process remembers the delivery; the drain must
+    # still not deliver it again, whoever is listening.
+    for attr in list(vars(TaskQueueService)):
+        if attr.startswith("_emitted"):
+            monkeypatch.setattr(TaskQueueService, attr, set())
     TaskQueueService._drain_outcome_events()
-    assert len(_emitted(events, session_id)) == 1 and _outbox_pending(db_path) == 0
+    TaskQueueService._deliver_outcome(session_id, task_item, "goal")
 
-    # After a restart the memo is gone: a redelivery reuses the dedupe id.
-    LifecycleAuthority(db_path).interrupt(session_id, InterruptReason.AUTH_EXPIRED)  # no-op
-    with sqlite3.connect(db_path) as conn:
-        conn.execute("UPDATE lifecycle_outbox SET delivered_at = NULL")
-    TaskQueueService._emitted_event_ids.clear()
+    assert [p["event_id"] for p in _emitted(events, session_id)] == [f"{session_id}:outcome"]
+    assert len(_interrupted(events, session_id)) == 1
+    notify.assert_called_once()
+    assert _outbox_pending(db_path) == 0
+
+
+@pytest.mark.asyncio
+async def test_a_failed_broadcast_releases_its_claim_so_the_retry_delivers(env, monkeypatch):
+    db_path, events = env
+    session_id = _add_running_session(db_path)
+    LifecycleAuthority(db_path).interrupt(session_id, InterruptReason.BRIDGE_CLOSED)
+    original = TaskQueueService._broadcast_event.__func__
+    calls = {"n": 0}
+
+    def flaky(cls, event_type, data):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("socket died mid-broadcast")
+        return original(cls, event_type, data)
+
+    monkeypatch.setattr(TaskQueueService, "_broadcast_event", classmethod(flaky))
+    TaskQueueService._deliver_outcome(session_id, {}, "goal")
+    assert events == [] and _outbox_pending(db_path) == 1
+
     TaskQueueService._drain_outcome_events()
-    ids = [p["event_id"] for p in _emitted(events, session_id)]
-    assert ids == [f"{session_id}:outcome"] * 2
+
+    assert len(_ended(events, session_id)) == 1
+    assert len(_interrupted(events, session_id)) == 1
     assert _outbox_pending(db_path) == 0
 
 

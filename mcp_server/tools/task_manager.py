@@ -34,7 +34,7 @@ from artemis.runtime import (
     stop_task_on_daemon,
     trace_store,
 )
-from artemis.runtime.lifecycle import finish_trace
+from artemis.runtime.lifecycle import LifecycleAuthority, Outcome
 from artemis.runtime.process_probe import pid_is_alive
 
 logger = logging.getLogger(__name__)
@@ -51,6 +51,26 @@ def _find_data_engine_db() -> str | None:
         return db_path
     db_path = os.path.join(env_utils.get_project_root(), "traces", "data_engine.db")
     return db_path if os.path.exists(db_path) else None
+
+
+def _finish(trace_id: str, status: str, **fields: Any) -> Outcome:
+    """Commit a run outcome through the lifecycle authority, on the DB this tool reads."""
+    db_path = _find_data_engine_db() or os.path.join(trace_store.TRACES_DIR, "data_engine.db")
+    return LifecycleAuthority(db_path).finish(trace_id, status, **fields)
+
+
+def _adopt_outcome(trace_id: str, status_data: dict[str, Any], outcome: Outcome) -> None:
+    """Make ``status_data`` reflect the authority's published outcome, never a cached one."""
+    if outcome.status:
+        status_data["status"] = outcome.status
+        status_data["interrupt_reason"] = (
+            outcome.interrupt_reason.value if outcome.interrupt_reason else None
+        )
+        if not status_data.get("end_time"):
+            status_data["end_time"] = time.time()
+    published = trace_store.read_status(trace_id)
+    if published:
+        status_data.update(published)
 
 
 def _pid_alive(pid: int | None) -> bool:
@@ -106,14 +126,14 @@ def _reconcile_task_state(
     """
     current_status = status_data.get("status", "unknown")
     pid = status_data.get("pid")
-    dirty = False
 
     # "success" is a legacy alias for the canonical "completed" terminal
     # status; consumers of this reconcile must only ever see "completed".
     if current_status == "success":
-        current_status = "completed"
+        outcome = _finish(trace_id, "completed")
         status_data["status"] = "completed"
-        dirty = True
+        _adopt_outcome(trace_id, status_data, outcome)
+        current_status = status_data["status"]
 
     db_status: str | None = None
     db_pid: int | None = None
@@ -145,7 +165,7 @@ def _reconcile_task_state(
     if db_pid and db_pid != pid:
         pid = db_pid
         status_data["pid"] = pid
-        dirty = True
+        trace_store.update_trace_fields(trace_id, pid=pid)  # a field merge, never the whole cache
 
     # The DB terminal verdict only fills in a status.json that has not reached a
     # terminal state itself, or corrects a liveness-inferred failure. It never
@@ -157,20 +177,21 @@ def _reconcile_task_state(
         current_status in ("running", "pending") or liveness_failed
     ):
         canonical = "completed" if db_status in ("completed", "success") else db_status
-        if current_status != canonical:
-            current_status = canonical
-            status_data["status"] = canonical
-            if canonical != "failed" and status_data.get("error") == _LIVENESS_FAILURE_ERROR:
-                status_data["error"] = None
-            if not status_data.get("end_time"):
-                status_data["end_time"] = time.time()
-            dirty = True
-        if (
-            canonical == "interrupted"
-            and status_data.get("interrupt_reason") != db_interrupt_reason
+        reason = db_interrupt_reason if canonical == "interrupted" else None
+        mismatched_reason = canonical == "interrupted" and (
+            status_data.get("interrupt_reason") != db_interrupt_reason
+        )
+        if (current_status != canonical or mismatched_reason) and (
+            canonical != "interrupted" or reason
         ):
-            status_data["interrupt_reason"] = db_interrupt_reason
-            dirty = True
+            # The DB row already holds the verdict; finishing re-projects it
+            # into status.json (first wins, so it cannot override anything).
+            outcome = _finish(trace_id, canonical, reason=reason)
+            _adopt_outcome(trace_id, status_data, outcome)
+            current_status = status_data["status"]
+            if current_status != "failed" and status_data.get("error") == _LIVENESS_FAILURE_ERROR:
+                status_data["error"] = None
+                trace_store.update_trace_fields(trace_id, error=None)
         is_alive = False
     elif current_status in ("running", "pending"):
         if not pid:
@@ -189,25 +210,32 @@ def _reconcile_task_state(
                 is_alive = True
             elif db_status in ("running", "pending") and db_pid:
                 # The runner registered itself and its process is gone: truly dead.
-                current_status = "failed"
-                _mark_liveness_failure(trace_id, status_data)
+                current_status = _mark_liveness_failure(trace_id, status_data)
             elif (time.time() - (status_data.get("start_time") or 0)) < _STARTUP_GRACE_SECONDS:
                 is_alive = True
             else:
-                current_status = "failed"
-                _mark_liveness_failure(trace_id, status_data)
+                current_status = _mark_liveness_failure(trace_id, status_data)
     else:
         is_alive = False
 
-    if dirty:
-        trace_store.write_status(trace_id, status_data)
     return current_status, pid, is_alive
 
 
-def _mark_liveness_failure(trace_id: str, status_data: dict[str, Any]) -> None:
-    finish_trace(trace_id, "failed", error=_LIVENESS_FAILURE_ERROR)
-    status_data["status"] = "failed"
-    status_data["error"] = _LIVENESS_FAILURE_ERROR
+def _mark_liveness_failure(trace_id: str, status_data: dict[str, Any]) -> str:
+    """Request ``failed`` for a worker that looks dead; returns the outcome that won.
+
+    A completion or cancellation that landed during the probe beats this
+    failure, so the caller reports what the authority published, not the guess.
+    """
+    outcome = _finish(trace_id, "failed", error=_LIVENESS_FAILURE_ERROR)
+    _adopt_outcome(trace_id, status_data, outcome)
+    if not status_data.get("status") or status_data["status"] in ("running", "pending"):
+        status_data["status"] = "failed"  # no row and no status file: report the guess
+        status_data["error"] = _LIVENESS_FAILURE_ERROR
+    if outcome.status not in (None, "failed") or (
+        outcome.status == "failed" and not outcome.committed
+    ):
+        return status_data["status"]  # another outcome won, or the failure was already announced
     conv_id = status_data.get("conversation_id")
     if conv_id:
         try:
@@ -229,6 +257,7 @@ def _mark_liveness_failure(trace_id: str, status_data: dict[str, Any]) -> None:
                 exc,
                 exc_info=True,
             )
+    return status_data["status"]
 
 
 @mcp.tool()
@@ -317,7 +346,7 @@ def mobile_manage_task(
                         if isinstance(d_info, dict) and d_info.get("device_id"):
                             device_serial = d_info["device_id"]
                             status_data["device_serial"] = device_serial
-                            trace_store.write_status(trace_id, status_data)
+                            trace_store.update_trace_fields(trace_id, device_serial=device_serial)
                     except (ValueError, TypeError, OSError):
                         # Malformed device_info or failed cache write: the
                         # serial simply stays unknown for this poll.
@@ -334,7 +363,7 @@ def mobile_manage_task(
                     if owner.pid == pid or owner.session_id == trace_id:
                         device_serial = owner.device_id
                         status_data["device_serial"] = device_serial
-                        trace_store.write_status(trace_id, status_data)
+                        trace_store.update_trace_fields(trace_id, device_serial=device_serial)
                         break
             except OSError:
                 # Lock-owner probe / cache write failed: serial stays unknown.
@@ -539,7 +568,7 @@ def mobile_manage_task(
                     if dev_owner.session_id and str(dev_owner.session_id) == trace_id:
                         pid = dev_owner.pid
                         status_data["pid"] = pid
-                        trace_store.write_status(trace_id, status_data)
+                        trace_store.update_trace_fields(trace_id, pid=pid)
                         break
             except OSError as exc:
                 # Without a resolved pid the stop falls back to the
@@ -578,7 +607,7 @@ def mobile_manage_task(
                         "message": f"Failed to terminate process {pid}: {e}",
                     }
 
-        finish_trace(trace_id, "cancelled", error="Task aborted by user request.")
+        _finish(trace_id, "cancelled", error="Task aborted by user request.")
         return {
             "trace_id": trace_id,
             "status": "cancelled",

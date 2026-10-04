@@ -764,10 +764,11 @@ class TaskQueueService:
                 {"session_id": sess_id, "error": recording_error},
             )
 
-    # Outcome events are delivered at-least-once: an event is acknowledged in
-    # the outbox only after it was broadcast, so a crash in between redelivers
-    # it with the same ``event_id``. This memo drops repeats inside one process.
-    _emitted_event_ids: set[str] = set()
+    # Each consumer of an outcome event (UI broadcast, external notification)
+    # claims its delivery durably in the outbox before acting, so a crash after
+    # the effect but before the final acknowledgement is not repeated by the
+    # drain of a restarted server. A failed effect releases its claim and the
+    # event stays pending for the next drain.
     _delivery_lock = threading.Lock()
 
     @classmethod
@@ -776,44 +777,63 @@ class TaskQueueService:
     ) -> None:
         """Deliver the pending outcome event of ``sess_id`` (every session when None).
 
-        Every finalizer (worker exit, stop, sweep, startup, shutdown) may call
-        this: the lock plus the memo keep a session from being announced twice,
-        and an event whose delivery failed stays pending for the next drain.
+        Every finalizer (worker exit, stop, sweep, startup, shutdown) may call this.
         """
         if sess_id is not None:
             state.active_connections.pop(sess_id, None)
+        lifecycle = session_repo.lifecycle
         with cls._delivery_lock:
             try:
-                events = session_repo.lifecycle.pending_events(
-                    str(sess_id) if sess_id is not None else None
-                )
+                events = lifecycle.pending_events(str(sess_id) if sess_id is not None else None)
             except sqlite3.Error:
                 logger.warning("Could not read pending outcome events", exc_info=True)
                 return
             delivered: list[str] = []
             for event in events:
-                event_id = event["dedupe_id"]
-                if event_id not in cls._emitted_event_ids:
-                    item = task_item
-                    if item is None or str(item.get("session_id")) != str(event["session_id"]):
-                        item = cls._queue_item_for(event["session_id"])
-                    try:
-                        cls._emit_outcome(event, item, goal)
-                    except (OSError, RuntimeError, ValueError, KeyError, TypeError):
-                        logger.warning(
-                            "Could not deliver outcome event %s; it stays pending",
-                            event_id,
-                            exc_info=True,
-                        )
-                        continue
-                    if len(cls._emitted_event_ids) > 1000:
-                        cls._emitted_event_ids.clear()
-                    cls._emitted_event_ids.add(event_id)
-                delivered.append(event_id)
+                item = task_item
+                if item is None or str(item.get("session_id")) != str(event["session_id"]):
+                    item = cls._queue_item_for(event["session_id"])
+                if cls._deliver_event(lifecycle, event, item, goal):
+                    delivered.append(event["dedupe_id"])
             try:
-                session_repo.lifecycle.acknowledge(delivered)
+                lifecycle.acknowledge(delivered)
             except sqlite3.Error:
                 logger.warning("Could not acknowledge outcome events", exc_info=True)
+
+    @classmethod
+    def _deliver_event(
+        cls, lifecycle: Any, event: dict[str, Any], task_item: dict[str, Any], goal: str | None
+    ) -> bool:
+        """Run each consumer's claimed delivery; False leaves the event pending."""
+        event_id = event["dedupe_id"]
+        steps = (
+            ("broadcast", lambda: cls._broadcast_outcome(event)),
+            (
+                "notify",
+                lambda: cls._notify_session_end(
+                    task_item, event["session_id"], goal, event["status"], event_id
+                ),
+            ),
+        )
+        for consumer, effect in steps:
+            try:
+                if not lifecycle.claim_delivery(event_id, consumer):
+                    continue  # already delivered, possibly before a restart
+            except sqlite3.Error:
+                logger.warning("Could not claim %s of %s", consumer, event_id, exc_info=True)
+                return False
+            try:
+                effect()
+            except (OSError, RuntimeError, ValueError, KeyError, TypeError):
+                logger.warning(
+                    "Could not %s %s; it stays pending", consumer, event_id, exc_info=True
+                )
+                try:
+                    lifecycle.release_delivery(event_id, consumer)
+                except sqlite3.Error:
+                    logger.warning("Could not release %s of %s", consumer, event_id, exc_info=True)
+                return False
+        return True
 
     @classmethod
     def _drain_outcome_events(cls) -> None:
@@ -832,7 +852,7 @@ class TaskQueueService:
         )
 
     @classmethod
-    def _emit_outcome(cls, event: dict[str, Any], task_item: dict[str, Any], goal: str | None):
+    def _broadcast_outcome(cls, event: dict[str, Any]) -> None:
         sess_id, status, reason = event["session_id"], event["status"], event["interrupt_reason"]
         payload = {
             "event_id": event["dedupe_id"],
@@ -853,7 +873,6 @@ class TaskQueueService:
                     "interrupted_at": event["created_at"],
                 },
             )
-        cls._notify_session_end(task_item, sess_id, goal, status, event["dedupe_id"])
 
     @classmethod
     def _notify_session_end(
@@ -1252,7 +1271,7 @@ class TaskQueueService:
                 ):
                     try:
                         session_repo.lifecycle.finish(session_id, "failed", error=str(exc))
-                    except OSError:
+                    except (OSError, sqlite3.Error):
                         logger.exception(
                             "Could not mark queue setup failure for session %s", session_id
                         )

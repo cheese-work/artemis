@@ -232,6 +232,50 @@ async def test_enqueue_marks_existing_running_trace_failed_when_db_admission_fai
 
 
 @pytest.mark.asyncio
+async def test_enqueue_rollback_survives_a_locked_database_and_keeps_the_original_error(
+    monkeypatch,
+):
+    import sqlite3
+
+    from artemis.runtime.lifecycle import LifecycleAuthority
+
+    queue_module = importlib.import_module("apps.admin_console.services.task_queue_service")
+    repository = queue_module.session_repo
+    create_queued_session = repository.create_queued_session
+    session_ids: list[str] = []
+
+    def fail_second_queued_session(*args, **kwargs):
+        session_ids.append(args[0])
+        if len(session_ids) == 2:
+            return False
+        return create_queued_session(*args, **kwargs)
+
+    real_finish = LifecycleAuthority.finish
+
+    def finish_locked_for_the_second_task(self, session_id, *args, **kwargs):
+        if len(session_ids) == 2 and session_id == session_ids[1]:
+            raise sqlite3.OperationalError("database is locked")
+        return real_finish(self, session_id, *args, **kwargs)
+
+    monkeypatch.setattr(repository, "create_queued_session", fail_second_queued_session)
+    monkeypatch.setattr(LifecycleAuthority, "finish", finish_locked_for_the_second_task)
+    with (
+        patch.object(TaskQueueService, "ensure_worker_running"),
+        patch.object(
+            TaskQueueService, "_reject_unavailable_device", new=AsyncMock(return_value=None)
+        ),
+        pytest.raises(RuntimeError, match="Could not persist queued session"),
+    ):
+        await TaskQueueService.enqueue_tasks(
+            ["First task", "Second task"], device_serial="test-device"
+        )
+
+    # the first task was failed and removed even though recording the second failure raised
+    assert repository.get_session_status(session_ids[0]) == "failed"
+    assert state.queue_items == []
+
+
+@pytest.mark.asyncio
 async def test_enqueue_rolls_back_earlier_items_when_later_setup_fails(tmp_path, monkeypatch):
     queue_module = importlib.import_module("apps.admin_console.services.task_queue_service")
     repository = queue_module.session_repo

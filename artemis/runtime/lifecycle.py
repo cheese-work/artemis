@@ -70,9 +70,13 @@ CREATE TABLE IF NOT EXISTS lifecycle_outbox (
     status TEXT NOT NULL,
     interrupt_reason TEXT,
     created_at REAL NOT NULL,
-    delivered_at REAL
+    delivered_at REAL,
+    broadcast_at REAL,
+    notified_at REAL
 )
 """
+# Durable per-consumer delivery claims on an outbox row (column per consumer).
+_DELIVERY_COLUMNS = {"broadcast": "broadcast_at", "notify": "notified_at"}
 
 
 def canonical_status(status: str | None) -> str | None:
@@ -122,6 +126,13 @@ def ensure_lifecycle_schema(conn: sqlite3.Connection) -> bool:
             except sqlite3.OperationalError:
                 pass  # another process added it first
     conn.execute(_OUTBOX_DDL)
+    outbox_columns = {row[1] for row in conn.execute("PRAGMA table_info(lifecycle_outbox)")}
+    for column in _DELIVERY_COLUMNS.values():
+        if column not in outbox_columns:
+            try:
+                conn.execute(f"ALTER TABLE lifecycle_outbox ADD COLUMN {column} REAL")
+            except sqlite3.OperationalError:
+                pass  # another process added it first
     conn.commit()
     return True
 
@@ -427,8 +438,8 @@ class LifecycleAuthority:
         """Outcome events not yet acknowledged, oldest first.
 
         Reading does not acknowledge: a crash before delivery leaves the event
-        pending for the next drain. Delivery is therefore at-least-once; every
-        redelivery carries the same ``dedupe_id`` so consumers can drop repeats.
+        pending for the next drain. Consumers claim their delivery durably
+        (``claim_delivery``), so a drain after a crash repeats no side effect.
         """
         where, args = ("AND session_id = ?", (str(session_id),)) if session_id else ("", ())
         with self._connect() as conn:
@@ -438,6 +449,35 @@ class LifecycleAuthority:
                 args,
             ).fetchall()
         return [dict(r) for r in rows]
+
+    def claim_delivery(self, dedupe_id: str, consumer: str) -> bool:
+        """Durably claim one consumer's delivery of an event; True for exactly one caller.
+
+        Call before the side effect and ``release_delivery`` if it fails. A
+        claim that survives a crash means the effect already happened (or was
+        about to), so a restarted drain never repeats it. The one window this
+        trades away: a crash between claiming and sending loses that effect.
+        """
+        column = _DELIVERY_COLUMNS[consumer] if consumer in _DELIVERY_COLUMNS else None
+        if column is None:
+            raise ValueError(f"unknown delivery consumer {consumer!r}")
+        with self._txn() as conn:
+            return (
+                conn.execute(
+                    f"UPDATE lifecycle_outbox SET {column} = ? "
+                    f"WHERE dedupe_id = ? AND {column} IS NULL",
+                    (self._clock(), dedupe_id),
+                ).rowcount
+                > 0
+            )
+
+    def release_delivery(self, dedupe_id: str, consumer: str) -> None:
+        """Undo a claim whose side effect did not happen, so a later drain retries it."""
+        column = _DELIVERY_COLUMNS[consumer]
+        with self._txn() as conn:
+            conn.execute(
+                f"UPDATE lifecycle_outbox SET {column} = NULL WHERE dedupe_id = ?", (dedupe_id,)
+            )
 
     def acknowledge(self, dedupe_ids: list[str]) -> int:
         """Mark delivered events done; idempotent. Returns how many were newly acknowledged."""

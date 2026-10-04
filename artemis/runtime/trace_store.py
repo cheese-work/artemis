@@ -410,6 +410,14 @@ def update_trace_status(
                 )
             return None
 
+        if data.get("status") in _TERMINAL_STATUSES:
+            # A published outcome is never rolled back by a late progress or
+            # metadata writer; only enrichment that is not outcome data lands.
+            if device_serial is not None:
+                data["device_serial"] = device_serial
+                write_status(trace_id, data)
+            return data
+
         data["status"] = status
         if error is not None:
             data["error"] = error

@@ -47,10 +47,12 @@ def _db_with_session(
     conn = sqlite3.connect(db_path)
     conn.execute(
         "CREATE TABLE sessions "
-        "(session_id TEXT, status TEXT, pid INTEGER, start_time REAL, interrupt_reason TEXT)"
+        "(session_id TEXT, status TEXT, pid INTEGER, start_time REAL, end_time REAL,"
+        " interrupt_reason TEXT)"
     )
     conn.execute(
-        "INSERT INTO sessions VALUES (?, ?, ?, ?, ?)",
+        "INSERT INTO sessions (session_id, status, pid, start_time, interrupt_reason)"
+        " VALUES (?, ?, ?, ?, ?)",
         (trace_id, status, pid, time.time(), interrupt_reason),
     )
     conn.commit()
