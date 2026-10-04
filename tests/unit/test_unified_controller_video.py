@@ -352,8 +352,17 @@ def mock_ctx(tmp_path):
     return ctx
 
 
+@pytest.fixture
+def mock_scrcpy_toolchain(monkeypatch):
+    monkeypatch.setattr("artemis.controllers.unified_controller.find_scrcpy", lambda: "scrcpy")
+    monkeypatch.setattr(
+        "artemis.controllers.unified_controller.detect_scrcpy_version",
+        lambda executable: "1.25",
+    )
+
+
 @pytest.mark.asyncio
-async def test_unified_controller_start_recording(mock_ctx, tmp_path):
+async def test_unified_controller_start_recording(mock_ctx, tmp_path, mock_scrcpy_toolchain):
     controller = UnifiedMobileController(mock_ctx)
     remove_active_session("emulator-5554")
 
@@ -704,7 +713,9 @@ async def test_await_scrcpy_first_frame_falls_back_on_timeout():
 
 
 @pytest.mark.asyncio
-async def test_start_recording_anchors_timeline_to_first_frame(mock_ctx, tmp_path):
+async def test_start_recording_anchors_timeline_to_first_frame(
+    mock_ctx, tmp_path, mock_scrcpy_toolchain
+):
     controller = UnifiedMobileController(mock_ctx)
     remove_active_session("emulator-5554")
 
@@ -735,7 +746,7 @@ async def test_start_recording_anchors_timeline_to_first_frame(mock_ctx, tmp_pat
 
 
 @pytest.mark.asyncio
-async def test_next_segment_anchors_at_first_frame(mock_ctx, tmp_path):
+async def test_next_segment_anchors_at_first_frame(mock_ctx, tmp_path, mock_scrcpy_toolchain):
     controller = UnifiedMobileController(mock_ctx)
     session = RecordingSession(
         video_id=uuid4(),
