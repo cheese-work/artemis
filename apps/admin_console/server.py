@@ -83,7 +83,7 @@ from apps.admin_console.core.access_control import (
 
 try:
     from admin_console.core.security import SameOriginBoundaryMiddleware
-    from admin_console.core.state import ServerState, state
+    from admin_console.core.state import IN_FLIGHT_STATUSES, ServerState, state
     from admin_console.database.connection import db_session, get_db
     from admin_console.database.repositories.session_repository import session_repo
     from admin_console.database.repositories.step_repository import step_repo
@@ -106,7 +106,7 @@ try:
     from admin_console.services.task_queue_service import task_queue_service
 except ImportError:
     from apps.admin_console.core.security import SameOriginBoundaryMiddleware
-    from apps.admin_console.core.state import state
+    from apps.admin_console.core.state import IN_FLIGHT_STATUSES, state
     from apps.admin_console.database.repositories.session_repository import session_repo
     from apps.admin_console.routers import (
         device_bridge,
@@ -234,7 +234,9 @@ async def on_shutdown():
     owned_items = {
         str(item["session_id"]): item
         for item in state.queue_items
-        if isinstance(item, dict) and item.get("status") == "running" and item.get("session_id")
+        if isinstance(item, dict)
+        and item.get("status") in IN_FLIGHT_STATUSES
+        and item.get("session_id")
     }
 
     worker = state.worker_task
@@ -488,7 +490,8 @@ class ArtemisUvicornServer(uvicorn.Server):
         if proc is not None and proc.returncode is None:
             return True
         return any(
-            isinstance(item, dict) and item.get("status") == "running" for item in state.queue_items
+            isinstance(item, dict) and item.get("status") in IN_FLIGHT_STATUSES
+            for item in state.queue_items
         )
 
     @staticmethod

@@ -26,14 +26,18 @@ from typing import Any
 import uuid
 
 try:
-    from admin_console.core.state import state
+    from admin_console.core.state import IN_FLIGHT_STATUSES, state
     from admin_console.database.repositories.session_repository import session_repo
     from admin_console.services import worker_process_io
+    from admin_console.services.host_admission import RunPhase, host_admission
+    from admin_console.services.host_admission import enabled as host_agent_enabled
     from admin_console.services.media_service import media_service
 except ImportError:
-    from apps.admin_console.core.state import state
+    from apps.admin_console.core.state import IN_FLIGHT_STATUSES, state
     from apps.admin_console.database.repositories.session_repository import session_repo
     from apps.admin_console.services import worker_process_io
+    from apps.admin_console.services.host_admission import RunPhase, host_admission
+    from apps.admin_console.services.host_admission import enabled as host_agent_enabled
     from apps.admin_console.services.media_service import media_service
 
 from artemis.config import (
@@ -57,6 +61,7 @@ from artemis.runtime import (
 logger = logging.getLogger(__name__)
 
 _STOPPED_FROM_FRONTEND = "Task stopped from the Artemis frontend."
+_CANCELLED_WHILE_QUEUED = "Queued task cancelled from the Artemis frontend."
 # Cadence of the sweep that fails running sessions whose worker vanished.
 _VANISHED_WORKER_SWEEP_SECONDS = 15.0
 
@@ -81,6 +86,8 @@ class TaskQueueService:
     _run_tasks: set[asyncio.Task] = set()
     # Deadline enforcers for graceful stops (see _stop_worker_gracefully).
     _forced_stop_tasks: set[asyncio.Task] = set()
+    # In-flight run coroutines by session id, so a NACKed start can be cancelled.
+    _run_tasks_by_session: dict[str, asyncio.Task] = {}
 
     DEFAULT_CANCEL_GRACE_SECONDS = 45.0
 
@@ -239,7 +246,11 @@ class TaskQueueService:
             else current_adb_endpoint()
         )
         serial = task_item.get("device_serial")
-        return AdbTarget(endpoint=endpoint, serial=str(serial) if serial else None)
+        return AdbTarget(
+            endpoint=endpoint,
+            serial=str(serial) if serial else None,
+            host_id=task_item.get("host_id"),
+        )
 
     @classmethod
     def _broadcast_event(
@@ -373,7 +384,7 @@ class TaskQueueService:
         in_flight = {
             str(i.get("session_id"))
             for i in state.queue_items
-            if isinstance(i, dict) and i.get("status") == "running"
+            if isinstance(i, dict) and i.get("status") in IN_FLIGHT_STATUSES
         }
 
         def owned(sid: str) -> bool:
@@ -441,6 +452,7 @@ class TaskQueueService:
         """Launch every pending task admissible under the current concurrency limit."""
         limit = cls._concurrency_limit()
         state.prune_finished_runs()
+        cls._promote_started_runs()
         if limit == 1 and state.is_running:
             return
 
@@ -448,7 +460,9 @@ class TaskQueueService:
         # "running" state, so admission must count those too -- active_runs alone
         # lags behind by the subprocess startup latency.
         in_flight = [
-            i for i in state.queue_items if isinstance(i, dict) and i.get("status") == "running"
+            i
+            for i in state.queue_items
+            if isinstance(i, dict) and i.get("status") in IN_FLIGHT_STATUSES
         ]
         capacity = None
         if limit >= 1:
@@ -491,7 +505,14 @@ class TaskQueueService:
                 # A second worker for this device would wait on its lock.
                 continue
 
-            item["status"] = "running"
+            # The single host-admission hook: a host that is not active, is full or
+            # shares an ambiguous device keeps the row waiting, in place.
+            if (reason := host_admission.admit(item)) is not None:
+                item["wait_reason"] = str(reason)
+                continue
+            item.pop("wait_reason", None)
+
+            item["status"] = "starting" if host_agent_enabled() else "running"
             dispatched_any = True
             if device is not None:
                 busy_devices.add(target.lock_key)
@@ -503,6 +524,16 @@ class TaskQueueService:
             run_task.add_done_callback(
                 lambda _t, key=run_key: state.executing_run_keys.discard(key)
             )
+            cls._run_tasks_by_session[run_key] = run_task
+            # A run cancelled before its first step never reaches its own cleanup.
+            run_task.add_done_callback(
+                lambda t, key=run_key: (
+                    host_admission.release(key),
+                    cls._run_tasks_by_session.pop(key, None)
+                    if cls._run_tasks_by_session.get(key) is t
+                    else None,
+                )
+            )
             # Hold a strong reference: asyncio keeps only weak refs to running
             # tasks, and a collected run would strand its queue item forever.
             cls._run_tasks.add(run_task)
@@ -513,6 +544,40 @@ class TaskQueueService:
                     break
 
     @classmethod
+    def _held_lock_session_ids(cls) -> set[str] | None:
+        """Sessions whose worker holds a device lock; None when lock state is unreadable."""
+        try:
+            return {
+                str(owner.session_id)
+                for owner in DeviceExecutionLock.get_active_owners().values()
+                if owner.session_id
+            }
+        except OSError:
+            return None
+
+    @classmethod
+    def _promote_started_runs(cls) -> None:
+        """Move "starting" rows to "running" once their worker holds the device lock."""
+        starting = [
+            i for i in state.queue_items if isinstance(i, dict) and i.get("status") == "starting"
+        ]
+        held = cls._held_lock_session_ids() if starting else None
+        if not held:
+            return
+        now = time.time()
+        for item in starting:
+            sid = str(item.get("session_id"))
+            if sid not in held:
+                continue
+            item["status"] = "running"
+            item["execution_started_at"] = now
+            host_admission.mark(sid, RunPhase.RUNNING)
+            try:
+                session_repo.lifecycle.mark_execution_started(sid, now)
+            except (OSError, sqlite3.Error):
+                logger.exception("Could not persist execution_started_at for %s", sid)
+
+    @classmethod
     def _begin_task_run(
         cls,
         task_item: dict[str, Any],
@@ -521,8 +586,9 @@ class TaskQueueService:
         goal: str,
         profile: str,
     ) -> None:
-        """Mark the task as running and announce the launch to subscribers."""
-        task_item["status"] = "running"
+        """Announce the launch; the row is "running" now, or once it holds the lock."""
+        if not host_agent_enabled():
+            task_item["status"] = "running"
         task_item["start_time"] = time.time()
 
         # A fresh launch clears a stale stop request left over for this run
@@ -1000,12 +1066,21 @@ class TaskQueueService:
 
     @classmethod
     def _release_run_slot(
-        cls, sess_id: Any, run_key: str, proc: asyncio.subprocess.Process | None
+        cls,
+        sess_id: Any,
+        run_key: str,
+        proc: asyncio.subprocess.Process | None,
+        *,
+        keep_row: bool = False,
     ) -> None:
-        """Clean up the finished task and release this run's scheduling slot."""
-        if sess_id:
+        """Clean up the finished task and release this run's scheduling slot.
+
+        ``keep_row`` leaves the queue row and its ticket for a requeued start.
+        """
+        if sess_id and not keep_row:
             cls._remove_task(sess_id)
             state.cancelled_session_ids.discard(str(sess_id))
+        host_admission.release(run_key)
         state.cancelled_session_ids.discard(run_key)
         state.manually_stopped_run_ids.discard(run_key)
         try:
@@ -1106,6 +1181,7 @@ class TaskQueueService:
                         f"[QueueWorker] Could not persist failure status for [{sess_id}]"
                     )
         finally:
+            host_admission.mark(run_key, RunPhase.CLEANING_UP)
             await cls._finish_output_forwarder(output_task)
             if config_snapshot is not None:
                 try:
@@ -1114,7 +1190,9 @@ class TaskQueueService:
                     logger.warning("Could not remove temporary run config snapshot")
             # 5. Clean up the finished task and release this run's scheduling slot
             try:
-                cls._release_run_slot(sess_id, run_key, proc)
+                cls._release_run_slot(
+                    sess_id, run_key, proc, keep_row=bool(task_item.get("requeue"))
+                )
             finally:
                 state.executing_run_keys.discard(run_key)
 
@@ -1253,6 +1331,7 @@ class TaskQueueService:
         verification_level: str | None = None,
         explorer_mode: str | None = None,
         run_id: str | None = None,
+        host_id: str | None = None,
     ) -> dict[str, Any]:
         """Reserve a device slot and build one pending queue item for a goal."""
         sess_id = single_session_id if single_session_id else str(uuid.uuid4())
@@ -1264,7 +1343,7 @@ class TaskQueueService:
             device_id=assigned_serial or "pending",
             session_id=sess_id,
             ingress=ingress,
-            lock_scope=endpoint.identity,
+            lock_scope=AdbTarget(endpoint, assigned_serial, host_id).lock_scope,
         )
         return {
             "session_id": sess_id,
@@ -1281,6 +1360,7 @@ class TaskQueueService:
             "ingress": ingress,
             "conversation_id": conversation_id,
             "run_id": run_id,
+            "host_id": host_id,
             "status": "pending",
             "queue_ticket": queue_ticket,
             "created_at": now + index * 0.001,
@@ -1303,8 +1383,13 @@ class TaskQueueService:
         verification_level: str | None = None,
         explorer_mode: str | None = None,
         run_id: str | None = None,
+        host_id: str | None = None,
     ) -> dict[str, Any]:
         """Enqueues one or more goals and wakes up the background worker.
+
+        ``host_id`` binds the run to a host-agent computer: it requires
+        ``ARTEMIS_HOST_AGENT`` and an explicit ``device_serial`` (the opaque device
+        ref), skips the local ADB checks, and waits on that host's admission.
 
         ``verification_level`` and ``explorer_mode`` are Pro-profile tuning knobs
         forwarded to the worker as ``--verification-level`` / ``--explorer-pro-mode``;
@@ -1319,6 +1404,10 @@ class TaskQueueService:
             str(verification_level).strip().lower() or None if verification_level else None
         )
         explorer_mode = str(explorer_mode).strip().lower() or None if explorer_mode else None
+        if host_id and not host_agent_enabled():
+            raise ValueError("Host runs need ARTEMIS_HOST_AGENT to be enabled.")
+        if host_id and not device_serial:
+            raise ValueError("A host run must name its device (device_ref).")
         cls.ensure_worker_running()
 
         enqueued_tasks = []
@@ -1334,7 +1423,9 @@ class TaskQueueService:
         # Cheap early refusal; the authoritative check follows the last await.
         cls.require_admission_open()
 
-        rejection_response = await cls._reject_unavailable_device(device_serial)
+        rejection_response = (
+            None if host_id else await cls._reject_unavailable_device(device_serial)
+        )
         if rejection_response is not None:
             return rejection_response
 
@@ -1369,6 +1460,7 @@ class TaskQueueService:
                 verification_level=verification_level,
                 explorer_mode=explorer_mode,
                 run_id=run_id,
+                host_id=host_id,
             )
             session_id = str(task_item["session_id"])
             existing_trace = trace_store.read_status(session_id)
@@ -1519,7 +1611,7 @@ class TaskQueueService:
         """Terminate all active device owners and clear pending queue submissions."""
         # 1. Cancel local queue reservations
         for item in state.queue_items:
-            if isinstance(item, dict) and item.get("status") != "running":
+            if isinstance(item, dict) and item.get("status") not in IN_FLIGHT_STATUSES:
                 DeviceExecutionLock.cancel_reservation(item.get("queue_ticket"))
         state.clear_queue()
 
@@ -1628,7 +1720,7 @@ class TaskQueueService:
                 item
                 for item in state.queue_items
                 if isinstance(item, dict)
-                and item.get("status") == "running"
+                and item.get("status") in IN_FLIGHT_STATUSES
                 and (not target_sid or str(item.get("session_id")) == target_sid)
             ),
             None,
@@ -1889,6 +1981,76 @@ class TaskQueueService:
         cls._clear_pause_file()
 
         cls.ensure_worker_running()
+        state.wake_event.set()
+        return True
+
+    @classmethod
+    def cancel_queued(cls, session_id: str) -> str:
+        """Cancel a run only while it waits; never stops one that has started.
+
+        Returns ``cancelled``, ``already_started`` or ``not_found``. Runs on the
+        event loop without yielding, so it is ordered against dispatch.
+        """
+        sid = str(session_id)
+        item = cls._queue_item_for(sid)
+        row = session_repo.get_session_by_id(sid)
+        waiting = (item and item.get("status") == "pending") or (
+            not item and row and row.get("status") == "queued"
+        )
+        if not waiting:
+            started = item or sid in state.active_runs or sid in state.executing_run_keys or row
+            return "already_started" if started else "not_found"
+        settled = session_repo.update_session_status(
+            sid, "cancelled", time.time(), error=_CANCELLED_WHILE_QUEUED
+        )
+        if not settled and not item:
+            return "already_started"  # a persisted row another writer already settled
+        cls._deliver_outcome(sid)
+        cls._remove_task(sid)  # also cancels the queue ticket, keeping the others' order
+        state.wake_event.set()
+        return "cancelled"
+
+    @classmethod
+    async def requeue_starting(cls, session_id: str) -> bool:
+        """The host agent NACKed a start that raced its barrier: wait again, in place.
+
+        The row keeps its list position and its ticket keeps its original
+        timestamp, so the run goes back to the same place in its device queue.
+        False when the run no longer is a not-yet-executing "starting" one.
+        """
+        sid = str(session_id)
+        item = cls._queue_item_for(sid)
+        run = state.active_runs.get(sid)
+        proc = run.get("process") if run else None
+        if (
+            item.get("status") != "starting"
+            or sid in (cls._held_lock_session_ids() or ())
+            or (proc is not None and proc.returncode is not None)
+        ):
+            return False
+        item["requeue"] = True
+        run_task = cls._run_tasks_by_session.get(sid)
+        if run_task is not None:
+            run_task.cancel()
+            await asyncio.gather(run_task, return_exceptions=True)
+        host_admission.release(sid)
+        if item not in state.queue_items:  # stopped while we waited
+            return True
+        if item.get("queue_ticket"):
+            # A spawned worker owned the ticket and is gone; take it back unchanged.
+            target = cls._task_target(item)
+            DeviceExecutionLock.transfer_reservation(
+                str(item["queue_ticket"]),
+                os.getpid(),
+                description=f"{item.get('ingress')} task: {str(item.get('goal'))[:120]}",
+                device_id=item.get("device_serial") or "pending",
+                session_id=sid,
+                ingress=str(item.get("ingress")),
+                lock_scope=target.lock_scope,
+            )
+        for key in ("requeue", "pid"):
+            item.pop(key, None)
+        item["status"] = "pending"
         state.wake_event.set()
         return True
 
