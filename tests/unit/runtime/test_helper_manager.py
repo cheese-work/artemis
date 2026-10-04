@@ -662,3 +662,65 @@ def test_uiautomation_holders_classifies_processes(env):
     adb.holders[SERIAL] = U2_LINES + ["31000 io.appium.uiautomator2.server.test", "7 sh"]
     holders = manager.uiautomation_holders(SERIAL)
     assert holders == {"uiautomator2": [24635], "appium": [31000]}
+
+
+# --------------------------------------------------------------------------- #
+# Provisioning mutex is scoped by endpoint plus serial
+# --------------------------------------------------------------------------- #
+
+
+def _manager_on(port: int, tmp_path: Path) -> AccessibilityHelperManager:
+    from artemis.runtime.adb_endpoint import AdbEndpoint
+    from artemis.runtime.endpoint_transport import EndpointTransport
+
+    return AccessibilityHelperManager(
+        transport=EndpointTransport(AdbEndpoint.create("127.0.0.1", port)),
+        sleep=lambda _s: None,
+        token_path=tmp_path / f"token-{port}",
+    )
+
+
+def test_the_same_serial_on_two_endpoints_provisions_independently(tmp_path, monkeypatch):
+    monkeypatch.setattr(hm, "get_temp_dir", lambda _name: tmp_path / "mutex")
+    monkeypatch.setattr(hm, "_PROVISION_MUTEX_TIMEOUT_SECONDS", 0.0)
+    first, second = _manager_on(40001, tmp_path), _manager_on(40002, tmp_path)
+
+    with first._provision_mutex(SERIAL):
+        with second._provision_mutex(SERIAL):  # a slow install on one host must not block the other
+            pass
+
+
+def test_the_same_device_on_the_same_endpoint_still_excludes(tmp_path, monkeypatch):
+    monkeypatch.setattr(hm, "get_temp_dir", lambda _name: tmp_path / "mutex")
+    monkeypatch.setattr(hm, "_PROVISION_MUTEX_TIMEOUT_SECONDS", 0.0)
+    first, again = _manager_on(40001, tmp_path), _manager_on(40001, tmp_path)
+
+    with first._provision_mutex(SERIAL):
+        with pytest.raises(TimeoutError):
+            with again._provision_mutex(SERIAL):
+                pass
+
+
+def test_two_serials_on_one_endpoint_do_not_block_each_other(tmp_path, monkeypatch):
+    monkeypatch.setattr(hm, "get_temp_dir", lambda _name: tmp_path / "mutex")
+    monkeypatch.setattr(hm, "_PROVISION_MUTEX_TIMEOUT_SECONDS", 0.0)
+    manager = _manager_on(40001, tmp_path)
+
+    with manager._provision_mutex(SERIAL):
+        with manager._provision_mutex(OTHER):
+            pass
+
+
+def test_the_shared_host_token_mutex_is_not_endpoint_scoped(tmp_path, monkeypatch):
+    """The token file is one per computer: its mutex is deliberately shared across endpoints."""
+    monkeypatch.setattr(hm, "get_temp_dir", lambda _name: tmp_path / "mutex")
+    monkeypatch.setattr(hm, "_PROVISION_MUTEX_TIMEOUT_SECONDS", 0.0)
+    token = tmp_path / "shared-token"
+    first = AccessibilityHelperManager(
+        transport=_manager_on(40001, tmp_path).transport, token_path=token
+    )
+    second = AccessibilityHelperManager(
+        transport=_manager_on(40002, tmp_path).transport, token_path=token
+    )
+
+    assert first.host_token() == second.host_token()
