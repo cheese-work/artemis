@@ -27,6 +27,7 @@ from artemis.runtime.adb_endpoint import AdbEndpoint, AdbSession
 from artemis.toolchain import find_adb
 
 DEFAULT_SESSION_TTL_SECONDS = 300
+DEFAULT_SESSION_MAX_LIFETIME_SECONDS = 4 * 60 * 60
 ADB_COMMAND_TIMEOUT_SECONDS = 15
 STREAM_CLOSE_TIMEOUT_SECONDS = 1
 MAX_ADB_PACKET_BYTES = 1024 * 1024 + 24
@@ -43,6 +44,17 @@ def _session_ttl_seconds() -> float:
     except ValueError:
         return DEFAULT_SESSION_TTL_SECONDS
     return ttl if ttl > 0 else DEFAULT_SESSION_TTL_SECONDS
+
+
+def _session_max_lifetime_seconds() -> float:
+    raw = os.environ.get("ARTEMIS_BRIDGE_SESSION_MAX_LIFETIME_SECONDS")
+    if not raw:
+        return DEFAULT_SESSION_MAX_LIFETIME_SECONDS
+    try:
+        lifetime = float(raw)
+    except ValueError:
+        return DEFAULT_SESSION_MAX_LIFETIME_SECONDS
+    return lifetime if lifetime > 0 else DEFAULT_SESSION_MAX_LIFETIME_SECONDS
 
 
 async def _run_adb_command(*arguments: str) -> str:
@@ -86,8 +98,11 @@ class BridgeSession:
     connected: asyncio.Event = field(default_factory=asyncio.Event)
     created_at: float = field(default_factory=time.monotonic)
     expires_at: float = 0.0
+    idle_timeout_seconds: float = DEFAULT_SESSION_TTL_SECONDS
+    max_expires_at: float = float("inf")
     adb_connect_attempted: bool = False
     revoked: bool = False
+    close_reason: str | None = None
 
     @property
     def serial(self) -> str:
@@ -95,10 +110,20 @@ class BridgeSession:
 
     @property
     def is_expired(self) -> bool:
-        return time.monotonic() >= self.expires_at
+        return time.monotonic() >= min(self.expires_at, self.max_expires_at)
 
     def remaining_seconds(self) -> float:
-        return max(0.0, self.expires_at - time.monotonic())
+        return max(0.0, min(self.expires_at, self.max_expires_at) - time.monotonic())
+
+    def renew(self) -> bool:
+        now = time.monotonic()
+        if now >= min(self.expires_at, self.max_expires_at):
+            return False
+        self.expires_at = min(now + self.idle_timeout_seconds, self.max_expires_at)
+        return True
+
+    def expiration_reason(self) -> str:
+        return "cap" if time.monotonic() >= self.max_expires_at else "idle"
 
 
 class BridgeSessionService:
@@ -109,7 +134,14 @@ class BridgeSessionService:
         self._lock = asyncio.Lock()
 
     async def create_session(self) -> BridgeSession:
-        session = BridgeSession(session_id=uuid.uuid4().hex)
+        created_at = time.monotonic()
+        idle_timeout_seconds = _session_ttl_seconds()
+        session = BridgeSession(
+            session_id=uuid.uuid4().hex,
+            created_at=created_at,
+            idle_timeout_seconds=idle_timeout_seconds,
+            max_expires_at=created_at + _session_max_lifetime_seconds(),
+        )
         listener = await asyncio.start_server(
             lambda reader, writer: self._accept_connection(session, reader, writer),
             "127.0.0.1",
@@ -124,7 +156,10 @@ class BridgeSessionService:
 
             session.listener = listener
             session.port = int(sockets[0].getsockname()[1])
-            session.expires_at = time.monotonic() + _session_ttl_seconds()
+            session.expires_at = min(
+                time.monotonic() + session.idle_timeout_seconds,
+                session.max_expires_at,
+            )
             async with self._lock:
                 self._sessions[session.session_id] = session
             registered = True
@@ -150,6 +185,13 @@ class BridgeSessionService:
             return
 
         session.revoked = True
+        session.close_reason = session.close_reason or "revoked"
+        logger.info(
+            "event=bridge_close session_id=%s serial=%s reason=%s",
+            session.session_id,
+            session.serial,
+            session.close_reason,
+        )
         try:
             if session.adb_connect_attempted:
                 await _run_adb_command("disconnect", session.serial)
