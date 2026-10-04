@@ -61,6 +61,16 @@ _STOPPED_FROM_FRONTEND = "Task stopped from the Artemis frontend."
 _VANISHED_WORKER_SWEEP_SECONDS = 15.0
 
 
+class ServerDraining(RuntimeError):
+    """Admission is closed: the server is draining for a deploy."""
+
+    code = "server_draining"
+    retry_after_seconds = 5
+
+    def __init__(self) -> None:
+        super().__init__("Server is draining for a deploy; retry shortly.")
+
+
 class TaskQueueService:
     """Service managing FIFO task execution, background worker, subprocess lifecycle,
     and startup tasks.
@@ -485,7 +495,14 @@ class TaskQueueService:
             dispatched_any = True
             if device is not None:
                 busy_devices.add(target.lock_key)
+            # Count from scheduling, not from the coroutine's first step: a stop
+            # can drop the queue row, or cancel the task, before it ever runs.
+            run_key = str(sess_id) if sess_id else uuid.uuid4().hex
+            state.executing_run_keys.add(run_key)
             run_task = loop.create_task(cls._execute_task_item(item))
+            run_task.add_done_callback(
+                lambda _t, key=run_key: state.executing_run_keys.discard(key)
+            )
             # Hold a strong reference: asyncio keeps only weak refs to running
             # tasks, and a collected run would strand its queue item forever.
             cls._run_tasks.add(run_task)
@@ -1022,6 +1039,7 @@ class TaskQueueService:
         proc: asyncio.subprocess.Process | None = None
         output_task: asyncio.Task[None] | None = None
         config_snapshot = None
+        state.executing_run_keys.add(run_key)
         try:
             if not isinstance(goal, str) or not goal.strip():
                 raise ValueError("Queued task must contain a non-empty string goal.")
@@ -1095,7 +1113,41 @@ class TaskQueueService:
                 except OSError:
                     logger.warning("Could not remove temporary run config snapshot")
             # 5. Clean up the finished task and release this run's scheduling slot
-            cls._release_run_slot(sess_id, run_key, proc)
+            try:
+                cls._release_run_slot(sess_id, run_key, proc)
+            finally:
+                state.executing_run_keys.discard(run_key)
+
+    @classmethod
+    def active_run_count(cls) -> int:
+        """Accepted work that has not finished cleanup, one count per session.
+
+        A queue row lives until its run slot is released; ``executing_run_keys``
+        outlives the row for runs removed early (stop) and ``active_runs`` covers
+        registered workers, so a run is counted from acceptance to cleanup end.
+        """
+        keys = {
+            str(item.get("session_id") or f"item:{id(item)}")
+            for item in state.queue_items
+            if isinstance(item, dict)
+        }
+        keys.update(state.active_runs)
+        keys.update(state.executing_run_keys)
+        return len(keys)
+
+    @classmethod
+    def set_draining(cls, draining: bool) -> None:
+        """Close or reopen admission; running and pending work is untouched."""
+        state.draining = draining
+
+    @classmethod
+    def drain_status(cls) -> dict[str, Any]:
+        return {"draining": state.draining, "active_run_count": cls.active_run_count()}
+
+    @staticmethod
+    def require_admission_open() -> None:
+        if state.draining:
+            raise ServerDraining
 
     @classmethod
     def _find_duplicate_submission(
@@ -1279,6 +1331,9 @@ class TaskQueueService:
         if duplicate_response is not None:
             return duplicate_response
 
+        # Cheap early refusal; the authoritative check follows the last await.
+        cls.require_admission_open()
+
         rejection_response = await cls._reject_unavailable_device(device_serial)
         if rejection_response is not None:
             return rejection_response
@@ -1292,6 +1347,10 @@ class TaskQueueService:
                 device_serial = await device_pool.select_device_async()
             except Exception:
                 device_serial = None
+        # Last await is behind us: from here to the queue append nothing yields,
+        # so a drain enabled during the awaits above is seen before any session
+        # or device reservation exists.
+        cls.require_admission_open()
         for i, goal in enumerate(goals):
             task_item = cls._create_queue_item(
                 goal,

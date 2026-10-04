@@ -7,6 +7,7 @@ from fastapi.routing import APIRoute, _IncludedRouter
 from apps.admin_console.core.access_control import (
     public_tier,
     require_admin,
+    require_effective_loopback,
     require_lifecycle_token,
     require_qa,
     require_websocket_admin,
@@ -57,6 +58,8 @@ def _assert_routes_have_declared_tiers(routes):
             assert require_qa in dependency_calls, f"Missing QA guard: {path}"
         if tier == "lifecycle":
             assert require_lifecycle_token in dependency_calls, f"Missing lifecycle guard: {path}"
+        if tier == "loopback":
+            assert require_effective_loopback in dependency_calls, f"Missing loopback guard: {path}"
         if methods.intersection({"POST", "PUT", "PATCH", "DELETE"}):
             if path == "/api/v1" or path.startswith("/api/v1/"):
                 assert any(call is not public_tier for call in dependency_calls), (
@@ -64,7 +67,7 @@ def _assert_routes_have_declared_tiers(routes):
                 )
             else:
                 public_task_controls = {"/api/run", "/api/stop", "/api/resume"}
-                assert tier in {"admin", "qa", "lifecycle"} or (
+                assert tier in {"admin", "qa", "lifecycle", "loopback"} or (
                     tier == "public" and path in public_task_controls
                 ), f"Unprotected mutation: {path}"
 
@@ -119,3 +122,9 @@ def test_approved_device_recovery_actions_require_a_signed_qa_identity():
         assert route_tier(path, {"POST"}) == "qa"
 
     assert route_tier("/api/system/adb/restart", {"POST"}) == "admin"
+
+
+def test_drain_controls_are_loopback_tier_for_every_method():
+    for method in ("GET", "POST", "DELETE"):
+        assert route_tier("/api/system/drain", {method}) == "loopback"
+    assert route_tier("/api/system/drain", {"PUT"}) is None

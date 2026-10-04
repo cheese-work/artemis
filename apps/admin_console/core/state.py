@@ -51,6 +51,10 @@ class ServerState:
         # `active_session_id` mirror the most recently launched run for
         # backward compatibility with single-task consumers.
         self.active_runs: dict[str, dict[str, Any]] = {}
+        # Run keys whose _execute_task_item coroutine has not finished cleanup.
+        self.executing_run_keys: set[str] = set()
+        # Deploy drain: new submissions are refused while accepted work finishes.
+        self.draining: bool = False
 
         # Unified single source of truth for task queue
         self.queue_items: list[dict[str, Any]] = []
