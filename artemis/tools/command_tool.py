@@ -55,6 +55,7 @@ from artemis.controllers.platform_specific_commands_controller import (
 )
 from artemis.data_engine.trace import trace_langchain_tool
 from artemis.drivers.base import BaseDeviceDriver
+from artemis.runtime.endpoint_transport import EndpointTransport
 from artemis.tools.base import ArtemisTool
 from artemis.tools.tool_wrapper import ToolWrapper
 from artemis.utils.logger import get_logger
@@ -113,16 +114,6 @@ HANG_GUIDANCE = (
     " background task. Detach daemons explicitly with"
     " `nohup CMD >/dev/null 2>&1 &`, otherwise the shell waits for them."
 )
-
-
-def _adb_binary() -> str:
-    """Resolves the adb executable through the shared toolchain resolver."""
-    try:
-        from artemis.toolchain import toolchain
-
-        return toolchain.find_adb()
-    except Exception:  # pylint: disable=broad-exception-caught
-        return "adb"
 
 
 #: Inline display cap for command output, in characters. Beyond it the full
@@ -689,7 +680,6 @@ class RunAdbCommandTool(ArtemisTool):
 
         # Prepare environment
         terminal_id = None
-        run_env = os.environ.copy()  # Local host env to run adb command
         android_env_vars: dict[str, str] = {}
 
         if run_persistent:
@@ -735,14 +725,9 @@ class RunAdbCommandTool(ArtemisTool):
         # The script travels as an argument so the remote shell exits with it;
         # stdin is closed unless the caller wants to feed input later.
         try:
-            process = await asyncio.create_subprocess_exec(
-                _adb_binary(),
-                "-s",
-                device_id,
-                "shell",
-                phone_script,
+            process = await EndpointTransport.shared(None).create_subprocess(
+                ["-s", device_id, "shell", phone_script],
                 cwd=os.getcwd(),
-                env=run_env,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
                 stdin=asyncio.subprocess.PIPE if interactive else asyncio.subprocess.DEVNULL,
@@ -1081,7 +1066,6 @@ class RunShortAdbCommandTool(ArtemisTool):
         if not device_id:
             device_id = "default_device"
 
-        run_env = os.environ.copy()
         phone_script = f"cd /data/local/tmp\n{cmd_line}\n"
 
         adb_client = getattr(ctx, "adb_client", None) if ctx else None
@@ -1101,14 +1085,9 @@ class RunShortAdbCommandTool(ArtemisTool):
                 return ToolFailure(f"Error running command: {e}")
 
         try:
-            process = await asyncio.create_subprocess_exec(
-                _adb_binary(),
-                "-s",
-                device_id,
-                "shell",
-                phone_script,
+            process = await EndpointTransport.shared(None).create_subprocess(
+                ["-s", device_id, "shell", phone_script],
                 cwd=os.getcwd(),
-                env=run_env,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
                 stdin=asyncio.subprocess.DEVNULL,

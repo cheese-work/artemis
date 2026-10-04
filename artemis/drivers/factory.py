@@ -17,12 +17,11 @@
 import os
 from typing import TYPE_CHECKING
 
-from adbutils import AdbClient
 
-from artemis.config import settings
 from artemis.drivers.android.adb_driver import AndroidAdbDriver
 from artemis.drivers.base import BaseDeviceDriver
 from artemis.drivers.mock.mock_driver import MockDeviceDriver
+from artemis.runtime.endpoint_transport import EndpointTransport
 from artemis.utils.logger import get_logger
 
 if TYPE_CHECKING:
@@ -59,9 +58,7 @@ def create_driver(ctx: "ArtemisContext") -> BaseDeviceDriver:
 
     # 3. Default Android ADB driver
     if ctx.adb_client is None:
-        ctx.adb_client = AdbClient(
-            host=settings.ADB_HOST or "localhost", port=settings.ADB_PORT or 5037
-        )
+        ctx.adb_client = EndpointTransport.shared(None).client()
 
     return AndroidAdbDriver(
         device_id=ctx.device.device_id,

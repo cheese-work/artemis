@@ -29,7 +29,6 @@ except ImportError:
 from pathlib import Path
 from platform import system
 import shutil
-from shutil import which
 import sys
 import threading
 from types import NoneType
@@ -71,6 +70,8 @@ from artemis.controllers.platform_specific_commands_controller import (
     get_first_device,
 )
 from artemis.runtime import DeviceExecutionLock, trace_store
+from artemis.runtime.adb_endpoint import AdbEndpoint
+from artemis.runtime.endpoint_transport import EndpointTransport
 from artemis.runtime.cancel_requests import watch_for_cancel_request
 from artemis.runtime.lifecycle import InterruptReason
 from artemis.data_engine.engine import DataEngine
@@ -215,7 +216,7 @@ class Agent:
         retry_wait_seconds: int = 5,
     ):
 
-        if os.environ.get("ARTEMIS_CLOUD_MODE") != "1" and not which("adb"):
+        if os.environ.get("ARTEMIS_CLOUD_MODE") != "1" and not EndpointTransport.adb_binary():
             raise ExecutableNotFoundError("adb")
 
         if self._initialized:
@@ -1441,11 +1442,11 @@ class Agent:
         device_id: str,
         platform: DevicePlatform,
     ):
-        self._adb_client = AdbClient(
-            host=self._config.servers.adb_host,
-            port=self._config.servers.adb_port,
+        transport = EndpointTransport.shared(
+            AdbEndpoint.create(self._config.servers.adb_host, self._config.servers.adb_port)
         )
-        self._ui_adb_client = create_screen_client(device_id)
+        self._adb_client = transport.client()
+        self._ui_adb_client = create_screen_client(device_id, transport=transport)
 
     async def _get_device_context(
         self,

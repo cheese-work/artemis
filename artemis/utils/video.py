@@ -429,17 +429,34 @@ async def probe_video_segment(video_path: Path) -> dict[str, float | int]:
         return {}
 
 
-async def get_android_display_state(device_id: str) -> tuple[int, int, int] | None:
+#: Why a run on a computer connected through the host agent has no screen recording yet.
+HOST_RECORDING_UNAVAILABLE = (
+    "Screen recording is not available for runs on a connected computer yet."
+)
+
+
+def recording_unavailable_reason() -> str | None:
+    """Reason the process's runs cannot record the screen, or ``None`` when they can.
+
+    Recording drives scrcpy and a 0.5 s ``dumpsys`` watchdog against the adb server of the
+    run's endpoint; neither is carried over a host agent's tunnel (release C records on
+    the host). A host run therefore skips recording rather than failing or polling a
+    server that may be offline.
+    """
+    from artemis.runtime.adb_endpoint import current_adb_endpoint
+
+    return HOST_RECORDING_UNAVAILABLE if current_adb_endpoint().is_host else None
+
+
+async def get_android_display_state(
+    device_id: str, transport: Any = None
+) -> tuple[int, int, int] | None:
     """Return Android's current (rotation, width, height)."""
+    from artemis.runtime.endpoint_transport import EndpointTransport
+
     try:
-        process = await asyncio.create_subprocess_exec(
-            "adb",
-            "-s",
-            device_id,
-            "shell",
-            "dumpsys",
-            "window",
-            "displays",
+        process = await (transport or EndpointTransport.shared(None)).create_subprocess(
+            ["-s", device_id, "shell", "dumpsys", "window", "displays"],
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
         )

@@ -390,9 +390,8 @@ def test_adb_commands_are_pinned_to_the_local_server(monkeypatch):
 
     monkeypatch.setenv("ADB_SERVER_SOCKET", "tcp:203.0.113.9:5037")
     monkeypatch.setattr(
-        bridge_session_service_module,
-        "find_adb",
-        lambda: "offline-adb-sentinel",
+        "artemis.runtime.adb_endpoint.toolchain.resolve",
+        lambda name: "offline-adb-sentinel" if name == "adb" else None,
     )
     monkeypatch.setattr(
         bridge_session_service_module.asyncio,

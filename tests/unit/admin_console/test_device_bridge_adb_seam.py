@@ -18,7 +18,6 @@ import time
 from fastapi.testclient import TestClient
 import pytest
 
-import apps.admin_console.services.bridge_session_service as bridge_session_service_module
 from apps.admin_console.server import proxy_aware_app
 from artemis.runtime.adb_endpoint import AdbEndpoint
 
@@ -67,7 +66,6 @@ def test_relay_carries_the_adb_handshake_through_the_local_adb_server(
     local.on_connect = dial_bridge
     local.on_disconnect = hang_up
     monkeypatch.setattr(AdbEndpoint, "local", classmethod(lambda cls: local.endpoint))
-    monkeypatch.setattr(bridge_session_service_module, "find_adb", lambda: REAL_ADB)
 
     client = TestClient(proxy_aware_app, client=("127.0.0.1", 50000))
     with client.websocket_connect(PATH, headers=_HOST_HEADER) as ws:

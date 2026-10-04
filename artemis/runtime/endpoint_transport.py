@@ -140,6 +140,13 @@ class EndpointTransport:
                 f"against {self.endpoint.mode} endpoint {self.endpoint.identity}."
             )
 
+    @staticmethod
+    def adb_binary() -> str | None:
+        """Path of the adb executable this machine uses, or ``None`` when there is none."""
+        from artemis.toolchain import toolchain
+
+        return toolchain.resolve("adb")
+
     # ------------------------------------------------------------------ #
     # Reachability
     # ------------------------------------------------------------------ #

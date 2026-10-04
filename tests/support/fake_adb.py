@@ -147,7 +147,9 @@ class FakeAdbServer:
 
         self._server = Server((self.host, 0), Handler)
         self._thread = threading.Thread(
-            target=self._server.serve_forever, name=f"fake-adb-{self.name}", daemon=True
+            target=lambda: self._server.serve_forever(poll_interval=0.02),
+            name=f"fake-adb-{self.name}",
+            daemon=True,
         )
         self._thread.start()
         return self

@@ -37,6 +37,7 @@ from artemis.controllers.types import (
     SwipeStartEndPercentagesRequest,
     TapOutput,
 )
+from artemis.runtime.endpoint_transport import EndpointTransport
 from artemis.utils.logger import get_logger
 from artemis.utils.video import (
     ANDROID_RECORDING_SEGMENT_SECONDS,
@@ -51,6 +52,7 @@ from artemis.utils.video import (
     get_active_session,
     has_active_session,
     normalize_recording_to_mp4,
+    recording_unavailable_reason,
     remux_recording_to_mp4,
     render_timeline_clip,
     remove_active_session,
@@ -84,6 +86,8 @@ class UnifiedMobileController:
         }
         if os.name == "nt":
             kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+        # scrcpy runs its own adb client: point it at the run's server explicitly.
+        kwargs["env"] = EndpointTransport.shared(None).environment()
         return await asyncio.create_subprocess_exec(*command, **kwargs)
 
     @staticmethod
@@ -574,6 +578,8 @@ class UnifiedMobileController:
 
     async def _recording_watchdog(self, device_id: str) -> None:
         """Roll fixed-orientation segments and recover scrcpy crashes."""
+        if recording_unavailable_reason():
+            return
         try:
             while True:
                 await asyncio.sleep(0.5)
@@ -614,6 +620,11 @@ class UnifiedMobileController:
         """Start screen recording on Android device using scrcpy."""
         self._segment_cache.clear()
         device_id = self._get_device_id()
+
+        unavailable = recording_unavailable_reason()
+        if unavailable:
+            logger.info(unavailable)
+            return VideoRecordingResult(success=False, message=unavailable)
 
         # Check mock driver first
         if (

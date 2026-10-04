@@ -24,7 +24,7 @@ import subprocess
 import time
 from collections.abc import AsyncGenerator
 
-from artemis.toolchain import find_adb
+from artemis.runtime.endpoint_transport import EndpointTransport
 
 logger = logging.getLogger("artemis.stream_service")
 
@@ -43,10 +43,8 @@ class DeviceStreamService:
     async def get_device_serial(self) -> str | None:
         """Find the currently connected active ADB device serial."""
         try:
-            adb_bin = find_adb()
-            proc = await asyncio.create_subprocess_exec(
-                adb_bin,
-                "devices",
+            proc = await EndpointTransport.shared(None).create_subprocess(
+                ["devices"],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
             )
@@ -67,14 +65,13 @@ class DeviceStreamService:
             try:
                 start_t = time.time()
                 serial = await self.get_device_serial()
-                adb_bin = find_adb()
                 cmd = (
-                    [adb_bin, "-s", serial, "exec-out", "screencap", "-p"]
+                    ["-s", serial, "exec-out", "screencap", "-p"]
                     if serial
-                    else [adb_bin, "exec-out", "screencap", "-p"]
+                    else ["exec-out", "screencap", "-p"]
                 )
-                proc = await asyncio.create_subprocess_exec(
-                    *cmd,
+                proc = await EndpointTransport.shared(None).create_subprocess(
+                    cmd,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                 )

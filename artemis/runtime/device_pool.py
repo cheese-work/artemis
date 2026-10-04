@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
-import shutil
 import subprocess
 import threading
 import time
@@ -27,7 +26,6 @@ from typing import Any
 from artemis.runtime.adb_endpoint import AdbEndpoint, current_adb_endpoint
 from artemis.runtime.device_lock import DeviceExecutionLock
 from artemis.runtime.endpoint_transport import EndpointTransport
-from artemis.toolchain import toolchain
 from artemis.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -154,12 +152,7 @@ class DevicePool:
         self._snapshot().inflight = value
 
     def _resolve_adb(self) -> str | None:
-        if self._adb_path:
-            return self._adb_path
-        try:
-            return toolchain.resolve("adb") or shutil.which("adb")
-        except Exception:
-            return shutil.which("adb")
+        return self._adb_path or EndpointTransport.adb_binary()
 
     def _current_query_timeout(self) -> float:
         return self.HOT_QUERY_TIMEOUT if self._warmed else self.COLD_QUERY_TIMEOUT

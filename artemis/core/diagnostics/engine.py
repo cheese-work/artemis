@@ -15,7 +15,6 @@
 """System Readiness & Diagnostic Orchestration Engine."""
 
 import asyncio
-import os
 import subprocess
 import time
 from typing import Any
@@ -40,8 +39,9 @@ from artemis.core.diagnostics.schema import (
     ProbeStatus,
     SystemReadinessReport,
 )
-from artemis.toolchain import toolchain
 from artemis.platform import platform
+from artemis.runtime.endpoint_transport import EndpointTransport
+from artemis.toolchain import toolchain
 from artemis.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -310,7 +310,8 @@ class ReadinessEngine:
                 "endpoint": endpoint.to_dict(),
             }
 
-        adb_path = toolchain.resolve("adb") or "adb"
+        # Local-only: kills and restarts this computer's own server, never a remote one.
+        adb = EndpointTransport.local()
 
         def _restart_sync():
             # If keys are corrupted, heal them first
@@ -319,24 +320,12 @@ class ReadinessEngine:
                 logger.warning(
                     f"[ReadinessEngine] Corrupted ADB keys detected ({key_status.error_reason}). Auto-healing..."
                 )
-                return heal_adb_keys(adb_path=adb_path)
+                return heal_adb_keys(adb_path=EndpointTransport.adb_binary())
 
             try:
-                clean_env = os.environ.copy()
-                clean_env.pop("ADB_SERVER_SOCKET", None)
-                subprocess.run(
-                    [adb_path, "kill-server"],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    timeout=5,
-                    env=clean_env,
-                )
-                res = subprocess.run(
-                    [adb_path, "start-server"],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    timeout=5,
-                    env=clean_env,
+                adb.kill_server(stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
+                res = adb.start_server(
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5
                 )
                 success = res.returncode == 0
                 return {
@@ -405,12 +394,12 @@ class ReadinessEngine:
         if not clean_host:
             return {"success": False, "message": "Host IP address cannot be empty"}
         target = f"{clean_host}:{port}"
-        adb_path = toolchain.resolve("adb") or "adb"
+        adb = EndpointTransport.local()
 
         def _connect_sync():
             try:
-                res = subprocess.run(
-                    [adb_path, "connect", target],
+                res = adb.run(
+                    ["connect", target],
                     capture_output=True,
                     text=True,
                     timeout=8,
