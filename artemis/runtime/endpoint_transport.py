@@ -25,10 +25,12 @@ that are not the local default server:
 
 * **Never spawn a server for someone else's endpoint.** adbutils runs a *local*
   ``adb start-server`` whenever its connection fails, whatever host it was
-  given, and the adb client does the same for a refused loopback port. For a
-  tunnel (or an SSH-forwarded port) that would start a stray server and hide
-  the real problem. The transport refuses with :class:`EndpointUnreachable`
-  instead, and builds its adbutils clients without the spawn.
+  given (a remote hostname included), and the adb client does the same for a
+  refused loopback port. For a tunnel or a forwarded port that would start a
+  stray server and hide the real problem. adbutils clients are therefore built
+  without the spawn for every endpoint but the local default, and the adb
+  subprocess path refuses a refused loopback port with
+  :class:`EndpointUnreachable`.
 * **Local-only operations are refused.** ``start-server``, ``kill-server`` and
   key healing act on this machine's server. :meth:`EndpointTransport.require_local`
   raises :class:`LocalOnlyOperation` rather than touching it.
@@ -128,8 +130,9 @@ class EndpointTransport:
     def _spawn_guarded(self) -> bool:
         """A loopback port that is not the default server: refused means not running.
 
-        Both adb and adbutils would start a server there themselves. Remote
-        addresses cannot be started from here, so they need no guard.
+        The adb *client* binary starts a server there itself, so subprocess calls get a
+        reachability pre-check. A remote address is never started by the adb binary;
+        adbutils is guarded separately and for every non-local endpoint (see ``client``).
         """
         return self.endpoint.is_loopback and not self.endpoint.is_local_default
 
@@ -207,7 +210,7 @@ class EndpointTransport:
     def client(self) -> AdbClient:
         """Explicit adbutils client for this endpoint (never the module-global one)."""
         if self._client is None:
-            self._client = _build_client(self.endpoint, spawn_allowed=not self._spawn_guarded)
+            self._client = _build_client(self.endpoint, spawn_allowed=self.is_local)
         return self._client
 
     def device(self, serial: str) -> AdbDevice:
