@@ -199,7 +199,9 @@ class EndpointTransport:
     async def create_subprocess(
         self, arguments: Sequence[str], **kwargs: Any
     ) -> asyncio.subprocess.Process:
-        self._preflight()
+        # The pre-check is a blocking connect (up to its timeout on a filtered port): keep it
+        # off the event loop so one slow endpoint cannot stall every other coroutine.
+        await asyncio.to_thread(self._preflight)
         kwargs.setdefault("env", self.environment())
         return await asyncio.create_subprocess_exec(*self.command(arguments), **kwargs)
 
