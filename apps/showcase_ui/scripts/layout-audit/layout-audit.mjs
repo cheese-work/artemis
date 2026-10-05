@@ -119,17 +119,38 @@ async function phoneStatusA11y() {
 // Genuine pointer drags (CDP mouse events), minimize/restore, theater exit, viewport resize and nav height changes:
 // after every step the player frame must be inside the viewport and clear of the nav, controls included.
 async function playerInteractions() {
+  // AUDIT_BYPASS=click|drag turns that input into a no-op so the phase can prove it fails when interactions do nothing.
+  const bypass = process.env.AUDIT_BYPASS ?? '';
   const mouse = (type, x, y) => send('Input.dispatchMouseEvent', { type, x, y, button: 'left', buttons: type === 'mouseReleased' ? 0 : 1, clickCount: 1 });
   const center = async (sel) => { const r = await evaluate(rect(sel)); return r && [(r.l + r.r) / 2, (r.t + r.b) / 2]; };
-  const click = async (sel) => { const c = await center(sel); if (!c) return false; await mouse('mouseMoved', ...c); await mouse('mousePressed', ...c); await mouse('mouseReleased', ...c); await sleep(400); return true; };
+  // Returns false when the control is missing so the caller can fail instead of silently carrying on.
+  const click = async (sel) => {
+    const c = await center(sel);
+    if (!c) return false;
+    if (bypass !== 'click') { await mouse('mouseMoved', ...c); await mouse('mousePressed', ...c); await mouse('mouseReleased', ...c); }
+    await sleep(400);
+    return true;
+  };
   const drag = async (dx, dy) => {
     const r = await evaluate(rect('.floating-video-wrapper .window-header'));
+    if (!r) return false;
     const [x0, y0] = [r.l + 40, (r.t + r.b) / 2];
-    await mouse('mouseMoved', x0, y0); await mouse('mousePressed', x0, y0);
-    for (let i = 1; i <= 6; i++) await mouse('mouseMoved', x0 + (dx * i) / 6, y0 + (dy * i) / 6);
-    await mouse('mouseReleased', x0 + dx, y0 + dy);
+    if (bypass !== 'drag') {
+      await mouse('mouseMoved', x0, y0); await mouse('mousePressed', x0, y0);
+      for (let i = 1; i <= 6; i++) await mouse('mouseMoved', x0 + (dx * i) / 6, y0 + (dy * i) / 6);
+      await mouse('mouseReleased', x0 + dx, y0 + dy);
+    }
     await sleep(400);
+    return true;
   };
+  // Stored (signals) and rendered (DOM) state of the player.
+  const snap = () => evaluate(`(() => { const el = document.querySelector('app-floating-video-player'); const c = ng.getComponent(el); const w = document.querySelector('.floating-video-wrapper');
+    const f = w?.getBoundingClientRect(); const img = document.querySelector('.step-frame-img');
+    return { minimized: c.agentService.isVideoMinimized(), theater: c.isTheaterMode(), x: c.posX(), y: c.posY(), stepIndex: c.activeStepIndex(), mode: c.agentService.playerMode(),
+      domMinimized: !!w?.classList.contains('minimized'), domTheater: !!w?.classList.contains('theater'), frame: f && [f.left, f.top, f.width, f.height],
+      imgOk: img ? img.complete && img.naturalWidth > 0 : null, counter: document.querySelector('.time-display')?.textContent.trim() ?? null }; })()`);
+  const expectedDrag = (before, dx, dy) => evaluate(`(() => { const c = ng.getComponent(document.querySelector('app-floating-video-player')); return c.containedPosition(${before.x + dx}, ${before.y + dy}); })()`);
+
   for (const [w, h] of [[375, 667], [320, 480]]) for (const phone of [true, false]) for (const content of ['live', 'replay']) {
     STATES.running();
     const where = `player-interaction ${w}x${h} phone=${phone} ${content}`;
@@ -142,19 +163,47 @@ async function playerInteractions() {
       if (${content === 'replay'}) { svc.selectSession('bbbbbbbb-2', false); await new Promise((r) => setTimeout(r, 1500)); svc.openVideoPlayer('bbbbbbbb-2', undefined, undefined, undefined, 0); }
       else svc.openVideoPlayer('aaaaaaaa-1');
       await new Promise((r) => setTimeout(r, 1200)); ng.applyChanges(document.querySelector('app-floating-video-player')); })()`);
-    const mode = await evaluate(`ng.getComponent(document.querySelector('app-floating-video-player')).agentService.playerMode()`);
-    if (content === 'replay' && (mode !== 'steps' || !(await evaluate(`!!document.querySelector('.step-replay-container')`)))) fail(where, `step replay did not load (mode=${mode})`);
-    const step = async (name, action) => { await action(); await playerClear(where, name); };
-    await step('on open', async () => {});
+    let moved = 0;
+    // One interaction: run it, then require (1) the control existed, (2) the expected state transition happened,
+    // (3) stored position == rendered position outside theater, (4) the frame is contained and clear of the nav.
+    const step = async (name, action, expectation) => {
+      const before = await snap();
+      const ok = await action(before);
+      if (ok === false) return fail(where, `${name}: control or drag handle not found, interaction skipped`);
+      const after = await snap();
+      if (!after.frame) return fail(where, `${name}: player gone`);
+      const problem = expectation ? await expectation(before, after) : null;
+      if (problem) fail(where, `${name}: ${problem}`);
+      if (!after.theater && (Math.abs(after.frame[0] - after.x) > 1 || Math.abs(after.frame[1] - after.y) > 1)) fail(where, `${name}: rendered frame ${after.frame.slice(0, 2).map(Math.round)} disagrees with stored position ${[after.x, after.y].map(Math.round)}`);
+      if (after.minimized !== after.domMinimized || after.theater !== after.domTheater) fail(where, `${name}: signal and DOM mode disagree (${JSON.stringify([after.minimized, after.domMinimized, after.theater, after.domTheater])})`);
+      await playerClear(where, name);
+    };
+    const dragStep = (name, dx, dy) => step(name, () => drag(dx, dy), async (b, a) => {
+      const e = await expectedDrag(b, dx, dy);
+      moved += Math.abs(a.x - b.x) + Math.abs(a.y - b.y);
+      if (Math.abs(a.x - e.x) > 1 || Math.abs(a.y - e.y) > 1) return `drag (${dx},${dy}) from ${[b.x, b.y].map(Math.round)} should land at ${[e.x, e.y].map(Math.round)}, landed at ${[a.x, a.y].map(Math.round)}`;
+    });
+    const toggle = (name, sel, key, want) => step(name, () => click(sel), (b, a) => (a[key] === want && b[key] !== want ? null : `${key} expected ${b[key]} -> ${want}, got ${a[key]}`));
+    const MIN = '.floating-video-wrapper button[aria-label="Minimize"]';
+    const THEATER = '.floating-video-wrapper button[aria-label="Theater"]';
+
+    await step('on open', async () => true, (b) => {
+      if (content === 'replay' && (b.mode !== 'steps' || b.imgOk !== true)) return `step replay not loaded (mode=${b.mode}, image loaded=${b.imgOk})`;
+    });
     await shot(`player-open-${w}x${h}-${phone ? 'connected' : 'idle'}-${content}`);
-    await step('drag right+down', () => drag(300, 200));
-    await step('drag left+up', () => drag(-600, -600));
-    await step('drag far right+down', () => drag(600, 600));
-    await step('minimize', () => click('.floating-video-wrapper button[aria-label="Minimize"]'));
-    await step('drag minimized right+down', () => drag(300, 300));
-    await step('restore at the edge', () => click('.floating-video-wrapper button[aria-label="Minimize"]'));
-    await step('theater', () => click('.floating-video-wrapper button[aria-label="Theater"]'));
-    await step('theater exit', () => click('.floating-video-wrapper button[aria-label="Theater"]'));
+    if (content === 'replay') {
+      await step('next step', () => click('.floating-video-wrapper button[title="Next Step"]'), (b, a) => (a.stepIndex === b.stepIndex + 1 && a.counter?.includes(`Step ${a.stepIndex + 1}`) && a.imgOk ? null : `step ${b.stepIndex} -> ${a.stepIndex}, counter "${a.counter}", image loaded=${a.imgOk}`));
+      await step('previous step', () => click('.floating-video-wrapper button[title="Previous Step"]'), (b, a) => (a.stepIndex === b.stepIndex - 1 ? null : `step ${b.stepIndex} -> ${a.stepIndex}`));
+    }
+    await dragStep('drag right+down', 300, 200);
+    await dragStep('drag left+up', -600, -600);
+    await dragStep('drag far right+down', 600, 600);
+    if (moved === 0) fail(where, 'no drag moved the player at all (every drag was a no-op or already at a bound)');
+    await toggle('minimize', MIN, 'minimized', true);
+    await dragStep('drag minimized right+down', 300, 300);
+    await toggle('restore at the edge', MIN, 'minimized', false);
+    await toggle('theater', THEATER, 'theater', true);
+    await toggle('theater exit', THEATER, 'theater', false);
     await drag(600, 600);
     await step('viewport shrink', async () => { await send('Emulation.setDeviceMetricsOverride', { width: 320, height: 480, deviceScaleFactor: 1, mobile: true }); await sleep(500); });
     await step('viewport grow', async () => { await send('Emulation.setDeviceMetricsOverride', { width: 375, height: 667, deviceScaleFactor: 1, mobile: true }); await sleep(500); });
