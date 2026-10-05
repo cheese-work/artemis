@@ -204,7 +204,11 @@
     max-width: calc(100vw - 24px - var(--right-panel-reserve, 0px));
 
     .nav-status { flex-basis: 100%; margin: 0; padding: 0 6px 3px; }
-    .usb-relay-badge { padding-left: 0; .badge-label { display: none; } }
+    .usb-relay-badge {
+      padding-left: 0;
+      // Visually hidden, still announced: the connected-phone status must stay in the accessibility tree.
+      .badge-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+    }
     .brand-wordmark { padding: 0 7px; }
     .nav-tab-btn { padding: 0 9px; }
   }

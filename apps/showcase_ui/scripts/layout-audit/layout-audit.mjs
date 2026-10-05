@@ -4,7 +4,8 @@
 //
 // 1. Clearance matrix: for every page x viewport x phone-badge state, no visible text may sit under the
 //    floating nav, nothing may overflow the viewport sideways, and the nav must stay inside the viewport.
-// 2. Scenarios: Task Queue dropdown, right-hand chat panel, floating video player, across mock states
+// 2. Accessibility: the connected-phone status stays in the accessibility tree at every width.
+// 3. Scenarios: Task Queue dropdown, right-hand chat panel, floating video player, across mock states
 //    (idle / running / paused-with-error / sessions API error / video error) and route changes.
 import { spawn } from 'node:child_process';
 import { mkdtempSync, mkdirSync, rmSync, existsSync, writeFileSync } from 'node:fs';
@@ -93,6 +94,26 @@ async function clearanceMatrix() {
   }
   mock.identity = null;
   console.log(`clearance matrix: ${failures.length ? 'failures above' : 'all clear'}`);
+}
+
+// The connected-phone status must be in the accessibility tree at every width, including where its text is visually hidden.
+async function phoneStatusA11y() {
+  await send('Accessibility.enable');
+  for (const width of [1770, 1024, 761, 760, 560, 375, 320]) {
+    const where = `a11y phone status @${width}px`;
+    await open('/workspace', width);
+    await setPhone(true);
+    const { nodes } = await send('Accessibility.getFullAXTree');
+    // role=status takes no name from content, so read the live region's text nodes.
+    const byId = new Map(nodes.map((n) => [n.nodeId, n]));
+    const region = nodes.find((n) => !n.ignored && n.role?.value === 'status' && (n.childIds ?? []).some((c) => /Phone connected/.test(byId.get(c)?.name?.value ?? '')));
+    if (!region) fail(where, 'no role=status live region containing "Phone connected…" in the accessibility tree');
+    else console.log(`  ok   ${where}: role=status text="${region.childIds.map((c) => byId.get(c)?.name?.value).filter(Boolean).join('')}"`);
+    const hidden = await evaluate(`(() => { const l = document.querySelector('.usb-relay-badge .badge-label'); return getComputedStyle(l).display === 'none' || getComputedStyle(l).visibility === 'hidden'; })()`);
+    if (hidden) fail(where, 'status label is display:none / visibility:hidden');
+    const nav = await evaluate(UNDER_NAV);
+    if (nav.navOffscreen || nav.overflowX > 0) fail(where, 'status label brought back nav/page overflow');
+  }
 }
 
 const T0 = Math.floor(Date.now() / 1000) - 600;
@@ -198,6 +219,7 @@ try {
   await send('Page.enable');
   const only = process.argv[2];
   if (!only || only === 'clearance') await clearanceMatrix();
+  if (!only || only === 'a11y') await phoneStatusA11y();
   if (!only || only === 'scenarios') await scenarios();
 } catch (e) {
   console.error(e);
