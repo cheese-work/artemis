@@ -1193,3 +1193,40 @@ async def test_unowned_queued_runs_can_only_be_cancelled_by_an_admin(cloudflare)
     assert (await _post(None, f"/api/tasks/{sid}/cancel-queued")).status_code == 403
     assert [i["session_id"] for i in state.queue_items] == [sid]
     assert (await _post(ADMIN, f"/api/tasks/{sid}/cancel-queued")).status_code == 200
+
+
+# -- a "starting" run (host agent flag on) is in flight for every owner rule (CHE-1128) --
+
+
+def _starting(db, owner: str) -> str:
+    sid = _run(db, owner, status="queued", queued=True)
+    state.queue_items[-1]["status"] = "starting"
+    return sid
+
+
+def test_active_session_ids_count_a_starting_run_as_running(env):
+    sid = _starting(env, QA1)
+
+    assert sid in task_queue_service.active_session_ids(running_only=True)
+    assert sid in task_queue_service.active_session_ids()
+
+
+@pytest.mark.asyncio
+async def test_untargeted_stop_by_the_owner_reaches_their_starting_run(cloudflare):
+    sid = _starting(cloudflare, QA1)
+
+    response = await _post(QA1, "/api/stop", json={})
+
+    assert response.json()["status"] == "stopped"
+    assert [c.kwargs["session_id"] for c in task_queue_service.stop_tasks.call_args_list] == [sid]
+
+
+@pytest.mark.asyncio
+async def test_clear_all_by_the_owner_includes_their_starting_run(cloudflare):
+    sid = _starting(cloudflare, QA1)
+    _run(cloudflare, QA2, status="queued", queued=True)
+
+    response = await _post(QA1, "/api/stop", json={"all": True})
+
+    assert response.json()["status"] == "stopped"
+    assert [c.kwargs["session_id"] for c in task_queue_service.stop_tasks.call_args_list] == [sid]
