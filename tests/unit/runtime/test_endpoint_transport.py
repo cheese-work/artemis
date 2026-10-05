@@ -301,3 +301,69 @@ def test_the_local_default_endpoint_keeps_adbutils_server_startup(failing_adbuti
         transport.device_list()
 
     assert failing_adbutils_connect == [["/fake/adb", "start-server"]]
+
+
+# --------------------------------------------------------------------------- #
+# The async spawn path never blocks the event loop on the reachability pre-check
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_a_slow_preflight_does_not_stall_other_coroutines(monkeypatch):
+    import asyncio
+    import time
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    monkeypatch.setenv("ARTEMIS_HOST_AGENT", "1")
+    transport = EndpointTransport(
+        AdbEndpoint.create("127.0.0.1", 40000, host_id="lab-1"), adb_path="fake-adb"
+    )
+    started = time.perf_counter()
+    heartbeat_at: list[float] = []
+
+    async def heartbeat() -> None:
+        await asyncio.sleep(0.01)
+        heartbeat_at.append(time.perf_counter() - started)
+
+    def slow_connect(*_args, **_kwargs):
+        time.sleep(0.2)  # a filtered tunnel port: connect() waits out its timeout
+        return MagicMock()
+
+    spawned: list[tuple] = []
+
+    async def fake_spawn(*argv, **_kwargs):
+        spawned.append(argv)
+        return SimpleNamespace(pid=-1)
+
+    monkeypatch.setattr("socket.create_connection", slow_connect)
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_spawn)
+
+    timer = asyncio.create_task(heartbeat())
+    await asyncio.sleep(0)
+    await transport.create_subprocess(["devices"])
+    await timer
+
+    assert heartbeat_at[0] < 0.1, f"event loop was blocked for {heartbeat_at[0]:.3f}s"
+    assert len(spawned) == 1
+
+
+@pytest.mark.asyncio
+async def test_an_unreachable_endpoint_still_refuses_before_spawning_async(monkeypatch):
+    import asyncio
+
+    monkeypatch.setenv("ARTEMIS_HOST_AGENT", "1")
+    transport = EndpointTransport(
+        AdbEndpoint.create("127.0.0.1", _dead_port(), host_id="lab-1"), adb_path="fake-adb"
+    )
+    spawned: list[tuple] = []
+
+    async def fake_spawn(*argv, **_kwargs):
+        spawned.append(argv)
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_spawn)
+
+    with pytest.raises(EndpointUnreachable, match="host offline"):
+        await transport.create_subprocess(["devices"])
+
+    assert spawned == []
