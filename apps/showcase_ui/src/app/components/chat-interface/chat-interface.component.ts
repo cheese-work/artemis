@@ -157,19 +157,36 @@ export class ChatInterfaceComponent {
    * Clear all database data/history to start fresh
    */
   public clearHistory(): void {
-    if (!confirm('Are you sure you want to clear all tasks and history? This cannot be undone.')) {
-      return;
-    }
     this.isSubmitting.set(true);
     this.errorMessage.set(null);
-    this.agentService.clearAllHistory().subscribe({
+    this.agentService.fetchClearableRunCount().subscribe({
+      next: (count: number) => this.confirmAndClear(count),
+      error: (err: any) => {
+        console.error('Failed to read the run count:', err);
+        this.isSubmitting.set(false);
+        this.errorMessage.set(err.error?.detail || 'Failed to clear history.');
+      }
+    });
+  }
+
+  /** Admin-only on the server: the exact count must be typed back. */
+  private confirmAndClear(count: number): void {
+    const typed = prompt(
+      `Clear all deletes ${count} runs for everyone, with their videos and files. ` +
+      `Pinned and running runs are kept. This cannot be undone.\n\nType ${count} to confirm.`
+    );
+    if (typed === null || typed.trim() !== String(count)) {
+      this.isSubmitting.set(false);
+      return;
+    }
+    this.agentService.clearAllHistory(count).subscribe({
       next: () => {
         this.isSubmitting.set(false);
       },
       error: (err: any) => {
         console.error('Failed to clear history:', err);
         this.isSubmitting.set(false);
-        this.errorMessage.set(err.error?.detail || 'Failed to clear history.');
+        this.errorMessage.set(err.error?.detail || err.error?.error || 'Failed to clear history.');
       }
     });
   }

@@ -73,6 +73,7 @@ describe('ChatInterfaceComponent device chip', () => {
         provideRouter([]),
         provideHttpClient(),
         provideHttpClientTesting(),
+        provideRouter([]),
         { provide: AgentService, useValue: agentService },
         {
           provide: HostsService,
