@@ -22,6 +22,7 @@ from apps.admin_console.database.repositories.session_repository import session_
 from apps.admin_console.services.host_admission import HostState, host_admission
 from apps.admin_console.services.task_queue_service import TaskQueueService
 from artemis.runtime import DeviceExecutionLock, device_lock, trace_store
+from artemis.runtime.lifecycle import LifecycleAuthority
 
 
 @pytest_asyncio.fixture(autouse=True)
@@ -477,3 +478,89 @@ async def test_refused_nack_of_a_dead_other_owner_keeps_the_waiting_run(tmp_path
     print(
         "DEAD OTHER OWNER: refused=True, worker_alive=True, row=starting, session=queued, ticket_kept=True"
     )
+
+
+# -- fifth review: terminal settlement and the NACK must not both own the outcome --
+
+
+@pytest.mark.asyncio
+async def test_nack_during_pre_spawn_terminal_settlement_never_requeues_a_failed_session(
+    tmp_path, monkeypatch
+):
+    host()
+    ticket = DeviceExecutionLock.reserve("probe", "d1", session_id="r1", lock_scope="host:host-a")
+    assert session_repo.create_queued_session("r1", "probe", "flash", "d1", 1.0, None)
+    settling = threading.Event()
+    allow_settlement = threading.Event()
+    settlement_done = threading.Event()
+    actual_settle = LifecycleAuthority.settle_worker_exit
+
+    def controlled_settle(authority, session_id, returncode, manual_stop):
+        settling.set()
+        try:
+            assert allow_settlement.wait(5)
+            return actual_settle(authority, session_id, returncode, manual_stop)
+        finally:
+            settlement_done.set()
+
+    store = SimpleNamespace(
+        snapshot_for_spawn=AsyncMock(side_effect=RuntimeError("config snapshot failed"))
+    )
+    monkeypatch.setattr("apps.admin_console.services.config_store.get_config_store", lambda: store)
+    monkeypatch.setattr(LifecycleAuthority, "settle_worker_exit", controlled_settle)
+    spawn = AsyncMock()
+    monkeypatch.setattr("asyncio.create_subprocess_exec", spawn)
+    state.queue_items.append(row("r1", ticket=ticket))
+    TaskQueueService._dispatch_pending_tasks()
+    assert await asyncio.to_thread(settling.wait, 5)
+    try:
+        requeued = await TaskQueueService.requeue_starting("r1")
+        allow_settlement.set()
+        assert await asyncio.to_thread(settlement_done.wait, 5)
+        stored_status = session_repo.get_session_by_id("r1")["status"]
+        row_status = next(
+            (item["status"] for item in state.queue_items if item["session_id"] == "r1"),
+            None,
+        )
+        print(
+            f"PRE-SPAWN SETTLEMENT: requeued={requeued}, "
+            f"spawn_calls={spawn.call_count}, row={row_status}, session={stored_status}"
+        )
+        spawn.assert_not_called()
+        assert not requeued or stored_status == "queued"
+    finally:
+        allow_settlement.set()
+        assert await asyncio.to_thread(settlement_done.wait, 5)
+
+
+@pytest.mark.asyncio
+async def test_barrier_counts_a_previously_spawned_start_until_it_finishes(tmp_path, monkeypatch):
+    host()
+    ticket = DeviceExecutionLock.reserve("probe", "d1", session_id="r1", lock_scope="host:host-a")
+    assert session_repo.create_queued_session("r1", "probe", "flash", "d1", 1.0, None)
+    exited = asyncio.Event()
+    worker = await spawned_worker(tmp_path, monkeypatch, ticket, exited)
+    state.queue_items.append(row("r2", device="d2"))
+    lock = worker_lock(ticket)
+    try:
+        ack = host_admission.request_barrier("host-a")
+        assert ack.starting == 1 and not ack.quiescent
+        assert await TaskQueueService.requeue_starting("r1") is False
+        worker.kill.assert_not_called()
+        lock.acquire(blocking=False)
+        TaskQueueService._dispatch_pending_tasks()
+        assert state.queue_items[0]["status"] == "running"
+        assert state.queue_items[1]["status"] == "pending"
+        assert not host_admission.request_barrier("host-a").quiescent
+        print(
+            "POST-SPAWN BARRIER: refused=True, new_reservations=0, "
+            "pre_barrier_start_runs=True, quiescent=False"
+        )
+        lock.release()
+        worker.returncode = 0
+        exited.set()
+        await asyncio.gather(*list(TaskQueueService._run_tasks))
+        assert host_admission.request_barrier("host-a").quiescent
+    finally:
+        lock.release()
+        exited.set()
