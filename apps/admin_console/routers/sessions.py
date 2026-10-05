@@ -65,13 +65,16 @@ def _list_sessions_sync(scope: OwnerScope = OPEN_SCOPE):
     # Pure read: run outcomes are owned by the lifecycle authority, which a
     # listing never calls (a vanished worker is swept by the queue worker).
     rows = session_repo.get_all_sessions()
-    if scope.enforced and not scope.include_all:
+    owners: dict[str, str | None] = {}
+    if scope.enforced:
         owners = owners_of([str(row.get("session_id")) for row in rows])
-        rows = [
-            row
-            for row in rows
-            if str(row.get("session_id")) in owners and scope.sees(owners[str(row["session_id"])])
-        ]
+        if not scope.include_all:
+            rows = [
+                row
+                for row in rows
+                if str(row.get("session_id")) in owners
+                and scope.sees(owners[str(row["session_id"])])
+            ]
     video_rec_map = session_repo.get_video_recordings_map()
     latest_recordings = session_repo.get_latest_video_recordings_map()
     agent_names_by_session = session_repo.get_agent_trace_names_map()
@@ -98,6 +101,7 @@ def _list_sessions_sync(scope: OwnerScope = OPEN_SCOPE):
             device_id = recording.get("device_id")
         row_dict["device_id"] = device_id
         row_dict["device_serial"] = device_id
+        row_dict["requested_by"] = owners.get(s_id)  # the UI's Owner label
 
         recording_status = str((recording or {}).get("status") or "unavailable")
         resolved_v_url = (

@@ -4,7 +4,9 @@ import {
   DestroyRef,
   ElementRef,
   computed,
+  effect,
   inject,
+  untracked,
   signal,
   viewChild
 } from '@angular/core';
@@ -16,6 +18,8 @@ import { Subscription } from 'rxjs';
 import { Computer } from '../../core/models/host.model';
 import { RunSummary } from '../../core/models/run.model';
 import { HostsService } from '../../services/hosts.service';
+import { OwnerScopeService } from '../../services/owner-scope.service';
+import { AllUsersSwitchComponent } from '../all-users-switch/all-users-switch.component';
 import { RunsService } from '../../services/runs.service';
 import { mapRecording } from '../../utils/recording-state.util';
 import {
@@ -32,6 +36,7 @@ import {
   expiresText,
   interruptReason,
   outcomeView,
+  ownerLabel,
   truncate
 } from '../../utils/run-library-strings';
 import { classifySearch } from '../../utils/run-search.util';
@@ -46,7 +51,7 @@ const STATUS_LABELS: Record<string, string> = {
 @Component({
   selector: 'app-run-library',
   standalone: true,
-  imports: [RouterLink, DatePipe],
+  imports: [RouterLink, DatePipe, AllUsersSwitchComponent],
   templateUrl: './run-library.component.html',
   styleUrl: './run-library.component.scss',
   changeDetection: ChangeDetectionStrategy.OnPush
@@ -54,6 +59,7 @@ const STATUS_LABELS: Record<string, string> = {
 export class RunLibraryComponent {
   private readonly runsApi = inject(RunsService);
   private readonly hostsApi = inject(HostsService);
+  private readonly scope = inject(OwnerScopeService);
   private readonly router = inject(Router);
   private readonly route = inject(ActivatedRoute);
   private readonly location = inject(Location);
@@ -63,6 +69,9 @@ export class RunLibraryComponent {
   public readonly statusOptions = STATUS_FILTERS.map((value) => ({ value, label: STATUS_LABELS[value] }));
   public readonly outcome = outcomeView;
   public readonly interruptReason = interruptReason;
+  public readonly ownerLabel = ownerLabel;
+  /** An admin's view of every user's runs; rows then name their owner. */
+  public readonly allUsers = this.scope.allUsers;
 
   /** What the URL says; the list always shows exactly this. */
   public readonly filters = signal<RunFilters>(EMPTY_FILTERS);
@@ -106,6 +115,16 @@ export class RunLibraryComponent {
       this.filters.set(filters);
       this.searchText.set(filters.q);
       this.load(false);
+    });
+
+    let lastScopeAll = this.allUsers();
+    effect(() => {
+      const all = this.allUsers();
+      untracked(() => {
+        if (all === lastScopeAll) return;
+        lastScopeAll = all;
+        this.load(false); // a cursor belongs to the scope that produced it
+      });
     });
 
     this.destroyRef.onDestroy(() => {
@@ -199,7 +218,7 @@ export class RunLibraryComponent {
     if (!more) this.nextCursor.set(null);
     (more ? this.loadingMore : this.loading).set(true);
     this.request = this.runsApi
-      .list(this.filters(), more ? { cursor: this.nextCursor() ?? undefined } : undefined)
+      .list(this.filters(), this.listOptions(more))
       .subscribe({
         next: (page) => {
           this.rows.set(more ? [...this.rows(), ...page.runs] : page.runs);
@@ -215,6 +234,15 @@ export class RunLibraryComponent {
           this.loadingMore.set(false);
         }
       });
+  }
+
+  /** Paging and scope for `GET /api/runs`; nothing at all for my own first page. */
+  private listOptions(more: boolean): { cursor?: string; scope?: 'all' } | undefined {
+    const options = {
+      ...(more ? { cursor: this.nextCursor() ?? undefined } : {}),
+      ...(this.allUsers() ? { scope: 'all' as const } : {})
+    };
+    return more || this.allUsers() ? options : undefined;
   }
 
   /** Back from a run: load pages until the saved position exists, then scroll to it. */

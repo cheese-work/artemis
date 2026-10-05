@@ -38,6 +38,7 @@ limitations under the License.
     </div>
 
     <div class="header-right">
+      <app-all-users-switch></app-all-users-switch>
       @if (agentService.sessions().length > 0 && agentService.activeTab() === 'tasks') {
         <button
           class="btn-clear-history"
@@ -96,7 +97,7 @@ limitations under the License.
                 <span class="task-time-divider">·</span>
               }
               <span class="task-time">{{ session.start_time * 1000 | date:'shortTime' }}</span>
-              @if (getTaskStatus(session) === 'running' || getTaskStatus(session) === 'paused') {
+              @if ((getTaskStatus(session) === 'running' || getTaskStatus(session) === 'paused') && canManage(session)) {
                 <button
                   type="button"
                   class="btn-stop-card"
@@ -107,7 +108,7 @@ limitations under the License.
                   <span class="material-symbols-outlined">stop_circle</span>
                 </button>
               }
-              @if (getTaskStatus(session) !== 'running' && getTaskStatus(session) !== 'paused') {
+              @if (getTaskStatus(session) !== 'running' && getTaskStatus(session) !== 'paused' && canManage(session)) {
                 <button
                   type="button"
                   class="btn-delete-card"
@@ -124,6 +125,9 @@ limitations under the License.
           <div class="task-goal" title="{{ session.initial_goal }}">
             {{ session.initial_goal || 'Unnamed Task' }}
           </div>
+          @if (ownerScope.allUsers()) {
+            <div class="task-owner">{{ ownerLabel(session.requested_by) }}</div>
+          }
           <div class="task-card-footer">
             <app-run-id-copy [runId]="session.session_id"></app-run-id-copy>
             <span class="task-date">{{ session.start_time * 1000 | date:'MM/dd/yy' }}</span>
@@ -173,7 +177,7 @@ limitations under the License.
                     <span class="task-time-divider">·</span>
                   }
                   <span class="task-time">{{ session.start_time * 1000 | date:'shortTime' }}</span>
-                  @if (getTaskStatus(session) !== 'running' && getTaskStatus(session) !== 'paused') {
+                  @if (getTaskStatus(session) !== 'running' && getTaskStatus(session) !== 'paused' && canManage(session)) {
                     <button
                       type="button"
                       class="btn-delete-card"
@@ -190,6 +194,9 @@ limitations under the License.
               <div class="task-goal" title="{{ session.initial_goal }}">
                 {{ session.initial_goal || 'Unnamed Task' }}
               </div>
+              @if (ownerScope.allUsers()) {
+                <div class="task-owner">{{ ownerLabel(session.requested_by) }}</div>
+              }
               <div class="task-card-footer">
                 <app-run-id-copy [runId]="session.session_id"></app-run-id-copy>
                 <span class="task-date">{{ session.start_time * 1000 | date:'MM/dd/yy' }}</span>

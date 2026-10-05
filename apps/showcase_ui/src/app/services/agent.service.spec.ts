@@ -1007,6 +1007,8 @@ describe('AgentService per-QA scope (CHE-1152)', () => {
 
   it('applies a status payload again after the scope changes even if it looks the same', () => {
     const { service } = create(false);
+    spyOn(service, 'fetchSessions');
+    spyOn(service, 'fetchStatus');
     (service as any).lastQueueSignature = '[]';
     (service as any).lastActiveTasksSignature = '[]';
     withFakeEventSource(() => service.onOwnerScopeChanged());

@@ -26,6 +26,9 @@ import { HostsResponse } from '../../core/models/host.model';
 import { deviceSourceOf } from '../../utils/device-chip.util';
 import { deviceKindLabel, deviceTitle, unlistedDeviceTitle } from '../../utils/device-label.util';
 import { RunIdCopyComponent } from '../run-id-copy/run-id-copy.component';
+import { AllUsersSwitchComponent } from '../all-users-switch/all-users-switch.component';
+import { OwnerScopeService } from '../../services/owner-scope.service';
+import { ownerLabel } from '../../utils/run-library-strings';
 import { Session } from '../../core/models/session.model';
 import { MarkdownSegment, MarkdownLine, NoteMilestone, ParsedNote } from '../../core/models/markdown.model';
 import { parseNote, parseNoteLines } from '../../utils/markdown-parser.util';
@@ -35,7 +38,7 @@ export type { MarkdownSegment, MarkdownLine, NoteMilestone, ParsedNote };
 @Component({
   selector: 'app-chat-interface',
   standalone: true,
-  imports: [CommonModule, FormsModule, RouterLink, RunIdCopyComponent],
+  imports: [CommonModule, FormsModule, RouterLink, RunIdCopyComponent, AllUsersSwitchComponent],
   templateUrl: './chat-interface.component.html',
   styleUrl: './chat-interface.component.scss',
   changeDetection: ChangeDetectionStrategy.OnPush
@@ -43,6 +46,8 @@ export type { MarkdownSegment, MarkdownLine, NoteMilestone, ParsedNote };
 export class ChatInterfaceComponent {
   public agentService = inject(AgentService);
   private readonly systemService = inject(SystemService);
+  public readonly ownerScope = inject(OwnerScopeService);
+  public readonly ownerLabel = ownerLabel;
   private readonly usbRelay = inject(UsbDeviceRelayService);
   // Computer names for the chip's source text; one load, refreshed on device-list change.
   private readonly registry = signal<HostsResponse | null>(null);
@@ -192,6 +197,11 @@ export class ChatInterfaceComponent {
         this.errorMessage.set(err.error?.detail || 'Failed to delete task.');
       }
     });
+  }
+
+  /** Mine-only lists hold only my runs; with All users on, a row may belong to someone I cannot act for. */
+  public canManage(session: Session): boolean {
+    return !this.ownerScope.allUsers() || this.ownerScope.canManage(session.requested_by);
   }
 
   /**

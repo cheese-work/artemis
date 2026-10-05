@@ -12,6 +12,9 @@ export const RUN_STRINGS = {
   clearFilters: 'Clear filters',
   emptyTitle: 'No runs yet.',
   emptyAction: 'Start one in Workspace',
+  emptyAllUsers: 'No runs from any user yet.',
+  allUsers: 'All users',
+  noOwner: 'no owner',
   noMatch: 'No matching runs.',
   loadFailed: "Couldn't load runs. Your filters are kept.",
   catalogNotReady: 'The run library is getting ready. Try again in a minute.',
@@ -41,6 +44,14 @@ export const RUN_STRINGS = {
   pinFailed: "Couldn't update the pin. Try again.",
   deleteFailed: "Couldn't delete this run. Try again."
 } as const;
+
+export function ownerLabel(owner: string | null | undefined): string {
+  return `Owner: ${owner || RUN_STRINGS.noOwner}`;
+}
+
+export function readOnlyNotice(owner: string | null | undefined): string {
+  return `This run is read-only for you. ${owner ? `It belongs to ${owner}.` : `It has ${RUN_STRINGS.noOwner}.`}`;
+}
 
 export const MEDIA_NOTICE =
   'Videos and screenshots are not redacted and may contain sensitive information.';

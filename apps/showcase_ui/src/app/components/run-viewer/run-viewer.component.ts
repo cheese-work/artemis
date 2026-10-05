@@ -13,12 +13,11 @@ import {
 } from '@angular/core';
 import { HttpErrorResponse, HttpEvent, HttpEventType } from '@angular/common/http';
 import { DatePipe } from '@angular/common';
-import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { Router, RouterLink } from '@angular/router';
 import { Subscription } from 'rxjs';
 import { RunSummary, SessionVideo, VideoSegment } from '../../core/models/run.model';
 import { StepItemData } from '../../core/models/stream.model';
-import { AdminConfigService } from '../../services/admin-config.service';
+import { OwnerScopeService } from '../../services/owner-scope.service';
 import { RunsService } from '../../services/runs.service';
 import {
   getActionObject,
@@ -38,6 +37,7 @@ import {
   interruptReason,
   interruptedSentence,
   outcomeView,
+  readOnlyNotice,
   removedReason
 } from '../../utils/run-library-strings';
 import { RunIdCopyComponent } from '../run-id-copy/run-id-copy.component';
@@ -63,7 +63,7 @@ const DIALOGS: Record<DialogKind, { title: string; notices: string[]; confirm: s
 })
 export class RunViewerComponent {
   private readonly runsApi = inject(RunsService);
-  private readonly adminApi = inject(AdminConfigService);
+  private readonly scope = inject(OwnerScopeService);
   private readonly router = inject(Router);
   private readonly destroyRef = inject(DestroyRef);
 
@@ -88,7 +88,6 @@ export class RunViewerComponent {
   public readonly playerFailed = signal(false);
   public readonly selectedStepId = signal<string | null>(null);
   public readonly activeSegmentIndex = signal(0);
-  public readonly isAdmin = signal(false);
   public readonly compact = signal(false);
   public readonly techOpen = signal(false);
 
@@ -151,6 +150,10 @@ export class RunViewerComponent {
       this.playerFailed() ||
       ['preparing', 'uploaded_unchecked', 'prepare_failed'].includes(this.recording().state)
   );
+  /** Owner or admin: the same rule the server applies to delete. Everyone else sees the run read-only. */
+  public readonly canManage = computed(() => this.scope.canManage(this.run()?.requested_by));
+  public readonly readOnly = computed(() => !!this.scope.identity() && !this.canManage());
+  public readonly readOnlyText = computed(() => readOnlyNotice(this.run()?.requested_by));
   public readonly rawLogs = computed(() => JSON.stringify({ run: this.run(), steps: this.steps() }, null, 2));
 
   private readonly dialogEl = viewChild<ElementRef<HTMLDialogElement>>('dialogEl');
@@ -164,10 +167,7 @@ export class RunViewerComponent {
   private continuePlaying = false;
 
   constructor() {
-    this.adminApi
-      .getIdentity()
-      .pipe(takeUntilDestroyed(this.destroyRef))
-      .subscribe({ next: (identity) => this.isAdmin.set(identity.admin), error: () => this.isAdmin.set(false) });
+    this.scope.load();
 
     const query = typeof window !== 'undefined' ? window.matchMedia('(max-width: 1279px)') : null;
     if (query) {

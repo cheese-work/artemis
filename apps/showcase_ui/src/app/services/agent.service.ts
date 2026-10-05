@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import { Injectable, signal, inject, computed, DestroyRef, NgZone } from '@angular/core';
+import { Injectable, signal, inject, computed, DestroyRef, NgZone, effect, untracked } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { Observable, catchError, map, of, switchMap } from 'rxjs';
 
@@ -23,6 +23,7 @@ import { ProTuningDefaults, ProTuningOptions } from '../core/models/pro-tuning.m
 import { StepItemData, StepReplayFrame, LLMStreamResetEventData, StreamResetNotice, DEFAULT_STREAM_RESET_MESSAGE, PersistedCheckerStream, StreamSegment } from '../core/models/stream.model';
 import { extractStepReplayFrames } from '../utils/action-formatter.util';
 import { persistedStreamToSegments } from '../utils/stream-aggregator.util';
+import { OwnerScopeService } from './owner-scope.service';
 import { SELECTED_DEVICE_SERIAL_KEY } from './system.service';
 export type { Session, ModelInfo, TaskQueueItem, AgentStatusResponse, StepItemData, StepReplayFrame, LLMStreamResetEventData, StreamResetNotice };
 
@@ -71,6 +72,7 @@ interface SessionVideoResponse {
 export class AgentService {
   private http = inject(HttpClient);
   private zone = inject(NgZone);
+  private ownerScope = inject(OwnerScopeService);
   private activePauseCardKey: string | null = null;
 
   // Signals to expose state to components
@@ -409,6 +411,31 @@ export class AgentService {
       document.addEventListener('visibilitychange', this.onVisibilityChange);
     }
     inject(DestroyRef).onDestroy(() => this.destroy());
+
+    let lastScopeAll = false;
+    effect(() => {
+      const all = this.ownerScope.allUsers();
+      untracked(() => {
+        if (all === lastScopeAll) return;
+        lastScopeAll = all;
+        this.onOwnerScopeChanged();
+      });
+    });
+  }
+
+  /** `/api/...` limited to the caller's runs, or every user's runs while an admin has All users on. */
+  private scoped(url: string): string {
+    return this.ownerScope?.allUsers() ? `${url}?scope=all` : url;
+  }
+
+  /** The All users switch moved: drop what the old scope fed us and read the new one. */
+  public onOwnerScopeChanged(): void {
+    this.invalidateStatusSignatures();
+    this.eventSource?.close();
+    this.eventSource = null;
+    this.ensureLiveStream();
+    this.fetchSessions();
+    this.fetchStatus();
   }
 
   /**
@@ -671,8 +698,10 @@ export class AgentService {
    * Fetch all past and active sessions from the backend
    */
   public fetchSessions(): void {
-    this.http.get<Session[]>('/api/sessions').subscribe({
+    const asked = this.ownerScope?.allUsers();
+    this.http.get<Session[]>(this.scoped('/api/sessions')).subscribe({
       next: (data) => {
+        if (this.ownerScope?.allUsers() !== asked) return; // the switch moved while this was in flight
         this.rawSessions.set(data);
         this.persistSessionsCache(data);
         // On initial load, if nothing is selected, not pinned, not running, and sessions exist, select latest
@@ -835,7 +864,7 @@ export class AgentService {
     // callbacks must not schedule a change-detection pass each. Signal writes
     // still notify the render scheduler, so the UI stays live.
     this.zone.runOutsideAngular(() => {
-    this.eventSource = new EventSource('/api/stream');
+    this.eventSource = new EventSource(this.scoped('/api/stream'));
 
     this.eventSource.addEventListener('info', () => {
       // Reconcile current session if active
@@ -1365,6 +1394,7 @@ export class AgentService {
 
   private persistSessionsCache(sessions: Session[]): void {
     try {
+      if (this.ownerScope?.allUsers()) return; // the remembered list is only ever my own runs
       const serialized = JSON.stringify(sessions);
       if (serialized === this.lastPersistedSessionsJson) return;
       this.lastPersistedSessionsJson = serialized;
@@ -1579,9 +1609,11 @@ export class AgentService {
    */
   public fetchStatus(): void {
     const requestSequence = ++this.statusRequestSequence;
-    this.http.get<any>('/api/status').subscribe({
+    const asked = this.ownerScope?.allUsers();
+    this.http.get<any>(this.scoped('/api/status')).subscribe({
       next: (data) => {
         if (requestSequence <= this.statusAppliedSequence) return;
+        if (this.ownerScope?.allUsers() !== asked) return; // the switch moved while this was in flight
         if (data && data.status) {
           this.statusAppliedSequence = requestSequence;
           const oldStatus = this.agentStatus();
@@ -1623,7 +1655,8 @@ export class AgentService {
                   initial_goal: item.goal || '',
                   start_time: item.start_time || item.created_at || (Date.now() / 1000 + index),
                   status: item.status || 'pending',
-                  device_serial: item.device_serial || item.device_id || null
+                  device_serial: item.device_serial || item.device_id || null,
+                  requested_by: item.requested_by ?? null
                 };
               }
               return {

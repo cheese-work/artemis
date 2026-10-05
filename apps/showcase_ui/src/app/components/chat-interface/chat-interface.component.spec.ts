@@ -18,6 +18,7 @@ import { provideHttpClient } from '@angular/common/http';
 import { provideHttpClientTesting } from '@angular/common/http/testing';
 import { signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
+import { provideRouter } from '@angular/router';
 import { EMPTY, of } from 'rxjs';
 import { DeviceInfo } from '../../core/models/system.model';
 import { Session } from '../../core/models/session.model';
@@ -81,6 +82,7 @@ describe('ChatInterfaceComponent device chip', () => {
       providers: [
         provideHttpClient(),
         provideHttpClientTesting(),
+        provideRouter([]),
         { provide: AgentService, useValue: agentService },
         {
           provide: HostsService,
@@ -202,6 +204,7 @@ describe('ChatInterfaceComponent whose runs it lists (CHE-1152)', () => {
       providers: [
         provideHttpClient(),
         provideHttpClientTesting(),
+        provideRouter([]),
         { provide: AgentService, useValue: agentService },
         { provide: HostsService, useValue: { list: () => of({ enabled: true, hosts: [], devices: [] }) } },
         { provide: WEBUSB_DEVICE_MANAGER, useValue: undefined },
@@ -234,9 +237,9 @@ describe('ChatInterfaceComponent whose runs it lists (CHE-1152)', () => {
     scope.allUsers.set(true);
     render();
     expect(text('.task-owner')).toEqual([
-      'qa1@example.test',
-      'qa2@example.test',
-      'No owner'
+      'Owner: qa1@example.test',
+      'Owner: qa2@example.test',
+      'Owner: no owner'
     ]);
   });
 

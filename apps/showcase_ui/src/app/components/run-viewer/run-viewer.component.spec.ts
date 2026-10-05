@@ -484,10 +484,12 @@ describe('RunViewerComponent', () => {
       expect(runs.unpin).toHaveBeenCalledWith(ID);
     });
 
-    it('shows Delete to admins only', async () => {
+    it('hides Delete from someone who is neither an admin nor the run\'s owner', async () => {
       await open({ isAdmin: false });
       expect(qa('button').some((b) => b.textContent!.trim() === 'Delete')).toBe(false);
-      fixture.destroy();
+    });
+
+    it('shows Delete to an admin', async () => {
       await open({ isAdmin: true });
       expect(button('Delete')).toBeTruthy();
     });
