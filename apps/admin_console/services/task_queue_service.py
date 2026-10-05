@@ -1989,7 +1989,7 @@ class TaskQueueService:
         global queue tickets. A ``None`` member is a lock record that names no
         session, or is still being published: a run that cannot be attributed.
         """
-        wanted = {"running"} if running_only else {"running", "pending"}
+        wanted = IN_FLIGHT_STATUSES if running_only else IN_FLIGHT_STATUSES | {"pending"}
         ids: set[str | None] = {
             str(item["session_id"])
             for item in state.queue_items
