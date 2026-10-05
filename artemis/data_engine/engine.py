@@ -595,14 +595,7 @@ class DataEngine:
         self.current_session_id = session_id
         self.session_start_time = time.time()
 
-        # Clear old pause file if it exists
-        pause_file = PAUSE_FILE
-        if pause_file.exists():
-            try:
-                pause_file.unlink()
-                logger.info("Removed old pause file on session start.")
-            except Exception as e:
-                logger.error(f"Failed to delete old pause file: {e}")
+        self._clear_stale_pause_file("start")
 
         session = SessionMetadata(
             session_id=session_id,
@@ -643,6 +636,49 @@ class DataEngine:
         self._publish("session_started", session.model_dump())
         return session_id
 
+    def _other_live_run_exists(self) -> bool:
+        """Whether a run other than this worker's is live, or cannot be ruled out.
+
+        Counts other processes' device-lock owners (an unnamed or unreadable
+        record is unattributable, so it counts) and other running sessions
+        with a live process. Any error fails closed.
+        """
+        from artemis.runtime import DeviceExecutionLock
+        from artemis.runtime.process_probe import pid_is_alive
+
+        me = os.getpid()
+        try:
+            if DeviceExecutionLock.has_unreadable_owner_record():
+                return True
+            if any(o.pid != me for o in DeviceExecutionLock.get_active_owners().values()):
+                return True
+            with sqlite3.connect(self.storage.db_path) as conn:
+                rows = conn.execute(
+                    "SELECT pid FROM sessions WHERE status = 'running' AND session_id != ?",
+                    (str(self.current_session_id),),
+                ).fetchall()
+        except (OSError, sqlite3.Error):
+            return True
+        return any(pid and pid != me and pid_is_alive(pid) for (pid,) in rows)
+
+    def _clear_stale_pause_file(self, when: str) -> None:
+        """Drop a leftover pause marker unless another live run would be resumed by it.
+
+        The marker is shared by every run and the console lets only an owner or
+        admin clear it, so a session start/end (e.g. from an allowed cancel) must
+        not do it behind their back. The sole live run still clears it.
+        """
+        if not PAUSE_FILE.exists():
+            return
+        if self._other_live_run_exists():
+            logger.info(f"Kept pause file on session {when}: another run is live.")
+            return
+        try:
+            PAUSE_FILE.unlink()
+            logger.info(f"Removed pause file on session {when}.")
+        except Exception as e:
+            logger.error(f"Failed to delete pause file on session {when}: {e}")
+
     def end_session(
         self,
         status: str = "completed",
@@ -656,14 +692,7 @@ class DataEngine:
         if not self.current_session_id:
             return
 
-        # Clear pause file if it exists
-        pause_file = PAUSE_FILE
-        if pause_file.exists():
-            try:
-                pause_file.unlink()
-                logger.info("Removed pause file on session end.")
-            except Exception as e:
-                logger.error(f"Failed to delete pause file on session end: {e}")
+        self._clear_stale_pause_file("end")
 
         session_id = self.current_session_id
         try:

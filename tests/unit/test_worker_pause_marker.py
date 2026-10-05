@@ -122,6 +122,8 @@ async def test_another_live_session_row_keeps_the_pause(world):
             (other, os.getppid()),  # a live process that is not this worker
         )
 
+    pause_file.write_text("LLM Error: paused", encoding="utf-8")  # start ran while alone
+
     engine.end_session("cancelled")
 
     assert pause_file.exists()
