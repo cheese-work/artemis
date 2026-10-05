@@ -30,6 +30,8 @@ export interface TaskQueueItem {
   start_time?: number;
   device_serial?: string | null;
   device_id?: string | null;
+  /** The verified identity that submitted the run; null for a run with none. */
+  requested_by?: string | null;
 }
 
 export interface Session {
@@ -44,6 +46,7 @@ export interface Session {
   device_serial?: string | null;
   device_id?: string | null;
   device_info?: any;
+  requested_by?: string | null;
 }
 
 export interface AgentStatusResponse {

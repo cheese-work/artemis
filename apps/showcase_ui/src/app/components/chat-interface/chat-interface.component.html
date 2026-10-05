@@ -38,6 +38,9 @@ limitations under the License.
     </div>
 
     <div class="header-right">
+      @if (agentService.activeTab() === 'tasks') {
+        <app-scope-switch></app-scope-switch>
+      }
       @if (agentService.sessions().length > 0 && agentService.activeTab() === 'tasks') {
         <button
           class="btn-clear-history"
@@ -126,6 +129,7 @@ limitations under the License.
           </div>
           <div class="task-card-footer">
             <app-run-id-copy [runId]="session.session_id"></app-run-id-copy>
+            <app-owner-label [owner]="session.requested_by"></app-owner-label>
             <span class="task-date">{{ session.start_time * 1000 | date:'MM/dd/yy' }}</span>
           </div>
         </div>
@@ -192,6 +196,7 @@ limitations under the License.
               </div>
               <div class="task-card-footer">
                 <app-run-id-copy [runId]="session.session_id"></app-run-id-copy>
+                <app-owner-label [owner]="session.requested_by"></app-owner-label>
                 <span class="task-date">{{ session.start_time * 1000 | date:'MM/dd/yy' }}</span>
               </div>
             </div>

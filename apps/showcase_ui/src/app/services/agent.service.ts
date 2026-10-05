@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import { Injectable, signal, inject, computed, DestroyRef, NgZone } from '@angular/core';
+import { Injectable, signal, inject, computed, DestroyRef, NgZone, effect, untracked } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { Observable, catchError, map, of, switchMap } from 'rxjs';
 
@@ -23,6 +23,7 @@ import { ProTuningDefaults, ProTuningOptions } from '../core/models/pro-tuning.m
 import { StepItemData, StepReplayFrame, LLMStreamResetEventData, StreamResetNotice, DEFAULT_STREAM_RESET_MESSAGE, PersistedCheckerStream, StreamSegment } from '../core/models/stream.model';
 import { extractStepReplayFrames } from '../utils/action-formatter.util';
 import { persistedStreamToSegments } from '../utils/stream-aggregator.util';
+import { OwnerScopeService } from './owner-scope.service';
 import { SELECTED_DEVICE_SERIAL_KEY } from './system.service';
 export type { Session, ModelInfo, TaskQueueItem, AgentStatusResponse, StepItemData, StepReplayFrame, LLMStreamResetEventData, StreamResetNotice };
 
@@ -71,6 +72,7 @@ interface SessionVideoResponse {
 export class AgentService {
   private http = inject(HttpClient);
   private zone = inject(NgZone);
+  private ownerScope = inject(OwnerScopeService);
   private activePauseCardKey: string | null = null;
 
   // Signals to expose state to components
@@ -401,6 +403,13 @@ export class AgentService {
   };
 
   constructor() {
+    let showingAll = false;
+    effect(() => {
+      const all = this.ownerScope.showAll();
+      if (all === showingAll) return;
+      showingAll = all;
+      untracked(() => this.reloadForScope());
+    });
     this.restoreSessionsCache();
     this.fetchSessions();
     this.startStatusPolling();
@@ -668,13 +677,37 @@ export class AgentService {
   }
 
   /**
+   * "All users" was switched on or off: drop the rows of the other scope, then
+   * read the queue, history and live stream again for the new one.
+   */
+  private reloadForScope(): void {
+    this.invalidatePendingStatusResponses();
+    this.invalidateStatusSignatures();
+    this.clearSessionsCache();
+    this.rawSessions.set([]);
+    this.pendingQueue.set([]);
+    this.activeTasks.set([]);
+    this.activeSessionTracking.clear();
+    if (this.eventSource) {
+      this.eventSource.close();
+      this.eventSource = null;
+    }
+    this.ensureLiveStream();
+    this.fetchSessions();
+    this.fetchStatus();
+  }
+
+  /**
    * Fetch all past and active sessions from the backend
    */
   public fetchSessions(): void {
-    this.http.get<Session[]>('/api/sessions').subscribe({
+    const requestedAll = this.ownerScope.showAll();
+    this.http.get<Session[]>('/api/sessions', { params: this.ownerScope.queryParams() }).subscribe({
       next: (data) => {
+        if (requestedAll !== this.ownerScope.showAll()) return; // answers for the scope the QA just left
         this.rawSessions.set(data);
-        this.persistSessionsCache(data);
+        // Everyone's runs must not seed the next page load, which starts on "mine".
+        if (!this.ownerScope.showAll()) this.persistSessionsCache(data);
         // On initial load, if nothing is selected, not pinned, not running, and sessions exist, select latest
         if (!this.currentSessionId() && !this.userPinnedSessionId() && this.agentStatus() !== 'running' && data.length > 0) {
           this.selectSession(data[0].session_id, false);
@@ -835,7 +868,7 @@ export class AgentService {
     // callbacks must not schedule a change-detection pass each. Signal writes
     // still notify the render scheduler, so the UI stays live.
     this.zone.runOutsideAngular(() => {
-    this.eventSource = new EventSource('/api/stream');
+    this.eventSource = new EventSource(this.ownerScope.showAll() ? '/api/stream?scope=all' : '/api/stream');
 
     this.eventSource.addEventListener('info', () => {
       // Reconcile current session if active
@@ -1579,7 +1612,7 @@ export class AgentService {
    */
   public fetchStatus(): void {
     const requestSequence = ++this.statusRequestSequence;
-    this.http.get<any>('/api/status').subscribe({
+    this.http.get<any>('/api/status', { params: this.ownerScope.queryParams() }).subscribe({
       next: (data) => {
         if (requestSequence <= this.statusAppliedSequence) return;
         if (data && data.status) {
@@ -1623,7 +1656,8 @@ export class AgentService {
                   initial_goal: item.goal || '',
                   start_time: item.start_time || item.created_at || (Date.now() / 1000 + index),
                   status: item.status || 'pending',
-                  device_serial: item.device_serial || item.device_id || null
+                  device_serial: item.device_serial || item.device_id || null,
+                  requested_by: item.requested_by ?? null
                 };
               }
               return {

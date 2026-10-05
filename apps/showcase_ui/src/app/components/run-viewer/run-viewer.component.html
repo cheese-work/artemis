@@ -150,12 +150,15 @@
         </div>
 
         <section class="actions" data-section="actions" aria-label="Actions">
+          @if (readOnlyNote(); as note) {
+            <p class="read-only-note" role="status">{{ note }}</p>
+          }
           <button type="button" class="action-button" (click)="ask('share', $event)">{{ strings.copyLink }}</button>
           <button type="button" class="action-button" (click)="ask('download', $event)">{{ strings.download }}</button>
-          <button type="button" class="action-button" [attr.aria-pressed]="current.pinned" (click)="togglePin($event)">
-            {{ current.pinned ? strings.unpin : strings.pin }}
-          </button>
-          @if (isAdmin()) {
+          @if (canChange()) {
+            <button type="button" class="action-button" [attr.aria-pressed]="current.pinned" (click)="togglePin($event)">
+              {{ current.pinned ? strings.unpin : strings.pin }}
+            </button>
             <button type="button" class="action-button danger" (click)="ask('delete', $event)">{{ strings.delete }}</button>
           }
           @if (feedback()) {

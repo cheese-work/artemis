@@ -18,6 +18,7 @@ import { provideHttpClient } from '@angular/common/http';
 import { provideHttpClientTesting } from '@angular/common/http/testing';
 import { signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
+import { provideRouter } from '@angular/router';
 import { EMPTY, of } from 'rxjs';
 import { DeviceInfo } from '../../core/models/system.model';
 import { Session } from '../../core/models/session.model';
@@ -69,6 +70,7 @@ describe('ChatInterfaceComponent device chip', () => {
     await TestBed.configureTestingModule({
       imports: [ChatInterfaceComponent],
       providers: [
+        provideRouter([]),
         provideHttpClient(),
         provideHttpClientTesting(),
         { provide: AgentService, useValue: agentService },
@@ -192,6 +194,7 @@ describe('ChatInterfaceComponent per-QA scope (CHE-1152)', () => {
     await TestBed.configureTestingModule({
       imports: [ChatInterfaceComponent],
       providers: [
+        provideRouter([]),
         provideHttpClient(),
         provideHttpClientTesting(),
         { provide: AgentService, useValue: agentService },

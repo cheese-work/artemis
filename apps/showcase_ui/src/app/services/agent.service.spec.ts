@@ -927,7 +927,7 @@ describe('AgentService per-QA scope (CHE-1152)', () => {
 
     beforeEach(() => {
       streams = [];
-      spyOn(window as any, 'EventSource').and.callFake((url: string) => {
+      spyOn(window as any, 'EventSource').and.callFake(function (url: string) {
         const stream = { url, close: jasmine.createSpy('close'), addEventListener: () => undefined, onerror: null };
         streams.push(stream);
         return stream;

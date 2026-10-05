@@ -532,7 +532,7 @@ describe('RunLibraryComponent', () => {
 
   describe('per-QA scope (CHE-1152)', () => {
     const switchControl = () => q<HTMLButtonElement>('[role="switch"]');
-    const owners = () => qa('.run-owner').map((el) => el.textContent!.trim());
+    const owners = () => qa('.owner-label').map((el) => el.textContent!.trim());
 
     it('shows a QA their own runs with no switch and no owner labels', async () => {
       await open('/runs', of(page([run()])));
