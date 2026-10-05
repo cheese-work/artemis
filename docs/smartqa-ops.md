@@ -55,3 +55,13 @@ dotenv values. A successful save applies to future runs without restarting the
 service; already-running workers keep their original snapshot. Readiness checks
 only the providers referenced by the active model configuration. Vision OCR is
 optional and is reported separately.
+
+## Computers (release B, off by default)
+
+Computers share their phones with SmartQA. Set `ARTEMIS_HOST_AGENT=enabled` on the server to turn the feature on; with the flag off, Setup → Computers says "Computers are turned off on this server" and every `/api/agent/*` route answers 404.
+
+- **Who can do what.** Anyone signed in reads the list. Admins create enrollment codes, rename and revoke. These are `/api/hosts*` routes, behind Cloudflare Access like every other human route.
+- **Cloudflare path policy.** The computer software calls `/api/agent/*` without a person signing in, so Access must let that prefix through (bypass, or an Access service token). Each route proves itself in the application: an enrollment code, a key signature, or a session token. Add a WAF rate limit for the prefix. `ARTEMIS_ALLOWED_HOSTS` needs no new entry; the software uses the existing public hostname.
+- **Enrollment codes.** 128-bit, single use, 15 minutes, stored hashed, rate limited per IP and per code. A code binds to the first key that signs it; the same key may retry within the 15 minutes, any other key gets "used".
+- **Sessions.** A signed challenge (single-use nonce, 60 s) opens a 24-hour token bound to the computer and its connection. Reconnecting replaces the earlier connection. Revoking closes the live connection at once and refuses renewal and uploads.
+- **Rollback.** Turn the flag off and revoke computers. The registry tables (`hosts`, `host_devices`, `host_tokens`, `host_enrollment_codes`) are additive and ignored when the flag is off.
