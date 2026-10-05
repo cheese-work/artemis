@@ -549,7 +549,7 @@ class DevicePool:
                     claimed.add(str(owner.device_id))
             for item in DeviceExecutionLock.get_queued_tasks():
                 serial = item.get("device_serial")
-                if serial and on_endpoint(item.get("lock_scope")):
+                if serial and on_endpoint(item.get("adb_endpoint_id")):
                     claimed.add(str(serial))
         except Exception as exc:
             logger.debug(f"Could not compute claimed device serials: {exc}")
