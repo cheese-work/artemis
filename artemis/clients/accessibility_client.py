@@ -200,14 +200,14 @@ class AccessibilityClient:
             self._device_id, provision=self._provision_on_connect, on_event=on_event
         )
         if self._awake_strategy is None:
-            self._awake_strategy = ensure_device_awake(self._device_id)
+            self._awake_strategy = ensure_device_awake(self._device_id, self._transport)
 
     def _ensure_session(self) -> HelperSession:
         """Observer-path entry: attach to a helper that is already running."""
         if self._session is None:
             self._session = self._manager.attach(self._device_id, provision=False)
             if self._awake_strategy is None:
-                self._awake_strategy = ensure_device_awake(self._device_id)
+                self._awake_strategy = ensure_device_awake(self._device_id, self._transport)
         return self._session
 
     def disconnect(self) -> None:
