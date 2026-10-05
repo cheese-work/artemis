@@ -24,11 +24,12 @@ limitations under the License.
 
 @if (agentService.isVideoWindowOpen()) {
   <div
+    #frame
     class="floating-video-wrapper"
     [class.minimized]="agentService.isVideoMinimized()"
     [class.theater]="isTheaterMode()"
     [style.left.px]="!isTheaterMode() ? posX() : null"
-    [style.top]="!isTheaterMode() ? 'max(' + posY() + 'px, var(--nav-clearance, 0px))' : null"
+    [style.top.px]="!isTheaterMode() ? posY() : null"
     >
     <!-- Window Header (Draggable Handle) -->
     <header class="window-header" (mousedown)="startDrag($event)">

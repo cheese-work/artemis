@@ -116,6 +116,47 @@ async function phoneStatusA11y() {
   }
 }
 
+// Genuine pointer drags (CDP mouse events), minimize/restore, theater exit, viewport resize and nav height changes:
+// after every step the player frame must be inside the viewport and clear of the nav, controls included.
+async function playerInteractions() {
+  const mouse = (type, x, y) => send('Input.dispatchMouseEvent', { type, x, y, button: 'left', buttons: type === 'mouseReleased' ? 0 : 1, clickCount: 1 });
+  const center = async (sel) => { const r = await evaluate(rect(sel)); return r && [(r.l + r.r) / 2, (r.t + r.b) / 2]; };
+  const click = async (sel) => { const c = await center(sel); if (!c) return false; await mouse('mouseMoved', ...c); await mouse('mousePressed', ...c); await mouse('mouseReleased', ...c); await sleep(400); return true; };
+  const drag = async (dx, dy) => {
+    const r = await evaluate(rect('.floating-video-wrapper .window-header'));
+    const [x0, y0] = [r.l + 40, (r.t + r.b) / 2];
+    await mouse('mouseMoved', x0, y0); await mouse('mousePressed', x0, y0);
+    for (let i = 1; i <= 6; i++) await mouse('mouseMoved', x0 + (dx * i) / 6, y0 + (dy * i) / 6);
+    await mouse('mouseReleased', x0 + dx, y0 + dy);
+    await sleep(400);
+  };
+  for (const [w, h] of [[375, 667], [320, 480]]) for (const phone of [true, false]) {
+    STATES.running();
+    const where = `player-interaction ${w}x${h} phone=${phone}`;
+    await open('/workspace', w, h);
+    await setPhone(phone);
+    await sleep(2400);
+    await evaluate(`(() => { ng.getComponent(document.querySelector('app-floating-video-player')).agentService.openVideoPlayer('aaaaaaaa-1'); ng.applyChanges(document.querySelector('app-floating-video-player')); })()`);
+    await sleep(800);
+    const step = async (name, action) => { await action(); await playerClear(where, name); };
+    await step('on open', async () => {});
+    await step('drag right+down', () => drag(300, 200));
+    await step('drag left+up', () => drag(-600, -600));
+    await step('drag far right+down', () => drag(600, 600));
+    await step('minimize', () => click('.floating-video-wrapper button[aria-label="Minimize"]'));
+    await step('drag minimized right+down', () => drag(300, 300));
+    await step('restore at the edge', () => click('.floating-video-wrapper button[aria-label="Minimize"]'));
+    await step('theater', () => click('.floating-video-wrapper button[aria-label="Theater"]'));
+    await step('theater exit', () => click('.floating-video-wrapper button[aria-label="Theater"]'));
+    await drag(600, 600);
+    await step('viewport shrink', async () => { await send('Emulation.setDeviceMetricsOverride', { width: 320, height: 480, deviceScaleFactor: 1, mobile: true }); await sleep(500); });
+    await step('viewport grow', async () => { await send('Emulation.setDeviceMetricsOverride', { width: 375, height: 667, deviceScaleFactor: 1, mobile: true }); await sleep(500); });
+    await step('nav height change', async () => { await setPhone(!phone); await sleep(500); });
+    await shot(`player-interaction-${w}x${h}-${phone ? 'connected' : 'idle'}`);
+  }
+  STATES.idle();
+}
+
 const T0 = Math.floor(Date.now() / 1000) - 600;
 const longGoal = 'Open the settings app, scroll to the accessibility section and verify that every toggle reflects the saved state after a restart';
 const sessions = [
@@ -233,9 +274,11 @@ try {
   };
   await send('Page.enable');
   const only = process.argv[2];
+  if (only && !['clearance', 'a11y', 'player', 'scenarios'].includes(only)) throw new Error(`unknown audit phase "${only}" (clearance | a11y | player | scenarios)`);
   if (!only || only === 'clearance') await clearanceMatrix();
   if (!only || only === 'a11y') await phoneStatusA11y();
   if (!only || only === 'scenarios') await scenarios();
+  if (!only || only === 'player') await playerInteractions();
 } catch (e) {
   console.error(e);
   failures.push(String(e));

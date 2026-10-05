@@ -57,12 +57,13 @@
 
   &.theater {
     left: 50% !important;
-    top: 50% !important;
+    /* centered in the space below the floating nav */
+    top: calc(50% + var(--nav-clearance, 0px) / 2) !important;
     transform: translate(-50%, -50%);
     width: 85vw;
     max-width: 960px;
     height: auto;
-    max-height: 88vh;
+    max-height: min(88vh, calc(100vh - var(--nav-clearance, 0px) - 20px));
     box-shadow: 0 24px 60px -12px rgba(15, 23, 42, 0.35);
 
     .video-body {
