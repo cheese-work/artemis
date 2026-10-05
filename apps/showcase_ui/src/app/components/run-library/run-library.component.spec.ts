@@ -8,7 +8,9 @@ import { RouterTestingHarness } from '@angular/router/testing';
 import { Observable, Subject, of, throwError } from 'rxjs';
 import { HostsResponse } from '../../core/models/host.model';
 import { RunPage, RunSummary } from '../../core/models/run.model';
+import { AdminConfigService, AdminIdentity } from '../../services/admin-config.service';
 import { HostsService } from '../../services/hosts.service';
+import { OwnerScopeService } from '../../services/owner-scope.service';
 import { RunsService } from '../../services/runs.service';
 import { SELECTED_DEVICE_SERIAL_KEY } from '../../services/system.service';
 import { signal } from '@angular/core';
@@ -47,12 +49,16 @@ const hostsResponse: HostsResponse = {
   devices: []
 };
 
+const QA_IDENTITY: AdminIdentity = { email: 'qa@example.test', admin: false, auth_mode: 'cloudflare', reason: null };
+const ADMIN_IDENTITY: AdminIdentity = { email: 'admin@example.test', admin: true, auth_mode: 'cloudflare', reason: null };
+
 const httpError = (status: number, body: unknown = {}) =>
   throwError(() => new HttpErrorResponse({ status, error: body }));
 
 describe('RunLibraryComponent', () => {
   let runs: jasmine.SpyObj<RunsService>;
   let hosts: jasmine.SpyObj<HostsService>;
+  let adminApi: jasmine.SpyObj<AdminConfigService>;
   let harness: RouterTestingHarness;
   let router: Router;
   let root: HTMLElement;
@@ -99,6 +105,8 @@ describe('RunLibraryComponent', () => {
     });
     hosts = jasmine.createSpyObj<HostsService>('HostsService', ['list']);
     hosts.list.and.returnValue(of(hostsResponse));
+    adminApi = jasmine.createSpyObj<AdminConfigService>('AdminConfigService', ['getIdentity']);
+    adminApi.getIdentity.and.returnValue(of(QA_IDENTITY));
     TestBed.configureTestingModule({
       imports: [RunLibraryComponent],
       providers: [
@@ -109,7 +117,8 @@ describe('RunLibraryComponent', () => {
         ]),
         provideLocationMocks(),
         { provide: RunsService, useValue: runs },
-        { provide: HostsService, useValue: hosts }
+        { provide: HostsService, useValue: hosts },
+        { provide: AdminConfigService, useValue: adminApi }
       ]
     });
     harness = await RouterTestingHarness.create();
@@ -518,6 +527,91 @@ describe('RunLibraryComponent', () => {
       expect(runs.list.calls.mostRecent().args[1]).toEqual({ cursor: 'cursor-1' });
       expect(qa('a.run-row').length).toBe(2);
       expect(q('button.load-more')).toBeNull();
+    });
+  });
+
+  describe('per-QA scope (CHE-1152)', () => {
+    const switchControl = () => q<HTMLButtonElement>('[role="switch"]');
+    const owners = () => qa('.run-owner').map((el) => el.textContent!.trim());
+
+    it('shows a QA their own runs with no switch and no owner labels', async () => {
+      await open('/runs', of(page([run()])));
+      expect(switchControl()).toBeNull();
+      expect(owners()).toEqual([]);
+    });
+
+    it('gives an admin the All users switch, off, with no owner labels and only their own runs asked for', async () => {
+      adminApi.getIdentity.and.returnValue(of(ADMIN_IDENTITY));
+      await open('/runs', of(page([run({ requested_by: 'admin@example.test' })])));
+      expect(switchControl()!.getAttribute('aria-checked')).toBe('false');
+      expect(owners()).toEqual([]);
+    });
+
+    it('reloads the list for everyone and labels each row with its owner when an admin turns the switch on', async () => {
+      adminApi.getIdentity.and.returnValue(of(ADMIN_IDENTITY));
+      await open('/runs', of(page([run({ requested_by: 'admin@example.test' })])));
+      runs.list.calls.reset();
+      runs.list.and.returnValue(
+        of(
+          page([
+            run({ requested_by: 'qa1@example.test' }),
+            run({ session_id: '22222222-5d7e-4a10-9c33-0e1f2a3b4c5d', requested_by: null })
+          ])
+        )
+      );
+      switchControl()!.click();
+      await settle();
+      expect(TestBed.inject(OwnerScopeService).showAll()).toBeTrue();
+      expect(runs.list).toHaveBeenCalledTimes(1);
+      expect(owners()).toEqual(['Owner: qa1@example.test', 'Owner: No owner']);
+    });
+
+    it('drops the owner labels and reloads again when the switch goes back off', async () => {
+      adminApi.getIdentity.and.returnValue(of(ADMIN_IDENTITY));
+      await open('/runs', of(page([run({ requested_by: 'qa1@example.test' })])));
+      switchControl()!.click();
+      await settle();
+      runs.list.calls.reset();
+      switchControl()!.click();
+      await settle();
+      expect(runs.list).toHaveBeenCalledTimes(1);
+      expect(owners()).toEqual([]);
+    });
+
+    it('keeps the search text and filters when the scope changes', async () => {
+      adminApi.getIdentity.and.returnValue(of(ADMIN_IDENTITY));
+      await open('/runs?q=login&status=failed', of(page([])));
+      switchControl()!.click();
+      await settle();
+      expect(runs.list.calls.mostRecent().args[0]).toEqual(jasmine.objectContaining({ q: 'login', status: 'failed' }));
+    });
+
+    it('says "No runs yet" for a QA with nothing, and "No runs match" only when a filter hides everything', async () => {
+      await open('/runs', of(page([])));
+      expect(q('.state-empty')!.textContent).toContain('No runs yet');
+      await router.navigateByUrl('/runs?status=failed');
+      await settle();
+      expect(q('.state-no-match')!.textContent).toContain('No matching runs');
+    });
+
+    it('names the scope in the empty state while an admin looks at all users', async () => {
+      adminApi.getIdentity.and.returnValue(of(ADMIN_IDENTITY));
+      await open('/runs', of(page([])));
+      expect(q('.state-empty')!.textContent).toContain('No runs yet');
+      runs.list.and.returnValue(of(page([])));
+      switchControl()!.click();
+      await settle();
+      expect(q('.state-empty')!.textContent).toContain('No runs from any user yet');
+    });
+
+    it('puts the switch first in the tab order for an admin, natively focusable', async () => {
+      adminApi.getIdentity.and.returnValue(of(ADMIN_IDENTITY));
+      await open('/runs', of(page([run()])));
+      const focusable = qa<HTMLElement>('a[href], button, input, select, summary').filter(
+        (el) => !(el as HTMLButtonElement).disabled && el.checkVisibility()
+      );
+      expect(focusable[0]).toBe(switchControl()!);
+      expect(focusable[1].getAttribute('aria-label')).toBe('Search runs');
     });
   });
 

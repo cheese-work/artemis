@@ -1,7 +1,11 @@
+import { provideHttpClient } from '@angular/common/http';
+import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { signal, computed } from '@angular/core';
+import { TestBed } from '@angular/core/testing';
 import { of, Subject } from 'rxjs';
 
 import { AgentService } from './agent.service';
+import { OwnerScopeService } from './owner-scope.service';
 import { buildRunSummary } from '../utils/run-copy.util';
 
 describe('AgentService live LLM retry timeline', () => {
@@ -21,6 +25,7 @@ describe('AgentService live LLM retry timeline', () => {
     (service as any).sessionSnapshotRequestId = 0;
     (service as any).sessionSnapshotAppliedId = 0;
     (service as any).pendingSnapshotRequests = new Set<number>();
+    (service as any).ownerScope = { showAll: () => false, queryParams: () => ({}) };
     return service;
   }
 
@@ -869,5 +874,115 @@ describe('AgentService task cancellation and active session tracking', () => {
     expect(service.agentStatus()).toBe('running');
     // activeTasks should have filtered out sess-2
     expect(service.activeTasks().map((at: any) => at.session_id)).toEqual(['sess-1']);
+  });
+});
+
+describe('AgentService per-QA scope (CHE-1152)', () => {
+  const admin = { email: 'admin@example.test', admin: true, auth_mode: 'cloudflare', reason: null };
+
+  function createBare(showAll: boolean) {
+    const service = Object.create(AgentService.prototype) as AgentService;
+    const get = jasmine.createSpy('get').and.returnValue(of([]));
+    (service as any).http = { get };
+    (service as any).ownerScope = {
+      showAll: () => showAll,
+      queryParams: () => (showAll ? { scope: 'all' } : {})
+    };
+    (service as any).rawSessions = signal<any[]>([]);
+    (service as any).lastPersistedSessionsJson = null;
+    service.currentSessionId = signal<string | null>('open');
+    service.userPinnedSessionId = signal<string | null>(null);
+    service.agentStatus = signal('idle');
+    return { service, get };
+  }
+
+  it('lists only my sessions by default and everyone\'s while All users is on', () => {
+    const mine = createBare(false);
+    mine.service.fetchSessions();
+    expect(mine.get).toHaveBeenCalledWith('/api/sessions', { params: {} });
+
+    const all = createBare(true);
+    all.service.fetchSessions();
+    expect(all.get).toHaveBeenCalledWith('/api/sessions', { params: { scope: 'all' } });
+  });
+
+  it('never saves all-users sessions to the browser cache that seeds the next page load', () => {
+    const setItem = spyOn(localStorage, 'setItem');
+    const all = createBare(true);
+    all.get.and.returnValue(of([{ session_id: 'theirs', initial_goal: 'x', start_time: 1 }]));
+    all.service.fetchSessions();
+    expect((all.service as any).rawSessions().length).toBe(1);
+    expect(setItem).not.toHaveBeenCalled();
+
+    const mine = createBare(false);
+    mine.get.and.returnValue(of([{ session_id: 'mine', initial_goal: 'x', start_time: 1 }]));
+    mine.service.fetchSessions();
+    expect(setItem).toHaveBeenCalledTimes(1);
+  });
+
+  describe('wiring', () => {
+    let streams: { url: string; close: jasmine.Spy }[];
+    let http: HttpTestingController;
+    let scope: OwnerScopeService;
+
+    beforeEach(() => {
+      streams = [];
+      spyOn(window as any, 'EventSource').and.callFake((url: string) => {
+        const stream = { url, close: jasmine.createSpy('close'), addEventListener: () => undefined, onerror: null };
+        streams.push(stream);
+        return stream;
+      });
+      spyOn(localStorage, 'getItem').and.returnValue(null);
+      spyOn(localStorage, 'setItem');
+      TestBed.configureTestingModule({ providers: [provideHttpClient(), provideHttpClientTesting()] });
+      http = TestBed.inject(HttpTestingController);
+      scope = TestBed.inject(OwnerScopeService);
+      scope.identity.set(admin);
+    });
+
+    const settleStartup = () => http.match(() => true).forEach((request) => request.flush([]));
+
+    it('starts on my own sessions, status and stream, with no scope sent', () => {
+      TestBed.inject(AgentService);
+      const sent = http.match(() => true);
+      expect(sent.filter((r) => r.request.url === '/api/sessions').every((r) => !r.request.params.has('scope'))).toBeTrue();
+      expect(streams.map((s) => s.url)).toEqual(['/api/stream']);
+      sent.forEach((r) => r.flush([]));
+    });
+
+    it('refetches sessions and status for everyone and reopens the stream when an admin turns All users on', () => {
+      const service = TestBed.inject(AgentService);
+      settleStartup();
+      (service as any).rawSessions.set([{ session_id: 'mine', initial_goal: 'g', start_time: 1, status: 'completed' }]);
+
+      scope.setAllUsers(true);
+      TestBed.tick();
+
+      expect((service as any).rawSessions()).toEqual([]);
+      const sessions = http.expectOne((r) => r.url === '/api/sessions');
+      expect(sessions.request.params.get('scope')).toBe('all');
+      const status = http.expectOne((r) => r.url === '/api/status');
+      expect(status.request.params.get('scope')).toBe('all');
+      expect(streams[0].close).toHaveBeenCalled();
+      expect(streams.map((s) => s.url)).toEqual(['/api/stream', '/api/stream?scope=all']);
+      sessions.flush([]);
+      status.flush({});
+    });
+
+    it('goes back to my own sessions and stream when the switch is turned off again', () => {
+      TestBed.inject(AgentService);
+      settleStartup();
+      scope.setAllUsers(true);
+      TestBed.tick();
+      settleStartup();
+      scope.setAllUsers(false);
+      TestBed.tick();
+
+      const sessions = http.expectOne((r) => r.url === '/api/sessions');
+      expect(sessions.request.params.has('scope')).toBeFalse();
+      expect(streams.map((s) => s.url)).toEqual(['/api/stream', '/api/stream?scope=all', '/api/stream']);
+      sessions.flush([]);
+      http.match(() => true).forEach((r) => r.flush({}));
+    });
   });
 });
