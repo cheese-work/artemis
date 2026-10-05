@@ -37,6 +37,15 @@ import { AdminIdentityIndicatorComponent } from '../admin-identity-indicator/adm
         <span class="tab-label">Workspace</span>
       </a>
       <a
+        routerLink="/runs"
+        routerLinkActive="active"
+        class="nav-tab-btn"
+        title="Open the run library"
+      >
+        <span class="material-symbols-outlined tab-icon" aria-hidden="true">history</span>
+        <span class="tab-label">Runs</span>
+      </a>
+      <a
         routerLink="/setup"
         routerLinkActive="active"
         class="nav-tab-btn"

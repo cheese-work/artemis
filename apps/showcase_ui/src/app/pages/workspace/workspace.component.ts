@@ -16,10 +16,14 @@
 
 import { Component, ChangeDetectionStrategy, NgZone, DestroyRef, inject, computed, signal, ViewChild, ElementRef, OnInit } from '@angular/core';
 
+import { toSignal } from '@angular/core/rxjs-interop';
 import { FormsModule } from '@angular/forms';
+import { ActivatedRoute, Router } from '@angular/router';
 import { AgentStreamComponent } from '../../components/agent-stream/agent-stream.component';
 import { ChatInterfaceComponent } from '../../components/chat-interface/chat-interface.component';
 import { FloatingVideoPlayerComponent } from '../../components/floating-video-player/floating-video-player.component';
+import { RunLibraryComponent } from '../../components/run-library/run-library.component';
+import { RunViewerComponent } from '../../components/run-viewer/run-viewer.component';
 import { AgentService } from '../../services/agent.service';
 
 @Component({
@@ -29,7 +33,9 @@ import { AgentService } from '../../services/agent.service';
     FormsModule,
     AgentStreamComponent,
     ChatInterfaceComponent,
-    FloatingVideoPlayerComponent
+    FloatingVideoPlayerComponent,
+    RunLibraryComponent,
+    RunViewerComponent
 ],
   templateUrl: './workspace.component.html',
   styleUrl: './workspace.component.scss',
@@ -38,9 +44,20 @@ import { AgentService } from '../../services/agent.service';
 export class WorkspaceComponent implements OnInit {
   public agentService = inject(AgentService);
   private zone = inject(NgZone);
+  private route = inject(ActivatedRoute);
+  private router = inject(Router);
   private destroyRef = inject(DestroyRef);
   private readonly whatsNewErrorOwner = Symbol('workspace-error');
   private errorTimeout: ReturnType<typeof setTimeout> | null = null;
+
+  /**
+   * `/runs` and `/runs/:id` show the run library or one run in place of the live
+   * stream. They read history through their own service and never select a
+   * session, so opening history cannot change the device for the next run.
+   */
+  public readonly reviewMode = !!this.route.snapshot.data['review'];
+  private readonly routeParams = toSignal(this.route.paramMap, { initialValue: this.route.snapshot.paramMap });
+  public readonly reviewRunId = computed(() => this.routeParams().get('id'));
 
   // Default right panel width to 1/3 of the screen (or 450px as fallback)
   public rightPanelWidth = signal<number>(
@@ -94,6 +111,10 @@ export class WorkspaceComponent implements OnInit {
   }
 
   ngOnInit(): void {
+    // "Start new run with this prompt" hands the prompt over as router state.
+    const navigation = this.router.currentNavigation() ?? this.router.lastSuccessfulNavigation();
+    const handed = (navigation?.extras.state ?? history.state) as { draftPrompt?: unknown } | null;
+    if (typeof handed?.draftPrompt === 'string' && handed.draftPrompt) this.taskInput = handed.draftPrompt;
     if (typeof localStorage !== 'undefined') {
       const saved = localStorage.getItem('artemis_selected_profile');
       if (saved === 'flash' || saved === 'pro') {

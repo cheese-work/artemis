@@ -23,6 +23,9 @@ export const routes: Routes = [
   { path: '', pathMatch: 'full', redirectTo: 'workspace' },
   { path: 'setup', component: HomeComponent },
   { path: 'workspace', component: WorkspaceComponent },
+  // Run library and viewer: the same shell in review mode, so history stays one click from a new run.
+  { path: 'runs', component: WorkspaceComponent, data: { review: true } },
+  { path: 'runs/:id', component: WorkspaceComponent, data: { review: true } },
   { path: 'check', component: LegacyWorkspaceComponent },
   { path: '**', redirectTo: 'workspace' }
 ];

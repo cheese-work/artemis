@@ -275,6 +275,14 @@ $text-muted: #a1a1aa;
         flex-direction: column;
         gap: 8px;
       }
+
+      .browse-runs-link {
+        display: inline-flex;
+        align-items: center;
+        min-height: 44px;
+        color: #1d4ed8;
+        font-size: 13px;
+      }
     }
 
     .task-card {

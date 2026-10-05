@@ -1,0 +1,127 @@
+<div class="library-scroll" #scrollRegion (scroll)="onScroll()">
+  <h1 class="library-title">{{ strings.title }}</h1>
+
+  <form class="search-form" role="search" (submit)="submitSearch($event)">
+    <input
+      type="search"
+      class="search-input"
+      [attr.aria-label]="strings.searchLabel"
+      [placeholder]="strings.searchPlaceholder"
+      [value]="searchText()"
+      autocomplete="off"
+      spellcheck="false"
+      (input)="searchText.set($any($event.target).value)"
+    />
+    <button type="submit" class="search-button">{{ strings.search }}</button>
+  </form>
+
+  <div class="filters">
+    <label class="field">
+      <span>Status</span>
+      <select aria-label="Status" [value]="filters().status" (change)="setFilter('status', $any($event.target).value)">
+        <option value="">Any status</option>
+        @for (option of statusOptions; track option.value) {
+          <option [value]="option.value" [selected]="filters().status === option.value">{{ option.label }}</option>
+        }
+      </select>
+    </label>
+    <label class="field">
+      <span>From</span>
+      <input type="date" aria-label="From date" [value]="filters().from" (change)="setFilter('from', $any($event.target).value)" />
+    </label>
+    <label class="field">
+      <span>To</span>
+      <input type="date" aria-label="To date" [value]="filters().to" (change)="setFilter('to', $any($event.target).value)" />
+    </label>
+  </div>
+
+  <details class="more-filters" [open]="moreOpen()">
+    <summary>{{ strings.moreFilters }}</summary>
+    <div class="filters">
+      <label class="field">
+        <span>Computer</span>
+        <select aria-label="Computer" [value]="filters().host" (change)="setFilter('host', $any($event.target).value)">
+          <option value="">Any computer</option>
+          <option value="local" [selected]="filters().host === 'local'">A browser (no computer)</option>
+          @for (computer of computers(); track computer.id) {
+            <option [value]="computer.id" [selected]="filters().host === computer.id">{{ computer.name }}</option>
+          }
+        </select>
+      </label>
+      <label class="field">
+        <span>Phone</span>
+        <input type="text" aria-label="Phone" placeholder="Serial" [value]="filters().device" (change)="setFilter('device', $any($event.target).value.trim())" />
+      </label>
+      <label class="field">
+        <span>Requested by</span>
+        <input type="text" aria-label="Requested by" placeholder="Email" [value]="filters().requester" (change)="setFilter('requester', $any($event.target).value.trim())" />
+      </label>
+    </div>
+  </details>
+
+  @if (error(); as kind) {
+    <div class="state state-error" role="alert">
+      <p>{{ kind === 'not_ready' ? strings.catalogNotReady : strings.loadFailed }}</p>
+      <button type="button" class="secondary-button" (click)="retry()">{{ strings.retry }}</button>
+    </div>
+  }
+
+  @if (loading() && rows().length === 0 && !error()) {
+    <p class="sr-only" role="status">Loading runs…</p>
+    <div class="skeleton-list" aria-hidden="true">
+      @for (n of [1, 2, 3, 4]; track n) {
+        <div class="skeleton-row"></div>
+      }
+    </div>
+  } @else if (!loading() && rows().length === 0 && !error()) {
+    @if (active()) {
+      <div class="state state-no-match">
+        <p>{{ strings.noMatch }}</p>
+        <button type="button" class="secondary-button" (click)="clearFilters()">{{ strings.clearFilters }}</button>
+      </div>
+    } @else {
+      <div class="state state-empty">
+        <p>{{ strings.emptyTitle }} <a routerLink="/workspace">{{ strings.emptyAction }}</a>.</p>
+      </div>
+    }
+  }
+
+  @if (rows().length > 0) {
+    <p class="sr-only" role="status">{{ rows().length }} runs shown</p>
+    <ol class="run-list" [attr.aria-busy]="loading() ? 'true' : 'false'">
+      @for (run of rows(); track trackRun($index, run)) {
+        <li>
+          <a class="run-row" [routerLink]="['/runs', run.session_id]">
+            <span class="run-prompt">{{ prompt(run) }}</span>
+            <span class="run-outcome tone-{{ outcome(run.status).tone }}">
+              <span class="material-symbols-outlined" aria-hidden="true">{{ outcome(run.status).icon }}</span>
+              {{ outcome(run.status).label }}
+            </span>
+            <span class="run-meta">
+              <span class="run-recording">{{ recordingBadge(run) }}</span>
+              <span class="run-device">{{ device(run) }}</span>
+              <span class="run-date">
+                @if (run.start_time) {
+                  {{ run.start_time * 1000 | date: 'MMM d, y, h:mm a' }}
+                } @else {
+                  Date unknown
+                }
+              </span>
+              @if (expires(run); as text) {
+                <span class="run-expires">{{ text }}</span>
+              }
+              @if (run.status === 'interrupted') {
+                <span class="run-reason">{{ interruptReason(run.interrupt_reason) }}</span>
+              }
+            </span>
+          </a>
+        </li>
+      }
+    </ol>
+    @if (nextCursor()) {
+      <button type="button" class="secondary-button load-more" [disabled]="loadingMore()" (click)="loadMore()">
+        {{ strings.loadMore }}
+      </button>
+    }
+  }
+</div>

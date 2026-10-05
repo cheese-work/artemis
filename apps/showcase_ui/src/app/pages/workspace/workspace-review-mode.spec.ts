@@ -64,7 +64,7 @@ describe('Workspace review mode', () => {
     root = harness.fixture.nativeElement;
   });
 
-  async function go(url: string, state?: unknown) {
+  async function go(url: string, state?: Record<string, unknown>) {
     await TestBed.inject(Router).navigateByUrl(url, { state });
     harness.fixture.detectChanges();
     await harness.fixture.whenStable();
@@ -92,6 +92,15 @@ describe('Workspace review mode', () => {
     expect(q('app-run-viewer')).not.toBeNull();
     expect(q('app-run-library')).toBeNull();
     expect(runs.get).toHaveBeenCalledWith(ID);
+  });
+
+  it('has no looping decorative motion in review mode, unlike the live workspace', async () => {
+    await go('/workspace');
+    expect(getComputedStyle(q('.liquid-wave')!).animationName).not.toBe('none');
+    await go('/runs');
+    for (const el of Array.from(root.querySelectorAll('.liquid-wave, .wave-glow-ambient'))) {
+      expect(getComputedStyle(el).animationName).toBe('none');
+    }
   });
 
   it('omits the mouse-only splitter in review mode', async () => {

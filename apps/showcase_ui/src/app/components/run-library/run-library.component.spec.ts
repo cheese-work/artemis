@@ -287,14 +287,13 @@ describe('RunLibraryComponent', () => {
       }
     });
 
-    it('survives opening a run and coming back: the same filters load again', async () => {
+    it('survives opening a run and coming back through the remembered query', async () => {
       await open('/runs?status=failed&q=login');
       await harness.navigateByUrl(`/runs/${ID}`);
       runs.list.calls.reset();
-      TestBed.inject(Location).back();
+      await router.navigate(['/runs'], { queryParams: runs.lastLibraryQuery() });
       await settle();
-      expect(router.url).toBe('/runs?status=failed&q=login');
-      await settle();
+      expect(router.url).toBe('/runs?q=login&status=failed');
       expect(runs.list.calls.mostRecent().args[0].status).toBe('failed');
       expect(runs.list.calls.mostRecent().args[0].q).toBe('login');
     });
@@ -323,6 +322,62 @@ describe('RunLibraryComponent', () => {
       next.complete();
       await settle();
       expect(q('ol.run-list')!.getAttribute('aria-busy')).toBe('false');
+    });
+  });
+
+  describe('scroll position in the URL', () => {
+    const many = (n: number, next: string | null = null) =>
+      page(
+        Array.from({ length: n }, (_, i) =>
+          run({ session_id: `${String(i).padStart(8, '0')}-5d7e-4a10-9c33-0e1f2a3b4c5d`, prompt: `Run ${i}` })
+        ),
+        next
+      );
+    const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+    async function openPending(url: string) {
+      const first = new Subject<RunPage>();
+      runs.list.and.returnValue(first);
+      await harness.navigateByUrl(url, RunLibraryComponent);
+      harness.fixture.autoDetectChanges(); // as in the app, rows are laid out before the restore timer fires
+      root = harness.fixture.nativeElement;
+      q<HTMLElement>('.library-scroll')!.style.height = '200px';
+      return first;
+    }
+
+    it('writes the scroll position to the URL, and a scroll alone does not reload the list', async () => {
+      await open('/runs', of(many(12)));
+      const region = q<HTMLElement>('.library-scroll')!;
+      region.style.height = '200px';
+      region.scrollTop = 120;
+      region.dispatchEvent(new Event('scroll'));
+      await wait(350);
+      await settle();
+      expect(router.url).toBe('/runs?scroll=120');
+      expect(runs.list).toHaveBeenCalledTimes(1);
+    });
+
+    it('restores the saved position once the first page is on screen', async () => {
+      const first = await openPending('/runs?scroll=150');
+      first.next(many(12));
+      first.complete();
+      await settle();
+      await wait(50);
+      expect(q<HTMLElement>('.library-scroll')!.scrollTop).toBe(150);
+    });
+
+    it('loads more pages until the saved position exists, then scrolls to it', async () => {
+      const first = await openPending('/runs?scroll=700');
+      runs.list.and.returnValue(of(many(12)));
+      first.next(many(3, 'next-page'));
+      first.complete();
+      await settle();
+      await wait(50);
+      await settle();
+      await wait(50);
+      expect(runs.list).toHaveBeenCalledTimes(2);
+      expect(runs.list.calls.mostRecent().args[1]).toEqual({ cursor: 'next-page' });
+      expect(q<HTMLElement>('.library-scroll')!.scrollTop).toBe(700);
     });
   });
 
