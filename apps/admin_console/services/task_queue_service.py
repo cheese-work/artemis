@@ -2116,7 +2116,7 @@ class TaskQueueService:
         item = cls._queue_item_for(sid)
         try:
             row = session_repo.read_session(sid)
-        except Exception:
+        except (sqlite3.Error, OSError):
             logger.exception("[QueueWorker] Could not read session %s to cancel it", sid)
             return "retry"  # a failed read is not proof the session is absent
         waiting = (item and item.get("status") == "pending") or (
@@ -2132,7 +2132,7 @@ class TaskQueueService:
             # Not ours to claim: another writer settled it, or the commit failed.
             try:
                 now = session_repo.read_session(sid)
-            except Exception:
+            except (sqlite3.Error, OSError):
                 logger.exception("[QueueWorker] Could not re-read session %s", sid)
                 return "retry"
             if now and now.get("status") != "queued":
