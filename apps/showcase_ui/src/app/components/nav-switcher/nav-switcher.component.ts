@@ -14,7 +14,8 @@
  * limitations under the License.
  */
 
-import { Component, ChangeDetectionStrategy, EventEmitter, inject, Input, Output } from '@angular/core';
+import { DOCUMENT } from '@angular/common';
+import { Component, ChangeDetectionStrategy, DestroyRef, ElementRef, EventEmitter, afterNextRender, inject, Input, Output } from '@angular/core';
 
 import { RouterLink, RouterLinkActive } from '@angular/router';
 import { UsbDeviceRelayService } from '../../services/usb-device-relay.service';
@@ -88,6 +89,25 @@ export class NavSwitcherComponent {
   @Output() public showWhatsNew = new EventEmitter<void>();
 
   public readonly usbRelay = inject(UsbDeviceRelayService);
+  private readonly bar = inject(ElementRef<HTMLElement>);
+
+  constructor() {
+    // Page content starts below the nav however many rows it wraps to: publish its bottom edge.
+    const rootStyle = inject(DOCUMENT).documentElement.style;
+    const destroyRef = inject(DestroyRef);
+    afterNextRender(() => {
+      const nav = (this.bar.nativeElement as HTMLElement).querySelector('nav') as HTMLElement;
+      const publish = () => rootStyle.setProperty('--nav-clearance', `${Math.ceil(nav.getBoundingClientRect().bottom) + 12}px`);
+      const observer = new ResizeObserver(publish);
+      observer.observe(nav);
+      publish();
+      destroyRef.onDestroy(() => {
+        observer.disconnect();
+        rootStyle.removeProperty('--nav-clearance');
+      });
+    });
+  }
+
   public get whatsNewLabel(): string {
     return this.hasUnreadWhatsNew ? "Open What's New, unread updates" : "Open What's New";
   }
