@@ -213,30 +213,34 @@ def set_pinned(session_id: str, pinned: bool) -> dict[str, Any]:
 
 
 def _delete(session_id: str, reason: str, *, keep_pinned: bool, vacuum: bool = True) -> str | None:
-    """Tombstone, then clean up now or once leases end.
+    """Tombstone and queue the cleanup in one transaction, then clean up now or once leases end.
 
     None when a guard (live, pending upload, and for retention a pin) holds at
-    the moment of the delete: nothing is tombstoned or removed.
+    the moment of the delete: nothing is tombstoned or removed. If the queue
+    write fails the tombstone rolls back with it, so a run is never removed
+    from the catalog without a cleanup that will find it.
     """
     db_path, _ = library_paths()
     with db_session(db_path) as conn:
-        cursor = conn.execute(
-            f"UPDATE run_meta SET deleted_at = {run_catalog.NOW_SQL}, deleted_reason = ? "
-            "WHERE session_id = ? AND deleted_at IS NULL"
-            + _GUARDS_SQL
-            + (" AND pinned = 0" if keep_pinned else ""),
-            (
-                reason,
-                session_id,
-                *sorted(TERMINAL),
-                *_PENDING_TRANSFER,
-                *_PENDING_CAPTURE,
-            ),
-        )
-        conn.commit()
-        if cursor.rowcount == 0:
-            return None
-    if run_leases.request_cleanup(db_path, session_id):
+        run_leases.begin_immediate(conn)
+        with conn:  # commits both writes together, or rolls both back on any error
+            cursor = conn.execute(
+                f"UPDATE run_meta SET deleted_at = {run_catalog.NOW_SQL}, deleted_reason = ? "
+                "WHERE session_id = ? AND deleted_at IS NULL"
+                + _GUARDS_SQL
+                + (" AND pinned = 0" if keep_pinned else ""),
+                (
+                    reason,
+                    session_id,
+                    *sorted(TERMINAL),
+                    *_PENDING_TRANSFER,
+                    *_PENDING_CAPTURE,
+                ),
+            )
+            if cursor.rowcount == 0:
+                return None
+            leased = run_leases.enqueue_cleanup(conn, session_id)
+    if leased:
         return "deferred"
     # Failed: tombstoned with its pending row kept, so the sweep retries until files are gone.
     ok, _ = attempt(_purge, session_id, vacuum=vacuum)
@@ -274,7 +278,8 @@ def _delete_all(session_ids: list[str], reason: str) -> dict[str, list[str]]:
     for session_id in session_ids:
         # One broken run must not starve the rest of the batch.
         ok, outcome = attempt(_delete, session_id, reason, keep_pinned=True, vacuum=False)
-        outcome = outcome if ok else "deferred"
+        if not ok:  # the delete rolled back as a whole: untouched, retried by the next run
+            continue
         if outcome:
             result["deleted" if outcome == "done" else "deferred"].append(session_id)
     if result["deleted"]:

@@ -117,7 +117,9 @@ def test_a_poisoned_pending_cleanup_does_not_block_the_others(library, monkeypat
     db = run_catalog_repo.db_path
     for sid in (bad, good):
         run_catalog_repo.tombstone(sid, "admin_delete")
-        run_leases.request_cleanup(db, sid)
+        with sqlite3.connect(db) as conn:
+            run_leases.begin_immediate(conn)
+            run_leases.enqueue_cleanup(conn, sid)
     real = run_purge.purge_run
 
     def purge(db_path, traces, session_id, **kwargs):

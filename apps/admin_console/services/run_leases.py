@@ -86,22 +86,23 @@ def release(db_path, lease_id: str) -> str | None:
         return row[0] if due and not _active(conn, row[0]) else None
 
 
-def request_cleanup(db_path, session_id: str) -> bool:
-    """Record a pending cleanup; True when a lease is active, so it must wait.
+def enqueue_cleanup(conn: sqlite3.Connection, session_id: str) -> bool:
+    """Record a pending cleanup on ``conn`` (the caller commits); True when a lease is active.
 
     The row stays until ``clear_pending``: a cleanup that crashes half-way is
     finished by the next startup instead of leaving orphaned files.
     """
-    with db_session(db_path) as conn:
-        _ensure(conn)
-        conn.execute("BEGIN IMMEDIATE")
-        conn.execute(
-            "INSERT OR IGNORE INTO run_pending_cleanup (session_id, requested_at) VALUES (?, ?)",
-            (session_id, time.time()),
-        )
-        leased = _active(conn, session_id) > 0
-        conn.commit()
-        return leased
+    conn.execute(
+        "INSERT OR IGNORE INTO run_pending_cleanup (session_id, requested_at) VALUES (?, ?)",
+        (session_id, time.time()),
+    )
+    return _active(conn, session_id) > 0
+
+
+def begin_immediate(conn: sqlite3.Connection) -> None:
+    """Open a write transaction with the queue table in place (DDL must come first)."""
+    _ensure(conn)
+    conn.execute("BEGIN IMMEDIATE")
 
 
 def due_cleanups(db_path) -> list[str]:
