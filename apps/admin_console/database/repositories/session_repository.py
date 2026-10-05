@@ -467,11 +467,14 @@ class SessionRepository:
         device_serial: str | None,
         start_time: float | None = None,
         notify_context: dict[str, Any] | None = None,
+        requested_by: str | None = None,
     ) -> bool:
         """Persist a queue item before its worker starts a session.
 
         ``notify_context`` (conversation id, ingress, goal) is stored with the
         session so the outcome notification survives a server restart.
+        ``requested_by`` (the verified submitter) becomes the run's owner in the
+        same transaction, so a run is never visible without its owner.
         """
         try:
             with db_session(self.db_path) as conn:
@@ -494,8 +497,17 @@ class SessionRepository:
                         json.dumps(notify_context) if notify_context else None,
                     ),
                 )
+                inserted = cursor.rowcount > 0
+                if requested_by:
+                    cursor.execute(
+                        "UPDATE run_meta SET requested_by = ? WHERE session_id = ?",
+                        (requested_by, str(session_id)),
+                    )
+                    if cursor.rowcount != 1:
+                        conn.rollback()
+                        return False
                 conn.commit()
-                return cursor.rowcount > 0
+                return inserted
         except Exception:
             logger.exception("Could not create queued session %s", session_id)
             return False

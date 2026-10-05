@@ -18,8 +18,10 @@ import asyncio
 from datetime import datetime, timezone, UTC
 from typing import Any
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query
 from fastapi.responses import JSONResponse
+
+from apps.admin_console.core.ownership import OwnerScope, list_scope, scope_or_open
 
 try:
     from admin_console.database.repositories.run_catalog_repository import (
@@ -63,8 +65,16 @@ async def list_runs(
     until: str | None = None,
     cursor: str | None = None,
     limit: int = Query(50, ge=1, le=200),
+    scope: OwnerScope = Depends(list_scope),
 ):
-    """Newest-first page of runs; ``next_cursor`` is null on the last page."""
+    """Newest-first page of runs; ``next_cursor`` is null on the last page.
+
+    Callers see their own runs; admins add ``scope=all`` to see everyone's.
+    """
+    scope = scope_or_open(scope)
+    owner_filter = {}
+    if scope.enforced and not scope.include_all:
+        owner_filter = {"owner": scope.email, "unowned": scope.email is None}
     try:
         bounds = {"since": _parse_time(since), "until": _parse_time(until)}
     except ValueError:
@@ -79,6 +89,7 @@ async def list_runs(
             requester=requester,
             cursor=cursor,
             limit=limit,
+            **owner_filter,
             **bounds,
         )
     except InvalidCursor:

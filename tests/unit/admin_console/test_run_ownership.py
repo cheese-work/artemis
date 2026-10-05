@@ -75,6 +75,8 @@ def env(tmp_path, monkeypatch):
     state.active_runs.clear()
     state.active_connections.clear()
     state.active_session_id = None
+    state.is_shutting_down = False  # an earlier lifecycle test may leave it set
+    state.shutdown_event.clear()
     yield db
     state.queue_items.clear()
     state.active_runs.clear()
@@ -231,7 +233,9 @@ async def _open_stream(scope=None):
 
 
 def _emit(session_id: str) -> None:
-    task_queue_service._broadcast_event("startup_progress", {"session_id": session_id, "stage": "x"})
+    task_queue_service._broadcast_event(
+        "startup_progress", {"session_id": session_id, "stage": "x"}
+    )
 
 
 @pytest.mark.asyncio
@@ -612,3 +616,21 @@ async def test_history_wipe_stays_admin_only(cloudflare):
     response = await _post(QA1, "/api/cleanup")
 
     assert response.status_code == 403 and response.json()["code"] == "admin_required"
+
+
+@pytest.mark.asyncio
+async def test_stale_pause_with_no_run_is_resumable_by_an_admin_only(cloudflare, monkeypatch):
+    pause_file = cloudflare.parent / ".artemis_paused"
+    pause_file.write_text("LLM Error: paused", encoding="utf-8")
+    monkeypatch.setattr("apps.admin_console.core.state.PAUSE_FILE", pause_file)
+
+    assert (await _post(QA1, "/api/resume")).status_code == 403
+    task_queue_service.resume_task.assert_not_called()
+    assert (await _post(ADMIN, "/api/resume")).status_code == 200
+
+
+def test_delete_route_is_qa_tier_and_history_wipe_stays_admin_tier():
+    from apps.admin_console.core.access_control import route_tier
+
+    assert route_tier("/api/sessions/{session_id}/delete", {"POST"}) == "qa"
+    assert route_tier("/api/cleanup", {"POST"}) == "admin"

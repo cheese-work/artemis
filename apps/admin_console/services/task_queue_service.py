@@ -1157,6 +1157,7 @@ class TaskQueueService:
         device_serial: str | None,
         endpoint: AdbEndpoint,
         now: float,
+        requested_by: str | None = None,
     ) -> dict[str, Any] | None:
         """Return the short-circuit response for a duplicate submission, if any."""
         # 1. Deduplication by session_id: if session_id is already running or queued, do not re-enqueue
@@ -1194,6 +1195,7 @@ class TaskQueueService:
                     for item in reversed(state.queue_items)
                     if isinstance(item, dict)
                     and item.get("status") == "pending"
+                    and item.get("requested_by") == requested_by
                     and item.get("goal") == first_goal
                     and (not device_serial or item.get("device_serial") == device_serial)
                     and item.get("adb_endpoint", {}).get("identity") == endpoint.identity
@@ -1253,6 +1255,7 @@ class TaskQueueService:
         verification_level: str | None = None,
         explorer_mode: str | None = None,
         run_id: str | None = None,
+        requested_by: str | None = None,
     ) -> dict[str, Any]:
         """Reserve a device slot and build one pending queue item for a goal."""
         sess_id = single_session_id if single_session_id else str(uuid.uuid4())
@@ -1281,6 +1284,7 @@ class TaskQueueService:
             "ingress": ingress,
             "conversation_id": conversation_id,
             "run_id": run_id,
+            "requested_by": requested_by,
             "status": "pending",
             "queue_ticket": queue_ticket,
             "created_at": now + index * 0.001,
@@ -1303,8 +1307,12 @@ class TaskQueueService:
         verification_level: str | None = None,
         explorer_mode: str | None = None,
         run_id: str | None = None,
+        requested_by: str | None = None,
     ) -> dict[str, Any]:
         """Enqueues one or more goals and wakes up the background worker.
+
+        ``requested_by`` is the verified identity that owns the new runs (None:
+        no owner); it is persisted with each session and shown on the queue item.
 
         ``verification_level`` and ``explorer_mode`` are Pro-profile tuning knobs
         forwarded to the worker as ``--verification-level`` / ``--explorer-pro-mode``;
@@ -1326,7 +1334,7 @@ class TaskQueueService:
         endpoint = current_adb_endpoint()
 
         duplicate_response = cls._find_duplicate_submission(
-            goals, session_id, device_serial, endpoint, now
+            goals, session_id, device_serial, endpoint, now, requested_by
         )
         if duplicate_response is not None:
             return duplicate_response
@@ -1369,6 +1377,7 @@ class TaskQueueService:
                 verification_level=verification_level,
                 explorer_mode=explorer_mode,
                 run_id=run_id,
+                requested_by=requested_by,
             )
             session_id = str(task_item["session_id"])
             existing_trace = trace_store.read_status(session_id)
@@ -1404,6 +1413,7 @@ class TaskQueueService:
                     task_item.get("device_serial"),
                     task_item.get("start_time"),
                     notify_context,
+                    requested_by,
                 ):
                     raise RuntimeError(f"Could not persist queued session {session_id}")
             except (OSError, RuntimeError) as exc:
