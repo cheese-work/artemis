@@ -39,19 +39,24 @@ _WORD = (
 )
 # A key must END in a sensitive word, so ``max_tokens`` and ``author`` stay readable.
 _SENSITIVE_KEY = re.compile(rf"(?:{_WORD})$", re.IGNORECASE)
-# A value is quoted (spaces and escaped quotes inside stay part of it), JSON quoted
-# inside a JSON string (\\"..\\"), an unterminated quote (to the end of the line),
-# or one unquoted run.
+# A value is quoted, or an unterminated quote (to the end of the line), or one
+# unquoted run. A quoted value closes only on the SAME run of k backslashes + quote
+# that opened it, so JSON nested at any depth works (k is 0, 1, 3, 7... for each
+# json.dumps level; an escaped inner quote at that level carries 2k+1 backslashes).
+# An escaped backslash right before the real closer reads as an inner quote: that
+# errs towards redacting more, never less.
 _VALUE = (
-    r"\\+\"(?:(?!\\+\").)*\\+\""
-    r"|\"(?:[^\"\\]|\\.)*\""
-    r"|'(?:[^'\\]|\\.)*'"
+    r"(?P<bs>\\*)(?P<q>[\"'])(?:(?!(?<!\\)(?P=bs)(?P=q)).)*(?P=bs)(?P=q)"
     r"|\\*[\"'][^\n]*"
     r"|(?:(?:bearer|basic|token)\s+)?[^\s\"'\\,;&}\]]+"
 )
 _ASSIGNMENT = re.compile(
     rf"(?P<head>(?<![\w.-])[\w.-]*?(?:{_WORD})(?:\\*[\"'])?\s*[:=]\s*)(?P<value>{_VALUE})",
     re.IGNORECASE,
+)
+# A Cookie / Set-Cookie header carries several name=value pairs: redact all of them.
+_COOKIE = re.compile(
+    r"(?P<head>\b(?:set-)?cookie[\"']?\s*[:=]\s*[\"']?)(?P<value>[^\r\n\"'\\]+)", re.IGNORECASE
 )
 _BEARER = re.compile(r"(?P<head>\bbearer\s+)[A-Za-z0-9._~+/=-]{8,}", re.IGNORECASE)
 _TYPED = (
@@ -93,11 +98,10 @@ def _redact_value(match: re.Match[str]) -> str:
     closer = ""
     body = value
     if opener:
-        quote = opener.group()[-1]
-        end = re.search(rf"\\*{re.escape(quote)}$", value)
-        if end and end.start() >= len(opener.group()):
-            closer = end.group()
-        body = value[len(opener.group()) : len(value) - len(closer)]
+        delimiter = opener.group()
+        if len(value) >= 2 * len(delimiter) and value.endswith(delimiter):
+            closer = delimiter
+        body = value[len(delimiter) : len(value) - len(closer)]
     if match.string.startswith(
         REDACTED, match.start("value") + len(opener.group() if opener else "")
     ):
@@ -105,11 +109,18 @@ def _redact_value(match: re.Match[str]) -> str:
     return f"{match.group('head')}{opener.group() if opener else ''}{REDACTED}{closer}"
 
 
+def _redact_cookie(match: re.Match[str]) -> str:
+    if match.group("value").startswith(REDACTED):
+        return match.group(0)
+    return f"{match.group('head')}{REDACTED}"
+
+
 def redact_text(text: str) -> str:
     """Replace secrets in free text with ``[REDACTED]``, keeping the surrounding words."""
     if not text:
         return text
     out = _SHAPES.sub(REDACTED, text)
+    out = _COOKIE.sub(_redact_cookie, out)
     out = _ASSIGNMENT.sub(_redact_value, out)
     for pattern in _TYPED:
         out = pattern.sub(_redact_value, out)

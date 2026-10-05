@@ -241,6 +241,7 @@ async def on_startup():
     state.worker_task = asyncio.create_task(task_queue_service.queue_worker())
     # Finishes deferred deletions, and enforces retention only once an admin enabled it.
     state.retention_task = asyncio.create_task(run_retention.sweep_forever())
+    state.retention_task.add_done_callback(run_retention.log_task_failure)
 
 
 async def on_shutdown():

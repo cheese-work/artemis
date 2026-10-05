@@ -26,7 +26,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import sqlite3
 import time
 from typing import Any
 
@@ -327,13 +326,24 @@ def finish_pending_cleanups() -> int:
     return len(due)
 
 
+def log_task_failure(task: asyncio.Task) -> None:
+    """Done-callback for a background task: a crash must not go unnoticed."""
+    if not task.cancelled() and task.exception() is not None:
+        logger.error("Background task %s died", task.get_name(), exc_info=task.exception())
+
+
 async def sweep_forever() -> None:
-    """Server background loop: finish due cleanups, enforce retention when enabled."""
+    """Server background loop: finish due cleanups, enforce retention when enabled.
+
+    Any failure is logged and the loop carries on; only cancellation ends it.
+    """
     while True:
         try:
             await asyncio.to_thread(finish_pending_cleanups)
             if (await asyncio.to_thread(get_settings))["enabled"]:
                 await asyncio.to_thread(enforce)
-        except (OSError, sqlite3.Error, RunLibraryError):
+        except asyncio.CancelledError:
+            raise
+        except Exception:
             logger.exception("Retention sweep failed; will retry")
         await asyncio.sleep(SWEEP_INTERVAL_SECONDS)

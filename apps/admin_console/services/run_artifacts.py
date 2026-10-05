@@ -26,6 +26,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import errno
 import json
+import logging
 import os
 from pathlib import Path
 import re
@@ -42,6 +43,8 @@ except ImportError:
     from apps.admin_console.database.connection import db_session
     from apps.admin_console.database.repositories.run_catalog_repository import run_catalog_repo
     from apps.admin_console.database.repositories.step_repository import StepRepository
+
+logger = logging.getLogger(__name__)
 
 _SAFE_NAME = re.compile(r"[A-Za-z0-9._-]{1,200}")
 _NOTE_SUFFIXES = {".md", ".txt", ".json", ".yaml"}
@@ -172,23 +175,83 @@ class UnsafePath(OSError):
     """A path component turned out to be a link (or the path left its root) at use time."""
 
 
-def no_symlink_parents(root: Path, candidate: Path) -> bool:
-    """True when every directory between ``root`` and ``candidate`` is a real directory.
+def remove_under(root: Path, candidate: Path, *, prune_empty_parents: bool = False) -> None:
+    """Delete a file, link or directory tree under ``root`` without following any link.
 
-    The leaf itself may be anything (a link is then removed, not followed).
+    Everything is relative to a directory fd walked from the root with
+    ``O_NOFOLLOW`` per component, so a parent swapped for a link at any moment
+    (before or during the delete) is refused rather than followed. A link in the
+    last position, or inside a tree, is unlinked itself. ``prune_empty_parents``
+    then removes the directories above it that are left empty (never ``root``).
     """
     found = relative_parts(root, candidate)
     if found is None:
-        return False
-    current, parts = found
-    for part in parts[:-1]:
-        current = current / part
+        return
+    base, parts = found
+    fds = [os.open(base, os.O_RDONLY | os.O_DIRECTORY)]
+    try:
+        for part in parts[:-1]:
+            fds.append(os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fds[-1]))
+        _remove_entry(fds[-1], parts[-1])
+        if prune_empty_parents:
+            for depth in range(len(parts) - 1, 0, -1):
+                os.rmdir(parts[depth - 1], dir_fd=fds[depth - 1])
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        if exc.errno not in (errno.ENOTEMPTY, errno.EEXIST):
+            logger.warning("Refused or could not delete %s", candidate, exc_info=True)
+    finally:
+        for fd in fds:
+            os.close(fd)
+
+
+def _remove_entry(dir_fd: int, name: str) -> None:
+    try:
+        mode = os.stat(name, dir_fd=dir_fd, follow_symlinks=False).st_mode
+        if not stat.S_ISDIR(mode):
+            os.unlink(name, dir_fd=dir_fd)
+            return
+        child = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=dir_fd)
         try:
-            if not stat.S_ISDIR(os.lstat(current).st_mode):
-                return False
-        except OSError:
-            return False
-    return True
+            with os.scandir(child) as entries:
+                names = [entry.name for entry in entries]
+            for entry_name in names:
+                _remove_entry(child, entry_name)
+        finally:
+            os.close(child)
+        os.rmdir(name, dir_fd=dir_fd)
+    except FileNotFoundError:
+        return
+    except OSError:
+        logger.warning("Could not delete %s", name, exc_info=True)
+
+
+def _like(text: str) -> str:
+    return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def recordings_under(db_path, traces: Path, key: str) -> list[tuple[str, Path]]:
+    """(run, recording path) for every recording at or inside the first-level entry ``key``.
+
+    ``key`` is a task folder directly under ``traces`` (shared by every rerun of
+    the same named task) or a file there. Purged runs have no rows left, so
+    deleted runs whose cleanup is still pending are included.
+    """
+    clauses, params = [], {}
+    for i, base in enumerate(_roots(traces)):
+        path = str(base / key)
+        clauses.append(f"{{col}} = :e{i} OR {{col}} LIKE :l{i} ESCAPE '\\'")
+        params |= {f"e{i}": path, f"l{i}": _like(path) + "/%"}
+    match = " OR ".join(clauses)
+    sql = (
+        "SELECT session_id, local_video_path FROM video_recordings "
+        f"WHERE {match.format(col='local_video_path')} "
+        "UNION SELECT session_id, video_filepath FROM sessions "
+        f"WHERE {match.format(col='video_filepath')}"
+    )
+    with db_session(db_path) as conn:
+        return [(row[0], Path(row[1])) for row in conn.execute(sql, params)]
 
 
 def open_under(root: Path, candidate: Path) -> BinaryIO:
@@ -260,12 +323,20 @@ def _skip(manifest: Manifest, name: str, reason: str) -> None:
     manifest.skipped.append({"name": name, "reason": reason})
 
 
+def _size(path: Path) -> int | None:
+    """File size, or None when it vanished after it was checked."""
+    try:
+        return os.lstat(path).st_size
+    except FileNotFoundError:
+        return None
+
+
 def _add_file(manifest, root: Path, candidate: Path, arcname: str, kind: str, name: str) -> None:
     path, reason = safe_file(root, candidate)
     if reason:
         _skip(manifest, name, reason)
-    elif path is not None:
-        manifest.add(Artifact(arcname, kind, os.lstat(path).st_size, path=path, root=root))
+    elif path is not None and (size := _size(path)) is not None:
+        manifest.add(Artifact(arcname, kind, size, path=path, root=root))
 
 
 def image_names(db_path, session_id: str) -> list[str]:
@@ -302,16 +373,8 @@ def _add_videos(manifest: Manifest, traces: Path, db_path, session_id: str) -> N
             path, reason = safe_file(traces, candidate)
             if reason:
                 _skip(manifest, f"video/{candidate.name}", reason)
-            elif path is not None:
-                manifest.add(
-                    Artifact(
-                        f"video/{path.name}",
-                        "media",
-                        os.lstat(path).st_size,
-                        path=path,
-                        root=traces,
-                    )
-                )
+            elif path is not None and (size := _size(path)) is not None:
+                manifest.add(Artifact(f"video/{path.name}", "media", size, path=path, root=traces))
                 break
 
 
