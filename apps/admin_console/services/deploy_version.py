@@ -48,11 +48,11 @@ def _normalize_time(value: str | None) -> str | None:
         return None
     try:
         parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
-    except ValueError:
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=UTC)
+        return _utc_text(parsed)
+    except (ValueError, OverflowError):
         return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=UTC)
-    return _utc_text(parsed)
 
 
 def read_deploy_version() -> dict[str, Any]:
@@ -67,7 +67,7 @@ def read_deploy_version() -> dict[str, Any]:
         except (OSError, UnicodeDecodeError):
             return dict(_UNKNOWN)
         sha = lines[0] if lines else ""
-        when = lines[1] if len(lines) > 1 else None
+        when = when or (lines[1] if len(lines) > 1 else None)
 
     sha = sha.strip().lower()
     if not _SHA.fullmatch(sha):

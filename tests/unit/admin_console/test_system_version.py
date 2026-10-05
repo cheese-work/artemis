@@ -106,3 +106,28 @@ async def test_malformed_time_is_dropped_not_echoed(clean_env):
     assert body["status"] == "known"
     assert body["deployed_at"] is None or body["deployed_at"].endswith("Z")
     assert "<script>" not in str(body)
+
+
+@pytest.mark.parametrize("stamp", ["0001-01-01T00:00:00+14:00", "9999-12-31T23:59:59-12:00"])
+@pytest.mark.asyncio
+async def test_out_of_range_time_degrades_to_mtime_not_500(clean_env, stamp):
+    clean_env.write_text(f"{SHA}\n{stamp}\n")
+
+    response = await _get()
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "known"
+    assert body["deployed_at"].endswith("Z")
+    assert body["deployed_at"] != stamp
+
+
+@pytest.mark.asyncio
+async def test_env_time_survives_when_sha_comes_from_file(clean_env, monkeypatch):
+    clean_env.write_text(f"{SHA}\n2026-10-05T03:10:00Z\n")
+    monkeypatch.setenv("ARTEMIS_DEPLOYED_AT", "2026-10-05T05:00:00Z")
+
+    body = (await _get()).json()
+
+    assert body["sha"] == SHA
+    assert body["deployed_at"] == "2026-10-05T05:00:00Z"
