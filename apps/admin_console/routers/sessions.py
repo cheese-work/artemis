@@ -15,11 +15,13 @@
 import asyncio
 import json
 import sqlite3
-from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException
 
-from artemis.config import DB_PATH, TRACES_PATH
 from apps.admin_console.core.access_control import require_admin
+from apps.admin_console.routers.run_admin import ClearRequest
+from apps.admin_console.routers.run_bundle import library_error
+from apps.admin_console.services import run_retention
+from apps.admin_console.services.run_artifacts import RunLibraryError
 
 try:
     from admin_console.core.state import state
@@ -183,30 +185,24 @@ async def get_session_startup_progress(session_id: str):
 
 
 @router.post("/api/cleanup", dependencies=[Depends(require_admin)])
-async def cleanup_history_endpoint():
+async def cleanup_history_endpoint(body: ClearRequest):
+    """Legacy "clear all": same rules as ``POST /api/runs/clear`` (typed count, no live or pinned)."""
     try:
-        from artemis.data_engine.storage import StorageManager
-
-        storage = StorageManager(DB_PATH, TRACES_PATH)
-        storage.clear_all_data()
-        return {
-            "status": "success",
-            "message": "History cleaned up successfully",
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        result = await asyncio.to_thread(run_retention.clear_all, body.confirm_count)
+    except RunLibraryError as exc:
+        return library_error(exc)
+    return {"status": "success", "message": "History cleaned up successfully", **result}
 
 
 @router.post("/api/sessions/{session_id}/delete", dependencies=[Depends(require_admin)])
 async def delete_session_endpoint(session_id: str):
+    """Legacy single delete: same rules as ``POST /api/runs/{id}/delete``."""
     try:
-        from artemis.data_engine.storage import StorageManager
-
-        storage = StorageManager(DB_PATH, TRACES_PATH)
-        storage.delete_session(UUID(session_id))
-        return {
-            "status": "success",
-            "message": f"Session {session_id} deleted successfully",
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        result = await asyncio.to_thread(run_retention.delete_run, session_id)
+    except RunLibraryError as exc:
+        return library_error(exc)
+    return {
+        "status": "success",
+        "message": f"Session {session_id} deleted successfully",
+        **result,
+    }

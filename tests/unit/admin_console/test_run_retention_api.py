@@ -87,7 +87,10 @@ async def test_dry_run_lists_exactly_what_would_go_and_deletes_nothing(library, 
         assert {r["session_id"] for r in report["would_delete"]} == {old, older}
         assert report["days"] == 30 and report["dry_run"] is True
         assert report["protected"] == {"pinned": 1, "live": 2, "pending_upload": 2}
-        assert all({"session_id", "prompt", "ended_at", "expires_at"} <= r.keys() for r in report["would_delete"])
+        assert all(
+            {"session_id", "prompt", "ended_at", "expires_at"} <= r.keys()
+            for r in report["would_delete"]
+        )
         for sid in (old, older, fresh, pinned, running, queued, uploading, waiting):
             assert await _exists(admin, sid)
     assert files.exists()
@@ -267,7 +270,7 @@ async def test_clear_all_needs_the_exact_count_and_an_admin(library, admin, qa):
         forbidden = await qa.post("/api/runs/clear", json={"confirm_count": 3})
         missing = await admin.post("/api/runs/clear", json={})
         wrong = await admin.post("/api/runs/clear", json={"confirm_count": 2})
-        assert all(await _exists(admin, sid) for sid in doomed)
+        assert all([await _exists(admin, sid) for sid in doomed])
         done = await admin.post("/api/runs/clear", json={"confirm_count": 3})
 
         assert forbidden.status_code == 403
@@ -398,6 +401,7 @@ async def test_storage_view_reports_usage_counts_and_free_disk(library, qa, monk
         body = (await qa.get("/api/system/storage")).json()
 
     assert body["run_count"] == 2 and body["pinned_count"] == 1
+    assert body["clearable_count"] == 1  # what "Clear all" would delete: the unpinned run
     assert body["usage_bytes"] >= 3000 and body["pinned_bytes"] >= 2000
     assert body["disk"] == {"total_bytes": 1000, "free_bytes": 600, "free_percent": 60.0}
     assert body["warnings"] == []
@@ -408,7 +412,9 @@ async def test_storage_view_reports_usage_counts_and_free_disk(library, qa, monk
 @pytest.mark.parametrize(
     ("free", "level"), [(19, "warning"), (10, "warning"), (9, "critical"), (0, "critical")]
 )
-async def test_storage_warns_below_twenty_and_ten_percent_free(library, qa, monkeypatch, free, level):
+async def test_storage_warns_below_twenty_and_ten_percent_free(
+    library, qa, monkeypatch, free, level
+):
     monkeypatch.setattr(run_storage, "disk_usage", lambda _path: DiskUsage(100, 100 - free, free))
 
     async with qa:

@@ -18,6 +18,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse
 
 from artemis.config import IMAGES_DIR, TRACES_PATH, WORKSPACE_ROOT
+from artemis.data_engine.run_catalog import validate_session_id
 
 try:
     from admin_console.database.repositories.session_repository import session_repo
@@ -27,6 +28,15 @@ except ImportError:
     from apps.admin_console.services.media_service import media_service
 
 router = APIRouter(tags=["media"])
+
+
+def _safe_session_id(session_id: str) -> str:
+    """Ids that name a folder under traces: safe characters, and the real path stays inside."""
+    try:
+        return validate_session_id(session_id, base_dir=TRACES_PATH)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="invalid_session_id")
+
 
 _VIDEO_MEDIA_TYPES = {
     ".mp4": "video/mp4",
@@ -184,15 +194,15 @@ async def get_local_file(path: str):
 
 @router.get("/api/sessions/{session_id}/plan")
 async def get_task_plan(session_id: str):
-    return {"plan": media_service.get_task_plan_content(session_id)}
+    return {"plan": media_service.get_task_plan_content(_safe_session_id(session_id))}
 
 
 @router.get("/api/sessions/{session_id}/notes")
 async def get_all_notes(session_id: str):
-    return {"notes": media_service.get_session_notes_content(session_id)}
+    return {"notes": media_service.get_session_notes_content(_safe_session_id(session_id))}
 
 
 @router.get("/api/sessions/{session_id}/checks")
 async def get_session_checks(session_id: str):
     """Checker verdict ledger + run outcome (backfill for the Checker panel)."""
-    return media_service.get_session_checks(session_id)
+    return media_service.get_session_checks(_safe_session_id(session_id))

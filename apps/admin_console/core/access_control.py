@@ -298,6 +298,9 @@ _PUBLIC_GET_PATHS = {
     "/api/system/config",
     "/api/runs",
     "/api/runs/{session_id}",
+    "/api/runs/{session_id}/bundle.zip",
+    "/api/system/retention",
+    "/api/system/storage",
     "/api/hosts",
     "/api/hosts/enrollment-codes/{code_id}",
     "/api/sessions",
@@ -353,6 +356,11 @@ _ADMIN_MUTATING_PATHS = {
     "/api/system/restart",
     "/api/cleanup",
     "/api/sessions/{session_id}/delete",
+    "/api/runs/{session_id}/delete",
+    "/api/runs/clear",
+    "/api/system/retention",
+    "/api/system/retention/dry-run",
+    "/api/system/retention/run",
     "/api/sessions/{session_id}/steps/{step_number}/replay",
     "/api/hosts/enrollment-codes",
     "/api/hosts/{host_id}/revoke",
@@ -372,6 +380,8 @@ _AGENT_PATHS = {
 _QA_MUTATING_PATHS = {
     "/api/system/adb/heal-keys",
     "/api/system/emulator/dismiss",
+    "/api/runs/{session_id}/pin",
+    "/api/runs/{session_id}/unpin",
 }
 
 _PUBLIC_MUTATING_PATHS = {

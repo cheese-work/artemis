@@ -25,7 +25,7 @@ SECRETS = [
     ("password=hunter2", "hunter2"),
     ("password: hunter2", "hunter2"),
     ('{"password": "hunter2"}', "hunter2"),
-    ("{\\\"password\\\": \\\"hunter2\\\"}", "hunter2"),  # JSON inside a JSON string
+    ('{\\"password\\": \\"hunter2\\"}', "hunter2"),  # JSON inside a JSON string
     ("db_password='hunter2'", "hunter2"),
     ("secret=s3cr3tvalue", "s3cr3tvalue"),
     ("access_token=abcdef123456", "abcdef123456"),
@@ -76,7 +76,10 @@ def test_redact_text_keeps_the_key_and_is_idempotent():
 
 def test_redact_json_walks_nested_dicts_lists_and_tuples():
     payload = {
-        "action": {"type": "type", "args": [{"note": "password=hunter2"}, ("Bearer abcdefghijklmnop",)]},
+        "action": {
+            "type": "type",
+            "args": [{"note": "password=hunter2"}, ("Bearer abcdefghijklmnop",)],
+        },
         "headers": {"Authorization": "Bearer abcdefghijklmnop", "X-Other": "fine"},
         "api_key": {"deep": ["anything"]},
         "count": 3,
@@ -94,7 +97,9 @@ def test_redact_json_walks_nested_dicts_lists_and_tuples():
 
 
 def test_redact_json_reaches_json_embedded_in_strings():
-    inner = json.dumps({"messages": [{"content": "my password is hunter2, token=abc12345"}], "secret": "x"})
+    inner = json.dumps(
+        {"messages": [{"content": "my password is hunter2, token=abc12345"}], "secret": "x"}
+    )
     out = redact_json({"payload": inner})
 
     assert "hunter2" not in out["payload"] and "abc12345" not in out["payload"]

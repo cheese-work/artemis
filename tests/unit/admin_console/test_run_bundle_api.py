@@ -19,6 +19,7 @@ import io
 import json
 import logging
 import os
+import sqlite3
 import threading
 import zipfile
 
@@ -59,7 +60,9 @@ def _full_run(library):
     library.write(sid, "stderr.log", f"oops {SECRET_BEARER}\n")
     library.write(sid, "notes/finding.md", "api_key=abcdef123456")
     library.write(sid, "notes/task_plan.md", "1. type password: hunter2")
-    library.write(sid, "check_ledger.jsonl", json.dumps({"verdict": "ok", "secret": "s3cr3t"}) + "\n")
+    library.write(
+        sid, "check_ledger.jsonl", json.dumps({"verdict": "ok", "secret": "s3cr3t"}) + "\n"
+    )
     return sid
 
 
@@ -75,14 +78,21 @@ async def test_bundle_holds_prompt_steps_images_video_and_logs(library, qa):
 
     archive = _zip(response)
     names = set(archive.namelist())
-    assert {"prompt.txt", "steps.json", "manifest.json", "logs/stdout.log", "logs/stderr.log"} <= names
+    assert {
+        "prompt.txt",
+        "steps.json",
+        "manifest.json",
+        "logs/stdout.log",
+        "logs/stderr.log",
+    } <= names
     assert {"images/pre1.jpg", "images/post1.jpg"} <= names
     assert any(n.startswith("video/") and n.endswith("recording.mp4") for n in names)
     assert {"notes/finding.md", "notes/task_plan.md", "checks/check_ledger.jsonl"} <= names
     assert response.headers["content-type"] == "application/zip"
     assert int(response.headers["content-length"]) == len(response.content)
-    assert f"bundle" in response.headers["content-disposition"] and sid[:8] in (
-        response.headers["content-disposition"]
+    assert (
+        "bundle" in response.headers["content-disposition"]
+        and sid[:8] in (response.headers["content-disposition"])
     )
     assert json.loads(archive.read("steps.json"))[0]["step_number"] == 1
 
@@ -136,6 +146,12 @@ async def test_symlinked_artifacts_are_rejected_not_followed(library, qa, tmp_pa
     os.symlink(outside, linked_dir)
     video = library.traces / sid / "recording.mp4"
     os.symlink(outside / "evil.jpg", video)
+    with sqlite3.connect(library.db) as conn:
+        conn.execute(
+            "INSERT INTO video_recordings (video_id, session_id, local_video_path, status) "
+            "VALUES ('v1', ?, ?, 'ready')",
+            (sid, str(video)),
+        )
 
     async with qa:
         response = await qa.get(f"/api/runs/{sid}/bundle.zip")
@@ -146,7 +162,7 @@ async def test_symlinked_artifacts_are_rejected_not_followed(library, qa, tmp_pa
     assert not {"notes/stolen.md", "logs/stdout.log", "images/evil.jpg"} & set(archive.namelist())
     skipped = json.loads(archive.read("manifest.json"))["skipped"]
     assert {entry["reason"] for entry in skipped} == {"symlink"}
-    assert len(skipped) >= 3
+    assert len(skipped) >= 4
 
 
 @pytest.mark.asyncio
@@ -159,9 +175,11 @@ async def test_symlinked_session_directory_is_not_followed(library, qa, tmp_path
     os.symlink(outside, library.traces / sid)
 
     async with qa:
-        archive = _zip(await qa.get(f"/api/runs/{sid}/bundle.zip"))
+        response = await qa.get(f"/api/runs/{sid}/bundle.zip")
 
-    assert b"TOP-SECRET" not in b"".join(archive.read(n) for n in archive.namelist())
+    # The id check already refuses a folder whose real path leaves traces.
+    assert response.status_code == 400
+    assert b"TOP-SECRET" not in response.content
 
 
 @pytest.mark.asyncio
@@ -176,7 +194,10 @@ async def test_dot_dot_names_from_the_database_cannot_escape(library, qa):
     assert b"OUTSIDE-IMAGES-DIR" not in b"".join(archive.read(n) for n in archive.namelist())
     for name in archive.namelist():
         assert not name.startswith("/") and ".." not in name.split("/"), name
-    assert any(e["reason"] == "outside_storage" for e in json.loads(archive.read("manifest.json"))["skipped"])
+    assert any(
+        e["reason"] == "outside_storage"
+        for e in json.loads(archive.read("manifest.json"))["skipped"]
+    )
 
 
 # -- cap, concurrency, cleanup ------------------------------------------------------
@@ -208,7 +229,9 @@ async def test_expanding_redacted_text_cannot_slip_past_the_cap(library, qa, mon
     monkeypatch.setattr("tempfile.tempdir", str(temp_dir))
     sid = library.seed("small sources")
     library.write(sid, "stdout.log", "ok " * 2000)
-    monkeypatch.setattr(run_bundle, "MAX_BUNDLE_BYTES", 1500)  # compressed result is tiny; raw is not
+    monkeypatch.setattr(
+        run_bundle, "MAX_BUNDLE_BYTES", 1500
+    )  # compressed result is tiny; raw is not
 
     async with qa:
         response = await qa.get(f"/api/runs/{sid}/bundle.zip")
@@ -302,7 +325,9 @@ async def test_bundle_download_emits_a_structured_event(library, qa, caplog):
         async with qa:
             response = await qa.get(f"/api/runs/{sid}/bundle.zip")
 
-    event = next(r.getMessage() for r in caplog.records if "event=bundle_download" in r.getMessage())
+    event = next(
+        r.getMessage() for r in caplog.records if "event=bundle_download" in r.getMessage()
+    )
     assert f"session_id={sid}" in event
     assert "requester=qa@example.com" in event
     assert f"bytes={len(response.content)}" in event
