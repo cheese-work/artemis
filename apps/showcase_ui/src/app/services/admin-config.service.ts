@@ -52,6 +52,10 @@ export class AdminConfigService {
     return this.http.get<AdminIdentity>('/api/system/whoami');
   }
 
+  public getVersion(): Observable<unknown> {
+    return this.http.get<unknown>('/api/system/version');
+  }
+
   public getConfig(): Observable<ConfigSnapshot> {
     return this.http.get<ConfigSnapshot>('/api/system/config');
   }

@@ -38,6 +38,7 @@ from apps.admin_console.core.access_control import (
     require_lifecycle_token,
     require_qa,
 )
+from apps.admin_console.services.deploy_version import read_deploy_version
 from apps.admin_console.services.config_store import (
     ConfigStoreError,
     get_config_store,
@@ -61,6 +62,12 @@ async def whoami(identity: AccessIdentity = Depends(public_tier)):
         "auth_mode": identity.auth_mode,
         "reason": identity.reason,
     }
+
+
+@router.get("/version")
+async def get_deployed_version():
+    """Deployed commit and deploy time; ``status: unknown`` when not recorded."""
+    return read_deploy_version()
 
 
 @router.get("/config")

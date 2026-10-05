@@ -11,6 +11,10 @@ const files = [
   'src/app/components/device-chip/device-chip.component.ts',
   'src/app/components/registry-phones/registry-phones.component.ts',
   'src/app/pages/setup/setup.component.html',
+  'src/app/utils/run-library-strings.ts',
+  'src/app/utils/recording-state.util.ts',
+  'src/app/components/run-library/run-library.component.html',
+  'src/app/components/run-viewer/run-viewer.component.html',
 ];
 
 const failures = [];

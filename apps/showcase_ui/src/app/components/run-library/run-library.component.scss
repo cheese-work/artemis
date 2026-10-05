@@ -1,0 +1,239 @@
+:host {
+  display: block;
+  height: 100%;
+  min-height: 0;
+}
+
+.library-scroll {
+  height: 100%;
+  overflow-y: auto;
+  /* Top: clears the floating navigation. Bottom: keeps the last rows and focused controls above the dock. */
+  padding: 88px 24px 168px;
+  scroll-padding-top: 88px;
+  scroll-padding-bottom: 168px;
+  background: var(--evidence-surface);
+  color: var(--evidence-text);
+}
+
+.library-title {
+  margin: 0 0 16px;
+  font-size: 22px;
+  font-weight: 600;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+.search-form {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.search-input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+input,
+select,
+button,
+summary {
+  min-height: 44px;
+  font-size: 14px;
+}
+
+input,
+select {
+  padding: 0 12px;
+  border: 1px solid var(--evidence-border);
+  border-radius: 8px;
+  color: var(--evidence-text);
+  background: var(--evidence-surface);
+}
+
+button {
+  padding: 0 18px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.search-button {
+  min-width: 96px;
+  border: 1px solid var(--evidence-text);
+  color: #ffffff;
+  background: var(--evidence-text);
+  font-weight: 600;
+}
+
+.secondary-button {
+  border: 1px solid var(--evidence-border);
+  color: var(--evidence-text);
+  background: var(--evidence-surface);
+}
+
+.filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.field {
+  display: grid;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--evidence-muted);
+}
+
+.more-filters {
+  margin-bottom: 16px;
+
+  summary {
+    display: list-item;
+    padding: 10px 0 0 4px;
+    cursor: pointer;
+    color: var(--evidence-text);
+  }
+}
+
+a:focus-visible,
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+summary:focus-visible {
+  outline: 3px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+.state {
+  margin: 24px 0;
+  padding: 16px;
+  border: 1px solid var(--evidence-border);
+  border-radius: 8px;
+  background: var(--evidence-surface);
+
+  p {
+    margin: 0 0 12px;
+  }
+
+  &.state-error {
+    border-color: var(--status-danger-fg);
+    color: var(--status-danger-fg);
+    background: var(--status-danger-bg);
+  }
+}
+
+.skeleton-row {
+  height: 64px;
+  margin-bottom: 8px;
+  border-radius: 8px;
+  background: var(--status-neutral-bg);
+}
+
+.run-list {
+  margin: 0 0 16px;
+  padding: 0;
+  list-style: none;
+
+  /* Busy is said in words (.updating), never by dimming: dimmed text and badges fall under 4.5:1. */
+  &[aria-busy='true'] {
+    cursor: progress;
+  }
+}
+
+.run-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 4px 12px;
+  min-height: 56px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--status-neutral-bg);
+  color: inherit;
+  text-decoration: none;
+
+  &:hover {
+    background: #f1f5f9;
+  }
+}
+
+.run-prompt {
+  overflow: hidden;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.run-outcome {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+
+  .material-symbols-outlined {
+    font-size: 16px;
+  }
+}
+
+.tone-ok {
+  color: var(--status-ok-fg);
+  background: var(--status-ok-bg);
+}
+
+.tone-warn {
+  color: var(--status-warn-fg);
+  background: var(--status-warn-bg);
+}
+
+.tone-danger {
+  color: var(--status-danger-fg);
+  background: var(--status-danger-bg);
+}
+
+.tone-neutral {
+  color: var(--status-neutral-fg);
+  background: var(--status-neutral-bg);
+}
+
+.run-meta {
+  display: flex;
+  flex-wrap: wrap;
+  grid-column: 1 / -1;
+  gap: 4px 16px;
+  font-size: 12px;
+  color: var(--evidence-muted);
+}
+
+.run-expires {
+  font-weight: 600;
+  color: var(--status-warn-fg);
+}
+
+.updating {
+  margin: 0 0 8px;
+  font-size: 13px;
+  color: var(--evidence-muted);
+}
+
+.load-more {
+  display: block;
+  width: 100%;
+}
+
+@media (max-width: 800px) {
+  .library-scroll,
+  .viewer-scroll {
+    padding-top: 104px;
+    scroll-padding-top: 104px;
+  }
+}

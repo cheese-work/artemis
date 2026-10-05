@@ -96,6 +96,7 @@ try:
         hosts,
         media,
         replay,
+        runs,
         sessions,
         steps,
         stream,
@@ -118,6 +119,7 @@ except ImportError:
         hosts,
         media,
         replay,
+        runs,
         sessions,
         steps,
         stream,
@@ -304,6 +306,7 @@ async def on_shutdown():
 app.include_router(stream.router)
 app.include_router(media.router)
 app.include_router(sessions.router)
+app.include_router(runs.router)
 app.include_router(steps.router)
 app.include_router(tasks.router)
 app.include_router(replay.router)

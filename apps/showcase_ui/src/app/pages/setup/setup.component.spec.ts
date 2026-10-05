@@ -17,6 +17,13 @@ describe('SetupComponent', () => {
     reason: null
   };
 
+  const deployedVersion = {
+    status: 'known',
+    sha: '52b9ed0a1b2c3d4e5f60718293a4b5c6d7e8f901',
+    short_sha: '52b9ed0',
+    deployed_at: '2026-10-05T03:10:00Z'
+  };
+
   const config: ConfigSnapshot = {
     version: 'version-1',
     default: {
@@ -56,10 +63,11 @@ describe('SetupComponent', () => {
   beforeEach(async () => {
     adminConfig = jasmine.createSpyObj<AdminConfigService>(
       'AdminConfigService',
-      ['getIdentity', 'getConfig', 'saveConfig']
+      ['getIdentity', 'getConfig', 'saveConfig', 'getVersion']
     );
     adminConfig.getIdentity.and.returnValue(of(identity));
     adminConfig.getConfig.and.returnValue(of(config));
+    adminConfig.getVersion.and.returnValue(of(deployedVersion));
 
     await TestBed.configureTestingModule({
       imports: [SetupComponent],
@@ -77,6 +85,30 @@ describe('SetupComponent', () => {
     fixture = TestBed.createComponent(SetupComponent);
     fixture.detectChanges();
   }
+
+  it('shows the deploy status line to admins only', async () => {
+    createComponent();
+    await fixture.whenStable();
+    fixture.detectChanges();
+    const line = fixture.nativeElement.querySelector('.deploy-status') as HTMLElement;
+    expect(line.textContent).toContain('Deploy status');
+    expect(line.textContent).toContain('52b9ed0');
+
+    adminConfig.getIdentity.and.returnValue(of({ ...identity, admin: false }));
+    createComponent();
+    await fixture.whenStable();
+    fixture.detectChanges();
+    expect(fixture.nativeElement.querySelector('.deploy-status')).toBeNull();
+  });
+
+  it('reports the deploy status as unknown when the version endpoint fails', async () => {
+    adminConfig.getVersion.and.returnValue(throwError(() => new Error('offline')));
+    createComponent();
+    await fixture.whenStable();
+    fixture.detectChanges();
+    expect(fixture.nativeElement.querySelector('.deploy-status').textContent).toContain('unknown');
+    expect(fixture.componentInstance.snapshot()).not.toBeNull();
+  });
 
   it('offers Models first and a Computers tab that swaps the panel', async () => {
     createComponent();

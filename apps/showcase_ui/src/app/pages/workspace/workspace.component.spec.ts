@@ -1,5 +1,6 @@
 import { CUSTOM_ELEMENTS_SCHEMA, signal } from '@angular/core';
 import { fakeAsync, TestBed, tick } from '@angular/core/testing';
+import { provideRouter } from '@angular/router';
 import { of } from 'rxjs';
 import { AgentService } from '../../services/agent.service';
 import { AgentStreamComponent } from '../../components/agent-stream/agent-stream.component';
@@ -38,7 +39,7 @@ describe('WorkspaceComponent error lifetime', () => {
 
     await TestBed.configureTestingModule({
       imports: [WorkspaceComponent],
-      providers: [{ provide: AgentService, useValue: agentService }],
+      providers: [provideRouter([]), { provide: AgentService, useValue: agentService }],
       schemas: [CUSTOM_ELEMENTS_SCHEMA]
     }).overrideComponent(WorkspaceComponent, {
       remove: { imports: [AgentStreamComponent, ChatInterfaceComponent, FloatingVideoPlayerComponent] },

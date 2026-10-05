@@ -14,10 +14,20 @@ See the License for the specific language governing permissions and
 limitations under the License.
 -->
 
-<div class="workspace-container" [class.is-resizing]="isDragging()">
-  <!-- Left Main Panel: Raw Agent Log Stream -->
+<div class="workspace-container" [class.is-resizing]="isDragging()" [class.review-mode]="reviewMode">
+  <!-- Left Main Panel: Raw Agent Log Stream, or the run library / viewer in review mode -->
   <main class="left-panel glass-panel">
-    <app-agent-stream></app-agent-stream>
+    @if (reviewMode) {
+      <div class="review-surface">
+        @if (reviewRunId(); as id) {
+          <app-run-viewer [runId]="id"></app-run-viewer>
+        } @else {
+          <app-run-library></app-run-library>
+        }
+      </div>
+    } @else {
+      <app-agent-stream></app-agent-stream>
+    }
 
     <!-- Bottom Floating Command Bar Dock -->
     <div class="workspace-floating-bar-wrapper" [class.is-expanded]="isBarExpanded()" [class.is-dormant]="!isBarExpanded()"
@@ -186,10 +196,12 @@ limitations under the License.
     </div>
   </main>
 
-  <!-- Split Pane Drag Resizer -->
-  <div class="resizer" (mousedown)="onDragStart($event)">
-    <div class="resizer-handle"></div>
-  </div>
+  <!-- Split Pane Drag Resizer (mouse only, so review mode leaves it out) -->
+  @if (!reviewMode) {
+    <div class="resizer" (mousedown)="onDragStart($event)">
+      <div class="resizer-handle"></div>
+    </div>
+  }
 
   <!-- Right Sidebar Panel: Chat Interface Mock -->
   <aside class="right-panel" [style.width.px]="rightPanelWidth()">
