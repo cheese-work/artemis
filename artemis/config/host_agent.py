@@ -14,8 +14,12 @@
 
 """Feature flag for release B (host agent). Off unless explicitly enabled.
 
+The single definition, shared by the admin console and the adb transport. Accepted
+spellings, case-insensitive: ``enabled`` (the documented one), ``1``, ``true``, ``yes``,
+``on``; anything else, or unset, is off.
+
 Read from the environment on every call, never cached, so a deployment flips it
-by restarting with ``ARTEMIS_HOST_AGENT=1`` and tests flip it with ``monkeypatch``.
+by restarting with the flag set and tests flip it with ``monkeypatch``.
 """
 
 from __future__ import annotations
@@ -23,7 +27,7 @@ from __future__ import annotations
 import os
 
 ENV_HOST_AGENT = "ARTEMIS_HOST_AGENT"
-_TRUTHY = frozenset({"1", "true", "yes", "on"})
+_TRUTHY = frozenset({"enabled", "1", "true", "yes", "on"})
 
 
 def host_agent_enabled() -> bool:
