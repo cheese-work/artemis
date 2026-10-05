@@ -6,6 +6,41 @@ import { routes } from '../../app.routes';
 import { HomeComponent } from '../home/home.component';
 import { SetupComponent } from './setup.component';
 
+
+type Rgba = { r: number; g: number; b: number; a: number };
+
+function parseColor(value: string): Rgba {
+  const m = value.match(/rgba?\(([^)]+)\)/) ?? value.match(/color\(srgb ([^)]+)\)/);
+  if (!m) throw new Error(`Unparseable color: ${value}`);
+  const parts = m[1].split(/[\s,/]+/).filter(Boolean).map(Number);
+  const scale = value.startsWith('color(') ? 255 : 1;
+  return { r: parts[0] * scale, g: parts[1] * scale, b: parts[2] * scale, a: parts[3] ?? 1 };
+}
+
+function luminance({ r, g, b }: Rgba): number {
+  const [lr, lg, lb] = [r, g, b].map((c) => {
+    const v = c / 255;
+    return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
+  });
+  return 0.2126 * lr + 0.7152 * lg + 0.0722 * lb;
+}
+
+function contrast(a: Rgba, b: Rgba): number {
+  const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x);
+  return (hi + 0.05) / (lo + 0.05);
+}
+
+function bg(el: Element): Rgba {
+  return parseColor(getComputedStyle(el).backgroundColor);
+}
+
+function fg(el: Element): Rgba {
+  return parseColor(getComputedStyle(el).color);
+}
+
+const LIGHT_SURFACE = 0.8;
+const MIN_TEXT_CONTRAST = 4.5;
+
 describe('SetupComponent', () => {
   let adminConfig: jasmine.SpyObj<AdminConfigService>;
   let fixture: ComponentFixture<SetupComponent>;
@@ -310,5 +345,121 @@ describe('SetupComponent', () => {
       .toBeTrue();
     expect((openaiRow?.querySelector('input[type="url"]') as HTMLInputElement).readOnly)
       .toBeTrue();
+  });
+
+  describe('SmartQA light theme (CHE-1145)', () => {
+    async function render(embedded: boolean, admin = true): Promise<HTMLElement> {
+      adminConfig.getIdentity.and.returnValue(of({ ...identity, admin }));
+      fixture = TestBed.createComponent(SetupComponent);
+      fixture.componentRef.setInput('embedded', embedded);
+      document.body.appendChild(fixture.nativeElement);
+      fixture.detectChanges();
+      await fixture.whenStable();
+      fixture.detectChanges();
+      return fixture.nativeElement as HTMLElement;
+    }
+
+    afterEach(() => fixture.nativeElement.remove());
+
+    it('renders the Step 2 and Credentials cards on a light surface with SmartQA borders', async () => {
+      const host = await render(true);
+      const panels = Array.from(host.querySelectorAll('.panel')) as HTMLElement[];
+
+      expect(panels.length).toBe(2);
+      for (const panel of panels) {
+        expect(luminance(bg(panel))).toBeGreaterThan(LIGHT_SURFACE);
+        expect(getComputedStyle(panel).borderTopColor).toBe('rgb(226, 232, 240)');
+      }
+    });
+
+    it('renders inputs, selects and secondary buttons without a dark background', async () => {
+      const host = await render(true);
+      const controls = Array.from(host.querySelectorAll('input, select, .secondary-button'));
+
+      expect(controls.length).toBeGreaterThan(4);
+      for (const control of controls) {
+        expect(luminance(bg(control)))
+          .withContext(`${control.tagName}.${control.className}`)
+          .toBeGreaterThan(LIGHT_SURFACE);
+      }
+    });
+
+    it('styles the primary action with the SmartQA blue and readable text', async () => {
+      const host = await render(true);
+      const save = host.querySelector('.primary-button') as Element;
+
+      expect(getComputedStyle(save).backgroundColor).toBe('rgb(26, 115, 232)');
+      expect(contrast(fg(save), bg(save))).toBeGreaterThanOrEqual(MIN_TEXT_CONTRAST);
+    });
+
+    it('keeps card text at 4.5:1 against the card surface', async () => {
+      const host = await render(true);
+      const surface = bg(host.querySelector('.panel') as Element);
+      const selectors = [
+        '.eyebrow', 'h2', 'h3', '.source-label', 'label span', '.configured',
+        '.configured.not-configured', '.source-note', '.save-hint', '.text-button'
+      ];
+
+      for (const selector of selectors) {
+        const el = host.querySelector(selector);
+        expect(el).withContext(selector).not.toBeNull();
+        expect(contrast(fg(el as Element), surface))
+          .withContext(selector)
+          .toBeGreaterThanOrEqual(MIN_TEXT_CONTRAST);
+      }
+      for (const input of Array.from(host.querySelectorAll('input, select'))) {
+        expect(contrast(fg(input), bg(input))).toBeGreaterThanOrEqual(MIN_TEXT_CONTRAST);
+      }
+    });
+
+    it('keeps read-only inputs at 4.5:1 and the read-only notice light', async () => {
+      const host = await render(true, false);
+      const notice = host.querySelector('.notice.read-only') as Element;
+      const readonlyInput = host.querySelector('input[readonly]') as Element;
+
+      expect(luminance(bg(notice))).toBeGreaterThan(LIGHT_SURFACE);
+      expect(contrast(fg(notice), bg(notice))).toBeGreaterThanOrEqual(MIN_TEXT_CONTRAST);
+      expect(contrast(fg(readonlyInput), bg(readonlyInput)))
+        .toBeGreaterThanOrEqual(MIN_TEXT_CONTRAST);
+    });
+
+    it('keeps input placeholders at 4.5:1, including read-only fields', async () => {
+      for (const admin of [true, false]) {
+        const host = await render(true, admin);
+        const inputs = Array.from(host.querySelectorAll('input[placeholder]'));
+
+        expect(inputs.length).toBeGreaterThan(0);
+        for (const input of inputs) {
+          const color = parseColor(getComputedStyle(input, '::placeholder').color);
+          expect(contrast(color, bg(input)))
+            .withContext(`admin=${admin} ${input.getAttribute('name')}`)
+            .toBeGreaterThanOrEqual(MIN_TEXT_CONTRAST);
+        }
+        fixture.nativeElement.remove();
+      }
+    });
+
+    it('shows a visible focus ring that contrasts with the light surface', async () => {
+      const host = await render(true);
+      const input = host.querySelector('input') as HTMLInputElement;
+      // Headless Karma never gives the document focus, so :focus cannot be
+      // matched live; read the declared :focus rule instead.
+      const rule = Array.from(document.styleSheets)
+        .flatMap((sheet) => Array.from(sheet.cssRules))
+        .filter((r): r is CSSStyleRule => r instanceof CSSStyleRule)
+        // Angular scopes selectors as input[_ngcontent-x]:focus.
+        .find((r) => /input(\[[^\]]*\])?:focus/.test(r.selectorText));
+
+      expect(rule).withContext('input:focus rule').toBeDefined();
+      expect(rule!.style.outlineStyle).toBe('solid');
+      expect(contrast(parseColor(rule!.style.outlineColor), bg(input))).toBeGreaterThanOrEqual(3);
+    });
+
+    it('keeps the standalone page light too', async () => {
+      const host = await render(false);
+
+      expect(luminance(bg(host))).toBeGreaterThan(LIGHT_SURFACE);
+      expect(contrast(fg(host), bg(host))).toBeGreaterThanOrEqual(MIN_TEXT_CONTRAST);
+    });
   });
 });
