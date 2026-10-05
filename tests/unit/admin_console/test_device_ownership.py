@@ -93,8 +93,12 @@ def _pool(monkeypatch) -> None:
         DeviceStatus(serial=QA2_PHONE, state="device", model="SM-S911B", device_kind="phone"),
         DeviceStatus(serial=ORPHAN_PHONE, state="device", model=None),
     ]
-    monkeypatch.setattr(tasks_router.device_pool, "list_devices_async", AsyncMock(return_value=devices))
-    monkeypatch.setattr(hosts_router.device_pool, "list_devices_async", AsyncMock(return_value=devices))
+    monkeypatch.setattr(
+        tasks_router.device_pool, "list_devices_async", AsyncMock(return_value=devices)
+    )
+    monkeypatch.setattr(
+        hosts_router.device_pool, "list_devices_async", AsyncMock(return_value=devices)
+    )
 
 
 @pytest.fixture
@@ -311,7 +315,9 @@ def _report() -> SystemReadinessReport:
 
 @pytest.mark.asyncio
 async def test_readiness_lists_a_qa_only_their_own_and_shared_devices(cloudflare, monkeypatch):
-    monkeypatch.setattr(system_router.readiness_engine, "run_all", AsyncMock(return_value=_report()))
+    monkeypatch.setattr(
+        system_router.readiness_engine, "run_all", AsyncMock(return_value=_report())
+    )
 
     body = (await _get(QA1, "/api/system/readiness")).json()
     listed = {d["serial"] for d in body["probes"][0]["metadata"]["devices"]}
@@ -324,18 +330,22 @@ async def test_readiness_lists_a_qa_only_their_own_and_shared_devices(cloudflare
 async def test_readiness_never_shows_a_qa_another_qas_address_or_active_device(
     cloudflare, monkeypatch
 ):
-    monkeypatch.setattr(system_router.readiness_engine, "run_all", AsyncMock(return_value=_report()))
+    monkeypatch.setattr(
+        system_router.readiness_engine, "run_all", AsyncMock(return_value=_report())
+    )
 
     response = await _get(QA1, "/api/system/readiness")
 
     assert QA2_PHONE not in response.text
     assert response.json()["active_device"] is None
-    assert "active_device" not in response.json()["probes"][0]["metadata"]
+    assert response.json()["probes"][0]["metadata"]["active_device"] is None
 
 
 @pytest.mark.asyncio
 async def test_readiness_shows_an_admin_every_device(cloudflare, monkeypatch):
-    monkeypatch.setattr(system_router.readiness_engine, "run_all", AsyncMock(return_value=_report()))
+    monkeypatch.setattr(
+        system_router.readiness_engine, "run_all", AsyncMock(return_value=_report())
+    )
 
     body = (await _get(ADMIN, "/api/system/readiness")).json()
 
@@ -349,7 +359,9 @@ async def test_readiness_shows_an_admin_every_device(cloudflare, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_open_mode_readiness_is_unfiltered(open_mode, monkeypatch):
-    monkeypatch.setattr(system_router.readiness_engine, "run_all", AsyncMock(return_value=_report()))
+    monkeypatch.setattr(
+        system_router.readiness_engine, "run_all", AsyncMock(return_value=_report())
+    )
 
     body = (await _get(None, "/api/system/readiness")).json()
 

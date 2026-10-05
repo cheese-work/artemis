@@ -103,6 +103,8 @@ class BridgeSession:
     adb_connect_attempted: bool = False
     revoked: bool = False
     close_reason: str | None = None
+    # Verified email of the person who connected the phone; None when no one was signed in.
+    owner: str | None = None
 
     @property
     def serial(self) -> str:
@@ -137,11 +139,22 @@ class BridgeSessionService:
         """Browser-attached phones, for the computer registry's device list."""
         return [s for s in self._sessions.values() if not s.is_expired]
 
-    async def create_session(self) -> BridgeSession:
+    def owner_of(self, serial: str) -> str | None:
+        """Who connected the browser phone at ``serial``; None when unowned or unknown."""
+        session = next((s for s in self._sessions.values() if s.serial == serial), None)
+        return session.owner if session else None
+
+    def newest_serial_of(self, owner: str | None) -> str | None:
+        """The most recently connected live browser phone of ``owner``."""
+        mine = [s for s in self.live_sessions() if owner is not None and s.owner == owner]
+        return max(mine, key=lambda s: s.created_at).serial if mine else None
+
+    async def create_session(self, owner: str | None = None) -> BridgeSession:
         created_at = time.monotonic()
         idle_timeout_seconds = _session_ttl_seconds()
         session = BridgeSession(
             session_id=uuid.uuid4().hex,
+            owner=owner,
             created_at=created_at,
             idle_timeout_seconds=idle_timeout_seconds,
             max_expires_at=created_at + _session_max_lifetime_seconds(),

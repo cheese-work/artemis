@@ -38,6 +38,8 @@ from apps.admin_console.core.access_control import (
     require_lifecycle_token,
     require_qa,
 )
+from apps.admin_console.core.device_ownership import hide_foreign_devices
+from apps.admin_console.core.ownership import OwnerScope, actor_scope, scope_or_open
 from apps.admin_console.services.deploy_version import read_deploy_version
 from apps.admin_console.services.config_store import (
     ConfigStoreError,
@@ -171,9 +173,12 @@ class SelectDeviceRequest(BaseModel):
 
 
 @router.get("/readiness", response_model=SystemReadinessReport)
-async def get_system_readiness(force: bool = False) -> SystemReadinessReport:
-    """Execute all diagnostic probes and return a comprehensive system readiness report."""
-    return await readiness_engine.run_all(force_refresh=force)
+async def get_system_readiness(
+    force: bool = False, actor: OwnerScope = Depends(actor_scope)
+) -> dict[str, Any]:
+    """Execute all diagnostic probes and return the readiness report the caller may see."""
+    report = await readiness_engine.run_all(force_refresh=force)
+    return hide_foreign_devices(scope_or_open(actor), report.model_dump(mode="json"))
 
 
 @router.post("/devices/select", dependencies=[Depends(require_admin)])

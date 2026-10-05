@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
 from apps.admin_console.core.access_control import AccessIdentity, AdminAPIError, require_admin
+from apps.admin_console.core.ownership import OwnerScope, actor_scope, scope_or_open
 from apps.admin_console.services import host_registry as hr
 from apps.admin_console.services.host_hub import CLOSE_REVOKED, host_hub
 from apps.admin_console.services.host_registry import host_registry
@@ -42,8 +43,9 @@ def _active_run_count(host_id: str) -> int:
 
 
 @router.get("")
-async def list_hosts() -> dict:
-    """Computers, and every phone a person can pick: shared by a computer or plugged into a browser."""
+async def list_hosts(actor: OwnerScope = Depends(actor_scope)) -> dict:
+    """Computers, and every phone the caller can pick: shared by a computer or plugged into their browser."""
+    scope = scope_or_open(actor)
     if not hr.host_agent_enabled():
         return {"enabled": False, "hosts": [], "devices": []}
     hosts, devices = host_registry.list_hosts()
@@ -51,7 +53,7 @@ async def list_hosts() -> dict:
         host["active_run_count"] = _active_run_count(host["id"])
     # The pool classifies phones from adb properties; a browser phone's address
     # (127.0.0.1:<port>) says nothing about what it is.
-    sessions = bridge_session_service.live_sessions()
+    sessions = [s for s in bridge_session_service.live_sessions() if scope.may_act_on(s.owner)]
     pool = {d.serial: d for d in await device_pool.list_devices_async()} if sessions else {}
     browser = [
         {
@@ -59,6 +61,7 @@ async def list_hosts() -> dict:
             "model": pool[s.serial].model if s.serial in pool else None,
             "device_kind": pool[s.serial].device_kind if s.serial in pool else "unknown",
             "source": "browser",
+            "owner": s.owner,
             "computer_id": None,
             "computer_name": None,
             "computer_status": "online",
