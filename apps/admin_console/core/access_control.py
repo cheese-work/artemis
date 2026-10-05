@@ -270,6 +270,23 @@ async def require_lifecycle_token(request: Request) -> None:
         )
 
 
+_FORWARDING_HEADERS = (b"x-forwarded-for", b"forwarded", b"x-real-ip", b"cf-connecting-ip")
+
+
+async def require_effective_loopback(request: Request) -> None:
+    """Admit only a direct local caller: loopback peer, no proxy forwarding."""
+    forwarded = any(
+        name.lower() in _FORWARDING_HEADERS for name, _value in request.scope.get("headers", ())
+    )
+    if forwarded or not _is_loopback_request(request):
+        raise AdminAPIError(
+            403,
+            "Deploy drain controls are local-only.",
+            "loopback_required",
+            "Call the drain endpoint directly from the server host.",
+        )
+
+
 _PUBLIC_GET_PATHS = {
     "/api/system/readiness",
     "/api/system/adb/server",
@@ -279,9 +296,12 @@ _PUBLIC_GET_PATHS = {
     "/api/system/server-status",
     "/api/system/whoami",
     "/api/system/config",
+    "/api/hosts",
+    "/api/hosts/enrollment-codes/{code_id}",
     "/api/sessions",
     "/api/sessions/{session_id}",
     "/api/sessions/{session_id}/usage",
+    "/api/sessions/{session_id}/events",
     "/api/sessions/{session_id}/tree",
     "/api/sessions/{session_id}/background_tasks",
     "/api/sessions/{session_id}/startup_progress",
@@ -332,6 +352,19 @@ _ADMIN_MUTATING_PATHS = {
     "/api/cleanup",
     "/api/sessions/{session_id}/delete",
     "/api/sessions/{session_id}/steps/{step_number}/replay",
+    "/api/hosts/enrollment-codes",
+    "/api/hosts/{host_id}/revoke",
+    "/api/hosts/{host_id}/rename",
+}
+
+# Machine routes for host agents. Cloudflare Access does not cover this prefix;
+# each route authenticates in the application (code, signature or token).
+_AGENT_PATHS = {
+    "/api/agent/install.sh": {"GET"},
+    "/api/agent/dist/{artifact}": {"GET"},
+    "/api/agent/enroll": {"POST"},
+    "/api/agent/challenge": {"POST"},
+    "/api/agent/renew": {"POST"},
 }
 
 _QA_MUTATING_PATHS = {
@@ -348,9 +381,15 @@ _PUBLIC_MUTATING_PATHS = {
 
 def route_tier(path: str, methods: set[str], is_websocket: bool = False) -> str | None:
     if is_websocket:
+        if path == "/api/agent/connect":
+            return "agent"
         return "public" if path == "/api/device-bridge/session" else None
+    if methods == _AGENT_PATHS.get(path):
+        return "agent"
     if path == "/api/system/shutdown" and methods == {"POST"}:
         return "lifecycle"
+    if path == "/api/system/drain" and methods in ({"GET"}, {"POST"}, {"DELETE"}):
+        return "loopback"
     if path == "/api/v1" or path.startswith("/api/v1/"):
         return "public"
     if methods == {"GET"} and path in _PUBLIC_GET_PATHS:

@@ -25,6 +25,7 @@ import os
 from pathlib import Path
 import secrets
 import signal
+import sqlite3
 import sys
 from types import FrameType
 
@@ -71,6 +72,8 @@ from artemis.config import (
     init_ls_address,
 )
 from artemis.resources import get_bundled_showcase_dist
+from artemis.runtime.lifecycle import InterruptReason
+from apps.admin_console.services.host_registry import host_agent_enabled, host_registry
 from apps.admin_console.core.access_control import (
     AdminAPIError,
     CloudflareAccessVerifier,
@@ -87,7 +90,10 @@ try:
     from admin_console.database.repositories.step_repository import step_repo
     from admin_console.database.repositories.trace_repository import trace_repo
     from admin_console.routers import (
+        agent,
         device_bridge,
+        drain,
+        hosts,
         media,
         replay,
         sessions,
@@ -106,7 +112,10 @@ except ImportError:
     from apps.admin_console.core.state import state
     from apps.admin_console.database.repositories.session_repository import session_repo
     from apps.admin_console.routers import (
+        agent,
         device_bridge,
+        drain,
+        hosts,
         media,
         replay,
         sessions,
@@ -150,6 +159,7 @@ logging.getLogger(__name__).info(
     app.state.access_config.audience or "none",
     len(app.state.access_config.admin_emails),
 )
+logger = logging.getLogger(__name__)
 LIFECYCLE_TOKEN = os.environ.get("ARTEMIS_LIFECYCLE_TOKEN") or secrets.token_urlsafe(32)
 app.state.lifecycle_token = LIFECYCLE_TOKEN
 
@@ -209,10 +219,16 @@ async def on_startup():
 
     cleaned = session_repo.cleanup_orphans_on_startup()
     if cleaned > 0:
-        print(f"[ServerStartup] Marked {cleaned} orphaned running session(s) as failed.")
+        print(f"[ServerStartup] Marked {cleaned} orphaned running session(s) as interrupted.")
+    # Announce (and acknowledge) the interruptions committed above or left
+    # pending by a previous server that stopped before delivering them.
+    task_queue_service._drain_outcome_events()
     # Workers killed together with a previous daemon never remuxed their
     # recordings; publish whatever raw files they left behind.
     asyncio.create_task(asyncio.to_thread(task_queue_service.recover_orphaned_recordings_on_launch))
+
+    if host_agent_enabled():
+        host_registry.reset_for_boot()
 
     await ipc_service.start_server()
     state.worker_task = asyncio.create_task(task_queue_service.queue_worker())
@@ -223,8 +239,8 @@ async def on_shutdown():
     state.is_shutting_down = True
     state.shutdown_event.set()
     task_queue_service._broadcast_event("server_shutdown", {"status": "stopping"})
-    owned_session_ids = {
-        str(item["session_id"])
+    owned_items = {
+        str(item["session_id"]): item
         for item in state.queue_items
         if isinstance(item, dict) and item.get("status") == "running" and item.get("session_id")
     }
@@ -261,8 +277,17 @@ async def on_shutdown():
     DeviceExecutionLock.cleanup_stale_locks()
     state.current_process = None
     state.queue_items.clear()
-    for session_id in owned_session_ids:
-        session_repo.update_session_status(session_id, "cancelled")
+    # The runs were cut short by this server stopping, not by a user. A locked
+    # or broken database must not skip the rest of the teardown below; whatever
+    # stays pending is delivered by the next startup's drain.
+    try:
+        for session_id in owned_items:
+            session_repo.lifecycle.interrupt(session_id, InterruptReason.SERVER_RESTARTED)
+        for session_id, item in owned_items.items():
+            task_queue_service._deliver_outcome(session_id, item)
+        task_queue_service._drain_outcome_events()
+    except (OSError, sqlite3.Error):
+        logger.warning("Could not record or deliver shutdown interruptions", exc_info=True)
 
     await ipc_service.stop_server()
     state.ipc_subscribers.clear()
@@ -281,7 +306,10 @@ app.include_router(steps.router)
 app.include_router(tasks.router)
 app.include_router(replay.router)
 app.include_router(system.router)
+app.include_router(drain.router)
 app.include_router(device_bridge.router)
+app.include_router(hosts.router)
+app.include_router(agent.router)
 
 # Mount cloud gateway router for Frappe / Cloud integration if present
 try:

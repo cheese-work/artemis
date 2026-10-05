@@ -72,7 +72,9 @@ from artemis.controllers.platform_specific_commands_controller import (
 )
 from artemis.runtime import DeviceExecutionLock, trace_store
 from artemis.runtime.cancel_requests import watch_for_cancel_request
+from artemis.runtime.lifecycle import InterruptReason
 from artemis.data_engine.engine import DataEngine
+from artemis.drivers.types import DeviceDisconnectedError
 from artemis.data_engine.trace import DataEngineCallbackHandler
 from artemis.graph.graph import get_graph
 from artemis.graph.state import State
@@ -719,7 +721,7 @@ class Agent:
                                     error=err,
                                 )
                                 if context.data_engine:
-                                    context.data_engine.end_session("failed")
+                                    self._end_session_for_report(context.data_engine, flash_result)
                             return output
                         else:
                             logger.info(f"[{task_name}] Invoking graph with input: {graph_input}")
@@ -869,7 +871,12 @@ class Agent:
                     error=err,
                 )
                 if context.data_engine:
-                    context.data_engine.end_session("failed")
+                    if isinstance(e, DeviceDisconnectedError):
+                        context.data_engine.end_session(
+                            "interrupted", interrupt_reason=InterruptReason.DEVICE_OFFLINE
+                        )
+                    else:
+                        context.data_engine.end_session("failed")
 
                 raise
             finally:
@@ -1163,6 +1170,17 @@ class Agent:
             device_info=device_data,
             session_id=sess_uuid,
         )
+
+    @staticmethod
+    def _end_session_for_report(data_engine, report: dict) -> None:
+        """End the session for a runner report that did not complete the task."""
+        if report.get("status") == "interrupted":
+            data_engine.end_session(
+                "interrupted",
+                interrupt_reason=report.get("interrupt_reason") or InterruptReason.DEVICE_OFFLINE,
+            )
+        else:
+            data_engine.end_session("failed")
 
     async def _finalize_tracing_safely(self, task: Task, context: ArtemisContext):
         """Finalize optional trace artifacts without changing task semantics."""

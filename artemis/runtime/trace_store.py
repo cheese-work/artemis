@@ -86,6 +86,11 @@ def _replace_with_retry(src: str, dst: str) -> None:
     raise last_error  # type: ignore[misc]
 
 
+def exclusive_file_lock(path: str):
+    """Cross-process mutex for read-modify-write of ``path`` (see ``_status_lock``)."""
+    return _status_lock(path)
+
+
 def _atomic_write_json(path: str, data: dict[str, Any]) -> None:
     """Write JSON atomically: temp file in the same directory + fsync + replace."""
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -336,6 +341,48 @@ def write_status(trace_id: str, data: dict[str, Any]) -> None:
     _atomic_write_json(get_status_path(trace_id), data)
 
 
+_TERMINAL_STATUSES = ("completed", "failed", "cancelled", "interrupted")
+
+
+def publish_outcome(
+    trace_id: str,
+    status: str,
+    *,
+    end_time: float | None = None,
+    error: str | None = None,
+    result: Any | None = None,
+    device_serial: str | None = None,
+    interrupt_reason: str | None = None,
+    only_if_not_terminal: bool = False,
+) -> dict[str, Any] | None:
+    """Mirror a run outcome into status.json; the lifecycle authority's projection.
+
+    The only writer of a terminal status. ``only_if_not_terminal`` makes it a
+    first-wins write for traces that have no sessions row. Returns the written
+    data, or ``None`` when nothing was written (no status file, or already final).
+    """
+    path = get_status_path(trace_id)
+    if not os.path.exists(path):
+        return None
+    with _status_lock(path):
+        data = read_status(trace_id)
+        if not data:
+            return None
+        if only_if_not_terminal and data.get("status") in _TERMINAL_STATUSES:
+            return None
+        data["status"] = status
+        data["end_time"] = end_time or time.time()
+        data["interrupt_reason"] = interrupt_reason
+        if error is not None:
+            data["error"] = error
+        if result is not None:
+            data["result"] = result
+        if device_serial is not None:
+            data["device_serial"] = device_serial
+        write_status(trace_id, data)
+        return data
+
+
 def update_trace_status(
     trace_id: str,
     status: str,
@@ -343,12 +390,20 @@ def update_trace_status(
     result: Any | None = None,
     device_serial: str | None = None,
 ) -> dict[str, Any] | None:
-    """Updates specific fields of the status.json for a given trace_id.
+    """Updates non-terminal fields of the status.json for a given trace_id.
+
+    Run outcomes (completed, failed, cancelled, interrupted) are owned by
+    ``artemis.runtime.lifecycle`` (``LifecycleAuthority.finish`` /
+    ``finish_trace``); passing one here is a bug, not a silent write.
 
     The read-modify-write cycle holds a cross-process lock so concurrent
     updates from the daemon, MCP tools, and worker processes do not lose each
     other's fields.
     """
+    if status == "success" or status in _TERMINAL_STATUSES:
+        raise ValueError(
+            f"{status!r} is a run outcome: commit it through LifecycleAuthority.finish"
+        )
     path = get_status_path(trace_id)
     with _status_lock(path):
         data = read_status(trace_id)
@@ -360,15 +415,15 @@ def update_trace_status(
                 )
             return None
 
-        # "success" is a legacy alias for the canonical "completed" terminal
-        # status and must never be persisted into status.json.
-        if status == "success":
-            status = "completed"
+        if data.get("status") in _TERMINAL_STATUSES:
+            # A published outcome is never rolled back by a late progress or
+            # metadata writer; only enrichment that is not outcome data lands.
+            if device_serial is not None:
+                data["device_serial"] = device_serial
+                write_status(trace_id, data)
+            return data
 
         data["status"] = status
-        if status in ("completed", "failed", "cancelled"):
-            data["end_time"] = time.time()
-
         if error is not None:
             data["error"] = error
         if result is not None:

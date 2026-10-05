@@ -24,7 +24,8 @@ class SessionMetadata(BaseModel):
     initial_goal: str
     start_time: float = Field(default_factory=time.time)
     end_time: float | None = None
-    status: str = "running"  # running, success, failed
+    status: str = "running"  # running, completed, failed, cancelled, interrupted
+    interrupt_reason: str | None = None  # set only when status == "interrupted"
     device_info: dict[str, Any] = Field(default_factory=dict)
     pid: int | None = None
     video_filepath: str | None = None

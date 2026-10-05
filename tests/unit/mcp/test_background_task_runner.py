@@ -382,3 +382,133 @@ class TestTerminationTimeBatchReconciliation:
             Path(trace_store.get_trace_dir(trace_id)) / "attempt_reconciliation_batch_verdict.json"
         )
         assert not batch_verdict_path.exists()
+
+
+async def _run_bg(tmp_path, monkeypatch, result, *, before=None, run_error=None, notify_fn=None):
+    """Run the detached runner with an agent returning ``result``; returns (trace_id, notify)."""
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    from artemis.runtime import trace_store
+    from artemis.runtime.lifecycle import finish_trace
+    from mcp_server.background import task_runner as bg
+
+    monkeypatch.setattr(trace_store, "TRACES_DIR", str(tmp_path))
+    trace_id = "trace-notice"
+    trace_store.init_trace(
+        trace_id=trace_id,
+        task_desc="Audit checkout",
+        model="Flash",
+        conversation_id="conv-1",
+        device_serial="emulator-5554",
+    )
+    if before:
+        finish_trace(trace_id, before)
+
+    fake_agent = MagicMock()
+    fake_agent._device_context = SimpleNamespace(device_id="emulator-5554")
+    fake_agent.run_task = AsyncMock(return_value=result, side_effect=run_error)
+    fake_agent.clean = AsyncMock()
+    notify = notify_fn or MagicMock()
+    monkeypatch.setattr(bg.device_utils, "resolve_adb_path", lambda: "adb")
+    monkeypatch.setattr(bg.device_utils, "get_connected_devices", lambda _adb: ["emulator-5554"])
+    monkeypatch.setattr(bg, "resolve_profile_file", lambda: None)
+    monkeypatch.setattr(bg, "_initialize_agent", AsyncMock())
+    monkeypatch.setattr(bg, "notify", notify)
+    with (
+        patch("artemis.sdk.builders.Builders", MagicMock()),
+        patch("artemis.sdk.Agent", return_value=fake_agent),
+        patch("artemis.sdk.types.AgentProfile", MagicMock()),
+        patch("artemis.config.initialize_llm_config", return_value=MagicMock()),
+    ):
+        await bg.run_task(
+            trace_id=trace_id,
+            task_desc="Audit checkout",
+            model="Flash",
+            conversation_id="conv-1",
+            device_serial="emulator-5554",
+        )
+    return trace_id, notify
+
+
+@pytest.mark.asyncio
+async def test_an_interrupted_result_is_published_and_announced_as_interrupted(
+    tmp_path, monkeypatch
+):
+    from artemis.runtime import trace_store
+
+    trace_id, notify = await _run_bg(
+        tmp_path,
+        monkeypatch,
+        {"status": "interrupted", "interrupt_reason": "device_offline", "explanation": "unplugged"},
+    )
+
+    status = trace_store.read_status(trace_id)
+    assert (status["status"], status["interrupt_reason"]) == ("interrupted", "device_offline")
+    assert notify.call_args.kwargs["event_type"] == "interrupted"
+
+
+@pytest.mark.asyncio
+async def test_no_incomplete_notice_when_another_outcome_already_won(tmp_path, monkeypatch):
+    from artemis.runtime import trace_store
+
+    trace_id, notify = await _run_bg(
+        tmp_path, monkeypatch, {"status": "failed", "explanation": "late"}, before="cancelled"
+    )
+
+    assert trace_store.read_status(trace_id)["status"] == "cancelled"
+    notify.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_no_completed_notice_when_another_outcome_already_won(tmp_path, monkeypatch):
+    from artemis.runtime import trace_store
+
+    trace_id, notify = await _run_bg(tmp_path, monkeypatch, "all good", before="cancelled")
+
+    assert trace_store.read_status(trace_id)["status"] == "cancelled"
+    notify.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_a_notifier_error_after_completion_does_not_announce_a_failure(tmp_path, monkeypatch):
+    from artemis.runtime import trace_store
+
+    sent = []
+
+    def notify(**payload):
+        sent.append(payload["event_type"])
+        if payload["event_type"] == "completed":
+            raise RuntimeError("notifier exploded after completion")
+        return True
+
+    trace_id, _ = await _run_bg(tmp_path, monkeypatch, "all good", notify_fn=notify)
+
+    assert trace_store.read_status(trace_id)["status"] == "completed"
+    assert sent == ["completed"]  # no "failed" notice for a completed run
+
+
+@pytest.mark.asyncio
+async def test_a_crash_after_another_outcome_won_sends_no_failure_notice(tmp_path, monkeypatch):
+    from artemis.runtime import trace_store
+
+    trace_id, notify = await _run_bg(
+        tmp_path, monkeypatch, None, before="cancelled", run_error=RuntimeError("late crash")
+    )
+
+    assert trace_store.read_status(trace_id)["status"] == "cancelled"
+    notify.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_a_cancellation_after_another_outcome_won_sends_no_cancel_notice(
+    tmp_path, monkeypatch
+):
+    from artemis.runtime import trace_store
+
+    with pytest.raises(asyncio.CancelledError):
+        await _run_bg(
+            tmp_path, monkeypatch, None, before="completed", run_error=asyncio.CancelledError()
+        )
+
+    assert trace_store.read_status("trace-notice")["status"] == "completed"
