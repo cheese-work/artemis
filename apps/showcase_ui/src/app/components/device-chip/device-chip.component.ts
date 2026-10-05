@@ -11,10 +11,13 @@ import { deviceChipView } from '../../utils/device-chip.util';
     <span class="chip" [class.ready]="v.state === 'Ready'" [class.offline]="v.state === 'Offline'" [class.attention]="v.state === 'Needs attention'">
       <span class="material-symbols-outlined" aria-hidden="true">{{ v.icon }}</span>
       <span class="label">{{ v.label }}</span>
+      @if (v.kind) {
+        <span class="kind">{{ v.kind }}</span>
+      }
       <span class="state">{{ v.state }}</span>
       <span class="source">{{ v.source }}</span>
     </span>
-    <span class="detail">{{ v.detail }}</span>
+    <span class="detail">{{ v.detail }} · {{ v.serial }}</span>
   `,
   styles: [`
     :host { display: flex; flex-wrap: wrap; align-items: center; gap: .25rem .75rem; }
@@ -22,6 +25,7 @@ import { deviceChipView } from '../../utils/device-chip.util';
     .chip.ready { border-color: #3d9a6b; }
     .chip.offline { border-color: #8892a6; }
     .chip.attention { border-color: #d9a441; }
+    .kind { color: #a7b4c8; font-size: .85rem; }
     .state { font-weight: 700; }
     .source { color: #a7b4c8; }
     .detail { color: #a7b4c8; font-size: .85rem; }

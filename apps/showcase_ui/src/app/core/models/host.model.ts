@@ -1,3 +1,5 @@
+import { DeviceKind } from './system.model';
+
 export type ComputerStatus = 'online' | 'offline' | 'update_required' | 'revoked';
 
 export interface Computer {
@@ -20,6 +22,8 @@ export interface Computer {
 export interface RegistryDevice {
   serial: string;
   model: string | null;
+  /** Classified from adb properties; absent when the computer's agent did not report it. */
+  device_kind?: DeviceKind;
   source: 'browser' | 'computer';
   computer_id: string | null;
   computer_name: string | null;

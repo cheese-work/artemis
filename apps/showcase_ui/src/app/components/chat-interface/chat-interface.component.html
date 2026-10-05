@@ -80,10 +80,16 @@ limitations under the License.
               {{ getTaskStatus(session) | uppercase }}
             </span>
             <div class="task-card-header-actions">
-              @if (getDeviceSerial(session)) {
-                <span class="task-device" [title]="'Device: ' + getDeviceSerial(session)">
+              @if (getDeviceChip(session); as chip) {
+                <span class="task-device" [title]="chip.tooltip">
                   <span class="material-symbols-outlined device-icon">phone_android</span>
-                  <span class="device-name">{{ getDeviceSerial(session) }}</span>
+                  <span class="device-name">{{ chip.title }}</span>
+                  @if (chip.kind) {
+                    <span class="device-kind">{{ chip.kind }}</span>
+                  }
+                  @if (chip.source) {
+                    <span class="device-kind">{{ chip.source }}</span>
+                  }
                 </span>
               }
               @if (getDeviceSerial(session)) {
@@ -151,10 +157,16 @@ limitations under the License.
                   {{ getTaskStatus(session) | uppercase }}
                 </span>
                 <div class="task-card-header-actions">
-                  @if (getDeviceSerial(session)) {
-                    <span class="task-device" [title]="'Device: ' + getDeviceSerial(session)">
+                  @if (getDeviceChip(session); as chip) {
+                    <span class="task-device" [title]="chip.tooltip">
                       <span class="material-symbols-outlined device-icon">phone_android</span>
-                      <span class="device-name">{{ getDeviceSerial(session) }}</span>
+                      <span class="device-name">{{ chip.title }}</span>
+                      @if (chip.kind) {
+                        <span class="device-kind">{{ chip.kind }}</span>
+                      }
+                      @if (chip.source) {
+                        <span class="device-kind">{{ chip.source }}</span>
+                      }
                     </span>
                   }
                   @if (getDeviceSerial(session)) {

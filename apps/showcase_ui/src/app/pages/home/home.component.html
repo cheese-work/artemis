@@ -309,15 +309,20 @@
                     </span>
                   </div>
                   <div class="device-hero-details">
+                    @let hero = activeDevice();
                     <div class="device-hero-name">
-                      {{ activeDevice()?.model || activeDevice()?.serial }}
+                      {{ hero ? deviceTitle(hero) : '' }}
                     </div>
                     <div class="device-hero-meta">
-                      @if (activeDevice()?.is_emulator) {
-                        <span>Virtual Device</span>
+                      @if (hero && deviceKindLabel(hero) !== deviceTitle(hero)) {
+                        <span>{{ deviceKindLabel(hero) }}</span>
                         <span class="meta-dot">·</span>
                       }
-                      <span>{{ activeDevice()?.serial }}</span>
+                      @if (hero && deviceSource(hero); as source) {
+                        <span>{{ source }}</span>
+                        <span class="meta-dot">·</span>
+                      }
+                      <span>{{ hero?.serial }}</span>
                       @if (activeDevice()?.screen_resolution) {
                         <span class="meta-dot">·</span>
                         <span>{{ activeDevice()?.screen_resolution }}</span>
@@ -355,7 +360,13 @@
                           <span class="material-symbols-outlined chip-icon">
                             phone_android
                           </span>
-                          <span>{{ dev.model || dev.serial }}</span>
+                          <span>{{ deviceTitle(dev) }}</span>
+                          @if (deviceKindLabel(dev) !== deviceTitle(dev)) {
+                            <span class="chip-kind">{{ deviceKindLabel(dev) }}</span>
+                          }
+                          @if (deviceSource(dev); as source) {
+                            <span class="chip-kind">{{ source }}</span>
+                          }
                           @if (dev.serial === activeDevice()?.serial) {
                             <span class="active-check">✓ Active</span>
                           }

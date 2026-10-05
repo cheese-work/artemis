@@ -655,3 +655,42 @@ def test_connect_message_golden_vector():
     message = hr.connect_message("lab.example", 1, "h1", "n1", 1800000000)
     assert message == b"artemis-host-connect/v1\nlab.example\n1\nh1\nn1\n1800000000"
     assert hr.enroll_message("c", "k") == b"artemis-host-enroll/v1\nc\nk"
+
+
+def _browser_phones(monkeypatch, serials, pool_devices):
+    from types import SimpleNamespace
+
+    from apps.admin_console.routers import hosts as hosts_router
+    from artemis.runtime.device_pool import DeviceStatus
+
+    monkeypatch.setattr(
+        hosts_router.bridge_session_service,
+        "live_sessions",
+        lambda: [SimpleNamespace(serial=s) for s in serials],
+    )
+
+    async def fake_list():
+        return [DeviceStatus(**d) for d in pool_devices]
+
+    monkeypatch.setattr(hosts_router.device_pool, "list_devices_async", fake_list)
+
+
+def test_browser_phone_on_loopback_serial_lists_model_and_kind(admin, monkeypatch):
+    _browser_phones(
+        monkeypatch,
+        ["127.0.0.1:36411", "127.0.0.1:40001"],
+        [
+            {
+                "serial": "127.0.0.1:36411",
+                "state": "device",
+                "model": "21081111RG",
+                "device_kind": "phone",
+            }
+        ],
+    )
+    devices = {d["serial"]: d for d in admin.get("/api/hosts").json()["devices"]}
+    assert devices["127.0.0.1:36411"]["model"] == "21081111RG"
+    assert devices["127.0.0.1:36411"]["device_kind"] == "phone"
+    # Not (yet) visible to adb: unknown, never guessed from the address.
+    assert devices["127.0.0.1:40001"]["model"] is None
+    assert devices["127.0.0.1:40001"]["device_kind"] == "unknown"

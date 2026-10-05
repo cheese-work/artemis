@@ -14,6 +14,7 @@ from apps.admin_console.core.access_control import AccessIdentity, AdminAPIError
 from apps.admin_console.services import host_registry as hr
 from apps.admin_console.services.host_hub import CLOSE_REVOKED, host_hub
 from apps.admin_console.services.host_registry import host_registry
+from artemis.runtime import device_pool
 
 try:
     from admin_console.core.state import state
@@ -48,10 +49,15 @@ async def list_hosts() -> dict:
     hosts, devices = host_registry.list_hosts()
     for host in hosts:
         host["active_run_count"] = _active_run_count(host["id"])
+    # The pool classifies phones from adb properties; a browser phone's address
+    # (127.0.0.1:<port>) says nothing about what it is.
+    sessions = bridge_session_service.live_sessions()
+    pool = {d.serial: d for d in await device_pool.list_devices_async()} if sessions else {}
     browser = [
         {
             "serial": s.serial,
-            "model": None,
+            "model": pool[s.serial].model if s.serial in pool else None,
+            "device_kind": pool[s.serial].device_kind if s.serial in pool else "unknown",
             "source": "browser",
             "computer_id": None,
             "computer_name": None,
@@ -59,7 +65,7 @@ async def list_hosts() -> dict:
             "reason": None,
             "since": None,
         }
-        for s in bridge_session_service.live_sessions()
+        for s in sessions
     ]
     return {"enabled": True, "hosts": hosts, "devices": [*devices, *browser]}
 
