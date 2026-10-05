@@ -15,6 +15,7 @@ from typing import Any
 
 from apps.admin_console.core.access_control import AdminAPIError
 from apps.admin_console.core.ownership import OwnerScope
+from artemis.runtime.device_lock import DeviceExecutionLock
 
 try:
     from admin_console.services.bridge_session_service import bridge_session_service
@@ -22,11 +23,15 @@ except ImportError:
     from apps.admin_console.services.bridge_session_service import bridge_session_service
 
 _BRIDGE_ADDRESS = re.compile(r"(?:127\.0\.0\.1|localhost):\d+")
+# The device pool and the device locks treat a serial as its normalized form
+# (stripped, every non-word character mapped to "_"), so a spelling variant of a
+# bridge address names the same phone. Ownership is decided on that same form.
+_BRIDGE_KEY = re.compile(r"(?:127_0_0_1|localhost)_\d+", re.IGNORECASE)
 _HIDDEN = "another person's phone"
 
 
 def may_use_device(scope: OwnerScope, serial: str) -> bool:
-    if not _BRIDGE_ADDRESS.fullmatch(serial):
+    if not _BRIDGE_KEY.fullmatch(DeviceExecutionLock._normalize_device_id(serial)):
         return True
     return scope.may_act_on(bridge_session_service.owner_of(serial))
 
@@ -40,6 +45,15 @@ def require_device(scope: OwnerScope, serial: str) -> None:
             "device_not_yours",
             "Pick your own phone or a shared device.",
         )
+
+
+def no_device_for() -> AdminAPIError:
+    return AdminAPIError(
+        409,
+        "No phone is available to you right now.",
+        "no_device_available",
+        "Connect your own phone in the browser or ask an administrator for a shared device.",
+    )
 
 
 def own_default_serial(scope: OwnerScope) -> str | None:

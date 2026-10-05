@@ -22,6 +22,7 @@ Covers the invariants the no-auth security model depends on:
 - lifecycle controls stay loopback-only.
 """
 
+from types import SimpleNamespace
 import json
 import secrets as py_secrets
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -373,7 +374,12 @@ async def test_nonadmin_can_use_public_task_controls(monkeypatch):
     verifier.verify = AsyncMock(return_value={"email": "qa@example.com"})
     monkeypatch.setattr(app.state, "access_verifier", verifier)
     enqueue = AsyncMock(return_value={"status": "queued", "tasks": []})
-    readiness_probe = AsyncMock(return_value=None)
+    # A scoped caller's run needs a device they may use: a shared one is ready.
+    readiness_probe = AsyncMock(
+        return_value=SimpleNamespace(
+            summary="Connected", metadata={"active_device": {"serial": "emulator-5554"}}
+        )
+    )
     stop_tasks = MagicMock(return_value=True)
     resume_task = MagicMock(return_value=True)
     monkeypatch.setattr(task_router.task_queue_service, "enqueue_tasks", enqueue)

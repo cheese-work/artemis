@@ -24,6 +24,7 @@ import time
 import uuid
 
 from artemis.runtime.adb_endpoint import AdbEndpoint, AdbSession
+from artemis.runtime.device_lock import DeviceExecutionLock
 from artemis.toolchain import find_adb
 
 DEFAULT_SESSION_TTL_SECONDS = 300
@@ -141,7 +142,16 @@ class BridgeSessionService:
 
     def owner_of(self, serial: str) -> str | None:
         """Who connected the browser phone at ``serial``; None when unowned or unknown."""
-        session = next((s for s in self._sessions.values() if s.serial == serial), None)
+        # Admission and device locks match serials in this normalized form, so ownership must too.
+        key = DeviceExecutionLock._normalize_device_id(serial)
+        session = next(
+            (
+                s
+                for s in self._sessions.values()
+                if DeviceExecutionLock._normalize_device_id(s.serial) == key
+            ),
+            None,
+        )
         return session.owner if session else None
 
     def newest_serial_of(self, owner: str | None) -> str | None:

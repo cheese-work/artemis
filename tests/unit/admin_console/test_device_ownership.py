@@ -570,9 +570,7 @@ async def test_with_no_allowed_device_at_all_the_run_is_refused_not_queued_on_a_
 
 
 @pytest.mark.asyncio
-async def test_an_admin_with_no_phone_named_still_auto_selects_across_every_device(
-    cloudflare, adb
-):
+async def test_an_admin_with_no_phone_named_still_auto_selects_across_every_device(cloudflare, adb):
     enqueue = adb([(QA2_PHONE, "device"), (SHARED, "device")])
 
     response = await _run(ADMIN)

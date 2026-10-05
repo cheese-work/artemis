@@ -28,6 +28,7 @@ import asyncio
 import json
 import sqlite3
 import uuid
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 from httpx import ASGITransport, AsyncClient
@@ -44,6 +45,11 @@ from apps.admin_console.services.task_queue_service import task_queue_service
 from artemis.data_engine.storage import StorageManager
 from artemis.runtime import trace_store
 from artemis.runtime.device_lock import DeviceExecutionLock
+
+# A scoped caller's run needs a device they may use: a shared one is ready.
+_SHARED_READY = SimpleNamespace(
+    summary="Connected", metadata={"active_device": {"serial": "emulator-5554"}}
+)
 
 QA1 = "qa1@example.com"
 QA2 = "qa2@example.com"
@@ -263,7 +269,9 @@ async def test_submit_records_the_verified_identity_as_requester(cloudflare, mon
     enqueue = AsyncMock(return_value={"status": "queued", "tasks": []})
     monkeypatch.setattr(task_queue_service, "enqueue_tasks", enqueue)
     monkeypatch.setattr(
-        tasks_router.readiness_engine, "run_device_submission_probe", AsyncMock(return_value=None)
+        tasks_router.readiness_engine,
+        "run_device_submission_probe",
+        AsyncMock(return_value=_SHARED_READY),
     )
 
     assert (await _post(QA1, "/api/run", json={"goal": "x"})).status_code == 200
@@ -275,7 +283,9 @@ async def test_submit_without_identity_gets_no_owner(cloudflare, monkeypatch):
     enqueue = AsyncMock(return_value={"status": "queued", "tasks": []})
     monkeypatch.setattr(task_queue_service, "enqueue_tasks", enqueue)
     monkeypatch.setattr(
-        tasks_router.readiness_engine, "run_device_submission_probe", AsyncMock(return_value=None)
+        tasks_router.readiness_engine,
+        "run_device_submission_probe",
+        AsyncMock(return_value=_SHARED_READY),
     )
 
     assert (await _post(None, "/api/run", json={"goal": "x"})).status_code == 200
