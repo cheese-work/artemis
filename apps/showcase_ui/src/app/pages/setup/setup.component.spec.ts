@@ -182,7 +182,6 @@ describe('SetupComponent', () => {
     await fixture.whenStable();
     fixture.detectChanges();
     expect(fixture.componentInstance.snapshot()).not.toBeNull();
-  });
 
     const openaiRow = Array.from(
       fixture.nativeElement.querySelectorAll('.provider-row') as NodeListOf<HTMLElement>

@@ -31,6 +31,7 @@ describe('HomeComponent phone surface', () => {
           provide: AdminConfigService,
           useValue: {
             getIdentity: () => of({ email: null, admin: false, auth_mode: 'open', reason: null }),
+            getVersion: () => of({ status: 'unknown' }),
             getConfig: () =>
               of({
                 version: 'v1',
