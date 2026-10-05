@@ -1156,3 +1156,40 @@ async def test_only_readable_owned_locks_let_the_owner_resume(lock_dir, real_ser
 
     assert (await _post(QA1, "/api/resume")).json() == {"status": "resumed"}
     assert not pause_file.exists()
+
+
+# -- cancel-queued follows the same owner-or-admin rule as stop (CHE-1128) ----------
+
+
+@pytest.mark.asyncio
+async def test_cancel_queued_by_a_non_owner_is_denied_with_no_side_effect(cloudflare):
+    sid = _run(cloudflare, QA1, status="queued", queued=True)
+
+    response = await _post(QA2, f"/api/tasks/{sid}/cancel-queued")
+
+    assert response.status_code == 403 and response.json()["code"] == "not_run_owner"
+    assert [i["session_id"] for i in state.queue_items] == [sid]
+    assert session_repo.get_session_by_id(sid)["status"] == "queued"
+
+
+@pytest.mark.asyncio
+async def test_owner_and_admin_may_cancel_a_queued_run(cloudflare):
+    mine = _run(cloudflare, QA1, status="queued", queued=True)
+    theirs = _run(cloudflare, QA2, status="queued", queued=True)
+
+    owner = await _post(QA1, f"/api/tasks/{mine}/cancel-queued")
+    admin = await _post(ADMIN, f"/api/tasks/{theirs}/cancel-queued")
+
+    assert owner.json()["status"] == "cancelled"
+    assert admin.json()["status"] == "cancelled"
+    assert state.queue_items == []
+
+
+@pytest.mark.asyncio
+async def test_unowned_queued_runs_can_only_be_cancelled_by_an_admin(cloudflare):
+    sid = _run(cloudflare, None, status="queued", queued=True)
+
+    assert (await _post(QA1, f"/api/tasks/{sid}/cancel-queued")).status_code == 403
+    assert (await _post(None, f"/api/tasks/{sid}/cancel-queued")).status_code == 403
+    assert [i["session_id"] for i in state.queue_items] == [sid]
+    assert (await _post(ADMIN, f"/api/tasks/{sid}/cancel-queued")).status_code == 200
