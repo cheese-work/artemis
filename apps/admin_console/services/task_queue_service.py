@@ -53,6 +53,7 @@ from artemis.runtime import (
     request_cancel,
     trace_store,
 )
+from artemis.runtime.adb_endpoint import InvalidAdbEndpoint
 from artemis.runtime.host_endpoints import host_endpoints
 
 logger = logging.getLogger(__name__)
@@ -60,6 +61,10 @@ logger = logging.getLogger(__name__)
 _STOPPED_FROM_FRONTEND = "Task stopped from the Artemis frontend."
 # Cadence of the sweep that fails running sessions whose worker vanished.
 _VANISHED_WORKER_SWEEP_SECONDS = 15.0
+
+
+class TaskEndpointUnavailable(RuntimeError):
+    """A queued task's adb endpoint snapshot cannot be turned into an endpoint."""
 
 
 class ServerDraining(RuntimeError):
@@ -232,6 +237,22 @@ class TaskQueueService:
         ).start()
 
     @staticmethod
+    def _scheduling_lock_key(task_item: dict[str, Any]) -> str:
+        """Lock key for the scheduler; never raises.
+
+        A snapshot that can no longer be turned into an endpoint (a host task queued
+        before the host agent flag went off) still has an identity to schedule on. The
+        task then fails alone when it launches, instead of the scheduler loop dying.
+        """
+        try:
+            return TaskQueueService._task_target(task_item).lock_key
+        except TaskEndpointUnavailable:
+            snapshot = task_item.get("adb_endpoint")
+            identity = snapshot.get("identity") if isinstance(snapshot, dict) else None
+            serial = task_item.get("device_serial")
+            return f"{identity or 'unavailable'}/{serial or 'pending'}"
+
+    @staticmethod
     def _task_target(task_item: dict[str, Any], *, resolve_host: bool = False) -> AdbTarget:
         """The task's adb target from its queued snapshot.
 
@@ -241,11 +262,16 @@ class TaskQueueService:
         the snapshot: host-scoped lock keys do not depend on the port.
         """
         endpoint_data = task_item.get("adb_endpoint")
-        endpoint = (
-            AdbEndpoint.from_mapping(endpoint_data)
-            if isinstance(endpoint_data, dict)
-            else current_adb_endpoint()
-        )
+        try:
+            endpoint = (
+                AdbEndpoint.from_mapping(endpoint_data)
+                if isinstance(endpoint_data, dict)
+                else current_adb_endpoint()
+            )
+        except InvalidAdbEndpoint as exc:
+            raise TaskEndpointUnavailable(
+                f"The task's adb endpoint {endpoint_data!r} cannot be used: {exc}"
+            ) from exc
         if resolve_host and endpoint.is_host:
             endpoint = host_endpoints.resolve(str(endpoint.host_id))
         serial = task_item.get("device_serial")
@@ -475,7 +501,7 @@ class TaskQueueService:
             if capacity <= 0:
                 return
         busy_devices = state.busy_device_ids | {
-            cls._task_target(i).lock_key for i in in_flight if i.get("device_serial")
+            cls._scheduling_lock_key(i) for i in in_flight if i.get("device_serial")
         }
         dispatched_any = False
         loop = asyncio.get_running_loop()
@@ -488,23 +514,23 @@ class TaskQueueService:
                 continue
 
             device = item.get("device_serial")
-            target = cls._task_target(item)
+            lock_key = cls._scheduling_lock_key(item)
             if limit == 0:
                 # A task without a resolved device may bind to any serial, so it
                 # only launches on an otherwise idle scheduler; the device lock
                 # then allocates freely without contending against active runs.
                 if device is None and (state.active_runs or in_flight or dispatched_any):
                     continue
-                if device is not None and target.lock_key in busy_devices:
+                if device is not None and lock_key in busy_devices:
                     continue
-            elif limit > 1 and device is not None and target.lock_key in busy_devices:
+            elif limit > 1 and device is not None and lock_key in busy_devices:
                 # A second worker for this device would wait on its lock.
                 continue
 
             item["status"] = "running"
             dispatched_any = True
             if device is not None:
-                busy_devices.add(target.lock_key)
+                busy_devices.add(lock_key)
             # Count from scheduling, not from the coroutine's first step: a stop
             # can drop the queue row, or cancel the task, before it ever runs.
             run_key = str(sess_id) if sess_id else uuid.uuid4().hex
