@@ -35,6 +35,13 @@ describe('RunsService', () => {
     req.flush({ runs: [], next_cursor: null, warnings: [] });
   });
 
+  it('adds scope=all only when asked, for an admin\'s All users view', () => {
+    service.list(EMPTY_FILTERS, { scope: 'all' }).subscribe();
+    const req = http.expectOne((r) => r.url === '/api/runs');
+    expect(req.request.params.get('scope')).toBe('all');
+    req.flush({ runs: [], next_cursor: null, warnings: [] });
+  });
+
   it('resolves one run by full id or prefix, encoded', () => {
     service.get('3f2b/9c1a').subscribe();
     http.expectOne({ method: 'GET', url: '/api/runs/3f2b%2F9c1a' }).flush({});

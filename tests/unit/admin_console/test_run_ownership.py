@@ -1156,3 +1156,26 @@ async def test_only_readable_owned_locks_let_the_owner_resume(lock_dir, real_ser
 
     assert (await _post(QA1, "/api/resume")).json() == {"status": "resumed"}
     assert not pause_file.exists()
+
+
+# -- session rows name their owner (CHE-1152: the UI's Owner label) -------------
+
+
+@pytest.mark.asyncio
+async def test_session_rows_carry_their_owner_in_the_admin_all_users_view(cloudflare):
+    mine, theirs, unowned = _run(cloudflare, QA1), _run(cloudflare, QA2), _run(cloudflare, None)
+
+    response = await _get(ADMIN, "/api/sessions", scope="all")
+
+    owners = {row["session_id"]: row["requested_by"] for row in response.json()}
+    assert owners == {mine: QA1, theirs: QA2, unowned: None}
+
+
+@pytest.mark.asyncio
+async def test_a_qa_sees_their_own_email_on_their_session_rows(cloudflare):
+    mine = _run(cloudflare, QA1)
+    _run(cloudflare, QA2)
+
+    response = await _get(QA1, "/api/sessions")
+
+    assert [(row["session_id"], row["requested_by"]) for row in response.json()] == [(mine, QA1)]

@@ -9,9 +9,10 @@ import { Observable, Subject, of, throwError } from 'rxjs';
 import { HostsResponse } from '../../core/models/host.model';
 import { RunPage, RunSummary } from '../../core/models/run.model';
 import { HostsService } from '../../services/hosts.service';
+import { OwnerScopeService } from '../../services/owner-scope.service';
 import { RunsService } from '../../services/runs.service';
 import { SELECTED_DEVICE_SERIAL_KEY } from '../../services/system.service';
-import { signal } from '@angular/core';
+import { WritableSignal, signal } from '@angular/core';
 import { RunLibraryComponent } from './run-library.component';
 
 @Component({ standalone: true, template: 'viewer stub' })
@@ -53,6 +54,8 @@ const httpError = (status: number, body: unknown = {}) =>
 describe('RunLibraryComponent', () => {
   let runs: jasmine.SpyObj<RunsService>;
   let hosts: jasmine.SpyObj<HostsService>;
+  let canSwitch: WritableSignal<boolean>;
+  let allUsers: WritableSignal<boolean>;
   let harness: RouterTestingHarness;
   let router: Router;
   let root: HTMLElement;
@@ -99,6 +102,14 @@ describe('RunLibraryComponent', () => {
     });
     hosts = jasmine.createSpyObj<HostsService>('HostsService', ['list']);
     hosts.list.and.returnValue(of(hostsResponse));
+    canSwitch = signal(false);
+    allUsers = signal(false);
+    const scope = {
+      load: () => undefined,
+      canSwitch,
+      allUsers,
+      setAllUsers: (on: boolean) => allUsers.set(on)
+    };
     TestBed.configureTestingModule({
       imports: [RunLibraryComponent],
       providers: [
@@ -109,7 +120,8 @@ describe('RunLibraryComponent', () => {
         ]),
         provideLocationMocks(),
         { provide: RunsService, useValue: runs },
-        { provide: HostsService, useValue: hosts }
+        { provide: HostsService, useValue: hosts },
+        { provide: OwnerScopeService, useValue: scope }
       ]
     });
     harness = await RouterTestingHarness.create();
@@ -488,6 +500,74 @@ describe('RunLibraryComponent', () => {
       expect(q('.state-no-match')!.textContent).toContain('No matching runs');
       expect(q('.state-no-match button')!.textContent).toContain('Clear filters');
       expect(q('.state-empty')).toBeNull();
+    });
+  });
+
+  describe('whose runs it lists (CHE-1152)', () => {
+    it('asks for my runs only by default and shows no owner on rows', async () => {
+      await open('/runs', of(page([run()])));
+      expect(runs.list.calls.mostRecent().args[1]).toBeUndefined();
+      expect(q('.run-owner')).toBeNull();
+      expect(q('button[role="switch"]')).toBeNull();
+    });
+
+    it('shows the All users switch to an admin', async () => {
+      canSwitch.set(true);
+      await open('/runs');
+      expect(q('button[role="switch"]')).not.toBeNull();
+    });
+
+    it('asks for everyone\'s runs when an admin turns All users on, and shows each row\'s owner', async () => {
+      canSwitch.set(true);
+      await open('/runs', of(page([run({ requested_by: 'qa2@example.test' }), run({ session_id: 'b'.repeat(36), requested_by: null })])));
+      runs.list.calls.reset();
+      allUsers.set(true);
+      await settle();
+      expect(runs.list.calls.count()).toBe(1);
+      expect(runs.list.calls.mostRecent().args[1]).toEqual({ scope: 'all' });
+      const owners = qa('.run-owner').map((el) => el.textContent!.replace(/\s+/g, ' ').trim());
+      expect(owners).toEqual(['Owner: qa2@example.test', 'Owner: no owner']);
+    });
+
+    it('reloads from the first page when All users is turned off again', async () => {
+      canSwitch.set(true);
+      await open('/runs');
+      allUsers.set(true);
+      await settle();
+      runs.list.calls.reset();
+      allUsers.set(false);
+      await settle();
+      expect(runs.list.calls.count()).toBe(1);
+      expect(runs.list.calls.mostRecent().args[1]).toBeUndefined();
+      expect(q('.run-owner')).toBeNull();
+    });
+
+    it('keeps the scope when paging', async () => {
+      canSwitch.set(true);
+      allUsers.set(true);
+      await open('/runs', of(page([run()], 'next-page')));
+      runs.list.and.returnValue(of(page([])));
+      q<HTMLButtonElement>('.load-more')!.click();
+      await settle();
+      expect(runs.list.calls.mostRecent().args[1]).toEqual({ cursor: 'next-page', scope: 'all' });
+    });
+
+    it('says "No runs yet" for me, and "No runs from any user yet" with All users on', async () => {
+      await open('/runs', of(page([])));
+      expect(q('.state-empty')!.textContent).toContain('No runs yet');
+      canSwitch.set(true);
+      allUsers.set(true);
+      await settle();
+      expect(q('.state-empty')!.textContent).toContain('No runs from any user yet');
+    });
+
+    it('keeps "No matching runs" for a search that finds nothing, in either scope', async () => {
+      await open('/runs?q=nothing', of(page([])));
+      expect(q('.state-no-match')!.textContent).toContain('No matching runs');
+      canSwitch.set(true);
+      allUsers.set(true);
+      await settle();
+      expect(q('.state-no-match')!.textContent).toContain('No matching runs');
     });
   });
 

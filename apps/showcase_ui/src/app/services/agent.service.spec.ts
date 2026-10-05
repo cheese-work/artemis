@@ -871,3 +871,146 @@ describe('AgentService task cancellation and active session tracking', () => {
     expect(service.activeTasks().map((at: any) => at.session_id)).toEqual(['sess-1']);
   });
 });
+
+describe('AgentService per-QA scope (CHE-1152)', () => {
+  const CACHE_KEY = 'artemis.sessions.v1';
+
+  function create(allUsers: boolean) {
+    const service = Object.create(AgentService.prototype) as AgentService;
+    const get = jasmine.createSpy('get').and.callFake((url: string) =>
+      of(url.startsWith('/api/status') ? { status: 'idle', queue: [], active_tasks: [] } : [])
+    );
+    (service as any).http = { get };
+    (service as any).ownerScope = { allUsers: signal(allUsers) };
+    (service as any).zone = { runOutsideAngular: (work: () => void) => work() };
+    (service as any).statusRequestSequence = 0;
+    (service as any).statusAppliedSequence = 0;
+    (service as any).whatsNewHandoffRequestBoundaries = [];
+    (service as any).whatsNewAcceptedRunHandoffs = signal(0);
+    (service as any).lastQueueSignature = null;
+    (service as any).lastActiveTasksSignature = null;
+    (service as any).lastPersistedSessionsJson = null;
+    (service as any).rawSessions = signal<any[]>([]);
+    (service as any).pendingQueue = signal<any[]>([]);
+    service.agentStatus = signal('offline');
+    service.runningSessionId = signal<string | null>(null);
+    service.runningGoal = signal<string | null>(null);
+    service.activeModel = signal<any>(null);
+    service.isPaused = signal(false);
+    service.pausedError = signal<string | null>(null);
+    service.isRetrying = signal(false);
+    service.activeTasks = signal<any[]>([]);
+    service.hasFetchedStatus = signal(false);
+    service.currentSessionId = signal<string | null>(null);
+    service.userPinnedSessionId = signal<string | null>(null);
+    spyOn(service, 'selectSession');
+    return { service, get };
+  }
+
+  function withFakeEventSource<T>(run: (opened: string[], closed: string[]) => T): T {
+    const opened: string[] = [];
+    const closed: string[] = [];
+    const original = Object.getOwnPropertyDescriptor(window, 'EventSource');
+    class TestEventSource {
+      constructor(public url: string) {
+        opened.push(url);
+      }
+      public addEventListener(): void {}
+      public close(): void {
+        closed.push(this.url);
+      }
+    }
+    Object.defineProperty(window, 'EventSource', { configurable: true, value: TestEventSource });
+    try {
+      return run(opened, closed);
+    } finally {
+      if (original) Object.defineProperty(window, 'EventSource', original);
+      else delete (window as any).EventSource;
+    }
+  }
+
+  beforeEach(() => localStorage.removeItem(CACHE_KEY));
+  afterEach(() => localStorage.removeItem(CACHE_KEY));
+
+  it('reads only my sessions and queue by default', () => {
+    const { service, get } = create(false);
+    service.fetchSessions();
+    service.fetchStatus();
+    expect(get).toHaveBeenCalledWith('/api/sessions');
+    expect(get).toHaveBeenCalledWith('/api/status');
+  });
+
+  it('asks the server for every user\'s sessions and queue when All users is on', () => {
+    const { service, get } = create(true);
+    service.fetchSessions();
+    service.fetchStatus();
+    expect(get).toHaveBeenCalledWith('/api/sessions?scope=all');
+    expect(get).toHaveBeenCalledWith('/api/status?scope=all');
+  });
+
+  it('keeps the owner on queued rows', () => {
+    const { service, get } = create(true);
+    get.and.callFake((url: string) =>
+      of(
+        url.startsWith('/api/status')
+          ? { status: 'idle', queue: [{ session_id: 'q1', goal: 'g', status: 'pending', requested_by: 'qa2@example.test' }], active_tasks: [] }
+          : []
+      )
+    );
+    service.fetchStatus();
+    expect((service as any).pendingQueue()[0].requested_by).toBe('qa2@example.test');
+  });
+
+  it('never saves an all-users list as the browser\'s remembered sessions', () => {
+    const { service, get } = create(true);
+    get.and.callFake(() => of([{ session_id: 's9', initial_goal: 'theirs', start_time: 1 }]));
+    service.fetchSessions();
+    expect(localStorage.getItem(CACHE_KEY)).toBeNull();
+  });
+
+  it('still remembers my own sessions', () => {
+    const { service, get } = create(false);
+    get.and.callFake(() => of([{ session_id: 's1', initial_goal: 'mine', start_time: 1 }]));
+    service.fetchSessions();
+    expect(localStorage.getItem(CACHE_KEY)).toContain('s1');
+  });
+
+  it('opens the live stream with the scope in force', () => {
+    withFakeEventSource((opened) => {
+      const { service } = create(true);
+      service.ensureLiveStream();
+      expect(opened).toEqual(['/api/stream?scope=all']);
+      (service as any).eventSource = null;
+    });
+    withFakeEventSource((opened) => {
+      const { service } = create(false);
+      service.ensureLiveStream();
+      expect(opened).toEqual(['/api/stream']);
+      (service as any).eventSource = null;
+    });
+  });
+
+  it('reconnects the stream and reloads sessions and status when the scope changes', () => {
+    withFakeEventSource((opened, closed) => {
+      const { service, get } = create(false);
+      service.ensureLiveStream();
+      (service as any).ownerScope.allUsers.set(true);
+      get.calls.reset();
+      service.onOwnerScopeChanged();
+      expect(closed).toEqual(['/api/stream']);
+      expect(opened).toEqual(['/api/stream', '/api/stream?scope=all']);
+      expect(get).toHaveBeenCalledWith('/api/sessions?scope=all');
+      expect(get).toHaveBeenCalledWith('/api/status?scope=all');
+      (service as any).eventSource = null;
+    });
+  });
+
+  it('applies a status payload again after the scope changes even if it looks the same', () => {
+    const { service } = create(false);
+    (service as any).lastQueueSignature = '[]';
+    (service as any).lastActiveTasksSignature = '[]';
+    withFakeEventSource(() => service.onOwnerScopeChanged());
+    expect((service as any).lastQueueSignature).toBeNull();
+    expect((service as any).lastActiveTasksSignature).toBeNull();
+  });
+});

@@ -25,6 +25,7 @@ import { AgentService } from '../../services/agent.service';
 import { HostsService } from '../../services/hosts.service';
 import { WEBUSB_DEVICE_MANAGER } from '../../services/usb-device-relay.service';
 import { RegistryDevice } from '../../core/models/host.model';
+import { OwnerScopeService } from '../../services/owner-scope.service';
 import { SystemService } from '../../services/system.service';
 import { ChatInterfaceComponent } from './chat-interface.component';
 
@@ -44,6 +45,16 @@ function device(overrides: Partial<DeviceInfo>): DeviceInfo {
     is_emulator: false,
     device_kind: 'phone',
     ...overrides
+  };
+}
+
+function quietScope() {
+  return {
+    load: () => undefined,
+    canSwitch: signal(false),
+    allUsers: signal(false),
+    setAllUsers: () => undefined,
+    canManage: () => true
   };
 }
 
@@ -75,7 +86,8 @@ describe('ChatInterfaceComponent device chip', () => {
           provide: HostsService,
           useValue: { list: () => of({ enabled: true, hosts: [], devices: registryDevices }) }
         },
-        { provide: WEBUSB_DEVICE_MANAGER, useValue: undefined }
+        { provide: WEBUSB_DEVICE_MANAGER, useValue: undefined },
+        { provide: OwnerScopeService, useValue: quietScope() }
       ]
     }).compileComponents();
     systemService = TestBed.inject(SystemService);
@@ -150,5 +162,89 @@ describe('ChatInterfaceComponent device chip', () => {
     const text = chipText('R5CT1', [device({ serial: 'R5CT1', model: 'Pixel 8' })]);
     expect(text).toContain('Pixel 8');
     expect(text).toContain('Lab Mac');
+  });
+});
+
+describe('ChatInterfaceComponent whose runs it lists (CHE-1152)', () => {
+  const sessions = signal<Session[]>([]);
+  let scope: ReturnType<typeof quietScope> & { canManage: jasmine.Spy };
+  let root: HTMLElement;
+  let fixture: import('@angular/core/testing').ComponentFixture<ChatInterfaceComponent>;
+
+  const text = (selector: string) =>
+    Array.from(root.querySelectorAll(selector)).map((el) => (el.textContent ?? '').replace(/\s+/g, ' ').trim());
+
+  function render() {
+    fixture = TestBed.createComponent(ChatInterfaceComponent);
+    fixture.detectChanges();
+    root = fixture.nativeElement;
+  }
+
+  beforeEach(async () => {
+    sessions.set([
+      { session_id: 'run-1', initial_goal: 'mine running', start_time: 2, status: 'running', requested_by: 'qa1@example.test' },
+      { session_id: 'old-1', initial_goal: 'theirs finished', start_time: 1, status: 'completed', requested_by: 'qa2@example.test' },
+      { session_id: 'old-2', initial_goal: 'nobody finished', start_time: 1, status: 'failed', requested_by: null }
+    ]);
+    scope = { ...quietScope(), canManage: jasmine.createSpy('canManage').and.returnValue(true) };
+    const agentService = {
+      sessions,
+      activeTab: signal('tasks'),
+      agentStatus: signal('running'),
+      runningSessionId: signal('run-1'),
+      currentSessionId: signal('run-1'),
+      currentNotes: signal([]),
+      selectedNoteKey: signal(null),
+      fetchStatus: () => {}
+    };
+    await TestBed.configureTestingModule({
+      imports: [ChatInterfaceComponent],
+      providers: [
+        provideHttpClient(),
+        provideHttpClientTesting(),
+        { provide: AgentService, useValue: agentService },
+        { provide: HostsService, useValue: { list: () => of({ enabled: true, hosts: [], devices: [] }) } },
+        { provide: WEBUSB_DEVICE_MANAGER, useValue: undefined },
+        { provide: OwnerScopeService, useValue: scope }
+      ]
+    }).compileComponents();
+    spyOn(TestBed.inject(SystemService), 'fetchReadiness').and.returnValue(EMPTY);
+  });
+
+  it('shows no owner on rows and no switch for a QA', () => {
+    render();
+    expect(root.querySelector('.task-owner')).toBeNull();
+    expect(root.querySelector('button[role="switch"]')).toBeNull();
+  });
+
+  it('keeps Stop and Delete on every row in my own view', () => {
+    render();
+    expect(root.querySelectorAll('.btn-stop-card').length).toBe(1);
+    expect(root.querySelectorAll('.btn-delete-card').length).toBe(2);
+  });
+
+  it('shows the switch in the header for an admin', () => {
+    scope.canSwitch.set(true);
+    render();
+    expect(root.querySelector('.chat-header button[role="switch"]')).not.toBeNull();
+  });
+
+  it('labels each row with its owner when All users is on', () => {
+    scope.canSwitch.set(true);
+    scope.allUsers.set(true);
+    render();
+    expect(text('.task-owner')).toEqual([
+      'qa1@example.test',
+      'qa2@example.test',
+      'No owner'
+    ]);
+  });
+
+  it('hides Stop and Delete on a row the caller may not manage', () => {
+    scope.allUsers.set(true);
+    scope.canManage.and.callFake((owner: string | null) => owner === 'qa1@example.test');
+    render();
+    expect(root.querySelectorAll('.btn-stop-card').length).toBe(1);
+    expect(root.querySelectorAll('.btn-delete-card').length).toBe(0);
   });
 });

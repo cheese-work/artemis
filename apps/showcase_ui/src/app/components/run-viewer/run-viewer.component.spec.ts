@@ -677,4 +677,71 @@ describe('RunViewerComponent', () => {
       }
     });
   });
+
+  describe('whose run it is (CHE-1152)', () => {
+    const ME = 'qa1@example.test';
+    const THEM = 'qa2@example.test';
+    const hasDelete = () => qa('button').some((b) => b.textContent!.trim() === 'Delete');
+    const notice = () => q('.read-only-notice');
+
+    async function openAs(identity: { email: string | null; admin: boolean; auth_mode: string }, owner: string | null) {
+      runs.get.and.returnValue(of(run({ requested_by: owner })));
+      runs.steps.and.returnValue(of([step(1)]));
+      runs.video.and.returnValue(of(ready()));
+      admin.getIdentity.and.returnValue(of({ ...identity, reason: null }));
+      fixture = TestBed.createComponent(RunViewerComponent);
+      fixture.componentRef.setInput('runId', ID);
+      root = fixture.nativeElement;
+      await settle();
+    }
+
+    it('lets a QA delete their own run, with no read-only notice', async () => {
+      await openAs({ email: ME, admin: false, auth_mode: 'cloudflare' }, ME);
+      expect(hasDelete()).toBeTrue();
+      expect(notice()).toBeNull();
+    });
+
+    it('opens a colleague\'s run read-only: no Delete, and a notice naming the owner', async () => {
+      await openAs({ email: ME, admin: false, auth_mode: 'cloudflare' }, THEM);
+      expect(hasDelete()).toBeFalse();
+      expect(notice()!.textContent).toContain(THEM);
+      expect(notice()!.textContent).toContain('read-only');
+    });
+
+    it('keeps Copy link and Download on a read-only run, so the link still works for sharing', async () => {
+      await openAs({ email: ME, admin: false, auth_mode: 'cloudflare' }, THEM);
+      expect(button('Copy link')).toBeTruthy();
+      expect(button('Download')).toBeTruthy();
+    });
+
+    it('treats a run with no owner as read-only for a QA', async () => {
+      await openAs({ email: ME, admin: false, auth_mode: 'cloudflare' }, null);
+      expect(hasDelete()).toBeFalse();
+      expect(notice()!.textContent).toContain('no owner');
+    });
+
+    it('lets an admin delete anyone\'s run without a read-only notice', async () => {
+      await openAs({ email: 'boss@example.test', admin: true, auth_mode: 'cloudflare' }, THEM);
+      expect(hasDelete()).toBeTrue();
+      expect(notice()).toBeNull();
+    });
+
+    it('does not filter in open mode', async () => {
+      await openAs({ email: null, admin: true, auth_mode: 'open' }, THEM);
+      expect(hasDelete()).toBeTrue();
+      expect(notice()).toBeNull();
+    });
+
+    it('stays read-only when the identity cannot be read', async () => {
+      runs.get.and.returnValue(of(run({ requested_by: ME })));
+      runs.steps.and.returnValue(of([step(1)]));
+      runs.video.and.returnValue(of(ready()));
+      admin.getIdentity.and.returnValue(httpError(0));
+      fixture = TestBed.createComponent(RunViewerComponent);
+      fixture.componentRef.setInput('runId', ID);
+      root = fixture.nativeElement;
+      await settle();
+      expect(hasDelete()).toBeFalse();
+    });
+  });
 });
