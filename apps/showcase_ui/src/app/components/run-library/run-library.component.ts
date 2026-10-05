@@ -100,7 +100,8 @@ export class RunLibraryComponent {
       const key = JSON.stringify(filters);
       this.runsApi.lastLibraryQuery.set({ ...filtersToQuery(filters), ...(scroll ? { scroll: String(scroll) } : {}) });
       if (key === this.lastFiltersKey) return; // only the scroll position changed
-      if (this.lastFiltersKey === null) this.pendingScroll = scroll; // restore on the first load only
+      // Restore the saved position on the first load only: a changed filter is a different list.
+      this.pendingScroll = this.lastFiltersKey === null ? scroll : 0;
       this.lastFiltersKey = key;
       this.filters.set(filters);
       this.searchText.set(filters.q);
@@ -187,12 +188,15 @@ export class RunLibraryComponent {
   }
 
   public loadMore(): void {
+    // A cursor is only valid for the query that produced it; a reload drops it.
+    if (this.loading() || this.loadingMore() || !this.nextCursor()) return;
     this.load(true);
   }
 
   private load(more: boolean): void {
     this.request?.unsubscribe();
     this.error.set(null);
+    if (!more) this.nextCursor.set(null);
     (more ? this.loadingMore : this.loading).set(true);
     this.request = this.runsApi
       .list(this.filters(), more ? { cursor: this.nextCursor() ?? undefined } : undefined)

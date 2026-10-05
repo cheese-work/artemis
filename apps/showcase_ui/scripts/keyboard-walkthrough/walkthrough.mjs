@@ -36,12 +36,24 @@ const chrome = spawn(
   ['--headless=new', '--no-sandbox', '--disable-gpu', `--remote-debugging-port=${port}`, `--user-data-dir=${profile}`, '--window-size=1280,900', 'about:blank'],
   { stdio: 'ignore' }
 );
+chrome.on('error', (error) => {
+  console.error(`Could not start Chrome (${error.message}). Set CHROME_BIN.`);
+  process.exit(2);
+});
+// A hung browser must not hang the run: give the whole walkthrough two minutes.
+setTimeout(() => {
+  console.error('\nKeyboard walkthrough FAILED: timed out after 120 s');
+  chrome.kill();
+  server.close();
+  process.exit(1);
+}, 120_000).unref();
 
 let ws;
 let nextId = 1;
 const pending = new Map();
 const send = (method, params = {}) =>
   new Promise((resolve, reject) => {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return reject(new Error('Chrome connection is closed'));
     const id = nextId++;
     pending.set(id, { resolve, reject });
     ws.send(JSON.stringify({ id, method, params }));
@@ -94,7 +106,8 @@ const log = (text) => {
 async function expectTrue(label, expression, timeout = 4000) {
   const start = Date.now();
   while (Date.now() - start < timeout) {
-    if (await evaluate(expression)) return log(`  ok   ${label}`);
+    // The page may be mid-navigation or the element not rendered yet: a throw here means "not yet".
+    if (await evaluate(expression).catch(() => false)) return log(`  ok   ${label}`);
     await sleep(100);
   }
   log(`  FAIL ${label}  (${expression})`);
@@ -103,7 +116,7 @@ async function expectTrue(label, expression, timeout = 4000) {
 async function tabUntil(label, predicate, { back = false, max = 60 } = {}) {
   for (let i = 1; i <= max; i++) {
     await press('Tab', back ? 8 : 0);
-    if (await evaluate(`(() => { const e = document.activeElement; return !!e && (${predicate}); })()`)) {
+    if (await evaluate(`(() => { const e = document.activeElement; return !!e && (${predicate}); })()`).catch(() => false)) {
       return log(`  ${back ? 'Shift+Tab' : 'Tab'} x${i} -> ${await describeFocus()}   [${label}]`);
     }
   }
@@ -126,6 +139,10 @@ try {
     } catch { await sleep(100); }
   }
   if (!ws) throw new Error('could not reach Chrome');
+  ws.onclose = () => {
+    for (const { reject } of pending.values()) reject(new Error('Chrome connection closed'));
+    pending.clear();
+  };
   ws.onmessage = (event) => {
     const msg = JSON.parse(event.data);
     if (msg.id && pending.has(msg.id)) {
