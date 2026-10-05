@@ -117,3 +117,37 @@ def test_redact_json_masks_text_typed_into_a_password_field():
 def test_redact_json_masks_text_typed_into_an_input_type_password():
     step = {"x": [{"input_type": "textPassword", "value": "hunter2"}]}
     assert redact_json(step)["x"][0]["value"] == REDACTED
+
+
+QUOTED = [
+    'password="alpha beta"',
+    "password='alpha beta'",
+    'password="alpha \\"beta\\" gamma"',
+    'password: "alpha beta"',
+    "password = 'alpha beta gamma'",
+    '{"password": "alpha beta"}',
+    '{\\"password\\": \\"alpha beta\\"}',  # JSON quoted inside a JSON string
+    'db_secret="alpha beta" next=1',
+    'typed password "alpha beta" into the field',
+    "api_key='alpha beta'",
+]
+
+
+@pytest.mark.parametrize("text", QUOTED)
+def test_quoted_values_with_spaces_are_redacted_whole(text):
+    out = redact_text(text)
+    assert "alpha" not in out and "beta" not in out and "gamma" not in out
+    assert REDACTED in out
+    assert redact_text(out) == out  # idempotent
+
+
+def test_quoted_redaction_keeps_json_parseable_and_neighbours():
+    out = redact_text('{"password": "alpha beta", "user": "dana", "n": 1}')
+    assert json.loads(out) == {"password": REDACTED, "user": "dana", "n": 1}
+    assert redact_text('password="a b" next=1') == f'password="{REDACTED}" next=1'
+
+
+def test_quoted_values_nested_through_redact_json():
+    payload = {"log": ['login password="alpha beta" ok'], "raw": json.dumps({"x": 'password="a \\"b\\" c"'})}
+    dumped = json.dumps(redact_json(payload))
+    assert "alpha" not in dumped and "beta" not in dumped and '\\"b\\"' not in dumped

@@ -17,13 +17,15 @@
 import asyncio
 from collections import namedtuple
 import io
+import os
+import sqlite3
 import threading
 import zipfile
 
 import pytest
 
 from apps.admin_console.database.repositories.run_catalog_repository import run_catalog_repo
-from apps.admin_console.services import run_bundle, run_storage
+from apps.admin_console.services import run_bundle, run_retention, run_storage
 
 DiskUsage = namedtuple("DiskUsage", "total used free")
 
@@ -454,3 +456,127 @@ async def test_a_full_disk_while_bundling_is_a_507_and_is_remembered(library, qa
 
     assert response.status_code == 507
     assert warnings[0]["code"] == "insufficient_storage"
+
+
+# -- review round 2: intermediate symlinks, delete-time guards -------------------------------
+
+
+def _mutate(library, sid, how):
+    with sqlite3.connect(library.db) as other:
+        if how == "live":
+            other.execute("UPDATE sessions SET status = 'running' WHERE session_id = ?", (sid,))
+        elif how == "pinned":
+            other.execute("UPDATE run_meta SET pinned = 1 WHERE session_id = ?", (sid,))
+        else:
+            other.execute(
+                "INSERT INTO run_recording_state (session_id, recording_id, transfer) "
+                "VALUES (?, 'rec-1', 'uploading')",
+                (sid,),
+            )
+
+
+def _flip(monkeypatch, library, sid, how):
+    """After the retention/clear selection reads its rows, change the run behind its back."""
+    real = run_retention._runs
+
+    def selected_then_changed(conn):
+        rows = real(conn)
+        _mutate(library, sid, how)
+        return rows
+
+    monkeypatch.setattr(run_retention, "_runs", selected_then_changed)
+
+
+def _untouched(library, sid, files):
+    with sqlite3.connect(library.db) as conn:
+        meta = conn.execute(
+            "SELECT deleted_at FROM run_meta WHERE session_id = ?", (sid,)
+        ).fetchone()
+    assert meta[0] is None  # not tombstoned
+    assert files.exists() and library.count("sessions", sid) == 1 and library.count("steps", sid) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("how", ["live", "pinned", "pending_upload"])
+async def test_retention_rechecks_guards_when_it_deletes(library, admin, monkeypatch, how):
+    sid = library.seed("old", age_days=60)
+    files = _populate(library, sid)
+
+    async with admin:
+        await _enable(admin)
+        _flip(monkeypatch, library, sid, how)
+        result = (await admin.post("/api/system/retention/run")).json()
+
+    assert result["deleted"] == [] and result["deferred"] == []
+    _untouched(library, sid, files)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("how", ["live", "pinned", "pending_upload"])
+async def test_clear_all_rechecks_guards_when_it_deletes(library, admin, monkeypatch, how):
+    sid = library.seed("victim")
+    files = _populate(library, sid)
+
+    async with admin:
+        _flip(monkeypatch, library, sid, how)
+        result = await admin.post("/api/runs/clear", json={"confirm_count": 1})
+
+    assert result.status_code == 200 and result.json()["deleted"] == []
+    _untouched(library, sid, files)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("how", ["live", "pending_upload"])
+async def test_admin_delete_never_removes_a_live_or_uploading_run(library, admin, monkeypatch, how):
+    sid = library.seed("busy")
+    files = _populate(library, sid)
+
+    # The state changes after the handler's own check, before the delete itself.
+    real = run_retention._lookup
+
+    def lookup_then_change(session_id):
+        row = real(session_id)
+        _mutate(library, sid, how)
+        return row
+
+    monkeypatch.setattr(run_retention, "_lookup", lookup_then_change)
+
+    async with admin:
+        response = await admin.post(f"/api/runs/{sid}/delete")
+
+    assert response.status_code == 409
+    _untouched(library, sid, files)
+
+
+@pytest.mark.asyncio
+async def test_admin_delete_refuses_a_run_with_a_pending_upload(library, admin):
+    sid = library.seed("uploading")
+    run_catalog_repo.set_recording_state(sid, "rec-1", transfer="uploading")
+
+    async with admin:
+        response = await admin.post(f"/api/runs/{sid}/delete")
+
+    assert response.status_code == 409 and response.json()["error"] == "run_pending_upload"
+
+
+@pytest.mark.asyncio
+async def test_a_symlinked_parent_of_a_recording_never_deletes_outside_storage(library, admin, tmp_path):
+    sid = library.seed("linked recording", age_days=1)
+    outside = tmp_path / "outside" / "sub"
+    outside.mkdir(parents=True)
+    precious = outside / "video.mp4"
+    precious.write_bytes(b"PRECIOUS")
+    os.symlink(tmp_path / "outside", library.traces / "link")
+    with sqlite3.connect(library.db) as conn:
+        conn.execute(
+            "INSERT INTO video_recordings (video_id, session_id, local_video_path, status) "
+            "VALUES ('v1', ?, ?, 'ready')",
+            (sid, str(library.traces / "link" / "sub" / "video.mp4")),
+        )
+
+    async with admin:
+        response = await admin.post(f"/api/runs/{sid}/delete")
+
+    assert response.status_code == 200
+    assert precious.read_bytes() == b"PRECIOUS"
+    assert (library.traces / "link").is_symlink()

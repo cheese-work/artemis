@@ -19,6 +19,7 @@ import io
 import json
 import logging
 import os
+from pathlib import Path
 import sqlite3
 import threading
 import zipfile
@@ -384,3 +385,80 @@ async def test_session_file_reads_reject_unsafe_ids(library, qa, suffix):
 
     assert dots.status_code == 400 and spaces.status_code == 400
     assert "OUTSIDE" not in dots.text
+
+
+# -- open-time containment, lease scope (review round 2) ----------------------------------
+
+
+def _swap_dir_for_symlink(real: Path, outside: Path) -> None:
+    moved = real.with_name(real.name + "-moved")
+    real.rename(moved)
+    os.symlink(outside, real)
+
+
+@pytest.mark.asyncio
+async def test_a_parent_swapped_to_a_symlink_after_listing_is_not_followed(library, qa, tmp_path, monkeypatch):
+    sid = library.seed("swap")
+    library.write(sid, "notes/finding.md", "INSIDE-NOTE")
+    video = library.video(sid, b"INSIDE-VIDEO")
+    outside = tmp_path / "outside"
+    (outside).mkdir()
+    (outside / "finding.md").write_text("TOP-SECRET-NOTE", encoding="utf-8")
+    (outside / "recording.mp4").write_bytes(b"TOP-SECRET-VIDEO")
+    real = run_bundle._build_zip
+
+    def swap_then_build(manifest, dest):
+        # The manifest was resolved safely; now the parents are replaced by links.
+        _swap_dir_for_symlink(library.traces / sid / "notes", outside)
+        _swap_dir_for_symlink(video.parent, outside)
+        return real(manifest, dest)
+
+    monkeypatch.setattr(run_bundle, "_build_zip", swap_then_build)
+
+    async with qa:
+        response = await qa.get(f"/api/runs/{sid}/bundle.zip")
+
+    archive = _zip(response)
+    assert b"TOP-SECRET" not in b"".join(archive.read(n) for n in archive.namelist())
+    assert "notes/finding.md" not in archive.namelist()
+    listing = json.loads(archive.read("manifest.json"))
+    assert {e["reason"] for e in listing["skipped"]} == {"symlink"}
+    assert "notes/finding.md" not in {e["name"] for e in listing["entries"]}
+
+
+@pytest.mark.asyncio
+async def test_unresolved_ids_take_no_lease(library, qa, monkeypatch):
+    from apps.admin_console.services import run_leases
+
+    library.seed("one", sid="aaaaaaaa-0000-4000-8000-000000000001")
+    library.seed("two", sid="aaaaaaaa-0000-4000-8000-000000000002")
+    leased: list[str] = []
+    real = run_leases.acquire
+    monkeypatch.setattr(run_leases, "acquire", lambda db, sid: leased.append(sid) or real(db, sid))
+
+    async with qa:
+        unknown = await qa.get("/api/runs/00000000-0000-4000-8000-000000000000/bundle.zip")
+        ambiguous = await qa.get("/api/runs/aaaaaaaa/bundle.zip")
+        malformed = await qa.get("/api/runs/bad%20id/bundle.zip")
+
+    assert (unknown.status_code, ambiguous.status_code, malformed.status_code) == (404, 409, 400)
+    assert leased == []
+
+
+@pytest.mark.asyncio
+async def test_a_prefix_download_leases_the_full_id(library, qa, monkeypatch):
+    sid = library.seed("prefixed", sid="bbbbbbbb-0000-4000-8000-000000000001")
+    seen: list[str] = []
+    real = run_bundle._build_zip
+
+    def peek(manifest, dest):
+        with sqlite3.connect(library.db) as conn:
+            seen.extend(r[0] for r in conn.execute("SELECT session_id FROM run_artifact_leases"))
+        return real(manifest, dest)
+
+    monkeypatch.setattr(run_bundle, "_build_zip", peek)
+
+    async with qa:
+        response = await qa.get("/api/runs/bbbbbbbb/bundle.zip")
+
+    assert response.status_code == 200 and seen == [sid]
