@@ -894,3 +894,89 @@ async def test_cancel_queued_endpoint_asks_for_a_retry_when_the_commit_failed(mo
 
     assert response.status_code == 503
     assert [i["session_id"] for i in state.queue_items] == ["q1"]
+
+
+# -- a failed session read is not an absent session (Sol, CHE-1128) --
+
+
+def _flaky_first_read(monkeypatch):
+    """The first database open fails, as a locked or unreadable sessions database does."""
+    from apps.admin_console.database.repositories import session_repository as repo_module
+
+    real = repo_module.db_session
+    calls = {"n": 0}
+
+    def flaky(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise sqlite3.OperationalError("database is locked")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(repo_module, "db_session", flaky)
+
+
+@pytest.mark.asyncio
+async def test_cancel_queued_asks_for_a_retry_when_the_session_read_and_commit_both_fail(
+    monkeypatch,
+):
+    assert session_repo.create_queued_session("q1", "g", "flash", "d1", None, None)
+    ticket = DeviceExecutionLock.reserve("t", "d1", session_id="q1", lock_scope=f"host:{HOST_A}")
+    state.queue_items.append(_row("q1", ticket=ticket))
+    _flaky_first_read(monkeypatch)
+    monkeypatch.setattr(session_repo, "update_session_status", lambda *_a, **_k: False)
+
+    async with _client() as client:
+        response = await client.post("/api/tasks/q1/cancel-queued")
+
+    assert response.status_code == 503 and response.headers["retry-after"] == "1"
+    assert [i["session_id"] for i in state.queue_items] == ["q1"]
+    assert len(_ticket_files(ticket)) == 1
+    assert session_repo.get_session_by_id("q1")["status"] == "queued"
+
+
+@pytest.mark.asyncio
+async def test_cancel_queued_changes_nothing_when_the_session_cannot_be_read(monkeypatch):
+    assert session_repo.create_queued_session("q1", "g", "flash", "d1", None, None)
+    state.queue_items.append(_row("q1"))
+    _flaky_first_read(monkeypatch)
+    update = MagicMock(wraps=session_repo.update_session_status)
+    monkeypatch.setattr(session_repo, "update_session_status", update)
+
+    assert TaskQueueService.cancel_queued("q1") == "retry"
+
+    update.assert_not_called()  # an unreadable session is never written blind
+    assert [i["status"] for i in state.queue_items] == ["pending"]
+    assert session_repo.get_session_by_id("q1")["status"] == "queued"
+
+
+@pytest.mark.asyncio
+async def test_cancel_queued_settled_by_another_writer_answers_already_started_end_to_end(
+    monkeypatch,
+):
+    assert session_repo.create_queued_session("q1", "g", "flash", "d1", None, None)
+    state.queue_items.append(_row("q1"))
+    real_update = session_repo.update_session_status
+
+    def settled_elsewhere(sid, status, *args, **kwargs):
+        real_update(sid, "completed", 1.0)
+        return real_update(sid, status, *args, **kwargs)
+
+    monkeypatch.setattr(session_repo, "update_session_status", settled_elsewhere)
+
+    async with _client() as client:
+        response = await client.post("/api/tasks/q1/cancel-queued")
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "already_started", "session_id": "q1"}
+    assert session_repo.get_session_by_id("q1")["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_cancel_queued_still_cancels_a_run_with_no_persisted_session_end_to_end():
+    state.queue_items.append(_row("ghost"))
+
+    async with _client() as client:
+        response = await client.post("/api/tasks/ghost/cancel-queued")
+
+    assert response.json() == {"status": "cancelled", "session_id": "ghost"}
+    assert state.queue_items == []
