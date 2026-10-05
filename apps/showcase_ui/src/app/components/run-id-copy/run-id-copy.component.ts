@@ -28,7 +28,7 @@ import { ElementRef, ViewChild } from '@angular/core';
   `,
   styles: [`
     .run-id-copy { position: relative; display: inline-flex; }
-    .run-id-copy-button { padding: 0; border: 0; color: inherit; background: none; font: inherit; text-align: left; cursor: pointer; }
+    .run-id-copy-button { display: inline-flex; align-items: center; min-width: 24px; min-height: 24px; padding: 0; border: 0; color: inherit; background: none; font: inherit; text-align: left; cursor: pointer; }
     .run-id-copy-button:hover { color: #2563eb; text-decoration: underline; }
     .run-id-copy-button:focus-visible { outline: 2px solid #60a5fa; outline-offset: 3px; border-radius: 3px; }
     .copy-feedback { position: absolute; z-index: 2; left: 50%; bottom: calc(100% + 6px); padding: 5px 9px; transform: translateX(-50%); border-radius: 8px; color: white; background: #172033; font-size: 11px; white-space: nowrap; }

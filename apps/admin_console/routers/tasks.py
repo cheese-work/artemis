@@ -20,6 +20,16 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from artemis.core.diagnostics import readiness_engine
 from artemis.runtime import DeviceExecutionLock, device_pool
+from apps.admin_console.core.access_control import AdminAPIError
+from apps.admin_console.core.ownership import (
+    OwnerScope,
+    actor_scope,
+    list_scope,
+    owners_of,
+    require_access,
+    require_access_all,
+    scope_or_open,
+)
 
 try:
     from admin_console.core.state import state
@@ -40,6 +50,10 @@ except ImportError:
 
 
 router = APIRouter(tags=["tasks"])
+
+# Lifecycle events every stream historically received; each names a run.
+_RUN_BOUND_EVENTS = ("session_started", "session_ended", "background_tasks_updated")
+_DROP = object()
 
 
 def _draining_error(exc: ServerDraining) -> HTTPException:
@@ -75,7 +89,8 @@ async def get_task_catalog():
 
 
 @router.post("/api/run")
-async def run_task(request: RunRequest):
+async def run_task(request: RunRequest, actor: OwnerScope = Depends(actor_scope)):
+    scope = scope_or_open(actor)
     incoming_goals = []
     if request.goals:
         incoming_goals = request.goals
@@ -108,6 +123,8 @@ async def run_task(request: RunRequest):
             or requested_sid in state.active_connections
         )
         if existing_item or persisted_session or is_active:
+            # A retry echoes the run's goal and queue item back: owner or admin only.
+            require_access(scope, requested_sid)
             task_payload = dict(existing_item or persisted_session or {})
             task_payload.setdefault("session_id", requested_sid)
             task_payload.setdefault("goal", incoming_goals[0])
@@ -196,6 +213,7 @@ async def run_task(request: RunRequest):
             session_id=request.session_id,
             conversation_id=request.conversation_id,
             run_id=request.run_id,
+            requested_by=scope.email,
         )
     except ServerDraining as exc:
         raise _draining_error(exc) from exc
@@ -224,13 +242,98 @@ async def list_devices():
     return {"devices": [d.to_dict() for d in devices]}
 
 
+def _owned_ids(scope: OwnerScope, ids: set[str | None]) -> list[str]:
+    """The ids whose recorded owner the caller may act on (unknown runs never qualify)."""
+    named = sorted(sid for sid in ids if sid)
+    owners = owners_of(named)
+    return [sid for sid in named if sid in owners and scope.may_act_on(owners[sid])]
+
+
+def _require_pause_authority(scope: OwnerScope) -> None:
+    """403 unless the caller may resume every run the global pause marker affects.
+
+    The marker is shared: clearing it resumes every running run, in this process
+    or any other. Mixed-owner, unowned or unattributable sets are admin-only; with
+    nothing running and nothing paused there is nothing to authorize.
+    """
+    if scope.enforced and not scope.admin:
+        affected = task_queue_service.active_session_ids(running_only=True)
+        if affected or state.is_paused:
+            require_access_all(scope, affected)
+
+
+def _may_clear_pause(scope: OwnerScope) -> bool:
+    try:
+        _require_pause_authority(scope)
+    except AdminAPIError:
+        return False
+    return True
+
+
+def _stop_one(
+    session_id: str | None, device_id: str | None, clear_pause: bool = False
+) -> dict[str, Any]:
+    # stop_tasks updates scheduler state and asyncio events owned by this loop.
+    if task_queue_service.stop_tasks(
+        clear_all=False, session_id=session_id, device_id=device_id, clear_pause=clear_pause
+    ):
+        return {"status": "stopped", "session_id": session_id}
+    return {"status": "no_running_task"}
+
+
+def _stop_for_non_admin(
+    scope: OwnerScope, clear_all: bool, session_id: str | None, device_id: str | None
+) -> dict[str, Any]:
+    """Stop only runs the caller owns; any other target is a 403 with no side effect."""
+    if session_id and device_id:
+        # The stop resolver falls back to the device when the session holds no
+        # lock, so an authorized session could reach a foreign run on that device.
+        raise AdminAPIError(
+            400,
+            "Name either a session or a device to stop, not both.",
+            "ambiguous_stop_target",
+            "Send only session_id, or only device_id.",
+        )
+    # Decided before anything is stopped. A stop may cancel the caller's own run
+    # without resuming everyone else's: the shared pause marker is cleared only
+    # if the caller could also have resumed it (same rule as /api/resume).
+    clear_pause = _may_clear_pause(scope)
+    if session_id:
+        require_access(scope, session_id)
+        return _stop_one(session_id, None, clear_pause)
+    if device_id:
+        # Resolve the device to its runs with the stop resolver itself, authorize
+        # those, then stop them by session so the device is never re-resolved.
+        on_device = task_queue_service.sessions_on_device(device_id)
+        if not on_device:
+            return {"status": "no_running_task"}
+        require_access_all(scope, on_device)
+        stopped = [
+            sid
+            for sid in sorted(on_device, key=str)
+            if _stop_one(sid, None, clear_pause)["status"] == "stopped"
+        ]
+        return (
+            {"status": "stopped", "session_id": None} if stopped else {"status": "no_running_task"}
+        )
+    # "Clear" and the untargeted legacy stop reach only the caller's own runs; the
+    # legacy stop keeps its rule of acting only when the target is unambiguous.
+    own = _owned_ids(scope, task_queue_service.active_session_ids(running_only=not clear_all))
+    if not clear_all and len(own) != 1:
+        return {"status": "no_running_task"}
+    stopped = [sid for sid in own if _stop_one(sid, None, clear_pause)["status"] == "stopped"]
+    return {"status": "stopped", "session_id": None} if stopped else {"status": "no_running_task"}
+
+
 @router.post("/api/stop")
 async def stop_task(
     request: Request,
     all: bool = False,
     session_id: str | None = None,
     device_id: str | None = None,
+    actor: OwnerScope = Depends(actor_scope),
 ):
+    scope = scope_or_open(actor)
     target_all = all
     target_sid = session_id
     target_dev = device_id
@@ -248,6 +351,9 @@ async def stop_task(
         # Empty or non-JSON body: fall back to the query parameters.
         pass
 
+    if scope.enforced and not scope.admin:
+        return _stop_for_non_admin(scope, target_all, target_sid, target_dev)
+
     # stop_tasks updates scheduler state and asyncio events owned by this loop.
     stopped = task_queue_service.stop_tasks(
         clear_all=target_all,
@@ -260,7 +366,14 @@ async def stop_task(
 
 
 @router.post("/api/resume")
-async def resume_task():
+async def resume_task(actor: OwnerScope = Depends(actor_scope)):
+    """Resume the paused worker.
+
+    The pause marker is global, so a non-admin may clear it only when every run it
+    affects (the running ones) is theirs; mixed-owner or unattributable pauses
+    are admin-only. With nothing running and nothing paused the call is a no-op.
+    """
+    _require_pause_authority(scope_or_open(actor))
     resumed = task_queue_service.resume_task()
     if resumed:
         return {"status": "resumed"}
@@ -268,7 +381,44 @@ async def resume_task():
 
 
 @router.get("/api/status")
-async def get_status():
+async def get_status(scope: OwnerScope = Depends(list_scope)):
+    return _scope_status(await _status_payload(), scope_or_open(scope))
+
+
+def _scope_status(payload: dict[str, Any], scope: OwnerScope) -> dict[str, Any]:
+    """Drop queue entries, device owners and the headline run the scope may not see."""
+    if not scope.enforced or scope.include_all:
+        return payload
+    queue = list(payload.get("queue") or [])
+    active = list(payload.get("active_tasks") or [])
+    headline = payload.get("session_id")
+    ids = {str(i["session_id"]) for i in [*queue, *active] if i.get("session_id")}
+    if headline:
+        ids.add(str(headline))
+    owners = owners_of(sorted(ids))
+
+    def visible(session_id: Any) -> bool:
+        return (
+            bool(session_id) and str(session_id) in owners and scope.sees(owners[str(session_id)])
+        )
+
+    scoped = {
+        **payload,
+        "queue": [i for i in queue if visible(i.get("session_id"))],
+        "active_tasks": [i for i in active if visible(i.get("session_id"))],
+        "background_tasks": [],
+    }
+    if not headline:
+        return scoped
+    if visible(headline):
+        # Bind to the run the caller can see, not the globally latest session.
+        scoped["background_tasks"] = session_repo.get_background_tasks(str(headline))
+    else:
+        scoped.update(session_id=None, goal=None, pid=None)
+    return scoped
+
+
+async def _status_payload() -> dict[str, Any]:
     # Watchdog check to ensure background worker is alive
     task_queue_service.ensure_worker_running()
 
@@ -405,19 +555,64 @@ async def get_status():
 
 @router.get("/api/stream")
 @router.get("/api/stream/{session_id}")
-async def stream_events(session_id: str = "active", client: str | None = None):
+async def stream_events(
+    session_id: str = "active",
+    client: str | None = None,
+    scope: OwnerScope = Depends(list_scope),
+):
+    # The "all"/"active" firehose is scoped to the caller's runs. A stream of one
+    # named run is a get-by-id (share link): in cloudflare mode it carries that
+    # run's events only, never another run's lifecycle events.
+    scope = scope_or_open(scope)
+    firehose = session_id in ("all", "active")
+    decided: dict[str, bool] = {}
+
+    def may_see(event_session_id: Any) -> bool:
+        if not event_session_id:
+            return True  # system event, not tied to a run
+        key = str(event_session_id)
+        if key in decided:
+            return decided[key]
+        owners = owners_of([key])
+        allowed = scope.sees(owners.get(key))
+        if key in owners:  # a run not yet recorded may still gain its owner
+            decided[key] = allowed
+        return allowed
+
+    def row_allowed(row_session_id: Any) -> bool:
+        if not row_session_id:
+            return False  # an unattributable row is never shared
+        if firehose:
+            return scope.include_all or may_see(row_session_id)
+        return str(row_session_id) == session_id
+
+    def scoped_payload(event_type: str, data: Any) -> Any:
+        """The payload this subscriber may receive, or ``_DROP``."""
+        if not scope.enforced or (firehose and scope.include_all):
+            return data
+        if isinstance(data, list):  # e.g. background_tasks_updated: one row per task
+            rows = [r for r in data if isinstance(r, dict) and row_allowed(r.get("session_id"))]
+            return rows or _DROP
+        if isinstance(data, dict):
+            event_session_id = data.get("session_id")
+            if firehose:
+                return data if may_see(event_session_id) else _DROP
+            if event_type in _RUN_BOUND_EVENTS and str(event_session_id) != session_id:
+                return _DROP
+            return data
+        return _DROP if firehose else data
+
     async def event_generator():
         queue = asyncio.Queue()
         event_loop = asyncio.get_running_loop()
 
         def callback(event_type, data):
             try:
+                data = scoped_payload(event_type, data)
+                if data is _DROP:
+                    return
                 # Global queue lifecycle events should always be delivered
-                if event_type not in (
-                    "session_started",
-                    "session_ended",
-                    "background_tasks_updated",
-                ):
+                if event_type not in _RUN_BOUND_EVENTS:
                     # Filter events by session_id when subscribed to a specific session
                     if session_id and session_id not in ("all", "active"):
                         evt_session_id = None
@@ -460,6 +655,8 @@ async def stream_events(session_id: str = "active", client: str | None = None):
                 if owner and owner.session_id:
                     active_sid = owner.session_id
 
+            if active_sid and scope.enforced and not scope.include_all and not may_see(active_sid):
+                active_sid = None
             if active_sid:
                 goal = state.current_goal or ""
                 profile = state.current_profile or "flash"

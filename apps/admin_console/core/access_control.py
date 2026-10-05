@@ -295,6 +295,7 @@ _PUBLIC_GET_PATHS = {
     "/api/system/model-config-env",
     "/api/system/server-status",
     "/api/system/whoami",
+    "/api/system/version",
     "/api/system/config",
     "/api/runs",
     "/api/runs/{session_id}",
@@ -355,7 +356,6 @@ _ADMIN_MUTATING_PATHS = {
     "/api/system/config",
     "/api/system/restart",
     "/api/cleanup",
-    "/api/sessions/{session_id}/delete",
     "/api/runs/{session_id}/delete",
     "/api/runs/clear",
     "/api/system/retention",
@@ -377,7 +377,10 @@ _AGENT_PATHS = {
     "/api/agent/renew": {"POST"},
 }
 
+# Owner-or-admin actions: the route guard needs a signed-in user; the handler
+# then checks the caller owns the run (see core/ownership.py).
 _QA_MUTATING_PATHS = {
+    "/api/sessions/{session_id}/delete",
     "/api/system/adb/heal-keys",
     "/api/system/emulator/dismiss",
     "/api/runs/{session_id}/pin",

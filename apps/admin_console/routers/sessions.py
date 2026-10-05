@@ -17,7 +17,17 @@ import json
 import sqlite3
 from fastapi import APIRouter, Depends, HTTPException
 
-from apps.admin_console.core.access_control import require_admin
+from artemis.config import DB_PATH, TRACES_PATH
+from apps.admin_console.core.access_control import AdminAPIError, require_admin, require_qa
+from apps.admin_console.core.ownership import (
+    OPEN_SCOPE,
+    OwnerScope,
+    actor_scope,
+    list_scope,
+    owners_of,
+    require_access,
+    scope_or_open,
+)
 from apps.admin_console.routers.run_admin import ClearRequest
 from apps.admin_console.routers.run_bundle import library_error
 from apps.admin_console.services import run_retention
@@ -41,21 +51,30 @@ router = APIRouter(tags=["sessions"])
 
 
 @router.get("/api/sessions")
-async def list_sessions():
+async def list_sessions(scope: OwnerScope = Depends(list_scope)):
     # The body does blocking work (sqlite queries, filesystem scans, ffmpeg
     # conversion on first sight of a new recording), so run it off the event
     # loop — the frontend polls this endpoint and it must not stall other
     # requests.
     try:
-        return await asyncio.to_thread(_list_sessions_sync)
+        return await asyncio.to_thread(_list_sessions_sync, scope_or_open(scope))
+    except AdminAPIError:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
-def _list_sessions_sync():
+def _list_sessions_sync(scope: OwnerScope = OPEN_SCOPE):
     # Pure read: run outcomes are owned by the lifecycle authority, which a
     # listing never calls (a vanished worker is swept by the queue worker).
     rows = session_repo.get_all_sessions()
+    if scope.enforced and not scope.include_all:
+        owners = owners_of([str(row.get("session_id")) for row in rows])
+        rows = [
+            row
+            for row in rows
+            if str(row.get("session_id")) in owners and scope.sees(owners[str(row["session_id"])])
+        ]
     video_rec_map = session_repo.get_video_recordings_map()
     latest_recordings = session_repo.get_latest_video_recordings_map()
     agent_names_by_session = session_repo.get_agent_trace_names_map()
@@ -194,9 +213,10 @@ async def cleanup_history_endpoint(body: ClearRequest):
     return {"status": "success", "message": "History cleaned up successfully", **result}
 
 
-@router.post("/api/sessions/{session_id}/delete", dependencies=[Depends(require_admin)])
-async def delete_session_endpoint(session_id: str):
-    """Legacy single delete: same rules as ``POST /api/runs/{id}/delete``."""
+@router.post("/api/sessions/{session_id}/delete", dependencies=[Depends(require_qa)])
+async def delete_session_endpoint(session_id: str, actor: OwnerScope = Depends(actor_scope)):
+    """Legacy single delete: the run's owner or an admin; deletion rules as ``/api/runs/{id}/delete``."""
+    require_access(scope_or_open(actor), session_id)
     try:
         result = await asyncio.to_thread(run_retention.delete_run, session_id)
     except RunLibraryError as exc:

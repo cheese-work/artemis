@@ -1,5 +1,11 @@
 [
   {
+    "id": "2026-10-05-smartqa-run-library",
+    "date": "2026-10-05",
+    "title": "The run library is here",
+    "body": "Open Runs to search past runs by words or run id, replay a run's steps and video, and copy a link for a coworker. Opening a past run never changes the phone you picked for the next one. Videos and screenshots are not redacted, so check a run before you share it."
+  },
+  {
     "id": "2026-10-03-smartqa-round-1",
     "date": "2026-10-03",
     "title": "SmartQA is here",
