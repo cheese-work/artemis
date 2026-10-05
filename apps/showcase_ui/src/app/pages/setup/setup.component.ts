@@ -3,13 +3,14 @@ import { DatePipe } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { finalize, forkJoin } from 'rxjs';
 import { ComputersComponent } from '../../components/computers/computers.component';
+import { StorageComponent } from '../../components/storage/storage.component';
 import { AdminConfigService, AdminIdentity, ConfigSnapshot, ModelSelection } from '../../services/admin-config.service';
 import { DeployVersion, parseDeployVersion } from '../../core/models/deploy-version.model';
 
 @Component({
   selector: 'app-setup',
   standalone: true,
-  imports: [DatePipe, FormsModule, ComputersComponent],
+  imports: [DatePipe, FormsModule, ComputersComponent, StorageComponent],
   templateUrl: './setup.component.html',
   styleUrl: './setup.component.scss',
   host: { '[class.embedded]': 'embedded' },
@@ -18,7 +19,7 @@ import { DeployVersion, parseDeployVersion } from '../../core/models/deploy-vers
 export class SetupComponent implements OnInit {
   @Input() public embedded = false;
   private readonly adminConfig = inject(AdminConfigService);
-  public readonly tab = signal<'models' | 'computers'>('models');
+  public readonly tab = signal<'models' | 'computers' | 'storage'>('models');
   public readonly identity = signal<AdminIdentity | null>(null);
   public readonly snapshot = signal<ConfigSnapshot | null>(null);
   public readonly deployVersion = signal<DeployVersion | null>(null);

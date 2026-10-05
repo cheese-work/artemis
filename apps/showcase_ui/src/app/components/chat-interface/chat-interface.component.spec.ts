@@ -18,6 +18,7 @@ import { provideHttpClient } from '@angular/common/http';
 import { provideHttpClientTesting } from '@angular/common/http/testing';
 import { signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
+import { provideRouter } from '@angular/router';
 import { EMPTY, of } from 'rxjs';
 import { DeviceInfo } from '../../core/models/system.model';
 import { Session } from '../../core/models/session.model';
@@ -70,6 +71,7 @@ describe('ChatInterfaceComponent device chip', () => {
       providers: [
         provideHttpClient(),
         provideHttpClientTesting(),
+        provideRouter([]),
         { provide: AgentService, useValue: agentService },
         {
           provide: HostsService,
