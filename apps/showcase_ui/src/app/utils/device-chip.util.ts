@@ -12,6 +12,8 @@ export interface DeviceChipView {
   /** Phone / Emulator / Unknown device when the server classified it; null otherwise. */
   kind: string | null;
   detail: string;
+  /** The raw adb serial, for the detail line only (never the label). */
+  serial: string;
   /** Material icon name, so state never relies on colour alone. */
   icon: string;
   since: number | null;
@@ -41,6 +43,7 @@ export function deviceChipView(
       source: own ? COMPUTER_STRINGS.thisBrowser : COMPUTER_STRINGS.aBrowser,
       label,
       kind: kindText,
+      serial: device.serial,
       detail: own
         ? 'Keep this browser tab open while using the phone.'
         : 'A phone attached from another browser.',
@@ -49,7 +52,7 @@ export function deviceChipView(
     };
   }
   const name = device.computer_name ?? computers.find((c) => c.id === device.computer_id)?.name ?? 'the computer';
-  const base = { source: name, label, kind: kindText, since: device.since };
+  const base = { source: name, label, kind: kindText, serial: device.serial, since: device.since };
   switch (device.computer_status) {
     case 'online':
       return { ...base, state: 'Ready', detail: `Shared by ${name}.`, icon: 'check_circle' };
@@ -70,4 +73,21 @@ export function deviceChipView(
         icon: 'cloud_off'
       };
   }
+}
+
+/**
+ * Where a phone listed by adb is attached: this tab, another browser, or the computer that
+ * shares it. Null when the registry does not know the serial.
+ */
+export function deviceSourceOf(
+  serial: string,
+  devices: RegistryDevice[],
+  computers: Computer[],
+  ownBrowserSerial: string | null
+): string | null {
+  if (ownBrowserSerial !== null && ownBrowserSerial === serial) {
+    return COMPUTER_STRINGS.thisBrowser;
+  }
+  const entry = devices.find((d) => d.serial === serial);
+  return entry ? deviceChipView(entry, computers, ownBrowserSerial).source : null;
 }

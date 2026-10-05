@@ -87,6 +87,9 @@ limitations under the License.
                   @if (chip.kind) {
                     <span class="device-kind">{{ chip.kind }}</span>
                   }
+                  @if (chip.source) {
+                    <span class="device-kind">{{ chip.source }}</span>
+                  }
                 </span>
               }
               @if (getDeviceSerial(session)) {
@@ -159,6 +162,9 @@ limitations under the License.
                       <span class="device-name">{{ chip.title }}</span>
                       @if (chip.kind) {
                         <span class="device-kind">{{ chip.kind }}</span>
+                      }
+                      @if (chip.source) {
+                        <span class="device-kind">{{ chip.source }}</span>
                       }
                     </span>
                   }

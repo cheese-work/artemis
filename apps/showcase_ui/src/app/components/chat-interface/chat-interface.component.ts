@@ -14,11 +14,15 @@
  * limitations under the License.
  */
 
-import { Component, ChangeDetectionStrategy, inject, computed, signal } from '@angular/core';
+import { Component, ChangeDetectionStrategy, inject, computed, effect, signal, untracked } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { AgentService } from '../../services/agent.service';
 import { SystemService } from '../../services/system.service';
+import { HostsService } from '../../services/hosts.service';
+import { UsbDeviceRelayService } from '../../services/usb-device-relay.service';
+import { HostsResponse } from '../../core/models/host.model';
+import { deviceSourceOf } from '../../utils/device-chip.util';
 import { deviceKindLabel, deviceTitle, unlistedDeviceTitle } from '../../utils/device-label.util';
 import { RunIdCopyComponent } from '../run-id-copy/run-id-copy.component';
 import { Session } from '../../core/models/session.model';
@@ -38,6 +42,19 @@ export type { MarkdownSegment, MarkdownLine, NoteMilestone, ParsedNote };
 export class ChatInterfaceComponent {
   public agentService = inject(AgentService);
   private readonly systemService = inject(SystemService);
+  private readonly usbRelay = inject(UsbDeviceRelayService);
+  // Computer names for the chip's source text; one load, refreshed on device-list change.
+  private readonly registry = signal<HostsResponse | null>(null);
+  private readonly hostsService = inject(HostsService);
+  private readonly refreshRegistryOnDeviceChange = effect(() => {
+    this.systemService.connectedDevices();
+    untracked(() =>
+      this.hostsService.list().subscribe({
+        next: (response) => this.registry.set(response),
+        error: () => this.registry.set(null)
+      })
+    );
+  });
 
   public taskInput: string = '';
   // Signals so async completion handlers refresh this OnPush view.
@@ -225,19 +242,35 @@ export class ChatInterfaceComponent {
    * Chip text for the session's device: the real model and kind when the
    * device is currently listed, never a bare 127.0.0.1:<port> address.
    */
-  public getDeviceChip(session: Session): { title: string; kind: string | null; tooltip: string } | null {
+  public getDeviceChip(
+    session: Session
+  ): { title: string; kind: string | null; source: string | null; tooltip: string } | null {
     const serial = this.getDeviceSerial(session);
     if (!serial) {
       return null;
     }
+    const registry = this.registry();
+    const relay = this.usbRelay.state();
+    const source = deviceSourceOf(
+      serial,
+      registry?.devices ?? [],
+      registry?.hosts ?? [],
+      relay.status === 'connected' ? relay.serial : null
+    );
+    const where = source ? ` · ${source}` : '';
     const device = this.systemService.connectedDevices().find((d) => d.serial === serial);
     if (!device) {
       const title = unlistedDeviceTitle(serial);
-      return { title, kind: null, tooltip: `Device: ${title} · ${serial}` };
+      return { title, kind: null, source, tooltip: `Device: ${title}${where} · ${serial}` };
     }
     const title = deviceTitle(device);
     const kind = deviceKindLabel(device);
-    return { title, kind: kind === title ? null : kind, tooltip: `Device: ${title} (${kind}) · ${serial}` };
+    return {
+      title,
+      kind: kind === title ? null : kind,
+      source,
+      tooltip: `Device: ${title} (${kind})${where} · ${serial}`
+    };
   }
 
   /**

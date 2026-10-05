@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import { deviceKindLabel, deviceSource, deviceTitle } from './device-label.util';
+import { deviceKindLabel, deviceTitle } from './device-label.util';
 
 describe('device-label.util', () => {
   const browserPhone = { serial: '127.0.0.1:36411', model: '21081111RG', device_kind: 'phone' as const };
@@ -35,11 +35,5 @@ describe('device-label.util', () => {
     expect(deviceKindLabel(unknown)).toBe('Unknown device');
     expect(deviceTitle(unknown)).toBe('Unknown device');
     expect(deviceKindLabel({ serial: 'x', model: null })).toBe('Unknown device');
-  });
-
-  it('names the source only when this browser relays the device', () => {
-    expect(deviceSource(browserPhone, '127.0.0.1:36411')).toBe('This browser');
-    expect(deviceSource(browserPhone, null)).toBeNull();
-    expect(deviceSource(browserPhone, 'other')).toBeNull();
   });
 });

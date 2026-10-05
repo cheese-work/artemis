@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 import os
 import shutil
@@ -267,8 +268,14 @@ class DevicePool:
             )
 
     def _refresh_identities_sync(self, raw: list[tuple[str, str, str | None, str | None]]) -> None:
-        for serial in self._stale_identity_serials(raw):
-            self._store_identity(serial, self._read_properties_sync(serial))
+        serials = self._stale_identity_serials(raw)
+        if not serials:
+            return
+        # Read in parallel so N unreadable devices cost one timeout, not N.
+        with ThreadPoolExecutor(max_workers=len(serials)) as executor:
+            results = list(executor.map(self._read_properties_sync, serials))
+        for serial, props in zip(serials, results, strict=True):
+            self._store_identity(serial, props)
 
     async def _refresh_identities_async(
         self, raw: list[tuple[str, str, str | None, str | None]]

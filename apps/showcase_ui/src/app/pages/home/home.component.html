@@ -364,6 +364,9 @@
                           @if (deviceKindLabel(dev) !== deviceTitle(dev)) {
                             <span class="chip-kind">{{ deviceKindLabel(dev) }}</span>
                           }
+                          @if (deviceSource(dev); as source) {
+                            <span class="chip-kind">{{ source }}</span>
+                          }
                           @if (dev.serial === activeDevice()?.serial) {
                             <span class="active-check">✓ Active</span>
                           }

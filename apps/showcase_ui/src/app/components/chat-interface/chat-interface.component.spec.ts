@@ -18,10 +18,13 @@ import { provideHttpClient } from '@angular/common/http';
 import { provideHttpClientTesting } from '@angular/common/http/testing';
 import { signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
-import { EMPTY } from 'rxjs';
+import { EMPTY, of } from 'rxjs';
 import { DeviceInfo } from '../../core/models/system.model';
 import { Session } from '../../core/models/session.model';
 import { AgentService } from '../../services/agent.service';
+import { HostsService } from '../../services/hosts.service';
+import { WEBUSB_DEVICE_MANAGER } from '../../services/usb-device-relay.service';
+import { RegistryDevice } from '../../core/models/host.model';
 import { SystemService } from '../../services/system.service';
 import { ChatInterfaceComponent } from './chat-interface.component';
 
@@ -47,9 +50,11 @@ function device(overrides: Partial<DeviceInfo>): DeviceInfo {
 describe('ChatInterfaceComponent device chip', () => {
   const sessions = signal<Session[]>([]);
   let systemService: SystemService;
+  let registryDevices: RegistryDevice[];
 
   beforeEach(async () => {
     sessions.set([]);
+    registryDevices = [];
     const agentService = {
       sessions,
       activeTab: signal('tasks'),
@@ -65,7 +70,12 @@ describe('ChatInterfaceComponent device chip', () => {
       providers: [
         provideHttpClient(),
         provideHttpClientTesting(),
-        { provide: AgentService, useValue: agentService }
+        { provide: AgentService, useValue: agentService },
+        {
+          provide: HostsService,
+          useValue: { list: () => of({ enabled: true, hosts: [], devices: registryDevices }) }
+        },
+        { provide: WEBUSB_DEVICE_MANAGER, useValue: undefined }
       ]
     }).compileComponents();
     systemService = TestBed.inject(SystemService);
@@ -122,5 +132,23 @@ describe('ChatInterfaceComponent device chip', () => {
     fixture.detectChanges();
     const chip = (fixture.nativeElement as HTMLElement).querySelector('.task-device');
     expect(chip?.getAttribute('title')).toContain('127.0.0.1:36411');
+  });
+
+  it('names the computer that shares the phone as the chip source', () => {
+    registryDevices = [
+      {
+        serial: 'R5CT1',
+        model: 'Pixel 8',
+        source: 'computer',
+        computer_id: 'h1',
+        computer_name: 'Lab Mac',
+        computer_status: 'online',
+        reason: null,
+        since: 1
+      }
+    ];
+    const text = chipText('R5CT1', [device({ serial: 'R5CT1', model: 'Pixel 8' })]);
+    expect(text).toContain('Pixel 8');
+    expect(text).toContain('Lab Mac');
   });
 });

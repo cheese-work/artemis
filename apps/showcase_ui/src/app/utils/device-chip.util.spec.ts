@@ -1,5 +1,5 @@
 import { Computer, RegistryDevice } from '../core/models/host.model';
-import { deviceChipView } from './device-chip.util';
+import { deviceChipView, deviceSourceOf } from './device-chip.util';
 
 const computer = (over: Partial<Computer> = {}): Computer => ({
   id: 'h1',
@@ -130,3 +130,40 @@ describe('deviceChipView', () => {
     }
   });
 });
+
+describe('deviceChipView serial detail', () => {
+  it('keeps the raw serial for the detail line while the label stays model or kind', () => {
+    const browser = phone({
+      source: 'browser',
+      computer_id: null,
+      computer_name: null,
+      serial: '127.0.0.1:40001',
+      model: null,
+      device_kind: 'unknown'
+    });
+    const view = deviceChipView(browser, [], null);
+    expect(view.label).toBe('Unknown device');
+    expect(view.serial).toBe('127.0.0.1:40001');
+  });
+});
+
+describe('deviceSourceOf', () => {
+  const registry = [
+    phone(),
+    phone({ serial: '127.0.0.1:6000', source: 'browser', computer_id: null, computer_name: null })
+  ];
+
+  it('names the computer that shares the phone', () => {
+    expect(deviceSourceOf('R5CT1', registry, [computer()], null)).toBe('Lab Mac');
+  });
+
+  it('says This browser for the serial this tab holds, even without a registry entry', () => {
+    expect(deviceSourceOf('127.0.0.1:5000', [], [], '127.0.0.1:5000')).toBe('This browser');
+  });
+
+  it('says A browser for another browser phone and null for an unlisted serial', () => {
+    expect(deviceSourceOf('127.0.0.1:6000', registry, [], '127.0.0.1:5000')).toBe('A browser');
+    expect(deviceSourceOf('emulator-5554', registry, [computer()], null)).toBeNull();
+  });
+});
+

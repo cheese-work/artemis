@@ -5,6 +5,7 @@ import { TestBed } from '@angular/core/testing';
 import { EMPTY, of } from 'rxjs';
 import { RegistryPhonesComponent } from '../../components/registry-phones/registry-phones.component';
 import { UsbPhoneConnectionComponent } from '../../components/usb-phone-connection/usb-phone-connection.component';
+import { RegistryDevice } from '../../core/models/host.model';
 import { DeviceInfo, SystemReadinessReport } from '../../core/models/system.model';
 import { AdminConfigService } from '../../services/admin-config.service';
 import { HostsService } from '../../services/hosts.service';
@@ -100,15 +101,21 @@ function report(devices: DeviceInfo[]): SystemReadinessReport {
 
 describe('HomeComponent device card', () => {
   let systemService: SystemService;
+  let registryDevices: RegistryDevice[];
 
   afterEach(() => systemService.stopAutoPolling());
 
   beforeEach(async () => {
+    registryDevices = [];
     await TestBed.configureTestingModule({
       imports: [HomeComponent],
       providers: [
         provideHttpClient(withXhr()),
         provideHttpClientTesting(),
+        {
+          provide: HostsService,
+          useValue: { list: () => of({ enabled: true, hosts: [], devices: registryDevices }) }
+        },
         { provide: WEBUSB_DEVICE_MANAGER, useValue: undefined }
       ]
     })
@@ -174,5 +181,31 @@ describe('HomeComponent device card', () => {
     expect(chips[1]).toContain('Emulator');
     expect(chips[2]).toContain('Unknown device');
     expect(chips.join('|')).not.toContain('127.0.0.1');
+  });
+
+  it('names the computer that shares a phone as its source in the card and the picker', () => {
+    registryDevices = [
+      {
+        serial: 'R5CT1',
+        model: 'Pixel 8',
+        source: 'computer',
+        computer_id: 'h1',
+        computer_name: 'Lab Mac',
+        computer_status: 'online',
+        reason: null,
+        since: 1
+      }
+    ];
+    systemService.configWritesLocked.set(false);
+    const root = render([
+      device({ serial: 'R5CT1', model: 'Pixel 8' }),
+      device({ serial: 'emulator-5554', model: 'sdk_gphone64_arm64', is_emulator: true, device_kind: 'emulator' })
+    ]);
+    expect(text(root, '.device-hero-meta')).toContain('Lab Mac');
+    const chips = Array.from(root.querySelectorAll('.device-chip-btn')).map(c =>
+      (c.textContent ?? '').replace(/\s+/g, ' ').trim()
+    );
+    expect(chips[0]).toContain('Lab Mac');
+    expect(chips[1]).not.toContain('Lab Mac');
   });
 });

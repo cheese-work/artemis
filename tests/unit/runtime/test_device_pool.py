@@ -14,6 +14,7 @@
 
 import asyncio
 import importlib
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -403,3 +404,17 @@ def test_async_enumeration_classifies_by_properties(monkeypatch):
     (device,) = asyncio.run(pool.list_devices_async())
     assert device.device_kind == "phone"
     assert device.model == "21081111RG"
+
+
+def test_sync_property_reads_run_in_parallel(monkeypatch):
+    pool = DevicePool()
+    raw = [(f"127.0.0.1:{n}", "device", None, None) for n in range(3)]
+    monkeypatch.setattr(pool, "_query_adb_devices_sync", lambda timeout=None: raw)
+    barrier = threading.Barrier(3, timeout=2)
+
+    def read(serial):
+        barrier.wait()  # only passes when all three reads are in flight together
+        return PHONE_PROPS
+
+    monkeypatch.setattr(pool, "_read_properties_sync", read)
+    assert {d.device_kind for d in pool.list_devices()} == {"phone"}

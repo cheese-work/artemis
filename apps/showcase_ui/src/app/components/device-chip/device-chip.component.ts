@@ -17,7 +17,7 @@ import { deviceChipView } from '../../utils/device-chip.util';
       <span class="state">{{ v.state }}</span>
       <span class="source">{{ v.source }}</span>
     </span>
-    <span class="detail">{{ v.detail }}</span>
+    <span class="detail">{{ v.detail }} · {{ v.serial }}</span>
   `,
   styles: [`
     :host { display: flex; flex-wrap: wrap; align-items: center; gap: .25rem .75rem; }
