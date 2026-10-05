@@ -1,6 +1,7 @@
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { of, throwError } from 'rxjs';
 import { AdminConfigService, AdminIdentity, ConfigSnapshot } from '../../services/admin-config.service';
+import { HostsService } from '../../services/hosts.service';
 import { routes } from '../../app.routes';
 import { HomeComponent } from '../home/home.component';
 import { SetupComponent } from './setup.component';
@@ -62,7 +63,13 @@ describe('SetupComponent', () => {
 
     await TestBed.configureTestingModule({
       imports: [SetupComponent],
-      providers: [{ provide: AdminConfigService, useValue: adminConfig }]
+      providers: [
+        { provide: AdminConfigService, useValue: adminConfig },
+        {
+          provide: HostsService,
+          useValue: { list: () => of({ enabled: false, hosts: [], devices: [] }) }
+        }
+      ]
     }).compileComponents();
   });
 
@@ -70,6 +77,23 @@ describe('SetupComponent', () => {
     fixture = TestBed.createComponent(SetupComponent);
     fixture.detectChanges();
   }
+
+  it('offers Models first and a Computers tab that swaps the panel', async () => {
+    createComponent();
+    await fixture.whenStable();
+    fixture.detectChanges();
+    const root = fixture.nativeElement as HTMLElement;
+    const tabs = Array.from(root.querySelectorAll('[role="tab"]')) as HTMLButtonElement[];
+    expect(tabs.map((tab) => tab.textContent?.trim())).toEqual(['Models', 'Computers']);
+    expect(tabs[0].getAttribute('aria-selected')).toBe('true');
+    expect(root.querySelector('app-computers')).toBeNull();
+
+    tabs[1].click();
+    fixture.detectChanges();
+    expect(tabs[1].getAttribute('aria-selected')).toBe('true');
+    expect(root.querySelector('app-computers')).not.toBeNull();
+    expect(root.querySelector('[name="default-provider"]')).toBeNull();
+  });
 
   it('replaces Step 2 on the System Setup route without adding a provider-only route', () => {
     expect(routes.find((route) => route.path === 'setup')?.component).toBe(HomeComponent);
