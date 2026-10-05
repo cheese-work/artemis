@@ -597,7 +597,9 @@ async def test_delete_needs_the_owner_or_an_admin(cloudflare, delete_spy):
     delete_spy.assert_not_called()
 
     assert (await _post(QA1, f"/api/sessions/{sid}/delete")).status_code == 200
-    assert (await _post(ADMIN, f"/api/sessions/{sid}/delete")).status_code == 200
+    # A delete now tombstones the run, so the admin deletes a second one of QA1's.
+    other = _run(cloudflare, QA1)
+    assert (await _post(ADMIN, f"/api/sessions/{other}/delete")).status_code == 200
     assert delete_spy.call_count == 2
 
 
