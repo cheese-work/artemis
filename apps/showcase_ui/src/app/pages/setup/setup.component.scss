@@ -89,6 +89,7 @@ input, select {
 input::placeholder { color: $text-muted; }
 input:hover:not(:disabled):not([readonly]), select:hover:not(:disabled) { border-color: $text-muted; }
 input:focus, select:focus { outline: 2px solid $primary; outline-offset: 1px; }
+input:disabled::placeholder, input[readonly]::placeholder { color: $text-secondary; }
 input:disabled, input[readonly], select:disabled { color: $text-secondary; background: $surface-muted; cursor: not-allowed; }
 .provider-row { display: grid; gap: .75rem; border-top: 1px solid $surface-muted; padding: 1rem 0; }
 .provider-row:first-of-type { border-top: 0; padding-top: 0; }

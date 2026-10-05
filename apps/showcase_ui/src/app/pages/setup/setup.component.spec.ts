@@ -367,6 +367,22 @@ describe('SetupComponent', () => {
         .toBeGreaterThanOrEqual(MIN_TEXT_CONTRAST);
     });
 
+    it('keeps input placeholders at 4.5:1, including read-only fields', async () => {
+      for (const admin of [true, false]) {
+        const host = await render(true, admin);
+        const inputs = Array.from(host.querySelectorAll('input[placeholder]'));
+
+        expect(inputs.length).toBeGreaterThan(0);
+        for (const input of inputs) {
+          const color = parseColor(getComputedStyle(input, '::placeholder').color);
+          expect(contrast(color, bg(input)))
+            .withContext(`admin=${admin} ${input.getAttribute('name')}`)
+            .toBeGreaterThanOrEqual(MIN_TEXT_CONTRAST);
+        }
+        fixture.nativeElement.remove();
+      }
+    });
+
     it('shows a visible focus ring that contrasts with the light surface', async () => {
       const host = await render(true);
       const input = host.querySelector('input') as HTMLInputElement;
