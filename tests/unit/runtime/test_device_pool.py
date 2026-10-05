@@ -301,3 +301,40 @@ def test_validate_explicit_serial_async_matches_sync(monkeypatch):
     ok, missing = asyncio.run(run())
     assert ok is None
     assert "not connected" in missing
+
+
+def test_claimed_serials_ignore_queue_tickets_for_other_endpoints():
+    """A queued serial on another adb server is not claimed on this one."""
+    from artemis.runtime.adb_endpoint import AdbEndpoint
+
+    alpha = AdbEndpoint.create("127.0.0.1", 40001)
+    beta = AdbEndpoint.create("127.0.0.1", 40002)
+    on_alpha = DeviceExecutionLock.reserve(
+        description="alpha",
+        device_id="alpha-phone",
+        session_id="queued-a",
+        lock_scope=alpha.lock_scope,
+    )
+    on_beta = DeviceExecutionLock.reserve(
+        description="beta",
+        device_id="beta-phone",
+        session_id="queued-b",
+        lock_scope=beta.lock_scope,
+    )
+    legacy = DeviceExecutionLock.reserve(
+        description="written before endpoint scoping",
+        device_id="legacy-phone",
+        session_id="queued-legacy",
+    )
+    try:
+        assert DevicePool.for_endpoint(alpha).get_claimed_serials() == {
+            "alpha-phone",
+            "legacy-phone",
+        }
+        assert DevicePool.for_endpoint(beta).get_claimed_serials() == {
+            "beta-phone",
+            "legacy-phone",
+        }
+    finally:
+        for ticket in (on_alpha, on_beta, legacy):
+            DeviceExecutionLock.cancel_reservation(ticket)
