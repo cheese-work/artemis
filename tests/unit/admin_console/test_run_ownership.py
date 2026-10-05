@@ -1230,3 +1230,19 @@ async def test_clear_all_by_the_owner_includes_their_starting_run(cloudflare):
 
     assert response.json()["status"] == "stopped"
     assert [c.kwargs["session_id"] for c in task_queue_service.stop_tasks.call_args_list] == [sid]
+
+
+@pytest.mark.asyncio
+async def test_owner_cancel_queued_with_an_unreadable_session_asks_for_a_retry(
+    cloudflare, monkeypatch
+):
+    sid = _run(cloudflare, QA1, status="queued", queued=True)
+    monkeypatch.setattr(
+        session_repo, "read_session", MagicMock(side_effect=sqlite3.OperationalError("locked"))
+    )
+
+    response = await _post(QA1, f"/api/tasks/{sid}/cancel-queued")
+
+    assert response.status_code == 503 and response.headers["retry-after"] == "1"
+    assert [i["session_id"] for i in state.queue_items] == [sid]
+    assert session_repo.get_session_by_id(sid)["status"] == "queued"

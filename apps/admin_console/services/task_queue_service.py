@@ -2108,13 +2108,17 @@ class TaskQueueService:
         """Cancel a run only while it waits; never stops one that has started.
 
         Returns ``cancelled``, ``already_started``, ``not_found`` or ``retry`` (the
-        cancellation could not be persisted; nothing changed). A run with no
-        persisted session is cancelled in memory. Runs on the event loop without
-        yielding, so it is ordered against dispatch.
+        session could not be read or the cancellation not persisted; nothing
+        changed). Only a session confirmed absent is cancelled in memory. Runs on
+        the event loop without yielding, so it is ordered against dispatch.
         """
         sid = str(session_id)
         item = cls._queue_item_for(sid)
-        row = session_repo.get_session_by_id(sid)
+        try:
+            row = session_repo.read_session(sid)
+        except Exception:
+            logger.exception("[QueueWorker] Could not read session %s to cancel it", sid)
+            return "retry"  # a failed read is not proof the session is absent
         waiting = (item and item.get("status") == "pending") or (
             not item and row and row.get("status") == "queued"
         )
@@ -2126,7 +2130,11 @@ class TaskQueueService:
         )
         if not settled and row:
             # Not ours to claim: another writer settled it, or the commit failed.
-            now = session_repo.get_session_by_id(sid)
+            try:
+                now = session_repo.read_session(sid)
+            except Exception:
+                logger.exception("[QueueWorker] Could not re-read session %s", sid)
+                return "retry"
             if now and now.get("status") != "queued":
                 return "already_started"
             return "retry"  # still queued and persisted as such: nothing was cancelled
