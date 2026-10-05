@@ -43,6 +43,7 @@ from apps.admin_console.server import app
 from apps.admin_console.services.task_queue_service import task_queue_service
 from artemis.data_engine.storage import StorageManager
 from artemis.runtime import trace_store
+from artemis.runtime.device_lock import DeviceExecutionLock
 
 QA1 = "qa1@example.com"
 QA2 = "qa2@example.com"
@@ -69,6 +70,9 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setattr(lock, "get_active_owners", staticmethod(lambda: {}))
     monkeypatch.setattr(lock, "get_active_owner", staticmethod(lambda *_a, **_k: None))
     monkeypatch.setattr(lock, "has_owner_record", staticmethod(lambda *_a, **_k: False))
+    monkeypatch.setattr(
+        lock, "has_unreadable_owner_record", staticmethod(lambda: False), raising=False
+    )
     monkeypatch.setattr(task_queue_service, "ensure_worker_running", MagicMock())
     monkeypatch.setattr(task_queue_service, "stop_tasks", MagicMock(return_value=True))
     monkeypatch.setattr(task_queue_service, "resume_task", MagicMock(return_value=True))
@@ -647,10 +651,9 @@ _REAL_RESUME_TASK = task_queue_service.resume_task
 
 
 @pytest.fixture
-def real_controls(cloudflare, tmp_path, monkeypatch):
-    """The real stop/resume resolvers over fake device-lock records and a kill spy."""
+def real_service(cloudflare, tmp_path, monkeypatch):
+    """The real stop/resume service with an isolated pause marker and a kill spy."""
     from apps.admin_console.services import task_queue_service as queue_module
-    from artemis.runtime.device_lock import DeviceLockOwner
 
     monkeypatch.setattr(task_queue_service, "stop_tasks", _REAL_STOP_TASKS)
     monkeypatch.setattr(task_queue_service, "resume_task", _REAL_RESUME_TASK)
@@ -661,6 +664,18 @@ def real_controls(cloudflare, tmp_path, monkeypatch):
     pause_file = tmp_path / ".artemis_paused"
     monkeypatch.setattr("apps.admin_console.core.state.PAUSE_FILE", pause_file)
     monkeypatch.setattr(queue_module, "PAUSE_FILE", pause_file)
+    killed = MagicMock(return_value=True)
+    monkeypatch.setattr(queue_module.process_supervisor, "terminate_tree_verified", killed)
+    return killed, pause_file
+
+
+@pytest.fixture
+def real_controls(real_service, monkeypatch):
+    """The real stop/resume resolvers over fake device-lock records and a kill spy."""
+    from apps.admin_console.services import task_queue_service as queue_module
+    from artemis.runtime.device_lock import DeviceLockOwner
+
+    killed, pause_file = real_service
     locks: dict[str, DeviceLockOwner] = {}
     lock = queue_module.DeviceExecutionLock
     monkeypatch.setattr(lock, "get_active_owners", staticmethod(lambda: dict(locks)))
@@ -676,8 +691,6 @@ def real_controls(cloudflare, tmp_path, monkeypatch):
     monkeypatch.setattr(lock, "has_owner_record", staticmethod(lambda device_id=None: bool(locks)))
     monkeypatch.setattr(lock, "is_active_owner", staticmethod(lambda *_a, **_k: True))
     monkeypatch.setattr(lock, "cleanup_stale_locks", staticmethod(lambda *_a, **_k: 0))
-    killed = MagicMock(return_value=True)
-    monkeypatch.setattr(queue_module.process_supervisor, "terminate_tree_verified", killed)
 
     def hold(device: str, session_id: str, pid: int) -> None:
         locks[device] = DeviceLockOwner(
@@ -981,3 +994,164 @@ async def test_clear_never_stops_a_foreign_process_even_when_it_holds_a_device(r
     killed.assert_not_called()
     assert _status_of(db, foreign) == "running"
     assert _status_of(db, mine) != "running"
+
+
+# -- correction round 3 (Sol, CHANGES REQUESTED on fa5effe): the shared pause marker ----
+
+
+async def _pause_with_foreign_run(real_controls):
+    """QA2 is running (synthetic lock) and paused; QA1 has only their own history."""
+    hold, killed, pause_file = real_controls
+    db = run_catalog_repo.db_path
+    foreign = _run(db, QA2, status="running")
+    hold("dev-qa2", foreign, 24680)
+    pause_file.write_text("LLM Error: paused", encoding="utf-8")
+    assert (await _post(QA1, "/api/resume")).status_code == 403
+    return db, foreign, killed, pause_file
+
+
+@pytest.mark.asyncio
+async def test_stopping_a_historical_own_run_keeps_another_users_pause(real_controls):
+    db, foreign, killed, pause_file = await _pause_with_foreign_run(real_controls)
+    history = _run(db, QA1)
+
+    response = await _post(QA1, "/api/stop", json={"session_id": history})
+
+    assert response.status_code == 200
+    assert pause_file.exists()
+    killed.assert_not_called()
+    assert _status_of(db, foreign) == "running"
+
+
+@pytest.mark.asyncio
+async def test_cancelling_an_owned_queued_run_keeps_another_users_pause(real_controls):
+    db, _foreign, _killed, pause_file = await _pause_with_foreign_run(real_controls)
+    queued = _run(db, QA1, queued=True)
+
+    response = await _post(QA1, "/api/stop", json={"session_id": queued})
+
+    assert response.json()["status"] == "stopped"  # the valid cancellation still happens
+    assert pause_file.exists()
+    assert all(item["session_id"] != queued for item in state.queue_items)
+
+
+@pytest.mark.asyncio
+async def test_clearing_own_runs_keeps_another_users_pause(real_controls):
+    db, _foreign, _killed, pause_file = await _pause_with_foreign_run(real_controls)
+    _run(db, QA1, queued=True)
+    _run(db, QA1, queued=True)
+
+    response = await _post(QA1, "/api/stop", json={"all": True})
+
+    assert response.json()["status"] == "stopped"
+    assert pause_file.exists()
+    assert not state.queue_items
+
+
+@pytest.mark.asyncio
+async def test_stopping_own_running_run_keeps_a_mixed_owner_pause(real_controls):
+    hold, _killed, pause_file = real_controls
+    db = run_catalog_repo.db_path
+    mine = _own_running_run(db)
+    hold("dev-qa2", _run(db, QA2, status="running"), 24680)
+    pause_file.write_text("LLM Error: paused", encoding="utf-8")
+
+    response = await _post(QA1, "/api/stop", json={"session_id": mine})
+
+    assert response.json()["status"] == "stopped"
+    assert pause_file.exists()
+
+
+@pytest.mark.asyncio
+async def test_stop_by_the_only_owner_and_by_an_admin_still_clears_the_pause(real_controls):
+    _hold, _killed, pause_file = real_controls
+    db = run_catalog_repo.db_path
+    mine = _own_running_run(db)
+    pause_file.write_text("LLM Error: paused", encoding="utf-8")
+
+    assert (await _post(QA1, "/api/stop", json={"session_id": mine})).json()["status"] == "stopped"
+    assert not pause_file.exists()
+
+    queued = _run(db, QA2, queued=True)
+    pause_file.write_text("LLM Error: paused", encoding="utf-8")
+    assert (await _post(ADMIN, "/api/stop", json={"session_id": queued})).status_code == 200
+    assert not pause_file.exists()
+
+
+_LOCK_NAMES = (
+    "get_active_owners",
+    "get_active_owner",
+    "get_queued_tasks",
+    "has_owner_record",
+    "has_unreadable_owner_record",
+)
+_REAL_LOCK_READS = {
+    name: vars(DeviceExecutionLock)[name]
+    for name in _LOCK_NAMES
+    if name in vars(DeviceExecutionLock)
+}
+
+
+@pytest.fixture
+def lock_dir(real_service, tmp_path, monkeypatch):
+    """Real lock-file enumeration over an isolated directory."""
+    directory = tmp_path / "device-locks"
+    directory.mkdir()
+    monkeypatch.setattr("artemis.runtime.device_lock.get_temp_dir", lambda _sub=None: directory)
+    for name, original in _REAL_LOCK_READS.items():
+        monkeypatch.setattr(DeviceExecutionLock, name, original)
+    monkeypatch.setattr(DeviceExecutionLock, "_owner_is_alive", classmethod(lambda *_a: True))
+    return directory
+
+
+def _write_lock(directory, name: str, session_id: str | None, pid: int) -> None:
+    payload = {
+        "pid": pid,
+        "process_created_at": 1234.5,
+        "token": f"token-{pid}",
+        "device_id": name,
+        "description": "task",
+        "acquired_at": "2026-10-05T00:00:00+00:00",
+    }
+    if session_id:
+        payload["session_id"] = session_id
+    (directory / f"artemis-device-{name}.lock").write_text(json.dumps(payload), encoding="utf-8")
+
+
+@pytest.mark.asyncio
+async def test_a_readable_owned_lock_does_not_hide_an_unreadable_one(lock_dir, real_service):
+    _killed, pause_file = real_service
+    db = run_catalog_repo.db_path
+    _own_running_run(db)
+    _write_lock(lock_dir, "dev-qa1", _run(db, QA1, status="running"), 24683)
+    (lock_dir / "artemis-device-broken.lock").write_text('{"pid": 24684, "tok', encoding="utf-8")
+    pause_file.write_text("LLM Error: paused", encoding="utf-8")
+
+    assert (await _post(QA1, "/api/resume")).status_code == 403
+    assert pause_file.exists()
+    assert (await _post(ADMIN, "/api/resume")).json() == {"status": "resumed"}
+
+
+@pytest.mark.asyncio
+async def test_a_readable_owned_lock_does_not_hide_a_parsed_but_unnamed_one(lock_dir, real_service):
+    _killed, pause_file = real_service
+    db = run_catalog_repo.db_path
+    _own_running_run(db)
+    _write_lock(lock_dir, "dev-qa1", _run(db, QA1, status="running"), 24683)
+    _write_lock(lock_dir, "dev-unnamed", None, 24685)
+    pause_file.write_text("LLM Error: paused", encoding="utf-8")
+
+    assert (await _post(QA1, "/api/resume")).status_code == 403
+    assert pause_file.exists()
+
+
+@pytest.mark.asyncio
+async def test_only_readable_owned_locks_let_the_owner_resume(lock_dir, real_service):
+    _killed, pause_file = real_service
+    db = run_catalog_repo.db_path
+    _own_running_run(db)
+    _write_lock(lock_dir, "dev-qa1", _run(db, QA1, status="running"), 24683)
+    pause_file.write_text("LLM Error: paused", encoding="utf-8")
+
+    assert (await _post(QA1, "/api/resume")).json() == {"status": "resumed"}
+    assert not pause_file.exists()
