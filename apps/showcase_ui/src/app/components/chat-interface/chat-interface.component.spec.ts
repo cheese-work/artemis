@@ -70,7 +70,6 @@ describe('ChatInterfaceComponent device chip', () => {
     await TestBed.configureTestingModule({
       imports: [ChatInterfaceComponent],
       providers: [
-        provideRouter([]),
         provideHttpClient(),
         provideHttpClientTesting(),
         provideRouter([]),
