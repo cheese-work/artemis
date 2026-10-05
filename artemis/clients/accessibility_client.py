@@ -35,11 +35,11 @@ only adds an adb screencap; the hierarchy is never dumped twice.
 
 from __future__ import annotations
 
-from io import BytesIO
 import json
 import subprocess
-from typing import Any
 import urllib.error
+from io import BytesIO
+from typing import Any
 
 from PIL import Image
 
@@ -217,7 +217,7 @@ class AccessibilityClient:
 
     def ping(self) -> bool:
         try:
-            session = self._ensure_session()
+            self._ensure_session()
         except HelperUnavailable:
             return False
         return self._manager.ping(self._device_id) is not None

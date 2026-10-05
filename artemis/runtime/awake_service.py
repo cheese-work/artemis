@@ -22,7 +22,6 @@ import subprocess
 import threading
 from typing import Iterable
 
-
 from artemis.runtime.awake_lease import ScreenAwakeLease
 from artemis.runtime.endpoint_transport import EndpointTransport
 from artemis.utils.logger import get_logger
