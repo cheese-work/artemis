@@ -378,6 +378,12 @@ async def cancel_queued_task(session_id: str, actor: OwnerScope = Depends(actor_
     result = task_queue_service.cancel_queued(session_id)
     if result == "not_found":
         raise HTTPException(status_code=404, detail="Unknown session.")
+    if result == "retry":
+        raise HTTPException(
+            status_code=503,
+            detail="The cancellation could not be saved; retry.",
+            headers={"Retry-After": "1"},
+        )
     return {"status": result, "session_id": session_id}
 
 

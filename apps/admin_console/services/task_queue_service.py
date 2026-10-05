@@ -2107,8 +2107,10 @@ class TaskQueueService:
     def cancel_queued(cls, session_id: str) -> str:
         """Cancel a run only while it waits; never stops one that has started.
 
-        Returns ``cancelled``, ``already_started`` or ``not_found``. Runs on the
-        event loop without yielding, so it is ordered against dispatch.
+        Returns ``cancelled``, ``already_started``, ``not_found`` or ``retry`` (the
+        cancellation could not be persisted; nothing changed). A run with no
+        persisted session is cancelled in memory. Runs on the event loop without
+        yielding, so it is ordered against dispatch.
         """
         sid = str(session_id)
         item = cls._queue_item_for(sid)
@@ -2122,8 +2124,12 @@ class TaskQueueService:
         settled = session_repo.update_session_status(
             sid, "cancelled", time.time(), error=_CANCELLED_WHILE_QUEUED
         )
-        if not settled and not item:
-            return "already_started"  # a persisted row another writer already settled
+        if not settled and row:
+            # Not ours to claim: another writer settled it, or the commit failed.
+            now = session_repo.get_session_by_id(sid)
+            if now and now.get("status") != "queued":
+                return "already_started"
+            return "retry"  # still queued and persisted as such: nothing was cancelled
         cls._deliver_outcome(sid)
         cls._remove_task(sid)  # also cancels the queue ticket, keeping the others' order
         state.wake_event.set()
