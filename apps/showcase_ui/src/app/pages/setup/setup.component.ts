@@ -1,12 +1,13 @@
 import { Component, ChangeDetectionStrategy, Input, OnInit, computed, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { finalize, forkJoin } from 'rxjs';
+import { ComputersComponent } from '../../components/computers/computers.component';
 import { AdminConfigService, AdminIdentity, ConfigSnapshot, ModelSelection } from '../../services/admin-config.service';
 
 @Component({
   selector: 'app-setup',
   standalone: true,
-  imports: [FormsModule],
+  imports: [FormsModule, ComputersComponent],
   templateUrl: './setup.component.html',
   styleUrl: './setup.component.scss',
   host: { '[class.embedded]': 'embedded' },
@@ -15,6 +16,7 @@ import { AdminConfigService, AdminIdentity, ConfigSnapshot, ModelSelection } fro
 export class SetupComponent implements OnInit {
   @Input() public embedded = false;
   private readonly adminConfig = inject(AdminConfigService);
+  public readonly tab = signal<'models' | 'computers'>('models');
   public readonly identity = signal<AdminIdentity | null>(null);
   public readonly snapshot = signal<ConfigSnapshot | null>(null);
   public readonly loading = signal(true);

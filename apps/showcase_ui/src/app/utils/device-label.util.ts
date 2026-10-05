@@ -15,6 +15,7 @@
  */
 
 import { DeviceInfo, DeviceKind } from '../core/models/system.model';
+import { COMPUTER_STRINGS } from './computer-strings';
 
 export type LabelableDevice = Pick<DeviceInfo, 'serial' | 'model'> & { device_kind?: DeviceKind };
 
@@ -36,7 +37,7 @@ export function deviceTitle(device: LabelableDevice): string {
 
 /** Secondary text naming where the device is attached, when known. */
 export function deviceSource(device: LabelableDevice, relaySerial: string | null): string | null {
-  return relaySerial !== null && relaySerial === device.serial ? 'this browser' : null;
+  return relaySerial !== null && relaySerial === device.serial ? COMPUTER_STRINGS.thisBrowser : null;
 }
 
 const LOOPBACK_ADDRESS = /^(127\.0\.0\.1|localhost):\d+$/;

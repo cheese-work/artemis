@@ -1,30 +1,64 @@
-/**
- * Copyright 2026 Google LLC
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-
-import { provideHttpClient } from '@angular/common/http';
+import { provideHttpClient, withXhr } from '@angular/common/http';
 import { provideHttpClientTesting } from '@angular/common/http/testing';
 import { CUSTOM_ELEMENTS_SCHEMA } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
-import { EMPTY } from 'rxjs';
-import { SetupComponent } from '../setup/setup.component';
+import { EMPTY, of } from 'rxjs';
+import { RegistryPhonesComponent } from '../../components/registry-phones/registry-phones.component';
 import { UsbPhoneConnectionComponent } from '../../components/usb-phone-connection/usb-phone-connection.component';
 import { DeviceInfo, SystemReadinessReport } from '../../core/models/system.model';
+import { AdminConfigService } from '../../services/admin-config.service';
+import { HostsService } from '../../services/hosts.service';
 import { SystemService } from '../../services/system.service';
 import { WEBUSB_DEVICE_MANAGER } from '../../services/usb-device-relay.service';
+import { SetupComponent } from '../setup/setup.component';
 import { HomeComponent } from './home.component';
+
+describe('HomeComponent phone surface', () => {
+  afterEach(() => TestBed.inject(SystemService).stopAutoPolling());
+
+  it('lists phones from computers and this browser with their source, next to the phone connection', async () => {
+    const device = {
+      serial: 'R5CT1',
+      model: 'Pixel 8',
+      source: 'computer',
+      computer_id: 'h1',
+      computer_name: 'Lab Mac',
+      computer_status: 'online',
+      reason: null,
+      since: 1_800_000_000
+    };
+    await TestBed.configureTestingModule({
+      imports: [HomeComponent],
+      providers: [
+        provideHttpClient(withXhr()),
+        provideHttpClientTesting(),
+        { provide: HostsService, useValue: { list: () => of({ enabled: true, hosts: [], devices: [device] }) } },
+        {
+          provide: AdminConfigService,
+          useValue: {
+            getIdentity: () => of({ email: null, admin: false, auth_mode: 'open', reason: null }),
+            getConfig: () =>
+              of({
+                version: 'v1',
+                default: { provider: 'openai', model: 'm' },
+                providers: [],
+                sources: { default: 'x', env: 'y' }
+              })
+          }
+        }
+      ]
+    }).compileComponents();
+    const fixture = TestBed.createComponent(HomeComponent);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    fixture.detectChanges();
+
+    const chip = (fixture.nativeElement as HTMLElement).querySelector('app-registry-phones app-device-chip');
+    expect(chip).not.toBeNull();
+    expect(chip!.textContent).toContain('Pixel 8');
+    expect(chip!.textContent).toContain('Lab Mac');
+  });
+});
 
 function device(overrides: Partial<DeviceInfo>): DeviceInfo {
   return {
@@ -67,17 +101,19 @@ function report(devices: DeviceInfo[]): SystemReadinessReport {
 describe('HomeComponent device card', () => {
   let systemService: SystemService;
 
+  afterEach(() => systemService.stopAutoPolling());
+
   beforeEach(async () => {
     await TestBed.configureTestingModule({
       imports: [HomeComponent],
       providers: [
-        provideHttpClient(),
+        provideHttpClient(withXhr()),
         provideHttpClientTesting(),
         { provide: WEBUSB_DEVICE_MANAGER, useValue: undefined }
       ]
     })
       .overrideComponent(HomeComponent, {
-        remove: { imports: [UsbPhoneConnectionComponent, SetupComponent] },
+        remove: { imports: [UsbPhoneConnectionComponent, RegistryPhonesComponent, SetupComponent] },
         add: { schemas: [CUSTOM_ELEMENTS_SCHEMA] }
       })
       .compileComponents();

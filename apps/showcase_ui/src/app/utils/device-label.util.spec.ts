@@ -38,7 +38,7 @@ describe('device-label.util', () => {
   });
 
   it('names the source only when this browser relays the device', () => {
-    expect(deviceSource(browserPhone, '127.0.0.1:36411')).toBe('this browser');
+    expect(deviceSource(browserPhone, '127.0.0.1:36411')).toBe('This browser');
     expect(deviceSource(browserPhone, null)).toBeNull();
     expect(deviceSource(browserPhone, 'other')).toBeNull();
   });
