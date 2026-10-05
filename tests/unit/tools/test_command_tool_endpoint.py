@@ -84,3 +84,48 @@ def test_a_transport_built_client_carries_its_endpoint_including_host_identity(m
     ctx.adb_client = EndpointTransport.shared(endpoint).client()
 
     assert context_transport(ctx).endpoint == endpoint
+
+
+# --------------------------------------------------------------------------- #
+# A bound client that names no usable endpoint fails closed
+# --------------------------------------------------------------------------- #
+
+UNUSABLE_CLIENTS = [
+    pytest.param(("remote.example", 70000), id="invalid-port"),
+    pytest.param(("http://remote.example", 5037), id="invalid-host"),
+    pytest.param(("fe80::1%eth0", 5037), id="scoped-ipv6"),
+]
+TOOLS = [
+    pytest.param(get_run_adb_command_tool, {"WaitMsBeforeAsync": 500}, id="run_adb_command"),
+    pytest.param(get_run_short_adb_command_tool, {}, id="run_short_adb_command"),
+]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("factory, extra", TOOLS)
+@pytest.mark.parametrize("bound", UNUSABLE_CLIENTS)
+async def test_a_bound_client_without_a_usable_endpoint_never_falls_back_to_the_process_endpoint(
+    factory, extra, bound, context_on_b, monkeypatch
+):
+    from artemis.core.tool_failure import is_tool_failure
+
+    monkeypatch.setenv("ARTEMIS_CLOUD_MODE", "0")
+    context_on_b.adb_client = AdbClient(*bound)
+
+    with patch("asyncio.create_subprocess_exec") as spawn:
+        # While the defect exists the tool reaches the spawn: answer it so the test fails, not hangs.
+        spawn.return_value = MockProcess(output_bytes=b"ok\n===EXIT_CODE===0\n", exit_code=0)
+        result = await factory(context_on_b).ainvoke({"CommandLine": "echo ok", **extra})
+
+    spawn.assert_not_called()
+    assert is_tool_failure(result)
+    assert "endpoint" in str(result).lower()
+
+
+def test_context_transport_raises_a_typed_error_for_an_unusable_client(context_on_b):
+    from artemis.tools.command_tool import ContextEndpointError, context_transport
+
+    context_on_b.adb_client = AdbClient("remote.example", 70000)
+
+    with pytest.raises(ContextEndpointError):
+        context_transport(context_on_b)
