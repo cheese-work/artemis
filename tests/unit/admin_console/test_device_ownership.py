@@ -461,16 +461,132 @@ async def test_run_with_two_phones_and_no_device_prefers_the_newest(cloudflare, 
 
 
 @pytest.mark.asyncio
-async def test_run_with_no_device_never_lands_on_another_qas_phone(cloudflare, submit):
-    # No phone of their own: the shared default resolves to somebody else's phone.
-    submit.probe.return_value = SimpleNamespace(
-        summary="Ready", metadata={"active_device": {"serial": QA2_PHONE}}
-    )
-    response = await _run("qa3@example.com")  # owns no phone
+@pytest.mark.parametrize(
+    "alias",
+    [
+        " " + QA2_PHONE,  # leading space
+        QA2_PHONE + " ",  # trailing space
+        QA2_PHONE.replace(":", ";"),  # the pool maps every non-word character to "_"
+        QA2_PHONE.replace(".", "_").replace(":", "_"),
+        "LOCALHOST:41002",  # case is not a way out either
+    ],
+)
+async def test_a_spelling_variant_of_another_qas_phone_is_refused_with_no_side_effect(
+    cloudflare, submit, alias
+):
+    response = await _run(QA1, device_serial=alias)
 
     assert response.status_code == 403
     assert response.json()["code"] == "device_not_yours"
-    submit.enqueue.assert_not_awaited()
+    _assert_no_side_effect(submit)
+
+
+@pytest.mark.asyncio
+async def test_a_bridge_address_with_no_session_is_refused_for_a_qa(cloudflare, submit):
+    response = await _run(QA1, device_serial="127.0.0.1:49999")
+
+    assert response.status_code == 403
+    _assert_no_side_effect(submit)
+
+
+@pytest.mark.asyncio
+async def test_a_spelling_variant_of_your_own_phone_stays_yours(cloudflare, submit):
+    assert (await _run(QA1, device_serial=" " + QA1_PHONE)).status_code == 200
+
+
+# -- auto-selection only ever considers the caller's own and shared devices --------------
+
+
+@pytest.fixture
+def adb(monkeypatch):
+    """The real submission probe over a fake adb: (serial, state) list and locked serials."""
+    probe = tasks_router.readiness_engine._adb_probe
+    monkeypatch.setattr(
+        "artemis.core.diagnostics.probes.adb_probe.toolchain.resolve", lambda _name: "adb"
+    )
+    monkeypatch.setattr(probe, "_target_serial", None)
+    enqueue = AsyncMock(return_value={"status": "queued", "tasks": []})
+    monkeypatch.setattr(task_queue_service, "enqueue_tasks", enqueue)
+
+    def configure(states, locked=()):
+        monkeypatch.setattr(probe, "_get_device_states", AsyncMock(return_value=states))
+
+        async def lock_state(_adb, serial, timeout_seconds=1.0):
+            return serial in locked
+
+        monkeypatch.setattr(probe, "_get_confirmed_device_lock_state", lock_state)
+        return enqueue
+
+    return configure
+
+
+@pytest.mark.asyncio
+async def test_with_no_phone_of_their_own_a_qa_gets_the_shared_device_not_a_foreign_phone(
+    cloudflare, adb
+):
+    enqueue = adb([(QA2_PHONE, "device"), (SHARED, "device")])
+
+    response = await _run("qa3@example.com")  # owns no phone
+
+    assert response.status_code == 200
+    assert enqueue.await_args.kwargs["device_serial"] == SHARED
+
+
+@pytest.mark.asyncio
+async def test_a_locked_shared_device_is_reported_without_naming_a_foreign_phone(cloudflare, adb):
+    enqueue = adb([(QA2_PHONE, "device"), (SHARED, "device")], locked={SHARED})
+
+    response = await _run("qa3@example.com")
+
+    assert response.status_code == 409
+    assert SHARED in response.json()["detail"]
+    assert QA2_PHONE not in response.text
+    enqueue.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_locked_foreign_phone_never_leaks_its_address_to_a_qa(cloudflare, adb):
+    enqueue = adb([(QA2_PHONE, "device")], locked={QA2_PHONE})
+
+    response = await _run("qa3@example.com")
+
+    assert response.status_code == 409
+    assert QA2_PHONE not in response.text
+    enqueue.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_with_no_allowed_device_at_all_the_run_is_refused_not_queued_on_a_foreign_phone(
+    cloudflare, adb
+):
+    enqueue = adb([(QA2_PHONE, "device")])
+
+    response = await _run("qa3@example.com")
+
+    assert response.status_code == 409
+    assert response.json()["code"] == "no_device_available"
+    assert QA2_PHONE not in response.text
+    enqueue.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_an_admin_with_no_phone_named_still_auto_selects_across_every_device(
+    cloudflare, adb
+):
+    enqueue = adb([(QA2_PHONE, "device"), (SHARED, "device")])
+
+    response = await _run(ADMIN)
+
+    assert response.status_code == 200
+    assert enqueue.await_args.kwargs["device_serial"] == QA2_PHONE
+
+
+@pytest.mark.asyncio
+async def test_open_mode_auto_selection_is_unchanged(open_mode, adb):
+    enqueue = adb([(QA2_PHONE, "device"), (SHARED, "device")])
+
+    assert (await _run(None)).status_code == 200
+    assert enqueue.await_args.kwargs["device_serial"] == QA2_PHONE
 
 
 # -- the bridge records who connected the phone ---------------------------------------

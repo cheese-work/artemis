@@ -323,6 +323,47 @@ async def test_submission_probe_fails_closed_when_lock_state_is_unknown(monkeypa
 
 
 @pytest.mark.asyncio
+async def test_submission_probe_only_considers_devices_the_caller_may_use(monkeypatch):
+    probe = AdbDeviceProbe()
+    monkeypatch.setattr(
+        "artemis.core.diagnostics.probes.adb_probe.toolchain.resolve", lambda name: "adb"
+    )
+    monkeypatch.setattr(
+        probe,
+        "_get_device_states",
+        AsyncMock(return_value=[("foreign", "device"), ("mine", "device")]),
+    )
+    checked: list[str] = []
+
+    async def lock_state(adb_path, serial, timeout_seconds=1.0):
+        checked.append(serial)
+        return False
+
+    monkeypatch.setattr(probe, "_get_confirmed_device_lock_state", lock_state)
+
+    result = await probe.probe_submission_readiness(may_use=lambda serial: serial != "foreign")
+
+    assert result.metadata["active_device"]["serial"] == "mine"
+    assert checked == ["mine"]
+
+
+@pytest.mark.asyncio
+async def test_submission_probe_with_no_allowed_device_reports_none_found(monkeypatch):
+    probe = AdbDeviceProbe()
+    monkeypatch.setattr(
+        "artemis.core.diagnostics.probes.adb_probe.toolchain.resolve", lambda name: "adb"
+    )
+    monkeypatch.setattr(
+        probe, "_get_device_states", AsyncMock(return_value=[("foreign", "device")])
+    )
+
+    result = await probe.probe_submission_readiness(may_use=lambda serial: False)
+
+    assert result.summary == "No Device Found"
+    assert "foreign" not in str(result.model_dump())
+
+
+@pytest.mark.asyncio
 async def test_submission_probe_falls_back_to_unlocked_device(monkeypatch):
     """When the first device is locked but a second device is unlocked, submission probe falls back."""
     probe = AdbDeviceProbe()
