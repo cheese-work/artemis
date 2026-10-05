@@ -133,7 +133,6 @@ class RunCatalogRepository:
         host: str | None = None,
         requester: str | None = None,
         owner: str | None = None,
-        unowned: bool = False,
         since: float | None = None,
         until: float | None = None,
         match: str | None = None,
@@ -167,8 +166,6 @@ class RunCatalogRepository:
         if owner:
             where.append("m.requested_by = ?")
             params.append(owner)
-        if unowned:
-            where.append("m.requested_by IS NULL")
         if since is not None:
             where.append("s.start_time >= ?")
             params.append(since)

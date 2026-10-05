@@ -74,7 +74,9 @@ async def list_runs(
     scope = scope_or_open(scope)
     owner_filter = {}
     if scope.enforced and not scope.include_all:
-        owner_filter = {"owner": scope.email, "unowned": scope.email is None}
+        if scope.email is None:  # no identity owns nothing
+            return {"runs": [], "next_cursor": None, "warnings": []}
+        owner_filter = {"owner": scope.email}
     try:
         bounds = {"since": _parse_time(since), "until": _parse_time(until)}
     except ValueError:

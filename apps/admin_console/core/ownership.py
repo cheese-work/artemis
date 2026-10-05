@@ -4,8 +4,8 @@ A run's owner is the verified Cloudflare identity that submitted it, stored as
 ``run_meta.requested_by``. A run submitted without an identity has no owner.
 Open mode never filters. In cloudflare mode a caller sees and acts on the runs
 they own; an admin may widen a listing with ``scope=all`` and acts on any run.
-An unowned run is visible to ``scope=all`` and actionable by an admin, plus by
-a caller with no identity (the local CLI/SDK that created it).
+An unowned run is visible to ``scope=all`` and actionable by an admin only: a
+caller with no identity owns nothing (a missing owner is not a matching one).
 """
 
 from __future__ import annotations
@@ -41,11 +41,14 @@ class OwnerScope:
 
     def sees(self, owner: str | None) -> bool:
         """Whether a listing, queue or stream for this scope includes the run."""
-        return not self.enforced or self.include_all or owner == self.email
+        return not self.enforced or self.include_all or self._owns(owner)
 
     def may_act_on(self, owner: str | None) -> bool:
         """Whether stop, resume, delete or clear may touch the run."""
-        return not self.enforced or self.admin or owner == self.email
+        return not self.enforced or self.admin or self._owns(owner)
+
+    def _owns(self, owner: str | None) -> bool:
+        return owner is not None and owner == self.email
 
 
 OPEN_SCOPE = OwnerScope(enforced=False)
@@ -101,14 +104,25 @@ def owners_of(session_ids: list[str]) -> dict[str, str | None]:
 
 
 def require_access(scope: OwnerScope, session_id: str | None) -> None:
-    """Raise 403 unless the caller owns the run or is an admin; no state is touched.
+    """Raise 403 unless the caller owns the run or is an admin; no state is touched."""
+    require_access_all(scope, {session_id})
 
-    ``session_id`` None (nothing to attribute the action to) counts as unowned.
+
+def require_access_all(scope: OwnerScope, session_ids: set[str | None]) -> None:
+    """Like ``require_access`` for an action that reaches every run in ``session_ids``.
+
+    An empty set, a ``None`` member (a run that cannot be attributed) or a run
+    with no recorded owner is admin-only.
     """
     if not scope.enforced or scope.admin:
         return
-    owner = owners_of([session_id]).get(session_id) if session_id else None
-    if scope.may_act_on(owner):
+    ids = sorted(sid for sid in session_ids if sid)
+    owners = owners_of(ids)
+    if (
+        session_ids
+        and None not in session_ids
+        and all(sid in owners and scope.may_act_on(owners[sid]) for sid in ids)
+    ):
         return
     raise AdminAPIError(
         403,

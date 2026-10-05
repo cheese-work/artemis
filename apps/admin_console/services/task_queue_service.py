@@ -1845,6 +1845,33 @@ class TaskQueueService:
         ]
 
     @classmethod
+    def sessions_on_device(cls, device_id: str) -> set[str | None]:
+        """Runs a device-targeted stop would reach, via the stop resolver itself.
+
+        A ``None`` entry is a lock record that names no session: unattributable.
+        """
+        ids: set[str | None] = {
+            str(sid) for sid, run in state.active_runs.items() if run.get("device_id") == device_id
+        }
+        ids.update(
+            str(item["session_id"])
+            for item in state.queue_items
+            if isinstance(item, dict)
+            and item.get("session_id")
+            and item.get("device_serial") == device_id
+        )
+        try:
+            owners = DeviceExecutionLock.get_active_owners()
+        except OSError:
+            owners = {}
+        owner = cls._resolve_stop_owner(owners, None, device_id)
+        if owner is not None:
+            ids.add(str(owner.session_id) if owner.session_id else None)
+        elif DeviceExecutionLock.has_owner_record(device_id):
+            ids.add(None)
+        return ids
+
+    @classmethod
     def _stop_targeted_task(cls, target_sid: str | None, target_device: str | None) -> bool:
         """Stop a specific task (or default single-device active task)."""
         active_owners = {}

@@ -68,6 +68,7 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setattr(lock, "get_queued_tasks", staticmethod(lambda: []))
     monkeypatch.setattr(lock, "get_active_owners", staticmethod(lambda: {}))
     monkeypatch.setattr(lock, "get_active_owner", staticmethod(lambda *_a, **_k: None))
+    monkeypatch.setattr(lock, "has_owner_record", staticmethod(lambda *_a, **_k: False))
     monkeypatch.setattr(task_queue_service, "ensure_worker_running", MagicMock())
     monkeypatch.setattr(task_queue_service, "stop_tasks", MagicMock(return_value=True))
     monkeypatch.setattr(task_queue_service, "resume_task", MagicMock(return_value=True))
@@ -654,6 +655,9 @@ def real_controls(cloudflare, tmp_path, monkeypatch):
     monkeypatch.setattr(task_queue_service, "stop_tasks", _REAL_STOP_TASKS)
     monkeypatch.setattr(task_queue_service, "resume_task", _REAL_RESUME_TASK)
     monkeypatch.setattr(queue_module, "session_repo", session_repo)
+    # Immediate kill (the graceful path has its own tests), with cancel files in tmp.
+    monkeypatch.setenv("ARTEMIS_CANCEL_GRACE_SECONDS", "0")
+    monkeypatch.setattr("artemis.runtime.cancel_requests.get_temp_dir", lambda _sub=None: tmp_path)
     pause_file = tmp_path / ".artemis_paused"
     monkeypatch.setattr("apps.admin_console.core.state.PAUSE_FILE", pause_file)
     monkeypatch.setattr(queue_module, "PAUSE_FILE", pause_file)
