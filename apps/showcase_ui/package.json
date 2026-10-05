@@ -9,7 +9,7 @@
     "test:docker-build-inputs": "node scripts/test-docker-build-inputs.mjs",
     "watch": "ng build --watch --configuration development",
     "test": "ng test",
-    "pretest": "node scripts/validate-whats-new.mjs && npm run test:tango-stream-extra",
+    "pretest": "node scripts/validate-whats-new.mjs && node scripts/lint-ui-strings.mjs && npm run test:tango-stream-extra",
     "test:tango-stream-extra": "node --test scripts/tango-stream-extra.test.mjs",
     "postinstall": "node scripts/patch-tango.mjs"
   },

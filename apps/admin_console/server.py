@@ -73,6 +73,7 @@ from artemis.config import (
 )
 from artemis.resources import get_bundled_showcase_dist
 from artemis.runtime.lifecycle import InterruptReason
+from apps.admin_console.services.host_registry import host_agent_enabled, host_registry
 from apps.admin_console.core.access_control import (
     AdminAPIError,
     CloudflareAccessVerifier,
@@ -89,10 +90,13 @@ try:
     from admin_console.database.repositories.step_repository import step_repo
     from admin_console.database.repositories.trace_repository import trace_repo
     from admin_console.routers import (
+        agent,
         device_bridge,
         drain,
+        hosts,
         media,
         replay,
+        runs,
         sessions,
         steps,
         stream,
@@ -109,10 +113,13 @@ except ImportError:
     from apps.admin_console.core.state import state
     from apps.admin_console.database.repositories.session_repository import session_repo
     from apps.admin_console.routers import (
+        agent,
         device_bridge,
         drain,
+        hosts,
         media,
         replay,
+        runs,
         sessions,
         steps,
         stream,
@@ -222,6 +229,9 @@ async def on_startup():
     # recordings; publish whatever raw files they left behind.
     asyncio.create_task(asyncio.to_thread(task_queue_service.recover_orphaned_recordings_on_launch))
 
+    if host_agent_enabled():
+        host_registry.reset_for_boot()
+
     await ipc_service.start_server()
     state.worker_task = asyncio.create_task(task_queue_service.queue_worker())
 
@@ -294,12 +304,15 @@ async def on_shutdown():
 app.include_router(stream.router)
 app.include_router(media.router)
 app.include_router(sessions.router)
+app.include_router(runs.router)
 app.include_router(steps.router)
 app.include_router(tasks.router)
 app.include_router(replay.router)
 app.include_router(system.router)
 app.include_router(drain.router)
 app.include_router(device_bridge.router)
+app.include_router(hosts.router)
+app.include_router(agent.router)
 
 # Mount cloud gateway router for Frappe / Cloud integration if present
 try:

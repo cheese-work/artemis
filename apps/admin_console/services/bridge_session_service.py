@@ -138,6 +138,10 @@ class BridgeSessionService:
         self._sessions: dict[str, BridgeSession] = {}
         self._lock = asyncio.Lock()
 
+    def live_sessions(self) -> list[BridgeSession]:
+        """Browser-attached phones, for the computer registry's device list."""
+        return [s for s in self._sessions.values() if not s.is_expired]
+
     async def create_session(self) -> BridgeSession:
         created_at = time.monotonic()
         idle_timeout_seconds = _session_ttl_seconds()

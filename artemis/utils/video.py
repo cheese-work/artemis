@@ -56,6 +56,59 @@ TIMELINE_GAP_EPSILON_SECONDS = 0.05
 # Target 100MB to allow 3-5min crisp video and prevent blurring for long durations.
 MAX_VIDEO_SIZE_MB = 500
 MAX_VIDEO_SIZE_BYTES = MAX_VIDEO_SIZE_MB * 1024 * 1024
+MINIMUM_SCRCPY_VERSION = (1, 25)
+
+
+def _parse_scrcpy_version(version_output: str) -> tuple[int, int, int]:
+    match = re.search(
+        r"\b(?:scrcpy\s+)?v?(\d+)\.(\d+)(?:\.(\d+))?\b", version_output, re.IGNORECASE
+    )
+    if not match:
+        raise ValueError(f"Could not parse scrcpy version from: {version_output!r}")
+    return tuple(int(part or 0) for part in match.groups())
+
+
+def scrcpy_recording_flags(version_output: str) -> tuple[str, str, str]:
+    """Return headless, bitrate, and orientation options for a scrcpy version."""
+    version = _parse_scrcpy_version(version_output)
+    if version[:2] < MINIMUM_SCRCPY_VERSION:
+        detected = f"{version[0]}.{version[1]}" + (f".{version[2]}" if version[2] else "")
+        minimum = ".".join(str(part) for part in MINIMUM_SCRCPY_VERSION)
+        raise ValueError(
+            f"Unsupported scrcpy {detected}: recording requires scrcpy {minimum} or newer"
+        )
+
+    if version[0] == 1:
+        return "--no-display", "--bit-rate", "--lock-video-orientation"
+    if version[0] == 2:
+        headless_flag = "--no-display" if version[1] < 5 else "--no-window"
+        return headless_flag, "--video-bit-rate", "--lock-video-orientation"
+    return "--no-window", "--video-bit-rate", "--capture-orientation=@"
+
+
+def detect_scrcpy_version(scrcpy_executable: str) -> str:
+    """Return the installed scrcpy version, or a diagnostic probe error."""
+    try:
+        result = subprocess.run(
+            [scrcpy_executable, "--version"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise ValueError(
+            f"Could not read scrcpy version using {scrcpy_executable!r} --version: {exc}"
+        ) from exc
+
+    output = "\n".join(part for part in (result.stdout, result.stderr) if part)
+    if result.returncode != 0:
+        raise ValueError(
+            f"{scrcpy_executable!r} --version exited with {result.returncode}: "
+            f"{output.strip() or 'no version output'}"
+        )
+    version = _parse_scrcpy_version(output)
+    return f"{version[0]}.{version[1]}" + (f".{version[2]}" if version[2] else "")
 
 
 def build_scrcpy_record_command(
@@ -64,6 +117,8 @@ def build_scrcpy_record_command(
     output_path: Path,
     video_bit_rate: str = "2M",
     lock_capture_orientation: bool = True,
+    *,
+    scrcpy_version: str,
 ) -> list[str]:
     """Build the shared scrcpy command used by all recording paths.
 
@@ -72,20 +127,21 @@ def build_scrcpy_record_command(
     segment never contains multiple coded sizes while still displaying the app
     in its natural orientation.
     """
+    headless_flag, bitrate_flag, orientation_flag = scrcpy_recording_flags(scrcpy_version)
     command = [
         scrcpy_executable,
         "--serial",
         device_id,
-        "--no-window",
+        headless_flag,
         "--record",
         str(output_path),
         "--record-format",
         "mkv",
-        "--video-bit-rate",
+        bitrate_flag,
         video_bit_rate,
     ]
     if lock_capture_orientation:
-        command.append("--capture-orientation=@")
+        command.append(orientation_flag)
     return command
 
 
@@ -152,6 +208,8 @@ class RecordingSession(BaseModel):
     video_id: UUID
     device_id: str
     start_time: float
+    scrcpy_executable: str | None = None
+    scrcpy_version: str | None = None
     process: Any = None
     data_engine_start_time: float | None = None
     local_video_path: Path | None = None

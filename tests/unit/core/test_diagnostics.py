@@ -435,6 +435,66 @@ async def test_toolchain_probe_structure():
 
 
 @pytest.mark.asyncio
+async def test_toolchain_probe_reports_scrcpy_version(monkeypatch):
+    monkeypatch.setattr(
+        "artemis.core.diagnostics.probes.toolchain_probe.toolchain.resolve",
+        lambda name: f"/usr/bin/{name}",
+    )
+    monkeypatch.setattr(
+        "artemis.core.diagnostics.probes.toolchain_probe.detect_scrcpy_version",
+        lambda executable: "4.1",
+    )
+
+    result = await ToolchainProbe().probe()
+
+    assert result.metadata["scrcpy_version"] == "4.1"
+    assert "scrcpy 4.1" in result.summary
+
+
+@pytest.mark.asyncio
+async def test_toolchain_probe_explains_unsupported_scrcpy(monkeypatch):
+    monkeypatch.setattr(
+        "artemis.core.diagnostics.probes.toolchain_probe.toolchain.resolve",
+        lambda name: f"/usr/bin/{name}",
+    )
+
+    monkeypatch.setattr(
+        "artemis.core.diagnostics.probes.toolchain_probe.detect_scrcpy_version",
+        lambda executable: "1.24",
+    )
+
+    result = await ToolchainProbe().probe()
+
+    assert result.status == ProbeStatus.FAIL
+    assert result.metadata["scrcpy_supported"] is False
+    assert "Unsupported scrcpy version (1.24)" in result.summary
+    assert "recording requires scrcpy 1.25" in result.description
+
+
+@pytest.mark.asyncio
+async def test_toolchain_probe_explains_unreadable_scrcpy_version(monkeypatch):
+    monkeypatch.setattr(
+        "artemis.core.diagnostics.probes.toolchain_probe.toolchain.resolve",
+        lambda name: f"/usr/bin/{name}",
+    )
+
+    def fail_version_probe(_executable):
+        raise ValueError("scrcpy --version exited with 1: permission denied")
+
+    monkeypatch.setattr(
+        "artemis.core.diagnostics.probes.toolchain_probe.detect_scrcpy_version",
+        fail_version_probe,
+    )
+
+    result = await ToolchainProbe().probe()
+
+    assert result.status == ProbeStatus.FAIL
+    assert result.summary == "Could not determine scrcpy version"
+    assert "Unsupported scrcpy version (None)" not in result.summary
+    assert "scrcpy --version exited with 1: permission denied" in result.description
+
+
+@pytest.mark.asyncio
 async def test_probe_target_serial_forwards_to_adb_probe():
     """Verify the probe target preference reaches the ADB probe and can be cleared."""
     engine = ReadinessEngine()

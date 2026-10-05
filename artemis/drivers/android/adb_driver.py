@@ -29,7 +29,11 @@ from artemis.config.paths import get_temp_dir
 from artemis.drivers.base import BaseDeviceDriver, KeyCode, ScreenData, SwipeDirection
 from artemis.drivers.types import DeviceDisconnectedError, device_disconnect_reason
 from artemis.toolchain import find_ffmpeg, find_scrcpy
-from artemis.utils.video import build_scrcpy_record_command, recording_unavailable_reason
+from artemis.utils.video import (
+    build_scrcpy_record_command,
+    detect_scrcpy_version,
+    recording_unavailable_reason,
+)
 from artemis.utils.ui_filter import filter_ui_hierarchy
 from artemis.utils.logger import get_logger
 
@@ -479,11 +483,15 @@ class AndroidAdbDriver(BaseDeviceDriver):
         logger.info(f"Starting scrcpy video recording to {self._recording_mkv_path}...")
         try:
             scrcpy_bin = find_scrcpy()
+            if not scrcpy_bin:
+                raise ValueError("scrcpy executable was not found")
+            scrcpy_version = await asyncio.to_thread(detect_scrcpy_version, scrcpy_bin)
             cmd = build_scrcpy_record_command(
                 scrcpy_bin,
                 self.device_id,
                 self._recording_mkv_path,
                 lock_capture_orientation=False,
+                scrcpy_version=scrcpy_version,
             )
             self._scrcpy_process = await asyncio.create_subprocess_exec(
                 *cmd,

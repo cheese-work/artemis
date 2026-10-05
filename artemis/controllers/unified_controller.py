@@ -29,6 +29,7 @@ from artemis.config.paths import get_temp_dir
 from artemis.context import ArtemisContext
 from artemis.drivers.factory import get_driver
 from artemis.drivers.base import BaseDeviceDriver
+from artemis.toolchain import find_scrcpy
 from artemis.drivers.types import DeviceDisconnectedError, device_disconnect_reason
 from artemis.controllers.device_controller import ScreenDataResponse
 from artemis.controllers.types import (
@@ -48,6 +49,7 @@ from artemis.utils.video import (
     build_scrcpy_record_command,
     cleanup_video_segments,
     concatenate_videos,
+    detect_scrcpy_version,
     get_android_display_state,
     get_active_session,
     has_active_session,
@@ -556,8 +558,21 @@ class UnifiedMobileController:
         session.generation = session.android_segment_index
         output_dir = session.local_video_path.parent
         new_video_path = output_dir / f"recording_{session.android_segment_index:03d}.mkv"
+        scrcpy_executable = session.scrcpy_executable or find_scrcpy()
+        if not scrcpy_executable:
+            raise ValueError("scrcpy executable was not found")
+        scrcpy_version = session.scrcpy_version or await asyncio.to_thread(
+            detect_scrcpy_version, scrcpy_executable
+        )
+        session.scrcpy_executable = scrcpy_executable
+        session.scrcpy_version = scrcpy_version
         process = await self._spawn_scrcpy(
-            build_scrcpy_record_command("scrcpy", session.device_id, new_video_path)
+            build_scrcpy_record_command(
+                scrcpy_executable,
+                session.device_id,
+                new_video_path,
+                scrcpy_version=scrcpy_version,
+            )
         )
         spawned_at = time.time()
         first_frame_at = await await_scrcpy_first_frame(process, spawned_at)
@@ -654,6 +669,10 @@ class UnifiedMobileController:
             video_id = uuid4()
             start_time = time.time()
             display_state = await get_android_display_state(device_id)
+            scrcpy_executable = find_scrcpy()
+            if not scrcpy_executable:
+                raise ValueError("scrcpy executable was not found")
+            scrcpy_version = await asyncio.to_thread(detect_scrcpy_version, scrcpy_executable)
             data_engine_start_time = (
                 self.ctx.data_engine.session_start_time
                 if (self.ctx and self.ctx.data_engine)
@@ -664,6 +683,8 @@ class UnifiedMobileController:
                 video_id=video_id,
                 device_id=device_id,
                 start_time=start_time,
+                scrcpy_executable=scrcpy_executable,
+                scrcpy_version=scrcpy_version,
                 data_engine_start_time=data_engine_start_time,
                 local_video_path=local_video_path,
                 capture_width=getattr(getattr(self.ctx, "device", None), "device_width", None),
@@ -676,7 +697,12 @@ class UnifiedMobileController:
                 session.capture_width, session.capture_height = display_state[1:]
 
             # Start scrcpy in background
-            cmd = build_scrcpy_record_command("scrcpy", device_id, local_video_path)
+            cmd = build_scrcpy_record_command(
+                scrcpy_executable,
+                device_id,
+                local_video_path,
+                scrcpy_version=scrcpy_version,
+            )
 
             process = await self._spawn_scrcpy(cmd)
             spawned_at = time.time()

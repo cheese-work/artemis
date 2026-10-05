@@ -34,6 +34,7 @@ from artemis.data_engine.models import (
     TraceRecord,
     VideoRecordingRecord,
 )
+from artemis.data_engine.run_catalog import migrate as migrate_run_catalog
 from artemis.runtime.lifecycle import ensure_lifecycle_schema
 from artemis.utils.logger import get_logger
 
@@ -274,6 +275,11 @@ class StorageManager:
             except sqlite3.OperationalError:
                 pass
             conn.commit()
+        try:
+            migrate_run_catalog(self.db_path)
+        except sqlite3.Error:
+            # Additive index over runs; the listing API reports "not ready" instead.
+            logger.exception("Run catalog migration failed for %s", self.db_path)
         logger.info(f"Database initialized at {self.db_path}")
 
     def create_session(self, session: SessionMetadata):
