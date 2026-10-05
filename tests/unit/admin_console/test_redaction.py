@@ -154,3 +154,57 @@ def test_quoted_values_nested_through_redact_json():
     }
     dumped = json.dumps(redact_json(payload))
     assert "alpha" not in dumped and "beta" not in dumped and '\\"b\\"' not in dumped
+
+
+# -- round 3: escaped quotes at any nesting depth, cookies ---------------------------------
+
+
+def _nested(depth: int) -> str:
+    text = json.dumps({"password": 'alpha "beta" gamma', "user": "dana"})
+    for _ in range(depth - 1):
+        text = json.dumps(text)
+    return text
+
+
+@pytest.mark.parametrize("depth", [1, 2, 3, 4])
+def test_escaped_inner_quotes_at_any_json_nesting_depth(depth):
+    out = redact_text(_nested(depth))
+    for leaked in ("alpha", "beta", "gamma"):
+        assert leaked not in out, f"{leaked} leaked at depth {depth}: {out}"
+    assert "dana" in out and REDACTED in out  # the neighbour field survives
+    assert redact_text(out) == out
+
+
+def test_nested_forms_mixed_in_one_text():
+    text = f'start {_nested(2)} middle password="x y" and {_nested(3)} end'
+    out = redact_text(text)
+    for leaked in ("alpha", "beta", "gamma", "x y"):
+        assert leaked not in out
+    assert out.startswith("start ") and out.endswith(" end") and "middle" in out
+
+
+def test_nested_depth_one_stays_parseable():
+    assert json.loads(redact_text(_nested(1))) == {"password": REDACTED, "user": "dana"}
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Cookie: sid=abc123; user=bob; theme=dark",
+        "curl -H 'Cookie: a=1; b=2' https://x.test",
+        'curl -H "Cookie: a=1; b=2" https://x.test',
+        "Set-Cookie: sid=abc123; Path=/; HttpOnly; Secure",
+        "cookie=sid=abc123; user=bob",
+        '{\\"Cookie\\": \\"sid=abc123; user=bob\\"}',
+    ],
+)
+def test_whole_cookie_header_value_is_redacted(text):
+    out = redact_text(text)
+    for leaked in ("abc123", "bob", "a=1", "b=2", "HttpOnly", "theme"):
+        assert leaked not in out, out
+    assert REDACTED in out and redact_text(out) == out
+
+
+def test_cookie_redaction_keeps_what_follows_the_header():
+    out = redact_text("Cookie: a=1; b=2\nHost: example.test")
+    assert out == f"Cookie: {REDACTED}\nHost: example.test"

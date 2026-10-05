@@ -584,3 +584,146 @@ async def test_a_symlinked_parent_of_a_recording_never_deletes_outside_storage(
     assert response.status_code == 200
     assert precious.read_bytes() == b"PRECIOUS"
     assert (library.traces / "link").is_symlink()
+
+
+# -- round 3: shared task folders, delete-time TOCTOU, sweep loop, vanished files -------------
+
+
+@pytest.mark.asyncio
+async def test_purging_a_run_leaves_a_sibling_sharing_its_task_folder_alone(library, admin):
+    doomed = library.seed("task rerun 1", age_days=3)
+    pinned = library.seed("task rerun 2", age_days=2, pinned=True)
+    live = library.seed("task rerun 3", status="running")
+    shared = library.video_in(doomed, "my-task", "recording.mp4", b"SHARED")
+    library.video_in(pinned, "my-task", "recording.mp4", b"SHARED")
+    own = library.video_in(
+        live, "my-task", "recording-live.mp4", b"LIVE"
+    )  # same folder, other file
+
+    async with admin:
+        assert (await admin.post(f"/api/runs/{doomed}/delete")).status_code == 200
+
+    assert shared.exists() and own.exists() and shared.read_bytes() == b"SHARED"
+    assert library.count("video_recordings", pinned) == 1 and library.count("sessions", doomed) == 0
+
+
+@pytest.mark.asyncio
+async def test_the_last_run_to_leave_a_task_folder_removes_it(library, admin):
+    first = library.seed("task rerun 1", age_days=3)
+    second = library.seed("task rerun 2", age_days=2)
+    library.video_in(first, "my-task", "recording.mp4")
+    library.video_in(second, "my-task", "recording-2.mp4")
+    folder = library.traces / "my-task"
+
+    async with admin:
+        await admin.post(f"/api/runs/{first}/delete")
+        assert folder.exists()  # the second run still owns files here
+        await admin.post(f"/api/runs/{second}/delete")
+
+    assert not folder.exists()
+
+
+@pytest.mark.asyncio
+async def test_a_parent_swapped_for_a_symlink_between_check_and_delete_is_not_followed(
+    library, admin, tmp_path, monkeypatch
+):
+    sid = library.seed("swap", age_days=1)
+    inside = library.traces / "task" / "sub"
+    inside.mkdir(parents=True)
+    (inside / "video.mp4").write_bytes(b"INSIDE")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    precious = outside / "video.mp4"
+    precious.write_bytes(b"PRECIOUS")
+    with sqlite3.connect(library.db) as conn:
+        conn.execute(
+            "INSERT INTO video_recordings (video_id, session_id, local_video_path, status) "
+            "VALUES ('v1', ?, ?, 'ready')",
+            (sid, str(inside / "video.mp4")),
+        )
+    fired = []
+    real_lstat, real_stat = os.lstat, os.stat
+
+    def swap_once(path):
+        if not fired and str(path).endswith("video.mp4"):
+            fired.append(True)
+            inside.rename(inside.with_name("sub-moved"))
+            os.symlink(outside, inside)
+
+    def lstat(path, *args, **kwargs):
+        swap_once(path)
+        return real_lstat(path, *args, **kwargs)
+
+    def stat(path, *args, **kwargs):
+        swap_once(path)
+        return real_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "lstat", lstat)
+    monkeypatch.setattr(os, "stat", stat)
+
+    async with admin:
+        response = await admin.post(f"/api/runs/{sid}/delete")
+
+    monkeypatch.undo()
+    assert response.status_code == 200
+    assert precious.read_bytes() == b"PRECIOUS"  # the swapped-in link was never followed
+
+
+@pytest.mark.asyncio
+async def test_the_sweep_loop_survives_any_error_and_stops_only_on_cancel(monkeypatch, caplog):
+    calls = []
+
+    def broken():
+        calls.append(1)
+        raise ValueError("boom")
+
+    sleeps = []
+
+    async def sleep(_seconds):
+        sleeps.append(1)
+        if len(sleeps) == 3:
+            raise asyncio.CancelledError
+
+    monkeypatch.setattr(run_retention, "finish_pending_cleanups", broken)
+    monkeypatch.setattr(run_retention.asyncio, "sleep", sleep)
+
+    with caplog.at_level("ERROR"), pytest.raises(asyncio.CancelledError):
+        await run_retention.sweep_forever()
+
+    assert len(calls) == 3  # kept looping after each failure
+    assert "Retention sweep failed" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_a_dead_background_task_is_logged(caplog):
+    async def dies():
+        raise RuntimeError("sweeper died")
+
+    task = asyncio.ensure_future(dies())
+    task.add_done_callback(run_retention.log_task_failure)
+    with caplog.at_level("ERROR"):
+        await asyncio.gather(task, return_exceptions=True)
+        await asyncio.sleep(0)
+
+    assert "sweeper died" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_a_file_that_vanishes_after_listing_does_not_break_bundle_or_storage(
+    library, qa, monkeypatch, tmp_path
+):
+    from apps.admin_console.services import run_artifacts
+
+    sid = library.seed("ghost", pinned=True)
+    library.video(sid)
+    ghost = tmp_path / "ghost.mp4"  # safe_file said yes, then the file was removed
+    monkeypatch.setattr(run_artifacts, "safe_file", lambda root, candidate: (ghost, None))
+
+    async with qa:
+        storage = await qa.get("/api/system/storage")
+        bundle = await qa.get(f"/api/runs/{sid}/bundle.zip")
+
+    assert storage.status_code == 200 and bundle.status_code == 200
+    assert not any(
+        n.startswith("video/") for n in zipfile.ZipFile(io.BytesIO(bundle.content)).namelist()
+    )

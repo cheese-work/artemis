@@ -127,6 +127,21 @@ class RunLibrary:
             )
         return path
 
+    def video_in(
+        self, sid: str, folder: str, name: str = "recording.mp4", data: bytes = b"v"
+    ) -> Path:
+        """A recording file under a task folder that other runs may share."""
+        path = self.traces / folder / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+        with sqlite3.connect(self.db) as conn:
+            conn.execute(
+                "INSERT INTO video_recordings (video_id, session_id, local_video_path, status) "
+                "VALUES (?, ?, ?, 'ready')",
+                (str(uuid.uuid4()), sid, str(path)),
+            )
+        return path
+
     def count(self, table: str, sid: str) -> int:
         with sqlite3.connect(self.db) as conn:
             return conn.execute(
