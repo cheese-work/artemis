@@ -797,7 +797,14 @@ class TaskQueueService:
 
         The worker's exit code is only a fallback: the lifecycle authority keeps
         any outcome already committed (completed, cancelled, interrupted, ...).
+
+        Settlement owns the run's outcome from this call on: a host NACK is
+        refused once ``settling`` is set, and a requeued row is never settled.
         """
+        item = cls._queue_item_for(sess_id)
+        if item.get("requeue"):
+            return "queued"
+        item["settling"] = True  # before the first await: the NACK check cannot miss it
         try:
             outcome = await asyncio.to_thread(
                 session_repo.lifecycle.settle_worker_exit, str(sess_id), returncode, manual_stop
@@ -2038,12 +2045,13 @@ class TaskQueueService:
     async def requeue_starting(cls, session_id: str) -> bool:
         """The host agent NACKed a start that raced its barrier: wait again, in place.
 
-        Honored only while no worker process exists for the run: it is then
-        cancelled before spawn, the row goes back to ``pending`` at its list
-        position, its ticket (never handed to a worker) keeps its original
-        timestamp and its session stays queued. Once a worker was, or may have
-        been, spawned (or the state is unknown) the NACK is refused and nothing
-        is killed: the worker may already hold the device, and stopping a
+        Honored only while no worker process exists for the run and terminal
+        settlement has not started: the run is then cancelled before spawn, the
+        row goes back to ``pending`` at its list position, its ticket (never
+        handed to a worker) keeps its original timestamp and its session stays
+        queued. Once a worker was, or may have been, spawned, once settlement
+        owns the outcome, or when the state is unknown, the NACK is refused and
+        nothing is killed: a worker may already hold the device, and stopping a
         spawned worker belongs to the host agent protocol (B2/B3a), where the
         agent is authoritative for its own processes. False when refused.
         """
@@ -2052,6 +2060,7 @@ class TaskQueueService:
         if (
             item.get("status") != "starting"
             or item.get("worker_spawned")
+            or item.get("settling")
             or not item.get("queue_ticket")
             or sid in state.active_runs
             or item not in state.queue_items

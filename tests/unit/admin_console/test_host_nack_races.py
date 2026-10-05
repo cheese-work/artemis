@@ -564,3 +564,62 @@ async def test_barrier_counts_a_previously_spawned_start_until_it_finishes(tmp_p
     finally:
         lock.release()
         exited.set()
+
+
+@pytest.mark.asyncio
+async def test_nack_that_wins_before_settlement_is_not_overwritten_by_a_later_failure(
+    tmp_path, monkeypatch
+):
+    """Other order: the NACK lands first; the run's later failure must not settle it."""
+    host()
+    ticket = DeviceExecutionLock.reserve("probe", "d1", session_id="r1", lock_scope="host:host-a")
+    assert session_repo.create_queued_session("r1", "probe", "flash", "d1", 1.0, None)
+    snapshot_started = asyncio.Event()
+    fail_snapshot = asyncio.Event()
+
+    async def snapshot_for_spawn():
+        snapshot_started.set()
+        await fail_snapshot.wait()
+        raise RuntimeError("config snapshot failed")
+
+    store = SimpleNamespace(snapshot_for_spawn=snapshot_for_spawn)
+    monkeypatch.setattr("apps.admin_console.services.config_store.get_config_store", lambda: store)
+    settle = MagicMock(wraps=LifecycleAuthority.settle_worker_exit)
+    monkeypatch.setattr(LifecycleAuthority, "settle_worker_exit", settle)
+    spawn = AsyncMock()
+    monkeypatch.setattr("asyncio.create_subprocess_exec", spawn)
+    state.queue_items.append(row("r1", ticket=ticket))
+    TaskQueueService._dispatch_pending_tasks()
+    await asyncio.wait_for(snapshot_started.wait(), 5)
+    run_task = TaskQueueService._run_tasks_by_session["r1"]
+
+    assert await TaskQueueService.requeue_starting("r1") is True
+    fail_snapshot.set()  # too late: the run was cancelled before it could fail
+    await asyncio.gather(run_task, return_exceptions=True)
+    await asyncio.sleep(0.05)
+
+    spawn.assert_not_called()
+    settle.assert_not_called()
+    assert session_repo.get_session_by_id("r1")["status"] == "queued"
+    assert [(i["session_id"], i["status"]) for i in state.queue_items] == [("r1", "pending")]
+
+
+@pytest.mark.asyncio
+async def test_settlement_never_overwrites_a_requeued_row(monkeypatch):
+    assert session_repo.create_queued_session("r1", "probe", "flash", "d1", 1.0, None)
+    state.queue_items.append({**row("r1"), "requeue": True})
+
+    status = await TaskQueueService._persist_terminal_session_status("r1", 1, False)
+
+    assert status == "queued"
+    assert session_repo.get_session_by_id("r1")["status"] == "queued"
+    assert "settling" not in state.queue_items[0]
+
+
+@pytest.mark.asyncio
+async def test_a_settling_start_is_refused_by_a_nack_even_before_any_thread_runs(monkeypatch):
+    host()
+    state.queue_items.append({**row("r1", ticket="t1"), "status": "starting", "settling": True})
+
+    assert await TaskQueueService.requeue_starting("r1") is False
+    assert state.queue_items[0]["status"] == "starting"
