@@ -17,6 +17,7 @@
 import asyncio
 import errno
 import os
+import sqlite3
 
 import pytest
 
@@ -178,3 +179,72 @@ async def test_a_partial_lease_acquire_releases_what_it_already_took(library, mo
         await asyncio.to_thread(run_media.lease, owners)
 
     assert _lease_rows(library) == 0
+
+
+# -- round 5: the tombstone and its cleanup queue row commit together ---------------------
+
+
+def _queue_down(library):
+    """Make writes to the cleanup queue fail until ``_queue_up`` (a crash or a locked database)."""
+    run_leases.pending_count(library.db)  # creates the table
+    with sqlite3.connect(library.db) as conn:
+        conn.execute(
+            "CREATE TRIGGER queue_down BEFORE INSERT ON run_pending_cleanup "
+            "BEGIN SELECT RAISE(ABORT, 'queue down'); END"
+        )
+
+
+def _queue_up(library):
+    with sqlite3.connect(library.db) as conn:
+        conn.execute("DROP TRIGGER queue_down")
+
+
+async def _assert_no_half_state(admin, library, sid):
+    """Tombstoned runs must have a pending cleanup; otherwise nothing may have happened."""
+    status = (await admin.get(f"/api/runs/{sid}")).status_code
+    if status == 410:
+        assert run_leases.pending_count(library.db) >= 1, "tombstoned with no cleanup queued"
+    else:
+        assert status == 200
+
+
+@pytest.mark.asyncio
+async def test_a_queue_failure_never_leaves_a_tombstone_without_a_cleanup(library, admin):
+    sid = library.seed("half", age_days=3)
+    video = library.video(sid)
+    _queue_down(library)
+
+    async with admin:
+        with pytest.raises(sqlite3.Error):
+            await admin.post(f"/api/runs/{sid}/delete")
+        await _assert_no_half_state(admin, library, sid)
+
+        _queue_up(library)
+        retry = await admin.post(f"/api/runs/{sid}/delete")
+
+    run_retention.finish_pending_cleanups()
+    assert retry.status_code == 200
+    assert not video.exists() and library.count("sessions", sid) == 0
+    assert run_leases.pending_count(library.db) == 0
+
+
+@pytest.mark.asyncio
+async def test_a_queue_failure_in_a_batch_is_retried_by_the_next_sweep(library, admin):
+    sid = library.seed("old", age_days=60)
+    video = library.video(sid)
+    _queue_down(library)
+
+    async with admin:
+        assert (await admin.put("/api/system/retention", json={"days": 30})).status_code == 200
+        await admin.post("/api/system/retention/dry-run")
+        await admin.put("/api/system/retention", json={"enabled": True})
+        first = (await admin.post("/api/system/retention/run")).json()
+        await _assert_no_half_state(admin, library, sid)
+        assert first["deleted"] == []
+
+        _queue_up(library)
+        second = (await admin.post("/api/system/retention/run")).json()
+
+    run_retention.finish_pending_cleanups()
+    assert second["deleted"] == [sid] and not video.exists()
+    assert library.count("sessions", sid) == 0
