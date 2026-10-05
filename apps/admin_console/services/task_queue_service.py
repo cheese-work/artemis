@@ -1157,6 +1157,9 @@ class TaskQueueService:
             print(
                 f"[QueueWorker] Starting task [{sess_id}]: '{goal}' (profile: {profile}, device: {device_serial or 'auto'}, outputter: {bool(task_item.get('expected_output') or task_item.get('enable_outputter'))})"
             )
+            # From here a worker process may exist before it is registered: the host
+            # NACK (requeue_starting) must treat this run as spawned.
+            task_item["worker_spawned"] = True
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
                 cwd=str(WORKSPACE_ROOT),
@@ -2032,75 +2035,41 @@ class TaskQueueService:
         return "cancelled"
 
     @classmethod
-    def _reclaim_ticket(cls, item: dict[str, Any]) -> None:
-        """Re-own a run's queue ticket (same file, same timestamp) as the server."""
-        if not item.get("queue_ticket"):
-            return
-        DeviceExecutionLock.transfer_reservation(
-            str(item["queue_ticket"]),
-            os.getpid(),
-            description=f"{item.get('ingress')} task: {str(item.get('goal'))[:120]}",
-            device_id=item.get("device_serial") or "pending",
-            session_id=str(item.get("session_id")),
-            ingress=str(item.get("ingress")),
-            lock_scope=cls._task_target(item).lock_scope,
-        )
-
-    @classmethod
     async def requeue_starting(cls, session_id: str) -> bool:
         """The host agent NACKed a start that raced its barrier: wait again, in place.
 
-        The device lock is the single arbiter. The server takes it (non-blocking)
-        for the whole decide, requeue and kill sequence: a worker that already
-        holds it makes this refuse and kill nothing; a worker that does not hold
-        it cannot acquire until the server lets go, by which time it is dead.
-        Unreadable lock state, a held lock or a missing ticket refuse the NACK
-        and leave the run untouched. On success the row keeps its list position,
-        its ticket keeps its original timestamp, and its session stays queued.
-        False when the run is not a not-yet-executing one.
+        Honored only while no worker process exists for the run: it is then
+        cancelled before spawn, the row goes back to ``pending`` at its list
+        position, its ticket (never handed to a worker) keeps its original
+        timestamp and its session stays queued. Once a worker was, or may have
+        been, spawned (or the state is unknown) the NACK is refused and nothing
+        is killed: the worker may already hold the device, and stopping a
+        spawned worker belongs to the host agent protocol (B2/B3a), where the
+        agent is authoritative for its own processes. False when refused.
         """
         sid = str(session_id)
         item = cls._queue_item_for(sid)
-        run = state.active_runs.get(sid)
-        proc = run.get("process") if run else None
         if (
             item.get("status") != "starting"
+            or item.get("worker_spawned")
             or not item.get("queue_ticket")
-            or (proc is not None and proc.returncode is not None)
+            or sid in state.active_runs
+            or item not in state.queue_items
         ):
             return False
-        arbiter = DeviceExecutionLock(
-            str(item.get("device_serial")),
-            f"requeue of {sid}",
-            session_id=f"requeue:{sid}",
-            lock_scope=cls._task_target(item).lock_scope,
-        )
-        try:
-            if not arbiter.try_hold():
-                return False
-        except OSError:
-            return False
-        try:
-            # No await between the decision and the cancel: the run cannot move.
-            item["requeue"] = True
-            # Hold the ticket as the server before the worker dies: a dead owner's
-            # ticket is swept as stale by the next waiting worker.
-            cls._reclaim_ticket(item)
-            run_task = cls._run_tasks_by_session.get(sid)
-            if run_task is not None:
-                run_task.cancel()
-                await asyncio.gather(run_task, return_exceptions=True)
-            host_admission.release(sid)
-            if item not in state.queue_items:  # stopped while we waited
-                return True
-            cls._reclaim_ticket(item)
-            for key in ("requeue", "pid"):
-                item.pop(key, None)
-            item["status"] = "pending"
-            state.wake_event.set()
+        # No await from the decision to the cancel: the run cannot move meanwhile.
+        item["requeue"] = True
+        run_task = cls._run_tasks_by_session.get(sid)
+        if run_task is not None:
+            run_task.cancel()
+            await asyncio.gather(run_task, return_exceptions=True)
+        host_admission.release(sid)
+        item.pop("requeue", None)
+        if item not in state.queue_items:  # stopped while we waited
             return True
-        finally:
-            arbiter.release()
+        item["status"] = "pending"
+        state.wake_event.set()
+        return True
 
     @classmethod
     def stop_tasks(

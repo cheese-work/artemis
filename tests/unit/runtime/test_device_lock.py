@@ -425,33 +425,6 @@ def _queue_files(tmp_path):
     return sorted((tmp_path / "artemis-global-device.queue").glob("*.wait"))
 
 
-def test_held_device_lock_keeps_a_waiting_worker_out():
-    arbiter = DeviceExecutionLock("d1", "arbiter", session_id="requeue:s1", lock_scope="host:a")
-    worker = DeviceExecutionLock("d1", "t", session_id="s1", lock_scope="host:a")
-    assert arbiter.try_hold() is True
-
-    with pytest.raises(DeviceBusyError):
-        worker.acquire(timeout=0.3)  # a blocking worker keeps waiting until it gives up
-    assert not worker._acquired
-
-    arbiter.release()
-    retry = DeviceExecutionLock("d1", "t", session_id="s1", lock_scope="host:a")
-    retry.acquire(blocking=False)
-    retry.release()
-
-
-def test_try_hold_fails_while_a_worker_owns_the_device():
-    worker = DeviceExecutionLock("d1", "t", session_id="s1", lock_scope="host:a")
-    arbiter = DeviceExecutionLock("d1", "arbiter", session_id="requeue:s1", lock_scope="host:a")
-    worker.acquire(blocking=False)
-    try:
-        assert arbiter.try_hold() is False
-    finally:
-        worker.release()
-    assert arbiter.try_hold() is True
-    arbiter.release()
-
-
 def test_queue_head_token_skips_dead_owners_and_other_scopes():
     first = DeviceExecutionLock.reserve("t", "d1", session_id="a", lock_scope="host:a")
     DeviceExecutionLock.reserve("t", "d1", session_id="b", lock_scope="host:a")
@@ -463,32 +436,3 @@ def test_queue_head_token_skips_dead_owners_and_other_scopes():
     DeviceExecutionLock.cancel_reservation(first)
     head = DeviceExecutionLock.queue_head_token("d1", "host:a")
     assert head is not None and head != first
-
-
-@pytest.mark.parametrize("record", ["", '{"pid": 12', "not json"])
-def test_try_hold_never_reaps_an_aged_partial_or_unreadable_lock(record):
-    holder = DeviceExecutionLock("d1", "worker", session_id="s1", lock_scope="host:a")
-    arbiter = DeviceExecutionLock("d1", "arbiter", session_id="requeue:s1", lock_scope="host:a")
-    holder.path.write_text(record)
-    old = time.time() - DeviceExecutionLock._MALFORMED_LOCK_GRACE_SECONDS - 60
-    os.utime(holder.path, (old, old))
-
-    assert arbiter.try_hold() is False
-
-    assert holder.path.exists()  # unknown ownership is never revoked, however old
-    assert holder.path.read_text() == record
-
-
-def test_try_hold_leaves_a_dead_owners_lock_for_the_normal_acquire_path():
-    holder = DeviceExecutionLock("d1", "worker", session_id="s1", lock_scope="host:a")
-    arbiter = DeviceExecutionLock("d1", "arbiter", session_id="requeue:s1", lock_scope="host:a")
-    holder.path.write_text(
-        json.dumps({"pid": 2**22 + 99, "process_created_at": 1.0, "token": "t", "device_id": "d1"})
-    )
-
-    assert arbiter.try_hold() is False
-    assert holder.path.exists()
-
-    worker = DeviceExecutionLock("d1", "next", session_id="s2", lock_scope="host:a")
-    worker.acquire(timeout=2)  # the ordinary path still clears a provably dead lease
-    worker.release()

@@ -1,7 +1,9 @@
-"""NACK arbitration probes from the CHE-1128 re-review (signing verifier x99-codex-sol).
+"""Server NACK of a host start (CHE-1128), including the signing verifier's probes.
 
-Adopted as regression tests: a controlled worker thread pauses inside the real
-DeviceExecutionLock.acquire while the real server NACK path runs.
+The NACK is honored only before a worker process exists; once one was or may have
+been spawned it is refused and nothing is killed, whatever the lock state is.
+Probes pause a real worker thread inside DeviceExecutionLock.acquire (including
+metadata publication) while the real server NACK path runs.
 """
 
 import asyncio
@@ -157,14 +159,10 @@ class ControlledAcquisition:
 
 
 @pytest.mark.asyncio
-async def test_nack_landing_while_a_worker_is_mid_acquisition_kills_it_only_without_the_lock(
+async def test_nack_while_a_spawned_worker_is_mid_acquisition_is_refused_and_kills_nothing(
     tmp_path, monkeypatch
 ):
-    """Re-review probe A: the worker is released into the acquisition mid-NACK.
-
-    The server holds the device lock for the whole NACK, so the worker's attempt
-    fails; the kill lands only after that, and the worker never owns the device.
-    """
+    """Re-review probe A: the worker is released into the acquisition after the NACK."""
     host()
     ticket = DeviceExecutionLock.reserve("probe", "d1", session_id="r1", lock_scope="host:host-a")
     assert session_repo.create_queued_session("r1", "probe", "flash", "d1", 1.0, None)
@@ -172,26 +170,18 @@ async def test_nack_landing_while_a_worker_is_mid_acquisition_kills_it_only_with
     lock = worker_lock(ticket)
     acquisition = ControlledAcquisition(lock, monkeypatch)
     acquisition.start()
-    kills_while_locked: list[bool] = []
-
-    def kill():
-        acquisition.allow_take.set()  # the worker's take lands inside the NACK
-        assert acquisition.attempted.wait(5)
-        kills_while_locked.append(lock._acquired)
-
-    worker.kill.side_effect = kill
     try:
         requeued = await TaskQueueService.requeue_starting("r1")
-        ticket_kept = len(_ticket_files(ticket))  # before the test's own thread gives up
+        acquisition.allow_take.set()  # the worker's take lands after the refused NACK
+        assert acquisition.attempted.wait(5)
+        took = acquisition.took
     finally:
         acquisition.stop()
 
-    assert requeued is True
-    assert ticket_kept == 1
-    assert kills_while_locked == [False]
-    assert acquisition.took is False  # the worker's take failed against the server's hold
-    assert DeviceExecutionLock.get_active_owner("d1", "host:host-a") is None
-    assert state.queue_items[0]["status"] == "pending"
+    assert requeued is False
+    assert took is True  # the worker owns its device; nothing contested it
+    worker.kill.assert_not_called()
+    assert state.queue_items[0]["status"] == "starting"
     assert session_repo.get_session_by_id("r1")["status"] == "queued"
 
 
@@ -225,42 +215,84 @@ async def test_nack_after_the_worker_took_the_lock_is_refused_and_kills_nothing(
 
 
 @pytest.mark.asyncio
-async def test_nacked_run_stays_queued_with_its_ticket_even_if_the_worker_then_exits(
+async def test_nack_before_any_worker_spawn_requeues_in_place_and_never_fails_the_run(
     tmp_path, monkeypatch
 ):
-    """Re-review probe B: a start the host refused is never settled as failed."""
+    """Re-review probe B: a refused start is requeued, not settled as failed."""
     host()
     ticket = DeviceExecutionLock.reserve("probe", "d1", session_id="r1", lock_scope="host:host-a")
     assert session_repo.create_queued_session("r1", "probe", "flash", "d1", 1.0, None)
-    exited = asyncio.Event()
-    worker = await spawned_worker(tmp_path, monkeypatch, ticket, exited)
-    run_task = TaskQueueService._run_tasks_by_session["r1"]
+    other = DeviceExecutionLock.reserve("probe", "d1", session_id="r2", lock_scope="host:host-a")
+    tickets_before = sorted(p.name for p in _ticket_files(ticket) + _ticket_files(other))
+    snapshot_started = asyncio.Event()
+    release_snapshot = asyncio.Event()
+    spawn = AsyncMock()
+
+    async def snapshot_for_spawn():
+        snapshot_started.set()
+        await release_snapshot.wait()
+        return SimpleNamespace(environment={}, config_path=tmp_path / "snapshot.json")
+
+    store = SimpleNamespace(snapshot_for_spawn=snapshot_for_spawn)
+    monkeypatch.setattr("apps.admin_console.services.config_store.get_config_store", lambda: store)
+    monkeypatch.setattr("asyncio.create_subprocess_exec", spawn)
+    state.queue_items.extend([row("r1", ticket=ticket), row("r2", ticket=other)])
+    state.queue_items[1]["status"] = "pending"
+    host_admission.heartbeat("host-a", HostState.ACTIVE, 2)
+    TaskQueueService._dispatch_pending_tasks()
+    await asyncio.wait_for(snapshot_started.wait(), 5)  # r1 dispatched, no worker yet
 
     assert await TaskQueueService.requeue_starting("r1") is True
-    worker.returncode = 1  # the killed worker's exit must not settle the session
-    exited.set()
-    await asyncio.gather(run_task, return_exceptions=True)
-    await asyncio.sleep(0)
 
+    spawn.assert_not_called()
+    assert [(i["session_id"], i["status"]) for i in state.queue_items][0] == ("r1", "pending")
     assert session_repo.get_session_by_id("r1")["status"] == "queued"
-    assert [(i["session_id"], i["status"]) for i in state.queue_items] == [("r1", "pending")]
-    assert len(_ticket_files(ticket)) == 1
+    assert sorted(p.name for p in _ticket_files(ticket) + _ticket_files(other)) == tickets_before
+    assert host_admission.snapshot("host-a", [])["starting"] <= 1  # r1 released its slot
+    assert "r1" not in TaskQueueService._run_tasks_by_session
+    assert "r1" not in state.executing_run_keys
 
 
 @pytest.mark.asyncio
-async def test_nack_is_refused_when_the_arbiter_cannot_read_lock_state(tmp_path, monkeypatch):
+async def test_nack_while_the_worker_process_is_being_spawned_is_refused(tmp_path, monkeypatch):
+    """The process may exist before it is registered: unknown state refuses."""
     host()
     ticket = DeviceExecutionLock.reserve("probe", "d1", session_id="r1", lock_scope="host:host-a")
-    worker = await spawned_worker(tmp_path, monkeypatch, ticket, asyncio.Event())
-    monkeypatch.setattr(
-        DeviceExecutionLock, "try_hold", MagicMock(side_effect=OSError("unreadable"))
-    )
+    assert session_repo.create_queued_session("r1", "probe", "flash", "d1", 1.0, None)
+    spawning = asyncio.Event()
+    finish_spawn = asyncio.Event()
+    worker = MagicMock(pid=os.getpid(), returncode=None)
+
+    async def slow_spawn(*_args, **_kwargs):
+        spawning.set()
+        await finish_spawn.wait()
+        return worker
+
+    snapshot = SimpleNamespace(environment={}, config_path=tmp_path / "snapshot.json")
+    store = SimpleNamespace(snapshot_for_spawn=AsyncMock(return_value=snapshot))
+    monkeypatch.setattr("apps.admin_console.services.config_store.get_config_store", lambda: store)
+    monkeypatch.setattr("asyncio.create_subprocess_exec", slow_spawn)
+    monkeypatch.setattr(TaskQueueService, "_start_output_forwarder", lambda *_args: None)
+    exited = asyncio.Event()
+
+    async def wait_for_exit(_worker):
+        await exited.wait()
+
+    monkeypatch.setattr(TaskQueueService, "_wait_for_worker_process", wait_for_exit)
+    state.queue_items.append(row("r1", ticket=ticket))
+    TaskQueueService._dispatch_pending_tasks()
+    await asyncio.wait_for(spawning.wait(), 5)
+    assert "r1" not in state.active_runs  # spawned but not registered yet
 
     assert await TaskQueueService.requeue_starting("r1") is False
 
+    finish_spawn.set()
+    await asyncio.sleep(0)
+    assert "r1" in state.active_runs
     worker.kill.assert_not_called()
     assert state.queue_items[0]["status"] == "starting"
     assert len(_ticket_files(ticket)) == 1
+    exited.set()
 
 
 # -- third review: the arbiter must never revoke a lease it cannot prove dead --
@@ -365,69 +397,49 @@ async def test_nack_preserves_a_worker_paused_before_owner_metadata_write(tmp_pa
         lock.release()
 
 
-# -- fourth review: acquire() must not reap the arbiter either --
+# -- fourth review: no arbiter lock exists any more, so acquire() has nothing to reap --
 
 
 @pytest.mark.asyncio
-async def test_worker_cannot_reap_a_nack_arbiter_paused_before_metadata_publication(
-    tmp_path, monkeypatch
-):
+async def test_aged_worker_acquisition_is_never_disturbed_by_a_nack(tmp_path, monkeypatch):
+    """Fourth-review probe, adapted: the NACK takes no lock and cannot race acquire()."""
     host()
     ticket = DeviceExecutionLock.reserve("probe", "d1", session_id="r1", lock_scope="host:host-a")
     assert session_repo.create_queued_session("r1", "probe", "flash", "d1", 1.0, None)
     worker = await spawned_worker(tmp_path, monkeypatch, ticket, asyncio.Event())
     lock = worker_lock(ticket)
-    arbiter_created = threading.Event()
-    allow_publication = threading.Event()
-    worker_acquired = threading.Event()
-    errors = []
-    real_write = os.write
-
-    def controlled_write(descriptor, payload):
-        if b'"session_id": "requeue:r1"' in payload:
-            arbiter_created.set()
-            assert allow_publication.wait(5)
-        return real_write(descriptor, payload)
+    kills_while_locked = []
+    worker.kill.side_effect = lambda: kills_while_locked.append(lock._acquired)
+    old_time = time.time() - DeviceExecutionLock._MALFORMED_LOCK_GRACE_SECONDS - 1
+    thread_errors = []
 
     def acquire():
         try:
-            assert arbiter_created.wait(5)
-            old_time = time.time() - DeviceExecutionLock._MALFORMED_LOCK_GRACE_SECONDS - 1
-            os.utime(lock.path, (old_time, old_time))
             lock.acquire(timeout=2, poll_interval=0.01)
-            worker_acquired.set()
-        except BaseException as error:
-            errors.append(error)
-        finally:
-            allow_publication.set()
+        except BaseException as error:  # noqa: BLE001 - recorded for the assertions
+            thread_errors.append(error)
 
-    monkeypatch.setattr(os, "write", controlled_write)
-    kills_while_locked = []
-    worker.kill.side_effect = lambda: kills_while_locked.append(lock._acquired)
     thread = threading.Thread(target=acquire)
     thread.start()
     try:
+        for _ in range(100):
+            if lock.path.exists():
+                os.utime(lock.path, (old_time, old_time))
+                break
+            await asyncio.sleep(0.01)
         requeued = await TaskQueueService.requeue_starting("r1")
-        assert worker_acquired.is_set()
-        assert errors == []
-        owner = DeviceExecutionLock.get_active_owner("d1", "host:host-a")
-        queue_dir = device_lock.get_temp_dir("device-locks") / "artemis-global-device.queue"
-        ticket_kept = bool(list(queue_dir.glob(f"*-{ticket}.wait")))
-        print(
-            f"ARBITER PUBLICATION GAP: requeued={requeued}, "
-            f"kills_while_locked={kills_while_locked}, "
-            f"current_owner={owner.session_id if owner else None}, "
-            f"ticket_kept={ticket_kept}, "
-            f"row={state.queue_items[0]['status']}, "
-            f"session={session_repo.get_session_by_id('r1')['status']}"
-        )
-        assert kills_while_locked == []
-        assert ticket_kept
+        thread.join(5)
     finally:
-        allow_publication.set()
         thread.join(5)
         assert not thread.is_alive()
+        owner_after = DeviceExecutionLock.get_active_owner("d1", "host:host-a")
         lock.release()
+
+    assert requeued is False
+    assert thread_errors == []
+    assert owner_after is not None and owner_after.session_id == "r1"
+    assert kills_while_locked == []
+    assert state.queue_items[0]["status"] == "starting"
 
 
 @pytest.mark.asyncio

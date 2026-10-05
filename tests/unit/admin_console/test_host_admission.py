@@ -556,14 +556,11 @@ async def test_a_nacked_start_requeues_at_its_original_position_and_ticket(runs,
 
 
 @pytest.mark.asyncio
-async def test_nack_after_the_worker_spawned_kills_it_and_hands_the_ticket_back(monkeypatch):
-    """The real run path: the spawned worker owned the ticket and dies with the NACK."""
+async def test_nack_after_the_worker_spawned_is_refused_and_keeps_the_run(monkeypatch):
+    """Killing a spawned worker belongs to the host agent protocol (B2/B3a), not here."""
     _host_agent()
     ticket = DeviceExecutionLock.reserve("t", "d1", session_id="r1", lock_scope=f"host:{HOST_A}")
     state.queue_items.append(_row("r1", ticket=ticket))
-    ticket_file = next(
-        (device_lock.get_temp_dir("device-locks") / "artemis-global-device.queue").glob("*.wait")
-    )
     proc = MagicMock(pid=2**22 + 12345, returncode=None)
     hang = asyncio.Event()
 
@@ -576,22 +573,18 @@ async def test_nack_after_the_worker_spawned_kills_it_and_hands_the_ticket_back(
     monkeypatch.setattr("asyncio.create_subprocess_exec", spawn)
     monkeypatch.setattr(TaskQueueService, "_wait_for_worker_process", wait_forever)
     monkeypatch.setattr(TaskQueueService, "_start_output_forwarder", lambda *_a: None)
-    monkeypatch.setattr(TaskQueueService, "_held_lock_session_ids", classmethod(lambda cls: set()))
     TaskQueueService._dispatch_pending_tasks()
     for _ in range(50):
         if "r1" in state.active_runs:
             break
         await asyncio.sleep(0.01)
-    assert json.loads(ticket_file.read_text())["pid"] == proc.pid  # the worker owns it now
 
-    assert await TaskQueueService.requeue_starting("r1") is True
+    assert await TaskQueueService.requeue_starting("r1") is False
 
-    proc.kill.assert_called_once()
-    assert [i["status"] for i in state.queue_items] == ["pending"]
-    assert "pid" not in state.queue_items[0]
-    assert "r1" not in state.active_runs
-    assert json.loads(ticket_file.read_text())["pid"] == os.getpid()  # same file, alive owner
-    assert host_admission.snapshot(HOST_A, [])["starting"] == 0
+    proc.kill.assert_not_called()
+    assert _statuses() == {"r1": "starting"}
+    assert "r1" in state.active_runs
+    assert host_admission.snapshot(HOST_A, [])["starting"] == 1
 
 
 @pytest.mark.asyncio
