@@ -96,7 +96,7 @@ export class RunLibraryComponent {
   private lastFiltersKey: string | null = null;
 
   constructor() {
-    let showingAll = false;
+    let showingAll = this.ownerScope.showAll();
     effect(() => {
       const all = this.ownerScope.showAll();
       if (all === showingAll) return;

@@ -604,6 +604,16 @@ describe('RunLibraryComponent', () => {
       expect(q('.state-empty')!.textContent).toContain('No runs from any user yet');
     });
 
+    it('loads once, not twice, when the page opens with All users already on', async () => {
+      adminApi.getIdentity.and.returnValue(of(ADMIN_IDENTITY));
+      const scope = TestBed.inject(OwnerScopeService);
+      scope.identity.set(ADMIN_IDENTITY);
+      scope.setAllUsers(true);
+      await open('/runs', of(page([run({ requested_by: 'qa1@example.test' })])));
+      expect(runs.list).toHaveBeenCalledTimes(1);
+      expect(owners()).toEqual(['Owner: qa1@example.test']);
+    });
+
     it('puts the switch first in the tab order for an admin, natively focusable', async () => {
       adminApi.getIdentity.and.returnValue(of(ADMIN_IDENTITY));
       await open('/runs', of(page([run()])));

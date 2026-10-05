@@ -27,7 +27,9 @@ import { OwnerScopeService } from './owner-scope.service';
 import { SELECTED_DEVICE_SERIAL_KEY } from './system.service';
 export type { Session, ModelInfo, TaskQueueItem, AgentStatusResponse, StepItemData, StepReplayFrame, LLMStreamResetEventData, StreamResetNotice };
 
-const SESSION_CACHE_KEY = 'artemis.sessions.v1';
+// v1 held rows with no owner; it may carry other users' runs, so it is dropped, never read.
+const LEGACY_SESSION_CACHE_KEY = 'artemis.sessions.v1';
+const SESSION_CACHE_KEY = 'artemis.sessions.v2';
 
 export interface VideoSegment {
   url: string;
@@ -395,6 +397,8 @@ export class AgentService {
   private lastQueueSignature: string | null = null;
   private lastActiveTasksSignature: string | null = null;
   private lastPersistedSessionsJson: string | null = null;
+  /** Bumped on every scope change; a sessions answer from an older one is dropped. */
+  private scopeGeneration = 0;
   private onVisibilityChange = () => {
     if (typeof document !== 'undefined' && !document.hidden) {
       this.fetchStatus();
@@ -410,7 +414,16 @@ export class AgentService {
       showingAll = all;
       untracked(() => this.reloadForScope());
     });
-    this.restoreSessionsCache();
+    this.dropLegacySessionsCache();
+    // The cache belongs to one identity, so it is read once that identity is known.
+    this.ownerScope.load();
+    let restored = false;
+    effect(() => {
+      const who = this.ownerScope.identity();
+      if (!who || restored) return;
+      restored = true;
+      untracked(() => this.restoreSessionsCache(who.email));
+    });
     this.fetchSessions();
     this.startStatusPolling();
     this.ensureLiveStream();
@@ -681,6 +694,7 @@ export class AgentService {
    * read the queue, history and live stream again for the new one.
    */
   private reloadForScope(): void {
+    this.scopeGeneration++;
     this.invalidatePendingStatusResponses();
     this.invalidateStatusSignatures();
     this.clearSessionsCache();
@@ -688,6 +702,13 @@ export class AgentService {
     this.pendingQueue.set([]);
     this.activeTasks.set([]);
     this.activeSessionTracking.clear();
+    // The merged list synthesizes a row for the running run, so the old scope's
+    // running run must go too, or it comes straight back (and stays in the bridge).
+    this.agentStatus.set('idle');
+    this.runningSessionId.set(null);
+    this.runningGoal.set(null);
+    this.isPaused.set(false);
+    this.pausedError.set(null);
     if (this.eventSource) {
       this.eventSource.close();
       this.eventSource = null;
@@ -701,13 +722,12 @@ export class AgentService {
    * Fetch all past and active sessions from the backend
    */
   public fetchSessions(): void {
-    const requestedAll = this.ownerScope.showAll();
+    const generation = this.scopeGeneration;
     this.http.get<Session[]>('/api/sessions', { params: this.ownerScope.queryParams() }).subscribe({
       next: (data) => {
-        if (requestedAll !== this.ownerScope.showAll()) return; // answers for the scope the QA just left
+        if (generation !== this.scopeGeneration) return; // an answer for a scope the QA already left
         this.rawSessions.set(data);
-        // Everyone's runs must not seed the next page load, which starts on "mine".
-        if (!this.ownerScope.showAll()) this.persistSessionsCache(data);
+        this.persistSessionsCache(data);
         // On initial load, if nothing is selected, not pinned, not running, and sessions exist, select latest
         if (!this.currentSessionId() && !this.userPinnedSessionId() && this.agentStatus() !== 'running' && data.length > 0) {
           this.selectSession(data[0].session_id, false);
@@ -1382,23 +1402,39 @@ export class AgentService {
     });
   }
 
-  private restoreSessionsCache(): void {
+  private dropLegacySessionsCache(): void {
+    try {
+      localStorage.removeItem(LEGACY_SESSION_CACHE_KEY);
+    } catch {
+      // No-op when browser storage is unavailable.
+    }
+  }
+
+  /** Seeds the list for `owner` only; a cache written by another identity is ignored. */
+  private restoreSessionsCache(owner: string | null): void {
     try {
       const cached = localStorage.getItem(SESSION_CACHE_KEY);
       if (!cached) return;
-      const sessions = JSON.parse(cached);
-      if (Array.isArray(sessions)) {
-        this.lastPersistedSessionsJson = cached;
-        this.rawSessions.set(sessions);
-      }
+      const entry = JSON.parse(cached);
+      if (entry?.owner !== owner || !Array.isArray(entry.sessions)) return;
+      // A fresh answer, or a scope change, already won the race.
+      if (this.rawSessions().length > 0 || this.ownerScope.showAll()) return;
+      this.lastPersistedSessionsJson = cached;
+      this.rawSessions.set(entry.sessions);
     } catch {
       this.clearSessionsCache();
     }
   }
 
+  /**
+   * The one place rows reach the cache. Only "mine" is cached, under the identity
+   * that owns it: All users rows, or rows before we know who is looking, never are.
+   */
   private persistSessionsCache(sessions: Session[]): void {
+    const who = this.ownerScope.identity();
+    if (!who || this.ownerScope.showAll()) return;
     try {
-      const serialized = JSON.stringify(sessions);
+      const serialized = JSON.stringify({ owner: who.email, sessions });
       if (serialized === this.lastPersistedSessionsJson) return;
       this.lastPersistedSessionsJson = serialized;
       localStorage.setItem(SESSION_CACHE_KEY, serialized);

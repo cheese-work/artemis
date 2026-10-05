@@ -5,6 +5,7 @@ import { TestBed } from '@angular/core/testing';
 import { of, Subject } from 'rxjs';
 
 import { AgentService } from './agent.service';
+import { AdminConfigService } from './admin-config.service';
 import { OwnerScopeService } from './owner-scope.service';
 import { buildRunSummary } from '../utils/run-copy.util';
 
@@ -885,11 +886,13 @@ describe('AgentService per-QA scope (CHE-1152)', () => {
     const get = jasmine.createSpy('get').and.returnValue(of([]));
     (service as any).http = { get };
     (service as any).ownerScope = {
+      identity: () => admin,
       showAll: () => showAll,
       queryParams: () => (showAll ? { scope: 'all' } : {})
     };
     (service as any).rawSessions = signal<any[]>([]);
     (service as any).lastPersistedSessionsJson = null;
+    (service as any).scopeGeneration = 0;
     service.currentSessionId = signal<string | null>('open');
     service.userPinnedSessionId = signal<string | null>(null);
     service.agentStatus = signal('idle');
@@ -934,12 +937,19 @@ describe('AgentService per-QA scope (CHE-1152)', () => {
       });
       spyOn(localStorage, 'getItem').and.returnValue(null);
       spyOn(localStorage, 'setItem');
-      TestBed.configureTestingModule({ providers: [provideHttpClient(), provideHttpClientTesting()] });
+      TestBed.configureTestingModule({
+        providers: [
+          provideHttpClient(),
+          provideHttpClientTesting(),
+          { provide: AdminConfigService, useValue: { getIdentity: () => of(admin) } }
+        ]
+      });
       http = TestBed.inject(HttpTestingController);
       scope = TestBed.inject(OwnerScopeService);
-      scope.identity.set(admin);
     });
 
+    const flushRest = () =>
+      http.match(() => true).forEach((r) => r.flush(r.request.url.startsWith('/api/sessions') ? [] : {}));
     const settleStartup = () => http.match(() => true).forEach((request) => request.flush([]));
 
     it('starts on my own sessions, status and stream, with no scope sent', () => {
@@ -982,7 +992,138 @@ describe('AgentService per-QA scope (CHE-1152)', () => {
       expect(sessions.request.params.has('scope')).toBeFalse();
       expect(streams.map((s) => s.url)).toEqual(['/api/stream', '/api/stream?scope=all', '/api/stream']);
       sessions.flush([]);
-      http.match(() => true).forEach((r) => r.flush({}));
+      flushRest();
+    });
+
+    it('forgets the other scope\'s running run at once, so it cannot come back after mine-only answers', () => {
+      const service = TestBed.inject(AgentService);
+      settleStartup();
+      scope.setAllUsers(true);
+      TestBed.tick();
+      http.match((r) => r.url === '/api/sessions').forEach((r) => r.flush([]));
+      http
+        .match((r) => r.url === '/api/status')
+        .forEach((r) => r.flush({ status: 'running', session_id: 'foreign-active', goal: 'theirs', queue: [], active_tasks: [] }));
+      expect(service.sessions().map((s) => s.session_id)).toEqual(['foreign-active']);
+
+      scope.setAllUsers(false);
+      TestBed.tick();
+      expect(service.sessions().map((s) => s.session_id)).toEqual([]);
+
+      http
+        .match((r) => r.url === '/api/sessions')
+        .forEach((r) => r.flush([{ session_id: 'mine', initial_goal: 'mine', start_time: 1, status: 'completed' }]));
+      http
+        .match((r) => r.url === '/api/status')
+        .forEach((r) => r.flush({ status: 'idle', session_id: null, queue: [], active_tasks: [] }));
+      expect(service.sessions().map((s) => s.session_id)).toEqual(['mine']);
+    });
+
+    it('ignores a sessions answer from an earlier switch position even when the switch is back where it was', () => {
+      const service = TestBed.inject(AgentService);
+      settleStartup();
+      scope.setAllUsers(true);
+      TestBed.tick();
+      const lateAll = http.expectOne((r) => r.url === '/api/sessions');
+      http.match((r) => r.url === '/api/status').forEach((r) => r.flush({}));
+      scope.setAllUsers(false);
+      TestBed.tick();
+      scope.setAllUsers(true);
+      TestBed.tick();
+      const current = http.match((r) => r.url === '/api/sessions');
+      lateAll.flush([{ session_id: 'stale', initial_goal: 'g', start_time: 1, status: 'completed' }]);
+      expect(service.sessions().map((s) => s.session_id)).toEqual([]);
+      current.forEach((r) => r.flush([{ session_id: 'fresh', initial_goal: 'g', start_time: 1, status: 'completed' }]));
+      expect(service.sessions().map((s) => s.session_id)).toEqual(['fresh']);
+      flushRest();
+    });
+  });
+
+  describe('browser session cache', () => {
+    let store: Map<string, string>;
+    let http: HttpTestingController;
+
+    const setUp = (identity: { email: string | null; admin: boolean; auth_mode: string; reason: null }) => {
+      TestBed.resetTestingModule();
+      TestBed.configureTestingModule({
+        providers: [
+          provideHttpClient(),
+          provideHttpClientTesting(),
+          { provide: AdminConfigService, useValue: { getIdentity: () => of(identity) } }
+        ]
+      });
+      http = TestBed.inject(HttpTestingController);
+      return TestBed.inject(AgentService);
+    };
+    const flushAll = () =>
+      http.match(() => true).forEach((r) => r.flush(r.request.url.startsWith('/api/sessions') ? [] : {}));
+    const cacheKeys = () => [...store.keys()].filter((key) => key.startsWith('artemis.sessions'));
+    const row = (id: string) => ({ session_id: id, initial_goal: id, start_time: 1, status: 'completed' });
+
+    beforeEach(() => {
+      store = new Map();
+      spyOn(window as any, 'EventSource').and.callFake(function () {
+        return { close: () => undefined, addEventListener: () => undefined, onerror: null };
+      });
+      spyOn(localStorage, 'getItem').and.callFake((key: string) => store.get(key) ?? null);
+      spyOn(localStorage, 'setItem').and.callFake((key: string, value: string) => void store.set(key, value));
+      spyOn(localStorage, 'removeItem').and.callFake((key: string) => void store.delete(key));
+    });
+
+    it('does not cache anyone else\'s rows when a run is deleted while All users is on', () => {
+      const service = setUp(admin);
+      TestBed.tick();
+      flushAll();
+      TestBed.inject(OwnerScopeService).setAllUsers(true);
+      TestBed.tick();
+      http.match((r) => r.url === '/api/sessions').forEach((r) => r.flush([row('foreign-delete'), row('foreign-kept')]));
+      flushAll();
+
+      service.deleteSession('foreign-delete').subscribe();
+      flushAll();
+
+      expect(cacheKeys()).toEqual([]);
+    });
+
+    it('starts the next page on mine, not on rows cached from All users', () => {
+      const first = setUp(admin);
+      TestBed.tick();
+      flushAll();
+      TestBed.inject(OwnerScopeService).setAllUsers(true);
+      TestBed.tick();
+      http.match((r) => r.url === '/api/sessions').forEach((r) => r.flush([row('foreign-kept')]));
+      flushAll();
+      expect(first.sessions().map((r) => r.session_id)).toEqual(['foreign-kept']);
+
+      const next = setUp(admin);
+      TestBed.tick();
+      expect(next.sessions()).toEqual([]);
+    });
+
+    it('restores cached rows only for the identity that cached them', () => {
+      const qa1 = { email: 'qa1@example.test', admin: false, auth_mode: 'cloudflare', reason: null };
+      const first = setUp(qa1);
+      TestBed.tick();
+      http.match((r) => r.url === '/api/sessions').forEach((r) => r.flush([row('qa1-run')]));
+      flushAll();
+      expect(cacheKeys().length).toBe(1);
+      expect(first).toBeDefined();
+
+      const same = setUp(qa1);
+      TestBed.tick();
+      expect(same.sessions().map((s) => s.session_id)).toEqual(['qa1-run']);
+
+      const other = setUp({ ...qa1, email: 'qa2@example.test' });
+      TestBed.tick();
+      expect(other.sessions()).toEqual([]);
+    });
+
+    it('drops the old unscoped cache key, which may hold other users\' rows', () => {
+      store.set('artemis.sessions.v1', JSON.stringify([row('legacy-foreign')]));
+      const service = setUp(admin);
+      TestBed.tick();
+      expect(store.has('artemis.sessions.v1')).toBeFalse();
+      expect(service.sessions()).toEqual([]);
     });
   });
 });
