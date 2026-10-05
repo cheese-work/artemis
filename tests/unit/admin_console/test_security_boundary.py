@@ -394,7 +394,11 @@ async def test_nonadmin_can_use_public_task_controls(monkeypatch):
     assert resume_response.status_code == 200
     enqueue.assert_awaited_once()
     readiness_probe.assert_awaited_once()
-    stop_tasks.assert_called_once_with(clear_all=True, session_id=None, device_id=None)
+    # A signed-in non-admin's "clear" is scoped to their own runs (CHE-1151); this
+    # QA owns none, so nothing is stopped. Admin clear and the owner paths are
+    # covered in test_run_ownership.py.
+    assert stop_response.json() == {"status": "no_running_task"}
+    stop_tasks.assert_not_called()
     resume_task.assert_called_once_with()
 
 

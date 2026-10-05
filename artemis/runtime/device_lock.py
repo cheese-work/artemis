@@ -875,6 +875,19 @@ class DeviceExecutionLock:
         return queued
 
     @classmethod
+    def has_unreadable_owner_record(cls) -> bool:
+        """Whether any lock file exists whose owner cannot be read (partial or corrupt).
+
+        ``get_active_owners`` skips such files, so a caller that must not miss a
+        live-but-unattributable holder asks here as well. Reads only; never unlinks.
+        """
+        lock_dir = get_temp_dir("device-locks")
+        if not lock_dir.exists():
+            return False
+        paths = [*lock_dir.glob("artemis-device-*.lock"), lock_dir / "artemis-global-device.lock"]
+        return any(path.exists() and cls._read_owner(path) is None for path in paths)
+
+    @classmethod
     def has_owner_record(cls, device_id: str | None = None) -> bool:
         """Return whether an owner record exists, including a record being written."""
         lock_dir = get_temp_dir("device-locks")

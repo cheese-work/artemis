@@ -132,6 +132,7 @@ class RunCatalogRepository:
         device: str | None = None,
         host: str | None = None,
         requester: str | None = None,
+        owner: str | None = None,
         since: float | None = None,
         until: float | None = None,
         match: str | None = None,
@@ -162,6 +163,9 @@ class RunCatalogRepository:
         if requester:
             where.append("m.requested_by = ?")
             params.append(requester)
+        if owner:
+            where.append("m.requested_by = ?")
+            params.append(owner)
         if since is not None:
             where.append("s.start_time >= ?")
             params.append(since)
@@ -251,6 +255,21 @@ class RunCatalogRepository:
                 return RunLookup(candidates=runs[:_MAX_CANDIDATES])
             self._attach_recordings(conn, runs)
             return RunLookup(run=runs[0])
+
+    def owners(self, session_ids: list[str]) -> dict[str, str | None]:
+        """``requested_by`` per run id; ids without a run record are left out."""
+        found: dict[str, str | None] = {}
+        with db_session(self.db_path) as conn:
+            self._require_ready(conn)
+            for start in range(0, len(session_ids), 500):
+                chunk = session_ids[start : start + 500]
+                marks = ", ".join("?" * len(chunk))
+                for row in conn.execute(
+                    f"SELECT session_id, requested_by FROM run_meta WHERE session_id IN ({marks})",
+                    chunk,
+                ):
+                    found[row["session_id"]] = row["requested_by"]
+        return found
 
     # -- writes (new writes need canonical uuids) -------------------------------
 
