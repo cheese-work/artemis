@@ -2,7 +2,7 @@ import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { signal, computed } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
-import { of, Subject } from 'rxjs';
+import { of, Subject, throwError } from 'rxjs';
 
 import { AgentService } from './agent.service';
 import { AdminConfigService } from './admin-config.service';
@@ -1043,13 +1043,16 @@ describe('AgentService per-QA scope (CHE-1152)', () => {
     let store: Map<string, string>;
     let http: HttpTestingController;
 
-    const setUp = (identity: { email: string | null; admin: boolean; auth_mode: string; reason: null }) => {
+    const setUp = (who: { email: string | null; admin: boolean; auth_mode: string; reason: null } | 'lookup-fails') => {
       TestBed.resetTestingModule();
       TestBed.configureTestingModule({
         providers: [
           provideHttpClient(),
           provideHttpClientTesting(),
-          { provide: AdminConfigService, useValue: { getIdentity: () => of(identity) } }
+          {
+            provide: AdminConfigService,
+            useValue: { getIdentity: () => (who === 'lookup-fails' ? throwError(() => new Error('offline')) : of(who)) }
+          }
         ]
       });
       http = TestBed.inject(HttpTestingController);
@@ -1116,6 +1119,50 @@ describe('AgentService per-QA scope (CHE-1152)', () => {
       const other = setUp({ ...qa1, email: 'qa2@example.test' });
       TestBed.tick();
       expect(other.sessions()).toEqual([]);
+    });
+
+    it('never lets a failed identity lookup read or write the cache, so QA2 cannot see QA1\'s runs', () => {
+      const qa1 = { email: 'qa1@example.test', admin: false, auth_mode: 'cloudflare', reason: null };
+      setUp(qa1);
+      TestBed.tick();
+      http.match((r) => r.url === '/api/sessions').forEach((r) => r.flush([row('qa1-run')]));
+      flushAll();
+      const cachedByQa1 = store.get('artemis.sessions.v2');
+      expect(cachedByQa1).toBeDefined();
+
+      // Two lookups in a row fail (QA2's, then another): both are the same "unknown" identity.
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const failed = setUp('lookup-fails');
+        TestBed.tick();
+        expect(failed.sessions()).toEqual([]);
+        http.match((r) => r.url === '/api/sessions').forEach((r) => r.flush([row('qa2-run')]));
+        flushAll();
+        expect(store.get('artemis.sessions.v2')).toBe(cachedByQa1);
+      }
+    });
+
+    it('ignores an existing null-owner entry unless the server is in open mode', () => {
+      store.set('artemis.sessions.v2', JSON.stringify({ owner: null, sessions: [row('left-by-a-failed-lookup')] }));
+      const signedOut = setUp({ email: null, admin: false, auth_mode: 'cloudflare', reason: null });
+      TestBed.tick();
+      expect(signedOut.sessions()).toEqual([]);
+
+      const failed = setUp('lookup-fails');
+      TestBed.tick();
+      expect(failed.sessions()).toEqual([]);
+    });
+
+    it('still caches and restores in open mode, where nothing is filtered by owner', () => {
+      const open = { email: null, admin: false, auth_mode: 'open', reason: null };
+      setUp(open);
+      TestBed.tick();
+      http.match((r) => r.url === '/api/sessions').forEach((r) => r.flush([row('local-run')]));
+      flushAll();
+      expect(JSON.parse(store.get('artemis.sessions.v2')!).owner).toBeNull();
+
+      const again = setUp(open);
+      TestBed.tick();
+      expect(again.sessions().map((r) => r.session_id)).toEqual(['local-run']);
     });
 
     it('drops the old unscoped cache key, which may hold other users\' rows', () => {
