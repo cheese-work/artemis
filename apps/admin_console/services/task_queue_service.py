@@ -853,7 +853,11 @@ class TaskQueueService:
     def _deliver_event(
         cls, lifecycle: Any, event: dict[str, Any], task_item: dict[str, Any], goal: str | None
     ) -> bool:
-        """Run each consumer not yet delivered; False leaves the event pending."""
+        """Run each consumer not yet delivered; False leaves the event pending.
+
+        A failing consumer never blocks the others: each is tried in turn and
+        the event stays pending if any is still owed a retry.
+        """
         event_id = event["dedupe_id"]
         steps = (
             ("broadcast", "broadcast_at", lambda: cls._broadcast_outcome(lifecycle, event)),
@@ -865,6 +869,7 @@ class TaskQueueService:
                 ),
             ),
         )
+        pending = False
         for consumer, column, effect in steps:
             if event.get(column) is not None:
                 continue  # delivered earlier, possibly before a restart
@@ -879,15 +884,16 @@ class TaskQueueService:
                     continue
                 failures = lifecycle.note_failed_attempt(event_id, consumer)
                 if failures < cls._MAX_DELIVERY_ATTEMPTS:
-                    return False
+                    pending = True
+                    continue
                 logger.error(
                     "Abandoning %s of %s after %d failed attempts", consumer, event_id, failures
                 )
                 lifecycle.mark_delivered(event_id, consumer, abandoned=True)
             except sqlite3.Error:
                 logger.warning("Could not record %s of %s", consumer, event_id, exc_info=True)
-                return False
-        return True
+                pending = True
+        return not pending
 
     @classmethod
     def _drain_outcome_events(cls) -> None:
