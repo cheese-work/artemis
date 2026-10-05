@@ -1,5 +1,6 @@
 import { signal, computed } from '@angular/core';
-import { of, Subject } from 'rxjs';
+import { of, Subject, throwError } from 'rxjs';
+import { HttpErrorResponse } from '@angular/common/http';
 
 import { AgentService } from './agent.service';
 import { buildRunSummary } from '../utils/run-copy.util';
@@ -551,6 +552,22 @@ describe('AgentService live LLM retry timeline', () => {
       goal: 'auto-pick task',
       profile: 'flash'
     });
+  });
+
+  it('surfaces the server refusal when a run targets a phone that is not the caller\'s', () => {
+    spyOn(localStorage, 'getItem').and.returnValue('phone-a');
+    const { service, post } = createRunService([{ serial: 'phone-a', state: 'device' }]);
+    const refusal = new HttpErrorResponse({
+      status: 403,
+      error: { detail: 'This phone belongs to someone else.', code: 'device_not_yours' }
+    });
+    post.and.returnValue(throwError(() => refusal));
+    let received: unknown = null;
+
+    service.runTask('not my phone').subscribe({ error: (err) => (received = err) });
+
+    expect(received).toBe(refusal);
+    expect(post).toHaveBeenCalledTimes(1);
   });
 
   it('auto-picks when the remembered phone is offline and another phone is ready', () => {

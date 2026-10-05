@@ -30,7 +30,8 @@ export const COMPUTER_STRINGS = {
   cancel: 'Cancel',
   noPhones: 'No phones found on this computer.',
   thisBrowser: 'This browser',
-  aBrowser: 'A browser'
+  aBrowser: 'A browser',
+  browserOf: (owner: string) => `${owner}'s browser`
 } as const;
 
 const REASONS: Record<string, string> = {
