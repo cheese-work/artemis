@@ -29,6 +29,7 @@ from artemis.controllers.unified_controller import UnifiedMobileController
 from artemis.drivers.mock.mock_driver import MockDeviceDriver
 from artemis.utils.video import (
     RecordingSession,
+    _parse_scrcpy_version,
     build_scrcpy_record_command,
     extract_audio_from_video,
     extract_frames_at_timestamps,
@@ -38,6 +39,7 @@ from artemis.utils.video import (
     plan_timeline_pieces,
     render_timeline_clip,
     remove_active_session,
+    scrcpy_recording_flags,
     set_active_session,
 )
 
@@ -72,10 +74,71 @@ def test_targeted_frame_extraction_uses_requested_timestamps():
 def test_scrcpy_recording_locks_each_segment_orientation(tmp_path):
     output_path = tmp_path / "recording.mkv"
 
-    command = build_scrcpy_record_command("scrcpy", "device-1", output_path)
+    command = build_scrcpy_record_command(
+        "scrcpy", "device-1", output_path, scrcpy_version="scrcpy 3.0"
+    )
 
     assert "--capture-orientation=@" in command
+    assert "--no-window" in command
     assert command[command.index("--record") + 1] == str(output_path)
+
+
+@pytest.mark.parametrize(
+    ("version", "expected_flags"),
+    [
+        (
+            "scrcpy 1.25 <https://github.com/Genymobile/scrcpy>",
+            ("--no-display", "--bit-rate", "--lock-video-orientation"),
+        ),
+        (
+            "scrcpy 2.4 <https://github.com/Genymobile/scrcpy>",
+            ("--no-display", "--video-bit-rate", "--lock-video-orientation"),
+        ),
+        (
+            "scrcpy 2.5 <https://github.com/Genymobile/scrcpy>",
+            ("--no-window", "--video-bit-rate", "--lock-video-orientation"),
+        ),
+        (
+            "scrcpy 2.7 <https://github.com/Genymobile/scrcpy>",
+            ("--no-window", "--video-bit-rate", "--lock-video-orientation"),
+        ),
+        (
+            "scrcpy 3.0 <https://github.com/Genymobile/scrcpy>",
+            ("--no-window", "--video-bit-rate", "--capture-orientation=@"),
+        ),
+        (
+            "scrcpy 4.1 <https://github.com/Genymobile/scrcpy>",
+            ("--no-window", "--video-bit-rate", "--capture-orientation=@"),
+        ),
+    ],
+)
+def test_scrcpy_recording_flags_follow_installed_version(version, expected_flags):
+    assert scrcpy_recording_flags(version) == expected_flags
+
+
+def test_scrcpy_recording_flags_reject_versions_below_minimum():
+    with pytest.raises(ValueError, match="Unsupported scrcpy 1.24"):
+        scrcpy_recording_flags("scrcpy 1.24")
+
+
+def test_parse_scrcpy_version_rejects_unreadable_output():
+    with pytest.raises(ValueError, match="Could not parse scrcpy version"):
+        _parse_scrcpy_version("scrcpy version unavailable")
+
+
+def test_scrcpy_record_command_uses_125_compatible_flags(tmp_path):
+    output_path = tmp_path / "recording.mkv"
+
+    command = build_scrcpy_record_command(
+        "scrcpy", "device-1", output_path, scrcpy_version="scrcpy 1.25"
+    )
+
+    assert "--no-display" in command
+    assert "--no-window" not in command
+    assert command[command.index("--bit-rate") + 1] == "2M"
+    assert "--video-bit-rate" not in command
+    assert "--lock-video-orientation" in command
+    assert "--capture-orientation=@" not in command
 
 
 @pytest.mark.asyncio
@@ -308,8 +371,17 @@ def mock_ctx(tmp_path):
     return ctx
 
 
+@pytest.fixture
+def mock_scrcpy_toolchain(monkeypatch):
+    monkeypatch.setattr("artemis.controllers.unified_controller.find_scrcpy", lambda: "scrcpy")
+    monkeypatch.setattr(
+        "artemis.controllers.unified_controller.detect_scrcpy_version",
+        lambda executable: "1.25",
+    )
+
+
 @pytest.mark.asyncio
-async def test_unified_controller_start_recording(mock_ctx, tmp_path):
+async def test_unified_controller_start_recording(mock_ctx, tmp_path, mock_scrcpy_toolchain):
     controller = UnifiedMobileController(mock_ctx)
     remove_active_session("emulator-5554")
 
@@ -660,7 +732,9 @@ async def test_await_scrcpy_first_frame_falls_back_on_timeout():
 
 
 @pytest.mark.asyncio
-async def test_start_recording_anchors_timeline_to_first_frame(mock_ctx, tmp_path):
+async def test_start_recording_anchors_timeline_to_first_frame(
+    mock_ctx, tmp_path, mock_scrcpy_toolchain
+):
     controller = UnifiedMobileController(mock_ctx)
     remove_active_session("emulator-5554")
 
@@ -691,7 +765,7 @@ async def test_start_recording_anchors_timeline_to_first_frame(mock_ctx, tmp_pat
 
 
 @pytest.mark.asyncio
-async def test_next_segment_anchors_at_first_frame(mock_ctx, tmp_path):
+async def test_next_segment_anchors_at_first_frame(mock_ctx, tmp_path, mock_scrcpy_toolchain):
     controller = UnifiedMobileController(mock_ctx)
     session = RecordingSession(
         video_id=uuid4(),
