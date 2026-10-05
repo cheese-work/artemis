@@ -27,6 +27,7 @@ from typing import Any
 
 from artemis.runtime.device_lock import DeviceExecutionLock
 from artemis.toolchain import toolchain
+from artemis.utils.device_kind import DeviceKind, classify_properties, parse_getprop
 from artemis.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -41,6 +42,7 @@ class DeviceStatus:
     model: str | None = None
     product: str | None = None
     is_emulator: bool = False
+    device_kind: str = DeviceKind.UNKNOWN.value
     is_busy: bool = False
     active_pid: int | None = None
     active_task_desc: str | None = None
@@ -54,6 +56,7 @@ class DeviceStatus:
             "model": self.model,
             "product": self.product,
             "is_emulator": self.is_emulator,
+            "device_kind": self.device_kind,
             "is_busy": self.is_busy,
             "active_pid": self.active_pid,
             "active_task_desc": self.active_task_desc,
@@ -78,6 +81,10 @@ class DevicePool:
     # adb server itself, which routinely exceeds the hot-path budget.
     HOT_QUERY_TIMEOUT = 2.0
     COLD_QUERY_TIMEOUT = 8.0
+    # Device properties are static, so a successful read lives until the serial
+    # leaves the listing. An unreadable device is asked again after this delay.
+    PROPERTIES_TIMEOUT = 2.5
+    UNKNOWN_KIND_RETRY_SECONDS = 10.0
 
     def __init__(self, adb_path: str | None = None):
         self._adb_path = adb_path
@@ -87,6 +94,8 @@ class DevicePool:
         self._warmed = False
         self._sync_query_gate = threading.Lock()
         self._async_inflight: tuple[asyncio.AbstractEventLoop, asyncio.Task] | None = None
+        # serial -> (read time, kind, ro.product.model)
+        self._identity_cache: dict[str, tuple[float, DeviceKind, str | None]] = {}
 
     def _resolve_adb(self) -> str | None:
         if self._adb_path:
@@ -179,6 +188,96 @@ class DevicePool:
             results.append((serial, state, model, product))
         return results
 
+    def _read_properties_sync(self, serial: str) -> dict[str, str]:
+        """`adb shell getprop` for one device; empty when it could not be read."""
+        adb = self._resolve_adb()
+        if not adb:
+            return {}
+        try:
+            res = subprocess.run(
+                [adb, "-s", serial, "shell", "getprop"],
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
+                timeout=self.PROPERTIES_TIMEOUT,
+                check=False,
+            )
+        except (subprocess.SubprocessError, OSError) as exc:
+            logger.debug(f"Error reading properties of {serial}: {exc}")
+            return {}
+        return parse_getprop(res.stdout) if res.returncode == 0 else {}
+
+    async def _read_properties_async(self, serial: str) -> dict[str, str]:
+        adb = self._resolve_adb()
+        if not adb:
+            return {}
+        proc = None
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                adb,
+                "-s",
+                serial,
+                "shell",
+                "getprop",
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=self.PROPERTIES_TIMEOUT)
+        except (TimeoutError, OSError) as exc:
+            logger.debug(f"Error reading properties of {serial}: {exc}")
+            if proc is not None:
+                try:
+                    proc.kill()
+                except (ProcessLookupError, OSError):
+                    # Process already exited; nothing left to clean up.
+                    pass
+            return {}
+        if proc.returncode != 0:
+            return {}
+        return parse_getprop(stdout.decode(errors="replace"))
+
+    def _stale_identity_serials(
+        self, raw: list[tuple[str, str, str | None, str | None]]
+    ) -> list[str]:
+        """Forget serials that left the listing; return the ones to (re)read."""
+        listed = {serial for serial, _, _, _ in raw}
+        now = time.monotonic()
+        with self._cache_lock:
+            for serial in [s for s in self._identity_cache if s not in listed]:
+                del self._identity_cache[serial]
+            return [
+                serial
+                for serial, state, _, _ in raw
+                if state == "device"
+                and (
+                    serial not in self._identity_cache
+                    or (
+                        self._identity_cache[serial][1] is DeviceKind.UNKNOWN
+                        and now - self._identity_cache[serial][0] > self.UNKNOWN_KIND_RETRY_SECONDS
+                    )
+                )
+            ]
+
+    def _store_identity(self, serial: str, props: dict[str, str]) -> None:
+        with self._cache_lock:
+            self._identity_cache[serial] = (
+                time.monotonic(),
+                classify_properties(props),
+                props.get("ro.product.model") or None,
+            )
+
+    def _refresh_identities_sync(self, raw: list[tuple[str, str, str | None, str | None]]) -> None:
+        for serial in self._stale_identity_serials(raw):
+            self._store_identity(serial, self._read_properties_sync(serial))
+
+    async def _refresh_identities_async(
+        self, raw: list[tuple[str, str, str | None, str | None]]
+    ) -> None:
+        serials = self._stale_identity_serials(raw)
+        results = await asyncio.gather(*(self._read_properties_async(s) for s in serials))
+        for serial, props in zip(serials, results, strict=True):
+            self._store_identity(serial, props)
+
     def _cached_snapshot(
         self, *, allow_stale: bool
     ) -> list[tuple[str, str, str | None, str | None]] | None:
@@ -211,6 +310,7 @@ class DevicePool:
             raw = self._query_adb_devices_sync()
             if raw is None:
                 return self._cached_snapshot(allow_stale=True)
+            self._refresh_identities_sync(raw)
             self._store_snapshot(raw)
             return raw
 
@@ -237,6 +337,7 @@ class DevicePool:
         raw = await self._query_adb_devices_async()
         if raw is None:
             return self._cached_snapshot(allow_stale=True)
+        await self._refresh_identities_async(raw)
         self._store_snapshot(raw)
         return raw
 
@@ -291,6 +392,7 @@ class DevicePool:
             raw = await self._query_adb_devices_async()
             if raw is not None:
                 succeeded = True
+                await self._refresh_identities_async(raw)
                 self._store_snapshot(raw)
                 if any(state == "device" for _, state, _, _ in raw):
                     return True
@@ -305,9 +407,10 @@ class DevicePool:
 
         devices: list[DeviceStatus] = []
         for serial, state, model, product in raw_devices:
-            is_emu = (
-                serial.startswith("emulator-") or "127.0.0.1" in serial or "localhost" in serial
-            )
+            with self._cache_lock:
+                _, kind, real_model = self._identity_cache.get(
+                    serial, (0.0, DeviceKind.UNKNOWN, None)
+                )
             clean_id = DeviceExecutionLock._normalize_lock_id(
                 serial,
                 os.getenv(DeviceExecutionLock.LOCK_SCOPE_ENV) or None,
@@ -319,9 +422,10 @@ class DevicePool:
             status = DeviceStatus(
                 serial=serial,
                 state=state,
-                model=model,
+                model=real_model or model,
                 product=product,
-                is_emulator=is_emu,
+                is_emulator=kind is DeviceKind.EMULATOR,
+                device_kind=kind.value,
                 is_busy=owner is not None,
                 active_pid=owner.pid if owner else None,
                 active_task_desc=owner.description if owner else None,

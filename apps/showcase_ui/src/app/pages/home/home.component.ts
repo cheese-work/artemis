@@ -25,6 +25,8 @@ import {
 } from '../../core/models/system.model';
 import { UsbPhoneConnectionComponent } from '../../components/usb-phone-connection/usb-phone-connection.component';
 import { SetupComponent } from '../setup/setup.component';
+import { UsbDeviceRelayService } from '../../services/usb-device-relay.service';
+import { deviceKindLabel, deviceSource, deviceTitle } from '../../utils/device-label.util';
 
 type AdbGuideTab = 'emulator' | 'usb' | 'wifi' | 'remote';
 
@@ -39,6 +41,18 @@ type AdbGuideTab = 'emulator' | 'usb' | 'wifi' | 'remote';
 })
 export class HomeComponent implements OnInit, OnDestroy {
   public systemService = inject(SystemService);
+  private readonly usbRelay = inject(UsbDeviceRelayService);
+
+  // Device labels come from the classified model/kind, never from the serial.
+  public readonly deviceTitle = deviceTitle;
+  public readonly deviceKindLabel = deviceKindLabel;
+  private readonly relaySerial = computed(() => {
+    const relay = this.usbRelay.state();
+    return relay.status === 'connected' ? relay.serial : null;
+  });
+  public deviceSource(device: DeviceInfo): string | null {
+    return deviceSource(device, this.relaySerial());
+  }
 
   // Interactive guide sub-tab inside the ADB section
   public activeAdbGuideTab = signal<AdbGuideTab>('emulator');

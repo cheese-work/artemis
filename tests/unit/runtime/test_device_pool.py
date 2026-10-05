@@ -301,3 +301,105 @@ def test_validate_explicit_serial_async_matches_sync(monkeypatch):
     ok, missing = asyncio.run(run())
     assert ok is None
     assert "not connected" in missing
+
+
+PHONE_PROPS = {"ro.product.model": "21081111RG", "ro.hardware": "qcom", "ro.kernel.qemu": ""}
+EMULATOR_PROPS = {"ro.product.model": "sdk_gphone64_arm64", "ro.hardware": "ranchu"}
+
+
+def _pool_with(monkeypatch, raw, props_by_serial):
+    pool = DevicePool()
+    monkeypatch.setattr(pool, "_query_adb_devices_sync", lambda timeout=None: raw)
+    monkeypatch.setattr(
+        pool, "_read_properties_sync", lambda serial: props_by_serial.get(serial, {})
+    )
+    return pool
+
+
+def test_loopback_serial_with_physical_properties_is_a_phone(monkeypatch):
+    pool = _pool_with(
+        monkeypatch,
+        [("127.0.0.1:36411", "device", "21081111RG", "vayu")],
+        {"127.0.0.1:36411": PHONE_PROPS},
+    )
+    (device,) = pool.list_devices()
+    assert device.device_kind == "phone"
+    assert device.is_emulator is False
+    assert device.to_dict()["device_kind"] == "phone"
+
+
+def test_real_emulator_is_an_emulator(monkeypatch):
+    pool = _pool_with(
+        monkeypatch,
+        [("emulator-5554", "device", None, None)],
+        {"emulator-5554": EMULATOR_PROPS},
+    )
+    (device,) = pool.list_devices()
+    assert device.device_kind == "emulator"
+    assert device.is_emulator is True
+
+
+def test_unreadable_properties_are_unknown_never_emulator(monkeypatch):
+    pool = _pool_with(
+        monkeypatch,
+        [("127.0.0.1:40001", "device", None, None), ("emulator-5556", "offline", None, None)],
+        {},
+    )
+    devices = pool.list_devices()
+    assert {d.device_kind for d in devices} == {"unknown"}
+    assert not any(d.is_emulator for d in devices)
+
+
+def test_properties_read_once_per_serial_and_evicted_on_disconnect(monkeypatch):
+    clock = _install_fake_clock(monkeypatch)
+    pool = DevicePool()
+    listings = iter(
+        [[("127.0.0.1:1", "device", None, None)], [], [("127.0.0.1:1", "device", None, None)]]
+    )
+    monkeypatch.setattr(pool, "_query_adb_devices_sync", lambda timeout=None: next(listings))
+    reads = []
+
+    def read(serial):
+        reads.append(serial)
+        return PHONE_PROPS
+
+    monkeypatch.setattr(pool, "_read_properties_sync", read)
+
+    pool.list_devices()
+    clock["now"] += pool.CACHE_TTL + 1.0
+    pool.list_devices()  # disconnected -> cache entry evicted
+    clock["now"] += pool.CACHE_TTL + 1.0
+    pool.list_devices()  # reused serial must be re-read
+    assert reads == ["127.0.0.1:1", "127.0.0.1:1"]
+
+
+def test_failed_property_read_is_retried_after_short_backoff(monkeypatch):
+    clock = _install_fake_clock(monkeypatch)
+    pool = DevicePool()
+    monkeypatch.setattr(
+        pool,
+        "_query_adb_devices_sync",
+        lambda timeout=None: [("127.0.0.1:2", "device", None, None)],
+    )
+    answers = iter([{}, PHONE_PROPS])
+    monkeypatch.setattr(pool, "_read_properties_sync", lambda serial: next(answers))
+
+    assert pool.list_devices()[0].device_kind == "unknown"
+    clock["now"] += pool.UNKNOWN_KIND_RETRY_SECONDS + 1.0
+    assert pool.list_devices()[0].device_kind == "phone"
+
+
+def test_async_enumeration_classifies_by_properties(monkeypatch):
+    pool = DevicePool()
+
+    async def fake_query(timeout=None):
+        return [("127.0.0.1:36411", "device", None, None)]
+
+    async def fake_read(serial):
+        return PHONE_PROPS
+
+    monkeypatch.setattr(pool, "_query_adb_devices_async", fake_query)
+    monkeypatch.setattr(pool, "_read_properties_async", fake_read)
+    (device,) = asyncio.run(pool.list_devices_async())
+    assert device.device_kind == "phone"
+    assert device.model == "21081111RG"

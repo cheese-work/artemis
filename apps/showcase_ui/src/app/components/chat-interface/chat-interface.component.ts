@@ -18,6 +18,8 @@ import { Component, ChangeDetectionStrategy, inject, computed, signal } from '@a
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { AgentService } from '../../services/agent.service';
+import { SystemService } from '../../services/system.service';
+import { deviceKindLabel, deviceTitle, unlistedDeviceTitle } from '../../utils/device-label.util';
 import { RunIdCopyComponent } from '../run-id-copy/run-id-copy.component';
 import { Session } from '../../core/models/session.model';
 import { MarkdownSegment, MarkdownLine, NoteMilestone, ParsedNote } from '../../core/models/markdown.model';
@@ -35,6 +37,7 @@ export type { MarkdownSegment, MarkdownLine, NoteMilestone, ParsedNote };
 })
 export class ChatInterfaceComponent {
   public agentService = inject(AgentService);
+  private readonly systemService = inject(SystemService);
 
   public taskInput: string = '';
   // Signals so async completion handlers refresh this OnPush view.
@@ -216,6 +219,25 @@ export class ChatInterfaceComponent {
     }
     this.deviceSerialCache.set(session, resolved);
     return resolved;
+  }
+
+  /**
+   * Chip text for the session's device: the real model and kind when the
+   * device is currently listed, never a bare 127.0.0.1:<port> address.
+   */
+  public getDeviceChip(session: Session): { title: string; kind: string | null; tooltip: string } | null {
+    const serial = this.getDeviceSerial(session);
+    if (!serial) {
+      return null;
+    }
+    const device = this.systemService.connectedDevices().find((d) => d.serial === serial);
+    if (!device) {
+      const title = unlistedDeviceTitle(serial);
+      return { title, kind: null, tooltip: `Device: ${title} · ${serial}` };
+    }
+    const title = deviceTitle(device);
+    const kind = deviceKindLabel(device);
+    return { title, kind: kind === title ? null : kind, tooltip: `Device: ${title} (${kind}) · ${serial}` };
   }
 
   /**

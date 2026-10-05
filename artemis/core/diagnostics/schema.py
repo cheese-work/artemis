@@ -95,6 +95,10 @@ class DeviceInfo(BaseModel):
         description="Whether Android Keyguard currently blocks access; None when undetermined",
     )
     is_emulator: bool = Field(default=False, description="Whether the device is an emulator")
+    device_kind: Literal["phone", "emulator", "unknown"] = Field(
+        default="unknown",
+        description="Classified from adb properties; 'unknown' when they could not be read",
+    )
     installed_packages: list[str] = Field(
         default_factory=list, description="List of recognized installed package names"
     )
