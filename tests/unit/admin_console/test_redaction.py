@@ -208,3 +208,32 @@ def test_whole_cookie_header_value_is_redacted(text):
 def test_cookie_redaction_keeps_what_follows_the_header():
     out = redact_text("Cookie: a=1; b=2\nHost: example.test")
     assert out == f"Cookie: {REDACTED}\nHost: example.test"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        'Cookie: sid="abc123"; user=bob',
+        'Set-Cookie: sid="a b"; Path=/',
+        "curl -H 'Cookie: sid=\"abc123\"; user=bob' https://x.test",
+        'curl -H "Cookie: sid=\\"abc123\\"; user=bob" https://x.test',
+        '{"Cookie": "sid=\\"abc123\\"; user=bob"}',
+        '{\\"Cookie\\": \\"sid=abc123; user=bob\\", \\"x\\": 1}',
+        'cookie="sid=abc123"; user=bob',
+    ],
+)
+def test_quoted_cookie_values_are_redacted_whole(text):
+    out = redact_text(text)
+    for leaked in ("abc123", "bob", "a b", "Path=/"):
+        assert leaked not in out, out
+    assert REDACTED in out and redact_text(out) == out
+
+
+def test_quoted_cookie_keeps_the_text_after_the_value():
+    assert redact_text("curl -H 'Cookie: a=\"1\"; b=2' https://x.test") == (
+        f"curl -H 'Cookie: {REDACTED}' https://x.test"
+    )
+    assert json.loads(redact_text(json.dumps({"Cookie": 'sid="a b"; x=1', "n": 1}))) == {
+        "Cookie": REDACTED,
+        "n": 1,
+    }
