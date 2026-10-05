@@ -130,16 +130,23 @@ async function playerInteractions() {
     await mouse('mouseReleased', x0 + dx, y0 + dy);
     await sleep(400);
   };
-  for (const [w, h] of [[375, 667], [320, 480]]) for (const phone of [true, false]) {
+  for (const [w, h] of [[375, 667], [320, 480]]) for (const phone of [true, false]) for (const content of ['live', 'replay']) {
     STATES.running();
-    const where = `player-interaction ${w}x${h} phone=${phone}`;
+    const where = `player-interaction ${w}x${h} phone=${phone} ${content}`;
+    if (mock.failVideo || mock.failSessions) fail(where, 'mock error state leaked into this run');
     await open('/workspace', w, h);
     await setPhone(phone);
     await sleep(2400);
-    await evaluate(`(() => { ng.getComponent(document.querySelector('app-floating-video-player')).agentService.openVideoPlayer('aaaaaaaa-1'); ng.applyChanges(document.querySelector('app-floating-video-player')); })()`);
-    await sleep(800);
+    // live: the running session; replay: a finished session whose loaded step screenshots make the frame taller.
+    await evaluate(`(async () => { const svc = ng.getComponent(document.querySelector('app-floating-video-player')).agentService;
+      if (${content === 'replay'}) { svc.selectSession('bbbbbbbb-2', false); await new Promise((r) => setTimeout(r, 1500)); svc.openVideoPlayer('bbbbbbbb-2', undefined, undefined, undefined, 0); }
+      else svc.openVideoPlayer('aaaaaaaa-1');
+      await new Promise((r) => setTimeout(r, 1200)); ng.applyChanges(document.querySelector('app-floating-video-player')); })()`);
+    const mode = await evaluate(`ng.getComponent(document.querySelector('app-floating-video-player')).agentService.playerMode()`);
+    if (content === 'replay' && (mode !== 'steps' || !(await evaluate(`!!document.querySelector('.step-replay-container')`)))) fail(where, `step replay did not load (mode=${mode})`);
     const step = async (name, action) => { await action(); await playerClear(where, name); };
     await step('on open', async () => {});
+    await shot(`player-open-${w}x${h}-${phone ? 'connected' : 'idle'}-${content}`);
     await step('drag right+down', () => drag(300, 200));
     await step('drag left+up', () => drag(-600, -600));
     await step('drag far right+down', () => drag(600, 600));
@@ -152,7 +159,7 @@ async function playerInteractions() {
     await step('viewport shrink', async () => { await send('Emulation.setDeviceMetricsOverride', { width: 320, height: 480, deviceScaleFactor: 1, mobile: true }); await sleep(500); });
     await step('viewport grow', async () => { await send('Emulation.setDeviceMetricsOverride', { width: 375, height: 667, deviceScaleFactor: 1, mobile: true }); await sleep(500); });
     await step('nav height change', async () => { await setPhone(!phone); await sleep(500); });
-    await shot(`player-interaction-${w}x${h}-${phone ? 'connected' : 'idle'}`);
+    await shot(`player-interaction-${w}x${h}-${phone ? 'connected' : 'idle'}-${content}`);
   }
   STATES.idle();
 }
@@ -164,12 +171,14 @@ const sessions = [
   { session_id: 'bbbbbbbb-2', initial_goal: 'Short goal', start_time: T0 - 900, end_time: T0 - 800, status: 'completed' },
   { session_id: 'cccccccc-3', initial_goal: 'Failing goal', start_time: T0 - 1800, end_time: T0 - 1700, status: 'failed' }
 ];
+// Every state starts from the same pristine mock, so one state's flags can never leak into the next run.
+const PRISTINE = { sessions: [], status: null, failSessions: false, failVideo: false, identity: null };
 const STATES = {
-  idle: () => Object.assign(mock, { sessions: [], status: null, failSessions: false, failVideo: false }),
-  'empty-api-error': () => Object.assign(mock, { sessions: [], status: null, failSessions: true }),
-  running: () => Object.assign(mock, { sessions, failSessions: false, status: { status: 'running', session_id: 'aaaaaaaa-1', goal: longGoal,
+  idle: () => Object.assign(mock, PRISTINE),
+  'empty-api-error': () => Object.assign(mock, PRISTINE, { failSessions: true }),
+  running: () => Object.assign(mock, PRISTINE, { sessions, status: { status: 'running', session_id: 'aaaaaaaa-1', goal: longGoal,
     queue: [{ session_id: 'dddddddd-4', goal: longGoal + ' (queued)', status: 'pending' }, 'plain string task'], active_tasks: [] } }),
-  'paused-error': () => Object.assign(mock, { sessions, failSessions: false, failVideo: true, status: { status: 'paused', session_id: 'aaaaaaaa-1', goal: longGoal,
+  'paused-error': () => Object.assign(mock, PRISTINE, { sessions, failVideo: true, status: { status: 'paused', session_id: 'aaaaaaaa-1', goal: longGoal,
     paused_error: 'AI model request failed: 429 Too Many Requests from the provider. '.repeat(3), queue: [] } })
 };
 const rect = (sel) => `(() => { const e = document.querySelector(${JSON.stringify(sel)}); if (!e) return null; const r = e.getBoundingClientRect();
@@ -183,11 +192,14 @@ async function playerClear(where, phase) {
     const w = document.querySelector('.floating-video-wrapper'); if (!w) return null; const f = w.getBoundingClientRect();
     const over = (r) => r.width > 0 && r.left < nav.right && r.right > nav.left && r.top < nav.bottom && r.bottom > nav.top;
     return { nav: [nav.left, nav.top, nav.right, nav.bottom].map(Math.round), frame: [f.left, f.top, f.right, f.bottom].map(Math.round), vw: innerWidth, vh: innerHeight,
-      frameOver: over(f), controls: [...w.querySelectorAll('.window-header button')].filter((b) => over(b.getBoundingClientRect())).map((b) => (b.getAttribute('aria-label') || b.getAttribute('title') || b.textContent).trim().slice(0, 20)) }; })()`);
+      frameOver: over(f), hidden: [...w.querySelectorAll('button, input[type=range]')].filter((b) => { const q = b.getBoundingClientRect();
+        if (q.width === 0 || q.height === 0) return false; const inner = q.top < f.top - 1 || q.bottom > f.bottom + 1 || q.left < f.left - 1 || q.right > f.right + 1;
+        return inner || q.bottom > innerHeight + 1 || q.right > innerWidth + 1 || q.top < -1 || q.left < -1; }).map((b) => (b.getAttribute('aria-label') || b.getAttribute('title') || b.className || b.textContent).toString().trim().slice(0, 24)), controls: [...w.querySelectorAll('.window-header button')].filter((b) => over(b.getBoundingClientRect())).map((b) => (b.getAttribute('aria-label') || b.getAttribute('title') || b.textContent).trim().slice(0, 20)) }; })()`);
   if (!r) return fail(where, `${phase}: floating player gone`);
   const [l, t, rt, b] = r.frame;
   if (l < 0 || t < 0 || rt > r.vw || b > r.vh) fail(where, `${phase}: player outside viewport ${r.frame}`);
   if (r.frameOver) fail(where, `${phase}: player frame ${r.frame} overlaps nav ${r.nav}`);
+  if (r.hidden.length) fail(where, `${phase}: player controls outside viewport or clipped by the frame: ${r.hidden.join(', ')}`);
   if (r.controls.length) fail(where, `${phase}: nav covers player controls: ${r.controls.join(', ')}`);
 }
 
