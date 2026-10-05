@@ -1,6 +1,7 @@
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { of, throwError } from 'rxjs';
 import { AdminConfigService, AdminIdentity, ConfigSnapshot } from '../../services/admin-config.service';
+import { StorageService } from '../../services/storage.service';
 import { HostsService } from '../../services/hosts.service';
 import { routes } from '../../app.routes';
 import { HomeComponent } from '../home/home.component';
@@ -109,6 +110,22 @@ describe('SetupComponent', () => {
       providers: [
         { provide: AdminConfigService, useValue: adminConfig },
         {
+          provide: StorageService,
+          useValue: {
+            report: () =>
+              of({
+                usage_bytes: 0,
+                run_count: 0,
+                clearable_count: 0,
+                pinned_count: 0,
+                pinned_bytes: 0,
+                disk: { total_bytes: 100, free_bytes: 90, free_percent: 90 },
+                warnings: [],
+                retention: { enabled: false, days: 30 }
+              })
+          }
+        },
+        {
           provide: HostsService,
           useValue: { list: () => of({ enabled: false, hosts: [], devices: [] }) }
         }
@@ -151,7 +168,7 @@ describe('SetupComponent', () => {
     fixture.detectChanges();
     const root = fixture.nativeElement as HTMLElement;
     const tabs = Array.from(root.querySelectorAll('[role="tab"]')) as HTMLButtonElement[];
-    expect(tabs.map((tab) => tab.textContent?.trim())).toEqual(['Models', 'Computers']);
+    expect(tabs.map((tab) => tab.textContent?.trim())).toEqual(['Models', 'Computers', 'Storage']);
     expect(tabs[0].getAttribute('aria-selected')).toBe('true');
     expect(root.querySelector('app-computers')).toBeNull();
 
@@ -160,6 +177,12 @@ describe('SetupComponent', () => {
     expect(tabs[1].getAttribute('aria-selected')).toBe('true');
     expect(root.querySelector('app-computers')).not.toBeNull();
     expect(root.querySelector('[name="default-provider"]')).toBeNull();
+
+    tabs[2].click();
+    fixture.detectChanges();
+    expect(tabs[2].getAttribute('aria-selected')).toBe('true');
+    expect(root.querySelector('app-storage')).not.toBeNull();
+    expect(root.querySelector('app-computers')).toBeNull();
   });
 
   it('replaces Step 2 on the System Setup route without adding a provider-only route', () => {

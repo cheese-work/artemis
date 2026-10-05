@@ -73,6 +73,7 @@ from artemis.config import (
 )
 from artemis.resources import get_bundled_showcase_dist
 from artemis.runtime.lifecycle import InterruptReason
+from apps.admin_console.services import run_retention
 from apps.admin_console.services.host_registry import host_agent_enabled, host_registry
 from apps.admin_console.core.access_control import (
     AdminAPIError,
@@ -96,6 +97,8 @@ try:
         hosts,
         media,
         replay,
+        run_admin,
+        run_bundle,
         runs,
         sessions,
         steps,
@@ -119,6 +122,8 @@ except ImportError:
         hosts,
         media,
         replay,
+        run_admin,
+        run_bundle,
         runs,
         sessions,
         steps,
@@ -234,6 +239,9 @@ async def on_startup():
 
     await ipc_service.start_server()
     state.worker_task = asyncio.create_task(task_queue_service.queue_worker())
+    # Finishes deferred deletions, and enforces retention only once an admin enabled it.
+    state.retention_task = asyncio.create_task(run_retention.sweep_forever())
+    state.retention_task.add_done_callback(run_retention.log_task_failure)
 
 
 async def on_shutdown():
@@ -257,6 +265,11 @@ async def on_shutdown():
         except (asyncio.CancelledError, TimeoutError):
             pass
     state.worker_task = None
+    retention = state.retention_task
+    if retention is not None and not retention.done():
+        retention.cancel()
+        await asyncio.gather(retention, return_exceptions=True)
+    state.retention_task = None
 
     # Cancel in-flight run coroutines and wait for their finalizers (DB status,
     # session_ended broadcast, trace sync, recording recovery) to run.
@@ -307,6 +320,8 @@ app.include_router(stream.router)
 app.include_router(media.router)
 app.include_router(sessions.router)
 app.include_router(runs.router)
+app.include_router(run_bundle.router)
+app.include_router(run_admin.router)
 app.include_router(steps.router)
 app.include_router(tasks.router)
 app.include_router(replay.router)
