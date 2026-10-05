@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import { Component, signal, computed, inject, OnInit, OnDestroy, ChangeDetectionStrategy } from '@angular/core';
+import { Component, signal, computed, inject, effect, untracked, OnInit, OnDestroy, ChangeDetectionStrategy } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { SystemService } from '../../services/system.service';
 import {
@@ -26,6 +26,11 @@ import {
 import { RegistryPhonesComponent } from '../../components/registry-phones/registry-phones.component';
 import { UsbPhoneConnectionComponent } from '../../components/usb-phone-connection/usb-phone-connection.component';
 import { SetupComponent } from '../setup/setup.component';
+import { UsbDeviceRelayService } from '../../services/usb-device-relay.service';
+import { HostsService } from '../../services/hosts.service';
+import { HostsResponse } from '../../core/models/host.model';
+import { deviceSourceOf } from '../../utils/device-chip.util';
+import { deviceKindLabel, deviceTitle } from '../../utils/device-label.util';
 
 type AdbGuideTab = 'emulator' | 'usb' | 'wifi' | 'remote';
 
@@ -40,6 +45,32 @@ type AdbGuideTab = 'emulator' | 'usb' | 'wifi' | 'remote';
 })
 export class HomeComponent implements OnInit, OnDestroy {
   public systemService = inject(SystemService);
+  private readonly usbRelay = inject(UsbDeviceRelayService);
+
+  // Device labels come from the classified model/kind, never from the serial.
+  public readonly deviceTitle = deviceTitle;
+  public readonly deviceKindLabel = deviceKindLabel;
+  private readonly relaySerial = computed(() => {
+    const relay = this.usbRelay.state();
+    return relay.status === 'connected' ? relay.serial : null;
+  });
+  private readonly hostsService = inject(HostsService);
+  private readonly registry = signal<HostsResponse | null>(null);
+  public deviceSource(device: DeviceInfo): string | null {
+    const registry = this.registry();
+    return deviceSourceOf(device.serial, registry?.devices ?? [], registry?.hosts ?? [], this.relaySerial());
+  }
+  // Source names come from the computers registry; refresh it when the phone list changes.
+  private readonly refreshRegistryOnDeviceChange = effect(() => {
+    this.systemService.connectedDevices();
+    untracked(() => this.refreshRegistry());
+  });
+  private refreshRegistry(): void {
+    this.hostsService.list().subscribe({
+      next: (response) => this.registry.set(response),
+      error: () => this.registry.set(null)
+    });
+  }
 
   // Interactive guide sub-tab inside the ADB section
   public activeAdbGuideTab = signal<AdbGuideTab>('emulator');
@@ -195,6 +226,7 @@ export class HomeComponent implements OnInit, OnDestroy {
   private focusListener = () => {
     // Silently re-check environment when user returns to the browser tab
     this.systemService.fetchReadiness().subscribe();
+    this.refreshRegistry();
   };
 
   ngOnInit(): void {

@@ -34,6 +34,7 @@ from artemis.core.diagnostics.schema import (
 from artemis.platform import OSType, platform
 from artemis.runtime.adb_endpoint import AdbEndpoint, current_adb_endpoint
 from artemis.runtime.endpoint_transport import EndpointTransport
+from artemis.utils.device_kind import DeviceKind, classify_properties, parse_getprop
 from artemis.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -503,18 +504,11 @@ class AdbDeviceProbe(BaseProbe):
                     elif token.startswith("product:"):
                         product = token.split(":", 1)[1]
 
-                is_emulator = (
-                    serial.startswith("emulator-") or "127.0.0.1" in serial or "localhost" in serial
-                )
-                if is_emulator and not model:
-                    model = "Android Emulator"
-
                 device_info = DeviceInfo(
                     serial=serial,
                     state=state,
                     model=model,
                     product=product,
-                    is_emulator=is_emulator,
                 )
                 devices.append(device_info)
 
@@ -534,12 +528,7 @@ class AdbDeviceProbe(BaseProbe):
                     if cached and now - cached[0] <= self._ENRICHMENT_CACHE_TTL_SECONDS:
                         enrichment = cached[1]
                     else:
-                        prop_task = self._run_adb_shell(
-                            adb_path,
-                            dev.serial,
-                            "getprop",
-                            "ro.build.version.release",
-                        )
+                        prop_task = self._run_adb_shell(adb_path, dev.serial, "getprop")
                         size_task = self._run_adb_shell(adb_path, dev.serial, "wm", "size")
                         packages_task = self._run_adb_shell(
                             adb_path,
@@ -548,11 +537,14 @@ class AdbDeviceProbe(BaseProbe):
                             "list",
                             "packages",
                         )
-                        android_version, size_str, packages_output = await asyncio.gather(
+                        getprop_output, size_str, packages_output = await asyncio.gather(
                             prop_task, size_task, packages_task
                         )
+                        props = parse_getprop(getprop_output)
                         enrichment = {
-                            "android_version": android_version or None,
+                            "android_version": props.get("ro.build.version.release") or None,
+                            "device_kind": classify_properties(props),
+                            "model": props.get("ro.product.model") or None,
                             "screen_resolution": (
                                 size_str.split("Physical size:")[-1].strip()
                                 if "Physical size:" in size_str
@@ -565,8 +557,16 @@ class AdbDeviceProbe(BaseProbe):
                                 and line.split("package:", 1)[1].strip()
                             ],
                         }
-                        self._device_enrichment_cache[dev.serial] = (now, enrichment)
+                        # An unreadable property dump must be retried, not remembered.
+                        if enrichment["device_kind"] is not DeviceKind.UNKNOWN:
+                            self._device_enrichment_cache[dev.serial] = (now, enrichment)
 
+                    kind = enrichment["device_kind"]
+                    dev.device_kind = kind.value
+                    dev.is_emulator = kind is DeviceKind.EMULATOR
+                    dev.model = enrichment["model"] or dev.model
+                    if dev.is_emulator and not dev.model:
+                        dev.model = "Android Emulator"
                     dev.android_version = enrichment["android_version"]
                     dev.screen_resolution = enrichment["screen_resolution"]
                     dev.installed_packages = list(enrichment["installed_packages"])

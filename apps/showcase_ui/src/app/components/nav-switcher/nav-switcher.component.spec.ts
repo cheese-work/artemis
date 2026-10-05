@@ -33,6 +33,25 @@ describe('NavSwitcherComponent', () => {
     expect(relay.disconnect).toHaveBeenCalled();
   });
 
+  it('links to the run library between Workspace and System Setup', async () => {
+    const relay = {
+      state: signal<UsbDeviceRelayState>({ status: 'idle', serial: null, error: null }),
+      disconnect: jasmine.createSpy('disconnect').and.resolveTo(undefined)
+    };
+    await TestBed.configureTestingModule({
+      imports: [NavSwitcherComponent],
+      providers: [provideRouter([]), { provide: UsbDeviceRelayService, useValue: relay }]
+    }).compileComponents();
+    const fixture = TestBed.createComponent(NavSwitcherComponent);
+    fixture.detectChanges();
+
+    const hrefs = Array.from<HTMLAnchorElement>(fixture.nativeElement.querySelectorAll('nav a[href]')).map(a =>
+      a.getAttribute('href')
+    );
+    expect(hrefs).toEqual(['/workspace', '/runs', '/setup']);
+    expect(fixture.nativeElement.querySelector('a[href="/runs"]').textContent).toContain('Runs');
+  });
+
   it("hides What's New navigation when there are no entries", async () => {
     const relay = {
       state: signal<UsbDeviceRelayState>({ status: 'idle', serial: null, error: null }),

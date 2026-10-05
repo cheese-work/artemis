@@ -1193,6 +1193,7 @@ class TaskQueueService:
         device_serial: str | None,
         endpoint: AdbEndpoint,
         now: float,
+        requested_by: str | None = None,
     ) -> dict[str, Any] | None:
         """Return the short-circuit response for a duplicate submission, if any."""
         # 1. Deduplication by session_id: if session_id is already running or queued, do not re-enqueue
@@ -1230,6 +1231,7 @@ class TaskQueueService:
                     for item in reversed(state.queue_items)
                     if isinstance(item, dict)
                     and item.get("status") == "pending"
+                    and item.get("requested_by") == requested_by
                     and item.get("goal") == first_goal
                     and (not device_serial or item.get("device_serial") == device_serial)
                     and item.get("adb_endpoint", {}).get("identity") == endpoint.identity
@@ -1292,6 +1294,7 @@ class TaskQueueService:
         verification_level: str | None = None,
         explorer_mode: str | None = None,
         run_id: str | None = None,
+        requested_by: str | None = None,
     ) -> dict[str, Any]:
         """Reserve a device slot and build one pending queue item for a goal."""
         sess_id = single_session_id if single_session_id else str(uuid.uuid4())
@@ -1320,6 +1323,7 @@ class TaskQueueService:
             "ingress": ingress,
             "conversation_id": conversation_id,
             "run_id": run_id,
+            "requested_by": requested_by,
             "status": "pending",
             "queue_ticket": queue_ticket,
             "created_at": now + index * 0.001,
@@ -1342,8 +1346,12 @@ class TaskQueueService:
         verification_level: str | None = None,
         explorer_mode: str | None = None,
         run_id: str | None = None,
+        requested_by: str | None = None,
     ) -> dict[str, Any]:
         """Enqueues one or more goals and wakes up the background worker.
+
+        ``requested_by`` is the verified identity that owns the new runs (None:
+        no owner); it is persisted with each session and shown on the queue item.
 
         ``verification_level`` and ``explorer_mode`` are Pro-profile tuning knobs
         forwarded to the worker as ``--verification-level`` / ``--explorer-pro-mode``;
@@ -1365,7 +1373,7 @@ class TaskQueueService:
         endpoint = current_adb_endpoint()
 
         duplicate_response = cls._find_duplicate_submission(
-            goals, session_id, device_serial, endpoint, now
+            goals, session_id, device_serial, endpoint, now, requested_by
         )
         if duplicate_response is not None:
             return duplicate_response
@@ -1408,6 +1416,7 @@ class TaskQueueService:
                 verification_level=verification_level,
                 explorer_mode=explorer_mode,
                 run_id=run_id,
+                requested_by=requested_by,
             )
             session_id = str(task_item["session_id"])
             existing_trace = trace_store.read_status(session_id)
@@ -1443,6 +1452,7 @@ class TaskQueueService:
                     task_item.get("device_serial"),
                     task_item.get("start_time"),
                     notify_context,
+                    requested_by,
                 ):
                     raise RuntimeError(f"Could not persist queued session {session_id}")
             except (OSError, RuntimeError) as exc:
@@ -1484,15 +1494,22 @@ class TaskQueueService:
         }
 
     @staticmethod
-    def _clear_pause_file() -> None:
-        """Remove a leftover pause marker after a stop request."""
-        if PAUSE_FILE.exists():
-            try:
-                PAUSE_FILE.unlink()
-            except OSError:
-                # Best-effort cleanup of the pause marker; a leftover file
-                # only pauses until the next resume request.
-                pass
+    def clear_pause_marker() -> bool:
+        """Remove the shared pause marker; True if one was removed.
+
+        The one place the console deletes it. The marker is global, so callers
+        outside the service must first prove the requester may resume every run
+        it affects (``routers.tasks._pause_authority``); stop paths take
+        ``clear_pause=False`` when they cannot.
+        """
+        if not PAUSE_FILE.exists():
+            return False
+        try:
+            PAUSE_FILE.unlink()
+        except OSError:
+            # A leftover marker only pauses until the next resume request.
+            return False
+        return True
 
     @classmethod
     def _terminate_all_device_owners(cls) -> None:
@@ -1571,7 +1588,7 @@ class TaskQueueService:
         state.current_goal = None
         state.current_profile = None
 
-        cls._clear_pause_file()
+        cls.clear_pause_marker()  # every run was just terminated: nothing left to pause
 
         cls.ensure_worker_running()
         state.wake_event.set()
@@ -1874,7 +1891,71 @@ class TaskQueueService:
         ]
 
     @classmethod
-    def _stop_targeted_task(cls, target_sid: str | None, target_device: str | None) -> bool:
+    def active_session_ids(cls, running_only: bool = False) -> set[str | None]:
+        """Every run that is queued or running, in this process or any other.
+
+        Covers the in-process queue and workers plus live device-lock owners
+        (other processes: CLI, SDK, MCP) and, unless ``running_only``, their
+        global queue tickets. A ``None`` member is a lock record that names no
+        session, or is still being published: a run that cannot be attributed.
+        """
+        wanted = {"running"} if running_only else {"running", "pending"}
+        ids: set[str | None] = {
+            str(item["session_id"])
+            for item in state.queue_items
+            if isinstance(item, dict) and item.get("session_id") and item.get("status") in wanted
+        }
+        ids.update(str(sid) for sid in state.active_runs)
+        if state.active_session_id:
+            ids.add(str(state.active_session_id))
+        try:
+            owners = list(DeviceExecutionLock.get_active_owners().values())
+            fallback = DeviceExecutionLock.get_active_owner()  # scoped/legacy records
+            queued = [] if running_only else DeviceExecutionLock.get_queued_tasks()
+            # get_active_owners skips unreadable files, so a readable owner cannot
+            # vouch for the whole directory: ask about unreadable records too.
+            record_unreadable = DeviceExecutionLock.has_unreadable_owner_record()
+        except OSError:
+            owners, fallback, queued, record_unreadable = [], None, [], True
+        if fallback is not None:
+            owners.append(fallback)
+        ids.update(str(owner.session_id) if owner.session_id else None for owner in owners)
+        ids.update(str(t["session_id"]) for t in queued if t.get("session_id"))
+        if record_unreadable:
+            ids.add(None)
+        return ids
+
+    @classmethod
+    def sessions_on_device(cls, device_id: str) -> set[str | None]:
+        """Runs a device-targeted stop would reach, via the stop resolver itself.
+
+        A ``None`` entry is a lock record that names no session: unattributable.
+        """
+        ids: set[str | None] = {
+            str(sid) for sid, run in state.active_runs.items() if run.get("device_id") == device_id
+        }
+        ids.update(
+            str(item["session_id"])
+            for item in state.queue_items
+            if isinstance(item, dict)
+            and item.get("session_id")
+            and item.get("device_serial") == device_id
+        )
+        try:
+            owners = DeviceExecutionLock.get_active_owners()
+        except OSError:
+            owners = {}
+        owner = cls._resolve_stop_owner(owners, None, device_id)
+        if owner is not None:
+            ids.add(str(owner.session_id) if owner.session_id else None)
+        elif DeviceExecutionLock.has_owner_record(device_id):
+            ids.add(None)
+        return ids
+
+    @classmethod
+    def _stop_targeted_task(
+        cls, target_sid: str | None, target_device: str | None, clear_pause: bool = True
+    ) -> bool:
         """Stop a specific task (or default single-device active task)."""
         active_owners = {}
         try:
@@ -1925,7 +2006,8 @@ class TaskQueueService:
         )
         cls._remove_stopped_queue_item(stopped_session_id, reservation_cancelled)
 
-        cls._clear_pause_file()
+        if clear_pause:
+            cls.clear_pause_marker()
 
         cls.ensure_worker_running()
         state.wake_event.set()
@@ -1937,8 +2019,12 @@ class TaskQueueService:
         clear_all: bool = False,
         session_id: str | None = None,
         device_id: str | None = None,
+        clear_pause: bool = True,
     ) -> bool:
         """Stop the active task controlling a mobile device or all tasks.
+
+        ``clear_pause=False`` leaves the global pause marker alone (a targeted
+        stop by a caller who may not resume the other runs it covers).
 
         The active lease is shared by frontend, MCP, CLI, SDK, and other UI
         processes across all connected devices.
@@ -1955,14 +2041,11 @@ class TaskQueueService:
         if clear_all:
             return cls._stop_all_tasks()
 
-        return cls._stop_targeted_task(target_sid, target_device)
+        return cls._stop_targeted_task(target_sid, target_device, clear_pause)
 
     @classmethod
     def resume_task(cls) -> bool:
-        if PAUSE_FILE.exists():
-            PAUSE_FILE.unlink()
-            return True
-        return False
+        return cls.clear_pause_marker()
 
     @classmethod
     def recover_orphaned_recordings_on_launch(cls) -> int:
