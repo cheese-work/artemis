@@ -847,3 +847,50 @@ async def test_a_local_submission_is_not_debounced_into_a_host_run():
     local = await TaskQueueService.enqueue_tasks(["same"], device_serial="d1")
 
     assert host_run["enqueued_count"] == local["enqueued_count"] == 1
+
+
+# -- cancel-queued reports what was persisted, not what the queue did (OCR, CHE-1128) --
+
+
+@pytest.mark.asyncio
+async def test_cancel_queued_does_not_claim_cancelled_when_the_commit_failed(monkeypatch):
+    assert session_repo.create_queued_session("q1", "g", "flash", "d1", None, None)
+    ticket = DeviceExecutionLock.reserve("t", "d1", session_id="q1", lock_scope=f"host:{HOST_A}")
+    state.queue_items.append(_row("q1", ticket=ticket))
+    monkeypatch.setattr(session_repo, "update_session_status", lambda *_a, **_k: False)
+
+    assert TaskQueueService.cancel_queued("q1") == "retry"
+
+    assert [i["session_id"] for i in state.queue_items] == ["q1"]  # still waiting, retryable
+    assert state.queue_items[0]["status"] == "pending"
+    assert len(_ticket_files(ticket)) == 1
+    assert session_repo.get_session_by_id("q1")["status"] == "queued"
+
+
+@pytest.mark.asyncio
+async def test_cancel_queued_answers_already_started_when_another_writer_settled_it(monkeypatch):
+    assert session_repo.create_queued_session("q1", "g", "flash", "d1", None, None)
+    state.queue_items.append(_row("q1"))
+    real_update = session_repo.update_session_status
+
+    def settled_elsewhere(sid, status, *args, **kwargs):
+        real_update(sid, "completed", 1.0)  # another writer wins first
+        return real_update(sid, status, *args, **kwargs)  # ours is then refused: False
+
+    monkeypatch.setattr(session_repo, "update_session_status", settled_elsewhere)
+
+    assert TaskQueueService.cancel_queued("q1") == "already_started"
+    assert session_repo.get_session_by_id("q1")["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_cancel_queued_endpoint_asks_for_a_retry_when_the_commit_failed(monkeypatch):
+    assert session_repo.create_queued_session("q1", "g", "flash", "d1", None, None)
+    state.queue_items.append(_row("q1"))
+    monkeypatch.setattr(session_repo, "update_session_status", lambda *_a, **_k: False)
+
+    async with _client() as client:
+        response = await client.post("/api/tasks/q1/cancel-queued")
+
+    assert response.status_code == 503
+    assert [i["session_id"] for i in state.queue_items] == ["q1"]
