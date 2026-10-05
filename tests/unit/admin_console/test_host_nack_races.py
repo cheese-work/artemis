@@ -5,6 +5,7 @@ DeviceExecutionLock.acquire while the real server NACK path runs.
 """
 
 import asyncio
+import json
 import os
 import threading
 import time
@@ -362,3 +363,105 @@ async def test_nack_preserves_a_worker_paused_before_owner_metadata_write(tmp_pa
         thread.join(5)
         assert not thread.is_alive()
         lock.release()
+
+
+# -- fourth review: acquire() must not reap the arbiter either --
+
+
+@pytest.mark.asyncio
+async def test_worker_cannot_reap_a_nack_arbiter_paused_before_metadata_publication(
+    tmp_path, monkeypatch
+):
+    host()
+    ticket = DeviceExecutionLock.reserve("probe", "d1", session_id="r1", lock_scope="host:host-a")
+    assert session_repo.create_queued_session("r1", "probe", "flash", "d1", 1.0, None)
+    worker = await spawned_worker(tmp_path, monkeypatch, ticket, asyncio.Event())
+    lock = worker_lock(ticket)
+    arbiter_created = threading.Event()
+    allow_publication = threading.Event()
+    worker_acquired = threading.Event()
+    errors = []
+    real_write = os.write
+
+    def controlled_write(descriptor, payload):
+        if b'"session_id": "requeue:r1"' in payload:
+            arbiter_created.set()
+            assert allow_publication.wait(5)
+        return real_write(descriptor, payload)
+
+    def acquire():
+        try:
+            assert arbiter_created.wait(5)
+            old_time = time.time() - DeviceExecutionLock._MALFORMED_LOCK_GRACE_SECONDS - 1
+            os.utime(lock.path, (old_time, old_time))
+            lock.acquire(timeout=2, poll_interval=0.01)
+            worker_acquired.set()
+        except BaseException as error:
+            errors.append(error)
+        finally:
+            allow_publication.set()
+
+    monkeypatch.setattr(os, "write", controlled_write)
+    kills_while_locked = []
+    worker.kill.side_effect = lambda: kills_while_locked.append(lock._acquired)
+    thread = threading.Thread(target=acquire)
+    thread.start()
+    try:
+        requeued = await TaskQueueService.requeue_starting("r1")
+        assert worker_acquired.is_set()
+        assert errors == []
+        owner = DeviceExecutionLock.get_active_owner("d1", "host:host-a")
+        queue_dir = device_lock.get_temp_dir("device-locks") / "artemis-global-device.queue"
+        ticket_kept = bool(list(queue_dir.glob(f"*-{ticket}.wait")))
+        print(
+            f"ARBITER PUBLICATION GAP: requeued={requeued}, "
+            f"kills_while_locked={kills_while_locked}, "
+            f"current_owner={owner.session_id if owner else None}, "
+            f"ticket_kept={ticket_kept}, "
+            f"row={state.queue_items[0]['status']}, "
+            f"session={session_repo.get_session_by_id('r1')['status']}"
+        )
+        assert kills_while_locked == []
+        assert ticket_kept
+    finally:
+        allow_publication.set()
+        thread.join(5)
+        assert not thread.is_alive()
+        lock.release()
+
+
+@pytest.mark.asyncio
+async def test_refused_nack_of_a_dead_other_owner_keeps_the_waiting_run(tmp_path, monkeypatch):
+    host()
+    ticket = DeviceExecutionLock.reserve("probe", "d1", session_id="r1", lock_scope="host:host-a")
+    assert session_repo.create_queued_session("r1", "probe", "flash", "d1", 1.0, None)
+    worker = await spawned_worker(tmp_path, monkeypatch, ticket, asyncio.Event())
+    lock = worker_lock(ticket)
+    stale_record = json.dumps(
+        {
+            "pid": 2**22 + 99,
+            "process_created_at": 1.0,
+            "token": "previous-worker",
+            "device_id": "d1",
+            "session_id": "previous-run",
+            "lock_scope": "host:host-a",
+        }
+    )
+    lock.path.write_text(stale_record)
+    queue_dir = device_lock.get_temp_dir("device-locks") / "artemis-global-device.queue"
+    tickets_before = sorted(queue_dir.glob(f"*-{ticket}.wait"))
+    assert len(tickets_before) == 1
+
+    assert await TaskQueueService.requeue_starting("r1") is False
+
+    worker.kill.assert_not_called()
+    assert worker.returncode is None
+    assert lock.path.read_text() == stale_record
+    assert state.queue_items[0]["status"] == "starting"
+    assert "requeue" not in state.queue_items[0]
+    assert "r1" in state.active_runs
+    assert session_repo.get_session_by_id("r1")["status"] == "queued"
+    assert sorted(queue_dir.glob(f"*-{ticket}.wait")) == tickets_before
+    print(
+        "DEAD OTHER OWNER: refused=True, worker_alive=True, row=starting, session=queued, ticket_kept=True"
+    )
