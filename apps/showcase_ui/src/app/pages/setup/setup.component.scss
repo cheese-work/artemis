@@ -93,6 +93,12 @@ input:disabled, input[readonly], select:disabled { color: #a5b0c0; opacity: .88;
   .field-grid { grid-template-columns: 1fr; }
 }
 
+.deploy-status {
+  margin: 0 0 12px;
+  color: #64748b;
+  font-size: 12px;
+}
+
 .setup-tabs { display: flex; gap: .25rem; margin-bottom: 1rem; border-bottom: 1px solid #26344e; }
 .setup-tabs button { min-height: 2.5rem; border: 0; border-bottom: 3px solid transparent; background: transparent; color: #a7b4c8; padding: 0 1rem; font: inherit; cursor: pointer; }
 .setup-tabs button[aria-selected='true'] { border-bottom-color: #98c7ff; color: #e8eef8; font-weight: 700; }
