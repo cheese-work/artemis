@@ -32,8 +32,9 @@ except ImportError:
 
 from apps.admin_console.services.run_artifacts import (
     image_file,
-    relative_parts,
+    no_symlink_parents,
     recorded_videos,
+    relative_parts,
     safe_file,
 )
 
@@ -50,8 +51,8 @@ _OWN_IMAGES_SQL = (
 
 def _remove(traces: Path, candidate: Path) -> None:
     """Delete a file, directory or link under ``traces``; a link is removed, never followed."""
-    if relative_parts(traces, candidate) is None:
-        return
+    if not no_symlink_parents(traces, candidate):
+        return  # outside storage, or reached through a link: never touch it
     try:
         mode = os.lstat(candidate).st_mode
         if stat.S_ISDIR(mode):

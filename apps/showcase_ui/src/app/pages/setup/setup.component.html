@@ -15,11 +15,14 @@
   <div class="setup-tabs" role="tablist" aria-label="Setup sections">
     <button type="button" role="tab" id="tab-models" [attr.aria-selected]="tab() === 'models'" aria-controls="panel-setup" (click)="tab.set('models')">Models</button>
     <button type="button" role="tab" id="tab-computers" [attr.aria-selected]="tab() === 'computers'" aria-controls="panel-setup" (click)="tab.set('computers')">Computers</button>
+    <button type="button" role="tab" id="tab-storage" [attr.aria-selected]="tab() === 'storage'" aria-controls="panel-setup" (click)="tab.set('storage')">Storage</button>
   </div>
 
-  <div id="panel-setup" role="tabpanel" [attr.aria-labelledby]="tab() === 'models' ? 'tab-models' : 'tab-computers'">
+  <div id="panel-setup" role="tabpanel" [attr.aria-labelledby]="'tab-' + tab()">
   @if (tab() === 'computers') {
     <app-computers />
+  } @else if (tab() === 'storage') {
+    <app-storage />
   } @else if (loading()) {
     <p class="notice" role="status">Loading provider settings…</p>
   } @else if (!snapshot()) {

@@ -24,11 +24,13 @@ a symlink, and it must be a regular file. Anything else is listed in
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import errno
 import json
 import os
 from pathlib import Path
 import re
 import stat
+from typing import BinaryIO
 
 from apps.admin_console.core.redaction import redact_json, redact_text
 
@@ -75,6 +77,7 @@ class Artifact:
     size: int
     path: Path | None = None  # a real file under storage, or...
     text: str | None = None  # ...generated content, already redacted
+    root: Path | None = None  # the storage root ``path`` must stay inside, re-checked on open
 
 
 @dataclass(slots=True)
@@ -96,7 +99,9 @@ class Manifest:
             n += 1
             arcname = f"{stem}-{n}{dot}{suffix}" if dot else f"{artifact.arcname}-{n}"
         self.artifacts.append(
-            Artifact(arcname, artifact.kind, artifact.size, artifact.path, artifact.text)
+            Artifact(
+                arcname, artifact.kind, artifact.size, artifact.path, artifact.text, artifact.root
+            )
         )
 
 
@@ -163,6 +168,59 @@ def safe_dir(root: Path, candidate: Path) -> tuple[Path | None, str | None]:
     return (current, None) if stat.S_ISDIR(mode) else (None, "not_a_directory")
 
 
+class UnsafePath(OSError):
+    """A path component turned out to be a link (or the path left its root) at use time."""
+
+
+def no_symlink_parents(root: Path, candidate: Path) -> bool:
+    """True when every directory between ``root`` and ``candidate`` is a real directory.
+
+    The leaf itself may be anything (a link is then removed, not followed).
+    """
+    found = relative_parts(root, candidate)
+    if found is None:
+        return False
+    current, parts = found
+    for part in parts[:-1]:
+        current = current / part
+        try:
+            if not stat.S_ISDIR(os.lstat(current).st_mode):
+                return False
+        except OSError:
+            return False
+    return True
+
+
+def open_under(root: Path, candidate: Path) -> BinaryIO:
+    """Open a regular file, refusing a link in ANY component at open time.
+
+    Walks from the root with ``O_NOFOLLOW`` one component at a time, so a
+    directory swapped for a link after the manifest was listed is refused
+    instead of followed. Raises UnsafePath, or FileNotFoundError if it vanished.
+    """
+    found = relative_parts(root, candidate)
+    if found is None:
+        raise UnsafePath(errno.EXDEV, "outside storage")
+    base, parts = found
+    fd = os.open(base, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        for part in parts[:-1]:
+            nxt = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            os.close(fd)
+            fd = nxt
+        file_fd = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW, dir_fd=fd)
+    except OSError as exc:
+        if exc.errno in (errno.ELOOP, errno.ENOTDIR):
+            raise UnsafePath(exc.errno, "symlink in path") from exc
+        raise
+    finally:
+        os.close(fd)
+    if not stat.S_ISREG(os.fstat(file_fd).st_mode):
+        os.close(file_fd)
+        raise UnsafePath(errno.EINVAL, "not a regular file")
+    return os.fdopen(file_fd, "rb")
+
+
 def recorded_videos(db_path, session_id: str) -> list[Path]:
     """Recording paths the database names for this run (not yet checked for safety)."""
     with db_session(db_path) as conn:
@@ -207,7 +265,7 @@ def _add_file(manifest, root: Path, candidate: Path, arcname: str, kind: str, na
     if reason:
         _skip(manifest, name, reason)
     elif path is not None:
-        manifest.add(Artifact(arcname, kind, os.lstat(path).st_size, path=path))
+        manifest.add(Artifact(arcname, kind, os.lstat(path).st_size, path=path, root=root))
 
 
 def image_names(db_path, session_id: str) -> list[str]:
@@ -246,7 +304,13 @@ def _add_videos(manifest: Manifest, traces: Path, db_path, session_id: str) -> N
                 _skip(manifest, f"video/{candidate.name}", reason)
             elif path is not None:
                 manifest.add(
-                    Artifact(f"video/{path.name}", "media", os.lstat(path).st_size, path=path)
+                    Artifact(
+                        f"video/{path.name}",
+                        "media",
+                        os.lstat(path).st_size,
+                        path=path,
+                        root=traces,
+                    )
                 )
                 break
 

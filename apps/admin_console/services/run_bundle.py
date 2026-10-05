@@ -52,7 +52,9 @@ from apps.admin_console.services.run_artifacts import (
     Artifact,
     Manifest,
     RunLibraryError,
+    UnsafePath,
     library_paths,
+    open_under,
     resolve_manifest,
 )
 
@@ -108,17 +110,18 @@ def _redacted_text(arcname: str, raw: str) -> str:
     return redact_text(raw)
 
 
-def _read_text(path: Path) -> str:
-    with _open_regular(path) as handle:
+def _read_text(artifact: Artifact) -> str:
+    with _open_regular(artifact) as handle:
         data = handle.read(_TEXT_LIMIT + 1)
     text = data[:_TEXT_LIMIT].decode("utf-8", errors="replace")
     return text + "\n[truncated]\n" if len(data) > _TEXT_LIMIT else text
 
 
-def _open_regular(path: Path) -> BinaryIO:
-    """Open without following a link swapped in after the manifest was resolved."""
-    fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
-    return os.fdopen(fd, "rb")
+def _open_regular(artifact: Artifact) -> BinaryIO:
+    """Open at write time, refusing a link in any component, whatever listing saw."""
+    if artifact.path is None or artifact.root is None:
+        raise ValueError(f"{artifact.arcname} has no file to open")
+    return open_under(artifact.root, artifact.path)
 
 
 class _Budget:
@@ -131,41 +134,49 @@ class _Budget:
             raise BundleError(413, "bundle_too_large", limit_bytes=MAX_BUNDLE_BYTES)
 
 
-def _write_artifact(archive: zipfile.ZipFile, artifact: Artifact, budget: _Budget) -> None:
+def _write_artifact(
+    archive: zipfile.ZipFile, artifact: Artifact, budget: _Budget, manifest: Manifest
+) -> bool:
+    """Add one entry; False when it was refused at open time (and is listed as skipped)."""
     if ".." in artifact.arcname.split("/") or artifact.arcname.startswith("/"):
         raise ValueError(f"unsafe bundle entry name: {artifact.arcname!r}")
     media = artifact.kind == "media"
     info = zipfile.ZipInfo(artifact.arcname, time.localtime(time.time())[:6])
     info.compress_type = zipfile.ZIP_STORED if media else zipfile.ZIP_DEFLATED
     info.external_attr = 0o600 << 16
-    if artifact.path is None or not media:
-        text = (
-            artifact.text
-            if artifact.text is not None
-            else _redacted_text(artifact.arcname, _read_text(artifact.path))
-        )
-        data = text.encode("utf-8")
-        budget.spend(len(data))
-        archive.writestr(info, data)
-        return
-    with _open_regular(artifact.path) as source, archive.open(info, "w", force_zip64=True) as sink:
-        while chunk := source.read(_CHUNK):
-            budget.spend(len(chunk))
-            sink.write(chunk)
+    try:
+        if artifact.path is None or not media:
+            text = (
+                artifact.text
+                if artifact.text is not None
+                else _redacted_text(artifact.arcname, _read_text(artifact))
+            )
+            data = text.encode("utf-8")
+            budget.spend(len(data))
+            archive.writestr(info, data)
+            return True
+        with _open_regular(artifact) as source, archive.open(info, "w", force_zip64=True) as sink:
+            while chunk := source.read(_CHUNK):
+                budget.spend(len(chunk))
+                sink.write(chunk)
+        return True
+    except UnsafePath:
+        manifest.skipped.append({"name": artifact.arcname, "reason": "symlink"})
+    except FileNotFoundError:
+        manifest.skipped.append({"name": artifact.arcname, "reason": "missing"})
+    return False
 
 
 def _build_zip(manifest: Manifest, dest: BinaryIO) -> int:
     """Write the manifest's artifacts and a manifest.json into ``dest``; returns entry count."""
     budget = _Budget(MAX_BUNDLE_BYTES)
     with zipfile.ZipFile(dest, "w", allowZip64=True) as archive:
-        for artifact in manifest.artifacts:
-            _write_artifact(archive, artifact, budget)
+        written = [a for a in manifest.artifacts if _write_artifact(archive, a, budget, manifest)]
         listing = {
             "session_id": manifest.session_id,
             "generated_at": time.time(),
             "entries": [
-                {"name": a.arcname, "kind": a.kind, "redacted": a.kind == "text"}
-                for a in manifest.artifacts
+                {"name": a.arcname, "kind": a.kind, "redacted": a.kind == "text"} for a in written
             ],
             "skipped": manifest.skipped,
             "note": "Text is redacted. Screenshots and video are not.",
@@ -174,8 +185,9 @@ def _build_zip(manifest: Manifest, dest: BinaryIO) -> int:
             archive,
             Artifact("manifest.json", "text", 0, text=json.dumps(listing, indent=2)),
             budget,
+            manifest,
         )
-    return len(manifest.artifacts) + 1
+    return len(written) + 1
 
 
 def _lookup(session_id: str) -> dict:
@@ -202,14 +214,17 @@ def prepare(session_id: str) -> BundleFile:
         raise BundleError(429, "bundle_busy", retry_after=RETRY_AFTER_SECONDS)
     db_path, _ = library_paths()
     started = time.monotonic()
-    lease_id = run_leases.acquire(db_path, session_id)
+    lease_id: str | None = None
     temp: Path | None = None
     handed_over = False
     try:
-        # Lease first, tombstone check second: a delete that wins the race
-        # either sees the lease (and waits) or is seen here (and we stop).
-        run = _lookup(session_id)
-        manifest = resolve_manifest(run["session_id"], run["prompt"])
+        # Resolve first (an id or prefix that names no single run takes no lease),
+        # lease the full id, then look again: a delete that wins the race either
+        # sees the lease (and waits) or is seen by the second look (and we stop).
+        full_id = _lookup(session_id)["session_id"]
+        lease_id = run_leases.acquire(db_path, full_id)
+        run = _lookup(full_id)
+        manifest = resolve_manifest(full_id, run["prompt"])
         if manifest.total_bytes > MAX_BUNDLE_BYTES:
             raise BundleError(413, "bundle_too_large", limit_bytes=MAX_BUNDLE_BYTES)
         fd, name = tempfile.mkstemp(prefix="artemis-bundle-", suffix=".zip")
@@ -217,13 +232,7 @@ def prepare(session_id: str) -> BundleFile:
         with os.fdopen(fd, "wb") as dest:
             entries = _build_zip(manifest, dest)
         bundle = BundleFile(
-            run["session_id"],
-            temp,
-            temp.stat().st_size,
-            entries,
-            len(manifest.skipped),
-            lease_id,
-            started,
+            full_id, temp, temp.stat().st_size, entries, len(manifest.skipped), lease_id, started
         )
         handed_over = True
         return bundle
@@ -237,6 +246,7 @@ def prepare(session_id: str) -> BundleFile:
         if not handed_over:
             if temp is not None:
                 temp.unlink(missing_ok=True)
-            due = run_leases.release(db_path, lease_id)
-            if due:
-                run_retention.finish_cleanups_for(due)
+            if lease_id is not None:
+                due = run_leases.release(db_path, lease_id)
+                if due:
+                    run_retention.finish_cleanups_for(due)

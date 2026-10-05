@@ -148,6 +148,9 @@ def test_quoted_redaction_keeps_json_parseable_and_neighbours():
 
 
 def test_quoted_values_nested_through_redact_json():
-    payload = {"log": ['login password="alpha beta" ok'], "raw": json.dumps({"x": 'password="a \\"b\\" c"'})}
+    payload = {
+        "log": ['login password="alpha beta" ok'],
+        "raw": json.dumps({"x": 'password="a \\"b\\" c"'}),
+    }
     dumped = json.dumps(redact_json(payload))
     assert "alpha" not in dumped and "beta" not in dumped and '\\"b\\"' not in dumped

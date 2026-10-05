@@ -397,7 +397,9 @@ def _swap_dir_for_symlink(real: Path, outside: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_parent_swapped_to_a_symlink_after_listing_is_not_followed(library, qa, tmp_path, monkeypatch):
+async def test_a_parent_swapped_to_a_symlink_after_listing_is_not_followed(
+    library, qa, tmp_path, monkeypatch
+):
     sid = library.seed("swap")
     library.write(sid, "notes/finding.md", "INSIDE-NOTE")
     video = library.video(sid, b"INSIDE-VIDEO")

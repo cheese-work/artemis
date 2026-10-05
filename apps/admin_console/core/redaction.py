@@ -39,11 +39,18 @@ _WORD = (
 )
 # A key must END in a sensitive word, so ``max_tokens`` and ``author`` stay readable.
 _SENSITIVE_KEY = re.compile(rf"(?:{_WORD})$", re.IGNORECASE)
-# JSON may itself be quoted inside a JSON string, hence the optional backslashes.
-_QUOTE = r"\\*[\"']?"
+# A value is quoted (spaces and escaped quotes inside stay part of it), JSON quoted
+# inside a JSON string (\\"..\\"), an unterminated quote (to the end of the line),
+# or one unquoted run.
+_VALUE = (
+    r"\\+\"(?:(?!\\+\").)*\\+\""
+    r"|\"(?:[^\"\\]|\\.)*\""
+    r"|'(?:[^'\\]|\\.)*'"
+    r"|\\*[\"'][^\n]*"
+    r"|(?:(?:bearer|basic|token)\s+)?[^\s\"'\\,;&}\]]+"
+)
 _ASSIGNMENT = re.compile(
-    rf"(?P<head>(?<![\w.-])[\w.-]*?(?:{_WORD}){_QUOTE}\s*[:=]\s*{_QUOTE})"
-    r"(?P<value>(?:(?:bearer|basic|token)\s+)?[^\s\"'\\,;&}\]]+)",
+    rf"(?P<head>(?<![\w.-])[\w.-]*?(?:{_WORD})(?:\\*[\"'])?\s*[:=]\s*)(?P<value>{_VALUE})",
     re.IGNORECASE,
 )
 _BEARER = re.compile(r"(?P<head>\bbearer\s+)[A-Za-z0-9._~+/=-]{8,}", re.IGNORECASE)
@@ -51,11 +58,11 @@ _TYPED = (
     re.compile(
         r"(?P<head>\b(?:typed|typing|type|entered|entering|enter|inputted|input|filled(?: in)?)\s+"
         r"(?:in\s+)?(?:the\s+|my\s+|your\s+)?(?:password|passcode|pin)\b\s*"
-        r"(?:is\s+|as\s+|:\s*|=\s*)?[\"']?)(?P<value>[^\s\"',;]+)",
+        rf"(?:is\s+|as\s+|:\s*|=\s*)?)(?P<value>{_VALUE})",
         re.IGNORECASE,
     ),
     re.compile(
-        r"(?P<head>\b(?:password|passcode)\s+(?:is|was)\s*[:=]?\s*[\"']?)(?P<value>[^\s\"',;]+)",
+        rf"(?P<head>\b(?:password|passcode)\s+(?:is|was)\s*[:=]?\s*)(?P<value>{_VALUE})",
         re.IGNORECASE,
     ),
 )
@@ -79,24 +86,34 @@ def _keep_head(match: re.Match[str]) -> str:
     return f"{match.group('head')}{REDACTED}"
 
 
+def _redact_value(match: re.Match[str]) -> str:
+    """Replace the value but keep its quotes, so redacted JSON text stays parseable."""
+    value = match.group("value")
+    opener = re.match(r"\\*[\"']", value)
+    closer = ""
+    body = value
+    if opener:
+        quote = opener.group()[-1]
+        end = re.search(rf"\\*{re.escape(quote)}$", value)
+        if end and end.start() >= len(opener.group()):
+            closer = end.group()
+        body = value[len(opener.group()) : len(value) - len(closer)]
+    if match.string.startswith(
+        REDACTED, match.start("value") + len(opener.group() if opener else "")
+    ):
+        return match.group(0)
+    return f"{match.group('head')}{opener.group() if opener else ''}{REDACTED}{closer}"
+
+
 def redact_text(text: str) -> str:
     """Replace secrets in free text with ``[REDACTED]``, keeping the surrounding words."""
     if not text:
         return text
     out = _SHAPES.sub(REDACTED, text)
-    out = _ASSIGNMENT.sub(_skip_redacted(_keep_head), out)
+    out = _ASSIGNMENT.sub(_redact_value, out)
     for pattern in _TYPED:
-        out = pattern.sub(_skip_redacted(_keep_head), out)
+        out = pattern.sub(_redact_value, out)
     return _BEARER.sub(_keep_head, out)
-
-
-def _skip_redacted(replace):
-    def apply(match: re.Match[str]) -> str:
-        if match.string.startswith(REDACTED, match.start("value")):
-            return match.group(0)
-        return replace(match)
-
-    return apply
 
 
 def _mentions_password(mapping: dict[Any, Any]) -> bool:

@@ -469,7 +469,7 @@ def _mutate(library, sid, how):
             other.execute("UPDATE run_meta SET pinned = 1 WHERE session_id = ?", (sid,))
         else:
             other.execute(
-                "INSERT INTO run_recording_state (session_id, recording_id, transfer) "
+                "INSERT OR IGNORE INTO run_recording_state (session_id, recording_id, transfer) "
                 "VALUES (?, 'rec-1', 'uploading')",
                 (sid,),
             )
@@ -493,7 +493,9 @@ def _untouched(library, sid, files):
             "SELECT deleted_at FROM run_meta WHERE session_id = ?", (sid,)
         ).fetchone()
     assert meta[0] is None  # not tombstoned
-    assert files.exists() and library.count("sessions", sid) == 1 and library.count("steps", sid) == 1
+    assert (
+        files.exists() and library.count("sessions", sid) == 1 and library.count("steps", sid) == 1
+    )
 
 
 @pytest.mark.asyncio
@@ -560,7 +562,9 @@ async def test_admin_delete_refuses_a_run_with_a_pending_upload(library, admin):
 
 
 @pytest.mark.asyncio
-async def test_a_symlinked_parent_of_a_recording_never_deletes_outside_storage(library, admin, tmp_path):
+async def test_a_symlinked_parent_of_a_recording_never_deletes_outside_storage(
+    library, admin, tmp_path
+):
     sid = library.seed("linked recording", age_days=1)
     outside = tmp_path / "outside" / "sub"
     outside.mkdir(parents=True)

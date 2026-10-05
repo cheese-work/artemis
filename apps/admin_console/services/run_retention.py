@@ -63,6 +63,16 @@ _RUNS_SQL = (
     "FROM run_meta m JOIN sessions s ON s.session_id = m.session_id WHERE m.deleted_at IS NULL"
 )
 _PROTECTIONS = ("live", "pending_upload", "pinned")
+# The same guards as ``_protection``, as SQL, so the delete itself re-checks them in the
+# one UPDATE that tombstones the run: a pin, upload or restart that lands between
+# selection and delete makes it a no-op.
+_TERMINAL_MARKS = ", ".join("?" * len(TERMINAL))
+_GUARDS_SQL = (
+    f" AND EXISTS (SELECT 1 FROM sessions s WHERE s.session_id = run_meta.session_id "
+    f"AND s.status IN ({_TERMINAL_MARKS}))"
+    " AND NOT EXISTS (SELECT 1 FROM run_recording_state r WHERE r.session_id = "
+    "run_meta.session_id AND (r.transfer IN (?, ?) OR r.capture IN (?, ?)))"
+)
 
 
 def _protection(row) -> str | None:
@@ -204,14 +214,25 @@ def set_pinned(session_id: str, pinned: bool) -> dict[str, Any]:
 
 
 def _delete(session_id: str, reason: str, *, keep_pinned: bool, vacuum: bool = True) -> str | None:
-    """Tombstone, then clean up now or once leases end. None when a pin got there first."""
+    """Tombstone, then clean up now or once leases end.
+
+    None when a guard (live, pending upload, and for retention a pin) holds at
+    the moment of the delete: nothing is tombstoned or removed.
+    """
     db_path, traces = library_paths()
     with db_session(db_path) as conn:
         cursor = conn.execute(
             f"UPDATE run_meta SET deleted_at = {run_catalog.NOW_SQL}, deleted_reason = ? "
             "WHERE session_id = ? AND deleted_at IS NULL"
+            + _GUARDS_SQL
             + (" AND pinned = 0" if keep_pinned else ""),
-            (reason, session_id),
+            (
+                reason,
+                session_id,
+                *sorted(TERMINAL),
+                *_PENDING_TRANSFER,
+                *_PENDING_CAPTURE,
+            ),
         )
         conn.commit()
         if cursor.rowcount == 0:
@@ -229,14 +250,21 @@ def _purge(session_id: str, *, vacuum: bool = True) -> None:
 
 
 def delete_run(session_id: str, reason: str = "admin_delete") -> dict[str, Any]:
-    """Admin delete of one run (pinned included). A live run is refused."""
-    row = _lookup(session_id)
-    if _protection(row) == "live":
-        raise RunLibraryError(409, "run_live")
+    """Admin delete of one run (pinned included). A live or uploading run is refused."""
+    _refuse_if_busy(_lookup(session_id))
     outcome = _delete(session_id, reason, keep_pinned=False)
-    if outcome is None:
-        raise RunLibraryError(410, "removed", reason=reason)
+    if outcome is None:  # a guard or a concurrent delete got there first
+        _refuse_if_busy(_lookup(session_id))
+        raise RunLibraryError(409, "run_protected")
     return {"session_id": session_id, "cleanup": outcome}
+
+
+def _refuse_if_busy(row) -> None:
+    reason = _protection(row)
+    if reason == "live":
+        raise RunLibraryError(409, "run_live")
+    if reason == "pending_upload":
+        raise RunLibraryError(409, "run_pending_upload")
 
 
 def _delete_all(session_ids: list[str], reason: str) -> dict[str, list[str]]:
