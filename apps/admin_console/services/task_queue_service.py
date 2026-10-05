@@ -1455,15 +1455,22 @@ class TaskQueueService:
         }
 
     @staticmethod
-    def _clear_pause_file() -> None:
-        """Remove a leftover pause marker after a stop request."""
-        if PAUSE_FILE.exists():
-            try:
-                PAUSE_FILE.unlink()
-            except OSError:
-                # Best-effort cleanup of the pause marker; a leftover file
-                # only pauses until the next resume request.
-                pass
+    def clear_pause_marker() -> bool:
+        """Remove the shared pause marker; True if one was removed.
+
+        The one place the console deletes it. The marker is global, so callers
+        outside the service must first prove the requester may resume every run
+        it affects (``routers.tasks._pause_authority``); stop paths take
+        ``clear_pause=False`` when they cannot.
+        """
+        if not PAUSE_FILE.exists():
+            return False
+        try:
+            PAUSE_FILE.unlink()
+        except OSError:
+            # A leftover marker only pauses until the next resume request.
+            return False
+        return True
 
     @classmethod
     def _terminate_all_device_owners(cls) -> None:
@@ -1542,7 +1549,7 @@ class TaskQueueService:
         state.current_goal = None
         state.current_profile = None
 
-        cls._clear_pause_file()
+        cls.clear_pause_marker()  # every run was just terminated: nothing left to pause
 
         cls.ensure_worker_running()
         state.wake_event.set()
@@ -1866,9 +1873,9 @@ class TaskQueueService:
             owners = list(DeviceExecutionLock.get_active_owners().values())
             fallback = DeviceExecutionLock.get_active_owner()  # scoped/legacy records
             queued = [] if running_only else DeviceExecutionLock.get_queued_tasks()
-            record_unreadable = (
-                fallback is None and not owners and DeviceExecutionLock.has_owner_record()
-            )
+            # get_active_owners skips unreadable files, so a readable owner cannot
+            # vouch for the whole directory: ask about unreadable records too.
+            record_unreadable = DeviceExecutionLock.has_unreadable_owner_record()
         except OSError:
             owners, fallback, queued, record_unreadable = [], None, [], True
         if fallback is not None:
@@ -1907,7 +1914,9 @@ class TaskQueueService:
         return ids
 
     @classmethod
-    def _stop_targeted_task(cls, target_sid: str | None, target_device: str | None) -> bool:
+    def _stop_targeted_task(
+        cls, target_sid: str | None, target_device: str | None, clear_pause: bool = True
+    ) -> bool:
         """Stop a specific task (or default single-device active task)."""
         active_owners = {}
         try:
@@ -1958,7 +1967,8 @@ class TaskQueueService:
         )
         cls._remove_stopped_queue_item(stopped_session_id, reservation_cancelled)
 
-        cls._clear_pause_file()
+        if clear_pause:
+            cls.clear_pause_marker()
 
         cls.ensure_worker_running()
         state.wake_event.set()
@@ -1970,8 +1980,12 @@ class TaskQueueService:
         clear_all: bool = False,
         session_id: str | None = None,
         device_id: str | None = None,
+        clear_pause: bool = True,
     ) -> bool:
         """Stop the active task controlling a mobile device or all tasks.
+
+        ``clear_pause=False`` leaves the global pause marker alone (a targeted
+        stop by a caller who may not resume the other runs it covers).
 
         The active lease is shared by frontend, MCP, CLI, SDK, and other UI
         processes across all connected devices.
@@ -1988,14 +2002,11 @@ class TaskQueueService:
         if clear_all:
             return cls._stop_all_tasks()
 
-        return cls._stop_targeted_task(target_sid, target_device)
+        return cls._stop_targeted_task(target_sid, target_device, clear_pause)
 
     @classmethod
     def resume_task(cls) -> bool:
-        if PAUSE_FILE.exists():
-            PAUSE_FILE.unlink()
-            return True
-        return False
+        return cls.clear_pause_marker()
 
     @classmethod
     def recover_orphaned_recordings_on_launch(cls) -> int:

@@ -500,7 +500,7 @@ async def test_stop_by_device_resolves_the_run_owner(cloudflare):
     assert allowed.status_code == 200
     # The device is resolved to its run first; stop_tasks gets the authorized run only.
     task_queue_service.stop_tasks.assert_called_once_with(
-        clear_all=False, session_id=sid, device_id=None
+        clear_all=False, session_id=sid, device_id=None, clear_pause=True
     )
 
 
@@ -556,8 +556,9 @@ async def test_untargeted_stop_by_a_qa_only_touches_their_own_single_run(cloudfl
     _run(cloudflare, QA2, status="running", queued=True, device="dev-2")
 
     assert (await _post(QA1, "/api/stop")).status_code == 200
+    # QA2's run is also running, so QA1's stop must leave the shared pause marker alone.
     task_queue_service.stop_tasks.assert_called_once_with(
-        clear_all=False, session_id=mine, device_id=None
+        clear_all=False, session_id=mine, device_id=None, clear_pause=False
     )
     task_queue_service.stop_tasks.reset_mock()
     assert (await _post("qa3@example.com", "/api/stop")).json() == {"status": "no_running_task"}

@@ -249,9 +249,34 @@ def _owned_ids(scope: OwnerScope, ids: set[str | None]) -> list[str]:
     return [sid for sid in named if sid in owners and scope.may_act_on(owners[sid])]
 
 
-def _stop_one(session_id: str | None, device_id: str | None) -> dict[str, Any]:
+def _require_pause_authority(scope: OwnerScope) -> None:
+    """403 unless the caller may resume every run the global pause marker affects.
+
+    The marker is shared: clearing it resumes every running run, in this process
+    or any other. Mixed-owner, unowned or unattributable sets are admin-only; with
+    nothing running and nothing paused there is nothing to authorize.
+    """
+    if scope.enforced and not scope.admin:
+        affected = task_queue_service.active_session_ids(running_only=True)
+        if affected or state.is_paused:
+            require_access_all(scope, affected)
+
+
+def _may_clear_pause(scope: OwnerScope) -> bool:
+    try:
+        _require_pause_authority(scope)
+    except AdminAPIError:
+        return False
+    return True
+
+
+def _stop_one(
+    session_id: str | None, device_id: str | None, clear_pause: bool = False
+) -> dict[str, Any]:
     # stop_tasks updates scheduler state and asyncio events owned by this loop.
-    if task_queue_service.stop_tasks(clear_all=False, session_id=session_id, device_id=device_id):
+    if task_queue_service.stop_tasks(
+        clear_all=False, session_id=session_id, device_id=device_id, clear_pause=clear_pause
+    ):
         return {"status": "stopped", "session_id": session_id}
     return {"status": "no_running_task"}
 
@@ -269,9 +294,13 @@ def _stop_for_non_admin(
             "ambiguous_stop_target",
             "Send only session_id, or only device_id.",
         )
+    # Decided before anything is stopped. A stop may cancel the caller's own run
+    # without resuming everyone else's: the shared pause marker is cleared only
+    # if the caller could also have resumed it (same rule as /api/resume).
+    clear_pause = _may_clear_pause(scope)
     if session_id:
         require_access(scope, session_id)
-        return _stop_one(session_id, None)
+        return _stop_one(session_id, None, clear_pause)
     if device_id:
         # Resolve the device to its runs with the stop resolver itself, authorize
         # those, then stop them by session so the device is never re-resolved.
@@ -280,7 +309,9 @@ def _stop_for_non_admin(
             return {"status": "no_running_task"}
         require_access_all(scope, on_device)
         stopped = [
-            sid for sid in sorted(on_device, key=str) if _stop_one(sid, None)["status"] == "stopped"
+            sid
+            for sid in sorted(on_device, key=str)
+            if _stop_one(sid, None, clear_pause)["status"] == "stopped"
         ]
         return (
             {"status": "stopped", "session_id": None} if stopped else {"status": "no_running_task"}
@@ -290,7 +321,7 @@ def _stop_for_non_admin(
     own = _owned_ids(scope, task_queue_service.active_session_ids(running_only=not clear_all))
     if not clear_all and len(own) != 1:
         return {"status": "no_running_task"}
-    stopped = [sid for sid in own if _stop_one(sid, None)["status"] == "stopped"]
+    stopped = [sid for sid in own if _stop_one(sid, None, clear_pause)["status"] == "stopped"]
     return {"status": "stopped", "session_id": None} if stopped else {"status": "no_running_task"}
 
 
@@ -342,11 +373,7 @@ async def resume_task(actor: OwnerScope = Depends(actor_scope)):
     affects (the running ones) is theirs; mixed-owner or unattributable pauses
     are admin-only. With nothing running and nothing paused the call is a no-op.
     """
-    scope = scope_or_open(actor)
-    if scope.enforced and not scope.admin:
-        affected = task_queue_service.active_session_ids(running_only=True)
-        if affected or state.is_paused:
-            require_access_all(scope, affected)
+    _require_pause_authority(scope_or_open(actor))
     resumed = task_queue_service.resume_task()
     if resumed:
         return {"status": "resumed"}
