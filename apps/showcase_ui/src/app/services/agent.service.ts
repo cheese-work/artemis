@@ -731,9 +731,19 @@ export class AgentService {
   }
 
   /**
-   * Clear all sessions, tasks, and history
+   * How many runs "Clear all" would delete now (pinned and live runs are kept).
+   * The admin types this number to confirm.
    */
-  public clearAllHistory(): Observable<any> {
+  public fetchClearableRunCount(): Observable<number> {
+    return this.http
+      .get<{ clearable_count: number }>('/api/system/storage')
+      .pipe(map((storage) => storage.clearable_count));
+  }
+
+  /**
+   * Clear all sessions, tasks, and history (the server needs the exact count)
+   */
+  public clearAllHistory(confirmCount: number): Observable<any> {
     // 1. Optimistically clear all local session state immediately
     this.invalidateStatusSignatures();
     this.userPinnedSessionId.set(null);
@@ -747,7 +757,7 @@ export class AgentService {
 
     // 2. Send API request
     return new Observable((obs) => {
-      this.http.post<any>('/api/cleanup', {}).subscribe({
+      this.http.post<any>('/api/cleanup', { confirm_count: confirmCount }).subscribe({
         next: (res) => {
           this.fetchSessions();
           this.fetchStatus();
