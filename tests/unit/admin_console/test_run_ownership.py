@@ -378,7 +378,8 @@ async def test_forged_email_headers_without_a_token_are_ignored(cloudflare):
             "/api/sessions", params={"scope": "all"}, headers={"X-Forwarded-Email": ADMIN}
         )
 
-    assert _session_ids(response) == {unowned}
+    assert _session_ids(response) == set()  # no identity owns nothing, not even unowned runs
+    assert unowned not in response.text
     assert admin_forged.status_code == 403
 
 
@@ -492,10 +493,10 @@ async def test_stop_by_device_resolves_the_run_owner(cloudflare):
 
     assert denied.status_code == 403
     assert allowed.status_code == 200
+    # The device is resolved to its run first; stop_tasks gets the authorized run only.
     task_queue_service.stop_tasks.assert_called_once_with(
-        clear_all=False, session_id=None, device_id="dev-qa1"
+        clear_all=False, session_id=sid, device_id=None
     )
-    assert sid in state.active_runs
 
 
 @pytest.mark.asyncio
@@ -503,6 +504,8 @@ async def test_unowned_runs_can_only_be_stopped_by_an_admin(cloudflare):
     sid = _run(cloudflare, None, queued=True)
 
     assert (await _post(QA1, "/api/stop", json={"session_id": sid})).status_code == 403
+    anonymous = await _post(None, "/api/stop", json={"session_id": sid})
+    assert anonymous.status_code == 403 and anonymous.json()["code"] == "not_run_owner"
     task_queue_service.stop_tasks.assert_not_called()
     assert (await _post(ADMIN, "/api/stop", json={"session_id": sid})).status_code == 200
 
@@ -634,3 +637,265 @@ def test_delete_route_is_qa_tier_and_history_wipe_stays_admin_tier():
 
     assert route_tier("/api/sessions/{session_id}/delete", {"POST"}) == "qa"
     assert route_tier("/api/cleanup", {"POST"}) == "admin"
+
+
+# -- correction round 1 (Sol, CHANGES REQUESTED on 7a3ccc8) ---------------------------
+
+_REAL_STOP_TASKS = task_queue_service.stop_tasks
+_REAL_RESUME_TASK = task_queue_service.resume_task
+
+
+@pytest.fixture
+def real_controls(cloudflare, tmp_path, monkeypatch):
+    """The real stop/resume resolvers over fake device-lock records and a kill spy."""
+    from apps.admin_console.services import task_queue_service as queue_module
+    from artemis.runtime.device_lock import DeviceLockOwner
+
+    monkeypatch.setattr(task_queue_service, "stop_tasks", _REAL_STOP_TASKS)
+    monkeypatch.setattr(task_queue_service, "resume_task", _REAL_RESUME_TASK)
+    monkeypatch.setattr(queue_module, "session_repo", session_repo)
+    pause_file = tmp_path / ".artemis_paused"
+    monkeypatch.setattr("apps.admin_console.core.state.PAUSE_FILE", pause_file)
+    monkeypatch.setattr(queue_module, "PAUSE_FILE", pause_file)
+    locks: dict[str, DeviceLockOwner] = {}
+    lock = queue_module.DeviceExecutionLock
+    monkeypatch.setattr(lock, "get_active_owners", staticmethod(lambda: dict(locks)))
+    monkeypatch.setattr(
+        lock,
+        "get_active_owner",
+        staticmethod(
+            lambda device_id=None, *_a, **_k: (
+                locks.get(device_id) or next(iter(locks.values()), None)
+            )
+        ),
+    )
+    monkeypatch.setattr(lock, "has_owner_record", staticmethod(lambda device_id=None: bool(locks)))
+    monkeypatch.setattr(lock, "is_active_owner", staticmethod(lambda *_a, **_k: True))
+    monkeypatch.setattr(lock, "cleanup_stale_locks", staticmethod(lambda *_a, **_k: 0))
+    killed = MagicMock(return_value=True)
+    monkeypatch.setattr(queue_module.process_supervisor, "terminate_tree_verified", killed)
+
+    def hold(device: str, session_id: str, pid: int) -> None:
+        locks[device] = DeviceLockOwner(
+            pid=pid,
+            process_created_at=1234.5,
+            token=f"token-{pid}",
+            device_id=device,
+            description="task",
+            acquired_at="2026-10-05T00:00:00+00:00",
+            session_id=session_id,
+            ingress="frontend",
+        )
+
+    return hold, killed, pause_file
+
+
+def _status_of(db, sid: str) -> str:
+    with sqlite3.connect(db) as conn:
+        return conn.execute("SELECT status FROM sessions WHERE session_id = ?", (sid,)).fetchone()[
+            0
+        ]
+
+
+@pytest.mark.asyncio
+async def test_own_session_paired_with_a_foreign_device_cannot_stop_the_foreign_run(real_controls):
+    hold, killed, _pause = real_controls
+    db = run_catalog_repo.db_path
+    mine = _run(db, QA1)  # QA1's historical, finished run
+    theirs = _run(db, QA2, status="running")
+    hold("dev-qa2", theirs, 24680)
+
+    response = await _post(QA1, "/api/stop", json={"session_id": mine, "device_id": "dev-qa2"})
+
+    assert response.status_code == 400 and response.json()["code"] == "ambiguous_stop_target"
+    killed.assert_not_called()
+    assert _status_of(db, theirs) == "running"
+
+
+@pytest.mark.asyncio
+async def test_device_stop_acts_on_the_run_holding_the_device_only_for_its_owner(real_controls):
+    hold, killed, _pause = real_controls
+    db = run_catalog_repo.db_path
+    theirs = _run(db, QA2, status="running")
+    hold("dev-qa2", theirs, 24680)
+
+    denied = await _post(QA1, "/api/stop", json={"device_id": "dev-qa2"})
+    assert denied.status_code == 403 and denied.json()["code"] == "not_run_owner"
+    killed.assert_not_called()
+    assert _status_of(db, theirs) == "running"
+
+    allowed = await _post(QA2, "/api/stop", json={"device_id": "dev-qa2"})
+    assert allowed.status_code == 200 and allowed.json()["status"] == "stopped"
+    killed.assert_called_once_with(24680, 1234.5)
+    assert _status_of(db, theirs) == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_device_stop_with_an_unattributable_lock_is_admin_only(real_controls):
+    hold, killed, _pause = real_controls
+    hold("dev-x", None, 24681)  # a lock record that names no session
+
+    denied = await _post(QA1, "/api/stop", json={"device_id": "dev-x"})
+
+    assert denied.status_code == 403
+    killed.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_a_historical_owned_session_id_cannot_resume_another_users_pause(real_controls):
+    _hold, _killed, pause_file = real_controls
+    db = run_catalog_repo.db_path
+    old = _run(db, QA1)
+    theirs = _run(db, QA2, status="running", queued=True)
+    state.queue_items[-1]["status"] = "running"
+    state.active_session_id = theirs
+    pause_file.write_text("LLM Error: paused", encoding="utf-8")
+
+    plain = await _post(QA1, "/api/resume")
+    by_id = await _post(QA1, "/api/resume", params={"session_id": old})
+
+    assert plain.status_code == by_id.status_code == 403
+    assert pause_file.exists()
+
+
+@pytest.mark.asyncio
+async def test_resume_of_a_mixed_owner_pause_is_admin_only_and_a_sole_owner_may_resume(
+    real_controls,
+):
+    _hold, _killed, pause_file = real_controls
+    db = run_catalog_repo.db_path
+    mine = _run(db, QA1, status="running", queued=True)
+    other = _run(db, QA2, status="running", queued=True)
+    for item in state.queue_items:
+        item["status"] = "running"
+    pause_file.write_text("LLM Error: paused", encoding="utf-8")
+
+    assert (await _post(QA1, "/api/resume")).status_code == 403
+    assert (await _post(QA2, "/api/resume")).status_code == 403
+    assert pause_file.exists()
+
+    state.queue_items[:] = [i for i in state.queue_items if i["session_id"] == mine]
+    assert (await _post(QA1, "/api/resume")).json() == {"status": "resumed"}
+    assert not pause_file.exists()
+    assert other  # QA2's run was never part of the resumed set
+
+
+@pytest.mark.asyncio
+async def test_anonymous_caller_owns_nothing_in_cloudflare_mode(cloudflare):
+    _run(cloudflare, None, queued=True)
+    _run(cloudflare, None, status="running", queued=True)
+    state.queue_items[-1]["status"] = "running"
+    unowned = _run(cloudflare, None)
+
+    assert _session_ids(await _get(None, "/api/sessions")) == set()
+    assert _run_ids(await _get(None, "/api/runs")) == set()
+    assert _queue_ids(await _get(None, "/api/status")) == set()
+    assert (await _post(None, "/api/stop", json={"all": True})).json() == {
+        "status": "no_running_task"
+    }
+    assert (await _post(None, "/api/stop")).json() == {"status": "no_running_task"}
+    assert (await _post(None, "/api/resume")).status_code == 403
+    task_queue_service.stop_tasks.assert_not_called()
+    task_queue_service.resume_task.assert_not_called()
+    # the admin rule still reaches unowned runs
+    assert unowned in _session_ids(await _get(ADMIN, "/api/sessions", scope="all"))
+
+
+def _bg_row(db, sid: str, task_id: str, summary: str) -> None:
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            "INSERT INTO background_tasks (task_id, session_id, summary, status, start_time, logs) "
+            "VALUES (?, ?, ?, 'running', 1.0, 'secret log')",
+            (task_id, sid, summary),
+        )
+
+
+@pytest.mark.asyncio
+async def test_status_background_tasks_bind_to_the_visible_run_not_the_latest(cloudflare):
+    mine = _run(cloudflare, QA1, status="running", queued=True)
+    state.queue_items[-1]["status"] = "running"
+    state.active_session_id = mine
+    newer = _run(cloudflare, QA2)
+    with sqlite3.connect(cloudflare) as conn:
+        conn.execute("UPDATE sessions SET start_time = 99.0 WHERE session_id = ?", (newer,))
+    _bg_row(cloudflare, mine, "t-mine", "mine")
+    _bg_row(cloudflare, newer, "t-theirs", "theirs")
+
+    body = (await _get(QA1, "/api/status")).json()
+
+    assert body["session_id"] == mine
+    assert [t["task_id"] for t in body["background_tasks"]] == ["t-mine"]
+    assert "secret log" in json.dumps(body["background_tasks"])
+    assert "t-theirs" not in json.dumps(body)
+
+
+@pytest.mark.asyncio
+async def test_list_shaped_background_events_are_filtered_per_row(cloudflare):
+    from apps.admin_console.core.ownership import owner_scope
+
+    one, two = _run(cloudflare, QA1), _run(cloudflare, QA2)
+    stream = await _open_stream(owner_scope(AccessIdentity(QA1, False, "cloudflare"), "mine"))
+    try:
+        both = [
+            {"task_id": "a", "session_id": two, "logs": "theirs"},
+            {"task_id": "b", "session_id": one, "logs": "mine"},
+            {"task_id": "c", "logs": "unattributed"},
+        ]
+        task_queue_service._broadcast_event("background_tasks_updated", both)
+        task_queue_service._broadcast_event(
+            "background_tasks_updated", [{"task_id": "z", "session_id": two}]
+        )
+        _emit(one)
+        event, rows = await _next_event(stream)
+        assert event == "background_tasks_updated"
+        assert [r["task_id"] for r in rows] == ["b"]
+        # the all-foreign update was dropped, so the next event is the marker
+        assert (await _next_event(stream))[0] == "startup_progress"
+    finally:
+        await stream.aclose()
+
+
+async def _open_named_stream(session_id: str, scope):
+    response = await tasks_router.stream_events(session_id=session_id, scope=scope)
+    stream = response.body_iterator
+    assert (await _next_event(stream))[0] == "info"
+    return stream
+
+
+@pytest.mark.asyncio
+async def test_named_stream_gets_only_its_own_runs_lifecycle_events(cloudflare):
+    from apps.admin_console.core.ownership import owner_scope
+
+    one, two = _run(cloudflare, QA1), _run(cloudflare, QA2)
+    stream = await _open_named_stream(
+        one, owner_scope(AccessIdentity(QA1, False, "cloudflare"), "mine")
+    )
+    try:
+        task_queue_service._broadcast_event(
+            "session_started", {"session_id": two, "initial_goal": "private goal"}
+        )
+        task_queue_service._broadcast_event("session_ended", {"session_id": two, "status": "x"})
+        task_queue_service._broadcast_event(
+            "background_tasks_updated",
+            [{"task_id": "a", "session_id": two}, {"task_id": "b", "session_id": one}],
+        )
+        task_queue_service._broadcast_event("session_started", {"session_id": one})
+        event, rows = await _next_event(stream)
+        assert event == "background_tasks_updated"
+        assert [r["task_id"] for r in rows] == ["b"]
+        event, data = await _next_event(stream)
+        assert (event, data["session_id"]) == ("session_started", one)
+    finally:
+        await stream.aclose()
+
+
+@pytest.mark.asyncio
+async def test_named_stream_in_open_mode_keeps_delivering_global_lifecycle_events(env):
+    response = await tasks_router.stream_events(session_id="mine")
+    stream = response.body_iterator
+    assert (await _next_event(stream))[0] == "info"
+    try:
+        task_queue_service._broadcast_event("session_started", {"session_id": "someone-elses"})
+        assert (await _next_event(stream))[1]["session_id"] == "someone-elses"
+    finally:
+        await stream.aclose()
