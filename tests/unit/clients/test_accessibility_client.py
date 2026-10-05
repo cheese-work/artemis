@@ -369,3 +369,18 @@ def test_normalize_helper_elements_tolerates_bad_input():
     assert normalize_helper_elements(None) == []
     assert normalize_helper_elements("x") == []
     assert normalize_helper_elements({"clickable": True}) == [{"clickable": "true"}]
+
+
+def test_awake_enrolment_uses_the_clients_own_transport():
+    from artemis.runtime.adb_endpoint import AdbEndpoint
+    from artemis.runtime.endpoint_transport import EndpointTransport
+
+    transport = EndpointTransport(AdbEndpoint.create("127.0.0.1", 40002))
+    with patch("artemis.clients.accessibility_client.ensure_device_awake") as awake:
+        awake.return_value = "usb_stay_on"
+        task_path = AccessibilityClient("dev", manager=FakeManager(), transport=transport)
+        task_path.connect()
+        observer_path = AccessibilityClient("dev", manager=FakeManager(), transport=transport)
+        observer_path._ensure_session()
+
+    assert [call.args for call in awake.call_args_list] == [("dev", transport), ("dev", transport)]
