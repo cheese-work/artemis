@@ -136,8 +136,22 @@ const rect = (sel) => `(() => { const e = document.querySelector(${JSON.stringif
 const inside = (r) => r && r.l >= 0 && r.t >= 0;
 const clickByText = (sel, text) => evaluate(`(() => { const e = [...document.querySelectorAll(${JSON.stringify(sel)})].find(e => e.textContent.includes(${JSON.stringify(text)})); if (!e) return false; e.click(); return true; })()`);
 
+// Player frame and every header control: inside the viewport and clear of the nav (the nav may be 1-3 rows tall).
+async function playerClear(where, phase) {
+  const r = await evaluate(`(() => { const nav = document.querySelector('.floating-nav-switcher').getBoundingClientRect();
+    const w = document.querySelector('.floating-video-wrapper'); if (!w) return null; const f = w.getBoundingClientRect();
+    const over = (r) => r.width > 0 && r.left < nav.right && r.right > nav.left && r.top < nav.bottom && r.bottom > nav.top;
+    return { nav: [nav.left, nav.top, nav.right, nav.bottom].map(Math.round), frame: [f.left, f.top, f.right, f.bottom].map(Math.round), vw: innerWidth, vh: innerHeight,
+      frameOver: over(f), controls: [...w.querySelectorAll('.window-header button')].filter((b) => over(b.getBoundingClientRect())).map((b) => (b.getAttribute('aria-label') || b.getAttribute('title') || b.textContent).trim().slice(0, 20)) }; })()`);
+  if (!r) return fail(where, `${phase}: floating player gone`);
+  const [l, t, rt, b] = r.frame;
+  if (l < 0 || t < 0 || rt > r.vw || b > r.vh) fail(where, `${phase}: player outside viewport ${r.frame}`);
+  if (r.frameOver) fail(where, `${phase}: player frame ${r.frame} overlaps nav ${r.nav}`);
+  if (r.controls.length) fail(where, `${phase}: nav covers player controls: ${r.controls.join(', ')}`);
+}
+
 async function scenarios() {
-  for (const [state, apply] of Object.entries(STATES)) for (const width of [1770, 1280, 1024, 768, 375]) {
+  for (const [state, apply] of Object.entries(STATES)) for (const width of [1770, 1280, 1150, 1024, 768, 375, 320]) {
     apply();
     const where = `state=${state} @${width}px`;
     await open('/workspace', width);
@@ -178,6 +192,8 @@ async function scenarios() {
         await sleep(500);
         if (await evaluate(`!!document.querySelector('.vscode-dropdown-menu')`)) fail(where, 'dropdown stayed open after route change');
         await open('/workspace', width);
+        await setPhone(state !== 'idle'); // a reload resets the browser-side phone state: restore it before the player checks
+        await sleep(300);
       }
     }
     // Floating player: live / error states, at the default position, minimized, theater, and after a route change.
@@ -188,17 +204,16 @@ async function scenarios() {
     const pw = await evaluate(rect('.floating-video-wrapper'));
     if (!pw) fail(where, 'floating player did not render');
     else {
-      if (pw.r > width || pw.b > 800 || pw.l < 0 || pw.t < 0) fail(where, `player outside viewport ${JSON.stringify(pw)}`);
-      const hdr = await evaluate(rect('.floating-video-wrapper .window-header'));
       const hdrOverflow = await evaluate(`(() => { const h = document.querySelector('.floating-video-wrapper .window-header'); return [...h.querySelectorAll('button')].filter(b => b.getBoundingClientRect().right > h.getBoundingClientRect().right + 1).length; })()`);
       if (hdrOverflow) fail(where, `${hdrOverflow} player header buttons overflow the header`);
-      const nav = (await evaluate(UNDER_NAV)).nav;
-      if (pw.t < nav[2] && pw.r > nav[0] && pw.l < nav[1] && pw.t >= 0) fail(where, `player top ${pw.t} under nav bottom ${nav[2]}`);
+      if (state !== 'idle' && !(await evaluate(`ng.getComponent(document.querySelector('app-nav-switcher')).usbRelay.state().status === 'connected'`))) fail(where, 'phone-connected state was lost before the player check');
+      await playerClear(where, 'on open');
       await shot(`player-${state}-${width}`);
-      await evaluate(`document.querySelector('a[href="/runs"]').click()`);
-      await sleep(500);
-      const still = await evaluate(rect('.floating-video-wrapper'));
-      if (still && (still.r > width || still.b > 800)) fail(where, `player outside viewport after route change ${JSON.stringify(still)}`);
+      for (const route of ['/runs', '/workspace']) {
+        await evaluate(`document.querySelector('a[href="${route}"]').click()`);
+        await sleep(600);
+        await playerClear(where, `after route to ${route}`);
+      }
     }
   }
   console.log(`scenarios: ${failures.length ? 'failures above' : 'all clear'}`);

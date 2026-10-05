@@ -28,7 +28,7 @@ limitations under the License.
     [class.minimized]="agentService.isVideoMinimized()"
     [class.theater]="isTheaterMode()"
     [style.left.px]="!isTheaterMode() ? posX() : null"
-    [style.top.px]="!isTheaterMode() ? posY() : null"
+    [style.top]="!isTheaterMode() ? 'max(' + posY() + 'px, var(--nav-clearance, 0px))' : null"
     >
     <!-- Window Header (Draggable Handle) -->
     <header class="window-header" (mousedown)="startDrag($event)">
