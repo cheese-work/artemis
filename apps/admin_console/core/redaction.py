@@ -54,9 +54,12 @@ _ASSIGNMENT = re.compile(
     rf"(?P<head>(?<![\w.-])[\w.-]*?(?:{_WORD})(?:\\*[\"'])?\s*[:=]\s*)(?P<value>{_VALUE})",
     re.IGNORECASE,
 )
-# A Cookie / Set-Cookie header carries several name=value pairs: redact all of them.
+# A Cookie / Set-Cookie header carries several name=value pairs (some quoted): redact the
+# whole value. It ends at the quote that wrapped it (a JSON value, or the quoted header
+# argument of ``curl -H '...'``), else at the end of the line.
 _COOKIE = re.compile(
-    r"(?P<head>\b(?:set-)?cookie[\"']?\s*[:=]\s*[\"']?)(?P<value>[^\r\n\"'\\]+)", re.IGNORECASE
+    r"(?P<head>(?P<lead>\\*[\"'])?\b(?:set-)?cookie(?:\\*[\"'])?\s*[:=]\s*)(?P<rest>[^\r\n]*)",
+    re.IGNORECASE,
 )
 _BEARER = re.compile(r"(?P<head>\bbearer\s+)[A-Za-z0-9._~+/=-]{8,}", re.IGNORECASE)
 _TYPED = (
@@ -96,12 +99,10 @@ def _redact_value(match: re.Match[str]) -> str:
     value = match.group("value")
     opener = re.match(r"\\*[\"']", value)
     closer = ""
-    body = value
     if opener:
         delimiter = opener.group()
         if len(value) >= 2 * len(delimiter) and value.endswith(delimiter):
             closer = delimiter
-        body = value[len(delimiter) : len(value) - len(closer)]
     if match.string.startswith(
         REDACTED, match.start("value") + len(opener.group() if opener else "")
     ):
@@ -110,9 +111,19 @@ def _redact_value(match: re.Match[str]) -> str:
 
 
 def _redact_cookie(match: re.Match[str]) -> str:
-    if match.group("value").startswith(REDACTED):
-        return match.group(0)
-    return f"{match.group('head')}{REDACTED}"
+    rest = match.group("rest")
+    opener = re.match(r"\\*[\"']", rest)
+    quote = opener.group() if opener else match.group("lead") or ""
+    body = rest[len(opener.group()) :] if opener else rest
+    end = re.search(rf"(?<!\\){re.escape(quote)}", body) if quote else None
+    if end and opener and re.match(r"\s*;", body[end.end() :]):
+        end = None  # ``cookie="a=1"; b=2``: the quote closed one pair, more follow
+    value, tail = (body[: end.start()], body[end.start() :]) if end else (body, "")
+    head = match.group("head") + (opener.group() if opener else "")
+    tail = _COOKIE.sub(_redact_cookie, tail)  # a second header later on the same line
+    if not value.strip() or value.startswith(REDACTED):
+        return f"{head}{value}{tail}"
+    return f"{head}{REDACTED}{tail}"
 
 
 def redact_text(text: str) -> str:

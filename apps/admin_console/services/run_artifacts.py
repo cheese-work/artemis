@@ -175,38 +175,63 @@ class UnsafePath(OSError):
     """A path component turned out to be a link (or the path left its root) at use time."""
 
 
-def remove_under(root: Path, candidate: Path, *, prune_empty_parents: bool = False) -> None:
+class RemovalFailed(OSError):
+    """Something under a run's storage could not be deleted; the run must be retried."""
+
+
+# A link in the path, or a path that is not a directory, is refused for good (retrying
+# cannot help). Anything else (I/O error, permissions, busy) is a failure to retry.
+_REFUSED = (errno.ELOOP, errno.ENOTDIR)
+
+
+def remove_under(
+    root: Path,
+    candidate: Path,
+    *,
+    keep: frozenset[tuple[str, ...]] = frozenset(),
+    prune_empty_parents: bool = False,
+) -> None:
     """Delete a file, link or directory tree under ``root`` without following any link.
 
     Everything is relative to a directory fd walked from the root with
     ``O_NOFOLLOW`` per component, so a parent swapped for a link at any moment
     (before or during the delete) is refused rather than followed. A link in the
-    last position, or inside a tree, is unlinked itself. ``prune_empty_parents``
-    then removes the directories above it that are left empty (never ``root``).
+    last position, or inside a tree, is unlinked itself. Entries listed in
+    ``keep`` (paths relative to ``root``, owned by another run) are left alone,
+    and so are the directories that hold them. ``prune_empty_parents`` removes
+    the directories above the target that are left empty (never ``root``).
+    Raises RemovalFailed when something that should have gone could not be deleted.
     """
     found = relative_parts(root, candidate)
     if found is None:
         return
     base, parts = found
-    fds = [os.open(base, os.O_RDONLY | os.O_DIRECTORY)]
+    fds = []
     try:
+        fds.append(os.open(base, os.O_RDONLY | os.O_DIRECTORY))
         for part in parts[:-1]:
             fds.append(os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fds[-1]))
-        _remove_entry(fds[-1], parts[-1])
+        _remove_entry(fds[-1], parts, keep)
         if prune_empty_parents:
             for depth in range(len(parts) - 1, 0, -1):
                 os.rmdir(parts[depth - 1], dir_fd=fds[depth - 1])
     except FileNotFoundError:
         return
     except OSError as exc:
-        if exc.errno not in (errno.ENOTEMPTY, errno.EEXIST):
-            logger.warning("Refused or could not delete %s", candidate, exc_info=True)
+        if exc.errno in _REFUSED:
+            logger.warning("Refused to follow a link while deleting %s", candidate)
+        elif exc.errno not in (errno.ENOTEMPTY, errno.EEXIST):
+            raise RemovalFailed(exc.errno, f"could not delete {candidate}: {exc}") from exc
     finally:
         for fd in fds:
             os.close(fd)
 
 
-def _remove_entry(dir_fd: int, name: str) -> None:
+def _remove_entry(dir_fd: int, rel: tuple[str, ...], keep: frozenset[tuple[str, ...]]) -> None:
+    """Remove ``rel[-1]`` inside ``dir_fd``; ``rel`` is its path from the storage root."""
+    name = rel[-1]
+    if rel in keep:
+        return
     try:
         mode = os.stat(name, dir_fd=dir_fd, follow_symlinks=False).st_mode
         if not stat.S_ISDIR(mode):
@@ -216,15 +241,20 @@ def _remove_entry(dir_fd: int, name: str) -> None:
         try:
             with os.scandir(child) as entries:
                 names = [entry.name for entry in entries]
-            for entry_name in names:
-                _remove_entry(child, entry_name)
+            failure = None
+            for entry_name in names:  # one entry failing must not strand the others
+                try:
+                    _remove_entry(child, (*rel, entry_name), keep)
+                except OSError as exc:
+                    failure = failure or exc
+            if failure is not None:
+                raise failure
         finally:
             os.close(child)
-        os.rmdir(name, dir_fd=dir_fd)
+        if not any(kept[: len(rel)] == rel for kept in keep):
+            os.rmdir(name, dir_fd=dir_fd)
     except FileNotFoundError:
         return
-    except OSError:
-        logger.warning("Could not delete %s", name, exc_info=True)
 
 
 def _like(text: str) -> str:

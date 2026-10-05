@@ -73,28 +73,42 @@ def lease(owners: list[str]) -> list[str] | None:
     """Lease every owner; None (and nothing held) when all of them are already deleted.
 
     Leasing first and checking after closes the race with a delete: the delete
-    either sees the lease and defers, or is seen here.
+    either sees the lease and defers, or is seen here. Whatever fails half-way
+    releases the leases already taken.
     """
     db_path = library_paths()[0]
-    lease_ids = [run_leases.acquire(db_path, owner) for owner in owners]
-    if owners:
-        marks = ",".join("?" * len(owners))
-        with db_session(db_path) as conn:
-            live = conn.execute(
-                f"SELECT 1 FROM sessions s LEFT JOIN run_meta m ON m.session_id = s.session_id "
+    lease_ids: list[str] = []
+    handed_over = False
+    try:
+        for owner in owners:
+            lease_ids.append(run_leases.acquire(db_path, owner))
+        handed_over = not owners or _any_live(db_path, owners)
+    finally:
+        if not handed_over:
+            release(lease_ids)
+    return lease_ids if handed_over else None
+
+
+def _any_live(db_path, owners: list[str]) -> bool:
+    marks = ",".join("?" * len(owners))
+    with db_session(db_path) as conn:
+        return (
+            conn.execute(
+                "SELECT 1 FROM sessions s LEFT JOIN run_meta m ON m.session_id = s.session_id "
                 f"WHERE s.session_id IN ({marks}) AND m.deleted_at IS NULL LIMIT 1",
                 owners,
             ).fetchone()
-        if live is None:
-            release(lease_ids)
-            return None
-    return lease_ids
+            is not None
+        )
 
 
 def release(lease_ids: list[str]) -> None:
-    """Drop the leases and finish any cleanup that was waiting on them."""
-    db_path = library_paths()[0]
-    for lease_id in lease_ids:
-        due = run_leases.release(db_path, lease_id)
-        if due:
-            run_retention.finish_cleanups_for(due)
+    """Drop every lease, even if one fails, and finish any cleanup that was waiting on them."""
+    for lease_id in lease_ids:  # an expired lease is reclaimed by the TTL; the rest must still go
+        run_retention.attempt(_release_one, lease_id)
+
+
+def _release_one(lease_id: str) -> None:
+    due = run_leases.release(library_paths()[0], lease_id)
+    if due:
+        run_retention.finish_cleanups_for(due)

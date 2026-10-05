@@ -218,7 +218,7 @@ def _delete(session_id: str, reason: str, *, keep_pinned: bool, vacuum: bool = T
     None when a guard (live, pending upload, and for retention a pin) holds at
     the moment of the delete: nothing is tombstoned or removed.
     """
-    db_path, traces = library_paths()
+    db_path, _ = library_paths()
     with db_session(db_path) as conn:
         cursor = conn.execute(
             f"UPDATE run_meta SET deleted_at = {run_catalog.NOW_SQL}, deleted_reason = ? "
@@ -238,7 +238,10 @@ def _delete(session_id: str, reason: str, *, keep_pinned: bool, vacuum: bool = T
             return None
     if run_leases.request_cleanup(db_path, session_id):
         return "deferred"
-    _purge(session_id, vacuum=vacuum)
+    # Failed: tombstoned with its pending row kept, so the sweep retries until files are gone.
+    ok, _ = attempt(_purge, session_id, vacuum=vacuum)
+    if not ok:
+        return "deferred"
     return "done"
 
 
@@ -269,7 +272,9 @@ def _refuse_if_busy(row) -> None:
 def _delete_all(session_ids: list[str], reason: str) -> dict[str, list[str]]:
     result: dict[str, list[str]] = {"deleted": [], "deferred": []}
     for session_id in session_ids:
-        outcome = _delete(session_id, reason, keep_pinned=True, vacuum=False)
+        # One broken run must not starve the rest of the batch.
+        ok, outcome = attempt(_delete, session_id, reason, keep_pinned=True, vacuum=False)
+        outcome = outcome if ok else "deferred"
         if outcome:
             result["deleted" if outcome == "done" else "deferred"].append(session_id)
     if result["deleted"]:
@@ -312,18 +317,32 @@ def enforce() -> dict[str, Any]:
 # -- deferred cleanups -----------------------------------------------------------------------
 
 
+def attempt(action, key: str, *args, **kwargs) -> tuple[bool, Any]:
+    """Run one cleanup step (keyed by run or lease id); a failure is logged and queued for retry, never raised.
+
+    Cancellation is not an ``Exception`` and still propagates.
+    """
+    try:
+        return True, action(key, *args, **kwargs)
+    except Exception:
+        logger.exception("Cleanup step for %s failed; will retry", key)
+        return False, None
+
+
 def finish_cleanups_for(session_id: str) -> None:
     """A lease just ended: finish this run's cleanup if one is waiting and nothing else holds it."""
     if session_id in run_leases.due_cleanups(library_paths()[0]):
-        _purge(session_id)
+        attempt(_purge, session_id)  # a lease release must never fail because a cleanup did
 
 
 def finish_pending_cleanups() -> int:
-    """Complete every cleanup whose leases are gone (startup, or after a crash)."""
+    """Complete every cleanup whose leases are gone (startup, or after a crash).
+
+    Each run is isolated: one that keeps failing stays queued without blocking the rest.
+    Returns how many finished.
+    """
     due = run_leases.due_cleanups(library_paths()[0])
-    for session_id in due:
-        _purge(session_id)
-    return len(due)
+    return sum(attempt(_purge, session_id)[0] for session_id in due)
 
 
 def log_task_failure(task: asyncio.Task) -> None:

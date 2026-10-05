@@ -81,7 +81,7 @@ async def test_a_failed_delete_is_retried_and_keeps_the_rows_that_name_the_files
     assert video.exists() and library.count("video_recordings", sid) == 1
     assert run_leases.pending_count(run_catalog_repo.db_path) == 1
 
-    monkeypatch.undo()
+    monkeypatch.setattr(os, "unlink", real_unlink)
     run_retention.finish_pending_cleanups()
     assert not video.exists() and library.count("video_recordings", sid) == 0
     assert library.count("sessions", sid) == 0
