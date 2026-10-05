@@ -1,8 +1,12 @@
 import { signal, computed } from '@angular/core';
+import { TestBed } from '@angular/core/testing';
+import { provideHttpClient } from '@angular/common/http';
+import { provideHttpClientTesting } from '@angular/common/http/testing';
 import { of, Subject, throwError } from 'rxjs';
 import { HttpErrorResponse } from '@angular/common/http';
 
 import { AgentService } from './agent.service';
+import { SELECTED_DEVICE_SERIAL_KEY, SystemService } from './system.service';
 import { buildRunSummary } from '../utils/run-copy.util';
 
 describe('AgentService live LLM retry timeline', () => {
@@ -552,6 +556,26 @@ describe('AgentService live LLM retry timeline', () => {
       goal: 'auto-pick task',
       profile: 'flash'
     });
+  });
+
+  it('runs on the phone a QA chose in the picker, and on none once they go back to Automatic', () => {
+    TestBed.configureTestingModule({ providers: [provideHttpClient(), provideHttpClientTesting()] });
+    const system = TestBed.inject(SystemService);
+    const { service, post } = createRunService([
+      { serial: '127.0.0.1:41001', state: 'device' },
+      { serial: 'emulator-5554', state: 'device' }
+    ]);
+
+    system.chooseRunTarget('127.0.0.1:41001');
+    service.runTask('own phone').subscribe();
+    expect(post.calls.mostRecent().args[1]).toEqual(
+      jasmine.objectContaining({ device_serial: '127.0.0.1:41001' })
+    );
+
+    system.chooseRunTarget(null);
+    service.runTask('automatic').subscribe();
+    expect(post.calls.mostRecent().args[1]).not.toEqual(jasmine.objectContaining({ device_serial: jasmine.anything() }));
+    expect(localStorage.getItem(SELECTED_DEVICE_SERIAL_KEY)).toBeNull();
   });
 
   it('surfaces the server refusal when a run targets a phone that is not the caller\'s', () => {

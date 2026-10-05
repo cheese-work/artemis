@@ -23,6 +23,7 @@ import { AgentStreamComponent } from '../../components/agent-stream/agent-stream
 import { ChatInterfaceComponent } from '../../components/chat-interface/chat-interface.component';
 import { FloatingVideoPlayerComponent } from '../../components/floating-video-player/floating-video-player.component';
 import { RunLibraryComponent } from '../../components/run-library/run-library.component';
+import { RunTargetPickerComponent } from '../../components/run-target-picker/run-target-picker.component';
 import { RunViewerComponent } from '../../components/run-viewer/run-viewer.component';
 import { AgentService } from '../../services/agent.service';
 
@@ -35,6 +36,7 @@ import { AgentService } from '../../services/agent.service';
     ChatInterfaceComponent,
     FloatingVideoPlayerComponent,
     RunLibraryComponent,
+    RunTargetPickerComponent,
     RunViewerComponent
 ],
   templateUrl: './workspace.component.html',
@@ -205,8 +207,8 @@ export class WorkspaceComponent implements OnInit {
    */
   public onCardClick(event: MouseEvent): void {
     const target = event.target as HTMLElement;
-    // Don't steal focus if clicking action buttons or textarea directly
-    if (target.closest('button') || target.tagName.toLowerCase() === 'textarea') {
+    // Don't steal focus if clicking action buttons, the run-target picker or textarea directly
+    if (target.closest('button, label, select') || target.tagName.toLowerCase() === 'textarea') {
       return;
     }
     this.focusInput();
