@@ -107,25 +107,37 @@ _PERSISTENT_ENV_EXCLUDE_PREFIXES = (
 )
 
 
+class ContextEndpointError(RuntimeError):
+    """The run context carries an adb client whose endpoint cannot be determined."""
+
+
 def context_transport(ctx: ArtemisContext | None) -> EndpointTransport:
     """adb access for the endpoint the run's context is bound to.
 
     The context's ``adb_client`` is the run's own adb server: a client built by the
     transport remembers its endpoint (host identity included); any other adbutils
-    client names one by host and port. Only a context with no client follows the
-    process's endpoint, which for a worker is the same thing.
+    client names one by host and port. Only a context with *no* client follows the
+    process's endpoint, which for a worker is the same thing. A client whose endpoint
+    cannot be resolved raises :class:`ContextEndpointError`: guessing the process
+    endpoint would run a state-changing command on a different server's phone.
     """
     client = getattr(ctx, "adb_client", None) if ctx is not None else None
+    if client is None:
+        return EndpointTransport.shared(None)
     endpoint = getattr(client, "artemis_endpoint", None)
     if isinstance(endpoint, AdbEndpoint):
         return EndpointTransport.shared(endpoint)
     host, port = getattr(client, "host", None), getattr(client, "port", None)
-    if isinstance(host, str) and isinstance(port, int):
+    if isinstance(host, str) and isinstance(port, int) and not isinstance(port, bool):
         try:
             return EndpointTransport.shared(AdbEndpoint.create(host, port))
-        except InvalidAdbEndpoint:
-            pass
-    return EndpointTransport.shared(None)
+        except InvalidAdbEndpoint as exc:
+            raise ContextEndpointError(
+                f"The run's adb endpoint {host!r}:{port!r} is not usable: {exc}"
+            ) from exc
+    raise ContextEndpointError(
+        "The run's adb client does not name an adb endpoint; refusing to use the process endpoint."
+    )
 
 
 #: Guidance shared by the tool descriptions: the commands that hang an
