@@ -30,6 +30,17 @@
       </section>
     }
 
+    @if (canEdit()) {
+      <p class="deploy-status">
+        Deploy status:
+        @if (deployVersion(); as v) {
+          SmartQA {{ v.shortSha }}@if (v.deployedAt) {, deployed <time [attr.datetime]="v.deployedAt">{{ v.deployedAt | date: 'yyyy-MM-dd HH:mm' }}</time>}
+        } @else {
+          unknown
+        }
+      </p>
+    }
+
     @if (message()) {
       <section class="notice" [class.error]="conflict() || message().startsWith('Admin only')" [attr.role]="conflict() ? 'alert' : 'status'">
         <p>{{ message() }}</p>

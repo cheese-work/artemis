@@ -18,11 +18,12 @@ import { Component, ChangeDetectionStrategy, inject, ViewChild } from '@angular/
 import { RouterOutlet } from '@angular/router';
 import { NavSwitcherComponent } from './components/nav-switcher/nav-switcher.component';
 import { WhatsNewComponent } from './components/whats-new/whats-new.component';
+import { VersionFooterComponent } from './components/version-footer/version-footer.component';
 import { AgentService } from './services/agent.service';
 
 @Component({
   selector: 'app-root',
-  imports: [RouterOutlet, NavSwitcherComponent, WhatsNewComponent],
+  imports: [RouterOutlet, NavSwitcherComponent, WhatsNewComponent, VersionFooterComponent],
   templateUrl: './app.component.html',
   changeDetection: ChangeDetectionStrategy.Eager,
   styleUrl: './app.component.scss'

@@ -295,6 +295,7 @@ _PUBLIC_GET_PATHS = {
     "/api/system/model-config-env",
     "/api/system/server-status",
     "/api/system/whoami",
+    "/api/system/version",
     "/api/system/config",
     "/api/sessions",
     "/api/sessions/{session_id}",

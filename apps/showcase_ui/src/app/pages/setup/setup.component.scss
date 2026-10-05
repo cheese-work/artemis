@@ -92,3 +92,9 @@ input:disabled, input[readonly], select:disabled { color: #a5b0c0; opacity: .88;
   .setup-header, .section-heading, .form-footer { align-items: flex-start; flex-direction: column; }
   .field-grid { grid-template-columns: 1fr; }
 }
+
+.deploy-status {
+  margin: 0 0 12px;
+  color: #64748b;
+  font-size: 12px;
+}

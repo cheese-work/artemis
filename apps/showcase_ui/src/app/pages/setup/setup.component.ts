@@ -1,12 +1,14 @@
 import { Component, ChangeDetectionStrategy, Input, OnInit, computed, inject, signal } from '@angular/core';
+import { DatePipe } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { finalize, forkJoin } from 'rxjs';
 import { AdminConfigService, AdminIdentity, ConfigSnapshot, ModelSelection } from '../../services/admin-config.service';
+import { DeployVersion, parseDeployVersion } from '../../core/models/deploy-version.model';
 
 @Component({
   selector: 'app-setup',
   standalone: true,
-  imports: [FormsModule],
+  imports: [DatePipe, FormsModule],
   templateUrl: './setup.component.html',
   styleUrl: './setup.component.scss',
   host: { '[class.embedded]': 'embedded' },
@@ -17,6 +19,7 @@ export class SetupComponent implements OnInit {
   private readonly adminConfig = inject(AdminConfigService);
   public readonly identity = signal<AdminIdentity | null>(null);
   public readonly snapshot = signal<ConfigSnapshot | null>(null);
+  public readonly deployVersion = signal<DeployVersion | null>(null);
   public readonly loading = signal(true);
   public readonly saving = signal(false);
   public readonly message = signal('');
@@ -46,6 +49,10 @@ export class SetupComponent implements OnInit {
     this.snapshot.set(null);
     this.message.set('');
     this.conflict.set(false);
+    this.adminConfig.getVersion().subscribe({
+      next: (value) => this.deployVersion.set(parseDeployVersion(value)),
+      error: () => this.deployVersion.set(null)
+    });
     forkJoin({
       identity: this.adminConfig.getIdentity(),
       config: this.adminConfig.getConfig()
