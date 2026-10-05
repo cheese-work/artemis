@@ -366,11 +366,15 @@ async def stop_task(
 
 
 @router.post("/api/tasks/{session_id}/cancel-queued")
-async def cancel_queued_task(session_id: str):
+async def cancel_queued_task(session_id: str, actor: OwnerScope = Depends(actor_scope)):
     """Cancel a run only while it waits; a started run is left running.
 
-    Running runs are stopped with ``/api/stop``, never through this route.
+    Running runs are stopped with ``/api/stop``, never through this route. Like
+    stop, it needs the run's owner or an admin; a denied call has no side effect.
     """
+    scope = scope_or_open(actor)
+    if scope.enforced and not scope.admin:
+        require_access(scope, session_id)
     result = task_queue_service.cancel_queued(session_id)
     if result == "not_found":
         raise HTTPException(status_code=404, detail="Unknown session.")
