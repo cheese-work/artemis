@@ -1,6 +1,6 @@
 // Layout audit in real headless Chrome against the built UI + mock API (no device, no backend).
 //
-//   npm run build && npm run test:layout      (CHROME_BIN overrides the browser; SHOTS=dir saves screenshots)
+//   npx ng build --configuration development && npm run test:layout      (CHROME_BIN overrides the browser; SHOTS=dir saves screenshots)
 //
 // 1. Clearance matrix: for every page x viewport x phone-badge state, no visible text may sit under the
 //    floating nav, nothing may overflow the viewport sideways, and the nav must stay inside the viewport.
@@ -122,6 +122,12 @@ async function scenarios() {
     await open('/workspace', width);
     await setPhone(state !== 'idle');
     await sleep(2400); // status poll (2 s) + sessions fetch
+    // Controls that live in the page chrome (stream toolbar, header tabs, chat header) must never sit under the nav.
+    const covered = await evaluate(`(() => { const nav = document.querySelector('.floating-nav-switcher').getBoundingClientRect();
+      return [...document.querySelectorAll('.stream-floating-toolbar button, .stream-floating-toolbar a, .vscode-nav-header button, app-chat-interface .chat-header button')]
+        .filter((e) => { const r = e.getBoundingClientRect(); return r.width > 0 && r.left < nav.right && r.right > nav.left && r.top < nav.bottom && r.bottom > nav.top; })
+        .map((e) => (e.getAttribute('aria-label') || e.textContent).trim().slice(0, 24)); })()`);
+    if (covered.length) fail(where, `page controls under the nav: ${covered.join(' | ')}`);
     const err = await evaluate(`document.body.innerText.includes('Failed to fetch') || document.body.innerText.includes('Something went wrong')`);
     if (err) fail(where, 'raw error text shown');
     if (width > 1150) {
@@ -154,7 +160,7 @@ async function scenarios() {
       }
     }
     // Floating player: live / error states, at the default position, minimized, theater, and after a route change.
-    const opened = await evaluate(`(() => { const svc = ng.getComponent(document.querySelector('app-agent-stream, app-chat-interface')).agentService;
+    const opened = await evaluate(`(() => { const svc = ng.getComponent(document.querySelector('app-floating-video-player')).agentService;
       svc.openVideoPlayer('aaaaaaaa-1'); ng.applyChanges(document.querySelector('app-floating-video-player')); return !!svc; })()`).catch(() => false);
     await sleep(800);
     if (!opened) { fail(where, 'could not open floating player'); continue; }

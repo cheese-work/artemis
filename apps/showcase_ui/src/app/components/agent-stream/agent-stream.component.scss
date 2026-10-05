@@ -211,7 +211,7 @@ $stream-row-height: 25px;
 
   .stream-floating-toolbar {
     position: absolute;
-    top: 12px;
+    top: var(--nav-clearance, 12px); /* below the floating nav, however many rows it wraps to */
     right: 20px;
     height: 36px;
     display: inline-flex;
@@ -222,7 +222,7 @@ $stream-row-height: 25px;
 
 
     @media (max-width: 1150px) {
-      top: 72px;
+      top: max(72px, var(--nav-clearance, 72px));
     }
 
     /* Model Info Chip: click opens the run info popover */
@@ -3971,4 +3971,10 @@ $stream-row-height: 25px;
       }
     }
   }
+}
+
+/* Task Queue / Notes drop below the tab buttons; when the floating nav wraps lower than the header, start under it. */
+.vscode-dropdown-menu.task-dropdown,
+.vscode-dropdown-menu.notes-dropdown {
+  margin-top: max(0px, calc(var(--nav-clearance, 0px) - 57px));
 }
