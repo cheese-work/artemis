@@ -1845,6 +1845,41 @@ class TaskQueueService:
         ]
 
     @classmethod
+    def active_session_ids(cls, running_only: bool = False) -> set[str | None]:
+        """Every run that is queued or running, in this process or any other.
+
+        Covers the in-process queue and workers plus live device-lock owners
+        (other processes: CLI, SDK, MCP) and, unless ``running_only``, their
+        global queue tickets. A ``None`` member is a lock record that names no
+        session, or is still being published: a run that cannot be attributed.
+        """
+        wanted = {"running"} if running_only else {"running", "pending"}
+        ids: set[str | None] = {
+            str(item["session_id"])
+            for item in state.queue_items
+            if isinstance(item, dict) and item.get("session_id") and item.get("status") in wanted
+        }
+        ids.update(str(sid) for sid in state.active_runs)
+        if state.active_session_id:
+            ids.add(str(state.active_session_id))
+        try:
+            owners = list(DeviceExecutionLock.get_active_owners().values())
+            fallback = DeviceExecutionLock.get_active_owner()  # scoped/legacy records
+            queued = [] if running_only else DeviceExecutionLock.get_queued_tasks()
+            record_unreadable = (
+                fallback is None and not owners and DeviceExecutionLock.has_owner_record()
+            )
+        except OSError:
+            owners, fallback, queued, record_unreadable = [], None, [], True
+        if fallback is not None:
+            owners.append(fallback)
+        ids.update(str(owner.session_id) if owner.session_id else None for owner in owners)
+        ids.update(str(t["session_id"]) for t in queued if t.get("session_id"))
+        if record_unreadable:
+            ids.add(None)
+        return ids
+
+    @classmethod
     def sessions_on_device(cls, device_id: str) -> set[str | None]:
         """Runs a device-targeted stop would reach, via the stop resolver itself.
 

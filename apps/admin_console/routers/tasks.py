@@ -242,24 +242,11 @@ async def list_devices():
     return {"devices": [d.to_dict() for d in devices]}
 
 
-def _active_session_ids(running_only: bool = False) -> set[str]:
-    """Session ids on the queue, in a worker, or marked active."""
-    wanted = {"running"} if running_only else {"running", "pending"}
-    ids = {
-        str(item["session_id"])
-        for item in state.queue_items
-        if isinstance(item, dict) and item.get("session_id") and item.get("status") in wanted
-    }
-    ids.update(str(sid) for sid in state.active_runs)
-    if state.active_session_id:
-        ids.add(str(state.active_session_id))
-    return ids
-
-
-def _owned_ids(scope: OwnerScope, ids: set[str]) -> list[str]:
+def _owned_ids(scope: OwnerScope, ids: set[str | None]) -> list[str]:
     """The ids whose recorded owner the caller may act on (unknown runs never qualify)."""
-    owners = owners_of(sorted(ids))
-    return sorted(sid for sid in ids if sid in owners and scope.may_act_on(owners[sid]))
+    named = sorted(sid for sid in ids if sid)
+    owners = owners_of(named)
+    return [sid for sid in named if sid in owners and scope.may_act_on(owners[sid])]
 
 
 def _stop_one(session_id: str | None, device_id: str | None) -> dict[str, Any]:
@@ -300,7 +287,7 @@ def _stop_for_non_admin(
         )
     # "Clear" and the untargeted legacy stop reach only the caller's own runs; the
     # legacy stop keeps its rule of acting only when the target is unambiguous.
-    own = _owned_ids(scope, _active_session_ids(running_only=not clear_all))
+    own = _owned_ids(scope, task_queue_service.active_session_ids(running_only=not clear_all))
     if not clear_all and len(own) != 1:
         return {"status": "no_running_task"}
     stopped = [sid for sid in own if _stop_one(sid, None)["status"] == "stopped"]
@@ -357,9 +344,9 @@ async def resume_task(actor: OwnerScope = Depends(actor_scope)):
     """
     scope = scope_or_open(actor)
     if scope.enforced and not scope.admin:
-        affected = _active_session_ids(running_only=True)
+        affected = task_queue_service.active_session_ids(running_only=True)
         if affected or state.is_paused:
-            require_access_all(scope, set(affected))
+            require_access_all(scope, affected)
     resumed = task_queue_service.resume_task()
     if resumed:
         return {"status": "resumed"}
