@@ -56,13 +56,14 @@ describe('RunLibraryComponent', () => {
   let harness: RouterTestingHarness;
   let router: Router;
   let root: HTMLElement;
+  let component: RunLibraryComponent;
 
   const q = <T extends Element>(selector: string) => root.querySelector<T>(selector);
   const qa = <T extends Element>(selector: string) => Array.from(root.querySelectorAll<T>(selector));
 
   async function open(url: string, list: Observable<RunPage> = of(page([run()]))) {
     runs.list.and.returnValue(list);
-    await harness.navigateByUrl(url, RunLibraryComponent);
+    component = await harness.navigateByUrl(url, RunLibraryComponent);
     harness.fixture.detectChanges();
     await harness.fixture.whenStable();
     harness.fixture.detectChanges();
@@ -410,6 +411,67 @@ describe('RunLibraryComponent', () => {
       expect(runs.list).toHaveBeenCalledTimes(2);
       expect(runs.list.calls.mostRecent().args[1]).toEqual({ cursor: 'next-page' });
       expect(q<HTMLElement>('.library-scroll')!.scrollTop).toBe(700);
+    });
+  });
+
+  describe('paging while the query changes', () => {
+    const failedRow = (n: number) =>
+      run({ session_id: `${String(n).padStart(8, '0')}-5d7e-4a10-9c33-0e1f2a3b4c5d`, status: 'failed', prompt: `Failed ${n}` });
+
+    it('P1: Load more is gone and inert while a new filter is loading, and no old cursor is ever sent', async () => {
+      await open('/runs', of(page([run({ status: 'completed' })], 'old-cursor')));
+      expect(q('button.load-more')).not.toBeNull();
+      const reload = new Subject<RunPage>();
+      runs.list.calls.reset();
+      runs.list.and.returnValue(reload);
+      choose('select[aria-label="Status"]', 'failed');
+      await settle();
+      expect(runs.list).toHaveBeenCalledTimes(1);
+      expect(q('button.load-more')).toBeNull(); // the old cursor belongs to the old query
+
+      component.loadMore(); // a queued or programmatic call must not consume it either
+      await settle();
+      expect(runs.list).toHaveBeenCalledTimes(1);
+      expect(runs.list.calls.mostRecent().args[1]).toBeUndefined();
+
+      reload.next(page([failedRow(1)]));
+      reload.complete();
+      await settle();
+      expect(qa('a.run-row').map((a) => a.textContent)).toEqual([jasmine.stringContaining('Failed 1')]);
+      expect(runs.list.calls.allArgs().some(([, options]) => options?.cursor === 'old-cursor')).toBe(false);
+    });
+
+    it('P1: a Load more page that is still in flight when the filter changes never lands in the new list', async () => {
+      await open('/runs', of(page([run({ status: 'completed' })], 'old-cursor')));
+      const older = new Subject<RunPage>();
+      runs.list.and.returnValue(older);
+      q<HTMLButtonElement>('button.load-more')!.click();
+      await settle();
+      expect(runs.list.calls.mostRecent().args[1]).toEqual({ cursor: 'old-cursor' });
+
+      runs.list.and.returnValue(of(page([failedRow(2)])));
+      choose('select[aria-label="Status"]', 'failed');
+      await settle();
+      older.next(page([run({ status: 'completed', prompt: 'Stale completed row' })]));
+      await settle();
+      expect(qa('a.run-row').length).toBe(1);
+      expect(root.textContent).not.toContain('Stale completed row');
+      expect(q('ol.run-list')!.getAttribute('aria-busy')).toBe('false');
+      expect(q<HTMLButtonElement>('button.load-more')).toBeNull();
+    });
+
+    it('P2: changing a filter drops the initial scroll restore target', async () => {
+      const first = new Subject<RunPage>();
+      runs.list.and.returnValue(first);
+      component = await harness.navigateByUrl('/runs?scroll=400', RunLibraryComponent);
+      harness.fixture.autoDetectChanges();
+      root = harness.fixture.nativeElement;
+      q<HTMLElement>('.library-scroll')!.style.height = '200px';
+      runs.list.and.returnValue(of(page(Array.from({ length: 12 }, (_, i) => failedRow(i + 10)))));
+      choose('select[aria-label="Status"]', 'failed');
+      await settle();
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      expect(q<HTMLElement>('.library-scroll')!.scrollTop).toBe(0);
     });
   });
 
