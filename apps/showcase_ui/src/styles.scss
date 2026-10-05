@@ -58,3 +58,23 @@ body {
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
+
+/* Review mode (run library and viewer): status colours are defined once and
+   used by badges, rows and banners. Each tone is a foreground/tint pair that
+   holds 4.5:1 on its tint and on the opaque evidence surface; status is also
+   always an icon plus text. */
+:root {
+  --evidence-surface: #ffffff;
+  --evidence-text: #0f172a;
+  --evidence-muted: #475569;
+  --evidence-border: #64748b;
+  --status-ok-fg: #166534;
+  --status-ok-bg: #dcfce7;
+  --status-warn-fg: #92400e;
+  --status-warn-bg: #fef3c7;
+  --status-danger-fg: #991b1b;
+  --status-danger-bg: #fee2e2;
+  --status-neutral-fg: #334155;
+  --status-neutral-bg: #e2e8f0;
+  --focus-ring: #1d4ed8;
+}

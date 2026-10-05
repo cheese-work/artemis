@@ -17,6 +17,7 @@
 import { Component, ChangeDetectionStrategy, inject, computed, signal } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
+import { RouterLink } from '@angular/router';
 import { AgentService } from '../../services/agent.service';
 import { RunIdCopyComponent } from '../run-id-copy/run-id-copy.component';
 import { Session } from '../../core/models/session.model';
@@ -28,7 +29,7 @@ export type { MarkdownSegment, MarkdownLine, NoteMilestone, ParsedNote };
 @Component({
   selector: 'app-chat-interface',
   standalone: true,
-  imports: [CommonModule, FormsModule, RunIdCopyComponent],
+  imports: [CommonModule, FormsModule, RouterLink, RunIdCopyComponent],
   templateUrl: './chat-interface.component.html',
   styleUrl: './chat-interface.component.scss',
   changeDetection: ChangeDetectionStrategy.OnPush

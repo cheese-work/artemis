@@ -130,6 +130,7 @@ limitations under the License.
           <span class="material-symbols-outlined section-icon">history</span> Past Runs & History ({{ historyTasks().length }})
         </summary>
         <div class="history-list-wrapper">
+          <a class="browse-runs-link" routerLink="/runs">Search and browse all runs</a>
           @if (historyTasks().length === 0) {
             <div class="empty-section-placeholder">
               No past tasks.

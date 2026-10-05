@@ -873,6 +873,37 @@ $rose-dark: #dc2626;
   }
 }
 
+/* Review mode shows evidence, not a live run: no looping decorative motion,
+   room above the dock so focused controls are never hidden behind it, and one
+   column below 800 px (share links are opened from chat on phones). */
+.workspace-container.review-mode {
+  .liquid-wave,
+  .wave-glow-ambient,
+  .pulse-indicator-dot,
+  .running-pulse-dot {
+    animation: none !important;
+  }
+
+  .review-surface {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow: hidden;
+  }
+}
+
+@media (max-width: 800px) {
+  .workspace-container.review-mode {
+    .right-panel {
+      display: none;
+    }
+
+    .left-panel {
+      flex-basis: 100%;
+      min-width: 0;
+    }
+  }
+}
+
 /* Respect the user's motion preference: freeze the decorative liquid waves
    and pulses while keeping the frosted dock visuals intact. */
 @media (prefers-reduced-motion: reduce) {
