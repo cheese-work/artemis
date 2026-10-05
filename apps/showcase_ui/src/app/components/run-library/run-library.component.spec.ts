@@ -310,6 +310,23 @@ describe('RunLibraryComponent', () => {
       expect(router.url).toBe('/runs');
     });
 
+    it('P2: the busy list keeps full text contrast: nothing on the rows is dimmed, and it says so in words', async () => {
+      await open('/runs', of(page([run(), run({ status: 'failed', session_id: '66666666-5d7e-4a10-9c33-0e1f2a3b4c5d' })])));
+      runs.list.and.returnValue(new Subject<RunPage>());
+      choose('select[aria-label="Status"]', 'failed');
+      await settle();
+      expect(q('ol.run-list')!.getAttribute('aria-busy')).toBe('true');
+      const effectiveOpacity = (el: Element) => {
+        let value = 1;
+        for (let node: Element | null = el; node; node = node.parentElement) value *= Number(getComputedStyle(node).opacity);
+        return value;
+      };
+      for (const el of qa('.run-prompt, .run-outcome, .run-meta, .run-meta span')) {
+        expect(effectiveOpacity(el)).toBe(1);
+      }
+      expect(q('.updating')!.textContent).toContain('Updating results');
+    });
+
     it('keeps the previous rows on screen, marked busy, while a new filter loads', async () => {
       await open('/runs');
       const next = new Subject<RunPage>();
@@ -344,6 +361,21 @@ describe('RunLibraryComponent', () => {
       q<HTMLElement>('.library-scroll')!.style.height = '200px';
       return first;
     }
+
+    it('P2: opening a row inside the scroll debounce still saves the position for the way back', async () => {
+      await open('/runs', of(many(12)));
+      const replace = spyOn(TestBed.inject(Location), 'replaceState').and.callThrough();
+      const region = q<HTMLElement>('.library-scroll')!;
+      region.style.height = '200px';
+      region.scrollTop = 120;
+      region.dispatchEvent(new Event('scroll'));
+      q<HTMLAnchorElement>('a.run-row')!.click(); // well inside the 250 ms debounce
+      await settle();
+      expect(replace).toHaveBeenCalled();
+      expect(replace.calls.mostRecent().args.join('')).toContain('scroll=120');
+      expect(runs.lastLibraryQuery()).toEqual({ scroll: '120' });
+      expect(router.url).toContain('/runs/');
+    });
 
     it('writes the scroll position to the URL, and a scroll alone does not reload the list', async () => {
       await open('/runs', of(many(12)));

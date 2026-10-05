@@ -9,6 +9,7 @@ import { StepItemData } from '../../core/models/stream.model';
 import { RunsService } from '../../services/runs.service';
 import { SELECTED_DEVICE_SERIAL_KEY } from '../../services/system.service';
 import { RunViewerComponent } from './run-viewer.component';
+import { tinyVideoUrl } from './tiny-video.testing';
 
 @Component({ standalone: true, template: 'stub' })
 class StubComponent {}
@@ -47,10 +48,15 @@ const ready = (over: Partial<SessionVideo> = {}): SessionVideo => ({
   session_id: ID,
   status: 'ready',
   has_video: true,
-  video_url: '/videos/run.mp4?v=1',
+  video_url: VIDEO_URL,
   video_segments: [],
   ...over
 });
+
+// Real, decodable media: a 404 for a fake URL would fire the element's error event and swap in the fallback.
+const VIDEO_URL = tinyVideoUrl();
+const VIDEO_A = tinyVideoUrl();
+const VIDEO_B = tinyVideoUrl();
 
 const httpError = (status: number, body: unknown = {}) =>
   throwError(() => new HttpErrorResponse({ status, error: body }));
@@ -212,7 +218,7 @@ describe('RunViewerComponent', () => {
     it('plays a ready recording in an opaque video element without the native download control', async () => {
       await open();
       const video = q<HTMLVideoElement>('video')!;
-      expect(video.getAttribute('src')).toBe('/videos/run.mp4?v=1');
+      expect(video.getAttribute('src')).toBe(VIDEO_URL);
       expect(video.hasAttribute('controls')).toBe(true);
       expect(video.getAttribute('controlslist')).toContain('nodownload');
       expect(q('.recording-ribbon')).toBeNull();
@@ -221,7 +227,7 @@ describe('RunViewerComponent', () => {
     it('plays a partial recording with the "stopped at mm:ss" ribbon', async () => {
       await open({
         runResult: of(run({ recordings: [{ recording_id: 'r1', capture: 'partial', transfer: 'uploaded' }] })),
-        video: of(ready({ video_segments: [{ url: '/videos/a.mp4', duration: 40 }, { url: '/videos/b.mp4', duration: 25 }] }))
+        video: of(ready({ video_segments: [{ url: VIDEO_A, duration: 40 }, { url: VIDEO_B, duration: 25 }] }))
       });
       expect(q('video')).not.toBeNull();
       expect(q('.recording-ribbon')!.textContent).toContain('Partial recording (stopped at 01:05)');
@@ -274,8 +280,8 @@ describe('RunViewerComponent', () => {
         video: of(
           ready({
             video_segments: [
-              { url: '/videos/a.mp4', duration: 15, start: 0, offset_ms: 0, duration_ms: 15000 },
-              { url: '/videos/b.mp4', duration: 20, start: 15, offset_ms: 20000, duration_ms: 20000 }
+              { url: VIDEO_A, duration: 15, start: 0, offset_ms: 0, duration_ms: 15000 },
+              { url: VIDEO_B, duration: 20, start: 15, offset_ms: 20000, duration_ms: 20000 }
             ]
           })
         )
@@ -283,7 +289,7 @@ describe('RunViewerComponent', () => {
       qa<HTMLButtonElement>('ol.step-list button.step-button')[2].click(); // 30 s into the session
       await settle();
       expect(fixture.componentInstance.activeSegmentIndex()).toBe(1);
-      expect(q('video')!.getAttribute('src')).toBe('/videos/b.mp4');
+      expect(q('video')!.getAttribute('src')).toBe(VIDEO_B);
     });
   });
 
@@ -512,6 +518,127 @@ describe('RunViewerComponent', () => {
       details.dispatchEvent(new Event('toggle'));
       await settle();
       expect(details.querySelector('pre.raw-logs')!.textContent).toContain('"step_id": "st1"');
+    });
+  });
+
+  describe('review corrections', () => {
+    const OTHER = '9a8b7c6d-1111-4222-8333-444455556666';
+    const noVideo = (): SessionVideo => ({ session_id: ID, status: 'unavailable', has_video: false, video_url: null, video_segments: [] });
+    const whenLoaded = (video: HTMLVideoElement) =>
+      new Promise<void>((resolve) =>
+        video.readyState > 0 ? resolve() : video.addEventListener('loadedmetadata', () => resolve(), { once: true })
+      );
+
+    async function openWith(over: { runFor?: (id: string) => RunSummary; video?: SessionVideo; steps?: StepItemData[] } = {}) {
+      runs.get.and.callFake((id: string) => of((over.runFor ?? ((rid: string) => run({ session_id: rid, prompt: `Prompt ${rid.slice(0, 4)}` })))(id)));
+      runs.steps.and.returnValue(of(over.steps ?? [step(1), step(2), step(3)]));
+      runs.video.and.returnValue(of(over.video ?? noVideo()));
+      admin.getIdentity.and.returnValue(of({ email: 'a@x.test', admin: true, auth_mode: 'cloudflare', reason: null }));
+      fixture = TestBed.createComponent(RunViewerComponent);
+      fixture.componentRef.setInput('runId', ID);
+      root = fixture.nativeElement;
+      await settle();
+    }
+
+    async function showOther() {
+      fixture.componentRef.setInput('runId', OTHER);
+      await settle();
+    }
+
+    it('P1: a late Pin success for run A cannot overwrite the viewer showing run B', async () => {
+      await openWith();
+      const pending = new Subject<unknown>();
+      runs.pin.and.returnValue(pending);
+      button('Pin').click();
+      await showOther();
+      expect(q('h1.run-prompt')!.textContent).toContain(`Prompt ${OTHER.slice(0, 4)}`);
+      pending.next({});
+      pending.complete();
+      await settle();
+      expect(fixture.componentInstance.run()!.session_id).toBe(OTHER);
+      expect(q('h1.run-prompt')!.textContent).toContain(`Prompt ${OTHER.slice(0, 4)}`);
+      expect(button('Pin').getAttribute('aria-pressed')).toBe('false');
+    });
+
+    it('P1: a late Unpin success and a late Pin failure also leave run B alone', async () => {
+      await openWith({ runFor: (id) => run({ session_id: id, pinned: true, prompt: `Prompt ${id.slice(0, 4)}` }) });
+      const unpin = new Subject<unknown>();
+      runs.unpin.and.returnValue(unpin);
+      button('Unpin').click();
+      await showOther();
+      unpin.next({});
+      await settle();
+      expect(button('Unpin').getAttribute('aria-pressed')).toBe('true');
+
+      const failing = new Subject<unknown>();
+      runs.unpin.and.returnValue(failing);
+      button('Unpin').click();
+      await settle();
+      fixture.componentRef.setInput('runId', ID);
+      await settle();
+      failing.error(new HttpErrorResponse({ status: 500 }));
+      await settle();
+      expect(q('.action-error')).toBeNull();
+    });
+
+    it('P1: a late bundle download or delete from run A does nothing once B is showing', async () => {
+      await openWith();
+      const bundle = new Subject<unknown>();
+      runs.downloadBundle.and.returnValue(bundle as never);
+      const created = spyOn(URL, 'createObjectURL').and.returnValue('blob:x');
+      button('Download').click();
+      await settle();
+      q<HTMLButtonElement>('.dialog-confirm')!.click();
+      await settle();
+      await showOther();
+      bundle.next(new HttpResponse({ status: 200, body: new Blob(['zip']) }));
+      await settle();
+      expect(created).not.toHaveBeenCalled();
+      expect(q('.action-feedback')).toBeNull();
+    });
+
+    it('P2: selecting a step seeks a single-file recording (no segments) to that step\'s time', async () => {
+      await openWith({ video: ready({ video_segments: [] }), steps: [step(1, { timestamp: START + 2 }), step(2, { timestamp: START + 3 })] });
+      const video = q<HTMLVideoElement>('video')!;
+      await whenLoaded(video);
+      qa<HTMLButtonElement>('ol.step-list button.step-button')[0].click();
+      await settle();
+      expect(video.currentTime).toBeCloseTo(2, 1);
+      qa<HTMLButtonElement>('ol.step-list button.step-button')[1].click();
+      await settle();
+      expect(video.currentTime).toBeCloseTo(3, 1);
+    });
+
+    it('P2: a step before the recording began, or past its end, clamps instead of failing', async () => {
+      await openWith({ video: ready(), steps: [step(1, { timestamp: START - 5 }), step(2, { timestamp: START + 500 })] });
+      const video = q<HTMLVideoElement>('video')!;
+      await whenLoaded(video);
+      qa<HTMLButtonElement>('ol.step-list button.step-button')[0].click();
+      await settle();
+      expect(video.currentTime).toBe(0);
+      qa<HTMLButtonElement>('ol.step-list button.step-button')[1].click();
+      await settle();
+      expect(video.currentTime).toBeLessThanOrEqual(video.duration);
+    });
+
+    it('P2: an id the server rejects as invalid (400) shows Run not found, not a retryable error', async () => {
+      await open({ id: 'bad id', runResult: httpError(400, { error: 'invalid_session_id' }) });
+      expect(q('.state-page h1')!.textContent).toContain('Run not found');
+      expect(qa('button').some((b) => b.textContent!.trim() === 'Retry')).toBe(false);
+    });
+
+    it('P2: a video file that fails to load falls back to the screenshot with recovery copy', async () => {
+      await openWith({ video: ready() });
+      expect(q('video')).not.toBeNull();
+      q<HTMLVideoElement>('video')!.dispatchEvent(new Event('error'));
+      await settle();
+      expect(q('video')).toBeNull();
+      expect(q('.recording-copy')!.textContent).toContain('could not be played');
+      expect(q('img.evidence-image')).not.toBeNull();
+      runs.video.and.returnValue(of(ready()));
+      button('Check again').click();
+      await settle();
+      expect(q('video')).not.toBeNull();
     });
   });
 
