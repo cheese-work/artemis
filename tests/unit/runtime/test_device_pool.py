@@ -303,10 +303,12 @@ def test_validate_explicit_serial_async_matches_sync(monkeypatch):
     assert "not connected" in missing
 
 
-def test_claimed_serials_ignore_queue_tickets_for_other_endpoints():
+def test_claimed_serials_ignore_queue_tickets_for_other_endpoints(monkeypatch):
     """A queued serial on another adb server is not claimed on this one."""
     from artemis.runtime.adb_endpoint import AdbEndpoint
 
+    # A ticket without an explicit scope inherits the process's; make "unscoped" mean unscoped.
+    monkeypatch.delenv(DeviceExecutionLock.LOCK_SCOPE_ENV, raising=False)
     alpha = AdbEndpoint.create("127.0.0.1", 40001)
     beta = AdbEndpoint.create("127.0.0.1", 40002)
     on_alpha = DeviceExecutionLock.reserve(
