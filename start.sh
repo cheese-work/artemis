@@ -227,11 +227,13 @@ if [ ${#MISSING_CORE[@]} -gt 0 ] || [ "${SCRCPY_NEEDS_FALLBACK}" = true ]; then
                     if curl -fsSL --connect-timeout 5 --max-time 30 "${SCRCPY_URL}" | tar -xz -C "${SCRCPY_DIR}" --strip-components=1 2>/dev/null; then
                         ln -sf "${SCRCPY_DIR}/scrcpy" "${HOME}/.local/bin/scrcpy"
                         export PATH="${SCRCPY_DIR}:${PATH}"
+                        export ARTEMIS_SCRCPY_PATH="${ARTEMIS_SCRCPY_PATH:-${SCRCPY_DIR}/scrcpy}"
                         echo -e "   ${GREEN}✓ scrcpy installed in user space.${NC}"
                     fi
                 else
                     ln -sf "${SCRCPY_DIR}/scrcpy" "${HOME}/.local/bin/scrcpy"
                     export PATH="${SCRCPY_DIR}:${PATH}"
+                    export ARTEMIS_SCRCPY_PATH="${ARTEMIS_SCRCPY_PATH:-${SCRCPY_DIR}/scrcpy}"
                 fi
             fi
         fi
