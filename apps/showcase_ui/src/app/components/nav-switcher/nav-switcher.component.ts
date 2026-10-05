@@ -32,6 +32,7 @@ import { AdminIdentityIndicatorComponent } from '../admin-identity-indicator/adm
         routerLinkActive="active"
         class="nav-tab-btn"
         title="Open Workspace"
+        aria-label="Workspace"
       >
         <span class="material-symbols-outlined tab-icon" aria-hidden="true">space_dashboard</span>
         <span class="tab-label">Workspace</span>
@@ -41,6 +42,7 @@ import { AdminIdentityIndicatorComponent } from '../admin-identity-indicator/adm
         routerLinkActive="active"
         class="nav-tab-btn"
         title="Open the run library"
+        aria-label="Runs"
       >
         <span class="material-symbols-outlined tab-icon" aria-hidden="true">history</span>
         <span class="tab-label">Runs</span>
@@ -50,6 +52,7 @@ import { AdminIdentityIndicatorComponent } from '../admin-identity-indicator/adm
         routerLinkActive="active"
         class="nav-tab-btn"
         title="System Setup"
+        aria-label="System Setup"
       >
         <span class="material-symbols-outlined tab-icon" aria-hidden="true">tune</span>
         <span class="tab-label">System Setup</span>
@@ -63,15 +66,17 @@ import { AdminIdentityIndicatorComponent } from '../admin-identity-indicator/adm
           }
         </button>
       }
-      @if (usbRelay.state().status === 'connected') {
-        <div class="usb-relay-badge" aria-live="polite">
-          <span class="material-symbols-outlined badge-icon" aria-hidden="true">smartphone</span>
-          <span class="badge-label" role="status">Phone connected via this browser</span>
-          <code>{{ usbRelay.state().serial }}</code>
-          <button type="button" (click)="disconnectPhone()">Disconnect</button>
-        </div>
-      }
-      <app-admin-identity-indicator></app-admin-identity-indicator>
+      <div class="nav-status">
+        @if (usbRelay.state().status === 'connected') {
+          <div class="usb-relay-badge" aria-live="polite">
+            <span class="material-symbols-outlined badge-icon" aria-hidden="true">smartphone</span>
+            <span class="badge-label" role="status">Phone connected via this browser</span>
+            <code>{{ usbRelay.state().serial }}</code>
+            <button type="button" (click)="disconnectPhone()">Disconnect</button>
+          </div>
+        }
+        <app-admin-identity-indicator></app-admin-identity-indicator>
+      </div>
     </nav>
   `,
   changeDetection: ChangeDetectionStrategy.Eager,

@@ -19,10 +19,13 @@
   top: 12px;
   left: 24px;
   z-index: 1100;
-  height: 36px;
+  min-height: 36px;
   box-sizing: border-box;
   display: inline-flex;
+  flex-wrap: wrap;
   align-items: center;
+  // Never grow under the right panel (workspace publishes its width) or past the viewport.
+  max-width: calc(100vw - 48px - var(--right-panel-reserve, 0px));
   background: rgba(255, 255, 255, 0.72);
   backdrop-filter: blur(16px) saturate(180%);
   -webkit-backdrop-filter: blur(16px) saturate(180%);
@@ -37,14 +40,22 @@
               box-shadow 0.25s cubic-bezier(0.4, 0, 0.2, 1),
               border-color 0.25s cubic-bezier(0.4, 0, 0.2, 1);
 
+  .nav-status {
+    display: inline-flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 3px 8px;
+    min-width: 0;
+    margin-left: 5px;
+    padding-right: 6px;
+  }
+
   .usb-relay-badge {
     display: inline-flex;
     align-items: center;
     gap: 7px;
     min-width: 0;
-    margin-left: 5px;
-    padding: 0 8px 0 11px;
-    border-left: 1px solid #dbe3ee;
+    padding: 0 0 0 8px;
     color: #166534;
     font-size: 11px;
     white-space: nowrap;
@@ -174,26 +185,32 @@
   }
 }
 
+@media (min-width: 1151px) {
+  // The right panel is visible: keep the bar inside the left panel.
+  .floating-nav-switcher { --right-panel-reserve: var(--right-panel-width, 0px); }
+}
+
+@media (max-width: 1150px) {
+  .floating-nav-switcher { --right-panel-reserve: var(--stream-header-width, 0px); }
+}
+
+@media (max-width: 900px) {
+  .floating-nav-switcher { --right-panel-reserve: var(--stream-header-width-compact, 0px); }
+}
+
 @media (max-width: 760px) {
   .floating-nav-switcher {
     left: 12px;
-    right: 12px;
-    width: max-content;
-    max-width: calc(100vw - 24px);
-    flex-wrap: wrap;
-    height: auto;
+    max-width: calc(100vw - 24px - var(--right-panel-reserve, 0px));
 
-    .usb-relay-badge {
-      flex-basis: 100%;
-      justify-content: center;
-      margin: 3px 0 0;
-      padding: 5px 0 2px;
-      border-top: 1px solid #dbe3ee;
-      border-left: 0;
-    }
-
+    .nav-status { flex-basis: 100%; margin: 0; padding: 0 6px 3px; }
+    .usb-relay-badge { padding-left: 0; .badge-label { display: none; } }
     .brand-wordmark { padding: 0 7px; }
-
     .nav-tab-btn { padding: 0 9px; }
   }
+}
+
+// Phones: tabs collapse to their icon (aria-label keeps the name) so the bar stays two rows.
+@media (max-width: 560px) {
+  .floating-nav-switcher .nav-tab-btn .tab-label { display: none; }
 }
