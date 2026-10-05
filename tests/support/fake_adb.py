@@ -145,9 +145,12 @@ class FakeAdbServer:
             allow_reuse_address = True
             daemon_threads = True
 
-        self._server = Server((self.host, 0), Handler)
+        server = Server((self.host, 0), Handler)
+        self._server = server
+        # The thread owns *this* server: reading ``self._server`` later would race ``stop()``,
+        # which clears it, and a serve thread that died would leave ``shutdown()`` waiting forever.
         self._thread = threading.Thread(
-            target=lambda: self._server.serve_forever(poll_interval=0.02),
+            target=lambda: server.serve_forever(poll_interval=0.02),
             name=f"fake-adb-{self.name}",
             daemon=True,
         )
