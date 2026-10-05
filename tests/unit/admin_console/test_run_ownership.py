@@ -903,3 +903,81 @@ async def test_named_stream_in_open_mode_keeps_delivering_global_lifecycle_event
         assert (await _next_event(stream))[1]["session_id"] == "someone-elses"
     finally:
         await stream.aclose()
+
+
+# -- correction round 2 (Luna, CHANGES REQUESTED on 3f0d934) --------------------------
+
+
+def _own_running_run(db, owner: str = QA1) -> str:
+    sid = _run(db, owner, status="running", queued=True)
+    state.queue_items[-1]["status"] = "running"
+    return sid
+
+
+@pytest.mark.asyncio
+async def test_resume_is_denied_while_a_foreign_process_holds_a_device(real_controls):
+    hold, _killed, pause_file = real_controls
+    db = run_catalog_repo.db_path
+    _own_running_run(db)
+    foreign = _run(db, QA2, status="running")  # another process; not in this queue
+    hold("dev-qa2", foreign, 24680)
+    pause_file.write_text("LLM Error: paused", encoding="utf-8")
+
+    response = await _post(QA1, "/api/resume")
+
+    assert response.status_code == 403 and response.json()["code"] == "not_run_owner"
+    assert pause_file.exists()
+
+
+@pytest.mark.asyncio
+async def test_resume_is_denied_while_an_unowned_process_holds_a_device(real_controls):
+    hold, _killed, pause_file = real_controls
+    db = run_catalog_repo.db_path
+    _own_running_run(db)
+    hold("dev-cli", _run(db, None, status="running"), 24682)
+    pause_file.write_text("LLM Error: paused", encoding="utf-8")
+
+    assert (await _post(QA1, "/api/resume")).status_code == 403
+    assert pause_file.exists()
+
+
+@pytest.mark.asyncio
+async def test_resume_is_denied_while_an_unnamed_lock_is_live(real_controls):
+    hold, _killed, pause_file = real_controls
+    _own_running_run(run_catalog_repo.db_path)
+    hold("dev-x", None, 24681)  # a lock record that names no session
+    pause_file.write_text("LLM Error: paused", encoding="utf-8")
+
+    assert (await _post(QA1, "/api/resume")).status_code == 403
+    assert pause_file.exists()
+    assert (await _post(ADMIN, "/api/resume")).json() == {"status": "resumed"}
+    assert not pause_file.exists()
+
+
+@pytest.mark.asyncio
+async def test_resume_with_only_the_callers_own_locks_still_works(real_controls):
+    hold, _killed, pause_file = real_controls
+    db = run_catalog_repo.db_path
+    _own_running_run(db)
+    other_process = _run(db, QA1, status="running")
+    hold("dev-qa1", other_process, 24683)
+    pause_file.write_text("LLM Error: paused", encoding="utf-8")
+
+    assert (await _post(QA1, "/api/resume")).json() == {"status": "resumed"}
+    assert not pause_file.exists()
+
+
+@pytest.mark.asyncio
+async def test_clear_never_stops_a_foreign_process_even_when_it_holds_a_device(real_controls):
+    hold, killed, _pause = real_controls
+    db = run_catalog_repo.db_path
+    mine = _run(db, QA1, queued=True)
+    foreign = _run(db, QA2, status="running")
+    hold("dev-qa2", foreign, 24680)
+
+    response = await _post(QA1, "/api/stop", json={"all": True})
+
+    assert response.status_code == 200
+    killed.assert_not_called()
+    assert _status_of(db, foreign) == "running"
+    assert _status_of(db, mine) != "running"
