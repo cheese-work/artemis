@@ -23,6 +23,7 @@ import { ProTuningDefaults, ProTuningOptions } from '../core/models/pro-tuning.m
 import { StepItemData, StepReplayFrame, LLMStreamResetEventData, StreamResetNotice, DEFAULT_STREAM_RESET_MESSAGE, PersistedCheckerStream, StreamSegment } from '../core/models/stream.model';
 import { extractStepReplayFrames } from '../utils/action-formatter.util';
 import { persistedStreamToSegments } from '../utils/stream-aggregator.util';
+import { AdminIdentity } from './admin-config.service';
 import { OwnerScopeService } from './owner-scope.service';
 import { SELECTED_DEVICE_SERIAL_KEY } from './system.service';
 export type { Session, ModelInfo, TaskQueueItem, AgentStatusResponse, StepItemData, StepReplayFrame, LLMStreamResetEventData, StreamResetNotice };
@@ -30,6 +31,16 @@ export type { Session, ModelInfo, TaskQueueItem, AgentStatusResponse, StepItemDa
 // v1 held rows with no owner; it may carry other users' runs, so it is dropped, never read.
 const LEGACY_SESSION_CACHE_KEY = 'artemis.sessions.v1';
 const SESSION_CACHE_KEY = 'artemis.sessions.v2';
+
+/**
+ * Who a cache entry belongs to: the signed-in email, or null in open mode (no
+ * owner filtering there). Undefined for a signed-out or failed lookup: those
+ * share one "unknown" identity, so they never read or write the cache.
+ */
+function cacheOwnerOf(who: AdminIdentity): string | null | undefined {
+  if (who.email) return who.email;
+  return who.auth_mode === 'open' ? null : undefined;
+}
 
 export interface VideoSegment {
   url: string;
@@ -422,7 +433,7 @@ export class AgentService {
       const who = this.ownerScope.identity();
       if (!who || restored) return;
       restored = true;
-      untracked(() => this.restoreSessionsCache(who.email));
+      untracked(() => this.restoreSessionsCache(who));
     });
     this.fetchSessions();
     this.startStatusPolling();
@@ -1420,13 +1431,15 @@ export class AgentService {
     }
   }
 
-  /** Seeds the list for `owner` only; a cache written by another identity is ignored. */
-  private restoreSessionsCache(owner: string | null): void {
+  /** Seeds the list for this identity only; a cache written by another one is ignored. */
+  private restoreSessionsCache(who: AdminIdentity): void {
+    const owner = cacheOwnerOf(who);
+    if (owner === undefined) return;
     try {
       const cached = localStorage.getItem(SESSION_CACHE_KEY);
       if (!cached) return;
       const entry = JSON.parse(cached);
-      if (entry?.owner !== owner || !Array.isArray(entry.sessions)) return;
+      if (!entry || entry.owner !== owner || !Array.isArray(entry.sessions)) return;
       // A fresh answer, or a scope change, already won the race.
       if (this.rawSessions().length > 0 || this.ownerScope.showAll()) return;
       this.lastPersistedSessionsJson = cached;
@@ -1442,9 +1455,10 @@ export class AgentService {
    */
   private persistSessionsCache(sessions: Session[]): void {
     const who = this.ownerScope.identity();
-    if (!who || this.ownerScope.showAll()) return;
+    const owner = who ? cacheOwnerOf(who) : undefined;
+    if (owner === undefined || this.ownerScope.showAll()) return;
     try {
-      const serialized = JSON.stringify({ owner: who.email, sessions });
+      const serialized = JSON.stringify({ owner, sessions });
       if (serialized === this.lastPersistedSessionsJson) return;
       this.lastPersistedSessionsJson = serialized;
       localStorage.setItem(SESSION_CACHE_KEY, serialized);
