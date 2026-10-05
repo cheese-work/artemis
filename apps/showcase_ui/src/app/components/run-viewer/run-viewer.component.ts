@@ -84,6 +84,8 @@ export class RunViewerComponent {
   public readonly stepsFailed = signal(false);
   public readonly video = signal<SessionVideo | null>(null);
   public readonly videoFailed = signal(false);
+  /** The media element itself could not load or decode the file. */
+  public readonly playerFailed = signal(false);
   public readonly selectedStepId = signal<string | null>(null);
   public readonly activeSegmentIndex = signal(0);
   public readonly isAdmin = signal(false);
@@ -93,7 +95,6 @@ export class RunViewerComponent {
   public readonly dialogKind = signal<DialogKind | null>(null);
   public readonly feedback = signal('');
   public readonly actionError = signal<{ text: string; retry: Retryable } | null>(null);
-  public readonly busy = signal(false);
 
   public readonly lastQuery = this.runsApi.lastLibraryQuery;
   public readonly dialog = computed(() => (this.dialogKind() ? DIALOGS[this.dialogKind()!] : null));
@@ -126,6 +127,13 @@ export class RunViewerComponent {
     );
   });
 
+  /** Player-area copy; a failed check or a file the browser cannot play wins over the mapped copy. */
+  public readonly copy = computed(() => {
+    if (this.videoFailed()) return "Couldn't check the video.";
+    if (this.playerFailed()) return 'The video could not be played. Steps and screenshots are still here.';
+    return this.recording().copy;
+  });
+
   public readonly videoUrl = computed(
     () => this.segments()[this.activeSegmentIndex()]?.url ?? this.video()?.video_url ?? null
   );
@@ -140,6 +148,7 @@ export class RunViewerComponent {
   public readonly canCheckAgain = computed(
     () =>
       this.videoFailed() ||
+      this.playerFailed() ||
       ['preparing', 'uploaded_unchecked', 'prepare_failed'].includes(this.recording().state)
   );
   public readonly rawLogs = computed(() => JSON.stringify({ run: this.run(), steps: this.steps() }, null, 2));
@@ -149,6 +158,8 @@ export class RunViewerComponent {
   private opener: HTMLElement | null = null;
   private loadRequest: Subscription | null = null;
   private evidenceRequests = new Subscription();
+  /** Pin, download and delete: cancelled on navigation so run A's answer never lands on run B. */
+  private actionRequests = new Subscription();
   private pendingSeek: number | null = null;
   private continuePlaying = false;
 
@@ -173,6 +184,7 @@ export class RunViewerComponent {
     this.destroyRef.onDestroy(() => {
       this.loadRequest?.unsubscribe();
       this.evidenceRequests.unsubscribe();
+      this.actionRequests.unsubscribe();
     });
   }
 
@@ -186,6 +198,9 @@ export class RunViewerComponent {
     this.loadRequest?.unsubscribe();
     this.evidenceRequests.unsubscribe(); // a slow answer for the previous run must not land on this one
     this.evidenceRequests = new Subscription();
+    this.actionRequests.unsubscribe();
+    this.actionRequests = new Subscription();
+    this.playerFailed.set(false);
     this.state.set('loading');
     this.run.set(null);
     this.steps.set([]);
@@ -208,6 +223,7 @@ export class RunViewerComponent {
   private fail(error: HttpErrorResponse): void {
     const body = (error.error ?? {}) as { reason?: string; candidates?: string[] };
     switch (error.status) {
+      case 400: // invalid_session_id: this id can never resolve, so Retry would be a lie
       case 404:
         return this.state.set('not_found');
       case 410:
@@ -254,7 +270,9 @@ export class RunViewerComponent {
 
   public checkAgain(): void {
     const id = this.run()?.session_id;
-    if (id) this.loadVideo(id);
+    if (!id) return;
+    this.playerFailed.set(false);
+    this.loadVideo(id);
   }
 
   // -- steps and playback -----------------------------------------------------
@@ -270,8 +288,15 @@ export class RunViewerComponent {
   public selectStep(step: StepItemData): void {
     this.selectedStepId.set(step.step_id);
     const run = this.run();
-    const located = locateSessionTime(this.segments(), step.timestamp - (run?.start_time ?? step.timestamp));
-    if (!located || !this.recording().playable) return;
+    if (!this.recording().playable) return;
+    const sessionSeconds = step.timestamp - (run?.start_time ?? step.timestamp);
+    if (!this.segments().length) {
+      // One file, no manifest: the session axis is the file's own axis.
+      this.pendingSeek = Math.max(0, sessionSeconds);
+      return this.applySeek();
+    }
+    const located = locateSessionTime(this.segments(), sessionSeconds);
+    if (!located) return;
     this.pendingSeek = located.localTime;
     if (located.index === this.activeSegmentIndex()) this.applySeek();
     else this.activeSegmentIndex.set(located.index);
@@ -288,7 +313,8 @@ export class RunViewerComponent {
   private applySeek(): void {
     const player = this.playerEl()?.nativeElement;
     if (player && this.pendingSeek !== null && player.readyState > 0) {
-      player.currentTime = this.pendingSeek;
+      const end = Number.isFinite(player.duration) ? player.duration : this.pendingSeek;
+      player.currentTime = Math.min(this.pendingSeek, end);
       this.pendingSeek = null;
     }
   }
@@ -341,10 +367,12 @@ export class RunViewerComponent {
     const run = this.run();
     if (!run) return;
     this.actionError.set(null);
-    (pinned ? this.runsApi.pin(run.session_id) : this.runsApi.unpin(run.session_id)).subscribe({
-      next: () => this.run.set({ ...run, pinned }),
-      error: () => this.actionError.set({ text: RUN_STRINGS.pinFailed, retry: null })
-    });
+    this.actionRequests.add(
+      (pinned ? this.runsApi.pin(run.session_id) : this.runsApi.unpin(run.session_id)).subscribe({
+        next: () => this.run.set({ ...run, pinned }),
+        error: () => this.actionError.set({ text: RUN_STRINGS.pinFailed, retry: null })
+      })
+    );
   }
 
   private async copyLink(): Promise<void> {
@@ -353,9 +381,9 @@ export class RunViewerComponent {
     this.actionError.set(null);
     try {
       await navigator.clipboard.writeText(`${window.location.origin}/runs/${run.session_id}`);
-      this.feedback.set(RUN_STRINGS.linkCopied);
+      if (this.run()?.session_id === run.session_id) this.feedback.set(RUN_STRINGS.linkCopied);
     } catch {
-      this.actionError.set({ text: "Couldn't copy the link. Copy it from the address bar.", retry: null });
+      if (this.run()?.session_id === run.session_id) this.actionError.set({ text: "Couldn't copy the link. Copy it from the address bar.", retry: null });
     }
   }
 
@@ -364,13 +392,15 @@ export class RunViewerComponent {
     if (!run) return;
     this.actionError.set(null);
     this.feedback.set(RUN_STRINGS.preparingBundle);
-    this.runsApi.downloadBundle(run.session_id).subscribe({
-      next: (event) => this.onBundleEvent(event, run.session_id),
-      error: () => {
-        this.feedback.set('');
-        this.actionError.set({ text: RUN_STRINGS.downloadFailed, retry: 'download' });
-      }
-    });
+    this.actionRequests.add(
+      this.runsApi.downloadBundle(run.session_id).subscribe({
+        next: (event) => this.onBundleEvent(event, run.session_id),
+        error: () => {
+          this.feedback.set('');
+          this.actionError.set({ text: RUN_STRINGS.downloadFailed, retry: 'download' });
+        }
+      })
+    );
   }
 
   public retry(): void {
@@ -396,10 +426,12 @@ export class RunViewerComponent {
   private remove(): void {
     const run = this.run();
     if (!run) return;
-    this.runsApi.remove(run.session_id).subscribe({
-      next: () => void this.router.navigate(['/runs'], { queryParams: this.lastQuery() }),
-      error: () => this.actionError.set({ text: RUN_STRINGS.deleteFailed, retry: null })
-    });
+    this.actionRequests.add(
+      this.runsApi.remove(run.session_id).subscribe({
+        next: () => void this.router.navigate(['/runs'], { queryParams: this.lastQuery() }),
+        error: () => this.actionError.set({ text: RUN_STRINGS.deleteFailed, retry: null })
+      })
+    );
   }
 
   public startNewRun(): void {

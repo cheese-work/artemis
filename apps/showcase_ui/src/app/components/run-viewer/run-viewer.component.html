@@ -88,7 +88,7 @@
 
         <div class="evidence-grid">
           <section class="evidence" data-section="evidence" aria-label="Evidence">
-            @if (recording().playable && videoUrl()) {
+            @if (recording().playable && videoUrl() && !playerFailed()) {
               @if (recording().ribbon; as ribbon) {
                 <p class="recording-ribbon">{{ ribbon }}</p>
               }
@@ -101,10 +101,11 @@
                 [src]="videoUrl()"
                 (loadedmetadata)="onMetadata()"
                 (ended)="onEnded()"
+                (error)="playerFailed.set(true)"
               ></video>
             } @else {
               <p class="recording-copy" role="status">
-                {{ videoFailed() ? "Couldn't check the video." : recording().copy }}
+                {{ copy() }}
               </p>
               @if (canCheckAgain()) {
                 <button type="button" class="secondary-button" (click)="checkAgain()">{{ strings.checkAgain }}</button>

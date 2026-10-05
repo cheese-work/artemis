@@ -10,7 +10,7 @@ import {
 } from '@angular/core';
 import { HttpErrorResponse } from '@angular/common/http';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
-import { DatePipe } from '@angular/common';
+import { DatePipe, Location } from '@angular/common';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 import { Subscription } from 'rxjs';
 import { Computer } from '../../core/models/host.model';
@@ -56,6 +56,7 @@ export class RunLibraryComponent {
   private readonly hostsApi = inject(HostsService);
   private readonly router = inject(Router);
   private readonly route = inject(ActivatedRoute);
+  private readonly location = inject(Location);
   private readonly destroyRef = inject(DestroyRef);
 
   public readonly strings = RUN_STRINGS;
@@ -152,6 +153,7 @@ export class RunLibraryComponent {
   public onScroll(): void {
     if (this.scrollTimer) clearTimeout(this.scrollTimer);
     this.scrollTimer = setTimeout(() => {
+      this.scrollTimer = null;
       const top = Math.floor(this.scrollRegion()?.nativeElement.scrollTop ?? 0);
       void this.router.navigate([], {
         relativeTo: this.route,
@@ -159,6 +161,23 @@ export class RunLibraryComponent {
         replaceUrl: true
       });
     }, 250);
+  }
+
+  /**
+   * Opening a run can beat the scroll debounce. Save the position into this
+   * history entry (and the remembered query) before the row's own navigation
+   * leaves, so Back and "Back to runs" both land where the QA was.
+   */
+  public rememberPosition(): void {
+    if (this.scrollTimer) clearTimeout(this.scrollTimer);
+    this.scrollTimer = null;
+    const top = Math.floor(this.scrollRegion()?.nativeElement.scrollTop ?? 0);
+    const query = { ...filtersToQuery(this.filters()), ...(top > 0 ? { scroll: String(top) } : {}) };
+    this.runsApi.lastLibraryQuery.set(query);
+    const [path, search = ''] = this.router
+      .serializeUrl(this.router.createUrlTree([], { relativeTo: this.route, queryParams: query }))
+      .split('?');
+    this.location.replaceState(path, search);
   }
 
   // -- loading --------------------------------------------------------------

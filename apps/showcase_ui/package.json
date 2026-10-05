@@ -7,6 +7,7 @@
     "start": "ng serve --proxy-config proxy.conf.json",
     "build": "ng build",
     "test:docker-build-inputs": "node scripts/test-docker-build-inputs.mjs",
+    "test:keyboard": "node scripts/keyboard-walkthrough/walkthrough.mjs",
     "watch": "ng build --watch --configuration development",
     "test": "ng test",
     "pretest": "node scripts/validate-whats-new.mjs && node scripts/lint-ui-strings.mjs && npm run test:tango-stream-extra",

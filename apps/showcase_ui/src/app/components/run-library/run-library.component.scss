@@ -142,8 +142,9 @@ summary:focus-visible {
   padding: 0;
   list-style: none;
 
+  /* Busy is said in words (.updating), never by dimming: dimmed text and badges fall under 4.5:1. */
   &[aria-busy='true'] {
-    opacity: 0.6;
+    cursor: progress;
   }
 }
 
@@ -216,6 +217,12 @@ summary:focus-visible {
 .run-expires {
   font-weight: 600;
   color: var(--status-warn-fg);
+}
+
+.updating {
+  margin: 0 0 8px;
+  font-size: 13px;
+  color: var(--evidence-muted);
 }
 
 .load-more {

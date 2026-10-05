@@ -88,10 +88,13 @@
 
   @if (rows().length > 0) {
     <p class="sr-only" role="status">{{ rows().length }} runs shown</p>
+    @if (loading()) {
+      <p class="updating" role="status">Updating results…</p>
+    }
     <ol class="run-list" [attr.aria-busy]="loading() ? 'true' : 'false'">
       @for (run of rows(); track trackRun($index, run)) {
         <li>
-          <a class="run-row" [routerLink]="['/runs', run.session_id]">
+          <a class="run-row" [routerLink]="['/runs', run.session_id]" (click)="rememberPosition()">
             <span class="run-prompt">{{ prompt(run) }}</span>
             <span class="run-outcome tone-{{ outcome(run.status).tone }}">
               <span class="material-symbols-outlined" aria-hidden="true">{{ outcome(run.status).icon }}</span>
