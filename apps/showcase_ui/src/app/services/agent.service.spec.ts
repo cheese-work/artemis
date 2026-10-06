@@ -1,4 +1,4 @@
-import { provideHttpClient } from '@angular/common/http';
+import { HttpErrorResponse, provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { signal, computed } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
@@ -7,6 +7,7 @@ import { of, Subject, throwError } from 'rxjs';
 import { AgentService } from './agent.service';
 import { AdminConfigService } from './admin-config.service';
 import { OwnerScopeService } from './owner-scope.service';
+import { SELECTED_DEVICE_SERIAL_KEY, SystemService } from './system.service';
 import { buildRunSummary } from '../utils/run-copy.util';
 
 describe('AgentService live LLM retry timeline', () => {
@@ -557,6 +558,42 @@ describe('AgentService live LLM retry timeline', () => {
       goal: 'auto-pick task',
       profile: 'flash'
     });
+  });
+
+  it('runs on the phone a QA chose in the picker, and on none once they go back to Automatic', () => {
+    TestBed.configureTestingModule({ providers: [provideHttpClient(), provideHttpClientTesting()] });
+    const system = TestBed.inject(SystemService);
+    const { service, post } = createRunService([
+      { serial: '127.0.0.1:41001', state: 'device' },
+      { serial: 'emulator-5554', state: 'device' }
+    ]);
+
+    system.chooseRunTarget('127.0.0.1:41001');
+    service.runTask('own phone').subscribe();
+    expect(post.calls.mostRecent().args[1]).toEqual(
+      jasmine.objectContaining({ device_serial: '127.0.0.1:41001' })
+    );
+
+    system.chooseRunTarget(null);
+    service.runTask('automatic').subscribe();
+    expect(post.calls.mostRecent().args[1]).not.toEqual(jasmine.objectContaining({ device_serial: jasmine.anything() }));
+    expect(localStorage.getItem(SELECTED_DEVICE_SERIAL_KEY)).toBeNull();
+  });
+
+  it('surfaces the server refusal when a run targets a phone that is not the caller\'s', () => {
+    spyOn(localStorage, 'getItem').and.returnValue('phone-a');
+    const { service, post } = createRunService([{ serial: 'phone-a', state: 'device' }]);
+    const refusal = new HttpErrorResponse({
+      status: 403,
+      error: { detail: 'This phone belongs to someone else.', code: 'device_not_yours' }
+    });
+    post.and.returnValue(throwError(() => refusal));
+    let received: unknown = null;
+
+    service.runTask('not my phone').subscribe({ error: (err) => (received = err) });
+
+    expect(received).toBe(refusal);
+    expect(post).toHaveBeenCalledTimes(1);
   });
 
   it('auto-picks when the remembered phone is offline and another phone is ready', () => {

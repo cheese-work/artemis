@@ -93,6 +93,43 @@ describe('RegistryPhonesComponent', () => {
     expect(chips[1].textContent).not.toContain('Keep this browser tab open');
   });
 
+  it('lists the phones this person may use: model names first, the source as secondary text', () => {
+    // The server already dropped other QAs' phones; the list shows exactly what it sent.
+    create({
+      enabled: true,
+      hosts: [computer],
+      devices: [
+        sharedPhone,
+        { ...browserPhone, model: '21081111RG', device_kind: 'phone', owner: 'qa1@example.com' },
+        {
+          ...browserPhone,
+          serial: '127.0.0.1:5001',
+          model: 'Pixel 6',
+          device_kind: 'phone',
+          owner: 'qa1@example.com'
+        }
+      ]
+    });
+    const chips = Array.from(root().querySelectorAll('app-device-chip'));
+    expect(chips.length).toBe(3);
+    expect(chips.map((c) => c.querySelector('.label')?.textContent)).toEqual([
+      'Pixel 8',
+      '21081111RG',
+      'Pixel 6'
+    ]);
+    expect(chips.map((c) => c.querySelector('.source')?.textContent)).toEqual([
+      'Lab Mac',
+      'This browser',
+      "qa1@example.com's browser"
+    ]);
+  });
+
+  it('never uses a bridge address as a phone\'s label', () => {
+    create({ enabled: true, hosts: [], devices: [{ ...browserPhone, serial: '127.0.0.1:5001' }] });
+    const label = root().querySelector('.label')?.textContent ?? '';
+    expect(label).not.toMatch(/127\.0\.0\.1/);
+  });
+
   it('shows an offline computer\'s phone as offline with the reason, not as selectable', () => {
     create({
       enabled: true,

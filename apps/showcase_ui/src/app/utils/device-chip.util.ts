@@ -40,7 +40,11 @@ export function deviceChipView(
     const own = ownBrowserSerial !== null && device.serial === ownBrowserSerial;
     return {
       state: 'Ready',
-      source: own ? COMPUTER_STRINGS.thisBrowser : COMPUTER_STRINGS.aBrowser,
+      source: own
+        ? COMPUTER_STRINGS.thisBrowser
+        : device.owner
+          ? COMPUTER_STRINGS.browserOf(device.owner)
+          : COMPUTER_STRINGS.aBrowser,
       label,
       kind: kindText,
       serial: device.serial,

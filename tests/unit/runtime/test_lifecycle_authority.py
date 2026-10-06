@@ -362,6 +362,21 @@ def test_deleting_a_session_clears_its_outbox_row_so_a_reused_id_announces_again
     assert _outbox(db_path) == []
 
 
+def test_deleting_a_session_also_deletes_its_recorded_events(db_path, tmp_path):
+    kept, gone = _add_session(db_path), _add_session(db_path)
+    authority = LifecycleAuthority(db_path)
+    for sid in (kept, gone):
+        authority.record_event(f"{sid}:outcome", "session_ended", sid, {"session_id": sid})
+    storage = StorageManager(db_path, tmp_path)
+
+    storage.delete_session(uuid.UUID(gone))
+
+    assert authority.events(gone) == []
+    assert len(authority.events(kept)) == 1  # another session's events survive
+    storage.clear_all_data()
+    assert authority.events(kept) == []
+
+
 # -- trace-only outcomes (traces that have no sessions row) -------------------
 
 

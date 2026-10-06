@@ -412,6 +412,23 @@ class DeviceExecutionLock:
         raise DeviceBusyError("Could not reserve a position in the Artemis device queue.")
 
     @classmethod
+    def queue_head_token(cls, device_id: str, lock_scope: str | None) -> str | None:
+        """Ticket token of the live head of one device's FIFO queue, if any."""
+        queue_dir = get_temp_dir("device-locks") / "artemis-global-device.queue"
+        if not queue_dir.exists():
+            return None
+        queue = cls._build_device_queue(
+            sorted(queue_dir.glob("*.wait")),
+            target_lock_id=cls._normalize_lock_id(device_id, lock_scope),
+            target_scope=lock_scope,
+        )
+        for path in queue:
+            owner = cls._read_owner(path)
+            if owner is not None and cls._owner_is_alive(owner):
+                return owner.token
+        return None
+
+    @classmethod
     def cancel_reservation(cls, token: str | None) -> bool:
         """Remove a pending queue ticket. Active execution leases are untouched."""
         if not token:

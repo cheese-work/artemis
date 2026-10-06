@@ -293,7 +293,10 @@ async def open_bridge_session(websocket: WebSocket) -> None:
     tasks: list[asyncio.Task[object]] = []
     send_lock = asyncio.Lock()
     try:
-        session = await bridge_session_service.create_session()
+        identity = getattr(getattr(websocket, "state", None), "identity", None)
+        session = await bridge_session_service.create_session(
+            owner=identity.email if identity else None
+        )
         await _send_json(
             websocket,
             {

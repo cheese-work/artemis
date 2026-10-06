@@ -119,17 +119,23 @@ class AdbTarget:
 
     endpoint: AdbEndpoint
     serial: str | None = None
+    # A host-agent device is locked by host id + opaque device id, not by the
+    # (loopback) endpoint that happens to carry its traffic.
+    host_id: str | None = None
 
     @property
     def lock_scope(self) -> str:
-        return self.endpoint.identity
+        return f"host:{self.host_id}" if self.host_id else self.endpoint.identity
 
     @property
     def lock_key(self) -> str:
         return f"{self.lock_scope}/{self.serial or 'pending'}"
 
     def to_dict(self) -> dict[str, Any]:
-        return {"endpoint": self.endpoint.to_dict(), "serial": self.serial}
+        data = {"endpoint": self.endpoint.to_dict(), "serial": self.serial}
+        if self.host_id:
+            data["host_id"] = self.host_id
+        return data
 
 
 class AdbSession:

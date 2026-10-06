@@ -38,6 +38,9 @@ const STEPS = Array.from({ length: 4 }, (_, n) => ({
   post_image_name: `post${n + 1}.svg`
 }));
 
+// Mutable so layout audits can drive connected / disconnected / error states. Defaults match the keyboard walkthrough.
+export const mock = { sessions: [], status: null, failSessions: false, failVideo: false, identity: null };
+
 const json = (res, code, body) => {
   res.writeHead(code, { 'content-type': 'application/json' });
   res.end(JSON.stringify(body));
@@ -64,8 +67,13 @@ export function startMockApi(distDir) {
     m = p.match(/^\/api\/sessions\/([^/]+)\/steps$/);
     if (m) return json(res, 200, STEPS.map((s) => ({ ...s, session_id: m[1] })));
     m = p.match(/^\/api\/sessions\/([^/]+)\/video$/);
+    if (m && mock.failVideo) return json(res, 500, { error: 'boom' });
     if (m) return json(res, 200, { session_id: m[1], status: 'unavailable', has_video: false, video_url: null, video_segments: [] });
-    if (p === '/api/system/whoami') return json(res, 200, { email: 'qa@example.test', admin: true, auth_mode: 'cloudflare', reason: null });
+    if (p === '/api/system/whoami') return mock.identity ? json(res, mock.identity.code ?? 200, mock.identity.body) : json(res, 200, { email: 'qa@example.test', admin: true, auth_mode: 'cloudflare', reason: null });
+    if (p === '/api/status' && mock.status) return json(res, 200, mock.status);
+    if (p === '/api/sessions' && mock.failSessions) return json(res, 500, { error: 'boom' });
+    if (p === '/api/sessions' && mock.sessions.length) return json(res, 200, mock.sessions);
+
     if (p === '/api/hosts') return json(res, 200, { enabled: true, hosts: [], devices: [] });
     if (p.startsWith('/images/')) {
       res.writeHead(200, { 'content-type': 'image/svg+xml' });

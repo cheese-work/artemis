@@ -29,12 +29,39 @@ import {
 
 export const SELECTED_DEVICE_SERIAL_KEY = 'artemis.selected_device_serial';
 
+function rememberedRunTarget(): string | null {
+  try {
+    return localStorage.getItem(SELECTED_DEVICE_SERIAL_KEY);
+  } catch {
+    return null;
+  }
+}
+
 @Injectable({
   providedIn: 'root'
 })
 export class SystemService {
   private http = inject(HttpClient);
   public configWritesLocked = signal<boolean>(true);
+  /** The phone this browser runs on next; null means automatic. */
+  public selectedRunTarget = signal<string | null>(rememberedRunTarget());
+
+  /**
+   * Remember which phone this browser uses for its next run. Unlike {@link selectDevice} it
+   * changes nothing on the server, so any signed-in person may use it.
+   */
+  public chooseRunTarget(serial: string | null): void {
+    try {
+      if (serial) {
+        localStorage.setItem(SELECTED_DEVICE_SERIAL_KEY, serial);
+      } else {
+        localStorage.removeItem(SELECTED_DEVICE_SERIAL_KEY);
+      }
+    } catch (error) {
+      console.warn('Unable to remember the run target in this browser:', error);
+    }
+    this.selectedRunTarget.set(serial);
+  }
 
   // Core reactive signals
   public readinessReport = signal<SystemReadinessReport | null>(null);
@@ -506,14 +533,7 @@ export class SystemService {
     return this.http.post<any>('/api/system/devices/select', { serial }).pipe(
       tap({
         next: (res) => {
-          try {
-            localStorage.setItem(
-              SELECTED_DEVICE_SERIAL_KEY,
-              typeof res?.selected_serial === 'string' ? res.selected_serial : serial
-            );
-          } catch (error) {
-            console.warn('Unable to remember selected device in this browser:', error);
-          }
+          this.chooseRunTarget(typeof res?.selected_serial === 'string' ? res.selected_serial : serial);
           if (res?.report) {
             this.applyReadinessReport(res.report);
           }

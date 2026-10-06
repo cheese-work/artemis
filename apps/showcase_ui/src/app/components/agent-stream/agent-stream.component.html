@@ -53,6 +53,8 @@ limitations under the License.
       cdkConnectedOverlayBackdropClass="cdk-overlay-transparent-backdrop"
       (backdropClick)="isTaskDropdownOpen.set(false)"
       [cdkConnectedOverlayPositions]="dropdownPositions"
+      [cdkConnectedOverlayPush]="true"
+      [cdkConnectedOverlayViewportMargin]="12"
     >
       <div class="vscode-dropdown-menu task-dropdown">
         <div class="popover-title-header">
@@ -199,6 +201,8 @@ limitations under the License.
       cdkConnectedOverlayBackdropClass="cdk-overlay-transparent-backdrop"
       (backdropClick)="isNotesDropdownOpen.set(false)"
       [cdkConnectedOverlayPositions]="dropdownPositions"
+      [cdkConnectedOverlayPush]="true"
+      [cdkConnectedOverlayViewportMargin]="12"
     >
       <div class="vscode-dropdown-menu notes-dropdown">
         <div class="popover-title-header">

@@ -50,6 +50,29 @@ describe('NavSwitcherComponent', () => {
     );
     expect(hrefs).toEqual(['/workspace', '/runs', '/setup']);
     expect(fixture.nativeElement.querySelector('a[href="/runs"]').textContent).toContain('Runs');
+    // Labels collapse to icons on phones, so each tab needs its own accessible name.
+    const names = Array.from<HTMLAnchorElement>(fixture.nativeElement.querySelectorAll('nav a[href]')).map(a =>
+      a.getAttribute('aria-label')
+    );
+    expect(names).toEqual(['Workspace', 'Runs', 'System Setup']);
+  });
+
+  it('stays inside the viewport with the phone badge showing (CHE-1189)', async () => {
+    const relay = {
+      state: signal<UsbDeviceRelayState>({ status: 'connected', serial: '127.0.0.1:35117', error: null }),
+      disconnect: jasmine.createSpy('disconnect').and.resolveTo(undefined)
+    };
+    await TestBed.configureTestingModule({
+      imports: [NavSwitcherComponent],
+      providers: [provideRouter([]), { provide: UsbDeviceRelayService, useValue: relay }]
+    }).compileComponents();
+    const fixture = TestBed.createComponent(NavSwitcherComponent);
+    fixture.detectChanges();
+
+    // Phone badge + identity wrap onto a second row instead of running off-screen.
+    const nav = fixture.nativeElement.querySelector('.floating-nav-switcher') as HTMLElement;
+    expect(nav.getBoundingClientRect().right).toBeLessThanOrEqual(window.innerWidth);
+    expect(getComputedStyle(nav).flexWrap).toBe('wrap');
   });
 
   it("hides What's New navigation when there are no entries", async () => {

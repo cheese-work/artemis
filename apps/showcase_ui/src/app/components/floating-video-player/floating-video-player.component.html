@@ -24,6 +24,7 @@ limitations under the License.
 
 @if (agentService.isVideoWindowOpen()) {
   <div
+    #frame
     class="floating-video-wrapper"
     [class.minimized]="agentService.isVideoMinimized()"
     [class.theater]="isTheaterMode()"

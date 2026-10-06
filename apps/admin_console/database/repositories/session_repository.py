@@ -398,6 +398,17 @@ class SessionRepository:
         except Exception:
             return None
 
+    def read_session(self, session_id: str) -> dict[str, Any] | None:
+        """Like :meth:`get_session_by_id`, but a failed read raises instead of reading as absent.
+
+        ``None`` means the session is confirmed not to exist.
+        """
+        with db_session(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM sessions WHERE session_id = ?", (str(session_id),))
+            row = cursor.fetchone()
+            return _canonicalize_status(dict(row)) if row else None
+
     @property
     def lifecycle(self) -> LifecycleAuthority:
         """The single owner of this database's run outcomes."""
