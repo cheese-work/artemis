@@ -39,7 +39,7 @@ from apps.admin_console.core.ownership import (
 )
 
 try:
-    from admin_console.core.state import state
+    from admin_console.core.state import IN_FLIGHT_STATUSES, state
     from admin_console.database.repositories.session_repository import session_repo
     from admin_console.schemas.task_schema import RunRequest
     from admin_console.services.ipc_service import ipc_service
@@ -47,7 +47,7 @@ try:
     from admin_console.services.task_preset_catalog import task_recommendation_engine
     from admin_console.services.task_queue_service import ServerDraining, task_queue_service
 except ImportError:
-    from apps.admin_console.core.state import state
+    from apps.admin_console.core.state import IN_FLIGHT_STATUSES, state
     from apps.admin_console.database.repositories.session_repository import session_repo
     from apps.admin_console.schemas.task_schema import RunRequest
     from apps.admin_console.services.ipc_service import ipc_service
@@ -386,6 +386,28 @@ async def stop_task(
     return {"status": "no_running_task"}
 
 
+@router.post("/api/tasks/{session_id}/cancel-queued")
+async def cancel_queued_task(session_id: str, actor: OwnerScope = Depends(actor_scope)):
+    """Cancel a run only while it waits; a started run is left running.
+
+    Running runs are stopped with ``/api/stop``, never through this route. Like
+    stop, it needs the run's owner or an admin; a denied call has no side effect.
+    """
+    scope = scope_or_open(actor)
+    if scope.enforced and not scope.admin:
+        require_access(scope, session_id)
+    result = task_queue_service.cancel_queued(session_id)
+    if result == "not_found":
+        raise HTTPException(status_code=404, detail="Unknown session.")
+    if result == "retry":
+        raise HTTPException(
+            status_code=503,
+            detail="The cancellation could not be saved; retry.",
+            headers={"Retry-After": "1"},
+        )
+    return {"status": result, "session_id": session_id}
+
+
 @router.post("/api/resume")
 async def resume_task(actor: OwnerScope = Depends(actor_scope)):
     """Resume the paused worker.
@@ -450,7 +472,12 @@ async def _status_payload() -> dict[str, Any]:
     global_owner = DeviceExecutionLock.get_active_owner()
     is_running = state.is_running or global_owner is not None
     running_task = next(
-        (t for t in state.queue_items if isinstance(t, dict) and t.get("status") == "running"), None
+        (
+            t
+            for t in state.queue_items
+            if isinstance(t, dict) and t.get("status") in IN_FLIGHT_STATUSES
+        ),
+        None,
     )
     if not running_task and is_running:
         running_task = next(
@@ -665,7 +692,7 @@ async def stream_events(
                     (
                         t
                         for t in state.queue_items
-                        if isinstance(t, dict) and t.get("status") == "running"
+                        if isinstance(t, dict) and t.get("status") in IN_FLIGHT_STATUSES
                     ),
                     None,
                 )

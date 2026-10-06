@@ -124,6 +124,19 @@ async def test_interrupted_state_and_typed_reason_are_served(env):
 # -- restart ---------------------------------------------------------------
 
 
+def test_server_restart_sweep_selects_running_rows_only(env):
+    """Queued rows are untouched today; the queued-row sweep is a later slice."""
+    db_path, _ = env
+    queued = str(uuid.uuid4())
+    assert session_repo.create_queued_session(queued, "goal", "flash", "emulator-5554", None, None)
+    gone = _add_running_session(db_path)
+
+    assert session_repo.cleanup_orphans_on_startup() == 1
+
+    assert session_repo.get_session_by_id(queued)["status"] == "queued"
+    assert session_repo.get_session_by_id(gone)["status"] == "interrupted"
+
+
 def test_server_restart_marks_running_sessions_interrupted(env):
     db_path, _ = env
     gone = _add_running_session(db_path, with_status_file=True)

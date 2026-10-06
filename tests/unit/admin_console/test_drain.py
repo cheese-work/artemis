@@ -207,6 +207,35 @@ async def test_run_cancelled_before_it_starts_counts_until_the_task_is_done(env)
     assert state.executing_run_keys == set()
 
 
+@pytest.mark.asyncio
+async def test_drain_report_counts_waiting_and_running_rows_together(env):
+    """Deploy drain waits for queued work too; host maintenance must not reuse this count."""
+    state.queue_items.extend([_item("w1"), _item("w2"), _item("r1", "running")])
+
+    async with _client() as client:
+        response = await client.post(DRAIN)
+
+    assert response.json() == {"draining": True, "active_run_count": 3}
+
+
+@pytest.mark.asyncio
+async def test_drain_flag_does_not_fence_a_limit_n_dispatch(env, monkeypatch):
+    """Drain closes submission only; the dispatcher keeps starting accepted rows."""
+    monkeypatch.setattr(TaskQueueService, "_concurrency_limit", classmethod(lambda cls: 2))
+    state.draining = True
+    state.queue_items.extend([_item("a") | {"device_serial": "d1"}, _item("b")])
+    started: list[str] = []
+
+    async def fake_execute(task_item):
+        started.append(task_item["session_id"])
+
+    with patch.object(TaskQueueService, "_execute_task_item", fake_execute):
+        TaskQueueService._dispatch_pending_tasks()
+        await asyncio.sleep(0)
+
+    assert started == ["a", "b"]
+
+
 # -- admission closes, execution does not ---------------------------------
 
 

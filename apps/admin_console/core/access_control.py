@@ -390,6 +390,7 @@ _QA_MUTATING_PATHS = {
 _PUBLIC_MUTATING_PATHS = {
     "/api/run",
     "/api/stop",
+    "/api/tasks/{session_id}/cancel-queued",
     "/api/resume",
 }
 
