@@ -21,6 +21,7 @@ import re
 import shutil
 import subprocess
 import time
+from collections.abc import Callable
 from typing import Any
 
 from artemis.core.diagnostics.probes.base import BaseProbe
@@ -346,8 +347,15 @@ class AdbDeviceProbe(BaseProbe):
             logger.debug(f"Failed submission-time ADB device check: {exc}")
             return None
 
-    async def probe_submission_readiness(self, target_serial: str | None = None) -> ProbeResult:
+    async def probe_submission_readiness(
+        self,
+        target_serial: str | None = None,
+        may_use: Callable[[str], bool] | None = None,
+    ) -> ProbeResult:
         """Run the minimal fail-safe device check required before enqueueing.
+
+        ``may_use`` limits every candidate, including the fallback when the
+        preferred device is locked, to the devices the caller may run on.
 
         The full diagnostics probe enriches device metadata, scans packages,
         and discovers emulators. None of that is needed to reject a locked
@@ -382,6 +390,8 @@ class AdbDeviceProbe(BaseProbe):
                 metadata={"installed": True, "submission_probe": True},
             )
 
+        if may_use is not None:
+            device_states = [(serial, state) for serial, state in device_states if may_use(serial)]
         ready_serials = [serial for serial, state in device_states if state == "device"]
         if not ready_serials:
             states = {state for _, state in device_states}

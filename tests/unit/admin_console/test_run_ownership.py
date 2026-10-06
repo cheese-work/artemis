@@ -28,6 +28,7 @@ import asyncio
 import json
 import sqlite3
 import uuid
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 from httpx import ASGITransport, AsyncClient
@@ -44,6 +45,11 @@ from apps.admin_console.services.task_queue_service import task_queue_service
 from artemis.data_engine.storage import StorageManager
 from artemis.runtime import trace_store
 from artemis.runtime.device_lock import DeviceExecutionLock
+
+# A scoped caller's run needs a device they may use: a shared one is ready.
+_SHARED_READY = SimpleNamespace(
+    summary="Connected", metadata={"active_device": {"serial": "emulator-5554"}}
+)
 
 QA1 = "qa1@example.com"
 QA2 = "qa2@example.com"
@@ -263,7 +269,9 @@ async def test_submit_records_the_verified_identity_as_requester(cloudflare, mon
     enqueue = AsyncMock(return_value={"status": "queued", "tasks": []})
     monkeypatch.setattr(task_queue_service, "enqueue_tasks", enqueue)
     monkeypatch.setattr(
-        tasks_router.readiness_engine, "run_device_submission_probe", AsyncMock(return_value=None)
+        tasks_router.readiness_engine,
+        "run_device_submission_probe",
+        AsyncMock(return_value=_SHARED_READY),
     )
 
     assert (await _post(QA1, "/api/run", json={"goal": "x"})).status_code == 200
@@ -275,7 +283,9 @@ async def test_submit_without_identity_gets_no_owner(cloudflare, monkeypatch):
     enqueue = AsyncMock(return_value={"status": "queued", "tasks": []})
     monkeypatch.setattr(task_queue_service, "enqueue_tasks", enqueue)
     monkeypatch.setattr(
-        tasks_router.readiness_engine, "run_device_submission_probe", AsyncMock(return_value=None)
+        tasks_router.readiness_engine,
+        "run_device_submission_probe",
+        AsyncMock(return_value=_SHARED_READY),
     )
 
     assert (await _post(None, "/api/run", json={"goal": "x"})).status_code == 200
@@ -1158,3 +1168,93 @@ async def test_only_readable_owned_locks_let_the_owner_resume(lock_dir, real_ser
 
     assert (await _post(QA1, "/api/resume")).json() == {"status": "resumed"}
     assert not pause_file.exists()
+
+
+# -- cancel-queued follows the same owner-or-admin rule as stop (CHE-1128) ----------
+
+
+@pytest.mark.asyncio
+async def test_cancel_queued_by_a_non_owner_is_denied_with_no_side_effect(cloudflare):
+    sid = _run(cloudflare, QA1, status="queued", queued=True)
+
+    response = await _post(QA2, f"/api/tasks/{sid}/cancel-queued")
+
+    assert response.status_code == 403 and response.json()["code"] == "not_run_owner"
+    assert [i["session_id"] for i in state.queue_items] == [sid]
+    assert session_repo.get_session_by_id(sid)["status"] == "queued"
+
+
+@pytest.mark.asyncio
+async def test_owner_and_admin_may_cancel_a_queued_run(cloudflare):
+    mine = _run(cloudflare, QA1, status="queued", queued=True)
+    theirs = _run(cloudflare, QA2, status="queued", queued=True)
+
+    owner = await _post(QA1, f"/api/tasks/{mine}/cancel-queued")
+    admin = await _post(ADMIN, f"/api/tasks/{theirs}/cancel-queued")
+
+    assert owner.json()["status"] == "cancelled"
+    assert admin.json()["status"] == "cancelled"
+    assert state.queue_items == []
+
+
+@pytest.mark.asyncio
+async def test_unowned_queued_runs_can_only_be_cancelled_by_an_admin(cloudflare):
+    sid = _run(cloudflare, None, status="queued", queued=True)
+
+    assert (await _post(QA1, f"/api/tasks/{sid}/cancel-queued")).status_code == 403
+    assert (await _post(None, f"/api/tasks/{sid}/cancel-queued")).status_code == 403
+    assert [i["session_id"] for i in state.queue_items] == [sid]
+    assert (await _post(ADMIN, f"/api/tasks/{sid}/cancel-queued")).status_code == 200
+
+
+# -- a "starting" run (host agent flag on) is in flight for every owner rule (CHE-1128) --
+
+
+def _starting(db, owner: str) -> str:
+    sid = _run(db, owner, status="queued", queued=True)
+    state.queue_items[-1]["status"] = "starting"
+    return sid
+
+
+def test_active_session_ids_count_a_starting_run_as_running(env):
+    sid = _starting(env, QA1)
+
+    assert sid in task_queue_service.active_session_ids(running_only=True)
+    assert sid in task_queue_service.active_session_ids()
+
+
+@pytest.mark.asyncio
+async def test_untargeted_stop_by_the_owner_reaches_their_starting_run(cloudflare):
+    sid = _starting(cloudflare, QA1)
+
+    response = await _post(QA1, "/api/stop", json={})
+
+    assert response.json()["status"] == "stopped"
+    assert [c.kwargs["session_id"] for c in task_queue_service.stop_tasks.call_args_list] == [sid]
+
+
+@pytest.mark.asyncio
+async def test_clear_all_by_the_owner_includes_their_starting_run(cloudflare):
+    sid = _starting(cloudflare, QA1)
+    _run(cloudflare, QA2, status="queued", queued=True)
+
+    response = await _post(QA1, "/api/stop", json={"all": True})
+
+    assert response.json()["status"] == "stopped"
+    assert [c.kwargs["session_id"] for c in task_queue_service.stop_tasks.call_args_list] == [sid]
+
+
+@pytest.mark.asyncio
+async def test_owner_cancel_queued_with_an_unreadable_session_asks_for_a_retry(
+    cloudflare, monkeypatch
+):
+    sid = _run(cloudflare, QA1, status="queued", queued=True)
+    monkeypatch.setattr(
+        session_repo, "read_session", MagicMock(side_effect=sqlite3.OperationalError("locked"))
+    )
+
+    response = await _post(QA1, f"/api/tasks/{sid}/cancel-queued")
+
+    assert response.status_code == 503 and response.headers["retry-after"] == "1"
+    assert [i["session_id"] for i in state.queue_items] == [sid]
+    assert session_repo.get_session_by_id(sid)["status"] == "queued"

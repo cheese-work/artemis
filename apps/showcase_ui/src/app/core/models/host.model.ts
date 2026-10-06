@@ -25,6 +25,8 @@ export interface RegistryDevice {
   /** Classified from adb properties; absent when the computer's agent did not report it. */
   device_kind?: DeviceKind;
   source: 'browser' | 'computer';
+  /** Verified email of the person who connected a browser phone; null for a computer's phone. */
+  owner?: string | null;
   computer_id: string | null;
   computer_name: string | null;
   computer_status: ComputerStatus;

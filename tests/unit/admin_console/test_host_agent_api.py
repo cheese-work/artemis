@@ -666,7 +666,7 @@ def _browser_phones(monkeypatch, serials, pool_devices):
     monkeypatch.setattr(
         hosts_router.bridge_session_service,
         "live_sessions",
-        lambda: [SimpleNamespace(serial=s) for s in serials],
+        lambda: [SimpleNamespace(serial=s, owner=None) for s in serials],
     )
 
     async def fake_list():

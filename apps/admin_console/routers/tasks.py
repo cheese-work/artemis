@@ -21,6 +21,13 @@ from fastapi.responses import StreamingResponse
 from artemis.core.diagnostics import readiness_engine
 from artemis.runtime import DeviceExecutionLock, device_pool
 from apps.admin_console.core.access_control import AdminAPIError
+from apps.admin_console.core.device_ownership import (
+    may_use_device,
+    no_device_for,
+    own_default_serial,
+    require_device,
+    visible_devices,
+)
 from apps.admin_console.core.ownership import (
     OwnerScope,
     actor_scope,
@@ -32,7 +39,7 @@ from apps.admin_console.core.ownership import (
 )
 
 try:
-    from admin_console.core.state import state
+    from admin_console.core.state import IN_FLIGHT_STATUSES, state
     from admin_console.database.repositories.session_repository import session_repo
     from admin_console.schemas.task_schema import RunRequest
     from admin_console.services.ipc_service import ipc_service
@@ -40,7 +47,7 @@ try:
     from admin_console.services.task_preset_catalog import task_recommendation_engine
     from admin_console.services.task_queue_service import ServerDraining, task_queue_service
 except ImportError:
-    from apps.admin_console.core.state import state
+    from apps.admin_console.core.state import IN_FLIGHT_STATUSES, state
     from apps.admin_console.database.repositories.session_repository import session_repo
     from apps.admin_console.schemas.task_schema import RunRequest
     from apps.admin_console.services.ipc_service import ipc_service
@@ -102,6 +109,10 @@ async def run_task(request: RunRequest, actor: OwnerScope = Depends(actor_scope)
             status_code=400,
             detail="Either 'goal' or 'goals' list must be provided.",
         )
+
+    # A phone the caller does not own is refused before any probe or enqueue.
+    if request.device_serial:
+        require_device(scope, request.device_serial)
 
     # Idempotent SDK retries must never re-run device readiness checks. A task
     # can hold the device while its admission response is lost in transit; in
@@ -173,8 +184,13 @@ async def run_task(request: RunRequest, actor: OwnerScope = Depends(actor_scope)
     # With no explicit serial the probe itself resolves a live target (it
     # prefers the diagnostics target preference, then any unlocked ready
     # device); the verified serial is bound below.
-    target_serial = request.device_serial
-    device_probe = await readiness_engine.run_device_submission_probe(target_serial=target_serial)
+    target_serial = request.device_serial or own_default_serial(scope)
+    # A scoped caller's auto-selection only ever considers their own and shared devices.
+    scoped = scope.enforced and not scope.admin
+    device_probe = await readiness_engine.run_device_submission_probe(
+        target_serial=target_serial,
+        may_use=(lambda serial: may_use_device(scope, serial)) if scoped else None,
+    )
     if device_probe and device_probe.summary in {"Device Locked", "Lock State Unknown"}:
         locked_serial = (
             device_probe.metadata.get("active_device", {}).get("serial") or target_serial or ""
@@ -196,7 +212,12 @@ async def run_task(request: RunRequest, actor: OwnerScope = Depends(actor_scope)
         # explicitly requested serial is never silently replaced -- if it is
         # invalid, enqueue_tasks rejects the submission with a clear error.
         if verified_serial and not request.device_serial:
+            require_device(scope, verified_serial)
             target_serial = verified_serial
+
+    # With nothing resolved, the queue would pick any attached phone, someone else's included.
+    if scoped and not target_serial:
+        raise no_device_for()
 
     try:
         return await task_queue_service.enqueue_tasks(
@@ -236,10 +257,10 @@ async def get_run_defaults():
 
 
 @router.get("/api/devices")
-async def list_devices():
+async def list_devices(actor: OwnerScope = Depends(actor_scope)):
     """List all connected Android devices with their busy / idle status."""
     devices = await device_pool.list_devices_async()
-    return {"devices": [d.to_dict() for d in devices]}
+    return {"devices": visible_devices(scope_or_open(actor), [d.to_dict() for d in devices])}
 
 
 def _owned_ids(scope: OwnerScope, ids: set[str | None]) -> list[str]:
@@ -365,6 +386,28 @@ async def stop_task(
     return {"status": "no_running_task"}
 
 
+@router.post("/api/tasks/{session_id}/cancel-queued")
+async def cancel_queued_task(session_id: str, actor: OwnerScope = Depends(actor_scope)):
+    """Cancel a run only while it waits; a started run is left running.
+
+    Running runs are stopped with ``/api/stop``, never through this route. Like
+    stop, it needs the run's owner or an admin; a denied call has no side effect.
+    """
+    scope = scope_or_open(actor)
+    if scope.enforced and not scope.admin:
+        require_access(scope, session_id)
+    result = task_queue_service.cancel_queued(session_id)
+    if result == "not_found":
+        raise HTTPException(status_code=404, detail="Unknown session.")
+    if result == "retry":
+        raise HTTPException(
+            status_code=503,
+            detail="The cancellation could not be saved; retry.",
+            headers={"Retry-After": "1"},
+        )
+    return {"status": result, "session_id": session_id}
+
+
 @router.post("/api/resume")
 async def resume_task(actor: OwnerScope = Depends(actor_scope)):
     """Resume the paused worker.
@@ -429,7 +472,12 @@ async def _status_payload() -> dict[str, Any]:
     global_owner = DeviceExecutionLock.get_active_owner()
     is_running = state.is_running or global_owner is not None
     running_task = next(
-        (t for t in state.queue_items if isinstance(t, dict) and t.get("status") == "running"), None
+        (
+            t
+            for t in state.queue_items
+            if isinstance(t, dict) and t.get("status") in IN_FLIGHT_STATUSES
+        ),
+        None,
     )
     if not running_task and is_running:
         running_task = next(
@@ -644,7 +692,7 @@ async def stream_events(
                     (
                         t
                         for t in state.queue_items
-                        if isinstance(t, dict) and t.get("status") == "running"
+                        if isinstance(t, dict) and t.get("status") in IN_FLIGHT_STATUSES
                     ),
                     None,
                 )

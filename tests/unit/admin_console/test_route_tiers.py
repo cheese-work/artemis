@@ -72,7 +72,12 @@ def _assert_routes_have_declared_tiers(routes):
                     f"Cloud API mutation lacks tenant-token auth: {path}"
                 )
             else:
-                public_task_controls = {"/api/run", "/api/stop", "/api/resume"}
+                public_task_controls = {
+                    "/api/run",
+                    "/api/stop",
+                    "/api/tasks/{session_id}/cancel-queued",
+                    "/api/resume",
+                }
                 assert tier in {"admin", "qa", "lifecycle", "loopback", "agent"} or (
                     tier == "public" and path in public_task_controls
                 ), f"Unprotected mutation: {path}"
@@ -116,7 +121,12 @@ def test_untiered_post_in_nested_included_router_fails_tier_check():
 
 
 def test_approved_task_controls_and_bridge_keep_public_tier():
-    for path in ("/api/run", "/api/stop", "/api/resume"):
+    for path in (
+        "/api/run",
+        "/api/stop",
+        "/api/tasks/{session_id}/cancel-queued",
+        "/api/resume",
+    ):
         assert route_tier(path, {"POST"}) == "public"
 
     assert route_tier("/api/device-bridge/session", set(), is_websocket=True) == "public"

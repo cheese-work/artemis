@@ -17,6 +17,7 @@
 import asyncio
 import subprocess
 import time
+from collections.abc import Callable
 from typing import Any
 
 from artemis.core.diagnostics.adb_server_connection import adb_server_connection
@@ -109,9 +110,15 @@ class ReadinessEngine:
             return None
         return await probe.probe()
 
-    async def run_device_submission_probe(self, target_serial: str | None = None) -> ProbeResult:
+    async def run_device_submission_probe(
+        self,
+        target_serial: str | None = None,
+        may_use: Callable[[str], bool] | None = None,
+    ) -> ProbeResult:
         """Run the bounded device gate used by task submission."""
-        return await self._adb_probe.probe_submission_readiness(target_serial=target_serial)
+        return await self._adb_probe.probe_submission_readiness(
+            target_serial=target_serial, may_use=may_use
+        )
 
     def invalidate_cache(self) -> None:
         """Invalidate the UI readiness snapshot after an explicit configuration change."""

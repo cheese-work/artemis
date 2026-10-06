@@ -48,6 +48,31 @@ describe('deviceChipView', () => {
     }
   });
 
+  it('names the owner of a browser phone that is not this tab\'s, as the source', () => {
+    const other = phone({
+      source: 'browser',
+      computer_id: null,
+      computer_name: null,
+      serial: '127.0.0.1:6000',
+      owner: 'qa2@example.com'
+    });
+    const view = deviceChipView(other, [], '127.0.0.1:5000');
+    expect(view.source).toBe("qa2@example.com's browser");
+    expect(view.label).toBe('Pixel 8');
+    expect(view.detail).not.toContain('Keep');
+  });
+
+  it('keeps "This browser" for this tab\'s phone even when the owner is known', () => {
+    const own = phone({
+      source: 'browser',
+      computer_id: null,
+      computer_name: null,
+      serial: '127.0.0.1:5000',
+      owner: 'qa1@example.com'
+    });
+    expect(deviceChipView(own, [], '127.0.0.1:5000').source).toBe('This browser');
+  });
+
   it('shows the computer name as the source of a phone on an online computer', () => {
     const view = deviceChipView(phone(), [computer()]);
     expect(view.state).toBe('Ready');

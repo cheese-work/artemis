@@ -124,6 +124,19 @@ async def test_interrupted_state_and_typed_reason_are_served(env):
 # -- restart ---------------------------------------------------------------
 
 
+def test_server_restart_sweep_selects_running_rows_only(env):
+    """Queued rows are untouched today; the queued-row sweep is a later slice."""
+    db_path, _ = env
+    queued = str(uuid.uuid4())
+    assert session_repo.create_queued_session(queued, "goal", "flash", "emulator-5554", None, None)
+    gone = _add_running_session(db_path)
+
+    assert session_repo.cleanup_orphans_on_startup() == 1
+
+    assert session_repo.get_session_by_id(queued)["status"] == "queued"
+    assert session_repo.get_session_by_id(gone)["status"] == "interrupted"
+
+
 def test_server_restart_marks_running_sessions_interrupted(env):
     db_path, _ = env
     gone = _add_running_session(db_path, with_status_file=True)
@@ -481,6 +494,30 @@ async def test_a_failed_notification_is_retried_and_only_then_acknowledged(env, 
     # the UI broadcast already succeeded, so the retry does not repeat it
     assert len(_interrupted(events, session_id)) == 1
     assert len(_ended(events, session_id)) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_failing_broadcast_does_not_delay_the_notification(env, monkeypatch):
+    from unittest.mock import MagicMock
+
+    db_path, events = env
+    session_id = _add_running_session(db_path)
+    _interrupt(db_path, session_id)
+    notify = MagicMock(return_value=True)
+    monkeypatch.setattr("mcp_server.notifiers.notify", notify)
+    task_item = {"session_id": session_id, "conversation_id": "conv-1", "ingress": "mcp"}
+
+    def broken(_event_type, _payload):
+        raise RuntimeError("subscriber down")
+
+    state.ipc_subscribers.append(broken)
+    try:
+        TaskQueueService._deliver_outcome(session_id, task_item, "goal")
+    finally:
+        state.ipc_subscribers.remove(broken)
+
+    notify.assert_called_once()  # broadcast failed below the cap; notify still ran
+    assert _outbox_pending(db_path) == 1  # the broadcast is still owed a retry
 
 
 @pytest.mark.asyncio

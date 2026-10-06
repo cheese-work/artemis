@@ -64,6 +64,8 @@ _SCHEMA_COLUMNS = (
     ("exit_cause", "TEXT"),
     ("pending_loss_reason", "TEXT"),
     ("notify_context", "TEXT"),  # JSON: who to notify (conversation id, ingress, goal)
+    # When the run first held its device lock; the enqueue start_time cannot mean this.
+    ("execution_started_at", "REAL"),
 )
 _OUTBOX_DDL = """
 CREATE TABLE IF NOT EXISTS lifecycle_outbox (
@@ -558,6 +560,16 @@ class LifecycleAuthority:
                 "UPDATE sessions SET notify_context = ? WHERE session_id = ?",
                 (json.dumps(context), str(session_id)),
             )
+
+    def mark_execution_started(self, session_id: str, at: float | None = None) -> bool:
+        """Record when the run began executing; the first mark wins."""
+        with self._txn() as conn:
+            cursor = conn.execute(
+                "UPDATE sessions SET execution_started_at = ? "
+                "WHERE session_id = ? AND execution_started_at IS NULL",
+                (self._clock() if at is None else at, str(session_id)),
+            )
+            return cursor.rowcount > 0
 
     def get_notify_context(self, session_id: str) -> dict[str, Any] | None:
         with self._connect() as conn:

@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 import pytest
 
 from apps.admin_console.server import proxy_aware_app
-from apps.admin_console.services import host_registry as hr
+from apps.admin_console.services import host_admission, host_registry as hr
 from artemis.config import host_agent
 from artemis.runtime.adb_endpoint import AdbEndpoint, InvalidAdbEndpoint
 
@@ -41,6 +41,7 @@ def test_every_enabling_spelling_turns_both_consumers_on(value, admin, monkeypat
 
     assert host_agent.host_agent_enabled() is True
     assert hr.host_agent_enabled() is True
+    assert host_admission.enabled() is True
     assert _console_enabled(admin) is True
     assert _endpoint_creatable() is True
 
@@ -51,6 +52,7 @@ def test_every_other_value_leaves_both_consumers_off(value, admin, monkeypatch):
 
     assert host_agent.host_agent_enabled() is False
     assert hr.host_agent_enabled() is False
+    assert host_admission.enabled() is False
     assert _console_enabled(admin) is False
     assert admin.post("/api/agent/challenge", json={"host_id": "x"}).status_code == 404
     assert _endpoint_creatable() is False
@@ -66,3 +68,8 @@ def test_unset_means_off_everywhere(admin, monkeypatch):
 def test_the_registry_has_no_definition_of_its_own():
     """The registry's check is the shared one, not a copy that can drift again."""
     assert hr.host_agent_enabled is host_agent.host_agent_enabled
+
+
+def test_host_admission_has_no_definition_of_its_own():
+    assert host_admission.enabled is host_agent.host_agent_enabled
+    assert host_admission.ENV_FLAG == host_agent.ENV_HOST_AGENT

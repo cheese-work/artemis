@@ -1324,3 +1324,195 @@ async def test_enqueue_tasks_debounces_rapid_identical_submissions():
         )
         assert len(state.queue_items) == 1
         assert res2["enqueued_count"] == 0
+
+
+# -- dispatcher admission, characterised before host admission (CHE-1128) ------
+# These pin today's behavior of _dispatch_pending_tasks, /api/stop and the
+# ticket queue so the host-admission hook cannot change it silently.
+
+
+@pytest.fixture
+def dispatch(monkeypatch):
+    """Run the real dispatcher against fake runs that finish when released."""
+    state.active_runs.clear()
+    state.executing_run_keys.clear()
+    started: list[str] = []
+    gates: dict[str, asyncio.Event] = {}
+
+    async def fake_execute(task_item):
+        sid = task_item["session_id"]
+        started.append(sid)
+        gates[sid] = asyncio.Event()
+        await gates[sid].wait()
+        TaskQueueService._remove_task(sid)
+
+    monkeypatch.setattr(TaskQueueService, "_execute_task_item", fake_execute)
+
+    def limit(value):
+        monkeypatch.setattr(TaskQueueService, "_concurrency_limit", classmethod(lambda cls: value))
+
+    async def tick():
+        TaskQueueService._dispatch_pending_tasks()
+        await asyncio.sleep(0)
+
+    async def finish(sid):
+        gates[sid].set()
+        await asyncio.sleep(0)
+
+    class Harness:
+        pass
+
+    h = Harness()
+    h.started, h.limit, h.tick, h.finish = started, limit, tick, finish
+    yield h
+    for gate in gates.values():
+        gate.set()
+    state.active_runs.clear()
+    state.executing_run_keys.clear()
+    TaskQueueService._run_tasks.clear()
+
+
+def _queued(sid, device="dev-a", ticket=None):
+    return {
+        "session_id": sid,
+        "goal": sid,
+        "profile": "flash",
+        "status": "pending",
+        "device_serial": device,
+        "queue_ticket": ticket,
+    }
+
+
+@pytest.mark.asyncio
+async def test_per_device_mode_runs_one_task_per_device_in_fifo_order(dispatch):
+    dispatch.limit(0)
+    state.queue_items.extend([_queued("a1"), _queued("a2"), _queued("b1", "dev-b")])
+
+    await dispatch.tick()
+    assert dispatch.started == ["a1", "b1"]
+    assert [i["status"] for i in state.queue_items] == ["running", "pending", "running"]
+
+    await dispatch.tick()
+    assert dispatch.started == ["a1", "b1"]  # a2 still waits for dev-a
+
+    await dispatch.finish("a1")
+    await dispatch.tick()
+    assert dispatch.started == ["a1", "b1", "a2"]
+
+
+@pytest.mark.asyncio
+async def test_run_without_device_waits_for_the_whole_scheduler_to_be_idle(dispatch):
+    dispatch.limit(0)
+    state.queue_items.extend([_queued("a1"), _queued("any", device=None)])
+
+    await dispatch.tick()
+    assert dispatch.started == ["a1"]  # the device-less run does not overlap it
+
+    await dispatch.finish("a1")
+    await dispatch.tick()
+    assert dispatch.started == ["a1", "any"]
+
+
+@pytest.mark.asyncio
+async def test_global_limit_one_serialises_runs_across_devices(dispatch):
+    dispatch.limit(1)
+    state.queue_items.extend([_queued("a1"), _queued("b1", "dev-b")])
+    # limit == 1 defers to state.is_running, which sees running queue rows.
+
+    await dispatch.tick()
+    assert dispatch.started == ["a1"]
+    await dispatch.tick()
+    assert dispatch.started == ["a1"]
+
+    await dispatch.finish("a1")
+    await dispatch.tick()
+    assert dispatch.started == ["a1", "b1"]
+
+
+@pytest.mark.asyncio
+async def test_global_limit_n_caps_runs_and_still_keeps_one_run_per_device(dispatch):
+    dispatch.limit(2)
+    state.queue_items.extend(
+        [_queued("a1"), _queued("a2"), _queued("b1", "dev-b"), _queued("c1", "dev-c")]
+    )
+
+    await dispatch.tick()
+    assert dispatch.started == ["a1", "b1"]  # a2 skipped (device busy), c1 over the limit
+
+    await dispatch.finish("b1")
+    await dispatch.tick()
+    assert dispatch.started == ["a1", "b1", "c1"]
+
+
+@pytest.mark.asyncio
+async def test_dispatch_skips_and_removes_cancelled_pending_rows(dispatch):
+    dispatch.limit(0)
+    state.queue_items.extend([_queued("gone"), _queued("kept", "dev-b")])
+    state.cancelled_session_ids.add("gone")
+
+    await dispatch.tick()
+
+    assert dispatch.started == ["kept"]
+    assert [i["session_id"] for i in state.queue_items] == ["kept"]
+
+
+@pytest.mark.asyncio
+async def test_api_stop_by_session_is_unconditional(dispatch):
+    from httpx import ASGITransport, AsyncClient
+    from apps.admin_console.server import app
+
+    state.queue_items.extend([_queued("q1", ticket="t1"), _queued("q2", ticket="t2")])
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://localhost") as client:
+        stopped = await client.post("/api/stop", json={"session_id": "q1"})
+        unknown = await client.post("/api/stop", json={"session_id": "nope"})
+
+    assert stopped.json() == {"status": "stopped", "session_id": "q1"}
+    # Unconditional: an id nobody owns still reports "stopped" (why cancel-queued exists).
+    assert unknown.json() == {"status": "stopped", "session_id": "nope"}
+    assert [i["session_id"] for i in state.queue_items] == ["q2"]
+
+
+def _device_queue(lock_id, scope="s"):
+    from artemis.runtime import DeviceExecutionLock
+    from artemis.runtime import device_lock
+
+    queue_dir = device_lock.get_temp_dir("device-locks") / "artemis-global-device.queue"
+    waits = sorted(queue_dir.glob("*.wait"))
+    queue = DeviceExecutionLock._build_device_queue(
+        waits, target_lock_id=lock_id, target_scope=scope
+    )
+    return [path.name.split("-", 1)[1].removesuffix(".wait") for path in queue]
+
+
+def test_tickets_order_each_device_queue_first_come_first_served():
+    from artemis.runtime import DeviceExecutionLock
+
+    first = DeviceExecutionLock.reserve("t", "dev-a", session_id="a1", lock_scope="s")
+    other = DeviceExecutionLock.reserve("t", "dev-b", session_id="b1", lock_scope="s")
+    second = DeviceExecutionLock.reserve("t", "dev-a", session_id="a2", lock_scope="s")
+
+    assert _device_queue("s__dev-a") == [first, second]
+    assert _device_queue("s__dev-b") == [other]
+
+
+def test_unclaimed_ticket_is_parked_on_one_idle_device_only():
+    from artemis.runtime import DeviceExecutionLock
+
+    DeviceExecutionLock.reserve("t", "dev-a", session_id="a1", lock_scope="s")
+    DeviceExecutionLock.reserve("t", "dev-b", session_id="b1", lock_scope="s")
+    parked = DeviceExecutionLock.reserve("t", "pending", session_id="p1", lock_scope="s")
+
+    assert parked in _device_queue("s__dev-a")
+    assert parked not in _device_queue("s__dev-b")
+
+
+def test_cancelled_ticket_leaves_the_rest_of_the_queue_order_intact():
+    from artemis.runtime import DeviceExecutionLock
+
+    first = DeviceExecutionLock.reserve("t", "dev-a", session_id="a1", lock_scope="s")
+    middle = DeviceExecutionLock.reserve("t", "dev-a", session_id="a2", lock_scope="s")
+    last = DeviceExecutionLock.reserve("t", "dev-a", session_id="a3", lock_scope="s")
+
+    assert DeviceExecutionLock.cancel_reservation(middle) is True
+    assert _device_queue("s__dev-a") == [first, last]
