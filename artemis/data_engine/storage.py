@@ -1123,6 +1123,7 @@ class StorageManager:
                 "steps",
                 "images",
                 "lifecycle_outbox",
+                "lifecycle_events",
                 "sessions",
             ]
             for table in tables:
@@ -1218,6 +1219,7 @@ class StorageManager:
                 "video_recordings",
                 "steps",
                 "lifecycle_outbox",
+                "lifecycle_events",
                 "sessions",
             ]
             for table in tables:

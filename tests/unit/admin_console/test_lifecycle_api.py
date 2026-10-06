@@ -484,6 +484,30 @@ async def test_a_failed_notification_is_retried_and_only_then_acknowledged(env, 
 
 
 @pytest.mark.asyncio
+async def test_a_failing_broadcast_does_not_delay_the_notification(env, monkeypatch):
+    from unittest.mock import MagicMock
+
+    db_path, events = env
+    session_id = _add_running_session(db_path)
+    _interrupt(db_path, session_id)
+    notify = MagicMock(return_value=True)
+    monkeypatch.setattr("mcp_server.notifiers.notify", notify)
+    task_item = {"session_id": session_id, "conversation_id": "conv-1", "ingress": "mcp"}
+
+    def broken(_event_type, _payload):
+        raise RuntimeError("subscriber down")
+
+    state.ipc_subscribers.append(broken)
+    try:
+        TaskQueueService._deliver_outcome(session_id, task_item, "goal")
+    finally:
+        state.ipc_subscribers.remove(broken)
+
+    notify.assert_called_once()  # broadcast failed below the cap; notify still ran
+    assert _outbox_pending(db_path) == 1  # the broadcast is still owed a retry
+
+
+@pytest.mark.asyncio
 async def test_a_subscriber_that_fails_once_is_retried_without_repeating_for_the_others(env):
     db_path, events = env
     session_id = _add_running_session(db_path)
