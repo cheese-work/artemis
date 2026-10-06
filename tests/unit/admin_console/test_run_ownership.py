@@ -1195,6 +1195,8 @@ async def test_a_qas_own_sessions_name_the_qa_as_owner(cloudflare):
     rows = (await _get(QA1, "/api/sessions")).json()
 
     assert [(row["session_id"], row["requested_by"]) for row in rows] == [(one, QA1)]
+
+
 # -- cancel-queued follows the same owner-or-admin rule as stop (CHE-1128) ----------
 
 
