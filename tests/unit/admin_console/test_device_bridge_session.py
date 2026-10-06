@@ -336,7 +336,7 @@ def test_expired_session_revokes_when_tcp_drain_is_backpressured(monkeypatch):
             self.session = session
             self.revoked = []
 
-        async def create_session(self):
+        async def create_session(self, owner=None):
             return self.session
 
         async def connect(self, session):
@@ -590,7 +590,7 @@ async def test_browser_relay_survives_more_than_five_minutes_with_traffic(monkey
         def __init__(self, session):
             self.session = session
 
-        async def create_session(self):
+        async def create_session(self, owner=None):
             return self.session
 
         async def connect(self, session):

@@ -21,6 +21,13 @@ from fastapi.responses import StreamingResponse
 from artemis.core.diagnostics import readiness_engine
 from artemis.runtime import DeviceExecutionLock, device_pool
 from apps.admin_console.core.access_control import AdminAPIError
+from apps.admin_console.core.device_ownership import (
+    may_use_device,
+    no_device_for,
+    own_default_serial,
+    require_device,
+    visible_devices,
+)
 from apps.admin_console.core.ownership import (
     OwnerScope,
     actor_scope,
@@ -103,6 +110,10 @@ async def run_task(request: RunRequest, actor: OwnerScope = Depends(actor_scope)
             detail="Either 'goal' or 'goals' list must be provided.",
         )
 
+    # A phone the caller does not own is refused before any probe or enqueue.
+    if request.device_serial:
+        require_device(scope, request.device_serial)
+
     # Idempotent SDK retries must never re-run device readiness checks. A task
     # can hold the device while its admission response is lost in transit; in
     # that state, probing the same device again may fail or block even though
@@ -173,8 +184,13 @@ async def run_task(request: RunRequest, actor: OwnerScope = Depends(actor_scope)
     # With no explicit serial the probe itself resolves a live target (it
     # prefers the diagnostics target preference, then any unlocked ready
     # device); the verified serial is bound below.
-    target_serial = request.device_serial
-    device_probe = await readiness_engine.run_device_submission_probe(target_serial=target_serial)
+    target_serial = request.device_serial or own_default_serial(scope)
+    # A scoped caller's auto-selection only ever considers their own and shared devices.
+    scoped = scope.enforced and not scope.admin
+    device_probe = await readiness_engine.run_device_submission_probe(
+        target_serial=target_serial,
+        may_use=(lambda serial: may_use_device(scope, serial)) if scoped else None,
+    )
     if device_probe and device_probe.summary in {"Device Locked", "Lock State Unknown"}:
         locked_serial = (
             device_probe.metadata.get("active_device", {}).get("serial") or target_serial or ""
@@ -196,7 +212,12 @@ async def run_task(request: RunRequest, actor: OwnerScope = Depends(actor_scope)
         # explicitly requested serial is never silently replaced -- if it is
         # invalid, enqueue_tasks rejects the submission with a clear error.
         if verified_serial and not request.device_serial:
+            require_device(scope, verified_serial)
             target_serial = verified_serial
+
+    # With nothing resolved, the queue would pick any attached phone, someone else's included.
+    if scoped and not target_serial:
+        raise no_device_for()
 
     try:
         return await task_queue_service.enqueue_tasks(
@@ -236,10 +257,10 @@ async def get_run_defaults():
 
 
 @router.get("/api/devices")
-async def list_devices():
+async def list_devices(actor: OwnerScope = Depends(actor_scope)):
     """List all connected Android devices with their busy / idle status."""
     devices = await device_pool.list_devices_async()
-    return {"devices": [d.to_dict() for d in devices]}
+    return {"devices": visible_devices(scope_or_open(actor), [d.to_dict() for d in devices])}
 
 
 def _owned_ids(scope: OwnerScope, ids: set[str | None]) -> list[str]:
