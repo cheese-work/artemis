@@ -51,6 +51,17 @@ export class FloatingVideoPlayerComponent implements OnDestroy {
   @ViewChild('stepImgRef') stepImgRef?: ElementRef<HTMLImageElement>;
   @ViewChild('stepOverlayRef') stepOverlayRef?: ElementRef<HTMLElement>;
 
+  // The frame appears and disappears with the window: watch its real size so minimize/restore, theater exit and
+  // content changes re-contain it, and watch the nav clearance var (root style) so a taller nav pushes it down.
+  private frameObserver = new ResizeObserver(() => this.zone.run(() => this.containFrame()));
+  private rootStyleObserver = new MutationObserver(() => this.zone.run(() => this.containFrame()));
+  @ViewChild('frame') set frameRef(el: ElementRef<HTMLElement> | undefined) {
+    this.frameObserver.disconnect();
+    this.frameEl = el?.nativeElement ?? null;
+    if (this.frameEl) this.frameObserver.observe(this.frameEl);
+  }
+  private frameEl: HTMLElement | null = null;
+
   // Playback state signals
   public isPlaying = signal<boolean>(false);
   public playbackRate = signal<number>(1.0);
@@ -121,6 +132,7 @@ export class FloatingVideoPlayerComponent implements OnDestroy {
   private initialPosY = 0;
 
   constructor() {
+    this.rootStyleObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['style'] });
     // Reset video load error whenever active video URL changes
     effect(
       () => {
@@ -246,17 +258,33 @@ export class FloatingVideoPlayerComponent implements OnDestroy {
     const deltaX = event.clientX - this.dragStartX;
     const deltaY = event.clientY - this.dragStartY;
 
-    const minX = 10;
-    const minY = 10;
-    const maxX = Math.max(10, window.innerWidth - 240);
-    const maxY = Math.max(10, window.innerHeight - 80);
-
-    const targetX = Math.max(minX, Math.min(maxX, this.initialPosX + deltaX));
-    const targetY = Math.max(minY, Math.min(maxY, this.initialPosY + deltaY));
-
-    this.posX.set(targetX);
-    this.posY.set(targetY);
+    const { x, y } = this.containedPosition(this.initialPosX + deltaX, this.initialPosY + deltaY);
+    this.posX.set(x);
+    this.posY.set(y);
   };
+
+  /**
+   * Nearest position that keeps the real frame (its current width and height, minimized or not) inside the
+   * viewport and below the floating nav. Nav clearance wins when the frame is taller than the space.
+   */
+  private containedPosition(x: number, y: number): { x: number; y: number } {
+    const margin = 10;
+    const width = this.frameEl?.offsetWidth ?? 0;
+    const height = this.frameEl?.offsetHeight ?? 0;
+    const clearance = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--nav-clearance'));
+    const minY = Math.max(margin, Number.isFinite(clearance) ? clearance : 0);
+    const maxX = Math.max(margin, window.innerWidth - width - margin);
+    const maxY = Math.max(minY, window.innerHeight - height - margin);
+    return { x: Math.min(maxX, Math.max(margin, x)), y: Math.min(maxY, Math.max(minY, y)) };
+  }
+
+  /** Re-contain the stored position after anything that changes the frame, the viewport or the nav. */
+  private containFrame(): void {
+    if (!this.frameEl || this.isTheaterMode() || this.isDragging) return;
+    const { x, y } = this.containedPosition(this.posX(), this.posY());
+    if (x !== this.posX()) this.posX.set(x);
+    if (y !== this.posY()) this.posY.set(y);
+  }
 
   private stopDrag = (): void => {
     this.isDragging = false;
@@ -266,11 +294,7 @@ export class FloatingVideoPlayerComponent implements OnDestroy {
 
   @HostListener('window:resize')
   public onResize(): void {
-    // Keep window within viewport bounds if window resized
-    const maxX = Math.max(10, window.innerWidth - 240);
-    const maxY = Math.max(10, window.innerHeight - 80);
-    if (this.posX() > maxX) this.posX.set(maxX);
-    if (this.posY() > maxY) this.posY.set(maxY);
+    this.containFrame();
   }
 
   @HostListener('window:keydown', ['$event'])
@@ -627,5 +651,7 @@ export class FloatingVideoPlayerComponent implements OnDestroy {
     }
     document.removeEventListener('mousemove', this.onDrag);
     document.removeEventListener('mouseup', this.stopDrag);
+    this.frameObserver.disconnect();
+    this.rootStyleObserver.disconnect();
   }
 }

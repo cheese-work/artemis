@@ -14,7 +14,8 @@
  * limitations under the License.
  */
 
-import { Component, ChangeDetectionStrategy, NgZone, DestroyRef, inject, computed, signal, ViewChild, ElementRef, OnInit } from '@angular/core';
+import { DOCUMENT } from '@angular/common';
+import { Component, ChangeDetectionStrategy, NgZone, DestroyRef, effect, inject, computed, signal, ViewChild, ElementRef, OnInit } from '@angular/core';
 
 import { toSignal } from '@angular/core/rxjs-interop';
 import { FormsModule } from '@angular/forms';
@@ -86,7 +87,16 @@ export class WorkspaceComponent implements OnInit {
   @ViewChild('dockInput') public dockInputRef?: ElementRef<HTMLTextAreaElement>;
 
   constructor() {
+    // The floating nav lives outside this component; tell it how much width the right panel takes.
+    const rootStyle = inject(DOCUMENT).documentElement.style;
+    effect(() => rootStyle.setProperty('--right-panel-width', `${this.rightPanelWidth()}px`));
+    // Live view only: at <= 1150px the stream's own Task Queue / Notes tabs sit top right (wide, then icon-only <= 900px).
+    if (!this.reviewMode) {
+      rootStyle.setProperty('--stream-header-width', '290px');
+      rootStyle.setProperty('--stream-header-width-compact', '96px');
+    }
     this.destroyRef.onDestroy(() => {
+      ['--right-panel-width', '--stream-header-width', '--stream-header-width-compact'].forEach((v) => rootStyle.removeProperty(v));
       if (this.errorTimeout) clearTimeout(this.errorTimeout);
       this.agentService.whatsNewPromptDraft.set(false);
       this.agentService.updateWhatsNewErrorVisibility(this.whatsNewErrorOwner, false);

@@ -7,7 +7,7 @@ import { AdminConfigService, AdminIdentity } from '../../services/admin-config.s
   template: `
     @if (identity(); as current) {
       <div class="identity-indicator" aria-live="polite">
-        <span>{{ current.email || (current.auth_mode === 'open' ? 'Local access' : 'Not signed in') }}</span>
+        <span class="identity-email" [attr.title]="current.email">{{ current.email || (current.auth_mode === 'open' ? 'Local access' : 'Not signed in') }}</span>
         <span class="identity-role" [class.admin-role]="current.admin">
           {{ current.admin ? 'Admin' : 'Read-only' }}
         </span>
@@ -15,9 +15,10 @@ import { AdminConfigService, AdminIdentity } from '../../services/admin-config.s
     }
   `,
   styles: [`
-    .identity-indicator { display: inline-flex; align-items: center; gap: .5rem; color: #d7e2f2; font-size: .8rem; }
-    .identity-role { border: 1px solid #64748b; border-radius: 999px; padding: .15rem .5rem; }
-    .admin-role { border-color: #65d6a5; color: #9bf0c6; }
+    .identity-indicator { display: inline-flex; align-items: center; gap: .5rem; min-width: 0; color: #475569; font-size: .8rem; }
+    .identity-email { min-width: 0; max-width: 16rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .identity-role { flex: none; border: 1px solid #94a3b8; border-radius: 999px; padding: .15rem .5rem; }
+    .admin-role { border-color: #86efac; color: #166534; }
   `],
   changeDetection: ChangeDetectionStrategy.Eager
 })

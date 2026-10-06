@@ -8,8 +8,8 @@
   height: 100%;
   overflow-y: auto;
   /* Top: clears the floating navigation. Bottom: keeps the last rows and focused controls above the dock. */
-  padding: 88px 24px 168px;
-  scroll-padding-top: 88px;
+  padding: var(--nav-clearance, 88px) 24px 168px;
+  scroll-padding-top: var(--nav-clearance, 88px);
   scroll-padding-bottom: 168px;
   background: var(--evidence-surface);
   color: var(--evidence-text);
@@ -230,10 +230,3 @@ summary:focus-visible {
   width: 100%;
 }
 
-@media (max-width: 800px) {
-  .library-scroll,
-  .viewer-scroll {
-    padding-top: 104px;
-    scroll-padding-top: 104px;
-  }
-}
