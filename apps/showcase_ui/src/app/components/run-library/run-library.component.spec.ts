@@ -117,6 +117,47 @@ describe('RunLibraryComponent', () => {
   });
 
   describe('rows', () => {
+    it('compact history scrolls inside the region whose position is saved and restored', async () => {
+      runs.list.and.returnValue(of(page(Array.from({ length: 20 }, (_, index) => run({ session_id: `run-${index}` })))));
+      const fixture = TestBed.createComponent(RunLibraryComponent);
+      fixture.componentRef.setInput('compact', true);
+      fixture.detectChanges();
+      await fixture.whenStable();
+      const region = fixture.nativeElement.querySelector('.library-scroll') as HTMLElement;
+      expect(getComputedStyle(region).overflowY).toBe('auto');
+      expect(region.scrollHeight).toBeGreaterThan(region.clientHeight);
+      region.scrollTop = 150;
+      fixture.componentInstance.rememberPosition();
+      expect(runs.lastLibraryQuery()).toEqual({ scroll: '150' });
+      fixture.destroy();
+
+      await router.navigateByUrl('/runs?scroll=150');
+      const restored = TestBed.createComponent(RunLibraryComponent);
+      restored.componentRef.setInput('compact', true);
+      restored.detectChanges();
+      await restored.whenStable();
+      expect(restored.nativeElement.querySelector('.library-scroll').scrollTop).toBe(150);
+      restored.destroy();
+    });
+
+    it('refreshes the current scope and filters without navigating or reusing a page cursor', async () => {
+      await open('/runs?scope=everyone&status=completed&q=login', of(page([run()], 'old-cursor')));
+      const fixture = TestBed.createComponent(RunLibraryComponent);
+      fixture.componentRef.setInput('refreshKey', 'initial');
+      fixture.detectChanges();
+      const before = runs.list.calls.count();
+      const url = router.url;
+      runs.list.and.returnValue(of(page([run({ session_id: 'new-run' })])));
+      fixture.componentRef.setInput('refreshKey', 'completed');
+      fixture.detectChanges();
+      expect(runs.list.calls.count()).toBe(before + 1);
+      expect(runs.list.calls.mostRecent().args[0]).toEqual(jasmine.objectContaining({ status: 'completed', q: 'login' }));
+      expect(runs.list.calls.mostRecent().args[1]).toEqual({ scope: 'everyone' });
+      expect(fixture.componentInstance.nextCursor()).toBeNull();
+      expect(router.url).toBe(url);
+      fixture.destroy();
+    });
+
     it('restores Everyone in the URL with filters and read-only owner-labelled links', async () => {
       await open('/runs?scope=everyone&q=login&status=failed&from=2026-10-01');
       expect(runs.list.calls.mostRecent().args[1]).toEqual({ scope: 'everyone' });

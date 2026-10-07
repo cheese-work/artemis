@@ -140,6 +140,27 @@ describe('ChatInterfaceComponent device chip', () => {
     expect(fixture.componentInstance.activeQueue().map((item) => item.session_id)).toEqual(['live']);
   });
 
+  it('refreshes history when a run completes after the first catalog load', () => {
+    sessions.set([session('emulator-5554')]);
+    const runs = TestBed.inject(RunsService);
+    const list = spyOn(runs, 'list').and.callThrough();
+    const fixture = TestBed.createComponent(ChatInterfaceComponent);
+    fixture.detectChanges();
+    expect(fixture.nativeElement.querySelector('.run-row')).toBeNull();
+    expect(list).toHaveBeenCalledTimes(1);
+
+    agentStatus.set('idle');
+    sessions.set([{ ...session('emulator-5554'), status: 'completed', end_time: 2 }]);
+    fixture.detectChanges();
+    expect(fixture.nativeElement.querySelector('.run-row')?.textContent).toContain('goal');
+    expect(list).toHaveBeenCalledTimes(2);
+    expect(fixture.componentInstance.activeQueue()).toEqual([]);
+
+    sessions.set([{ ...session('emulator-5554'), status: 'completed', end_time: 2 }]);
+    fixture.detectChanges();
+    expect(list).toHaveBeenCalledTimes(2);
+  });
+
   it('labels a browser-relayed phone by model and kind, not by its address', () => {
     const text = chipText('127.0.0.1:36411', [device({})]);
     expect(text).toContain('21081111RG');

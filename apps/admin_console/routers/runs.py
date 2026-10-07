@@ -101,7 +101,7 @@ async def list_runs(
     owner_filter = {}
     if team and scope.enforced and not scope.admin:
         owner_filter = {"owned_only": True}
-    if scope.enforced and not scope.include_all:
+    if scope.enforced and (not scope.include_all or (team and q and q.strip())):
         if scope.email is None:  # no identity owns nothing
             return {"runs": [], "next_cursor": None, "warnings": []}
         owner_filter = {"owner": scope.email}
@@ -145,7 +145,11 @@ async def get_run(session_id: str, scope: OwnerScope = Depends(actor_scope)):
     if found.run:
         return _present(found.run, scope_or_open(scope))
     if found.candidates:
-        return _error(409, "ambiguous_prefix", candidates=found.candidates)
+        return _error(
+            409,
+            "ambiguous_prefix",
+            candidates=[_present(run, scope_or_open(scope)) for run in found.candidates],
+        )
     if found.removed:
         return _error(410, "removed", **found.removed)
     return _error(404, "not_found")

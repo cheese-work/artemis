@@ -3,6 +3,8 @@ import {
   Component,
   DestroyRef,
   ElementRef,
+  OnChanges,
+  SimpleChanges,
   computed,
   inject,
   input,
@@ -45,7 +47,7 @@ import { classifySearch } from '../../utils/run-search.util';
   host: { '[class.compact]': 'compact()' },
   changeDetection: ChangeDetectionStrategy.OnPush
 })
-export class RunLibraryComponent {
+export class RunLibraryComponent implements OnChanges {
   private readonly runsApi = inject(RunsService);
   private readonly hostsApi = inject(HostsService);
   private readonly router = inject(Router);
@@ -56,6 +58,7 @@ export class RunLibraryComponent {
   public readonly strings = RUN_STRINGS;
   public readonly statusOptions = STATUS_FILTERS.map((value) => ({ value, label: runStatusView(value).label }));
   public readonly compact = input(false);
+  public readonly refreshKey = input('');
   public readonly recordedDevices = input<ReadonlyMap<string, LabelableDevice>>(new Map());
   public readonly mediaNotice = MEDIA_NOTICE;
   public readonly scope = signal<'mine' | 'everyone'>('mine');
@@ -118,6 +121,10 @@ export class RunLibraryComponent {
   }
 
   // -- search and filters -------------------------------------------------
+
+  public ngOnChanges(changes: SimpleChanges): void {
+    if (changes['refreshKey'] && !changes['refreshKey'].firstChange) this.load(false);
+  }
 
   public submitSearch(event: Event): void {
     event.preventDefault();

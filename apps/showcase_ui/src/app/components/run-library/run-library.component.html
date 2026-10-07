@@ -11,7 +11,10 @@
       </button>
     }
   </div>
-  @if (scope() === 'everyone') { <p class="media-notice">{{ mediaNotice }}</p> }
+  @if (scope() === 'everyone') {
+    <p class="media-notice">{{ mediaNotice }}</p>
+    <p class="media-notice">Text search only matches your own runs.</p>
+  }
 
   <section id="runs-panel" role="tabpanel" [attr.aria-labelledby]="'runs-tab-' + scope()">
 

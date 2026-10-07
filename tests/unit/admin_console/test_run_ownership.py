@@ -205,6 +205,51 @@ async def test_everyone_scope_requires_identity_and_does_not_widen_queue(cloudfl
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("mode,query", [("fts", "zebra7*"), ("substring", "zebra7")])
+async def test_team_search_does_not_match_another_owners_secret(
+    cloudflare, monkeypatch, mode, query
+):
+    from artemis.data_engine import run_catalog
+
+    sid = _run(cloudflare, QA1)
+    with sqlite3.connect(cloudflare) as conn:
+        conn.execute(
+            "UPDATE sessions SET initial_goal = ? WHERE session_id = ?",
+            ('Login with password="zebra7secret"', sid),
+        )
+    monkeypatch.setattr(run_catalog, "search_mode", lambda conn: mode)
+
+    assert _run_ids(await _get(QA1, "/api/runs", q=query)) == {sid}
+    assert _run_ids(await _get(QA1, "/api/runs", scope="everyone", q=query)) == {sid}
+    for caller in (QA2, ADMIN):
+        response = await _get(caller, "/api/runs", scope="everyone", q=query)
+        assert _run_ids(response) == set()
+        assert response.json()["next_cursor"] is None
+    assert _run_ids(await _get(QA2, "/api/runs", scope="everyone", q=query, requester=QA1)) == set()
+    assert _run_ids(await _get(QA2, "/api/runs", scope="everyone", q=" ")) == {sid}
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_prefix_redacts_non_actionable_candidates(cloudflare, monkeypatch):
+    ids = [uuid.UUID(f"deadbeef-0000-4000-8000-{suffix:012d}") for suffix in (1, 2)]
+    monkeypatch.setattr(uuid, "uuid4", MagicMock(side_effect=ids))
+    other, mine = _run(cloudflare, QA1), _run(cloudflare, QA2)
+    with sqlite3.connect(cloudflare) as conn:
+        conn.execute(
+            "UPDATE sessions SET initial_goal = ?",
+            ('Login with password="candidate-secret"',),
+        )
+
+    response = await _get(QA2, "/api/runs/deadbeef")
+    assert response.status_code == 409
+    candidates = {row["session_id"]: row for row in response.json()["candidates"]}
+    assert candidates[other]["read_only"] is True
+    assert "candidate-secret" not in candidates[other]["prompt"]
+    assert candidates[mine]["read_only"] is False
+    assert "candidate-secret" in candidates[mine]["prompt"]
+
+
+@pytest.mark.asyncio
 async def test_everyone_filters_and_pagination_do_not_expose_unowned_runs(cloudflare):
     wanted = [_run(cloudflare, QA1, status="failed") for _ in range(3)]
     _run(cloudflare, None, status="failed")

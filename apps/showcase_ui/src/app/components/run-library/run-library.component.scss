@@ -26,8 +26,9 @@
 
   .library-scroll {
     height: auto;
-    overflow: visible;
+    max-height: 60vh;
     padding: 16px 0;
+    scroll-padding: 16px;
   }
 
   .run-row {

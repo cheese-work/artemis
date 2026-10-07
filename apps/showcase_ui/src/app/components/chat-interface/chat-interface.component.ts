@@ -96,6 +96,12 @@ export class ChatInterfaceComponent {
     return devices;
   });
 
+  public readonly historyRevision = computed(() => JSON.stringify(
+    this.agentService.sessions()
+      .filter((session) => !this.statusView(session).active)
+      .map((session) => [session.session_id, session.status, session.end_time])
+  ));
+
   /**
    * Submit a new task goal to the backend
    */
