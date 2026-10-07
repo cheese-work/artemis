@@ -181,7 +181,7 @@ describe('RunViewerComponent', () => {
       expect(q('.step-number')!.textContent!.trim()).toBe('Step 1');
       expect(q('.step-title')).not.toBeNull();
       expect(q('.step-button')!.getAttribute('aria-current')).toBe('step');
-      expect(qa('.actions button').map((control) => control.textContent!.trim())).toEqual(['Copy link', 'Download', 'Pin']);
+      expect(qa('.actions button').map((control) => control.textContent!.trim())).toEqual(['Copy link', 'Download', 'Pin', 'Delete']);
     });
 
     it('preserves badge, step and action dimensions after moving their styles', async () => {
