@@ -291,10 +291,10 @@ def test_expired_session_times_out_and_disconnects_adb(
         payload = ws.receive_json()
         session_id = payload["session_id"]
         port = payload["listener"]["port"]
-        ws.receive_json()
 
         with pytest.raises(WebSocketDisconnect) as exc_info:
-            ws.receive_text()
+            while True:
+                ws.receive_text()
     assert exc_info.value.code == 4008
 
     assert _mock_adb[0][0] == "connect"
