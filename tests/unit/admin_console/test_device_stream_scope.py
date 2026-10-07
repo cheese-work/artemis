@@ -100,7 +100,7 @@ async def _frames(service: DeviceStreamService, may_use, serial, count_seconds=0
         import asyncio
 
         received.append(await asyncio.wait_for(generator.__anext__(), count_seconds))
-    except asyncio.TimeoutError:
+    except TimeoutError:
         pass
     finally:
         await generator.aclose()
