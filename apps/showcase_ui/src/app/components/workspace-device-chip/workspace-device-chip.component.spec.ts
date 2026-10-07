@@ -20,6 +20,13 @@ describe('WorkspaceDeviceChipComponent', () => {
 
   beforeEach(() => (fakes = phoneFakes()));
 
+  /** A run in progress on `serial`, while the person may be looking at some other run. */
+  const runningOn = (serial: string | null) => {
+    fakes.agent.sessions.update((all) => [...all, { session_id: 'live', status: 'running', device_serial: serial }]);
+    fakes.agent.agentStatus.set('running');
+  };
+  const viewing = (status: string) => fakes.agent.currentSession.set({ status, initial_goal: 'old' });
+
   it('starts as "No phone · Connect" with the picker closed', () => {
     const { chip, panel } = create();
     expect(chip().textContent).toContain('No phone · Connect');
@@ -127,7 +134,7 @@ describe('WorkspaceDeviceChipComponent', () => {
     buttons().find((b) => b.textContent!.trim() === 'Disconnect')!.click();
     expect(fakes.relay.disconnect).toHaveBeenCalledTimes(1);
 
-    fakes.agent.isCurrentSessionRunning.set(true);
+    runningOn('127.0.0.1:41003');
     settle();
     chip().click();
     settle();
@@ -141,7 +148,8 @@ describe('WorkspaceDeviceChipComponent', () => {
 
   it('locks the phone list while a run is on it', () => {
     fakes.system.connectedDevices.set([phone()]);
-    fakes.agent.isCurrentSessionRunning.set(true);
+    fakes.system.selectedRunTarget.set('R58M1234a1b2');
+    runningOn('R58M1234a1b2');
     const { chip, el, buttons, settle } = create();
     chip().click();
     settle();
@@ -222,5 +230,62 @@ describe('WorkspaceDeviceChipComponent', () => {
     fakes.system.selectedRunTarget.set('127.0.0.1:41003');
     create();
     expect(TestBed.inject(WorkspacePhoneService).target()).toBeNull();
+  });
+
+  describe('viewing history while a run is active (OCR/verifier F4)', () => {
+    const OWN = '127.0.0.1:41003';
+    beforeEach(() => {
+      fakes.relay.state.set({ status: 'connected', serial: OWN, sessionId: 'b', error: null });
+      fakes.system.connectedDevices.set([phone({ serial: OWN })]);
+      runningOn(OWN);
+      viewing('completed'); // a finished run from history is on screen; the live run goes on
+    });
+
+    it('still asks before disconnecting the phone a live run is using', () => {
+      const { chip, buttons, settle } = create();
+      chip().click();
+      settle();
+      buttons().find((b) => b.textContent!.trim() === 'Disconnect')!.click();
+      settle();
+      expect(fakes.relay.disconnect).not.toHaveBeenCalled();
+      expect(buttons().map((b) => b.textContent!.trim())).toContain('Disconnect and stop');
+    });
+
+    it('keeps the phone list locked and says the phone is in use', () => {
+      fakes.system.connectedDevices.update((all) => [...all, phone({ serial: 'B', model: 'Pixel 8' })]);
+      const { el, chip, buttons, settle } = create();
+      chip().click();
+      settle();
+      expect(buttons().filter((b) => b.classList.contains('option')).every((b) => b.disabled)).toBeTrue();
+      expect(el.querySelector('.panel')!.textContent).toContain('Phone in use by this run.');
+    });
+
+    it('does not lock the picker for a run on a phone this person is not using', () => {
+      fakes.agent.sessions.set([{ session_id: 'theirs', status: 'running', device_serial: 'someone-elses-phone' }]);
+      const { chip, buttons, settle } = create();
+      chip().click();
+      settle();
+      expect(buttons().find((b) => b.classList.contains('option'))!.disabled).toBeFalse();
+    });
+
+    it('treats a live run whose phone is not known yet as using this phone', () => {
+      fakes.agent.sessions.set([{ session_id: 'fresh', status: 'running', device_serial: null }]);
+      const { chip, buttons, settle } = create();
+      chip().click();
+      settle();
+      buttons().find((b) => b.textContent!.trim() === 'Disconnect')!.click();
+      settle();
+      expect(fakes.relay.disconnect).not.toHaveBeenCalled();
+    });
+
+    it('does not ask when the live run is on a different phone than the one this browser holds', () => {
+      fakes.agent.sessions.set([{ session_id: 'shared', status: 'running', device_serial: 'emulator-5554' }]);
+      fakes.system.selectedRunTarget.set(OWN);
+      const { chip, buttons, settle } = create();
+      chip().click();
+      settle();
+      buttons().find((b) => b.textContent!.trim() === 'Disconnect')!.click();
+      expect(fakes.relay.disconnect).toHaveBeenCalledTimes(1);
+    });
   });
 });

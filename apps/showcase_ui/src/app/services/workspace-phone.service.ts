@@ -23,8 +23,29 @@ export class WorkspacePhoneService {
   private readonly registry = signal<HostsResponse | null>(null);
   private readonly pickerRequestCount = signal(0);
 
-  /** True while the run on screen is running; the phone cannot change under it. */
-  public readonly runActive = computed(() => this.agent.isCurrentSessionRunning());
+  /** Whichever run is live, wherever the person is looking: viewing history changes nothing here. */
+  private readonly liveRuns = computed(() =>
+    this.agent.sessions().filter((session) => session.status === 'running' || session.status === 'paused')
+  );
+  private readonly browserSerial = computed(() => {
+    const { status, serial } = this.relay.state();
+    return status === 'connected' ? serial : null;
+  });
+  /** A live run counts as on a phone when it names it; a run whose phone is not known yet counts as on ours. */
+  private runIsOn(serial: string | null): boolean {
+    return (
+      serial !== null &&
+      this.liveRuns().some((run) => {
+        const runSerial = run.device_serial ?? run.device_id ?? null;
+        return runSerial === null || runSerial === serial;
+      })
+    );
+  }
+  /** A run is live on the phone the next run would use, or on the phone this browser holds. */
+  public readonly runActive = computed(() => {
+    if (this.liveRuns().length === 0) return ['running', 'paused'].includes(this.agent.agentStatus());
+    return this.runIsOn(this.target()?.serial ?? null) || this.runIsOn(this.browserSerial());
+  });
   public readonly runInterrupted = computed(
     () => this.agent.currentSession()?.status?.toLowerCase() === 'interrupted'
   );
@@ -45,8 +66,8 @@ export class WorkspacePhoneService {
   public readonly options = computed(() => pickerOptions(this.input()));
   /** Where the next run goes; null means Run stays blocked. */
   public readonly target = computed(() => this.view().target);
-  /** The run on screen is running on the phone this tab holds, so disconnecting stops it. */
-  public readonly runUsesBrowserPhone = computed(() => this.runActive() && !!this.target()?.bridgeSessionId);
+  /** A live run is on the phone this tab holds, so disconnecting it stops that run. */
+  public readonly runUsesBrowserPhone = computed(() => this.runIsOn(this.browserSerial()));
   public readonly canConnectFromBrowser = computed(
     () => this.relay.isSupported() && this.relay.state().status !== 'connecting' && !this.runActive()
   );

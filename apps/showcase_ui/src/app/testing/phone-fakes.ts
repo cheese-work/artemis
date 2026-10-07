@@ -43,7 +43,9 @@ export function phoneFakes() {
     useLocalAdbServer: jasmine.createSpy('useLocalAdbServer')
   };
   const agent = {
-    isCurrentSessionRunning: signal(false),
+    // All sessions, whichever one the person is viewing; `currentSession` is only the viewed one.
+    sessions: signal<{ session_id: string; status: string; device_serial?: string | null }[]>([]),
+    agentStatus: signal('idle'),
     currentSession: signal<{ status?: string; initial_goal?: string; interrupt_reason?: string | null } | null>(null),
     currentSessionStepFrames: signal<{ stepNumber: number }[]>([]),
     resumeTask: jasmine.createSpy('resumeTask')
