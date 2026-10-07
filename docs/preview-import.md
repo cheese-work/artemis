@@ -40,14 +40,29 @@ fallback. The checker runs with a 30-second wall timeout, 15-second CPU budget,
 core dumps. Production checker code and interpreter must be protected installs,
 not code obtained from the candidate PR.
 
-The supported export is **one tagless, uncompressed legacy Docker-save image**
-for Linux/amd64. Export by image ID, not a mutable name. Required outer members
+The checker accepts only **one tagless, uncompressed legacy Docker-save image**
+for Linux/amd64. Required outer members
 are `manifest.json`, `<config-sha256>.json` and `<layer-id>/layer.tar`. Declared
 layer directories and bounded legacy `json`/`VERSION` metadata are accepted.
 OCI-layout, compressed exports, multiple images, tags, image-declared volumes, undeclared files,
 duplicate names, outer links/special files, sparse entries and nonzero trailing
 data are rejected. The controller/export layer must target this format; an OCI
 archive requires a separately reviewed format extension, not a fallback.
+
+Stock `docker save` on Docker 25 or later emits an OCI layout, which this
+checker rejects. That layout includes `blobs/sha256/*`, `index.json`,
+`oci-layout`, and a `manifest.json` with `LayerSources` and a blob-path `Config`.
+The independent reviewer observed this on Docker 29.6.2 with the overlay2
+classic image store, including export by image ID. Moby's Docker 29.8.2
+`save.go` source also emits this layout. Exporting by image ID does not produce
+the accepted legacy format. No compatible producer has been qualified.
+
+Before the export-owning layer is accepted (L5c2, or L5b3 if export lands there),
+that layer must demonstrate a real round trip on pinned Docker 29.8.2:
+real export, acceptance by `check_archive`, and `docker load` to the exact sealed
+image ID. If no producer can emit the accepted legacy layout, that layer must
+propose and obtain review of an OCI-layout extension to the pre-check.
+There is no unchecked fallback.
 
 The checker never extracts files. It validates the config digest/platform and
 ordered uncompressed layer DiffIDs. Layer headers reject traversal, absolute
@@ -116,6 +131,13 @@ Versions other than the exact pin and mismatched artifacts are blocked. Review
 security support and patch advisories again before activation; changing the pin
 requires review and fresh checks.
 
+The classic image store is an activation prerequisite. `DockerLoad` requires
+`docker image inspect`'s `.Id` to equal the sealed config digest. Containerd
+image-store ID semantics are unsupported and unqualified; import may fail
+closed when `.Id` is a manifest digest instead. The reviewer did not test a
+containerd-store daemon. A classic-store receipt alone does not qualify an
+archive producer or satisfy the export layer's round-trip gate above.
+
 `docker load` still parses hostile data in rootful `dockerd`. The dedicated daemon
 is root-equivalent, and the pre-check does not remove that residual risk. All
 admission, human approval, runner isolation, seal, resource, host-readiness and
@@ -134,7 +156,9 @@ digest mismatch, unsafe sealed files, stale admission, sandbox failure/timeouts,
 fixed Docker commands, and failed-import route preservation. The checker process
 test uses a synthetic archive and the current unprivileged UID. Mocked namespace
 and Docker command tests do not establish native namespace or rootful-import
-acceptance. The native namespace test is opt-in and uses no Docker daemon:
+acceptance. Synthetic fixtures do not qualify a real archive producer or prove
+an export/import round trip. The native namespace test is opt-in and uses no
+Docker daemon:
 
 ```bash
 ARTEMIS_TEST_ARCHIVE_SANDBOX=1 python3 -m pytest -o addopts='' \
