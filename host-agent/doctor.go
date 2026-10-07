@@ -37,6 +37,9 @@ func doctor(ctx context.Context, configPath string, config configuration) ([]che
 		_, err = adb(ctx, binary, "version")
 	}
 	add("adb", err)
+	if err == nil {
+		results[len(results)-1].Message = "This check only verifies the adb executable. Discovery via devices and run requires an already-running adb server at 127.0.0.1:5037; this agent does not start or restart it."
+	}
 	if config.Server == "" {
 		results = append(results, checkResult{Name: "network", Status: "NOT-RUN", Message: "Configure SMARTQA_HOST_SERVER first."})
 		return results, firstError

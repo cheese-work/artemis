@@ -39,13 +39,17 @@ so a retry after a lost response uses the same key. An enrolled identity
 cannot silently move to another server.
 
 ```sh
-ARTEMIS_HOST_AGENT=1 smartqa-host enroll --server https://smartqa.example --code CODE
+ARTEMIS_HOST_AGENT=1 smartqa-host enroll --server https://smartqa.example
 smartqa-host status --json
 smartqa-host devices --json
 smartqa-host config show
 smartqa-host doctor --no-adb-download
 smartqa-host support-info
 ```
+
+Set `SMARTQA_HOST_CODE` in the environment before enrollment. Do not pass the
+one-time code as a process argument. The installer passes enrollment headers
+to curl through stdin and passes the code to `enroll` through the environment.
 
 HTTPS is required except for loopback fixture servers. Redirects are not
 followed. Explicit `--proxy` and `--dns-server IP:port` support environments
@@ -78,6 +82,15 @@ publishes bounded latest-only updates through the small tunnel interface.
 Server registration still requires the B2 implementation; scans never bypass
 its gateway.
 
+**Known discovery gap:** `doctor` only checks the resolved adb executable's
+version, including a downloaded platform-tools binary. A PASS does not make
+`devices` or `run` discovery ready. Both use the existing adb server's smart
+socket at `127.0.0.1:5037`, not the downloaded executable. If that server is
+absent, discovery returns `SQH-E201`. Downloading platform-tools does not
+start an adb server, and this agent does not start an adb server or restart
+an existing one. An already-running adb server is required for discovery;
+automatic downloaded-adb startup remains unimplemented before ready.
+
 ## Install and user services
 
 An operator must deploy the built distribution directory and set
@@ -86,16 +99,22 @@ and artifact routes then serve only the three supported targets, installer
 and checksum manifest. Without a valid enrollment header or with the feature
 off, the routes remain unavailable. Symlinks and unsupported assets are denied.
 
-After that deployment, the one-line Linux/macOS installer is:
+After that deployment, export `SMARTQA_HOST_CODE` and set `SERVER` to the
+HTTPS server URL. The one-line Linux/macOS installer is:
 
 ```sh
-( installer=$(mktemp) && trap 'rm -f "$installer"' EXIT && curl --proto '=https' -fsS -H "X-Artemis-Enrollment-Code: $CODE" "$SERVER/api/agent/install.sh" -o "$installer" && sh "$installer" "$SERVER" "$CODE" )
+( installer=$(mktemp) && trap 'rm -f "$installer"' EXIT && printf 'X-Artemis-Enrollment-Code: %s\n' "$SMARTQA_HOST_CODE" | curl --proto '=https' -fsS -H @- "$SERVER/api/agent/install.sh" -o "$installer" && sh "$installer" "$SERVER" )
 ```
 
 The line verifies the binary checksum, installs into `~/.local/bin`, enrolls,
-runs doctor, installs/starts a user service and checks its status. Add
-`--no-adb-download` as the third installer argument to opt out.
-**This candidate cannot pass the service-start acceptance until B2 is wired.**
+runs doctor, then requests user-service installation. Add `--no-adb-download`
+as the second installer argument to opt out.
+**Service activation is refused with `SQH-E301` until a B2 tunnel is wired.**
+`service install` writes no service file and invokes no service manager when
+the tunnel is absent. The installer exits at that refusal and does not query
+service status or enable a restarting service. The installed binary and
+enrolled identity remain available for diagnostics. Service-start acceptance
+remains NOT-RUN until B2 is wired.
 No install on a deployed hostname is claimed. Linux uses systemd `--user`
 and attempts linger; macOS uses a LaunchAgent. No root or SYSTEM service is
 created. `service uninstall` removes only this agent's service; identity is

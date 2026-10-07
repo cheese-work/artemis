@@ -1,10 +1,12 @@
 #!/bin/sh
 set -eu
 server=${1:?Pass the SmartQA server HTTPS URL}
-code=${2:?Pass the enrollment code}
-option=${3:-}
+: "${SMARTQA_HOST_CODE:?Set SMARTQA_HOST_CODE to the enrollment code}"
+option=${2:-}
+[ "$#" -le 2 ] || { echo 'Pass only the server URL and optional --no-adb-download' >&2; exit 1; }
 case "$server" in https://*) ;; *) echo 'HTTPS server required' >&2; exit 1 ;; esac
 case "$option" in ''|--no-adb-download) ;; *) echo 'Unknown install option' >&2; exit 1 ;; esac
+case "$SMARTQA_HOST_CODE" in *[!A-Za-z0-9_-]*) echo 'Invalid enrollment code' >&2; exit 1 ;; esac
 case "$(uname -s)/$(uname -m)" in
   Linux/x86_64) artifact=smartqa-host-linux-amd64 ;;
   Darwin/arm64) artifact=smartqa-host-darwin-arm64 ;;
@@ -13,9 +15,11 @@ esac
 temporary=$(mktemp -d)
 trap 'rm -rf "$temporary"' EXIT HUP INT TERM
 umask 077
-header="X-Artemis-Enrollment-Code: $code"
-curl --proto '=https' --fail --silent --show-error -H "$header" "$server/api/agent/dist/SHA256SUMS" -o "$temporary/SHA256SUMS"
-curl --proto '=https' --fail --silent --show-error -H "$header" "$server/api/agent/dist/$artifact" -o "$temporary/$artifact"
+download() {
+  printf 'X-Artemis-Enrollment-Code: %s\n' "$SMARTQA_HOST_CODE" | curl --proto '=https' --fail --silent --show-error -H @- "$server/api/agent/dist/$1" -o "$temporary/$1"
+}
+download SHA256SUMS
+download "$artifact"
 expected=$(awk -v filename="$artifact" '$2 == filename {print $1}' "$temporary/SHA256SUMS")
 case "$expected" in *[!0-9a-f]*|'') echo 'Invalid SHA256 manifest' >&2; exit 1 ;; esac
 [ ${#expected} -eq 64 ] || { echo 'Invalid SHA256 length' >&2; exit 1; }
@@ -33,10 +37,10 @@ else
 fi
 export ARTEMIS_HOST_AGENT=1
 if [ -n "$option" ]; then
-  "$destination" enroll --server "$server" --code "$code" "$option"
+  "$destination" enroll --server "$server" "$option"
   "$destination" doctor "$option"
 else
-  "$destination" enroll --server "$server" --code "$code"
+  "$destination" enroll --server "$server"
   "$destination" doctor
 fi
 "$destination" service install

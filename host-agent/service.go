@@ -36,7 +36,10 @@ func serviceTemplate(platform, binary, configPath, logPath string) (string, erro
 	return "", failure("SQH-E402", nil)
 }
 
-func service(ctx context.Context, action, configPath string, output io.Writer) error {
+func service(ctx context.Context, action, configPath string, tunnelAvailable bool, output io.Writer) error {
+	if action == "install" && !tunnelAvailable {
+		return failure("SQH-E301", nil)
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return failure("SQH-E401", err)

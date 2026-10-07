@@ -133,7 +133,7 @@ func executeApplication(ctx context.Context, arguments []string, output io.Write
 		_, err = fmt.Fprintf(output, "Enrolled agent %s. Next: smartqa-host doctor.\n", state.HostID)
 		return err
 	case "status":
-		status := map[string]any{"version": version, "host_id": state.HostID, "enrolled": state.HostID != "", "connected": false, "tunnel": "NOT-RUN", "next_step": "smartqa-host enroll --server URL --code CODE"}
+		status := map[string]any{"version": version, "host_id": state.HostID, "enrolled": state.HostID != "", "connected": false, "tunnel": "NOT-RUN", "next_step": "Set SMARTQA_HOST_CODE, then smartqa-host enroll --server URL"}
 		if state.HostID != "" {
 			status["next_step"] = "B2 tunnel publication is required before smartqa-host run"
 		}
@@ -191,7 +191,7 @@ func executeApplication(ctx context.Context, arguments []string, output io.Write
 		}
 		return writeJSON(map[string]any{"server": config.Server, "adb": config.ADB, "dns_server": config.DNSServer, "proxy_configured": config.Proxy != "", "no_adb_download": config.NoADBDownload})
 	case "service":
-		return service(ctx, action, path, output)
+		return service(ctx, action, path, app.Tunnel != nil, output)
 	case "logs":
 		if runtime.GOOS == "linux" {
 			operation := exec.CommandContext(ctx, "journalctl", "--user", "-u", "smartqa-host.service", "-n", "100", "--no-pager")
