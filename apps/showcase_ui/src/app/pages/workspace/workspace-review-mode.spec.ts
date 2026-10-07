@@ -165,6 +165,8 @@ describe('Workspace review mode', () => {
       expect(starts.length).toBe(1);
       starts[0].click();
       harness.fixture.detectChanges();
+      await harness.fixture.whenStable();
+      harness.fixture.detectChanges();
       expect((q('textarea.dock-textarea') as HTMLTextAreaElement).value).toBe(prompt);
 
       const reconnects = buttons.filter((element) => element.textContent?.includes('Reconnect phone'));
