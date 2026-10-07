@@ -79,6 +79,32 @@ def test_an_unclassified_route_in_a_nested_router_fails_the_enumeration():
         pr.require_classified(app)
 
 
+def test_a_head_only_route_stays_in_the_inventory():
+    app = FastAPI()
+
+    @app.get("/{full_path:path}")
+    async def spa(full_path: str):
+        return {}
+
+    @app.head("/api/rogue-head")
+    async def rogue_head():
+        return {}
+
+    assert pr.unclassified_routes(app) == ["HEAD /api/rogue-head"]
+    with pytest.raises(pr.UnsupportedRouteTree, match="HEAD /api/rogue-head"):
+        pr.require_classified(app)
+
+
+def test_a_get_route_does_not_gain_a_head_entry():
+    app = FastAPI()
+
+    @app.get("/api/sessions")
+    async def sessions():
+        return []
+
+    assert pr.unclassified_routes(app) == []
+
+
 def test_a_mounted_app_is_refused_rather_than_guessed_at():
     from starlette.routing import Mount
 
@@ -115,10 +141,18 @@ def _effective(app):
 
 
 @pytest.fixture
-def guarded():
+def guarded_app():
     """A toy app guarded like the preview; every handler records that it ran."""
     ran: list[str] = []
     app = FastAPI()
+
+    @app.get("/local_file")
+    async def local_file():
+        ran.append("local_file")
+
+    @app.head("/api/rogue-head")
+    async def rogue_head():
+        ran.append("rogue-head")
 
     @app.get("/api/system/config")
     async def live_config():
@@ -148,6 +182,12 @@ def guarded():
         await websocket.accept()
 
     app.add_middleware(pr.PreviewRouteGuard, route_source=app)
+    return app, ran
+
+
+@pytest.fixture
+def guarded(guarded_app):
+    app, ran = guarded_app
     return TestClient(app), ran
 
 
@@ -165,6 +205,8 @@ def _refused(response) -> bool:
         ("GET", "/admin/"),
         ("GET", "/debug/anything"),
         ("DELETE", "/api/never-registered"),
+        ("HEAD", "/api/rogue-head"),  # a HEAD-only route nobody classified
+        ("HEAD", "/local_file"),
     ],
 )
 def test_disabled_and_unclassified_routes_answer_before_the_handler(guarded, method, path):
@@ -176,6 +218,34 @@ def test_disabled_and_unclassified_routes_answer_before_the_handler(guarded, met
     assert ran == []
     if method != "HEAD":
         assert _refused(response)
+
+
+@pytest.mark.parametrize(
+    ("path", "refused"),
+    [
+        ("/preview/pr-92/local_file", True),  # disabled route behind the root path
+        ("/preview/pr-92/admin/x", True),  # legacy console behind the root path
+        ("/preview/pr-92/api/system/config", True),
+        ("/preview/pr-92/api/sessions", False),
+        ("/preview/pr-92-other/local_file", True),  # not under the root path: SPA fallback path
+    ],
+)
+def test_the_guard_matches_the_path_the_router_selects_under_a_root_path(
+    guarded_app, path, refused
+):
+    app, ran = guarded_app
+    client = TestClient(app, root_path="/preview/pr-92")
+
+    response = client.get(path)
+
+    if refused and "pr-92-other" not in path:
+        assert _refused(response)
+        assert ran == []
+    elif refused:
+        # Outside the root path the router sees the full path, which only the SPA serves.
+        assert response.status_code == 200 and ran == ["spa"]
+    else:
+        assert response.status_code == 200 and ran == ["sessions"]
 
 
 def test_a_disabled_route_is_refused_before_its_body_is_validated(guarded):
@@ -428,9 +498,25 @@ _PROBE = textwrap.dedent(
     async def rogue():
         return {}
 
+    @server.app.head("/api/rogue-head")
+    async def rogue_head():
+        return {}
+
+    headers = {"Cf-Access-Jwt-Assertion": os.environ["ARTEMIS_TEST_ACCESS_TOKEN"]}
     client = TestClient(server.app, base_url="http://localhost", raise_server_exceptions=False,
-                        headers={"Cf-Access-Jwt-Assertion": os.environ["ARTEMIS_TEST_ACCESS_TOKEN"]})
-    keys = sorted(pr.ALLOWED | pr.DISABLED) + ["GET /api/rogue-added-later", "POST /api/never"]
+                        headers=headers)
+    rooted = TestClient(
+        server.app,
+        base_url="http://localhost",
+        root_path="/preview/pr-92",
+        raise_server_exceptions=False,
+        headers=headers,
+    )
+    keys = sorted(pr.ALLOWED | pr.DISABLED) + [
+        "GET /api/rogue-added-later",
+        "HEAD /api/rogue-head",
+        "POST /api/never",
+    ]
     skipped = {"GET /api/stream", "GET /api/stream/{session_id}"}  # endless SSE
     results = {}
     for key in keys:
@@ -455,6 +541,17 @@ _PROBE = textwrap.dedent(
                 code = None
         results[key] = {"status": status, "code": code, "handled": list(handled),
                         "effects": list(effects)}
+    for key in sorted(pr.DISABLED):
+        method, path = key.split(" ", 1)
+        if method != "GET":
+            continue
+        handled.clear(); effects.clear()
+        response = rooted.get("/preview/pr-92" + re.sub(r"\\{[^}]+\\}", "x", path))
+        results["ROOT " + key] = {"status": response.status_code,
+                                  "code": (response.json() or {}).get("code")
+                                  if response.headers.get("content-type", "").startswith("application/json")
+                                  and isinstance(response.json(), dict) else None,
+                                  "handled": list(handled), "effects": list(effects)}
     print(json.dumps({"preview": server.PREVIEW_PROFILE, "results": results}))
     """
 )
@@ -497,10 +594,22 @@ def test_preview_refuses_every_disabled_route_before_any_handler_or_effect(previ
         assert got["handled"] == [] and got["effects"] == [], (key, got)
 
 
-def test_preview_refuses_routes_nobody_classified(preview_probe):
-    for key in ("GET /api/rogue-added-later", "POST /api/never"):
+def test_preview_refuses_every_disabled_get_route_behind_a_root_path(preview_probe):
+    rooted = [key for key in preview_probe if key.startswith("ROOT ")]
+    assert rooted
+    for key in rooted:
         got = preview_probe[key]
         assert got["code"] == pr.PREVIEW_DISABLED_CODE, (key, got)
+        assert got["handled"] == [] and got["effects"] == [], (key, got)
+
+
+def test_preview_refuses_routes_nobody_classified(preview_probe):
+    for key in ("GET /api/rogue-added-later", "HEAD /api/rogue-head", "POST /api/never"):
+        got = preview_probe[key]
+        # A HEAD response has no body to carry the code, so its 403 is the refusal.
+        assert got["code"] == pr.PREVIEW_DISABLED_CODE or (
+            key.startswith("HEAD") and got["status"] == 403
+        ), (key, got)
         assert got["handled"] == [] and got["effects"] == [], (key, got)
 
 
