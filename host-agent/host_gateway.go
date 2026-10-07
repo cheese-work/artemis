@@ -267,10 +267,6 @@ func (gateway *hostGateway) exchange(ctx context.Context, stream *hostStream, re
 					err = closeErr
 				}
 			}
-			if err != nil && !errors.Is(err, context.Canceled) {
-				stream.Close()
-				remote.Close()
-			}
 			done <- err
 		}()
 		_, err = io.CopyBuffer(stream, remote, make([]byte, hostMaxPayload))

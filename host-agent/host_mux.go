@@ -266,6 +266,10 @@ func (stream *hostStream) read(ctx context.Context, buffer []byte) (int, error) 
 	mux := stream.mux
 	for {
 		mux.Lock()
+		if err := ctx.Err(); err != nil {
+			mux.Unlock()
+			return 0, err
+		}
 		if len(stream.incoming) > 0 {
 			data := stream.incoming[0]
 			count := copy(buffer, data)
