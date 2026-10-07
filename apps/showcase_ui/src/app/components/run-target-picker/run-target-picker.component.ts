@@ -30,9 +30,12 @@ let nextId = 0;
     }
   `,
   styles: [`
-    .run-target { display: inline-flex; align-items: center; gap: .4rem; font-size: .85rem; color: #a7b4c8; }
-    select { max-width: 18rem; padding: .2rem .4rem; border: 1px solid #385174; border-radius: 8px; background: #111d31; color: #e8eef8; }
-    select:focus-visible { outline: 2px solid #7fb3ff; outline-offset: 2px; }
+    .run-target { display: inline-flex; align-items: center; gap: .4rem; font-size: .85rem; color: #475569; }
+    select { max-width: 18rem; padding: .2rem .4rem; border: 1px solid #e2e8f0; border-radius: 8px; background: #f8fafc; color: #475569; color-scheme: light; }
+    option { background: #f8fafc; color: #475569; }
+    select:hover, option:hover { background: #f1f5f9; border-color: #cbd5e1; }
+    option:checked { background: #eff6ff; color: #1e40af; }
+    select:focus-visible { outline: 2px solid #1a73e8; outline-offset: 2px; }
   `],
   changeDetection: ChangeDetectionStrategy.OnPush
 })

@@ -81,8 +81,6 @@ export class WorkspaceComponent implements OnInit {
   private dragWidthRafId: number | null = null;
   private pendingDragWidth = 0;
 
-  // Floating Command Bar State. taskInput is backed by a signal so computed
-  // expressions (isBarExpanded) genuinely track it under OnPush.
   private taskInputSignal = signal<string>('');
   public get taskInput(): string { return this.taskInputSignal(); }
   public set taskInput(value: string) {
@@ -103,8 +101,6 @@ export class WorkspaceComponent implements OnInit {
 
   public selectedProfile = signal<'flash' | 'pro'>('flash');
 
-  // Expand States (Signals for 0-latency reactivity)
-  public isHoveringCard = signal<boolean>(false);
   public isInputFocused = signal<boolean>(false);
 
   @ViewChild('dockInput') public dockInputRef?: ElementRef<HTMLTextAreaElement>;
@@ -204,20 +200,6 @@ export class WorkspaceComponent implements OnInit {
       return `Stop current task (${curId})`;
     }
     return 'Stop current running task';
-  });
-
-  /**
-   * Computed boolean whether the command bar should be in its expanded state:
-   * - Mouse is hovering directly on the command card
-   * - Input textarea is focused
-   * - User has entered task text (drafting)
-   */
-  public isBarExpanded = computed(() => {
-    return (
-      this.isHoveringCard() ||
-      this.isInputFocused() ||
-      this.taskInput.trim().length > 0
-    );
   });
 
   /**
@@ -324,6 +306,20 @@ export class WorkspaceComponent implements OnInit {
     const input = event.target as HTMLInputElement;
     this.addImages(Array.from(input.files ?? []));
     input.value = ''; // the same file can be chosen again after it was removed
+  }
+
+  public onPaste(event: ClipboardEvent): void {
+    const clipboard = event.clipboardData;
+    if (!clipboard) return;
+    const files = Array.from(clipboard.files);
+    const hasText = clipboard.types.includes('text/plain');
+    if (files.length) {
+      if (!hasText) event.preventDefault();
+      if (!this.isSubmitting()) this.addImages(files);
+    } else if (clipboard.types.length && !hasText) {
+      event.preventDefault();
+      this.setErrorMessage('Clipboard content is not text or a PNG, JPG, JPEG or WEBP image.');
+    }
   }
 
   public removeImage(id: number): void {
