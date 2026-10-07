@@ -18,6 +18,8 @@ import { DeviceInfo, DeviceKind } from '../core/models/system.model';
 
 export type LabelableDevice = Pick<DeviceInfo, 'serial' | 'model'> & { device_kind?: DeviceKind };
 
+export const WIRELESS_PHONE = 'Wireless phone';
+
 const KIND_LABELS: Record<DeviceKind, string> = {
   phone: 'Phone',
   emulator: 'Emulator',
@@ -35,8 +37,19 @@ export function deviceTitle(device: LabelableDevice): string {
 }
 
 const LOOPBACK_ADDRESS = /^(127\.0\.0\.1|localhost|\[::1\]):\d+$/;
-// host:port, with a dotted name, an IPv4 address or a bracketed IPv6 address as the host.
-const NETWORK_ADDRESS = /^(\[[0-9a-f:.]+\]|[a-z0-9-]+(\.[a-z0-9-]+)+):\d+$/i;
+// Any other host:port, whatever the host looks like (IPv4, dotted name, single-label name, [IPv6]),
+// or an mDNS wireless-debugging name. USB and emulator serials never contain a colon.
+const NETWORK_ADDRESS = /^(\[[0-9a-f:.]+\]|[^\s:/\[\]]+):\d+$|\._adb-tls-(connect|pairing)\._tcp\.?$/i;
+
+export type SerialShape = 'loopback' | 'network' | 'plain';
+
+/** What a device reference looks like: an address nobody should read as a name, or a plain serial. */
+export function serialShape(serial: string): SerialShape {
+  if (LOOPBACK_ADDRESS.test(serial)) {
+    return 'loopback';
+  }
+  return NETWORK_ADDRESS.test(serial) ? 'network' : 'plain';
+}
 
 /**
  * Title for a device that is not (or no longer) in the live device list. An
@@ -44,7 +57,14 @@ const NETWORK_ADDRESS = /^(\[[0-9a-f:.]+\]|[a-z0-9-]+(\.[a-z0-9-]+)+):\d+$/i;
  * shown as a label.
  */
 export function unlistedDeviceTitle(serial: string): string {
-  return LOOPBACK_ADDRESS.test(serial) ? KIND_LABELS.unknown : serial;
+  switch (serialShape(serial)) {
+    case 'loopback':
+      return KIND_LABELS.unknown;
+    case 'network':
+      return WIRELESS_PHONE;
+    default:
+      return serial;
+  }
 }
 
 /**
@@ -53,10 +73,14 @@ export function unlistedDeviceTitle(serial: string): string {
  * the address or "Unknown device"; the address stays in a detail line. A plain serial is kept.
  */
 export function unlistedRunDeviceTitle(serial: string, ownBrowser: boolean): string {
-  if (LOOPBACK_ADDRESS.test(serial)) {
-    return ownBrowser ? 'Phone via this browser' : 'Phone via a browser';
+  switch (serialShape(serial)) {
+    case 'loopback':
+      return ownBrowser ? 'Phone via this browser' : 'Phone via a browser';
+    case 'network':
+      return WIRELESS_PHONE;
+    default:
+      return serial;
   }
-  return NETWORK_ADDRESS.test(serial) ? 'Wireless phone' : serial;
 }
 
 /** True when the record says what the device is: a model name or a classified kind. */

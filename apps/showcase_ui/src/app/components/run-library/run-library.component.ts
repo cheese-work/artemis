@@ -33,6 +33,7 @@ import {
   interruptReason,
   truncate
 } from '../../utils/run-library-strings';
+import { serialShape, unlistedRunDeviceTitle } from '../../utils/device-label.util';
 import { runStatusView } from '../../utils/run-status.util';
 import { classifySearch } from '../../utils/run-search.util';
 
@@ -242,7 +243,9 @@ export class RunLibraryComponent {
   }
 
   public device(run: RunSummary): string {
-    const phone = run.device_ref?.serial ?? 'Unknown phone';
+    // The address is detail (the row's tooltip); a browser-relayed phone is named by the computer part.
+    const serial = run.device_ref?.serial;
+    const phone = !serial ? 'Unknown phone' : serialShape(serial) === 'loopback' ? 'Phone' : unlistedRunDeviceTitle(serial, false);
     const computer =
       run.host_id === null
         ? 'A browser'

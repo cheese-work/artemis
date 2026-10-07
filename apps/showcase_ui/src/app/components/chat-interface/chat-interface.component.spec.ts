@@ -130,22 +130,35 @@ describe('ChatInterfaceComponent device chip', () => {
     expect(text).not.toContain('127.0.0.1');
   });
 
+  function chipTitle(serial: string): string {
+    systemService.readinessReport.set(null);
+    sessions.set([session(serial)]);
+    const fixture = TestBed.createComponent(ChatInterfaceComponent);
+    fixture.detectChanges();
+    return (fixture.nativeElement as HTMLElement).querySelector('.task-device .device-name')?.textContent?.trim() ?? '';
+  }
+
   it('never titles a disconnected wireless phone by its address (R3)', () => {
-    for (const address of ['192.168.1.12:5555', '[::1]:39129']) {
+    for (const address of ['192.168.1.12:5555', '[::1]:39129', 'pixel:5555', 'android-phone:37099']) {
       const text = chipText(address, []);
       expect(text).not.toContain(address);
       expect(text).not.toContain('Unknown device');
     }
-    expect(chipText('192.168.1.12:5555', [])).toContain('Wireless phone');
+    for (const address of ['192.168.1.12:5555', 'pixel:5555', 'android-phone:37099']) {
+      expect(chipText(address, [])).toContain('Wireless phone');
+      expect(chipTitle(address)).toBe('Wireless phone');
+    }
   });
 
   it('keeps the wireless phone address in the tooltip only (R3)', () => {
     systemService.readinessReport.set(null);
-    sessions.set([session('192.168.1.12:5555')]);
-    const fixture = TestBed.createComponent(ChatInterfaceComponent);
-    fixture.detectChanges();
-    const chip = (fixture.nativeElement as HTMLElement).querySelector('.task-device');
-    expect(chip?.getAttribute('title')).toContain('192.168.1.12:5555');
+    for (const address of ['192.168.1.12:5555', 'pixel:5555', 'android-phone:37099']) {
+      sessions.set([session(address)]);
+      const fixture = TestBed.createComponent(ChatInterfaceComponent);
+      fixture.detectChanges();
+      const chip = (fixture.nativeElement as HTMLElement).querySelector('.task-device');
+      expect(chip?.getAttribute('title')).toContain(address);
+    }
   });
 
   it('labels a past run by the model recorded with it when the phone is gone', () => {

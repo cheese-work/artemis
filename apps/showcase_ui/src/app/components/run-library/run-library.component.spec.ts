@@ -146,6 +146,23 @@ describe('RunLibraryComponent', () => {
       expect(rows[1].querySelector('.run-recording')!.textContent).toContain('Video unknown');
     });
 
+    it('keeps a browser or network address out of the device text, and in the tooltip (R3)', async () => {
+      const serials = ['127.0.0.1:39129', 'pixel:5555', '192.168.1.12:5555'];
+      await open(
+        '/runs',
+        of(page(serials.map((serial, i) => run({ session_id: `${i}1111111-5d7e-4a10-9c33-0e1f2a3b4c5d`, device_ref: { host_id: null, serial } }))))
+      );
+      const devices = qa<HTMLElement>('.run-device');
+      expect(devices.length).toBe(3);
+      devices.forEach((el, i) => {
+        expect(el.textContent).not.toContain(serials[i]);
+        expect(el.textContent).not.toContain('Unknown');
+        expect(el.getAttribute('title')).toContain(serials[i]);
+      });
+      expect(devices[0].textContent).toContain('A browser');
+      expect(devices[1].textContent).toContain('Wireless phone');
+    });
+
     it('shows status as an icon plus text, never colour alone', async () => {
       await open('/runs');
       const badge = q('.run-outcome')!;
