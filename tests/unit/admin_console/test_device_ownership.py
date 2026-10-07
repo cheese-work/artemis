@@ -658,6 +658,14 @@ async def test_run_bound_to_a_live_bridge_targets_that_phone(cloudflare, submit)
 
     assert response.status_code == 200
     assert submit.enqueue.await_args.kwargs["device_serial"] == QA1_PHONE
+    # The validated lease travels with the run, not just its serial.
+    assert submit.enqueue.await_args.kwargs["bridge_session_id"] == "s41001"
+
+
+@pytest.mark.asyncio
+async def test_run_with_no_bridge_enqueues_no_bridge_session_id(cloudflare, submit):
+    assert (await _run(QA1, device_serial=SHARED)).status_code == 200
+    assert submit.enqueue.await_args.kwargs["bridge_session_id"] is None
 
 
 @pytest.mark.asyncio

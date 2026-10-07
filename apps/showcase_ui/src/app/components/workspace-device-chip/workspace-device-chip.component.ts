@@ -64,15 +64,22 @@ let nextId = 0;
           @if (phone.runActive()) {
             <p class="note">Phone in use by this run.</p>
           }
-          <button
-            type="button"
-            class="action"
-            [disabled]="!phone.canConnectFromBrowser()"
-            (click)="connect()"
-          >
-            <span class="material-symbols-outlined" aria-hidden="true">usb</span>
-            Connect from this browser
-          </button>
+          @if (phone.view().kind === 'other-tab') {
+            <button type="button" class="action" [disabled]="phone.runActive()" (click)="useHere()">
+              <span class="material-symbols-outlined" aria-hidden="true">tab</span>
+              Use here
+            </button>
+          } @else {
+            <button
+              type="button"
+              class="action"
+              [disabled]="!phone.canConnectFromBrowser()"
+              (click)="connect()"
+            >
+              <span class="material-symbols-outlined" aria-hidden="true">usb</span>
+              Connect from this browser
+            </button>
+          }
           @if (phone.browserPhoneConnected()) {
             @if (confirmingDisconnect()) {
               <p class="note" role="alert">Disconnecting stops the run on this phone.</p>
@@ -103,8 +110,8 @@ let nextId = 0;
     .chip .text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .chip.connected { border-color: #86efac; }
     .chip.connected .icon { color: #16a34a; }
-    .chip.dropped, .chip.interrupted { border-color: #fcd34d; background: #fffbeb; }
-    .chip.dropped .icon, .chip.interrupted .icon { color: #b45309; }
+    .chip.dropped, .chip.interrupted, .chip.other-tab { border-color: #fcd34d; background: #fffbeb; }
+    .chip.dropped .icon, .chip.interrupted .icon, .chip.other-tab .icon { color: #b45309; }
     .chip.none .icon { color: #64748b; }
     .spinning { animation: chip-spin 1s linear infinite; }
     @keyframes chip-spin { to { transform: rotate(360deg); } }
@@ -198,6 +205,11 @@ export class WorkspaceDeviceChipComponent {
   protected connect(): void {
     this.close(true);
     void this.phone.connectFromBrowser();
+  }
+
+  protected useHere(): void {
+    this.close(true);
+    void this.phone.useHere();
   }
 
   protected askDisconnect(): void {

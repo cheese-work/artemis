@@ -191,4 +191,36 @@ describe('WorkspaceDeviceChipComponent', () => {
     expect(fakes.system.selectDevice).not.toHaveBeenCalled();
     expect(fakes.system.useLocalAdbServer).not.toHaveBeenCalled();
   });
+
+  it('says Connecting… while the chooser is open and Attaching… after it (OCR F3)', () => {
+    fakes.relay.state.set({ status: 'connecting', serial: null, sessionId: null, error: null });
+    const { chip, settle } = create();
+    expect(chip().textContent).toContain('Connecting…');
+    fakes.relay.attaching.set(true);
+    settle();
+    expect(chip().textContent).toContain('Attaching…');
+  });
+
+  it('shows "Connected in another tab" and Use here takes the phone over, then connects (OCR F3)', async () => {
+    fakes.relay.heldInAnotherTab.set({ serial: '127.0.0.1:41003' });
+    const { chip, buttons, settle } = create();
+    expect(chip().textContent).toContain('Connected in another tab');
+    chip().click();
+    settle();
+    const labels = buttons().map((b) => b.textContent!);
+    expect(labels.some((l) => l.includes('Connect from this browser'))).toBeFalse();
+    buttons().find((b) => b.textContent!.includes('Use here'))!.click();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(fakes.tabs.requestRelease).toHaveBeenCalled();
+    expect(fakes.relay.connect).toHaveBeenCalled();
+  });
+
+  it('never offers a run target for a phone another tab holds', () => {
+    fakes.relay.heldInAnotherTab.set({ serial: '127.0.0.1:41003' });
+    fakes.system.connectedDevices.set([phone({ serial: '127.0.0.1:41003' })]);
+    fakes.system.selectedRunTarget.set('127.0.0.1:41003');
+    create();
+    expect(TestBed.inject(WorkspacePhoneService).target()).toBeNull();
+  });
 });

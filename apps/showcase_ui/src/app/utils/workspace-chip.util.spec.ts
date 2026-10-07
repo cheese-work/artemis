@@ -23,6 +23,8 @@ const input = (over: Partial<WorkspaceChipInput> = {}): WorkspaceChipInput => ({
   computers: [],
   selected: null,
   runInterrupted: false,
+  attaching: false,
+  otherTab: null,
   ...over
 });
 
@@ -54,6 +56,72 @@ describe('workspaceChipView', () => {
     expect(view.kind).toBe('connected');
     expect(view.text).toBe('Pixel 6 · …1003 · via this browser');
     expect(view.target).toEqual({ serial: '127.0.0.1:41003', bridgeSessionId: 'bridge-9' });
+  });
+
+  describe('a selected phone that is unavailable (OCR F1)', () => {
+    const own: UsbDeviceRelayState = { status: 'connected', serial: '127.0.0.1:41003', sessionId: 'bridge-9', error: null };
+    const browserPhone = phone({ serial: '127.0.0.1:41003', model: 'Pixel 6' });
+    const shared = (over: Partial<DeviceInfo> = {}) => phone({ serial: 'emulator-5554', model: 'Pixel 8', ...over });
+
+    it('runs on the explicitly picked shared phone while this browser also holds another', () => {
+      const view = workspaceChipView(input({ relay: own, selected: 'emulator-5554', devices: [browserPhone, shared()] }));
+      expect(view.kind).toBe('connected');
+      expect(view.target).toEqual({ serial: 'emulator-5554', bridgeSessionId: null });
+    });
+
+    it('returns no runnable target when the picked phone is gone, and never falls back to the browser phone', () => {
+      const view = workspaceChipView(input({ relay: own, selected: 'emulator-5554', devices: [browserPhone] }));
+      expect(view.kind).toBe('none');
+      expect(view.target).toBeNull();
+      expect(view.text).toBe('Phone not available');
+    });
+
+    it('returns no runnable target when the picked phone is offline', () => {
+      const view = workspaceChipView(
+        input({ relay: own, selected: 'emulator-5554', devices: [browserPhone, shared({ state: 'offline' })] })
+      );
+      expect(view.target).toBeNull();
+      expect(view.text).toBe('Phone not available');
+    });
+
+    it('returns no runnable target when the picked phone is unauthorized, and asks to allow it', () => {
+      const view = workspaceChipView(
+        input({ relay: own, selected: 'emulator-5554', devices: [browserPhone, shared({ state: 'unauthorized' })] })
+      );
+      expect(view.target).toBeNull();
+      expect(view.text).toBe('Allow USB debugging');
+    });
+
+    it('runs on the browser phone once the person picks it', () => {
+      const view = workspaceChipView(input({ relay: own, selected: '127.0.0.1:41003', devices: [browserPhone] }));
+      expect(view.target).toEqual({ serial: '127.0.0.1:41003', bridgeSessionId: 'bridge-9' });
+    });
+  });
+
+  it('shows Attaching… once the chooser is done and the bridge has not reported the phone yet', () => {
+    const connecting: UsbDeviceRelayState = { ...idle, status: 'connecting' };
+    const chooser = workspaceChipView(input({ relay: connecting }));
+    const attaching = workspaceChipView(input({ relay: connecting, attaching: true }));
+    expect(chooser.text).toBe('Connecting…');
+    expect(attaching.kind).toBe('connecting');
+    expect(attaching.text).toBe('Attaching…');
+    expect(attaching.hint).toBe('Unlock the phone and tap Allow.');
+    expect(attaching.target).toBeNull();
+  });
+
+  it('shows "Connected in another tab" with no run target when another tab holds the phone', () => {
+    const view = workspaceChipView(
+      input({ otherTab: { serial: '127.0.0.1:41003' }, selected: '127.0.0.1:41003', devices: [phone({ serial: '127.0.0.1:41003' })] })
+    );
+    expect(view.kind).toBe('other-tab');
+    expect(view.text).toBe('Connected in another tab');
+    expect(view.hint).toContain('Use here');
+    expect(view.target).toBeNull();
+  });
+
+  it('does not treat the phone this tab holds as being in another tab', () => {
+    const relay: UsbDeviceRelayState = { status: 'connected', serial: '127.0.0.1:41003', sessionId: 'b', error: null };
+    expect(workspaceChipView(input({ relay, otherTab: { serial: '127.0.0.1:41003' } })).kind).toBe('connected');
   });
 
   it('counts the tab’s phone as connected before the adb list shows it', () => {

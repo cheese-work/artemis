@@ -10,11 +10,27 @@ import {
   AdbDaemonWebUsbDeviceManager
 } from '@yume-chan/adb-daemon-webusb';
 import { Consumable } from '@yume-chan/stream-extra';
+import { PHONE_TAB_CHANNEL, TabChannel } from './phone-tab.service';
 import {
   DEVICE_BRIDGE_SOCKET_FACTORY,
   UsbDeviceRelayService,
   WEBUSB_DEVICE_MANAGER
 } from './usb-device-relay.service';
+
+/** A tab channel that records what this tab says and lets a spec speak as another tab. */
+class FakeTabChannel implements TabChannel {
+  public posted: { type: string; serial?: string }[] = [];
+  private listeners: ((event: MessageEvent) => void)[] = [];
+  public postMessage(message: unknown): void { this.posted.push(message as { type: string }); }
+  public addEventListener(_type: 'message', listener: (event: MessageEvent) => void): void { this.listeners.push(listener); }
+  public removeEventListener(_type: 'message', listener: (event: MessageEvent) => void): void {
+    this.listeners = this.listeners.filter((l) => l !== listener);
+  }
+  public close(): void { this.listeners = []; }
+  public fromOtherTab(message: object): void {
+    this.listeners.forEach((l) => l({ data: { tab: 'other', ...message } } as MessageEvent));
+  }
+}
 
 class FakeSocket {
   public binaryType: BinaryType = 'blob';
@@ -63,6 +79,7 @@ class FakeSocket {
 describe('UsbDeviceRelayService', () => {
   let service: UsbDeviceRelayService | null = null;
   let socket: FakeSocket;
+  let tabChannel: FakeTabChannel;
   let socketUrl: string | undefined;
   let manager: { requestDevice: jasmine.Spy };
   let webUsbDeviceManager: AdbDaemonWebUsbDeviceManager | undefined;
@@ -76,6 +93,7 @@ describe('UsbDeviceRelayService', () => {
   let resolvePacketWrite!: () => void;
 
   beforeEach(() => {
+    tabChannel = new FakeTabChannel();
     service = null;
     socket = new FakeSocket();
     socketUrl = undefined;
@@ -111,6 +129,7 @@ describe('UsbDeviceRelayService', () => {
           provide: WEBUSB_DEVICE_MANAGER,
           useFactory: () => webUsbDeviceManager
         },
+        { provide: PHONE_TAB_CHANNEL, useFactory: () => tabChannel },
         {
           provide: DEVICE_BRIDGE_SOCKET_FACTORY,
           useValue: (url: string) => {
@@ -138,6 +157,69 @@ describe('UsbDeviceRelayService', () => {
     expect(service.isSupported()).toBeFalse();
     expect(service.state().error).toContain('WebUSB is unavailable');
     expect(manager.requestDevice).not.toHaveBeenCalled();
+  });
+
+  it('goes back to no phone, with no error, when the chooser is closed without a choice (OCR F3)', async () => {
+    manager.requestDevice.and.rejectWith(new DOMException('No device selected.', 'NotFoundError'));
+    service = TestBed.inject(UsbDeviceRelayService);
+
+    await service.connect();
+
+    expect(service.state()).toEqual({ status: 'idle', serial: null, sessionId: null, error: null });
+    expect(socketUrl).toBeUndefined();
+  });
+
+  it('is attaching from the end of the chooser until the bridge reports the phone (OCR F3)', async () => {
+    service = TestBed.inject(UsbDeviceRelayService);
+    const connecting = service.connect();
+    expect(service.attaching()).toBeFalse();
+    await flushMicrotasks();
+    socket.open();
+    await connecting;
+
+    expect(service.state().status).toBe('connecting');
+    expect(service.attaching()).toBeTrue();
+
+    socket.message(JSON.stringify({ type: 'session_leased', session_id: 'lease-1', expires_in_seconds: 300 }));
+    socket.message(JSON.stringify({ type: 'device_attached', serial: 'R58M123' }));
+    expect(service.attaching()).toBeFalse();
+  });
+
+  it('tells other tabs which phone it holds, and that it let go (OCR F3)', async () => {
+    service = TestBed.inject(UsbDeviceRelayService);
+    const connecting = service.connect();
+    await flushMicrotasks();
+    socket.open();
+    await connecting;
+    socket.message(JSON.stringify({ type: 'session_leased', session_id: 'lease-1', expires_in_seconds: 300 }));
+    socket.message(JSON.stringify({ type: 'device_attached', serial: 'R58M123' }));
+    expect(tabChannel.posted).toContain(jasmine.objectContaining({ type: 'held', serial: 'R58M123' }));
+
+    await service.disconnect();
+    expect(tabChannel.posted.at(-1)).toEqual(jasmine.objectContaining({ type: 'released' }));
+  });
+
+  it('lets go and shows Disconnected when another tab takes the phone over (OCR F3)', async () => {
+    service = TestBed.inject(UsbDeviceRelayService);
+    const connecting = service.connect();
+    await flushMicrotasks();
+    socket.open();
+    await connecting;
+    socket.message(JSON.stringify({ type: 'session_leased', session_id: 'lease-1', expires_in_seconds: 300 }));
+    socket.message(JSON.stringify({ type: 'device_attached', serial: 'R58M123' }));
+
+    tabChannel.fromOtherTab({ type: 'release' });
+    await flushMicrotasks();
+
+    expect(service.state().status).toBe('dropped');
+    expect(service.state().error).toBe('This phone is now used in another tab.');
+    expect(tabChannel.posted.at(-1)).toEqual(jasmine.objectContaining({ type: 'released' }));
+  });
+
+  it('knows when another tab holds a phone', () => {
+    service = TestBed.inject(UsbDeviceRelayService);
+    tabChannel.fromOtherTab({ type: 'held', serial: '127.0.0.1:41003' });
+    expect(service.heldInAnotherTab()).toEqual({ serial: '127.0.0.1:41003' });
   });
 
   it('reports a denied USB permission request', async () => {

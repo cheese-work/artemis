@@ -6,7 +6,7 @@ import { deviceSourceOf } from './device-chip.util';
 import { deviceKindLabel, deviceTitle } from './device-label.util';
 
 /** The Workspace chip's states. A phone is only ever "connected" when a run could use it now. */
-export type WorkspaceChipKind = 'none' | 'connecting' | 'connected' | 'dropped' | 'interrupted';
+export type WorkspaceChipKind = 'none' | 'connecting' | 'connected' | 'other-tab' | 'dropped' | 'interrupted';
 
 export interface WorkspaceChipInput {
   relay: UsbDeviceRelayState;
@@ -19,6 +19,10 @@ export interface WorkspaceChipInput {
   selected: string | null;
   /** The run on screen was interrupted by a lost phone. */
   runInterrupted: boolean;
+  /** The USB chooser is done and the bridge has not reported the phone yet. */
+  attaching: boolean;
+  /** A phone another tab of this browser holds; null when none does. */
+  otherTab: { serial: string } | null;
 }
 
 export interface WorkspaceChipView {
@@ -71,20 +75,37 @@ export function pickerOptions(input: WorkspaceChipInput): PickerOption[] {
   }));
 }
 
+function anotherTab(
+  view: (kind: WorkspaceChipKind, text: string, hint: string, icon: string) => WorkspaceChipView
+): WorkspaceChipView {
+  return view('other-tab', 'Connected in another tab', 'Use here to run from this tab. The other tab disconnects.', 'tab');
+}
+
 export function workspaceChipView(input: WorkspaceChipInput): WorkspaceChipView {
   const { relay } = input;
   const view = (kind: WorkspaceChipKind, text: string, hint: string, icon: string, target: RunTarget | null = null) =>
     ({ kind, text, hint, icon, target }) satisfies WorkspaceChipView;
 
   if (relay.status === 'connecting') {
-    return view('connecting', 'Connecting…', 'Choose the phone, then unlock it and tap Allow.', 'progress_activity');
+    return input.attaching
+      ? view('connecting', 'Attaching…', 'Unlock the phone and tap Allow.', 'progress_activity')
+      : view('connecting', 'Connecting…', 'Choose the phone, then unlock it and tap Allow.', 'progress_activity');
   }
 
-  // A remembered phone counts only while it is listed and ready. The phone this tab holds
-  // counts as soon as the bridge says it is attached; the adb list may lag a few seconds.
+  // The phone this tab holds counts as soon as the bridge says it is attached; the adb list may
+  // lag a few seconds. A phone the person picked counts only while it is listed and ready. A
+  // picked phone that is gone, offline or unauthorized is never swapped for another phone: the
+  // person reconnects it or picks again.
   const own = relay.status === 'connected' && relay.serial ? relay.serial : null;
   const listed = input.selected ? input.devices.find((device) => device.serial === input.selected) : undefined;
-  const serial = listed?.state === 'device' ? listed.serial : own;
+  const serial = input.selected
+    ? input.selected === own || listed?.state === 'device'
+      ? input.selected
+      : null
+    : own;
+  if (serial && serial !== own && input.otherTab?.serial === serial) {
+    return anotherTab(view);
+  }
   if (serial) {
     const device = input.devices.find((d) => d.serial === serial);
     const text = [
@@ -99,6 +120,9 @@ export function workspaceChipView(input: WorkspaceChipInput): WorkspaceChipView 
       bridgeSessionId: serial === own ? relay.sessionId : null
     });
   }
+  if (!own && input.otherTab && (!input.selected || input.selected === input.otherTab.serial)) {
+    return anotherTab(view);
+  }
 
   if (relay.status === 'dropped') {
     return view('dropped', 'Phone disconnected', 'Reconnect the phone to run.', 'phonelink_erase');
@@ -108,6 +132,9 @@ export function workspaceChipView(input: WorkspaceChipInput): WorkspaceChipView 
   }
   if (listed?.state === 'unauthorized') {
     return view('none', 'Allow USB debugging', 'Unlock the phone and tap Allow.', 'lock');
+  }
+  if (input.selected) {
+    return view('none', 'Phone not available', 'Reconnect it, or pick another phone.', 'phonelink_erase');
   }
   return view(
     'none',

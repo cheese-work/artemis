@@ -2,6 +2,7 @@ import { signal } from '@angular/core';
 import { of } from 'rxjs';
 import { DeviceInfo } from '../core/models/system.model';
 import { AgentService } from '../services/agent.service';
+import { PhoneTabService } from '../services/phone-tab.service';
 import { HostsService } from '../services/hosts.service';
 import { SystemService } from '../services/system.service';
 import { UsbDeviceRelayService, UsbDeviceRelayState } from '../services/usb-device-relay.service';
@@ -26,6 +27,8 @@ export function phoneFakes() {
   const relay = {
     state: signal<UsbDeviceRelayState>(IDLE),
     isSupported: signal(true),
+    attaching: signal(false),
+    heldInAnotherTab: signal<{ serial: string } | null>(null),
     connect: jasmine.createSpy('connect').and.resolveTo(undefined),
     disconnect: jasmine.createSpy('disconnect').and.resolveTo(undefined)
   };
@@ -46,11 +49,13 @@ export function phoneFakes() {
     resumeTask: jasmine.createSpy('resumeTask')
   };
   const hosts = { list: jasmine.createSpy('list').and.returnValue(of({ enabled: true, hosts: [], devices: [] })) };
+  const tabs = { requestRelease: jasmine.createSpy('requestRelease').and.resolveTo(undefined) };
   const providers = [
+    { provide: PhoneTabService, useValue: tabs },
     { provide: UsbDeviceRelayService, useValue: relay },
     { provide: SystemService, useValue: system },
     { provide: AgentService, useValue: agent },
     { provide: HostsService, useValue: hosts }
   ];
-  return { relay, system, agent, hosts, providers };
+  return { relay, system, agent, hosts, tabs, providers };
 }

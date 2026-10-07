@@ -6,6 +6,7 @@ import {
   calculateChecksum
 } from '@yume-chan/adb';
 import type { AdbPacketData, AdbPacketInit } from '@yume-chan/adb';
+import { PhoneTabService } from './phone-tab.service';
 import {
   AdbDaemonWebUsbDevice,
   AdbDaemonWebUsbDeviceManager
@@ -58,6 +59,7 @@ export class UsbDeviceRelayService implements OnDestroy {
   private readonly deviceManager = inject(WEBUSB_DEVICE_MANAGER);
   private readonly socketFactory = inject(DEVICE_BRIDGE_SOCKET_FACTORY);
   private readonly browserWindow = this.document.defaultView;
+  private readonly tabs = inject(PhoneTabService);
 
   public readonly isSupported = computed(() => this.deviceManager !== undefined);
   public readonly state = signal<UsbDeviceRelayState>({
@@ -66,6 +68,11 @@ export class UsbDeviceRelayService implements OnDestroy {
     sessionId: null,
     error: null
   });
+
+  /** The USB chooser is done and the bridge has not reported the phone yet. */
+  public readonly attaching = signal(false);
+  /** The phone another tab of this browser holds; null when none does. */
+  public readonly heldInAnotherTab = this.tabs.heldElsewhere;
 
   private generation = 0;
   private socket: WebSocket | null = null;
@@ -87,6 +94,13 @@ export class UsbDeviceRelayService implements OnDestroy {
     }
   };
 
+  constructor() {
+    // Another tab asked for the phone this tab holds: let go and say so.
+    this.tabs.onReleaseRequest(() => {
+      void this.finishConnection(this.generation, 'This phone is now used in another tab.');
+    });
+  }
+
   public ngOnDestroy(): void {
     void this.disconnect();
   }
@@ -97,6 +111,7 @@ export class UsbDeviceRelayService implements OnDestroy {
     }
 
     const generation = ++this.generation;
+    this.attaching.set(false);
     this.state.set({ status: 'connecting', serial: null, sessionId: null, error: null });
     this.registerUnloadWarning();
 
@@ -114,6 +129,7 @@ export class UsbDeviceRelayService implements OnDestroy {
         return;
       }
 
+      this.attaching.set(true);
       this.device = device;
       const connection = await device.connect();
       if (generation !== this.generation) {
@@ -131,7 +147,8 @@ export class UsbDeviceRelayService implements OnDestroy {
       await this.openSocket(socket, generation);
     } catch (error) {
       if (generation === this.generation) {
-        await this.finishConnection(generation, this.toUserMessage(error));
+        // Closing the chooser is a choice, not a failure: back to no phone, with no error.
+        await this.finishConnection(generation, isChooserCancel(error) ? null : this.toUserMessage(error));
       }
     }
   }
@@ -280,12 +297,14 @@ export class UsbDeviceRelayService implements OnDestroy {
           clearTimeout(this.attachmentTimer);
           this.attachmentTimer = null;
         }
+        this.attaching.set(false);
         this.state.set({
           status: 'connected',
           serial: value.serial.trim(),
           sessionId: this.leasedSessionId,
           error: null
         });
+        this.tabs.announceHeld(value.serial.trim());
         return;
       }
 
@@ -311,6 +330,8 @@ export class UsbDeviceRelayService implements OnDestroy {
       : { status: 'idle', serial: null, sessionId: null, error: null });
     this.sessionLeased = false;
     this.leasedSessionId = null;
+    this.attaching.set(false);
+    this.tabs.announceReleased();
 
     if (this.socketOpenTimer) {
       clearTimeout(this.socketOpenTimer);
@@ -411,6 +432,9 @@ export class UsbDeviceRelayService implements OnDestroy {
       error instanceof AdbDaemonWebUsbDevice.DeviceBusyError ||
       /claim(?:ing)? interface/i.test(message)
     ) {
+      if (this.tabs.heldElsewhere()) {
+        return 'This phone is connected in another tab. Use it there, or choose Use here.';
+      }
       return 'Another program on this computer is using the phone (adb, Android Studio, scrcpy). ' +
         'Quit it or run adb kill-server, unplug and replug, then retry.';
     }
@@ -439,6 +463,12 @@ export class UsbDeviceRelayService implements OnDestroy {
           `Details: ${name || 'Unknown error'}${message ? `: ${message}` : ''}`;
     }
   }
+}
+
+/** The person closed the USB chooser without picking a phone. */
+function isChooserCancel(error: unknown): boolean {
+  const name = typeof error === 'object' && error !== null ? (error as { name?: unknown }).name : undefined;
+  return name === 'DeviceSelectionCancelledError' || name === 'NotFoundError';
 }
 
 function namedError(name: string): Error {

@@ -2,6 +2,7 @@ import { computed, effect, inject, Injectable, signal, untracked } from '@angula
 import { HostsResponse } from '../core/models/host.model';
 import { AgentService } from './agent.service';
 import { HostsService } from './hosts.service';
+import { PhoneTabService } from './phone-tab.service';
 import { SystemService } from './system.service';
 import { UsbDeviceRelayService } from './usb-device-relay.service';
 import { pickerOptions, WorkspaceChipInput, workspaceChipView } from '../utils/workspace-chip.util';
@@ -17,6 +18,7 @@ export class WorkspacePhoneService {
   private readonly system = inject(SystemService);
   private readonly hosts = inject(HostsService);
   private readonly agent = inject(AgentService);
+  private readonly tabs = inject(PhoneTabService);
 
   private readonly registry = signal<HostsResponse | null>(null);
   private readonly pickerRequestCount = signal(0);
@@ -34,7 +36,9 @@ export class WorkspacePhoneService {
     registry: this.registry()?.devices ?? [],
     computers: this.registry()?.hosts ?? [],
     selected: this.system.selectedRunTarget(),
-    runInterrupted: this.runInterrupted()
+    runInterrupted: this.runInterrupted(),
+    attaching: this.relay.attaching(),
+    otherTab: this.relay.heldInAnotherTab()
   }));
 
   public readonly view = computed(() => workspaceChipView(this.input()));
@@ -86,6 +90,12 @@ export class WorkspacePhoneService {
 
   /** Connect (or reconnect) a phone from this browser. Reconnecting does not resume a run. */
   public async connectFromBrowser(): Promise<void> {
+    await this.relay.connect();
+  }
+
+  /** Take the phone over from the other tab that holds it, then connect it here. */
+  public async useHere(): Promise<void> {
+    await this.tabs.requestRelease();
     await this.relay.connect();
   }
 
