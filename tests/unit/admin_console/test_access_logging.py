@@ -77,7 +77,7 @@ async def test_api_request_emits_redacted_well_formed_access_line(
     assert response.startswith(b"HTTP/1.1 200 OK")
     rendered = output.getvalue()
     assert f'127.0.0.1:41234 - "GET /openapi.json?password={REDACTED}' in rendered
-    assert 'HTTP/1.1" 200 OK' in rendered
+    assert 'HTTP/1.1" 200\n' in rendered
     assert "access-goal-password-sentinel" not in rendered
     assert "access-configured-credential-sentinel" not in rendered
     assert "Logging error" not in capsys.readouterr().err
