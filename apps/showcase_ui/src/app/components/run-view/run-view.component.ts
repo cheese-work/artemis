@@ -36,7 +36,7 @@ import { Playback, mapRecording } from '../../utils/recording-state.util';
 import { locateSessionTime } from '../../utils/recording-timeline.util';
 import { runStatusView } from '../../utils/run-status.util';
 import { buildStartupWorkItems } from '../../utils/run-startup.util';
-import type { StartupProgressEvent } from '../../services/agent.service';
+import { AgentService, type StartupProgressEvent } from '../../services/agent.service';
 import {
   DELETE_NOTICE,
   MEDIA_NOTICE,
@@ -77,6 +77,7 @@ const DIALOGS: Record<DialogKind, { title: string; notices: string[]; confirm: s
 export class RunViewComponent {
   private readonly logger = inject(LoggerService);
   private readonly runsApi = inject(RunsService);
+  private readonly agentService = inject(AgentService);
   private readonly adminApi = inject(AdminConfigService);
   private readonly router = inject(Router);
   private readonly destroyRef = inject(DestroyRef);
@@ -140,7 +141,14 @@ export class RunViewComponent {
   public readonly dialogKind = signal<DialogKind | null>(null);
   public readonly feedback = signal('');
   public readonly actionError = signal<{ text: string; retry: Retryable } | null>(null);
+  public readonly canResume = computed(() => {
+    if (this.mode() !== 'live' || !this.agentService.isPaused() || this.agentService.agentStatus() !== 'paused') return false;
+    const pausedSessionId = this.agentService.runningSessionId();
+    return !!pausedSessionId && this.run()?.session_id === pausedSessionId
+      && this.agentService.currentSessionId() === pausedSessionId;
+  });
   public readonly actions = computed<RunAction[]>(() => [
+    ...(this.canResume() ? [{ id: 'resume', label: 'Continue task' }] : []),
     { id: 'share', label: this.strings.copyLink },
     { id: 'download', label: this.strings.download },
     { id: 'pin', label: this.run()?.pinned ? this.strings.unpin : this.strings.pin, pressed: this.run()?.pinned ?? false },
@@ -477,7 +485,9 @@ export class RunViewComponent {
   // -- actions ----------------------------------------------------------------
 
   public onAction(action: RunActionEvent): void {
-    if (action.id === 'pin') this.togglePin(action.event);
+    if (action.id === 'resume') {
+      if (this.canResume()) this.agentService.resumeTask();
+    } else if (action.id === 'pin') this.togglePin(action.event);
     else if (action.id === 'retry') this.retry();
     else this.ask(action.id as DialogKind, action.event);
   }

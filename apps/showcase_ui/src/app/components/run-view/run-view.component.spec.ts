@@ -4,6 +4,7 @@ import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { Router, provideRouter } from '@angular/router';
 import { Observable, Subject, of, throwError } from 'rxjs';
 import { AdminConfigService } from '../../services/admin-config.service';
+import { AgentService } from '../../services/agent.service';
 import { RunSummary, SessionVideo } from '../../core/models/run.model';
 import { StepItemData } from '../../core/models/stream.model';
 import { RunsService } from '../../services/runs.service';
@@ -68,6 +69,9 @@ describe('RunViewComponent', () => {
   let router: Router;
   let root: HTMLElement;
   let clipboard: jasmine.Spy;
+  let agent: Pick<AgentService, 'isPaused' | 'agentStatus' | 'currentSessionId' | 'runningSessionId'> & {
+    resumeTask: jasmine.Spy;
+  };
 
   const q = <T extends Element>(selector: string) => root.querySelector<T>(selector);
   const qa = <T extends Element>(selector: string) => Array.from(root.querySelectorAll<T>(selector));
@@ -112,6 +116,13 @@ describe('RunViewComponent', () => {
       { lastLibraryQuery: signal<Record<string, string>>({ status: 'failed' }), viewPosition: signal(null) }
     );
     admin = jasmine.createSpyObj<AdminConfigService>('AdminConfigService', ['getIdentity']);
+    agent = {
+      isPaused: signal(false),
+      agentStatus: signal('idle'),
+      currentSessionId: signal<string | null>(ID),
+      runningSessionId: signal<string | null>(ID),
+      resumeTask: jasmine.createSpy('resumeTask')
+    };
     clipboard = spyOn(navigator.clipboard, 'writeText').and.resolveTo();
     await TestBed.configureTestingModule({
       imports: [RunViewComponent],
@@ -122,7 +133,8 @@ describe('RunViewComponent', () => {
           { path: 'workspace', component: StubComponent }
         ]),
         { provide: RunsService, useValue: runs },
-        { provide: AdminConfigService, useValue: admin }
+        { provide: AdminConfigService, useValue: admin },
+        { provide: AgentService, useValue: agent }
       ]
     }).compileComponents();
     router = TestBed.inject(Router);
@@ -361,6 +373,54 @@ describe('RunViewComponent', () => {
       fixture.componentInstance.newRunPrompt.subscribe(received);
       button('Start new run with this prompt').click();
       expect(received).toHaveBeenCalledWith('Log in and open settings');
+    });
+  });
+
+  describe('paused-task recovery characterization', () => {
+    beforeEach(() => {
+      agent.isPaused.set(true);
+      agent.agentStatus.set('paused');
+    });
+
+    it('offers a native focusable Continue control that resumes the current paused live run', async () => {
+      await open({ viewMode: 'live', runResult: of(run({ status: 'paused' })) });
+      const control = button('Continue task');
+      expect(control).toBeDefined();
+      control.focus();
+      expect(document.activeElement).toBe(control);
+      expect(control.type).toBe('button');
+      expect(control.tabIndex).toBe(0);
+      control.click();
+      expect(agent.resumeTask).toHaveBeenCalledTimes(1);
+    });
+
+    for (const scenario of [
+      { name: 'a stored run', viewMode: 'review' as const, viewedId: ID, activeId: ID, paused: true, status: 'paused' },
+      { name: 'a different live run', viewMode: 'live' as const, viewedId: 'other-run', activeId: ID, paused: true, status: 'paused' },
+      { name: 'a stale paused event', viewMode: 'live' as const, viewedId: ID, activeId: ID, paused: true, status: 'running' },
+      { name: 'a stale polled pause', viewMode: 'live' as const, viewedId: ID, activeId: ID, paused: false, status: 'paused' },
+      { name: 'a missing active task', viewMode: 'live' as const, viewedId: ID, activeId: null, paused: true, status: 'paused' }
+    ]) {
+      it(`does not resume the active task from ${scenario.name}`, async () => {
+        agent.currentSessionId.set(scenario.viewedId);
+        agent.runningSessionId.set(scenario.activeId);
+        agent.isPaused.set(scenario.paused);
+        agent.agentStatus.set(scenario.status);
+        await open({ id: scenario.viewedId, viewMode: scenario.viewMode,
+          runResult: of(run({ session_id: scenario.viewedId, status: 'paused' })) });
+        expect(button('Continue task')).toBeUndefined();
+        fixture.componentInstance.onAction({ id: 'resume', event: new Event('click') });
+        expect(agent.resumeTask).not.toHaveBeenCalled();
+      });
+    }
+
+    it('rechecks the current session before acting on an already-rendered Continue control', async () => {
+      await open({ viewMode: 'live', runResult: of(run({ status: 'paused' })) });
+      const control = button('Continue task');
+      expect(control).toBeDefined();
+      agent.currentSessionId.set('other-run');
+      control.click();
+      expect(agent.resumeTask).not.toHaveBeenCalled();
     });
   });
 
