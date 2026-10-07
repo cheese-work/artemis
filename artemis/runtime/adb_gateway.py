@@ -1,0 +1,138 @@
+"""Non-overridable smart-socket allowlist, shared by the host and server."""
+
+import asyncio
+from collections.abc import Callable
+import logging
+import re
+
+from artemis.runtime.host_protocol import CONTRACT, MAX_PAYLOAD, ProtocolError
+
+logger = logging.getLogger(__name__)
+_HEX = re.compile(rb"[0-9a-fA-F]{4}\Z")
+_SERIAL = re.compile(r"[A-Za-z0-9._:\-]{1,64}\Z")
+_HOST_SERVICES = frozenset(
+    {"host:version", "host:devices", "host:devices-l", "host:track-devices", "host:track-devices-l"}
+)
+_DEVICE_SERVICES = ("shell:", "exec:", "sync:", "tcp:", "localabstract:", "framebuffer:")
+
+
+def pack_message(payload: bytes) -> bytes:
+    if not 0 < len(payload) <= CONTRACT.max_text:
+        if not payload:
+            return b"0000"
+        raise ProtocolError("ADB text exceeds limit")
+    return f"{len(payload):04x}".encode() + payload
+
+
+def text(payload: bytes) -> str:
+    if len(payload) > CONTRACT.max_text:
+        raise ProtocolError("ADB text exceeds limit")
+    try:
+        result = payload.decode("utf-8", errors="strict")
+    except UnicodeError as error:
+        raise ProtocolError("Invalid UTF-8") from error
+    if any(ord(character) < 32 and character not in "\t\n\r" for character in result):
+        raise ProtocolError("Invalid text control character")
+    return result
+
+
+def filter_devices(payload: bytes, shared: set[str]) -> bytes:
+    result = []
+    for line in text(payload).splitlines():
+        serial, separator, details = line.partition("\t")
+        if not separator or not _SERIAL.fullmatch(serial) or not details:
+            raise ProtocolError("Malformed devices list")
+        if serial in shared:
+            result.append(line + "\n")
+    return "".join(result).encode()
+
+
+async def read_exact(source, size: int) -> bytes:
+    data = bytearray()
+    while len(data) < size:
+        part = await source.read(size - len(data))
+        if not part:
+            raise asyncio.IncompleteReadError(bytes(data), size)
+        data.extend(part)
+    return bytes(data)
+
+
+async def read_message(source) -> bytes:
+    prefix = await read_exact(source, 4)
+    if not _HEX.fullmatch(prefix):
+        raise ProtocolError("Malformed ADB length")
+    return await read_exact(source, int(prefix, 16))
+
+
+class Gateway:
+    def __init__(self, shared: Callable[[], set[str]]):
+        self.shared = shared
+        self.serial: str | None = None
+
+    def allows(self, service: str) -> bool:
+        if self.serial is not None:
+            return self.serial in self.shared() and service.startswith(_DEVICE_SERVICES)
+        if service in _HOST_SERVICES:
+            return True
+        if service.startswith("host:transport:"):
+            serial = service[len("host:transport:") :]
+            return bool(_SERIAL.fullmatch(serial) and serial in self.shared())
+        return False
+
+    async def relay(self, reader, writer, remote) -> None:
+        try:
+            while True:
+                request = await read_message(reader)
+                service = text(request)
+                if not self.allows(service):
+                    logger.warning("event=adb_denied service=%r", service[:128])
+                    writer.write(b"FAIL" + pack_message(b"Service is not allowed"))
+                    await writer.drain()
+                    return
+                await remote.write(pack_message(request))
+                status = await read_exact(remote, 4)
+                if status == b"FAIL":
+                    message = await read_message(remote)
+                    text(message)
+                    writer.write(status + pack_message(message))
+                    await writer.drain()
+                    return
+                if status != b"OKAY":
+                    raise ProtocolError("Invalid ADB status")
+                writer.write(status)
+                await writer.drain()
+                if service.startswith("host:transport:"):
+                    self.serial = service[len("host:transport:") :]
+                    continue
+                if service in _HOST_SERVICES:
+                    while True:
+                        response = await read_message(remote)
+                        if service != "host:version":
+                            response = filter_devices(response, self.shared())
+                        else:
+                            text(response)
+                        writer.write(pack_message(response))
+                        await writer.drain()
+                        if not service.startswith("host:track-devices"):
+                            return
+
+                async def upstream():
+                    while data := await reader.read(MAX_PAYLOAD):
+                        await remote.write(data)
+                    remote.finish()
+
+                async def downstream():
+                    while data := await remote.read(MAX_PAYLOAD):
+                        writer.write(data)
+                        await writer.drain()
+
+                send = asyncio.create_task(upstream())
+                try:
+                    await downstream()
+                finally:
+                    send.cancel()
+                    await asyncio.gather(send, return_exceptions=True)
+                return
+        except (asyncio.IncompleteReadError, ProtocolError, UnicodeError):
+            writer.write(b"FAIL" + pack_message(b"Invalid ADB request or response"))
+            await writer.drain()
