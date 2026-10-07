@@ -32,6 +32,13 @@ export interface TaskQueueItem {
   device_id?: string | null;
 }
 
+/** A picture sent with a task's goal; `url` is owner-only. */
+export interface GoalImage {
+  index: number;
+  media_type: string;
+  url: string;
+}
+
 export interface Session {
   session_id: string;
   initial_goal: string;
@@ -44,6 +51,7 @@ export interface Session {
   device_serial?: string | null;
   device_id?: string | null;
   device_info?: any;
+  goal_images?: GoalImage[];
 }
 
 export interface AgentStatusResponse {

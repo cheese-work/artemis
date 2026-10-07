@@ -578,6 +578,33 @@ describe('AgentService live LLM retry timeline', () => {
     expect(localStorage.getItem(SELECTED_DEVICE_SERIAL_KEY)).toBeNull();
   });
 
+  it('sends images and the draft session id with the goal in the same request', () => {
+    spyOn(localStorage, 'getItem').and.returnValue(null);
+    const { service, post } = createRunService([]);
+    const images = [{ name: 'a.png', media_type: 'image/png', data: 'AQID' }];
+
+    service.runTask('what is this?', 'flash', undefined, undefined, undefined, { images, sessionId: 'draft-1' }).subscribe();
+
+    expect(post).toHaveBeenCalledWith('/api/run', {
+      goal: 'what is this?',
+      profile: 'flash',
+      images,
+      session_id: 'draft-1'
+    });
+  });
+
+  it('keeps the images when a rejected phone falls back to automatic selection', () => {
+    spyOn(localStorage, 'getItem').and.returnValue('phone-a');
+    const { service, post } = createRunService([{ serial: 'phone-a', state: 'device' }]);
+    post.and.returnValues(of({ status: 'rejected', error: 'gone' }), of({ tasks: [] }));
+    const images = [{ name: 'a.png', media_type: 'image/png', data: 'AQID' }];
+
+    service.runTask('g', 'flash', undefined, undefined, undefined, { images, sessionId: 'd' }).subscribe();
+
+    expect(post.calls.mostRecent().args[1]).toEqual(jasmine.objectContaining({ images, session_id: 'd' }));
+    expect(post.calls.mostRecent().args[1].device_serial).toBeUndefined();
+  });
+
   it('surfaces the server refusal when a run targets a phone that is not the caller\'s', () => {
     spyOn(localStorage, 'getItem').and.returnValue('phone-a');
     const { service, post } = createRunService([{ serial: 'phone-a', state: 'device' }]);

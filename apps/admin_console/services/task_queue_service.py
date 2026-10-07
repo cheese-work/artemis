@@ -40,6 +40,7 @@ except ImportError:
     from apps.admin_console.services.host_admission import enabled as host_agent_enabled
     from apps.admin_console.services.media_service import media_service
 
+from apps.admin_console.services import run_images
 from artemis.config import (
     PAUSE_FILE,
     TEST_DATA_DIR,
@@ -707,6 +708,8 @@ class TaskQueueService:
         if device_serial:
             cmd.extend(["--device-serial", str(device_serial)])
             env["ADB_DEVICE_SERIAL"] = str(device_serial)
+        if task_item.get("goal_images") and sess_id:
+            env.update(run_images.worker_environment(str(sess_id), task_item["goal_images"]))
         return cmd, env
 
     @classmethod
@@ -1426,8 +1429,12 @@ class TaskQueueService:
         run_id: str | None = None,
         host_id: str | None = None,
         requested_by: str | None = None,
+        goal_images: list[run_images.ValidatedImage] | None = None,
     ) -> dict[str, Any]:
         """Enqueues one or more goals and wakes up the background worker.
+
+        ``goal_images`` are validated pictures for the single goal; they are stored
+        with the run and the queue item names them (never their server paths).
 
         ``requested_by`` is the verified identity that owns the new runs (None:
         no owner); it is persisted with each session and shown on the queue item.
@@ -1445,6 +1452,8 @@ class TaskQueueService:
         spawned worker as ``--run-id`` so daemon-dispatched attempts get the
         same manifest/reconciliation evidence as standalone runs.
         """
+        if session_id:
+            run_images.require_safe_session_id(str(session_id))  # before any side effect
         verification_level = (
             str(verification_level).strip().lower() or None if verification_level else None
         )
@@ -1551,6 +1560,9 @@ class TaskQueueService:
                     requested_by,
                 ):
                     raise RuntimeError(f"Could not persist queued session {session_id}")
+                if goal_images:
+                    # Synchronous on purpose: nothing may yield before the queue append.
+                    task_item["goal_images"] = run_images.store(session_id, goal_images)
             except (OSError, RuntimeError) as exc:
                 DeviceExecutionLock.cancel_reservation(task_item.get("queue_ticket"))
                 if trace_created or (

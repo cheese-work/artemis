@@ -28,6 +28,7 @@ from apps.admin_console.core.device_ownership import (
     require_device,
     visible_devices,
 )
+from apps.admin_console.services import run_images
 from apps.admin_console.core.ownership import (
     OwnerScope,
     actor_scope,
@@ -109,6 +110,27 @@ async def run_task(request: RunRequest, actor: OwnerScope = Depends(actor_scope)
             status_code=400,
             detail="Either 'goal' or 'goals' list must be provided.",
         )
+
+    # A client-chosen id names folders under traces: refuse anything unsafe up front.
+    if request.session_id and not run_images.is_safe_session_id(str(request.session_id)):
+        raise AdminAPIError(
+            400,
+            "The session id is not valid.",
+            "invalid_session_id",
+            "Leave the session id out, or use letters, digits, '.', '_' and '-' only.",
+        )
+
+    # Pictures are checked before anything is probed, stored or queued.
+    goal_images = None
+    if request.images:
+        if len(incoming_goals) != 1:
+            raise AdminAPIError(
+                400,
+                "Images can only be sent with a single goal.",
+                "images_need_one_goal",
+                "Send one message with its images, or send the goals without images.",
+            )
+        goal_images = await asyncio.to_thread(run_images.validate, request.images)
 
     # A phone the caller does not own is refused before any probe or enqueue.
     if request.device_serial:
@@ -235,6 +257,7 @@ async def run_task(request: RunRequest, actor: OwnerScope = Depends(actor_scope)
             conversation_id=request.conversation_id,
             run_id=request.run_id,
             requested_by=scope.email,
+            goal_images=goal_images,
         )
     except ServerDraining as exc:
         raise _draining_error(exc) from exc

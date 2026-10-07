@@ -22,7 +22,7 @@ import asyncio
 import logging
 import subprocess
 import time
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Callable
 
 from artemis.toolchain import find_adb
 
@@ -37,6 +37,8 @@ class DeviceStreamService:
         self._lock = asyncio.Lock()
         self._latest_frame: bytes | None = None
         self._last_frame_time: float = 0.0
+        # The phone the latest frame came from, so each listener is checked per frame.
+        self._frame_serial: str | None = None
         self._is_capturing = False
         self._capture_task: asyncio.Task | None = None
 
@@ -81,6 +83,7 @@ class DeviceStreamService:
                 stdout, _ = await proc.communicate()
                 if proc.returncode == 0 and len(stdout) > 1000:
                     self._latest_frame = stdout
+                    self._frame_serial = serial
                     self._last_frame_time = time.time()
 
                 elapsed = time.time() - start_t
@@ -111,8 +114,14 @@ class DeviceStreamService:
                 self._capture_task.cancel()
                 self._is_capturing = False
 
-    async def mjpeg_frame_generator(self) -> AsyncGenerator[bytes, None]:
-        """Async generator streaming MJPEG multipart bytes to HTTP response."""
+    async def mjpeg_frame_generator(
+        self, may_use: Callable[[str], bool] | None = None
+    ) -> AsyncGenerator[bytes, None]:
+        """Async generator streaming MJPEG multipart bytes to HTTP response.
+
+        ``may_use`` limits a scoped listener to phones it may use: a frame from any
+        other phone, or one that cannot be attributed to a phone, is never sent.
+        """
         await self.start_capturing()
         try:
             last_sent_time = 0.0
@@ -120,6 +129,11 @@ class DeviceStreamService:
                 if self._latest_frame and self._last_frame_time > last_sent_time:
                     last_sent_time = self._last_frame_time
                     frame_bytes = self._latest_frame
+                    if may_use is not None and not (
+                        self._frame_serial and may_use(self._frame_serial)
+                    ):
+                        await asyncio.sleep(0.04)
+                        continue
                     yield (
                         b"--frame\r\n"
                         b"Content-Type: image/png\r\n"

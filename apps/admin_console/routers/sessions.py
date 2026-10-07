@@ -16,6 +16,7 @@ import asyncio
 import json
 import sqlite3
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import FileResponse
 
 from artemis.config import DB_PATH, TRACES_PATH
 from apps.admin_console.core.access_control import AdminAPIError, require_admin, require_qa
@@ -30,7 +31,7 @@ from apps.admin_console.core.ownership import (
 )
 from apps.admin_console.routers.run_admin import ClearRequest
 from apps.admin_console.routers.run_bundle import library_error
-from apps.admin_console.services import run_retention
+from apps.admin_console.services import run_images, run_retention
 from apps.admin_console.services.run_artifacts import RunLibraryError
 
 try:
@@ -114,6 +115,7 @@ def _list_sessions_sync(scope: OwnerScope = OPEN_SCOPE):
         else:
             row_dict["video_url"] = None
         row_dict["recording_status"] = recording_status
+        row_dict["goal_images"] = run_images.describe(s_id)
 
         agent_names = agent_names_by_session.get(s_id, [])
         sess_profile = model_service.resolve_session_profile(
@@ -155,6 +157,21 @@ async def get_session_details(session_id: str):
     if not row:
         raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
     return dict(row)
+
+
+@router.get("/api/sessions/{session_id}/goal-images/{index}")
+async def get_goal_image(session_id: str, index: str, actor: OwnerScope = Depends(actor_scope)):
+    """A picture sent with the run's goal: the run's owner or an administrator only."""
+    require_access(scope_or_open(actor), session_id)
+    found = (
+        await asyncio.to_thread(run_images.find, session_id, index)
+        if run_images.is_safe_session_id(session_id)
+        else None
+    )
+    if found is None:
+        raise HTTPException(status_code=404, detail="Image not found")
+    path, media_type = found
+    return FileResponse(path, media_type=media_type, headers={"Content-Disposition": "inline"})
 
 
 @router.get("/api/sessions/{session_id}/events")

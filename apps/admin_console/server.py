@@ -82,6 +82,7 @@ from apps.admin_console.core.access_control import (
     config_from_environment,
     public_tier,
 )
+from apps.admin_console.services.run_images import RequestSizeLimitMiddleware
 
 try:
     from admin_console.core.security import SameOriginBoundaryMiddleware
@@ -173,6 +174,7 @@ app.state.lifecycle_token = LIFECYCLE_TOKEN
 # The console UI is served same-origin from this process, so no CORS grants
 # exist at all; the boundary middleware rejects cross-origin browser traffic
 # and unrecognized Host headers (DNS rebinding) instead.
+app.add_middleware(RequestSizeLimitMiddleware)
 app.add_middleware(SameOriginBoundaryMiddleware)
 
 
