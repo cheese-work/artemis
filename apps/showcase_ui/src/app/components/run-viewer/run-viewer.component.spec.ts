@@ -86,6 +86,7 @@ describe('RunViewerComponent', () => {
       steps = of([step(1), step(2), step(3)]) as Observable<StepItemData[]>,
       video = of(ready()) as Observable<SessionVideo>,
       isAdmin = false,
+      email = 'qa@example.test',
       id = ID
     } = {}
   ) {
@@ -93,7 +94,7 @@ describe('RunViewerComponent', () => {
     runs.steps.and.returnValue(steps);
     runs.video.and.returnValue(video);
     admin.getIdentity.and.returnValue(
-      of({ email: 'a@x.test', admin: isAdmin, auth_mode: 'cloudflare', reason: null })
+      of({ email, admin: isAdmin, auth_mode: 'cloudflare', reason: null })
     );
     fixture = TestBed.createComponent(RunViewerComponent);
     fixture.componentRef.setInput('runId', id);
@@ -267,12 +268,15 @@ describe('RunViewerComponent', () => {
       expect(q('.state-page a.back-to-runs')).not.toBeNull();
     });
 
-    for (const status of [401, 403, 0]) {
-      it(`shows the access page with a sign-in link back to this run when the check answers ${status}`, async () => {
-        await open({ runResult: httpError(status) });
-        expect(q('.state-page h1')!.textContent).toContain('Sign in to open this run');
-        expect(q<HTMLAnchorElement>('.state-page a.sign-in')!.getAttribute('href')).toBe(`/runs/${ID}`);
-      });
+    for (const prefix of ['/', '/preview/pr/70/']) {
+      for (const status of [401, 403, 0]) {
+        it(`keeps the sign-in link under ${prefix} when the check answers ${status}`, async () => {
+          spyOnProperty(document, 'baseURI', 'get').and.returnValue(new URL(prefix, location.href).href);
+          await open({ runResult: httpError(status) });
+          expect(q('.state-page h1')!.textContent).toContain('Sign in to open this run');
+          expect(q<HTMLAnchorElement>('.state-page a.sign-in')!.getAttribute('href')).toBe(`${prefix}runs/${ID}`);
+        });
+      }
     }
 
     it('lists candidates when a short id matches several runs', async () => {
@@ -535,6 +539,60 @@ describe('RunViewerComponent', () => {
     });
   });
 
+  describe('a run that is not mine (CHE-1152)', () => {
+    const labels = () => qa('button').map((b) => (b.textContent ?? '').replace(/\s+/g, ' ').trim());
+
+    it('opens read-only for a QA who does not own it: evidence and Copy link stay, every change goes', async () => {
+      await open({ email: 'someone.else@example.test' });
+      expect(q('[data-section="evidence"]')).not.toBeNull();
+      expect(q('[data-section="steps"]')).not.toBeNull();
+      expect(labels()).toContain('Copy link');
+      expect(labels()).toContain('Download');
+      for (const control of ['Delete', 'Pin', 'Unpin', 'Stop', 'Resume', 'Stop task', 'Resume task']) {
+        expect(labels()).not.toContain(control);
+      }
+      expect(q('.read-only-note')!.textContent).toContain('qa@example.test');
+    });
+
+    it('treats a run with no owner as read-only for a QA', async () => {
+      await open({ email: 'someone.else@example.test', runResult: of(run({ requested_by: null })) });
+      expect(labels()).not.toContain('Delete');
+      expect(q('.read-only-note')).not.toBeNull();
+    });
+
+    it('shows no read-only note and the full actions on my own run', async () => {
+      await open();
+      expect(q('.read-only-note')).toBeNull();
+      expect(labels()).toContain('Pin');
+      expect(labels()).toContain('Delete');
+    });
+
+    it('lets an admin act on anyone\'s run, including an unowned one', async () => {
+      await open({ isAdmin: true, email: 'admin@example.test', runResult: of(run({ requested_by: null })) });
+      expect(q('.read-only-note')).toBeNull();
+      expect(labels()).toContain('Delete');
+      expect(labels()).toContain('Pin');
+    });
+
+    it('does not offer changes until it knows who is looking', async () => {
+      admin.getIdentity.and.returnValue(new Subject());
+      runs.get.and.returnValue(of(run()));
+      runs.steps.and.returnValue(of([]));
+      runs.video.and.returnValue(of(ready()));
+      fixture = TestBed.createComponent(RunViewerComponent);
+      fixture.componentRef.setInput('runId', ID);
+      root = fixture.nativeElement;
+      await settle();
+      expect(labels()).not.toContain('Delete');
+      expect(labels()).not.toContain('Pin');
+    });
+
+    it('still lets a viewer start a new run from the same prompt', async () => {
+      await open({ email: 'someone.else@example.test', runResult: of(run({ status: 'interrupted' })) });
+      expect(labels()).toContain('Start new run with this prompt');
+    });
+  });
+
   describe('pin and delete', () => {
     it('pins and unpins with a pressed state', async () => {
       await open();
@@ -573,11 +631,11 @@ describe('RunViewerComponent', () => {
       expect(runs.unpin).toHaveBeenCalledWith(ID);
     });
 
-    it('shows Delete to admins only', async () => {
+    it('shows Delete to the run\'s owner and to admins', async () => {
       await open({ isAdmin: false });
-      expect(qa('button').some((b) => b.textContent!.trim() === 'Delete')).toBe(false);
+      expect(button('Delete')).toBeTruthy();
       fixture.destroy();
-      await open({ isAdmin: true });
+      await open({ isAdmin: true, email: 'admin@example.test' });
       expect(button('Delete')).toBeTruthy();
     });
 

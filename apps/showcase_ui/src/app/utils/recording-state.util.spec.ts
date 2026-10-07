@@ -3,7 +3,8 @@ import {
   Playback,
   RECORDING_STATES,
   Transfer,
-  mapRecording
+  mapRecording,
+  partialRibbonFor
 } from './recording-state.util';
 
 const CAPTURES: Capture[] = [
@@ -111,5 +112,24 @@ describe('mapRecording', () => {
     expect(mapRecording({ capture: null, transfer: null, playback: null }).badge).toBe('Video unknown');
     expect(mapRecording({ capture: 'partial', transfer: 'uploaded', playback: 'ready' }).badge).toBe('Partial video');
     expect(mapRecording({ capture: 'stopped', transfer: 'uploaded', playback: 'ready' }).badge).toBe('Video ready');
+  });
+});
+
+describe('partialRibbonFor', () => {
+  it('says where an interrupted run’s recording stopped', () => {
+    expect(partialRibbonFor({ status: 'interrupted', start_time: 100, end_time: 165 })).toBe(
+      'Partial recording (stopped at 01:05)'
+    );
+  });
+
+  it('says only "Partial recording" when the stop time is unknown', () => {
+    expect(partialRibbonFor({ status: 'interrupted', start_time: 100 })).toBe('Partial recording');
+  });
+
+  it('has no ribbon for any other run', () => {
+    for (const status of ['completed', 'failed', 'cancelled', 'running', undefined]) {
+      expect(partialRibbonFor({ status, start_time: 1, end_time: 9 })).toBeNull();
+    }
+    expect(partialRibbonFor(null)).toBeNull();
   });
 });

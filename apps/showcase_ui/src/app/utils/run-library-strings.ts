@@ -12,6 +12,7 @@ export const RUN_STRINGS = {
   clearFilters: 'Clear filters',
   emptyTitle: 'No runs yet.',
   emptyAction: 'Start one in Workspace',
+  emptyAllUsers: 'No runs from any user yet.',
   noMatch: 'No matching runs.',
   loadFailed: "Couldn't load runs. Your filters are kept.",
   catalogNotReady: 'The run library is getting ready. Try again in a minute.',
@@ -41,6 +42,12 @@ export const RUN_STRINGS = {
   pinFailed: "Couldn't update the pin. Try again.",
   deleteFailed: "Couldn't delete this run. Try again."
 } as const;
+
+/** Shown on a run the viewer neither owns nor administers: nothing on it can be changed. */
+export function readOnlyText(owner: string | null | undefined): string {
+  const whose = owner ? `This run belongs to ${owner}.` : 'This run has no owner.';
+  return `${whose} You can look at it and download it, but not change it.`;
+}
 
 export const MEDIA_NOTICE =
   'Videos and screenshots are not redacted and may contain sensitive information.';

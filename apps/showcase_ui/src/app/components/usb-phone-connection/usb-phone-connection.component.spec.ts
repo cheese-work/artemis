@@ -18,7 +18,7 @@ describe('UsbPhoneConnectionComponent', () => {
   beforeEach(async () => {
     relay = {
       isSupported: signal(true),
-      state: signal<UsbDeviceRelayState>({ status: 'idle', serial: null, error: null }),
+      state: signal<UsbDeviceRelayState>({ status: 'idle', serial: null, sessionId: null, error: null }),
       connect: jasmine.createSpy('connect').and.resolveTo(undefined),
       disconnect: jasmine.createSpy('disconnect').and.resolveTo(undefined)
     };
@@ -43,7 +43,7 @@ describe('UsbPhoneConnectionComponent', () => {
   });
 
   it('disables the connect action while permission and bridge setup are in progress', () => {
-    relay.state.set({ status: 'connecting', serial: null, error: null });
+    relay.state.set({ status: 'connecting', serial: null, sessionId: null, error: null });
     fixture.detectChanges();
 
     const button = fixture.nativeElement.querySelector('button') as HTMLButtonElement;
@@ -56,6 +56,7 @@ describe('UsbPhoneConnectionComponent', () => {
     relay.state.set({
       status: 'error',
       serial: null,
+      sessionId: null,
       error: 'USB permission was not granted. Allow access to the phone and try again.'
     });
     fixture.detectChanges();
@@ -69,6 +70,7 @@ describe('UsbPhoneConnectionComponent', () => {
     relay.state.set({
       status: 'error',
       serial: null,
+      sessionId: null,
       error: 'Could not connect the phone. Check its cable and USB Debugging, then retry.\n' +
         'Details: InvalidStateError: The interface is unavailable.\nUSB transfer failed.'
     });
@@ -84,7 +86,7 @@ describe('UsbPhoneConnectionComponent', () => {
   });
 
   it('shows the attached phone serial and tab-lifetime warning', () => {
-    relay.state.set({ status: 'connected', serial: 'R58M123', error: null });
+    relay.state.set({ status: 'connected', serial: 'R58M123', sessionId: null, error: null });
     fixture.detectChanges();
 
     expect(fixture.nativeElement.querySelector('code')?.textContent).toBe('R58M123');

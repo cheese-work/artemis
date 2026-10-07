@@ -28,6 +28,7 @@ try:
 except ImportError:
     from apps.admin_console.database.connection import db_session
 
+from apps.admin_console.services import failure_ledger
 from apps.admin_console.services.run_artifacts import (
     RemovalFailed,
     image_file,
@@ -114,10 +115,11 @@ def purge_run(db_path, traces: Path, session_id: str, *, vacuum: bool = True) ->
     StorageManager(db_path or DB_PATH, traces).delete_session(
         session_id, delete_files=False, vacuum=vacuum
     )
-    if names:
-        with db_session(db_path) as conn:
+    with db_session(db_path) as conn:
+        if names:
             conn.executemany("DELETE FROM images WHERE image_name = ?", [(n,) for n in names])
-            conn.commit()
+        failure_ledger.forget(conn, session_id)
+        conn.commit()
 
 
 def compact(db_path) -> None:

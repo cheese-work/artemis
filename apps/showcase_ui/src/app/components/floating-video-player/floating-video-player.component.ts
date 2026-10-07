@@ -15,6 +15,7 @@
  */
 
 import { LoggerService } from '../../services/logger.service';
+import { appUrl, mediaUrl } from '../../utils/app-url.util';
 import {
   Component,
   ChangeDetectionStrategy,
@@ -34,6 +35,7 @@ import { AgentService } from '../../services/agent.service';
 import { StepReplayFrame } from '../../core/models/stream.model';
 import { drawActionCoordinatesOnOverlay } from '../../utils/image-overlay.util';
 import { getActionIcon } from '../../utils/action-formatter.util';
+import { partialRibbonFor } from '../../utils/recording-state.util';
 import { locateTimelineTime, sessionTimeToTimelineTime } from '../../utils/recording-timeline.util';
 
 @Component({
@@ -73,12 +75,12 @@ export class FloatingVideoPlayerComponent implements OnDestroy {
   public isMuted = signal<boolean>(false);
   public isTheaterMode = signal<boolean>(false);
   public videoLoadError = signal<boolean>(false);
-  public liveStreamUrl = signal<string>('/api/stream/device-live');
+  public liveStreamUrl = signal<string>(appUrl('/api/stream/device-live'));
   public liveStreamError = signal<boolean>(false);
   public activeSegmentIndex = signal<number>(0);
   public currentVideoUrl = computed(() => {
     const segments = this.agentService.activeVideoSegments();
-    return segments[this.activeSegmentIndex()]?.url || this.agentService.activeVideoUrl();
+    return mediaUrl(segments[this.activeSegmentIndex()]?.url || this.agentService.activeVideoUrl());
   });
   private pendingLocalTime: number | null = null;
   private pendingAutoplay = false;
@@ -94,6 +96,9 @@ export class FloatingVideoPlayerComponent implements OnDestroy {
   public isStepImageLoading = signal<boolean>(false);
   public stepImageError = signal<boolean>(false);
   private stepTimer: any = null;
+
+  /** "Partial recording (stopped at mm:ss)" when the run on screen was interrupted before it ended. */
+  public partialRibbon = computed(() => partialRibbonFor(this.agentService.currentSession()));
 
   public stepFrames = computed(() => this.agentService.currentSessionStepFrames());
   public totalStepFrames = computed(() => this.stepFrames().length);
@@ -211,7 +216,7 @@ export class FloatingVideoPlayerComponent implements OnDestroy {
 
   public retryLiveStream(): void {
     this.liveStreamError.set(false);
-    this.liveStreamUrl.set(`/api/stream/device-live?t=${Date.now()}`);
+    this.liveStreamUrl.set(appUrl(`/api/stream/device-live?t=${Date.now()}`));
   }
 
   /**
@@ -489,7 +494,7 @@ export class FloatingVideoPlayerComponent implements OnDestroy {
   }
 
   public openInNewTab(): void {
-    const url = this.agentService.activeVideoUrl();
+    const url = this.currentVideoUrl();
     if (url) {
       window.open(url, '_blank');
     }

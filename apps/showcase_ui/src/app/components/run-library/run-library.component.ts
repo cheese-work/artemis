@@ -4,8 +4,10 @@ import {
   DestroyRef,
   ElementRef,
   computed,
+  effect,
   inject,
   signal,
+  untracked,
   viewChild
 } from '@angular/core';
 import { HttpErrorResponse } from '@angular/common/http';
@@ -16,6 +18,7 @@ import { Subscription } from 'rxjs';
 import { Computer } from '../../core/models/host.model';
 import { RunSummary } from '../../core/models/run.model';
 import { HostsService } from '../../services/hosts.service';
+import { OwnerScopeService } from '../../services/owner-scope.service';
 import { RunsService } from '../../services/runs.service';
 import { mapRecording } from '../../utils/recording-state.util';
 import {
@@ -33,13 +36,16 @@ import {
   interruptReason,
   truncate
 } from '../../utils/run-library-strings';
+import { serialShape, unlistedRunDeviceTitle } from '../../utils/device-label.util';
 import { runStatusView } from '../../utils/run-status.util';
 import { classifySearch } from '../../utils/run-search.util';
+import { OwnerLabelComponent } from '../owner-label/owner-label.component';
+import { ScopeSwitchComponent } from '../scope-switch/scope-switch.component';
 
 @Component({
   selector: 'app-run-library',
   standalone: true,
-  imports: [RouterLink, DatePipe],
+  imports: [RouterLink, DatePipe, OwnerLabelComponent, ScopeSwitchComponent],
   templateUrl: './run-library.component.html',
   styleUrl: './run-library.component.scss',
   changeDetection: ChangeDetectionStrategy.OnPush
@@ -47,6 +53,7 @@ import { classifySearch } from '../../utils/run-search.util';
 export class RunLibraryComponent {
   private readonly runsApi = inject(RunsService);
   private readonly hostsApi = inject(HostsService);
+  private readonly ownerScope = inject(OwnerScopeService);
   private readonly router = inject(Router);
   private readonly route = inject(ActivatedRoute);
   private readonly location = inject(Location);
@@ -68,6 +75,7 @@ export class RunLibraryComponent {
   public readonly error = signal<'failed' | 'not_ready' | null>(null);
   public readonly computers = signal<Computer[]>([]);
 
+  public readonly showingAll = this.ownerScope.showAll;
   public readonly active = computed(() => hasActiveFilters(this.filters()));
   public readonly moreOpen = computed(() => {
     const { device, host, requester } = this.filters();
@@ -82,6 +90,17 @@ export class RunLibraryComponent {
   private lastFiltersKey: string | null = null;
 
   constructor() {
+    let showingAll = this.ownerScope.showAll();
+    effect(() => {
+      const all = this.ownerScope.showAll();
+      if (all === showingAll) return;
+      showingAll = all;
+      // Another set of runs: the old cursor, scroll position and rows mean nothing.
+      untracked(() => {
+        this.pendingScroll = 0;
+        this.load(false);
+      });
+    });
     this.hostsApi
       .list()
       .pipe(takeUntilDestroyed(this.destroyRef))
@@ -242,7 +261,9 @@ export class RunLibraryComponent {
   }
 
   public device(run: RunSummary): string {
-    const phone = run.device_ref?.serial ?? 'Unknown phone';
+    // The address is detail (the row's tooltip); a browser-relayed phone is named by the computer part.
+    const serial = run.device_ref?.serial;
+    const phone = !serial ? 'Unknown phone' : serialShape(serial) === 'loopback' ? 'Phone' : unlistedRunDeviceTitle(serial, false);
     const computer =
       run.host_id === null
         ? 'A browser'

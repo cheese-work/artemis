@@ -19,6 +19,7 @@ export interface RunActionEvent {
   selector: '[appRunActionBar]',
   standalone: true,
   template: `
+    <ng-content select="[barNote]" />
     @for (control of actions(); track control.id) {
       <button type="button" [class]="control.className ?? 'action-button'"
         [attr.aria-label]="control.ariaLabel ?? null" [attr.title]="control.title ?? null"
