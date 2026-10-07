@@ -27,6 +27,15 @@ import { RunLibraryComponent } from '../../components/run-library/run-library.co
 import { RunTargetPickerComponent } from '../../components/run-target-picker/run-target-picker.component';
 import { RunViewerComponent } from '../../components/run-viewer/run-viewer.component';
 import { AgentService } from '../../services/agent.service';
+import { IMAGE_ACCEPT, RunImageUpload, screenImages, toUpload } from '../../utils/run-image.util';
+
+/** A picture chosen for the next message, with the object URL its preview uses. */
+export interface AttachedImage {
+  id: number;
+  file: File;
+  mediaType: string;
+  previewUrl: string;
+}
 
 @Component({
   selector: 'app-workspace',
@@ -80,6 +89,14 @@ export class WorkspaceComponent implements OnInit {
   }
   public isSubmitting = signal<boolean>(false);
   public errorMessage = signal<string | null>(null);
+
+  // Image chat: pictures for the next message. The draft session id lives as long as the
+  // draft, so a retry after a failed or lost send cannot queue the message twice.
+  public readonly imageAccept = IMAGE_ACCEPT;
+  public attachedImages = signal<AttachedImage[]>([]);
+  private nextImageId = 0;
+  private draftSessionId: string | null = null;
+
   public selectedProfile = signal<'flash' | 'pro'>('flash');
 
   // Expand States (Signals for 0-latency reactivity)
@@ -98,6 +115,7 @@ export class WorkspaceComponent implements OnInit {
       rootStyle.setProperty('--stream-header-width-compact', '96px');
     }
     this.destroyRef.onDestroy(() => {
+      this.attachedImages().forEach((image) => URL.revokeObjectURL(image.previewUrl));
       ['--right-panel-width', '--stream-header-width', '--stream-header-width-compact'].forEach((v) => rootStyle.removeProperty(v));
       if (this.errorTimeout) clearTimeout(this.errorTimeout);
       this.agentService.whatsNewPromptDraft.set(false);
@@ -278,10 +296,49 @@ export class WorkspaceComponent implements OnInit {
     }
   }
 
+  /** Add the chosen files; each refusal is named in the error banner. */
+  public addImages(files: File[]): void {
+    const { accepted, errors } = screenImages(files, this.attachedImages().length);
+    if (accepted.length) {
+      this.attachedImages.update((images) => [
+        ...images,
+        ...accepted.map(({ file, mediaType }) => ({
+          id: this.nextImageId++,
+          file,
+          mediaType,
+          previewUrl: URL.createObjectURL(file)
+        }))
+      ]);
+      this.draftSessionId = null; // different content is a different message
+    }
+    if (errors.length) {
+      this.setErrorMessage(errors.join(' '));
+    }
+  }
+
+  public onFilesChosen(event: Event): void {
+    const input = event.target as HTMLInputElement;
+    this.addImages(Array.from(input.files ?? []));
+    input.value = ''; // the same file can be chosen again after it was removed
+  }
+
+  public removeImage(id: number): void {
+    const removed = this.attachedImages().find((image) => image.id === id);
+    if (removed) URL.revokeObjectURL(removed.previewUrl);
+    this.attachedImages.update((images) => images.filter((image) => image.id !== id));
+    this.draftSessionId = null;
+  }
+
+  private clearImages(): void {
+    this.attachedImages().forEach((image) => URL.revokeObjectURL(image.previewUrl));
+    this.attachedImages.set([]);
+    this.draftSessionId = null;
+  }
+
   /**
    * Submit a new task instruction
    */
-  public submitTask(): void {
+  public async submitTask(): Promise<void> {
     const goal = this.taskInput.trim();
     if (!goal || this.isSubmitting()) {
       return;
@@ -295,9 +352,24 @@ export class WorkspaceComponent implements OnInit {
     }
     this.isInputFocused.set(false);
 
-    this.agentService.runTask(goal, this.selectedProfile()).subscribe({
-      next: (res) => {
+    let uploads: RunImageUpload[] = [];
+    try {
+      uploads = await Promise.all(this.attachedImages().map((image) => toUpload(image.file, image.mediaType)));
+    } catch (err) {
+      this.isSubmitting.set(false);
+      this.setErrorMessage(err instanceof Error ? err.message : 'An image could not be read.');
+      return;
+    }
+    this.draftSessionId ??= crypto.randomUUID();
+    const imageChat = uploads.length ? { images: uploads, sessionId: this.draftSessionId } : undefined;
+
+    const submission = imageChat
+      ? this.agentService.runTask(goal, this.selectedProfile(), undefined, undefined, undefined, imageChat)
+      : this.agentService.runTask(goal, this.selectedProfile());
+    submission.subscribe({
+      next: () => {
         this.taskInput = '';
+        this.clearImages();
         if (this.dockInputRef?.nativeElement) {
           this.dockInputRef.nativeElement.style.height = 'auto';
         }

@@ -160,9 +160,7 @@ async def get_session_details(session_id: str):
 
 
 @router.get("/api/sessions/{session_id}/goal-images/{index}")
-async def get_goal_image(
-    session_id: str, index: str, actor: OwnerScope = Depends(actor_scope)
-):
+async def get_goal_image(session_id: str, index: str, actor: OwnerScope = Depends(actor_scope)):
     """A picture sent with the run's goal: the run's owner or an administrator only."""
     require_access(scope_or_open(actor), session_id)
     found = (

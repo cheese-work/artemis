@@ -87,7 +87,10 @@ def test_the_four_allowed_types_are_accepted(fmt, media_type, name, extension):
     ("upload", "code"),
     [
         (_upload("GIF", "image/gif", "a.gif"), "unsupported_image_type"),
-        (_upload(raw=b"<svg xmlns='http://www.w3.org/2000/svg'/>", media_type="image/svg+xml"), "unsupported_image_type"),
+        (
+            _upload(raw=b"<svg xmlns='http://www.w3.org/2000/svg'/>", media_type="image/svg+xml"),
+            "unsupported_image_type",
+        ),
         (_upload(raw=b"plain text, not a picture"), "invalid_image"),
         (_upload(raw=_image_bytes()[:40]), "invalid_image"),
         (_upload("JPEG", "image/png", "a.png"), "invalid_image"),
@@ -229,7 +232,11 @@ async def test_a_message_without_images_is_unchanged(cloudflare, enqueue):
 @pytest.mark.parametrize(
     ("body", "status", "code"),
     [
-        ({"goal": "x", "images": [_upload("GIF", "image/gif", "a.gif")]}, 415, "unsupported_image_type"),
+        (
+            {"goal": "x", "images": [_upload("GIF", "image/gif", "a.gif")]},
+            415,
+            "unsupported_image_type",
+        ),
         ({"goal": "x", "images": [_upload(raw=b"not an image")]}, 400, "invalid_image"),
         ({"goal": "x", "images": [_upload()] * 9}, 413, "too_many_images"),
         ({"goals": ["a", "b"], "images": [_upload()]}, 400, "images_need_one_goal"),

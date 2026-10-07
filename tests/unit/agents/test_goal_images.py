@@ -73,7 +73,7 @@ def test_the_message_form_is_one_human_message(attached):
     assert len(_image_urls(message.content)) == 2
 
 
-@pytest.mark.parametrize("value", ["not json", '{"a": 1}', '["relative/0.png"]', '[1]'])
+@pytest.mark.parametrize("value", ["not json", '{"a": 1}', '["relative/0.png"]', "[1]"])
 def test_a_bad_variable_stops_the_run(monkeypatch, value):
     monkeypatch.setenv(goal_images.ENV_VAR, value)
 
@@ -81,9 +81,7 @@ def test_a_bad_variable_stops_the_run(monkeypatch, value):
         goal_images.goal_image_blocks()
 
 
-def test_a_missing_or_unsupported_file_stops_the_run_instead_of_dropping_it(
-    tmp_path, monkeypatch
-):
+def test_a_missing_or_unsupported_file_stops_the_run_instead_of_dropping_it(tmp_path, monkeypatch):
     gone = tmp_path / "0.png"
     odd = tmp_path / "1.gif"
     odd.write_bytes(b"GIF89a")
@@ -158,9 +156,7 @@ async def test_the_operator_observation_carries_the_pictures(attached):
 
 
 @pytest.mark.asyncio
-async def test_the_planner_sends_the_pictures_with_the_first_screenshot(
-    mock_context, attached
-):
+async def test_the_planner_sends_the_pictures_with_the_first_screenshot(mock_context, attached):
     state = Mock(initial_goal="g", latest_screenshot=None)
     node = PlannerNode(mock_context)
     llm = Mock()

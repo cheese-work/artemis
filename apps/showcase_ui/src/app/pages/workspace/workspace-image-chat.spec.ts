@@ -129,7 +129,7 @@ describe('WorkspaceComponent image chat', () => {
     component.addImages([png('a.png')]);
     component.taskInput = 'what is this?';
 
-    component.submitTask();
+    await component.submitTask();
     await settle();
 
     const [goal, profile, , , , extras] = runTask.calls.mostRecent().args;
@@ -144,7 +144,7 @@ describe('WorkspaceComponent image chat', () => {
   it('sends a plain message exactly as before', async () => {
     component.taskInput = 'open settings';
 
-    component.submitTask();
+    await component.submitTask();
     await settle();
 
     expect(runTask.calls.mostRecent().args.length).toBeLessThanOrEqual(2);
@@ -158,7 +158,7 @@ describe('WorkspaceComponent image chat', () => {
     component.addImages([png('a.png')]);
     component.taskInput = 'what is this?';
 
-    component.submitTask();
+    await component.submitTask();
     await settle();
     const firstId = runTask.calls.mostRecent().args[5].sessionId;
 
@@ -167,7 +167,7 @@ describe('WorkspaceComponent image chat', () => {
     expect(component.taskInput).toBe('what is this?');
     expect(component.isSubmitting()).toBeFalse();
 
-    component.submitTask();
+    await component.submitTask();
     await settle();
 
     expect(runTask.calls.mostRecent().args[5].sessionId).toBe(firstId);
@@ -177,13 +177,13 @@ describe('WorkspaceComponent image chat', () => {
   it('starts a new session id for the next message', async () => {
     component.addImages([png()]);
     component.taskInput = 'one';
-    component.submitTask();
+    await component.submitTask();
     await settle();
     const first = runTask.calls.mostRecent().args[5].sessionId;
 
     component.addImages([png()]);
     component.taskInput = 'two';
-    component.submitTask();
+    await component.submitTask();
     await settle();
 
     expect(runTask.calls.mostRecent().args[5].sessionId).not.toBe(first);
