@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
+import json
 import logging
 import os
 import time
@@ -26,6 +27,7 @@ import uuid
 from artemis.runtime.adb_endpoint import AdbEndpoint
 from artemis.runtime.device_lock import DeviceExecutionLock
 from artemis.runtime.endpoint_transport import EndpointTransport
+from artemis.utils.redaction import redact_text
 
 DEFAULT_SESSION_TTL_SECONDS = 300
 DEFAULT_SESSION_MAX_LIFETIME_SECONDS = 4 * 60 * 60
@@ -109,6 +111,9 @@ class BridgeSession:
     adb_connect_attempted: bool = False
     revoked: bool = False
     close_reason: str | None = None
+    client_close: dict[str, object] | None = None
+    websocket_close_code: int | None = None
+    websocket_close_reason: str = ""
     # Verified email of the person who connected the phone; None when no one was signed in.
     owner: str | None = None
 
@@ -236,10 +241,13 @@ class BridgeSessionService:
         session.revoked = True
         session.close_reason = session.close_reason or "revoked"
         logger.info(
-            "event=bridge_close session_id=%s serial=%s reason=%s",
+            "event=bridge_close session_id=%s serial=%s reason=%s close_code=%s close_reason=%s client_close=%s",
             session.session_id,
             session.serial,
             session.close_reason,
+            session.websocket_close_code,
+            json.dumps(redact_text(session.websocket_close_reason[:512])),
+            json.dumps(session.client_close),
         )
         try:
             if session.adb_connect_attempted:

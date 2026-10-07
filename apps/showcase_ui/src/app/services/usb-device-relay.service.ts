@@ -1,4 +1,4 @@
-import { LoggerService } from './logger.service';
+import { LoggerService, redact } from './logger.service';
 import { DOCUMENT } from '@angular/common';
 import { computed, inject, Injectable, InjectionToken, OnDestroy, signal } from '@angular/core';
 import {
@@ -49,6 +49,10 @@ const SOCKET_OPEN = 1;
 const MAX_ADB_PAYLOAD_LENGTH = 1024 * 1024;
 const SOCKET_OPEN_TIMEOUT_MS = 15_000;
 const DEVICE_ATTACH_TIMEOUT_MS = 30_000;
+type ClientCloseReason = 'manual_disconnect' | 'service_destroyed' | 'page_unload' |
+  'connect_error' | 'socket_open_timeout' | 'attachment_timeout' | 'socket_error' |
+  'socket_closed' | 'protocol_error' | 'bridge_rejected' | 'usb_read_error' |
+  'usb_write_error' | 'usb_disconnected';
 
 @Injectable({ providedIn: 'root' })
 export class UsbDeviceRelayService implements OnDestroy {
@@ -84,8 +88,12 @@ export class UsbDeviceRelayService implements OnDestroy {
     }
   };
 
+  private readonly closeBeforeUnload = (): void => {
+    void this.finishConnection(this.generation, null, 'page_unload');
+  };
+
   public ngOnDestroy(): void {
-    void this.disconnect();
+    void this.finishConnection(this.generation, null, 'service_destroyed');
   }
 
   public async connect(): Promise<void> {
@@ -128,34 +136,39 @@ export class UsbDeviceRelayService implements OnDestroy {
       await this.openSocket(socket, generation);
     } catch (error) {
       if (generation === this.generation) {
-        await this.finishConnection(generation, this.toUserMessage(error));
+        await this.finishConnection(
+          generation, this.toUserMessage(error), 'connect_error',
+          this.device && !this.socket ? error : null
+        );
       }
     }
   }
 
   public async disconnect(): Promise<void> {
-    await this.finishConnection(this.generation, null);
+    await this.finishConnection(this.generation, null, 'manual_disconnect');
   }
 
   private async openSocket(socket: WebSocket, generation: number): Promise<void> {
+    let failureReason: ClientCloseReason = 'connect_error';
     await new Promise<void>((resolve, reject) => {
       let opened = false;
       let settled = false;
 
-      const fail = (error: Error): void => {
+      const fail = (error: Error, reason: ClientCloseReason): void => {
         if (generation !== this.generation) {
           return;
         }
+        failureReason = reason;
         if (!settled) {
           settled = true;
           reject(error);
         } else {
-          void this.finishConnection(generation, this.toUserMessage(error));
+          void this.finishConnection(generation, this.toUserMessage(error), reason);
         }
       };
 
       this.socketOpenTimer = setTimeout(() => {
-        fail(namedError('DeviceBridgeConnectionError'));
+        fail(namedError('DeviceBridgeConnectionError'), 'socket_open_timeout');
       }, SOCKET_OPEN_TIMEOUT_MS);
 
       socket.onopen = () => {
@@ -171,7 +184,8 @@ export class UsbDeviceRelayService implements OnDestroy {
         this.attachmentTimer = setTimeout(() => {
           void this.finishConnection(
             generation,
-            'The bridge did not report an attached phone. Check the connection and try again.'
+            'The bridge did not report an attached phone. Check the connection and try again.',
+            'attachment_timeout'
           );
         }, DEVICE_ATTACH_TIMEOUT_MS);
         resolve();
@@ -181,10 +195,17 @@ export class UsbDeviceRelayService implements OnDestroy {
       };
 
       socket.onmessage = event => this.handleSocketMessage(event, generation);
-      socket.onerror = () => fail(namedError('DeviceBridgeConnectionError'));
-      socket.onclose = () => {
-        fail(namedError(opened ? 'DeviceBridgeDroppedError' : 'DeviceBridgeConnectionError'));
+      socket.onerror = () => fail(namedError('DeviceBridgeConnectionError'), 'socket_error');
+      socket.onclose = event => {
+        this.logger.warn('Device bridge socket closed:', {
+          code: event.code, reason: event.reason, was_clean: event.wasClean,
+          visibility_state: this.document.visibilityState
+        });
+        socket.onclose = null;
+        fail(namedError(opened ? 'DeviceBridgeDroppedError' : 'DeviceBridgeConnectionError'), 'socket_closed');
       };
+    }).catch(async error => {
+      await this.finishConnection(generation, this.toUserMessage(error), failureReason);
     });
   }
 
@@ -193,23 +214,31 @@ export class UsbDeviceRelayService implements OnDestroy {
     socket: WebSocket,
     generation: number
   ): Promise<void> {
+    let reason: ClientCloseReason = 'usb_read_error';
     try {
       while (generation === this.generation) {
+        reason = 'usb_read_error';
         const { value, done } = await reader.read();
         if (done) {
+          reason = 'usb_disconnected';
           throw namedError('UsbDeviceDisconnectedError');
         }
         if (socket.readyState !== SOCKET_OPEN) {
+          reason = 'socket_closed';
           throw namedError('DeviceBridgeDroppedError');
         }
+        reason = 'protocol_error';
         const serialized = serializeDevicePacket(value);
         const frame = new Uint8Array(serialized.byteLength);
         frame.set(serialized);
+        reason = 'socket_error';
         socket.send(frame.buffer);
       }
     } catch (error) {
       if (generation === this.generation) {
-        await this.finishConnection(generation, this.toUserMessage(error));
+        await this.finishConnection(
+          generation, this.toUserMessage(error), reason, reason === 'usb_read_error' ? error : null
+        );
       }
     }
   }
@@ -225,6 +254,9 @@ export class UsbDeviceRelayService implements OnDestroy {
     }
 
     this.incomingPackets = this.incomingPackets.then(async () => {
+      if (generation !== this.generation) {
+        return;
+      }
       const frame = await toUint8Array(event.data);
       if (generation !== this.generation) {
         return;
@@ -236,13 +268,20 @@ export class UsbDeviceRelayService implements OnDestroy {
       if (generation !== this.generation || !this.writer) {
         return;
       }
-      await this.writer.write(new Consumable(packet));
+      try {
+        await this.writer.write(new Consumable(packet));
+      } catch (error) {
+        if (generation === this.generation) {
+          await this.finishConnection(generation, this.toUserMessage(error), 'usb_write_error', error);
+        }
+      }
     }).catch((error) => {
       this.logger.error('Device bridge packet failed:', error);
       if (generation === this.generation) {
         void this.finishConnection(
           generation,
-          'The device bridge sent invalid ADB data. Disconnect and try again.'
+          'The device bridge sent invalid ADB data. Disconnect and try again.',
+          'protocol_error'
         );
       }
     });
@@ -286,16 +325,31 @@ export class UsbDeviceRelayService implements OnDestroy {
       }
     } catch (error) {
       if (generation === this.generation) {
-        void this.finishConnection(generation, this.toUserMessage(error));
+        void this.finishConnection(
+          generation, this.toUserMessage(error),
+          error instanceof Error && error.name === 'DeviceBridgeRejectedError' ? 'bridge_rejected' : 'protocol_error'
+        );
       }
     }
   }
 
-  private async finishConnection(generation: number, error: string | null): Promise<void> {
-    if (generation !== this.generation) {
+  private async finishConnection(
+    generation: number,
+    error: string | null,
+    reason: ClientCloseReason,
+    usbError: unknown = null
+  ): Promise<void> {
+    if (generation !== this.generation ||
+      (!this.socket && !this.device && ['idle', 'error'].includes(this.state().status))) {
       return;
     }
 
+    const report = {
+      type: 'client_close', reason,
+      usb_error: usbError === null ? null : errorDetails(usbError),
+      visibility_state: this.document.visibilityState
+    };
+    this.logger.warn('Device bridge closing:', report);
     this.generation += 1;
     this.state.set(error
       ? { status: 'error', serial: null, error }
@@ -317,13 +371,12 @@ export class UsbDeviceRelayService implements OnDestroy {
       socket.onopen = null;
       socket.onmessage = null;
       socket.onerror = null;
-      socket.onclose = null;
       try {
         if (socket.readyState === SOCKET_OPEN) {
-          socket.send('close');
+          socket.send(JSON.stringify(report));
         }
         if (socket.readyState < 2) {
-          socket.close(1000, 'Client disconnected');
+          socket.close(1000, reason);
         }
       } catch (error) {
         this.logger.warn('Device bridge socket cleanup failed:', error);
@@ -359,6 +412,7 @@ export class UsbDeviceRelayService implements OnDestroy {
   private registerUnloadWarning(): void {
     if (this.browserWindow && !this.unloadWarningRegistered) {
       this.browserWindow.addEventListener('beforeunload', this.warnBeforeUnload);
+      this.browserWindow.addEventListener('pagehide', this.closeBeforeUnload);
       this.unloadWarningRegistered = true;
     }
   }
@@ -366,6 +420,7 @@ export class UsbDeviceRelayService implements OnDestroy {
   private unregisterUnloadWarning(): void {
     if (this.browserWindow && this.unloadWarningRegistered) {
       this.browserWindow.removeEventListener('beforeunload', this.warnBeforeUnload);
+      this.browserWindow.removeEventListener('pagehide', this.closeBeforeUnload);
       this.unloadWarningRegistered = false;
     }
   }
@@ -431,6 +486,17 @@ export class UsbDeviceRelayService implements OnDestroy {
         return 'Could not connect the phone. Check its cable and USB Debugging, then retry.\n' +
           `Details: ${name || 'Unknown error'}${message ? `: ${message}` : ''}`;
     }
+  }
+}
+
+function errorDetails(error: unknown): string {
+  try {
+    if (typeof error === 'object' && error !== null && 'name' in error && 'message' in error) {
+      return redact(`${error.name}: ${error.message}`).slice(0, 512);
+    }
+    return redact(String(error)).slice(0, 512);
+  } catch {
+    return 'Unknown USB error';
   }
 }
 

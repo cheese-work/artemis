@@ -10,6 +10,7 @@ import {
   AdbDaemonWebUsbDeviceManager
 } from '@yume-chan/adb-daemon-webusb';
 import { Consumable } from '@yume-chan/stream-extra';
+import { LoggerService } from './logger.service';
 import {
   DEVICE_BRIDGE_SOCKET_FACTORY,
   UsbDeviceRelayService,
@@ -25,11 +26,16 @@ class FakeSocket {
   public onclose: ((event: CloseEvent) => void) | null = null;
   public sent: Array<string | ArrayBufferLike | Blob | ArrayBufferView> = [];
   public readonly firstBinaryFrame: Promise<ArrayBuffer>;
+  public readonly firstCloseReport: Promise<void>;
   private resolveFirstBinaryFrame!: (frame: ArrayBuffer) => void;
+  private resolveFirstCloseReport!: () => void;
 
   public constructor() {
     this.firstBinaryFrame = new Promise(resolve => {
       this.resolveFirstBinaryFrame = resolve;
+    });
+    this.firstCloseReport = new Promise(resolve => {
+      this.resolveFirstCloseReport = resolve;
     });
   }
 
@@ -42,21 +48,22 @@ class FakeSocket {
     this.onmessage?.(new MessageEvent('message', { data }));
   }
 
-  public drop(): void {
+  public drop(code = 1006, reason = ''): void {
     this.readyState = 3;
-    this.onclose?.(new CloseEvent('close'));
+    this.onclose?.(new CloseEvent('close', { code, reason, wasClean: code === 1000 }));
   }
 
   public send(data: string | ArrayBufferLike | Blob | ArrayBufferView): void {
     this.sent.push(data);
     if (data instanceof ArrayBuffer) {
       this.resolveFirstBinaryFrame(data);
+    } else if (typeof data === 'string' && data.startsWith('{')) {
+      this.resolveFirstCloseReport();
     }
   }
 
-  public close(): void {
-    this.readyState = 3;
-    this.onclose?.(new CloseEvent('close'));
+  public close(code = 1000, reason = ''): void {
+    this.drop(code, reason);
   }
 }
 
@@ -74,12 +81,15 @@ describe('UsbDeviceRelayService', () => {
   let receivedPackets: AdbPacketInit[];
   let packetWriteCompleted: Promise<void>;
   let resolvePacketWrite!: () => void;
+  let writeError: Error | null;
+  let closeLog: jasmine.Spy;
 
   beforeEach(() => {
     service = null;
     socket = new FakeSocket();
     socketUrl = undefined;
     receivedPackets = [];
+    writeError = null;
     packetWriteCompleted = new Promise(resolve => {
       resolvePacketWrite = resolve;
     });
@@ -91,6 +101,9 @@ describe('UsbDeviceRelayService', () => {
     });
     const writable = new WritableStream<Consumable<AdbPacketInit>>({
       write(packet) {
+        if (writeError) {
+          throw writeError;
+        }
         receivedPackets.push(packet.value);
         resolvePacketWrite();
       }
@@ -120,6 +133,7 @@ describe('UsbDeviceRelayService', () => {
         }
       ]
     });
+    closeLog = spyOn(TestBed.inject(LoggerService), 'warn');
   });
 
   afterEach(async () => {
@@ -273,7 +287,9 @@ describe('UsbDeviceRelayService', () => {
     }));
 
     await service.disconnect();
-    expect(socket.sent.at(-1)).toBe('close');
+    expect(JSON.parse(socket.sent.at(-1) as string)).toEqual(jasmine.objectContaining({
+      type: 'client_close', reason: 'manual_disconnect', usb_error: null
+    }));
     expect(service.state().status).toBe('idle');
   });
 
@@ -350,6 +366,229 @@ describe('UsbDeviceRelayService', () => {
     beforeUnloadHandler?.(event as BeforeUnloadEvent);
 
     expect(event.defaultPrevented).toBeTrue();
+  });
+
+  async function openRelay(): Promise<void> {
+    service = TestBed.inject(UsbDeviceRelayService);
+    const connecting = service.connect();
+    await flushMicrotasks();
+    socket.open();
+    await connecting;
+    socket.message(JSON.stringify({
+      type: 'session_leased', session_id: 'lease-1', expires_in_seconds: 300
+    }));
+    socket.message(JSON.stringify({ type: 'device_attached', serial: 'R58M123' }));
+  }
+
+  function expectClose(reason: string, usbError: string | null = null): void {
+    expect(closeLog).toHaveBeenCalledWith('Device bridge closing:', jasmine.objectContaining({
+      reason, usb_error: usbError
+    }));
+    expect(JSON.parse(socket.sent.at(-1) as string)).toEqual(jasmine.objectContaining({
+      type: 'client_close', reason, usb_error: usbError
+    }));
+    expect(socket.readyState).toBe(3);
+  }
+
+  it('reports manual disconnect before closing and cleans up only once', async () => {
+    await openRelay();
+    const close = spyOn(socket, 'close').and.callFake(() => {
+      expect(JSON.parse(socket.sent.at(-1) as string).reason).toBe('manual_disconnect');
+      socket.drop(1000, 'manual_disconnect');
+    });
+    await service!.disconnect();
+    await service!.disconnect();
+    expectClose('manual_disconnect');
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(closeLog.calls.allArgs().filter(args => args[0] === 'Device bridge closing:').length).toBe(1);
+  });
+
+  it('reports service destruction separately from manual disconnect', async () => {
+    await openRelay();
+    service!.ngOnDestroy();
+    await flushMicrotasks();
+    expectClose('service_destroyed');
+  });
+
+  it('logs USB setup errors even before a bridge socket exists', async () => {
+    device.connect.and.rejectWith(new DOMException('connect failed', 'NetworkError'));
+    service = TestBed.inject(UsbDeviceRelayService);
+    await service.connect();
+    expect(closeLog).toHaveBeenCalledWith('Device bridge closing:', jasmine.objectContaining({
+      reason: 'connect_error', usb_error: 'NetworkError: connect failed'
+    }));
+    expect(device.raw.close).toHaveBeenCalled();
+  });
+
+  it('logs socket errors during opening', async () => {
+    service = TestBed.inject(UsbDeviceRelayService);
+    const connecting = service.connect();
+    await flushMicrotasks();
+    socket.onerror?.(new Event('error'));
+    await connecting;
+    expect(closeLog).toHaveBeenCalledWith('Device bridge closing:', jasmine.objectContaining({
+      reason: 'socket_error'
+    }));
+    expect(socket.readyState).toBe(3);
+  });
+
+  it('logs a socket close before opening with its received close code', async () => {
+    service = TestBed.inject(UsbDeviceRelayService);
+    const connecting = service.connect();
+    await flushMicrotasks();
+    socket.drop(1008, 'not_signed_in');
+    await connecting;
+    expect(closeLog).toHaveBeenCalledWith('Device bridge socket closed:', jasmine.objectContaining({
+      code: 1008, reason: 'not_signed_in'
+    }));
+    expect(closeLog).toHaveBeenCalledWith('Device bridge closing:', jasmine.objectContaining({
+      reason: 'socket_closed'
+    }));
+  });
+
+  it('reports page unload without closing for a cancelled beforeunload warning', async () => {
+    const handlers = new Map<string, EventListener>();
+    spyOn(window, 'addEventListener').and.callFake((
+      type: string, listener: EventListenerOrEventListenerObject
+    ) => {
+      handlers.set(type, listener as EventListener);
+    });
+    await openRelay();
+    handlers.get('beforeunload')!(new Event('beforeunload', { cancelable: true }));
+    expect(socket.readyState).toBe(1);
+    handlers.get('pagehide')!(new Event('pagehide'));
+    await flushMicrotasks();
+    expectClose('page_unload');
+  });
+
+  it('logs the received WebSocket close code and reason without sending on a closed socket', async () => {
+    await openRelay();
+    socket.drop(1011, 'upstream reset');
+    await flushMicrotasks();
+    expect(closeLog).toHaveBeenCalledWith('Device bridge socket closed:', jasmine.objectContaining({
+      code: 1011, reason: 'upstream reset', was_clean: false
+    }));
+    expect(closeLog).toHaveBeenCalledWith('Device bridge closing:', jasmine.objectContaining({
+      reason: 'socket_closed', usb_error: null
+    }));
+    expect(socket.sent).toEqual([]);
+  });
+
+  it('reports a socket error before closing', async () => {
+    await openRelay();
+    socket.onerror?.(new Event('error'));
+    await flushMicrotasks();
+    expectClose('socket_error');
+  });
+
+  it('reports invalid control messages before closing', async () => {
+    await openRelay();
+    socket.message('{');
+    await flushMicrotasks();
+    expectClose('protocol_error');
+  });
+
+  it('reports a bridge rejection before closing', async () => {
+    await openRelay();
+    socket.message(JSON.stringify({ type: 'error' }));
+    await flushMicrotasks();
+    expectClose('bridge_rejected');
+  });
+
+  it('reports malformed ADB frames separately from USB errors', async () => {
+    await openRelay();
+    socket.message(new Uint8Array([1]).buffer);
+    await flushMicrotasks();
+    expectClose('protocol_error');
+  });
+
+  it('reports a USB transfer-in error before closing', async () => {
+    await openRelay();
+    packetController.error(new DOMException('transferIn failed', 'NetworkError'));
+    await socket.firstCloseReport;
+    await flushMicrotasks();
+    expectClose('usb_read_error', 'NetworkError: transferIn failed');
+  });
+
+  it('fault-injects a USB transfer-out error without blaming the server packet', async () => {
+    await openRelay();
+    writeError = new DOMException('transferOut failed', 'NetworkError');
+    socket.message(AdbPacket.serialize({
+      command: AdbCommand.Write, arg0: 1, arg1: 2, checksum: 0,
+      magic: (AdbCommand.Write ^ 0xffffffff) >>> 0, payload: new Uint8Array([3])
+    }));
+    await socket.firstCloseReport;
+    await flushMicrotasks();
+    expectClose('usb_write_error', 'NetworkError: transferOut failed');
+    expect(service!.state().error).not.toContain('invalid ADB data');
+  });
+
+  it('reports USB end-of-stream as a phone disconnect', async () => {
+    await openRelay();
+    packetController.close();
+    await socket.firstCloseReport;
+    await flushMicrotasks();
+    expectClose('usb_disconnected');
+  });
+
+  it('bounds and redacts USB diagnostics before sending them to the server', async () => {
+    await openRelay();
+    packetController.error(new Error(`token=synthetic-secret ${'x'.repeat(600)}`));
+    await socket.firstCloseReport;
+    const report = JSON.parse(socket.sent.at(-1) as string);
+    expect(report.usb_error.length).toBeLessThanOrEqual(512);
+    expect(report.usb_error).toContain('[REDACTED]');
+    expect(report.usb_error).not.toContain('synthetic-secret');
+  });
+
+  it('reports attachment timeout before closing', async () => {
+    jasmine.clock().install();
+    try {
+      service = TestBed.inject(UsbDeviceRelayService);
+      const connecting = service.connect();
+      await flushMicrotasks();
+      socket.open();
+      await connecting;
+      jasmine.clock().tick(30_000);
+      await flushMicrotasks();
+      expectClose('attachment_timeout');
+    } finally {
+      jasmine.clock().uninstall();
+    }
+  });
+
+  it('logs an opening timeout even when a control frame cannot be sent', async () => {
+    jasmine.clock().install();
+    try {
+      service = TestBed.inject(UsbDeviceRelayService);
+      const connecting = service.connect();
+      await flushMicrotasks();
+      jasmine.clock().tick(15_000);
+      await connecting;
+      expect(closeLog).toHaveBeenCalledWith('Device bridge closing:', jasmine.objectContaining({
+        reason: 'socket_open_timeout'
+      }));
+      expect(socket.sent).toEqual([]);
+    } finally {
+      jasmine.clock().uninstall();
+    }
+  });
+
+  it('does not close an attached bridge just because the tab becomes hidden', async () => {
+    jasmine.clock().install();
+    try {
+      await openRelay();
+      spyOnProperty(document, 'visibilityState', 'get').and.returnValue('hidden');
+      document.dispatchEvent(new Event('visibilitychange'));
+      jasmine.clock().tick(142_000);
+      await flushMicrotasks();
+      expect(service!.state().status).toBe('connected');
+      expect(socket.readyState).toBe(1);
+      await service!.disconnect();
+      expect(JSON.parse(socket.sent.at(-1) as string).visibility_state).toBe('hidden');
+    } finally {
+      jasmine.clock().uninstall();
+    }
   });
 });
 
