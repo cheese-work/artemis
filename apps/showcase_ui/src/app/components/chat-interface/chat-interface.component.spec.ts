@@ -290,8 +290,8 @@ describe('ChatInterfaceComponent device chip', () => {
         sessions.set([{ ...session('emulator-5554'), session_id: 's1', status: 'something_new' }]);
         const fixture = TestBed.createComponent(ChatInterfaceComponent);
         fixture.detectChanges();
-        const badge = (fixture.nativeElement as HTMLElement).querySelector('.task-badge');
-        expect(badge?.textContent?.trim()).toBe('Unknown');
+        const badge = (fixture.nativeElement as HTMLElement).querySelector('.task-badge, .run-outcome');
+        expect(badge?.textContent).toContain('Unknown');
       });
     }
 

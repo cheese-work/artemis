@@ -193,6 +193,12 @@ async def test_everyone_catalog_is_redacted_read_only_and_keeps_mine_private(clo
 async def test_everyone_scope_requires_identity_and_does_not_widen_queue(cloudflare):
     _run(cloudflare, QA1, queued=True)
     assert (await _get(None, "/api/runs", scope="everyone")).status_code == 403
+    async with _client() as client:
+        forged = await client.get(
+            "/api/runs?scope=everyone",
+            headers={"Cf-Access-Authenticated-User-Email": QA1},
+        )
+    assert forged.status_code == 403
     assert (await _get(QA2, "/api/status", scope="everyone")).status_code == 400
     assert (await _get(QA2, "/api/runs", scope="all")).status_code == 403
     assert (await _get(QA2, "/api/status")).json()["queue"] == []

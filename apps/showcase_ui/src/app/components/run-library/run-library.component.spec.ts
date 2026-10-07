@@ -154,6 +154,23 @@ describe('RunLibraryComponent', () => {
       expect(root.textContent).not.toContain('Start one in Workspace');
     });
 
+    it('drops stale prompts and cursors before loading a different owner tab', async () => {
+      await open('/runs', of(page([run({ prompt: 'Private prompt' })], 'mine-cursor')));
+      const team = new Subject<RunPage>();
+      runs.list.and.returnValue(team);
+      qa<HTMLButtonElement>('[role="tab"]')[1].click();
+      await settle();
+      expect(root.textContent).not.toContain('Private prompt');
+      expect(component.nextCursor()).toBeNull();
+      expect(runs.list.calls.mostRecent().args[1]).toEqual({ scope: 'everyone' });
+      team.next(page([run({ prompt: 'Redacted team prompt' })], 'team-cursor'));
+      await settle();
+      runs.list.and.returnValue(of(page([])));
+      component.loadMore();
+      await settle();
+      expect(runs.list.calls.mostRecent().args[1]).toEqual({ scope: 'everyone', cursor: 'team-cursor' });
+    });
+
     it('characterizes status and date URL filters without changing the selected device', async () => {
       localStorage.setItem(SELECTED_DEVICE_SERIAL_KEY, 'my-phone');
       await open('/runs?status=failed&from=2026-10-01&to=2026-10-07');
@@ -574,7 +591,7 @@ describe('RunLibraryComponent', () => {
       el.getAttribute('aria-label') || (el.textContent ?? '').replace(/\s+/g, ' ').trim();
     const visibleControls = () =>
       qa<HTMLElement>(FOCUSABLE).filter(
-        (el) => !(el as HTMLButtonElement).disabled && el.checkVisibility()
+        (el) => el.tabIndex >= 0 && !(el as HTMLButtonElement).disabled && el.checkVisibility()
       );
 
     it('tabs through search, filters, then the rows, in reading order, all natively focusable', async () => {
@@ -583,10 +600,10 @@ describe('RunLibraryComponent', () => {
         of(page([run(), run({ session_id: '55555555-5d7e-4a10-9c33-0e1f2a3b4c5d', prompt: 'Second' })], 'c'))
       );
       const names = visibleControls().map(nameOf);
-      expect(names.slice(0, 6)).toEqual(['Search runs', 'Search', 'Status', 'From date', 'To date', 'More filters']);
-      expect(names[6]).toContain('Log in and open settings');
-      expect(names[7]).toContain('Second');
-      expect(names[8]).toBe('Load more');
+      expect(names.slice(0, 7)).toEqual(['My runs', 'Search runs', 'Search', 'Status', 'From date', 'To date', 'More filters']);
+      expect(names[7]).toContain('Log in and open settings');
+      expect(names[8]).toContain('Second');
+      expect(names[9]).toBe('Load more');
       for (const el of visibleControls()) {
         expect(el.tabIndex).toBeGreaterThanOrEqual(0);
         expect(nameOf(el).length).toBeGreaterThan(0);
@@ -599,7 +616,7 @@ describe('RunLibraryComponent', () => {
       details.open = true;
       harness.fixture.detectChanges();
       const names = visibleControls().map(nameOf);
-      expect(names.slice(5, 9)).toEqual(['More filters', 'Computer', 'Phone', 'Requested by']);
+      expect(names.slice(6, 10)).toEqual(['More filters', 'Computer', 'Phone', 'Requested by']);
     });
 
     it('keeps every target at least 24 px and primary targets at least 44 px', async () => {

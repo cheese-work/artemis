@@ -1,24 +1,22 @@
 import { DatePipe } from '@angular/common';
 import { ChangeDetectionStrategy, Component, computed, input } from '@angular/core';
 import { RunSummary } from '../../core/models/run.model';
-import { LabelableDevice } from '../../utils/device-label.util';
+import { LabelableDevice, runDeviceLabel } from '../../utils/device-label.util';
 import { mapRecording } from '../../utils/recording-state.util';
 import { expiresText, interruptReason, truncate } from '../../utils/run-library-strings';
-import { RunDeviceLabelComponent } from '../run-presentation/run-device-label.component';
 import { RunStatusBadgeComponent } from '../run-presentation/run-status-badge.component';
 
 @Component({
   selector: '[appRunCard]',
   standalone: true,
-  imports: [DatePipe, RunDeviceLabelComponent, RunStatusBadgeComponent],
+  imports: [DatePipe, RunStatusBadgeComponent],
   template: `
     <span class="run-prompt" [title]="run().prompt ?? ''">{{ prompt() }}</span>
     <span class="run-outcome" appRunStatusBadge [status]="run().status"></span>
     <span class="run-meta">
       <span class="run-recording">{{ recording() }}</span>
       <span class="run-device" [title]="run().device_ref?.serial ?? 'Unknown phone'">
-        <span appRunDeviceLabel [serial]="run().device_ref?.serial ?? 'Unknown phone'" [device]="device()"
-          [attr.title]="run().device_ref?.serial"></span> · {{ computer() }}
+        {{ deviceLabel() }} · {{ computer() }}
       </span>
       <span class="run-date">
         @if (run().start_time) { {{ run().start_time! * 1000 | date: 'MMM d, y, h:mm a' }} }
@@ -53,6 +51,7 @@ export class RunCardComponent {
   readonly showOwner = input(false);
   readonly interruptReason = interruptReason;
   readonly prompt = computed(() => truncate(this.run().prompt));
+  readonly deviceLabel = computed(() => runDeviceLabel(this.run().device_ref?.serial ?? 'Unknown phone', this.device()));
   readonly expires = computed(() => expiresText(this.run().expires_at, Math.floor(Date.now() / 1000)));
   readonly recording = computed(() => {
     const recording = this.run().recordings[0];
