@@ -30,6 +30,7 @@ import logging
 from pathlib import Path
 import re
 import sqlite3
+import threading
 import time
 from typing import Any
 
@@ -83,7 +84,15 @@ _RULES: tuple[tuple[str, str, str], ...] = (
         r"llmexhaustederror|connection error|\b(503|403|429)\b|rate.?limit",
     ),
     ("app_not_installed", "user_prompt", r"error finding package for app"),
-    ("agent_reported_unachievable", "user_prompt", r"flashrunner failed:"),
+    # Runner-internal stops say nothing about the goal. Only the model's own report that the
+    # goal cannot be reached counts as prompt-side; any other runner failure stays unknown.
+    ("model_no_response", "provider", r"the model returned no response"),
+    ("max_turns_reached", "unknown", r"max turns reached"),
+    (
+        "agent_reported_unachievable",
+        "user_prompt",
+        r"flashrunner failed:.*(is not installed|isn.t installed|not installed on|impossible|cannot be (done|completed)|does not exist|doesn.t exist)",
+    ),
 )
 _COMPILED = tuple((rule, category, re.compile(p, re.IGNORECASE)) for rule, category, p in _RULES)
 _ACTION = {"user_prompt": "no action", "provider": "monitor", "unknown": "review"}
@@ -112,6 +121,7 @@ CREATE TABLE IF NOT EXISTS failure_ledger (
     "CREATE INDEX IF NOT EXISTS idx_failure_ledger_time ON failure_ledger (occurred_at)",
     "CREATE TABLE IF NOT EXISTS failure_digest_sent (cause TEXT PRIMARY KEY, sent_at REAL NOT NULL)",
 )
+_DIGEST_LOCK = threading.Lock()  # ponytail: one server process; a claim table if that changes
 _SETTINGS = {"failure_digest_last_at": 0.0}
 
 
@@ -131,6 +141,18 @@ def _cause(rule: str, evidence: str) -> str:
 def _ensure(conn: sqlite3.Connection) -> None:
     for statement in _DDL:
         conn.execute(statement)
+
+
+def forget(conn: sqlite3.Connection, session_id: str) -> None:
+    """Drop a run's ledger rows (called when the run is purged). The caller commits."""
+    _ensure(conn)
+    conn.execute("DELETE FROM failure_ledger WHERE session_id = ?", (session_id,))
+
+
+# A run that is deleted but whose cleanup is still pending is already gone from the catalog.
+_LIVE = (
+    "EXISTS (SELECT 1 FROM run_meta m WHERE m.session_id = l.session_id AND m.deleted_at IS NULL)"
+)
 
 
 def _run_evidence(row: sqlite3.Row, traces_dir: Path) -> str:
@@ -230,20 +252,20 @@ def view(days: int = DEFAULT_DAYS) -> dict[str, Any]:
         _ensure(conn)
         counts = conn.execute(
             "SELECT date(occurred_at, 'unixepoch') AS day, category, COUNT(*) AS count "
-            "FROM failure_ledger WHERE occurred_at >= ? GROUP BY day, category "
+            f"FROM failure_ledger l WHERE occurred_at >= ? AND {_LIVE} GROUP BY day, category "
             "ORDER BY day DESC, category",
             (since,),
         ).fetchall()
         causes = conn.execute(
             "SELECT cause, category, rule, COUNT(*) AS count, MAX(occurred_at) AS last_seen, "
             "MIN(evidence) AS sample, json_group_array(DISTINCT session_id) AS session_ids "
-            "FROM failure_ledger WHERE occurred_at >= ? GROUP BY cause "
+            f"FROM failure_ledger l WHERE occurred_at >= ? AND {_LIVE} GROUP BY cause "
             "ORDER BY count DESC, last_seen DESC LIMIT ?",
             (since, _CAUSE_LIMIT),
         ).fetchall()
         rows = conn.execute(
             "SELECT session_id, step_number, scope, category, rule, evidence, device, source, "
-            "owner, occurred_at FROM failure_ledger WHERE occurred_at >= ? "
+            f"owner, occurred_at FROM failure_ledger l WHERE occurred_at >= ? AND {_LIVE} "
             "ORDER BY occurred_at DESC, session_id, step_number LIMIT ?",
             (since, _ROW_LIMIT),
         ).fetchall()
@@ -273,7 +295,15 @@ def _send(title: str, message: str) -> bool:
 
 
 def digest() -> dict[str, Any]:
-    """One summary of SmartQA-side causes not reported before. Marked reported only once sent."""
+    """One summary of SmartQA-side causes not reported before. Marked reported only once sent.
+
+    Serialized: a second caller waits, then finds the causes already reported.
+    """
+    with _DIGEST_LOCK:
+        return _digest()
+
+
+def _digest() -> dict[str, Any]:
     with db_session(run_catalog_repo.db_path) as conn:
         _ensure(conn)
         causes = [
@@ -281,7 +311,7 @@ def digest() -> dict[str, Any]:
             for row in conn.execute(
                 "SELECT l.cause, l.category, l.rule, COUNT(*) AS count, MIN(l.evidence) AS sample, "
                 "MIN(l.session_id) AS session_id FROM failure_ledger l "
-                "WHERE l.category LIKE 'smartqa\\_%' ESCAPE '\\' "
+                f"WHERE {_LIVE} AND l.category LIKE 'smartqa\\_%' ESCAPE '\\' "
                 "AND NOT EXISTS (SELECT 1 FROM failure_digest_sent d WHERE d.cause = l.cause) "
                 "GROUP BY l.cause ORDER BY count DESC"
             )

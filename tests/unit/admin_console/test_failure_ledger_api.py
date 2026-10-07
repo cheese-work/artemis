@@ -14,6 +14,7 @@
 
 """Failure ledger at the server API seam, using the real messages of the 2026-10-07 runs."""
 
+import asyncio
 import json
 import sqlite3
 import time
@@ -75,8 +76,9 @@ def seed_run(
     owner="qa@example.com",
     host_id=None,
     sid=None,
+    age_days=0.0,
 ):
-    sid = library.seed(status=status, sid=sid)
+    sid = library.seed(status=status, sid=sid, age_days=age_days)
     now = time.time()
     with sqlite3.connect(library.db) as conn:
         conn.execute(
@@ -214,6 +216,21 @@ CASES = [
         "FlashRunner failed: I couldn’t complete the task. 'Foo' is not installed.",
         "user_prompt",
         "agent_reported_unachievable",
+    ),
+    (
+        "[web_1_ab12cd34] FlashRunner failed: The model returned no response; the reactive loop stopped.",
+        "provider",
+        "model_no_response",
+    ),
+    (
+        "[web_1_ab12cd34] FlashRunner failed: Max turns reached without final status report.",
+        "unknown",
+        "max_turns_reached",
+    ),
+    (
+        "FlashRunner failed: I couldn't finish; the screen kept changing.",
+        "unknown",
+        "no_match",
     ),
     ("Error executing key press 'APP_SWITCH'.", "unknown", "no_match"),
 ]
@@ -376,3 +393,86 @@ async def test_digest_repeats_until_a_delivery_succeeds(library, admin, notices)
 async def test_only_admins_reach_the_failure_endpoints(library, qa, anonymous, method, path):
     for client in (qa, anonymous):
         assert (await getattr(client, method)(path)).status_code in (401, 403)
+
+
+# -- deletion, retention and concurrency -----------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_deleting_a_run_removes_its_failures_from_view_and_digest(library, admin, notices):
+    gone = seed_run(library, status="failed", stdout=f"{OFFLINE}\n")
+    kept = seed_run(library, status="completed", steps=[("click", _bad(EMPTY_LIST))])
+    await collect(admin)
+
+    assert (await admin.post(f"/api/runs/{gone}/delete")).status_code == 200
+
+    view = await failures(admin)
+    assert by_session(view, gone) == []
+    assert len(by_session(view, kept)) == 1
+    assert all(gone not in cause["session_ids"] for cause in view["causes"])
+    assert library.count("failure_ledger", gone) == 0
+    sent = (await admin.post("/api/system/failures/digest")).json()
+    assert [c["rule"] for c in sent["causes"]] == ["empty_target_list"]
+    assert gone[:8] not in notices[0][1]
+
+
+@pytest.mark.asyncio
+async def test_a_tombstoned_run_is_hidden_before_its_cleanup_finishes(library, admin, notices):
+    sid = seed_run(library, status="failed", stdout=f"{OFFLINE}\n")
+    await collect(admin)
+    with sqlite3.connect(library.db) as conn:  # deleted, files still waiting on a lease
+        conn.execute("UPDATE run_meta SET deleted_at = 1.0 WHERE session_id = ?", (sid,))
+
+    assert by_session(await failures(admin), sid) == []
+    assert (await admin.post("/api/system/failures/digest")).json() == {"sent": False, "causes": []}
+    assert await collect(admin) == {"scanned": 0, "inserted": 0}
+
+
+@pytest.mark.asyncio
+async def test_retention_sweep_purges_ledger_rows(library, admin):
+    from apps.admin_console.services import run_retention
+
+    old = seed_run(library, status="failed", age_days=40, stdout=f"{OFFLINE}\n")
+    await collect(admin)
+    assert library.count("failure_ledger", old) == 1
+    assert (await admin.put("/api/system/retention", json={"days": 30})).status_code == 200
+    assert (await admin.post("/api/system/retention/dry-run")).status_code == 200
+    assert (await admin.put("/api/system/retention", json={"enabled": True})).status_code == 200
+
+    await asyncio.to_thread(run_retention.enforce)
+
+    assert library.count("failure_ledger", old) == 0
+    assert by_session(await failures(admin), old) == []
+
+
+@pytest.mark.asyncio
+async def test_concurrent_digests_deliver_each_cause_once(library, admin, notices, monkeypatch):
+    seed_run(library, status="completed", steps=[("click", _bad(EMPTY_LIST))])
+    await collect(admin)
+    real_send = failure_ledger._send
+
+    def slow_send(title, message):
+        time.sleep(0.2)  # both callers are inside digest() before either finishes
+        return real_send(title, message)
+
+    monkeypatch.setattr(failure_ledger, "_send", slow_send)
+
+    first, second = await asyncio.gather(
+        admin.post("/api/system/failures/digest"), admin.post("/api/system/failures/digest")
+    )
+
+    assert len(notices) == 1
+    assert sorted(r.json()["sent"] for r in (first, second)) == [False, True]
+
+
+@pytest.mark.asyncio
+async def test_a_failed_concurrent_delivery_is_retried(library, admin, notices):
+    seed_run(library, status="completed", steps=[("click", _bad(EMPTY_LIST))])
+    await collect(admin)
+    notices.delivered = False
+    results = await asyncio.gather(
+        admin.post("/api/system/failures/digest"), admin.post("/api/system/failures/digest")
+    )
+    assert all(r.json()["sent"] is False for r in results)
+    notices.delivered = True
+    assert (await admin.post("/api/system/failures/digest")).json()["sent"] is True
