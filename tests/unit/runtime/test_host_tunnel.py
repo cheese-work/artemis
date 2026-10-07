@@ -24,7 +24,9 @@ def test_shared_go_host_frame_vectors():
     path = Path(__file__).parents[2] / "support/golden/host_frames.json"
     for vector in json.loads(path.read_text()):
         frame = Frame(
-            FrameKind(vector["kind"]), vector["epoch"], vector["stream"],
+            FrameKind(vector["kind"]),
+            vector["epoch"],
+            vector["stream"],
             bytes.fromhex(vector["payload"]),
         )
         wire = bytes.fromhex(vector["wire"])
