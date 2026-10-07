@@ -179,12 +179,15 @@ describe('RunViewerComponent', () => {
       expect(q('.state-page a.back-to-runs')).not.toBeNull();
     });
 
-    for (const status of [401, 403, 0]) {
-      it(`shows the access page with a sign-in link back to this run when the check answers ${status}`, async () => {
-        await open({ runResult: httpError(status) });
-        expect(q('.state-page h1')!.textContent).toContain('Sign in to open this run');
-        expect(q<HTMLAnchorElement>('.state-page a.sign-in')!.getAttribute('href')).toBe(`/runs/${ID}`);
-      });
+    for (const prefix of ['/', '/preview/pr/70/']) {
+      for (const status of [401, 403, 0]) {
+        it(`keeps the sign-in link under ${prefix} when the check answers ${status}`, async () => {
+          spyOnProperty(document, 'baseURI', 'get').and.returnValue(new URL(prefix, location.href).href);
+          await open({ runResult: httpError(status) });
+          expect(q('.state-page h1')!.textContent).toContain('Sign in to open this run');
+          expect(q<HTMLAnchorElement>('.state-page a.sign-in')!.getAttribute('href')).toBe(`${prefix}runs/${ID}`);
+        });
+      }
     }
 
     it('lists candidates when a short id matches several runs', async () => {

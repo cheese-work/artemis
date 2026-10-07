@@ -15,9 +15,11 @@ label, not admission evidence: the later trusted builder must bind it to the
 checked-out candidate. A prefixed build without valid metadata says `unavailable`.
 
 `appUrl` resolves from `document.baseURI`. The HttpClient interceptor covers all
-services, including version and What's New. Native SSE (including `scope=all`),
-relay WebSocket URLs, live video, copied run links, enrollment commands, screenshots,
-recording segments and summary links use the same resolver. It rejects external
+services, including version and What's New. Audited native consumers include SSE
+(including `scope=all`), relay WebSocket URLs, live video and retries, copied run
+links, sign-in links, enrollment commands, screenshots, task goal images in both
+the queue and history, recording segments, video tabs and summary links. These
+consumers use the same resolver. It rejects external
 API/media origins, credentialed URLs, traversal and another PR's prefix. Approved
 external links (such as font stylesheets and ordinary Markdown links) are unchanged.
 Image uploads and same-origin blob downloads remain supported.
@@ -41,10 +43,13 @@ npm run test:preview-path
 ```
 
 The browser check serves disposable synthetic HTTP fixtures at both `/` and
-`/preview/pr/70/`. It exercises real Angular consumers and checks for zero root-site
-API/media requests from the nested UI. It opens only a fixture WebSocket; no device
-is connected. Fixture identities and SHA labels are not live authentication or
-exact-head admission evidence.
+`/preview/pr/70/`. It checks for zero root-site API/media requests in the real Angular
+flows it exercises, not every interaction. It opens only a fixture WebSocket; no
+device is connected. Component specs separately cover queue/history goal images,
+sign-in links, video tabs and live-stream retries under both prefixes. A passing
+component spec is not browser-network or live-preview acceptance evidence.
+Fixture identities and SHA labels are not live authentication or exact-head
+admission evidence.
 
 This layer does not deploy, register a service worker, modify ingress/Access,
 configure ASGI `root_path`, disable legacy `/admin`/`/debug`, or call providers.

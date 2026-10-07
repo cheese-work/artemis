@@ -130,7 +130,7 @@ limitations under the License.
           @if (session.goal_images?.length) {
             <div class="task-goal-images">
               @for (image of session.goal_images; track image.index) {
-                <img [src]="image.url" [alt]="'Image ' + (image.index + 1) + ' sent with this task'" loading="lazy">
+                <img [src]="mediaUrl(image.url)" [alt]="'Image ' + (image.index + 1) + ' sent with this task'" loading="lazy">
               }
             </div>
           }
@@ -204,7 +204,7 @@ limitations under the License.
               @if (session.goal_images?.length) {
                 <div class="task-goal-images">
                   @for (image of session.goal_images; track image.index) {
-                    <img [src]="image.url" [alt]="'Image ' + (image.index + 1) + ' sent with this task'" loading="lazy">
+                    <img [src]="mediaUrl(image.url)" [alt]="'Image ' + (image.index + 1) + ' sent with this task'" loading="lazy">
                   }
                 </div>
               }
