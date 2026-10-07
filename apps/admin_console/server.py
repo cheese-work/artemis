@@ -57,6 +57,9 @@ from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 configure_logging()
 
 REDACTED_UVICORN_LOGGING = deepcopy(uvicorn.config.LOGGING_CONFIG)
+REDACTED_UVICORN_LOGGING["formatters"]["access"] = REDACTED_UVICORN_LOGGING["formatters"][
+    "default"
+].copy()
 REDACTED_UVICORN_LOGGING["filters"] = {"redaction": {"()": Redactor}}
 for handler_config in REDACTED_UVICORN_LOGGING["handlers"].values():
     handler_config["filters"] = ["redaction"]
