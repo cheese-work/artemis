@@ -21,14 +21,53 @@ import sqlite3
 import time
 import uuid
 
+from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi import Request
 from httpx import ASGITransport, AsyncClient
+import jwt
 import pytest
 
 from apps.admin_console.core.access_control import AccessIdentity, public_tier
 from apps.admin_console.server import app
 
 DAY = 86400.0
+
+
+@pytest.fixture(scope="module")
+def preview_access_env(tmp_path_factory):
+    root = tmp_path_factory.mktemp("preview-public-keys")
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    public = jwt.algorithms.RSAAlgorithm.to_jwk(key.public_key(), as_dict=True)
+    public.update(kid="preview-test-key", alg="RS256", use="sig")
+    issuer = "https://preview.cloudflareaccess.com"
+    now = int(time.time())
+    bundle = root / "jwks.json"
+    bundle.write_text(
+        json.dumps({"issuer": issuer, "fetched_at": now, "keys": [public]}), encoding="utf-8"
+    )
+    token = jwt.encode(
+        {
+            "iss": issuer,
+            "aud": "preview-audience",
+            "sub": "admin@example.test",
+            "email": "admin@example.test",
+            "iat": now - 1,
+            "nbf": now - 1,
+            "exp": now + 3600,
+        },
+        key,
+        algorithm="RS256",
+        headers={"kid": "preview-test-key"},
+    )
+    return {
+        "ARTEMIS_AUTH_MODE": "cloudflare",
+        "ARTEMIS_CF_ACCESS_AUD": "preview-audience",
+        "ARTEMIS_CF_ACCESS_TEAM_DOMAIN": "preview.cloudflareaccess.com",
+        "ARTEMIS_ADMIN_EMAILS": "admin@example.test",
+        "ARTEMIS_PREVIEW_QA_EMAILS": "qa1@example.test,qa2@example.test",
+        "ARTEMIS_PREVIEW_JWKS_BUNDLE": str(bundle),
+        "ARTEMIS_TEST_ACCESS_TOKEN": token,
+    }
 
 
 @dataclass

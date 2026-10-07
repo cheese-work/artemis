@@ -27,6 +27,8 @@ export const RUNS = PROMPTS.map(([prompt, status], i) => ({
   pinned: false,
   recordings: []
 }));
+// Someone else's run: only the admin's "All users" view lists it.
+const OTHERS = [{ ...RUNS[0], session_id: id(7), prompt: "Another QA's checkout test", requested_by: 'other@example.test' }];
 const STEPS = Array.from({ length: 4 }, (_, n) => ({
   step_id: `st${n + 1}`,
   step_number: n + 1,
@@ -37,7 +39,7 @@ const STEPS = Array.from({ length: 4 }, (_, n) => ({
 }));
 
 // Mutable so layout audits can drive connected / disconnected / error states. Defaults match the keyboard walkthrough.
-export const mock = { sessions: [], status: null, failSessions: false, failVideo: false, identity: null };
+export const mock = { sessions: [], status: null, failSessions: false, failVideo: false, identity: null, readiness: null };
 
 const json = (res, code, body) => {
   res.writeHead(code, { 'content-type': 'application/json' });
@@ -53,12 +55,13 @@ export function startMockApi(distDir) {
     if (p === '/api/runs') {
       const q = (url.searchParams.get('q') ?? '').toLowerCase();
       const status = url.searchParams.get('status');
-      const runs = RUNS.filter((r) => (!q || r.prompt.toLowerCase().includes(q)) && (!status || r.status === status));
+      const all = url.searchParams.get('scope') === 'all';
+      const runs = (all ? [...RUNS, ...OTHERS] : RUNS).filter((r) => (!q || r.prompt.toLowerCase().includes(q)) && (!status || r.status === status));
       return json(res, 200, { runs, next_cursor: null, warnings: [] });
     }
     let m = p.match(/^\/api\/runs\/([^/]+)$/);
     if (m) {
-      const run = RUNS.find((r) => r.session_id.startsWith(m[1]));
+      const run = [...RUNS, ...OTHERS].find((r) => r.session_id.startsWith(m[1]));
       return run ? json(res, 200, run) : json(res, 404, { error: 'not_found' });
     }
     m = p.match(/^\/api\/sessions\/([^/]+)\/steps$/);
@@ -67,6 +70,7 @@ export function startMockApi(distDir) {
     if (m && mock.failVideo) return json(res, 500, { error: 'boom' });
     if (m) return json(res, 200, { session_id: m[1], status: 'unavailable', has_video: false, video_url: null, video_segments: [] });
     if (p === '/api/system/whoami') return mock.identity ? json(res, mock.identity.code ?? 200, mock.identity.body) : json(res, 200, { email: 'qa@example.test', admin: true, auth_mode: 'cloudflare', reason: null });
+    if (p === '/api/system/readiness' && mock.readiness) return json(res, 200, mock.readiness);
     if (p === '/api/status' && mock.status) return json(res, 200, mock.status);
     if (p === '/api/sessions' && mock.failSessions) return json(res, 500, { error: 'boom' });
     if (p === '/api/sessions' && mock.sessions.length) return json(res, 200, mock.sessions);

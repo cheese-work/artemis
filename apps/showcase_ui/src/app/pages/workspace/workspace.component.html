@@ -32,8 +32,11 @@ limitations under the License.
 
     <!-- Bottom Floating Command Bar Dock -->
     @if (!reviewMode) {
-    <div class="workspace-floating-bar-wrapper" [class.is-expanded]="isBarExpanded()" [class.is-dormant]="!isBarExpanded()"
+    <div class="workspace-floating-bar-wrapper is-expanded"
       [class.is-focused]="isInputFocused()" [class.has-text]="!!taskInput.trim()" [class.is-running]="isTaskRunning()">
+      <!-- A run lost its phone: Reconnect, then start a new run (the old one is over) -->
+      <app-interrupted-banner [lastStep]="liveSteps().at(-1)?.step_number ?? null" (startNewRun)="startNewRunFrom($event)"></app-interrupted-banner>
+
       <!-- Floating Error / Notification Toast -->
       @if (errorMessage()) {
         <div class="floating-dock-toast error">
@@ -48,8 +51,7 @@ limitations under the License.
       <!-- Dock Row (Contains the Main Card and the Separate Stop Button when running) -->
       <div class="floating-dock-row">
         <!-- Floating Dock Main Card -->
-        <div class="floating-dock-card" (click)="onCardClick($event)"
-          (mouseenter)="isHoveringCard.set(true)" (mouseleave)="isHoveringCard.set(false)">
+        <div class="floating-dock-card" (click)="onCardClick($event)">
           <!-- Ambient Liquid Wave / Aurora Background Layer (Active in both Dormant & Expanded) -->
           <div class="dock-wave-container" [class.is-pro]="selectedProfile() === 'pro'">
             <div class="wave-glow-ambient"></div>
@@ -99,18 +101,13 @@ limitations under the License.
             </div>
           </div>
 
-          <!-- Dormant / Capsule Peek View (Visible when mouse is away and input idle) -->
-          <div class="capsule-peek-view">
-            <span class="capsule-placeholder">Start a new task...</span>
-          </div>
-
-          <!-- Expanded Full View Content (Visible on hover, focus, or text) -->
           <div class="expanded-card-content">
             <div class="card-main-input-row">
               <!-- Textarea Container with Dynamic English Placeholder -->
               <div class="input-content-area">
                 <textarea #dockInput [(ngModel)]="taskInput"
                   (input)="onTextareaInput($event)"
+                  (paste)="onPaste($event)"
                   (keydown)="onKeyDown($event)"
                   (focus)="onInputFocus()"
                   (blur)="onInputBlur()"
@@ -158,9 +155,11 @@ limitations under the License.
               <!-- Send Button -->
               <button type="button" class="dock-circle-btn btn-send"
                 [class.has-content]="!!taskInput.trim()"
+                [class.is-blocked]="!phone.target()"
                 [disabled]="!taskInput.trim() || isSubmitting()"
+                [attr.aria-disabled]="phone.target() ? null : 'true'"
                 (click)="submitTask()"
-                [title]="isSubmitting() ? 'Starting task...' : 'Start task (Enter)'"
+                [title]="isSubmitting() ? 'Starting task...' : (phone.target() ? 'Start task (Enter)' : 'Connect a phone first')"
                 aria-label="Start task"
                 >
                 @if (isSubmitting()) {
@@ -210,23 +209,11 @@ limitations under the License.
                     <span class="pill-label">Pro</span>
                   </button>
                 </div>
-                <app-run-target-picker></app-run-target-picker>
               </div>
             </div>
           </div>
         </div>
 
-        <!-- Separate Standalone Stop Button Beside the Capsule (Visible when currently viewed task is active) -->
-        @if (isTaskRunning()) {
-          <button type="button" class="standalone-stop-btn"
-            [disabled]="isSubmitting()"
-            (click)="stopTask($event)"
-            [title]="stopButtonTitle()"
-            [attr.aria-label]="stopButtonTitle()"
-            >
-            <span class="material-symbols-outlined">stop</span>
-          </button>
-        }
       </div>
     </div>
     }

@@ -20,9 +20,13 @@ import { provideRouter } from '@angular/router';
 import { Observable, of, throwError } from 'rxjs';
 import { RunViewComponent } from '../../components/run-view/run-view.component';
 import { ChatInterfaceComponent } from '../../components/chat-interface/chat-interface.component';
+import { InterruptedBannerComponent } from '../../components/interrupted-banner/interrupted-banner.component';
 import { AgentService } from '../../services/agent.service';
+import { WorkspacePhoneService } from '../../services/workspace-phone.service';
 import { MAX_IMAGES } from '../../utils/run-image.util';
 import { WorkspaceComponent } from './workspace.component';
+
+const TARGET = { serial: '127.0.0.1:41003', bridgeSessionId: 'bridge-9' };
 
 function png(name = 'a.png'): File {
   return new File([new Uint8Array([1, 2, 3])], name, { type: 'image/png' });
@@ -54,11 +58,15 @@ describe('WorkspaceComponent image chat', () => {
     };
     await TestBed.configureTestingModule({
       imports: [WorkspaceComponent],
-      providers: [provideRouter([]), { provide: AgentService, useValue: agentService }],
+      providers: [
+        provideRouter([]),
+        { provide: AgentService, useValue: agentService },
+        { provide: WorkspacePhoneService, useValue: { target: () => TARGET, requestPicker: jasmine.createSpy('requestPicker') } }
+      ],
       schemas: [CUSTOM_ELEMENTS_SCHEMA]
     })
       .overrideComponent(WorkspaceComponent, {
-      remove: { imports: [RunViewComponent, ChatInterfaceComponent] },
+      remove: { imports: [RunViewComponent, ChatInterfaceComponent, InterruptedBannerComponent] },
         add: { schemas: [CUSTOM_ELEMENTS_SCHEMA] }
       })
       .compileComponents();
@@ -147,7 +155,9 @@ describe('WorkspaceComponent image chat', () => {
     await component.submitTask();
     await settle();
 
-    expect(runTask.calls.mostRecent().args.length).toBeLessThanOrEqual(2);
+    const args = runTask.calls.mostRecent().args;
+    expect(args.slice(0, 6)).toEqual(['open settings', 'flash', undefined, undefined, undefined, undefined]);
+    expect(args[6]).toEqual(TARGET);
   });
 
   it('keeps the text and images after a failed send and retries with the same session id', async () => {

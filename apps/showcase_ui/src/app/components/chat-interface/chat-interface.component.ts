@@ -27,23 +27,27 @@ import { HostsResponse } from '../../core/models/host.model';
 import { deviceSourceOf } from '../../utils/device-chip.util';
 import { deviceKindLabel, deviceTitle, isIdentifiedDevice, unlistedRunDeviceTitle } from '../../utils/device-label.util';
 import { recordedDevice } from '../../utils/session-device.util';
+import { OwnerLabelComponent } from '../owner-label/owner-label.component';
 import { RunIdCopyComponent } from '../run-id-copy/run-id-copy.component';
+import { ScopeSwitchComponent } from '../scope-switch/scope-switch.component';
 import { Session } from '../../core/models/session.model';
 import { RunStatusKey, RunStatusView, sessionStatusView } from '../../utils/run-status.util';
 import { MarkdownSegment, MarkdownLine, NoteMilestone, ParsedNote } from '../../core/models/markdown.model';
 import { parseNote, parseNoteLines } from '../../utils/markdown-parser.util';
+import { mediaUrl } from '../../utils/app-url.util';
 
 export type { MarkdownSegment, MarkdownLine, NoteMilestone, ParsedNote };
 
 @Component({
   selector: 'app-chat-interface',
   standalone: true,
-  imports: [CommonModule, FormsModule, RouterLink, RunIdCopyComponent],
+  imports: [CommonModule, FormsModule, RouterLink, RunIdCopyComponent, OwnerLabelComponent, ScopeSwitchComponent],
   templateUrl: './chat-interface.component.html',
   styleUrl: './chat-interface.component.scss',
   changeDetection: ChangeDetectionStrategy.OnPush
 })
 export class ChatInterfaceComponent {
+  public readonly mediaUrl = mediaUrl;
   private readonly logger = inject(LoggerService);
   public agentService = inject(AgentService);
   private readonly systemService = inject(SystemService);

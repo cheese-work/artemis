@@ -1,9 +1,12 @@
 import { CUSTOM_ELEMENTS_SCHEMA, signal } from '@angular/core';
-import { fakeAsync, TestBed, tick } from '@angular/core/testing';
+import { ComponentFixture, fakeAsync, TestBed, tick } from '@angular/core/testing';
 import { provideRouter } from '@angular/router';
-import { of } from 'rxjs';
+import { of, throwError } from 'rxjs';
+import { RunTarget } from '../../core/models/run-target.model';
 import { AgentService } from '../../services/agent.service';
 import { RunViewComponent } from '../../components/run-view/run-view.component';
+import { WorkspacePhoneService } from '../../services/workspace-phone.service';
+import { InterruptedBannerComponent } from '../../components/interrupted-banner/interrupted-banner.component';
 import { ChatInterfaceComponent } from '../../components/chat-interface/chat-interface.component';
 import { WorkspaceComponent } from './workspace.component';
 
@@ -40,10 +43,14 @@ describe('WorkspaceComponent error lifetime', () => {
 
     await TestBed.configureTestingModule({
       imports: [WorkspaceComponent],
-      providers: [provideRouter([]), { provide: AgentService, useValue: agentService }],
+      providers: [
+        provideRouter([]),
+        { provide: AgentService, useValue: agentService },
+        { provide: WorkspacePhoneService, useValue: { target: () => null, requestPicker: () => undefined } }
+      ],
       schemas: [CUSTOM_ELEMENTS_SCHEMA]
     }).overrideComponent(WorkspaceComponent, {
-      remove: { imports: [RunViewComponent, ChatInterfaceComponent] },
+      remove: { imports: [RunViewComponent, ChatInterfaceComponent, InterruptedBannerComponent] },
       add: { schemas: [CUSTOM_ELEMENTS_SCHEMA] }
     }).compileComponents();
   });
@@ -103,5 +110,100 @@ describe('WorkspaceComponent error lifetime', () => {
     fixture.detectChanges();
     expect(fixture.nativeElement.querySelector('app-floating-video-player')).toBeNull();
     fixture.destroy();
+  });
+});
+
+describe('WorkspaceComponent phone binding', () => {
+  let runTask: jasmine.Spy;
+  let phone: { target: ReturnType<typeof signal<RunTarget | null>>; requestPicker: jasmine.Spy };
+  let fixture: ComponentFixture<WorkspaceComponent>;
+  let component: WorkspaceComponent;
+
+  const sendButton = () => (fixture.nativeElement as HTMLElement).querySelector<HTMLButtonElement>('button.btn-send')!;
+
+  beforeEach(async () => {
+    runTask = jasmine.createSpy('runTask').and.returnValue(of({}));
+    phone = { target: signal<RunTarget | null>(null), requestPicker: jasmine.createSpy('requestPicker') };
+    const agentService = {
+      whatsNewPromptDraft: signal(false),
+      updateWhatsNewErrorVisibility: () => undefined,
+      isCurrentSessionRunning: () => false,
+      currentSession: () => null,
+      currentSessionId: () => null,
+      runTask,
+      fetchStatus: jasmine.createSpy('fetchStatus'),
+      stopTask: jasmine.createSpy('stopTask')
+    };
+    await TestBed.configureTestingModule({
+      imports: [WorkspaceComponent],
+      providers: [
+        provideRouter([]),
+        { provide: AgentService, useValue: agentService },
+        { provide: WorkspacePhoneService, useValue: phone }
+      ],
+      schemas: [CUSTOM_ELEMENTS_SCHEMA]
+    }).overrideComponent(WorkspaceComponent, {
+      remove: { imports: [RunViewComponent, ChatInterfaceComponent, InterruptedBannerComponent] },
+      add: { schemas: [CUSTOM_ELEMENTS_SCHEMA] }
+    }).compileComponents();
+    fixture = TestBed.createComponent(WorkspaceComponent);
+    component = fixture.componentInstance;
+    fixture.detectChanges();
+  });
+
+  it('blocks Run with no phone: says why, keeps the prompt, opens the picker, sends nothing', async () => {
+    component.taskInput = 'open settings';
+    fixture.detectChanges();
+    expect(sendButton().getAttribute('aria-disabled')).toBe('true');
+    expect(sendButton().title).toBe('Connect a phone first');
+
+    await component.submitTask();
+
+    expect(runTask).not.toHaveBeenCalled();
+    expect(phone.requestPicker).toHaveBeenCalledTimes(1);
+    expect(component.taskInput).toBe('open settings');
+  });
+
+  it('blocks the Enter key the same way', () => {
+    component.taskInput = 'open settings';
+    component.onKeyDown(new KeyboardEvent('keydown', { key: 'Enter' }));
+    expect(runTask).not.toHaveBeenCalled();
+    expect(phone.requestPicker).toHaveBeenCalled();
+  });
+
+  it('sends the run to exactly the chosen serial and its bridge session', async () => {
+    phone.target.set({ serial: '127.0.0.1:41003', bridgeSessionId: 'bridge-9' });
+    component.taskInput = 'open settings';
+    fixture.detectChanges();
+    expect(sendButton().getAttribute('aria-disabled')).toBeNull();
+
+    await component.submitTask();
+
+    expect(runTask.calls.mostRecent().args[6]).toEqual({ serial: '127.0.0.1:41003', bridgeSessionId: 'bridge-9' });
+    expect(phone.requestPicker).not.toHaveBeenCalled();
+  });
+
+  it('keeps the prompt and opens the picker when the server says the phone is gone', async () => {
+    phone.target.set({ serial: 's', bridgeSessionId: 'b' });
+    runTask.and.returnValue(throwError(() => ({ status: 409, error: { code: 'device_offline', detail: 'x' } })));
+    component.taskInput = 'open settings';
+
+    await component.submitTask();
+
+    expect(component.errorMessage()).toBe('Your phone is not connected. Connect it again to run.');
+    expect(phone.requestPicker).toHaveBeenCalled();
+    expect(component.taskInput).toBe('open settings');
+    expect(runTask).toHaveBeenCalledTimes(1);
+  });
+
+  it('has no phone chip in the Prompt Dock: the chip lives in the top bar (CHE-1143, OCR F6)', () => {
+    const el = fixture.nativeElement as HTMLElement;
+    expect(el.querySelector('app-workspace-device-chip')).toBeNull();
+    expect(el.querySelector('.workspace-floating-bar-wrapper .dock-chip')).toBeNull();
+  });
+
+  it('starts a new run from the interrupted run’s prompt', () => {
+    component.startNewRunFrom('Open Settings');
+    expect(component.taskInput).toBe('Open Settings');
   });
 });
