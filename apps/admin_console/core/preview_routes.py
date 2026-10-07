@@ -83,6 +83,8 @@ SYNTHETIC = frozenset(
         "POST /api/stop",
         "POST /api/resume",
         "POST /api/tasks/{session_id}/cancel-queued",
+        "POST /api/sessions/{session_id}/delete",
+        "POST /api/runs/{session_id}/delete",
     }
 )
 
@@ -107,10 +109,8 @@ DISABLED = frozenset(
         "GET /api/sessions/{session_id}/steps/{step_number}/replay_traces",
         # Run library writes wait for the L3 fixture store and its ownership tests.
         "POST /api/cleanup",
-        "POST /api/sessions/{session_id}/delete",
         "POST /api/runs/{session_id}/pin",
         "POST /api/runs/{session_id}/unpin",
-        "POST /api/runs/{session_id}/delete",
         "POST /api/runs/clear",
         "PUT /api/system/retention",
         "POST /api/system/retention/dry-run",

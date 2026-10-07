@@ -48,10 +48,14 @@ for _p in (str(_workspace_root), str(_apps_dir), str(_admin_console_dir), str(_c
         sys.path.insert(0, _p)
 
 # Select the profile before any import below can run an import-time side effect.
-from apps.admin_console.core.preview_profile import preview_profile_selected
+from apps.admin_console.core.preview_profile import (
+    prepare_preview_environment,
+    preview_profile_selected,
+)
 from apps.admin_console.core.preview_routes import PreviewRouteGuard, require_classified
 
 PREVIEW_PROFILE = preview_profile_selected()
+PREVIEW_ROOT = prepare_preview_environment() if PREVIEW_PROFILE else None
 
 from fastapi import Depends, FastAPI
 from fastapi.responses import FileResponse, HTMLResponse
@@ -99,7 +103,10 @@ from apps.admin_console.core.access_control import (
     admin_api_error_handler,
     config_from_environment,
     public_tier,
+    require_qa,
 )
+from apps.admin_console.core.preview_access import preview_access_verifier
+from apps.admin_console.core.preview_fixtures import initialize_preview_fixtures
 from apps.admin_console.services.run_images import RequestSizeLimitMiddleware
 
 try:
@@ -176,11 +183,15 @@ async def _lifespan(_app: "FastAPI"):
 app = FastAPI(
     title="Artemis Admin & Trace Console",
     lifespan=_lifespan,
-    dependencies=[Depends(public_tier)],
+    dependencies=[Depends(public_tier), *([Depends(require_qa)] if PREVIEW_PROFILE else [])],
 )
 app.add_exception_handler(AdminAPIError, admin_api_error_handler)
 app.state.access_config = config_from_environment()
-app.state.access_verifier = CloudflareAccessVerifier()
+app.state.access_verifier = (
+    preview_access_verifier(app.state.access_config)
+    if PREVIEW_PROFILE
+    else CloudflareAccessVerifier()
+)
 logging.getLogger(__name__).info(
     "Admin access configured: mode=%s issuer=%s audience=%s admin_count=%d",
     app.state.access_config.auth_mode,
@@ -228,7 +239,7 @@ async def on_startup():
     state.is_shutting_down = False
     state.shutdown_event.clear()
     if PREVIEW_PROFILE:
-        # Synthetic fixtures only: no device, host, IPC, recovery or retention work.
+        initialize_preview_fixtures(PREVIEW_ROOT, app.state.access_config)
         return
     write_server_info(
         port=getattr(state, "port", 8000),

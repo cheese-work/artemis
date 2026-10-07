@@ -118,6 +118,8 @@ def test_profile_selection_reads_only_the_explicit_flag(value, expected):
 async def test_preview_startup_runs_none_of_the_named_effects(monkeypatch):
     _stub_hooks(monkeypatch, forbidden=True)
     monkeypatch.setattr(server, "PREVIEW_PROFILE", True)
+    fixtures = MagicMock()
+    monkeypatch.setattr(server, "initialize_preview_fixtures", fixtures)
 
     await server.on_startup()
     await asyncio.sleep(0.2)  # let any scheduled background task reach its hook
@@ -125,6 +127,7 @@ async def test_preview_startup_runs_none_of_the_named_effects(monkeypatch):
     assert VIOLATIONS == []
     assert state.worker_task is None
     assert state.retention_task is None
+    fixtures.assert_called_once_with(server.PREVIEW_ROOT, server.app.state.access_config)
     assert state.is_shutting_down is False
 
 
@@ -216,7 +219,7 @@ _IMPORT_PROBE = textwrap.dedent(
 )
 
 
-def _import_server(tmp_path, *, preview: bool) -> dict:
+def _import_server(tmp_path, *, preview: bool, access_env=None) -> dict:
     env = {
         **os.environ,
         "ARTEMIS_APP_DIR": str(tmp_path / "app"),
@@ -227,6 +230,7 @@ def _import_server(tmp_path, *, preview: bool) -> dict:
     env.pop(ENV_PREVIEW_PROFILE, None)
     if preview:
         env[ENV_PREVIEW_PROFILE] = "1"
+        env.update(access_env)
     result = subprocess.run(
         [sys.executable, "-c", _IMPORT_PROBE],
         cwd=REPO_ROOT,
@@ -240,8 +244,10 @@ def _import_server(tmp_path, *, preview: bool) -> dict:
     return json.loads(result.stdout.strip().splitlines()[-1])
 
 
-def test_preview_import_runs_no_effect_and_ignores_the_live_lifecycle_token(tmp_path):
-    outcome = _import_server(tmp_path, preview=True)
+def test_preview_import_runs_no_effect_and_ignores_the_live_lifecycle_token(
+    tmp_path, preview_access_env
+):
+    outcome = _import_server(tmp_path, preview=True, access_env=preview_access_env)
 
     assert outcome["preview"] is True
     assert outcome["called"] == []

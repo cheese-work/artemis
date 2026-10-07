@@ -451,7 +451,7 @@ def test_resume_clears_only_the_preview_pause_and_follows_the_ownership_rule(syn
 
 _PROBE = textwrap.dedent(
     """
-    import json, re, sys
+    import json, os, re, sys
     import starlette.routing as sr
 
     handled, effects = [], []
@@ -502,12 +502,15 @@ _PROBE = textwrap.dedent(
     async def rogue_head():
         return {}
 
-    client = TestClient(server.app, base_url="http://localhost", raise_server_exceptions=False)
+    headers = {"Cf-Access-Jwt-Assertion": os.environ["ARTEMIS_TEST_ACCESS_TOKEN"]}
+    client = TestClient(server.app, base_url="http://localhost", raise_server_exceptions=False,
+                        headers=headers)
     rooted = TestClient(
         server.app,
         base_url="http://localhost",
         root_path="/preview/pr-92",
         raise_server_exceptions=False,
+        headers=headers,
     )
     keys = sorted(pr.ALLOWED | pr.DISABLED) + [
         "GET /api/rogue-added-later",
@@ -555,7 +558,7 @@ _PROBE = textwrap.dedent(
 
 
 @pytest.fixture(scope="module")
-def preview_probe(tmp_path_factory):
+def preview_probe(tmp_path_factory, preview_access_env):
     tmp_path = tmp_path_factory.mktemp("preview-routes")
     env = {
         **os.environ,
@@ -563,6 +566,7 @@ def preview_probe(tmp_path_factory):
         "TMPDIR": str(tmp_path),
         "ANTIGRAVITY_LS_ADDRESS": "127.0.0.1:1",
         ENV_PREVIEW_PROFILE: "1",
+        **preview_access_env,
     }
     try:
         result = subprocess.run(
