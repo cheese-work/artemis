@@ -18,10 +18,10 @@ import { HttpErrorResponse, HttpEvent, HttpEventType } from '@angular/common/htt
 import { DatePipe } from '@angular/common';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { Router, RouterLink } from '@angular/router';
-import { Subscription } from 'rxjs';
+import { Subscription, catchError, of, switchMap, timer } from 'rxjs';
 import { RunSummary, SessionVideo, VideoSegment } from '../../core/models/run.model';
 import { StepItemData } from '../../core/models/stream.model';
-import { Session } from '../../core/models/session.model';
+import { Session, SessionUsage } from '../../core/models/session.model';
 import { AdminConfigService } from '../../services/admin-config.service';
 import { RunsService } from '../../services/runs.service';
 import {
@@ -36,6 +36,7 @@ import { Playback, mapRecording } from '../../utils/recording-state.util';
 import { locateSessionTime } from '../../utils/recording-timeline.util';
 import { runStatusView } from '../../utils/run-status.util';
 import { buildStartupWorkItems } from '../../utils/run-startup.util';
+import { consolidateLogsToBlocks, getSortedStepEvents } from '../../utils/stream-aggregator.util';
 import { AgentService, type StartupProgressEvent } from '../../services/agent.service';
 import {
   DELETE_NOTICE,
@@ -141,12 +142,35 @@ export class RunViewComponent {
   public readonly dialogKind = signal<DialogKind | null>(null);
   public readonly feedback = signal('');
   public readonly actionError = signal<{ text: string; retry: Retryable } | null>(null);
+  public readonly viewingLiveSession = computed(() => this.mode() === 'live'
+    && !!this.run()?.session_id && this.run()?.session_id === this.agentService.currentSessionId());
+  private readonly activeLiveSession = computed(() => this.viewingLiveSession()
+    && !!this.agentService.runningSessionId() && this.run()?.session_id === this.agentService.runningSessionId());
   public readonly canResume = computed(() => {
     if (this.mode() !== 'live' || !this.agentService.isPaused() || this.agentService.agentStatus() !== 'paused') return false;
     const pausedSessionId = this.agentService.runningSessionId();
     return !!pausedSessionId && this.run()?.session_id === pausedSessionId
       && this.agentService.currentSessionId() === pausedSessionId;
   });
+  public readonly liveState = computed(() => {
+    if (!this.activeLiveSession()) return null;
+    if (this.canResume()) return { title: 'Task paused', reason: this.agentService.pausedError() || 'AI call failed.' };
+    if (this.agentService.isRetrying() && this.agentService.agentStatus() === 'running') {
+      return { title: 'Retrying', reason: this.agentService.retryMessage() || 'AI service is temporarily busy. Retrying…' };
+    }
+    return null;
+  });
+  public readonly infoOpen = signal(false);
+  public readonly usage = signal<SessionUsage | null>(null);
+  public readonly usageFailed = signal(false);
+  public readonly viewedModel = computed(() => this.viewingLiveSession() ? this.agentService.viewedModel() : null);
+  public readonly streamBlocks = computed(() => this.viewingLiveSession()
+    ? consolidateLogsToBlocks(this.agentService.sessionLogs()).map((block) => ({
+      id: block.id,
+      resets: (block.data.stream_resets ?? []) as Array<{ id: string; message: string }>,
+      events: getSortedStepEvents(block.data).filter((event) => event.type === 'thinking' || event.type === 'text')
+    })).filter((block) => block.events.length || block.resets.length)
+    : []);
   public readonly actions = computed<RunAction[]>(() => [
     ...(this.canResume() ? [{ id: 'resume', label: 'Continue task' }] : []),
     { id: 'share', label: this.strings.copyLink },
@@ -224,6 +248,8 @@ export class RunViewComponent {
   private readonly scrollEl = viewChild<ElementRef<HTMLElement>>('scrollEl');
   private readonly timelineEl = viewChild<ElementRef<HTMLElement>>('timelineEl');
   private pendingPosition: { scrollTop: number; timelineScrollTop: number } | null = null;
+  private loadedSessionId: string | null = null;
+  private renderedStepId: string | null = null;
   private liveStateKey = '';
   private opener: HTMLElement | null = null;
   private loadRequest: Subscription | null = null;
@@ -251,6 +277,20 @@ export class RunViewComponent {
       const id = this.runId();
       untracked(() => this.load(id));
     });
+    effect((onCleanup) => {
+      const id = this.viewingLiveSession() && this.infoOpen() ? this.run()?.session_id : null;
+      const active = runStatusView(this.run()?.status).active;
+      this.usage.set(null);
+      this.usageFailed.set(false);
+      if (!id) return;
+      const requests = (active ? timer(0, 3000) : of(0)).pipe(
+        switchMap(() => this.agentService.getSessionUsage(id).pipe(catchError(() => of(null))))
+      ).subscribe((usage) => {
+        this.usage.set(usage?.session_id === id ? usage : null);
+        this.usageFailed.set(!usage || usage.session_id !== id);
+      });
+      onCleanup(() => requests.unsubscribe());
+    });
     effect(() => {
       const session = this.mode() === 'live' ? this.liveSession() : null;
       const id = this.runId();
@@ -268,6 +308,7 @@ export class RunViewComponent {
       });
     });
     afterEveryRender(() => {
+      if (this.state() === 'ready') this.renderedStepId = this.selectedStep()?.step_id ?? null;
       if (this.state() !== 'ready' || !this.stepsLoaded() || !this.pendingPosition || !this.scrollEl()) return;
       this.scrollEl()!.nativeElement.scrollTop = this.pendingPosition.scrollTop;
       if (this.timelineEl()) this.timelineEl()!.nativeElement.scrollTop = this.pendingPosition.timelineScrollTop;
@@ -288,6 +329,8 @@ export class RunViewComponent {
 
   private load(id: string): void {
     this.rememberPosition();
+    this.loadedSessionId = id || null;
+    this.renderedStepId = null;
     this.closeDialog();
     this.loadRequest?.unsubscribe();
     this.evidenceRequests.unsubscribe(); // a slow answer for the previous run must not land on this one
@@ -313,6 +356,7 @@ export class RunViewComponent {
     }
     this.loadRequest = this.runsApi.get(id).subscribe({
       next: (run) => {
+        this.loadedSessionId = run.session_id;
         this.catalogRun.set(run);
         if (position?.sessionId === run.session_id) {
           this.selectedStepId.set(position.selectedStepId);
@@ -345,10 +389,9 @@ export class RunViewComponent {
   }
 
   public rememberPosition(): void {
-    const run = this.run();
-    if (this.state() !== 'ready' || !run || !this.scrollEl()) return;
+    if (this.state() !== 'ready' || !this.loadedSessionId || !this.scrollEl()) return;
     this.runsApi.viewPosition.set({
-      sessionId: run.session_id, selectedStepId: this.selectedStep()?.step_id ?? null,
+      sessionId: this.loadedSessionId, selectedStepId: this.selectedStepId() ?? this.renderedStepId,
       scrollTop: this.scrollEl()!.nativeElement.scrollTop,
       timelineScrollTop: this.timelineEl()?.nativeElement.scrollTop ?? 0
     });

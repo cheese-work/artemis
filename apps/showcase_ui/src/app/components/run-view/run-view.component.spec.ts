@@ -1,10 +1,11 @@
 import { Component, signal } from '@angular/core';
 import { HttpErrorResponse, HttpEventType, HttpHeaderResponse, HttpHeaders, HttpResponse } from '@angular/common/http';
-import { ComponentFixture, TestBed } from '@angular/core/testing';
+import { ComponentFixture, TestBed, fakeAsync, tick } from '@angular/core/testing';
 import { Router, provideRouter } from '@angular/router';
 import { Observable, Subject, of, throwError } from 'rxjs';
 import { AdminConfigService } from '../../services/admin-config.service';
 import { AgentService } from '../../services/agent.service';
+import { SessionUsage } from '../../core/models/session.model';
 import { RunSummary, SessionVideo } from '../../core/models/run.model';
 import { StepItemData } from '../../core/models/stream.model';
 import { RunsService } from '../../services/runs.service';
@@ -69,8 +70,10 @@ describe('RunViewComponent', () => {
   let router: Router;
   let root: HTMLElement;
   let clipboard: jasmine.Spy;
-  let agent: Pick<AgentService, 'isPaused' | 'agentStatus' | 'currentSessionId' | 'runningSessionId'> & {
+  let agent: Pick<AgentService, 'isPaused' | 'pausedError' | 'isRetrying' | 'retryMessage' | 'sessionLogs'
+    | 'viewedModel' | 'agentStatus' | 'currentSessionId' | 'runningSessionId'> & {
     resumeTask: jasmine.Spy;
+    getSessionUsage: jasmine.Spy;
   };
 
   const q = <T extends Element>(selector: string) => root.querySelector<T>(selector);
@@ -118,10 +121,19 @@ describe('RunViewComponent', () => {
     admin = jasmine.createSpyObj<AdminConfigService>('AdminConfigService', ['getIdentity']);
     agent = {
       isPaused: signal(false),
+      pausedError: signal<string | null>(null),
+      isRetrying: signal(false),
+      retryMessage: signal<string | null>(null),
+      sessionLogs: signal<any[]>([]),
+      viewedModel: signal({ name: 'Pro', id: 'model-pro', provider: 'test' }),
       agentStatus: signal('idle'),
       currentSessionId: signal<string | null>(ID),
       runningSessionId: signal<string | null>(ID),
-      resumeTask: jasmine.createSpy('resumeTask')
+      resumeTask: jasmine.createSpy('resumeTask'),
+      getSessionUsage: jasmine.createSpy('getSessionUsage').and.returnValue(of({
+        session_id: ID, llm_calls: 2, prompt_tokens: 100, completion_tokens: 50, total_tokens: 150,
+        cached_tokens: 10, operator_context_tokens: 80, operator_context_window_tokens: 1000
+      } satisfies SessionUsage))
     };
     clipboard = spyOn(navigator.clipboard, 'writeText').and.resolveTo();
     await TestBed.configureTestingModule({
@@ -422,6 +434,197 @@ describe('RunViewComponent', () => {
       control.click();
       expect(agent.resumeTask).not.toHaveBeenCalled();
     });
+  });
+
+  describe('live state and run-information characterization', () => {
+    it('shows the current paused run reason beside its Continue control', async () => {
+      agent.isPaused.set(true);
+      agent.agentStatus.set('paused');
+      agent.pausedError.set('AI call failed: quota exhausted');
+      await open({ viewMode: 'live', runResult: of(run({ status: 'paused' })) });
+      expect(q('.live-state')!.getAttribute('role')).toBe('status');
+      expect(q('.live-state')!.textContent).toContain('Task paused');
+      expect(q('.live-state')!.textContent).toContain('AI call failed: quota exhausted');
+      expect(button('Continue task')).toBeDefined();
+    });
+
+    it('shows the current retry reason and removes the notice when retry ends', async () => {
+      agent.agentStatus.set('running');
+      agent.isRetrying.set(true);
+      agent.retryMessage.set('AI service is temporarily busy (Attempt 2/3); retrying in 1s...');
+      await open({ viewMode: 'live', runResult: of(run({ status: 'running' })) });
+      expect(q('.live-state')!.textContent).toContain('Retrying');
+      expect(q('.live-state')!.textContent).toContain('Attempt 2/3');
+      expect(button('Continue task')).toBeUndefined();
+      agent.isRetrying.set(false);
+      await settle();
+      expect(q('.live-state')).toBeNull();
+    });
+
+    for (const viewMode of ['live', 'review'] as const) {
+      it(`does not leak the active task reason into a different ${viewMode} run`, async () => {
+        agent.isPaused.set(true);
+        agent.agentStatus.set('paused');
+        agent.pausedError.set('Other task error');
+        agent.isRetrying.set(true);
+        agent.retryMessage.set('Other task retry');
+        agent.runningSessionId.set('other-task');
+        await open({ viewMode });
+        expect(q('.live-state')).toBeNull();
+        expect(root.textContent).not.toContain('Other task');
+      });
+    }
+
+    it('restores model, session tokens and executor context in a native live details panel', async () => {
+      await open({ viewMode: 'live' });
+      const info = q<HTMLDetailsElement>('.run-info')!;
+      expect(info.querySelector('summary')!.textContent).toContain('Run information');
+      info.open = true;
+      info.dispatchEvent(new Event('toggle'));
+      await settle();
+      expect(agent.getSessionUsage).toHaveBeenCalledWith(ID);
+      expect(info.textContent).toContain('Pro');
+      expect(info.textContent).toContain('150');
+      expect(info.textContent).toContain('80 / 1000');
+    });
+
+    it('cancels old usage on a live switch and rejects mismatched usage responses', async () => {
+      const oldUsage = new Subject<SessionUsage>();
+      agent.getSessionUsage.and.returnValue(oldUsage);
+      await open({ viewMode: 'live' });
+      const info = q<HTMLDetailsElement>('.run-info')!;
+      info.open = true;
+      info.dispatchEvent(new Event('toggle'));
+      await settle();
+      expect(oldUsage.observed).toBeTrue();
+      const nextId = 'another-task';
+      agent.getSessionUsage.and.returnValue(of({ session_id: ID, total_tokens: 9999 }));
+      runs.get.and.returnValue(of(run({ session_id: nextId })));
+      agent.currentSessionId.set(nextId);
+      fixture.componentRef.setInput('runId', nextId);
+      await settle();
+      expect(oldUsage.observed).toBeFalse();
+      expect(root.textContent).not.toContain('9999');
+    });
+
+    it('shows a usage failure without displaying stale counts', async () => {
+      agent.getSessionUsage.and.returnValue(httpError(500));
+      await open({ viewMode: 'live' });
+      const info = q<HTMLDetailsElement>('.run-info')!;
+      info.open = true;
+      info.dispatchEvent(new Event('toggle'));
+      await settle();
+      expect(info.textContent).toContain('Could not load usage');
+    });
+
+    it('does not fetch live usage or show the active model in review mode', async () => {
+      await open();
+      expect(q('.run-info')).toBeNull();
+      expect(agent.getSessionUsage).not.toHaveBeenCalled();
+    });
+
+    it('refreshes usage every three seconds only while the active run information is open', fakeAsync(() => {
+      runs.get.and.returnValue(of(run({ status: 'running' })));
+      runs.steps.and.returnValue(of([step(1)]));
+      runs.video.and.returnValue(of(ready()));
+      admin.getIdentity.and.returnValue(of({ email: null, admin: false, auth_mode: 'open', reason: null }));
+      fixture = TestBed.createComponent(RunViewComponent);
+      root = fixture.nativeElement;
+      fixture.componentRef.setInput('mode', 'live');
+      fixture.componentRef.setInput('runId', ID);
+      fixture.detectChanges();
+      const info = q<HTMLDetailsElement>('.run-info')!;
+      info.open = true;
+      info.dispatchEvent(new Event('toggle'));
+      fixture.detectChanges();
+      tick(0);
+      expect(agent.getSessionUsage).toHaveBeenCalledTimes(1);
+      tick(3000);
+      expect(agent.getSessionUsage).toHaveBeenCalledTimes(2);
+      info.open = false;
+      info.dispatchEvent(new Event('toggle'));
+      fixture.detectChanges();
+      tick(6000);
+      expect(agent.getSessionUsage).toHaveBeenCalledTimes(2);
+      fixture.destroy();
+    }));
+  });
+
+  describe('streamed thinking and text characterization', () => {
+    const logs = [
+      { type: 'llm_stream', timestamp: START, data: { execution_id: 'exec-1', step_id: 'st1', stream_type: 'thinking', text: 'Inspect the screen', isCompleted: false } },
+      { type: 'llm_stream', timestamp: START + 1, data: { execution_id: 'exec-1', step_id: 'st1', stream_type: 'text', text: '<script>work</script>', isCompleted: false } }
+    ];
+
+    it('shows live Thought and Work blocks as escaped text with native disclosure controls', async () => {
+      agent.sessionLogs.set(logs);
+      await open({ viewMode: 'live' });
+      const streams = q('.live-streams')!;
+      expect(streams.textContent).toContain('Thought');
+      expect(streams.textContent).toContain('Inspect the screen');
+      expect(streams.textContent).toContain('Work');
+      expect(streams.textContent).toContain('<script>work</script>');
+      expect(streams.querySelector('script')).toBeNull();
+      expect(streams.querySelectorAll('details > summary').length).toBe(2);
+    });
+
+    it('updates a streamed block without duplicating the execution', async () => {
+      agent.sessionLogs.set(logs);
+      await open({ viewMode: 'live' });
+      agent.sessionLogs.set([logs[0], { ...logs[1], data: { ...logs[1].data, text: 'Work completed', isCompleted: true } }]);
+      await settle();
+      expect(q('.live-streams')!.textContent).toContain('Work completed');
+      expect(q('.live-streams')!.textContent).not.toContain('<script>work</script>');
+      expect(q('.live-streams')!.querySelectorAll('details').length).toBe(2);
+    });
+
+    it('shows a discarded stream reset reason instead of the discarded output', async () => {
+      agent.sessionLogs.set([{ ...logs[1], data: { ...logs[1].data, text: '', isReset: true, resetMessage: 'Retrying after invalid output' } }]);
+      await open({ viewMode: 'live' });
+      expect(q('.live-streams')!.textContent).toContain('Retrying after invalid output');
+      expect(q('.live-streams')!.textContent).not.toContain('<script>work</script>');
+    });
+
+    for (const viewMode of ['live', 'review'] as const) {
+      it(`does not show selected-session streams on another ${viewMode} run`, async () => {
+        agent.sessionLogs.set(logs);
+        agent.currentSessionId.set('other-task');
+        await open({ viewMode });
+        expect(q('.live-streams')).toBeNull();
+      });
+    }
+  });
+
+  describe('live task-switch position characterization', () => {
+    for (const catalogMissing of [false, true]) {
+      it(`saves run A under A and resets run B with catalog ${catalogMissing ? 'missing' : 'present'}`, async () => {
+        const manySteps = Array.from({ length: 30 }, (_, index) => step(index + 1));
+        await open({ viewMode: 'live', runResult: catalogMissing ? httpError(404) : of(run()), steps: of(manySteps) });
+        fixture.componentRef.setInput('liveSession', { session_id: ID, initial_goal: 'Run A', start_time: START, status: 'running' });
+        fixture.componentRef.setInput('liveSteps', manySteps);
+        await settle();
+        fixture.componentInstance.selectStep(manySteps[0]);
+        await settle();
+        q<HTMLElement>('.viewer-scroll')!.scrollTop = 120;
+        q<HTMLElement>('.step-list')!.scrollTop = 180;
+        const oldScroll = q<HTMLElement>('.viewer-scroll')!.scrollTop;
+        const oldTimeline = q<HTMLElement>('.step-list')!.scrollTop;
+        expect(oldScroll).toBeGreaterThan(0);
+        expect(oldTimeline).toBeGreaterThan(0);
+        const nextId = 'run-b';
+        const nextSteps = manySteps.map((item) => ({ ...item, session_id: nextId, step_id: `b-${item.step_id}` }));
+        runs.get.and.returnValue(catalogMissing ? httpError(404) : of(run({ session_id: nextId })));
+        runs.steps.and.returnValue(of(nextSteps));
+        fixture.componentRef.setInput('runId', nextId);
+        fixture.componentRef.setInput('liveSession', { session_id: nextId, initial_goal: 'Run B', start_time: START, status: 'running' });
+        fixture.componentRef.setInput('liveSteps', nextSteps);
+        await settle();
+        expect(runs.viewPosition()).toEqual({ sessionId: ID, selectedStepId: 'st1', scrollTop: oldScroll, timelineScrollTop: oldTimeline });
+        expect(fixture.componentInstance.selectedStep()?.step_id).toBe('b-st30');
+        expect(q<HTMLElement>('.viewer-scroll')!.scrollTop).toBe(0);
+        expect(q<HTMLElement>('.step-list')!.scrollTop).toBe(0);
+      });
+    }
   });
 
   describe('reading order', () => {

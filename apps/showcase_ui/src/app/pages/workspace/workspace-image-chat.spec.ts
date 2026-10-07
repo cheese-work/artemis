@@ -20,7 +20,6 @@ import { provideRouter } from '@angular/router';
 import { Observable, of, throwError } from 'rxjs';
 import { RunViewComponent } from '../../components/run-view/run-view.component';
 import { ChatInterfaceComponent } from '../../components/chat-interface/chat-interface.component';
-import { FloatingVideoPlayerComponent } from '../../components/floating-video-player/floating-video-player.component';
 import { AgentService } from '../../services/agent.service';
 import { MAX_IMAGES } from '../../utils/run-image.util';
 import { WorkspaceComponent } from './workspace.component';
@@ -59,7 +58,7 @@ describe('WorkspaceComponent image chat', () => {
       schemas: [CUSTOM_ELEMENTS_SCHEMA]
     })
       .overrideComponent(WorkspaceComponent, {
-      remove: { imports: [RunViewComponent, ChatInterfaceComponent, FloatingVideoPlayerComponent] },
+      remove: { imports: [RunViewComponent, ChatInterfaceComponent] },
         add: { schemas: [CUSTOM_ELEMENTS_SCHEMA] }
       })
       .compileComponents();

@@ -6,7 +6,6 @@ import { RouterTestingHarness } from '@angular/router/testing';
 import { NEVER, of } from 'rxjs';
 import { routes } from '../../app.routes';
 import { ChatInterfaceComponent } from '../../components/chat-interface/chat-interface.component';
-import { FloatingVideoPlayerComponent } from '../../components/floating-video-player/floating-video-player.component';
 import { AdminConfigService } from '../../services/admin-config.service';
 import { AgentService } from '../../services/agent.service';
 import { HostsService } from '../../services/hosts.service';
@@ -57,7 +56,7 @@ describe('Workspace review mode', () => {
       ],
       schemas: [CUSTOM_ELEMENTS_SCHEMA]
     }).overrideComponent(WorkspaceComponent, {
-      remove: { imports: [ChatInterfaceComponent, FloatingVideoPlayerComponent] },
+      remove: { imports: [ChatInterfaceComponent] },
       add: { schemas: [CUSTOM_ELEMENTS_SCHEMA] }
     });
     harness = await RouterTestingHarness.create();

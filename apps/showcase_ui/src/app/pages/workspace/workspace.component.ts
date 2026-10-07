@@ -22,7 +22,6 @@ import { toSignal } from '@angular/core/rxjs-interop';
 import { FormsModule } from '@angular/forms';
 import { ActivatedRoute, Router } from '@angular/router';
 import { ChatInterfaceComponent } from '../../components/chat-interface/chat-interface.component';
-import { FloatingVideoPlayerComponent } from '../../components/floating-video-player/floating-video-player.component';
 import { RunLibraryComponent } from '../../components/run-library/run-library.component';
 import { RunTargetPickerComponent } from '../../components/run-target-picker/run-target-picker.component';
 import { RunViewComponent } from '../../components/run-view/run-view.component';
@@ -45,7 +44,6 @@ export interface AttachedImage {
   imports: [
     FormsModule,
     ChatInterfaceComponent,
-    FloatingVideoPlayerComponent,
     RunLibraryComponent,
     RunTargetPickerComponent,
     RunViewComponent

@@ -5,7 +5,6 @@ import { of } from 'rxjs';
 import { AgentService } from '../../services/agent.service';
 import { RunViewComponent } from '../../components/run-view/run-view.component';
 import { ChatInterfaceComponent } from '../../components/chat-interface/chat-interface.component';
-import { FloatingVideoPlayerComponent } from '../../components/floating-video-player/floating-video-player.component';
 import { WorkspaceComponent } from './workspace.component';
 
 describe('WorkspaceComponent error lifetime', () => {
@@ -44,7 +43,7 @@ describe('WorkspaceComponent error lifetime', () => {
       providers: [provideRouter([]), { provide: AgentService, useValue: agentService }],
       schemas: [CUSTOM_ELEMENTS_SCHEMA]
     }).overrideComponent(WorkspaceComponent, {
-      remove: { imports: [RunViewComponent, ChatInterfaceComponent, FloatingVideoPlayerComponent] },
+      remove: { imports: [RunViewComponent, ChatInterfaceComponent] },
       add: { schemas: [CUSTOM_ELEMENTS_SCHEMA] }
     }).compileComponents();
   });
@@ -70,4 +69,39 @@ describe('WorkspaceComponent error lifetime', () => {
     expect(newerFixture.componentInstance.errorMessage()).toBeNull();
     expect(errorOwners.size).toBe(0);
   }));
+
+  for (const width of [1150, 1024, 390]) {
+    it(`keeps the task-switcher and notes panel visible at ${width}px`, () => {
+      const frame = document.createElement('iframe');
+      frame.style.width = `${width}px`;
+      frame.style.height = '768px';
+      document.body.appendChild(frame);
+      const fixture = TestBed.createComponent(WorkspaceComponent);
+      try {
+        fixture.detectChanges();
+        const frameDocument = frame.contentDocument!;
+        for (const style of Array.from(document.head.querySelectorAll('style'))) {
+          frameDocument.head.appendChild(style.cloneNode(true));
+        }
+        frameDocument.body.appendChild(fixture.nativeElement);
+        const panel = frameDocument.querySelector<HTMLElement>('.right-panel')!;
+        const left = frameDocument.querySelector<HTMLElement>('.left-panel')!;
+        expect(frame.contentWindow!.getComputedStyle(panel).display).not.toBe('none');
+        expect(panel.querySelector('app-chat-interface')).not.toBeNull();
+        expect(panel.getBoundingClientRect().top).toBeGreaterThanOrEqual(left.getBoundingClientRect().bottom);
+        expect(panel.getBoundingClientRect().height).toBeGreaterThan(0);
+        expect(panel.getBoundingClientRect().width).toBeLessThanOrEqual(width);
+      } finally {
+        fixture.destroy();
+        frame.remove();
+      }
+    });
+  }
+
+  it('does not mount a second floating video controller beside RunView evidence', () => {
+    const fixture = TestBed.createComponent(WorkspaceComponent);
+    fixture.detectChanges();
+    expect(fixture.nativeElement.querySelector('app-floating-video-player')).toBeNull();
+    fixture.destroy();
+  });
 });

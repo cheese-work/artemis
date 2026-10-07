@@ -78,6 +78,31 @@
           </details>
         </section>
 
+        @if (liveState(); as live) {
+          <div class="interrupted-banner live-state" role="status">
+            <p>{{ live.title }}</p>
+            <p>{{ live.reason }}</p>
+          </div>
+        }
+
+        @if (viewingLiveSession()) {
+          <details class="run-info" (toggle)="infoOpen.set($any($event.target).open)">
+            <summary>Run information</summary>
+            <dl>
+              <dt>Model</dt>
+              <dd>{{ viewedModel()?.name ?? 'Unknown' }} ({{ viewedModel()?.id ?? 'Unknown' }})</dd>
+              @if (usage(); as totals) {
+                <dt>Session tokens</dt><dd>{{ totals.total_tokens }}</dd>
+                <dt>Input / output tokens</dt><dd>{{ totals.prompt_tokens }} / {{ totals.completion_tokens }}</dd>
+                <dt>Cached tokens</dt><dd>{{ totals.cached_tokens }}</dd>
+                <dt>Context tokens</dt><dd>{{ totals.operator_context_tokens ?? 'Unknown' }} / {{ totals.operator_context_window_tokens }}</dd>
+                <dt>LLM calls</dt><dd>{{ totals.llm_calls }}</dd>
+              }
+            </dl>
+            @if (!usage()) { <p>{{ usageFailed() ? 'Could not load usage.' : 'Open run information to load usage.' }}</p> }
+          </details>
+        }
+
         @if (current.status === 'interrupted' && stepsLoaded()) {
           <div class="interrupted-banner" role="status">
             <p>{{ interruptedText() }}</p>
@@ -147,6 +172,21 @@
           [actions]="actions()" [feedback]="feedback()" [error]="actionError()?.text ?? null"
           [retryable]="!!actionError()?.retry" (action)="onAction($event)">
         </section>
+
+        @if (streamBlocks().length) {
+          <section class="live-streams" aria-label="Live thinking and text">
+            @for (block of streamBlocks(); track block.id) {
+              @for (reset of block.resets; track $index) { <p role="status">{{ reset.message }}</p> }
+              @for (event of block.events; track $index) {
+                <details open>
+                  <summary>{{ event.type === 'thinking' ? 'Thought' : 'Work' }}</summary>
+                  @if (event.data.isReset) { <p role="status">{{ event.data.resetMessage }}</p> }
+                  <pre>{{ event.data.text }}</pre>
+                </details>
+              }
+            }
+          </section>
+        }
 
         <details class="technical-details" (toggle)="techOpen.set($any($event.target).open)">
           <summary>{{ strings.technicalDetails }}</summary>

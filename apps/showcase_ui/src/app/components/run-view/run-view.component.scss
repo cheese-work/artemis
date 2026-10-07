@@ -180,6 +180,17 @@ video:focus-visible {
   color: var(--evidence-muted);
 }
 
+.run-info,
+.live-streams {
+  margin-bottom: 16px;
+  padding: 12px;
+  border: 1px solid var(--evidence-border);
+  border-radius: 8px;
+
+  summary { min-height: 44px; cursor: pointer; }
+  pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+}
+
 dl {
   display: grid;
   grid-template-columns: max-content 1fr;
