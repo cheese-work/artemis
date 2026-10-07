@@ -295,6 +295,10 @@ def test_expired_session_times_out_and_disconnects_adb(
         with pytest.raises(WebSocketDisconnect) as exc_info:
             while True:
                 ws.receive_text()
+        deadline = time.monotonic() + 2.0
+        while len(_mock_adb) < 2 and time.monotonic() < deadline:
+            time.sleep(0.005)
+        assert len(_mock_adb) >= 2, "ADB disconnect did not complete within 2 seconds"
     assert exc_info.value.code == 4008
 
     assert _mock_adb[0][0] == "connect"
