@@ -1,3 +1,4 @@
+import { LoggerService } from '../../services/logger.service';
 import { ChangeDetectionStrategy, Component, DestroyRef, Input, inject, signal } from '@angular/core';
 import { ElementRef, ViewChild } from '@angular/core';
 
@@ -38,6 +39,7 @@ import { ElementRef, ViewChild } from '@angular/core';
   changeDetection: ChangeDetectionStrategy.OnPush
 })
 export class RunIdCopyComponent {
+  private readonly logger = inject(LoggerService);
   private readonly destroyRef = inject(DestroyRef);
   private feedbackTimer: ReturnType<typeof setTimeout> | null = null;
   private selectionTimer: ReturnType<typeof setTimeout> | null = null;
@@ -62,7 +64,8 @@ export class RunIdCopyComponent {
     try {
       await navigator.clipboard.writeText(this.runId);
       this.feedback.set('Copied');
-    } catch {
+    } catch (error) {
+      this.logger.warn('UI operation failed:', error);
       this.feedback.set('Copy failed');
       this.copyFailed.set(true);
       this.selectionTimer = setTimeout(() => {

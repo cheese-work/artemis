@@ -1,3 +1,4 @@
+import { LoggerService } from './logger.service';
 import { DOCUMENT } from '@angular/common';
 import { computed, inject, Injectable, InjectionToken, OnDestroy, signal } from '@angular/core';
 import {
@@ -55,6 +56,7 @@ const DEVICE_ATTACH_TIMEOUT_MS = 30_000;
 
 @Injectable({ providedIn: 'root' })
 export class UsbDeviceRelayService implements OnDestroy {
+  private readonly logger = inject(LoggerService);
   private readonly document = inject(DOCUMENT);
   private readonly deviceManager = inject(WEBUSB_DEVICE_MANAGER);
   private readonly socketFactory = inject(DEVICE_BRIDGE_SOCKET_FACTORY);
@@ -125,7 +127,7 @@ export class UsbDeviceRelayService implements OnDestroy {
         throw namedError('DeviceSelectionCancelledError');
       }
       if (generation !== this.generation) {
-        await device.raw.close().catch(() => undefined);
+        await device.raw.close().catch((error: unknown) => this.logger.warn('Device close failed:', error));
         return;
       }
 
@@ -133,7 +135,7 @@ export class UsbDeviceRelayService implements OnDestroy {
       this.device = device;
       const connection = await device.connect();
       if (generation !== this.generation) {
-        await device.raw.close().catch(() => undefined);
+        await device.raw.close().catch((error: unknown) => this.logger.warn('Device close failed:', error));
         return;
       }
 
@@ -257,7 +259,8 @@ export class UsbDeviceRelayService implements OnDestroy {
         return;
       }
       await this.writer.write(new Consumable(packet));
-    }).catch(() => {
+    }).catch((error) => {
+      this.logger.error('Device bridge packet failed:', error);
       if (generation === this.generation) {
         void this.finishConnection(
           generation,
@@ -356,10 +359,13 @@ export class UsbDeviceRelayService implements OnDestroy {
         if (socket.readyState < 2) {
           socket.close(1000, 'Client disconnected');
         }
-      } catch {
+      } catch (error) {
+        this.logger.warn('Device bridge socket cleanup failed:', error);
         try {
           socket.close();
-        } catch {}
+        } catch (error) {
+          this.logger.warn('Device bridge socket close failed:', error);
+        }
       }
     }
 
@@ -373,13 +379,13 @@ export class UsbDeviceRelayService implements OnDestroy {
 
     const cleanup: Promise<unknown>[] = [];
     if (reader) {
-      cleanup.push(reader.cancel().catch(() => undefined));
+      cleanup.push(reader.cancel().catch(error => this.logger.warn('Device reader cleanup failed:', error)));
     }
     if (writer) {
-      cleanup.push(writer.abort().catch(() => undefined));
+      cleanup.push(writer.abort().catch(error => this.logger.warn('Device writer cleanup failed:', error)));
     }
     if (device && !reader && !writer) {
-      cleanup.push(device.raw.close().catch(() => undefined));
+      cleanup.push(device.raw.close().catch((error: unknown) => this.logger.warn('Device close failed:', error)));
     }
     await Promise.allSettled(cleanup);
   }
@@ -458,7 +464,7 @@ export class UsbDeviceRelayService implements OnDestroy {
       case 'UsbDeviceDisconnectedError':
         return 'The phone disconnected. Reconnect it to continue.';
       default:
-        console.error(error);
+        this.logger.error('Device bridge connection failed:', error);
         return 'Could not connect the phone. Check its cable and USB Debugging, then retry.\n' +
           `Details: ${name || 'Unknown error'}${message ? `: ${message}` : ''}`;
     }

@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+import { LoggerService } from '../../services/logger.service';
 import { Component, ChangeDetectionStrategy, inject, computed, effect, signal, untracked } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
@@ -25,7 +26,9 @@ import { UsbDeviceRelayService } from '../../services/usb-device-relay.service';
 import { HostsResponse } from '../../core/models/host.model';
 import { deviceSourceOf } from '../../utils/device-chip.util';
 import { deviceKindLabel, deviceTitle, unlistedDeviceTitle } from '../../utils/device-label.util';
+import { OwnerLabelComponent } from '../owner-label/owner-label.component';
 import { RunIdCopyComponent } from '../run-id-copy/run-id-copy.component';
+import { ScopeSwitchComponent } from '../scope-switch/scope-switch.component';
 import { Session } from '../../core/models/session.model';
 import { TaskStatus, taskStatusOf } from '../../utils/task-status.util';
 import { MarkdownSegment, MarkdownLine, NoteMilestone, ParsedNote } from '../../core/models/markdown.model';
@@ -36,12 +39,13 @@ export type { MarkdownSegment, MarkdownLine, NoteMilestone, ParsedNote };
 @Component({
   selector: 'app-chat-interface',
   standalone: true,
-  imports: [CommonModule, FormsModule, RouterLink, RunIdCopyComponent],
+  imports: [CommonModule, FormsModule, RouterLink, RunIdCopyComponent, OwnerLabelComponent, ScopeSwitchComponent],
   templateUrl: './chat-interface.component.html',
   styleUrl: './chat-interface.component.scss',
   changeDetection: ChangeDetectionStrategy.OnPush
 })
 export class ChatInterfaceComponent {
+  private readonly logger = inject(LoggerService);
   public agentService = inject(AgentService);
   private readonly systemService = inject(SystemService);
   private readonly usbRelay = inject(UsbDeviceRelayService);
@@ -116,7 +120,7 @@ export class ChatInterfaceComponent {
         this.agentService.fetchStatus();
       },
       error: (err) => {
-        console.error('Failed to submit task:', err);
+        this.logger.error('Failed to submit task:', err);
         this.isSubmitting.set(false);
         this.errorMessage.set(err.error?.detail || 'The runner is busy. Please wait for the current task to finish.');
         // Auto-dismiss error banner after 5 seconds
@@ -161,7 +165,7 @@ export class ChatInterfaceComponent {
     this.agentService.fetchClearableRunCount().subscribe({
       next: (count: number) => this.confirmAndClear(count),
       error: (err: any) => {
-        console.error('Failed to read the run count:', err);
+        this.logger.error('Failed to read the run count:', err);
         this.isSubmitting.set(false);
         this.errorMessage.set(err.error?.detail || 'Failed to clear history.');
       }
@@ -183,7 +187,7 @@ export class ChatInterfaceComponent {
         this.isSubmitting.set(false);
       },
       error: (err: any) => {
-        console.error('Failed to clear history:', err);
+        this.logger.error('Failed to clear history:', err);
         this.isSubmitting.set(false);
         this.errorMessage.set(err.error?.detail || err.error?.error || 'Failed to clear history.');
       }
@@ -205,7 +209,7 @@ export class ChatInterfaceComponent {
         this.isSubmitting.set(false);
       },
       error: (err: any) => {
-        console.error(`Failed to delete task ${sessionId}:`, err);
+        this.logger.error(`Failed to delete task ${sessionId}:`, err);
         this.isSubmitting.set(false);
         this.errorMessage.set(err.error?.detail || 'Failed to delete task.');
       }
@@ -237,7 +241,8 @@ export class ChatInterfaceComponent {
         if (s && s !== 'pending' && s !== 'null' && s !== 'undefined') {
           resolved = s;
         }
-      } catch {
+      } catch (error) {
+        this.logger.warn('UI operation failed:', error);
         // ignore
       }
     }

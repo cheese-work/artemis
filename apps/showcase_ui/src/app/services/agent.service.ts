@@ -14,7 +14,8 @@
  * limitations under the License.
  */
 
-import { Injectable, signal, inject, computed, DestroyRef, NgZone } from '@angular/core';
+import { LoggerService } from './logger.service';
+import { Injectable, signal, inject, computed, DestroyRef, NgZone, effect, untracked } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { Observable, catchError, map, of, switchMap } from 'rxjs';
 
@@ -25,10 +26,24 @@ import { StepItemData, StepReplayFrame, LLMStreamResetEventData, StreamResetNoti
 import { extractStepReplayFrames } from '../utils/action-formatter.util';
 import { persistedStreamToSegments } from '../utils/stream-aggregator.util';
 import { RunTarget } from '../core/models/run-target.model';
+import { AdminIdentity } from './admin-config.service';
+import { OwnerScopeService } from './owner-scope.service';
 import { SELECTED_DEVICE_SERIAL_KEY } from './system.service';
 export type { Session, ModelInfo, TaskQueueItem, AgentStatusResponse, StepItemData, StepReplayFrame, LLMStreamResetEventData, StreamResetNotice };
 
-const SESSION_CACHE_KEY = 'artemis.sessions.v1';
+// v1 held rows with no owner; it may carry other users' runs, so it is dropped, never read.
+const LEGACY_SESSION_CACHE_KEY = 'artemis.sessions.v1';
+const SESSION_CACHE_KEY = 'artemis.sessions.v2';
+
+/**
+ * Who a cache entry belongs to: the signed-in email, or null in open mode (no
+ * owner filtering there). Undefined for a signed-out or failed lookup: those
+ * share one "unknown" identity, so they never read or write the cache.
+ */
+function cacheOwnerOf(who: AdminIdentity): string | null | undefined {
+  if (who.email) return who.email;
+  return who.auth_mode === 'open' ? null : undefined;
+}
 
 export interface VideoSegment {
   url: string;
@@ -71,8 +86,10 @@ interface SessionVideoResponse {
   providedIn: 'root'
 })
 export class AgentService {
+  private readonly logger = inject(LoggerService);
   private http = inject(HttpClient);
   private zone = inject(NgZone);
+  private ownerScope = inject(OwnerScopeService);
   private activePauseCardKey: string | null = null;
 
   // Signals to expose state to components
@@ -133,8 +150,8 @@ export class AgentService {
         try {
           const info = typeof s.device_info === 'string' ? JSON.parse(s.device_info) : s.device_info;
           serial = info?.device_id || info?.device_serial || null;
-        } catch {
-          // ignore
+        } catch (error) {
+          this.logger.warn('Invalid session device metadata:', error);
         }
       }
       const finalSession: Session = {
@@ -395,6 +412,8 @@ export class AgentService {
   private lastQueueSignature: string | null = null;
   private lastActiveTasksSignature: string | null = null;
   private lastPersistedSessionsJson: string | null = null;
+  /** Bumped on every scope change; a sessions answer from an older one is dropped. */
+  private scopeGeneration = 0;
   private onVisibilityChange = () => {
     if (typeof document !== 'undefined' && !document.hidden) {
       this.fetchStatus();
@@ -403,7 +422,23 @@ export class AgentService {
   };
 
   constructor() {
-    this.restoreSessionsCache();
+    let showingAll = false;
+    effect(() => {
+      const all = this.ownerScope.showAll();
+      if (all === showingAll) return;
+      showingAll = all;
+      untracked(() => this.reloadForScope());
+    });
+    this.dropLegacySessionsCache();
+    // The cache belongs to one identity, so it is read once that identity is known.
+    this.ownerScope.load();
+    let restored = false;
+    effect(() => {
+      const who = this.ownerScope.identity();
+      if (!who || restored) return;
+      restored = true;
+      untracked(() => this.restoreSessionsCache(who));
+    });
     this.fetchSessions();
     this.startStatusPolling();
     this.ensureLiveStream();
@@ -489,7 +524,10 @@ export class AgentService {
           )
             ? selectedDeviceSerial
             : null),
-          catchError(() => of(null))
+          catchError((error) => {
+            this.logger.error('Failed to check the selected device:', error);
+            return of(null);
+          })
         )
         : of(null);
       const submission = selectedDevice$.pipe(
@@ -554,7 +592,8 @@ export class AgentService {
   private getSelectedDeviceSerial(): string | null {
     try {
       return localStorage.getItem(SELECTED_DEVICE_SERIAL_KEY);
-    } catch {
+    } catch (error) {
+      this.logger.warn('Unable to restore the selected device:', error);
       return null;
     }
   }
@@ -651,7 +690,7 @@ export class AgentService {
         this.fetchSessions();
       },
       error: (err) => {
-        console.error('Failed to stop task:', err);
+        this.logger.error('Failed to stop task:', err);
         this.fetchSessions();
         this.fetchStatus();
       }
@@ -679,17 +718,48 @@ export class AgentService {
         this.fetchStatus();
       },
       error: (err) => {
-        console.error('Failed to resume task:', err);
+        this.logger.error('Failed to resume task:', err);
       }
     });
+  }
+
+  /**
+   * "All users" was switched on or off: drop the rows of the other scope, then
+   * read the queue, history and live stream again for the new one.
+   */
+  private reloadForScope(): void {
+    this.scopeGeneration++;
+    this.invalidatePendingStatusResponses();
+    this.invalidateStatusSignatures();
+    this.clearSessionsCache();
+    this.rawSessions.set([]);
+    this.pendingQueue.set([]);
+    this.activeTasks.set([]);
+    this.activeSessionTracking.clear();
+    // The merged list synthesizes a row for the running run, so the old scope's
+    // running run must go too, or it comes straight back (and stays in the bridge).
+    this.agentStatus.set('idle');
+    this.runningSessionId.set(null);
+    this.runningGoal.set(null);
+    this.isPaused.set(false);
+    this.pausedError.set(null);
+    if (this.eventSource) {
+      this.eventSource.close();
+      this.eventSource = null;
+    }
+    this.ensureLiveStream();
+    this.fetchSessions();
+    this.fetchStatus();
   }
 
   /**
    * Fetch all past and active sessions from the backend
    */
   public fetchSessions(): void {
-    this.http.get<Session[]>('/api/sessions').subscribe({
+    const generation = this.scopeGeneration;
+    this.http.get<Session[]>('/api/sessions', { params: this.ownerScope.queryParams() }).subscribe({
       next: (data) => {
+        if (generation !== this.scopeGeneration) return; // an answer for a scope the QA already left
         this.rawSessions.set(data);
         this.persistSessionsCache(data);
         // On initial load, if nothing is selected, not pinned, not running, and sessions exist, select latest
@@ -698,7 +768,7 @@ export class AgentService {
         }
       },
       error: (err) => {
-        console.error('Failed to fetch sessions from backend:', err);
+        this.logger.error('Failed to fetch sessions from backend:', err);
       }
     });
   }
@@ -738,7 +808,7 @@ export class AgentService {
           obs.complete();
         },
         error: (err) => {
-          console.error(`Failed to delete session ${sessionId}:`, err);
+          this.logger.error(`Failed to delete session ${sessionId}:`, err);
           this.fetchSessions();
           this.fetchStatus();
           obs.error(err);
@@ -782,7 +852,7 @@ export class AgentService {
           obs.complete();
         },
         error: (err) => {
-          console.error('Failed to cleanup history:', err);
+          this.logger.error('Failed to cleanup history:', err);
           this.fetchSessions();
           this.fetchStatus();
           obs.error(err);
@@ -842,7 +912,7 @@ export class AgentService {
       this.openVideoPlayer(sessionId);
     }
 
-    console.debug(`Selecting session: ${sessionId}`);
+    this.logger.debug(`Selecting session: ${sessionId}`);
     // Start reading the persisted snapshot immediately
     this.backfillSessionSteps(sessionId, loadGeneration);
     this.ensureLiveStream();
@@ -857,12 +927,12 @@ export class AgentService {
       return;
     }
 
-    console.debug('Establishing persistent unified live stream via /api/stream');
+    this.logger.debug('Establishing persistent unified live stream via /api/stream');
     // The stream is registered outside the Angular zone: high-frequency SSE
     // callbacks must not schedule a change-detection pass each. Signal writes
     // still notify the render scheduler, so the UI stays live.
     this.zone.runOutsideAngular(() => {
-    this.eventSource = new EventSource('/api/stream');
+    this.eventSource = new EventSource(this.ownerScope.showAll() ? '/api/stream?scope=all' : '/api/stream');
 
     this.eventSource.addEventListener('info', () => {
       // Reconcile current session if active
@@ -1189,7 +1259,7 @@ export class AgentService {
             }
           }
         } catch (e) {
-          console.error(`Failed to parse ${eventType} event data:`, e);
+          this.logger.error(`Failed to parse ${eventType} event data:`, e);
           this.sessionLogs.update((logs) => [
             ...logs,
             {
@@ -1203,7 +1273,7 @@ export class AgentService {
     });
 
     this.eventSource.onerror = (err) => {
-      console.warn('Persistent live stream issue, browser will auto-reconnect:', err);
+      this.logger.warn('Persistent live stream issue, browser will auto-reconnect:', err);
     };
     });
   }
@@ -1343,7 +1413,7 @@ export class AgentService {
       },
       error: (err) => {
         this.pendingSnapshotRequests.delete(requestId);
-        console.error('Failed to backfill session steps:', err);
+        this.logger.error('Failed to backfill session steps:', err);
         if (
           this.currentSessionId() === sessionId
           && loadGeneration === this.sessionLoadGeneration
@@ -1372,32 +1442,52 @@ export class AgentService {
           });
         }
       },
-      error: () => {}
+      error: (error) => this.logger.error('Failed to fetch session events:', error)
     });
   }
 
-  private restoreSessionsCache(): void {
+  private dropLegacySessionsCache(): void {
+    try {
+      localStorage.removeItem(LEGACY_SESSION_CACHE_KEY);
+    } catch {
+      // No-op when browser storage is unavailable.
+    }
+  }
+
+  /** Seeds the list for this identity only; a cache written by another one is ignored. */
+  private restoreSessionsCache(who: AdminIdentity): void {
+    const owner = cacheOwnerOf(who);
+    if (owner === undefined) return;
     try {
       const cached = localStorage.getItem(SESSION_CACHE_KEY);
       if (!cached) return;
-      const sessions = JSON.parse(cached);
-      if (Array.isArray(sessions)) {
-        this.lastPersistedSessionsJson = cached;
-        this.rawSessions.set(sessions);
-      }
-    } catch {
+      const entry = JSON.parse(cached);
+      if (!entry || entry.owner !== owner || !Array.isArray(entry.sessions)) return;
+      // A fresh answer, or a scope change, already won the race.
+      if (this.rawSessions().length > 0 || this.ownerScope.showAll()) return;
+      this.lastPersistedSessionsJson = cached;
+      this.rawSessions.set(entry.sessions);
+    } catch (error) {
+      this.logger.warn('Unable to restore cached sessions:', error);
       this.clearSessionsCache();
     }
   }
 
+  /**
+   * The one place rows reach the cache. Only "mine" is cached, under the identity
+   * that owns it: All users rows, or rows before we know who is looking, never are.
+   */
   private persistSessionsCache(sessions: Session[]): void {
+    const who = this.ownerScope.identity();
+    const owner = who ? cacheOwnerOf(who) : undefined;
+    if (owner === undefined || this.ownerScope.showAll()) return;
     try {
-      const serialized = JSON.stringify(sessions);
+      const serialized = JSON.stringify({ owner, sessions });
       if (serialized === this.lastPersistedSessionsJson) return;
       this.lastPersistedSessionsJson = serialized;
       localStorage.setItem(SESSION_CACHE_KEY, serialized);
-    } catch {
-      // Storage can be unavailable in private browsing or embedded contexts.
+    } catch (error) {
+      this.logger.warn('Unable to cache sessions:', error);
     }
   }
 
@@ -1405,8 +1495,8 @@ export class AgentService {
     this.lastPersistedSessionsJson = null;
     try {
       localStorage.removeItem(SESSION_CACHE_KEY);
-    } catch {
-      // No-op when browser storage is unavailable.
+    } catch (error) {
+      this.logger.warn('Unable to clear cached sessions:', error);
     }
   }
 
@@ -1606,7 +1696,7 @@ export class AgentService {
    */
   public fetchStatus(): void {
     const requestSequence = ++this.statusRequestSequence;
-    this.http.get<any>('/api/status').subscribe({
+    this.http.get<any>('/api/status', { params: this.ownerScope.queryParams() }).subscribe({
       next: (data) => {
         if (requestSequence <= this.statusAppliedSequence) return;
         if (data && data.status) {
@@ -1650,7 +1740,8 @@ export class AgentService {
                   initial_goal: item.goal || '',
                   start_time: item.start_time || item.created_at || (Date.now() / 1000 + index),
                   status: item.status || 'pending',
-                  device_serial: item.device_serial || item.device_id || null
+                  device_serial: item.device_serial || item.device_id || null,
+                  requested_by: item.requested_by ?? null
                 };
               }
               return {
@@ -1697,7 +1788,7 @@ export class AgentService {
       error: (err) => {
         if (requestSequence <= this.statusAppliedSequence) return;
         this.statusAppliedSequence = requestSequence;
-        console.error('Failed to fetch status from backend:', err);
+        this.logger.error('Failed to fetch status from backend:', err);
         this.agentStatus.set('offline');
         this.runningSessionId.set(null);
         this.runningGoal.set(null);
@@ -1762,7 +1853,7 @@ export class AgentService {
         ]);
       },
       error: (err) => {
-        console.error(`Failed to fetch checks for session ${sessionId}:`, err);
+        this.logger.error(`Failed to fetch checks for session ${sessionId}:`, err);
       }
     });
   }
@@ -1887,7 +1978,7 @@ export class AgentService {
         }
       },
       error: (err) => {
-        console.error(`Failed to fetch notes for session ${sessionId}:`, err);
+        this.logger.error(`Failed to fetch notes for session ${sessionId}:`, err);
       }
     });
   }

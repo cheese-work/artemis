@@ -156,7 +156,9 @@ class HistoryAnalyzer:
                         span.status = "failed"
                         span.error = result
                     else:
-                        logger.info(f"HistoryAnalyzer executing tool {tool_name} with args: {args}")
+                        logger.info(
+                            f"event=tool_called tool={tool_name} args_length={len(str(args))}"
+                        )
                         try:
                             result = await invoke_tool_with_injection(
                                 tool=tool, args=args, tool_call_id=tc["id"]

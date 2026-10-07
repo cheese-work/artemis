@@ -50,7 +50,19 @@ for _p in (str(_workspace_root), str(_apps_dir), str(_admin_console_dir), str(_c
 from fastapi import Depends, FastAPI
 from fastapi.responses import FileResponse, HTMLResponse
 import uvicorn
+from copy import deepcopy
+from artemis.utils.redaction import Redactor, configure_logging
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
+
+configure_logging()
+
+REDACTED_UVICORN_LOGGING = deepcopy(uvicorn.config.LOGGING_CONFIG)
+REDACTED_UVICORN_LOGGING["formatters"]["access"] = REDACTED_UVICORN_LOGGING["formatters"][
+    "default"
+].copy()
+REDACTED_UVICORN_LOGGING["filters"] = {"redaction": {"()": Redactor}}
+for handler_config in REDACTED_UVICORN_LOGGING["handlers"].values():
+    handler_config["filters"] = ["redaction"]
 
 from artemis.runtime import (
     DeviceExecutionLock,
@@ -563,6 +575,7 @@ class ArtemisUvicornServer(uvicorn.Server):
 
 def run_ui_server(host: str, port: int, reload: bool = False) -> None:
     """Run the UI server with bounded, signal-aware graceful shutdown."""
+    configure_logging(streams=True)
     state.host = host
     state.port = port
     write_server_info(port=port, host=host, lifecycle_token=LIFECYCLE_TOKEN)
@@ -574,6 +587,7 @@ def run_ui_server(host: str, port: int, reload: bool = False) -> None:
                 host=host,
                 port=port,
                 reload=True,
+                log_config=REDACTED_UVICORN_LOGGING,
                 proxy_headers=False,
                 timeout_graceful_shutdown=5,
             )
@@ -581,11 +595,13 @@ def run_ui_server(host: str, port: int, reload: bool = False) -> None:
 
         config = uvicorn.Config(
             proxy_aware_app,
+            log_config=REDACTED_UVICORN_LOGGING,
             host=host,
             port=port,
             proxy_headers=False,
             timeout_graceful_shutdown=5,
         )
+        configure_logging()
         server = ArtemisUvicornServer(config)
         app.state.uvicorn_server = server
         server.run()

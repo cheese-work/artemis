@@ -352,7 +352,9 @@ class PlannerNode:
 
                 for tc in response.tool_calls:
                     tool_name = tc["name"]
-                    logger.info(f"Planner called tool: {tool_name} with args: {tc['args']}")
+                    logger.info(
+                        f"event=tool_called tool={tool_name} args_length={len(str(tc['args']))}"
+                    )
                     if ":" in tool_name:
                         tool_to_run = get_tool_by_name(tool_name, all_tools)
                     else:
@@ -373,7 +375,9 @@ class PlannerNode:
                                     f" {list(tool_to_run.args.keys())}"
                                 )
 
-                                logger.info(f"Invoking {tool_name} with args: {list(args.keys())}")
+                                logger.info(
+                                    f"event=tool_called tool={tool_name} args_length={len(str(args))}"
+                                )
                                 result_obj = await invoke_tool_with_injection(
                                     tool=tool_to_run,
                                     args=args,

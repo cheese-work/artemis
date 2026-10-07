@@ -14,13 +14,16 @@
  * limitations under the License.
  */
 
+import { LoggerService } from '../../services/logger.service';
 import { Component, ChangeDetectionStrategy, NgZone, signal, computed, effect, inject, untracked, DestroyRef, AfterViewInit } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { RouterLink } from '@angular/router';
 import { HttpClient } from '@angular/common/http';
 import { AgentService, StartupProgressEvent } from '../../services/agent.service';
+import { OwnerLabelComponent } from '../owner-label/owner-label.component';
 import { RunIdCopyComponent } from '../run-id-copy/run-id-copy.component';
+import { ScopeSwitchComponent } from '../scope-switch/scope-switch.component';
 import { RunSummaryCopyComponent } from '../run-summary-copy/run-summary-copy.component';
 import { Session, ModelInfo, SessionUsage } from '../../core/models/session.model';
 import { TaskStatus, taskStatusOf } from '../../utils/task-status.util';
@@ -236,12 +239,13 @@ export type { MarkdownSegment, MarkdownLine, NoteMilestone, ParsedNote, StreamRe
 @Component({
   selector: 'app-agent-stream',
   standalone: true,
-  imports: [CommonModule, FormsModule, OverlayModule, RunIdCopyComponent, RunSummaryCopyComponent],
+  imports: [CommonModule, FormsModule, OverlayModule, RunIdCopyComponent, RunSummaryCopyComponent, OwnerLabelComponent, ScopeSwitchComponent],
   templateUrl: './agent-stream.component.html',
   styleUrl: './agent-stream.component.scss',
   changeDetection: ChangeDetectionStrategy.OnPush
 })
 export class AgentStreamComponent implements AfterViewInit {
+  private readonly logger = inject(LoggerService);
   public agentService = inject(AgentService);
   private http = inject(HttpClient);
   private destroyRef = inject(DestroyRef);
@@ -861,7 +865,7 @@ export class AgentStreamComponent implements AfterViewInit {
         if (this.agentService.currentSessionId() !== sessionId) return;
         this.runUsage.set(usage);
       },
-      error: (err) => console.error('Failed to load session usage:', err)
+      error: (err) => this.logger.error('Failed to load session usage:', err)
     });
   }
 
@@ -900,7 +904,8 @@ export class AgentStreamComponent implements AfterViewInit {
         if (s && s !== 'pending' && s !== 'null' && s !== 'undefined') {
           resolved = s;
         }
-      } catch {
+      } catch (error) {
+        this.logger.warn('UI operation failed:', error);
         // ignore
       }
     }
@@ -926,7 +931,7 @@ export class AgentStreamComponent implements AfterViewInit {
     }
     this.agentService.deleteSession(sessionId).subscribe({
       error: (err) => {
-        console.error(`Failed to delete session ${sessionId}:`, err);
+        this.logger.error(`Failed to delete session ${sessionId}:`, err);
       }
     });
   }
@@ -1432,7 +1437,7 @@ export class AgentStreamComponent implements AfterViewInit {
     try {
       this.drawActionCoordinatesOnOverlay(img, overlay, actionObj);
     } catch (e) {
-      console.warn('Failed to draw action overlay:', e);
+      this.logger.warn('Failed to draw action overlay:', e);
     }
   }
 
@@ -2033,7 +2038,8 @@ export class AgentStreamComponent implements AfterViewInit {
     if (typeof data === 'string') {
       try {
         return JSON.stringify(JSON.parse(data), null, 2);
-      } catch {
+      } catch (error) {
+        this.logger.warn('UI operation failed:', error);
         return data;
       }
     }

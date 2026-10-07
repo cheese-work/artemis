@@ -1,4 +1,5 @@
-import { ChangeDetectionStrategy, Component, Input, signal } from '@angular/core';
+import { LoggerService } from '../../services/logger.service';
+import { inject, ChangeDetectionStrategy, Component, Input, signal } from '@angular/core';
 import { Session } from '../../core/models/session.model';
 import { buildRunSummary } from '../../utils/run-copy.util';
 
@@ -27,6 +28,7 @@ import { buildRunSummary } from '../../utils/run-copy.util';
   changeDetection: ChangeDetectionStrategy.OnPush
 })
 export class RunSummaryCopyComponent {
+  private readonly logger = inject(LoggerService);
   @Input({ required: true }) public session!: Session;
   @Input({ required: true }) public currentStatus = 'unknown';
   @Input() public logs: unknown[] = [];
@@ -39,7 +41,8 @@ export class RunSummaryCopyComponent {
     try {
       await navigator.clipboard.writeText(summary);
       this.feedback.set('Copied');
-    } catch {
+    } catch (error) {
+      this.logger.warn('UI operation failed:', error);
       this.feedback.set('Copy failed');
     }
 

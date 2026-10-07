@@ -305,7 +305,7 @@ describe('UsbDeviceRelayService', () => {
       'Could not connect the phone. Check its cable and USB Debugging, then retry.\n' +
       'Details: InvalidStateError: The interface is unavailable.'
     );
-    expect(consoleError).toHaveBeenCalledWith(originalError);
+    expect(consoleError).toHaveBeenCalledWith('Device bridge connection failed:', jasmine.objectContaining({ name: originalError.name, message: originalError.message }));
   });
 
   it('relays complete ADB packets in both directions and shows the attached serial', async () => {
