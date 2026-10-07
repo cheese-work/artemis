@@ -162,6 +162,16 @@ ALLOWED = REAL | SYNTHETIC
 _LEGACY_CONSOLE = re.compile(r"^/(?:admin|debug)(?:/|$)")
 
 
+def _route_path(scope: dict[str, Any]) -> str:
+    """The path Starlette routes: ``path`` below ``root_path`` (same rule as its ``get_route_path``)."""
+    path, root = scope["path"], scope.get("root_path", "")
+    if not root or not path.startswith(root):
+        return path
+    if path == root:
+        return ""
+    return path[len(root) :] if path[len(root)] == "/" else path
+
+
 class UnsupportedRouteTree(RuntimeError):
     """The router tree has a shape this module cannot classify; refuse to guess."""
 
@@ -169,15 +179,22 @@ class UnsupportedRouteTree(RuntimeError):
 @dataclass(frozen=True)
 class RegisteredRoute:
     path: str
-    methods: frozenset[str]  # {WEBSOCKET} for a websocket route; HEAD is folded into GET
+    # {WEBSOCKET} for a websocket route. HEAD is listed only when the route has no GET:
+    # Starlette adds HEAD to a GET route itself, so it is not a separate entry there.
+    methods: frozenset[str]
     regex: Any
 
     @property
     def keys(self) -> frozenset[str]:
         return frozenset(f"{method} {self.path}" for method in self.methods)
 
-    def matches(self, method: str, path: str) -> bool:
-        return method in self.methods and self.regex.match(path) is not None
+    def served_keys(self, method: str, path: str) -> frozenset[str]:
+        """The keys that must be allowed if this route could serve the request."""
+        if self.regex.match(path) is None:
+            return frozenset()
+        # A HEAD request can reach an explicit HEAD route or a GET route.
+        wanted = {"HEAD", "GET"} if method == "HEAD" else {method}
+        return frozenset(f"{m} {self.path}" for m in self.methods & wanted)
 
 
 def _registered(node: Any) -> RegisteredRoute:
@@ -188,11 +205,9 @@ def _registered(node: Any) -> RegisteredRoute:
     path, regex = getattr(route, "path", None), getattr(route, "path_regex", None)
     if not path or regex is None:
         raise UnsupportedRouteTree(f"Cannot read the path of {type(node).__name__}.")
-    methods = getattr(route, "methods", None)
+    methods = frozenset(getattr(route, "methods", None) or {WEBSOCKET})
     return RegisteredRoute(
-        path=path,
-        methods=frozenset(methods) - {"HEAD"} if methods else frozenset({WEBSOCKET}),
-        regex=regex,
+        path=path, methods=methods - {"HEAD"} if "GET" in methods else methods, regex=regex
     )
 
 
@@ -242,15 +257,16 @@ class PreviewRouteGuard:
     def _allowed(self, scope: dict[str, Any]) -> bool:
         if self._routes is None:
             self._routes = registered_routes(self._route_source)
-        if scope["type"] == "websocket":
-            method = WEBSOCKET
-        else:
-            method = "GET" if scope["method"] == "HEAD" else scope["method"]
-        path = scope["path"]
-        if method == "GET" and _LEGACY_CONSOLE.match(path):
-            return False
-        keys = [route.path for route in self._routes if route.matches(method, path)]
-        return bool(keys) and all(f"{method} {key}" in ALLOWED for key in keys)
+        method = WEBSOCKET if scope["type"] == "websocket" else scope["method"]
+        # The router matches the path below ``root_path``. Judge that path and the raw
+        # one, so a prefix can neither hide a disabled route nor make one up.
+        keys: set[str] = set()
+        for path in {_route_path(scope), scope["path"]}:
+            if method in ("GET", "HEAD") and _LEGACY_CONSOLE.match(path):
+                return False
+            for route in self._routes:
+                keys |= route.served_keys(method, path)
+        return bool(keys) and keys <= ALLOWED
 
     async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
         if scope["type"] not in ("http", "websocket") or self._allowed(scope):
