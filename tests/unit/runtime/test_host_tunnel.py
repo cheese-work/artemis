@@ -268,6 +268,17 @@ async def test_gateway_allowlist_before_transport(service, caplog):
         "sync",
         "shell",
         "unknown:",
+        "shell:id\0",
+        "shell,v2,raw:id\0",
+        "exec:cmd package\0install",
+        "sync:\0",
+        "tcp:9008\0",
+        "localabstract:scrcpy\0",
+        "framebuffer:\0",
+        "abb\0_exec:package\0install",
+        "abb_exec\0:package\0install",
+        "abb_exec:package\x01install",
+        "abb:package\0install",
     ],
 )
 async def test_gateway_deny_after_transport(service):
@@ -294,6 +305,58 @@ async def test_gateway_nested_transport_fragmented_and_coalesced(service, fragme
 async def test_gateway_devices_filter():
     writer, _, _ = await gateway_exchange(["host:devices-l"])
     assert bytes(writer.data) == b"OKAY" + pack_message(b"phone\tdevice\n")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("transport", ["host:transport:", "host:tport:serial:"])
+@pytest.mark.parametrize("serial", ["phone", "127.0.0.1:5555"])
+@pytest.mark.parametrize("fragmented", [False, True])
+async def test_gateway_abb_exec_install_preserves_nul_arguments(transport, serial, fragmented):
+    command = "abb_exec:package\0install\0-r\0-g\0/data/local/tmp/test.apk\0"
+    writer, remote, gateway = await gateway_exchange(
+        [transport + serial, command], shared={serial}, fragmented=fragmented
+    )
+    transport_id = struct.pack("<Q", 0x0102030405060708) if "tport" in transport else b""
+    assert bytes(writer.data) == b"OKAY" + transport_id + b"OKAYoutput"
+    assert remote.sent[-1] == pack_message(command.encode())
+    assert gateway.serial == serial
+
+
+@pytest.mark.asyncio
+async def test_gateway_abb_exec_is_denied_after_serial_is_unshared():
+    reader = asyncio.StreamReader()
+    reader.feed_data(pack_message(b"abb_exec:package\0install\0test.apk"))
+    reader.feed_eof()
+    remote, writer = FakeRemote(), FakeWriter()
+    gateway = Gateway(lambda: set())
+    gateway.serial = "phone"
+    await gateway.relay(reader, writer, remote)
+    assert bytes(writer.data).startswith(b"FAIL")
+    assert remote.sent == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "service",
+    [
+        "abb_exec:package\0install\0test.apk",
+        "host:transport:hidden\0",
+        "host:tport:serial:hidden\0",
+        "host:features\0",
+        "host-serial:phone:features\0",
+    ],
+)
+async def test_gateway_nul_without_shared_transport_is_denied(service):
+    writer, remote, _ = await gateway_exchange([service])
+    assert bytes(writer.data).startswith(b"FAIL")
+    assert remote.sent == []
+
+
+@pytest.mark.parametrize("service", ["shell:id\0", "exec:cmd\0package", "host:features\0"])
+def test_gateway_allowlist_itself_denies_nul_in_other_services(service):
+    gateway = Gateway(lambda: {"phone"})
+    gateway.serial = "phone"
+    assert not gateway.allows(service)
 
 
 @pytest.mark.asyncio

@@ -12,7 +12,9 @@ import asyncio
 import json
 import socket
 import sqlite3
+import struct
 import time
+from unittest.mock import patch
 
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -160,15 +162,20 @@ async def wire_server(monkeypatch):
     listener = socket.socket()
     listener.bind(("127.0.0.1", 0))
     port = listener.getsockname()[1]
-    server = ReadyServer(
-        uvicorn.Config(
-            proxy_aware_app,
-            lifespan="off",
-            ws_max_size=CONTRACT.max_frame,
-            log_level="error",
-            timeout_graceful_shutdown=1,
-        )
-    )
+    from apps.admin_console import server as console_server
+
+    with (
+        patch.object(console_server, "configure_logging"),
+        patch.object(console_server, "write_server_info"),
+        patch.object(console_server, "clear_server_info"),
+        patch.object(console_server.ArtemisUvicornServer, "run", autospec=True) as run,
+    ):
+        console_server.run_ui_server("127.0.0.1", port)
+    config = run.call_args.args[0].config
+    config.lifespan = "off"
+    config.log_level = "error"
+    config.timeout_graceful_shutdown = 1
+    server = ReadyServer(config)
     task = asyncio.create_task(server.serve(sockets=[listener]))
     try:
         await asyncio.wait_for(ready.wait(), 5)
@@ -219,7 +226,7 @@ async def test_real_host_socket_close_enters_grace_and_expires_once(admin, wire_
     ],
     ids=["binary", "utf8", "fragmented"],
 )
-async def test_uvicorn_rejects_oversize_host_message_before_asgi(
+async def test_agent_rejects_oversize_host_message_with_bridge_transport_cap(
     admin, wire_server, monkeypatch, payload
 ):
     from unittest.mock import Mock
@@ -237,12 +244,80 @@ async def test_uvicorn_rejects_oversize_host_message_before_asgi(
         assert connected["type"] == "connected", connected
         tunnels.bind_run(host_id, "run")
         await ws.send(payload)
+        assert json.loads(await asyncio.wait_for(ws.recv(), 2)) == {
+            "type": "error",
+            "code": "bad_frame",
+        }
+        with pytest.raises(ConnectionClosedError) as closed:
+            await asyncio.wait_for(ws.recv(), 2)
+        assert closed.value.rcvd.code == 4400
+    await asyncio.wait_for(lost.wait(), 1)
+    assert decode.call_count == (1 if isinstance(payload, bytes) else 2)
+    assert frame_decode.call_count == (1 if isinstance(payload, bytes) else 0)
+
+
+@pytest.mark.asyncio
+async def test_host_flag_preserves_maximum_device_bridge_packet(admin, wire_server, monkeypatch):
+    from apps.admin_console.routers import device_bridge
+    from apps.admin_console.services import bridge_session_service as bridge_module
+    from apps.admin_console.services.bridge_session_service import (
+        MAX_ADB_PACKET_BYTES,
+        BridgeSessionService,
+    )
+
+    audience, _, _, _, _ = wire_server
+    bridge = BridgeSessionService()
+    monkeypatch.setattr(device_bridge, "bridge_session_service", bridge)
+
+    async def fake_adb(*arguments):
+        return f"connected to {arguments[1]}" if arguments[0] == "connect" else "disconnected"
+
+    monkeypatch.setattr(bridge_module, "_run_adb_command", fake_adb)
+    command = int.from_bytes(b"WRTE", "little")
+    payload = b"x" * (1024 * 1024)
+    packet = struct.pack("<6I", command, 1, 1, len(payload), 0, command ^ 0xFFFFFFFF) + payload
+    assert len(packet) == MAX_ADB_PACKET_BYTES
+    async with websocket_connect(
+        f"ws://{audience}/api/device-bridge/session",
+        max_size=MAX_ADB_PACKET_BYTES,
+        compression=None,
+    ) as ws:
+        leased = json.loads(await asyncio.wait_for(ws.recv(), 2))
+        assert leased["type"] == "session_leased"
+        assert json.loads(await asyncio.wait_for(ws.recv(), 2))["type"] == "device_attached"
+        peer_reader, peer_writer = await asyncio.open_connection(
+            leased["listener"]["host"], leased["listener"]["port"]
+        )
+        try:
+            await ws.send(packet)
+            assert await asyncio.wait_for(peer_reader.readexactly(len(packet)), 2) == packet
+            peer_writer.write(packet)
+            await peer_writer.drain()
+            assert await asyncio.wait_for(ws.recv(), 2) == packet
+            await ws.send("close")
+            await asyncio.wait_for(ws.wait_closed(), 2)
+        finally:
+            await bridge.revoke(leased["session_id"])
+            peer_writer.close()
+            await peer_writer.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_uvicorn_bounds_messages_at_the_bridge_limit(admin, wire_server):
+    from apps.admin_console.services.bridge_session_service import MAX_ADB_PACKET_BYTES
+
+    audience, tunnels, _, _, lost = wire_server
+    admin.headers["Host"] = audience
+    key, host_id = _enrolled(admin)
+    async with websocket_connect(f"ws://{audience}/api/agent/connect", compression=None) as ws:
+        await ws.send(json.dumps(_hello(admin, key, host_id, audience=audience)))
+        assert json.loads(await ws.recv())["type"] == "connected"
+        tunnels.bind_run(host_id, "run")
+        await ws.send(bytes(MAX_ADB_PACKET_BYTES + 1))
         with pytest.raises(ConnectionClosedError) as closed:
             await asyncio.wait_for(ws.recv(), 2)
         assert closed.value.rcvd.code == 1009
     await asyncio.wait_for(lost.wait(), 1)
-    assert decode.call_count == 1
-    assert frame_decode.call_count == 0
 
 
 # -- flag ---------------------------------------------------------------

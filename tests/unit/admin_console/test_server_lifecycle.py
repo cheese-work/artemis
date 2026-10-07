@@ -24,7 +24,6 @@ from artemis.runtime.lifecycle import InterruptReason, LifecycleAuthority
 from apps.admin_console.core.state import state
 from apps.admin_console.routers.tasks import stream_events
 from apps.admin_console.server import ArtemisUvicornServer, app, on_shutdown
-from artemis.runtime.host_protocol import CONTRACT
 
 WINDOWS_FORCE_SIGNAL = getattr(signal, "SIGBREAK", signal.SIGTERM)
 
@@ -46,7 +45,9 @@ def test_server_bounds_websocket_messages_before_asgi(monkeypatch, reload, enabl
         server.run_ui_server("127.0.0.1", 0, reload=reload)
     options = run.call_args.kwargs if reload else config.call_args.kwargs
     if enabled:
-        assert options["ws_max_size"] == CONTRACT.max_frame
+        from apps.admin_console.services.bridge_session_service import MAX_ADB_PACKET_BYTES
+
+        assert options["ws_max_size"] == MAX_ADB_PACKET_BYTES
     else:
         assert "ws_max_size" not in options
 
