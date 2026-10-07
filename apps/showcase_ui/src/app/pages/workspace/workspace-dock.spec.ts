@@ -48,6 +48,7 @@ describe('WorkspaceComponent always-open task dock', () => {
           isCurrentSessionRunning: () => false,
           currentSession: () => null,
           currentSessionId: () => null,
+          currentStartupProgress: () => [],
           runTask: jasmine.createSpy('runTask').and.returnValue(of({}))
         }
       }]
@@ -57,7 +58,7 @@ describe('WorkspaceComponent always-open task dock', () => {
     }).compileComponents();
   });
 
-  for (const review of [false, true]) {
+  for (const review of [false]) {
     it(`stays at its expanded size after mouse leave and focus loss in ${review ? 'review' : 'live'} mode`, async () => {
       await create(review);
       const root: HTMLElement = fixture.nativeElement;
@@ -94,14 +95,9 @@ describe('WorkspaceComponent always-open task dock', () => {
     });
   }
 
-  it('uses the same normal dock size on live and review pages', async () => {
-    await create();
-    const live = fixture.nativeElement.querySelector('.floating-dock-card').getBoundingClientRect();
-    fixture.destroy();
+  it('has no task dock on review pages: the run view offers Start new run instead', async () => {
     await create(true);
-    const review = fixture.nativeElement.querySelector('.floating-dock-card').getBoundingClientRect();
-    expect(review.width).toBe(live.width);
-    expect(review.height).toBe(live.height);
+    expect(fixture.nativeElement.querySelector('.workspace-floating-bar-wrapper')).toBeNull();
   });
 
   it('leaves plain text to the native paste operation without attaching an image', async () => {

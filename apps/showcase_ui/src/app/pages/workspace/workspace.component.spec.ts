@@ -130,6 +130,7 @@ describe('WorkspaceComponent phone binding', () => {
       isCurrentSessionRunning: () => false,
       currentSession: () => null,
       currentSessionId: () => null,
+      currentStartupProgress: () => [],
       runTask,
       fetchStatus: jasmine.createSpy('fetchStatus'),
       stopTask: jasmine.createSpy('stopTask')
