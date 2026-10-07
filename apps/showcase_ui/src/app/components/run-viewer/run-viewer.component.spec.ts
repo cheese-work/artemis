@@ -191,7 +191,7 @@ describe('RunViewerComponent', () => {
       expect(badge.borderRadius).toBe('999px');
       expect(badge.fontWeight).toBe('600');
       expect(getComputedStyle(q('.step-number')!).fontSize).toBe('12px');
-      expect(getComputedStyle(q('.step-failed')!).display).toBe('inline-flex');
+      expect(getComputedStyle(q('.step-failed')!).display).toBe('flex');
       expect(getComputedStyle(q('.step-failed')!).fontSize).toBe('12px');
       for (const control of qa('.actions button')) {
         const style = getComputedStyle(control);
