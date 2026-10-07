@@ -39,19 +39,20 @@ const UNKNOWN: RunStatusView = { key: 'unknown', label: 'Unknown', icon: 'help',
 export function runStatusView(status: string | null | undefined): RunStatusView {
   const raw = (status ?? '').toLowerCase();
   const key = (raw === 'success' ? 'completed' : raw) as RunStatusKey;
-  return key in VIEWS ? { key, ...VIEWS[key as keyof typeof VIEWS] } : UNKNOWN;
+  return Object.hasOwn(VIEWS, key) ? { key, ...VIEWS[key as keyof typeof VIEWS] } : UNKNOWN;
 }
 
 /**
  * A session's status for the Workspace panels. A row the server has not given a status yet is the
- * live run when this tab is watching it; otherwise it is Unknown.
+ * live run when this tab is watching it. A stored status the UI does not recognise stays Unknown,
+ * because the server did say something.
  */
 export function sessionStatusView(
   stored: string | null | undefined,
   liveStatus: string | null
 ): RunStatusView {
-  const view = runStatusView(stored);
-  return view.key === 'unknown' && (liveStatus === 'running' || liveStatus === 'paused')
-    ? runStatusView(liveStatus)
-    : view;
+  if (stored) {
+    return runStatusView(stored);
+  }
+  return liveStatus === 'running' || liveStatus === 'paused' ? runStatusView(liveStatus) : UNKNOWN;
 }
