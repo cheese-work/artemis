@@ -47,6 +47,11 @@ for _p in (str(_workspace_root), str(_apps_dir), str(_admin_console_dir), str(_c
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
+# Select the profile before any import below can run an import-time side effect.
+from apps.admin_console.core.preview_profile import preview_profile_selected
+
+PREVIEW_PROFILE = preview_profile_selected()
+
 from fastapi import Depends, FastAPI
 from fastapi.responses import FileResponse, HTMLResponse
 import uvicorn
@@ -150,7 +155,8 @@ except ImportError:
     from apps.admin_console.services.task_queue_service import task_queue_service
 
 # Initialize language server synchronization address
-init_ls_address()
+if not PREVIEW_PROFILE:
+    init_ls_address()
 
 
 @asynccontextmanager
@@ -180,7 +186,12 @@ logging.getLogger(__name__).info(
     len(app.state.access_config.admin_emails),
 )
 logger = logging.getLogger(__name__)
-LIFECYCLE_TOKEN = os.environ.get("ARTEMIS_LIFECYCLE_TOKEN") or secrets.token_urlsafe(32)
+# A preview never adopts the live service's token: its own is fresh and container-local.
+LIFECYCLE_TOKEN = (
+    secrets.token_urlsafe(32)
+    if PREVIEW_PROFILE
+    else os.environ.get("ARTEMIS_LIFECYCLE_TOKEN") or secrets.token_urlsafe(32)
+)
 app.state.lifecycle_token = LIFECYCLE_TOKEN
 
 # The console UI is served same-origin from this process, so no CORS grants
@@ -210,6 +221,9 @@ async def on_startup():
     """Startup lifecycle hooks."""
     state.is_shutting_down = False
     state.shutdown_event.clear()
+    if PREVIEW_PROFILE:
+        # Synthetic fixtures only: no device, host, IPC, recovery or retention work.
+        return
     write_server_info(
         port=getattr(state, "port", 8000),
         host=getattr(state, "host", "127.0.0.1"),
@@ -262,6 +276,10 @@ async def on_shutdown():
     """Stop task and IPC children before the UI server exits."""
     state.is_shutting_down = True
     state.shutdown_event.set()
+    if PREVIEW_PROFILE:
+        state.queue_items.clear()
+        state.ipc_subscribers.clear()
+        return
     task_queue_service._broadcast_event("server_shutdown", {"status": "stopping"})
     owned_items = {
         str(item["session_id"]): item
@@ -578,7 +596,8 @@ def run_ui_server(host: str, port: int, reload: bool = False) -> None:
     configure_logging(streams=True)
     state.host = host
     state.port = port
-    write_server_info(port=port, host=host, lifecycle_token=LIFECYCLE_TOKEN)
+    if not PREVIEW_PROFILE:
+        write_server_info(port=port, host=host, lifecycle_token=LIFECYCLE_TOKEN)
 
     try:
         if reload:
@@ -607,7 +626,8 @@ def run_ui_server(host: str, port: int, reload: bool = False) -> None:
         server.run()
     finally:
         app.state.uvicorn_server = None
-        clear_server_info(port=port, lifecycle_token=LIFECYCLE_TOKEN)
+        if not PREVIEW_PROFILE:
+            clear_server_info(port=port, lifecycle_token=LIFECYCLE_TOKEN)
 
 
 def main(argv: list[str] | None = None) -> None:
