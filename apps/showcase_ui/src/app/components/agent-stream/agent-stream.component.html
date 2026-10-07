@@ -60,6 +60,7 @@ limitations under the License.
         <div class="popover-title-header">
           <span class="material-symbols-outlined">list_alt</span>
           <span>Task Queue</span>
+          <app-scope-switch style="margin-left: auto"></app-scope-switch>
         </div>
         <div class="dropdown-section-label">
           <span class="material-symbols-outlined icon-bolt">bolt</span>
@@ -124,6 +125,7 @@ limitations under the License.
             </div>
             <div class="item-footer">
               <app-run-id-copy [runId]="session.session_id"></app-run-id-copy>
+              <app-owner-label [owner]="session.requested_by"></app-owner-label>
               <span class="item-date">{{ session.start_time * 1000 | date:'MM/dd/yy' }}</span>
             </div>
           </div>
@@ -181,6 +183,7 @@ limitations under the License.
               </div>
               <div class="item-footer">
                 <app-run-id-copy [runId]="session.session_id"></app-run-id-copy>
+                <app-owner-label [owner]="session.requested_by"></app-owner-label>
                 <span class="item-date">{{ session.start_time * 1000 | date:'MM/dd/yy' }}</span>
               </div>
             </div>

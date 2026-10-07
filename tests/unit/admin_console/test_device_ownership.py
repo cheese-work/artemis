@@ -647,3 +647,68 @@ async def test_the_handler_leases_the_session_to_the_verified_identity(monkeypat
 
     await device_bridge.open_bridge_session(_Websocket(None))
     assert seen["owner"] is None
+
+
+# -- /api/run with bridge_session_id: the run is bound to the phone its bridge holds -------
+
+
+@pytest.mark.asyncio
+async def test_run_bound_to_a_live_bridge_targets_that_phone(cloudflare, submit):
+    response = await _run(QA1, bridge_session_id="s41001")
+
+    assert response.status_code == 200
+    assert submit.enqueue.await_args.kwargs["device_serial"] == QA1_PHONE
+    # The validated lease travels with the run, not just its serial.
+    assert submit.enqueue.await_args.kwargs["bridge_session_id"] == "s41001"
+
+
+@pytest.mark.asyncio
+async def test_run_with_no_bridge_enqueues_no_bridge_session_id(cloudflare, submit):
+    assert (await _run(QA1, device_serial=SHARED)).status_code == 200
+    assert submit.enqueue.await_args.kwargs["bridge_session_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_run_bound_to_a_bridge_accepts_the_serial_that_bridge_holds(cloudflare, submit):
+    response = await _run(QA1, bridge_session_id="s41001", device_serial=QA1_PHONE)
+
+    assert response.status_code == 200
+    assert submit.enqueue.await_args.kwargs["device_serial"] == QA1_PHONE
+
+
+@pytest.mark.asyncio
+async def test_run_bound_to_a_bridge_that_is_gone_is_refused_not_rerouted(cloudflare, submit):
+    response = await _run(QA1, bridge_session_id="s-closed", device_serial=SHARED)
+
+    assert response.status_code == 409
+    assert response.json()["code"] == "device_offline"
+    _assert_no_side_effect(submit)
+
+
+@pytest.mark.asyncio
+async def test_run_bound_to_an_expired_bridge_is_refused(cloudflare, submit):
+    bridge_session_service._sessions["s41001"].expires_at = 0.0
+
+    response = await _run(QA1, bridge_session_id="s41001")
+
+    assert response.status_code == 409
+    assert response.json()["code"] == "device_offline"
+    _assert_no_side_effect(submit)
+
+
+@pytest.mark.asyncio
+async def test_run_naming_another_phone_than_its_bridge_is_refused(cloudflare, submit):
+    response = await _run(QA1, bridge_session_id="s41001", device_serial=SHARED)
+
+    assert response.status_code == 409
+    assert response.json()["code"] == "device_mismatch"
+    _assert_no_side_effect(submit)
+
+
+@pytest.mark.asyncio
+async def test_run_bound_to_another_qas_bridge_is_refused(cloudflare, submit):
+    response = await _run(QA1, bridge_session_id="s41002")
+
+    assert response.status_code == 403
+    assert response.json()["code"] == "device_not_yours"
+    _assert_no_side_effect(submit)

@@ -21,7 +21,9 @@ import { FormsModule } from '@angular/forms';
 import { RouterLink } from '@angular/router';
 import { HttpClient } from '@angular/common/http';
 import { AgentService, StartupProgressEvent } from '../../services/agent.service';
+import { OwnerLabelComponent } from '../owner-label/owner-label.component';
 import { RunIdCopyComponent } from '../run-id-copy/run-id-copy.component';
+import { ScopeSwitchComponent } from '../scope-switch/scope-switch.component';
 import { RunSummaryCopyComponent } from '../run-summary-copy/run-summary-copy.component';
 import { Session, ModelInfo, SessionUsage } from '../../core/models/session.model';
 import { deviceTitle, isIdentifiedDevice, unlistedRunDeviceTitle } from '../../utils/device-label.util';
@@ -239,7 +241,7 @@ export type { MarkdownSegment, MarkdownLine, NoteMilestone, ParsedNote, StreamRe
 @Component({
   selector: 'app-agent-stream',
   standalone: true,
-  imports: [CommonModule, FormsModule, OverlayModule, RunIdCopyComponent, RunSummaryCopyComponent],
+  imports: [CommonModule, FormsModule, OverlayModule, RunIdCopyComponent, RunSummaryCopyComponent, OwnerLabelComponent, ScopeSwitchComponent],
   templateUrl: './agent-stream.component.html',
   styleUrl: './agent-stream.component.scss',
   changeDetection: ChangeDetectionStrategy.OnPush

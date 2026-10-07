@@ -26,6 +26,7 @@ import { AgentService } from '../../services/agent.service';
 import { HostsService } from '../../services/hosts.service';
 import { WEBUSB_DEVICE_MANAGER } from '../../services/usb-device-relay.service';
 import { RegistryDevice } from '../../core/models/host.model';
+import { OwnerScopeService } from '../../services/owner-scope.service';
 import { SystemService } from '../../services/system.service';
 import { ChatInterfaceComponent } from './chat-interface.component';
 
@@ -227,23 +228,30 @@ describe('ChatInterfaceComponent device chip', () => {
     expect(text).toContain('Lab Mac');
   });
 
-  it('shows the images sent with a task under its goal, each with alt text', () => {
-    const withImages: Session = {
-      ...session('emulator-5554'),
-      goal_images: [
-        { index: 0, media_type: 'image/png', url: '/api/sessions/s1/goal-images/0' },
-        { index: 1, media_type: 'image/jpeg', url: '/api/sessions/s1/goal-images/1' }
-      ]
-    };
-    sessions.set([withImages]);
-    const fixture = TestBed.createComponent(ChatInterfaceComponent);
-    fixture.detectChanges();
+  for (const prefix of ['/', '/preview/pr/70/']) {
+    for (const status of ['running', 'completed']) {
+      it(`scopes ${status} task goal images under ${prefix} and keeps their alt text`, () => {
+        spyOnProperty(document, 'baseURI', 'get').and.returnValue(new URL(prefix, location.href).href);
+        const withImages: Session = {
+          ...session('emulator-5554'),
+          status,
+          goal_images: [
+            { index: 0, media_type: 'image/png', url: '/api/sessions/s1/goal-images/0' },
+            { index: 1, media_type: 'image/jpeg', url: '/api/sessions/s1/goal-images/1' }
+          ]
+        };
+        sessions.set([withImages]);
+        const fixture = TestBed.createComponent(ChatInterfaceComponent);
+        fixture.detectChanges();
 
-    const images = (fixture.nativeElement as HTMLElement).querySelectorAll<HTMLImageElement>('.task-goal-images img');
-    expect(images.length).toBe(2);
-    expect(images[0].getAttribute('src')).toBe('/api/sessions/s1/goal-images/0');
-    expect(images[1].alt).toBe('Image 2 sent with this task');
-  });
+        const images = (fixture.nativeElement as HTMLElement).querySelectorAll<HTMLImageElement>('.task-goal-images img');
+        expect(images.length).toBe(2);
+        expect(images[0].getAttribute('src')).toBe(`${prefix}api/sessions/s1/goal-images/0`);
+        expect(images[1].getAttribute('src')).toBe(`${prefix}api/sessions/s1/goal-images/1`);
+        expect(images[1].alt).toBe('Image 2 sent with this task');
+      });
+    }
+  }
 
   it('shows no image strip for a task without images', () => {
     sessions.set([session('emulator-5554')]);
@@ -289,5 +297,84 @@ describe('ChatInterfaceComponent device chip', () => {
         expect(inHistory).toBe(where === 'history');
       });
     }
+  });
+});
+
+describe('ChatInterfaceComponent per-QA scope (CHE-1152)', () => {
+  const sessions = signal<Session[]>([]);
+  let scope: OwnerScopeService;
+
+  const owned = (id: string, status: string, owner: string | null): Session => ({
+    session_id: id,
+    initial_goal: `goal ${id}`,
+    start_time: 1,
+    status,
+    requested_by: owner
+  });
+
+  function render() {
+    const fixture = TestBed.createComponent(ChatInterfaceComponent);
+    fixture.detectChanges();
+    const root = fixture.nativeElement as HTMLElement;
+    return {
+      fixture,
+      owners: () => Array.from(root.querySelectorAll('.task-card .owner-label')).map((el) => el.textContent!.trim()),
+      switchControl: () => root.querySelector<HTMLButtonElement>('[role="switch"]')
+    };
+  }
+
+  beforeEach(async () => {
+    sessions.set([owned('q1', 'running', 'qa1@example.test'), owned('h1', 'completed', null)]);
+    const agentService = {
+      sessions,
+      activeTab: signal('tasks'),
+      agentStatus: signal('running'),
+      runningSessionId: signal('q1'),
+      currentSessionId: signal('q1'),
+      currentNotes: signal([]),
+      selectedNoteKey: signal(null),
+      fetchStatus: () => {}
+    };
+    await TestBed.configureTestingModule({
+      imports: [ChatInterfaceComponent],
+      providers: [
+        provideRouter([]),
+        provideHttpClient(),
+        provideHttpClientTesting(),
+        { provide: AgentService, useValue: agentService },
+        { provide: HostsService, useValue: { list: () => of({ enabled: true, hosts: [], devices: [] }) } },
+        { provide: WEBUSB_DEVICE_MANAGER, useValue: undefined }
+      ]
+    }).compileComponents();
+    spyOn(TestBed.inject(SystemService), 'fetchReadiness').and.returnValue(EMPTY);
+    scope = TestBed.inject(OwnerScopeService);
+  });
+
+  it('shows a QA neither the All users switch nor any owner label', () => {
+    scope.identity.set({ email: 'qa1@example.test', admin: false, auth_mode: 'cloudflare', reason: null });
+    const { owners, switchControl } = render();
+    expect(switchControl()).toBeNull();
+    expect(owners()).toEqual([]);
+  });
+
+  it('gives an admin the switch in the Task Queue header, and no labels until it is on', () => {
+    scope.identity.set({ email: 'admin@example.test', admin: true, auth_mode: 'cloudflare', reason: null });
+    const { switchControl, owners, fixture } = render();
+    expect(switchControl()!.closest('.chat-header')).not.toBeNull();
+    expect(owners()).toEqual([]);
+    scope.setAllUsers(true);
+    fixture.detectChanges();
+    expect(owners()).toEqual(['Owner: qa1@example.test', 'Owner: No owner']);
+  });
+
+  it('labels queue and history rows alike, so a QA\'s run and an unowned run are told apart', () => {
+    scope.identity.set({ email: 'admin@example.test', admin: true, auth_mode: 'cloudflare', reason: null });
+    scope.setAllUsers(true);
+    const { fixture, owners } = render();
+    fixture.detectChanges();
+    const root = fixture.nativeElement as HTMLElement;
+    expect(root.querySelector('.history-section .owner-label')!.textContent).toContain('No owner');
+    expect(root.querySelector('.task-card .owner-label')!.textContent).toContain('qa1@example.test');
+    expect(owners().length).toBe(2);
   });
 });

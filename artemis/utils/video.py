@@ -56,7 +56,8 @@ TIMELINE_GAP_EPSILON_SECONDS = 0.05
 # Target 100MB to allow 3-5min crisp video and prevent blurring for long durations.
 MAX_VIDEO_SIZE_MB = 500
 MAX_VIDEO_SIZE_BYTES = MAX_VIDEO_SIZE_MB * 1024 * 1024
-MINIMUM_SCRCPY_VERSION = (1, 25)
+MINIMUM_SCRCPY_VERSION = (2, 4)
+SCRCPY_TOO_OLD_REASON = "scrcpy too old for this phone's Android version"
 
 
 def _parse_scrcpy_version(version_output: str) -> tuple[int, int, int]:
@@ -75,11 +76,10 @@ def scrcpy_recording_flags(version_output: str) -> tuple[str, str, str]:
         detected = f"{version[0]}.{version[1]}" + (f".{version[2]}" if version[2] else "")
         minimum = ".".join(str(part) for part in MINIMUM_SCRCPY_VERSION)
         raise ValueError(
-            f"Unsupported scrcpy {detected}: recording requires scrcpy {minimum} or newer"
+            f"Unsupported scrcpy {detected}: {SCRCPY_TOO_OLD_REASON}; "
+            f"recording requires scrcpy {minimum} or newer"
         )
 
-    if version[0] == 1:
-        return "--no-display", "--bit-rate", "--lock-video-orientation"
     if version[0] == 2:
         headless_flag = "--no-display" if version[1] < 5 else "--no-window"
         return headless_flag, "--video-bit-rate", "--lock-video-orientation"
@@ -133,6 +133,7 @@ def build_scrcpy_record_command(
         "--serial",
         device_id,
         headless_flag,
+        "--no-clipboard-autosync",
         "--record",
         str(output_path),
         "--record-format",
@@ -143,6 +144,17 @@ def build_scrcpy_record_command(
     if lock_capture_orientation:
         command.append(orientation_flag)
     return command
+
+
+def classify_recording_failure(error: str) -> str:
+    if SCRCPY_TOO_OLD_REASON in error:
+        return "recorder_incompatible"
+    if "NoSuchMethodException" in error and (
+        "android.view.SurfaceControl.createDisplay" in error
+        or ("IClipboard" in error and "addPrimaryClipChangedListener" in error)
+    ):
+        return "recorder_incompatible"
+    return "recorder_failed"
 
 
 async def await_scrcpy_first_frame(

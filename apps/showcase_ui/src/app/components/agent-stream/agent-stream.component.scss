@@ -3744,7 +3744,8 @@ $stream-row-height: 25px;
             background-color: #ef4444;
           }
         }
-        &.cancelled {
+        &.cancelled,
+        &.interrupted {
           background: #fafafa;
           color: #d97706;
           border-color: #fef3c7;
