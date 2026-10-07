@@ -15,6 +15,14 @@
 from pydantic import BaseModel
 
 
+class RunImageUpload(BaseModel):
+    """One picture sent with a goal; the server checks the claim against the bytes."""
+
+    name: str | None = None
+    media_type: str
+    data: str  # base64
+
+
 class RunRequest(BaseModel):
     goal: str | None = None
     goals: list[str] | None = None
@@ -33,6 +41,8 @@ class RunRequest(BaseModel):
     session_id: str | None = None
     conversation_id: str | None = None
     run_id: str | None = None
+    # Pictures for the one goal (image chat); see services/run_images.py for the limits.
+    images: list[RunImageUpload] | None = None
 
 
 class ReplayRequest(BaseModel):

@@ -61,6 +61,42 @@ def isolate_provider_credentials(monkeypatch):
             monkeypatch.setattr(settings, field, None)
 
 
+ADB_ENVIRONMENT_KEYS = (
+    "ADB_HOST",
+    "ADB_PORT",
+    "ADB_SERVER_SOCKET",
+    "ANDROID_ADB_SERVER_HOST",
+    "ANDROID_ADB_SERVER_PORT",
+    "ARTEMIS_ADB_ENDPOINT_ID",
+    "ARTEMIS_ADB_HOST_ID",
+    "ARTEMIS_ADB_GENERATION",
+    "ARTEMIS_HOST_AGENT",
+)
+
+
+@pytest.fixture(autouse=True)
+def isolate_adb_environment():
+    """Undo adb endpoint activation (``AdbEndpoint.apply_to_environment`` writes ``os.environ``).
+
+    Process-wide endpoint selection is real production behaviour, so tests that exercise
+    it must not leak the selected server into the next test: device-lock scopes and every
+    adb call derive from it.
+    """
+    import os
+
+    from artemis.config.settings import settings
+
+    saved = {key: os.environ.get(key) for key in ADB_ENVIRONMENT_KEYS}
+    saved_settings = (settings.ADB_HOST, settings.ADB_PORT)
+    yield
+    settings.ADB_HOST, settings.ADB_PORT = saved_settings
+    for key, value in saved.items():
+        if value is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = value
+
+
 @pytest.fixture
 def fake_provider_credentials(monkeypatch):
     """Configure clients with synthetic credentials and never live keys."""
@@ -78,6 +114,27 @@ def default_agent_config(monkeypatch, tmp_path):
     config_path = tmp_path / "artemis.jsonc"
     config_path.write_text('{"agent": {}}', encoding="utf-8")
     monkeypatch.setenv("ARTEMIS_ARTEMIS_JSONC", str(config_path))
+
+
+@pytest.fixture
+def fake_adb_server_factory():
+    """Start fake adb servers on ephemeral loopback ports; all stop at teardown.
+
+    Every client under test must be pointed at ``server.endpoint`` explicitly:
+    the fake never replaces, and is never reachable as, the machine's adb server.
+    """
+    from tests.support.fake_adb import FakeAdbServer
+
+    servers: list[FakeAdbServer] = []
+
+    def make(name: str = "fake-adb", **kwargs) -> FakeAdbServer:
+        server = FakeAdbServer(name, **kwargs).start()
+        servers.append(server)
+        return server
+
+    yield make
+    for server in servers:
+        server.stop()
 
 
 @pytest.fixture

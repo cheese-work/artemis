@@ -20,6 +20,7 @@ import { Observable, catchError, map, of, switchMap } from 'rxjs';
 
 import { Session, ModelInfo, TaskQueueItem, AgentStatusResponse, SessionUsage } from '../core/models/session.model';
 import { ProTuningDefaults, ProTuningOptions } from '../core/models/pro-tuning.model';
+import { ImageChat } from '../utils/run-image.util';
 import { StepItemData, StepReplayFrame, LLMStreamResetEventData, StreamResetNotice, DEFAULT_STREAM_RESET_MESSAGE, PersistedCheckerStream, StreamSegment } from '../core/models/stream.model';
 import { extractStepReplayFrames } from '../utils/action-formatter.util';
 import { persistedStreamToSegments } from '../utils/stream-aggregator.util';
@@ -473,7 +474,8 @@ export class AgentService {
     profile: string = 'flash',
     expectedOutput?: string,
     enableOutputter?: boolean,
-    proTuning?: ProTuningOptions
+    proTuning?: ProTuningOptions,
+    imageChat?: ImageChat
   ): Observable<any> {
     return new Observable((obs) => {
       const submittedEvent: StartupProgressEvent = {
@@ -494,6 +496,11 @@ export class AgentService {
       }
       if (proTuning?.explorerMode) {
         payload.explorer_mode = proTuning.explorerMode;
+      }
+      if (imageChat?.images.length) {
+        // The draft's session id makes a retry after a lost response idempotent on the server.
+        payload.images = imageChat.images;
+        payload.session_id = imageChat.sessionId;
       }
       this.clearUserPinnedSession();
       let submissionSettled = false;

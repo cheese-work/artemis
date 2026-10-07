@@ -127,6 +127,13 @@ limitations under the License.
           <div class="task-goal" title="{{ session.initial_goal }}">
             {{ session.initial_goal || 'Unnamed Task' }}
           </div>
+          @if (session.goal_images?.length) {
+            <div class="task-goal-images">
+              @for (image of session.goal_images; track image.index) {
+                <img [src]="image.url" [alt]="'Image ' + (image.index + 1) + ' sent with this task'" loading="lazy">
+              }
+            </div>
+          }
           <div class="task-card-footer">
             <app-run-id-copy [runId]="session.session_id"></app-run-id-copy>
             <app-owner-label [owner]="session.requested_by"></app-owner-label>
@@ -194,6 +201,13 @@ limitations under the License.
               <div class="task-goal" title="{{ session.initial_goal }}">
                 {{ session.initial_goal || 'Unnamed Task' }}
               </div>
+              @if (session.goal_images?.length) {
+                <div class="task-goal-images">
+                  @for (image of session.goal_images; track image.index) {
+                    <img [src]="image.url" [alt]="'Image ' + (image.index + 1) + ' sent with this task'" loading="lazy">
+                  }
+                </div>
+              }
               <div class="task-card-footer">
                 <app-run-id-copy [runId]="session.session_id"></app-run-id-copy>
                 <app-owner-label [owner]="session.requested_by"></app-owner-label>

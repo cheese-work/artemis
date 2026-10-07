@@ -40,6 +40,7 @@ except ImportError:
     from apps.admin_console.services.host_admission import enabled as host_agent_enabled
     from apps.admin_console.services.media_service import media_service
 
+from apps.admin_console.services import run_images
 from artemis.config import (
     PAUSE_FILE,
     TEST_DATA_DIR,
@@ -57,6 +58,8 @@ from artemis.runtime import (
     request_cancel,
     trace_store,
 )
+from artemis.runtime.adb_endpoint import InvalidAdbEndpoint
+from artemis.runtime.host_endpoints import host_endpoints
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +67,10 @@ _STOPPED_FROM_FRONTEND = "Task stopped from the Artemis frontend."
 _CANCELLED_WHILE_QUEUED = "Queued task cancelled from the Artemis frontend."
 # Cadence of the sweep that fails running sessions whose worker vanished.
 _VANISHED_WORKER_SWEEP_SECONDS = 15.0
+
+
+class TaskEndpointUnavailable(RuntimeError):
+    """A queued task's adb endpoint snapshot cannot be turned into an endpoint."""
 
 
 class ServerDraining(RuntimeError):
@@ -238,13 +245,43 @@ class TaskQueueService:
         ).start()
 
     @staticmethod
-    def _task_target(task_item: dict[str, Any]) -> AdbTarget:
+    def _scheduling_lock_key(task_item: dict[str, Any]) -> str:
+        """Lock key for the scheduler; never raises.
+
+        A snapshot that can no longer be turned into an endpoint (a host task queued
+        before the host agent flag went off) still has an identity to schedule on. The
+        task then fails alone when it launches, instead of the scheduler loop dying.
+        """
+        try:
+            return TaskQueueService._task_target(task_item).lock_key
+        except TaskEndpointUnavailable:
+            snapshot = task_item.get("adb_endpoint")
+            identity = snapshot.get("identity") if isinstance(snapshot, dict) else None
+            serial = task_item.get("device_serial")
+            return f"{identity or 'unavailable'}/{serial or 'pending'}"
+
+    @staticmethod
+    def _task_target(task_item: dict[str, Any], *, resolve_host: bool = False) -> AdbTarget:
+        """The task's adb target from its queued snapshot.
+
+        A host endpoint is snapshotted by host id; its tunnel port is only valid *now*, so
+        ``resolve_host=True`` (used when the worker launches) swaps in the host's live
+        endpoint and raises :class:`HostOffline` when it has none. The scheduler keeps
+        the snapshot: host-scoped lock keys do not depend on the port.
+        """
         endpoint_data = task_item.get("adb_endpoint")
-        endpoint = (
-            AdbEndpoint.from_mapping(endpoint_data)
-            if isinstance(endpoint_data, dict)
-            else current_adb_endpoint()
-        )
+        try:
+            endpoint = (
+                AdbEndpoint.from_mapping(endpoint_data)
+                if isinstance(endpoint_data, dict)
+                else current_adb_endpoint()
+            )
+        except InvalidAdbEndpoint as exc:
+            raise TaskEndpointUnavailable(
+                f"The task's adb endpoint {endpoint_data!r} cannot be used: {exc}"
+            ) from exc
+        if resolve_host and endpoint.is_host:
+            endpoint = host_endpoints.resolve(str(endpoint.host_id))
         serial = task_item.get("device_serial")
         return AdbTarget(
             endpoint=endpoint,
@@ -479,7 +516,7 @@ class TaskQueueService:
             if capacity <= 0:
                 return
         busy_devices = state.busy_device_ids | {
-            cls._task_target(i).lock_key for i in in_flight if i.get("device_serial")
+            cls._scheduling_lock_key(i) for i in in_flight if i.get("device_serial")
         }
         dispatched_any = False
         loop = asyncio.get_running_loop()
@@ -492,16 +529,16 @@ class TaskQueueService:
                 continue
 
             device = item.get("device_serial")
-            target = cls._task_target(item)
+            lock_key = cls._scheduling_lock_key(item)
             if limit == 0:
                 # A task without a resolved device may bind to any serial, so it
                 # only launches on an otherwise idle scheduler; the device lock
                 # then allocates freely without contending against active runs.
                 if device is None and (state.active_runs or in_flight or dispatched_any):
                     continue
-                if device is not None and target.lock_key in busy_devices:
+                if device is not None and lock_key in busy_devices:
                     continue
-            elif limit > 1 and device is not None and target.lock_key in busy_devices:
+            elif limit > 1 and device is not None and lock_key in busy_devices:
                 # A second worker for this device would wait on its lock.
                 continue
 
@@ -520,7 +557,7 @@ class TaskQueueService:
             item["status"] = "starting" if host_agent_enabled() else "running"
             dispatched_any = True
             if device is not None:
-                busy_devices.add(target.lock_key)
+                busy_devices.add(lock_key)
             # Count from scheduling, not from the coroutine's first step: a stop
             # can drop the queue row, or cancel the task, before it ever runs.
             run_key = str(sess_id) if sess_id else uuid.uuid4().hex
@@ -707,6 +744,8 @@ class TaskQueueService:
         if device_serial:
             cmd.extend(["--device-serial", str(device_serial)])
             env["ADB_DEVICE_SERIAL"] = str(device_serial)
+        if task_item.get("goal_images") and sess_id:
+            env.update(run_images.worker_environment(str(sess_id), task_item["goal_images"]))
         return cmd, env
 
     @classmethod
@@ -1152,7 +1191,7 @@ class TaskQueueService:
                 raise ValueError("Queued task must contain a non-empty string goal.")
             cls._begin_task_run(task_item, run_key, sess_id, goal, profile)
 
-            target = cls._task_target(task_item)
+            target = cls._task_target(task_item, resolve_host=True)
             from apps.admin_console.services.config_store import get_config_store
 
             config_snapshot = await get_config_store().snapshot_for_spawn()
@@ -1328,7 +1367,9 @@ class TaskQueueService:
         return None
 
     @classmethod
-    async def _reject_unavailable_device(cls, device_serial: str | None) -> dict[str, Any] | None:
+    async def _reject_unavailable_device(
+        cls, device_serial: str | None, endpoint: AdbEndpoint | None = None
+    ) -> dict[str, Any] | None:
         """Return the rejection response for an unattached explicit serial, if any."""
         # Strict device binding: reject an explicitly requested serial that is not
         # attached and authorized, instead of silently running on another device.
@@ -1338,7 +1379,8 @@ class TaskQueueService:
             try:
                 from artemis.runtime import device_pool
 
-                rejection = await device_pool.validate_explicit_serial_async(device_serial)
+                pool = device_pool.pool_for(endpoint) if endpoint else device_pool
+                rejection = await pool.validate_explicit_serial_async(device_serial)
             except Exception:
                 rejection = None
             if rejection:
@@ -1426,8 +1468,12 @@ class TaskQueueService:
         run_id: str | None = None,
         host_id: str | None = None,
         requested_by: str | None = None,
+        goal_images: list[run_images.ValidatedImage] | None = None,
     ) -> dict[str, Any]:
         """Enqueues one or more goals and wakes up the background worker.
+
+        ``goal_images`` are validated pictures for the single goal; they are stored
+        with the run and the queue item names them (never their server paths).
 
         ``requested_by`` is the verified identity that owns the new runs (None:
         no owner); it is persisted with each session and shown on the queue item.
@@ -1445,6 +1491,8 @@ class TaskQueueService:
         spawned worker as ``--run-id`` so daemon-dispatched attempts get the
         same manifest/reconciliation evidence as standalone runs.
         """
+        if session_id:
+            run_images.require_safe_session_id(str(session_id))  # before any side effect
         verification_level = (
             str(verification_level).strip().lower() or None if verification_level else None
         )
@@ -1475,7 +1523,7 @@ class TaskQueueService:
         cls.require_admission_open()
 
         rejection_response = (
-            None if host_id else await cls._reject_unavailable_device(device_serial)
+            None if host_id else await cls._reject_unavailable_device(device_serial, endpoint)
         )
         if rejection_response is not None:
             return rejection_response
@@ -1486,7 +1534,7 @@ class TaskQueueService:
             from artemis.runtime import device_pool
 
             try:
-                device_serial = await device_pool.select_device_async()
+                device_serial = await device_pool.pool_for(endpoint).select_device_async()
             except Exception:
                 device_serial = None
         # Last await is behind us: from here to the queue append nothing yields,
@@ -1551,6 +1599,9 @@ class TaskQueueService:
                     requested_by,
                 ):
                     raise RuntimeError(f"Could not persist queued session {session_id}")
+                if goal_images:
+                    # Synchronous on purpose: nothing may yield before the queue append.
+                    task_item["goal_images"] = run_images.store(session_id, goal_images)
             except (OSError, RuntimeError) as exc:
                 DeviceExecutionLock.cancel_reservation(task_item.get("queue_ticket"))
                 if trace_created or (

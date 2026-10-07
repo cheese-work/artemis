@@ -304,6 +304,45 @@ def test_validate_explicit_serial_async_matches_sync(monkeypatch):
     assert "not connected" in missing
 
 
+def test_claimed_serials_ignore_queue_tickets_for_other_endpoints(monkeypatch):
+    """A queued serial on another adb server is not claimed on this one."""
+    from artemis.runtime.adb_endpoint import AdbEndpoint
+
+    # A ticket without an explicit scope inherits the process's; make "unscoped" mean unscoped.
+    monkeypatch.delenv(DeviceExecutionLock.LOCK_SCOPE_ENV, raising=False)
+    alpha = AdbEndpoint.create("127.0.0.1", 40001)
+    beta = AdbEndpoint.create("127.0.0.1", 40002)
+    on_alpha = DeviceExecutionLock.reserve(
+        description="alpha",
+        device_id="alpha-phone",
+        session_id="queued-a",
+        lock_scope=alpha.lock_scope,
+    )
+    on_beta = DeviceExecutionLock.reserve(
+        description="beta",
+        device_id="beta-phone",
+        session_id="queued-b",
+        lock_scope=beta.lock_scope,
+    )
+    legacy = DeviceExecutionLock.reserve(
+        description="written before endpoint scoping",
+        device_id="legacy-phone",
+        session_id="queued-legacy",
+    )
+    try:
+        assert DevicePool.for_endpoint(alpha).get_claimed_serials() == {
+            "alpha-phone",
+            "legacy-phone",
+        }
+        assert DevicePool.for_endpoint(beta).get_claimed_serials() == {
+            "beta-phone",
+            "legacy-phone",
+        }
+    finally:
+        for ticket in (on_alpha, on_beta, legacy):
+            DeviceExecutionLock.cancel_reservation(ticket)
+
+
 PHONE_PROPS = {"ro.product.model": "21081111RG", "ro.hardware": "qcom", "ro.kernel.qemu": ""}
 EMULATOR_PROPS = {"ro.product.model": "sdk_gphone64_arm64", "ro.hardware": "ranchu"}
 
@@ -418,3 +457,23 @@ def test_sync_property_reads_run_in_parallel(monkeypatch):
 
     monkeypatch.setattr(pool, "_read_properties_sync", read)
     assert {d.device_kind for d in pool.list_devices()} == {"phone"}
+
+
+def test_device_kind_of_one_serial_is_read_per_endpoint(monkeypatch):
+    """The same serial behind two adb servers is two phones: kinds are not shared between them."""
+    from artemis.runtime.adb_endpoint import AdbEndpoint
+
+    alpha = AdbEndpoint.create("127.0.0.1", 40001)
+    beta = AdbEndpoint.create("127.0.0.1", 40002)
+    raw = [("127.0.0.1:5555", "device", None, None)]
+    props = {alpha: EMULATOR_PROPS, beta: PHONE_PROPS}
+    pools = {}
+    for endpoint in (alpha, beta):
+        pool = DevicePool.for_endpoint(endpoint)
+        monkeypatch.setattr(pool, "_query_adb_devices_sync", lambda timeout=None: raw)
+        monkeypatch.setattr(pool, "_read_properties_sync", lambda serial, e=endpoint: props[e])
+        pools[endpoint] = pool
+
+    assert pools[alpha].list_devices()[0].device_kind == "emulator"
+    assert pools[beta].list_devices()[0].device_kind == "phone"
+    assert pools[alpha].list_devices()[0].device_kind == "emulator"

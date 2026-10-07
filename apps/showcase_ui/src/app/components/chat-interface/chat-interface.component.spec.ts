@@ -154,6 +154,32 @@ describe('ChatInterfaceComponent device chip', () => {
     expect(text).toContain('Pixel 8');
     expect(text).toContain('Lab Mac');
   });
+
+  it('shows the images sent with a task under its goal, each with alt text', () => {
+    const withImages: Session = {
+      ...session('emulator-5554'),
+      goal_images: [
+        { index: 0, media_type: 'image/png', url: '/api/sessions/s1/goal-images/0' },
+        { index: 1, media_type: 'image/jpeg', url: '/api/sessions/s1/goal-images/1' }
+      ]
+    };
+    sessions.set([withImages]);
+    const fixture = TestBed.createComponent(ChatInterfaceComponent);
+    fixture.detectChanges();
+
+    const images = (fixture.nativeElement as HTMLElement).querySelectorAll<HTMLImageElement>('.task-goal-images img');
+    expect(images.length).toBe(2);
+    expect(images[0].getAttribute('src')).toBe('/api/sessions/s1/goal-images/0');
+    expect(images[1].alt).toBe('Image 2 sent with this task');
+  });
+
+  it('shows no image strip for a task without images', () => {
+    sessions.set([session('emulator-5554')]);
+    const fixture = TestBed.createComponent(ChatInterfaceComponent);
+    fixture.detectChanges();
+
+    expect((fixture.nativeElement as HTMLElement).querySelector('.task-goal-images')).toBeNull();
+  });
 });
 
 describe('ChatInterfaceComponent per-QA scope (CHE-1152)', () => {

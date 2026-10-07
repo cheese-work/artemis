@@ -23,9 +23,9 @@ import os
 import time
 import uuid
 
-from artemis.runtime.adb_endpoint import AdbEndpoint, AdbSession
+from artemis.runtime.adb_endpoint import AdbEndpoint
 from artemis.runtime.device_lock import DeviceExecutionLock
-from artemis.toolchain import find_adb
+from artemis.runtime.endpoint_transport import EndpointTransport
 
 DEFAULT_SESSION_TTL_SECONDS = 300
 DEFAULT_SESSION_MAX_LIFETIME_SECONDS = 4 * 60 * 60
@@ -59,12 +59,17 @@ def _session_max_lifetime_seconds() -> float:
 
 
 async def _run_adb_command(*arguments: str) -> str:
-    adb_session = AdbSession(AdbEndpoint.local(), adb_path=find_adb())
-    process = await asyncio.create_subprocess_exec(
-        *adb_session.command(arguments),
+    """Run ``adb <arguments>`` against this computer's own adb server, whatever the preference.
+
+    The bridge makes the *local* adb server dial the loopback listener (``adb connect
+    127.0.0.1:<port>``); a run's endpoint, a host agent's tunnel included, is never the
+    right server for that.
+    """
+    transport = EndpointTransport(AdbEndpoint.local())
+    process = await transport.create_subprocess(
+        arguments,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
-        env=adb_session.environment(),
     )
     try:
         stdout, stderr = await asyncio.wait_for(

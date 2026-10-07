@@ -17,7 +17,6 @@ import binascii
 from collections import deque
 from contextlib import closing, contextmanager
 import hashlib
-import os
 import re
 import secrets
 import sqlite3
@@ -29,6 +28,7 @@ from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 from apps.admin_console.database.connection import get_db
+from artemis.config.host_agent import host_agent_enabled
 
 # Shared protocol constants (the agent, server, UI and docs read these).
 PROTOCOL_VERSION = 1
@@ -68,10 +68,6 @@ CREATE TABLE IF NOT EXISTS host_tokens (
     scopes TEXT NOT NULL, expires_at REAL NOT NULL
 );
 """
-
-
-def host_agent_enabled() -> bool:
-    return os.environ.get("ARTEMIS_HOST_AGENT", "").strip().casefold() == "enabled"
 
 
 def enroll_message(code: str, public_key: str) -> bytes:

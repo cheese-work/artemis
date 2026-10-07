@@ -283,7 +283,7 @@ async def test_whole_batch_is_refused_while_draining(env):
 
 @pytest.mark.asyncio
 async def test_drain_flipped_during_device_validation_is_caught_at_enqueue(env, monkeypatch):
-    async def validate_then_drain(_serial):
+    async def validate_then_drain(_serial, _endpoint=None):
         state.draining = True
 
     monkeypatch.setattr(TaskQueueService, "_reject_unavailable_device", validate_then_drain)

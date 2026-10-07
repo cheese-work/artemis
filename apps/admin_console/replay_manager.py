@@ -22,6 +22,9 @@ import traceback
 from typing import Any
 from uuid import UUID
 
+from artemis.runtime.adb_endpoint import AdbEndpoint
+from artemis.runtime.endpoint_transport import EndpointTransport
+
 WORKSPACE_ROOT = Path(__file__).parent.parent.resolve()
 
 # Try to import settings from artemis
@@ -116,6 +119,7 @@ class ReplayManager:
         device_id: str = None,
         original_db_path: Path = None,
         init_device: bool = False,
+        endpoint: AdbEndpoint | None = None,
     ):
         """Initializes the ReplayManager and autodetects the connected Android device.
 
@@ -128,6 +132,9 @@ class ReplayManager:
               database. Defaults to DB_PATH.
             init_device (bool, optional): Whether to initialize the ADB device
               connection on startup.
+            endpoint (AdbEndpoint, optional): The ADB server the replay devices live
+              on. Defaults to this computer's own server; a replay never follows the
+              process preference, so it cannot reach another server by accident.
         """
         self.workspace_root = workspace_root
         self.traces_path = TRACES_PATH
@@ -143,6 +150,7 @@ class ReplayManager:
         self.h = None
         self.adb = None
         self.ui_client = None
+        self.transport = EndpointTransport(endpoint or AdbEndpoint.local())
 
         if init_device:
             try:
@@ -155,8 +163,6 @@ class ReplayManager:
 
     def _init_device(self, device_id: str = None):
         """Initializes connection to the target device and queries screen metrics."""
-        from adbutils import AdbClient
-
         try:
             from artemis.clients.ui_automator_client import UIAutomatorClient
         except ImportError:
@@ -164,7 +170,7 @@ class ReplayManager:
                 "Failed to import UIAutomatorClient. Ensure artemis package is installed in path."
             )
 
-        self.adb = AdbClient(host="localhost", port=5037)
+        self.adb = self.transport.client()
         try:
             devices = self.adb.device_list()
         except Exception as adb_err:
@@ -188,7 +194,7 @@ class ReplayManager:
         else:
             self.device_id = devices[0].serial
 
-        self.ui_client = UIAutomatorClient(device_id=self.device_id)
+        self.ui_client = UIAutomatorClient(device_id=self.device_id, transport=self.transport)
         ui_data = self.ui_client.get_screen_data()
         self.w, self.h = ui_data.width, ui_data.height
         print(f"Connected to device: {self.device_id} ({self.w}x{self.h})")
@@ -399,10 +405,7 @@ class ReplayManager:
     def list_devices(self) -> list[dict]:
         """Dynamically queries the ADB server for connected Android devices."""
         try:
-            from adbutils import AdbClient
-
-            adb = AdbClient(host="localhost", port=5037)
-            devices = adb.device_list()
+            devices = self.transport.device_list()
             return [{"serial": d.serial, "status": "online"} for d in devices]
         except Exception as e:
             print(f"Warning: Failed to query device list from ADB: {e}")

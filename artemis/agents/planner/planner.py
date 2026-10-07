@@ -44,6 +44,7 @@ from artemis.tools.tool_wrapper import (
     invoke_tool_with_injection,
 )
 from artemis.utils.decorators import wrap_with_callbacks
+from artemis.utils.goal_images import goal_image_blocks
 from artemis.utils.logger import get_logger
 from artemis.utils.notes import get_note_file_path
 from artemis.utils.plan_grammar import (
@@ -295,7 +296,7 @@ class PlannerNode:
 
         human_message = Template(human_content).render(**render_kwargs)
 
-        human_message_content = [{"type": "text", "text": human_message}]
+        human_message_content = [{"type": "text", "text": human_message}, *goal_image_blocks()]
         if screenshot_b64:
             human_message_content.append(
                 {
