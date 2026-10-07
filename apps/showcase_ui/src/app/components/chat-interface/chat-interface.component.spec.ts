@@ -121,10 +121,50 @@ describe('ChatInterfaceComponent device chip', () => {
     expect(text).toContain('Emulator');
   });
 
-  it('shows Unknown device for a loopback address that is no longer listed', () => {
+  it('never says Unknown device for a loopback address that is no longer listed', () => {
     const text = chipText('127.0.0.1:55555', []);
-    expect(text).toContain('Unknown device');
+    expect(text).toContain('Phone via a browser');
+    expect(text).not.toContain('Unknown device');
     expect(text).not.toContain('127.0.0.1');
+  });
+
+  it('labels a past run by the model recorded with it when the phone is gone', () => {
+    systemService.readinessReport.set(null);
+    sessions.set([
+      {
+        ...session('127.0.0.1:55555'),
+        status: 'interrupted',
+        device_serial: undefined,
+        device_info: { device_id: '127.0.0.1:55555', model: 'Pixel 8', device_kind: 'phone' }
+      }
+    ]);
+    const fixture = TestBed.createComponent(ChatInterfaceComponent);
+    fixture.detectChanges();
+    const chip = (fixture.nativeElement as HTMLElement).querySelector('.task-device');
+    const text = (chip?.textContent ?? '').replace(/\s+/g, ' ').trim();
+    expect(text).toContain('Pixel 8');
+    expect(text).not.toContain('Unknown device');
+    expect(text).not.toContain('127.0.0.1');
+    expect(chip?.getAttribute('title')).toContain('127.0.0.1:55555');
+  });
+
+  it('labels a past run by the registry model when only the registry knows the phone', () => {
+    registryDevices = [
+      {
+        serial: '127.0.0.1:55555',
+        model: 'Pixel 6 Pro',
+        device_kind: 'phone',
+        source: 'browser',
+        computer_id: null,
+        computer_name: null,
+        computer_status: 'online',
+        reason: null,
+        since: 1
+      }
+    ];
+    const text = chipText('127.0.0.1:55555', []);
+    expect(text).toContain('Pixel 6 Pro');
+    expect(text).not.toContain('Unknown device');
   });
 
   it('keeps the raw serial in the tooltip detail', () => {
@@ -178,5 +218,32 @@ describe('ChatInterfaceComponent device chip', () => {
     fixture.detectChanges();
 
     expect((fixture.nativeElement as HTMLElement).querySelector('.task-goal-images')).toBeNull();
+  });
+
+  describe('run status badges', () => {
+    const rows: Array<[string | undefined, string, 'queue' | 'history']> = [
+      ['running', 'Running', 'queue'],
+      ['pending', 'Queued', 'queue'],
+      ['paused', 'Paused', 'queue'],
+      ['completed', 'Passed', 'history'],
+      ['failed', 'Failed', 'history'],
+      ['cancelled', 'Cancelled', 'history'],
+      ['interrupted', 'Interrupted', 'history'],
+      ['something_new', 'Unknown', 'history'],
+      [undefined, 'Unknown', 'history']
+    ];
+
+    for (const [status, label, where] of rows) {
+      it(`shows ${status ?? 'a missing status'} as ${label} in the ${where}`, () => {
+        sessions.set([{ ...session('emulator-5554'), session_id: 'other', status }]);
+        const fixture = TestBed.createComponent(ChatInterfaceComponent);
+        fixture.detectChanges();
+        const root = fixture.nativeElement as HTMLElement;
+        const badge = root.querySelector('.task-badge');
+        expect(badge?.textContent?.trim()).toBe(label);
+        const inHistory = root.querySelector('.history-section .task-badge') !== null;
+        expect(inHistory).toBe(where === 'history');
+      });
+    }
   });
 });

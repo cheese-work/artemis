@@ -38,9 +38,9 @@ import {
   UNPIN_EXPIRED_NOTICE,
   interruptReason,
   interruptedSentence,
-  outcomeView,
   removedReason
 } from '../../utils/run-library-strings';
+import { runStatusView } from '../../utils/run-status.util';
 import { RunIdCopyComponent } from '../run-id-copy/run-id-copy.component';
 
 type PageState = 'loading' | 'ready' | 'not_found' | 'removed' | 'access' | 'ambiguous' | 'error';
@@ -73,7 +73,7 @@ export class RunViewerComponent {
   public readonly runId = input.required<string>();
 
   public readonly strings = RUN_STRINGS;
-  public readonly outcome = outcomeView;
+  public readonly outcome = runStatusView;
   public readonly interruptReason = interruptReason;
   public readonly removedReason = removedReason;
 

@@ -44,3 +44,19 @@ const LOOPBACK_ADDRESS = /^(127\.0\.0\.1|localhost):\d+$/;
 export function unlistedDeviceTitle(serial: string): string {
   return LOOPBACK_ADDRESS.test(serial) ? KIND_LABELS.unknown : serial;
 }
+
+/**
+ * Title for a past run whose phone is no longer listed. A loopback address is how a browser
+ * relays a phone, so say that rather than "Unknown device"; the address stays in a detail line.
+ */
+export function unlistedRunDeviceTitle(serial: string, ownBrowser: boolean): string {
+  if (!LOOPBACK_ADDRESS.test(serial)) {
+    return serial;
+  }
+  return ownBrowser ? 'Phone via this browser' : 'Phone via a browser';
+}
+
+/** True when the record says what the device is: a model name or a classified kind. */
+export function isIdentifiedDevice(device: LabelableDevice): boolean {
+  return !!device.model?.trim() || (!!device.device_kind && device.device_kind !== 'unknown');
+}

@@ -15,9 +15,11 @@
  */
 
 import { DOCUMENT } from '@angular/common';
-import { Component, ChangeDetectionStrategy, DestroyRef, ElementRef, EventEmitter, afterNextRender, inject, Input, Output } from '@angular/core';
+import { Component, ChangeDetectionStrategy, DestroyRef, computed, ElementRef, EventEmitter, afterNextRender, inject, Input, Output } from '@angular/core';
 
 import { RouterLink, RouterLinkActive } from '@angular/router';
+import { SystemService } from '../../services/system.service';
+import { deviceKindLabel, deviceTitle, isIdentifiedDevice } from '../../utils/device-label.util';
 import { UsbDeviceRelayService } from '../../services/usb-device-relay.service';
 import { AdminIdentityIndicatorComponent } from '../admin-identity-indicator/admin-identity-indicator.component';
 
@@ -69,10 +71,12 @@ import { AdminIdentityIndicatorComponent } from '../admin-identity-indicator/adm
       }
       <div class="nav-status">
         @if (usbRelay.state().status === 'connected') {
-          <div class="usb-relay-badge" aria-live="polite">
+          <div class="usb-relay-badge" aria-live="polite" [title]="'Address: ' + usbRelay.state().serial">
             <span class="material-symbols-outlined badge-icon" aria-hidden="true">smartphone</span>
             <span class="badge-label" role="status">Phone connected via this browser</span>
-            <code>{{ usbRelay.state().serial }}</code>
+            @if (phoneName(); as name) {
+              <strong class="badge-device">{{ name }}</strong>
+            }
             <button type="button" (click)="disconnectPhone()">Disconnect</button>
           </div>
         }
@@ -89,6 +93,19 @@ export class NavSwitcherComponent {
   @Output() public showWhatsNew = new EventEmitter<void>();
 
   public readonly usbRelay = inject(UsbDeviceRelayService);
+  private readonly system = inject(SystemService);
+
+  /** Model and kind of the browser's phone, once the device list knows it; the raw address stays in the tooltip. */
+  public readonly phoneName = computed(() => {
+    const serial = this.usbRelay.state().serial;
+    const device = this.system.connectedDevices().find((d) => d.serial === serial);
+    if (!device || !isIdentifiedDevice(device)) {
+      return null;
+    }
+    const title = deviceTitle(device);
+    const kind = device.device_kind && device.device_kind !== 'unknown' ? deviceKindLabel(device) : null;
+    return kind && kind !== title ? `${title} · ${kind}` : title;
+  });
   private readonly bar = inject(ElementRef<HTMLElement>);
 
   constructor() {

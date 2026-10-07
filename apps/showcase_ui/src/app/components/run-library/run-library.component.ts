@@ -31,17 +31,10 @@ import {
   RUN_STRINGS,
   expiresText,
   interruptReason,
-  outcomeView,
   truncate
 } from '../../utils/run-library-strings';
+import { runStatusView } from '../../utils/run-status.util';
 import { classifySearch } from '../../utils/run-search.util';
-
-const STATUS_LABELS: Record<string, string> = {
-  completed: 'Passed',
-  failed: 'Failed',
-  interrupted: 'Interrupted',
-  cancelled: 'Cancelled'
-};
 
 @Component({
   selector: 'app-run-library',
@@ -60,8 +53,8 @@ export class RunLibraryComponent {
   private readonly destroyRef = inject(DestroyRef);
 
   public readonly strings = RUN_STRINGS;
-  public readonly statusOptions = STATUS_FILTERS.map((value) => ({ value, label: STATUS_LABELS[value] }));
-  public readonly outcome = outcomeView;
+  public readonly statusOptions = STATUS_FILTERS.map((value) => ({ value, label: runStatusView(value).label }));
+  public readonly outcome = runStatusView;
   public readonly interruptReason = interruptReason;
 
   /** What the URL says; the list always shows exactly this. */

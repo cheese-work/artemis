@@ -2,6 +2,7 @@ import { TestBed } from '@angular/core/testing';
 import { provideRouter } from '@angular/router';
 import { signal } from '@angular/core';
 import { of } from 'rxjs';
+import { SystemService } from '../../services/system.service';
 import { AdminConfigService } from '../../services/admin-config.service';
 import {
   UsbDeviceRelayService,
@@ -28,7 +29,8 @@ describe('NavSwitcherComponent', () => {
     fixture.detectChanges();
 
     expect(fixture.nativeElement.textContent).toContain('Phone connected via this browser');
-    expect(fixture.nativeElement.querySelector('code')?.textContent).toBe('R58M123');
+    expect(fixture.nativeElement.querySelector('.usb-relay-badge')?.getAttribute('title')).toContain('R58M123');
+    expect(fixture.nativeElement.querySelector('code')).toBeNull();
     (fixture.nativeElement.querySelector('.usb-relay-badge button') as HTMLButtonElement).click();
     expect(relay.disconnect).toHaveBeenCalled();
   });
@@ -159,5 +161,57 @@ describe('NavSwitcherComponent', () => {
     whatsNewButton.click();
     expect(showWhatsNew).toHaveBeenCalled();
     expect(fixture.nativeElement.querySelector('app-admin-identity-indicator')?.textContent).toContain('Admin');
+  });
+
+  it('labels the browser phone by model and kind, keeping the raw address out of the bar (CHE-1261)', async () => {
+    const relay = {
+      state: signal<UsbDeviceRelayState>({ status: 'connected', serial: '127.0.0.1:44447', error: null }),
+      disconnect: jasmine.createSpy('disconnect').and.resolveTo(undefined)
+    };
+    await TestBed.configureTestingModule({
+      imports: [NavSwitcherComponent],
+      providers: [
+        provideRouter([]),
+        { provide: UsbDeviceRelayService, useValue: relay },
+        {
+          provide: SystemService,
+          useValue: {
+            connectedDevices: signal([
+              { serial: '127.0.0.1:44447', state: 'device', model: 'Pixel 6 Pro', device_kind: 'phone' }
+            ])
+          }
+        }
+      ]
+    }).compileComponents();
+    const fixture = TestBed.createComponent(NavSwitcherComponent);
+    fixture.detectChanges();
+
+    const badge = fixture.nativeElement.querySelector('.usb-relay-badge') as HTMLElement;
+    const text = (badge.textContent ?? '').replace(/\s+/g, ' ');
+    expect(text).toContain('Pixel 6 Pro');
+    expect(text).toContain('Phone');
+    expect(text).not.toContain('127.0.0.1');
+    expect(badge.getAttribute('title')).toContain('127.0.0.1:44447');
+  });
+
+  it('shows no raw address in the bar when the phone is not in the device list yet (CHE-1261)', async () => {
+    const relay = {
+      state: signal<UsbDeviceRelayState>({ status: 'connected', serial: '127.0.0.1:44447', error: null }),
+      disconnect: jasmine.createSpy('disconnect').and.resolveTo(undefined)
+    };
+    await TestBed.configureTestingModule({
+      imports: [NavSwitcherComponent],
+      providers: [
+        provideRouter([]),
+        { provide: UsbDeviceRelayService, useValue: relay },
+        { provide: SystemService, useValue: { connectedDevices: signal([]) } }
+      ]
+    }).compileComponents();
+    const fixture = TestBed.createComponent(NavSwitcherComponent);
+    fixture.detectChanges();
+
+    const text = (fixture.nativeElement.querySelector('.usb-relay-badge').textContent ?? '').replace(/\s+/g, ' ');
+    expect(text).toContain('Phone connected via this browser');
+    expect(text).not.toContain('127.0.0.1');
   });
 });

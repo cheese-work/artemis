@@ -3691,6 +3691,7 @@ $stream-row-height: 25px;
         padding: 2px 5px;
         border-radius: 4px;
         letter-spacing: 0.05em;
+        text-transform: uppercase;
         border: 1px solid #e2e8f0;
         background: #fafafa;
         color: #64748b;
@@ -3749,6 +3750,22 @@ $stream-row-height: 25px;
           border-color: #fef3c7;
           &::before {
             background-color: #f59e0b;
+          }
+        }
+        &.interrupted {
+          background: #fff7ed;
+          color: #c2410c;
+          border-color: #fdba74;
+          &::before {
+            background-color: #f97316;
+          }
+        }
+        &.unknown {
+          background: #fafafa;
+          color: #64748b;
+          border-color: #e2e8f0;
+          &::before {
+            background-color: #94a3b8;
           }
         }
 

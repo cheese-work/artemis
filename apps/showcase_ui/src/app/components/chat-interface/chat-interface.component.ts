@@ -25,9 +25,11 @@ import { HostsService } from '../../services/hosts.service';
 import { UsbDeviceRelayService } from '../../services/usb-device-relay.service';
 import { HostsResponse } from '../../core/models/host.model';
 import { deviceSourceOf } from '../../utils/device-chip.util';
-import { deviceKindLabel, deviceTitle, unlistedDeviceTitle } from '../../utils/device-label.util';
+import { deviceKindLabel, deviceTitle, isIdentifiedDevice, unlistedRunDeviceTitle } from '../../utils/device-label.util';
+import { recordedDevice } from '../../utils/session-device.util';
 import { RunIdCopyComponent } from '../run-id-copy/run-id-copy.component';
 import { Session } from '../../core/models/session.model';
+import { RunStatusKey, RunStatusView, sessionStatusView } from '../../utils/run-status.util';
 import { MarkdownSegment, MarkdownLine, NoteMilestone, ParsedNote } from '../../core/models/markdown.model';
 import { parseNote, parseNoteLines } from '../../utils/markdown-parser.util';
 
@@ -72,10 +74,7 @@ export class ChatInterfaceComponent {
    * Filtered computed list of active tasks (running or pending) sorted by status and submission order
    */
   public activeQueue = computed(() => {
-    const list = this.agentService.sessions().filter((s) => {
-      const status = this.getTaskStatus(s);
-      return status === 'running' || status === 'paused' || status === 'pending';
-    });
+    const list = this.agentService.sessions().filter((s) => this.statusView(s).active);
     return list.sort((a, b) => {
       const statusA = this.getTaskStatus(a);
       const statusB = this.getTaskStatus(b);
@@ -91,10 +90,7 @@ export class ChatInterfaceComponent {
    * Filtered computed list of historical/completed tasks (completed, failed, or cancelled)
    */
   public historyTasks = computed(() => {
-    return this.agentService.sessions().filter((s) => {
-      const status = this.getTaskStatus(s);
-      return status === 'completed' || status === 'failed' || status === 'cancelled';
-    });
+    return this.agentService.sessions().filter((s) => !this.statusView(s).active);
   });
 
   /**
@@ -213,23 +209,13 @@ export class ChatInterfaceComponent {
     });
   }
 
-  /**
-   * Determine the current task execution status
-   */
-  public getTaskStatus(session: Session): 'running' | 'paused' | 'completed' | 'pending' | 'failed' | 'cancelled' {
-    if (session.status) {
-      const s = session.status.toLowerCase();
-      if (s === 'completed' || s === 'success' || s === 'failed' || s === 'cancelled') {
-        return (s === 'success' ? 'completed' : s) as any;
-      }
-      if (s === 'running' || s === 'paused' || s === 'pending') {
-        return s as any;
-      }
-    }
-    if (session.session_id === this.agentService.runningSessionId() && (this.agentService.agentStatus() === 'running' || this.agentService.agentStatus() === 'paused')) {
-      return this.agentService.agentStatus() as 'running' | 'paused';
-    }
-    return 'completed';
+  public statusView(session: Session): RunStatusView {
+    const live = session.session_id === this.agentService.runningSessionId() ? this.agentService.agentStatus() : null;
+    return sessionStatusView(session.status, live);
+  }
+
+  public getTaskStatus(session: Session): RunStatusKey {
+    return this.statusView(session).key;
   }
 
   /**
@@ -260,8 +246,8 @@ export class ChatInterfaceComponent {
   }
 
   /**
-   * Chip text for the session's device: the real model and kind when the
-   * device is currently listed, never a bare 127.0.0.1:<port> address.
+   * Chip text for the session's device: the real model and kind (live, recorded with
+   * the run, or from the registry), never a bare 127.0.0.1:<port> address.
    */
   public getDeviceChip(
     session: Session
@@ -279,18 +265,26 @@ export class ChatInterfaceComponent {
       relay.status === 'connected' ? relay.serial : null
     );
     const where = source ? ` · ${source}` : '';
-    const device = this.systemService.connectedDevices().find((d) => d.serial === serial);
+    // Newest knowledge first: the live list, then what the run recorded, then the registry.
+    const device = [
+      this.systemService.connectedDevices().find((d) => d.serial === serial),
+      recordedDevice(session, serial),
+      registry?.devices.find((d) => d.serial === serial)
+    ].find((d) => d && isIdentifiedDevice(d));
     if (!device) {
-      const title = unlistedDeviceTitle(serial);
+      const ownBrowser = relay.status === 'connected' && relay.serial === serial;
+      const title = unlistedRunDeviceTitle(serial, ownBrowser);
       return { title, kind: null, source, tooltip: `Device: ${title}${where} · ${serial}` };
     }
     const title = deviceTitle(device);
-    const kind = deviceKindLabel(device);
+    const kind = isIdentifiedDevice({ serial, model: null, device_kind: device.device_kind })
+      ? deviceKindLabel(device)
+      : null;
     return {
       title,
       kind: kind === title ? null : kind,
       source,
-      tooltip: `Device: ${title} (${kind})${where} · ${serial}`
+      tooltip: `Device: ${title}${kind ? ` (${kind})` : ''}${where} · ${serial}`
     };
   }
 

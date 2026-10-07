@@ -82,13 +82,13 @@ limitations under the License.
                 @if (getTaskStatus(session) === 'running') {
                   <span class="status-dot"></span>
                 }
-                {{ getTaskStatus(session) | uppercase }}
+                {{ statusView(session).label }}
               </span>
               <div class="item-header-actions">
                 @if (getDeviceSerial(session)) {
                   <span class="item-device" [title]="'Device: ' + getDeviceSerial(session)">
                     <span class="material-symbols-outlined device-icon">phone_android</span>
-                    <span class="device-name">{{ getDeviceSerial(session) }}</span>
+                    <span class="device-name">{{ deviceName(session) }}</span>
                   </span>
                 }
                 @if (getDeviceSerial(session)) {
@@ -150,13 +150,13 @@ limitations under the License.
                   @if (getTaskStatus(session) === 'running') {
                     <span class="status-dot"></span>
                   }
-                  {{ getTaskStatus(session) | uppercase }}
+                  {{ statusView(session).label }}
                 </span>
                 <div class="item-header-actions">
                   @if (getDeviceSerial(session)) {
                     <span class="item-device" [title]="'Device: ' + getDeviceSerial(session)">
                       <span class="material-symbols-outlined device-icon">phone_android</span>
-                      <span class="device-name">{{ getDeviceSerial(session) }}</span>
+                      <span class="device-name">{{ deviceName(session) }}</span>
                     </span>
                   }
                   @if (getDeviceSerial(session)) {

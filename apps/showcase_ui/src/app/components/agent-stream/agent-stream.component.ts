@@ -24,6 +24,9 @@ import { AgentService, StartupProgressEvent } from '../../services/agent.service
 import { RunIdCopyComponent } from '../run-id-copy/run-id-copy.component';
 import { RunSummaryCopyComponent } from '../run-summary-copy/run-summary-copy.component';
 import { Session, ModelInfo, SessionUsage } from '../../core/models/session.model';
+import { deviceTitle, isIdentifiedDevice, unlistedRunDeviceTitle } from '../../utils/device-label.util';
+import { recordedDevice } from '../../utils/session-device.util';
+import { RunStatusKey, RunStatusView, sessionStatusView } from '../../utils/run-status.util';
 import { MarkdownSegment, MarkdownLine, NoteMilestone, ParsedNote } from '../../core/models/markdown.model';
 import { OverlayModule, ConnectedPosition } from '@angular/cdk/overlay';
 import { StepBlock, PhaseBlock, StepEvent, ActionParam, CheckerResult, StreamResetNotice, DEFAULT_STREAM_RESET_MESSAGE } from '../../core/models/stream.model';
@@ -380,10 +383,7 @@ export class AgentStreamComponent implements AfterViewInit {
 
   // Top Nav Task Queue Computed Properties
   public activeQueue = computed(() => {
-    const list = this.agentService.sessions().filter((s) => {
-      const status = this.getTaskStatus(s);
-      return status === 'running' || status === 'paused' || status === 'pending';
-    });
+    const list = this.agentService.sessions().filter((s) => this.statusView(s).active);
     return list.sort((a, b) => {
       const statusA = this.getTaskStatus(a);
       const statusB = this.getTaskStatus(b);
@@ -396,10 +396,7 @@ export class AgentStreamComponent implements AfterViewInit {
   });
 
   public historyTasks = computed(() => {
-    return this.agentService.sessions().filter((s) => {
-      const status = this.getTaskStatus(s);
-      return status === 'completed' || status === 'failed' || status === 'cancelled';
-    });
+    return this.agentService.sessions().filter((s) => !this.statusView(s).active);
   });
 
   // Top Nav Notes Computed Properties
@@ -878,20 +875,20 @@ export class AgentStreamComponent implements AfterViewInit {
     return tuningLabel(kind, id);
   }
 
-  public getTaskStatus(session: Session): 'running' | 'paused' | 'completed' | 'pending' | 'failed' | 'cancelled' {
-    if (session.status) {
-      const s = session.status.toLowerCase();
-      if (s === 'completed' || s === 'success' || s === 'failed' || s === 'cancelled') {
-        return (s === 'success' ? 'completed' : s) as any;
-      }
-      if (s === 'running' || s === 'paused' || s === 'pending') {
-        return s as any;
-      }
-    }
-    if (session.session_id === this.agentService.runningSessionId() && (this.agentService.agentStatus() === 'running' || this.agentService.agentStatus() === 'paused')) {
-      return this.agentService.agentStatus() as 'running' | 'paused';
-    }
-    return 'completed';
+  public statusView(session: Session): RunStatusView {
+    const live = session.session_id === this.agentService.runningSessionId() ? this.agentService.agentStatus() : null;
+    return sessionStatusView(session.status, live);
+  }
+
+  public getTaskStatus(session: Session): RunStatusKey {
+    return this.statusView(session).key;
+  }
+
+  /** Device name for a task row: the model recorded with the run, never a bare 127.0.0.1:<port>. */
+  public deviceName(session: Session): string {
+    const serial = this.getDeviceSerial(session) ?? '';
+    const recorded = recordedDevice(session, serial);
+    return recorded && isIdentifiedDevice(recorded) ? deviceTitle(recorded) : unlistedRunDeviceTitle(serial, false);
   }
 
 
