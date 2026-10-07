@@ -3,16 +3,17 @@
 Included ahead of the real routers when the preview profile is selected, so each
 route here answers instead of its real twin (see ``SYNTHETIC`` in
 ``core.preview_routes``). The only state these handlers change is the in-memory
-queue (``state.queue_items``) and ``control``: no process, device, provider, lock
-file or host call, and no database write. Ownership checks are the real ones.
+queue (``state.queue_items``), ``control`` and the private fixture database:
+no process, device, provider, lock file or host call. Ownership checks are real.
 """
 
 from dataclasses import dataclass
 from typing import Any
+import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
-from apps.admin_console.core.access_control import AdminAPIError
+from apps.admin_console.core.access_control import AdminAPIError, require_admin, require_qa
 from apps.admin_console.core.ownership import (
     OwnerScope,
     actor_scope,
@@ -28,9 +29,11 @@ from artemis.core.diagnostics.schema import SystemReadinessReport
 try:
     from admin_console.core.state import IN_FLIGHT_STATUSES, state
     from admin_console.database.repositories.session_repository import session_repo
+    from admin_console.database.repositories.run_catalog_repository import run_catalog_repo
 except ImportError:
     from apps.admin_console.core.state import IN_FLIGHT_STATUSES, state
     from apps.admin_console.database.repositories.session_repository import session_repo
+    from apps.admin_console.database.repositories.run_catalog_repository import run_catalog_repo
 
 router = APIRouter(tags=["preview"])
 
@@ -59,6 +62,11 @@ def _actionable(scope: OwnerScope, items: list[dict[str, Any]]) -> list[dict[str
         for i in items
         if str(i.get("session_id")) in owners and scope.may_act_on(owners[str(i["session_id"])])
     ]
+
+
+def _cancel_fixture(session_id: str) -> None:
+    if not session_repo.update_session_status(session_id, "cancelled"):
+        raise HTTPException(status_code=503, detail="The preview outcome could not be persisted.")
 
 
 @router.get("/api/devices")
@@ -144,6 +152,7 @@ async def stop_task(
         owned = _actionable(scope, candidates)
         targets = owned if all or len(owned) == 1 else []
     for item in targets:
+        _cancel_fixture(item["session_id"])
         item["status"] = "stopped"
     if not targets:
         return {"status": "no_running_task"}
@@ -169,6 +178,7 @@ async def cancel_queued_task(
         raise HTTPException(status_code=404, detail="Unknown session.")
     if item["status"] != "pending":
         return {"status": "already_started", "session_id": session_id}
+    _cancel_fixture(session_id)
     item["status"] = "cancelled"
     return {"status": "cancelled", "session_id": session_id}
 
@@ -187,3 +197,40 @@ async def resume_task(actor: OwnerScope = Depends(actor_scope)) -> dict[str, str
         return {"status": "not_paused"}
     control.paused = False
     return {"status": "resumed"}
+
+
+def _delete_fixture(session_id: str, scope: OwnerScope) -> dict[str, str]:
+    from artemis.data_engine.storage import StorageManager
+
+    require_access(scope, session_id)
+    try:
+        uuid.UUID(session_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="Unknown session.") from exc
+    found = run_catalog_repo.get_run(session_id)
+    if found.run is None:
+        raise HTTPException(status_code=404, detail="Unknown session.")
+    if found.run["status"] not in {"completed", "cancelled", "failed", "interrupted"}:
+        raise HTTPException(status_code=409, detail="A live preview run cannot be deleted.")
+    if found.run["pinned"]:
+        raise HTTPException(status_code=409, detail="A pinned preview run cannot be deleted.")
+    run_catalog_repo.tombstone(session_id, "manual")
+    storage = StorageManager(
+        session_repo.db_path or run_catalog_repo.traces_dir / "data_engine.db",
+        run_catalog_repo.traces_dir,
+    )
+    storage.delete_session(uuid.UUID(session_id), delete_files=False, vacuum=False)
+    state.queue_items[:] = [
+        item for item in state.queue_items if item.get("session_id") != session_id
+    ]
+    return {"status": "success", "session_id": session_id}
+
+
+@router.post("/api/sessions/{session_id}/delete", dependencies=[Depends(require_qa)])
+async def delete_session(session_id: str, actor: OwnerScope = Depends(actor_scope)):
+    return _delete_fixture(session_id, scope_or_open(actor))
+
+
+@router.post("/api/runs/{session_id}/delete", dependencies=[Depends(require_admin)])
+async def delete_run(session_id: str, actor: OwnerScope = Depends(actor_scope)):
+    return _delete_fixture(session_id, scope_or_open(actor))
