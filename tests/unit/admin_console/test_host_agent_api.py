@@ -679,6 +679,57 @@ def test_tunnel_rejects_malformed_binary_frame(admin):
         context.__exit__(None, None, None)
 
 
+def test_tunnel_blackhole_without_fin_closes_at_silence_deadline(admin, monkeypatch):
+    monkeypatch.setattr(agent_router, "DEAD_AFTER_SECONDS", 0.15)
+    key, host_id = _enrolled(admin)
+    context, ws, _reply = _handshake(admin, key, host_id)
+    try:
+        with pytest.raises(WebSocketDisconnect) as closed:
+            ws.receive_json()
+        assert closed.value.code == 4408
+        assert admin.get("/api/hosts").json()["hosts"][0]["status"] == "offline"
+    finally:
+        context.__exit__(None, None, None)
+
+
+def test_tunnel_json_rejects_unencodable_host_text():
+    from artemis.runtime.host_protocol import ProtocolError
+
+    with pytest.raises(ProtocolError):
+        agent_router._json_message({"text": "\ud800"})
+
+
+def test_superseded_socket_cannot_interrupt_runs_during_replacement(admin, monkeypatch):
+    import asyncio
+    from apps.admin_console.services.host_tunnel import host_tunnels
+
+    interrupted = []
+    monkeypatch.setattr(host_tunnels, "interrupt", lambda *args: interrupted.append(args))
+    monkeypatch.setattr(host_tunnels, "note_loss", lambda session: None)
+    monkeypatch.setattr(host_tunnels, "recover_loss", lambda session: None)
+    original = agent_router.host_hub.replace
+
+    async def delayed_replace(*args):
+        await original(*args)
+        if args[2] == 2:
+            first_ws.send_json({"type": "ping"})
+        await asyncio.sleep(0.1)
+
+    monkeypatch.setattr(agent_router.host_hub, "replace", delayed_replace)
+    key, host_id = _enrolled(admin)
+    first, first_ws, _ = _handshake(admin, key, host_id)
+    host_tunnels.bind_run(host_id, "bound-run")
+    second, _second_ws, reply = _handshake(admin, key, host_id)
+    try:
+        assert reply["generation"] == 2
+        assert interrupted == []
+        assert "bound-run" in host_tunnels.runs[host_id]
+    finally:
+        host_tunnels.release_run(host_id, "bound-run")
+        second.__exit__(None, None, None)
+        first.__exit__(None, None, None)
+
+
 def test_tunnel_device_ref_routes_to_named_host_without_local_probe(admin, monkeypatch):
     from apps.admin_console.routers import tasks
     from unittest.mock import AsyncMock

@@ -34,6 +34,8 @@ def manager(monkeypatch):
         clock=clock,
         interrupt=lambda session: outcomes.append(session),
         set_status=lambda host, status, reason: states.append((host, status, reason)),
+        note_loss=lambda session: None,
+        recover_loss=lambda session: None,
     )
     return service, clock, outcomes, states
 
@@ -122,6 +124,7 @@ async def test_unshare_closes_selected_live_stream(manager):
     shared.clear()
     tunnel.unshare()
     assert await asyncio.wait_for(reader.read(), 1) == b""
+    assert not tunnel.mux.streams
     writer.close()
     await writer.wait_closed()
     await service.close()
@@ -217,3 +220,134 @@ async def test_concurrent_attach_cannot_publish_an_older_generation(manager, mon
     assert service.tunnels["lab"] is newest
     assert service.endpoints.resolve("lab").generation == 2
     await service.close()
+
+
+@pytest.mark.asyncio
+async def test_loss_defers_worker_failure_across_authorities_until_grace(tmp_path, monkeypatch):
+    import sqlite3
+    from artemis.data_engine.storage import StorageManager
+    from artemis.runtime.lifecycle import LifecycleAuthority
+    from artemis.runtime import trace_store
+
+    database = tmp_path / "sessions.db"
+    StorageManager(database, tmp_path)
+    monkeypatch.setattr(trace_store, "TRACES_DIR", str(tmp_path / "traces"))
+    clock = Clock()
+    server, worker = (
+        LifecycleAuthority(database, clock=clock),
+        LifecycleAuthority(database, clock=clock),
+    )
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "INSERT INTO sessions (session_id, initial_goal, start_time, status) VALUES ('run', 'fake', 1, 'running')"
+        )
+    assert server.note_loss("run", "host_disconnected", grace_seconds=CONTRACT.grace_seconds)
+    outcome = worker.settle_worker_exit("run", 1, False)
+    assert outcome.status == "running"
+    assert not outcome.committed
+    assert server.pending_events("run") == []
+    clock.now = 130
+    outcome = server.interrupt("run", "host_disconnected")
+    assert outcome.status == "interrupted"
+    assert len(server.pending_events("run")) == 1
+
+
+@pytest.mark.asyncio
+async def test_queue_wait_keeps_bound_run_until_loss_resolves(manager):
+    service, clock, outcomes, _ = manager
+    await service.attach("lab", 1, Socket(), lambda: set())
+    service.bind_run("lab", "run")
+    await service.disconnect("lab", 1, "reset")
+    waiter = asyncio.create_task(service.wait_for_run("run"))
+    await asyncio.sleep(0)
+    assert not waiter.done()
+    clock.now = 130
+    service.expire()
+    await asyncio.wait_for(waiter, 1)
+    assert outcomes == ["run"]
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_auth_expiry_interrupts_without_grace(manager):
+    service, _, _, _ = manager
+    outcomes = []
+    service.interrupt = lambda session, reason="host_disconnected": outcomes.append(
+        (session, reason)
+    )
+    await service.attach("lab", 1, Socket(), lambda: set())
+    service.bind_run("lab", "run")
+    await service.disconnect("lab", 1, "auth_expired")
+    assert service.reconnecting("lab") is None
+    assert outcomes == [("run", "auth_expired")]
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_reconnect_preserves_loopback_address_for_existing_workers(manager):
+    service, _, _, _ = manager
+    await service.attach("lab", 1, Socket(), lambda: set())
+    old = service.endpoints.resolve("lab")
+    service.bind_run("lab", "run")
+    await service.disconnect("lab", 1, "reset")
+    await service.attach("lab", 2, Socket(), lambda: set())
+    new = service.endpoints.resolve("lab")
+    assert (new.host, new.port) == (old.host, old.port)
+    assert new.generation == 2
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_revoke_during_grace_interrupts_immediately(manager):
+    service, _, _, _ = manager
+    outcomes = []
+    service.interrupt = lambda session, reason="host_disconnected": outcomes.append(
+        (session, reason)
+    )
+    await service.attach("lab", 1, Socket(), lambda: set())
+    service.bind_run("lab", "run")
+    await service.disconnect("lab", 1, "reset")
+    await service.abort_host("lab", "auth_expired")
+    assert outcomes == [("run", "auth_expired")]
+    assert service.reconnecting("lab") is None
+    await service.close()
+
+
+@pytest.mark.parametrize("terminal", ["completed", "cancelled"])
+def test_loss_grace_does_not_defer_completion_or_cancel(tmp_path, monkeypatch, terminal):
+    import sqlite3
+    from artemis.data_engine.storage import StorageManager
+    from artemis.runtime.lifecycle import LifecycleAuthority
+    from artemis.runtime import trace_store
+
+    database = tmp_path / "sessions.db"
+    StorageManager(database, tmp_path)
+    monkeypatch.setattr(trace_store, "TRACES_DIR", str(tmp_path / "traces"))
+    authority = LifecycleAuthority(database, clock=Clock())
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "INSERT INTO sessions (session_id, initial_goal, start_time, status) VALUES ('run', 'fake', 1, 'running')"
+        )
+    authority.note_loss("run", "host_disconnected", grace_seconds=30)
+    assert authority.finish("run", terminal).status == terminal
+    assert authority.interrupt("run", "host_disconnected").status == terminal
+    assert len(authority.pending_events("run")) == 1
+
+
+def test_recover_clears_pending_loss_before_worker_settlement(tmp_path, monkeypatch):
+    import sqlite3
+    from artemis.data_engine.storage import StorageManager
+    from artemis.runtime.lifecycle import LifecycleAuthority
+    from artemis.runtime import trace_store
+
+    database = tmp_path / "sessions.db"
+    StorageManager(database, tmp_path)
+    monkeypatch.setattr(trace_store, "TRACES_DIR", str(tmp_path / "traces"))
+    authority = LifecycleAuthority(database, clock=Clock())
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "INSERT INTO sessions (session_id, initial_goal, start_time, status) VALUES ('run', 'fake', 1, 'running')"
+        )
+    authority.note_loss("run", "host_disconnected", grace_seconds=30)
+    assert authority.recover_loss("run")
+    assert authority.settle_worker_exit("run", 1, False).status == "failed"

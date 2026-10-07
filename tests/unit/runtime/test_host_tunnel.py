@@ -357,6 +357,30 @@ async def test_process_cap_reserves_control_capacity_and_releases_it():
 
 
 @pytest.mark.asyncio
+async def test_receive_saturation_resets_only_overflowing_stream():
+    budget = ByteBudget(CONTRACT.control_reserve + 8)
+    mux = Multiplexer(1, budget=budget)
+    blocked, healthy = mux.open(), mux.open()
+    await mux.next_frame()
+    await mux.next_frame()
+    for stream in (blocked, healthy):
+        mux.receive(
+            Frame(FrameKind.ACK, 1, stream.stream_id, struct.pack("!I", CONTRACT.stream_credit))
+        )
+    mux.receive(Frame(FrameKind.DATA, 1, blocked.stream_id, b"12345678"))
+    mux.receive(Frame(FrameKind.DATA, 1, healthy.stream_id, b"overflow"))
+    reset = await mux.next_frame()
+    assert reset.kind == FrameKind.RESET
+    assert reset.stream_id == healthy.stream_id
+    assert blocked.stream_id in mux.streams
+    assert not mux.closed
+    assert budget.used <= budget.limit
+    assert await blocked.read(8) == b"12345678"
+    mux.close()
+    assert budget.used == 0
+
+
+@pytest.mark.asyncio
 async def test_fin_releases_stream_slots_without_reusing_ids():
     mux = Multiplexer(1)
     for stream_id in range(1, 65):
