@@ -34,7 +34,9 @@ export function deviceTitle(device: LabelableDevice): string {
   return device.model?.trim() || deviceKindLabel(device);
 }
 
-const LOOPBACK_ADDRESS = /^(127\.0\.0\.1|localhost):\d+$/;
+const LOOPBACK_ADDRESS = /^(127\.0\.0\.1|localhost|\[::1\]):\d+$/;
+// host:port, with a dotted name, an IPv4 address or a bracketed IPv6 address as the host.
+const NETWORK_ADDRESS = /^(\[[0-9a-f:.]+\]|[a-z0-9-]+(\.[a-z0-9-]+)+):\d+$/i;
 
 /**
  * Title for a device that is not (or no longer) in the live device list. An
@@ -47,13 +49,14 @@ export function unlistedDeviceTitle(serial: string): string {
 
 /**
  * Title for a past run whose phone is no longer listed. A loopback address is how a browser
- * relays a phone, so say that rather than "Unknown device"; the address stays in a detail line.
+ * relays a phone and any other host:port is a wireless phone, so say that rather than showing
+ * the address or "Unknown device"; the address stays in a detail line. A plain serial is kept.
  */
 export function unlistedRunDeviceTitle(serial: string, ownBrowser: boolean): string {
-  if (!LOOPBACK_ADDRESS.test(serial)) {
-    return serial;
+  if (LOOPBACK_ADDRESS.test(serial)) {
+    return ownBrowser ? 'Phone via this browser' : 'Phone via a browser';
   }
-  return ownBrowser ? 'Phone via this browser' : 'Phone via a browser';
+  return NETWORK_ADDRESS.test(serial) ? 'Wireless phone' : serial;
 }
 
 /** True when the record says what the device is: a model name or a classified kind. */

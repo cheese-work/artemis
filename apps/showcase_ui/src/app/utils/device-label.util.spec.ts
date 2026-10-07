@@ -41,6 +41,16 @@ describe('device-label.util', () => {
     expect(unlistedRunDeviceTitle('127.0.0.1:55555', true)).toBe('Phone via this browser');
     expect(unlistedRunDeviceTitle('127.0.0.1:55555', false)).toBe('Phone via a browser');
     expect(unlistedRunDeviceTitle('localhost:5555', false)).toBe('Phone via a browser');
+    expect(unlistedRunDeviceTitle('[::1]:39129', false)).toBe('Phone via a browser');
     expect(unlistedRunDeviceTitle('emulator-5554', false)).toBe('emulator-5554');
+    expect(unlistedRunDeviceTitle('R58M123', false)).toBe('R58M123');
+  });
+
+  it('never titles a disconnected network phone by its address (R3)', () => {
+    for (const address of ['192.168.1.12:5555', '10.0.0.7:37099', 'pixel.local:5555', '[fe80::1]:5555']) {
+      const title = unlistedRunDeviceTitle(address, false);
+      expect(title).toBe('Wireless phone');
+      expect(title).not.toContain(address);
+    }
   });
 });

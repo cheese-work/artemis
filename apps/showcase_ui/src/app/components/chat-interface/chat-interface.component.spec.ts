@@ -50,16 +50,18 @@ function device(overrides: Partial<DeviceInfo>): DeviceInfo {
 
 describe('ChatInterfaceComponent device chip', () => {
   const sessions = signal<Session[]>([]);
+  const agentStatus = signal('running');
   let systemService: SystemService;
   let registryDevices: RegistryDevice[];
 
   beforeEach(async () => {
     sessions.set([]);
+    agentStatus.set('running');
     registryDevices = [];
     const agentService = {
       sessions,
       activeTab: signal('tasks'),
-      agentStatus: signal('running'),
+      agentStatus,
       runningSessionId: signal('s1'),
       currentSessionId: signal('s1'),
       currentNotes: signal([]),
@@ -126,6 +128,24 @@ describe('ChatInterfaceComponent device chip', () => {
     expect(text).toContain('Phone via a browser');
     expect(text).not.toContain('Unknown device');
     expect(text).not.toContain('127.0.0.1');
+  });
+
+  it('never titles a disconnected wireless phone by its address (R3)', () => {
+    for (const address of ['192.168.1.12:5555', '[::1]:39129']) {
+      const text = chipText(address, []);
+      expect(text).not.toContain(address);
+      expect(text).not.toContain('Unknown device');
+    }
+    expect(chipText('192.168.1.12:5555', [])).toContain('Wireless phone');
+  });
+
+  it('keeps the wireless phone address in the tooltip only (R3)', () => {
+    systemService.readinessReport.set(null);
+    sessions.set([session('192.168.1.12:5555')]);
+    const fixture = TestBed.createComponent(ChatInterfaceComponent);
+    fixture.detectChanges();
+    const chip = (fixture.nativeElement as HTMLElement).querySelector('.task-device');
+    expect(chip?.getAttribute('title')).toContain('192.168.1.12:5555');
   });
 
   it('labels a past run by the model recorded with it when the phone is gone', () => {
@@ -232,6 +252,17 @@ describe('ChatInterfaceComponent device chip', () => {
       ['something_new', 'Unknown', 'history'],
       [undefined, 'Unknown', 'history']
     ];
+
+    for (const live of ['running', 'paused']) {
+      it(`shows an unrecognised stored status as Unknown for the live session while ${live} (R1)`, () => {
+        agentStatus.set(live);
+        sessions.set([{ ...session('emulator-5554'), session_id: 's1', status: 'something_new' }]);
+        const fixture = TestBed.createComponent(ChatInterfaceComponent);
+        fixture.detectChanges();
+        const badge = (fixture.nativeElement as HTMLElement).querySelector('.task-badge');
+        expect(badge?.textContent?.trim()).toBe('Unknown');
+      });
+    }
 
     for (const [status, label, where] of rows) {
       it(`shows ${status ?? 'a missing status'} as ${label} in the ${where}`, () => {
