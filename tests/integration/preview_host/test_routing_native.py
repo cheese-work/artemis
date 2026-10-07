@@ -205,6 +205,27 @@ def test_base_alone_serves_root_ui_api_and_sse(native):
             assert response.status == 404
 
 
+@pytest.mark.parametrize("host", [routing.HOST, "qa.tailnet"])
+def test_root_video_paths_keep_reserved_characters_with_previews_active(native, host):
+    manager, port, _, _ = native
+    manager.reconcile(registry(), ready=lambda item: True)
+    await_preview(port, "/preview/pr/7/", "pr7")
+    for path in (
+        "/videos/Test%20%231.mp4",
+        "/videos/a;b.mp4",
+        "/videos/dir%2Ffile.mp4",
+        "/videos/a%25b.mp4",
+        "/previewish/videos/a;b.mp4",
+        "/api/x?q=%2f",
+    ):
+        with request(port, path, host=host) as response:
+            assert response.status == 200, path
+            payload = json.load(response)
+            assert payload["upstream"] == "root"
+            assert payload["path"] == path
+            assert payload["host"] == host
+
+
 def test_native_prefix_boundaries_redirect_headers_and_stream(native):
     manager, port, _, upstreams = native
     manager.reconcile(registry(), ready=lambda item: True)

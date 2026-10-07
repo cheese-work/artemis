@@ -88,6 +88,12 @@ def test_base_and_static_policy():
     assert set(static["providers"]) == {"file", "providersThrottleDuration"}
 
 
+def test_ambiguous_path_rejection_is_limited_to_reserved_preview_namespace():
+    base = routing.base_config()
+    rule = base["http"]["routers"]["ambiguous-path"]["rule"]
+    assert rule.startswith("(Path(`/preview`) || PathPrefix(`/preview/`)) && PathRegexp(")
+
+
 def test_validate_then_swap_and_retain_last_known_good(reconciler):
     manager, base, validations = reconciler
     base_bytes = base.read_bytes()

@@ -15,7 +15,7 @@ The upstream release archive was checked against its published checksum before
 extracting the binary. Other binaries fail native validation.
 
 - `base_config` contains root UI/API/SSE forwarding, supported-host bounds,
-  ambiguous-path rejection and the reserved preview fallback. A maintainer must
+  preview-only ambiguous-path rejection and the reserved preview fallback. A maintainer must
   list every existing supported host explicitly; the default is SmartQA only.
 - `preview_config` accepts at most three protected `Preview` registry entries.
   Ports come from the L4a slot registry, not PR arithmetic. Routes require the
@@ -27,9 +27,11 @@ extracting the binary. Other binaries fail native validation.
   process. No API router or dashboard is exposed. Root `/api/rawdata` and
   `/dashboard/` still belong to Artemis.
 - Path sanitization is disabled only with the protected rejection router present.
-  Dot segments, repeated separators, encoded traversal and backslashes cannot
-  select either upstream. Native encoded-character defaults also reject unsafe
-  encodings. Host, Origin and the Access assertion are preserved; the application
+  Within `/preview` and `/preview/`, dot segments, repeated separators, encoded
+  traversal and backslashes cannot select either upstream. Root-site video paths
+  with encoded `#`, `/`, `%` or a literal `;` retain their original forwarding.
+  Native encoded-character defaults still reject unsafe encodings. Host, Origin
+  and the Access assertion are preserved; the application
   still validates the assertion. Native HTTP proxying retains SSE and upgrades.
   Forwarded headers are trusted only from loopback. Bare-path redirects use the
   fixed SmartQA HTTPS origin; native RedirectRegex does not infer its scheme from

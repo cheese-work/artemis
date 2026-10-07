@@ -89,7 +89,8 @@ def base_config(live_port: int = 18001, hosts: Sequence[str] = (HOST,)) -> dict:
                 },
                 "ambiguous-path": {
                     "entryPoints": ["web"],
-                    "rule": r"PathRegexp(`(^|/)[.]{1,2}(/|$)|//|\\|;|(?i)%(2e|2f|5c|25|00|3b|3f|23)`)",
+                    "rule": "(Path(`/preview`) || PathPrefix(`/preview/`)) && "
+                    r"PathRegexp(`(^|/)[.]{1,2}(/|$)|//|\\|;|(?i)%(2e|2f|5c|25|00|3b|3f|23)`)",
                     "priority": 1000,
                     "service": "api@internal",
                     "middlewares": ["preview-not-found"],
