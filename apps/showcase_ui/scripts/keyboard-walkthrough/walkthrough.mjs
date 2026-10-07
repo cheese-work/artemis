@@ -75,6 +75,7 @@ async function cleanup(code) {
 
 const KEYS = {
   Tab: { key: 'Tab', code: 'Tab', windowsVirtualKeyCode: 9 },
+  Space: { key: ' ', code: 'Space', windowsVirtualKeyCode: 32, text: ' ' },
   Enter: { key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, text: '\r' },
   Escape: { key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 }
 };
@@ -154,6 +155,13 @@ try {
   await send('Page.enable');
   await send('Page.navigate', { url: `${base}/runs` });
   await expectTrue('library loaded', `document.querySelectorAll('a.run-row').length === 6`);
+
+  log('Library: the admin All users switch');
+  await tabUntil('All users switch', focusIs('button[role="switch"]'));
+  await press('Space');
+  await expectTrue('Space turned All users on: the other QA\'s run is listed with its owner', `document.activeElement.getAttribute('aria-checked') === 'true' && document.querySelectorAll('a.run-row').length === 7 && document.body.textContent.includes('other@example.test')`);
+  await press('Enter');
+  await expectTrue('Enter turned it off: only my runs remain', `document.activeElement.getAttribute('aria-checked') === 'false' && document.querySelectorAll('a.run-row').length === 6`);
 
   log('Library: search by text');
   await tabUntil('search box', focusIs('input[type="search"]'));
