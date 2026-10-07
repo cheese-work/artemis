@@ -111,6 +111,15 @@ async def run_task(request: RunRequest, actor: OwnerScope = Depends(actor_scope)
             detail="Either 'goal' or 'goals' list must be provided.",
         )
 
+    # A client-chosen id names folders under traces: refuse anything unsafe up front.
+    if request.session_id and not run_images.is_safe_session_id(str(request.session_id)):
+        raise AdminAPIError(
+            400,
+            "The session id is not valid.",
+            "invalid_session_id",
+            "Leave the session id out, or use letters, digits, '.', '_' and '-' only.",
+        )
+
     # Pictures are checked before anything is probed, stored or queued.
     goal_images = None
     if request.images:

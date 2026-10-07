@@ -143,7 +143,25 @@ async def test_flash_without_pictures_is_unchanged(mock_context, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_the_operator_observation_carries_the_pictures(attached):
+async def test_the_legacy_operator_observation_carries_the_pictures_when_asked(attached):
+    builder = PromptBuilder()
+
+    await ObservationPromptComponent()(
+        builder,
+        Mock(),
+        Mock(),
+        latest_screenshot_b64="c2hvdA==",
+        minimal_list="[]",
+        include_goal_images=True,
+    )
+
+    urls = _image_urls([p for p in builder.human_parts if isinstance(p, dict)])
+    assert urls[:2] == _image_urls(goal_images.goal_image_blocks())
+    assert urls[-1].endswith("c2hvdA==")
+
+
+@pytest.mark.asyncio
+async def test_the_transcript_tail_does_not_repeat_pictures_the_static_prefix_holds(attached):
     builder = PromptBuilder()
 
     await ObservationPromptComponent()(
@@ -151,8 +169,16 @@ async def test_the_operator_observation_carries_the_pictures(attached):
     )
 
     urls = _image_urls([p for p in builder.human_parts if isinstance(p, dict)])
-    assert urls[:2] == _image_urls(goal_images.goal_image_blocks())
-    assert urls[-1].endswith("c2hvdA==")
+    assert len(urls) == 1 and urls[0].endswith("c2hvdA==")
+
+
+def test_the_legacy_operator_component_list_asks_for_the_pictures():
+    import inspect
+
+    from artemis.agents.operator import operator as operator_module
+
+    source = inspect.getsource(operator_module)
+    assert source.count("include_goal_images") == 1, "only the legacy per-turn prompt repeats them"
 
 
 @pytest.mark.asyncio

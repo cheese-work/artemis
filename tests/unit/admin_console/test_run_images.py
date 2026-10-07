@@ -385,3 +385,51 @@ async def test_deleting_a_run_deletes_its_images(cloudflare):
 
     assert not folder.exists()
     assert (await _get(QA1, f"/api/sessions/{sid}/goal-images/0")).status_code in (403, 404)
+
+
+# -- a client-chosen session id never reaches the filesystem unchecked ---------------
+
+_UNSAFE_IDS = ["../../evil", "a/b", "..", "x/../../y", "/abs", "a" * 200]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("session_id", _UNSAFE_IDS)
+@pytest.mark.parametrize("with_images", [True, False])
+async def test_an_unsafe_session_id_is_refused_before_anything_is_queued_or_written(
+    cloudflare, enqueue, session_id, with_images
+):
+    body = {"goal": "x", "session_id": session_id}
+    if with_images:
+        body["images"] = [_upload()]
+
+    response = await _post(QA1, "/api/run", json=body)
+
+    assert response.status_code == 400
+    assert response.json()["code"] == "invalid_session_id"
+    enqueue.assert_not_awaited()
+    assert not list(cloudflare.rglob("goal_images"))
+    assert not (cloudflare.parent / "evil").exists()
+
+
+@pytest.mark.asyncio
+async def test_enqueue_refuses_an_unsafe_session_id_before_any_side_effect(cloudflare):
+    images = run_images.validate([_upload()])
+
+    with pytest.raises(ValueError, match="session id"):
+        await task_queue_service.enqueue_tasks(
+            ["g"], session_id="../../evil", requested_by=QA1, goal_images=images
+        )
+
+    assert not list(cloudflare.rglob("goal_images"))
+    assert not (cloudflare.parent / "evil").exists()
+    assert not (cloudflare / "traces").exists() or not list((cloudflare / "traces").iterdir())
+
+
+def test_the_image_store_itself_refuses_an_unsafe_session_id(cloudflare):
+    images = run_images.validate([_upload()])
+
+    with pytest.raises(ValueError):
+        run_images.store("../../evil", images)
+
+    assert run_images.describe("../../evil") == []
+    assert run_images.stored_paths("../../evil") == []

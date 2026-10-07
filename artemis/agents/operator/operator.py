@@ -251,7 +251,7 @@ class OperatorNode:
                     {"template_name": "main_template"},
                 ),
                 (ExecutionIncidentPromptComponent(), {}),
-                (ObservationPromptComponent(), {}),
+                (ObservationPromptComponent(), {"include_goal_images": True}),
                 (ScreenshotSimilarityPromptComponent(), {}),
                 (HistoricalStateHintPromptComponent(), {}),
                 (InjectedInstructionPromptComponent(), {}),

@@ -1452,6 +1452,8 @@ class TaskQueueService:
         spawned worker as ``--run-id`` so daemon-dispatched attempts get the
         same manifest/reconciliation evidence as standalone runs.
         """
+        if session_id:
+            run_images.require_safe_session_id(str(session_id))  # before any side effect
         verification_level = (
             str(verification_level).strip().lower() or None if verification_level else None
         )

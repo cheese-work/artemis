@@ -151,16 +151,21 @@ def validate(uploads) -> list[ValidatedImage]:
     return images
 
 
+def require_safe_session_id(session_id: str) -> str:
+    """The id if it names a folder inside the traces directory; ValueError otherwise."""
+    return validate_session_id(session_id, base_dir=library_paths()[1])
+
+
 def is_safe_session_id(session_id: str) -> bool:
     try:
-        validate_session_id(session_id, base_dir=library_paths()[1])
+        require_safe_session_id(session_id)
     except ValueError:
         return False
     return True
 
 
 def _folder(session_id: str) -> Path:
-    return library_paths()[1] / session_id / FOLDER
+    return library_paths()[1] / require_safe_session_id(session_id) / FOLDER
 
 
 def store(session_id: str, images: list[ValidatedImage]) -> list[dict]:
@@ -173,6 +178,8 @@ def store(session_id: str, images: list[ValidatedImage]) -> list[dict]:
 
 
 def _stored(session_id: str) -> list[tuple[int, str, Path]]:
+    if not is_safe_session_id(session_id):
+        return []
     folder = _folder(session_id)
     if not folder.is_dir() or folder.is_symlink():
         return []
