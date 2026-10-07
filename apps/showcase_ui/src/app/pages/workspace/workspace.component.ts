@@ -26,7 +26,6 @@ import { FloatingVideoPlayerComponent } from '../../components/floating-video-pl
 import { RunLibraryComponent } from '../../components/run-library/run-library.component';
 import { InterruptedBannerComponent } from '../../components/interrupted-banner/interrupted-banner.component';
 import { RunViewerComponent } from '../../components/run-viewer/run-viewer.component';
-import { WorkspaceDeviceChipComponent } from '../../components/workspace-device-chip/workspace-device-chip.component';
 import { AgentService } from '../../services/agent.service';
 import { WorkspacePhoneService } from '../../services/workspace-phone.service';
 import { IMAGE_ACCEPT, ImageChat, MAX_IMAGES, newDraftId, RunImageUpload, screenImages, toUpload } from '../../utils/run-image.util';
@@ -49,8 +48,7 @@ export interface AttachedImage {
     FloatingVideoPlayerComponent,
     RunLibraryComponent,
     InterruptedBannerComponent,
-    RunViewerComponent,
-    WorkspaceDeviceChipComponent
+    RunViewerComponent
 ],
   templateUrl: './workspace.component.html',
   styleUrl: './workspace.component.scss',

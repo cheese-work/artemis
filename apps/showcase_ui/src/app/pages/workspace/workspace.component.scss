@@ -194,13 +194,6 @@ $rose-dark: #dc2626;
       transition: gap 0.32s cubic-bezier(0.16, 1, 0.3, 1);
     }
 
-    /* The phone chip sits left of the capsule and stays visible when the capsule rests. */
-    .dock-chip {
-      flex: 0 1 auto;
-      min-width: 0;
-      margin-right: 10px;
-    }
-
     /* Standalone Floating Stop Button (Separated from Capsule) */
     .standalone-stop-btn {
       pointer-events: auto;

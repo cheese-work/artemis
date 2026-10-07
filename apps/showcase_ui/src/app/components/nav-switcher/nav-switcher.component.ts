@@ -18,12 +18,13 @@ import { DOCUMENT } from '@angular/common';
 import { Component, ChangeDetectionStrategy, DestroyRef, ElementRef, EventEmitter, afterNextRender, inject, Input, Output } from '@angular/core';
 
 import { RouterLink, RouterLinkActive } from '@angular/router';
+import { WorkspaceDeviceChipComponent } from '../workspace-device-chip/workspace-device-chip.component';
 import { AdminIdentityIndicatorComponent } from '../admin-identity-indicator/admin-identity-indicator.component';
 
 @Component({
   selector: 'app-nav-switcher',
   standalone: true,
-  imports: [RouterLink, RouterLinkActive, AdminIdentityIndicatorComponent],
+  imports: [RouterLink, RouterLinkActive, AdminIdentityIndicatorComponent, WorkspaceDeviceChipComponent],
   template: `
     <nav class="floating-nav-switcher" aria-label="Primary navigation">
       <span class="brand-wordmark">SmartQA</span>
@@ -67,6 +68,8 @@ import { AdminIdentityIndicatorComponent } from '../admin-identity-indicator/adm
         </button>
       }
       <div class="nav-status">
+        <!-- The phone the next run uses: the app's only phone control -->
+        <app-workspace-device-chip></app-workspace-device-chip>
         <app-admin-identity-indicator></app-admin-identity-indicator>
       </div>
     </nav>

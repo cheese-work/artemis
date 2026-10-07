@@ -19,7 +19,7 @@ import {
 
 /** A tab channel that records what this tab says and lets a spec speak as another tab. */
 class FakeTabChannel implements TabChannel {
-  public posted: { type: string; serial?: string }[] = [];
+  public posted: { type: string; serial?: string; tab?: string }[] = [];
   private listeners: ((event: MessageEvent) => void)[] = [];
   public postMessage(message: unknown): void { this.posted.push(message as { type: string }); }
   public addEventListener(_type: 'message', listener: (event: MessageEvent) => void): void { this.listeners.push(listener); }
@@ -208,7 +208,14 @@ describe('UsbDeviceRelayService', () => {
     socket.message(JSON.stringify({ type: 'session_leased', session_id: 'lease-1', expires_in_seconds: 300 }));
     socket.message(JSON.stringify({ type: 'device_attached', serial: 'R58M123' }));
 
-    tabChannel.fromOtherTab({ type: 'release' });
+    const me = tabChannel.posted.find((m) => m.type === 'held')!.tab;
+    // A request aimed at some other tab, or at another phone, leaves this tab connected.
+    tabChannel.fromOtherTab({ type: 'release', target: 'someone-else', serial: 'R58M123' });
+    tabChannel.fromOtherTab({ type: 'release', target: me, serial: 'another-phone' });
+    await flushMicrotasks();
+    expect(service.state().status).toBe('connected');
+
+    tabChannel.fromOtherTab({ type: 'release', target: me, serial: 'R58M123' });
     await flushMicrotasks();
 
     expect(service.state().status).toBe('dropped');

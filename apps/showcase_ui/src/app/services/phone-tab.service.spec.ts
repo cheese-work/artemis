@@ -2,16 +2,22 @@ import { Injector, runInInjectionContext } from '@angular/core';
 import { fakeAsync, tick } from '@angular/core/testing';
 import { PHONE_TAB_CHANNEL, PhoneTabService, TabChannel } from './phone-tab.service';
 
-/** Two in-memory channels that deliver to each other, like two tabs on one BroadcastChannel. */
-function pair(): [TabChannel, TabChannel] {
-  const listeners: ((event: MessageEvent) => void)[][] = [[], []];
-  const make = (self: 0 | 1): TabChannel => ({
-    postMessage: (data) => listeners[1 - self].forEach((l) => queueMicrotask(() => l({ data } as MessageEvent))),
-    addEventListener: (_t, l) => listeners[self].push(l),
-    removeEventListener: (_t, l) => listeners[self].splice(listeners[self].indexOf(l), 1),
+/** In-memory channels that each deliver to every other one, like tabs on one BroadcastChannel. */
+function bus(count: number): TabChannel[] {
+  const listeners: ((event: MessageEvent) => void)[][] = Array.from({ length: count }, () => []);
+  return listeners.map((own, self) => ({
+    postMessage: (data) =>
+      listeners.forEach((all, other) => {
+        if (other !== self) all.forEach((l) => queueMicrotask(() => l({ data } as MessageEvent)));
+      }),
+    addEventListener: (_t, l) => own.push(l),
+    removeEventListener: (_t, l) => own.splice(own.indexOf(l), 1),
     close: () => undefined
-  });
-  return [make(0), make(1)];
+  }));
+}
+function pair(): [TabChannel, TabChannel] {
+  const [a, b] = bus(2);
+  return [a, b];
 }
 
 /** One tab: a service of its own on the given channel. */
@@ -53,7 +59,7 @@ describe('PhoneTabService', () => {
     a.announceHeld('S');
     tick();
     let done = false;
-    void b.requestRelease().then(() => (done = true));
+    void b.requestRelease('S').then(() => (done = true));
     tick();
     expect(done).toBeTrue();
     expect(b.heldElsewhere()).toBeNull();
@@ -64,7 +70,7 @@ describe('PhoneTabService', () => {
     a.announceHeld('S'); // holder registered no handler: it never lets go
     tick();
     let done = false;
-    void b.requestRelease().then(() => (done = true));
+    void b.requestRelease('S').then(() => (done = true));
     tick(1000);
     expect(done).toBeFalse();
     tick(600);
@@ -74,7 +80,7 @@ describe('PhoneTabService', () => {
   it('does not wait when no other tab holds a phone', fakeAsync(() => {
     const [, b] = create(pair());
     let done = false;
-    void b.requestRelease().then(() => (done = true));
+    void b.requestRelease('S').then(() => (done = true));
     tick();
     expect(done).toBeTrue();
   }));
@@ -83,5 +89,62 @@ describe('PhoneTabService', () => {
     const service = tab(null);
     service.announceHeld('S');
     expect(service.heldElsewhere()).toBeNull();
+  });
+
+  describe('three tabs, two phones (OCR F5)', () => {
+    /** A holds phone A, B holds phone B, C holds nothing and sees both. */
+    function threeTabs() {
+      const [chA, chB, chC] = bus(3);
+      const a = tab(chA);
+      const b = tab(chB);
+      const c = tab(chC);
+      const releasedA = jasmine.createSpy('releaseA').and.callFake(() => a.announceReleased());
+      const releasedB = jasmine.createSpy('releaseB').and.callFake(() => b.announceReleased());
+      a.onReleaseRequest(releasedA);
+      b.onReleaseRequest(releasedB);
+      a.announceHeld('phone-A');
+      b.announceHeld('phone-B');
+      return { a, b, c, releasedA, releasedB };
+    }
+
+    it('asks only the tab that holds the requested phone to let go', fakeAsync(() => {
+      const { c, releasedA, releasedB } = threeTabs();
+      tick();
+
+      void c.requestRelease('phone-B');
+      tick();
+
+      expect(releasedB).toHaveBeenCalledTimes(1);
+      expect(releasedA).not.toHaveBeenCalled();
+    }));
+
+    it('ignores an acknowledgement from a tab that was not asked', fakeAsync(() => {
+      const [chA, chB, chC] = bus(3);
+      const a = tab(chA);
+      const b = tab(chB); // holds phone B but never answers
+      const c = tab(chC);
+      a.announceHeld('phone-A');
+      b.announceHeld('phone-B');
+      tick();
+      let done = false;
+      void c.requestRelease('phone-B').then(() => (done = true));
+      tick();
+
+      a.announceReleased(); // an unrelated tab lets go of its own phone meanwhile
+      tick();
+      expect(done).toBeFalse();
+
+      tick(1600); // only the timeout ends the wait
+      expect(done).toBeTrue();
+    }));
+
+    it('keeps seeing the other holder after one of two holders lets go', fakeAsync(() => {
+      const { a, c } = threeTabs();
+      tick();
+      expect(c.heldElsewhere()).toEqual({ serial: 'phone-B' });
+      a.announceReleased();
+      tick();
+      expect(c.heldElsewhere()).toEqual({ serial: 'phone-B' });
+    }));
   });
 });

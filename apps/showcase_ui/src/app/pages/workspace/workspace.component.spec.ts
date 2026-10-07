@@ -6,7 +6,6 @@ import { RunTarget } from '../../core/models/run-target.model';
 import { AgentService } from '../../services/agent.service';
 import { WorkspacePhoneService } from '../../services/workspace-phone.service';
 import { InterruptedBannerComponent } from '../../components/interrupted-banner/interrupted-banner.component';
-import { WorkspaceDeviceChipComponent } from '../../components/workspace-device-chip/workspace-device-chip.component';
 import { AgentStreamComponent } from '../../components/agent-stream/agent-stream.component';
 import { ChatInterfaceComponent } from '../../components/chat-interface/chat-interface.component';
 import { FloatingVideoPlayerComponent } from '../../components/floating-video-player/floating-video-player.component';
@@ -50,7 +49,7 @@ describe('WorkspaceComponent error lifetime', () => {
       ],
       schemas: [CUSTOM_ELEMENTS_SCHEMA]
     }).overrideComponent(WorkspaceComponent, {
-      remove: { imports: [AgentStreamComponent, ChatInterfaceComponent, FloatingVideoPlayerComponent, InterruptedBannerComponent, WorkspaceDeviceChipComponent] },
+      remove: { imports: [AgentStreamComponent, ChatInterfaceComponent, FloatingVideoPlayerComponent, InterruptedBannerComponent] },
       add: { schemas: [CUSTOM_ELEMENTS_SCHEMA] }
     }).compileComponents();
   });
@@ -108,7 +107,7 @@ describe('WorkspaceComponent phone binding', () => {
       ],
       schemas: [CUSTOM_ELEMENTS_SCHEMA]
     }).overrideComponent(WorkspaceComponent, {
-      remove: { imports: [AgentStreamComponent, ChatInterfaceComponent, FloatingVideoPlayerComponent, InterruptedBannerComponent, WorkspaceDeviceChipComponent] },
+      remove: { imports: [AgentStreamComponent, ChatInterfaceComponent, FloatingVideoPlayerComponent, InterruptedBannerComponent] },
       add: { schemas: [CUSTOM_ELEMENTS_SCHEMA] }
     }).compileComponents();
     fixture = TestBed.createComponent(WorkspaceComponent);
@@ -159,6 +158,12 @@ describe('WorkspaceComponent phone binding', () => {
     expect(phone.requestPicker).toHaveBeenCalled();
     expect(component.taskInput).toBe('open settings');
     expect(runTask).toHaveBeenCalledTimes(1);
+  });
+
+  it('has no phone chip in the Prompt Dock: the chip lives in the top bar (CHE-1143, OCR F6)', () => {
+    const el = fixture.nativeElement as HTMLElement;
+    expect(el.querySelector('app-workspace-device-chip')).toBeNull();
+    expect(el.querySelector('.workspace-floating-bar-wrapper .dock-chip')).toBeNull();
   });
 
   it('starts a new run from the interrupted run’s prompt', () => {

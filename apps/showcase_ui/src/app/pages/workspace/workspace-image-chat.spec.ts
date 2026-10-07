@@ -22,7 +22,6 @@ import { AgentStreamComponent } from '../../components/agent-stream/agent-stream
 import { ChatInterfaceComponent } from '../../components/chat-interface/chat-interface.component';
 import { FloatingVideoPlayerComponent } from '../../components/floating-video-player/floating-video-player.component';
 import { InterruptedBannerComponent } from '../../components/interrupted-banner/interrupted-banner.component';
-import { WorkspaceDeviceChipComponent } from '../../components/workspace-device-chip/workspace-device-chip.component';
 import { AgentService } from '../../services/agent.service';
 import { WorkspacePhoneService } from '../../services/workspace-phone.service';
 import { MAX_IMAGES } from '../../utils/run-image.util';
@@ -68,7 +67,7 @@ describe('WorkspaceComponent image chat', () => {
     })
       .overrideComponent(WorkspaceComponent, {
         remove: {
-          imports: [AgentStreamComponent, ChatInterfaceComponent, FloatingVideoPlayerComponent, InterruptedBannerComponent, WorkspaceDeviceChipComponent]
+          imports: [AgentStreamComponent, ChatInterfaceComponent, FloatingVideoPlayerComponent, InterruptedBannerComponent]
         },
         add: { schemas: [CUSTOM_ELEMENTS_SCHEMA] }
       })

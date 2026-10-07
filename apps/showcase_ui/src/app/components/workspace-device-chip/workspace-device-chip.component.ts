@@ -126,7 +126,7 @@ let nextId = 0;
     @keyframes chip-spin { to { transform: rotate(360deg); } }
     @media (prefers-reduced-motion: reduce) { .spinning { animation: none; } }
     .panel {
-      position: absolute; bottom: calc(100% + 8px); left: 0; z-index: 60; width: 21rem; max-width: calc(100vw - 2rem);
+      position: absolute; top: calc(100% + 8px); left: 0; z-index: 60; width: 21rem; max-width: calc(100vw - 2rem);
       display: flex; flex-direction: column; gap: .5rem; padding: .75rem; border: 1px solid #e2e8f0; border-radius: 14px;
       background: #fff; color: #0f172a; box-shadow: 0 12px 32px -8px rgba(15, 23, 42, .25);
     }

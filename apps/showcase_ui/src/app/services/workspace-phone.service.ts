@@ -116,7 +116,7 @@ export class WorkspacePhoneService {
 
   /** Take the phone over from the other tab that holds it, then connect it here. */
   public async useHere(): Promise<void> {
-    await this.tabs.requestRelease();
+    await this.tabs.requestRelease(this.relay.heldInAnotherTab()?.serial);
     await this.relay.connect();
   }
 

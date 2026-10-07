@@ -223,7 +223,8 @@ describe('WorkspaceDeviceChipComponent', () => {
     buttons().find((b) => b.textContent!.includes('Use here'))!.click();
     await Promise.resolve();
     await Promise.resolve();
-    expect(fakes.tabs.requestRelease).toHaveBeenCalled();
+    // It asks for the phone the other tab holds, not for whichever tab answers first.
+    expect(fakes.tabs.requestRelease).toHaveBeenCalledWith('127.0.0.1:41003');
     expect(fakes.relay.connect).toHaveBeenCalled();
   });
 

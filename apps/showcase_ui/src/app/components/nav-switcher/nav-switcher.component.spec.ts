@@ -1,6 +1,7 @@
 import { TestBed } from '@angular/core/testing';
 import { provideRouter } from '@angular/router';
 import { signal } from '@angular/core';
+import { phoneFakes } from '../../testing/phone-fakes';
 import { of } from 'rxjs';
 import { AdminConfigService } from '../../services/admin-config.service';
 import {
@@ -18,7 +19,7 @@ describe('NavSwitcherComponent', () => {
 
     await TestBed.configureTestingModule({
       imports: [NavSwitcherComponent],
-      providers: [provideRouter([])]
+      providers: [provideRouter([]), ...phoneFakes().providers]
     }).compileComponents();
 
     const fixture = TestBed.createComponent(NavSwitcherComponent);
@@ -32,7 +33,7 @@ describe('NavSwitcherComponent', () => {
   it('links to the run library between Workspace and System Setup', async () => {
     await TestBed.configureTestingModule({
       imports: [NavSwitcherComponent],
-      providers: [provideRouter([])]
+      providers: [provideRouter([]), ...phoneFakes().providers]
     }).compileComponents();
     const fixture = TestBed.createComponent(NavSwitcherComponent);
     fixture.detectChanges();
@@ -52,7 +53,7 @@ describe('NavSwitcherComponent', () => {
   it('stays inside the viewport (CHE-1189)', async () => {
     await TestBed.configureTestingModule({
       imports: [NavSwitcherComponent],
-      providers: [provideRouter([])]
+      providers: [provideRouter([]), ...phoneFakes().providers]
     }).compileComponents();
     const fixture = TestBed.createComponent(NavSwitcherComponent);
     fixture.detectChanges();
@@ -67,7 +68,7 @@ describe('NavSwitcherComponent', () => {
 
     await TestBed.configureTestingModule({
       imports: [NavSwitcherComponent],
-      providers: [provideRouter([])]
+      providers: [provideRouter([]), ...phoneFakes().providers]
     }).compileComponents();
 
     const fixture = TestBed.createComponent(NavSwitcherComponent);
@@ -80,7 +81,7 @@ describe('NavSwitcherComponent', () => {
 
     await TestBed.configureTestingModule({
       imports: [NavSwitcherComponent],
-      providers: [provideRouter([])]
+      providers: [provideRouter([]), ...phoneFakes().providers]
     }).compileComponents();
 
     const fixture = TestBed.createComponent(NavSwitcherComponent);
@@ -113,6 +114,7 @@ describe('NavSwitcherComponent', () => {
       imports: [NavSwitcherComponent],
       providers: [
         provideRouter([]),
+        ...phoneFakes().providers,
         { provide: AdminConfigService, useValue: adminConfig }
       ]
     }).compileComponents();
@@ -134,5 +136,23 @@ describe('NavSwitcherComponent', () => {
     whatsNewButton.click();
     expect(showWhatsNew).toHaveBeenCalled();
     expect(fixture.nativeElement.querySelector('app-admin-identity-indicator')?.textContent).toContain('Admin');
+  });
+
+  it('puts the phone chip in the top bar, the first click of the 2-click connect (CHE-1143, OCR F6)', async () => {
+    await TestBed.configureTestingModule({
+      imports: [NavSwitcherComponent],
+      providers: [provideRouter([]), ...phoneFakes().providers]
+    }).compileComponents();
+    const fixture = TestBed.createComponent(NavSwitcherComponent);
+    fixture.detectChanges();
+
+    const nav = fixture.nativeElement.querySelector('nav.floating-nav-switcher') as HTMLElement;
+    const chip = nav.querySelector('app-workspace-device-chip button.chip') as HTMLButtonElement;
+    expect(chip).not.toBeNull();
+    expect(chip.textContent).toContain('No phone');
+    // It sits in the top bar's status area, next to who is signed in.
+    expect(chip.closest('.nav-status')).not.toBeNull();
+    expect(nav.querySelectorAll('app-workspace-device-chip').length).toBe(1);
+    expect(nav.getBoundingClientRect().top).toBeLessThan(window.innerHeight / 4);
   });
 });

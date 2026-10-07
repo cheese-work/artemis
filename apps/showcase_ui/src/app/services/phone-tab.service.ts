@@ -17,7 +17,8 @@ type TabMessage =
   | { type: 'query'; tab: string }
   | { type: 'held'; tab: string; serial: string }
   | { type: 'released'; tab: string }
-  | { type: 'release'; tab: string };
+  /** Asks the tab `target`, which holds `serial`, to let go. Every other tab ignores it. */
+  | { type: 'release'; tab: string; target: string; serial: string };
 
 const TAKE_OVER_TIMEOUT_MS = 1500;
 
@@ -32,11 +33,18 @@ export class PhoneTabService implements OnDestroy {
   private readonly tab = Math.random().toString(36).slice(2);
   private held: string | null = null;
   private releaseHandler: (() => void) | null = null;
-  private readonly released = new Set<() => void>();
+  /** Who is waiting for which tab to let go. */
+  private readonly waiting = new Map<string, Set<() => void>>();
+  /** Every other tab that holds a phone, and which. The newest announcement is last. */
+  private readonly holders = new Map<string, string>();
 
-  /** The phone another tab of this browser holds; null when none does. */
+  /** A phone another tab of this browser holds (the newest announced); null when none does. */
   public readonly heldElsewhere = signal<{ serial: string } | null>(null);
-  private elsewhereTab: string | null = null;
+
+  private publishHeldElsewhere(): void {
+    const newest = [...this.holders.values()].at(-1);
+    this.heldElsewhere.set(newest === undefined ? null : { serial: newest });
+  }
 
   private readonly onMessage = (event: MessageEvent): void => {
     const message = event.data as TabMessage | null;
@@ -46,18 +54,21 @@ export class PhoneTabService implements OnDestroy {
         if (this.held) this.post({ type: 'held', tab: this.tab, serial: this.held });
         break;
       case 'held':
-        this.elsewhereTab = message.tab;
-        this.heldElsewhere.set({ serial: message.serial });
+        this.holders.delete(message.tab); // a tab that switched phones becomes the newest holder
+        this.holders.set(message.tab, message.serial);
+        this.publishHeldElsewhere();
         break;
       case 'released':
-        if (this.elsewhereTab === message.tab) {
-          this.elsewhereTab = null;
-          this.heldElsewhere.set(null);
-        }
-        this.released.forEach((resolve) => resolve());
+        this.holders.delete(message.tab);
+        this.publishHeldElsewhere();
+        // Only the tab that was asked ends a wait; a stranger letting go of its own phone does not.
+        this.waiting.get(message.tab)?.forEach((resolve) => resolve());
         break;
       case 'release':
-        if (this.held) this.releaseHandler?.();
+        // Addressed to one tab and one phone: a tab holding any other phone leaves it alone.
+        if (message.target === this.tab && this.held !== null && this.held === message.serial) {
+          this.releaseHandler?.();
+        }
         break;
     }
   };
@@ -93,18 +104,24 @@ export class PhoneTabService implements OnDestroy {
     this.post({ type: 'released', tab: this.tab });
   }
 
-  /** Ask the holding tab to let go; resolves when it did, or after a short wait if it never answers. */
-  public requestRelease(): Promise<void> {
-    if (!this.heldElsewhere()) return Promise.resolve();
+  /**
+   * Ask the tab that holds `serial` to let go. Resolves when that tab did, or after a short wait
+   * if it never answers. No tab holds it: resolves at once.
+   */
+  public requestRelease(serial: string | null | undefined): Promise<void> {
+    const holder = serial ? [...this.holders].find(([, held]) => held === serial)?.[0] : undefined;
+    if (holder === undefined || !serial) return Promise.resolve();
     return new Promise((resolve) => {
+      const waiters = this.waiting.get(holder) ?? new Set<() => void>();
+      this.waiting.set(holder, waiters);
       const done = (): void => {
         clearTimeout(timer);
-        this.released.delete(done);
+        waiters.delete(done);
         resolve();
       };
       const timer = setTimeout(done, TAKE_OVER_TIMEOUT_MS);
-      this.released.add(done);
-      this.post({ type: 'release', tab: this.tab });
+      waiters.add(done);
+      this.post({ type: 'release', tab: this.tab, target: holder, serial });
     });
   }
 

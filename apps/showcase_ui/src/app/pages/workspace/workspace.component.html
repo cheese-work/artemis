@@ -48,9 +48,6 @@ limitations under the License.
 
       <!-- Dock Row (Contains the Main Card and the Separate Stop Button when running) -->
       <div class="floating-dock-row">
-        <!-- The phone the next run uses: the Workspace's only device control -->
-        <app-workspace-device-chip class="dock-chip"></app-workspace-device-chip>
-
         <!-- Floating Dock Main Card -->
         <div class="floating-dock-card" (click)="onCardClick($event)"
           (mouseenter)="isHoveringCard.set(true)" (mouseleave)="isHoveringCard.set(false)">
