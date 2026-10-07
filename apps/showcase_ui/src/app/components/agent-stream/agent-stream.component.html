@@ -78,18 +78,10 @@ limitations under the License.
             (click)="selectTask(session.session_id, $event)"
             >
             <div class="item-header">
-              <span class="task-badge" [ngClass]="getTaskStatus(session)">
-                @if (getTaskStatus(session) === 'running') {
-                  <span class="status-dot"></span>
-                }
-                {{ statusView(session).label }}
-              </span>
+              <span class="task-badge" appRunStatusBadge presentation="stream" [status]="statusView(session).key"></span>
               <div class="item-header-actions">
                 @if (getDeviceSerial(session)) {
-                  <span class="item-device" [title]="'Device: ' + getDeviceSerial(session)">
-                    <span class="material-symbols-outlined device-icon">phone_android</span>
-                    <span class="device-name">{{ deviceName(session) }}</span>
-                  </span>
+                  <span class="item-device" appRunDeviceLabel [serial]="getDeviceSerial(session)" [device]="sessionDevice(session)" [title]="'Device: ' + getDeviceSerial(session)"></span>
                 }
                 @if (getDeviceSerial(session)) {
                   <span class="item-time-divider">·</span>
@@ -146,18 +138,10 @@ limitations under the License.
               (click)="selectTask(session.session_id, $event)"
               >
               <div class="item-header">
-                <span class="task-badge" [ngClass]="getTaskStatus(session)">
-                  @if (getTaskStatus(session) === 'running') {
-                    <span class="status-dot"></span>
-                  }
-                  {{ statusView(session).label }}
-                </span>
+                <span class="task-badge" appRunStatusBadge presentation="stream" [status]="statusView(session).key"></span>
                 <div class="item-header-actions">
                   @if (getDeviceSerial(session)) {
-                    <span class="item-device" [title]="'Device: ' + getDeviceSerial(session)">
-                      <span class="material-symbols-outlined device-icon">phone_android</span>
-                      <span class="device-name">{{ deviceName(session) }}</span>
-                    </span>
+                    <span class="item-device" appRunDeviceLabel [serial]="getDeviceSerial(session)" [device]="sessionDevice(session)" [title]="'Device: ' + getDeviceSerial(session)"></span>
                   }
                   @if (getDeviceSerial(session)) {
                     <span class="item-time-divider">·</span>
@@ -493,7 +477,10 @@ limitations under the License.
       }
       <!-- Screen Recording Action Button (Interactive Button) -->
       <button
-        class="btn-screen-recording"
+        class="btn-screen-recording" appRunEvidencePanel presentation="trigger"
+        [running]="agentService.isCurrentSessionRunning()" [playbackStatus]="agentService.currentSessionRecordingStatus()"
+        [videoUrl]="agentService.currentSessionVideoUrl()" [hasSteps]="agentService.hasCurrentSessionStepFrames()"
+        [screenshotCount]="agentService.currentSessionStepFrames().length"
         [class.active]="agentService.isVideoWindowOpen()"
         [class.recording]="agentService.isCurrentSessionRunning()"
         [class.processing]="!agentService.isCurrentSessionRunning() && agentService.currentSessionRecordingStatus() === 'processing'"
@@ -503,62 +490,6 @@ limitations under the License.
         (click)="agentService.toggleVideoPlayer()"
         [title]="getScreenRecordingButtonTitle()"
         >
-        @if (agentService.isCurrentSessionRunning()) {
-          <span class="material-symbols-outlined video-icon">
-            videocam
-          </span>
-        }
-        @if (!agentService.isCurrentSessionRunning() && agentService.currentSessionRecordingStatus() === 'processing') {
-          <span class="material-symbols-outlined video-icon spin-animation">
-            progress_activity
-          </span>
-        }
-        @if (!agentService.isCurrentSessionRunning() && agentService.currentSessionRecordingStatus() !== 'processing' && agentService.currentSessionVideoUrl()) {
-          <span class="material-symbols-outlined video-icon play-icon">
-            smart_display
-          </span>
-        }
-        @if (!agentService.isCurrentSessionRunning() && agentService.currentSessionRecordingStatus() !== 'processing' && !agentService.currentSessionVideoUrl() && agentService.hasCurrentSessionStepFrames()) {
-          <span class="material-symbols-outlined video-icon steps-icon">
-            slideshow
-          </span>
-        }
-        @if (!agentService.isCurrentSessionRunning() && agentService.currentSessionRecordingStatus() !== 'processing' && !agentService.currentSessionVideoUrl() && !agentService.hasCurrentSessionStepFrames() && agentService.currentSessionRecordingStatus() === 'failed') {
-          <span class="material-symbols-outlined video-icon error-icon">
-            videocam_off
-          </span>
-        }
-        @if (!agentService.isCurrentSessionRunning() && agentService.currentSessionRecordingStatus() !== 'processing' && !agentService.currentSessionVideoUrl() && !agentService.hasCurrentSessionStepFrames() && agentService.currentSessionRecordingStatus() !== 'failed') {
-          <span class="material-symbols-outlined video-icon">
-            videocam
-          </span>
-        }
-        @if (agentService.isCurrentSessionRunning()) {
-          <span class="btn-text">Recording...</span>
-        }
-        @if (!agentService.isCurrentSessionRunning() && agentService.currentSessionRecordingStatus() === 'processing') {
-          <span class="btn-text">Preparing...</span>
-        }
-        @if (!agentService.isCurrentSessionRunning() && agentService.currentSessionRecordingStatus() !== 'processing' && agentService.currentSessionVideoUrl()) {
-          <span class="btn-text">Play Recording</span>
-        }
-        @if (!agentService.isCurrentSessionRunning() && agentService.currentSessionRecordingStatus() !== 'processing' && !agentService.currentSessionVideoUrl() && agentService.hasCurrentSessionStepFrames()) {
-          <span class="btn-text">Step Replay</span>
-        }
-        @if (!agentService.isCurrentSessionRunning() && agentService.currentSessionRecordingStatus() !== 'processing' && !agentService.currentSessionVideoUrl() && !agentService.hasCurrentSessionStepFrames() && agentService.currentSessionRecordingStatus() === 'failed') {
-          <span class="btn-text">Recording Failed</span>
-        }
-        @if (!agentService.isCurrentSessionRunning() && agentService.currentSessionRecordingStatus() !== 'processing' && !agentService.currentSessionVideoUrl() && !agentService.hasCurrentSessionStepFrames() && agentService.currentSessionRecordingStatus() !== 'failed') {
-          <span class="btn-text">Screen Recording</span>
-        }
-        @if (agentService.isCurrentSessionRunning()) {
-          <span class="video-pulse-dot red"></span>
-        }
-        @if (!agentService.isCurrentSessionRunning() && !agentService.currentSessionVideoUrl() && agentService.hasCurrentSessionStepFrames()) {
-          <span class="steps-count-badge">
-            {{ agentService.currentSessionStepFrames().length }}
-          </span>
-        }
       </button>
     </div>
   }
@@ -585,8 +516,7 @@ limitations under the License.
       <div class="logs-list-container">
         @if (startupWorkItems().length > 0) {
           <div class="phase-container startup-phase" aria-live="polite">
-            <div class="phase-header first-phase">
-              <span class="phase-worked-time">Worked for {{ startupPreparationDuration() }}s</span>
+            <div class="phase-header first-phase" appRunStepRow presentation="phase" title="Worked" [duration]="startupPreparationDuration()">
             </div>
             <div class="phase-body" aria-label="Task startup progress">
               <div class="block-item type-stream">
@@ -615,9 +545,9 @@ limitations under the License.
             @if (hasVisibleBlocks(phase)) {
               <div
                 class="phase-header"
+                appRunStepRow presentation="phase" [title]="isCheckerPhase(phase) ? 'Checked' : 'Worked'" [duration]="phase.durationSeconds"
                 [class.first-phase]="first && startupWorkItems().length === 0"
                 >
-                <span class="phase-worked-time">{{ isCheckerPhase(phase) ? 'Checked' : 'Worked' }} for {{ phase.durationSeconds }}s</span>
                 @if (phase.tokens) {
                   <span class="phase-token-usage" [title]="getTokenTooltip(phase)">
                     <span class="token-dot">·</span>

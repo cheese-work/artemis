@@ -182,6 +182,36 @@ describe('RunViewerComponent', () => {
       expect(q('.step-button')!.getAttribute('aria-current')).toBe('step');
       expect(qa('.actions button').map((control) => control.textContent!.trim())).toEqual(['Copy link', 'Download', 'Pin']);
     });
+
+    it('preserves badge, step and action dimensions after moving their styles', async () => {
+      await open({ steps: of([step(1, { action_taken: { action: 'tap', status: 'failed' } })]) });
+      const badge = getComputedStyle(q('.outcome-badge')!);
+      expect(badge.display).toBe('inline-flex');
+      expect(badge.padding).toBe('4px 12px');
+      expect(badge.borderRadius).toBe('999px');
+      expect(badge.fontWeight).toBe('600');
+      expect(getComputedStyle(q('.step-number')!).fontSize).toBe('12px');
+      expect(getComputedStyle(q('.step-failed')!).display).toBe('inline-flex');
+      expect(getComputedStyle(q('.step-failed')!).fontSize).toBe('12px');
+      for (const control of qa('.actions button')) {
+        const style = getComputedStyle(control);
+        expect(style.minHeight).toBe('44px');
+        expect(style.padding).toBe('0px 18px');
+        expect(style.borderRadius).toBe('8px');
+        expect(style.fontSize).toBe('14px');
+      }
+    });
+
+    it('preserves evidence media sizing and fallback message spacing', async () => {
+      await open({ video: new Subject<SessionVideo>() });
+      const image = getComputedStyle(q('.evidence-image')!);
+      expect(image.display).toBe('block');
+      expect(image.objectFit).toBe('contain');
+      expect(image.backgroundColor).toBe('rgb(0, 0, 0)');
+      const copy = getComputedStyle(q('.recording-copy')!);
+      expect(copy.margin).toBe('0px 0px 8px');
+      expect(copy.fontWeight).toBe('600');
+    });
   });
 
   describe('reading order', () => {

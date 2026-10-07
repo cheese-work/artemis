@@ -60,3 +60,13 @@ export function unlistedRunDeviceTitle(serial: string, ownBrowser: boolean): str
 export function isIdentifiedDevice(device: LabelableDevice): boolean {
   return !!device.model?.trim() || (!!device.device_kind && device.device_kind !== 'unknown');
 }
+
+export function runDeviceLabel(
+  serial: string | null,
+  device: LabelableDevice | null = null,
+  ownBrowser = false,
+  detail = false
+): string {
+  if (detail) return serial ?? 'Unknown phone';
+  return device && isIdentifiedDevice(device) ? deviceTitle(device) : unlistedRunDeviceTitle(serial ?? '', ownBrowser);
+}

@@ -23,8 +23,11 @@ import { HttpClient } from '@angular/common/http';
 import { AgentService, StartupProgressEvent } from '../../services/agent.service';
 import { RunIdCopyComponent } from '../run-id-copy/run-id-copy.component';
 import { RunSummaryCopyComponent } from '../run-summary-copy/run-summary-copy.component';
+import { RunStatusBadgeComponent } from '../run-presentation/run-status-badge.component';
+import { RunDeviceLabelComponent } from '../run-presentation/run-device-label.component';
+import { RunStepRowComponent } from '../run-presentation/run-step-row.component';
+import { RunEvidencePanelComponent } from '../run-presentation/run-evidence-panel.component';
 import { Session, ModelInfo, SessionUsage } from '../../core/models/session.model';
-import { deviceTitle, isIdentifiedDevice, unlistedRunDeviceTitle } from '../../utils/device-label.util';
 import { recordedDevice } from '../../utils/session-device.util';
 import { RunStatusKey, RunStatusView, sessionStatusView } from '../../utils/run-status.util';
 import { MarkdownSegment, MarkdownLine, NoteMilestone, ParsedNote } from '../../core/models/markdown.model';
@@ -239,7 +242,8 @@ export type { MarkdownSegment, MarkdownLine, NoteMilestone, ParsedNote, StreamRe
 @Component({
   selector: 'app-agent-stream',
   standalone: true,
-  imports: [CommonModule, FormsModule, OverlayModule, RunIdCopyComponent, RunSummaryCopyComponent],
+  imports: [CommonModule, FormsModule, OverlayModule, RunIdCopyComponent, RunSummaryCopyComponent,
+    RunStatusBadgeComponent, RunDeviceLabelComponent, RunStepRowComponent, RunEvidencePanelComponent],
   templateUrl: './agent-stream.component.html',
   styleUrl: './agent-stream.component.scss',
   changeDetection: ChangeDetectionStrategy.OnPush
@@ -884,11 +888,8 @@ export class AgentStreamComponent implements AfterViewInit {
     return this.statusView(session).key;
   }
 
-  /** Device name for a task row: the model recorded with the run, never a bare 127.0.0.1:<port>. */
-  public deviceName(session: Session): string {
-    const serial = this.getDeviceSerial(session) ?? '';
-    const recorded = recordedDevice(session, serial);
-    return recorded && isIdentifiedDevice(recorded) ? deviceTitle(recorded) : unlistedRunDeviceTitle(serial, false);
+  public sessionDevice(session: Session) {
+    return recordedDevice(session, this.getDeviceSerial(session) ?? '');
   }
 
 

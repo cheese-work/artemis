@@ -49,10 +49,7 @@
         <a class="back-to-runs" routerLink="/runs" [queryParams]="lastQuery()">{{ strings.backToRuns }}</a>
 
         <section class="outcome" data-section="outcome" aria-label="Outcome">
-          <span class="outcome-badge tone-{{ outcome(current.status).tone }}">
-            <span class="material-symbols-outlined" aria-hidden="true">{{ outcome(current.status).icon }}</span>
-            {{ outcome(current.status).label }}
-          </span>
+          <span class="outcome-badge" appRunStatusBadge [status]="current.status"></span>
           <h1 class="run-prompt">{{ current.prompt || 'Untitled run' }}</h1>
           <div class="run-id">
             <app-run-id-copy [runId]="current.session_id"></app-run-id-copy>
@@ -61,7 +58,7 @@
             <summary>Run details</summary>
             <dl>
               <dt>Phone</dt>
-              <dd>{{ current.device_ref?.serial ?? 'Unknown phone' }}</dd>
+              <dd appRunDeviceLabel [serial]="current.device_ref?.serial ?? null" [detail]="true"></dd>
               <dt>Computer</dt>
               <dd>{{ current.host_id === null ? 'A browser' : 'A computer (' + current.host_id.slice(0, 8) + ')' }}</dd>
               <dt>Requested by</dt>
@@ -87,35 +84,11 @@
         }
 
         <div class="evidence-grid">
-          <section class="evidence" data-section="evidence" aria-label="Evidence">
-            @if (recording().playable && videoUrl() && !playerFailed()) {
-              @if (recording().ribbon; as ribbon) {
-                <p class="recording-ribbon">{{ ribbon }}</p>
-              }
-              <video
-                #playerEl
-                class="evidence-video"
-                controls
-                controlsList="nodownload"
-                playsinline
-                [src]="videoUrl()"
-                (loadedmetadata)="onMetadata()"
-                (ended)="onEnded()"
-                (error)="playerFailed.set(true)"
-              ></video>
-            } @else {
-              <p class="recording-copy" role="status">
-                {{ copy() }}
-              </p>
-              @if (canCheckAgain()) {
-                <button type="button" class="secondary-button" (click)="checkAgain()">{{ strings.checkAgain }}</button>
-              }
-              @if (screenshot(); as src) {
-                <img class="evidence-image" [src]="src" [alt]="'Screenshot for step ' + selectedStep()?.step_number" />
-              } @else if (stepsLoaded()) {
-                <p class="muted">No screenshots for this run.</p>
-              }
-            }
+          <section class="evidence" data-section="evidence" aria-label="Evidence" appRunEvidencePanel
+            [recording]="recording()" [videoUrl]="videoUrl()" [playerFailed]="playerFailed()" [message]="copy()"
+            [retryable]="canCheckAgain()" [screenshotUrl]="screenshot()"
+            [screenshotAlt]="'Screenshot for step ' + selectedStep()?.step_number" [loaded]="stepsLoaded()"
+            (metadata)="onMetadata()" (ended)="onEnded()" (failed)="playerFailed.set(true)" (retry)="checkAgain()">
           </section>
 
           <section class="steps" data-section="steps" aria-label="Steps">
@@ -130,18 +103,10 @@
                 <li>
                   <button
                     type="button"
-                    class="step-button"
+                    class="step-button" appRunStepRow [stepNumber]="step.step_number" [title]="stepTitle(step)" [failed]="stepFailed(step)"
                     [attr.aria-current]="selectedStep()?.step_id === step.step_id ? 'step' : null"
                     (click)="selectStep(step)"
                   >
-                    <span class="step-number">Step {{ step.step_number }}</span>
-                    <span class="step-title">{{ stepTitle(step) }}</span>
-                    @if (stepFailed(step)) {
-                      <span class="step-failed">
-                        <span class="material-symbols-outlined" aria-hidden="true">error</span>
-                        Failed
-                      </span>
-                    }
                   </button>
                 </li>
               }
@@ -149,26 +114,9 @@
           </section>
         </div>
 
-        <section class="actions" data-section="actions" aria-label="Actions">
-          <button type="button" class="action-button" (click)="ask('share', $event)">{{ strings.copyLink }}</button>
-          <button type="button" class="action-button" (click)="ask('download', $event)">{{ strings.download }}</button>
-          <button type="button" class="action-button" [attr.aria-pressed]="current.pinned" (click)="togglePin($event)">
-            {{ current.pinned ? strings.unpin : strings.pin }}
-          </button>
-          @if (isAdmin()) {
-            <button type="button" class="action-button danger" (click)="ask('delete', $event)">{{ strings.delete }}</button>
-          }
-          @if (feedback()) {
-            <p class="action-feedback" role="status">{{ feedback() }}</p>
-          }
-          @if (actionError(); as failure) {
-            <p class="action-error" role="alert">
-              {{ failure.text }}
-              @if (failure.retry) {
-                <button type="button" class="secondary-button" (click)="retry()">{{ strings.retry }}</button>
-              }
-            </p>
-          }
+        <section class="actions" data-section="actions" aria-label="Actions" appRunActionBar
+          [actions]="actions()" [feedback]="feedback()" [error]="actionError()?.text ?? null"
+          [retryable]="!!actionError()?.retry" (action)="onAction($event)">
         </section>
 
         <details class="technical-details" (toggle)="techOpen.set($any($event.target).open)">

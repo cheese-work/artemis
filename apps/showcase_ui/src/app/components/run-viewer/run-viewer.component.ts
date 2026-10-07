@@ -40,8 +40,12 @@ import {
   interruptedSentence,
   removedReason
 } from '../../utils/run-library-strings';
-import { runStatusView } from '../../utils/run-status.util';
 import { RunIdCopyComponent } from '../run-id-copy/run-id-copy.component';
+import { RunStatusBadgeComponent } from '../run-presentation/run-status-badge.component';
+import { RunDeviceLabelComponent } from '../run-presentation/run-device-label.component';
+import { RunStepRowComponent } from '../run-presentation/run-step-row.component';
+import { RunEvidencePanelComponent } from '../run-presentation/run-evidence-panel.component';
+import { RunAction, RunActionBarComponent, RunActionEvent } from '../run-presentation/run-action-bar.component';
 
 type PageState = 'loading' | 'ready' | 'not_found' | 'removed' | 'access' | 'ambiguous' | 'error';
 type DialogKind = 'share' | 'download' | 'unpin_expired' | 'delete';
@@ -57,7 +61,8 @@ const DIALOGS: Record<DialogKind, { title: string; notices: string[]; confirm: s
 @Component({
   selector: 'app-run-viewer',
   standalone: true,
-  imports: [RouterLink, DatePipe, RunIdCopyComponent],
+  imports: [RouterLink, DatePipe, RunIdCopyComponent, RunStatusBadgeComponent, RunDeviceLabelComponent,
+    RunStepRowComponent, RunEvidencePanelComponent, RunActionBarComponent],
   templateUrl: './run-viewer.component.html',
   styleUrl: './run-viewer.component.scss',
   changeDetection: ChangeDetectionStrategy.OnPush
@@ -73,7 +78,6 @@ export class RunViewerComponent {
   public readonly runId = input.required<string>();
 
   public readonly strings = RUN_STRINGS;
-  public readonly outcome = runStatusView;
   public readonly interruptReason = interruptReason;
   public readonly removedReason = removedReason;
 
@@ -97,6 +101,12 @@ export class RunViewerComponent {
   public readonly dialogKind = signal<DialogKind | null>(null);
   public readonly feedback = signal('');
   public readonly actionError = signal<{ text: string; retry: Retryable } | null>(null);
+  public readonly actions = computed<RunAction[]>(() => [
+    { id: 'share', label: this.strings.copyLink },
+    { id: 'download', label: this.strings.download },
+    { id: 'pin', label: this.run()?.pinned ? this.strings.unpin : this.strings.pin, pressed: this.run()?.pinned ?? false },
+    ...(this.isAdmin() ? [{ id: 'delete', label: this.strings.delete, className: 'action-button danger' }] : [])
+  ]);
 
   public readonly lastQuery = this.runsApi.lastLibraryQuery;
   public readonly dialog = computed(() => (this.dialogKind() ? DIALOGS[this.dialogKind()!] : null));
@@ -156,7 +166,7 @@ export class RunViewerComponent {
   public readonly rawLogs = computed(() => JSON.stringify({ run: this.run(), steps: this.steps() }, null, 2));
 
   private readonly dialogEl = viewChild<ElementRef<HTMLDialogElement>>('dialogEl');
-  private readonly playerEl = viewChild<ElementRef<HTMLVideoElement>>('playerEl');
+  private readonly evidencePanel = viewChild(RunEvidencePanelComponent);
   private opener: HTMLElement | null = null;
   private loadRequest: Subscription | null = null;
   private evidenceRequests = new Subscription();
@@ -308,12 +318,12 @@ export class RunViewerComponent {
     this.applySeek();
     if (this.continuePlaying) {
       this.continuePlaying = false;
-      void this.playerEl()?.nativeElement.play().catch(() => undefined);
+      void this.evidencePanel()?.player()?.nativeElement.play().catch(() => undefined);
     }
   }
 
   private applySeek(): void {
-    const player = this.playerEl()?.nativeElement;
+    const player = this.evidencePanel()?.player()?.nativeElement;
     if (player && this.pendingSeek !== null && player.readyState > 0) {
       const end = Number.isFinite(player.duration) ? player.duration : this.pendingSeek;
       player.currentTime = Math.min(this.pendingSeek, end);
@@ -329,6 +339,12 @@ export class RunViewerComponent {
   }
 
   // -- actions ----------------------------------------------------------------
+
+  public onAction(action: RunActionEvent): void {
+    if (action.id === 'pin') this.togglePin(action.event);
+    else if (action.id === 'retry') this.retry();
+    else this.ask(action.id as DialogKind, action.event);
+  }
 
   public ask(kind: DialogKind, event?: Event): void {
     this.opener = (event?.currentTarget as HTMLElement | null) ?? null;
