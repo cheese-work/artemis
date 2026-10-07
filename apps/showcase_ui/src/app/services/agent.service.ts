@@ -441,7 +441,7 @@ export class AgentService {
       previousIdentity = who;
       untracked(() => {
         if (previous) {
-          this.browserStorage.removeItem(SESSION_CACHE_KEY, previous);
+          this.clearSessionsCache(previous);
           this.reloadForScope();
           this.activeVideoUrl.set(null);
           this.activeVideoSegments.set([]);
@@ -1492,10 +1492,10 @@ export class AgentService {
     }
   }
 
-  private clearSessionsCache(): void {
+  private clearSessionsCache(identity?: AdminIdentity | null): void {
     this.lastPersistedSessionsJson = null;
     try {
-      this.browserStorage.removeItem(SESSION_CACHE_KEY);
+      this.browserStorage.removeItem(SESSION_CACHE_KEY, identity);
     } catch (error) {
       this.logger.warn('Unable to clear cached sessions:', error);
     }
