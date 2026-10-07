@@ -51,7 +51,7 @@ for (const prefix of ['/', '/preview/pr/70/']) {
     '--disable-extensions', '--disable-component-extensions-with-background-pages',
     '--host-resolver-rules=MAP *.googleapis.com ~NOTFOUND, MAP *.gstatic.com ~NOTFOUND',
     '--remote-debugging-port=0', `--user-data-dir=${profile}`, 'about:blank'
-  ], { stdio: ['ignore', 'ignore', 'pipe'] });
+  ], { stdio: ['ignore', 'ignore', 'pipe'], detached: true });
   let browserErrors = '';
   chrome.stderr.on('data', chunk => { browserErrors = (browserErrors + chunk).slice(-4000); });
   let socket;
@@ -137,8 +137,10 @@ for (const prefix of ['/', '/preview/pr/70/']) {
       chrome.kill('SIGTERM');
       await exited;
     }
+    // Chrome's helper processes outlive the main process and keep writing to the profile.
+    try { process.kill(-chrome.pid, 'SIGKILL'); } catch { /* the process group is already gone */ }
     server.closeAllConnections();
     await new Promise(resolve => server.close(resolve));
-    rmSync(profile, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
+    rmSync(profile, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
   }
 }
