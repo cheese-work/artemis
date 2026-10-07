@@ -574,6 +574,10 @@ class ArtemisUvicornServer(uvicorn.Server):
 
 def run_ui_server(host: str, port: int, reload: bool = False) -> None:
     """Run the UI server with bounded, signal-aware graceful shutdown."""
+    from artemis.config.host_agent import host_agent_enabled
+    from artemis.runtime.host_protocol import CONTRACT
+
+    websocket_options = {"ws_max_size": CONTRACT.max_frame} if host_agent_enabled() else {}
     configure_logging(streams=True)
     state.host = host
     state.port = port
@@ -589,6 +593,7 @@ def run_ui_server(host: str, port: int, reload: bool = False) -> None:
                 log_config=REDACTED_UVICORN_LOGGING,
                 proxy_headers=False,
                 timeout_graceful_shutdown=5,
+                **websocket_options,
             )
             return
 
@@ -599,6 +604,7 @@ def run_ui_server(host: str, port: int, reload: bool = False) -> None:
             port=port,
             proxy_headers=False,
             timeout_graceful_shutdown=5,
+            **websocket_options,
         )
         configure_logging()
         server = ArtemisUvicornServer(config)

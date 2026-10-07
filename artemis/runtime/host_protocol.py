@@ -114,8 +114,10 @@ The server's allowlist gateway checks nested transport and service requests.
 Generation/grace contract for CHE-1108 and B3:
 - The authenticated registry generation is the frame epoch and endpoint generation.
 - A disconnect immediately unregisters and closes its loopback listener and streams.
-  Reconnect reuses that host's loopback port, so surviving workers can open new
-  TCP streams without switching host/serial. Existing TCP streams are not replayed.
+  Reconnect tries that host's saved loopback port while bound runs remain.
+  With no bound run or if the saved port cannot bind, it allocates a fresh port.
+  Consumers must resolve the current endpoint after a port change; cached worker
+  ports are not rewritten. Existing TCP streams are not replayed.
 - `host_tunnels.reconnecting(host_id)` reports the fixed grace deadline for bound
   active runs. B2 publishes no forced loss outcome before that deadline; the
   Computers view reports `reconnecting`. Idle computers go offline immediately.
@@ -138,6 +140,16 @@ override the aggregate byte caps.
 Host output is untrusted: binary frames and credits are validated before enqueue;
 ADB length-prefixed text is bounded and UTF-8 decoded strictly. Devices lists and
 track updates contain only shared serials. Unshare closes the selected streams.
+Both gateways accept legacy `host:transport:<shared>` and modern
+`host:tport:serial:<shared>`; the latter relays the raw 8-byte transport id after
+OKAY. `host:features` and shared-serial `features`, `get-state`, `get-serialno`
+and valid `wait-for-*` forms are supported. Shell v2 uses the `shell,` prefix.
+Scoped forwarding, unshared/implicit transport selection and all other denied
+services remain denied. Wait responses carry a second OKAY or a bounded FAIL.
+With ARTEMIS_HOST_AGENT enabled, the bundled Uvicorn startup paths cap complete
+WebSocket messages server-wide at max_frame before ASGI delivery, including
+fragmented, UTF-8 and decompressed messages. Flag-off transport defaults stay unchanged.
+Alternate ASGI launchers must configure the same transport-layer cap themselves.
 The default-off `ARTEMIS_HOST_AGENT` gate governs listener creation and requests.
 """
 

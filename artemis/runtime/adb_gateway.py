@@ -11,9 +11,22 @@ logger = logging.getLogger(__name__)
 _HEX = re.compile(rb"[0-9a-fA-F]{4}\Z")
 _SERIAL = re.compile(r"[A-Za-z0-9._:\-]{1,64}\Z")
 _HOST_SERVICES = frozenset(
-    {"host:version", "host:devices", "host:devices-l", "host:track-devices", "host:track-devices-l"}
+    {
+        "host:version",
+        "host:features",
+        "host:devices",
+        "host:devices-l",
+        "host:track-devices",
+        "host:track-devices-l",
+    }
 )
-_DEVICE_SERVICES = ("shell:", "exec:", "sync:", "tcp:", "localabstract:", "framebuffer:")
+_TRANSPORT_PREFIXES = ("host:transport:", "host:tport:serial:")
+_SERIAL_SERVICES = frozenset({"features", "get-state", "get-serialno"})
+_WAIT_SERVICE = re.compile(
+    r"wait-for-(?:any|usb|local)-(?:device|recovery|rescue|sideload|bootloader|any|disconnect)"
+    r"(?:-(?:device|recovery|rescue|sideload|bootloader|any|disconnect))*\Z"
+)
+_DEVICE_SERVICES = ("shell:", "shell,", "exec:", "sync:", "tcp:", "localabstract:", "framebuffer:")
 
 
 def pack_message(payload: bytes) -> bytes:
@@ -74,9 +87,17 @@ class Gateway:
             return self.serial in self.shared() and service.startswith(_DEVICE_SERVICES)
         if service in _HOST_SERVICES:
             return True
-        if service.startswith("host:transport:"):
-            serial = service[len("host:transport:") :]
-            return bool(_SERIAL.fullmatch(serial) and serial in self.shared())
+        for prefix in _TRANSPORT_PREFIXES:
+            if service.startswith(prefix):
+                serial = service[len(prefix) :]
+                return bool(_SERIAL.fullmatch(serial) and serial in self.shared())
+        if service.startswith("host-serial:"):
+            serial, _, command = service[len("host-serial:") :].rpartition(":")
+            return bool(
+                _SERIAL.fullmatch(serial)
+                and serial in self.shared()
+                and (command in _SERIAL_SERVICES or _WAIT_SERVICE.fullmatch(command))
+            )
         return False
 
     async def relay(self, reader, writer, remote) -> None:
@@ -89,6 +110,8 @@ class Gateway:
                     writer.write(b"FAIL" + pack_message(b"Service is not allowed"))
                     await writer.drain()
                     return
+                if service.startswith("host-serial:"):
+                    self.serial = service[len("host-serial:") :].rpartition(":")[0]
                 await remote.write(pack_message(request))
                 status = await read_exact(remote, 4)
                 if status == b"FAIL":
@@ -101,13 +124,38 @@ class Gateway:
                     raise ProtocolError("Invalid ADB status")
                 writer.write(status)
                 await writer.drain()
-                if service.startswith("host:transport:"):
-                    self.serial = service[len("host:transport:") :]
+                if service.startswith(_TRANSPORT_PREFIXES):
+                    prefix = next(
+                        prefix for prefix in _TRANSPORT_PREFIXES if service.startswith(prefix)
+                    )
+                    self.serial = service[len(prefix) :]
+                    if prefix == "host:tport:serial:":
+                        writer.write(await read_exact(remote, 8))
+                        await writer.drain()
                     continue
-                if service in _HOST_SERVICES:
+                if service in _HOST_SERVICES or service.startswith("host-serial:"):
+                    if service.startswith("host-serial:") and service.rpartition(":")[2].startswith(
+                        "wait-for-"
+                    ):
+                        status = await read_exact(remote, 4)
+                        if status == b"OKAY":
+                            writer.write(status)
+                        elif status == b"FAIL":
+                            message = await read_message(remote)
+                            text(message)
+                            writer.write(status + pack_message(message))
+                        else:
+                            raise ProtocolError("Invalid ADB wait status")
+                        await writer.drain()
+                        return
                     while True:
                         response = await read_message(remote)
-                        if service != "host:version":
+                        if service in {
+                            "host:devices",
+                            "host:devices-l",
+                            "host:track-devices",
+                            "host:track-devices-l",
+                        }:
                             response = filter_devices(response, self.shared())
                         else:
                             text(response)

@@ -225,9 +225,19 @@ class HostTunnels:
         if previous is not None:
             self.endpoints.unregister(host_id, previous.generation)
             await previous.close()
-        tunnel = HostTunnel(host_id, generation, ws, shared, port=self.ports.get(host_id, 0))
+        port = self.ports.get(host_id, 0) if self.runs.get(host_id) else 0
+        tunnel = HostTunnel(host_id, generation, ws, shared, port=port)
         try:
-            endpoint = await tunnel.start()
+            try:
+                endpoint = await tunnel.start()
+            except OSError:
+                if not port:
+                    raise
+                await tunnel.close()
+                if self.generations.get(host_id) != generation:
+                    raise ValueError("Superseded connection generation")
+                tunnel = HostTunnel(host_id, generation, ws, shared)
+                endpoint = await tunnel.start()
             if self.generations.get(host_id) != generation:
                 raise ValueError("Superseded connection generation")
         except (OSError, ValueError, asyncio.CancelledError):
