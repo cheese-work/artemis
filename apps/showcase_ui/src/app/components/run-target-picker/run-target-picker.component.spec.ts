@@ -123,6 +123,38 @@ describe('RunTargetPickerComponent', () => {
     expect(label?.getAttribute('for')).toBe(select().id);
   });
 
+  it('uses the light app surface with dark text and at least 4.5:1 contrast', () => {
+    create([OWN_NEW, SHARED]);
+    const styles = getComputedStyle(select());
+    expect(styles.backgroundColor).toBe('rgb(248, 250, 252)');
+    expect(styles.color).toBe('rgb(71, 85, 105)');
+    expect(styles.borderColor).toBe('rgb(226, 232, 240)');
+    const luminance = (channels: number[]) => channels.map((channel) => {
+      const value = channel / 255;
+      return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
+    }).reduce((sum, value, index) => sum + value * [0.2126, 0.7152, 0.0722][index], 0);
+    expect((luminance([248, 250, 252]) + 0.05) / (luminance([71, 85, 105]) + 0.05)).toBeGreaterThanOrEqual(4.5);
+    const option = getComputedStyle(select().options[1]);
+    expect(option.backgroundColor).toBe(styles.backgroundColor);
+    expect(option.color).toBe(styles.color);
+    const selected = getComputedStyle(select().options[0]);
+    expect(selected.backgroundColor).toBe('rgb(239, 246, 255)');
+    expect(selected.color).toBe('rgb(30, 64, 175)');
+    expect((luminance([239, 246, 255]) + 0.05) / (luminance([30, 64, 175]) + 0.05)).toBeGreaterThanOrEqual(4.5);
+  });
+
+  it('keeps native keyboard focus and commits a selection without moving the shared target', () => {
+    create([OWN_NEW, SHARED]);
+    select().focus();
+    expect(document.activeElement).toBe(select());
+    expect(select().tabIndex).toBe(0);
+    choose(SHARED.serial);
+    expect(system.selectedRunTarget()).toBe(SHARED.serial);
+    choose('');
+    expect(system.selectedRunTarget()).toBeNull();
+    http.expectNone('/api/system/devices/select');
+  });
+
   it('chooses the older of two own phones for the next run, locally, without touching the global target', () => {
     create([OWN_NEW, OWN_OLD, SHARED]);
 

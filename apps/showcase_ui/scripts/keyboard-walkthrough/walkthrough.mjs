@@ -11,7 +11,7 @@ import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { startMockApi } from './mock-api.mjs';
+import { startMockApi, mock } from './mock-api.mjs';
 
 const dist = fileURLToPath(new URL('../../dist/frontend/browser', import.meta.url));
 if (!existsSync(path.join(dist, 'index.html'))) {
@@ -28,6 +28,10 @@ const freePort = () =>
   });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+mock.readiness = {
+  os_type: 'linux', overall_ready: true,
+  probes: [{ id: 'android_adb', status: 'pass', metadata: { devices: [{ serial: 'keyboard-fixture', state: 'device', model: 'Pixel test', device_kind: 'phone' }] } }]
+};
 const { server, url: base } = await startMockApi(dist);
 const profile = mkdtempSync(path.join(tmpdir(), 'kbd-walk-'));
 const port = await freePort();
@@ -65,11 +69,15 @@ const evaluate = async (expression) => {
 };
 
 async function cleanup(code) {
+  if (chrome.exitCode === null && chrome.signalCode === null) {
+    const stopped = new Promise((resolve) => chrome.once('exit', resolve));
+    await send('Browser.close').catch(() => chrome.kill());
+    await stopped;
+  }
   try { ws?.close(); } catch { /* already closed */ }
-  chrome.kill();
-  server.close();
+  await new Promise((resolve) => server.close(resolve));
   await sleep(200);
-  rmSync(profile, { recursive: true, force: true });
+  rmSync(profile, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
   process.exit(code);
 }
 
@@ -77,7 +85,10 @@ const KEYS = {
   Tab: { key: 'Tab', code: 'Tab', windowsVirtualKeyCode: 9 },
   Space: { key: ' ', code: 'Space', windowsVirtualKeyCode: 32, text: ' ' },
   Enter: { key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, text: '\r' },
-  Escape: { key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 }
+  Escape: { key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 },
+  ArrowDown: { key: 'ArrowDown', code: 'ArrowDown', windowsVirtualKeyCode: 40 },
+  ArrowUp: { key: 'ArrowUp', code: 'ArrowUp', windowsVirtualKeyCode: 38 },
+  v: { key: 'v', code: 'KeyV', windowsVirtualKeyCode: 86 }
 };
 async function press(name, modifiers = 0) {
   const k = KEYS[name];
@@ -214,6 +225,36 @@ try {
   await tabUntil('Back to runs', focusNamed('Back to runs'), { back: true });
   await press('Enter');
   await expectTrue('back on /runs with the list', `location.pathname === '/runs' && document.querySelectorAll('a.run-row').length === 6`);
+
+  log('Task dock: stays open, native dropdown and clipboard keyboard operation');
+  await send('Page.navigate', { url: `${base}/workspace` });
+  await expectTrue('empty task dock is expanded', `!!document.querySelector('.workspace-floating-bar-wrapper.is-expanded textarea') && getComputedStyle(document.querySelector('.expanded-card-content')).display !== 'none'`);
+  const dockWidth = await evaluate(`document.querySelector('.floating-dock-card').getBoundingClientRect().width`);
+  await expectTrue('run-target options loaded', `document.querySelector('app-run-target-picker select')?.options.length === 2`, 8000);
+  await tabUntil('Run on select', focusIs('app-run-target-picker select'));
+  await press('ArrowDown');
+  await expectTrue('ArrowDown chooses the available phone', `document.querySelector('app-run-target-picker select').value === 'keyboard-fixture'`);
+  await press('ArrowUp');
+  await expectTrue('ArrowUp restores Automatic', `document.querySelector('app-run-target-picker select').value === ''`);
+  await press('Tab');
+  await expectTrue('focus loss does not collapse or resize the dock', `!document.querySelector('.is-dormant') && document.querySelector('.floating-dock-card').getBoundingClientRect().width === ${dockWidth}`);
+  await tabUntil('task textarea', focusIs('textarea.dock-textarea'));
+  await send('Browser.grantPermissions', { permissions: ['clipboardReadWrite', 'clipboardSanitizedWrite'], origin: base });
+  await evaluate(`(async () => {
+    const canvas = new OffscreenCanvas(1, 1);
+    canvas.getContext('2d').fillRect(0, 0, 1, 1);
+    const image = await canvas.convertToBlob({ type: 'image/png' });
+    await navigator.clipboard.write([new ClipboardItem({ 'image/png': image })]);
+  })()`);
+  await press('v', 2);
+  await expectTrue('Ctrl+V of an image creates a preview', `document.querySelectorAll('ul.attached-images img').length === 1`);
+  await tabUntil('Remove image', focusIs('button.btn-remove-image'));
+  await press('Enter');
+  await expectTrue('Enter removes the pasted preview', `!document.querySelector('ul.attached-images')`);
+  await tabUntil('task textarea', focusIs('textarea.dock-textarea'));
+  await evaluate(`navigator.clipboard.writeText('clipboard task text')`);
+  await press('v', 2);
+  await expectTrue('Ctrl+V of text remains text without an attachment', `document.querySelector('textarea.dock-textarea').value === 'clipboard task text' && !document.querySelector('ul.attached-images')`);
 
   log('\nKeyboard walkthrough passed.');
   await cleanup(0);
