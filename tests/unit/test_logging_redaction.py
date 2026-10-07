@@ -151,6 +151,23 @@ def test_goal_file_is_private_single_use_and_metadata_has_no_goal(tmp_path):
     assert "goal_length=" in goal_metadata(goal)
 
 
+def test_goal_file_write_failure_removes_partial_file(tmp_path):
+    with pytest.raises(TypeError):
+        write_goal_file(None, directory=tmp_path)
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.asyncio
+async def test_forwarder_reports_invalid_log_path_without_losing_redacted_output(capsys):
+    stream = asyncio.StreamReader()
+    stream.feed_data(b"password=invalid-path-secret\n")
+    stream.feed_eof()
+    await forward_worker_output(stream, "invalid\0/stdout.log")
+    output = capsys.readouterr().out
+    assert "invalid-path-secret" not in output
+    assert "REDACTED" in output
+
+
 @pytest.mark.asyncio
 async def test_forwarder_redacts_chunk_splits_and_tail(tmp_path, capsys, monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "split-secret-sentinel")

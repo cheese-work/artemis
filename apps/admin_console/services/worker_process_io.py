@@ -72,7 +72,7 @@ async def forward_worker_output(
         try:
             os.makedirs(os.path.dirname(log_path), exist_ok=True)
             log_file = open(log_path, "w", buffering=1, encoding="utf-8", errors="replace")
-        except Exception as exc:
+        except (OSError, ValueError):
             logger.exception("event=worker_log_open_failed")
 
     def _emit(text: str) -> None:

@@ -201,27 +201,22 @@ def goal_metadata(goal: str) -> str:
 
 class Redactor(logging.Filter):
     def redact(self, value: Any) -> Any:
-        try:
-            if isinstance(value, dict):
-                return {key: self.redact(item) for key, item in redact_json(value).items()}
-            if isinstance(value, list | tuple):
-                return type(value)(self.redact(item) for item in value)
-            if not isinstance(value, str):
-                return value
-            secrets = set(_PRIVATE_TEXT.get())
-            secrets.update(
-                item
-                for key, item in tuple(os.environ.items())
-                if item and _SENSITIVE_KEY.search(key)
-            )
-            for secret in sorted(secrets, key=len, reverse=True):
-                value = value.replace(secret, REDACTED)
-                escaped = json.dumps(secret, ensure_ascii=False)[1:-1]
-                if escaped != secret:
-                    value = value.replace(escaped, REDACTED)
-            return _redact_string(value)
-        except Exception:
-            return REDACTED
+        if isinstance(value, dict):
+            return {key: self.redact(item) for key, item in redact_json(value).items()}
+        if isinstance(value, list | tuple):
+            return type(value)(self.redact(item) for item in value)
+        if not isinstance(value, str):
+            return value
+        secrets = set(_PRIVATE_TEXT.get())
+        secrets.update(
+            item for key, item in tuple(os.environ.items()) if item and _SENSITIVE_KEY.search(key)
+        )
+        for secret in sorted(secrets, key=len, reverse=True):
+            value = value.replace(secret, REDACTED)
+            escaped = json.dumps(secret, ensure_ascii=False)[1:-1]
+            if escaped != secret:
+                value = value.replace(escaped, REDACTED)
+        return _redact_string(value)
 
     def filter(self, record: logging.LogRecord) -> bool:
         try:
@@ -335,13 +330,15 @@ def configure_logging(*, streams: bool = False) -> None:
 
 def write_goal_file(goal: str, directory=None) -> str:
     descriptor, path = tempfile.mkstemp(prefix="artemis-goal-", dir=directory)
+    written = False
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8") as goal_file:
             goal_file.write(goal)
-    except BaseException:
-        os.unlink(path)
-        raise
-    return path
+        written = True
+        return path
+    finally:
+        if not written:
+            os.unlink(path)
 
 
 def read_goal_file(path: str) -> str:
