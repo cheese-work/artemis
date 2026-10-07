@@ -110,7 +110,7 @@ for (const prefix of ['/', '/preview/pr/70/']) {
     const bridge = await evaluate(`(() => {
       const root = ng.getComponent(document.querySelector('app-root'));
       root.agentService.ownerScope.setAllUsers(true);
-      const relay = ng.getComponent(document.querySelector('app-nav-switcher')).usbRelay;
+      const relay = ng.getComponent(document.querySelector('app-workspace-device-chip')).phone.relay;
       const target = relay.createBridgeUrl();
       new WebSocket(target);
       return target;
