@@ -50,7 +50,16 @@ for _p in (str(_workspace_root), str(_apps_dir), str(_admin_console_dir), str(_c
 from fastapi import Depends, FastAPI
 from fastapi.responses import FileResponse, HTMLResponse
 import uvicorn
+from copy import deepcopy
+from artemis.utils.redaction import Redactor, configure_logging
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
+
+configure_logging()
+
+REDACTED_UVICORN_LOGGING = deepcopy(uvicorn.config.LOGGING_CONFIG)
+REDACTED_UVICORN_LOGGING["filters"] = {"redaction": {"()": Redactor}}
+for handler_config in REDACTED_UVICORN_LOGGING["handlers"].values():
+    handler_config["filters"] = ["redaction"]
 
 from artemis.runtime import (
     DeviceExecutionLock,
@@ -75,6 +84,7 @@ from artemis.resources import get_bundled_showcase_dist
 from artemis.runtime.lifecycle import InterruptReason
 from apps.admin_console.services import run_retention
 from apps.admin_console.services.host_registry import host_agent_enabled, host_registry
+from apps.admin_console.services.host_tunnel import host_tunnels
 from apps.admin_console.core.access_control import (
     AdminAPIError,
     CloudflareAccessVerifier,
@@ -148,6 +158,7 @@ async def _lifespan(_app: "FastAPI"):
     try:
         yield
     finally:
+        await host_tunnels.close()
         await on_shutdown()
 
 
@@ -563,6 +574,11 @@ class ArtemisUvicornServer(uvicorn.Server):
 
 def run_ui_server(host: str, port: int, reload: bool = False) -> None:
     """Run the UI server with bounded, signal-aware graceful shutdown."""
+    from artemis.config.host_agent import host_agent_enabled
+    from apps.admin_console.services.bridge_session_service import MAX_ADB_PACKET_BYTES
+
+    websocket_options = {"ws_max_size": MAX_ADB_PACKET_BYTES} if host_agent_enabled() else {}
+    configure_logging(streams=True)
     state.host = host
     state.port = port
     write_server_info(port=port, host=host, lifecycle_token=LIFECYCLE_TOKEN)
@@ -574,18 +590,23 @@ def run_ui_server(host: str, port: int, reload: bool = False) -> None:
                 host=host,
                 port=port,
                 reload=True,
+                log_config=REDACTED_UVICORN_LOGGING,
                 proxy_headers=False,
                 timeout_graceful_shutdown=5,
+                **websocket_options,
             )
             return
 
         config = uvicorn.Config(
             proxy_aware_app,
+            log_config=REDACTED_UVICORN_LOGGING,
             host=host,
             port=port,
             proxy_headers=False,
             timeout_graceful_shutdown=5,
+            **websocket_options,
         )
+        configure_logging()
         server = ArtemisUvicornServer(config)
         app.state.uvicorn_server = server
         server.run()

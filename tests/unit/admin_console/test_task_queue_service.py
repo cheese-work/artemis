@@ -16,6 +16,7 @@ import asyncio
 import importlib
 import json
 import os
+from pathlib import Path
 import sqlite3
 import subprocess
 import sys
@@ -373,7 +374,7 @@ async def test_queue_worker_execution_lifecycle():
     executed_goals = []
 
     async def fake_subprocess_exec(*args, **kwargs):
-        goal_arg = args[3]
+        goal_arg = Path(args[args.index("--goal-file") + 1]).read_text()
         executed_goals.append(goal_arg)
         proc = MagicMock()
         proc.pid = 99999
@@ -777,7 +778,7 @@ async def test_cancel_task_triggers_next_pending_task():
     executed_goals = []
 
     async def fake_subprocess_exec(*args, **kwargs):
-        goal_arg = args[3]
+        goal_arg = Path(args[args.index("--goal-file") + 1]).read_text()
         executed_goals.append(goal_arg)
         proc = MagicMock()
         proc.pid = 77777
@@ -831,7 +832,7 @@ async def test_immediate_cancel_ignores_stale_ipc_and_runs_next_task():
     task1_session_id = None
 
     async def fake_subprocess_exec(*args, **kwargs):
-        goal_arg = args[3]
+        goal_arg = Path(args[args.index("--goal-file") + 1]).read_text()
         executed_goals.append(goal_arg)
         proc = MagicMock()
         proc.pid = 88888
@@ -1025,7 +1026,8 @@ async def test_queue_worker_notifies_conversation():
         mock_notify.assert_called_once()
         kwargs = mock_notify.call_args[1]
         assert kwargs["conversation_id"] == "conv-789"
-        assert "Notify goal" in kwargs["message"]
+        assert "Notify goal" not in kwargs["message"]
+        assert "goal_length=11" in kwargs["message"]
 
         task = state.worker_task
         if task and not task.done():
@@ -1234,7 +1236,7 @@ async def test_manual_stop_of_one_run_does_not_pollute_concurrent_run(tmp_path, 
     procs: dict[str, FakeProc] = {}
 
     async def fake_subprocess_exec(*args, **kwargs):
-        goal = args[3]
+        goal = Path(args[args.index("--goal-file") + 1]).read_text()
         # Use our own pid so the reaped-process watchdog keeps waiting.
         proc = FakeProc(os.getpid())
         procs[goal] = proc

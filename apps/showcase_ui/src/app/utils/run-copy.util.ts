@@ -1,4 +1,5 @@
 import { Session } from '../core/models/session.model';
+import { redact } from '../services/logger.service';
 import { isActionFailed } from './action-formatter.util';
 import { consolidateLogsToBlocks } from './stream-aggregator.util';
 import { compareStepIdentity, getStepTraceIds } from './step-identity.util';
@@ -17,14 +18,14 @@ export function buildRunSummary(
   const device = session.device_serial || session.device_id || 'Unknown';
   const recording = safeRecordingUrl(recordingUrl);
 
-  return [
+  return redact([
     '# Run summary',
     `- Run ID: ${singleLine(session.session_id)}`,
     `- Device: ${singleLine(device)}`,
     `- Outcome: ${formatOutcome(session.status || currentStatus)}`,
     `- Failing step: ${findFailingStep(logs)}`,
     `- Recording: ${recording ? `[Open recording](${recording})` : 'Not available'}`
-  ].join('\n');
+  ].join('\n'));
 }
 
 function findFailingStep(logs: unknown[]): string {

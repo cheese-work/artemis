@@ -1,6 +1,6 @@
 import { DeviceKind } from './system.model';
 
-export type ComputerStatus = 'online' | 'offline' | 'update_required' | 'revoked';
+export type ComputerStatus = 'online' | 'reconnecting' | 'offline' | 'update_required' | 'revoked';
 
 export interface Computer {
   id: string;

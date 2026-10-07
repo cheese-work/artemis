@@ -12,7 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+
+class DeviceRef(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    host_id: str = Field(pattern=r"^[A-Za-z0-9_-]{1,64}$")
+    serial: str = Field(pattern=r"^[A-Za-z0-9._:\-]{1,64}$")
 
 
 class RunImageUpload(BaseModel):
@@ -37,12 +43,19 @@ class RunRequest(BaseModel):
     locked_app_package: str | None = None
     app_path: str | None = None
     device_serial: str | None = None
+    device_ref: DeviceRef | None = None
     ingress: str | None = "frontend"
     session_id: str | None = None
     conversation_id: str | None = None
     run_id: str | None = None
     # Pictures for the one goal (image chat); see services/run_images.py for the limits.
     images: list[RunImageUpload] | None = None
+
+    @model_validator(mode="after")
+    def check_device_ref(self):
+        if self.device_ref and self.device_serial not in {None, self.device_ref.serial}:
+            raise ValueError("device_serial must match device_ref.serial")
+        return self
 
 
 class ReplayRequest(BaseModel):

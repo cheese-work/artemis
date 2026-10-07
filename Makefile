@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-.PHONY: help test test-integration test-device test-all install install-deps setup start ui restart stop status build-ui doctor clean precommit-install precommit lint format typecheck quality-ratchet
+.PHONY: help test test-integration test-device test-all host-dev host-flap install install-deps setup start ui restart stop status build-ui doctor clean precommit-install precommit lint format typecheck quality-ratchet
 
 help: ## Show this help message
 	@echo 'Usage: make [target]'
@@ -45,6 +45,12 @@ doctor: ## Run system, device, and toolchain diagnostics
 test: ## Run deterministic tests that need no device, credentials, or private services
 	@echo "🧪 Running deterministic tests..."
 	@uv run pytest
+
+host-dev: ## Run the fake ADB/computer protocol and gateway seam (no device)
+	@uv run pytest tests/unit/runtime/test_host_tunnel.py -q
+
+host-flap: ## Run close, silence, reset, recovery and grace regressions (no device)
+	@uv run pytest tests/unit/admin_console/test_host_tunnel_service.py tests/unit/admin_console/test_host_agent_api.py -q -k 'flap or reconnect or grace or tunnel'
 
 test-integration: ## Run non-device integration tests (may require configured model credentials)
 	@echo "🧪 Running integration tests..."

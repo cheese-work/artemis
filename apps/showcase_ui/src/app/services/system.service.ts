@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+import { LoggerService } from './logger.service';
 import { Injectable, signal, computed, inject, DestroyRef, NgZone } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { Observable, finalize, map, shareReplay, tap } from 'rxjs';
@@ -29,10 +30,11 @@ import {
 
 export const SELECTED_DEVICE_SERIAL_KEY = 'artemis.selected_device_serial';
 
-function rememberedRunTarget(): string | null {
+function rememberedRunTarget(logger: LoggerService): string | null {
   try {
     return localStorage.getItem(SELECTED_DEVICE_SERIAL_KEY);
-  } catch {
+  } catch (error) {
+    logger.warn('Unable to restore the run target:', error);
     return null;
   }
 }
@@ -41,10 +43,11 @@ function rememberedRunTarget(): string | null {
   providedIn: 'root'
 })
 export class SystemService {
+  private readonly logger = inject(LoggerService);
   private http = inject(HttpClient);
   public configWritesLocked = signal<boolean>(true);
   /** The phone this browser runs on next; null means automatic. */
-  public selectedRunTarget = signal<string | null>(rememberedRunTarget());
+  public selectedRunTarget = signal<string | null>(rememberedRunTarget(this.logger));
 
   /**
    * Remember which phone this browser uses for its next run. Unlike {@link selectDevice} it
@@ -58,7 +61,7 @@ export class SystemService {
         localStorage.removeItem(SELECTED_DEVICE_SERIAL_KEY);
       }
     } catch (error) {
-      console.warn('Unable to remember the run target in this browser:', error);
+      this.logger.warn('Unable to remember the run target in this browser:', error);
     }
     this.selectedRunTarget.set(serial);
   }
@@ -184,7 +187,7 @@ export class SystemService {
   private lastAppliedReportJson: string | null = null;
   private onVisibilityChange = () => {
     if (typeof document !== 'undefined' && !document.hidden) {
-      this.fetchReadiness(true).subscribe({ error: () => {} });
+      this.fetchReadiness(true).subscribe({ error: (error) => this.logger.error('Request failed:', error) });
     }
   };
 
@@ -219,7 +222,7 @@ export class SystemService {
         }
         // Perform silent background check without disturbing UI loading state
         this.fetchReadiness(true).subscribe({
-          error: () => {} // Silent catch
+          error: (error) => this.logger.error('Request failed:', error) // Silent catch
         });
       }, intervalMs);
     });
@@ -261,7 +264,7 @@ export class SystemService {
           this.applyReadinessReport(report);
         },
         error: (err) => {
-          console.error('Failed to fetch system readiness:', err);
+          this.logger.error('Failed to fetch system readiness:', err);
         }
       }),
       finalize(() => {
@@ -314,7 +317,7 @@ export class SystemService {
           }
         },
         error: (err) => {
-          console.error('Failed to fetch emulator status:', err);
+          this.logger.error('Failed to fetch emulator status:', err);
         }
       })
     );
@@ -329,7 +332,7 @@ export class SystemService {
     }
     this.emulatorPollTimer = setInterval(() => {
       this.fetchEmulatorStatus().subscribe({
-        error: () => {}
+        error: (error) => this.logger.error('Request failed:', error)
       });
     }, 1000);
   }
@@ -374,7 +377,7 @@ export class SystemService {
           }
         },
         error: (err) => {
-          console.error('Failed to launch emulator:', err);
+          this.logger.error('Failed to launch emulator:', err);
           this.launchingAvd.set(null);
           const errorMsg = err?.error?.detail || err?.message || 'Failed to start emulator process.';
           this.emulatorLaunchState.set({
@@ -440,7 +443,7 @@ export class SystemService {
           this.isRestartingAdb.set(false);
         },
         error: (err) => {
-          console.error('Failed to restart ADB server:', err);
+          this.logger.error('Failed to restart ADB server:', err);
           this.isRestartingAdb.set(false);
         }
       })
@@ -540,7 +543,7 @@ export class SystemService {
           this.isLoading.set(false);
         },
         error: (err) => {
-          console.error('Failed to select active device:', err);
+          this.logger.error('Failed to select active device:', err);
           this.isLoading.set(false);
         }
       })
@@ -569,7 +572,7 @@ export class SystemService {
           this.modelConfigEnv.set(data);
         },
         error: (err) => {
-          console.error('Failed to fetch model config and env:', err);
+          this.logger.error('Failed to fetch model config and env:', err);
         }
       })
     );
@@ -605,7 +608,7 @@ export class SystemService {
           this.fetchCredentialStatus().subscribe();
         },
         error: (err) => {
-          console.error(`Failed to update credentials for ${provider}:`, err);
+          this.logger.error(`Failed to update credentials for ${provider}:`, err);
         }
       })
     );

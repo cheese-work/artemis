@@ -74,6 +74,9 @@ def configure_stdio_mode() -> None:
             h for h in log_instance.handlers if not isinstance(h, logging.StreamHandler)
         ]
         fh = logging.FileHandler(log_path, encoding="utf-8")
+        from artemis.utils.redaction import redactor
+
+        fh.addFilter(redactor)
         fh.setFormatter(logging.Formatter("%(asctime)s | %(name)s | %(levelname)s | %(message)s"))
         log_instance.addHandler(fh)
 

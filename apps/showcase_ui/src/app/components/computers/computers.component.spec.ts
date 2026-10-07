@@ -128,6 +128,14 @@ describe('ComputersComponent', () => {
     expect(text()).toContain('2 min ago');
   });
 
+  it('shows reconnecting during an active run grace period', () => {
+    hosts.list.and.returnValue(
+      of(response([computer({ status: 'reconnecting', reason: 'disconnected' })]))
+    );
+    create();
+    expect(text()).toContain('Reconnecting…');
+  });
+
   it('explains an offline computer whose session expired', () => {
     hosts.list.and.returnValue(
       of(response([computer({ status: 'offline', reason: 'auth_expired', since: Date.now() / 1000 })]))

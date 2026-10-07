@@ -272,7 +272,7 @@ async def outputter(
             tool_name = tc["name"].split(":")[-1] if ":" in tc["name"] else tc["name"]
             args = tc["args"]
 
-            logger.info(f"Outputter executing tool {tool_name} with args: {args}")
+            logger.info(f"event=tool_called tool={tool_name} args_length={len(str(args))}")
             tool_map = {
                 "search_history": search_tool,
                 "replay_steps": replay_tool,

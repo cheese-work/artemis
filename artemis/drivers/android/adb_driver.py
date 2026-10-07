@@ -387,7 +387,7 @@ class AndroidAdbDriver(BaseDeviceDriver):
             raise
         except Exception as e:
             self._raise_if_disconnected(e)
-            logger.error(f"Input text failed for '{text}': {e}")
+            logger.error(f"Input text failed text_length={len(text)} error_type={type(e).__name__}")
             return False
 
     async def press_key(self, key: KeyCode | str | int) -> bool:
