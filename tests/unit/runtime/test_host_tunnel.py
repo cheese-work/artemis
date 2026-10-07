@@ -1,8 +1,10 @@
 """B2 merge-gate regressions. Only fake computers and loopback sockets are used."""
 
 import asyncio
+import json
 import random
 import struct
+from pathlib import Path
 
 import pytest
 
@@ -16,6 +18,18 @@ def test_frame_golden_vector():
     golden = bytes.fromhex("0300000000000000070000000300000003") + b"adb"
     assert frame.encode() == golden
     assert Frame.decode(golden) == frame
+
+
+def test_shared_go_host_frame_vectors():
+    path = Path(__file__).parents[2] / "support/golden/host_frames.json"
+    for vector in json.loads(path.read_text()):
+        frame = Frame(
+            FrameKind(vector["kind"]), vector["epoch"], vector["stream"],
+            bytes.fromhex(vector["payload"]),
+        )
+        wire = bytes.fromhex(vector["wire"])
+        assert frame.encode() == wire
+        assert Frame.decode(wire) == frame
 
 
 @pytest.mark.parametrize("kind", list(FrameKind))
