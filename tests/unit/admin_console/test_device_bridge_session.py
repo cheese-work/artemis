@@ -299,6 +299,15 @@ class _ManualClock:
 def test_expired_session_times_out_and_disconnects_adb(
     loopback_client, monkeypatch, _mock_adb, caplog
 ):
+    # Pin both limits so ambient settings cannot change which one fires after the advance.
+    monkeypatch.setenv(
+        "ARTEMIS_BRIDGE_SESSION_TTL_SECONDS",
+        str(bridge_session_service_module.DEFAULT_SESSION_TTL_SECONDS),
+    )
+    monkeypatch.setenv(
+        "ARTEMIS_BRIDGE_SESSION_MAX_LIFETIME_SECONDS",
+        str(bridge_session_service_module.DEFAULT_SESSION_MAX_LIFETIME_SECONDS),
+    )
     clock = _ManualClock()
     monkeypatch.setattr(
         bridge_session_service_module,
