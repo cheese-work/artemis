@@ -182,7 +182,7 @@ def _stored(session_id: str) -> list[tuple[int, str, Path]]:
     if not is_safe_session_id(session_id):
         return []
     folder = _folder(session_id)
-    if not folder.is_dir() or folder.is_symlink():
+    if not folder.is_dir() or folder.is_symlink() or folder.parent.is_symlink():
         return []
     found = []
     for entry in folder.iterdir():
@@ -231,7 +231,14 @@ def worker_environment(session_id: str, manifest: list[dict]) -> dict[str, str]:
     """
     if not manifest:
         return {}
-    folder = _folder(session_id)
+    try:
+        folder = _folder(session_id)
+    except ValueError:  # the run folder resolves outside traces (a link)
+        folder = None
+    if folder is None or folder.is_symlink() or folder.parent.is_symlink():
+        raise GoalImagesMissing(
+            "The pictures attached to this run are not in a trusted folder, so it was not started."
+        )
     paths, lost = [], []
     for entry in manifest:
         extension = _EXTENSION_BY_MEDIA.get(entry.get("media_type"))
