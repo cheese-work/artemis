@@ -26,7 +26,16 @@ _WAIT_SERVICE = re.compile(
     r"wait-for-(?:any|usb|local)-(?:device|recovery|rescue|sideload|bootloader|any|disconnect)"
     r"(?:-(?:device|recovery|rescue|sideload|bootloader|any|disconnect))*\Z"
 )
-_DEVICE_SERVICES = ("shell:", "shell,", "exec:", "sync:", "tcp:", "localabstract:", "framebuffer:")
+_DEVICE_SERVICES = (
+    "shell:",
+    "shell,",
+    "exec:",
+    "abb_exec:",
+    "sync:",
+    "tcp:",
+    "localabstract:",
+    "framebuffer:",
+)
 
 
 def pack_message(payload: bytes) -> bytes:
@@ -37,14 +46,17 @@ def pack_message(payload: bytes) -> bytes:
     return f"{len(payload):04x}".encode() + payload
 
 
-def text(payload: bytes) -> str:
+def text(payload: bytes, *, allow_nul: bool = False) -> str:
     if len(payload) > CONTRACT.max_text:
         raise ProtocolError("ADB text exceeds limit")
     try:
         result = payload.decode("utf-8", errors="strict")
     except UnicodeError as error:
         raise ProtocolError("Invalid UTF-8") from error
-    if any(ord(character) < 32 and character not in "\t\n\r" for character in result):
+    if any(
+        ord(character) < 32 and character not in "\t\n\r" and not (allow_nul and character == "\0")
+        for character in result
+    ):
         raise ProtocolError("Invalid text control character")
     return result
 
@@ -83,6 +95,8 @@ class Gateway:
         self.serial: str | None = None
 
     def allows(self, service: str) -> bool:
+        if "\0" in service and not service.startswith("abb_exec:"):
+            return False
         if self.serial is not None:
             return self.serial in self.shared() and service.startswith(_DEVICE_SERVICES)
         if service in _HOST_SERVICES:
@@ -104,7 +118,14 @@ class Gateway:
         try:
             while True:
                 request = await read_message(reader)
-                service = text(request)
+                service = text(
+                    request,
+                    allow_nul=bool(
+                        self.serial is not None
+                        and self.serial in self.shared()
+                        and request.startswith(b"abb_exec:")
+                    ),
+                )
                 if not self.allows(service):
                     logger.warning("event=adb_denied service=%r", service[:128])
                     writer.write(b"FAIL" + pack_message(b"Service is not allowed"))

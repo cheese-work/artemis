@@ -144,12 +144,19 @@ Both gateways accept legacy `host:transport:<shared>` and modern
 `host:tport:serial:<shared>`; the latter relays the raw 8-byte transport id after
 OKAY. `host:features` and shared-serial `features`, `get-state`, `get-serialno`
 and valid `wait-for-*` forms are supported. Shell v2 uses the `shell,` prefix.
+`abb_exec:` supports package install with NUL-separated arguments only after
+shared-serial transport selection. NUL remains invalid in all other services
+and in metadata/error text. Other text limits and UTF-8 validation remain strict.
 Scoped forwarding, unshared/implicit transport selection and all other denied
 services remain denied. Wait responses carry a second OKAY or a bounded FAIL.
 With ARTEMIS_HOST_AGENT enabled, the bundled Uvicorn startup paths cap complete
-WebSocket messages server-wide at max_frame before ASGI delivery, including
-fragmented, UTF-8 and decompressed messages. Flag-off transport defaults stay unchanged.
-Alternate ASGI launchers must configure the same transport-layer cap themselves.
+WebSocket messages server-wide at the bridge's MAX_ADB_PACKET_BYTES (1 MiB + 24).
+This preserves the existing device-bridge /session packet limit. The agent route
+still rejects JSON/binary messages above max_frame (64 KiB) and closes with 4400,
+but ASGI can buffer up to the bridge transport cap before that route-level check.
+The transport cap covers fragmented, UTF-8 and decompressed messages; exceeding
+it closes with 1009. Flag-off transport defaults stay unchanged. Alternate ASGI
+launchers must configure the same transport-layer cap themselves.
 The default-off `ARTEMIS_HOST_AGENT` gate governs listener creation and requests.
 """
 

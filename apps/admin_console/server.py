@@ -575,9 +575,9 @@ class ArtemisUvicornServer(uvicorn.Server):
 def run_ui_server(host: str, port: int, reload: bool = False) -> None:
     """Run the UI server with bounded, signal-aware graceful shutdown."""
     from artemis.config.host_agent import host_agent_enabled
-    from artemis.runtime.host_protocol import CONTRACT
+    from apps.admin_console.services.bridge_session_service import MAX_ADB_PACKET_BYTES
 
-    websocket_options = {"ws_max_size": CONTRACT.max_frame} if host_agent_enabled() else {}
+    websocket_options = {"ws_max_size": MAX_ADB_PACKET_BYTES} if host_agent_enabled() else {}
     configure_logging(streams=True)
     state.host = host
     state.port = port
