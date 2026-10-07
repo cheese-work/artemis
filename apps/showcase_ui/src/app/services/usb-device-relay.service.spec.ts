@@ -237,7 +237,7 @@ describe('UsbDeviceRelayService', () => {
       expires_in_seconds: 300
     }));
     socket.message(JSON.stringify({ type: 'device_attached', serial: 'R58M123' }));
-    expect(service.state()).toEqual({ status: 'connected', serial: 'R58M123', error: null });
+    expect(service.state()).toEqual({ status: 'connected', serial: 'R58M123', sessionId: 'lease-1', error: null });
 
     const devicePacket = {
       command: AdbCommand.Okay,
@@ -316,6 +316,34 @@ describe('UsbDeviceRelayService', () => {
 
     expect(service.state().error).toContain('connection dropped');
     expect(service.state().serial).toBeNull();
+    // It never reported an attached phone, so this is a failed connect, not a dropped phone.
+    expect(service.state().status).toBe('error');
+  });
+
+  it('reports a phone that was attached and then lost as dropped, and can reconnect', async () => {
+    service = TestBed.inject(UsbDeviceRelayService);
+    const connecting = service.connect();
+    await flushMicrotasks();
+    socket.open();
+    await connecting;
+    socket.message(JSON.stringify({ type: 'session_leased', session_id: 'lease-1', expires_in_seconds: 300 }));
+    socket.message(JSON.stringify({ type: 'device_attached', serial: 'R58M123' }));
+    expect(service.state().sessionId).toBe('lease-1');
+
+    socket.drop();
+    await flushMicrotasks();
+
+    expect(service.state()).toEqual({
+      status: 'dropped',
+      serial: null,
+      sessionId: null,
+      error: 'The device bridge connection dropped. Connect the phone again.'
+    });
+
+    // Dropped is not "still connected": a new connect goes back to the USB chooser.
+    void service.connect();
+    await flushMicrotasks();
+    expect(manager.requestDevice).toHaveBeenCalledTimes(2);
   });
 
   it('warns before leaving while the bridge is active', async () => {

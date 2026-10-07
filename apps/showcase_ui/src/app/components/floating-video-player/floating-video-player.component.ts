@@ -33,6 +33,7 @@ import { AgentService } from '../../services/agent.service';
 import { StepReplayFrame } from '../../core/models/stream.model';
 import { drawActionCoordinatesOnOverlay } from '../../utils/image-overlay.util';
 import { getActionIcon } from '../../utils/action-formatter.util';
+import { partialRibbonFor } from '../../utils/recording-state.util';
 import { locateTimelineTime, sessionTimeToTimelineTime } from '../../utils/recording-timeline.util';
 
 @Component({
@@ -92,6 +93,9 @@ export class FloatingVideoPlayerComponent implements OnDestroy {
   public isStepImageLoading = signal<boolean>(false);
   public stepImageError = signal<boolean>(false);
   private stepTimer: any = null;
+
+  /** "Partial recording (stopped at mm:ss)" when the run on screen was interrupted before it ended. */
+  public partialRibbon = computed(() => partialRibbonFor(this.agentService.currentSession()));
 
   public stepFrames = computed(() => this.agentService.currentSessionStepFrames());
   public totalStepFrames = computed(() => this.stepFrames().length);

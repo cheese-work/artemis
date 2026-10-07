@@ -18,7 +18,6 @@ import { DOCUMENT } from '@angular/common';
 import { Component, ChangeDetectionStrategy, DestroyRef, ElementRef, EventEmitter, afterNextRender, inject, Input, Output } from '@angular/core';
 
 import { RouterLink, RouterLinkActive } from '@angular/router';
-import { UsbDeviceRelayService } from '../../services/usb-device-relay.service';
 import { AdminIdentityIndicatorComponent } from '../admin-identity-indicator/admin-identity-indicator.component';
 
 @Component({
@@ -68,14 +67,6 @@ import { AdminIdentityIndicatorComponent } from '../admin-identity-indicator/adm
         </button>
       }
       <div class="nav-status">
-        @if (usbRelay.state().status === 'connected') {
-          <div class="usb-relay-badge" aria-live="polite">
-            <span class="material-symbols-outlined badge-icon" aria-hidden="true">smartphone</span>
-            <span class="badge-label" role="status">Phone connected via this browser</span>
-            <code>{{ usbRelay.state().serial }}</code>
-            <button type="button" (click)="disconnectPhone()">Disconnect</button>
-          </div>
-        }
         <app-admin-identity-indicator></app-admin-identity-indicator>
       </div>
     </nav>
@@ -88,7 +79,6 @@ export class NavSwitcherComponent {
   @Input() public hasUnreadWhatsNew = false;
   @Output() public showWhatsNew = new EventEmitter<void>();
 
-  public readonly usbRelay = inject(UsbDeviceRelayService);
   private readonly bar = inject(ElementRef<HTMLElement>);
 
   constructor() {
@@ -110,9 +100,5 @@ export class NavSwitcherComponent {
 
   public get whatsNewLabel(): string {
     return this.hasUnreadWhatsNew ? "Open What's New, unread updates" : "Open What's New";
-  }
-
-  public disconnectPhone(): void {
-    void this.usbRelay.disconnect();
   }
 }

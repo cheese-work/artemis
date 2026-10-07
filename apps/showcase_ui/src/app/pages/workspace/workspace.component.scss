@@ -194,15 +194,22 @@ $rose-dark: #dc2626;
       transition: gap 0.32s cubic-bezier(0.16, 1, 0.3, 1);
     }
 
+    /* The phone chip sits left of the capsule and stays visible when the capsule rests. */
+    .dock-chip {
+      flex: 0 1 auto;
+      min-width: 0;
+      margin-right: 10px;
+    }
+
     /* Standalone Floating Stop Button (Separated from Capsule) */
     .standalone-stop-btn {
       pointer-events: auto;
       display: flex;
       align-items: center;
       justify-content: center;
-      width: 34px;
-      height: 34px;
-      min-width: 34px;
+      width: 44px;
+      height: 44px;
+      min-width: 44px;
       border-radius: 50%;
       border: 1px solid rgba(255, 255, 255, 0.85);
       background: rgba(239, 68, 68, 0.9);
@@ -622,8 +629,8 @@ $rose-dark: #dc2626;
 
           /* Stop Button (Frosted Red) */
           &.btn-stop {
-            width: 36px;
-            height: 36px;
+            width: 44px;
+            height: 44px;
             background: rgba(239, 68, 68, 0.9);
             backdrop-filter: blur(8px);
             color: #ffffff;
@@ -649,8 +656,8 @@ $rose-dark: #dc2626;
 
           /* Send Button */
           &.btn-send {
-            width: 36px;
-            height: 36px;
+            width: 44px;
+            height: 44px;
             background: rgba(15, 23, 42, 0.88);
             backdrop-filter: blur(12px);
             border: 1px solid rgba(255, 255, 255, 0.25);
@@ -679,6 +686,12 @@ $rose-dark: #dc2626;
 
             &:active:not(:disabled) {
               transform: scale(0.95);
+            }
+
+            /* No phone: looks off, but stays clickable so Run can open the phone picker. */
+            &.is-blocked {
+              opacity: 0.55;
+              cursor: not-allowed;
             }
           }
         }

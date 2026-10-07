@@ -24,9 +24,11 @@ import { AgentStreamComponent } from '../../components/agent-stream/agent-stream
 import { ChatInterfaceComponent } from '../../components/chat-interface/chat-interface.component';
 import { FloatingVideoPlayerComponent } from '../../components/floating-video-player/floating-video-player.component';
 import { RunLibraryComponent } from '../../components/run-library/run-library.component';
-import { RunTargetPickerComponent } from '../../components/run-target-picker/run-target-picker.component';
+import { InterruptedBannerComponent } from '../../components/interrupted-banner/interrupted-banner.component';
 import { RunViewerComponent } from '../../components/run-viewer/run-viewer.component';
+import { WorkspaceDeviceChipComponent } from '../../components/workspace-device-chip/workspace-device-chip.component';
 import { AgentService } from '../../services/agent.service';
+import { WorkspacePhoneService } from '../../services/workspace-phone.service';
 import { IMAGE_ACCEPT, ImageChat, MAX_IMAGES, newDraftId, RunImageUpload, screenImages, toUpload } from '../../utils/run-image.util';
 
 /** A picture chosen for the next message, with the object URL its preview uses. */
@@ -46,8 +48,9 @@ export interface AttachedImage {
     ChatInterfaceComponent,
     FloatingVideoPlayerComponent,
     RunLibraryComponent,
-    RunTargetPickerComponent,
-    RunViewerComponent
+    InterruptedBannerComponent,
+    RunViewerComponent,
+    WorkspaceDeviceChipComponent
 ],
   templateUrl: './workspace.component.html',
   styleUrl: './workspace.component.scss',
@@ -55,6 +58,7 @@ export interface AttachedImage {
 })
 export class WorkspaceComponent implements OnInit {
   public agentService = inject(AgentService);
+  public phone = inject(WorkspacePhoneService);
   private zone = inject(NgZone);
   private route = inject(ActivatedRoute);
   private router = inject(Router);
@@ -237,7 +241,7 @@ export class WorkspaceComponent implements OnInit {
    */
   public onCardClick(event: MouseEvent): void {
     const target = event.target as HTMLElement;
-    // Don't steal focus if clicking action buttons, the run-target picker or textarea directly
+    // Don't steal focus if clicking action buttons, or textarea directly
     if (target.closest('button, label, select') || target.tagName.toLowerCase() === 'textarea') {
       return;
     }
@@ -345,6 +349,12 @@ export class WorkspaceComponent implements OnInit {
     if (!goal || this.isSubmitting()) {
       return;
     }
+    // A run always goes to a phone the person chose; with none, open the picker and keep the prompt.
+    const target = this.phone.target();
+    if (!target) {
+      this.phone.requestPicker();
+      return;
+    }
 
     this.isSubmitting.set(true);
     this.setErrorMessage(null);
@@ -368,9 +378,9 @@ export class WorkspaceComponent implements OnInit {
       imageChat = { images: uploads, sessionId: this.draftSessionId };
     }
 
-    const submission = imageChat
-      ? this.agentService.runTask(goal, this.selectedProfile(), undefined, undefined, undefined, imageChat)
-      : this.agentService.runTask(goal, this.selectedProfile());
+    const submission = this.agentService.runTask(
+      goal, this.selectedProfile(), undefined, undefined, undefined, imageChat, target
+    );
     submission.subscribe({
       next: () => {
         this.taskInput = '';
@@ -384,12 +394,24 @@ export class WorkspaceComponent implements OnInit {
       error: (err) => {
         console.error('Failed to submit task:', err);
         this.isSubmitting.set(false);
+        if (err.status === 409 && err.error?.code === 'device_offline') {
+          // The phone left between choosing it and pressing Run: say so, keep the prompt, open the picker.
+          this.setErrorMessage('Your phone is not connected. Connect it again to run.');
+          this.phone.requestPicker();
+          return;
+        }
         const fallback = imageChat
           ? 'The message could not be sent. Your text and images are kept; try again.'
           : 'The runner is busy. Please wait for current task to finish.';
         this.setErrorMessage(err.error?.detail || fallback);
       }
     });
+  }
+
+  /** "Start new run with this prompt" on the interrupted banner. */
+  public startNewRunFrom(prompt: string): void {
+    this.taskInput = prompt;
+    this.focusInput();
   }
 
   /**

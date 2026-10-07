@@ -43,6 +43,7 @@ try:
     from admin_console.core.state import IN_FLIGHT_STATUSES, state
     from admin_console.database.repositories.session_repository import session_repo
     from admin_console.schemas.task_schema import RunRequest
+    from admin_console.services.bridge_session_service import bridge_session_service
     from admin_console.services.ipc_service import ipc_service
     from admin_console.services.model_service import model_service
     from admin_console.services.task_preset_catalog import task_recommendation_engine
@@ -51,6 +52,7 @@ except ImportError:
     from apps.admin_console.core.state import IN_FLIGHT_STATUSES, state
     from apps.admin_console.database.repositories.session_repository import session_repo
     from apps.admin_console.schemas.task_schema import RunRequest
+    from apps.admin_console.services.bridge_session_service import bridge_session_service
     from apps.admin_console.services.ipc_service import ipc_service
     from apps.admin_console.services.model_service import model_service
     from apps.admin_console.services.task_preset_catalog import task_recommendation_engine
@@ -70,6 +72,29 @@ def _draining_error(exc: ServerDraining) -> HTTPException:
         detail={"code": exc.code, "message": str(exc)},
         headers={"Retry-After": str(exc.retry_after_seconds)},
     )
+
+
+async def _bind_bridge_session(request: RunRequest) -> None:
+    """Point a run at the phone its bridge holds; a bridge that is gone refuses the run."""
+    session = await bridge_session_service.get(request.bridge_session_id)
+    if session is None or session.revoked or session.is_expired:
+        raise AdminAPIError(
+            409,
+            "Your phone is not connected.",
+            "device_offline",
+            "Connect the phone again, then start the run.",
+        )
+    named = request.device_serial
+    if named and DeviceExecutionLock._normalize_device_id(named) != (
+        DeviceExecutionLock._normalize_device_id(session.serial)
+    ):
+        raise AdminAPIError(
+            409,
+            "That is not the phone this browser connected.",
+            "device_mismatch",
+            "Pick the phone shown in the Workspace and start the run again.",
+        )
+    request.device_serial = session.serial
 
 
 @router.get("/api/tasks/presets")
@@ -132,6 +157,8 @@ async def run_task(request: RunRequest, actor: OwnerScope = Depends(actor_scope)
             )
         goal_images = await asyncio.to_thread(run_images.validate, request.images)
 
+    if request.bridge_session_id:
+        await _bind_bridge_session(request)
     # A phone the caller does not own is refused before any probe or enqueue.
     if request.device_serial:
         require_device(scope, request.device_serial)

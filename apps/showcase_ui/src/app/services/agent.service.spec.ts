@@ -578,6 +578,60 @@ describe('AgentService live LLM retry timeline', () => {
     expect(localStorage.getItem(SELECTED_DEVICE_SERIAL_KEY)).toBeNull();
   });
 
+  describe('with an explicit run target (the Workspace chip)', () => {
+    it('binds the run to the serial and bridge session in one request, with no device pre-check', () => {
+      const { service, get, post } = createRunService([]);
+
+      service.runTask('go', 'flash', undefined, undefined, undefined, undefined, {
+        serial: '127.0.0.1:41003',
+        bridgeSessionId: 'bridge-9'
+      }).subscribe();
+
+      expect(get).not.toHaveBeenCalledWith('/api/devices');
+      expect(post).toHaveBeenCalledTimes(1);
+      expect(post).toHaveBeenCalledWith('/api/run', {
+        goal: 'go',
+        profile: 'flash',
+        device_serial: '127.0.0.1:41003',
+        bridge_session_id: 'bridge-9'
+      });
+    });
+
+    it('sends no bridge session for a shared phone, and ignores the remembered phone', () => {
+      spyOn(localStorage, 'getItem').and.returnValue('other-phone');
+      const { service, post } = createRunService([{ serial: 'other-phone', state: 'device' }]);
+
+      service.runTask('go', 'flash', undefined, undefined, undefined, undefined, { serial: 'shared-1' }).subscribe();
+
+      expect(post.calls.mostRecent().args[1]).toEqual({ goal: 'go', profile: 'flash', device_serial: 'shared-1' });
+    });
+
+    it('never falls back to another phone when the server rejects the chosen one', () => {
+      const { service, post } = createRunService([]);
+      post.and.returnValue(of({ status: 'rejected', error: 'gone' }));
+      let received: any = null;
+
+      service.runTask('go', 'flash', undefined, undefined, undefined, undefined, { serial: 'gone-1' })
+        .subscribe({ error: (err) => (received = err) });
+
+      expect(post).toHaveBeenCalledTimes(1);
+      expect(received.error.detail).toBe('gone');
+    });
+
+    it('surfaces a 409 device_offline for a bridge that closed, without a retry', () => {
+      const { service, post } = createRunService([]);
+      const offline = new HttpErrorResponse({ status: 409, error: { detail: 'Phone offline.', code: 'device_offline' } });
+      post.and.returnValue(throwError(() => offline));
+      let received: unknown = null;
+
+      service.runTask('go', 'flash', undefined, undefined, undefined, undefined, { serial: 's', bridgeSessionId: 'b' })
+        .subscribe({ error: (err) => (received = err) });
+
+      expect(received).toBe(offline);
+      expect(post).toHaveBeenCalledTimes(1);
+    });
+  });
+
   it('sends images and the draft session id with the goal in the same request', () => {
     spyOn(localStorage, 'getItem').and.returnValue(null);
     const { service, post } = createRunService([]);

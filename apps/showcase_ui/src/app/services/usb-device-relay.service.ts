@@ -20,11 +20,14 @@ import type {
   WritableStreamDefaultWriter as TangoWritableStreamDefaultWriter
 } from '@yume-chan/stream-extra';
 
-export type UsbDeviceRelayStatus = 'idle' | 'connecting' | 'connected' | 'error';
+/** `dropped` is a connection that was up and then lost; `error` is one that never came up. */
+export type UsbDeviceRelayStatus = 'idle' | 'connecting' | 'connected' | 'dropped' | 'error';
 
 export interface UsbDeviceRelayState {
   status: UsbDeviceRelayStatus;
   serial: string | null;
+  /** The server's bridge session this tab holds; runs bind to it. Null unless connected. */
+  sessionId: string | null;
   error: string | null;
 }
 
@@ -60,6 +63,7 @@ export class UsbDeviceRelayService implements OnDestroy {
   public readonly state = signal<UsbDeviceRelayState>({
     status: 'idle',
     serial: null,
+    sessionId: null,
     error: null
   });
 
@@ -69,6 +73,7 @@ export class UsbDeviceRelayService implements OnDestroy {
   private reader: TangoReadableStreamDefaultReader<AdbPacketData> | null = null;
   private writer: TangoWritableStreamDefaultWriter<Consumable<AdbPacketInit>> | null = null;
   private sessionLeased = false;
+  private leasedSessionId: string | null = null;
   private socketOpenTimer: ReturnType<typeof setTimeout> | null = null;
   private attachmentTimer: ReturnType<typeof setTimeout> | null = null;
   private incomingPackets = Promise.resolve();
@@ -92,7 +97,7 @@ export class UsbDeviceRelayService implements OnDestroy {
     }
 
     const generation = ++this.generation;
-    this.state.set({ status: 'connecting', serial: null, error: null });
+    this.state.set({ status: 'connecting', serial: null, sessionId: null, error: null });
     this.registerUnloadWarning();
 
     try {
@@ -263,6 +268,7 @@ export class UsbDeviceRelayService implements OnDestroy {
           throw namedError('DeviceBridgeProtocolError');
         }
         this.sessionLeased = true;
+        this.leasedSessionId = value.session_id;
         return;
       }
 
@@ -274,7 +280,12 @@ export class UsbDeviceRelayService implements OnDestroy {
           clearTimeout(this.attachmentTimer);
           this.attachmentTimer = null;
         }
-        this.state.set({ status: 'connected', serial: value.serial.trim(), error: null });
+        this.state.set({
+          status: 'connected',
+          serial: value.serial.trim(),
+          sessionId: this.leasedSessionId,
+          error: null
+        });
         return;
       }
 
@@ -294,10 +305,12 @@ export class UsbDeviceRelayService implements OnDestroy {
     }
 
     this.generation += 1;
+    const wasConnected = this.state().status === 'connected';
     this.state.set(error
-      ? { status: 'error', serial: null, error }
-      : { status: 'idle', serial: null, error: null });
+      ? { status: wasConnected ? 'dropped' : 'error', serial: null, sessionId: null, error }
+      : { status: 'idle', serial: null, sessionId: null, error: null });
     this.sessionLeased = false;
+    this.leasedSessionId = null;
 
     if (this.socketOpenTimer) {
       clearTimeout(this.socketOpenTimer);

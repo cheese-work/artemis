@@ -24,6 +24,7 @@ import { ImageChat } from '../utils/run-image.util';
 import { StepItemData, StepReplayFrame, LLMStreamResetEventData, StreamResetNotice, DEFAULT_STREAM_RESET_MESSAGE, PersistedCheckerStream, StreamSegment } from '../core/models/stream.model';
 import { extractStepReplayFrames } from '../utils/action-formatter.util';
 import { persistedStreamToSegments } from '../utils/stream-aggregator.util';
+import { RunTarget } from '../core/models/run-target.model';
 import { SELECTED_DEVICE_SERIAL_KEY } from './system.service';
 export type { Session, ModelInfo, TaskQueueItem, AgentStatusResponse, StepItemData, StepReplayFrame, LLMStreamResetEventData, StreamResetNotice };
 
@@ -119,7 +120,7 @@ export class AgentService {
       const pendingMatch = pendingById.get(s.session_id);
       const isCurrentActive = ((status === 'running' || status === 'paused') && runId === s.session_id)
         || !!activeMatch;
-      const isTerminal = s.status === 'completed' || s.status === 'success' || s.status === 'failed' || s.status === 'cancelled';
+      const isTerminal = s.status === 'completed' || s.status === 'success' || s.status === 'failed' || s.status === 'cancelled' || s.status === 'interrupted';
       let sStatus = s.status;
       if (!isTerminal) {
         const isPending = !!pendingMatch && !isCurrentActive;
@@ -442,7 +443,8 @@ export class AgentService {
     expectedOutput?: string,
     enableOutputter?: boolean,
     proTuning?: ProTuningOptions,
-    imageChat?: ImageChat
+    imageChat?: ImageChat,
+    target?: RunTarget
   ): Observable<any> {
     return new Observable((obs) => {
       const submittedEvent: StartupProgressEvent = {
@@ -471,7 +473,15 @@ export class AgentService {
       }
       this.clearUserPinnedSession();
       let submissionSettled = false;
-      const selectedDeviceSerial = this.getSelectedDeviceSerial();
+      // An explicit target is sent as is: it is never checked against, or swapped for, another
+      // phone. Without one (older callers) the browser's remembered phone is tried first.
+      if (target) {
+        payload.device_serial = target.serial;
+        if (target.bridgeSessionId) {
+          payload.bridge_session_id = target.bridgeSessionId;
+        }
+      }
+      const selectedDeviceSerial = target ? null : this.getSelectedDeviceSerial();
       const selectedDevice$ = selectedDeviceSerial
         ? this.http.get<{ devices?: { serial?: string; state?: string }[] }>('/api/devices').pipe(
           map((response) => response.devices?.some((device) =>
@@ -1542,8 +1552,8 @@ export class AgentService {
     const reportedStatus = String(data?.status || '').toLowerCase();
     const status: Session['status'] | null = data?.was_stopped_manually || reportedStatus === 'cancelled'
       ? 'cancelled'
-      : reportedStatus === 'failed'
-        ? 'failed'
+      : reportedStatus === 'failed' || reportedStatus === 'interrupted'
+        ? reportedStatus
         : reportedStatus === 'completed' || reportedStatus === 'success'
           ? 'completed'
           : null;

@@ -663,6 +663,17 @@
       }
     }
 
+    .partial-ribbon {
+      align-self: stretch;
+      margin: 0;
+      padding: 6px 12px;
+      font-size: 13px;
+      font-weight: 600;
+      color: #92400e;
+      background: #fffbeb;
+      border-bottom: 1px solid #fcd34d;
+    }
+
     .video-container {
       position: relative;
       width: 100%;

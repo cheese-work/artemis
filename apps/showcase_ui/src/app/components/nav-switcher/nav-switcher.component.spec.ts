@@ -10,37 +10,29 @@ import {
 import { NavSwitcherComponent } from './nav-switcher.component';
 
 describe('NavSwitcherComponent', () => {
-  it('shows the browser phone and disconnect action while connected', async () => {
+  it('has no phone control: the Workspace chip is the only one', async () => {
     const relay = {
-      state: signal<UsbDeviceRelayState>({ status: 'connected', serial: 'R58M123', error: null }),
+      state: signal<UsbDeviceRelayState>({ status: 'connected', serial: 'R58M123', sessionId: 's1', error: null }),
       disconnect: jasmine.createSpy('disconnect').and.resolveTo(undefined)
     };
 
     await TestBed.configureTestingModule({
       imports: [NavSwitcherComponent],
-      providers: [
-        provideRouter([]),
-        { provide: UsbDeviceRelayService, useValue: relay }
-      ]
+      providers: [provideRouter([])]
     }).compileComponents();
 
     const fixture = TestBed.createComponent(NavSwitcherComponent);
     fixture.detectChanges();
 
-    expect(fixture.nativeElement.textContent).toContain('Phone connected via this browser');
-    expect(fixture.nativeElement.querySelector('code')?.textContent).toBe('R58M123');
-    (fixture.nativeElement.querySelector('.usb-relay-badge button') as HTMLButtonElement).click();
-    expect(relay.disconnect).toHaveBeenCalled();
+    expect(fixture.nativeElement.querySelector('.usb-relay-badge')).toBeNull();
+    expect(fixture.nativeElement.textContent).not.toContain('Phone connected');
+    expect(fixture.nativeElement.textContent).not.toContain('Disconnect');
   });
 
   it('links to the run library between Workspace and System Setup', async () => {
-    const relay = {
-      state: signal<UsbDeviceRelayState>({ status: 'idle', serial: null, error: null }),
-      disconnect: jasmine.createSpy('disconnect').and.resolveTo(undefined)
-    };
     await TestBed.configureTestingModule({
       imports: [NavSwitcherComponent],
-      providers: [provideRouter([]), { provide: UsbDeviceRelayService, useValue: relay }]
+      providers: [provideRouter([])]
     }).compileComponents();
     const fixture = TestBed.createComponent(NavSwitcherComponent);
     fixture.detectChanges();
@@ -57,33 +49,25 @@ describe('NavSwitcherComponent', () => {
     expect(names).toEqual(['Workspace', 'Runs', 'System Setup']);
   });
 
-  it('stays inside the viewport with the phone badge showing (CHE-1189)', async () => {
-    const relay = {
-      state: signal<UsbDeviceRelayState>({ status: 'connected', serial: '127.0.0.1:35117', error: null }),
-      disconnect: jasmine.createSpy('disconnect').and.resolveTo(undefined)
-    };
+  it('stays inside the viewport (CHE-1189)', async () => {
     await TestBed.configureTestingModule({
       imports: [NavSwitcherComponent],
-      providers: [provideRouter([]), { provide: UsbDeviceRelayService, useValue: relay }]
+      providers: [provideRouter([])]
     }).compileComponents();
     const fixture = TestBed.createComponent(NavSwitcherComponent);
     fixture.detectChanges();
 
-    // Phone badge + identity wrap onto a second row instead of running off-screen.
+    // The identity wraps onto a second row instead of running off-screen.
     const nav = fixture.nativeElement.querySelector('.floating-nav-switcher') as HTMLElement;
     expect(nav.getBoundingClientRect().right).toBeLessThanOrEqual(window.innerWidth);
     expect(getComputedStyle(nav).flexWrap).toBe('wrap');
   });
 
   it("hides What's New navigation when there are no entries", async () => {
-    const relay = {
-      state: signal<UsbDeviceRelayState>({ status: 'idle', serial: null, error: null }),
-      disconnect: jasmine.createSpy('disconnect').and.resolveTo(undefined)
-    };
 
     await TestBed.configureTestingModule({
       imports: [NavSwitcherComponent],
-      providers: [provideRouter([]), { provide: UsbDeviceRelayService, useValue: relay }]
+      providers: [provideRouter([])]
     }).compileComponents();
 
     const fixture = TestBed.createComponent(NavSwitcherComponent);
@@ -93,14 +77,10 @@ describe('NavSwitcherComponent', () => {
   });
 
   it('announces unread updates in the navigation', async () => {
-    const relay = {
-      state: signal<UsbDeviceRelayState>({ status: 'idle', serial: null, error: null }),
-      disconnect: jasmine.createSpy('disconnect').and.resolveTo(undefined)
-    };
 
     await TestBed.configureTestingModule({
       imports: [NavSwitcherComponent],
-      providers: [provideRouter([]), { provide: UsbDeviceRelayService, useValue: relay }]
+      providers: [provideRouter([])]
     }).compileComponents();
 
     const fixture = TestBed.createComponent(NavSwitcherComponent);
@@ -120,10 +100,6 @@ describe('NavSwitcherComponent', () => {
   });
 
   it("retains System Setup and unread What's New navigation with admin identity", async () => {
-    const relay = {
-      state: signal<UsbDeviceRelayState>({ status: 'idle', serial: null, error: null }),
-      disconnect: jasmine.createSpy('disconnect').and.resolveTo(undefined)
-    };
     const adminConfig = {
       getIdentity: () => of({
         email: 'admin@example.test',
@@ -137,7 +113,6 @@ describe('NavSwitcherComponent', () => {
       imports: [NavSwitcherComponent],
       providers: [
         provideRouter([]),
-        { provide: UsbDeviceRelayService, useValue: relay },
         { provide: AdminConfigService, useValue: adminConfig }
       ]
     }).compileComponents();
