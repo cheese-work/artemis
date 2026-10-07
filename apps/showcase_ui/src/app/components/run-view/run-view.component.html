@@ -1,5 +1,8 @@
-<div class="viewer-scroll">
+<div #scrollEl class="viewer-scroll" (scroll)="rememberPosition()">
   @switch (state()) {
+    @case ('empty') {
+      <div class="state-page"><h1>Start a new run</h1><p>Enter a task below. Steps will appear here as they arrive.</p></div>
+    }
     @case ('loading') {
       <p class="sr-only" role="status">Loading run…</p>
       <div class="skeleton" aria-hidden="true"></div>
@@ -82,8 +85,21 @@
             <button type="button" class="secondary-button" (click)="startNewRun()">{{ strings.startNewRun }}</button>
           </div>
         }
+        @if (current.status === 'failed') {
+          <div class="interrupted-banner failed-banner" role="status">
+            <p>Run failed.</p>
+            <p>{{ failureReason() }}</p>
+            <button type="button" class="secondary-button" (click)="startNewRun()">{{ strings.startNewRun }}</button>
+          </div>
+        }
 
         <div class="evidence-grid">
+          @if (mode() === 'live' && startupItems().length && !steps().length) {
+            <section aria-label="Preparing the phone" class="startup-progress">
+              <h2>Preparing the phone</h2>
+              @for (item of startupItems(); track item.stage) { <p role="status">{{ item.message }}</p> }
+            </section>
+          }
           <section class="evidence" data-section="evidence" aria-label="Evidence" appRunEvidencePanel
             [recording]="recording()" [videoUrl]="videoUrl()" [playerFailed]="playerFailed()" [message]="copy()"
             [retryable]="canCheckAgain()" [screenshotUrl]="screenshot()"
@@ -98,16 +114,29 @@
             } @else if (stepsLoaded() && steps().length === 0) {
               <p class="muted">No steps were recorded.</p>
             }
-            <ol class="step-list">
+            <ol #timelineEl class="step-list" (scroll)="rememberPosition()">
               @for (step of steps(); track trackStep($index, step)) {
                 <li>
                   <button
                     type="button"
                     class="step-button" appRunStepRow [stepNumber]="step.step_number" [title]="stepTitle(step)" [failed]="stepFailed(step)"
+                    [failureDetail]="stepFailed(step) ? stepFailureDetail(step) : null"
                     [attr.aria-current]="selectedStep()?.step_id === step.step_id ? 'step' : null"
                     (click)="selectStep(step)"
+                    (keydown)="onStepKey($event, $index)"
                   >
+                    @if (!stepFailed(step)) { <span class="step-outcome">{{ step.last_execution_result || postImage(step) ? 'Completed' : 'Dispatched' }}</span> }
                   </button>
+                  @if (selectedStep()?.step_id === step.step_id) {
+                    <div class="step-screenshots">
+                      @if (preImage(step); as before) {
+                        <figure><figcaption>Before</figcaption><img [src]="before" [alt]="'Before step ' + step.step_number"></figure>
+                      }
+                      @if (postImage(step); as after) {
+                        <figure><figcaption>After</figcaption><img [src]="after" [alt]="'After step ' + step.step_number"></figure>
+                      }
+                    </div>
+                  }
                 </li>
               }
             </ol>

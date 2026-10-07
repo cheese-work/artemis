@@ -14,7 +14,7 @@ const PROMPTS = [
   ['Cancel an order from history', 'cancelled'],
   ['Open the camera permission dialog', 'completed']
 ];
-const RUNS = PROMPTS.map(([prompt, status], i) => ({
+export const RUNS = PROMPTS.map(([prompt, status], i) => ({
   session_id: id(i + 1),
   prompt,
   status,

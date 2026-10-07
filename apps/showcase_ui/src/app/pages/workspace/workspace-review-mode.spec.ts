@@ -5,7 +5,6 @@ import { Router, provideRouter } from '@angular/router';
 import { RouterTestingHarness } from '@angular/router/testing';
 import { NEVER, of } from 'rxjs';
 import { routes } from '../../app.routes';
-import { AgentStreamComponent } from '../../components/agent-stream/agent-stream.component';
 import { ChatInterfaceComponent } from '../../components/chat-interface/chat-interface.component';
 import { FloatingVideoPlayerComponent } from '../../components/floating-video-player/floating-video-player.component';
 import { AdminConfigService } from '../../services/admin-config.service';
@@ -24,7 +23,7 @@ describe('Workspace review mode', () => {
 
   beforeEach(async () => {
     runs = jasmine.createSpyObj<RunsService>('RunsService', ['list', 'get', 'steps', 'video'], {
-      lastLibraryQuery: signal<Record<string, string>>({})
+      lastLibraryQuery: signal<Record<string, string>>({}), viewPosition: signal(null)
     });
     runs.list.and.returnValue(NEVER);
     runs.get.and.returnValue(NEVER);
@@ -40,6 +39,7 @@ describe('Workspace review mode', () => {
       isCurrentSessionRunning: () => false,
       currentSession: () => null,
       currentSessionId: () => null,
+      currentStartupProgress: () => [],
       runTask: jasmine.createSpy('runTask'),
       fetchStatus: jasmine.createSpy('fetchStatus'),
       stopTask: jasmine.createSpy('stopTask'),
@@ -57,7 +57,7 @@ describe('Workspace review mode', () => {
       ],
       schemas: [CUSTOM_ELEMENTS_SCHEMA]
     }).overrideComponent(WorkspaceComponent, {
-      remove: { imports: [AgentStreamComponent, ChatInterfaceComponent, FloatingVideoPlayerComponent] },
+      remove: { imports: [ChatInterfaceComponent, FloatingVideoPlayerComponent] },
       add: { schemas: [CUSTOM_ELEMENTS_SCHEMA] }
     });
     harness = await RouterTestingHarness.create();
@@ -71,25 +71,26 @@ describe('Workspace review mode', () => {
     harness.fixture.detectChanges();
   }
 
-  it('shows the live agent stream, the splitter and no review class on /workspace', async () => {
+  it('shows the shared RunView, new-task box and splitter on /workspace', async () => {
     await go('/workspace');
-    expect(q('app-agent-stream')).not.toBeNull();
+    expect(q('app-run-view')).not.toBeNull();
+    expect(q('textarea.dock-textarea')).not.toBeNull();
     expect(q('.workspace-container.review-mode')).toBeNull();
     expect(q('.resizer')).not.toBeNull();
     expect(q('app-run-library')).toBeNull();
   });
 
-  it('shows the run library in place of the live stream on /runs, keeping the dock', async () => {
+  it('shows the run library without the live new-task box on /runs', async () => {
     await go('/runs');
     expect(q('.workspace-container.review-mode')).not.toBeNull();
     expect(q('app-run-library')).not.toBeNull();
     expect(q('app-agent-stream')).toBeNull();
-    expect(q('.workspace-floating-bar-wrapper')).not.toBeNull();
+    expect(q('.workspace-floating-bar-wrapper')).toBeNull();
   });
 
   it('shows the run viewer for the id in the URL on /runs/:id', async () => {
     await go(`/runs/${ID}`);
-    expect(q('app-run-viewer')).not.toBeNull();
+    expect(q('app-run-view')).not.toBeNull();
     expect(q('app-run-library')).toBeNull();
     expect(runs.get).toHaveBeenCalledWith(ID);
   });

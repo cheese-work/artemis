@@ -21,12 +21,13 @@ import { Component, ChangeDetectionStrategy, NgZone, DestroyRef, effect, inject,
 import { toSignal } from '@angular/core/rxjs-interop';
 import { FormsModule } from '@angular/forms';
 import { ActivatedRoute, Router } from '@angular/router';
-import { AgentStreamComponent } from '../../components/agent-stream/agent-stream.component';
 import { ChatInterfaceComponent } from '../../components/chat-interface/chat-interface.component';
 import { FloatingVideoPlayerComponent } from '../../components/floating-video-player/floating-video-player.component';
 import { RunLibraryComponent } from '../../components/run-library/run-library.component';
 import { RunTargetPickerComponent } from '../../components/run-target-picker/run-target-picker.component';
-import { RunViewerComponent } from '../../components/run-viewer/run-viewer.component';
+import { RunViewComponent } from '../../components/run-view/run-view.component';
+import { consolidateLogsToBlocks } from '../../utils/stream-aggregator.util';
+import { StepItemData } from '../../core/models/stream.model';
 import { AgentService } from '../../services/agent.service';
 import { IMAGE_ACCEPT, ImageChat, MAX_IMAGES, newDraftId, RunImageUpload, screenImages, toUpload } from '../../utils/run-image.util';
 
@@ -43,12 +44,11 @@ export interface AttachedImage {
   standalone: true,
   imports: [
     FormsModule,
-    AgentStreamComponent,
     ChatInterfaceComponent,
     FloatingVideoPlayerComponent,
     RunLibraryComponent,
     RunTargetPickerComponent,
-    RunViewerComponent
+    RunViewComponent
 ],
   templateUrl: './workspace.component.html',
   styleUrl: './workspace.component.scss',
@@ -72,6 +72,14 @@ export class WorkspaceComponent implements OnInit {
   public readonly reviewMode = !!this.route.snapshot.data['review'];
   private readonly routeParams = toSignal(this.route.paramMap, { initialValue: this.route.snapshot.paramMap });
   public readonly reviewRunId = computed(() => this.routeParams().get('id'));
+  public readonly liveSteps = computed<StepItemData[]>(() => {
+    const id = this.agentService.currentSessionId();
+    if (!id) return [];
+    const logs = this.agentService.sessionLogs().filter((log) =>
+      (log.type === 'step_recorded' || log.type === 'step_updated') && (!log.data?.session_id || log.data.session_id === id));
+    return consolidateLogsToBlocks(logs).filter((block) => block.type === 'step')
+      .map((block) => ({ ...block.data, session_id: block.data.session_id ?? id }));
+  });
 
   // Default right panel width to 1/3 of the screen (or 450px as fallback)
   public rightPanelWidth = signal<number>(

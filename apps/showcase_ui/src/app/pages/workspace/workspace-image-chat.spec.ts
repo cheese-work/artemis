@@ -18,7 +18,7 @@ import { CUSTOM_ELEMENTS_SCHEMA, signal } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { provideRouter } from '@angular/router';
 import { Observable, of, throwError } from 'rxjs';
-import { AgentStreamComponent } from '../../components/agent-stream/agent-stream.component';
+import { RunViewComponent } from '../../components/run-view/run-view.component';
 import { ChatInterfaceComponent } from '../../components/chat-interface/chat-interface.component';
 import { FloatingVideoPlayerComponent } from '../../components/floating-video-player/floating-video-player.component';
 import { AgentService } from '../../services/agent.service';
@@ -48,6 +48,7 @@ describe('WorkspaceComponent image chat', () => {
       isCurrentSessionRunning: () => false,
       currentSession: () => null,
       currentSessionId: () => null,
+      currentStartupProgress: () => [],
       runTask,
       fetchStatus: jasmine.createSpy('fetchStatus'),
       stopTask: jasmine.createSpy('stopTask')
@@ -58,7 +59,7 @@ describe('WorkspaceComponent image chat', () => {
       schemas: [CUSTOM_ELEMENTS_SCHEMA]
     })
       .overrideComponent(WorkspaceComponent, {
-        remove: { imports: [AgentStreamComponent, ChatInterfaceComponent, FloatingVideoPlayerComponent] },
+      remove: { imports: [RunViewComponent, ChatInterfaceComponent, FloatingVideoPlayerComponent] },
         add: { schemas: [CUSTOM_ELEMENTS_SCHEMA] }
       })
       .compileComponents();

@@ -11,7 +11,7 @@ import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { startMockApi } from './mock-api.mjs';
+import { startMockApi, mock, RUNS } from './mock-api.mjs';
 
 const dist = fileURLToPath(new URL('../../dist/frontend/browser', import.meta.url));
 if (!existsSync(path.join(dist, 'index.html'))) {
@@ -76,7 +76,11 @@ async function cleanup(code) {
 const KEYS = {
   Tab: { key: 'Tab', code: 'Tab', windowsVirtualKeyCode: 9 },
   Enter: { key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, text: '\r' },
-  Escape: { key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 }
+  Escape: { key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 },
+  Space: { key: ' ', code: 'Space', windowsVirtualKeyCode: 32 },
+  ArrowDown: { key: 'ArrowDown', code: 'ArrowDown', windowsVirtualKeyCode: 40 },
+  Home: { key: 'Home', code: 'Home', windowsVirtualKeyCode: 36 },
+  End: { key: 'End', code: 'End', windowsVirtualKeyCode: 35 }
 };
 async function press(name, modifiers = 0) {
   const k = KEYS[name];
@@ -125,6 +129,36 @@ async function tabUntil(label, predicate, { back = false, max = 60 } = {}) {
 }
 const focusIs = (selector) => `e.matches(${JSON.stringify(selector)})`;
 const focusNamed = (name) => `(e.getAttribute('aria-label') || e.textContent || '').trim().replace(/\\s+/g, ' ').startsWith(${JSON.stringify(name)})`;
+
+async function checkRunKeyboard(mode) {
+  log(`${mode}: steps, share notice, download notice, technical details`);
+  await expectTrue('four steps are loaded', `document.querySelectorAll('button.step-button').length === 4`);
+  await tabUntil('first step', focusIs('button.step-button'));
+  await press('Enter');
+  await expectTrue('Enter selected the step', `document.activeElement.getAttribute('aria-current') === 'step'`);
+  await press('ArrowDown');
+  await expectTrue('ArrowDown selected the next step', `document.activeElement.textContent.includes('Step 2') && document.activeElement.getAttribute('aria-current') === 'step'`);
+  await press('End');
+  await expectTrue('End selected the last step', `document.activeElement.textContent.includes('Step 4')`);
+  await press('Home');
+  await press('Space');
+  await expectTrue('Home and Space selected the first step', `document.activeElement.textContent.includes('Step 1') && document.activeElement.getAttribute('aria-current') === 'step'`);
+  await tabUntil('Copy link', focusNamed('Copy link'));
+  await press('Enter');
+  await expectTrue('share dialog is open, focus is inside it', `!!document.querySelector('dialog.trust-dialog[open]') && document.querySelector('dialog.trust-dialog').contains(document.activeElement)`);
+  await expectTrue('share dialog shows both notices', `document.querySelector('dialog.trust-dialog').textContent.includes('not redacted') && document.querySelector('dialog.trust-dialog').textContent.includes('Cloudflare Access')`);
+  await press('Escape');
+  await expectTrue('Escape returned focus to Copy link', `!document.querySelector('dialog.trust-dialog[open]') && ${`(() => { const e = document.activeElement; return ${focusNamed('Copy link')}; })()`}`);
+  await tabUntil('Download', focusNamed('Download'));
+  await press('Space');
+  await expectTrue('download dialog shows only the redaction notice', `!!document.querySelector('dialog.trust-dialog[open]') && document.querySelector('dialog.trust-dialog').textContent.includes('not redacted') && !document.querySelector('dialog.trust-dialog').textContent.includes('Cloudflare Access')`);
+  await press('Escape');
+  await expectTrue('Escape returned focus to Download', `!document.querySelector('dialog.trust-dialog[open]') && ${`(() => { const e = document.activeElement; return ${focusNamed('Download')}; })()`}`);
+  await tabUntil('Pin', focusNamed('Pin'));
+  await tabUntil('Technical details', focusNamed('Technical details'));
+  await press('Enter');
+  await expectTrue('Technical details opened and raw logs rendered', `!!document.querySelector('pre.raw-logs')`);
+}
 
 try {
   for (let i = 0; i < 50; i++) {
@@ -181,35 +215,28 @@ try {
   await press('Enter');
   await expectTrue('viewer opened for the run', `location.pathname.startsWith('/runs/') && !!document.querySelector('[data-section="outcome"]')`);
 
-  log('Viewer: steps, share notice, download notice, technical details');
-  await tabUntil('first step', focusIs('button.step-button'));
-  await press('Enter');
-  await expectTrue('Enter selected the step', `document.activeElement.getAttribute('aria-current') === 'step'`);
-  await tabUntil('Copy link', focusNamed('Copy link'));
-  await press('Enter');
-  await expectTrue('share dialog is open, focus is inside it', `!!document.querySelector('dialog.trust-dialog[open]') && document.querySelector('dialog.trust-dialog').contains(document.activeElement)`);
-  await expectTrue('share dialog shows both notices', `document.querySelector('dialog.trust-dialog').textContent.includes('not redacted') && document.querySelector('dialog.trust-dialog').textContent.includes('Cloudflare Access')`);
-  await press('Escape');
-  await expectTrue('Escape closed the dialog and focus returned to Copy link', `!document.querySelector('dialog.trust-dialog[open]') && ${`(() => { const e = document.activeElement; return ${focusNamed('Copy link')}; })()`}`);
-  log(`  focus is now: ${await describeFocus()}`);
-  await tabUntil('Download', focusNamed('Download'));
-  await press('Enter');
-  await expectTrue('download dialog shows only the redaction notice', `!!document.querySelector('dialog.trust-dialog[open]') && document.querySelector('dialog.trust-dialog').textContent.includes('not redacted') && !document.querySelector('dialog.trust-dialog').textContent.includes('Cloudflare Access')`);
-  await press('Escape');
-  await expectTrue('Escape closed it and focus returned to Download', `!document.querySelector('dialog.trust-dialog[open]') && ${`(() => { const e = document.activeElement; return ${focusNamed('Download')}; })()`}`);
-  await tabUntil('Pin', focusNamed('Pin'));
-  await tabUntil('Technical details', focusNamed('Technical details'));
-  await press('Enter');
-  await expectTrue('Technical details opened and raw logs rendered', `!!document.querySelector('pre.raw-logs')`);
+  await checkRunKeyboard('Review');
 
   log('Viewer: back to the library');
   await tabUntil('Back to runs', focusNamed('Back to runs'), { back: true });
   await press('Enter');
   await expectTrue('back on /runs with the list', `location.pathname === '/runs' && document.querySelectorAll('a.run-row').length === 6`);
 
+  const current = RUNS[0];
+  mock.sessions = [{ session_id: current.session_id, initial_goal: current.prompt, status: current.status,
+    start_time: current.start_time, end_time: current.end_time, device_serial: current.device_ref.serial }];
+  mock.status = { status: 'idle', session_id: null };
+  await send('Page.navigate', { url: `${base}/workspace` });
+  await expectTrue('Workspace shows the same run with its new-task box', `!!document.querySelector('app-run-view [data-section="outcome"]') && !!document.querySelector('textarea.dock-textarea')`);
+  await expectTrue('first Workspace visit opens What\'s New', `!!document.querySelector('dialog.whats-new-dialog[open]')`);
+  await press('Escape');
+  await expectTrue('Escape dismisses What\'s New', `!document.querySelector('dialog.whats-new-dialog[open]')`);
+  await checkRunKeyboard('Live');
+
   log('\nKeyboard walkthrough passed.');
   await cleanup(0);
 } catch (error) {
   console.error(`\nKeyboard walkthrough FAILED: ${error.message}`);
+  console.error(await evaluate(`JSON.stringify({focus: document.activeElement?.outerHTML, text: document.querySelector('app-run-view')?.textContent})`).catch(() => 'Page unavailable'));
   await cleanup(1);
 }

@@ -14,7 +14,7 @@ const files = [
   'src/app/utils/run-library-strings.ts',
   'src/app/utils/recording-state.util.ts',
   'src/app/components/run-library/run-library.component.html',
-  'src/app/components/run-viewer/run-viewer.component.html',
+  'src/app/components/run-view/run-view.component.html',
 ];
 
 const failures = [];

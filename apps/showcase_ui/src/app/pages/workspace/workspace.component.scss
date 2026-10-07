@@ -908,11 +908,12 @@ $rose-dark: #dc2626;
     animation: none !important;
   }
 
-  .review-surface {
-    flex: 1 1 auto;
-    min-height: 0;
-    overflow: hidden;
-  }
+}
+
+.run-surface {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
 }
 
 @media (max-width: 800px) {

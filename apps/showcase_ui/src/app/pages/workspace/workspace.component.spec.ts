@@ -3,7 +3,7 @@ import { fakeAsync, TestBed, tick } from '@angular/core/testing';
 import { provideRouter } from '@angular/router';
 import { of } from 'rxjs';
 import { AgentService } from '../../services/agent.service';
-import { AgentStreamComponent } from '../../components/agent-stream/agent-stream.component';
+import { RunViewComponent } from '../../components/run-view/run-view.component';
 import { ChatInterfaceComponent } from '../../components/chat-interface/chat-interface.component';
 import { FloatingVideoPlayerComponent } from '../../components/floating-video-player/floating-video-player.component';
 import { WorkspaceComponent } from './workspace.component';
@@ -15,6 +15,7 @@ describe('WorkspaceComponent error lifetime', () => {
     isCurrentSessionRunning: () => boolean;
     currentSession: () => null;
     currentSessionId: () => null;
+    currentStartupProgress: () => [];
     runTask: jasmine.Spy;
     fetchStatus: jasmine.Spy;
     stopTask: jasmine.Spy;
@@ -32,6 +33,7 @@ describe('WorkspaceComponent error lifetime', () => {
       isCurrentSessionRunning: () => false,
       currentSession: () => null,
       currentSessionId: () => null,
+      currentStartupProgress: () => [],
       runTask: jasmine.createSpy('runTask').and.returnValue(of({})),
       fetchStatus: jasmine.createSpy('fetchStatus'),
       stopTask: jasmine.createSpy('stopTask')
@@ -42,7 +44,7 @@ describe('WorkspaceComponent error lifetime', () => {
       providers: [provideRouter([]), { provide: AgentService, useValue: agentService }],
       schemas: [CUSTOM_ELEMENTS_SCHEMA]
     }).overrideComponent(WorkspaceComponent, {
-      remove: { imports: [AgentStreamComponent, ChatInterfaceComponent, FloatingVideoPlayerComponent] },
+      remove: { imports: [RunViewComponent, ChatInterfaceComponent, FloatingVideoPlayerComponent] },
       add: { schemas: [CUSTOM_ELEMENTS_SCHEMA] }
     }).compileComponents();
   });

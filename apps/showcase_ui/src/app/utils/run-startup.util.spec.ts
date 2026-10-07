@@ -1,5 +1,5 @@
-import { StartupProgressEvent } from '../../services/agent.service';
-import { buildStartupWorkItems } from './agent-stream.component';
+import { StartupProgressEvent } from '../services/agent.service';
+import { buildStartupWorkItems } from './run-startup.util';
 
 describe('startup Work block', () => {
   it('shows only the three device preparation operations', () => {
