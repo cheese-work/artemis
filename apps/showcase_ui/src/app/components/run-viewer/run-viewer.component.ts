@@ -1,4 +1,5 @@
 import { LoggerService } from '../../services/logger.service';
+import { appUrl, mediaUrl } from '../../utils/app-url.util';
 import {
   ChangeDetectionStrategy,
   Component,
@@ -63,6 +64,7 @@ const DIALOGS: Record<DialogKind, { title: string; notices: string[]; confirm: s
   changeDetection: ChangeDetectionStrategy.OnPush
 })
 export class RunViewerComponent {
+  public readonly appUrl = appUrl;
   private readonly logger = inject(LoggerService);
   private readonly runsApi = inject(RunsService);
   private readonly ownerScope = inject(OwnerScopeService);
@@ -143,7 +145,7 @@ export class RunViewerComponent {
   });
 
   public readonly videoUrl = computed(
-    () => this.segments()[this.activeSegmentIndex()]?.url ?? this.video()?.video_url ?? null
+    () => mediaUrl(this.segments()[this.activeSegmentIndex()]?.url ?? this.video()?.video_url)
   );
 
   public readonly screenshot = computed(() => {
@@ -385,7 +387,7 @@ export class RunViewerComponent {
     if (!run) return;
     this.actionError.set(null);
     try {
-      await navigator.clipboard.writeText(`${window.location.origin}/runs/${run.session_id}`);
+      await navigator.clipboard.writeText(new URL(appUrl(`/runs/${encodeURIComponent(run.session_id)}`), document.baseURI).href);
       if (this.run()?.session_id === run.session_id) this.feedback.set(RUN_STRINGS.linkCopied);
     } catch (error) {
       this.logger.warn('UI operation failed:', error);

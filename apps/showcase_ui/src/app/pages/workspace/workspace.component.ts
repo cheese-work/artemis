@@ -15,6 +15,7 @@
  */
 
 import { LoggerService } from '../../services/logger.service';
+import { BrowserStorageService } from '../../services/browser-storage.service';
 import { DOCUMENT } from '@angular/common';
 import { Component, ChangeDetectionStrategy, NgZone, DestroyRef, effect, inject, computed, signal, ViewChild, ElementRef, OnInit } from '@angular/core';
 
@@ -56,6 +57,7 @@ export interface AttachedImage {
 })
 export class WorkspaceComponent implements OnInit {
   private readonly logger = inject(LoggerService);
+  private readonly browserStorage = inject(BrowserStorageService);
   public agentService = inject(AgentService);
   private zone = inject(NgZone);
   private route = inject(ActivatedRoute);
@@ -106,6 +108,14 @@ export class WorkspaceComponent implements OnInit {
   @ViewChild('dockInput') public dockInputRef?: ElementRef<HTMLTextAreaElement>;
 
   constructor() {
+    effect(() => {
+      try {
+        const saved = this.browserStorage.getItem('artemis_selected_profile');
+        this.selectedProfile.set(saved === 'pro' ? 'pro' : 'flash');
+      } catch (error) {
+        this.logger.warn('Unable to restore the selected profile:', error);
+      }
+    });
     // The floating nav lives outside this component; tell it how much width the right panel takes.
     const rootStyle = inject(DOCUMENT).documentElement.style;
     effect(() => rootStyle.setProperty('--right-panel-width', `${this.rightPanelWidth()}px`));
@@ -145,13 +155,6 @@ export class WorkspaceComponent implements OnInit {
     const navigation = this.router.currentNavigation() ?? this.router.lastSuccessfulNavigation();
     const handed = (navigation?.extras.state ?? history.state) as { draftPrompt?: unknown } | null;
     if (typeof handed?.draftPrompt === 'string' && handed.draftPrompt) this.taskInput = handed.draftPrompt;
-    if (typeof localStorage !== 'undefined') {
-      const saved = localStorage.getItem('artemis_selected_profile');
-      if (saved === 'flash' || saved === 'pro') {
-        this.selectedProfile.set(saved);
-      }
-    }
-
     // The global ⌘K/Ctrl+K shortcut is registered outside the Angular zone so
     // ordinary typing never schedules an extra change-detection pass.
     this.zone.runOutsideAngular(() => {
@@ -171,8 +174,10 @@ export class WorkspaceComponent implements OnInit {
       event.stopPropagation();
     }
     this.selectedProfile.set(profile);
-    if (typeof localStorage !== 'undefined') {
-      localStorage.setItem('artemis_selected_profile', profile);
+    try {
+      this.browserStorage.setItem('artemis_selected_profile', profile);
+    } catch (error) {
+      this.logger.warn('Unable to remember the selected profile:', error);
     }
   }
 

@@ -22,7 +22,7 @@
       <div class="state-page">
         <h1>{{ strings.accessTitle }}</h1>
         <p>{{ strings.accessBody }}</p>
-        <a class="sign-in primary-link" [href]="'/runs/' + runId()">{{ strings.signIn }}</a>
+        <a class="sign-in primary-link" [href]="appUrl('/runs/' + runId())">{{ strings.signIn }}</a>
       </div>
     }
     @case ('ambiguous') {

@@ -155,23 +155,30 @@ describe('ChatInterfaceComponent device chip', () => {
     expect(text).toContain('Lab Mac');
   });
 
-  it('shows the images sent with a task under its goal, each with alt text', () => {
-    const withImages: Session = {
-      ...session('emulator-5554'),
-      goal_images: [
-        { index: 0, media_type: 'image/png', url: '/api/sessions/s1/goal-images/0' },
-        { index: 1, media_type: 'image/jpeg', url: '/api/sessions/s1/goal-images/1' }
-      ]
-    };
-    sessions.set([withImages]);
-    const fixture = TestBed.createComponent(ChatInterfaceComponent);
-    fixture.detectChanges();
+  for (const prefix of ['/', '/preview/pr/70/']) {
+    for (const status of ['running', 'completed']) {
+      it(`scopes ${status} task goal images under ${prefix} and keeps their alt text`, () => {
+        spyOnProperty(document, 'baseURI', 'get').and.returnValue(new URL(prefix, location.href).href);
+        const withImages: Session = {
+          ...session('emulator-5554'),
+          status,
+          goal_images: [
+            { index: 0, media_type: 'image/png', url: '/api/sessions/s1/goal-images/0' },
+            { index: 1, media_type: 'image/jpeg', url: '/api/sessions/s1/goal-images/1' }
+          ]
+        };
+        sessions.set([withImages]);
+        const fixture = TestBed.createComponent(ChatInterfaceComponent);
+        fixture.detectChanges();
 
-    const images = (fixture.nativeElement as HTMLElement).querySelectorAll<HTMLImageElement>('.task-goal-images img');
-    expect(images.length).toBe(2);
-    expect(images[0].getAttribute('src')).toBe('/api/sessions/s1/goal-images/0');
-    expect(images[1].alt).toBe('Image 2 sent with this task');
-  });
+        const images = (fixture.nativeElement as HTMLElement).querySelectorAll<HTMLImageElement>('.task-goal-images img');
+        expect(images.length).toBe(2);
+        expect(images[0].getAttribute('src')).toBe(`${prefix}api/sessions/s1/goal-images/0`);
+        expect(images[1].getAttribute('src')).toBe(`${prefix}api/sessions/s1/goal-images/1`);
+        expect(images[1].alt).toBe('Image 2 sent with this task');
+      });
+    }
+  }
 
   it('shows no image strip for a task without images', () => {
     sessions.set([session('emulator-5554')]);

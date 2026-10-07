@@ -1,4 +1,5 @@
 import { LoggerService } from './logger.service';
+import { appUrl } from '../utils/app-url.util';
 import { DOCUMENT } from '@angular/common';
 import { computed, inject, Injectable, InjectionToken, OnDestroy, signal } from '@angular/core';
 import {
@@ -376,7 +377,7 @@ export class UsbDeviceRelayService implements OnDestroy {
       throw namedError('DeviceBridgeConnectionError');
     }
 
-    const url = new URL('/api/device-bridge/session', location.href);
+    const url = new URL(appUrl('/api/device-bridge/session', this.document.baseURI), location.href);
     if (url.protocol === 'https:') {
       url.protocol = 'wss:';
     } else if (

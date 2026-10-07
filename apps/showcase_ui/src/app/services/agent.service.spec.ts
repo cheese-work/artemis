@@ -1,6 +1,7 @@
 import { HttpErrorResponse, provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { LoggerService } from './logger.service';
+import { BrowserStorageService } from './browser-storage.service';
 import { signal, computed } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { of, Subject, throwError } from 'rxjs';
@@ -14,7 +15,8 @@ import { buildRunSummary } from '../utils/run-copy.util';
 describe('AgentService live LLM retry timeline', () => {
   function createServiceWithoutPolling(): AgentService {
     const service = Object.create(AgentService.prototype) as AgentService;
-    (service as any).logger = new LoggerService();
+    (service as any).logger = TestBed.inject(LoggerService);
+    (service as any).browserStorage = TestBed.inject(BrowserStorageService);
     service.sessionLogs = signal<any[]>([]);
     service.isSessionContentLoading = signal(false);
     service.startupProgressBySession = signal({});
@@ -747,7 +749,8 @@ describe('AgentService live LLM retry timeline', () => {
 describe('AgentService recording finalization lifecycle', () => {
   function createVideoService(response: any): AgentService {
     const service = Object.create(AgentService.prototype) as AgentService;
-    (service as any).logger = new LoggerService();
+    (service as any).logger = TestBed.inject(LoggerService);
+    (service as any).browserStorage = TestBed.inject(BrowserStorageService);
     (service as any).http = { get: () => of(response) };
     (service as any).rawSessions = signal<any[]>([
       { session_id: 'session-1', status: 'completed', recording_status: 'recording' }
@@ -826,7 +829,8 @@ describe('AgentService recording finalization lifecycle', () => {
 describe('AgentService video analysis seeking', () => {
   it('publishes repeatable, clamped seek requests for the floating player', () => {
     const service = Object.create(AgentService.prototype) as AgentService;
-    (service as any).logger = new LoggerService();
+    (service as any).logger = TestBed.inject(LoggerService);
+    (service as any).browserStorage = TestBed.inject(BrowserStorageService);
     service.videoSeekRequest = signal<{ seconds: number; requestId: number } | null>(null);
     (service as any).videoSeekRequestId = 0;
 
@@ -844,7 +848,8 @@ describe('AgentService video analysis seeking', () => {
 describe('AgentService task cancellation and active session tracking', () => {
   it('computes isCurrentSessionRunning true only when viewing an active running/paused session', () => {
     const service = Object.create(AgentService.prototype) as any;
-    (service as any).logger = new LoggerService();
+    (service as any).logger = TestBed.inject(LoggerService);
+    (service as any).browserStorage = TestBed.inject(BrowserStorageService);
     service.currentSessionId = signal<string | null>(null);
     service.rawSessions = signal<any[]>([]);
     service.activeTasks = signal<any[]>([]);
@@ -906,7 +911,8 @@ describe('AgentService task cancellation and active session tracking', () => {
 
   it('stops a specific session by passing its session_id', () => {
     const service = Object.create(AgentService.prototype) as AgentService;
-    (service as any).logger = new LoggerService();
+    (service as any).logger = TestBed.inject(LoggerService);
+    (service as any).browserStorage = TestBed.inject(BrowserStorageService);
     service.currentSessionId = signal<string | null>('sess-2');
     service.runningSessionId = signal<string | null>('sess-1');
     service.runningGoal = signal<string | null>('Goal 1');
@@ -953,6 +959,8 @@ describe('AgentService per-QA scope (CHE-1152)', () => {
 
   function createBare(showAll: boolean) {
     const service = Object.create(AgentService.prototype) as AgentService;
+    (service as any).logger = TestBed.inject(LoggerService);
+    (service as any).browserStorage = TestBed.inject(BrowserStorageService);
     const get = jasmine.createSpy('get').and.returnValue(of([]));
     (service as any).http = { get };
     (service as any).ownerScope = {
@@ -1189,6 +1197,40 @@ describe('AgentService per-QA scope (CHE-1152)', () => {
       const other = setUp({ ...qa1, email: 'qa2@example.test' });
       TestBed.tick();
       expect(other.sessions()).toEqual([]);
+    });
+
+    it('clears cached and displayed sessions when the verified identity changes', () => {
+      const qa1 = { email: 'qa1@example.test', admin: false, auth_mode: 'cloudflare', reason: null };
+      const service = setUp(qa1);
+      TestBed.tick();
+      http.match((request) => request.url === '/api/sessions').forEach((request) => request.flush([row('qa1-run')]));
+      flushAll();
+      expect(store.has('artemis.sessions.v2')).toBeTrue();
+
+      TestBed.inject(OwnerScopeService).identity.set({ ...qa1, email: 'qa2@example.test' });
+      TestBed.tick();
+
+      expect(service.sessions()).toEqual([]);
+      expect(store.has('artemis.sessions.v2')).toBeFalse();
+      flushAll();
+    });
+
+    it('clears the previous identity state even when browser storage is unavailable', () => {
+      const qa1 = { email: 'qa1@example.test', admin: false, auth_mode: 'cloudflare', reason: null };
+      const service = setUp(qa1);
+      TestBed.tick();
+      http.match((request) => request.url === '/api/sessions').forEach((request) => request.flush([row('qa1-run')]));
+      flushAll();
+      service.activeVideoUrl.set('/videos/qa1-run.mp4');
+      (localStorage.removeItem as jasmine.Spy).and.throwError('Storage unavailable');
+
+      TestBed.inject(OwnerScopeService).identity.set({ ...qa1, email: 'qa2@example.test' });
+
+      expect(() => TestBed.tick()).not.toThrow();
+      expect(service.sessions()).toEqual([]);
+      expect(service.activeVideoUrl()).toBeNull();
+      expect(http.match((request) => request.url === '/api/sessions').length).toBeGreaterThan(0);
+      flushAll();
     });
 
     it('never lets a failed identity lookup read or write the cache, so QA2 cannot see QA1\'s runs', () => {

@@ -15,6 +15,7 @@
  */
 
 import { LoggerService } from '../../services/logger.service';
+import { appUrl, mediaUrl } from '../../utils/app-url.util';
 import {
   Component,
   ChangeDetectionStrategy,
@@ -73,12 +74,12 @@ export class FloatingVideoPlayerComponent implements OnDestroy {
   public isMuted = signal<boolean>(false);
   public isTheaterMode = signal<boolean>(false);
   public videoLoadError = signal<boolean>(false);
-  public liveStreamUrl = signal<string>('/api/stream/device-live');
+  public liveStreamUrl = signal<string>(appUrl('/api/stream/device-live'));
   public liveStreamError = signal<boolean>(false);
   public activeSegmentIndex = signal<number>(0);
   public currentVideoUrl = computed(() => {
     const segments = this.agentService.activeVideoSegments();
-    return segments[this.activeSegmentIndex()]?.url || this.agentService.activeVideoUrl();
+    return mediaUrl(segments[this.activeSegmentIndex()]?.url || this.agentService.activeVideoUrl());
   });
   private pendingLocalTime: number | null = null;
   private pendingAutoplay = false;
@@ -211,7 +212,7 @@ export class FloatingVideoPlayerComponent implements OnDestroy {
 
   public retryLiveStream(): void {
     this.liveStreamError.set(false);
-    this.liveStreamUrl.set(`/api/stream/device-live?t=${Date.now()}`);
+    this.liveStreamUrl.set(appUrl(`/api/stream/device-live?t=${Date.now()}`));
   }
 
   /**
@@ -489,7 +490,7 @@ export class FloatingVideoPlayerComponent implements OnDestroy {
   }
 
   public openInNewTab(): void {
-    const url = this.agentService.activeVideoUrl();
+    const url = this.currentVideoUrl();
     if (url) {
       window.open(url, '_blank');
     }
