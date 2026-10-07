@@ -105,7 +105,7 @@ from artemis.utils.media import (
     remove_steps_json_from_trace_folder,
 )
 from artemis.utils.startup_progress import publish_startup_progress
-from artemis.utils.video import classify_recording_failure
+from artemis.utils.video import SCRCPY_TOO_OLD_REASON, classify_recording_failure
 
 logger = get_logger(__name__)
 
@@ -681,8 +681,7 @@ class Agent:
                                 failure = start_res.message if start_res else "unknown"
                                 self._report_recording_unavailable(failure, str(sess_id))
                                 logger.warning(
-                                    f"[{task_name}] Failed to start screen"
-                                    f" recording: {start_res.message if start_res else 'unknown'}"
+                                    f"[{task_name}] Failed to start screen recording: {failure}"
                                 )
                         except Exception as e:
                             self._report_recording_unavailable(str(e), str(sess_id))
@@ -937,9 +936,12 @@ class Agent:
     def _report_recording_unavailable(error: str, session_id: str) -> None:
         reason = classify_recording_failure(error)
         detail = (
-            "scrcpy is incompatible with this phone's Android version."
+            f"{SCRCPY_TOO_OLD_REASON}."
+            if SCRCPY_TOO_OLD_REASON in error
+            else "scrcpy is incompatible with this phone's Android version."
             if reason == "recorder_incompatible"
-            else error or "the recorder could not start."
+            else (error.splitlines()[0].strip()[:200] if error else "")
+            or "the recorder could not start."
         )
         publish_startup_progress(
             "recording_unavailable", f"No recording: {detail}", session_id=session_id, reason=reason
