@@ -32,6 +32,7 @@ from artemis.tools.command_tool import (
     _is_output_long,
 )
 from artemis.utils.logger import get_logger
+from artemis.utils.goal_images import goal_image_blocks
 from artemis.utils.plan_grammar import parse_plan, render_plan_grammar_spec
 from artemis.utils.task_tree import SELF_DESCRIBED_MARKER, action_intent_phrase
 
@@ -380,6 +381,8 @@ class ObservationPromptComponent(PromptComponent):
         latest_screenshot_b64 = kwargs.get("latest_screenshot_b64")
         minimal_list = kwargs.get("minimal_list")
 
+        for block in goal_image_blocks():
+            builder.add_human_content(block)
         builder.add_human_content("--- Current Screenshot ---")
         builder.add_human_content(
             {

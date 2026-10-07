@@ -53,6 +53,7 @@ from artemis.utils.coordinates import (
 from artemis.utils.decorators import wrap_with_callbacks
 from artemis.utils.logger import get_logger
 from artemis.utils.notes import get_note_file_path
+from artemis.utils.goal_images import goal_image_messages
 from artemis.utils.plan_grammar import parse_plan
 from artemis.memory.context_policy import build_history_for
 from artemis.utils.task_tree import get_active_subgoal_hashes
@@ -375,7 +376,7 @@ class OperatorNode:
         # 1. S region: rendered exactly once per session.
         if not ledger.has_static_prefix:
             static_text = render_transcript_static_system(self.prompts, self.ctx, state)
-            ledger.set_static_prefix([SystemMessage(content=static_text)])
+            ledger.set_static_prefix([SystemMessage(content=static_text), *goal_image_messages()])
 
         # 2. F region cold start: an empty ledger over an existing step record
         # trail means the process restarted — freeze the compiled history once.

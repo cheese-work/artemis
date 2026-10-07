@@ -102,7 +102,7 @@ def test_wrong_type_or_content_is_refused_with_a_code(upload, code):
 
 
 def test_one_oversize_image_is_refused(monkeypatch):
-    monkeypatch.setattr(run_images, "MAX_IMAGE_BYTES", 100)
+    monkeypatch.setattr(run_images, "MAX_IMAGE_BYTES", 10)
 
     with pytest.raises(run_images.ImageRejected) as refused:
         run_images.validate([_upload(size=(64, 64))])
@@ -249,7 +249,7 @@ async def test_a_bad_image_is_refused_before_anything_is_queued(
 async def test_a_request_body_over_the_cap_is_refused_before_it_is_parsed(
     cloudflare, enqueue, monkeypatch
 ):
-    monkeypatch.setattr(run_images, "MAX_REQUEST_BYTES", 200)
+    monkeypatch.setattr(run_images, "MAX_REQUEST_BYTES", 50)
 
     response = await _post(QA1, "/api/run", json={"goal": "x", "images": [_upload()]})
 

@@ -95,6 +95,7 @@ from artemis.utils.coordinates import (
 from artemis.drivers.types import DeviceDisconnectedError, device_disconnect_reason
 from artemis.runtime.lifecycle import InterruptReason
 from artemis.utils.logger import get_logger
+from artemis.utils.goal_images import goal_image_messages
 
 logger = get_logger(__name__)
 
@@ -1041,7 +1042,10 @@ class FlashRunner:
         """Installs the static prefix and captures the initial device state."""
         ledger = self._build_ledger()
         ledger.set_static_prefix(
-            [SystemMessage(content=self._render_system_prompt(tools_declaration))]
+            [
+                SystemMessage(content=self._render_system_prompt(tools_declaration)),
+                *goal_image_messages(),
+            ]
         )
 
         # Capture Initial State (Screenshot + UI Tree)
