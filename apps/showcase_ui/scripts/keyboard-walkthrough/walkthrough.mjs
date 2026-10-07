@@ -214,7 +214,7 @@ try {
   await expectTrue('chip says there is no phone and the picker is closed', `document.activeElement.textContent.includes('No phone') && document.activeElement.getAttribute('aria-expanded') === 'false'`);
   await press('Enter');
   await expectTrue('Enter opened the picker and focus moved inside it', `document.activeElement.getAttribute('aria-expanded') === null && !!document.querySelector('app-workspace-device-chip .panel')?.contains(document.activeElement)`);
-  await expectTrue('focus is on the first usable choice: Connect from this browser', `document.activeElement.textContent.includes('Connect from this browser')`);
+  await expectTrue('focus is on the first usable choice: Connect a phone from this browser', `document.activeElement.textContent.includes('Connect a phone from this browser')`);
   await press('Escape');
   await expectTrue('Escape closed the picker and focus returned to the chip', `!document.querySelector('app-workspace-device-chip .panel') && document.activeElement.matches('app-workspace-device-chip button.chip') && document.activeElement.getAttribute('aria-expanded') === 'false'`);
   log(`  focus is now: ${await describeFocus()}`);

@@ -1,4 +1,5 @@
 import { ChangeDetectionStrategy, Component, DestroyRef, ElementRef, Injector, afterNextRender, effect, inject, signal, untracked, viewChild } from '@angular/core';
+import { RouterLink } from '@angular/router';
 import { WorkspacePhoneService } from '../../services/workspace-phone.service';
 
 let nextId = 0;
@@ -11,6 +12,7 @@ let nextId = 0;
 @Component({
   selector: 'app-workspace-device-chip',
   standalone: true,
+  imports: [RouterLink],
   template: `
     <div class="chip-host" (keydown.escape)="close(true)" (focusout)="onFocusOut($event)">
       <button
@@ -22,6 +24,7 @@ let nextId = 0;
         [attr.aria-expanded]="open()"
         [attr.aria-controls]="panelId"
         [attr.aria-describedby]="statusId"
+        [title]="phone.view().text"
         (click)="toggle()"
       >
         <span class="material-symbols-outlined icon" [class.spinning]="phone.view().kind === 'connecting'" aria-hidden="true">{{ phone.view().icon }}</span>
@@ -69,6 +72,11 @@ let nextId = 0;
               <span class="material-symbols-outlined" aria-hidden="true">tab</span>
               Use here
             </button>
+          } @else if (phone.view().kind === 'dropped' || phone.view().kind === 'interrupted') {
+            <button type="button" class="action" [disabled]="!phone.canConnectFromBrowser()" (click)="connect()">
+              <span class="material-symbols-outlined" aria-hidden="true">refresh</span>
+              Reconnect
+            </button>
           } @else {
             <button
               type="button"
@@ -77,7 +85,7 @@ let nextId = 0;
               (click)="connect()"
             >
               <span class="material-symbols-outlined" aria-hidden="true">usb</span>
-              Connect from this browser
+              Connect a phone from this browser
             </button>
           }
           @if (phone.browserPhoneConnected()) {
@@ -91,6 +99,7 @@ let nextId = 0;
               <button type="button" class="action" (click)="askDisconnect()">Disconnect</button>
             }
           }
+          <a class="action more" routerLink="/setup" (click)="close(false)">More options</a>
         </div>
       }
     </div>
@@ -103,7 +112,7 @@ let nextId = 0;
       min-height: 44px; min-width: 44px; box-sizing: border-box; font: inherit; cursor: pointer;
     }
     .chip {
-      display: inline-flex; align-items: center; gap: .45rem; max-width: 19rem; padding: 0 .9rem;
+      display: inline-flex; align-items: center; gap: .45rem; max-width: 22rem; padding: 0 .9rem;
       border: 1px solid #cbd5e1; border-radius: 22px; background: rgba(255, 255, 255, .85); color: #0f172a;
       font-size: .85rem; font-weight: 600;
     }
@@ -129,6 +138,7 @@ let nextId = 0;
       border: 1px solid #cbd5e1; border-radius: 10px; background: #f8fafc; color: inherit; font-size: .9rem; text-align: left;
     }
     .option[aria-pressed='true'] { border-color: #16a34a; background: #f0fdf4; }
+    a.action { text-decoration: none; }
     .option:disabled, .action:disabled { opacity: .55; cursor: not-allowed; }
     .action { justify-content: center; }
     .action.danger { border-color: #fca5a5; color: #b91c1c; }

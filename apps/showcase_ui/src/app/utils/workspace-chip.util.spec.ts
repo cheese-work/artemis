@@ -54,7 +54,7 @@ describe('workspaceChipView', () => {
     const relay: UsbDeviceRelayState = { status: 'connected', serial: '127.0.0.1:41003', sessionId: 'bridge-9', error: null };
     const view = workspaceChipView(input({ relay, devices: [phone({ serial: '127.0.0.1:41003' })] }));
     expect(view.kind).toBe('connected');
-    expect(view.text).toBe('Pixel 6 · …1003 · via this browser');
+    expect(view.text).toBe('Pixel 6 · Phone · …1003 · via this browser');
     expect(view.target).toEqual({ serial: '127.0.0.1:41003', bridgeSessionId: 'bridge-9' });
   });
 
@@ -140,14 +140,14 @@ describe('workspaceChipView', () => {
         ]
       })
     );
-    expect(view.text).toBe('Pixel 6 · …a1b2 · via X99');
+    expect(view.text).toBe('Pixel 6 · Phone · …a1b2 · via X99');
     expect(view.target).toEqual({ serial: 'R58M1234a1b2', bridgeSessionId: null });
   });
 
   it('labels an emulator', () => {
     const emulator = phone({ serial: 'emulator-5554', model: 'sdk_gphone', is_emulator: true, device_kind: 'emulator' });
     const view = workspaceChipView(input({ selected: 'emulator-5554', devices: [emulator] }));
-    expect(view.text).toBe('sdk_gphone · …5554 · emulator');
+    expect(view.text).toBe('sdk_gphone · Emulator · …5554');
   });
 
   it('drops a remembered phone that is no longer listed', () => {
@@ -199,6 +199,6 @@ describe('pickerOptions', () => {
       'The phone is offline.',
       'Unlock the phone to run.'
     ]);
-    expect(options[0].text).toBe('Pixel 6 · …a1b2');
+    expect(options[0].text).toBe('Pixel 6 · Phone · …a1b2');
   });
 });

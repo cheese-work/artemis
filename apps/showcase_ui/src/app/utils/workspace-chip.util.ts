@@ -49,18 +49,25 @@ export function serialSuffix(serial: string): string {
   return `…${serial.slice(-4)}`;
 }
 
-function sourceText(input: WorkspaceChipInput, device: DeviceInfo | undefined, serial: string): string | null {
+function sourceText(input: WorkspaceChipInput, serial: string): string | null {
   const ownBrowser = input.relay.status === 'connected' ? input.relay.serial : null;
   const source = deviceSourceOf(serial, input.registry, input.computers, ownBrowser);
   if (source === 'This browser') return 'via this browser';
-  if (source) return device?.device_kind === 'emulator' || device?.is_emulator ? `emulator on ${source}` : `via ${source}`;
-  return device?.device_kind === 'emulator' || device?.is_emulator ? 'emulator' : null;
+  return source ? `via ${source}` : null;
+}
+
+/** "Pixel 6 · Phone": the model and what it is. Never the adb address as the main label. */
+function phoneName(device: DeviceInfo | undefined, serial: string): string[] {
+  const subject = device ?? { serial, model: null };
+  const title = deviceTitle(subject);
+  const kind = deviceKindLabel(subject);
+  return title === kind ? [title] : [title, kind];
 }
 
 export function pickerOptions(input: WorkspaceChipInput): PickerOption[] {
   return input.devices.map((device) => ({
     serial: device.serial,
-    text: [deviceTitle(device), serialSuffix(device.serial), sourceText(input, device, device.serial)]
+    text: [...phoneName(device, device.serial), serialSuffix(device.serial), sourceText(input, device.serial)]
       .filter(Boolean)
       .join(' · '),
     usable: device.state === 'device',
@@ -108,11 +115,7 @@ export function workspaceChipView(input: WorkspaceChipInput): WorkspaceChipView 
   }
   if (serial) {
     const device = input.devices.find((d) => d.serial === serial);
-    const text = [
-      device ? deviceTitle(device) : deviceKindLabel({ serial, model: null }),
-      serialSuffix(serial),
-      sourceText(input, device, serial)
-    ]
+    const text = [...phoneName(device, serial), serialSuffix(serial), sourceText(input, serial)]
       .filter(Boolean)
       .join(' · ');
     return view('connected', text, 'Runs start on this phone.', 'smartphone', {
