@@ -129,7 +129,7 @@ for (const prefix of ['/', '/preview/pr/70/']) {
     if (prefix !== '/' && process.argv.includes('--root-api-negative-control')) await evaluate(`fetch('/api/preview-root-leak-control').catch(() => {})`);
     if (prefix !== '/') assert.equal(requests.filter(request => request.startsWith('/api/') || request.startsWith('/images/') || request.startsWith('/videos/') || request.startsWith('/local_file')).length, 0);
     assert.ok(requests.some(request => request.startsWith(`${prefix}api/runs/`)));
-    console.log(`PASS ${prefix}: UI, banner, HTTP, scoped SSE, WebSocket, copied run link, images; root API escapes=0`);
+    console.log(`PASS ${prefix}: UI, banner, HTTP, scoped SSE, WebSocket, copied run link, images; root API escapes=0; requests=${requests.length}`);
   } finally {
     socket?.close();
     if (chrome.exitCode === null) {
@@ -139,6 +139,6 @@ for (const prefix of ['/', '/preview/pr/70/']) {
     }
     server.closeAllConnections();
     await new Promise(resolve => server.close(resolve));
-    rmSync(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    rmSync(profile, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
   }
 }
