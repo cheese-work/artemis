@@ -273,19 +273,60 @@ def test_no_listener_survives_after_multiple_sessions_open_and_close(loopback_cl
         _assert_listener_closed(port)
 
 
+class _ManualClock:
+    """Monotonic clock that only moves when the test advances it.
+
+    The relay runs on the TestClient's portal thread, so `sleep` polls instead of
+    waiting on a loop-bound event. Expiry then depends on `advance`, never on
+    how fast the host runs the steps between the lease and the expiry check.
+    """
+
+    def __init__(self) -> None:
+        self.now = 1000.0
+
+    def monotonic(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+
+    async def sleep(self, seconds: float) -> None:
+        deadline = self.now + seconds
+        while self.now < deadline:
+            await asyncio.sleep(0.001)
+
+
 def test_expired_session_times_out_and_disconnects_adb(
     loopback_client, monkeypatch, _mock_adb, caplog
 ):
-    monkeypatch.setenv("ARTEMIS_BRIDGE_SESSION_TTL_SECONDS", "0.05")
+    clock = _ManualClock()
+    monkeypatch.setattr(
+        bridge_session_service_module,
+        "time",
+        type("FakeTime", (), {"monotonic": staticmethod(clock.monotonic)}),
+    )
+    monkeypatch.setattr(device_bridge, "_sleep", clock.sleep)
+    # The close frame reaches the client before the handler's cleanup revokes the session.
+    revoked = threading.Event()
+    revoke = bridge_session_service.revoke
+
+    async def observe_revoke(session_id):
+        await revoke(session_id)
+        revoked.set()
+
+    monkeypatch.setattr(bridge_session_service, "revoke", observe_revoke)
 
     with loopback_client.websocket_connect(PATH, headers=_HOST_HEADER) as ws:
         payload = ws.receive_json()
         session_id = payload["session_id"]
         port = payload["listener"]["port"]
         ws.receive_json()
+        clock.advance(bridge_session_service_module.DEFAULT_SESSION_TTL_SECONDS + 1)
 
         with pytest.raises(WebSocketDisconnect) as exc_info:
             ws.receive_text()
+        # Wait inside the `with`: leaving it tears the app task down mid-cleanup.
+        assert revoked.wait(5.0)
     assert exc_info.value.code == 4008
 
     assert _mock_adb[0][0] == "connect"
