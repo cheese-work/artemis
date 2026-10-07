@@ -95,7 +95,7 @@ from artemis.config import (
 )
 from artemis.resources import get_bundled_showcase_dist
 from artemis.runtime.lifecycle import InterruptReason
-from apps.admin_console.services import run_retention
+from apps.admin_console.services import failure_ledger, run_retention
 from apps.admin_console.services.host_registry import host_agent_enabled, host_registry
 from apps.admin_console.core.access_control import (
     AdminAPIError,
@@ -120,6 +120,7 @@ try:
         agent,
         device_bridge,
         drain,
+        failures,
         hosts,
         media,
         preview_synthetic,
@@ -146,6 +147,7 @@ except ImportError:
         agent,
         device_bridge,
         drain,
+        failures,
         hosts,
         media,
         preview_synthetic,
@@ -287,6 +289,8 @@ async def on_startup():
     # Finishes deferred deletions, and enforces retention only once an admin enabled it.
     state.retention_task = asyncio.create_task(run_retention.sweep_forever())
     state.retention_task.add_done_callback(run_retention.log_task_failure)
+    state.failure_task = asyncio.create_task(failure_ledger.sweep_forever())
+    state.failure_task.add_done_callback(run_retention.log_task_failure)
 
 
 async def on_shutdown():
@@ -319,6 +323,11 @@ async def on_shutdown():
         retention.cancel()
         await asyncio.gather(retention, return_exceptions=True)
     state.retention_task = None
+    failure_sweep = state.failure_task
+    if failure_sweep is not None and not failure_sweep.done():
+        failure_sweep.cancel()
+        await asyncio.gather(failure_sweep, return_exceptions=True)
+    state.failure_task = None
 
     # Cancel in-flight run coroutines and wait for their finalizers (DB status,
     # session_ended broadcast, trace sync, recording recovery) to run.
@@ -374,6 +383,7 @@ app.include_router(sessions.router)
 app.include_router(runs.router)
 app.include_router(run_bundle.router)
 app.include_router(run_admin.router)
+app.include_router(failures.router)
 app.include_router(steps.router)
 app.include_router(tasks.router)
 app.include_router(replay.router)
