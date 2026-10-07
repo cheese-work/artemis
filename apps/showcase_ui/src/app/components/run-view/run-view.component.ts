@@ -280,6 +280,7 @@ export class RunViewComponent {
 
   private load(id: string): void {
     this.rememberPosition();
+    this.closeDialog();
     this.loadRequest?.unsubscribe();
     this.evidenceRequests.unsubscribe(); // a slow answer for the previous run must not land on this one
     this.evidenceRequests = new Subscription();

@@ -272,6 +272,20 @@ describe('RunViewComponent', () => {
         expect(q('.step-screenshots')!.querySelector('img')).toBeNull();
         expect(q('.evidence')!.textContent).toContain('No screenshots for this run.');
       });
+
+      it('drops an old confirmation when a different run is selected', async () => {
+        await open({ viewMode, isAdmin: true });
+        button('Delete').click();
+        await settle();
+        expect(q<HTMLDialogElement>('dialog')!.open).toBeTrue();
+        const nextId = '4f2b9c1a-5d7e-4a10-9c33-0e1f2a3b4c5d';
+        runs.get.and.returnValue(of(run({ session_id: nextId })));
+        fixture.componentRef.setInput('runId', nextId);
+        await settle();
+        expect(q<HTMLDialogElement>('dialog')!.open).toBeFalse();
+        expect(fixture.componentInstance.dialogKind()).toBeNull();
+        expect(runs.remove).not.toHaveBeenCalled();
+      });
     });
   }
 
