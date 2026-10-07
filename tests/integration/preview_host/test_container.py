@@ -1,0 +1,144 @@
+"""A real preview container started from the sandbox argv (CHE-1291).
+
+Build the image first: `docker build --target preview -t artemis-preview:l4a .`
+(override with PREVIEW_IMAGE). Creates one disposable network and container with
+exact names and removes them afterwards. The host firewall is NOT installed here
+(that needs privileges), so reachability of the host is covered by test_firewall.py;
+this module checks what the container configuration itself guarantees.
+"""
+
+import base64
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import time
+import urllib.error
+import urllib.request
+
+from cryptography.hazmat.primitives.asymmetric import rsa
+import pytest
+
+from scripts import preview_sandbox as sb
+
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.skipif(shutil.which("docker") is None, reason="docker not installed"),
+]
+
+ROOT = Path(__file__).resolve().parents[3]
+TEAM = "example.cloudflareaccess.com"
+
+
+def docker(*args: str, stdin: str | None = None, check: bool = True) -> str:
+    done = subprocess.run(["docker", *args], input=stdin, text=True, capture_output=True)
+    if check and done.returncode:
+        raise RuntimeError(f"docker {' '.join(args)}: {done.stderr.strip()}")
+    return done.stdout.strip()
+
+
+def b64url(number: int) -> str:
+    raw = number.to_bytes((number.bit_length() + 7) // 8, "big")
+    return base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
+
+
+def write_bundle(path: Path) -> None:
+    numbers = rsa.generate_private_key(65537, 2048).public_key().public_numbers()
+    key = {"kty": "RSA", "kid": "k1", "alg": "RS256", "use": "sig"}
+    key |= {"n": b64url(numbers.n), "e": b64url(numbers.e)}
+    doc = {"issuer": f"https://{TEAM}", "fetched_at": int(time.time()), "keys": [key]}
+    path.write_text(json.dumps(doc))
+    path.chmod(0o644)
+
+
+@pytest.fixture(scope="module")
+def container(tmp_path_factory):
+    tag = os.environ.get("PREVIEW_IMAGE", "artemis-preview:l4a")
+    image_id = docker("image", "inspect", "-f", "{{.Id}}", tag, check=False)
+    if not image_id.startswith("sha256:"):
+        pytest.skip(f"preview image {tag} not built")
+    bundle = tmp_path_factory.mktemp("jwks") / "jwks.json"
+    write_bundle(bundle)
+    preview = sb.Preview(pr=991291, head_sha="c" * 40, image_id=image_id, slot=0)
+    env = {
+        "ARTEMIS_AUTH_MODE": "cloudflare",
+        "ARTEMIS_CF_ACCESS_TEAM_DOMAIN": TEAM,
+        "ARTEMIS_CF_ACCESS_AUD": "test-aud",
+        "ARTEMIS_PREVIEW_QA_EMAILS": "qa1@example.com,qa2@example.com",
+        "ARTEMIS_ADMIN_EMAILS": "admin@example.com",
+    }
+    try:
+        docker(*sb.network_create_argv(preview)[1:])
+        docker(*sb.container_create_argv(preview, env, str(bundle))[1:])
+        docker("start", preview.name)
+        yield preview
+    finally:
+        docker("rm", "-f", preview.name, check=False)
+        docker("network", "rm", preview.name, check=False)
+
+
+def inspect(preview: sb.Preview) -> dict:
+    return json.loads(docker("inspect", preview.name))[0]
+
+
+def run_in(preview: sb.Preview, code: str, *args: str) -> str:
+    return docker("exec", "-i", preview.name, "python", "-", *args, stdin=code, check=False)
+
+
+def test_runtime_options_are_applied_by_the_engine(container):
+    info = inspect(container)
+    host = info["HostConfig"]
+    assert info["Config"]["User"] == "10001:10001"
+    assert host["ReadonlyRootfs"] is True
+    assert host["Privileged"] is False
+    assert host["CapDrop"] == ["ALL"] and not host["CapAdd"]
+    assert host["SecurityOpt"] == ["no-new-privileges"]
+    assert host["PidsLimit"] == 256
+    assert host["Memory"] == host["MemorySwap"] == 1024**3
+    assert host["NanoCpus"] == 10**9
+    assert host["NetworkMode"] == container.name
+    assert host["PidMode"] == "" and host["IpcMode"] == "private"
+    assert host["PortBindings"] == {"8080/tcp": [{"HostIp": "127.0.0.1", "HostPort": "18100"}]}
+    assert [(m["Type"], m["Destination"], m["RW"]) for m in info["Mounts"]] == [
+        ("bind", sb.JWKS_PATH, False)
+    ]
+
+
+def test_app_serves_in_the_preview_profile_and_rejects_unsigned_requests(container):
+    deadline, status = time.time() + 60, None
+    while status is None and time.time() < deadline:
+        try:
+            status = urllib.request.urlopen("http://127.0.0.1:18100/api/runs", timeout=3).status
+        except urllib.error.HTTPError as exc:
+            status = exc.code
+        except OSError:
+            time.sleep(1)
+    assert status in (401, 403), f"expected an Access rejection, got {status}"
+
+
+def test_image_has_no_adb_and_filesystem_is_read_only_for_non_root(container):
+    code = (
+        "import os, shutil, tempfile\n"
+        "print(os.getuid(), shutil.which('adb'), shutil.which('git'), shutil.which('curl'))\n"
+        "try:\n    open('/app/x', 'w')\nexcept OSError as e:\n    print('ro', e.errno)\n"
+        "open('/tmp/x', 'w').close(); print('tmp-ok')\n"
+    )
+    assert run_in(container, code).split("\n") == ["10001 None None None", "ro 30", "tmp-ok"]
+
+
+def test_ipv6_is_disabled_inside_the_container(container):
+    probe = (ROOT / "scripts" / "preview_isolation_probe.py").read_text()
+    out = run_in(container, probe, "tcp://[fd00::1]:80", "tcp://[2001:db8::7]:80")
+    assert json.loads(out) == {
+        "tcp://[fd00::1]:80": "blocked",
+        "tcp://[2001:db8::7]:80": "blocked",
+    }
+
+
+def test_non_loopback_publish_is_not_reachable_on_other_host_addresses(container):
+    host_ip = docker(
+        "network", "inspect", container.name, "-f", "{{(index .IPAM.Config 0).Gateway}}"
+    )
+    with pytest.raises(OSError):
+        urllib.request.urlopen(f"http://{host_ip}:18100/", timeout=2)
