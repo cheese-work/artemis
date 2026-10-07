@@ -1,0 +1,42 @@
+name: Host agent core
+
+on:
+  push:
+    paths:
+      - 'host-agent/**'
+      - '.github/workflows/host-agent.yml'
+  pull_request:
+    paths:
+      - 'host-agent/**'
+      - '.github/workflows/host-agent.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: host-agent-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  core:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, cheese-x99]
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: host-agent
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.2'
+          cache: false
+      - run: go test -race ./...
+      - run: go vet ./...
+      - run: sh -n build.sh install.sh
+      - run: sh build.sh "${{ github.sha }}"
+      - run: cd dist && sha256sum -c SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: smartqa-host-core
+          path: host-agent/dist/

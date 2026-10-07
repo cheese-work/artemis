@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends, Request, WebSocket
 from pydantic import BaseModel, Field
 from starlette.websockets import WebSocketDisconnect, WebSocketState
+from starlette.responses import FileResponse
 
 from apps.admin_console.core.access_control import AdminAPIError, public_tier
 from apps.admin_console.core.agent_auth import (
@@ -50,13 +53,40 @@ class ChallengeRequest(BaseModel):
 
 
 @router.get("/install.sh", dependencies=[Depends(require_enrollment_code)])
-async def install_script() -> None:
-    _artifact_unavailable()
+async def install_script() -> FileResponse:
+    return _release_artifact("install.sh")
 
 
 @router.get("/dist/{artifact}", dependencies=[Depends(require_enrollment_code)])
-async def download_artifact(artifact: str) -> None:
-    _artifact_unavailable()
+async def download_artifact(artifact: str) -> FileResponse:
+    return _release_artifact(artifact)
+
+
+def _release_artifact(artifact: str) -> FileResponse:
+    allowed = {
+        "install.sh",
+        "SHA256SUMS",
+        "smartqa-host-linux-amd64",
+        "smartqa-host-darwin-arm64",
+        "smartqa-host-windows-amd64.exe",
+    }
+    directory = os.environ.get("ARTEMIS_AGENT_DIST_DIR", "")
+    if not directory or artifact not in allowed:
+        _artifact_unavailable()
+    try:
+        root = Path(directory).resolve(strict=True)
+        candidate = root / artifact
+        if candidate.is_symlink():
+            _artifact_unavailable()
+        path = candidate.resolve(strict=True)
+        if path.parent != root or not path.is_file() or path.stat().st_size > 128 * 1024 * 1024:
+            _artifact_unavailable()
+    except OSError:
+        _artifact_unavailable()
+    media_type = (
+        "text/plain" if artifact in {"install.sh", "SHA256SUMS"} else "application/octet-stream"
+    )
+    return FileResponse(path, media_type=media_type, filename=artifact)
 
 
 def _artifact_unavailable() -> None:
