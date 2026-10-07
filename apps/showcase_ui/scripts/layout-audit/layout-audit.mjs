@@ -5,7 +5,7 @@
 // 1. Clearance matrix: for every page x viewport x phone state, no visible text may sit under the
 //    floating nav, nothing may overflow the viewport sideways, and the nav must stay inside the viewport.
 // 2. Accessibility: the connected-phone status stays in the accessibility tree at every width; the chip is >= 44px.
-// 3. Scenarios: Task Queue dropdown, right-hand chat panel, floating video player, across mock states
+// 3. Scenarios: RunView controls and Task Queue / Notes & Plans sidebar across mock states
 //    (idle / running / paused-with-error / sessions API error / video error) and route changes.
 import { spawn } from 'node:child_process';
 import { mkdtempSync, mkdirSync, rmSync, existsSync, writeFileSync } from 'node:fs';
@@ -119,103 +119,6 @@ async function phoneStatusA11y() {
   }
 }
 
-// Genuine pointer drags (CDP mouse events), minimize/restore, theater exit, viewport resize and nav height changes:
-// after every step the player frame must be inside the viewport and clear of the nav, controls included.
-async function playerInteractions() {
-  // AUDIT_BYPASS=click|drag turns that input into a no-op so the phase can prove it fails when interactions do nothing.
-  const bypass = process.env.AUDIT_BYPASS ?? '';
-  const mouse = (type, x, y) => send('Input.dispatchMouseEvent', { type, x, y, button: 'left', buttons: type === 'mouseReleased' ? 0 : 1, clickCount: 1 });
-  const center = async (sel) => { const r = await evaluate(rect(sel)); return r && [(r.l + r.r) / 2, (r.t + r.b) / 2]; };
-  // Returns false when the control is missing so the caller can fail instead of silently carrying on.
-  const click = async (sel) => {
-    const c = await center(sel);
-    if (!c) return false;
-    if (bypass !== 'click') { await mouse('mouseMoved', ...c); await mouse('mousePressed', ...c); await mouse('mouseReleased', ...c); }
-    await sleep(400);
-    return true;
-  };
-  const drag = async (dx, dy) => {
-    const r = await evaluate(rect('.floating-video-wrapper .window-header'));
-    if (!r) return false;
-    const [x0, y0] = [r.l + 40, (r.t + r.b) / 2];
-    if (bypass !== 'drag') {
-      await mouse('mouseMoved', x0, y0); await mouse('mousePressed', x0, y0);
-      for (let i = 1; i <= 6; i++) await mouse('mouseMoved', x0 + (dx * i) / 6, y0 + (dy * i) / 6);
-      await mouse('mouseReleased', x0 + dx, y0 + dy);
-    }
-    await sleep(400);
-    return true;
-  };
-  // Stored (signals) and rendered (DOM) state of the player.
-  const snap = () => evaluate(`(() => { const el = document.querySelector('app-floating-video-player'); const c = ng.getComponent(el); const w = document.querySelector('.floating-video-wrapper');
-    const f = w?.getBoundingClientRect(); const img = document.querySelector('.step-frame-img');
-    return { minimized: c.agentService.isVideoMinimized(), theater: c.isTheaterMode(), x: c.posX(), y: c.posY(), stepIndex: c.activeStepIndex(), mode: c.agentService.playerMode(),
-      domMinimized: !!w?.classList.contains('minimized'), domTheater: !!w?.classList.contains('theater'), frame: f && [f.left, f.top, f.width, f.height],
-      imgOk: img ? img.complete && img.naturalWidth > 0 : null, counter: document.querySelector('.time-display')?.textContent.trim() ?? null }; })()`);
-  const expectedDrag = (before, dx, dy) => evaluate(`(() => { const c = ng.getComponent(document.querySelector('app-floating-video-player')); return c.containedPosition(${before.x + dx}, ${before.y + dy}); })()`);
-
-  for (const [w, h] of [[375, 667], [320, 480]]) for (const phone of [true, false]) for (const content of ['live', 'replay']) {
-    STATES.running();
-    const where = `player-interaction ${w}x${h} phone=${phone} ${content}`;
-    if (mock.failVideo || mock.failSessions) fail(where, 'mock error state leaked into this run');
-    await open('/workspace', w, h);
-    await setPhone(phone);
-    await sleep(2400);
-    // live: the running session; replay: a finished session whose loaded step screenshots make the frame taller.
-    await evaluate(`(async () => { const svc = ng.getComponent(document.querySelector('app-floating-video-player')).agentService;
-      if (${content === 'replay'}) { svc.selectSession('bbbbbbbb-2', false); await new Promise((r) => setTimeout(r, 1500)); svc.openVideoPlayer('bbbbbbbb-2', undefined, undefined, undefined, 0); }
-      else svc.openVideoPlayer('aaaaaaaa-1');
-      await new Promise((r) => setTimeout(r, 1200)); ng.applyChanges(document.querySelector('app-floating-video-player')); })()`);
-    let moved = 0;
-    // One interaction: run it, then require (1) the control existed, (2) the expected state transition happened,
-    // (3) stored position == rendered position outside theater, (4) the frame is contained and clear of the nav.
-    const step = async (name, action, expectation) => {
-      const before = await snap();
-      const ok = await action(before);
-      if (ok === false) return fail(where, `${name}: control or drag handle not found, interaction skipped`);
-      const after = await snap();
-      if (!after.frame) return fail(where, `${name}: player gone`);
-      const problem = expectation ? await expectation(before, after) : null;
-      if (problem) fail(where, `${name}: ${problem}`);
-      if (!after.theater && (Math.abs(after.frame[0] - after.x) > 1 || Math.abs(after.frame[1] - after.y) > 1)) fail(where, `${name}: rendered frame ${after.frame.slice(0, 2).map(Math.round)} disagrees with stored position ${[after.x, after.y].map(Math.round)}`);
-      if (after.minimized !== after.domMinimized || after.theater !== after.domTheater) fail(where, `${name}: signal and DOM mode disagree (${JSON.stringify([after.minimized, after.domMinimized, after.theater, after.domTheater])})`);
-      await playerClear(where, name);
-    };
-    const dragStep = (name, dx, dy) => step(name, () => drag(dx, dy), async (b, a) => {
-      const e = await expectedDrag(b, dx, dy);
-      moved += Math.abs(a.x - b.x) + Math.abs(a.y - b.y);
-      if (Math.abs(a.x - e.x) > 1 || Math.abs(a.y - e.y) > 1) return `drag (${dx},${dy}) from ${[b.x, b.y].map(Math.round)} should land at ${[e.x, e.y].map(Math.round)}, landed at ${[a.x, a.y].map(Math.round)}`;
-    });
-    const toggle = (name, sel, key, want) => step(name, () => click(sel), (b, a) => (a[key] === want && b[key] !== want ? null : `${key} expected ${b[key]} -> ${want}, got ${a[key]}`));
-    const MIN = '.floating-video-wrapper button[aria-label="Minimize"]';
-    const THEATER = '.floating-video-wrapper button[aria-label="Theater"]';
-
-    await step('on open', async () => true, (b) => {
-      if (content === 'replay' && (b.mode !== 'steps' || b.imgOk !== true)) return `step replay not loaded (mode=${b.mode}, image loaded=${b.imgOk})`;
-    });
-    await shot(`player-open-${w}x${h}-${phone ? 'connected' : 'idle'}-${content}`);
-    if (content === 'replay') {
-      await step('next step', () => click('.floating-video-wrapper button[title="Next Step"]'), (b, a) => (a.stepIndex === b.stepIndex + 1 && a.counter?.includes(`Step ${a.stepIndex + 1}`) && a.imgOk ? null : `step ${b.stepIndex} -> ${a.stepIndex}, counter "${a.counter}", image loaded=${a.imgOk}`));
-      await step('previous step', () => click('.floating-video-wrapper button[title="Previous Step"]'), (b, a) => (a.stepIndex === b.stepIndex - 1 ? null : `step ${b.stepIndex} -> ${a.stepIndex}`));
-    }
-    await dragStep('drag right+down', 300, 200);
-    await dragStep('drag left+up', -600, -600);
-    await dragStep('drag far right+down', 600, 600);
-    if (moved === 0) fail(where, 'no drag moved the player at all (every drag was a no-op or already at a bound)');
-    await toggle('minimize', MIN, 'minimized', true);
-    await dragStep('drag minimized right+down', 300, 300);
-    await toggle('restore at the edge', MIN, 'minimized', false);
-    await toggle('theater', THEATER, 'theater', true);
-    await toggle('theater exit', THEATER, 'theater', false);
-    await drag(600, 600);
-    await step('viewport shrink', async () => { await send('Emulation.setDeviceMetricsOverride', { width: 320, height: 480, deviceScaleFactor: 1, mobile: true }); await sleep(500); });
-    await step('viewport grow', async () => { await send('Emulation.setDeviceMetricsOverride', { width: 375, height: 667, deviceScaleFactor: 1, mobile: true }); await sleep(500); });
-    await step('nav height change', async () => { await setPhone(!phone); await sleep(500); });
-    await shot(`player-interaction-${w}x${h}-${phone ? 'connected' : 'idle'}-${content}`);
-  }
-  STATES.idle();
-}
-
 const T0 = Math.floor(Date.now() / 1000) - 600;
 const longGoal = 'Open the settings app, scroll to the accessibility section and verify that every toggle reflects the saved state after a restart';
 const sessions = [
@@ -238,23 +141,6 @@ const rect = (sel) => `(() => { const e = document.querySelector(${JSON.stringif
 const inside = (r) => r && r.l >= 0 && r.t >= 0;
 const clickByText = (sel, text) => evaluate(`(() => { const e = [...document.querySelectorAll(${JSON.stringify(sel)})].find(e => e.textContent.includes(${JSON.stringify(text)})); if (!e) return false; e.click(); return true; })()`);
 
-// Player frame and every header control: inside the viewport and clear of the nav (the nav may be 1-3 rows tall).
-async function playerClear(where, phase) {
-  const r = await evaluate(`(() => { const nav = document.querySelector('.floating-nav-switcher').getBoundingClientRect();
-    const w = document.querySelector('.floating-video-wrapper'); if (!w) return null; const f = w.getBoundingClientRect();
-    const over = (r) => r.width > 0 && r.left < nav.right && r.right > nav.left && r.top < nav.bottom && r.bottom > nav.top;
-    return { nav: [nav.left, nav.top, nav.right, nav.bottom].map(Math.round), frame: [f.left, f.top, f.right, f.bottom].map(Math.round), vw: innerWidth, vh: innerHeight,
-      frameOver: over(f), hidden: [...w.querySelectorAll('button, input[type=range]')].filter((b) => { const q = b.getBoundingClientRect();
-        if (q.width === 0 || q.height === 0) return false; const inner = q.top < f.top - 1 || q.bottom > f.bottom + 1 || q.left < f.left - 1 || q.right > f.right + 1;
-        return inner || q.bottom > innerHeight + 1 || q.right > innerWidth + 1 || q.top < -1 || q.left < -1; }).map((b) => (b.getAttribute('aria-label') || b.getAttribute('title') || b.className || b.textContent).toString().trim().slice(0, 24)), controls: [...w.querySelectorAll('.window-header button')].filter((b) => over(b.getBoundingClientRect())).map((b) => (b.getAttribute('aria-label') || b.getAttribute('title') || b.textContent).trim().slice(0, 20)) }; })()`);
-  if (!r) return fail(where, `${phase}: floating player gone`);
-  const [l, t, rt, b] = r.frame;
-  if (l < 0 || t < 0 || rt > r.vw || b > r.vh) fail(where, `${phase}: player outside viewport ${r.frame}`);
-  if (r.frameOver) fail(where, `${phase}: player frame ${r.frame} overlaps nav ${r.nav}`);
-  if (r.hidden.length) fail(where, `${phase}: player controls outside viewport or clipped by the frame: ${r.hidden.join(', ')}`);
-  if (r.controls.length) fail(where, `${phase}: nav covers player controls: ${r.controls.join(', ')}`);
-}
-
 async function scenarios() {
   for (const [state, apply] of Object.entries(STATES)) for (const width of [1770, 1280, 1150, 1024, 768, 375, 320]) {
     apply();
@@ -262,64 +148,25 @@ async function scenarios() {
     await open('/workspace', width);
     await setPhone(state !== 'idle');
     await sleep(2400); // status poll (2 s) + sessions fetch
-    // Controls that live in the page chrome (stream toolbar, header tabs, chat header) must never sit under the nav.
+    // Controls in RunView and the chat header must never sit under the nav.
     const covered = await evaluate(`(() => { const nav = document.querySelector('.floating-nav-switcher').getBoundingClientRect();
-      return [...document.querySelectorAll('.stream-floating-toolbar button, .stream-floating-toolbar a, .vscode-nav-header button, app-chat-interface .chat-header button')]
+      return [...document.querySelectorAll('app-run-view button, app-run-view a, app-chat-interface .chat-header button')]
         .filter((e) => { const r = e.getBoundingClientRect(); return r.width > 0 && r.left < nav.right && r.right > nav.left && r.top < nav.bottom && r.bottom > nav.top; })
         .map((e) => (e.getAttribute('aria-label') || e.textContent).trim().slice(0, 24)); })()`);
     if (covered.length) fail(where, `page controls under the nav: ${covered.join(' | ')}`);
     const err = await evaluate(`document.body.innerText.includes('Failed to fetch') || document.body.innerText.includes('Something went wrong')`);
     if (err) fail(where, 'raw error text shown');
-    if (width > 1150) {
-      // Chat panel: must show its tabs and keep long task text inside the panel.
-      const panel = await evaluate(rect('app-chat-interface'));
-      const sw = await evaluate(`[...document.querySelectorAll('app-chat-interface *')].filter(e => e.scrollWidth > e.clientWidth + 1 && getComputedStyle(e).overflowX === 'visible' && e.clientWidth > 0).slice(0, 3).map(e => e.className || e.tagName)`);
-      if (!panel) fail(where, 'chat panel missing'); else if (sw.length) fail(where, `chat panel content overflows its box: ${sw.join(', ')}`);
-      await shot(`chat-${state}-${width}`);
-    } else {
-      // Task Queue dropdown: opens inside the viewport, is closable with Escape, route change closes it.
-      if (!(await clickByText('button.vscode-tab-btn', width <= 900 ? '' : 'Task Queue'))) { fail(where, 'Task Queue tab not found'); continue; }
+    const panel = await evaluate(rect('app-chat-interface'));
+    const sw = await evaluate(`[...document.querySelectorAll('app-chat-interface *')].filter(e => e.scrollWidth > e.clientWidth + 1 && getComputedStyle(e).overflowX === 'visible' && e.clientWidth > 0).slice(0, 3).map(e => e.className || e.tagName)`);
+    if (!panel) fail(where, 'chat panel missing');
+    else if (!inside(panel) || panel.r > width) fail(where, `chat panel outside viewport horizontally: ${JSON.stringify(panel)}`);
+    else if (sw.length) fail(where, `chat panel content overflows its box: ${sw.join(', ')}`);
+    for (const [tab, content] of [['Notes & Plans', '.notes-tab-content'], ['Task Queue', '.queue-section-header']]) {
+      if (!(await clickByText('app-chat-interface button.tab-selector-btn', tab))) { fail(where, `${tab} tab not found`); continue; }
       await sleep(300);
-      const menu = await evaluate(rect('.vscode-dropdown-menu'));
-      if (!menu) fail(where, 'Task Queue dropdown did not open');
-      else {
-        if (!inside(menu) || menu.r > width || menu.b > 800) fail(where, `dropdown outside viewport ${JSON.stringify(menu)}`);
-        const under = await evaluate(UNDER_NAV);
-        if (menu.t < under.nav[2] && menu.r > under.nav[0] && menu.l < under.nav[1]) fail(where, `dropdown top ${menu.t} is under nav (bottom ${under.nav[2]})`);
-        await shot(`dropdown-${state}-${width}`);
-        await send('Input.dispatchKeyEvent', { type: 'rawKeyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
-        await send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
-        await sleep(300);
-        if (await evaluate(`!!document.querySelector('.vscode-dropdown-menu')`)) fail(where, 'Escape did not close the Task Queue dropdown');
-        await clickByText('button.vscode-tab-btn', width <= 900 ? '' : 'Task Queue');
-        await sleep(300);
-        await evaluate(`document.querySelector('a[href="/runs"]').click()`);
-        await sleep(500);
-        if (await evaluate(`!!document.querySelector('.vscode-dropdown-menu')`)) fail(where, 'dropdown stayed open after route change');
-        await open('/workspace', width);
-        await setPhone(state !== 'idle'); // a reload resets the browser-side phone state: restore it before the player checks
-        await sleep(300);
-      }
+      if (!(await evaluate(`!!document.querySelector(${JSON.stringify('app-chat-interface ' + content)})`))) fail(where, `${tab} content did not open`);
     }
-    // Floating player: live / error states, at the default position, minimized, theater, and after a route change.
-    const opened = await evaluate(`(() => { const svc = ng.getComponent(document.querySelector('app-floating-video-player')).agentService;
-      svc.openVideoPlayer('aaaaaaaa-1'); ng.applyChanges(document.querySelector('app-floating-video-player')); return !!svc; })()`).catch(() => false);
-    await sleep(800);
-    if (!opened) { fail(where, 'could not open floating player'); continue; }
-    const pw = await evaluate(rect('.floating-video-wrapper'));
-    if (!pw) fail(where, 'floating player did not render');
-    else {
-      const hdrOverflow = await evaluate(`(() => { const h = document.querySelector('.floating-video-wrapper .window-header'); return [...h.querySelectorAll('button')].filter(b => b.getBoundingClientRect().right > h.getBoundingClientRect().right + 1).length; })()`);
-      if (hdrOverflow) fail(where, `${hdrOverflow} player header buttons overflow the header`);
-      if (state !== 'idle' && !(await evaluate(`ng.getComponent(document.querySelector('app-workspace-device-chip')).phone.relay.state().status === 'connected'`))) fail(where, 'phone-connected state was lost before the player check');
-      await playerClear(where, 'on open');
-      await shot(`player-${state}-${width}`);
-      for (const route of ['/runs', '/workspace']) {
-        await evaluate(`document.querySelector('a[href="${route}"]').click()`);
-        await sleep(600);
-        await playerClear(where, `after route to ${route}`);
-      }
-    }
+    await shot(`chat-${state}-${width}`);
   }
   console.log(`scenarios: ${failures.length ? 'failures above' : 'all clear'}`);
 }
@@ -338,11 +185,10 @@ try {
   };
   await send('Page.enable');
   const only = process.argv[2];
-  if (only && !['clearance', 'a11y', 'player', 'scenarios'].includes(only)) throw new Error(`unknown audit phase "${only}" (clearance | a11y | player | scenarios)`);
+  if (only && !['clearance', 'a11y', 'scenarios'].includes(only)) throw new Error(`unknown audit phase "${only}" (clearance | a11y | scenarios)`);
   if (!only || only === 'clearance') await clearanceMatrix();
   if (!only || only === 'a11y') await phoneStatusA11y();
   if (!only || only === 'scenarios') await scenarios();
-  if (!only || only === 'player') await playerInteractions();
 } catch (e) {
   console.error(e);
   failures.push(String(e));
