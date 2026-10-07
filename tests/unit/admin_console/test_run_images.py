@@ -528,4 +528,4 @@ async def test_a_run_with_a_lost_picture_ends_failed_and_never_starts_a_worker(
 
     spawned.assert_not_called()
     persisted.assert_awaited_once()
-    assert persisted.await_args.args[1] == 1  # a failed exit, not a text-only run
+    assert persisted.await_args.kwargs["returncode"] == 1  # failed, not a text-only run

@@ -709,7 +709,7 @@ class TaskQueueService:
             cmd.extend(["--device-serial", str(device_serial)])
             env["ADB_DEVICE_SERIAL"] = str(device_serial)
         if task_item.get("goal_images") and sess_id:
-            env.update(run_images.worker_environment(str(sess_id)))
+            env.update(run_images.worker_environment(str(sess_id), task_item["goal_images"]))
         return cmd, env
 
     @classmethod

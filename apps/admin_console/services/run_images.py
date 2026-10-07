@@ -50,6 +50,7 @@ _FORMATS = {
     "image/jpeg": ("JPEG", ".jpg"),
     "image/webp": ("WEBP", ".webp"),
 }
+_EXTENSION_BY_MEDIA = {media: ext for media, (_fmt, ext) in _FORMATS.items()}
 _MEDIA_BY_EXTENSION = {ext: media for media, (_fmt, ext) in _FORMATS.items()}
 _STORED_NAME = re.compile(r"(\d{1,2})(\.png|\.jpg|\.webp)")
 
@@ -217,10 +218,34 @@ def find(session_id: str, index: str) -> tuple[Path, str] | None:
     return None
 
 
-def worker_environment(session_id: str) -> dict[str, str]:
-    """``ARTEMIS_GOAL_IMAGES`` for the worker, or nothing when the run has no pictures."""
-    paths = stored_paths(session_id)
-    return {"ARTEMIS_GOAL_IMAGES": json.dumps(paths)} if paths else {}
+class GoalImagesMissing(RuntimeError):
+    """A picture the run accepted is no longer on disk; the run must not start without it."""
+
+
+def worker_environment(session_id: str, manifest: list[dict]) -> dict[str, str]:
+    """``ARTEMIS_GOAL_IMAGES`` for the worker, built from the pictures the run recorded.
+
+    The recorded manifest, not whatever is on disk, decides what the worker needs: a
+    recorded picture that is gone (or is not a plain file) raises instead of letting
+    the run continue as if it were text-only.
+    """
+    if not manifest:
+        return {}
+    folder = _folder(session_id)
+    paths, lost = [], []
+    for entry in manifest:
+        extension = _EXTENSION_BY_MEDIA.get(entry.get("media_type"))
+        index = entry.get("index")
+        path = folder / f"{index}{extension}" if extension and isinstance(index, int) else None
+        if path is None or path.is_symlink() or not path.is_file():
+            lost.append(str(index))
+        else:
+            paths.append(str(path))
+    if lost:
+        raise GoalImagesMissing(
+            f"Picture(s) {', '.join(lost)} attached to this run are missing, so it was not started."
+        )
+    return {"ARTEMIS_GOAL_IMAGES": json.dumps(paths)}
 
 
 class _BodyTooLarge(Exception):
