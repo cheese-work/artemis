@@ -45,3 +45,14 @@ def test_failed_container_create_removes_only_the_network_that_was_created():
     docker.calls.clear()
     owned.cleanup()
     assert docker.calls == [("network", "rm", net)]
+
+
+def test_image_cleanup_untags_only_the_recorded_tag_and_never_forces_by_id():
+    """A cached build can share its ID with images other runs use (`rmi -f <ID>` removes them)."""
+    docker = FakeDocker()
+    owned = Owned(docker)
+    image_id = owned.image("artemis-preview-hostile:abc", "FROM base\n")
+    assert image_id == "sha256:abc"
+    docker.calls.clear()
+    owned.cleanup()
+    assert docker.calls == [("rmi", "artemis-preview-hostile:abc")]

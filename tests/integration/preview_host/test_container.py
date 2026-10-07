@@ -182,6 +182,19 @@ def test_image_declared_volume_is_refused_before_create_and_caught_after(
         owned.cleanup()
 
 
+def test_image_cleanup_keeps_other_tags_that_share_the_image_id(image_tag, image_id):
+    """`FROM <tag>` alone builds the same image ID, so a second tag shares it."""
+    owned = Owned(docker)
+    try:
+        shared = owned.image(
+            f"artemis-preview-shared:{secrets.token_hex(4)}", f"FROM {image_tag}\n"
+        )
+        assert shared == image_id
+    finally:
+        owned.cleanup()
+    assert docker("image", "inspect", "-f", "{{.Id}}", image_tag) == image_id  # untouched
+
+
 def test_non_loopback_publish_is_not_reachable_on_other_host_addresses(container):
     host_ip = docker(
         "network", "inspect", container.name, "-f", "{{(index .IPAM.Config 0).Gateway}}"
