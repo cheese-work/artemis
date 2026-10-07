@@ -35,7 +35,7 @@ limitations under the License.
     <div class="workspace-floating-bar-wrapper is-expanded"
       [class.is-focused]="isInputFocused()" [class.has-text]="!!taskInput.trim()" [class.is-running]="isTaskRunning()">
       <!-- A run lost its phone: Reconnect, then start a new run (the old one is over) -->
-      <app-interrupted-banner [lastStep]="liveSteps().at(-1)?.step_number ?? null" (startNewRun)="startNewRunFrom($event)"></app-interrupted-banner>
+      <app-interrupted-banner [reconnectOnly]="true" [lastStep]="liveSteps().at(-1)?.step_number ?? null" (startNewRun)="startNewRunFrom($event)"></app-interrupted-banner>
 
       <!-- Floating Error / Notification Toast -->
       @if (errorMessage()) {

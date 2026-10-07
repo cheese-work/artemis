@@ -6,10 +6,14 @@ import { RouterTestingHarness } from '@angular/router/testing';
 import { NEVER, of } from 'rxjs';
 import { routes } from '../../app.routes';
 import { ChatInterfaceComponent } from '../../components/chat-interface/chat-interface.component';
+import { RunSummary } from '../../core/models/run.model';
+import { RunTarget } from '../../core/models/run-target.model';
+import { Session } from '../../core/models/session.model';
 import { AdminConfigService } from '../../services/admin-config.service';
 import { AgentService } from '../../services/agent.service';
 import { HostsService } from '../../services/hosts.service';
 import { RunsService } from '../../services/runs.service';
+import { WorkspacePhoneService } from '../../services/workspace-phone.service';
 import { WorkspaceComponent } from './workspace.component';
 
 const ID = '3f2b9c1a-5d7e-4a10-9c33-0e1f2a3b4c5d';
@@ -18,9 +22,15 @@ describe('Workspace review mode', () => {
   let runs: jasmine.SpyObj<RunsService>;
   let harness: RouterTestingHarness;
   let root: HTMLElement;
+  let liveSession: ReturnType<typeof signal<Session | null>>;
+  let target: ReturnType<typeof signal<RunTarget | null>>;
+  let reconnect: jasmine.Spy;
   const q = (selector: string) => root.querySelector(selector);
 
   beforeEach(async () => {
+    liveSession = signal<Session | null>(null);
+    target = signal<RunTarget | null>(null);
+    reconnect = jasmine.createSpy('connectFromBrowser').and.resolveTo(undefined);
     runs = jasmine.createSpyObj<RunsService>('RunsService', ['list', 'get', 'steps', 'video'], {
       lastLibraryQuery: signal<Record<string, string>>({}), viewPosition: signal(null)
     });
@@ -36,9 +46,13 @@ describe('Workspace review mode', () => {
       whatsNewPromptDraft: signal(false),
       updateWhatsNewErrorVisibility: () => undefined,
       isCurrentSessionRunning: () => false,
-      currentSession: () => null,
-      currentSessionId: () => null,
+      currentSession: liveSession,
+      currentSessionId: () => liveSession()?.session_id ?? null,
       currentStartupProgress: () => [],
+      runningSessionId: () => null,
+      isPaused: () => false,
+      viewedModel: () => null,
+      sessionLogs: () => [],
       runTask: jasmine.createSpy('runTask'),
       fetchStatus: jasmine.createSpy('fetchStatus'),
       stopTask: jasmine.createSpy('stopTask'),
@@ -51,6 +65,13 @@ describe('Workspace review mode', () => {
         provideLocationMocks(),
         { provide: AgentService, useValue: agentService },
         { provide: RunsService, useValue: runs },
+        { provide: WorkspacePhoneService, useValue: {
+          target,
+          runInterrupted: () => liveSession()?.status === 'interrupted',
+          canConnectFromBrowser: () => true,
+          connectFromBrowser: reconnect,
+          requestPicker: jasmine.createSpy('requestPicker')
+        } },
         { provide: HostsService, useValue: hosts },
         { provide: AdminConfigService, useValue: admin }
       ],
@@ -120,4 +141,40 @@ describe('Workspace review mode', () => {
     await go('/workspace', { draftPrompt: 'Log in and open settings' });
     expect((q('textarea.dock-textarea') as HTMLTextAreaElement).value).toBe('Log in and open settings');
   });
+
+  for (const connected of [false, true]) {
+    it(`shows one interrupted banner with a ${connected ? 'connected' : 'disconnected'} phone`, async () => {
+      const prompt = 'Open Settings';
+      liveSession.set({ session_id: ID, initial_goal: prompt, start_time: 1, status: 'interrupted' });
+      if (connected) target.set({ serial: 'phone-1' });
+      runs.get.and.returnValue(of<RunSummary>({
+        session_id: ID, prompt, status: 'interrupted', interrupt_reason: 'device_offline',
+        start_time: 1, end_time: 2, host_id: null, device_ref: null, requested_by: null,
+        pinned: false, recordings: []
+      }));
+      runs.steps.and.returnValue(of([]));
+      await go('/workspace');
+
+      expect(TestBed.inject(WorkspacePhoneService).runInterrupted()).toBeTrue();
+      const banners = Array.from(root.querySelectorAll<HTMLElement>('[role="status"]'))
+        .filter((element) => element.textContent?.includes('Run interrupted before the first step.'));
+      expect(banners.length).toBe(1);
+      expect(banners[0].closest('app-run-view')).not.toBeNull();
+      const buttons = Array.from(root.querySelectorAll<HTMLButtonElement>('button'));
+      const starts = buttons.filter((element) => element.textContent?.includes('Start new run with this prompt'));
+      expect(starts.length).toBe(1);
+      starts[0].click();
+      harness.fixture.detectChanges();
+      expect((q('textarea.dock-textarea') as HTMLTextAreaElement).value).toBe(prompt);
+
+      const reconnects = buttons.filter((element) => element.textContent?.includes('Reconnect phone'));
+      expect(reconnects.length).toBe(connected ? 0 : 1);
+      if (!connected) {
+        expect(reconnects[0].tagName).toBe('BUTTON');
+        expect(reconnects[0].disabled).toBeFalse();
+        reconnects[0].click();
+        expect(reconnect).toHaveBeenCalledTimes(1);
+      }
+    });
+  }
 });

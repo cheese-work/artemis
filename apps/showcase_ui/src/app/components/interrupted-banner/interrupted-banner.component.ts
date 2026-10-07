@@ -11,7 +11,11 @@ import { interruptedSentence, interruptReason, RUN_STRINGS } from '../../utils/r
   selector: 'app-interrupted-banner',
   standalone: true,
   template: `
-    @if (phone.runInterrupted()) {
+    @if (phone.runInterrupted() && reconnectOnly()) {
+      @if (!phone.target()) {
+        <button type="button" class="action" [disabled]="!phone.canConnectFromBrowser()" (click)="reconnect()">Reconnect phone</button>
+      }
+    } @else if (phone.runInterrupted()) {
       <div class="banner" role="status" aria-live="polite">
         <p class="headline">{{ sentence() }}</p>
         <p class="reason">{{ reason() }}</p>
@@ -49,6 +53,7 @@ export class InterruptedBannerComponent {
 
   /** The interrupted run's prompt, handed back so a new run can start from it. */
   public readonly startNewRun = output<string>();
+  public readonly reconnectOnly = input(false);
 
   protected readonly prompt = computed(() => this.agent.currentSession()?.initial_goal ?? '');
   /** The last step the run reached, from the run on screen; null when no step ran. */
