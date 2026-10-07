@@ -49,6 +49,7 @@ for _p in (str(_workspace_root), str(_apps_dir), str(_admin_console_dir), str(_c
 
 # Select the profile before any import below can run an import-time side effect.
 from apps.admin_console.core.preview_profile import preview_profile_selected
+from apps.admin_console.core.preview_routes import PreviewRouteGuard, require_classified
 
 PREVIEW_PROFILE = preview_profile_selected()
 
@@ -114,6 +115,7 @@ try:
         drain,
         hosts,
         media,
+        preview_synthetic,
         replay,
         run_admin,
         run_bundle,
@@ -139,6 +141,7 @@ except ImportError:
         drain,
         hosts,
         media,
+        preview_synthetic,
         replay,
         run_admin,
         run_bundle,
@@ -197,6 +200,9 @@ app.state.lifecycle_token = LIFECYCLE_TOKEN
 # The console UI is served same-origin from this process, so no CORS grants
 # exist at all; the boundary middleware rejects cross-origin browser traffic
 # and unrecognized Host headers (DNS rebinding) instead.
+if PREVIEW_PROFILE:
+    # Innermost, so the Host/Origin boundary still screens requests before this answers.
+    app.add_middleware(PreviewRouteGuard, route_source=app)
 app.add_middleware(RequestSizeLimitMiddleware)
 app.add_middleware(SameOriginBoundaryMiddleware)
 
@@ -348,6 +354,9 @@ async def on_shutdown():
 
 
 # Mount modular routers
+if PREVIEW_PROFILE:
+    # Ahead of the real routers: first match wins, so these answer their real twins.
+    app.include_router(preview_synthetic.router)
 app.include_router(stream.router)
 app.include_router(media.router)
 app.include_router(sessions.router)
@@ -526,6 +535,11 @@ async def serve_showcase_spa(full_path: str):
 </body>
 </html>"""
     return HTMLResponse(fallback_html)
+
+
+if PREVIEW_PROFILE:
+    # Refuse to boot a preview with a route nobody has classified.
+    require_classified(app)
 
 
 # ------------------------------------------------------------------------------
