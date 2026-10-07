@@ -13,6 +13,7 @@ import pytest
 
 from artemis.utils.redaction import (
     Redactor,
+    RedactingStream,
     bind_session,
     goal_metadata,
     read_goal_file,
@@ -67,6 +68,59 @@ def test_redactor_fails_closed_on_bad_record():
 
 def test_standalone_short_bearer_tokens_are_redacted():
     assert "tiny" not in Redactor().redact("Bearer tiny")
+
+
+def test_working_directory_environment_values_are_not_credentials(monkeypatch):
+    monkeypatch.setenv("PWD", "/ordinary-current-directory")
+    monkeypatch.setenv("OLDPWD", "/ordinary-previous-directory")
+    monkeypatch.setenv("OPENAI_API_KEY", "private-api-credential")
+    rendered = Redactor().redact(
+        "/ordinary-current-directory /ordinary-previous-directory private-api-credential"
+    )
+    assert "/ordinary-current-directory" in rendered
+    assert "/ordinary-previous-directory" in rendered
+    assert "private-api-credential" not in rendered
+
+
+def test_short_goal_lines_do_not_mask_ordinary_diagnostics():
+    bind_session("line-test", "Login page\nI\npassword=private-typed-value")
+    assert Redactor().redact("INFO ordinary I diagnostics") == "INFO ordinary I diagnostics"
+    assert "Login page" not in Redactor().redact("Login page")
+    assert "private-typed-value" not in Redactor().redact("private-typed-value")
+
+
+def test_redacting_stream_finishes_a_tee_without_closed_property():
+    output = io.StringIO()
+    tee = SimpleNamespace(write=output.write, flush=output.flush)
+    stream = RedactingStream(tee)
+    stream.write("password=stream-private-value")
+    stream.finish()
+    assert "stream-private-value" not in output.getvalue()
+    assert "REDACTED" in output.getvalue()
+
+
+@pytest.mark.parametrize("backend", ["adb", "ime"])
+@pytest.mark.asyncio
+async def test_text_input_failure_logs_length_not_the_text(monkeypatch, backend):
+    from artemis.drivers.android import adb_driver, input_ime
+
+    text = "unknown-user-input-value"
+    device = MagicMock()
+    device.shell.side_effect = ValueError(f"input failed: {text}")
+    if backend == "adb":
+        driver = adb_driver.AndroidAdbDriver("mock-device", MagicMock())
+        driver._device = device
+        operation = driver.input_text
+        module = adb_driver
+    else:
+        operation = input_ime.AndroidInputIME(device).type_text
+        module = input_ime
+    logger = MagicMock()
+    monkeypatch.setattr(module, "logger", logger)
+    assert await operation(text) is False
+    message = str(logger.error.call_args)
+    assert text not in message
+    assert f"text_length={len(text)}" in message
 
 
 def test_uvicorn_handlers_are_redacted():

@@ -189,7 +189,7 @@ def bind_session(session_id: str | None, goal: str | None = None) -> None:
     values = set()
     if goal:
         values.add(goal)
-        values.update(line for line in goal.splitlines() if line)
+        values.update(line for line in goal.splitlines() if len(line) >= 8)
         for pattern in (_ASSIGNMENT, *_TYPED):
             values.update(match.group("value").strip("\\\"'") for match in pattern.finditer(goal))
     _PRIVATE_TEXT.set(frozenset(values))
@@ -209,7 +209,9 @@ class Redactor(logging.Filter):
             return value
         secrets = set(_PRIVATE_TEXT.get())
         secrets.update(
-            item for key, item in tuple(os.environ.items()) if item and _SENSITIVE_KEY.search(key)
+            item
+            for key, item in tuple(os.environ.items())
+            if item and key not in {"PWD", "OLDPWD"} and _SENSITIVE_KEY.search(key)
         )
         for secret in sorted(secrets, key=len, reverse=True):
             value = value.replace(secret, REDACTED)
@@ -299,7 +301,7 @@ class RedactingStream:
         self.stream.flush()
 
     def finish(self) -> None:
-        if self.stream.closed:
+        if getattr(self.stream, "closed", False):
             return
         self.stream.write(self.lines.feed("", final=True))
         self.stream.flush()
