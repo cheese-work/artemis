@@ -105,6 +105,7 @@ from artemis.utils.media import (
     remove_steps_json_from_trace_folder,
 )
 from artemis.utils.startup_progress import publish_startup_progress
+from artemis.utils.video import classify_recording_failure
 
 logger = get_logger(__name__)
 
@@ -677,11 +678,14 @@ class Agent:
                             if start_res and start_res.success:
                                 recording_started = True
                             else:
+                                failure = start_res.message if start_res else "unknown"
+                                self._report_recording_unavailable(failure, str(sess_id))
                                 logger.warning(
                                     f"[{task_name}] Failed to start screen"
                                     f" recording: {start_res.message if start_res else 'unknown'}"
                                 )
                         except Exception as e:
+                            self._report_recording_unavailable(str(e), str(sess_id))
                             logger.error(f"[{task_name}] Failed to start screen recording: {e}")
 
                     publish_startup_progress(
@@ -928,6 +932,18 @@ class Agent:
                         await cancel_watcher
                     except asyncio.CancelledError:
                         pass
+
+    @staticmethod
+    def _report_recording_unavailable(error: str, session_id: str) -> None:
+        reason = classify_recording_failure(error)
+        detail = (
+            "scrcpy is incompatible with this phone's Android version."
+            if reason == "recorder_incompatible"
+            else error or "the recorder could not start."
+        )
+        publish_startup_progress(
+            "recording_unavailable", f"No recording: {detail}", session_id=session_id, reason=reason
+        )
 
     async def _watch_external_cancel(self, task_name: str) -> None:
         """Cancel the running task when another process drops a cancel marker.

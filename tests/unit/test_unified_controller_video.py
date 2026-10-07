@@ -27,6 +27,7 @@ import cv2
 from artemis.context import ArtemisContext
 from artemis.controllers.unified_controller import UnifiedMobileController
 from artemis.drivers.mock.mock_driver import MockDeviceDriver
+from artemis.utils import video as video_utils
 from artemis.utils.video import (
     RecordingSession,
     _parse_scrcpy_version,
@@ -112,8 +113,32 @@ def test_scrcpy_recording_locks_each_segment_orientation(tmp_path):
         ),
     ],
 )
-def test_scrcpy_recording_flags_follow_installed_version(version, expected_flags):
+def test_scrcpy_recording_flags_follow_installed_version(version, expected_flags, tmp_path):
     assert scrcpy_recording_flags(version) == expected_flags
+    command = build_scrcpy_record_command(
+        "scrcpy", "device-1", tmp_path / "recording.mkv", scrcpy_version=version
+    )
+    assert command.count("--no-clipboard-autosync") == 1
+    assert all(flag in command for flag in expected_flags)
+
+
+@pytest.mark.parametrize(
+    ("error", "expected_reason"),
+    [
+        (
+            "java.lang.NoSuchMethodException: "
+            "android.content.IClipboard$Stub$Proxy.addPrimaryClipChangedListener "
+            "at com.genymobile.scrcpy.Device.<init>(Device.java:100)",
+            "recorder_incompatible",
+        ),
+        ("scrcpy failed to start: device disconnected", "recorder_failed"),
+        ("java.lang.NoSuchMethodException: some.other.Method", "recorder_failed"),
+        ("Clipboard warning: addPrimaryClipChangedListener", "recorder_failed"),
+        ("", "recorder_failed"),
+    ],
+)
+def test_recording_failure_classifies_clipboard_api_crash(error, expected_reason):
+    assert video_utils.classify_recording_failure(error) == expected_reason
 
 
 def test_scrcpy_recording_flags_reject_versions_below_minimum():

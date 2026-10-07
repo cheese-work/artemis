@@ -133,6 +133,7 @@ def build_scrcpy_record_command(
         "--serial",
         device_id,
         headless_flag,
+        "--no-clipboard-autosync",
         "--record",
         str(output_path),
         "--record-format",
@@ -143,6 +144,15 @@ def build_scrcpy_record_command(
     if lock_capture_orientation:
         command.append(orientation_flag)
     return command
+
+
+def classify_recording_failure(error: str) -> str:
+    if all(
+        marker in error
+        for marker in ("NoSuchMethodException", "IClipboard", "addPrimaryClipChangedListener")
+    ):
+        return "recorder_incompatible"
+    return "recorder_failed"
 
 
 async def await_scrcpy_first_frame(
