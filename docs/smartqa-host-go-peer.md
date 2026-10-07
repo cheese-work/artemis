@@ -72,7 +72,9 @@ generated protocol document. Tests cover credit violations, stream-id
 exhaustion, the 32-stream cap, control progress with blocked destinations,
 saturation isolation, FIN ordering/half-close, untrusted text, allowlist
 denials, fragmented/coalesced adb requests, binary transport ids, cancellation,
-and deterministic grace/backoff flaps with one notification.
+and deterministic grace/backoff controls. A synthetic connection-flap harness
+drives the real reconnect loop through its 30-second grace and asserts one
+notification, including no second notification on later authentication loss.
 
 The build matrix remains linux/amd64, darwin/arm64, windows/amd64 only.
 All adb peers in these tests are fake sockets; no Android device is used.

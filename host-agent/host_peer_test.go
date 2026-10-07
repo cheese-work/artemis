@@ -293,6 +293,36 @@ func TestHostConnectionCancellationDoesNotReportLoss(t *testing.T) {
 	}
 }
 
+func TestHostConnectionFlapHarnessExactlyOneInterruption(t *testing.T) {
+	t.Setenv("ARTEMIS_HOST_AGENT", "enabled")
+	ctx, cancel := context.WithTimeout(context.Background(), hostGraceInterval+2*time.Second)
+	defer cancel()
+	connections := 0
+	interruptions := 0
+	started := time.Now()
+	err := RunHostConnections(ctx, func(context.Context) (*HostPeer, HostTransport, error) {
+		connections++
+		if interruptions > 0 {
+			return nil, nil, ErrHostAuthExpired
+		}
+		if connections > 1 {
+			return nil, nil, io.ErrUnexpectedEOF
+		}
+		peer, err := newHostPeer(7, nil, nil)
+		transport := &fakeHostTransport{make(chan hostMessage, 1), make(chan hostMessage, 1), make(chan struct{}), sync.Once{}}
+		transport.incoming <- hostMessage{err: io.EOF}
+		return peer, transport, err
+	}, func() bool { return true }, func(reason string) {
+		interruptions++
+		if reason != "host_disconnected" || time.Since(started) < hostGraceInterval {
+			t.Errorf("premature or wrong interruption: %s", reason)
+		}
+	})
+	if !errors.Is(err, ErrHostAuthExpired) || connections < 4 || interruptions != 1 {
+		t.Fatalf("flap result: %v, connects=%d, interruptions=%d", err, connections, interruptions)
+	}
+}
+
 func TestHostPeerGatewayCannotBeBypassed(t *testing.T) {
 	local, remote := net.Pipe()
 	defer remote.Close()
