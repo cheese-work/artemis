@@ -651,6 +651,81 @@ def test_registry_refuses_device_writes_from_a_stale_generation_or_revoked_host(
         first_context.__exit__(None, None, None)
 
 
+def test_tunnel_listener_is_generation_bound_and_closed_on_disconnect(admin):
+    from artemis.runtime.host_endpoints import HostOffline, host_endpoints
+
+    key, host_id = _enrolled(admin)
+    context, ws, connected = _handshake(admin, key, host_id)
+    endpoint = host_endpoints.resolve(host_id)
+    assert endpoint.generation == connected["generation"]
+    assert endpoint.host == "127.0.0.1"
+    ws.send_json({"type": "ping"})
+    assert ws.receive_json()["type"] == "pong"
+    context.__exit__(None, None, None)
+    with pytest.raises(HostOffline):
+        host_endpoints.resolve(host_id)
+
+
+def test_tunnel_rejects_malformed_binary_frame(admin):
+    key, host_id = _enrolled(admin)
+    context, ws, _ = _handshake(admin, key, host_id)
+    try:
+        ws.send_bytes(b"not a frame")
+        assert ws.receive_json() == {"type": "error", "code": "bad_frame"}
+        with pytest.raises(WebSocketDisconnect) as closed:
+            ws.receive_json()
+        assert closed.value.code == 4400
+    finally:
+        context.__exit__(None, None, None)
+
+
+def test_tunnel_device_ref_routes_to_named_host_without_local_probe(admin, monkeypatch):
+    from apps.admin_console.routers import tasks
+    from unittest.mock import AsyncMock
+
+    key, host_id = _enrolled(admin)
+    context, ws, _ = _handshake(admin, key, host_id)
+    try:
+        ws.send_json({"type": "devices", "devices": [{"serial": "phone", "shared": True}]})
+        ws.send_json({"type": "ping"})
+        assert ws.receive_json()["type"] == "pong"
+        probe = AsyncMock(side_effect=AssertionError("must not probe local ADB"))
+        enqueue = AsyncMock(return_value={"status": "queued"})
+        monkeypatch.setattr(tasks.readiness_engine, "run_device_submission_probe", probe)
+        monkeypatch.setattr(tasks.task_queue_service, "enqueue_tasks", enqueue)
+        result = admin.post(
+            "/api/run", json={"goal": "fake", "device_ref": {"host_id": host_id, "serial": "phone"}}
+        )
+        assert result.status_code == 200, result.text
+        assert enqueue.call_args.kwargs["host_id"] == host_id
+        assert enqueue.call_args.kwargs["device_serial"] == "phone"
+        assert probe.call_count == 0
+    finally:
+        context.__exit__(None, None, None)
+
+
+@pytest.mark.parametrize("serial", ["hidden", "", "../phone", "phone\u0000"])
+def test_tunnel_ref_refuses_unshared_or_invalid_device(admin, serial, monkeypatch):
+    from apps.admin_console.routers import tasks
+    from unittest.mock import AsyncMock
+
+    monkeypatch.setattr(
+        tasks.readiness_engine,
+        "run_device_submission_probe",
+        AsyncMock(side_effect=AssertionError("no local discovery")),
+    )
+    monkeypatch.setattr(
+        tasks.task_queue_service,
+        "enqueue_tasks",
+        AsyncMock(side_effect=AssertionError("no enqueue")),
+    )
+    result = admin.post(
+        "/api/run",
+        json={"goal": "fake", "device_ref": {"host_id": "unknown-host", "serial": serial}},
+    )
+    assert result.status_code in {409, 422}
+
+
 def test_connect_message_golden_vector():
     message = hr.connect_message("lab.example", 1, "h1", "n1", 1800000000)
     assert message == b"artemis-host-connect/v1\nlab.example\n1\nh1\nn1\n1800000000"
