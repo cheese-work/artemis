@@ -11,6 +11,7 @@ import base64
 import json
 import os
 from pathlib import Path
+import secrets
 import shutil
 import subprocess
 import time
@@ -21,6 +22,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 import pytest
 
 from scripts import preview_sandbox as sb
+from tests.integration.preview_host.owned import Owned
 
 pytestmark = [
     pytest.mark.integration,
@@ -52,30 +54,54 @@ def write_bundle(path: Path) -> None:
     path.chmod(0o644)
 
 
+ENV = {
+    "ARTEMIS_AUTH_MODE": "cloudflare",
+    "ARTEMIS_CF_ACCESS_TEAM_DOMAIN": TEAM,
+    "ARTEMIS_CF_ACCESS_AUD": "test-aud",
+    "ARTEMIS_PREVIEW_QA_EMAILS": "qa1@example.com,qa2@example.com",
+    "ARTEMIS_ADMIN_EMAILS": "admin@example.com",
+}
+
+
+def unique_preview(image_id: str, slot: int = 0) -> sb.Preview:
+    """A PR number no other run uses, so container and network names are exclusive."""
+    pr = 10**9 + secrets.randbelow(10**9)
+    return sb.Preview(pr=pr, head_sha="c" * 40, image_id=image_id, slot=slot)
+
+
 @pytest.fixture(scope="module")
-def container(tmp_path_factory):
-    tag = os.environ.get("PREVIEW_IMAGE", "artemis-preview:l4a")
-    image_id = docker("image", "inspect", "-f", "{{.Id}}", tag, check=False)
-    if not image_id.startswith("sha256:"):
-        pytest.skip(f"preview image {tag} not built")
-    bundle = tmp_path_factory.mktemp("jwks") / "jwks.json"
-    write_bundle(bundle)
-    preview = sb.Preview(pr=991291, head_sha="c" * 40, image_id=image_id, slot=0)
-    env = {
-        "ARTEMIS_AUTH_MODE": "cloudflare",
-        "ARTEMIS_CF_ACCESS_TEAM_DOMAIN": TEAM,
-        "ARTEMIS_CF_ACCESS_AUD": "test-aud",
-        "ARTEMIS_PREVIEW_QA_EMAILS": "qa1@example.com,qa2@example.com",
-        "ARTEMIS_ADMIN_EMAILS": "admin@example.com",
-    }
+def image_tag() -> str:
+    return os.environ.get("PREVIEW_IMAGE", "artemis-preview:l4a")
+
+
+@pytest.fixture(scope="module")
+def image_id(image_tag) -> str:
+    found = docker("image", "inspect", "-f", "{{.Id}}", image_tag, check=False)
+    if not found.startswith("sha256:"):
+        pytest.skip(f"preview image {image_tag} not built")
+    return found
+
+
+@pytest.fixture(scope="module")
+def bundle(tmp_path_factory) -> Path:
+    path = tmp_path_factory.mktemp("jwks") / "jwks.json"
+    write_bundle(path)
+    return path
+
+
+@pytest.fixture(scope="module")
+def container(image_id, bundle):
+    owned = Owned(docker)
+    preview = unique_preview(image_id)
     try:
-        docker(*sb.network_create_argv(preview)[1:])
-        docker(*sb.container_create_argv(preview, env, str(bundle))[1:])
+        sb.verify_image(json.loads(docker("image", "inspect", image_id))[0])
+        owned.network(sb.network_create_argv(preview))
+        owned.container(sb.container_create_argv(preview, ENV, str(bundle)))
+        sb.verify_container(inspect(preview))
         docker("start", preview.name)
         yield preview
     finally:
-        docker("rm", "-f", preview.name, check=False)
-        docker("network", "rm", preview.name, check=False)
+        owned.cleanup()  # only the IDs created above
 
 
 def inspect(preview: sb.Preview) -> dict:
@@ -134,6 +160,26 @@ def test_ipv6_is_disabled_inside_the_container(container):
         "tcp://[fd00::1]:80": "blocked",
         "tcp://[2001:db8::7]:80": "blocked",
     }
+
+
+def test_image_declared_volume_is_refused_before_create_and_caught_after(
+    image_tag, image_id, bundle
+):
+    """A hostile image declaring VOLUME gets writable host-backed storage despite --read-only."""
+    owned = Owned(docker)
+    try:
+        tag = f"artemis-preview-hostile:{secrets.token_hex(4)}"
+        hostile_id = owned.image(tag, f"FROM {image_tag}\nVOLUME /scratch\n")
+        with pytest.raises(ValueError, match="/scratch"):
+            sb.verify_image(json.loads(docker("image", "inspect", hostile_id))[0])
+        preview = unique_preview(hostile_id, slot=1)
+        owned.network(sb.network_create_argv(preview))
+        owned.container(sb.container_create_argv(preview, ENV, str(bundle)))
+        assert any(m["Destination"] == "/scratch" for m in inspect(preview)["Mounts"])
+        with pytest.raises(ValueError, match="unexpected mounts"):
+            sb.verify_container(inspect(preview))
+    finally:
+        owned.cleanup()
 
 
 def test_non_loopback_publish_is_not_reachable_on_other_host_addresses(container):

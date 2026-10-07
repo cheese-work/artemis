@@ -25,9 +25,21 @@ target (last stage) is still the live console with ADB.
 | Network | Per-slot bridge `artemis-pv<slot>` in `172.31.240.0/24` (one /28 each), no NAT, no ICC, IPv6 disabled, DNS pointed at a blackhole |
 | Environment | Five allowlisted inputs plus fixed values the caller cannot override |
 
-The PID limit is 256, not the planned 128: the app idles at 106 tasks and peaks at 111
-after boot (about 100 are Python threads), so 128 left no headroom. Native thread pools
-are pinned to one thread for the same reason.
+The PID limit is 256, not the planned 128 (amended on CHE-1291). The app idles at 106
+tasks and peaks at 111 after boot. 93 of them are one `DataEngineHandler._drain_queue`
+thread per logger name, created at `import artemis`; reducing them means changing app
+code. 128 left 17 PIDs for the request thread pool. Native thread pools (OpenBLAS, OMP,
+MKL, NumExpr) are pinned to one thread: without that, `import numpy` alone spawned 55
+threads on the 56-core host.
+
+## Checks the daemon must run
+
+- `verify_image(docker image inspect)` before `docker create`. Docker mounts an
+  anonymous volume for every image-declared `VOLUME`, even with `--read-only`. That is
+  writable host-backed storage outside the tmpfs budget, and no run flag disables it, so
+  the image is refused.
+- `verify_container(docker inspect)` after create and before `docker start`. The mounts
+  must be exactly the read-only JWKS bind plus the two tmpfs.
 
 ## Host firewall
 
@@ -37,7 +49,9 @@ host-initiated connections pass. This denies the host gateway and its services,
 private, tailnet and metadata ranges, the internet, DNS and other previews. The
 daemon must load the table before it starts a preview and must not admit a preview
 until `scripts/preview_isolation_probe.py` run inside the container reports every
-target blocked. Without the table a container can reach the host: Docker alone
+target blocked. Use `dns-udp://` targets (a valid DNS query) for resolvers: a service can
+ignore the generic `udp://` payload and look blocked. A negative DNS answer such as
+NXDOMAIN is an answer and fails the probe. Without the table a container can reach the host: Docker alone
 does not isolate it.
 
 ## Tests
@@ -50,7 +64,9 @@ does not isolate it.
   is reachable; with the rules every one is blocked and ingress still works.
 - `tests/integration/preview_host/test_container.py`: starts the real image from the
   sandbox argv and checks the engine applied the options, the app serves and rejects
-  unsigned requests, and the container has no ADB, a read-only rootfs and no IPv6.
+  unsigned requests, and the container has no ADB, a read-only rootfs and no IPv6. A
+  hostile image that declares a `VOLUME` is refused. Both modules remove only the Docker
+  objects they created, by ID (`owned.py`).
 
 Run the integration tests with `pytest -m integration tests/integration/preview_host
 -o addopts=""` after `docker build --target preview -t artemis-preview:l4a .`.

@@ -243,3 +243,47 @@ def test_preview_image_shares_a_base_that_has_no_adb():
 def test_default_build_target_is_still_the_live_console_with_adb():
     assert "adb" in list(dockerfile_stages().values())[-1]
     assert sb.UID == 10001
+
+
+def test_image_declared_volumes_are_refused():
+    sb.verify_image({"Config": {"Volumes": None}})
+    sb.verify_image({"Config": {}})
+    with pytest.raises(ValueError, match="/scratch"):
+        sb.verify_image({"Config": {"Volumes": {"/scratch": {}}}})
+
+
+def container_inspect(**over) -> dict:
+    base = {
+        "Mounts": [{"Type": "bind", "Destination": sb.JWKS_PATH, "RW": False}],
+        "HostConfig": {"Tmpfs": {"/tmp": "rw", sb.STATE_DIR: "rw"}},
+    }
+    return {**base, **over}
+
+
+def test_expected_container_mount_set_passes():
+    sb.verify_container(container_inspect())
+
+
+@pytest.mark.parametrize(
+    "mounts",
+    [
+        [],
+        [{"Type": "bind", "Destination": sb.JWKS_PATH, "RW": True}],
+        [
+            {"Type": "bind", "Destination": sb.JWKS_PATH, "RW": False},
+            {"Type": "volume", "Destination": "/scratch", "RW": True},
+        ],
+    ],
+)
+def test_any_other_mount_set_is_refused(mounts):
+    with pytest.raises(ValueError, match="mounts"):
+        sb.verify_container(container_inspect(Mounts=mounts))
+
+
+def test_extra_tmpfs_or_binds_are_refused():
+    host = {"Tmpfs": {"/tmp": "rw", sb.STATE_DIR: "rw", "/extra": "rw"}}
+    with pytest.raises(ValueError, match="tmpfs"):
+        sb.verify_container(container_inspect(HostConfig=host))
+    host = {"Tmpfs": {"/tmp": "rw", sb.STATE_DIR: "rw"}, "VolumesFrom": ["other"]}
+    with pytest.raises(ValueError, match="volumes-from"):
+        sb.verify_container(container_inspect(HostConfig=host))

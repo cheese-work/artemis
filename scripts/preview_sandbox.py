@@ -16,8 +16,10 @@ POOL = IPv4Network("172.31.240.0/24")  # one /28 per slot: .1 gateway, .2 previe
 HOST_PORT_BASE = 18100  # loopback port = base + slot, Traefik's upstream
 CONTAINER_PORT = 8080
 UID = 10001
-# Measured on the L4a image: 106 tasks idle, 111 peak after boot (about 100 are app
-# threads), so the planned 128 left no headroom for requests.
+# Amends the planned 128 (recorded on CHE-1291). Measured on the L4a image: 106 tasks
+# idle, 111 peak after boot. 93 of them are one `DataEngineHandler._drain_queue` thread
+# per `get_logger` name, created at `import artemis`; they cannot be reduced without
+# changing app code. 128 left 17 PIDs for the request thread pool.
 PIDS_LIMIT = 256
 BRIDGE_PREFIX = "artemis-pv"
 STATE_DIR = "/var/lib/artemis-preview"
@@ -188,3 +190,27 @@ def container_create_argv(preview: Preview, env: Mapping[str, str], jwks_bundle:
         "--entrypoint", ENTRYPOINT,
         preview.image_id, *COMMAND,
     ]  # fmt: skip
+
+
+def verify_image(image_inspect: Mapping) -> None:
+    """Run on `docker image inspect` output before `docker create`.
+
+    Docker mounts an anonymous volume for every image-declared VOLUME even with
+    `--read-only`, which would give a PR image writable host-backed storage outside the
+    tmpfs budget. There is no run flag to disable it, so such an image is refused.
+    """
+    volumes = (image_inspect.get("Config") or {}).get("Volumes") or {}
+    if volumes:
+        raise ValueError(f"image declares volumes: {sorted(volumes)}")
+
+
+def verify_container(container_inspect: Mapping) -> None:
+    """Run on `docker inspect` output of the created container, before `docker start`."""
+    mounts = {(m["Type"], m["Destination"], m["RW"]) for m in container_inspect.get("Mounts") or []}
+    if mounts != {("bind", JWKS_PATH, False)}:
+        raise ValueError(f"unexpected mounts: {sorted(mounts)}")
+    host = container_inspect.get("HostConfig") or {}
+    if set(host.get("Tmpfs") or {}) != {"/tmp", STATE_DIR}:
+        raise ValueError(f"unexpected tmpfs mounts: {sorted(host.get('Tmpfs') or {})}")
+    if host.get("Binds") or host.get("VolumesFrom"):
+        raise ValueError("unexpected binds or volumes-from")

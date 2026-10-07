@@ -47,8 +47,12 @@ def serve(ports: list[int]) -> None:
         sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
         sock.bind(("::", port))
         while True:
-            data, peer = sock.recvfrom(64)
-            sock.sendto(data, peer)
+            data, peer = sock.recvfrom(512)
+            if port != 53:
+                sock.sendto(data, peer)  # generic echo
+            elif len(data) >= 12 and data[2:4] == b"\x01\x00":
+                # a DNS server: NXDOMAIN for valid queries, silence for anything else
+                sock.sendto(data[:2] + b"\x81\x83" + data[4:], peer)
 
     for port in ports:
         for fn in (tcp, udp):
@@ -151,7 +155,8 @@ def main() -> None:
     time.sleep(1)
     targets = {
         "host_gateway": f"tcp://{pv0.gateway}:9000",
-        "host_gateway_dns_udp": f"udp://{pv0.gateway}:53",
+        "host_gateway_udp_echo": f"udp://{pv0.gateway}:9000",
+        "host_gateway_dns_udp": f"dns-udp://{pv0.gateway}:53",
         "private_10": "tcp://10.1.2.3:9000",
         "private_192_168": "tcp://192.168.5.5:9000",
         "private_172_16": "tcp://172.16.9.9:9000",
@@ -162,7 +167,7 @@ def main() -> None:
         "ipv6_host_gateway": "tcp://[fd00:240::1]:9000",
         "ipv6_forwarded": "tcp://[2001:db8::7]:9000",
         "internet_v4": "tcp://198.51.100.7:9000",
-        "internet_dns_udp": "udp://198.51.100.7:53",
+        "internet_dns_udp": "dns-udp://198.51.100.7:53",
         "other_preview": f"tcp://{pv1.ip}:8080",
     }
     control = run_probe(targets, ns0)  # no rules yet: every target must be reachable
