@@ -6,6 +6,7 @@ normal profile must keep calling the same hooks.
 
 import asyncio
 import json
+import logging
 import os
 from pathlib import Path
 import subprocess
@@ -43,6 +44,26 @@ def _forbidden_async(name: str):
         raise AssertionError(f"{name} must not run under the preview profile")
 
     return fail
+
+
+def _logging_snapshot():
+    loggers = [logging.getLogger(), *logging.Logger.manager.loggerDict.values()]
+    handlers = {
+        h: list(h.filters) for lg in loggers if isinstance(lg, logging.Logger) for h in lg.handlers
+    }
+    return sys.stdout, sys.stderr, handlers
+
+
+@pytest.fixture(autouse=True)
+def _logging_not_leaked():
+    """configure_logging() wraps std streams and filters every live handler; no test here may keep that."""
+    before = _logging_snapshot()
+    yield
+    after = _logging_snapshot()
+    assert after[:2] == before[:2], "std streams left wrapped"
+    assert {h: f for h, f in after[2].items() if h in before[2]} == {
+        h: f for h, f in before[2].items() if h in after[2]
+    }, "handler filters leaked"
 
 
 @pytest.fixture(autouse=True)
@@ -186,6 +207,7 @@ def test_run_ui_server_writes_server_info_only_in_the_normal_profile(monkeypatch
     monkeypatch.setattr(server, "clear_server_info", calls.clear_server_info)
     monkeypatch.setattr(server, "ArtemisUvicornServer", lambda _config: calls.uvicorn_server)
     monkeypatch.setattr(server, "PREVIEW_PROFILE", preview)
+    monkeypatch.setattr(server, "configure_logging", lambda **_kwargs: None)  # process-global
 
     server.run_ui_server("127.0.0.1", 8123)
 
