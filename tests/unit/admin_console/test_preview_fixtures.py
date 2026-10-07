@@ -428,9 +428,10 @@ def test_fixture_admin_must_be_explicit(monkeypatch):
 
 _BOOT_PROBE = textwrap.dedent("""
     import json, os, socket, subprocess
+    import traceback
     effects = []
     def forbidden(*args, **kwargs):
-        effects.append("network-or-process")
+        effects.append("".join(traceback.format_stack()))
         raise AssertionError("Preview attempted a network or process call")
     socket.socket.connect = forbidden
     class ForbiddenProcess(subprocess.Popen):
