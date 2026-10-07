@@ -67,9 +67,12 @@ from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 configure_logging()
 
 REDACTED_UVICORN_LOGGING = deepcopy(uvicorn.config.LOGGING_CONFIG)
-REDACTED_UVICORN_LOGGING["formatters"]["access"] = REDACTED_UVICORN_LOGGING["formatters"][
-    "default"
-].copy()
+# Redactor keeps the access record's args intact, so Uvicorn's AccessFormatter
+# still renders the status phrase; it only needs the session id added to its format.
+_access_formatter = REDACTED_UVICORN_LOGGING["formatters"]["access"]
+_access_formatter["fmt"] = _access_formatter["fmt"].replace(
+    "%(client_addr)s", "session_id=%(session_id)s %(client_addr)s"
+)
 REDACTED_UVICORN_LOGGING["filters"] = {"redaction": {"()": Redactor}}
 for handler_config in REDACTED_UVICORN_LOGGING["handlers"].values():
     handler_config["filters"] = ["redaction"]
