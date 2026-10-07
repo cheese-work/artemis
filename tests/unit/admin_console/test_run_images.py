@@ -355,13 +355,25 @@ async def test_the_session_list_names_each_runs_images_for_its_owner_only(cloudf
     ]
 
 
+def _manifest(count: int) -> list[dict]:
+    return [{"index": i, "media_type": "image/png", "url": f"/u/{i}"} for i in range(count)]
+
+
+def _launch(sid: str, manifest: list[dict]):
+    target = MagicMock()
+    target.endpoint.apply_to_environment = lambda env: None
+    target.lock_scope = "scope"
+    item = {"session_id": sid, "goal": "g", "goal_images": manifest}
+    return TaskQueueService._build_worker_invocation(item, "k", sid, "g", "flash", target, {})
+
+
 def test_the_worker_is_told_where_its_images_are_and_nothing_else_changes(cloudflare):
     sid = _owned_run(cloudflare, QA1)
     folder = _stored(cloudflare, sid, 2)
     target = MagicMock()
     target.endpoint.apply_to_environment = lambda env: None
     target.lock_scope = "scope"
-    with_images = {"session_id": sid, "goal": "g", "goal_images": [{"index": 0}, {"index": 1}]}
+    with_images = {"session_id": sid, "goal": "g", "goal_images": _manifest(2)}
 
     _, env = TaskQueueService._build_worker_invocation(
         with_images, "k", sid, "g", "flash", target, {}
@@ -433,3 +445,87 @@ def test_the_image_store_itself_refuses_an_unsafe_session_id(cloudflare):
 
     assert run_images.describe("../../evil") == []
     assert run_images.stored_paths("../../evil") == []
+
+
+# -- an accepted picture is never silently lost before the worker starts --------------
+
+
+def test_launch_fails_when_one_recorded_picture_is_gone(cloudflare):
+    sid = _owned_run(cloudflare, QA1)
+    folder = _stored(cloudflare, sid, 2)
+    (folder / "1.png").unlink()
+
+    with pytest.raises(run_images.GoalImagesMissing) as lost:
+        _launch(sid, _manifest(2))
+
+    assert "1" in str(lost.value)
+
+
+def test_launch_fails_when_every_recorded_picture_is_gone(cloudflare):
+    sid = _owned_run(cloudflare, QA1)
+    folder = _stored(cloudflare, sid, 2)
+    for entry in folder.iterdir():
+        entry.unlink()
+
+    with pytest.raises(run_images.GoalImagesMissing):
+        _launch(sid, _manifest(2))
+
+
+def test_launch_fails_when_the_whole_image_folder_is_gone(cloudflare):
+    sid = _owned_run(cloudflare, QA1)
+    import shutil
+
+    shutil.rmtree(_stored(cloudflare, sid, 1))
+
+    with pytest.raises(run_images.GoalImagesMissing):
+        _launch(sid, _manifest(1))
+
+
+def test_launch_hands_the_worker_exactly_the_recorded_pictures_in_order(cloudflare):
+    sid = _owned_run(cloudflare, QA1)
+    folder = _stored(cloudflare, sid, 3)
+
+    _, env = _launch(sid, _manifest(2))
+
+    assert json.loads(env["ARTEMIS_GOAL_IMAGES"]) == [str(folder / "0.png"), str(folder / "1.png")]
+
+
+def test_a_recorded_picture_that_became_a_link_is_not_trusted(cloudflare, tmp_path):
+    sid = _owned_run(cloudflare, QA1)
+    folder = _stored(cloudflare, sid, 1)
+    (folder / "0.png").unlink()
+    outside = tmp_path / "outside.png"
+    outside.write_bytes(_image_bytes())
+    (folder / "0.png").symlink_to(outside)
+
+    with pytest.raises(run_images.GoalImagesMissing):
+        _launch(sid, _manifest(1))
+
+
+@pytest.mark.asyncio
+async def test_a_run_with_a_lost_picture_ends_failed_and_never_starts_a_worker(
+    cloudflare, monkeypatch
+):
+    sid = _owned_run(cloudflare, QA1)
+    folder = _stored(cloudflare, sid, 1)
+    (folder / "0.png").unlink()
+    spawned = AsyncMock()
+    monkeypatch.setattr("asyncio.create_subprocess_exec", spawned)
+    monkeypatch.setattr(TaskQueueService, "_begin_task_run", MagicMock(), raising=True)
+    monkeypatch.setattr(TaskQueueService, "_task_target", MagicMock(return_value=MagicMock()))
+    persisted = AsyncMock()
+    monkeypatch.setattr(TaskQueueService, "_persist_terminal_session_status", persisted)
+    monkeypatch.setattr(TaskQueueService, "_deliver_outcome", MagicMock())
+    monkeypatch.setattr(TaskQueueService, "_release_run_slot", MagicMock())
+    store = MagicMock()
+    store.snapshot_for_spawn = AsyncMock(
+        return_value=MagicMock(environment={}, config_path=MagicMock())
+    )
+    monkeypatch.setattr("apps.admin_console.services.config_store.get_config_store", lambda: store)
+    item = {"session_id": sid, "goal": "g", "goal_images": _manifest(1)}
+
+    await TaskQueueService._execute_task_item(item)
+
+    spawned.assert_not_called()
+    persisted.assert_awaited_once()
+    assert persisted.await_args.args[1] == 1  # a failed exit, not a text-only run
