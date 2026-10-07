@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+import { LoggerService } from './logger.service';
 import { Injectable, signal, inject, computed, DestroyRef, NgZone, effect, untracked } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { Observable, catchError, map, of, switchMap } from 'rxjs';
@@ -84,6 +85,7 @@ interface SessionVideoResponse {
   providedIn: 'root'
 })
 export class AgentService {
+  private readonly logger = inject(LoggerService);
   private http = inject(HttpClient);
   private zone = inject(NgZone);
   private ownerScope = inject(OwnerScopeService);
@@ -147,8 +149,8 @@ export class AgentService {
         try {
           const info = typeof s.device_info === 'string' ? JSON.parse(s.device_info) : s.device_info;
           serial = info?.device_id || info?.device_serial || null;
-        } catch {
-          // ignore
+        } catch (error) {
+          this.logger.warn('Invalid session device metadata:', error);
         }
       }
       const finalSession: Session = {
@@ -512,7 +514,10 @@ export class AgentService {
           )
             ? selectedDeviceSerial
             : null),
-          catchError(() => of(null))
+          catchError((error) => {
+            this.logger.error('Failed to check the selected device:', error);
+            return of(null);
+          })
         )
         : of(null);
       const submission = selectedDevice$.pipe(
@@ -577,7 +582,8 @@ export class AgentService {
   private getSelectedDeviceSerial(): string | null {
     try {
       return localStorage.getItem(SELECTED_DEVICE_SERIAL_KEY);
-    } catch {
+    } catch (error) {
+      this.logger.warn('Unable to restore the selected device:', error);
       return null;
     }
   }
@@ -674,7 +680,7 @@ export class AgentService {
         this.fetchSessions();
       },
       error: (err) => {
-        console.error('Failed to stop task:', err);
+        this.logger.error('Failed to stop task:', err);
         this.fetchSessions();
         this.fetchStatus();
       }
@@ -702,7 +708,7 @@ export class AgentService {
         this.fetchStatus();
       },
       error: (err) => {
-        console.error('Failed to resume task:', err);
+        this.logger.error('Failed to resume task:', err);
       }
     });
   }
@@ -752,7 +758,7 @@ export class AgentService {
         }
       },
       error: (err) => {
-        console.error('Failed to fetch sessions from backend:', err);
+        this.logger.error('Failed to fetch sessions from backend:', err);
       }
     });
   }
@@ -792,7 +798,7 @@ export class AgentService {
           obs.complete();
         },
         error: (err) => {
-          console.error(`Failed to delete session ${sessionId}:`, err);
+          this.logger.error(`Failed to delete session ${sessionId}:`, err);
           this.fetchSessions();
           this.fetchStatus();
           obs.error(err);
@@ -836,7 +842,7 @@ export class AgentService {
           obs.complete();
         },
         error: (err) => {
-          console.error('Failed to cleanup history:', err);
+          this.logger.error('Failed to cleanup history:', err);
           this.fetchSessions();
           this.fetchStatus();
           obs.error(err);
@@ -896,7 +902,7 @@ export class AgentService {
       this.openVideoPlayer(sessionId);
     }
 
-    console.debug(`Selecting session: ${sessionId}`);
+    this.logger.debug(`Selecting session: ${sessionId}`);
     // Start reading the persisted snapshot immediately
     this.backfillSessionSteps(sessionId, loadGeneration);
     this.ensureLiveStream();
@@ -911,7 +917,7 @@ export class AgentService {
       return;
     }
 
-    console.debug('Establishing persistent unified live stream via /api/stream');
+    this.logger.debug('Establishing persistent unified live stream via /api/stream');
     // The stream is registered outside the Angular zone: high-frequency SSE
     // callbacks must not schedule a change-detection pass each. Signal writes
     // still notify the render scheduler, so the UI stays live.
@@ -1243,7 +1249,7 @@ export class AgentService {
             }
           }
         } catch (e) {
-          console.error(`Failed to parse ${eventType} event data:`, e);
+          this.logger.error(`Failed to parse ${eventType} event data:`, e);
           this.sessionLogs.update((logs) => [
             ...logs,
             {
@@ -1257,7 +1263,7 @@ export class AgentService {
     });
 
     this.eventSource.onerror = (err) => {
-      console.warn('Persistent live stream issue, browser will auto-reconnect:', err);
+      this.logger.warn('Persistent live stream issue, browser will auto-reconnect:', err);
     };
     });
   }
@@ -1397,7 +1403,7 @@ export class AgentService {
       },
       error: (err) => {
         this.pendingSnapshotRequests.delete(requestId);
-        console.error('Failed to backfill session steps:', err);
+        this.logger.error('Failed to backfill session steps:', err);
         if (
           this.currentSessionId() === sessionId
           && loadGeneration === this.sessionLoadGeneration
@@ -1426,7 +1432,7 @@ export class AgentService {
           });
         }
       },
-      error: () => {}
+      error: (error) => this.logger.error('Failed to fetch session events:', error)
     });
   }
 
@@ -1451,7 +1457,8 @@ export class AgentService {
       if (this.rawSessions().length > 0 || this.ownerScope.showAll()) return;
       this.lastPersistedSessionsJson = cached;
       this.rawSessions.set(entry.sessions);
-    } catch {
+    } catch (error) {
+      this.logger.warn('Unable to restore cached sessions:', error);
       this.clearSessionsCache();
     }
   }
@@ -1469,8 +1476,8 @@ export class AgentService {
       if (serialized === this.lastPersistedSessionsJson) return;
       this.lastPersistedSessionsJson = serialized;
       localStorage.setItem(SESSION_CACHE_KEY, serialized);
-    } catch {
-      // Storage can be unavailable in private browsing or embedded contexts.
+    } catch (error) {
+      this.logger.warn('Unable to cache sessions:', error);
     }
   }
 
@@ -1478,8 +1485,8 @@ export class AgentService {
     this.lastPersistedSessionsJson = null;
     try {
       localStorage.removeItem(SESSION_CACHE_KEY);
-    } catch {
-      // No-op when browser storage is unavailable.
+    } catch (error) {
+      this.logger.warn('Unable to clear cached sessions:', error);
     }
   }
 
@@ -1771,7 +1778,7 @@ export class AgentService {
       error: (err) => {
         if (requestSequence <= this.statusAppliedSequence) return;
         this.statusAppliedSequence = requestSequence;
-        console.error('Failed to fetch status from backend:', err);
+        this.logger.error('Failed to fetch status from backend:', err);
         this.agentStatus.set('offline');
         this.runningSessionId.set(null);
         this.runningGoal.set(null);
@@ -1836,7 +1843,7 @@ export class AgentService {
         ]);
       },
       error: (err) => {
-        console.error(`Failed to fetch checks for session ${sessionId}:`, err);
+        this.logger.error(`Failed to fetch checks for session ${sessionId}:`, err);
       }
     });
   }
@@ -1961,7 +1968,7 @@ export class AgentService {
         }
       },
       error: (err) => {
-        console.error(`Failed to fetch notes for session ${sessionId}:`, err);
+        this.logger.error(`Failed to fetch notes for session ${sessionId}:`, err);
       }
     });
   }

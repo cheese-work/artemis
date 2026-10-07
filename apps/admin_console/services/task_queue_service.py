@@ -60,6 +60,7 @@ from artemis.runtime import (
 )
 from artemis.runtime.adb_endpoint import InvalidAdbEndpoint
 from artemis.runtime.host_endpoints import host_endpoints
+from artemis.utils.redaction import bind_session, goal_metadata, write_goal_file
 
 logger = logging.getLogger(__name__)
 
@@ -718,7 +719,8 @@ class TaskQueueService:
             sys.executable,
             "-m",
             "artemis.main",
-            goal,
+            "--goal-file",
+            write_goal_file(goal),
             "--profile",
             profile,
             "--test-name",
@@ -787,7 +789,7 @@ class TaskQueueService:
             transferred = DeviceExecutionLock.transfer_reservation(
                 str(queue_ticket),
                 proc.pid,
-                description=f"{ingress_type} task: {goal[:120]}",
+                description=f"{ingress_type} task: {goal_metadata(goal)}",
                 device_id=device_serial or "pending",
                 session_id=str(sess_id) if sess_id else None,
                 ingress=ingress_type,
@@ -852,7 +854,7 @@ class TaskQueueService:
             logger.exception("[QueueWorker] Could not settle terminal status for %s", sess_id)
             outcome = None
         if outcome is not None and outcome.status:
-            print(f"[QueueWorker] Session {sess_id} outcome '{outcome.status}'")
+            logger.info("event=task_finished session_id=%s status=%s", sess_id, outcome.status)
             return outcome.status
         fallback = "cancelled" if manual_stop else ("completed" if returncode == 0 else "failed")
         logger.error(
@@ -1119,15 +1121,15 @@ class TaskQueueService:
             return bool(
                 notify(
                     conversation_id=conversation_id or "",
-                    message=f"Artemis autonomous task '{goal}' finished with status '{status}'.\nTrace ID: {sess_id}",
-                    title=f"Task {status.capitalize()}: {goal[:40]}",
+                    message=f"Artemis autonomous task {goal_metadata(goal)} finished with status '{status}'.\nTrace ID: {sess_id}",
+                    title=f"Task {status.capitalize()}: {sess_id}",
                     event_type=status,
                     payload={
                         "event_id": event_id,
                         "trace_id": sess_id,
                         "session_id": sess_id,
                         "status": status,
-                        "goal": goal,
+                        "goal_length": len(goal),
                     },
                 )
             )
@@ -1181,10 +1183,12 @@ class TaskQueueService:
         sess_id = task_item.get("session_id")
         run_key = str(sess_id) if sess_id else uuid.uuid4().hex
         goal = task_item.get("goal")
+        bind_session(str(sess_id) if sess_id else None, goal if isinstance(goal, str) else None)
         profile = task_item.get("profile", "flash")
         proc: asyncio.subprocess.Process | None = None
         output_task: asyncio.Task[None] | None = None
         config_snapshot = None
+        cmd = None
         state.executing_run_keys.add(run_key)
         try:
             if not isinstance(goal, str) or not goal.strip():
@@ -1206,8 +1210,11 @@ class TaskQueueService:
             )
 
             device_serial = task_item.get("device_serial")
-            print(
-                f"[QueueWorker] Starting task [{sess_id}]: '{goal}' (profile: {profile}, device: {device_serial or 'auto'}, outputter: {bool(task_item.get('expected_output') or task_item.get('enable_outputter'))})"
+            logger.info(
+                "event=task_started session_id=%s %s profile=%s",
+                sess_id,
+                goal_metadata(goal),
+                profile,
             )
             # From here a worker process may exist before it is registered: the host
             # NACK (requeue_starting) must treat this run as spawned.
@@ -1224,7 +1231,7 @@ class TaskQueueService:
 
             # 3. Await subprocess completion
             returncode = await cls._wait_for_worker_process(proc)
-            print(f"[QueueWorker] Task [{sess_id}] exited with returncode {returncode}")
+            logger.info("event=task_exited session_id=%s returncode=%s", sess_id, returncode)
 
             manual_stop = run_key in state.manually_stopped_run_ids or bool(
                 sess_id and str(sess_id) in state.cancelled_session_ids
@@ -1257,6 +1264,11 @@ class TaskQueueService:
         finally:
             host_admission.mark(run_key, RunPhase.CLEANING_UP)
             await cls._finish_output_forwarder(output_task)
+            if cmd is not None and "--goal-file" in cmd:
+                try:
+                    Path(cmd[cmd.index("--goal-file") + 1]).unlink(missing_ok=True)
+                except OSError:
+                    logger.exception("event=worker_goal_cleanup_failed")
             if config_snapshot is not None:
                 try:
                     config_snapshot.config_path.unlink(missing_ok=True)
@@ -1421,7 +1433,7 @@ class TaskQueueService:
         assigned_serial = device_serial
 
         queue_ticket = DeviceExecutionLock.reserve(
-            description=f"{ingress} task: {goal[:120]}",
+            description=f"{ingress} task: {goal_metadata(goal)}",
             device_id=assigned_serial or "pending",
             session_id=sess_id,
             ingress=ingress,

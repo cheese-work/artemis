@@ -195,6 +195,11 @@ class BridgeSessionService:
             async with self._lock:
                 self._sessions[session.session_id] = session
             registered = True
+            logger.info(
+                "event=bridge_lease_created session_id=%s serial=%s",
+                session.session_id,
+                session.serial,
+            )
             return session
         finally:
             if not registered:
@@ -203,10 +208,22 @@ class BridgeSessionService:
 
     async def connect(self, session: BridgeSession) -> str:
         session.adb_connect_attempted = True
-        output = await _run_adb_command("connect", session.serial)
-        success = (f"connected to {session.serial}", f"already connected to {session.serial}")
-        if not output.lower().startswith(tuple(message.lower() for message in success)):
-            raise RuntimeError(f"adb connect failed: {output}")
+        started = time.monotonic()
+        try:
+            output = await _run_adb_command("connect", session.serial)
+            success = (f"connected to {session.serial}", f"already connected to {session.serial}")
+            if not output.lower().startswith(tuple(message.lower() for message in success)):
+                raise RuntimeError(f"adb connect failed: {output}")
+        except Exception:
+            logger.exception(
+                "event=bridge_adb_connect session_id=%s result=failed", session.session_id
+            )
+            raise
+        logger.info(
+            "event=bridge_adb_connect session_id=%s result=connected duration_ms=%d",
+            session.session_id,
+            int((time.monotonic() - started) * 1000),
+        )
         return session.serial
 
     async def revoke(self, session_id: str) -> None:
@@ -227,8 +244,14 @@ class BridgeSessionService:
         try:
             if session.adb_connect_attempted:
                 await _run_adb_command("disconnect", session.serial)
+                logger.info(
+                    "event=bridge_adb_disconnect session_id=%s result=disconnected",
+                    session.session_id,
+                )
         except Exception:
-            logger.exception("Failed to disconnect device bridge serial %s", session.serial)
+            logger.exception(
+                "event=bridge_adb_disconnect session_id=%s result=failed", session.session_id
+            )
         finally:
             if session.listener is not None:
                 session.listener.close()

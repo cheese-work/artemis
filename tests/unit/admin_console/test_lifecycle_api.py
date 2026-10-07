@@ -700,8 +700,16 @@ async def test_restart_drain_notifies_from_the_persisted_context_with_no_queue_i
     TaskQueueService._drain_outcome_events()
 
     notify.assert_called_once()
-    assert notify.call_args.kwargs["conversation_id"] == "conv-9"
-    assert "Open X" in notify.call_args.kwargs["message"]
+    notification = notify.call_args.kwargs
+    assert notification["conversation_id"] == "conv-9"
+    assert notification["message"] == (
+        "Artemis autonomous task goal_length=6 goal_sha256=8254eef147a1 "
+        f"finished with status 'interrupted'.\nTrace ID: {session_id}"
+    )
+    assert notification["title"] == f"Task Interrupted: {session_id}"
+    assert notification["payload"]["goal_length"] == 6
+    assert "goal" not in notification["payload"]
+    assert "Open X" not in str(notification)
     assert _outbox_pending(db_path) == 0
 
 
