@@ -12,10 +12,11 @@ export class RunsService {
   /** The library's last URL query, so the viewer can link back to the same list. */
   public readonly lastLibraryQuery = signal<Record<string, string>>({});
 
-  public list(filters: RunFilters, options: { cursor?: string; limit?: number } = {}): Observable<RunPage> {
+  public list(filters: RunFilters, options: { cursor?: string; limit?: number; scope?: 'mine' | 'everyone' } = {}): Observable<RunPage> {
     let params = new HttpParams().set('limit', String(options.limit ?? 50));
     for (const [key, value] of Object.entries(apiParams(filters))) params = params.set(key, value);
     if (options.cursor) params = params.set('cursor', options.cursor);
+    if (options.scope) params = params.set('scope', options.scope);
     return this.http.get<RunPage>('/api/runs', { params });
   }
 

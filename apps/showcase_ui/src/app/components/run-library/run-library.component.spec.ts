@@ -117,6 +117,53 @@ describe('RunLibraryComponent', () => {
   });
 
   describe('rows', () => {
+    it('restores Everyone in the URL with filters and read-only owner-labelled links', async () => {
+      await open('/runs?scope=everyone&q=login&status=failed&from=2026-10-01');
+      expect(runs.list.calls.mostRecent().args[1]).toEqual({ scope: 'everyone' });
+      expect(q('.run-owner')?.textContent).toContain('qa@example.test');
+      expect(q<HTMLAnchorElement>('.run-row')?.getAttribute('href')).toContain('review=1');
+      expect(root.textContent).toContain('Videos and screenshots are not redacted');
+      expect(qa<HTMLButtonElement>('[role="tab"]').map((tab) => tab.getAttribute('aria-selected')))
+        .toEqual(['false', 'true']);
+    });
+
+    it('switches tabs by keyboard without losing search, status or date filters', async () => {
+      await open('/runs?q=login&status=failed&from=2026-10-01&to=2026-10-07&scroll=100');
+      const mine = q<HTMLButtonElement>('[role="tab"]')!;
+      mine.focus();
+      mine.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true, cancelable: true }));
+      await settle();
+      expect(router.url).toContain('scope=everyone');
+      expect(router.url).toContain('q=login');
+      expect(router.url).toContain('status=failed');
+      expect(router.url).toContain('from=2026-10-01');
+      expect(router.url).toContain('to=2026-10-07');
+      expect(router.url).not.toContain('scroll=');
+      expect(document.activeElement).toBe(qa<HTMLButtonElement>('[role="tab"]')[1]);
+      component.clearFilters();
+      await settle();
+      expect(router.url).toBe('/runs?scope=everyone');
+      qa<HTMLButtonElement>('[role="tab"]')[1].dispatchEvent(new KeyboardEvent('keydown', { key: 'Home', bubbles: true }));
+      await settle();
+      expect(router.url).toBe('/runs');
+    });
+
+    it('explains an empty team tab separately from an empty My runs tab', async () => {
+      await open('/runs?scope=everyone', of(page([])));
+      expect(root.textContent).toContain('No shared runs yet.');
+      expect(root.textContent).not.toContain('Start one in Workspace');
+    });
+
+    it('characterizes status and date URL filters without changing the selected device', async () => {
+      localStorage.setItem(SELECTED_DEVICE_SERIAL_KEY, 'my-phone');
+      await open('/runs?status=failed&from=2026-10-01&to=2026-10-07');
+      expect(component.filters().status).toBe('failed');
+      expect(component.filters().from).toBe('2026-10-01');
+      expect(component.filters().to).toBe('2026-10-07');
+      expect(q<HTMLAnchorElement>('.run-row')?.getAttribute('href')).toBe(`/runs/${ID}`);
+      expect(localStorage.getItem(SELECTED_DEVICE_SERIAL_KEY)).toBe('my-phone');
+    });
+
     it('lists runs newest first as links with prompt, outcome, recording, device and computer, and date', async () => {
       await open(
         '/runs',

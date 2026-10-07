@@ -20,7 +20,7 @@ limitations under the License.
     @if (reviewMode) {
       <div class="review-surface">
         @if (reviewRunId(); as id) {
-          <app-run-viewer [runId]="id"></app-run-viewer>
+          <app-run-viewer [runId]="id" [readOnly]="reviewReadOnly()"></app-run-viewer>
         } @else {
           <app-run-library></app-run-library>
         }
@@ -237,9 +237,11 @@ limitations under the License.
   }
 
   <!-- Right Sidebar Panel: Chat Interface Mock -->
+  @if (!reviewMode) {
   <aside class="right-panel" [style.width.px]="rightPanelWidth()">
     <app-chat-interface></app-chat-interface>
   </aside>
+  }
 
   <!-- Floating Video Replay Player Modal / Window -->
   <app-floating-video-player></app-floating-video-player>

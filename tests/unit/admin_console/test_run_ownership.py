@@ -163,6 +163,60 @@ def _run_ids(response) -> set[str]:
     return {row["session_id"] for row in response.json()["runs"]}
 
 
+@pytest.mark.asyncio
+async def test_everyone_catalog_is_redacted_read_only_and_keeps_mine_private(cloudflare):
+    other = _run(cloudflare, QA1)
+    mine = _run(cloudflare, QA2)
+    unowned = _run(cloudflare, None)
+    with sqlite3.connect(cloudflare) as conn:
+        conn.execute(
+            "UPDATE sessions SET initial_goal = ? WHERE session_id = ?",
+            ('Login with password="team-secret"', other),
+        )
+    response = await _get(QA2, "/api/runs", scope="everyone")
+    assert _run_ids(response) == {other, mine}
+    assert unowned not in _run_ids(response)
+    rows = {row["session_id"]: row for row in response.json()["runs"]}
+    assert rows[other]["requested_by"] == QA1
+    assert all(row["read_only"] for row in rows.values())
+    assert "team-secret" not in response.text
+    assert _run_ids(await _get(QA2, "/api/runs")) == {mine}
+    shared = await _get(QA2, f"/api/runs/{other}")
+    assert shared.json()["read_only"] is True
+    assert "team-secret" not in shared.text
+    own = await _get(QA1, f"/api/runs/{other}")
+    assert own.json()["read_only"] is False
+    assert "team-secret" in own.text
+
+
+@pytest.mark.asyncio
+async def test_everyone_scope_requires_identity_and_does_not_widen_queue(cloudflare):
+    _run(cloudflare, QA1, queued=True)
+    assert (await _get(None, "/api/runs", scope="everyone")).status_code == 403
+    assert (await _get(QA2, "/api/status", scope="everyone")).status_code == 400
+    assert (await _get(QA2, "/api/runs", scope="all")).status_code == 403
+    assert (await _get(QA2, "/api/status")).json()["queue"] == []
+
+
+@pytest.mark.asyncio
+async def test_everyone_filters_and_pagination_do_not_expose_unowned_runs(cloudflare):
+    wanted = [_run(cloudflare, QA1, status="failed") for _ in range(3)]
+    _run(cloudflare, None, status="failed")
+    _run(cloudflare, QA2, status="completed")
+    first = await _get(QA2, "/api/runs", scope="everyone", status="failed", limit=2)
+    assert len(first.json()["runs"]) == 2
+    second = await _get(
+        QA2,
+        "/api/runs",
+        scope="everyone",
+        status="failed",
+        limit=2,
+        cursor=first.json()["next_cursor"],
+    )
+    assert _run_ids(first) | _run_ids(second) == set(wanted)
+    assert second.json()["next_cursor"] is None
+
+
 def _queue_ids(response) -> set[str]:
     assert response.status_code == 200, response.text
     return {item["session_id"] for item in response.json()["queue"]}

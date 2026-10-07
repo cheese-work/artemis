@@ -19,7 +19,7 @@ import { provideHttpClientTesting } from '@angular/common/http/testing';
 import { signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { provideRouter } from '@angular/router';
-import { EMPTY, of } from 'rxjs';
+import { EMPTY, defer, of } from 'rxjs';
 import { DeviceInfo } from '../../core/models/system.model';
 import { Session } from '../../core/models/session.model';
 import { AgentService } from '../../services/agent.service';
@@ -27,6 +27,8 @@ import { HostsService } from '../../services/hosts.service';
 import { WEBUSB_DEVICE_MANAGER } from '../../services/usb-device-relay.service';
 import { RegistryDevice } from '../../core/models/host.model';
 import { SystemService } from '../../services/system.service';
+import { RunsService } from '../../services/runs.service';
+import { sessionStatusView } from '../../utils/run-status.util';
 import { ChatInterfaceComponent } from './chat-interface.component';
 
 function session(serial: string): Session {
@@ -75,6 +77,21 @@ describe('ChatInterfaceComponent device chip', () => {
         provideHttpClientTesting(),
         provideRouter([]),
         { provide: AgentService, useValue: agentService },
+        { provide: RunsService, useValue: {
+          lastLibraryQuery: signal({}),
+          list: () => defer(() => of({
+            runs: sessions().filter((session) => !sessionStatusView(session.status, null).active).map((session) => {
+              const info = typeof session.device_info === 'string' ? JSON.parse(session.device_info) : session.device_info;
+              return {
+                session_id: session.session_id, prompt: session.initial_goal, status: session.status,
+                start_time: session.start_time, end_time: null, host_id: null,
+                device_ref: { host_id: null, serial: session.device_serial ?? session.device_id ?? info?.device_id ?? null },
+                requested_by: null, interrupt_reason: null, pinned: false, recordings: []
+              };
+            }),
+            next_cursor: null, warnings: []
+          }))
+        } },
         {
           provide: HostsService,
           useValue: { list: () => of({ enabled: true, hosts: [], devices: registryDevices }) }
@@ -105,9 +122,23 @@ describe('ChatInterfaceComponent device chip', () => {
     sessions.set([session(serial)]);
     const fixture = TestBed.createComponent(ChatInterfaceComponent);
     fixture.detectChanges();
-    const chip = (fixture.nativeElement as HTMLElement).querySelector('.task-device');
+    const chip = (fixture.nativeElement as HTMLElement).querySelector('.task-device, .run-device');
     return (chip?.textContent ?? '').replace(/\s+/g, ' ').trim();
   }
+
+  it('characterizes the past-run list separately from the active queue', () => {
+    sessions.set([
+      { ...session('emulator-5554'), session_id: 'past', status: 'failed', initial_goal: 'Past prompt' },
+      { ...session('emulator-5554'), session_id: 'live', status: 'running', initial_goal: 'Live prompt' }
+    ]);
+    const fixture = TestBed.createComponent(ChatInterfaceComponent);
+    fixture.detectChanges();
+    const history = (fixture.nativeElement as HTMLElement).querySelector('.history-section');
+    expect(history?.textContent).toContain('Past prompt');
+    expect(history?.textContent).toContain('Failed');
+    expect(history?.textContent).not.toContain('Live prompt');
+    expect(fixture.componentInstance.activeQueue().map((item) => item.session_id)).toEqual(['live']);
+  });
 
   it('labels a browser-relayed phone by model and kind, not by its address', () => {
     const text = chipText('127.0.0.1:36411', [device({})]);
@@ -160,7 +191,7 @@ describe('ChatInterfaceComponent device chip', () => {
     ]);
     const fixture = TestBed.createComponent(ChatInterfaceComponent);
     fixture.detectChanges();
-    const chip = (fixture.nativeElement as HTMLElement).querySelector('.task-device');
+    const chip = (fixture.nativeElement as HTMLElement).querySelector('.task-device, .run-device');
     const text = (chip?.textContent ?? '').replace(/\s+/g, ' ').trim();
     expect(text).toContain('Pixel 8');
     expect(text).not.toContain('Unknown device');
@@ -270,9 +301,9 @@ describe('ChatInterfaceComponent device chip', () => {
         const fixture = TestBed.createComponent(ChatInterfaceComponent);
         fixture.detectChanges();
         const root = fixture.nativeElement as HTMLElement;
-        const badge = root.querySelector('.task-badge');
-        expect(badge?.textContent?.trim()).toBe(label);
-        const inHistory = root.querySelector('.history-section .task-badge') !== null;
+        const badge = root.querySelector('.task-badge, .run-outcome');
+        expect(badge?.textContent).toContain(label);
+        const inHistory = root.querySelector('.history-section .run-outcome') !== null;
         expect(inHistory).toBe(where === 'history');
       });
     }

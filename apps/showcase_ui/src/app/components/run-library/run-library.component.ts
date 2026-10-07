@@ -5,19 +5,21 @@ import {
   ElementRef,
   computed,
   inject,
+  input,
   signal,
   viewChild
 } from '@angular/core';
 import { HttpErrorResponse } from '@angular/common/http';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
-import { DatePipe, Location } from '@angular/common';
+import { Location } from '@angular/common';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 import { Subscription } from 'rxjs';
-import { Computer } from '../../core/models/host.model';
+import { Computer, RegistryDevice } from '../../core/models/host.model';
 import { RunSummary } from '../../core/models/run.model';
 import { HostsService } from '../../services/hosts.service';
 import { RunsService } from '../../services/runs.service';
-import { mapRecording } from '../../utils/recording-state.util';
+import { RunCardComponent } from './run-card.component';
+import { LabelableDevice } from '../../utils/device-label.util';
 import {
   EMPTY_FILTERS,
   RunFilters,
@@ -29,9 +31,7 @@ import {
 } from '../../utils/run-filters.util';
 import {
   RUN_STRINGS,
-  expiresText,
-  interruptReason,
-  truncate
+  MEDIA_NOTICE
 } from '../../utils/run-library-strings';
 import { runStatusView } from '../../utils/run-status.util';
 import { classifySearch } from '../../utils/run-search.util';
@@ -39,9 +39,10 @@ import { classifySearch } from '../../utils/run-search.util';
 @Component({
   selector: 'app-run-library',
   standalone: true,
-  imports: [RouterLink, DatePipe],
+  imports: [RouterLink, RunCardComponent],
   templateUrl: './run-library.component.html',
   styleUrl: './run-library.component.scss',
+  host: { '[class.compact]': 'compact()' },
   changeDetection: ChangeDetectionStrategy.OnPush
 })
 export class RunLibraryComponent {
@@ -54,8 +55,11 @@ export class RunLibraryComponent {
 
   public readonly strings = RUN_STRINGS;
   public readonly statusOptions = STATUS_FILTERS.map((value) => ({ value, label: runStatusView(value).label }));
-  public readonly outcome = runStatusView;
-  public readonly interruptReason = interruptReason;
+  public readonly compact = input(false);
+  public readonly recordedDevices = input<ReadonlyMap<string, LabelableDevice>>(new Map());
+  public readonly mediaNotice = MEDIA_NOTICE;
+  public readonly scope = signal<'mine' | 'everyone'>('mine');
+  public readonly runQuery = computed(() => this.scope() === 'everyone' ? { scope: 'everyone', review: '1' } : {});
 
   /** What the URL says; the list always shows exactly this. */
   public readonly filters = signal<RunFilters>(EMPTY_FILTERS);
@@ -67,13 +71,13 @@ export class RunLibraryComponent {
   public readonly loadingMore = signal(false);
   public readonly error = signal<'failed' | 'not_ready' | null>(null);
   public readonly computers = signal<Computer[]>([]);
+  public readonly devices = signal<RegistryDevice[]>([]);
 
   public readonly active = computed(() => hasActiveFilters(this.filters()));
   public readonly moreOpen = computed(() => {
     const { device, host, requester } = this.filters();
     return !!(device || host || requester);
   });
-  public readonly nowSeconds = Math.floor(Date.now() / 1000);
 
   private readonly scrollRegion = viewChild<ElementRef<HTMLElement>>('scrollRegion');
   private request: Subscription | null = null;
@@ -85,13 +89,19 @@ export class RunLibraryComponent {
     this.hostsApi
       .list()
       .pipe(takeUntilDestroyed(this.destroyRef))
-      .subscribe({ next: (response) => this.computers.set(response.hosts), error: () => undefined });
+      .subscribe({ next: (response) => {
+        this.computers.set(response.hosts);
+        this.devices.set(response.devices);
+      }, error: () => undefined });
 
     this.route.queryParamMap.pipe(takeUntilDestroyed(this.destroyRef)).subscribe((params) => {
       const filters = filtersFromQuery(params);
       const scroll = scrollFromQuery(params);
-      const key = JSON.stringify(filters);
-      this.runsApi.lastLibraryQuery.set({ ...filtersToQuery(filters), ...(scroll ? { scroll: String(scroll) } : {}) });
+      const scope = params.get('scope') === 'everyone' ? 'everyone' : 'mine';
+      const key = JSON.stringify({ filters, scope });
+      if (scope !== this.scope()) this.rows.set([]);
+      this.scope.set(scope);
+      this.runsApi.lastLibraryQuery.set({ ...this.query(filters), ...(scroll ? { scroll: String(scroll) } : {}) });
       if (key === this.lastFiltersKey) return; // only the scroll position changed
       // Restore the saved position on the first load only: a changed filter is a different list.
       this.pendingScroll = this.lastFiltersKey === null ? scroll : 0;
@@ -118,10 +128,10 @@ export class RunLibraryComponent {
       .get(intent.id)
       .pipe(takeUntilDestroyed(this.destroyRef))
       .subscribe({
-        next: (run) => void this.router.navigate(['/runs', run.session_id]),
+        next: (run) => void this.router.navigate(['/runs', run.session_id], { queryParams: this.runQuery() }),
         error: (error: HttpErrorResponse) => {
           // 409 and 410 are answers the viewer can explain; anything else may be a word that looks like an id.
-          if (error.status === 409 || error.status === 410) void this.router.navigate(['/runs', intent.id]);
+          if (error.status === 409 || error.status === 410) void this.router.navigate(['/runs', intent.id], { queryParams: this.runQuery() });
           else this.apply({ q: intent.id });
         }
       });
@@ -135,11 +145,28 @@ export class RunLibraryComponent {
     this.apply(EMPTY_FILTERS);
   }
 
+  public setScope(scope: 'mine' | 'everyone'): void {
+    void this.router.navigate([], { relativeTo: this.route, queryParams: this.query(this.filters(), scope), replaceUrl: true });
+  }
+
+  public onTabKey(event: KeyboardEvent, scope: 'mine' | 'everyone'): void {
+    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+    event.preventDefault();
+    const next = event.key === 'Home' ? 'mine' : event.key === 'End' ? 'everyone' : scope === 'mine' ? 'everyone' : 'mine';
+    this.setScope(next);
+    const list = (event.currentTarget as HTMLElement).parentElement;
+    list?.querySelector<HTMLButtonElement>(`[data-scope="${next}"]`)?.focus();
+  }
+
+  private query(filters = this.filters(), scope = this.scope()): Record<string, string> {
+    return { ...filtersToQuery(filters), ...(scope === 'everyone' ? { scope } : {}) };
+  }
+
   private apply(change: Partial<RunFilters>): void {
     const next = { ...this.filters(), ...change };
     void this.router.navigate([], {
       relativeTo: this.route,
-      queryParams: filtersToQuery(next),
+      queryParams: this.query(next),
       replaceUrl: true
     });
   }
@@ -151,7 +178,7 @@ export class RunLibraryComponent {
       const top = Math.floor(this.scrollRegion()?.nativeElement.scrollTop ?? 0);
       void this.router.navigate([], {
         relativeTo: this.route,
-        queryParams: { ...filtersToQuery(this.filters()), ...(top > 0 ? { scroll: top } : {}) },
+        queryParams: { ...this.query(), ...(top > 0 ? { scroll: top } : {}) },
         replaceUrl: true
       });
     }, 250);
@@ -166,7 +193,7 @@ export class RunLibraryComponent {
     if (this.scrollTimer) clearTimeout(this.scrollTimer);
     this.scrollTimer = null;
     const top = Math.floor(this.scrollRegion()?.nativeElement.scrollTop ?? 0);
-    const query = { ...filtersToQuery(this.filters()), ...(top > 0 ? { scroll: String(top) } : {}) };
+    const query = { ...this.query(), ...(top > 0 ? { scroll: String(top) } : {}) };
     this.runsApi.lastLibraryQuery.set(query);
     const [path, search = ''] = this.router
       .serializeUrl(this.router.createUrlTree([], { relativeTo: this.route, queryParams: query }))
@@ -192,7 +219,9 @@ export class RunLibraryComponent {
     if (!more) this.nextCursor.set(null);
     (more ? this.loadingMore : this.loading).set(true);
     this.request = this.runsApi
-      .list(this.filters(), more ? { cursor: this.nextCursor() ?? undefined } : undefined)
+      .list(this.filters(), this.scope() === 'everyone'
+        ? { scope: 'everyone', ...(more ? { cursor: this.nextCursor() ?? undefined } : {}) }
+        : more ? { cursor: this.nextCursor() ?? undefined } : undefined)
       .subscribe({
         next: (page) => {
           this.rows.set(more ? [...this.rows(), ...page.runs] : page.runs);
@@ -228,30 +257,13 @@ export class RunLibraryComponent {
 
   // -- row presentation ---------------------------------------------------
 
-  public prompt(run: RunSummary): string {
-    return truncate(run.prompt);
+  public computer(run: RunSummary): string {
+    return run.host_id === null ? 'A browser' : (this.computers().find((computer) => computer.id === run.host_id)?.name ?? 'Unknown computer');
   }
 
-  public recordingBadge(run: RunSummary): string {
-    const recording = run.recordings[0];
-    return mapRecording({
-      capture: (recording?.capture ?? null) as never,
-      transfer: (recording?.transfer ?? null) as never,
-      playback: null
-    }).badge;
-  }
-
-  public device(run: RunSummary): string {
-    const phone = run.device_ref?.serial ?? 'Unknown phone';
-    const computer =
-      run.host_id === null
-        ? 'A browser'
-        : (this.computers().find((c) => c.id === run.host_id)?.name ?? 'Unknown computer');
-    return `${phone} · ${computer}`;
-  }
-
-  public expires(run: RunSummary): string | null {
-    return expiresText(run.expires_at, this.nowSeconds);
+  public device(run: RunSummary): LabelableDevice | null {
+    return this.recordedDevices().get(run.session_id)
+      ?? this.devices().find((device) => device.serial === run.device_ref?.serial) ?? null;
   }
 
   public trackRun(_: number, run: RunSummary): string {

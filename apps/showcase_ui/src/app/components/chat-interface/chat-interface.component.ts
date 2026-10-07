@@ -18,7 +18,7 @@ import { LoggerService } from '../../services/logger.service';
 import { Component, ChangeDetectionStrategy, inject, computed, effect, signal, untracked } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
-import { RouterLink } from '@angular/router';
+import { RunLibraryComponent } from '../run-library/run-library.component';
 import { AgentService } from '../../services/agent.service';
 import { SystemService } from '../../services/system.service';
 import { HostsService } from '../../services/hosts.service';
@@ -38,7 +38,7 @@ export type { MarkdownSegment, MarkdownLine, NoteMilestone, ParsedNote };
 @Component({
   selector: 'app-chat-interface',
   standalone: true,
-  imports: [CommonModule, FormsModule, RouterLink, RunIdCopyComponent],
+  imports: [CommonModule, FormsModule, RunLibraryComponent, RunIdCopyComponent],
   templateUrl: './chat-interface.component.html',
   styleUrl: './chat-interface.component.scss',
   changeDetection: ChangeDetectionStrategy.OnPush
@@ -86,11 +86,14 @@ export class ChatInterfaceComponent {
     });
   });
 
-  /**
-   * Filtered computed list of historical/completed tasks (completed, failed, or cancelled)
-   */
-  public historyTasks = computed(() => {
-    return this.agentService.sessions().filter((s) => !this.statusView(s).active);
+  public readonly recordedDevices = computed(() => {
+    const devices = new Map<string, NonNullable<ReturnType<typeof recordedDevice>>>();
+    for (const session of this.agentService.sessions()) {
+      const serial = this.getDeviceSerial(session);
+      const device = serial ? recordedDevice(session, serial) : null;
+      if (device) devices.set(session.session_id, device);
+    }
+    return devices;
   });
 
   /**

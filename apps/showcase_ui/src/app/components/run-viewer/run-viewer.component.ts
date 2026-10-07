@@ -76,6 +76,8 @@ export class RunViewerComponent {
 
   /** Full run id or its 8-character prefix, from the URL. */
   public readonly runId = input.required<string>();
+  public readonly readOnly = input(false);
+  public readonly readOnlyRun = computed(() => this.readOnly() || !!this.run()?.read_only);
 
   public readonly strings = RUN_STRINGS;
   public readonly interruptReason = interruptReason;
@@ -104,8 +106,8 @@ export class RunViewerComponent {
   public readonly actions = computed<RunAction[]>(() => [
     { id: 'share', label: this.strings.copyLink },
     { id: 'download', label: this.strings.download },
-    { id: 'pin', label: this.run()?.pinned ? this.strings.unpin : this.strings.pin, pressed: this.run()?.pinned ?? false },
-    ...(this.isAdmin() ? [{ id: 'delete', label: this.strings.delete, className: 'action-button danger' }] : [])
+    ...(!this.readOnlyRun() ? [{ id: 'pin', label: this.run()?.pinned ? this.strings.unpin : this.strings.pin, pressed: this.run()?.pinned ?? false }] : []),
+    ...(this.isAdmin() && !this.readOnlyRun() ? [{ id: 'delete', label: this.strings.delete, className: 'action-button danger' }] : [])
   ]);
 
   public readonly lastQuery = this.runsApi.lastLibraryQuery;
@@ -347,6 +349,7 @@ export class RunViewerComponent {
   }
 
   public ask(kind: DialogKind, event?: Event): void {
+    if (this.readOnlyRun() && (kind === 'delete' || kind === 'unpin_expired')) return;
     this.opener = (event?.currentTarget as HTMLElement | null) ?? null;
     this.dialogKind.set(kind);
     this.dialogEl()?.nativeElement.showModal();
@@ -374,6 +377,7 @@ export class RunViewerComponent {
   }
 
   public togglePin(event: Event): void {
+    if (this.readOnlyRun()) return;
     const run = this.run();
     if (!run) return;
     if (!run.pinned) return this.setPinned(true);
@@ -382,6 +386,7 @@ export class RunViewerComponent {
   }
 
   private setPinned(pinned: boolean): void {
+    if (this.readOnlyRun()) return;
     const run = this.run();
     if (!run) return;
     this.actionError.set(null);
@@ -443,6 +448,7 @@ export class RunViewerComponent {
   }
 
   private remove(): void {
+    if (this.readOnlyRun()) return;
     const run = this.run();
     if (!run) return;
     this.actionRequests.add(

@@ -16,6 +16,13 @@ describe('RunsService', () => {
 
   afterEach(() => http.verify());
 
+  it('opts into the read-only team catalog without widening other endpoints', () => {
+    service.list(EMPTY_FILTERS, { scope: 'everyone' }).subscribe();
+    const request = http.expectOne((candidate) => candidate.url === '/api/runs');
+    expect(request.request.params.get('scope')).toBe('everyone');
+    request.flush({ runs: [], next_cursor: null, warnings: [] });
+  });
+
   it('lists runs with only the filters that are set, plus cursor and limit', () => {
     service.list({ ...EMPTY_FILTERS, q: 'login flow', status: 'failed' }, { cursor: 'abc', limit: 25 }).subscribe();
     const req = http.expectOne((r) => r.url === '/api/runs');

@@ -83,6 +83,7 @@ describe('Workspace review mode', () => {
     await go('/runs');
     expect(q('.workspace-container.review-mode')).not.toBeNull();
     expect(q('app-run-library')).not.toBeNull();
+    expect(q('.right-panel')).toBeNull();
     expect(q('app-agent-stream')).toBeNull();
     expect(q('.workspace-floating-bar-wrapper')).not.toBeNull();
   });

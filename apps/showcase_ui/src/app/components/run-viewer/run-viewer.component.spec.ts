@@ -536,6 +536,27 @@ describe('RunViewerComponent', () => {
   });
 
   describe('pin and delete', () => {
+    it('keeps another QA’s run read-only, including pin and delete handlers', async () => {
+      await open({ runResult: of(run({ read_only: true })) });
+      fixture.componentInstance.isAdmin.set(true);
+      await settle();
+      expect(qa('.actions button').map((control) => control.textContent!.trim())).toEqual(['Copy link', 'Download']);
+      fixture.componentInstance.togglePin(new Event('click'));
+      fixture.componentInstance.ask('delete');
+      expect(fixture.componentInstance.dialogKind()).toBeNull();
+      expect(runs.pin).not.toHaveBeenCalled();
+      expect(runs.unpin).not.toHaveBeenCalled();
+      expect(runs.remove).not.toHaveBeenCalled();
+    });
+
+    it('keeps the team-tab review route read-only even for an administrator', async () => {
+      await open();
+      fixture.componentRef.setInput('readOnly', true);
+      fixture.componentInstance.isAdmin.set(true);
+      await settle();
+      expect(fixture.componentInstance.actions().map((action) => action.id)).toEqual(['share', 'download']);
+    });
+
     it('pins and unpins with a pressed state', async () => {
       await open();
       const pin = button('Pin');

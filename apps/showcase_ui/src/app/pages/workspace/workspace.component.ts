@@ -72,6 +72,8 @@ export class WorkspaceComponent implements OnInit {
   public readonly reviewMode = !!this.route.snapshot.data['review'];
   private readonly routeParams = toSignal(this.route.paramMap, { initialValue: this.route.snapshot.paramMap });
   public readonly reviewRunId = computed(() => this.routeParams().get('id'));
+  private readonly queryParams = toSignal(this.route.queryParamMap, { initialValue: this.route.snapshot.queryParamMap });
+  public readonly reviewReadOnly = computed(() => this.queryParams().get('review') === '1' || this.queryParams().get('scope') === 'everyone');
 
   // Default right panel width to 1/3 of the screen (or 450px as fallback)
   public rightPanelWidth = signal<number>(
