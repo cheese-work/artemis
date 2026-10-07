@@ -64,6 +64,7 @@ const DIALOGS: Record<DialogKind, { title: string; notices: string[]; confirm: s
   changeDetection: ChangeDetectionStrategy.OnPush
 })
 export class RunViewerComponent {
+  public readonly appUrl = appUrl;
   private readonly logger = inject(LoggerService);
   private readonly runsApi = inject(RunsService);
   private readonly ownerScope = inject(OwnerScopeService);

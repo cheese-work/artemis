@@ -1215,6 +1215,24 @@ describe('AgentService per-QA scope (CHE-1152)', () => {
       flushAll();
     });
 
+    it('clears the previous identity state even when browser storage is unavailable', () => {
+      const qa1 = { email: 'qa1@example.test', admin: false, auth_mode: 'cloudflare', reason: null };
+      const service = setUp(qa1);
+      TestBed.tick();
+      http.match((request) => request.url === '/api/sessions').forEach((request) => request.flush([row('qa1-run')]));
+      flushAll();
+      service.activeVideoUrl.set('/videos/qa1-run.mp4');
+      (localStorage.removeItem as jasmine.Spy).and.throwError('Storage unavailable');
+
+      TestBed.inject(OwnerScopeService).identity.set({ ...qa1, email: 'qa2@example.test' });
+
+      expect(() => TestBed.tick()).not.toThrow();
+      expect(service.sessions()).toEqual([]);
+      expect(service.activeVideoUrl()).toBeNull();
+      expect(http.match((request) => request.url === '/api/sessions').length).toBeGreaterThan(0);
+      flushAll();
+    });
+
     it('never lets a failed identity lookup read or write the cache, so QA2 cannot see QA1\'s runs', () => {
       const qa1 = { email: 'qa1@example.test', admin: false, auth_mode: 'cloudflare', reason: null };
       setUp(qa1);

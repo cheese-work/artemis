@@ -32,6 +32,7 @@ import { ScopeSwitchComponent } from '../scope-switch/scope-switch.component';
 import { Session } from '../../core/models/session.model';
 import { MarkdownSegment, MarkdownLine, NoteMilestone, ParsedNote } from '../../core/models/markdown.model';
 import { parseNote, parseNoteLines } from '../../utils/markdown-parser.util';
+import { mediaUrl } from '../../utils/app-url.util';
 
 export type { MarkdownSegment, MarkdownLine, NoteMilestone, ParsedNote };
 
@@ -44,6 +45,7 @@ export type { MarkdownSegment, MarkdownLine, NoteMilestone, ParsedNote };
   changeDetection: ChangeDetectionStrategy.OnPush
 })
 export class ChatInterfaceComponent {
+  public readonly mediaUrl = mediaUrl;
   private readonly logger = inject(LoggerService);
   public agentService = inject(AgentService);
   private readonly systemService = inject(SystemService);
