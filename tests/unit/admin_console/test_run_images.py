@@ -372,3 +372,16 @@ def test_the_worker_is_told_where_its_images_are_and_nothing_else_changes(cloudf
 
     assert json.loads(env["ARTEMIS_GOAL_IMAGES"]) == [str(folder / "0.png"), str(folder / "1.png")]
     assert "ARTEMIS_GOAL_IMAGES" not in plain
+
+
+@pytest.mark.asyncio
+async def test_deleting_a_run_deletes_its_images(cloudflare):
+    from apps.admin_console.services.run_purge import purge_run
+
+    sid = _owned_run(cloudflare, QA1)
+    folder = _stored(cloudflare, sid, 2)
+
+    purge_run(cloudflare / "data_engine.db", cloudflare / "traces", sid)
+
+    assert not folder.exists()
+    assert (await _get(QA1, f"/api/sessions/{sid}/goal-images/0")).status_code in (403, 404)
