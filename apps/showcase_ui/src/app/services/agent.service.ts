@@ -28,6 +28,8 @@ import { persistedStreamToSegments } from '../utils/stream-aggregator.util';
 import { AdminIdentity } from './admin-config.service';
 import { OwnerScopeService } from './owner-scope.service';
 import { SELECTED_DEVICE_SERIAL_KEY } from './system.service';
+import { BrowserStorageService } from './browser-storage.service';
+import { appUrl } from '../utils/app-url.util';
 export type { Session, ModelInfo, TaskQueueItem, AgentStatusResponse, StepItemData, StepReplayFrame, LLMStreamResetEventData, StreamResetNotice };
 
 // v1 held rows with no owner; it may carry other users' runs, so it is dropped, never read.
@@ -85,6 +87,7 @@ interface SessionVideoResponse {
   providedIn: 'root'
 })
 export class AgentService {
+  private readonly browserStorage = inject(BrowserStorageService);
   private readonly logger = inject(LoggerService);
   private http = inject(HttpClient);
   private zone = inject(NgZone);
@@ -429,14 +432,22 @@ export class AgentService {
       untracked(() => this.reloadForScope());
     });
     this.dropLegacySessionsCache();
-    // The cache belongs to one identity, so it is read once that identity is known.
     this.ownerScope.load();
-    let restored = false;
+    let previousIdentity: AdminIdentity | null = null;
     effect(() => {
       const who = this.ownerScope.identity();
-      if (!who || restored) return;
-      restored = true;
-      untracked(() => this.restoreSessionsCache(who));
+      if (who === previousIdentity) return;
+      const previous = previousIdentity;
+      previousIdentity = who;
+      untracked(() => {
+        if (previous) {
+          this.browserStorage.removeItem(SESSION_CACHE_KEY, previous);
+          this.reloadForScope();
+          this.activeVideoUrl.set(null);
+          this.activeVideoSegments.set([]);
+        }
+        if (who) this.restoreSessionsCache(who);
+      });
     });
     this.fetchSessions();
     this.startStatusPolling();
@@ -581,7 +592,7 @@ export class AgentService {
 
   private getSelectedDeviceSerial(): string | null {
     try {
-      return localStorage.getItem(SELECTED_DEVICE_SERIAL_KEY);
+      return this.browserStorage.getItem(SELECTED_DEVICE_SERIAL_KEY);
     } catch (error) {
       this.logger.warn('Unable to restore the selected device:', error);
       return null;
@@ -922,7 +933,7 @@ export class AgentService {
     // callbacks must not schedule a change-detection pass each. Signal writes
     // still notify the render scheduler, so the UI stays live.
     this.zone.runOutsideAngular(() => {
-    this.eventSource = new EventSource(this.ownerScope.showAll() ? '/api/stream?scope=all' : '/api/stream');
+    this.eventSource = new EventSource(appUrl(this.ownerScope.showAll() ? '/api/stream?scope=all' : '/api/stream'));
 
     this.eventSource.addEventListener('info', () => {
       // Reconcile current session if active
@@ -1438,7 +1449,7 @@ export class AgentService {
 
   private dropLegacySessionsCache(): void {
     try {
-      localStorage.removeItem(LEGACY_SESSION_CACHE_KEY);
+      this.browserStorage.removeItem(LEGACY_SESSION_CACHE_KEY);
     } catch {
       // No-op when browser storage is unavailable.
     }
@@ -1449,7 +1460,7 @@ export class AgentService {
     const owner = cacheOwnerOf(who);
     if (owner === undefined) return;
     try {
-      const cached = localStorage.getItem(SESSION_CACHE_KEY);
+      const cached = this.browserStorage.getItem(SESSION_CACHE_KEY);
       if (!cached) return;
       const entry = JSON.parse(cached);
       if (!entry || entry.owner !== owner || !Array.isArray(entry.sessions)) return;
@@ -1475,7 +1486,7 @@ export class AgentService {
       const serialized = JSON.stringify({ owner, sessions });
       if (serialized === this.lastPersistedSessionsJson) return;
       this.lastPersistedSessionsJson = serialized;
-      localStorage.setItem(SESSION_CACHE_KEY, serialized);
+      this.browserStorage.setItem(SESSION_CACHE_KEY, serialized);
     } catch (error) {
       this.logger.warn('Unable to cache sessions:', error);
     }
@@ -1484,7 +1495,7 @@ export class AgentService {
   private clearSessionsCache(): void {
     this.lastPersistedSessionsJson = null;
     try {
-      localStorage.removeItem(SESSION_CACHE_KEY);
+      this.browserStorage.removeItem(SESSION_CACHE_KEY);
     } catch (error) {
       this.logger.warn('Unable to clear cached sessions:', error);
     }
