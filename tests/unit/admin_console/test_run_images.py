@@ -529,3 +529,26 @@ async def test_a_run_with_a_lost_picture_ends_failed_and_never_starts_a_worker(
     spawned.assert_not_called()
     persisted.assert_awaited_once()
     assert persisted.await_args.kwargs["returncode"] == 1  # failed, not a text-only run
+
+
+def test_launch_does_not_trust_an_image_folder_that_became_a_link(cloudflare, tmp_path):
+    sid = _owned_run(cloudflare, QA1)
+    folder = _stored(cloudflare, sid, 1)
+    elsewhere = tmp_path / "elsewhere"
+    folder.rename(elsewhere)
+    folder.symlink_to(elsewhere, target_is_directory=True)
+
+    with pytest.raises(run_images.GoalImagesMissing):
+        _launch(sid, _manifest(1))
+
+
+def test_launch_does_not_trust_a_run_folder_that_became_a_link(cloudflare, tmp_path):
+    sid = _owned_run(cloudflare, QA1)
+    _stored(cloudflare, sid, 1)
+    run_folder = cloudflare / "traces" / sid
+    elsewhere = tmp_path / "elsewhere-run"
+    run_folder.rename(elsewhere)
+    run_folder.symlink_to(elsewhere, target_is_directory=True)
+
+    with pytest.raises(run_images.GoalImagesMissing):
+        _launch(sid, _manifest(1))
