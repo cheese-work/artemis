@@ -26,6 +26,7 @@ import threading
 from colorama import Fore, Style, init
 
 from artemis.data_engine.context_vars import CURRENT_TRACE_ID
+from artemis.utils.redaction import redact, redactor
 
 init(autoreset=True)
 
@@ -125,6 +126,7 @@ class ArtemisLogger:
 
         # Add DataEngineHandler
         data_engine_handler = DataEngineHandler()
+        data_engine_handler.addFilter(redactor)
         data_engine_handler.setLevel(logging.DEBUG)
         formatter = logging.Formatter(fmt="%(asctime)s | %(name)s | %(levelname)s | %(message)s")
         data_engine_handler.setFormatter(formatter)
@@ -135,12 +137,14 @@ class ArtemisLogger:
             log_path = Path(traces_dir) / "mcp_server.log"
             log_path.parent.mkdir(parents=True, exist_ok=True)
             file_handler = logging.FileHandler(log_path, encoding="utf-8")
+            file_handler.addFilter(redactor)
             file_handler.setLevel(logging.DEBUG)
             file_handler.setFormatter(formatter)
             self.logger.addHandler(file_handler)
 
     def _setup_console_handler(self, level: str):
         console_handler = logging.StreamHandler(sys.stderr)
+        console_handler.addFilter(redactor)
         console_handler.setLevel(getattr(logging, level.upper()))
 
         console_formatter = ColoredFormatter()
@@ -172,7 +176,7 @@ class ArtemisLogger:
         colored_message = f"{Fore.CYAN}{message}{Style.RESET_ALL}"
 
         print(colored_separator, file=sys.stderr)
-        print(colored_message, file=sys.stderr)
+        print(redact(colored_message), file=sys.stderr)
         print(colored_separator, file=sys.stderr)
         self.logger.info(f"\n{separator}\n{message}\n{separator}")
 
@@ -184,6 +188,10 @@ class ColoredFormatter(logging.Formatter):
 
         colored_message = f"{color}{symbol} {record.getMessage()}{Style.RESET_ALL}"
 
+        if record.exc_text:
+            colored_message += f"\n{record.exc_text}"
+        if record.stack_info:
+            colored_message += f"\n{record.stack_info}"
         return colored_message
 
 

@@ -116,5 +116,7 @@ class AndroidInputIME:
                     await asyncio.to_thread(self.device.shell, f"input text {escaped}")
             return True
         except Exception as e:
-            logger.error(f"Failed to type text '{text}': {e}")
+            logger.error(
+                f"Failed to type text text_length={len(text)} error_type={type(e).__name__}"
+            )
             return False

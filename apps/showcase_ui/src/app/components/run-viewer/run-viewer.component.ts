@@ -1,3 +1,4 @@
+import { LoggerService } from '../../services/logger.service';
 import {
   ChangeDetectionStrategy,
   Component,
@@ -62,6 +63,7 @@ const DIALOGS: Record<DialogKind, { title: string; notices: string[]; confirm: s
   changeDetection: ChangeDetectionStrategy.OnPush
 })
 export class RunViewerComponent {
+  private readonly logger = inject(LoggerService);
   private readonly runsApi = inject(RunsService);
   private readonly adminApi = inject(AdminConfigService);
   private readonly router = inject(Router);
@@ -382,7 +384,8 @@ export class RunViewerComponent {
     try {
       await navigator.clipboard.writeText(`${window.location.origin}/runs/${run.session_id}`);
       if (this.run()?.session_id === run.session_id) this.feedback.set(RUN_STRINGS.linkCopied);
-    } catch {
+    } catch (error) {
+      this.logger.warn('UI operation failed:', error);
       if (this.run()?.session_id === run.session_id) this.actionError.set({ text: "Couldn't copy the link. Copy it from the address bar.", retry: null });
     }
   }

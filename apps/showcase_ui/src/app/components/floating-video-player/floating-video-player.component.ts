@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+import { LoggerService } from '../../services/logger.service';
 import {
   Component,
   ChangeDetectionStrategy,
@@ -44,6 +45,7 @@ import { locateTimelineTime, sessionTimeToTimelineTime } from '../../utils/recor
   changeDetection: ChangeDetectionStrategy.OnPush
 })
 export class FloatingVideoPlayerComponent implements OnDestroy {
+  private readonly logger = inject(LoggerService);
   public agentService = inject(AgentService);
   private zone = inject(NgZone);
 
@@ -338,12 +340,13 @@ export class FloatingVideoPlayerComponent implements OnDestroy {
       }
       if (this.pendingAutoplay) {
         this.pendingAutoplay = false;
-        v.play().catch(() => {});
+        v.play().catch(error => this.logger.warn('Video playback failed:', error));
       }
       if (this.agentService.consumeVideoAutoplay()) {
         this.isMuted.set(true);
         v.muted = true;
-        v.play().catch(() => {
+        v.play().catch((error) => {
+          this.logger.warn('Video autoplay failed:', error);
           this.isPlaying.set(false);
         });
       }
@@ -397,7 +400,7 @@ export class FloatingVideoPlayerComponent implements OnDestroy {
     const v = this.videoRef?.nativeElement;
     if (!v) return;
     if (v.paused) {
-      v.play().catch(() => {});
+      v.play().catch(error => this.logger.warn('Video playback failed:', error));
     } else {
       v.pause();
     }
@@ -427,13 +430,13 @@ export class FloatingVideoPlayerComponent implements OnDestroy {
     const location = locateTimelineTime(segments, target);
     if (!location) {
       v.currentTime = target;
-      if (autoplay) v.play().catch(() => {});
+      if (autoplay) v.play().catch(error => this.logger.warn('Video playback failed:', error));
       return;
     }
     const { index, localTime } = location;
     if (index === this.activeSegmentIndex()) {
       v.currentTime = localTime;
-      if (autoplay) v.play().catch(() => {});
+      if (autoplay) v.play().catch(error => this.logger.warn('Video playback failed:', error));
     } else {
       this.pendingLocalTime = localTime;
       this.pendingAutoplay = autoplay || !v.paused;
@@ -625,7 +628,7 @@ export class FloatingVideoPlayerComponent implements OnDestroy {
     try {
       drawActionCoordinatesOnOverlay(img, overlay, frame.action);
     } catch (err) {
-      console.warn('Failed to draw step coordinates overlay:', err);
+      this.logger.warn('Failed to draw step coordinates overlay:', err);
     }
   }
 

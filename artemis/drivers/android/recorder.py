@@ -34,7 +34,7 @@ class ScreenRecorder:
     async def start(self) -> None:
         """Starts remote screen recording."""
         self.is_recording = True
-        logger.info("Starting screen recording on device...")
+        logger.info("event=recorder_started")
         # Start background screenrecord
         asyncio.create_task(
             asyncio.to_thread(self.device.shell, f"screenrecord {self._remote_path}")
@@ -45,7 +45,7 @@ class ScreenRecorder:
         if not self.is_recording:
             return None
         self.is_recording = False
-        logger.info("Stopping screen recording...")
+        logger.info("event=recorder_stopping")
         try:
             await asyncio.to_thread(self.device.shell, "pkill -2 screenrecord")
             await asyncio.sleep(1.0)

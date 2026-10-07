@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+import { LoggerService } from '../../services/logger.service';
 import { DOCUMENT } from '@angular/common';
 import { Component, ChangeDetectionStrategy, NgZone, DestroyRef, effect, inject, computed, signal, ViewChild, ElementRef, OnInit } from '@angular/core';
 
@@ -54,6 +55,7 @@ export interface AttachedImage {
   changeDetection: ChangeDetectionStrategy.OnPush
 })
 export class WorkspaceComponent implements OnInit {
+  private readonly logger = inject(LoggerService);
   public agentService = inject(AgentService);
   private zone = inject(NgZone);
   private route = inject(ActivatedRoute);
@@ -382,7 +384,7 @@ export class WorkspaceComponent implements OnInit {
         this.agentService.fetchStatus();
       },
       error: (err) => {
-        console.error('Failed to submit task:', err);
+        this.logger.error('Failed to submit task:', err);
         this.isSubmitting.set(false);
         const fallback = imageChat
           ? 'The message could not be sent. Your text and images are kept; try again.'

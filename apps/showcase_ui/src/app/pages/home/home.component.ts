@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+import { LoggerService } from '../../services/logger.service';
 import { Component, signal, computed, inject, effect, untracked, OnInit, OnDestroy, ChangeDetectionStrategy } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { SystemService } from '../../services/system.service';
@@ -44,6 +45,7 @@ type AdbGuideTab = 'emulator' | 'usb' | 'wifi' | 'remote';
   styleUrl: './home.component.scss'
 })
 export class HomeComponent implements OnInit, OnDestroy {
+  private readonly logger = inject(LoggerService);
   public systemService = inject(SystemService);
   private readonly usbRelay = inject(UsbDeviceRelayService);
 
@@ -242,7 +244,7 @@ export class HomeComponent implements OnInit, OnDestroy {
           this.activeAdbGuideTab.set('remote');
         }
       },
-      error: () => {}
+      error: (error) => this.logger.error('Request failed:', error)
     });
 
     window.addEventListener('focus', this.focusListener);
