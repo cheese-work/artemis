@@ -227,6 +227,7 @@ markers = [
     "e2e: end-to-end tests requiring a running Artemis environment",
     "cloud: tests requiring the optional cloud_service package",
     "manual: tests that must only be launched explicitly by an operator",
+    "real_reachability: keep EndpointTransport's real adb-server reachability pre-check",
 ]
 
 [tool.pylint.master]

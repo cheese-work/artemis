@@ -1169,7 +1169,7 @@ async def mobile_diagnose(
         android_version, is_locked, is_emulator, accessibility_helper}) or
         null. `accessibility_helper` describes the Artemis UI-hierarchy
         helper APK on that device ({installed, installed_version,
-        bundled_version, outdated, enabled, forward_port, reachable,
+        bundled_version, outdated, enabled, reachable,
         backend}); with backend "auto" a missing helper only degrades
         (UIAutomator2 fallback), with backend "helper" it blocks.
       - `emulator`: background emulator launch state ({avd_name, status,

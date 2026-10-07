@@ -20,17 +20,14 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from enum import StrEnum
-import os
 import threading
 from typing import Any
 
-ENV_FLAG = "ARTEMIS_HOST_AGENT"
+from artemis.config.host_agent import ENV_HOST_AGENT as ENV_FLAG
+from artemis.config.host_agent import host_agent_enabled as enabled
+
 # 32 streams = 4 shared pre-selection + 28 device streams, 4 per run (accepted plan A3).
 DEFAULT_MAX_RUNS = 7
-
-
-def enabled() -> bool:
-    return os.getenv(ENV_FLAG, "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 class HostState(StrEnum):

@@ -24,17 +24,17 @@ import sys
 import time
 from typing import Any
 
-from adbutils import AdbClient
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from artemis.agents.video_analyzer.video_analyzer import VideoAnalyzer
-from artemis.config import initialize_llm_config, settings
+from artemis.config import initialize_llm_config
 from artemis.context import ArtemisContext, DeviceContext, DevicePlatform, ExecutionSetup
 from artemis.controllers.controller_factory import get_controller
 from artemis.runtime import DeviceExecutionLock
+from artemis.runtime.endpoint_transport import EndpointTransport
 from artemis.sdk.builders import Builders
 from artemis.sdk.types import AgentProfile
 from artemis.clients.ui_automator_client import UIAutomatorClient
@@ -347,7 +347,7 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
     llm_config = initialize_llm_config()
     profile = AgentProfile(name="acceptance", llm_config=llm_config)
     agent_config = Builders.AgentConfig.with_default_profile(profile).build()
-    adb_client = AdbClient(host=settings.ADB_HOST or "127.0.0.1", port=settings.ADB_PORT or 5037)
+    adb_client = EndpointTransport.shared(None).client()
     device = adb_client.device(serial=args.device_id)
     width, height = await asyncio.to_thread(device.window_size)
     ui_client = UIAutomatorClient(device_id=args.device_id)

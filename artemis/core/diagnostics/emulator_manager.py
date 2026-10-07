@@ -29,6 +29,8 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from artemis.platform import OSType, platform
+from artemis.runtime.adb_endpoint import AdbEndpoint
+from artemis.runtime.endpoint_transport import EndpointTransport
 from artemis.toolchain import toolchain
 from artemis.utils.logger import get_logger
 
@@ -122,10 +124,11 @@ class EmulatorManager:
 
     def _locate_adb(self) -> str:
         """Find the adb binary path."""
-        resolved = toolchain.resolve("adb")
-        if resolved:
-            return resolved
-        return shutil.which("adb") or "adb"
+        return EndpointTransport.adb_binary() or "adb"
+
+    def _local_adb(self) -> EndpointTransport:
+        """adb pinned to this computer's own server: an emulator we launch registers there."""
+        return EndpointTransport(AdbEndpoint.local(), adb_path=self._locate_adb())
 
     def get_status(self) -> EmulatorLaunchState:
         """Return current launch progress state snapshot."""
@@ -250,7 +253,7 @@ class EmulatorManager:
 
     async def _track_boot_lifecycle(self, avd_name: str, proc: subprocess.Popen, started_at: float):
         """Monitor emulator lifecycle from process execution to ADB connection and OS boot completion."""
-        adb_path = self._locate_adb()
+        adb = self._local_adb()
         detected_serial: str | None = None
         max_wait_seconds = 180  # 3 minutes maximum boot timeout
 
@@ -308,10 +311,8 @@ class EmulatorManager:
 
                 # Check adb devices for emulator serial
                 try:
-                    p = await asyncio.create_subprocess_exec(
-                        adb_path,
-                        "devices",
-                        "-l",
+                    p = await adb.create_subprocess(
+                        ["devices", "-l"],
                         stdout=subprocess.PIPE,
                         stderr=subprocess.PIPE,
                     )
@@ -373,12 +374,8 @@ class EmulatorManager:
 
                 # Check sys.boot_completed
                 try:
-                    p = await asyncio.create_subprocess_exec(
-                        adb_path,
-                        "-s",
-                        detected_serial,
-                        "shell",
-                        "getprop sys.boot_completed",
+                    p = await adb.create_subprocess(
+                        ["-s", detected_serial, "shell", "getprop sys.boot_completed"],
                         stdout=subprocess.PIPE,
                         stderr=subprocess.PIPE,
                     )
@@ -460,9 +457,8 @@ class EmulatorManager:
 
             if serial:
                 try:
-                    adb_path = self._locate_adb()
-                    subprocess.run(
-                        [adb_path, "-s", serial, "emu", "kill"],
+                    self._local_adb().run(
+                        ["-s", serial, "emu", "kill"],
                         stdout=subprocess.DEVNULL,
                         stderr=subprocess.DEVNULL,
                         timeout=5,

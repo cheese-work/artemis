@@ -19,12 +19,11 @@ import os
 import sqlite3
 import uuid
 from pathlib import Path
-from shutil import which
 from typing import Annotated
 
-from adbutils import AdbClient
 from langchain_core.callbacks.base import Callbacks
 from artemis.config import checker_overrides_for_level, initialize_llm_config, settings
+from artemis.runtime.endpoint_transport import EndpointTransport
 from artemis.config.attempt_lifecycle_hooks import (
     record_attempt_manifest,
     reconcile_and_store_verdict,
@@ -512,11 +511,8 @@ def run_command(
 
     adb_client = None
     try:
-        if which("adb"):
-            adb_client = AdbClient(
-                host=settings.ADB_HOST or "localhost",
-                port=settings.ADB_PORT or 5037,
-            )
+        if EndpointTransport.adb_binary():
+            adb_client = EndpointTransport.shared(None).client()
     except Exception as exc:
         # Optional cosmetic device-status display; run continues without it.
         logger.debug(f"Could not create ADB client for device status display: {exc}")

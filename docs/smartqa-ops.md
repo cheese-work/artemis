@@ -58,7 +58,7 @@ optional and is reported separately.
 
 ## Computers (release B, off by default)
 
-Computers share their phones with SmartQA. Set `ARTEMIS_HOST_AGENT=enabled` on the server to turn the feature on; with the flag off, Setup → Computers says "Computers are turned off on this server" and every `/api/agent/*` route answers 404.
+Computers share their phones with SmartQA. Set `ARTEMIS_HOST_AGENT=enabled` on the server to turn the feature on (`1`, `true`, `yes` and `on` also work, case-insensitive; anything else, or unset, is off); with the flag off, Setup → Computers says "Computers are turned off on this server" and every `/api/agent/*` route answers 404.
 
 - **Who can do what.** Anyone signed in reads the list. Admins create enrollment codes, rename and revoke. These are `/api/hosts*` routes, behind Cloudflare Access like every other human route.
 - **Cloudflare path policy.** The computer software calls `/api/agent/*` without a person signing in, so Access must let that prefix through (bypass, or an Access service token). Each route proves itself in the application: an enrollment code, a key signature, or a session token. Add a WAF rate limit for the prefix. `ARTEMIS_ALLOWED_HOSTS` needs no new entry; the software uses the existing public hostname.

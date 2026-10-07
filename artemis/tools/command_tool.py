@@ -55,6 +55,8 @@ from artemis.controllers.platform_specific_commands_controller import (
 )
 from artemis.data_engine.trace import trace_langchain_tool
 from artemis.drivers.base import BaseDeviceDriver
+from artemis.runtime.adb_endpoint import AdbEndpoint, InvalidAdbEndpoint
+from artemis.runtime.endpoint_transport import EndpointTransport
 from artemis.tools.base import ArtemisTool
 from artemis.tools.tool_wrapper import ToolWrapper
 from artemis.utils.logger import get_logger
@@ -104,6 +106,40 @@ _PERSISTENT_ENV_EXCLUDE_PREFIXES = (
     "STANDALONE_",
 )
 
+
+class ContextEndpointError(RuntimeError):
+    """The run context carries an adb client whose endpoint cannot be determined."""
+
+
+def context_transport(ctx: ArtemisContext | None) -> EndpointTransport:
+    """adb access for the endpoint the run's context is bound to.
+
+    The context's ``adb_client`` is the run's own adb server: a client built by the
+    transport remembers its endpoint (host identity included); any other adbutils
+    client names one by host and port. Only a context with *no* client follows the
+    process's endpoint, which for a worker is the same thing. A client whose endpoint
+    cannot be resolved raises :class:`ContextEndpointError`: guessing the process
+    endpoint would run a state-changing command on a different server's phone.
+    """
+    client = getattr(ctx, "adb_client", None) if ctx is not None else None
+    if client is None:
+        return EndpointTransport.shared(None)
+    endpoint = getattr(client, "artemis_endpoint", None)
+    if isinstance(endpoint, AdbEndpoint):
+        return EndpointTransport.shared(endpoint)
+    host, port = getattr(client, "host", None), getattr(client, "port", None)
+    if isinstance(host, str) and isinstance(port, int) and not isinstance(port, bool):
+        try:
+            return EndpointTransport.shared(AdbEndpoint.create(host, port))
+        except InvalidAdbEndpoint as exc:
+            raise ContextEndpointError(
+                f"The run's adb endpoint {host!r}:{port!r} is not usable: {exc}"
+            ) from exc
+    raise ContextEndpointError(
+        "The run's adb client does not name an adb endpoint; refusing to use the process endpoint."
+    )
+
+
 #: Guidance shared by the tool descriptions: the commands that hang an
 #: ``adb shell`` and how to bound them.
 HANG_GUIDANCE = (
@@ -113,16 +149,6 @@ HANG_GUIDANCE = (
     " background task. Detach daemons explicitly with"
     " `nohup CMD >/dev/null 2>&1 &`, otherwise the shell waits for them."
 )
-
-
-def _adb_binary() -> str:
-    """Resolves the adb executable through the shared toolchain resolver."""
-    try:
-        from artemis.toolchain import toolchain
-
-        return toolchain.find_adb()
-    except Exception:  # pylint: disable=broad-exception-caught
-        return "adb"
 
 
 #: Inline display cap for command output, in characters. Beyond it the full
@@ -689,7 +715,6 @@ class RunAdbCommandTool(ArtemisTool):
 
         # Prepare environment
         terminal_id = None
-        run_env = os.environ.copy()  # Local host env to run adb command
         android_env_vars: dict[str, str] = {}
 
         if run_persistent:
@@ -735,14 +760,9 @@ class RunAdbCommandTool(ArtemisTool):
         # The script travels as an argument so the remote shell exits with it;
         # stdin is closed unless the caller wants to feed input later.
         try:
-            process = await asyncio.create_subprocess_exec(
-                _adb_binary(),
-                "-s",
-                device_id,
-                "shell",
-                phone_script,
+            process = await context_transport(ctx).create_subprocess(
+                ["-s", device_id, "shell", phone_script],
                 cwd=os.getcwd(),
-                env=run_env,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
                 stdin=asyncio.subprocess.PIPE if interactive else asyncio.subprocess.DEVNULL,
@@ -1081,7 +1101,6 @@ class RunShortAdbCommandTool(ArtemisTool):
         if not device_id:
             device_id = "default_device"
 
-        run_env = os.environ.copy()
         phone_script = f"cd /data/local/tmp\n{cmd_line}\n"
 
         adb_client = getattr(ctx, "adb_client", None) if ctx else None
@@ -1101,14 +1120,9 @@ class RunShortAdbCommandTool(ArtemisTool):
                 return ToolFailure(f"Error running command: {e}")
 
         try:
-            process = await asyncio.create_subprocess_exec(
-                _adb_binary(),
-                "-s",
-                device_id,
-                "shell",
-                phone_script,
+            process = await context_transport(ctx).create_subprocess(
+                ["-s", device_id, "shell", phone_script],
                 cwd=os.getcwd(),
-                env=run_env,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
                 stdin=asyncio.subprocess.DEVNULL,

@@ -282,7 +282,7 @@ async def test_submission_probe_skips_full_device_enrichment(monkeypatch):
     get_lock_state = AsyncMock(return_value=False)
     full_probe = AsyncMock()
     monkeypatch.setattr(
-        "artemis.core.diagnostics.probes.adb_probe.toolchain.resolve",
+        "artemis.toolchain.toolchain.resolve",
         lambda name: "adb",
     )
     monkeypatch.setattr(probe, "_get_device_states", get_states)
@@ -302,7 +302,7 @@ async def test_submission_probe_skips_full_device_enrichment(monkeypatch):
 async def test_submission_probe_fails_closed_when_lock_state_is_unknown(monkeypatch):
     probe = AdbDeviceProbe()
     monkeypatch.setattr(
-        "artemis.core.diagnostics.probes.adb_probe.toolchain.resolve",
+        "artemis.toolchain.toolchain.resolve",
         lambda name: "adb",
     )
     monkeypatch.setattr(
@@ -325,9 +325,7 @@ async def test_submission_probe_fails_closed_when_lock_state_is_unknown(monkeypa
 @pytest.mark.asyncio
 async def test_submission_probe_only_considers_devices_the_caller_may_use(monkeypatch):
     probe = AdbDeviceProbe()
-    monkeypatch.setattr(
-        "artemis.core.diagnostics.probes.adb_probe.toolchain.resolve", lambda name: "adb"
-    )
+    monkeypatch.setattr("artemis.toolchain.toolchain.resolve", lambda name: "adb")
     monkeypatch.setattr(
         probe,
         "_get_device_states",
@@ -350,9 +348,7 @@ async def test_submission_probe_only_considers_devices_the_caller_may_use(monkey
 @pytest.mark.asyncio
 async def test_submission_probe_with_no_allowed_device_reports_none_found(monkeypatch):
     probe = AdbDeviceProbe()
-    monkeypatch.setattr(
-        "artemis.core.diagnostics.probes.adb_probe.toolchain.resolve", lambda name: "adb"
-    )
+    monkeypatch.setattr("artemis.toolchain.toolchain.resolve", lambda name: "adb")
     monkeypatch.setattr(
         probe, "_get_device_states", AsyncMock(return_value=[("foreign", "device")])
     )

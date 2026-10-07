@@ -29,7 +29,11 @@ from artemis.config.paths import get_temp_dir
 from artemis.drivers.base import BaseDeviceDriver, KeyCode, ScreenData, SwipeDirection
 from artemis.drivers.types import DeviceDisconnectedError, device_disconnect_reason
 from artemis.toolchain import find_ffmpeg, find_scrcpy
-from artemis.utils.video import build_scrcpy_record_command, detect_scrcpy_version
+from artemis.utils.video import (
+    build_scrcpy_record_command,
+    detect_scrcpy_version,
+    recording_unavailable_reason,
+)
 from artemis.utils.ui_filter import filter_ui_hierarchy
 from artemis.utils.logger import get_logger
 
@@ -468,6 +472,10 @@ class AndroidAdbDriver(BaseDeviceDriver):
 
     async def start_video_recording(self, output_dir: Path | None = None) -> None:
         """Starts screen recording via scrcpy in background."""
+        unavailable = recording_unavailable_reason()
+        if unavailable:
+            logger.info(unavailable)
+            return
         out_dir = output_dir or get_temp_dir("recordings")
         out_dir.mkdir(parents=True, exist_ok=True)
         self._recording_mkv_path = out_dir / "recording.mkv"

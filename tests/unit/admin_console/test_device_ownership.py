@@ -501,9 +501,7 @@ async def test_a_spelling_variant_of_your_own_phone_stays_yours(cloudflare, subm
 def adb(monkeypatch):
     """The real submission probe over a fake adb: (serial, state) list and locked serials."""
     probe = tasks_router.readiness_engine._adb_probe
-    monkeypatch.setattr(
-        "artemis.core.diagnostics.probes.adb_probe.toolchain.resolve", lambda _name: "adb"
-    )
+    monkeypatch.setattr("artemis.toolchain.toolchain.resolve", lambda _name: "adb")
     monkeypatch.setattr(probe, "_target_serial", None)
     enqueue = AsyncMock(return_value={"status": "queued", "tasks": []})
     monkeypatch.setattr(task_queue_service, "enqueue_tasks", enqueue)

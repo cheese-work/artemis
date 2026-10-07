@@ -29,11 +29,10 @@ from artemis.config import settings
 from artemis.config.paths import ROOT_DIR, get_app_dir
 from artemis.runtime.adb_endpoint import (
     AdbEndpoint,
-    AdbSession,
     InvalidAdbEndpoint,
     current_adb_endpoint,
 )
-from artemis.toolchain import toolchain
+from artemis.runtime.endpoint_transport import EndpointTransport, EndpointUnreachable
 from artemis.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -51,7 +50,7 @@ class AdbServerConnectionManager:
         adb_resolver: Callable[[], str | None] | None = None,
         env_files: list[Path] | None = None,
     ) -> None:
-        self._adb_resolver = adb_resolver or (lambda: toolchain.resolve("adb"))
+        self._adb_resolver = adb_resolver or EndpointTransport.adb_binary
         self._env_files = env_files
         self._activation_lock = asyncio.Lock()
 
@@ -159,11 +158,10 @@ class AdbServerConnectionManager:
                 "devices": [],
             }
 
-        session = AdbSession(endpoint, adb_path=adb_path)
-        command = session.command(["devices", "-l"])
+        transport = EndpointTransport(endpoint, adb_path=adb_path)
         try:
-            result = subprocess.run(
-                command,
+            result = transport.run(
+                ["devices", "-l"],
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
@@ -171,6 +169,16 @@ class AdbServerConnectionManager:
                 timeout=8,
                 env=self._probe_environment(),
             )
+        except EndpointUnreachable:
+            # Refused before adb ran: adb itself would have tried to start a server on a
+            # loopback port nobody is listening on.
+            return {
+                "success": False,
+                "error_code": "server_unreachable",
+                "message": self._connection_error_message("cannot connect"),
+                "endpoint": endpoint.to_dict(),
+                "devices": [],
+            }
         except subprocess.TimeoutExpired:
             return {
                 "success": False,
@@ -303,6 +311,9 @@ class AdbServerConnectionManager:
         )
 
     def _persist(self, endpoint: AdbServerEndpoint) -> None:
+        if not endpoint.persistable:
+            # A host agent's tunnel port is ephemeral and belongs to one session.
+            raise ValueError(f"{endpoint.identity} is a session endpoint and is never saved.")
         for env_file in self._environment_files():
             env_file.parent.mkdir(parents=True, exist_ok=True)
             if not env_file.exists():

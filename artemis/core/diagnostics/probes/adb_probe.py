@@ -33,7 +33,8 @@ from artemis.core.diagnostics.schema import (
     ProbeStatus,
 )
 from artemis.platform import OSType, platform
-from artemis.toolchain import toolchain
+from artemis.runtime.adb_endpoint import AdbEndpoint, current_adb_endpoint
+from artemis.runtime.endpoint_transport import EndpointTransport
 from artemis.utils.device_kind import DeviceKind, classify_properties, parse_getprop
 from artemis.utils.logger import get_logger
 
@@ -46,8 +47,9 @@ class AdbDeviceProbe(BaseProbe):
     _ENRICHMENT_CACHE_TTL_SECONDS = 60.0
     _LAST_LOCK_STATE_TTL_SECONDS = 15.0
 
-    def __init__(self, target_serial: str | None = None):
+    def __init__(self, target_serial: str | None = None, endpoint: AdbEndpoint | None = None):
         self._target_serial = target_serial
+        self._endpoint = endpoint
         self._device_enrichment_cache: dict[str, tuple[float, dict[str, Any]]] = {}
         self._last_lock_states: dict[str, tuple[float, bool]] = {}
         self._lock_state_sources: dict[str, str] = {}
@@ -74,7 +76,11 @@ class AdbDeviceProbe(BaseProbe):
 
     def _locate_adb(self) -> str | None:
         """Find the adb binary path from ToolchainResolver."""
-        return toolchain.resolve("adb")
+        return EndpointTransport.adb_binary()
+
+    def _transport(self, adb_path: str) -> EndpointTransport:
+        """adb access for the probe's endpoint (the process's, unless one was given)."""
+        return EndpointTransport(self._endpoint or current_adb_endpoint(), adb_path=adb_path)
 
     def _locate_emulator(self) -> str | None:
         """Find the emulator binary path from PATH or standard SDK environments."""
@@ -120,9 +126,8 @@ class AdbDeviceProbe(BaseProbe):
     async def _get_adb_version(self, adb_path: str) -> str:
         """Query ADB version string."""
         try:
-            proc = await asyncio.create_subprocess_exec(
-                adb_path,
-                "version",
+            proc = await self._transport(adb_path).create_subprocess(
+                ["version"],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
             )
@@ -204,13 +209,8 @@ class AdbDeviceProbe(BaseProbe):
         """Query Keyguard state without changing or waking the target device."""
 
         async def run_dumpsys(*service_args: str) -> str:
-            proc = await asyncio.create_subprocess_exec(
-                adb_path,
-                "-s",
-                serial,
-                "shell",
-                "dumpsys",
-                *service_args,
+            proc = await self._transport(adb_path).create_subprocess(
+                ["-s", serial, "shell", "dumpsys", *service_args],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
             )
@@ -282,20 +282,16 @@ class AdbDeviceProbe(BaseProbe):
         self._lock_state_sources[serial] = "unknown"
         return None
 
-    @staticmethod
     async def _run_adb_shell(
+        self,
         adb_path: str,
         serial: str,
         *args: str,
         timeout_seconds: float = 2.5,
     ) -> str:
         """Run a bounded ADB shell command and always reap timed-out children."""
-        proc = await asyncio.create_subprocess_exec(
-            adb_path,
-            "-s",
-            serial,
-            "shell",
-            *args,
+        proc = await self._transport(adb_path).create_subprocess(
+            ["-s", serial, "shell", *args],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
@@ -321,10 +317,8 @@ class AdbDeviceProbe(BaseProbe):
         """
         proc = None
         try:
-            proc = await asyncio.create_subprocess_exec(
-                adb_path,
-                "devices",
-                "-l",
+            proc = await self._transport(adb_path).create_subprocess(
+                ["devices", "-l"],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
             )
@@ -368,7 +362,7 @@ class AdbDeviceProbe(BaseProbe):
         device at submission time, so this path only checks ADB connectivity
         and Keyguard state with strict time bounds.
         """
-        adb_path = toolchain.resolve("adb")
+        adb_path = EndpointTransport.adb_binary()
         if not adb_path:
             return ProbeResult(
                 id=self.probe_id,
@@ -489,10 +483,8 @@ class AdbDeviceProbe(BaseProbe):
         """Execute `adb devices -l` and extract structured device metadata."""
         devices: list[DeviceInfo] = []
         try:
-            proc = await asyncio.create_subprocess_exec(
-                adb_path,
-                "devices",
-                "-l",
+            proc = await self._transport(adb_path).create_subprocess(
+                ["devices", "-l"],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
             )

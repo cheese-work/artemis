@@ -6,6 +6,7 @@ import base64
 from io import BytesIO
 import json
 import urllib.error
+import urllib.request
 from unittest.mock import MagicMock, patch
 
 from PIL import Image
@@ -37,7 +38,7 @@ TOKEN = "a" * 48
 
 class FakeManager:
     def __init__(self):
-        self.session = self._session(41000)
+        self.session = self._session(0)
         self.attach_calls: list[bool] = []
         self.reattach_calls = 0
         self.pushed_tokens = 0
@@ -45,14 +46,12 @@ class FakeManager:
         self.fail_reattach = False
 
     @staticmethod
-    def _session(port: int) -> HelperSession:
+    def _session(generation: int) -> HelperSession:
         return HelperSession(
             serial="dev",
-            local_port=port,
-            transport_id="3",
+            transport_id=str(3 + generation),
             version_code=6,
             version_name="1.2.0",
-            owns_forward=True,
             token=TOKEN,
             protocol_version=2,
         )
@@ -67,7 +66,7 @@ class FakeManager:
         self.reattach_calls += 1
         if self.fail_reattach:
             raise HelperUnavailable("dead")
-        self.session = self._session(41001)
+        self.session = self._session(1)
         return self.session
 
     def push_token(self, serial):
@@ -80,8 +79,16 @@ class FakeManager:
     def detach(self, serial):
         self.detached = True
 
-    def ping(self, port):
+    def ping(self, serial):
         return {"success": True}
+
+    def http(self, serial, path, payload=None, headers=None, timeout=6.0):
+        """Stand-in for the adb stream: the same request, delivered through ``urlopen``."""
+        request = urllib.request.Request(
+            f"http://device-{serial}{path}", data=payload, headers=headers or {}
+        )
+        with urllib.request.urlopen(request, timeout=timeout) as resp:
+            return resp.read()
 
 
 def _response(body: bytes):
@@ -136,7 +143,7 @@ def test_every_request_carries_the_session_token(client):
         urlopen.return_value = _response(XML.encode())
         assert c.get_hierarchy() == XML
     request = urlopen.call_args.args[0]
-    assert request.full_url == "http://127.0.0.1:41000/dump_xml"
+    assert request.full_url == "http://device-dev/dump_xml"
     # urllib stores header names capitalized: "X-artemis-token".
     assert request.get_header(TOKEN_HEADER.capitalize()) == TOKEN
 
@@ -172,7 +179,7 @@ def test_transport_failure_reattaches_once_and_retries(client):
         urlopen.side_effect = [urllib.error.URLError("connection refused"), _response(XML.encode())]
         assert c.get_hierarchy() == XML
     assert manager.reattach_calls == 1
-    assert urlopen.call_args.args[0].full_url == "http://127.0.0.1:41001/dump_xml"
+    assert urlopen.call_args.args[0].full_url == "http://device-dev/dump_xml"
 
 
 def test_transport_failure_after_reattach_propagates(client):
@@ -213,7 +220,7 @@ def test_screen_data_is_one_snapshot_request_with_xml_only(client):
         urlopen.return_value = _response(json.dumps(snapshot).encode())
         data = c.get_screen_data()
     assert urlopen.call_count == 1
-    assert urlopen.call_args.args[0].full_url == "http://127.0.0.1:41000/snapshot?fields=xml"
+    assert urlopen.call_args.args[0].full_url == "http://device-dev/snapshot?fields=xml"
 
     assert data.base64 == "QUJD" and data.width == 1080 and data.height == 2424
     assert data.hierarchy_xml == XML
@@ -315,7 +322,7 @@ def test_set_clipboard_sends_raw_utf8(client):
         urlopen.return_value = _response(b'{"success": true}')
         assert c.set_clipboard("héllo\n你好") is True
     request = urlopen.call_args.args[0]
-    assert request.full_url == "http://127.0.0.1:41000/action"
+    assert request.full_url == "http://device-dev/action"
     assert request.data == '{"cmd": "clipboard", "text": "héllo\\n你好"}'.encode()
     assert request.get_header("Content-type") == "application/json; charset=utf-8"
 
@@ -362,3 +369,18 @@ def test_normalize_helper_elements_tolerates_bad_input():
     assert normalize_helper_elements(None) == []
     assert normalize_helper_elements("x") == []
     assert normalize_helper_elements({"clickable": True}) == [{"clickable": "true"}]
+
+
+def test_awake_enrolment_uses_the_clients_own_transport():
+    from artemis.runtime.adb_endpoint import AdbEndpoint
+    from artemis.runtime.endpoint_transport import EndpointTransport
+
+    transport = EndpointTransport(AdbEndpoint.create("127.0.0.1", 40002))
+    with patch("artemis.clients.accessibility_client.ensure_device_awake") as awake:
+        awake.return_value = "usb_stay_on"
+        task_path = AccessibilityClient("dev", manager=FakeManager(), transport=transport)
+        task_path.connect()
+        observer_path = AccessibilityClient("dev", manager=FakeManager(), transport=transport)
+        observer_path._ensure_session()
+
+    assert [call.args for call in awake.call_args_list] == [("dev", transport), ("dev", transport)]

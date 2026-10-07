@@ -34,7 +34,7 @@ from PIL import Image
 from pydantic import BaseModel
 import uiautomator2 as u2
 
-from artemis.runtime.adb_endpoint import adb_command
+from artemis.runtime.endpoint_transport import EndpointTransport
 from artemis.runtime.awake_service import ensure_device_awake
 from artemis.utils.logger import get_logger
 
@@ -173,11 +173,13 @@ def _pil_to_base64(img: Image.Image, format: str = "JPEG", quality: int = 80) ->
     return base64.b64encode(buffer.getvalue()).decode("utf-8")
 
 
-def _is_package_installed(device_id: str, pkg: str) -> bool:
+def _is_package_installed(
+    device_id: str, pkg: str, transport: EndpointTransport | None = None
+) -> bool:
     """Check if a package is installed on the device."""
     try:
-        result = subprocess.run(
-            adb_command(["-s", device_id, "shell", "pm", "list", "packages"]),
+        result = (transport or EndpointTransport.shared(None)).run(
+            ["-s", device_id, "shell", "pm", "list", "packages"],
             stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
@@ -198,22 +200,13 @@ def _is_package_installed(device_id: str, pkg: str) -> bool:
         return False
 
 
-def _uninstall_package(device_id: str, pkg: str) -> bool:
+def _uninstall_package(
+    device_id: str, pkg: str, transport: EndpointTransport | None = None
+) -> bool:
     """Uninstall a package from the device for the current user."""
     try:
-        result = subprocess.run(
-            adb_command(
-                [
-                    "-s",
-                    device_id,
-                    "shell",
-                    "pm",
-                    "uninstall",
-                    "--user",
-                    "0",
-                    pkg,
-                ]
-            ),
+        result = (transport or EndpointTransport.shared(None)).run(
+            ["-s", device_id, "shell", "pm", "uninstall", "--user", "0", pkg],
             stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
@@ -233,18 +226,20 @@ def _uninstall_package(device_id: str, pkg: str) -> bool:
         return False
 
 
-def _ensure_maestro_not_installed(device_id: str) -> None:
+def _ensure_maestro_not_installed(
+    device_id: str, transport: EndpointTransport | None = None
+) -> None:
     """Check if Maestro is installed and uninstall it.
 
     Maestro conflicts with uiautomator2 - if Maestro's package is installed,
     u2.connect() will fail. This function ensures Maestro is removed before
     attempting to connect.
     """
-    if _is_package_installed(device_id, MAESTRO_PACKAGE):
+    if _is_package_installed(device_id, MAESTRO_PACKAGE, transport):
         logger.warning(
             f"Maestro ({MAESTRO_PACKAGE}) detected - uninstalling to enable UIAutomator2..."
         )
-        _uninstall_package(device_id, MAESTRO_PACKAGE)
+        _uninstall_package(device_id, MAESTRO_PACKAGE, transport)
 
 
 class UIAutomatorClient:
@@ -257,15 +252,21 @@ class UIAutomatorClient:
     with uiautomator2. This client automatically handles Maestro removal.
     """
 
-    def __init__(self, device_id: str):
+    def __init__(self, device_id: str, transport: EndpointTransport | None = None):
         """Initialize the UIAutomator client.
 
         Args:
             device_id: The Android device serial number (e.g., "emulator-5554")
+            transport: The adb endpoint the device lives on; defaults to the process's own.
         """
         self._device_id = device_id
+        self._transport = transport
         self._device: Device | None = None
         self._awake_strategy: str | None = None
+
+    @property
+    def _adb(self) -> EndpointTransport:
+        return self._transport or EndpointTransport.shared(None)
 
     def _ensure_connected(self) -> "Device":
         """Ensure connection to the device, handling Maestro blocker.
@@ -283,12 +284,12 @@ class UIAutomatorClient:
                 self._device = None
 
         # Ensure Maestro is not blocking us
-        _ensure_maestro_not_installed(self._device_id)
+        _ensure_maestro_not_installed(self._device_id, self._transport)
 
         # Enroll the device in the containing Artemis service lifetime before
         # UIAutomator2 reads the screen. Client disconnects do not release it.
         if self._awake_strategy is None:
-            self._awake_strategy = ensure_device_awake(self._device_id)
+            self._awake_strategy = ensure_device_awake(self._device_id, self._transport)
 
         # Retry connections while ADB recovers from a reboot or USB disconnect.
         logger.info(f"Connecting UIAutomator2 to device: {self._device_id}")
@@ -297,7 +298,7 @@ class UIAutomatorClient:
             if attempt:
                 time.sleep(1.0 * attempt)
             try:
-                self._device = u2.connect(self._device_id)
+                self._device = self._adb.u2_connect(self._device_id)
                 break
             except Exception as exc:
                 last_error = exc
@@ -395,8 +396,8 @@ class UIAutomatorClient:
             PIL Image or None if capture failed
         """
         try:
-            result = subprocess.run(
-                adb_command(["-s", self._device_id, "exec-out", "screencap", "-p"]),
+            result = self._adb.run(
+                ["-s", self._device_id, "exec-out", "screencap", "-p"],
                 stdin=subprocess.DEVNULL,
                 capture_output=True,
                 timeout=10,
@@ -483,13 +484,14 @@ class UIAutomatorClient:
             return False
 
 
-def get_client(device_id: str) -> UIAutomatorClient:
+def get_client(device_id: str, transport: EndpointTransport | None = None) -> UIAutomatorClient:
     """Factory function to create a UIAutomatorClient.
 
     Args:
         device_id: The Android device serial number
+        transport: The adb endpoint the device lives on (default: the process's)
 
     Returns:
         UIAutomatorClient instance
     """
-    return UIAutomatorClient(device_id=device_id)
+    return UIAutomatorClient(device_id=device_id, transport=transport)
