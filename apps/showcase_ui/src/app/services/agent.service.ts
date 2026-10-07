@@ -22,11 +22,10 @@ import { Observable, catchError, map, of, switchMap } from 'rxjs';
 import { Session, ModelInfo, TaskQueueItem, AgentStatusResponse, SessionUsage } from '../core/models/session.model';
 import { ProTuningDefaults, ProTuningOptions } from '../core/models/pro-tuning.model';
 import { ImageChat } from '../utils/run-image.util';
-import { StepItemData, StepReplayFrame, LLMStreamResetEventData, StreamResetNotice, DEFAULT_STREAM_RESET_MESSAGE, PersistedCheckerStream, StreamSegment } from '../core/models/stream.model';
-import { extractStepReplayFrames } from '../utils/action-formatter.util';
+import { StepItemData, LLMStreamResetEventData, StreamResetNotice, DEFAULT_STREAM_RESET_MESSAGE, PersistedCheckerStream, StreamSegment } from '../core/models/stream.model';
 import { persistedStreamToSegments } from '../utils/stream-aggregator.util';
 import { SELECTED_DEVICE_SERIAL_KEY } from './system.service';
-export type { Session, ModelInfo, TaskQueueItem, AgentStatusResponse, StepItemData, StepReplayFrame, LLMStreamResetEventData, StreamResetNotice };
+export type { Session, ModelInfo, TaskQueueItem, AgentStatusResponse, StepItemData, LLMStreamResetEventData, StreamResetNotice };
 
 const SESSION_CACHE_KEY = 'artemis.sessions.v1';
 
@@ -229,29 +228,6 @@ export class AgentService {
   public streamResetEvent = signal<LLMStreamResetEventData | null>(null);
 
   /**
-   * Step logs only. Streaming text chunks cannot change replay frames, so the
-   * custom equality keeps downstream frame extraction from re-running on every
-   * llm_stream update of the sessionLogs signal.
-   */
-  private stepLogsForReplay = computed<any[]>(
-    () => this.sessionLogs().filter(
-      (log) => log && (log.type === 'step_updated' || log.type === 'step_recorded')
-    ),
-    { equal: (a, b) => a.length === b.length && a.every((log, i) => log === b[i]) }
-  );
-
-  /**
-   * Computed step replay frames from current session logs
-   */
-  public currentSessionStepFrames = computed<StepReplayFrame[]>(() => {
-    return extractStepReplayFrames(this.stepLogsForReplay());
-  });
-
-  public hasCurrentSessionStepFrames = computed<boolean>(() => {
-    return this.currentSessionStepFrames().length > 0;
-  });
-
-  /**
    * Clear user-pinned selection so subsequent runs automatically follow active runner
    */
   public clearUserPinnedSession(): void {
@@ -300,24 +276,6 @@ export class AgentService {
       return true;
     }
     return false;
-  });
-
-  /**
-   * Computed video URL for the currently viewed session
-   */
-  public currentSessionVideoUrl = computed(() => {
-    const curId = this.currentSessionId();
-    if (!curId) return null;
-    const session = this.sessions().find(s => s.session_id === curId);
-    return session?.video_url || null;
-  });
-
-  public currentSessionRecordingStatus = computed(() => {
-    const session = this.currentSession();
-    const status = session?.recording_status;
-    return status === 'recording' || status === 'finalizing' || status === 'processing'
-      ? 'processing'
-      : status;
   });
 
   private eventSource: EventSource | null = null;
