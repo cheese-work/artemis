@@ -139,16 +139,13 @@ def _set_status(host_id, status, reason):
 
 
 def _interrupt(session_id, reason="host_disconnected"):
-    try:
-        from admin_console.database.repositories.session_repository import session_repo
-    except ImportError:
-        from apps.admin_console.database.repositories.session_repository import session_repo
+    from apps.admin_console.services.task_queue_service import TaskQueueService
 
-    session_repo.lifecycle.interrupt(session_id, reason)
+    TaskQueueService.interrupt_device_binding(session_id, reason)
 
 
 def _note_loss(session_id):
-    from apps.admin_console.database.repositories.session_repository import session_repo
+    from apps.admin_console.services.task_queue_service import session_repo
 
     session_repo.lifecycle.note_loss(
         session_id, "host_disconnected", grace_seconds=CONTRACT.grace_seconds
@@ -156,8 +153,14 @@ def _note_loss(session_id):
 
 
 def _recover_loss(session_id):
-    from apps.admin_console.database.repositories.session_repository import session_repo
+    from apps.admin_console.services.task_queue_service import TaskQueueService, session_repo
 
+    item = TaskQueueService._queue_item_for(session_id)
+    if item.get("device_binding"):
+        tunnel = host_tunnels.tunnels.get(item.get("host_id"))
+        if tunnel is None or item.get("device_serial") not in tunnel.shared():
+            _interrupt(session_id, "device_offline")
+            return
     session_repo.lifecycle.recover_loss(session_id)
 
 

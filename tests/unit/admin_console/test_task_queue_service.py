@@ -91,6 +91,18 @@ def clean_state(tmp_path, monkeypatch):
     state.worker_task = None
 
 
+def _read_queued_session(session_id):
+    item = next(
+        (item for item in state.queue_items if str(item["session_id"]) == str(session_id)), None
+    )
+    if item is None:
+        return None
+    return {
+        "status": "queued",
+        "device_info": json.dumps({"device_binding": item.get("device_binding")}),
+    }
+
+
 def test_paused_error_reads_persisted_reason(tmp_path):
     pause_file = tmp_path / ".artemis_paused"
     pause_file.write_text("LLM Error: 503 UNAVAILABLE: model overloaded", encoding="utf-8")
@@ -214,7 +226,9 @@ async def test_enqueue_marks_existing_running_trace_failed_when_db_admission_fai
     session_id = "mcp-session"
     trace_store.init_trace(session_id, "MCP goal", "flash")
     queue_module = importlib.import_module("apps.admin_console.services.task_queue_service")
-    monkeypatch.setattr(queue_module.session_repo, "create_queued_session", lambda *_args: False)
+    monkeypatch.setattr(
+        queue_module.session_repo, "create_queued_session", lambda *_args, **_kwargs: False
+    )
 
     with (
         patch.object(TaskQueueService, "ensure_worker_running"),
@@ -392,6 +406,7 @@ async def test_queue_worker_execution_lifecycle():
         ),
     ):
         mock_repo.get_running_session_id.return_value = None
+        mock_repo.read_session.side_effect = _read_queued_session
         mock_repo.get_video_recording_for_session.return_value = {"status": "ready"}
         # Enqueue two tasks
         res = await task_queue_service.enqueue_tasks(["First Task", "Second Task"])
@@ -438,6 +453,7 @@ async def test_queue_worker_cmd_construction():
         ),
     ):
         mock_repo.get_running_session_id.return_value = None
+        mock_repo.read_session.side_effect = _read_queued_session
         mock_repo.get_video_recording_for_session.return_value = {"status": "ready"}
 
         enqueue_result = await task_queue_service.enqueue_tasks(
@@ -527,6 +543,7 @@ async def test_queue_worker_cmd_forwards_run_id():
         ),
     ):
         mock_repo.get_running_session_id.return_value = None
+        mock_repo.read_session.side_effect = _read_queued_session
         mock_repo.get_video_recording_for_session.return_value = {"status": "ready"}
 
         await task_queue_service.enqueue_tasks(
@@ -806,6 +823,7 @@ async def test_cancel_task_triggers_next_pending_task():
         ),
     ):
         mock_repo.get_running_session_id.return_value = None
+        mock_repo.read_session.side_effect = _read_queued_session
         mock_repo.get_video_recording_for_session.return_value = {"status": "ready"}
         await task_queue_service.enqueue_tasks(["Task 1", "Task 2"])
 
@@ -857,6 +875,7 @@ async def test_immediate_cancel_ignores_stale_ipc_and_runs_next_task():
         ),
     ):
         mock_repo.get_running_session_id.return_value = None
+        mock_repo.read_session.side_effect = _read_queued_session
         mock_repo.get_video_recording_for_session.return_value = {"status": "ready"}
 
         # Enqueue Task 1
@@ -996,6 +1015,7 @@ async def test_queue_worker_notifies_conversation():
         ),
     ):
         mock_repo.get_running_session_id.return_value = None
+        mock_repo.read_session.side_effect = _read_queued_session
         mock_repo.lifecycle.pending_events.side_effect = lambda sid=None: (
             [
                 {

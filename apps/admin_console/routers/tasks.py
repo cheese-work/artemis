@@ -167,8 +167,16 @@ async def run_task(request: RunRequest, actor: OwnerScope = Depends(actor_scope)
         if existing_item or persisted_session or is_active:
             require_access(scope, requested_sid)
             existing = dict(existing_item or persisted_session or {})
-            if existing.get("host_id") != host_id or (
-                host_id and existing.get("device_serial") != requested_serial
+            device_info = json.loads(existing.get("device_info") or "{}")
+            binding = existing.get("device_binding") or device_info.get("device_binding") or {}
+            accepted_host = binding.get("host_id", existing.get("host_id"))
+            accepted_serial = (
+                binding.get("serial")
+                or existing.get("device_serial")
+                or device_info.get("device_id")
+            )
+            if accepted_host != host_id or (
+                requested_serial and accepted_serial != requested_serial
             ):
                 raise AdminAPIError(
                     409,
@@ -182,6 +190,10 @@ async def run_task(request: RunRequest, actor: OwnerScope = Depends(actor_scope)
             task_payload.setdefault("goal", incoming_goals[0])
             task_payload.setdefault("profile", request.profile or "flash")
             task_payload.setdefault("device_serial", requested_serial)
+            if binding:
+                task_payload.setdefault("device_binding", binding)
+                task_payload.setdefault("bridge_session_id", binding.get("bridge_session_id"))
+                task_payload.setdefault("host_id", accepted_host)
             task_payload.setdefault("status", "running" if is_active else "queued")
             return {
                 "status": task_payload["status"],

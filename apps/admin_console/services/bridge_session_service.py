@@ -235,6 +235,9 @@ class BridgeSessionService:
 
         session.revoked = True
         session.close_reason = session.close_reason or "revoked"
+        from apps.admin_console.services.task_queue_service import TaskQueueService
+
+        TaskQueueService.interrupt_bridge_binding(session.session_id)
         logger.info(
             "event=bridge_close session_id=%s serial=%s reason=%s",
             session.session_id,

@@ -471,6 +471,13 @@ class HostRegistry:
                 "INSERT OR REPLACE INTO host_devices VALUES (?,?,?,?,?)",
                 rows[:MAX_DEVICES_PER_HOST],
             )
+        from apps.admin_console.services.task_queue_service import TaskQueueService
+
+        TaskQueueService.validate_host_device_inventory(
+            host_id,
+            generation,
+            {row[1] for row in rows[:MAX_DEVICES_PER_HOST] if row[3]},
+        )
         return True
 
     def list_hosts(self) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
