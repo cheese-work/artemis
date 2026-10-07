@@ -212,7 +212,7 @@ export class FloatingVideoPlayerComponent implements OnDestroy {
 
   public retryLiveStream(): void {
     this.liveStreamError.set(false);
-    this.liveStreamUrl.set(`/api/stream/device-live?t=${Date.now()}`);
+    this.liveStreamUrl.set(appUrl(`/api/stream/device-live?t=${Date.now()}`));
   }
 
   /**
@@ -490,7 +490,7 @@ export class FloatingVideoPlayerComponent implements OnDestroy {
   }
 
   public openInNewTab(): void {
-    const url = this.agentService.activeVideoUrl();
+    const url = this.currentVideoUrl();
     if (url) {
       window.open(url, '_blank');
     }
