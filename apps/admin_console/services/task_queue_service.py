@@ -314,9 +314,12 @@ class TaskQueueService:
                 if stored != binding_data:
                     raise TaskEndpointUnavailable("Run binding differs from accepted identity")
             if resolve_host and binding.bridge_session_id:
-                from apps.admin_console.services.bridge_session_service import (
-                    bridge_session_service,
-                )
+                try:
+                    from admin_console.services.bridge_session_service import bridge_session_service
+                except ImportError:
+                    from apps.admin_console.services.bridge_session_service import (
+                        bridge_session_service,
+                    )
 
                 if not any(
                     lease.session_id == binding.bridge_session_id
@@ -1549,7 +1552,10 @@ class TaskQueueService:
         sess_id = single_session_id if single_session_id else str(uuid.uuid4())
         # enqueue_tasks resolves the device before creating queue items.
         assigned_serial = device_serial
-        from apps.admin_console.services.bridge_session_service import bridge_session_service
+        try:
+            from admin_console.services.bridge_session_service import bridge_session_service
+        except ImportError:
+            from apps.admin_console.services.bridge_session_service import bridge_session_service
 
         lease = next(
             (

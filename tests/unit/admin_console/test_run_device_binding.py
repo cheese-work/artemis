@@ -59,6 +59,9 @@ def context(tmp_path, monkeypatch):
     monkeypatch.setattr(DeviceExecutionLock, "cancel_reservation", lambda ticket: None)
     bridge = BridgeSessionService()
     monkeypatch.setattr(bridge_module, "bridge_session_service", bridge)
+    monkeypatch.setattr(
+        "admin_console.services.bridge_session_service.bridge_session_service", bridge
+    )
     hosts = HostTunnels(
         endpoints=HostEndpointRegistry(), clock=clock, set_status=lambda *args: None
     )
@@ -427,3 +430,15 @@ async def test_durable_retry_reuses_only_accepted_device(
         assert result["tasks"][0]["device_binding"] == item["device_binding"]
         assert result["tasks"][0]["host_id"] == host_id
     probe.assert_not_awaited()
+
+
+def test_binding_captures_browser_lease_from_the_server_import_path(context, monkeypatch):
+    from admin_console.services import bridge_session_service as server_bridge
+
+    primary = BridgeSessionService()
+    lease = BridgeSession("server-lease", port=31415, expires_at=time.monotonic() + 60)
+    primary._sessions[lease.session_id] = lease
+    monkeypatch.setattr(server_bridge, "bridge_session_service", primary)
+    item = queue_item(context, AdbEndpoint.local(), lease.serial)
+    assert item["bridge_session_id"] == lease.session_id
+    assert TaskQueueService._task_target(item, resolve_host=True).serial == lease.serial
