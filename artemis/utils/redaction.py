@@ -221,9 +221,14 @@ class Redactor(logging.Filter):
         return _redact_string(value)
 
     def filter(self, record: logging.LogRecord) -> bool:
+        access_log = record.name == "uvicorn.access"
         try:
-            record.msg = self.redact(record.getMessage())
-            record.args = ()
+            if access_log:
+                record.msg = self.redact(str(record.msg))
+                record.args = self.redact(record.args)
+            else:
+                record.msg = self.redact(record.getMessage())
+                record.args = ()
             if record.exc_info:
                 record.exc_text = self.redact("".join(traceback.format_exception(*record.exc_info)))
                 record.exc_info = None
@@ -245,6 +250,9 @@ class Redactor(logging.Filter):
                     record.__dict__[key] = REDACTED
             record.msg = "[REDACTED: unrenderable log record]"
             record.args = ()
+            if access_log:
+                record.args = (REDACTED, REDACTED, record.msg, REDACTED, 0)
+                record.msg = '%s - "%s %s HTTP/%s" %d'
             record.exc_info = None
             record.exc_text = None
             record.stack_info = None
