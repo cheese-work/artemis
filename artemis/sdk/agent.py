@@ -97,6 +97,7 @@ from artemis.sdk.types.task import (
 )
 from artemis.utils.app_launch_utils import _handle_initial_app_launch
 from artemis.utils.logger import get_logger
+from artemis.utils.redaction import bind_session, goal_metadata
 from artemis.utils.media import (
     create_gif_from_trace_folder,
     create_steps_json_from_trace_folder,
@@ -521,6 +522,7 @@ class Agent:
         self,
         request: TaskRequest[TOutput],
     ) -> str | dict | TOutput | None:
+        bind_session(self._session_id or os.getenv("ARTEMIS_SESSION_ID"), request.goal)
         if not self._initialized:
             raise AgentNotInitializedError()
 
@@ -548,6 +550,7 @@ class Agent:
             or os.getenv("ARTEMIS_CLOUD_SESSION_ID")
             or uuid.uuid4()
         )
+        bind_session(task_id, request.goal)
 
         task = Task(
             id=task_id,
@@ -576,7 +579,7 @@ class Agent:
             )
             logger.info(str(output_config))
 
-        logger.info(f"[{task_name}] Starting graph with goal: `{request.goal}`")
+        logger.info(f"event=task_graph_started {goal_metadata(request.goal)}")
         state = self._get_graph_state(task=task)
         graph_input = state.model_dump()
         datetime.now(UTC)
@@ -608,7 +611,7 @@ class Agent:
                 if already_held
                 else DeviceExecutionLock(
                     self._device_context.device_id,
-                    description=f"{request.goal[:120]}",
+                    description=goal_metadata(request.goal),
                     concurrency_mode=effective_mode,
                     max_concurrency=effective_max,
                     session_id=str(sess_id) if sess_id else None,
@@ -667,7 +670,7 @@ class Agent:
                                     self._tmp_traces_dir / context.execution_setup.trace_name
                                 ).resolve()
 
-                            logger.info(f"[{task_name}] Starting automated screen recording...")
+                            logger.info("event=recorder_starting")
                             start_res = await controller.start_video_recording(
                                 output_dir=output_dir
                             )
@@ -725,7 +728,7 @@ class Agent:
                                     self._end_session_for_report(context.data_engine, flash_result)
                             return output
                         else:
-                            logger.info(f"[{task_name}] Invoking graph with input: {graph_input}")
+                            logger.info(f"event=task_graph_invoked input_fields={len(graph_input)}")
                             await task.set_status(status="running", message="Invoking graph...")
                             async for chunk in (await get_graph(context)).astream(
                                 input=graph_input,

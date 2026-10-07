@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+import { LoggerService } from '../../services/logger.service';
 import { Component, ChangeDetectionStrategy, NgZone, signal, computed, effect, inject, untracked, DestroyRef, AfterViewInit } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
@@ -241,6 +242,7 @@ export type { MarkdownSegment, MarkdownLine, NoteMilestone, ParsedNote, StreamRe
   changeDetection: ChangeDetectionStrategy.OnPush
 })
 export class AgentStreamComponent implements AfterViewInit {
+  private readonly logger = inject(LoggerService);
   public agentService = inject(AgentService);
   private http = inject(HttpClient);
   private destroyRef = inject(DestroyRef);
@@ -860,7 +862,7 @@ export class AgentStreamComponent implements AfterViewInit {
         if (this.agentService.currentSessionId() !== sessionId) return;
         this.runUsage.set(usage);
       },
-      error: (err) => console.error('Failed to load session usage:', err)
+      error: (err) => this.logger.error('Failed to load session usage:', err)
     });
   }
 
@@ -911,7 +913,8 @@ export class AgentStreamComponent implements AfterViewInit {
         if (s && s !== 'pending' && s !== 'null' && s !== 'undefined') {
           resolved = s;
         }
-      } catch {
+      } catch (error) {
+        this.logger.warn('UI operation failed:', error);
         // ignore
       }
     }
@@ -937,7 +940,7 @@ export class AgentStreamComponent implements AfterViewInit {
     }
     this.agentService.deleteSession(sessionId).subscribe({
       error: (err) => {
-        console.error(`Failed to delete session ${sessionId}:`, err);
+        this.logger.error(`Failed to delete session ${sessionId}:`, err);
       }
     });
   }
@@ -1443,7 +1446,7 @@ export class AgentStreamComponent implements AfterViewInit {
     try {
       this.drawActionCoordinatesOnOverlay(img, overlay, actionObj);
     } catch (e) {
-      console.warn('Failed to draw action overlay:', e);
+      this.logger.warn('Failed to draw action overlay:', e);
     }
   }
 
@@ -2044,7 +2047,8 @@ export class AgentStreamComponent implements AfterViewInit {
     if (typeof data === 'string') {
       try {
         return JSON.stringify(JSON.parse(data), null, 2);
-      } catch {
+      } catch (error) {
+        this.logger.warn('UI operation failed:', error);
         return data;
       }
     }

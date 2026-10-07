@@ -954,7 +954,7 @@ class FlashRunner:
             name = tc["name"].split(":")[-1] if ":" in tc["name"] else tc["name"]
             args = tc.get("args") or {}
             tc_id = tc.get("id") or str(uuid.uuid4())
-            logger.info(f"Executing Flash tool: {name}({args})")
+            logger.info(f"event=tool_called tool={name} args_length={len(str(args))}")
 
             if name == "report_task_status":
                 final_report = await self._finalize_task_report(

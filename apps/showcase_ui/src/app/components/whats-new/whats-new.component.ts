@@ -1,3 +1,4 @@
+import { LoggerService } from '../../services/logger.service';
 import { HttpClient } from '@angular/common/http';
 import { ChangeDetectionStrategy, Component, ElementRef, HostListener, ViewChild, computed, effect, inject, signal } from '@angular/core';
 import { AgentService } from '../../services/agent.service';
@@ -115,6 +116,7 @@ export const WHATS_NEW_LAST_SEEN_KEY = 'smartqa.whats-new.last-seen-id';
   changeDetection: ChangeDetectionStrategy.OnPush
 })
 export class WhatsNewComponent {
+  private readonly logger = inject(LoggerService);
   private readonly http = inject(HttpClient);
   private readonly agentService = inject(AgentService);
   private readonly dialogRef = signal<HTMLDialogElement | null>(null);
@@ -208,7 +210,8 @@ export class WhatsNewComponent {
     if (latestEntry) {
       try {
         localStorage.setItem(WHATS_NEW_LAST_SEEN_KEY, latestEntry.id);
-      } catch {
+      } catch (error) {
+        this.logger.warn('UI operation failed:', error);
       }
     }
     this.agentService.whatsNewHasUnread.set(false);
@@ -230,7 +233,8 @@ export class WhatsNewComponent {
   private readLastSeenId(): string | null {
     try {
       return localStorage.getItem(WHATS_NEW_LAST_SEEN_KEY);
-    } catch {
+    } catch (error) {
+      this.logger.warn('UI operation failed:', error);
       return null;
     }
   }

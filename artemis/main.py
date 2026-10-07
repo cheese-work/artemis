@@ -15,10 +15,21 @@
 """Backward compatibility entrypoint for artemis CLI."""
 
 import sys
-from artemis.interfaces.cli.main import app
+from artemis.utils.redaction import bind_session, configure_logging, read_goal_file
+import os
 
 
 def cli():
+    if "--goal-file" in sys.argv:
+        position = sys.argv.index("--goal-file")
+        if position + 1 >= len(sys.argv):
+            raise SystemExit("--goal-file requires a private input file")
+        goal = read_goal_file(sys.argv[position + 1])
+        bind_session(os.environ.get("ARTEMIS_SESSION_ID"), goal)
+        sys.argv[position : position + 2] = [goal]
+    configure_logging(streams=True)
+    from artemis.interfaces.cli.main import app
+
     # If invoked directly as python -m artemis.main without subcommand 'run',
     # check if first argument is a goal rather than a subcommand
     if len(sys.argv) > 1 and sys.argv[1] not in (

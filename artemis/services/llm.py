@@ -65,6 +65,7 @@ from artemis.llm.structured import (
     parse_structured,
 )
 from artemis.utils.logger import get_logger
+from artemis.utils.redaction import redactor
 
 # Logger for internal messages
 llm_logger = logging.getLogger(__name__)
@@ -292,7 +293,9 @@ def _install_provider_retry_telemetry() -> None:
         isinstance(handler, _ProviderRetryTelemetryHandler) for handler in provider_logger.handlers
     ):
         return
-    provider_logger.addHandler(_ProviderRetryTelemetryHandler(level=logging.INFO))
+    handler = _ProviderRetryTelemetryHandler(level=logging.INFO)
+    handler.addFilter(redactor)
+    provider_logger.addHandler(handler)
 
 
 _install_provider_retry_telemetry()
@@ -887,6 +890,8 @@ async def invoke_llm_with_timeout_message[T](
     hard_timeout: int = 180,
 ) -> T:
     """Send an LLM call and display a countdown / timeout message if delayed."""
+    call_start = asyncio.get_running_loop().time()
+    user_messages_logger.info("event=model_call_started")
     llm_task = asyncio.create_task(llm_call)
     waiter_task = asyncio.create_task(asyncio.sleep(timeout_seconds))
     try:
@@ -915,11 +920,15 @@ async def invoke_llm_with_timeout_message[T](
                     user_messages_logger.error(f"LLM call timed out after {hard_timeout} seconds.")
                     raise TimeoutError(f"LLM call timed out after {hard_timeout} seconds.")
     except BaseException:
+        user_messages_logger.error("event=model_call_failed")
         if not llm_task.done():
             llm_task.cancel()
         await asyncio.gather(llm_task, return_exceptions=True)
         raise
     finally:
+        user_messages_logger.info(
+            f"event=model_call_finished duration_ms={int((asyncio.get_running_loop().time() - call_start) * 1000)}"
+        )
         if not waiter_task.done():
             waiter_task.cancel()
         await asyncio.gather(waiter_task, return_exceptions=True)
