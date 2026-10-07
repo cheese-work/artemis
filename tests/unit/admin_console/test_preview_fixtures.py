@@ -427,8 +427,20 @@ def test_fixture_admin_must_be_explicit(monkeypatch):
 
 
 _BOOT_PROBE = textwrap.dedent("""
-    import json, os, socket, subprocess
+    import json, os, shutil, socket, subprocess
+    from pathlib import Path
     import traceback
+    if os.environ.get("ARTEMIS_TEST_MISSING_FFMPEG") == "1":
+        original_which = shutil.which
+        shutil.which = lambda command, *args, **kwargs: (
+            None if command in {"ffmpeg", "ffmpeg.exe"}
+            else original_which(command, *args, **kwargs)
+        )
+        original_exists = Path.exists
+        Path.exists = lambda path: (
+            False if path.name in {"ffmpeg", "ffmpeg.exe"}
+            else original_exists(path)
+        )
     effects = []
     def forbidden(*args, **kwargs):
         effects.append("".join(traceback.format_stack()))
@@ -452,8 +464,9 @@ _BOOT_PROBE = textwrap.dedent("""
 """)
 
 
+@pytest.mark.parametrize("missing_ffmpeg", [False, True], ids=["host-ffmpeg", "missing-ffmpeg"])
 def test_real_preview_boot_seeds_private_fixtures_without_process_or_network_calls(
-    tmp_path, preview_access_env
+    tmp_path, preview_access_env, missing_ffmpeg
 ):
     live = tmp_path / "live"
     live.mkdir()
@@ -472,7 +485,11 @@ def test_real_preview_boot_seeds_private_fixtures_without_process_or_network_cal
         "DATA_ENGINE_DB_PATH": str(sentinel),
         "TMPDIR": str(tmp_path),
         "ANTIGRAVITY_LS_ADDRESS": "127.0.0.1:1",
+        "ARTEMIS_TEST_MISSING_FFMPEG": "1" if missing_ffmpeg else "0",
     }
+    if missing_ffmpeg:
+        environment.pop("ARTEMIS_FFMPEG_PATH", None)
+        environment.pop("IMAGEIO_FFMPEG_EXE", None)
     result = subprocess.run(
         [sys.executable, "-c", _BOOT_PROBE],
         cwd=Path(__file__).resolve().parents[3],
