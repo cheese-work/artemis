@@ -226,16 +226,22 @@ try {
   await press('Enter');
   await expectTrue('back on /runs with the list', `location.pathname === '/runs' && document.querySelectorAll('a.run-row').length === 6`);
 
-  log('Task dock: stays open, native dropdown and clipboard keyboard operation');
+  log('Workspace: the phone chip opens and closes from the keyboard');
+  await send('Page.navigate', { url: `${base}/workspace` });
+  await expectTrue('workspace loaded with the phone chip', `!!document.querySelector('app-workspace-device-chip button.chip')`);
+  await tabUntil('phone chip', focusIs('app-workspace-device-chip button.chip'));
+  await expectTrue('chip says there is no phone and the picker is closed', `document.activeElement.textContent.includes('No phone') && document.activeElement.getAttribute('aria-expanded') === 'false'`);
+  await press('Enter');
+  await expectTrue('Enter opened the picker and focus moved inside it', `document.activeElement.getAttribute('aria-expanded') === null && !!document.querySelector('app-workspace-device-chip .panel')?.contains(document.activeElement)`);
+  await expectTrue('focus is on the first usable choice: Connect a phone from this browser', `document.activeElement.textContent.includes('Connect a phone from this browser')`);
+  await press('Escape');
+  await expectTrue('Escape closed the picker and focus returned to the chip', `!document.querySelector('app-workspace-device-chip .panel') && document.activeElement.matches('app-workspace-device-chip button.chip') && document.activeElement.getAttribute('aria-expanded') === 'false'`);
+  log(`  focus is now: ${await describeFocus()}`);
+
+  log('Task dock: stays open, and clipboard keyboard operation');
   await send('Page.navigate', { url: `${base}/workspace` });
   await expectTrue('empty task dock is expanded', `!!document.querySelector('.workspace-floating-bar-wrapper.is-expanded textarea') && getComputedStyle(document.querySelector('.expanded-card-content')).display !== 'none'`);
   const dockWidth = await evaluate(`document.querySelector('.floating-dock-card').getBoundingClientRect().width`);
-  await expectTrue('run-target options loaded', `document.querySelector('app-run-target-picker select')?.options.length === 2`, 8000);
-  await tabUntil('Run on select', focusIs('app-run-target-picker select'));
-  await press('ArrowDown');
-  await expectTrue('ArrowDown chooses the available phone', `document.querySelector('app-run-target-picker select').value === 'keyboard-fixture'`);
-  await press('ArrowUp');
-  await expectTrue('ArrowUp restores Automatic', `document.querySelector('app-run-target-picker select').value === ''`);
   await press('Tab');
   await expectTrue('focus loss does not collapse or resize the dock', `!document.querySelector('.is-dormant') && document.querySelector('.floating-dock-card').getBoundingClientRect().width === ${dockWidth}`);
   await tabUntil('task textarea', focusIs('textarea.dock-textarea'));

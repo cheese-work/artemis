@@ -50,39 +50,6 @@
     padding-right: 6px;
   }
 
-  .usb-relay-badge {
-    display: inline-flex;
-    align-items: center;
-    gap: 7px;
-    min-width: 0;
-    padding: 0 0 0 8px;
-    color: #166534;
-    font-size: 11px;
-    white-space: nowrap;
-
-    .badge-icon {
-      font-size: 16px;
-    }
-
-    code {
-      color: #475569;
-      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-      font-size: 10px;
-    }
-
-    button {
-      min-height: 26px;
-      padding: 0 9px;
-      border: 1px solid #bbf7d0;
-      border-radius: 13px;
-      background: #f0fdf4;
-      color: #166534;
-      font: inherit;
-      font-weight: 600;
-      cursor: pointer;
-    }
-  }
-
   .brand-wordmark {
     padding: 0 12px;
     color: #0f172a;
@@ -204,11 +171,6 @@
     max-width: calc(100vw - 24px - var(--right-panel-reserve, 0px));
 
     .nav-status { flex-basis: 100%; margin: 0; padding: 0 6px 3px; }
-    .usb-relay-badge {
-      padding-left: 0;
-      // Visually hidden, still announced: the connected-phone status must stay in the accessibility tree.
-      .badge-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
-    }
     .brand-wordmark { padding: 0 7px; }
     .nav-tab-btn { padding: 0 9px; }
   }

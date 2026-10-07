@@ -30,6 +30,7 @@ import { OwnerLabelComponent } from '../owner-label/owner-label.component';
 import { RunIdCopyComponent } from '../run-id-copy/run-id-copy.component';
 import { ScopeSwitchComponent } from '../scope-switch/scope-switch.component';
 import { Session } from '../../core/models/session.model';
+import { TaskStatus, taskStatusOf } from '../../utils/task-status.util';
 import { MarkdownSegment, MarkdownLine, NoteMilestone, ParsedNote } from '../../core/models/markdown.model';
 import { parseNote, parseNoteLines } from '../../utils/markdown-parser.util';
 import { mediaUrl } from '../../utils/app-url.util';
@@ -97,7 +98,7 @@ export class ChatInterfaceComponent {
   public historyTasks = computed(() => {
     return this.agentService.sessions().filter((s) => {
       const status = this.getTaskStatus(s);
-      return status === 'completed' || status === 'failed' || status === 'cancelled';
+      return status !== 'running' && status !== 'paused' && status !== 'pending';
     });
   });
 
@@ -220,20 +221,8 @@ export class ChatInterfaceComponent {
   /**
    * Determine the current task execution status
    */
-  public getTaskStatus(session: Session): 'running' | 'paused' | 'completed' | 'pending' | 'failed' | 'cancelled' {
-    if (session.status) {
-      const s = session.status.toLowerCase();
-      if (s === 'completed' || s === 'success' || s === 'failed' || s === 'cancelled') {
-        return (s === 'success' ? 'completed' : s) as any;
-      }
-      if (s === 'running' || s === 'paused' || s === 'pending') {
-        return s as any;
-      }
-    }
-    if (session.session_id === this.agentService.runningSessionId() && (this.agentService.agentStatus() === 'running' || this.agentService.agentStatus() === 'paused')) {
-      return this.agentService.agentStatus() as 'running' | 'paused';
-    }
-    return 'completed';
+  public getTaskStatus(session: Session): TaskStatus {
+    return taskStatusOf(session, { sessionId: this.agentService.runningSessionId(), status: this.agentService.agentStatus() });
   }
 
   /**

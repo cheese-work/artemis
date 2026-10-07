@@ -187,6 +187,22 @@ describe('ChatInterfaceComponent device chip', () => {
 
     expect((fixture.nativeElement as HTMLElement).querySelector('.task-goal-images')).toBeNull();
   });
+
+  it('lists an interrupted run as interrupted, and a status it does not know as unknown, never completed', () => {
+    sessions.set([
+      { ...session('a'), session_id: 's2', status: 'interrupted' },
+      { ...session('a'), session_id: 's3', status: 'brand_new_status' }
+    ]);
+    const fixture = TestBed.createComponent(ChatInterfaceComponent);
+    fixture.detectChanges();
+
+    const badges = Array.from((fixture.nativeElement as HTMLElement).querySelectorAll('.task-badge')).map((b) =>
+      (b.textContent ?? '').trim()
+    );
+    expect(badges).toContain('INTERRUPTED');
+    expect(badges).toContain('UNKNOWN');
+    expect(badges).not.toContain('COMPLETED');
+  });
 });
 
 describe('ChatInterfaceComponent per-QA scope (CHE-1152)', () => {

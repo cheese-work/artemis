@@ -47,6 +47,8 @@ export interface Session {
   start_time: number;
   end_time?: number;
   status?: string;
+  /** Why an `interrupted` run stopped (e.g. `device_offline`); absent on other runs. */
+  interrupt_reason?: string | null;
   video_url?: string;
   recording_status?: 'recording' | 'finalizing' | 'processing' | 'ready' | 'failed' | 'unavailable';
   model_info?: ModelInfo;

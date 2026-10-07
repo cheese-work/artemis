@@ -6,9 +6,10 @@ import { AgentStreamComponent } from '../../components/agent-stream/agent-stream
 import { ChatInterfaceComponent } from '../../components/chat-interface/chat-interface.component';
 import { FloatingVideoPlayerComponent } from '../../components/floating-video-player/floating-video-player.component';
 import { RunLibraryComponent } from '../../components/run-library/run-library.component';
-import { RunTargetPickerComponent } from '../../components/run-target-picker/run-target-picker.component';
+import { InterruptedBannerComponent } from '../../components/interrupted-banner/interrupted-banner.component';
 import { RunViewerComponent } from '../../components/run-viewer/run-viewer.component';
 import { AgentService } from '../../services/agent.service';
+import { WorkspacePhoneService } from '../../services/workspace-phone.service';
 import { MAX_IMAGE_BYTES, MAX_IMAGES } from '../../utils/run-image.util';
 import { WorkspaceComponent } from './workspace.component';
 
@@ -39,6 +40,9 @@ describe('WorkspaceComponent always-open task dock', () => {
     await TestBed.configureTestingModule({
       imports: [WorkspaceComponent],
       providers: [provideRouter([]), { provide: ActivatedRoute, useValue: route }, {
+        provide: WorkspacePhoneService,
+        useValue: { target: () => ({ serial: 'fixture-phone' }), requestPicker: () => undefined }
+      }, {
         provide: AgentService,
         useValue: {
           whatsNewPromptDraft: signal(false),
@@ -50,7 +54,7 @@ describe('WorkspaceComponent always-open task dock', () => {
         }
       }]
     }).overrideComponent(WorkspaceComponent, {
-      remove: { imports: [AgentStreamComponent, ChatInterfaceComponent, FloatingVideoPlayerComponent, RunLibraryComponent, RunTargetPickerComponent, RunViewerComponent] },
+      remove: { imports: [AgentStreamComponent, ChatInterfaceComponent, FloatingVideoPlayerComponent, RunLibraryComponent, InterruptedBannerComponent, RunViewerComponent] },
       add: { schemas: [CUSTOM_ELEMENTS_SCHEMA] }
     }).compileComponents();
   });

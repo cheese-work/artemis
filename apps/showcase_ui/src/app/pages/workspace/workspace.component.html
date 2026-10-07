@@ -32,6 +32,9 @@ limitations under the License.
     <!-- Bottom Floating Command Bar Dock -->
     <div class="workspace-floating-bar-wrapper is-expanded"
       [class.is-focused]="isInputFocused()" [class.has-text]="!!taskInput.trim()" [class.is-running]="isTaskRunning()">
+      <!-- A run lost its phone: Reconnect, then start a new run (the old one is over) -->
+      <app-interrupted-banner (startNewRun)="startNewRunFrom($event)"></app-interrupted-banner>
+
       <!-- Floating Error / Notification Toast -->
       @if (errorMessage()) {
         <div class="floating-dock-toast error">
@@ -150,9 +153,11 @@ limitations under the License.
               <!-- Send Button -->
               <button type="button" class="dock-circle-btn btn-send"
                 [class.has-content]="!!taskInput.trim()"
+                [class.is-blocked]="!phone.target()"
                 [disabled]="!taskInput.trim() || isSubmitting()"
+                [attr.aria-disabled]="phone.target() ? null : 'true'"
                 (click)="submitTask()"
-                [title]="isSubmitting() ? 'Starting task...' : 'Start task (Enter)'"
+                [title]="isSubmitting() ? 'Starting task...' : (phone.target() ? 'Start task (Enter)' : 'Connect a phone first')"
                 aria-label="Start task"
                 >
                 @if (isSubmitting()) {
@@ -202,7 +207,6 @@ limitations under the License.
                     <span class="pill-label">Pro</span>
                   </button>
                 </div>
-                <app-run-target-picker></app-run-target-picker>
               </div>
             </div>
           </div>
