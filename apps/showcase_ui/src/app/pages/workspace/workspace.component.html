@@ -127,9 +127,10 @@ limitations under the License.
                 [accept]="imageAccept" aria-label="Choose images to attach"
                 (change)="onFilesChosen($event)" tabindex="-1">
               <button type="button" class="dock-circle-btn btn-attach"
-                [disabled]="isSubmitting()"
+                [disabled]="isSubmitting() || attachedImages().length >= maxImages"
                 (click)="imageInput.click()"
-                title="Attach images (PNG, JPG, JPEG or WEBP)" aria-label="Attach images">
+                [title]="attachedImages().length >= maxImages ? 'Image limit reached (' + maxImages + ')' : 'Attach images (PNG, JPG, JPEG or WEBP)'"
+                aria-label="Attach images">
                 <span class="material-symbols-outlined">image</span>
               </button>
 

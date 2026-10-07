@@ -20,7 +20,7 @@ import { Observable, catchError, map, of, switchMap } from 'rxjs';
 
 import { Session, ModelInfo, TaskQueueItem, AgentStatusResponse, SessionUsage } from '../core/models/session.model';
 import { ProTuningDefaults, ProTuningOptions } from '../core/models/pro-tuning.model';
-import { RunImageUpload } from '../utils/run-image.util';
+import { ImageChat } from '../utils/run-image.util';
 import { StepItemData, StepReplayFrame, LLMStreamResetEventData, StreamResetNotice, DEFAULT_STREAM_RESET_MESSAGE, PersistedCheckerStream, StreamSegment } from '../core/models/stream.model';
 import { extractStepReplayFrames } from '../utils/action-formatter.util';
 import { persistedStreamToSegments } from '../utils/stream-aggregator.util';
@@ -442,7 +442,7 @@ export class AgentService {
     expectedOutput?: string,
     enableOutputter?: boolean,
     proTuning?: ProTuningOptions,
-    imageChat?: { images: RunImageUpload[]; sessionId: string }
+    imageChat?: ImageChat
   ): Observable<any> {
     return new Observable((obs) => {
       const submittedEvent: StartupProgressEvent = {

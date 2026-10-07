@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import { MAX_IMAGES, MAX_IMAGE_BYTES, screenImages, toUpload } from './run-image.util';
+import { MAX_IMAGES, MAX_IMAGE_BYTES, newDraftId, screenImages, toUpload } from './run-image.util';
 
 function file(name: string, type: string, size = 10): File {
   return new File([new Uint8Array(size)], name, { type });
@@ -62,6 +62,35 @@ describe('screenImages', () => {
 
     expect(picked.accepted.length).toBe(1);
     expect(picked.errors).toEqual([`Only ${MAX_IMAGES} images can be attached to one message.`]);
+  });
+});
+
+describe('screenImages edge cases', () => {
+  it('does not treat a dotless file name as an extension', () => {
+    const picked = screenImages([file('png', 'image/png')], 0);
+
+    expect(picked.accepted).toEqual([]);
+    expect(picked.errors).toEqual(['png is not a PNG, JPG, JPEG or WEBP image.']);
+  });
+
+  it('refuses an empty file by name', () => {
+    const picked = screenImages([file('empty.png', 'image/png', 0)], 0);
+
+    expect(picked.accepted).toEqual([]);
+    expect(picked.errors).toEqual(['empty.png is empty.']);
+  });
+});
+
+describe('newDraftId', () => {
+  it('is a uuid-shaped id even where crypto.randomUUID is missing (plain http)', () => {
+    const original = crypto.randomUUID;
+    (crypto as { randomUUID?: unknown }).randomUUID = undefined;
+    try {
+      expect(newDraftId()).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+      expect(newDraftId()).not.toBe(newDraftId());
+    } finally {
+      crypto.randomUUID = original;
+    }
   });
 });
 

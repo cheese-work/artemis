@@ -27,7 +27,7 @@ import { RunLibraryComponent } from '../../components/run-library/run-library.co
 import { RunTargetPickerComponent } from '../../components/run-target-picker/run-target-picker.component';
 import { RunViewerComponent } from '../../components/run-viewer/run-viewer.component';
 import { AgentService } from '../../services/agent.service';
-import { IMAGE_ACCEPT, RunImageUpload, screenImages, toUpload } from '../../utils/run-image.util';
+import { IMAGE_ACCEPT, ImageChat, MAX_IMAGES, newDraftId, RunImageUpload, screenImages, toUpload } from '../../utils/run-image.util';
 
 /** A picture chosen for the next message, with the object URL its preview uses. */
 export interface AttachedImage {
@@ -84,6 +84,7 @@ export class WorkspaceComponent implements OnInit {
   private taskInputSignal = signal<string>('');
   public get taskInput(): string { return this.taskInputSignal(); }
   public set taskInput(value: string) {
+    if (value !== this.taskInputSignal()) this.draftSessionId = null; // new wording is a new message
     this.taskInputSignal.set(value);
     this.agentService.whatsNewPromptDraft.set(value.trim().length > 0);
   }
@@ -93,6 +94,7 @@ export class WorkspaceComponent implements OnInit {
   // Image chat: pictures for the next message. The draft session id lives as long as the
   // draft, so a retry after a failed or lost send cannot queue the message twice.
   public readonly imageAccept = IMAGE_ACCEPT;
+  public readonly maxImages = MAX_IMAGES;
   public attachedImages = signal<AttachedImage[]>([]);
   private nextImageId = 0;
   private draftSessionId: string | null = null;
@@ -360,8 +362,11 @@ export class WorkspaceComponent implements OnInit {
       this.setErrorMessage(err instanceof Error ? err.message : 'An image could not be read.');
       return;
     }
-    this.draftSessionId ??= crypto.randomUUID();
-    const imageChat = uploads.length ? { images: uploads, sessionId: this.draftSessionId } : undefined;
+    let imageChat: ImageChat | undefined;
+    if (uploads.length) {
+      this.draftSessionId ??= newDraftId();
+      imageChat = { images: uploads, sessionId: this.draftSessionId };
+    }
 
     const submission = imageChat
       ? this.agentService.runTask(goal, this.selectedProfile(), undefined, undefined, undefined, imageChat)
@@ -379,7 +384,10 @@ export class WorkspaceComponent implements OnInit {
       error: (err) => {
         console.error('Failed to submit task:', err);
         this.isSubmitting.set(false);
-        this.setErrorMessage(err.error?.detail || 'The runner is busy. Please wait for current task to finish.');
+        const fallback = imageChat
+          ? 'The message could not be sent. Your text and images are kept; try again.'
+          : 'The runner is busy. Please wait for current task to finish.';
+        this.setErrorMessage(err.error?.detail || fallback);
       }
     });
   }

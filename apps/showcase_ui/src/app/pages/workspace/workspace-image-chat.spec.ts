@@ -197,4 +197,53 @@ describe('WorkspaceComponent image chat', () => {
 
     expect(revoke).toHaveBeenCalledTimes(1);
   });
+
+  it('starts a new session id when the text changes, so an edited goal is never dropped by a retry', async () => {
+    component.addImages([png()]);
+    component.taskInput = 'first wording';
+    await component.submitTask();
+    runTask.and.returnValue(throwError(() => ({ error: { detail: 'lost' } })) as Observable<unknown>);
+    component.addImages([png()]);
+    component.taskInput = 'wording one';
+    await component.submitTask();
+    const lostId = runTask.calls.mostRecent().args[5].sessionId;
+
+    component.taskInput = 'wording two';
+    await component.submitTask();
+
+    expect(runTask.calls.mostRecent().args[5].sessionId).not.toBe(lostId);
+  });
+
+  it('disables the attach button once the image limit is reached', async () => {
+    component.addImages(Array.from({ length: MAX_IMAGES }, (_, i) => png(`${i}.png`)));
+    await settle();
+
+    const button = element.querySelector<HTMLButtonElement>('button.btn-attach')!;
+    expect(button.disabled).toBeTrue();
+  });
+
+  it('still sends when crypto.randomUUID is unavailable', async () => {
+    const original = crypto.randomUUID;
+    (crypto as { randomUUID?: unknown }).randomUUID = undefined;
+    try {
+      component.addImages([png()]);
+      component.taskInput = 'hello';
+      await component.submitTask();
+    } finally {
+      crypto.randomUUID = original;
+    }
+
+    expect(runTask.calls.mostRecent().args[5].sessionId).toMatch(/^[0-9a-f-]{36}$/);
+    expect(component.isSubmitting()).toBeFalse();
+  });
+
+  it('says the message could not be sent, not that the runner is busy, when an image send fails without a reason', async () => {
+    runTask.and.returnValue(throwError(() => ({ error: null })) as Observable<unknown>);
+    component.addImages([png()]);
+    component.taskInput = 'hello';
+
+    await component.submitTask();
+
+    expect(component.errorMessage()).toBe('The message could not be sent. Your text and images are kept; try again.');
+  });
 });

@@ -26,6 +26,12 @@ const MEDIA_BY_EXTENSION: Record<string, string> = {
   webp: 'image/webp'
 };
 
+/** What `runTask` needs to send pictures: the uploads and the draft's retry-safe session id. */
+export interface ImageChat {
+  images: RunImageUpload[];
+  sessionId: string;
+}
+
 export interface RunImageUpload {
   name: string;
   media_type: string;
@@ -44,7 +50,8 @@ export interface ScreenResult {
 
 /** The type the file name claims, kept only when the browser's own type does not contradict it. */
 function mediaTypeOf(file: File): string | null {
-  const extension = file.name.split('.').pop()?.toLowerCase() ?? '';
+  const dot = file.name.lastIndexOf('.');
+  const extension = dot < 0 ? '' : file.name.slice(dot + 1).toLowerCase();
   const fromName = MEDIA_BY_EXTENSION[extension];
   if (!fromName || (file.type && file.type !== fromName)) {
     return null;
@@ -60,6 +67,8 @@ export function screenImages(files: File[], alreadyAttached: number): ScreenResu
     const mediaType = mediaTypeOf(file);
     if (!mediaType) {
       errors.push(`${file.name} is not a PNG, JPG, JPEG or WEBP image.`);
+    } else if (file.size === 0) {
+      errors.push(`${file.name} is empty.`);
     } else if (file.size > MAX_IMAGE_BYTES) {
       errors.push(`${file.name} is larger than ${MAX_IMAGE_BYTES / (1024 * 1024)} MB.`);
     } else if (alreadyAttached + accepted.length >= MAX_IMAGES) {
@@ -75,11 +84,25 @@ export function screenImages(files: File[], alreadyAttached: number): ScreenResu
 export function toUpload(file: File, mediaType: string): Promise<RunImageUpload> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
-    reader.onerror = () => reject(new Error(`${file.name} could not be read.`));
+    const unreadable = () => reject(new Error(`${file.name} could not be read.`));
+    reader.onerror = unreadable;
+    reader.onabort = unreadable;
     reader.onload = () => {
       const url = String(reader.result);
       resolve({ name: file.name, media_type: mediaType, data: url.slice(url.indexOf(',') + 1) });
     };
     reader.readAsDataURL(file);
   });
+}
+
+/** A uuid-shaped draft id; `crypto.randomUUID` only exists on https and localhost, `getRandomValues` everywhere. */
+export function newDraftId(): string {
+  if (typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
