@@ -101,6 +101,146 @@ async def test_reconnect_cancels_loss_and_stale_cleanup_cannot_close_new_listene
 
 
 @pytest.mark.asyncio
+async def test_reconnect_falls_back_when_saved_port_is_occupied(manager, monkeypatch):
+    from apps.admin_console.services.host_tunnel import HostTunnel
+    from artemis.runtime.host_mux import PROCESS_BUDGET
+
+    service, _, _, _ = manager
+    baseline = PROCESS_BUDGET.used
+    attempted = []
+    original = HostTunnel.start
+
+    async def record_start(tunnel):
+        attempted.append(tunnel)
+        return await original(tunnel)
+
+    monkeypatch.setattr(HostTunnel, "start", record_start)
+    await service.attach("lab", 1, Socket(), lambda: set())
+    port = service.endpoints.resolve("lab").port
+    service.bind_run("lab", "run")
+    await service.disconnect("lab", 1, "disconnected")
+    occupied = await asyncio.start_server(lambda reader, writer: writer.close(), "127.0.0.1", port)
+    try:
+        newest = await service.attach("lab", 2, Socket(), lambda: set())
+        assert [tunnel.port for tunnel in attempted] == [0, port, 0]
+        assert attempted[1].mux.closed
+        assert attempted[1].mux.buffered_bytes == 0
+        assert service.endpoints.resolve("lab").port != port
+        assert service.tunnels["lab"] is newest
+        assert service.reconnecting("lab") is None
+        assert "lab" not in service.timers
+    finally:
+        occupied.close()
+        await occupied.wait_closed()
+        await service.close()
+    assert PROCESS_BUDGET.used == baseline
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("remaining", ["none", "released", "expired"])
+async def test_no_bound_run_requests_a_fresh_port(manager, monkeypatch, remaining):
+    from apps.admin_console.services.host_tunnel import HostTunnel
+
+    service, clock, _, _ = manager
+    await service.attach("lab", 1, Socket(), lambda: set())
+    if remaining != "none":
+        service.bind_run("lab", "run")
+    await service.disconnect("lab", 1, "disconnected")
+    if remaining == "released":
+        service.release_run("lab", "run")
+    elif remaining == "expired":
+        clock.now = 130
+        service.expire()
+    requested = []
+    original = HostTunnel.start
+
+    async def record_start(tunnel):
+        requested.append(tunnel.port)
+        return await original(tunnel)
+
+    monkeypatch.setattr(HostTunnel, "start", record_start)
+    try:
+        await service.attach("lab", 2, Socket(), lambda: set())
+        assert requested == [0]
+    finally:
+        await service.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", [OSError, asyncio.CancelledError])
+async def test_port_retry_failure_releases_all_candidates(manager, monkeypatch, failure):
+    from apps.admin_console.services.host_tunnel import HostTunnel
+    from artemis.runtime.host_mux import PROCESS_BUDGET
+
+    service, _, _, _ = manager
+    baseline = PROCESS_BUDGET.used
+    await service.attach("lab", 1, Socket(), lambda: set())
+    service.bind_run("lab", "run")
+    await service.disconnect("lab", 1, "disconnected")
+    candidates = []
+
+    async def fail_start(tunnel):
+        candidates.append(tunnel)
+        if tunnel.port:
+            raise OSError("saved port occupied")
+        raise failure()
+
+    monkeypatch.setattr(HostTunnel, "start", fail_start)
+    try:
+        with pytest.raises(failure):
+            await service.attach("lab", 2, Socket(), lambda: set())
+        assert len(candidates) == 2
+        assert all(tunnel.mux.closed for tunnel in candidates)
+        assert PROCESS_BUDGET.used == baseline
+        with pytest.raises(HostOffline):
+            service.endpoints.resolve("lab")
+    finally:
+        await service.close()
+
+
+@pytest.mark.asyncio
+async def test_port_retry_cannot_publish_a_superseded_generation(manager, monkeypatch):
+    from apps.admin_console.services.host_tunnel import HostTunnel
+    from artemis.runtime.host_mux import PROCESS_BUDGET
+
+    service, _, _, _ = manager
+    baseline = PROCESS_BUDGET.used
+    await service.attach("lab", 1, Socket(), lambda: set())
+    service.bind_run("lab", "run")
+    await service.disconnect("lab", 1, "disconnected")
+    blocked, resume = asyncio.Event(), asyncio.Event()
+    original = HostTunnel.start
+    candidates = []
+
+    async def delayed_retry(tunnel):
+        if tunnel.generation == 2:
+            candidates.append(tunnel)
+            if tunnel.port:
+                raise OSError("saved port occupied")
+            blocked.set()
+            await resume.wait()
+        return await original(tunnel)
+
+    monkeypatch.setattr(HostTunnel, "start", delayed_retry)
+    first = asyncio.create_task(service.attach("lab", 2, Socket(), lambda: set()))
+    try:
+        await asyncio.wait_for(blocked.wait(), 1)
+        newest = await service.attach("lab", 3, Socket(), lambda: set())
+        resume.set()
+        with pytest.raises(ValueError, match="Superseded"):
+            await asyncio.wait_for(first, 1)
+        assert all(tunnel.mux.closed for tunnel in candidates)
+        assert service.tunnels["lab"] is newest
+        assert service.endpoints.resolve("lab").generation == 3
+        assert newest.listener.is_serving()
+    finally:
+        resume.set()
+        await asyncio.gather(first, return_exceptions=True)
+        await service.close()
+    assert PROCESS_BUDGET.used == baseline
+
+
+@pytest.mark.asyncio
 async def test_unshare_closes_selected_live_stream(manager):
     service, _, _, _ = manager
     shared = {"phone"}

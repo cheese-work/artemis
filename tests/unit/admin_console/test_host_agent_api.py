@@ -8,6 +8,9 @@ ARTEMIS_HOST_AGENT.
 from __future__ import annotations
 
 import base64
+import asyncio
+import json
+import socket
 import sqlite3
 import time
 
@@ -16,6 +19,10 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
 import pytest
+import pytest_asyncio
+import uvicorn
+from websockets.asyncio.client import connect as websocket_connect
+from websockets.exceptions import ConnectionClosedError
 from starlette.websockets import WebSocketDisconnect
 
 from apps.admin_console.core import agent_auth
@@ -24,6 +31,9 @@ from apps.admin_console.core.access_control import AdminAPIError, admin_api_erro
 from apps.admin_console.server import proxy_aware_app
 from apps.admin_console.services import host_registry as hr
 from apps.admin_console.services.host_registry import host_registry
+from apps.admin_console.services.host_tunnel import HostTunnels
+from artemis.runtime.host_endpoints import HostEndpointRegistry
+from artemis.runtime.host_protocol import CONTRACT
 
 HOST = {"Host": "localhost"}
 
@@ -125,6 +135,114 @@ def _handshake(client, key, host_id, **kw):
     ws = context.__enter__()
     ws.send_json(_hello(client, key, host_id, **kw))
     return context, ws, ws.receive_json()
+
+
+@pytest_asyncio.fixture
+async def wire_server(monkeypatch):
+    ready, lost = asyncio.Event(), asyncio.Event()
+    clock = {"now": 100.0}
+    outcomes = []
+    tunnels = HostTunnels(
+        endpoints=HostEndpointRegistry(),
+        clock=lambda: clock["now"],
+        interrupt=outcomes.append,
+        set_status=lambda *args: None,
+        note_loss=lambda session: lost.set(),
+        recover_loss=lambda session: None,
+    )
+    monkeypatch.setattr(agent_router, "host_tunnels", tunnels)
+
+    class ReadyServer(uvicorn.Server):
+        async def startup(self, sockets=None):
+            await super().startup(sockets=sockets)
+            ready.set()
+
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    port = listener.getsockname()[1]
+    server = ReadyServer(
+        uvicorn.Config(
+            proxy_aware_app,
+            lifespan="off",
+            ws_max_size=CONTRACT.max_frame,
+            log_level="error",
+            timeout_graceful_shutdown=1,
+        )
+    )
+    task = asyncio.create_task(server.serve(sockets=[listener]))
+    try:
+        await asyncio.wait_for(ready.wait(), 5)
+        yield f"localhost:{port}", tunnels, clock, outcomes, lost
+    finally:
+        server.should_exit = True
+        try:
+            await asyncio.wait_for(task, 5)
+        finally:
+            await tunnels.close()
+            listener.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("close", ["websocket", "tcp_abort"])
+async def test_real_host_socket_close_enters_grace_and_expires_once(admin, wire_server, close):
+    audience, tunnels, clock, outcomes, lost = wire_server
+    admin.headers["Host"] = audience
+    key, host_id = _enrolled(admin)
+    async with websocket_connect(f"ws://{audience}/api/agent/connect") as ws:
+        await ws.send(json.dumps(_hello(admin, key, host_id, audience=audience)))
+        connected = json.loads(await ws.recv())
+        assert connected["type"] == "connected", connected
+        tunnels.bind_run(host_id, "run")
+        tunnel = tunnels.tunnels[host_id]
+        if close == "websocket":
+            await ws.close()
+        else:
+            ws.transport.abort()
+    await asyncio.wait_for(lost.wait(), 1)
+    assert tunnels.reconnecting(host_id) == 130
+    assert outcomes == []
+    clock["now"] = 130
+    tunnels.expire()
+    tunnels.expire()
+    assert outcomes == ["run"]
+    assert tunnel.mux.closed
+    assert not tunnel.listener.is_serving()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "payload",
+    [
+        bytes(CONTRACT.max_frame + 1),
+        "€" * (CONTRACT.max_frame // 3 + 1),
+        ["x" * 32768, "x" * 32769],
+    ],
+    ids=["binary", "utf8", "fragmented"],
+)
+async def test_uvicorn_rejects_oversize_host_message_before_asgi(
+    admin, wire_server, monkeypatch, payload
+):
+    from unittest.mock import Mock
+
+    audience, tunnels, _, _, lost = wire_server
+    admin.headers["Host"] = audience
+    decode = Mock(wraps=agent_router._json_message)
+    frame_decode = Mock(wraps=agent_router.Frame.decode)
+    monkeypatch.setattr(agent_router, "_json_message", decode)
+    monkeypatch.setattr(agent_router.Frame, "decode", frame_decode)
+    key, host_id = _enrolled(admin)
+    async with websocket_connect(f"ws://{audience}/api/agent/connect") as ws:
+        await ws.send(json.dumps(_hello(admin, key, host_id, audience=audience)))
+        connected = json.loads(await ws.recv())
+        assert connected["type"] == "connected", connected
+        tunnels.bind_run(host_id, "run")
+        await ws.send(payload)
+        with pytest.raises(ConnectionClosedError) as closed:
+            await asyncio.wait_for(ws.recv(), 2)
+        assert closed.value.rcvd.code == 1009
+    await asyncio.wait_for(lost.wait(), 1)
+    assert decode.call_count == 1
+    assert frame_decode.call_count == 0
 
 
 # -- flag ---------------------------------------------------------------

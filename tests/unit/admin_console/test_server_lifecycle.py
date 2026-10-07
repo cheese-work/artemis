@@ -24,8 +24,31 @@ from artemis.runtime.lifecycle import InterruptReason, LifecycleAuthority
 from apps.admin_console.core.state import state
 from apps.admin_console.routers.tasks import stream_events
 from apps.admin_console.server import ArtemisUvicornServer, app, on_shutdown
+from artemis.runtime.host_protocol import CONTRACT
 
 WINDOWS_FORCE_SIGNAL = getattr(signal, "SIGBREAK", signal.SIGTERM)
+
+
+@pytest.mark.parametrize("reload", [False, True])
+@pytest.mark.parametrize("enabled", [False, True])
+def test_server_bounds_websocket_messages_before_asgi(monkeypatch, reload, enabled):
+    from apps.admin_console import server
+
+    monkeypatch.setenv("ARTEMIS_HOST_AGENT", "1" if enabled else "0")
+    monkeypatch.setattr(server, "configure_logging", lambda **kwargs: None)
+    monkeypatch.setattr(server, "write_server_info", lambda **kwargs: None)
+    monkeypatch.setattr(server, "clear_server_info", lambda **kwargs: None)
+    with (
+        patch.object(uvicorn, "run") as run,
+        patch.object(server.ArtemisUvicornServer, "run"),
+        patch.object(uvicorn, "Config", wraps=uvicorn.Config) as config,
+    ):
+        server.run_ui_server("127.0.0.1", 0, reload=reload)
+    options = run.call_args.kwargs if reload else config.call_args.kwargs
+    if enabled:
+        assert options["ws_max_size"] == CONTRACT.max_frame
+    else:
+        assert "ws_max_size" not in options
 
 
 def _pending_queue_get_tasks():

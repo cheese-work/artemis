@@ -151,8 +151,20 @@ class FakeRemote:
         self.replies.feed_data(b"OKAY")
         if service == "host:version":
             self.replies.feed_data(pack_message(b"0029"))
+        elif service == "host:features" or service.endswith(":features"):
+            self.replies.feed_data(pack_message(b"shell_v2,cmd,stat_v2"))
         elif service in {"host:devices", "host:devices-l"}:
             self.replies.feed_data(pack_message(b"hidden\tdevice\nphone\tdevice\n"))
+        elif service.startswith("host:tport:serial:"):
+            self.replies.feed_data(struct.pack("<Q", 0x0102030405060708))
+        elif service.startswith("host-serial:"):
+            if service.rpartition(":")[2].startswith("wait-for-"):
+                self.replies.feed_data(b"OKAY")
+            elif service.endswith(":get-state"):
+                self.replies.feed_data(pack_message(b"device"))
+            elif service.endswith(":get-serialno"):
+                self.replies.feed_data(pack_message(service[12:].rsplit(":", 1)[0].encode()))
+            self.replies.feed_eof()
         elif not service.startswith("host:transport:"):
             self.replies.feed_data(b"output")
             self.replies.feed_eof()
@@ -172,10 +184,10 @@ class FakeWriter:
         pass
 
 
-async def gateway_exchange(commands, *, fragmented=False):
+async def gateway_exchange(commands, *, fragmented=False, shared=None):
     reader = asyncio.StreamReader()
     writer, remote = FakeWriter(), FakeRemote()
-    gateway = Gateway(lambda: {"phone"})
+    gateway = Gateway(lambda: {"phone"} if shared is None else shared)
     payload = b"".join(pack_message(command.encode()) for command in commands)
     if fragmented:
         for byte in payload:
@@ -201,6 +213,30 @@ async def gateway_exchange(commands, *, fragmented=False):
         "host:emulator:kill",
         "host:transport:hidden",
         "host:transport-any",
+        "host:tport:serial:hidden",
+        "host:tport:serial:phone\n",
+        "host:tport:any",
+        "host:tport:usb",
+        "host:tport:local",
+        "host:tport:serial:phone:extra",
+        "host-serial:hidden:features",
+        "host-serial:hidden:get-state",
+        "host-serial:hidden:get-serialno",
+        "host-serial:hidden:wait-for-any-device",
+        "host-serial:phone:forward:tcp:1;tcp:2",
+        "host-serial:phone:forward:norebind:tcp:1;tcp:2",
+        "host-serial:phone:killforward-all",
+        "host-serial:phone:killforward:tcp:1",
+        "host-serial:phone:root:",
+        "host-serial:phone:get-devpath",
+        "host-serial:phone:unknown",
+        "host-serial:phone:features:extra",
+        "host-serial:phone:wait-for-any-device:forward:tcp:1;tcp:2",
+        "host-serial:phone:wait-for-",
+        "host-serial:phone:wait-for-evil-device",
+        "host:wait-for-any-device",
+        "host:features:extra",
+        "shell,v2,raw:id",
         "host:unknown",
         "shell:id",
     ],
@@ -224,6 +260,11 @@ async def test_gateway_allowlist_before_transport(service, caplog):
         "usb:",
         "host:kill",
         "host:forward:tcp:1;tcp:2",
+        "host:transport:hidden",
+        "host:tport:serial:hidden",
+        "host:tport:serial:phone",
+        "host-serial:phone:features",
+        "host-serial:phone:forward:tcp:1;tcp:2",
         "sync",
         "shell",
         "unknown:",
@@ -253,6 +294,77 @@ async def test_gateway_nested_transport_fragmented_and_coalesced(service, fragme
 async def test_gateway_devices_filter():
     writer, _, _ = await gateway_exchange(["host:devices-l"])
     assert bytes(writer.data) == b"OKAY" + pack_message(b"phone\tdevice\n")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("serial", ["phone", "127.0.0.1:5555"])
+@pytest.mark.parametrize("fragmented", [False, True])
+@pytest.mark.parametrize(
+    "operation", ["features", "host_features", "shell", "wait", "state", "serial", "exec", "sync"]
+)
+async def test_gateway_adb_1_0_41_conformance(serial, fragmented, operation):
+    exchanges = {
+        "features": (
+            [f"host-serial:{serial}:features"],
+            b"OKAY" + pack_message(b"shell_v2,cmd,stat_v2"),
+        ),
+        "host_features": (["host:features"], b"OKAY" + pack_message(b"shell_v2,cmd,stat_v2")),
+        "shell": (
+            [f"host:tport:serial:{serial}", "shell,v2,TERM=xterm-256color,raw:id"],
+            b"OKAY" + struct.pack("<Q", 0x0102030405060708) + b"OKAYoutput",
+        ),
+        "wait": ([f"host-serial:{serial}:wait-for-any-device"], b"OKAYOKAY"),
+        "state": ([f"host-serial:{serial}:get-state"], b"OKAY" + pack_message(b"device")),
+        "serial": ([f"host-serial:{serial}:get-serialno"], b"OKAY" + pack_message(serial.encode())),
+        "exec": (
+            [f"host:tport:serial:{serial}", "exec:cat"],
+            b"OKAY" + struct.pack("<Q", 0x0102030405060708) + b"OKAYoutput",
+        ),
+        "sync": (
+            [f"host:tport:serial:{serial}", "sync:"],
+            b"OKAY" + struct.pack("<Q", 0x0102030405060708) + b"OKAYoutput",
+        ),
+    }
+    commands, expected = exchanges[operation]
+    writer, remote, gateway = await asyncio.wait_for(
+        gateway_exchange(commands, fragmented=fragmented, shared={serial}), 1
+    )
+    assert bytes(writer.data) == expected
+    assert remote.sent == [pack_message(command.encode()) for command in commands]
+    if commands[0] != "host:features":
+        assert gateway.serial == serial
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "command",
+    [
+        "features",
+        "get-state",
+        "get-serialno",
+        "wait-for-usb-recovery",
+        "wait-for-local-disconnect",
+        "wait-for-any-device-recovery",
+    ],
+)
+async def test_gateway_scoped_serial_with_wait_substring(command):
+    serial = "phone:wait-for-any-device"
+    writer, remote, gateway = await gateway_exchange(
+        [f"host-serial:{serial}:{command}"], shared={serial}
+    )
+    payloads = {
+        "features": b"shell_v2,cmd,stat_v2",
+        "get-state": b"device",
+        "get-serialno": serial.encode(),
+    }
+    expected = (
+        b"OKAYOKAY"
+        if command.startswith("wait-for-")
+        else b"OKAY" + pack_message(payloads[command])
+    )
+    assert bytes(writer.data) == expected
+    assert gateway.serial == serial
+    assert len(remote.sent) == 1
 
 
 @pytest.mark.asyncio
