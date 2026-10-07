@@ -125,6 +125,65 @@ describe('RunViewerComponent', () => {
     router = TestBed.inject(Router);
   });
 
+  describe('U1 presentation characterization', () => {
+    const statuses = [
+      ['pending', 'Queued', 'schedule', 'neutral'],
+      ['running', 'Running', 'play_circle', 'neutral'],
+      ['paused', 'Paused', 'pause_circle', 'neutral'],
+      ['completed', 'Passed', 'check_circle', 'ok'],
+      ['success', 'Passed', 'check_circle', 'ok'],
+      ['failed', 'Failed', 'cancel', 'danger'],
+      ['interrupted', 'Interrupted', 'warning', 'warn'],
+      ['cancelled', 'Cancelled', 'block', 'neutral'],
+      ['future_status', 'Unknown', 'help', 'neutral']
+    ];
+    for (const [status, label, icon, tone] of statuses) {
+      it(`preserves the ${status} badge`, async () => {
+        await open({ runResult: of(run({ status })) });
+        const badge = q('.outcome-badge')!;
+        expect(badge.classList.contains(`tone-${tone}`)).toBeTrue();
+        expect(badge.textContent!.replace(/\s+/g, ' ').trim()).toBe(`${icon} ${label}`);
+        expect(badge.querySelector('span')!.getAttribute('aria-hidden')).toBe('true');
+      });
+    }
+
+    const recordings: Array<[string, string | null, string | null, SessionVideo['status'] | null, string, boolean]> = [
+      ['in_progress', 'recording', null, 'ready', 'Recording in progress', false],
+      ['pending', 'pending', null, 'ready', 'The recording has not started yet.', false],
+      ['waiting_for_computer', 'stopped', 'waiting_for_computer', 'ready', 'Video will appear when your computer reconnects.', false],
+      ['uploading', 'stopped', 'uploading', 'ready', 'Uploading video…', false],
+      ['upload_failed', 'stopped', 'failed', 'ready', 'Video upload failed. Retry upload runs from the computer.', false],
+      ['preparing', 'stopped', 'uploaded', 'processing', 'Preparing video…', true],
+      ['prepare_failed', 'stopped', 'uploaded', 'failed', 'The video could not be prepared.', true],
+      ['uploaded_unchecked', 'stopped', 'uploaded', null, 'Video uploaded. Checking that it can play…', true],
+      ['missing', 'missing:device_offline', 'uploaded', 'ready', 'No recording: the phone went offline.', false],
+      ['none', null, null, 'unavailable', 'No recording for this run.', false],
+      ['unknown', null, null, null, 'Recording status unknown.', false]
+    ];
+    for (const [state, capture, transfer, status, copy, retry] of recordings) {
+      it(`preserves ${state} recording copy and screenshot fallback`, async () => {
+        await open({
+          runResult: of(run({ recordings: [{ recording_id: 'r1', capture, transfer }] })),
+          video: status === null ? new Subject<SessionVideo>() : of(ready({ status }))
+        });
+        expect(q('video')).toBeNull();
+        expect(q('.recording-copy')!.textContent!.trim()).toBe(copy);
+        expect(q('.recording-copy')!.getAttribute('role')).toBe('status');
+        expect(q('img.evidence-image')!.getAttribute('alt')).toBe('Screenshot for step 3');
+        expect(qa('button').some((control) => control.textContent!.trim() === 'Check again')).toBe(retry);
+      });
+    }
+
+    it('preserves device detail, step markup and action order', async () => {
+      await open({ steps: of([step(1)]) });
+      expect(q('.secondary-meta dd')!.textContent!.trim()).toBe('emulator-5554');
+      expect(q('.step-number')!.textContent!.trim()).toBe('Step 1');
+      expect(q('.step-title')).not.toBeNull();
+      expect(q('.step-button')!.getAttribute('aria-current')).toBe('step');
+      expect(qa('.actions button').map((control) => control.textContent!.trim())).toEqual(['Copy link', 'Download', 'Pin']);
+    });
+  });
+
   describe('reading order', () => {
     it('leads with outcome and prompt, then evidence with steps, then actions, then technical details', async () => {
       await open();
