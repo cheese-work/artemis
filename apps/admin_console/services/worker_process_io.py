@@ -27,6 +27,11 @@ import psutil
 import subprocess
 import sys
 from typing import Any
+import logging
+
+from artemis.utils.redaction import LineRedactor
+
+logger = logging.getLogger(__name__)
 
 
 def subprocess_creation_kwargs() -> dict[str, Any]:
@@ -68,7 +73,7 @@ async def forward_worker_output(
             os.makedirs(os.path.dirname(log_path), exist_ok=True)
             log_file = open(log_path, "w", buffering=1, encoding="utf-8", errors="replace")
         except Exception as exc:
-            print(f"[QueueWorker] Could not open worker log file '{log_path}': {exc}")
+            logger.exception("event=worker_log_open_failed")
 
     def _emit(text: str) -> None:
         sys.stdout.write(text)
@@ -79,28 +84,28 @@ async def forward_worker_output(
             except (OSError, ValueError):
                 # Best-effort tee into stdout.log; console output above
                 # already carried the text.
-                pass
+                logger.exception("event=worker_log_write_failed")
 
     try:
         decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        lines = LineRedactor()
         while True:
             chunk = await stream.read(4096)
             if not chunk:
                 break
             text = decoder.decode(chunk)
             if text:
-                _emit(text)
+                _emit(lines.feed(text))
 
         tail = decoder.decode(b"", final=True)
-        if tail:
-            _emit(tail)
+        _emit(lines.feed(tail, final=True))
     finally:
         if log_file is not None:
             try:
                 log_file.close()
             except OSError:
                 # Flush-on-close of the best-effort tee failed; nothing to do.
-                pass
+                logger.exception("event=worker_log_close_failed")
 
 
 async def finish_output_forwarder(output_task: asyncio.Task[None] | None) -> None:
@@ -120,7 +125,7 @@ async def finish_output_forwarder(output_task: asyncio.Task[None] | None) -> Non
         except asyncio.CancelledError:
             pass
     except Exception as exc:
-        print(f"[QueueWorker] Failed to forward detached worker output: {exc}")
+        logger.exception("event=worker_output_forward_failed")
 
 
 async def wait_for_worker_process(proc: asyncio.subprocess.Process) -> int:
