@@ -20,6 +20,11 @@ clipboard, pin, download or trust-dialog state.
   inputs. Emits the action ID and original event. The existing copy components
   retain clipboard redaction, feedback and manual-copy fallback behavior.
 
+The status table also retains the summary's legacy captions (`Completed`,
+`Pending`, and `Unknown` for an interrupted run). Summary-only `error` and
+`queued` aliases do not change badge status handling. This extraction does
+not change copied text; caption unification is a separate behavior change.
+
 The existing screen controllers keep asynchronous request cancellation,
 segmented seeks, authorization, confirmation dialogs and focus restoration.
 Styles for generated children move with their component. Host layout and

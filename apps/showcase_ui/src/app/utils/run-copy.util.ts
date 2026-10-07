@@ -3,6 +3,8 @@ import { redact } from '../services/logger.service';
 import { isActionFailed } from './action-formatter.util';
 import { consolidateLogsToBlocks } from './stream-aggregator.util';
 import { compareStepIdentity, getStepTraceIds } from './step-identity.util';
+import { runSummaryStatusLabel } from './run-status.util';
+import { runDeviceLabel } from './device-label.util';
 
 interface SummaryStepEntry {
   step: Record<string, unknown>;
@@ -15,14 +17,14 @@ export function buildRunSummary(
   logs: unknown[],
   recordingUrl: string | null | undefined
 ): string {
-  const device = session.device_serial || session.device_id || 'Unknown';
+  const device = runDeviceLabel(session.device_serial || session.device_id || 'Unknown', null, false, true);
   const recording = safeRecordingUrl(recordingUrl);
 
   return redact([
     '# Run summary',
     `- Run ID: ${singleLine(session.session_id)}`,
     `- Device: ${singleLine(device)}`,
-    `- Outcome: ${formatOutcome(session.status || currentStatus)}`,
+    `- Outcome: ${runSummaryStatusLabel(session.status || currentStatus)}`,
     `- Failing step: ${findFailingStep(logs)}`,
     `- Recording: ${recording ? `[Open recording](${recording})` : 'Not available'}`
   ].join('\n'));
@@ -324,28 +326,6 @@ function actionForStep(step: Record<string, unknown>): Record<string, unknown> |
     return action as Record<string, unknown>;
   }
   return null;
-}
-
-function formatOutcome(status: string): string {
-  switch (status.toLowerCase()) {
-    case 'success':
-    case 'completed':
-      return 'Completed';
-    case 'failed':
-    case 'error':
-      return 'Failed';
-    case 'cancelled':
-      return 'Cancelled';
-    case 'paused':
-      return 'Paused';
-    case 'pending':
-    case 'queued':
-      return 'Pending';
-    case 'running':
-      return 'Running';
-    default:
-      return 'Unknown';
-  }
 }
 
 function safeRecordingUrl(value: string | null | undefined): string | null {
