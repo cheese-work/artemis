@@ -971,6 +971,10 @@ async def test_enqueue_tasks_unified_ingress():
     with (
         patch.object(TaskQueueService, "ensure_worker_running"),
         patch(
+            "artemis.runtime.device_pool.device_pool.select_device_async",
+            return_value="emulator-5554",
+        ),
+        patch(
             "apps.admin_console.services.task_queue_service.DeviceExecutionLock.reserve",
             return_value="mock-ticket-unified",
         ),
@@ -989,6 +993,7 @@ async def test_enqueue_tasks_unified_ingress():
         assert task["ingress"] == "mcp"
         assert task["conversation_id"] == "conv-456"
         assert task["goal"] == "Test unified goal"
+        assert task["device_serial"] == "emulator-5554"
 
 
 @pytest.mark.asyncio
@@ -1199,6 +1204,10 @@ async def test_enqueue_tasks_deduplicates_by_session_id():
     with (
         patch("apps.admin_console.services.task_queue_service.session_repo"),
         patch(
+            "artemis.runtime.device_pool.device_pool.select_device_async",
+            return_value="emulator-5554",
+        ),
+        patch(
             "apps.admin_console.services.task_queue_service.DeviceExecutionLock.reserve",
             return_value="ticket-123",
         ),
@@ -1206,6 +1215,7 @@ async def test_enqueue_tasks_deduplicates_by_session_id():
         res1 = await task_queue_service.enqueue_tasks(["Task goal"], session_id="sid-dedup-1")
         assert len(state.queue_items) == 1
         assert res1["enqueued_count"] == 1
+        assert res1["tasks"][0]["device_serial"] == "emulator-5554"
 
         # Second submission with same session_id must not enqueue a duplicate
         res2 = await task_queue_service.enqueue_tasks(["Task goal again"], session_id="sid-dedup-1")

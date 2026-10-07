@@ -26,7 +26,10 @@ from apps.admin_console.services.host_admission import (
     host_admission,
 )
 from apps.admin_console.services.task_queue_service import TaskQueueService
+from apps.admin_console.services import task_queue_service as queue_module
 from artemis.runtime import DeviceExecutionLock, device_lock, trace_store
+from artemis.runtime.adb_endpoint import AdbEndpoint
+from artemis.runtime.host_endpoints import HostEndpointRegistry
 
 HOST_A = "host-a"
 HOST_B = "host-b"
@@ -40,6 +43,7 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setattr(session_repo, "db_path", tmp_path / "sessions.db")
     monkeypatch.setattr(trace_store, "TRACES_DIR", str(tmp_path / "traces"))
     monkeypatch.setenv("ARTEMIS_HOST_AGENT", "1")
+    monkeypatch.setattr(queue_module, "host_endpoints", HostEndpointRegistry())
     monkeypatch.setattr(TaskQueueService, "ensure_worker_running", MagicMock())
     monkeypatch.setattr(
         TaskQueueService, "_reject_unavailable_device", AsyncMock(return_value=None)
@@ -97,6 +101,9 @@ def runs(monkeypatch):
 
 
 def _host_agent(host_id=HOST_A, devices=("d1", "d2", "d3"), state_=HostState.ACTIVE, max_runs=None):
+    queue_module.host_endpoints.register(
+        AdbEndpoint.create("127.0.0.1", 31415, host_id=host_id, generation=1)
+    )
     host_admission.heartbeat(host_id, state_, max_runs)
     for device in devices:
         host_admission.share_device(host_id, device)

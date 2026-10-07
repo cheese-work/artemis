@@ -24,7 +24,7 @@ from artemis.data_engine.models import SessionMetadata
 from artemis.runtime import trace_store
 from artemis.runtime.adb_endpoint import AdbEndpoint
 from artemis.runtime.device_lock import DeviceExecutionLock
-from artemis.runtime.host_endpoints import HostEndpointRegistry
+from artemis.runtime.host_endpoints import HostEndpointRegistry, HostOffline
 from artemis.runtime.host_protocol import CONTRACT
 from artemis.runtime.lifecycle import LifecycleAuthority
 from artemis.runtime.run_device_binding import RunDeviceBinding
@@ -105,6 +105,63 @@ def fake_process(session_id="run"):
     process.returncode = None
     state.active_runs[session_id] = {"process": process, "session_id": session_id}
     return process
+
+
+@pytest.mark.asyncio
+async def test_host_enqueue_snapshots_registered_endpoint_not_local_preference(
+    context, monkeypatch
+):
+    endpoint = AdbEndpoint.create("127.0.0.1", 31415, host_id="host", generation=4)
+    context.hosts.endpoints.register(endpoint)
+    local_preference = MagicMock(return_value=AdbEndpoint.local())
+    monkeypatch.setattr(queue_module, "current_adb_endpoint", local_preference)
+    monkeypatch.setattr(TaskQueueService, "ensure_worker_running", MagicMock())
+
+    result = await TaskQueueService.enqueue_tasks(
+        ["One fake step"], host_id="host", device_serial="selected", session_id="run"
+    )
+
+    (item,) = result["tasks"]
+    expected_binding = RunDeviceBinding(AdbTarget(endpoint, "selected", "host")).to_dict()
+    assert item["adb_endpoint"] == endpoint.to_dict()
+    assert item["device_binding"] == expected_binding
+    persisted = context.repository.read_session("run")
+    assert json.loads(persisted["device_info"])["device_binding"] == expected_binding
+    assert TaskQueueService._task_target(item).endpoint == endpoint
+
+
+@pytest.mark.asyncio
+async def test_host_enqueue_requires_registered_endpoint_before_reservation(context, monkeypatch):
+    reserve = MagicMock()
+    monkeypatch.setattr(DeviceExecutionLock, "reserve", reserve)
+    monkeypatch.setattr(TaskQueueService, "ensure_worker_running", MagicMock())
+
+    with pytest.raises(HostOffline):
+        await TaskQueueService.enqueue_tasks(
+            ["One fake step"], host_id="host", device_serial="selected"
+        )
+
+    reserve.assert_not_called()
+    assert state.queue_items == []
+
+
+@pytest.mark.asyncio
+async def test_queued_host_retry_reuses_binding_without_live_endpoint(context, monkeypatch):
+    endpoint = AdbEndpoint.create("127.0.0.1", 31415, host_id="host", generation=4)
+    context.hosts.endpoints.register(endpoint)
+    monkeypatch.setattr(TaskQueueService, "ensure_worker_running", MagicMock())
+    accepted = await TaskQueueService.enqueue_tasks(
+        ["One fake step"], host_id="host", device_serial="selected", session_id="run"
+    )
+    context.hosts.endpoints.unregister("host", 4)
+
+    retry = await TaskQueueService.enqueue_tasks(
+        ["One fake step"], host_id="host", device_serial="selected", session_id="run"
+    )
+
+    assert retry["enqueued_count"] == 0
+    assert retry["tasks"][0]["device_binding"] == accepted["tasks"][0]["device_binding"]
+    assert len(state.queue_items) == 1
 
 
 def browser_lease(context, serial, lease_id="browser-lease"):

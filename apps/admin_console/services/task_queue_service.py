@@ -1484,7 +1484,10 @@ class TaskQueueService:
                     and item.get("requested_by") == requested_by
                     and item.get("goal") == first_goal
                     and (not device_serial or item.get("device_serial") == device_serial)
-                    and item.get("adb_endpoint", {}).get("identity") == endpoint.identity
+                    and (
+                        host_id is not None
+                        or item.get("adb_endpoint", {}).get("identity") == endpoint.identity
+                    )
                     and item.get("host_id") == host_id
                     and (now - float(item.get("created_at", 0))) < 1.0
                 ),
@@ -1672,6 +1675,9 @@ class TaskQueueService:
         )
         if duplicate_response is not None:
             return duplicate_response
+
+        if host_id:
+            endpoint = host_endpoints.resolve(host_id)
 
         # Cheap early refusal; the authoritative check follows the last await.
         cls.require_admission_open()
