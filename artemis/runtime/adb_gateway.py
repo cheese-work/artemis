@@ -64,10 +64,10 @@ def text(payload: bytes, *, allow_nul: bool = False) -> str:
 def filter_devices(payload: bytes, shared: set[str]) -> bytes:
     result = []
     for line in text(payload).splitlines():
-        serial, separator, details = line.partition("\t")
-        if not separator or not _SERIAL.fullmatch(serial) or not details:
+        fields = line.split(maxsplit=1)
+        if len(fields) < 2 or not _SERIAL.fullmatch(fields[0]):
             raise ProtocolError("Malformed devices list")
-        if serial in shared:
+        if fields[0] in shared:
             result.append(line + "\n")
     return "".join(result).encode()
 
