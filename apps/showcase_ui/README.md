@@ -43,3 +43,16 @@ The walkthrough seeds the real browser clipboard and sends a native CDP `paste`
 editing command with Ctrl+V on Linux/Windows or Cmd+V on macOS. It verifies trusted
 paste events, PNG payloads, preview removal with Enter, and native plain-text insertion.
 It does not dispatch synthetic `ClipboardEvent` objects or invoke the component directly.
+
+### Navigation
+
+The top bar shows Workspace, Runs, What's New (when updates exist), the device chip,
+and the signed-in user. Connect or switch a phone from either page by opening the
+chip and choosing an action. Connection addresses appear only in the picker's detail lines.
+More options opens the device settings in Setup; admins also have Setup in the user menu.
+Workspace opens Setup on first use when system configuration or all provider credentials
+are missing. A disconnected phone alone does not redirect to Setup, and Runs stays accessible.
+Use Tab and Enter/Space to open the device and user controls. Escape closes either
+control and restores focus to its trigger.
+Run `npm run build && npm run test:navigation` for the navigation-only native keyboard
+walkthrough. It mocks the USB chooser; it does not access a real device.

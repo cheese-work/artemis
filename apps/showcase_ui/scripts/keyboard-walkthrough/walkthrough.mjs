@@ -28,10 +28,15 @@ const freePort = () =>
     });
   });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const navigationOnly = process.argv.includes('--navigation-only');
 
 mock.readiness = {
   os_type: 'linux', overall_ready: true,
-  probes: [{ id: 'android_adb', status: 'pass', metadata: { devices: [{ serial: 'keyboard-fixture', state: 'device', model: 'Pixel test', device_kind: 'phone' }] } }]
+  probes: [
+    { id: 'system_config', status: 'pass' },
+    { id: 'llm_api_key', status: 'pass', metadata: { is_set: true } },
+    { id: 'android_adb', status: 'pass', metadata: { devices: navigationOnly ? [] : [{ serial: 'keyboard-fixture', state: 'device', model: 'Pixel test', device_kind: 'phone' }] } }
+  ]
 };
 const { server, url: base } = await startMockApi(dist);
 const profile = mkdtempSync(path.join(tmpdir(), 'kbd-walk-'));
@@ -196,6 +201,55 @@ try {
     }
   };
   await send('Page.enable');
+  if (navigationOnly) {
+    await send('Page.addScriptToEvaluateOnNewDocument', { source: `
+      window.phoneChooserRequests = 0;
+      Object.defineProperty(navigator, 'usb', { value: {
+        getDevices: async () => [],
+        requestDevice: async () => {
+          window.phoneChooserRequests++;
+          throw new DOMException('Cancelled fixture chooser', 'NotFoundError');
+        },
+        addEventListener: () => {}, removeEventListener: () => {}
+      } });
+    ` });
+    mock.identity = { body: { email: 'qa@example.test', admin: false, auth_mode: 'cloudflare', reason: null } };
+    for (const route of ['/workspace', '/runs']) {
+      log(`Navigation: non-admin on ${route}`);
+      await send('Page.navigate', { url: `${base}${route}` });
+      await expectTrue('user identity loaded', `!!document.querySelector('summary[aria-label^="User menu"]')`);
+      await expectTrue('no Setup tab', `!document.querySelector('nav > a[href="/setup"]')`);
+      await tabUntil('phone chip', focusIs('button.chip'));
+      await press('Enter');
+      await expectTrue('first activation opens the picker with Connect focused', `document.activeElement.textContent.includes('Connect a phone from this browser')`);
+      await expectTrue('Connect is visible without scrolling', `document.activeElement.getBoundingClientRect().bottom <= innerHeight && scrollY === 0`);
+      await press('Enter');
+      await expectTrue('second activation reaches the mocked chooser, with no device access', `window.phoneChooserRequests === 1 && !document.querySelector('.chip-host .panel') && location.pathname === '${route}'`);
+      await tabUntil('user menu', focusIs('summary[aria-label^="User menu"]'));
+      await press('Enter');
+      await expectTrue('Enter opens the QA user menu without Setup', `document.querySelector('details.identity-menu').open && !document.querySelector('app-admin-identity-indicator a[href="/setup"]')`);
+      await press('Escape');
+      await expectTrue('Escape closes the user menu and returns focus', `!document.querySelector('details.identity-menu').open && document.activeElement.matches('summary')`);
+      await tabUntil('phone chip', focusIs('button.chip'), { back: true });
+      await press('Space');
+      await tabUntil('More options', focusIs('a.more'));
+      await expectTrue('QAs can reach device settings through More options', `document.activeElement.getAttribute('href') === '/setup'`);
+      await press('Escape');
+      await expectTrue('Escape closes the phone picker with focus restored', `!document.querySelector('.chip-host .panel') && document.activeElement.matches('button.chip')`);
+    }
+    mock.identity.body.admin = true;
+    await send('Page.navigate', { url: `${base}/workspace` });
+    await expectTrue('admin identity loaded', `document.querySelector('.identity-role')?.textContent.includes('Admin')`);
+    await tabUntil('admin user menu', focusIs('summary[aria-label^="User menu"]'));
+    await press('Space');
+    await expectTrue('Space opens the admin user menu', `document.querySelector('details.identity-menu').open`);
+    await press('Tab');
+    await expectTrue('Tab reaches Setup only inside the admin user menu', `document.activeElement.matches('app-admin-identity-indicator a[href="/setup"]') && !document.querySelector('nav > a[href="/setup"]')`);
+    await press('Escape');
+    await expectTrue('Escape restores focus to the admin menu trigger', `document.activeElement.matches('summary') && !document.querySelector('details.identity-menu').open`);
+    log('\nNavigation keyboard walkthrough passed. WebUSB was mocked; no device was accessed.');
+    await cleanup(0);
+  }
   await send('Page.navigate', { url: `${base}/runs` });
   await expectTrue('library loaded', `document.querySelectorAll('a.run-row').length === 6`);
 
