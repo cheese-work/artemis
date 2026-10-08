@@ -36,27 +36,29 @@ The synthetic preview returns an empty device list and disables device, provider
 
 ### BUG-001 — Private browser-phone isolation
 
-1. After admission, sign in as QA-A in the browser context that owns the Pixel 6 Pro bridge. Sign in as QA-B in a separate context. Both accounts must be regular QAs.
-2. In QA-A's context, open `app-workspace-device-chip button[aria-haspopup="true"]`, then use the `button.action` named `Connect a phone from this browser`. Verify the phone appears as the selected option under `[role="group"][aria-label="Phones"] button.option`. Record the admitted serial in Sol's claim. Use only an owner-approved synthetic screen; stop if personal content appears.
-3. In QA-B's context, open the same chip and inspect the `[role="group"][aria-label="Phones"] button.option` list. Verify QA-B cannot select QA-A's private bridge serial. Read `GET /api/stream/device-state`; the source-pinned expected response is `{"connected":false,"serial":null,"live_stream_url":null}`, with no frame for QA-B. Confirm the serving revision before treating this as live acceptance.
-4. Verify QA-A's browser can read its private-phone state and QA-B cannot read that state or frame. Do not issue a target-selection or task-control request in this packet. The live target-response contract is `UNKNOWN`: at the pinned source, `require_device` runs only when `host_id` is absent, while a host-bound `/api/run` request bypasses that check. Do not let either identity switch Sol's reviewed host-selected serial to the private bridge serial.
-5. Verify an explicitly shared lab phone remains visible to both accounts. Do not alter its sharing state or reset shared ADB.
+1. At the verified serving revision, revalidate the two existing QA profiles with read-only `GET /api/system/whoami`; require two distinct regular-QA identities and no admins. Then, after Sol records admission, sign in as QA-A in the browser context that owns the Pixel 6 Pro bridge and QA-B in a separate context. Do not provision accounts or access credentials.
+2. In QA-A's context, open `app-workspace-device-chip button[aria-haspopup="true"]`, then use the `button.action` named `Connect a phone from this browser`. Verify the phone appears as the selected option under `[role="group"][aria-label="Phones"] button.option`. Record the exact admitted serial in Sol's claim. Use only an owner-approved synthetic screen; stop if personal content appears.
+3. In QA-B's context, open the same chip and inspect the `[role="group"][aria-label="Phones"] button.option` list. Verify QA-B cannot select the exact private serial in Sol's claim. Do not submit or issue any task-control request from QA-B.
+4. Read `GET /api/stream/device-state` in each context. Its stream source is the first connected ADB serial, not the selected workspace phone. Require QA-A's response serial to equal the exact serial in Sol's claim. For a private claimed serial, require QA-B's response to be `{"connected":false,"serial":null,"live_stream_url":null}` and verify QA-B receives no frame from that serial. If the response serial differs from Sol's claim, mark this observation `NOT-RUN`; do not reorder ADB or treat the UI selection as stream-source evidence. Confirm the serving revision before treating the observation as live acceptance.
+5. The safe pre-enqueue control is the read-only QA-B selector check in step 3: the private serial must be absent and unselectable. Stop before any `/api/run` request. This control proves only UI-level prevention; the server-side target-control contract remains `UNKNOWN` and `NOT-RUN`. Do not send a host-bound request until Sol verifies the serving revision and approves a safe control that proves rejection before enqueue and before any device command. Do not let either identity switch Sol's reviewed host-selected serial to the private bridge serial.
+6. Verify an explicitly shared lab phone remains visible to both accounts. Do not alter its sharing state or reset shared ADB.
 
-**Provisional evidence:** paired owner/non-owner browser observations, privacy-safe target labels, the read-only response, and serving revision. This does not cover task-control authorization. Keep that control `NOT-RUN` until the serving contract is verified and a reviewed negative control proves rejection before enqueue and before any device command.
+**Provisional evidence:** paired owner/non-owner browser observations, the exact claim serial, privacy-safe target labels, read-only stream-state responses, and serving revision. This does not cover server-side task-control authorization. Keep that control `NOT-RUN` until the serving contract is verified and a reviewed negative control proves rejection before enqueue and before any device command.
 
 ### BUG-002 — Owner-filtered events
 
-1. Use the same two authorized QA contexts and one QA-A run created by the image case below. Compare the owner's event view with QA-B's event and history views.
-2. Verify QA-A receives the event rows for QA-A's run. Verify QA-B receives no QA-A event payload, run identifier, or private image reference. Verify QA-B's own data remains scoped to QA-B.
-3. Preserve read-only access through any already-authorized share link. Do not create, revoke, or modify a link. If no owner-supplied link fixture exists, record this control as `NOT-RUN`.
+1. Use the same two authorized QA contexts. Before QA-A submits anything, open one `GET /api/stream/active` SSE connection in each context. Require HTTP `200`, an open stream, and its initial `info` message `Subscribed to session active` in both contexts. Record both handshakes. If either stream is not healthy, do not submit the run and record the case `NOT-RUN`.
+2. After both handshakes, submit the single QA-A run described in REQ-003. Keep both SSE connections open and capture each stream continuously. Require QA-A to receive positive run-scoped evidence for the exact run, including `session_started` and `session_ended`. Keep QA-B's capture through QA-A's `session_ended` event or 900 seconds after submission, whichever comes first.
+3. Verify QA-B receives no QA-A event payload, run identifier, or private image reference. Verify QA-B's own data remains scoped to QA-B. Any disconnect before the capture boundary, missing QA-A terminal event, or missing positive QA-A event evidence makes the result `NOT-RUN`, not a pass. Do not reconnect and do not add another run for event capture.
+4. Preserve read-only access through any already-authorized share link. Do not create, revoke, or modify a link. If no owner-supplied link fixture exists, record this control as `NOT-RUN`.
 
-**Pass evidence:** owner and non-owner captures or redacted response records tied to the same run ID, plus a separate record that the allowed share-link read was preserved or `NOT-RUN` because no authorized link fixture was supplied.
+**Pass evidence:** both successful subscription handshakes; continuous owner/non-owner captures tied to the same run ID; QA-A's positive `session_started` and `session_ended` evidence; QA-B's bounded capture; and a separate record that the allowed share-link read was preserved or `NOT-RUN` because no authorized link fixture was supplied.
 
 ### REQ-003 — Image delivery in the current conversation
 
 1. Use the pinned synthetic JPEG fixture. Stage it only through an action permitted by Sol's claim; verify its digest after staging.
 2. In QA-A's current conversation, use `button[aria-label="Attach images"]` and `input[aria-label="Choose images to attach"]`. Verify the preview has alt text `Preview of screenshot.jpg`. Verify `button[aria-label="Remove screenshot.jpg"]` removes the selected image before reattaching it for the send.
-3. Enter: `What date does the yellow instruction ask me to select? Reply with only the date.` Submit through `button[aria-label="Start task"]` only after the provider gate is recorded.
+3. Enter: `What date does the yellow instruction ask me to select? Reply with only the date.` Submit the sole QA-A run through `button[aria-label="Start task"]` only after both BUG-002 subscriptions are healthy and the provider gate is recorded.
 4. Verify the same request contains the text and the pinned JPEG, the returned assistant answer is `11/07/2016`, and the answer and image belong to QA-A's current conversation. Confirm the matching event is visible to QA-A and absent from QA-B's private event/history views.
 
 **Pass evidence:** fixture digest, same-request text and image evidence, current conversation/run ID, provider-call evidence with no credential values, returned answer, owner/non-owner event observations, and the served app revision.
@@ -64,8 +66,27 @@ The synthetic preview returns an empty device list and disables device, provider
 ## Negative controls and qualification
 
 - Reuse the existing unsupported/malformed/oversize image regressions; they must reject before enqueue or provider activity. Do not duplicate them in a second source-level suite.
-- The live non-owner phone-control control is `UNKNOWN` and `NOT-RUN`. The pinned source's `host_id` branch bypasses `require_device`; do not send a host-bound control request or claim that the branch denies it. Verify the served revision and resolve the target contract before defining a safe control that proves rejection before enqueue and before any device command. Shared-device visibility and authorized share-link reads are preservation controls, not denials.
-- If Sol determines this target class needs first-class qualification, run the Android squad's clean representative pass, clean rerun, and deliberate assertion-failure control against this same reviewed revision. Record the expected non-zero assertion-failure result separately. Include any model-provider use inside the recorded spend cap; otherwise keep qualification `NOT-RUN`.
+- The live non-owner phone-control contract is `UNKNOWN` and `NOT-RUN`. The safe pre-enqueue control is the read-only QA-B selector denial in BUG-001; it must stop before `/api/run`, enqueue, or device command. It does not prove server-side task-control authorization. The pinned source's `host_id` branch bypasses `require_device`; do not send a host-bound request or claim that the branch denies it. Sol must verify the serving revision and approve a separate reviewed control that proves rejection before enqueue and before any device command. Shared-device visibility and authorized share-link reads are preservation controls, not denials.
+- If Sol determines this target class needs first-class qualification, run the Android squad's clean representative pass, clean rerun, and deliberate assertion-failure control against this same reviewed revision. For the control only, copy the journey and change only the expected answer assertion from `11/07/2016` to `11/07/2017`; keep the reviewed journey unchanged. The control goal is: `Open the same QA-A SmartQA conversation, attach the pinned screenshot.jpg, ask "What date does the yellow instruction ask me to select? Reply with only the date.", and assert that the returned assistant answer is exactly 11/07/2017.`
+
+  Run the control only after both reviews, Sol's admission, QA-profile revalidation at the serving revision, and provider/account-owner/numeric-spend gates. Use a fresh session ID and the exact claim serial. Preserve the outcome artifact before evaluating it. The runner command must return `0`; the outcome must show `task_status="completed"`, exactly one failed assertion, and that failed assertion must name `11/07/2017`. The validator's expected exit is `1`; any other runner or validator result invalidates the control.
+
+  ```bash
+  CONTROL_GOAL='Open the same QA-A SmartQA conversation, attach the pinned screenshot.jpg, ask "What date does the yellow instruction ask me to select? Reply with only the date.", and assert that the returned assistant answer is exactly 11/07/2017.'
+  CONTROL_SESSION_ID='<fresh session UUID>'
+  CLAIM_SERIAL='<exact device serial in Sol claim>'
+  CONTROL_TRACE_ROOT='<private control trace directory>'
+  EVIDENCE_DIR='<authorized evidence destination>'
+  set +e
+  timeout --signal=TERM --kill-after=30s 900s env ARTEMIS_TRACES_DIR="$CONTROL_TRACE_ROOT" uv run artemis run "$CONTROL_GOAL" --profile pro --device-serial "$CLAIM_SERIAL" --standalone --session-id "$CONTROL_SESSION_ID" --enable-checker --verification-level final
+  runner_status=$?
+  set -e
+  cp "$CONTROL_TRACE_ROOT/$CONTROL_SESSION_ID/run_outcome.json" "$EVIDENCE_DIR/qualification-control-run_outcome.json"
+  test "$runner_status" -eq 0
+  uv run python -c 'import json,sys; o=json.load(open(sys.argv[1])); t=o.get("tests",{}); f=t.get("failed_items",[]); ok=o.get("task_status")=="completed" and t.get("failed")==1 and len(f)==1 and "11/07/2017" in f[0].get("item_text","") and "11/07/2016" in f[0].get("evidence",""); print(json.dumps({"task_status":o.get("task_status"),"failed":t.get("failed"),"failed_items":f})); sys.exit(1 if ok else 2)' "$EVIDENCE_DIR/qualification-control-run_outcome.json"
+  ```
+
+  Keep the control `NOT-RUN` if any gate is missing. Include provider use inside the recorded numeric spend scope; Anthropic Android runs remain halted.
 - Do not execute a control against a real phone or provider during authoring.
 
 ## Cleanup and evidence
