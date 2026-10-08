@@ -15,6 +15,7 @@ import pytest
 
 from apps.admin_console.core.access_control import (
     AccessConfig,
+    AccessIdentity,
     AdminAPIError,
     CloudflareAccessVerifier,
     admin_api_error_handler,
@@ -157,6 +158,234 @@ def test_signed_qa_admin_and_identity_changes_use_real_ownership(signed_preview)
         assert identity["admin"] is (email == ADMIN)
     assert client.get("/api/runs?scope=all", headers=headers(QA1)).status_code == 403
     assert len(client.get("/api/runs?scope=all", headers=headers(ADMIN)).json()["runs"]) == 9
+
+
+@pytest.mark.parametrize("auth_mode", ["open", "cloudflare"])
+@pytest.mark.parametrize("source", ["header", "cookie"])
+def test_identity_switch_is_refused_outside_preview(signed_preview, auth_mode, source, monkeypatch):
+    client, _headers, *_rest = signed_preview
+    monkeypatch.setenv("ARTEMIS_PREVIEW_PROFILE", "1")
+    monkeypatch.setenv("ARTEMIS_PREVIEW_IDENTITY_SWITCH", "1")
+    client.app.state.access_config = AccessConfig(auth_mode=auth_mode)
+    client.app.state.preview_profile = False
+    client.app.state.preview_identities = {"admin": AccessIdentity(ADMIN, True, "preview")}
+    headers = {"X-Artemis-Preview-Identity": "admin"} if source == "header" else {}
+    if source == "cookie":
+        client.cookies.set("artemis_preview_identity", "admin")
+    response = client.get("/api/system/whoami", headers=headers)
+    assert response.status_code == 403
+    assert response.json()["code"] == "preview_identity_disabled"
+
+
+@pytest.fixture
+def switched_preview(signed_preview, monkeypatch):
+    from apps.admin_console.core.preview_identity import configure_preview_identities
+
+    client, *_rest = signed_preview
+    monkeypatch.setenv("ARTEMIS_PREVIEW_IDENTITY_SWITCH", "1")
+    monkeypatch.setenv("ARTEMIS_ADMIN_EMAILS", ADMIN)
+    client.app.state.preview_profile = True
+    client.app.state.preview_identities = configure_preview_identities(CONFIG, preview_profile=True)
+    client.app.state.access_verifier = None
+    return signed_preview
+
+
+def test_identity_switch_uses_real_ownership_without_jwks(switched_preview):
+    client, _headers, bundle, _document, _root, queue = switched_preview
+    bundle.unlink()
+    for alias, email in (("qa-a", QA1), ("qa-b", QA2), ("admin", ADMIN), ("qa-a", QA1)):
+        headers = {"X-Artemis-Preview-Identity": alias}
+        response = client.get("/api/runs", headers=headers)
+        assert response.status_code == 200
+        assert {run["requested_by"] for run in response.json()["runs"]} == {email}
+        identity = client.get("/api/system/whoami", headers=headers).json()
+        assert identity == {
+            "email": email,
+            "admin": email == ADMIN,
+            "auth_mode": "preview",
+            "reason": None,
+        }
+    target = next(item for item in queue if item["requested_by"] == QA2)
+    before = session_repo.get_session_by_id(target["session_id"])
+    assert (
+        client.post(
+            f"/api/stop?session_id={target['session_id']}",
+            headers={"X-Artemis-Preview-Identity": "qa-a"},
+        ).status_code
+        == 403
+    )
+    assert session_repo.get_session_by_id(target["session_id"]) == before
+    assert (
+        client.get(
+            "/api/runs?scope=all", headers={"X-Artemis-Preview-Identity": "qa-a"}
+        ).status_code
+        == 403
+    )
+    all_runs = client.get("/api/runs?scope=all", headers={"X-Artemis-Preview-Identity": "admin"})
+    assert all_runs.status_code == 200
+    assert len(all_runs.json()["runs"]) == 9
+    assert client.get("/api/runs").status_code == 401
+
+
+def test_preview_cookie_supports_isolated_browser_contexts(switched_preview):
+    client, *_rest = switched_preview
+    for alias, email in (("qa-a", QA1), ("qa-b", QA2), ("admin", ADMIN)):
+        with TestClient(client.app, base_url="http://localhost") as browser:
+            browser.cookies.set("artemis_preview_identity", alias)
+            assert browser.get("/api/system/whoami").json()["email"] == email
+    assert client.get("/api/system/whoami").status_code == 401
+
+
+@pytest.mark.parametrize("alias", ["", "qa-c", ADMIN, "ADMIN", " qa-a"])
+def test_unknown_fixture_identity_is_refused(switched_preview, alias):
+    client, *_rest = switched_preview
+    response = client.get("/api/runs", headers={"X-Artemis-Preview-Identity": alias})
+    assert response.status_code == 400
+    assert response.json()["code"] == "preview_identity_invalid"
+
+
+def test_conflicting_and_duplicate_identity_sources_are_refused(switched_preview):
+    client, *_rest = switched_preview
+    client.cookies.set("artemis_preview_identity", "qa-a")
+    assert (
+        client.get("/api/runs", headers={"X-Artemis-Preview-Identity": "admin"}).status_code == 400
+    )
+    client.cookies.clear()
+    assert (
+        client.get(
+            "/api/runs",
+            headers=[
+                ("X-Artemis-Preview-Identity", "qa-a"),
+                ("X-Artemis-Preview-Identity", "admin"),
+            ],
+        ).status_code
+        == 400
+    )
+
+
+def test_preview_requires_explicit_identity_switch_opt_in(signed_preview):
+    client, *_rest = signed_preview
+    client.app.state.preview_profile = True
+    response = client.get("/api/runs", headers={"X-Artemis-Preview-Identity": "admin"})
+    assert response.status_code == 403
+    assert response.json()["code"] == "preview_identity_disabled"
+
+
+def test_identity_selector_cannot_override_signed_qa_without_opt_in(signed_preview):
+    client, headers, *_rest = signed_preview
+    assert client.get("/api/system/whoami", headers=headers()).json()["email"] == QA1
+    response = client.get(
+        "/api/system/whoami", headers={**headers(), "X-Artemis-Preview-Identity": "admin"}
+    )
+    assert response.status_code == 403
+    assert response.json()["code"] == "preview_identity_disabled"
+
+
+@pytest.mark.parametrize("value", ["", "0", "false", "1", "true", "invalid"])
+def test_identity_switch_flag_is_explicit_and_profile_gated(value):
+    from apps.admin_console.core.preview_profile import preview_identity_switch_selected
+
+    environment = {"ARTEMIS_PREVIEW_IDENTITY_SWITCH": value}
+    if value == "invalid":
+        with pytest.raises(ValueError, match="must be"):
+            preview_identity_switch_selected(True, environment)
+    elif value in {"1", "true"}:
+        assert preview_identity_switch_selected(True, environment)
+        with pytest.raises(ValueError, match="preview profile"):
+            preview_identity_switch_selected(False, environment)
+    else:
+        assert not preview_identity_switch_selected(True, environment)
+        assert not preview_identity_switch_selected(False, environment)
+
+
+@pytest.mark.parametrize("preview_profile", [False, True])
+def test_identity_switch_configuration_fails_closed(monkeypatch, preview_profile):
+    from apps.admin_console.core.preview_identity import configure_preview_identities
+
+    monkeypatch.setenv("ARTEMIS_PREVIEW_IDENTITY_SWITCH", "1")
+    monkeypatch.setenv("ARTEMIS_PREVIEW_QA_EMAILS", f"{QA1},{QA2}")
+    monkeypatch.setenv("ARTEMIS_ADMIN_EMAILS", ADMIN)
+    if preview_profile:
+        with pytest.raises(ValueError, match="cloudflare"):
+            configure_preview_identities(AccessConfig(), preview_profile=True)
+    else:
+        with pytest.raises(ValueError, match="preview profile"):
+            configure_preview_identities(CONFIG, preview_profile=False)
+
+
+def test_real_identity_preview_boot_needs_no_sign_in_or_key_bundle(tmp_path):
+    probe = textwrap.dedent("""
+        import json, socket, subprocess
+        effects = []
+        def forbidden(*args, **kwargs):
+            effects.append("forbidden network or process call")
+            raise AssertionError(effects[-1])
+        socket.socket.connect = forbidden
+        class ForbiddenProcess(subprocess.Popen):
+            def __init__(self, *args, **kwargs):
+                forbidden()
+        subprocess.Popen = ForbiddenProcess
+        import apps.admin_console.server as server
+        from fastapi.testclient import TestClient
+        with TestClient(server.app, base_url="http://localhost") as client:
+            for alias in ("qa-a", "qa-b", "admin"):
+                client.cookies.set("artemis_preview_identity", alias)
+                response = client.get("/api/runs")
+                assert response.status_code == 200, response.text
+                assert len(response.json()["runs"]) == 3
+                identity = client.get("/api/system/whoami").json()
+                assert identity["auth_mode"] == "preview"
+                assert identity["admin"] == (alias == "admin")
+            assert len(client.get("/api/runs?scope=all").json()["runs"]) == 9
+            client.cookies.clear()
+            assert client.get("/api/runs").status_code == 401
+            assert client.post("/api/run").status_code == 403
+        assert not effects, effects
+        print(json.dumps({"worker": server.state.worker_task,
+                          "retention": server.state.retention_task, "effects": effects}))
+    """)
+    environment = {
+        **os.environ,
+        "ARTEMIS_PREVIEW_PROFILE": "1",
+        "ARTEMIS_PREVIEW_IDENTITY_SWITCH": "1",
+        "ARTEMIS_PREVIEW_JWKS_BUNDLE": "",
+        "ARTEMIS_APP_DIR": str(tmp_path / "fixtures"),
+        "ARTEMIS_AUTH_MODE": "cloudflare",
+        "ARTEMIS_CF_ACCESS_TEAM_DOMAIN": "preview.cloudflareaccess.com",
+        "ARTEMIS_CF_ACCESS_AUD": "preview-audience",
+        "ARTEMIS_PREVIEW_QA_EMAILS": f"{QA1},{QA2}",
+        "ARTEMIS_ADMIN_EMAILS": ADMIN,
+        "TMPDIR": str(tmp_path),
+        "ANTIGRAVITY_LS_ADDRESS": "127.0.0.1:1",
+    }
+    result = subprocess.run(
+        [sys.executable, "-c", probe], env=environment, capture_output=True, text=True, timeout=120
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    report = json.loads(result.stdout.splitlines()[-1])
+    assert report == {"worker": None, "retention": None, "effects": []}
+
+
+def test_production_boot_refuses_the_switch_before_live_imports(tmp_path):
+    sentinel = tmp_path / "data_engine.db"
+    sentinel.write_bytes(b"production database sentinel")
+    environment = {
+        **os.environ,
+        "ARTEMIS_PREVIEW_PROFILE": "0",
+        "ARTEMIS_PREVIEW_IDENTITY_SWITCH": "1",
+        "ARTEMIS_APP_DIR": str(tmp_path),
+    }
+    result = subprocess.run(
+        [sys.executable, "-c", _BOOT_PROBE],
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode != 0
+    assert "identity switch requires the isolated preview profile" in result.stderr
+    assert sentinel.read_bytes() == b"production database sentinel"
+    assert list(tmp_path.iterdir()) == [sentinel]
 
 
 @pytest.mark.parametrize("operation", ["stop", "cancel", "delete"])
