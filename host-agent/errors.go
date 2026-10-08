@@ -37,6 +37,19 @@ type agentError struct {
 	Cause error
 }
 
+const permanentErrorExitStatus = 78
+
+func processExitStatus(err error) int {
+	if err == nil {
+		return 0
+	}
+	switch errorCode(err) {
+	case "SQH-E006", "SQH-E007", "SQH-E008", "SQH-E009":
+		return permanentErrorExitStatus
+	}
+	return 1
+}
+
 func (err *agentError) Error() string        { return fmt.Sprintf("%s: %s", err.Code, errorCatalog[err.Code]) }
 func (err *agentError) Unwrap() error        { return err.Cause }
 func failure(code string, cause error) error { return &agentError{code, cause} }

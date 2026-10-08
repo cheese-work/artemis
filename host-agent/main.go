@@ -30,7 +30,7 @@ func main() {
 	defer cancel()
 	if err := execute(ctx, os.Args[1:], os.Stdout); err != nil {
 		_, _ = fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+		os.Exit(processExitStatus(err))
 	}
 }
 
@@ -43,7 +43,7 @@ type application struct {
 	Tunnel tunnel
 }
 
-func executeApplication(ctx context.Context, arguments []string, output io.Writer, app application) error {
+func executeApplication(ctx context.Context, arguments []string, output io.Writer, app application) (result error) {
 	command := "status"
 	if len(arguments) > 0 && !strings.HasPrefix(arguments[0], "-") {
 		command = arguments[0]
@@ -64,6 +64,15 @@ func executeApplication(ctx context.Context, arguments []string, output io.Write
 		}
 		action = arguments[0]
 		arguments = arguments[1:]
+	}
+	if command == "service" && action == "run" {
+		command = "run"
+		defer func() {
+			if processExitStatus(result) == permanentErrorExitStatus {
+				_, _ = fmt.Fprintln(output, result)
+				result = nil
+			}
+		}()
 	}
 	flags := flag.NewFlagSet("smartqa-host", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)

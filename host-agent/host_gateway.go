@@ -87,11 +87,11 @@ func hostFilterDevices(data []byte, shared func(string) bool) ([]byte, error) {
 		lines = lines[:len(lines)-1]
 	}
 	for _, line := range lines {
-		serial, details, found := strings.Cut(line, "\t")
-		if !found || !hostSerialPattern.MatchString(serial) || details == "" {
+		fields := strings.Fields(line)
+		if len(fields) < 2 || !hostSerialPattern.MatchString(fields[0]) {
 			return nil, errHostProtocol
 		}
-		if shared(serial) {
+		if shared(fields[0]) {
 			result.WriteString(line)
 			result.WriteByte('\n')
 		}
