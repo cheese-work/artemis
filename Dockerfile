@@ -41,15 +41,9 @@ RUN python -m pip wheel --no-cache-dir --no-deps --wheel-dir /wheels ./packages/
     && python -m pip wheel --no-cache-dir --no-deps --wheel-dir /wheels .
 
 
-FROM python:3.12-slim
+FROM python:3.12-slim AS runtime-base
 
 WORKDIR /app
-
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    adb \
-    curl \
-    git \
-    && rm -rf /var/lib/apt/lists/*
 
 COPY --from=wheel-builder /wheels/ /wheels/
 RUN pip install --no-cache-dir /wheels/artemis_client-*.whl \
@@ -61,6 +55,35 @@ ENV ARTEMIS_APP_DIR=/app
 ENV PORT=8080
 
 EXPOSE 8080
+
+
+# Per-PR preview image (build with `--target preview`): no ADB, no device tooling,
+# no curl or git, non-root, and always in the synthetic preview profile. The host
+# daemon still sets its own user, mounts and limits at run time (CHE-1291).
+FROM runtime-base AS preview
+
+# Shared libraries the OpenCV wheel (imported at startup) needs; nothing else.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libgl1 \
+    libglib2.0-0 \
+    libxcb1 \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --system --uid 10001 --no-create-home --shell /usr/sbin/nologin preview
+USER 10001:10001
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV ARTEMIS_PREVIEW_PROFILE=1
+
+CMD ["uvicorn", "apps.admin_console.server:app", "--host", "0.0.0.0", "--port", "8080"]
+
+
+# Default target: the live console. Must stay the last stage.
+FROM runtime-base
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    adb \
+    curl \
+    git \
+    && rm -rf /var/lib/apt/lists/*
 
 # The console has no user authentication: publish the port to loopback only,
 # e.g. `docker run -p 127.0.0.1:8080:8080 ...`, and reach it remotely through
