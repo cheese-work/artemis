@@ -84,11 +84,13 @@ async def download_bundle(session_id: str, identity: AccessIdentity = Depends(pu
     except RunLibraryError as exc:
         return library_error(exc, actor)
     if session_id == bundle.session_id:
+        recorded = False
         try:
             await asyncio.to_thread(record_run_read, actor, session_id)
-        except BaseException:
-            await asyncio.shield(asyncio.to_thread(bundle.finish))
-            raise
+            recorded = True
+        finally:
+            if not recorded:
+                await asyncio.shield(asyncio.to_thread(bundle.finish))
     logger.info(
         "event=bundle_download session_id=%s requester=%s bytes=%d entries=%d skipped=%d ms=%d",
         bundle.session_id,

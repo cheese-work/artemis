@@ -7,6 +7,7 @@ from apps.admin_console.core.access_control import route_tier
 from apps.admin_console.core.preview_routes import registered_routes, unclassified_routes
 from apps.admin_console.database.repositories.run_catalog_repository import run_catalog_repo
 from apps.admin_console.database.repositories.session_repository import session_repo
+from apps.admin_console.routers import run_bundle as bundle_router
 from apps.admin_console.routers import tasks
 from apps.admin_console.server import app
 from artemis.data_engine import run_catalog
@@ -114,6 +115,20 @@ async def test_failed_reads_do_not_record_link_shares(cloudflare):
     assert _ids(await _get(QA1, "/api/runs", scope="available")) == set()
     with sqlite3.connect(cloudflare) as conn:
         assert conn.execute("SELECT count(*) FROM run_link_shares").fetchone()[0] == 0
+
+
+@pytest.mark.asyncio
+async def test_failed_share_recording_releases_bundle_lease(cloudflare, monkeypatch):
+    shared = _seed(cloudflare, QA2)
+
+    def unavailable(*args):
+        raise sqlite3.OperationalError("link-share storage unavailable")
+
+    monkeypatch.setattr(bundle_router, "record_run_read", unavailable)
+    with pytest.raises(sqlite3.OperationalError, match="link-share storage unavailable"):
+        await _get(QA1, f"/api/runs/{shared}/bundle.zip")
+    with sqlite3.connect(cloudflare) as conn:
+        assert conn.execute("SELECT count(*) FROM run_artifact_leases").fetchone()[0] == 0
 
 
 @pytest.mark.asyncio
