@@ -21,7 +21,7 @@ from apps.admin_console.core.preview_profile import (
     ENV_PREVIEW_PROFILE,
     preview_profile_selected,
 )
-from apps.admin_console.core.state import state
+from apps.admin_console.core.state import ServerState, state
 from apps.admin_console.services import run_retention
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -67,15 +67,10 @@ def _logging_not_leaked():
 
 
 @pytest.fixture(autouse=True)
-def _clean_state():
+def _clean_state(monkeypatch):
     VIOLATIONS.clear()
-    state.queue_items.clear()
-    state.worker_task = None
-    state.retention_task = None
-    yield
-    state.queue_items.clear()
-    state.worker_task = None
-    state.retention_task = None
+    for name, value in vars(ServerState()).items():
+        monkeypatch.setattr(state, name, value)
 
 
 def _stub_hooks(monkeypatch, *, forbidden: bool):
@@ -110,6 +105,7 @@ def _stub_hooks(monkeypatch, *, forbidden: bool):
         "ipc_stop_server": (server.ipc_service, "stop_server"),
         "queue_worker": (server.task_queue_service, "queue_worker"),
         "sweep_forever": (run_retention, "sweep_forever"),
+        "failure_sweep": (server.failure_ledger, "sweep_forever"),
     }
     for name, (owner, attr) in sync_targets.items():
         stub = _forbidden(name) if forbidden else getattr(calls, name)
@@ -194,6 +190,7 @@ async def test_normal_startup_and_shutdown_still_run_every_effect(monkeypatch):
     calls.reset_for_boot.assert_called_once()
     calls.ipc_start_server.assert_awaited_once()
     calls.sweep_forever.assert_called_once()
+    calls.failure_sweep.assert_called_once()
     calls.cancel_reservation.assert_called_once_with("ticket-1")
     calls.shutdown_awake_service.assert_called_once()
     calls.clear_server_info.assert_called_once()
@@ -203,6 +200,9 @@ async def test_normal_startup_and_shutdown_still_run_every_effect(monkeypatch):
 @pytest.mark.parametrize("preview", [True, False])
 def test_run_ui_server_writes_server_info_only_in_the_normal_profile(monkeypatch, preview):
     calls = MagicMock()
+    monkeypatch.setattr(server, "configure_logging", calls.configure_logging)
+    monkeypatch.setattr(server.uvicorn, "Config", calls.uvicorn_config)
+    monkeypatch.setattr(server.app.state, "uvicorn_server", None, raising=False)
     monkeypatch.setattr(server, "write_server_info", calls.write_server_info)
     monkeypatch.setattr(server, "clear_server_info", calls.clear_server_info)
     monkeypatch.setattr(server, "ArtemisUvicornServer", lambda _config: calls.uvicorn_server)
