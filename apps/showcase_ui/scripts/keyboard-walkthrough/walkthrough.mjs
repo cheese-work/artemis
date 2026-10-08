@@ -12,6 +12,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startMockApi, mock } from './mock-api.mjs';
+import { pasteShortcut } from './paste-shortcut.mjs';
 
 const dist = fileURLToPath(new URL('../../dist/frontend/browser', import.meta.url));
 if (!existsSync(path.join(dist, 'index.html'))) {
@@ -87,8 +88,7 @@ const KEYS = {
   Enter: { key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, text: '\r' },
   Escape: { key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 },
   ArrowDown: { key: 'ArrowDown', code: 'ArrowDown', windowsVirtualKeyCode: 40 },
-  ArrowUp: { key: 'ArrowUp', code: 'ArrowUp', windowsVirtualKeyCode: 38 },
-  v: { key: 'v', code: 'KeyV', windowsVirtualKeyCode: 86 }
+  ArrowUp: { key: 'ArrowUp', code: 'ArrowUp', windowsVirtualKeyCode: 38 }
 };
 async function press(name, modifiers = 0) {
   const k = KEYS[name];
@@ -245,6 +245,16 @@ try {
   await press('Tab');
   await expectTrue('focus loss does not collapse or resize the dock', `!document.querySelector('.is-dormant') && document.querySelector('.floating-dock-card').getBoundingClientRect().width === ${dockWidth}`);
   await tabUntil('task textarea', focusIs('textarea.dock-textarea'));
+  await evaluate(`(() => {
+    window.dockPasteEvents = [];
+    document.querySelector('textarea.dock-textarea').addEventListener('paste', event => {
+      window.dockPasteEvents.push({
+        trusted: event.isTrusted,
+        types: Array.from(event.clipboardData?.types ?? []),
+        files: Array.from(event.clipboardData?.files ?? []).map(file => ({ type: file.type, size: file.size }))
+      });
+    }, { capture: true });
+  })()`);
   await send('Browser.grantPermissions', { permissions: ['clipboardReadWrite', 'clipboardSanitizedWrite'], origin: base });
   await evaluate(`(async () => {
     const canvas = new OffscreenCanvas(1, 1);
@@ -252,19 +262,24 @@ try {
     const image = await canvas.convertToBlob({ type: 'image/png' });
     await navigator.clipboard.write([new ClipboardItem({ 'image/png': image })]);
   })()`);
-  await press('v', 2);
-  await expectTrue('Ctrl+V of an image creates a preview', `document.querySelectorAll('ul.attached-images img').length === 1`);
+  await pasteShortcut(send);
+  await sleep(120);
+  await expectTrue('native image paste delivers a trusted PNG clipboard payload', `window.dockPasteEvents.length === 1 && window.dockPasteEvents[0].trusted && window.dockPasteEvents[0].files.length === 1 && window.dockPasteEvents[0].files[0].type === 'image/png' && window.dockPasteEvents[0].files[0].size > 0`);
+  await expectTrue('platform paste shortcut of an image creates a preview', `document.querySelectorAll('ul.attached-images img').length === 1`);
   await tabUntil('Remove image', focusIs('button.btn-remove-image'));
   await press('Enter');
   await expectTrue('Enter removes the pasted preview', `!document.querySelector('ul.attached-images')`);
   await tabUntil('task textarea', focusIs('textarea.dock-textarea'));
   await evaluate(`navigator.clipboard.writeText('clipboard task text')`);
-  await press('v', 2);
-  await expectTrue('Ctrl+V of text remains text without an attachment', `document.querySelector('textarea.dock-textarea').value === 'clipboard task text' && !document.querySelector('ul.attached-images')`);
+  await pasteShortcut(send);
+  await sleep(120);
+  await expectTrue('native text paste delivers a trusted text clipboard payload', `window.dockPasteEvents.length === 2 && window.dockPasteEvents[1].trusted && window.dockPasteEvents[1].types.includes('text/plain') && window.dockPasteEvents[1].files.length === 0`);
+  await expectTrue('platform paste shortcut of text remains text without an attachment', `document.querySelector('textarea.dock-textarea').value === 'clipboard task text' && !document.querySelector('ul.attached-images')`);
 
   log('\nKeyboard walkthrough passed.');
   await cleanup(0);
 } catch (error) {
   console.error(`\nKeyboard walkthrough FAILED: ${error.message}`);
+  console.error('Dock paste evidence:', await evaluate(`JSON.stringify({ focus: document.activeElement?.outerHTML, events: window.dockPasteEvents })`).catch(() => 'unavailable'));
   await cleanup(1);
 }
