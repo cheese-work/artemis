@@ -24,6 +24,7 @@ limitations under the License.
 
 @if (agentService.isVideoWindowOpen()) {
   <div
+    #frame
     class="floating-video-wrapper"
     [class.minimized]="agentService.isVideoMinimized()"
     [class.theater]="isTheaterMode()"
@@ -330,6 +331,9 @@ limitations under the License.
                 @if (agentService.playerMode() === 'video' && agentService.recordingPlaybackStatus() === 'ready' && !agentService.isVideoLoading() && agentService.activeVideoUrl(); as videoUrl) {
                   @if (!videoLoadError()) {
                     <div class="video-container">
+                      @if (partialRibbon(); as ribbon) {
+                        <p class="partial-ribbon" role="status">{{ ribbon }}</p>
+                      }
                       <video
                         #videoRef
                         [src]="currentVideoUrl()"

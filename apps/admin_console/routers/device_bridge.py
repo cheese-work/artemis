@@ -21,8 +21,11 @@ import ipaddress
 import logging
 import struct
 
-from fastapi import APIRouter, WebSocket
+from fastapi import APIRouter, Depends, WebSocket, WebSocketException
 from starlette.websockets import WebSocketDisconnect
+
+from apps.admin_console.core.access_control import AccessIdentity, public_tier
+
 
 try:
     from admin_console.services.bridge_session_service import (
@@ -47,6 +50,15 @@ _MAX_PENDING_BYTES = MAX_ADB_PACKET_BYTES * 4
 _WEBSOCKET_SEND_TIMEOUT_SECONDS = 2
 
 logger = logging.getLogger(__name__)
+_sleep = asyncio.sleep
+
+
+async def require_bridge_access(
+    websocket: WebSocket,
+    identity: AccessIdentity = Depends(public_tier),
+) -> None:
+    if websocket.headers.get("x-forwarded-for") and not identity.email:
+        raise WebSocketException(code=1008, reason="not_signed_in")
 
 
 def _client_is_loopback(websocket: WebSocket) -> bool:
@@ -77,6 +89,7 @@ async def _forward_tcp_packets(
     reader: asyncio.StreamReader,
     websocket: WebSocket,
     send_lock: asyncio.Lock,
+    session: BridgeSession,
 ) -> None:
     while True:
         header = await reader.readexactly(_ADB_HEADER_BYTES)
@@ -85,6 +98,8 @@ async def _forward_tcp_packets(
             raise ValueError("ADB packet exceeds relay limit")
         payload = await reader.readexactly(payload_size)
         await _send_bytes(websocket, header + payload, send_lock)
+        if not await _renew_lease(session, websocket, send_lock):
+            return
 
 
 async def _send_bytes(websocket: WebSocket, message: bytes, send_lock: asyncio.Lock) -> None:
@@ -111,10 +126,16 @@ async def _forward_websocket_packets(
     websocket: WebSocket,
     writer: asyncio.StreamWriter,
     receive_task: asyncio.Task[dict[str, object]],
+    session: BridgeSession,
+    send_lock: asyncio.Lock,
 ) -> None:
     while True:
         message = await receive_task
-        if message["type"] == "websocket.disconnect" or message.get("text") == "close":
+        if message["type"] == "websocket.disconnect":
+            session.close_reason = "client"
+            return
+        if message.get("text") == "close":
+            session.close_reason = "client"
             return
         frame = message.get("bytes")
         if frame is None:
@@ -123,6 +144,8 @@ async def _forward_websocket_packets(
         if packet is not None:
             writer.write(packet)
             await writer.drain()
+            if not await _renew_lease(session, websocket, send_lock):
+                return
         receive_task = asyncio.create_task(websocket.receive())
 
 
@@ -145,7 +168,11 @@ async def _relay_packets(
             )
             if receive_task in done:
                 message = receive_task.result()
-                if message["type"] == "websocket.disconnect" or message.get("text") == "close":
+                if message["type"] == "websocket.disconnect":
+                    session.close_reason = "client"
+                    return
+                if message.get("text") == "close":
+                    session.close_reason = "client"
                     return
                 frame = message.get("bytes")
                 if frame is None:
@@ -171,12 +198,15 @@ async def _relay_packets(
             writer.write(packet)
         if pending_packets:
             await writer.drain()
+            for _packet in pending_packets:
+                if not await _renew_lease(session, websocket, send_lock):
+                    return
 
         tcp_to_websocket_task = asyncio.create_task(
-            _forward_tcp_packets(reader, websocket, send_lock)
+            _forward_tcp_packets(reader, websocket, send_lock, session)
         )
         websocket_to_tcp_task = asyncio.create_task(
-            _forward_websocket_packets(websocket, writer, receive_task)
+            _forward_websocket_packets(websocket, writer, receive_task, session, send_lock)
         )
         done, _ = await asyncio.wait(
             (tcp_to_websocket_task, websocket_to_tcp_task),
@@ -185,6 +215,7 @@ async def _relay_packets(
         for task in done:
             task.result()
     except WebSocketDisconnect:
+        session.close_reason = "client"
         return
     finally:
         for task in (
@@ -215,8 +246,25 @@ async def _expire_session(
     session: BridgeSession,
     send_lock: asyncio.Lock,
 ) -> None:
-    await asyncio.sleep(session.remaining_seconds())
+    while True:
+        remaining_seconds = session.remaining_seconds()
+        if remaining_seconds <= 0:
+            session.close_reason = session.expiration_reason()
+            await _close_websocket(websocket, _CLOSE_SESSION_EXPIRED, send_lock)
+            return
+        await _sleep(remaining_seconds)
+
+
+async def _renew_lease(
+    session: BridgeSession,
+    websocket: WebSocket,
+    send_lock: asyncio.Lock,
+) -> bool:
+    if session.renew():
+        return True
+    session.close_reason = session.expiration_reason()
     await _close_websocket(websocket, _CLOSE_SESSION_EXPIRED, send_lock)
+    return False
 
 
 async def _close_websocket(
@@ -234,7 +282,7 @@ async def _close_websocket(
         pass
 
 
-@router.websocket("/session")
+@router.websocket("/session", dependencies=[Depends(require_bridge_access)])
 async def open_bridge_session(websocket: WebSocket) -> None:
     if not _client_is_loopback(websocket):
         await websocket.close(code=_CLOSE_FORBIDDEN_REMOTE)
@@ -245,7 +293,10 @@ async def open_bridge_session(websocket: WebSocket) -> None:
     tasks: list[asyncio.Task[object]] = []
     send_lock = asyncio.Lock()
     try:
-        session = await bridge_session_service.create_session()
+        identity = getattr(getattr(websocket, "state", None), "identity", None)
+        session = await bridge_session_service.create_session(
+            owner=identity.email if identity else None
+        )
         await _send_json(
             websocket,
             {
@@ -264,6 +315,7 @@ async def open_bridge_session(websocket: WebSocket) -> None:
 
         done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
         if expiry_task in done:
+            expiry_task.result()
             return
         if relay_task in done:
             relay_task.result()
@@ -279,9 +331,16 @@ async def open_bridge_session(websocket: WebSocket) -> None:
                 (relay_task, expiry_task), return_when=asyncio.FIRST_COMPLETED
             )
             if expiry_task in done:
+                expiry_task.result()
                 return
             relay_task.result()
+    except WebSocketDisconnect:
+        if session is not None:
+            session.close_reason = "client"
+        return
     except Exception:
+        if session is not None:
+            session.close_reason = "error"
         logger.exception("Device bridge session failed")
         await _close_websocket(websocket, _CLOSE_BRIDGE_ERROR, send_lock)
     finally:

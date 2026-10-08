@@ -1,0 +1,28 @@
+:host { display: block; color: inherit; }
+.section-heading { margin-bottom: 1rem; }
+h2, p { margin-top: 0; }
+h2 { margin-bottom: .25rem; font-size: 1.25rem; }
+.intro, .meta { color: #a7b4c8; font-size: .85rem; }
+.notice { display: flex; gap: .75rem; align-items: center; border: 1px solid #26344e; border-radius: 1rem; background: #111a2c; padding: 1rem 1.25rem; margin-bottom: 1rem; color: #cdd9ea; }
+.notice.error { border-color: #8a4b4b; }
+.notice.warning { border-color: #d9a441; }
+.notice.warning.critical { border-color: #e5736b; }
+.notice.warning strong::before { content: '▲ '; }
+.notice.warning.critical strong::before { content: '■ '; }
+.meter { height: .9rem; border: 1px solid #385174; border-radius: .5rem; background: #0b1020; overflow: hidden; }
+.meter-fill { display: block; height: 100%; background: #98c7ff; }
+.facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr)); gap: .75rem; margin: 1rem 0; }
+.facts div { border: 1px solid #26344e; border-radius: 1rem; background: #111a2c; padding: .9rem 1.1rem; }
+dt { color: #a7b4c8; font-size: .8rem; }
+dd { margin: .15rem 0 0; font-weight: 700; }
+.confirm { display: flex; flex-wrap: wrap; align-items: center; gap: .75rem; border: 1px solid #8a4b4b; border-radius: 1rem; padding: 1rem 1.25rem; }
+.confirm p { flex: 1 1 20rem; margin: 0; }
+.confirm-count { min-height: 2.25rem; width: 6rem; border: 1px solid #385174; border-radius: .5rem; background: #0b1020; color: inherit; padding: 0 .6rem; font: inherit; }
+.clear-error { flex-basis: 100%; color: #ff9b94; }
+button { min-height: 2.25rem; min-width: 2.25rem; border-radius: .6rem; font: inherit; cursor: pointer; }
+button:disabled { opacity: .5; cursor: not-allowed; }
+.primary-button { border: 0; background: #1a73e8; color: #fff; font-weight: 600; padding: 0 1rem; }
+.primary-button.danger { background: #b42318; }
+.secondary-button { border: 1px solid #385174; background: transparent; color: inherit; padding: 0 1rem; }
+.secondary-button.danger { color: #ff9b94; }
+.text-button { border: 0; background: transparent; color: #98c7ff; padding: 0 .5rem; }

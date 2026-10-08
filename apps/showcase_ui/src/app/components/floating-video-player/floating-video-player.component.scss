@@ -42,6 +42,11 @@
   display: flex;
   flex-direction: column;
   box-sizing: border-box;
+  /* Space below the floating nav. Content shrinks to it (and scrolls as a last resort) instead of overflowing. */
+  --player-avail: calc(100dvh - var(--nav-clearance, 10px) - 20px);
+  /* Header + controls footer + paddings around the replay image / video. */
+  --player-chrome: 240px;
+  max-height: var(--player-avail);
   animation: popIn 0.2s cubic-bezier(0.16, 1, 0.3, 1);
   user-select: none;
   font-family: 'Google Sans', 'Google Sans Text', 'Inter', system-ui, -apple-system, sans-serif;
@@ -57,20 +62,21 @@
 
   &.theater {
     left: 50% !important;
-    top: 50% !important;
+    /* centered in the space below the floating nav */
+    top: calc(50% + var(--nav-clearance, 0px) / 2) !important;
     transform: translate(-50%, -50%);
     width: 85vw;
     max-width: 960px;
     height: auto;
-    max-height: 88vh;
+    max-height: min(88vh, var(--player-avail));
     box-shadow: 0 24px 60px -12px rgba(15, 23, 42, 0.35);
 
     .video-body {
-      max-height: calc(88vh - 46px);
+      max-height: calc(min(88vh, var(--player-avail)) - 46px);
       
       .video-container {
         video {
-          max-height: calc(88vh - 120px);
+          max-height: calc(min(88vh, var(--player-avail)) - 120px);
         }
       }
     }
@@ -304,7 +310,10 @@
     flex-direction: column;
     align-items: stretch;
     justify-content: flex-start;
-    overflow: hidden;
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-x: hidden;
+    overflow-y: auto;
 
     .video-loading-state {
       padding: 36px 20px;
@@ -335,12 +344,12 @@
       align-items: center;
       justify-content: center;
       background: #ffffff;
-      min-height: 260px;
+      min-height: min(260px, calc(var(--player-avail) - 60px));
       overflow: hidden;
 
       .live-screen-img {
         width: 100%;
-        max-height: 520px;
+        max-height: min(520px, calc(var(--player-avail) - 60px));
         display: block;
         object-fit: contain;
         user-select: none;
@@ -442,8 +451,8 @@
         justify-content: center;
         position: relative;
         background: #f8fafc;
-        min-height: 280px;
-        max-height: 520px;
+        min-height: min(280px, max(100px, calc(var(--player-avail) - var(--player-chrome))));
+        max-height: min(520px, max(100px, calc(var(--player-avail) - var(--player-chrome))));
         overflow: hidden;
         padding: 10px 0;
 
@@ -480,11 +489,11 @@
           align-items: center;
           justify-content: center;
           max-width: 92%;
-          max-height: 500px;
+          max-height: min(500px, max(80px, calc(var(--player-avail) - var(--player-chrome) - 20px)));
 
           .step-frame-img {
             max-width: 100%;
-            max-height: 500px;
+            max-height: min(500px, max(80px, calc(var(--player-avail) - var(--player-chrome) - 20px)));
             width: auto;
             height: auto;
             object-fit: contain;
@@ -654,6 +663,17 @@
       }
     }
 
+    .partial-ribbon {
+      align-self: stretch;
+      margin: 0;
+      padding: 6px 12px;
+      font-size: 13px;
+      font-weight: 600;
+      color: #92400e;
+      background: #fffbeb;
+      border-bottom: 1px solid #fcd34d;
+    }
+
     .video-container {
       position: relative;
       width: 100%;
@@ -666,7 +686,7 @@
       video {
         width: 100%;
         height: auto;
-        max-height: 520px;
+        max-height: min(520px, max(100px, calc(var(--player-avail) - var(--player-chrome))));
         display: block;
         object-fit: contain;
         cursor: pointer;
@@ -769,11 +789,14 @@
 
       .controls-row {
         display: flex;
+        flex-wrap: wrap; /* narrow frames: controls wrap to a second row instead of running past the edge */
         align-items: center;
         justify-content: space-between;
+        gap: 8px;
 
         .controls-left, .controls-right {
           display: flex;
+          flex-wrap: wrap;
           align-items: center;
           gap: 8px;
         }

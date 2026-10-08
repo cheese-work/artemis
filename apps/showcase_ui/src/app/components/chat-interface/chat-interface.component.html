@@ -38,6 +38,9 @@ limitations under the License.
     </div>
 
     <div class="header-right">
+      @if (agentService.activeTab() === 'tasks') {
+        <app-scope-switch></app-scope-switch>
+      }
       @if (agentService.sessions().length > 0 && agentService.activeTab() === 'tasks') {
         <button
           class="btn-clear-history"
@@ -80,10 +83,16 @@ limitations under the License.
               {{ getTaskStatus(session) | uppercase }}
             </span>
             <div class="task-card-header-actions">
-              @if (getDeviceSerial(session)) {
-                <span class="task-device" [title]="'Device: ' + getDeviceSerial(session)">
+              @if (getDeviceChip(session); as chip) {
+                <span class="task-device" [title]="chip.tooltip">
                   <span class="material-symbols-outlined device-icon">phone_android</span>
-                  <span class="device-name">{{ getDeviceSerial(session) }}</span>
+                  <span class="device-name">{{ chip.title }}</span>
+                  @if (chip.kind) {
+                    <span class="device-kind">{{ chip.kind }}</span>
+                  }
+                  @if (chip.source) {
+                    <span class="device-kind">{{ chip.source }}</span>
+                  }
                 </span>
               }
               @if (getDeviceSerial(session)) {
@@ -118,8 +127,16 @@ limitations under the License.
           <div class="task-goal" title="{{ session.initial_goal }}">
             {{ session.initial_goal || 'Unnamed Task' }}
           </div>
+          @if (session.goal_images?.length) {
+            <div class="task-goal-images">
+              @for (image of session.goal_images; track image.index) {
+                <img [src]="mediaUrl(image.url)" [alt]="'Image ' + (image.index + 1) + ' sent with this task'" loading="lazy">
+              }
+            </div>
+          }
           <div class="task-card-footer">
-            <span class="task-id" [title]="session.session_id">ID: {{ session.session_id }}</span>
+            <app-run-id-copy [runId]="session.session_id"></app-run-id-copy>
+            <app-owner-label [owner]="session.requested_by"></app-owner-label>
             <span class="task-date">{{ session.start_time * 1000 | date:'MM/dd/yy' }}</span>
           </div>
         </div>
@@ -130,6 +147,7 @@ limitations under the License.
           <span class="material-symbols-outlined section-icon">history</span> Past Runs & History ({{ historyTasks().length }})
         </summary>
         <div class="history-list-wrapper">
+          <a class="browse-runs-link" routerLink="/runs">Search and browse all runs</a>
           @if (historyTasks().length === 0) {
             <div class="empty-section-placeholder">
               No past tasks.
@@ -150,10 +168,16 @@ limitations under the License.
                   {{ getTaskStatus(session) | uppercase }}
                 </span>
                 <div class="task-card-header-actions">
-                  @if (getDeviceSerial(session)) {
-                    <span class="task-device" [title]="'Device: ' + getDeviceSerial(session)">
+                  @if (getDeviceChip(session); as chip) {
+                    <span class="task-device" [title]="chip.tooltip">
                       <span class="material-symbols-outlined device-icon">phone_android</span>
-                      <span class="device-name">{{ getDeviceSerial(session) }}</span>
+                      <span class="device-name">{{ chip.title }}</span>
+                      @if (chip.kind) {
+                        <span class="device-kind">{{ chip.kind }}</span>
+                      }
+                      @if (chip.source) {
+                        <span class="device-kind">{{ chip.source }}</span>
+                      }
                     </span>
                   }
                   @if (getDeviceSerial(session)) {
@@ -177,8 +201,16 @@ limitations under the License.
               <div class="task-goal" title="{{ session.initial_goal }}">
                 {{ session.initial_goal || 'Unnamed Task' }}
               </div>
+              @if (session.goal_images?.length) {
+                <div class="task-goal-images">
+                  @for (image of session.goal_images; track image.index) {
+                    <img [src]="mediaUrl(image.url)" [alt]="'Image ' + (image.index + 1) + ' sent with this task'" loading="lazy">
+                  }
+                </div>
+              }
               <div class="task-card-footer">
-                <span class="task-id" [title]="session.session_id">ID: {{ session.session_id }}</span>
+                <app-run-id-copy [runId]="session.session_id"></app-run-id-copy>
+                <app-owner-label [owner]="session.requested_by"></app-owner-label>
                 <span class="task-date">{{ session.start_time * 1000 | date:'MM/dd/yy' }}</span>
               </div>
             </div>
@@ -377,4 +409,3 @@ limitations under the License.
     }
   </main>
 </div>
-

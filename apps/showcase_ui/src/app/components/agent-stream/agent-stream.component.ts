@@ -14,13 +14,19 @@
  * limitations under the License.
  */
 
+import { LoggerService } from '../../services/logger.service';
 import { Component, ChangeDetectionStrategy, NgZone, signal, computed, effect, inject, untracked, DestroyRef, AfterViewInit } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { RouterLink } from '@angular/router';
 import { HttpClient } from '@angular/common/http';
 import { AgentService, StartupProgressEvent } from '../../services/agent.service';
+import { OwnerLabelComponent } from '../owner-label/owner-label.component';
+import { RunIdCopyComponent } from '../run-id-copy/run-id-copy.component';
+import { ScopeSwitchComponent } from '../scope-switch/scope-switch.component';
+import { RunSummaryCopyComponent } from '../run-summary-copy/run-summary-copy.component';
 import { Session, ModelInfo, SessionUsage } from '../../core/models/session.model';
+import { TaskStatus, taskStatusOf } from '../../utils/task-status.util';
 import { MarkdownSegment, MarkdownLine, NoteMilestone, ParsedNote } from '../../core/models/markdown.model';
 import { OverlayModule, ConnectedPosition } from '@angular/cdk/overlay';
 import { StepBlock, PhaseBlock, StepEvent, ActionParam, CheckerResult, StreamResetNotice, DEFAULT_STREAM_RESET_MESSAGE } from '../../core/models/stream.model';
@@ -233,12 +239,13 @@ export type { MarkdownSegment, MarkdownLine, NoteMilestone, ParsedNote, StreamRe
 @Component({
   selector: 'app-agent-stream',
   standalone: true,
-  imports: [CommonModule, FormsModule, OverlayModule],
+  imports: [CommonModule, FormsModule, OverlayModule, RunIdCopyComponent, RunSummaryCopyComponent, OwnerLabelComponent, ScopeSwitchComponent],
   templateUrl: './agent-stream.component.html',
   styleUrl: './agent-stream.component.scss',
   changeDetection: ChangeDetectionStrategy.OnPush
 })
 export class AgentStreamComponent implements AfterViewInit {
+  private readonly logger = inject(LoggerService);
   public agentService = inject(AgentService);
   private http = inject(HttpClient);
   private destroyRef = inject(DestroyRef);
@@ -394,7 +401,7 @@ export class AgentStreamComponent implements AfterViewInit {
   public historyTasks = computed(() => {
     return this.agentService.sessions().filter((s) => {
       const status = this.getTaskStatus(s);
-      return status === 'completed' || status === 'failed' || status === 'cancelled';
+      return status !== 'running' && status !== 'paused' && status !== 'pending';
     });
   });
 
@@ -858,7 +865,7 @@ export class AgentStreamComponent implements AfterViewInit {
         if (this.agentService.currentSessionId() !== sessionId) return;
         this.runUsage.set(usage);
       },
-      error: (err) => console.error('Failed to load session usage:', err)
+      error: (err) => this.logger.error('Failed to load session usage:', err)
     });
   }
 
@@ -874,21 +881,10 @@ export class AgentStreamComponent implements AfterViewInit {
     return tuningLabel(kind, id);
   }
 
-  public getTaskStatus(session: Session): 'running' | 'paused' | 'completed' | 'pending' | 'failed' | 'cancelled' {
-    if (session.status) {
-      const s = session.status.toLowerCase();
-      if (s === 'completed' || s === 'success' || s === 'failed' || s === 'cancelled') {
-        return (s === 'success' ? 'completed' : s) as any;
-      }
-      if (s === 'running' || s === 'paused' || s === 'pending') {
-        return s as any;
-      }
-    }
-    if (session.session_id === this.agentService.runningSessionId() && (this.agentService.agentStatus() === 'running' || this.agentService.agentStatus() === 'paused')) {
-      return this.agentService.agentStatus() as 'running' | 'paused';
-    }
-    return 'completed';
+  public getTaskStatus(session: Session): TaskStatus {
+    return taskStatusOf(session, { sessionId: this.agentService.runningSessionId(), status: this.agentService.agentStatus() });
   }
+
 
   /**
    * Determine the device serial number for the session
@@ -908,7 +904,8 @@ export class AgentStreamComponent implements AfterViewInit {
         if (s && s !== 'pending' && s !== 'null' && s !== 'undefined') {
           resolved = s;
         }
-      } catch {
+      } catch (error) {
+        this.logger.warn('UI operation failed:', error);
         // ignore
       }
     }
@@ -934,7 +931,7 @@ export class AgentStreamComponent implements AfterViewInit {
     }
     this.agentService.deleteSession(sessionId).subscribe({
       error: (err) => {
-        console.error(`Failed to delete session ${sessionId}:`, err);
+        this.logger.error(`Failed to delete session ${sessionId}:`, err);
       }
     });
   }
@@ -1440,7 +1437,7 @@ export class AgentStreamComponent implements AfterViewInit {
     try {
       this.drawActionCoordinatesOnOverlay(img, overlay, actionObj);
     } catch (e) {
-      console.warn('Failed to draw action overlay:', e);
+      this.logger.warn('Failed to draw action overlay:', e);
     }
   }
 
@@ -2041,7 +2038,8 @@ export class AgentStreamComponent implements AfterViewInit {
     if (typeof data === 'string') {
       try {
         return JSON.stringify(JSON.parse(data), null, 2);
-      } catch {
+      } catch (error) {
+        this.logger.warn('UI operation failed:', error);
         return data;
       }
     }
@@ -2162,12 +2160,12 @@ export class AgentStreamComponent implements AfterViewInit {
   }
 
   public getArchitectureTooltip(model?: ModelInfo | null): string {
-    if (!model) return 'Agent Architecture: ARTEMIS Flash (Reactive Fast Loop)';
+    if (!model) return 'Agent Architecture: SmartQA Flash (Reactive Fast Loop)';
     const name = this.getModelDisplayName(model.name);
     const isPro = name.toLowerCase().includes('pro');
     const archDesc = isPro
-      ? 'ARTEMIS Pro (Multi-Agent Cognitive State Graph)'
-      : 'ARTEMIS Flash (Reactive Fast Loop)';
+      ? 'SmartQA Pro (Multi-Agent Cognitive State Graph)'
+      : 'SmartQA Flash (Reactive Fast Loop)';
     if (model.id) {
       return `Agent Architecture: ${archDesc} · LLM: ${model.id} (${model.provider || 'google'})`;
     }

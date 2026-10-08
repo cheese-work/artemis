@@ -14,7 +14,7 @@
  limitations under the License.
 -->
 
-<div class="home-container" [class.system-ready]="isReady()" [class.system-pending]="!isReady()" [class.pro-theme-active]="selectedProfile() === 'pro'">
+<div class="home-container" [class.system-ready]="isReady()" [class.system-pending]="!isReady()">
   <!-- Dynamic Aurora Glow Background -->
   <div class="aurora-background">
     <div class="glow glow-1"></div>
@@ -22,57 +22,19 @@
     <div class="glow glow-3"></div>
     <div class="glow glow-pending"></div>
     <div class="glow glow-ready"></div>
-    <div class="glow glow-pro"></div>
   </div>
 
 
   <!-- Main Content Layout -->
   <main class="home-content">
     
-    <!-- Task entry section -->
     <section class="hero-section">
-      <h1 class="hero-title">
-        What would you like to do on your phone?
-      </h1>
+      <h1 class="hero-title">System Setup &amp; Prerequisites</h1>
     </section>
-
-    <!-- Top View Mode Stepper / Tab Switcher (Frosted Glass Segmented Control matching top-left nav) -->
-    <div class="mode-tabs-container">
-      <div class="mode-tabs">
-        <button
-          type="button"
-          class="mode-tab-btn"
-          [class.active]="activeTab() === 'diagnostics'"
-          (click)="setTab('diagnostics')"
-        >
-          @if (isReady()) {
-            <span class="material-symbols-outlined tab-icon icon-ready">check_circle</span>
-          } @else {
-            <span class="material-symbols-outlined tab-icon">tune</span>
-          }
-          <span class="tab-label">System Setup & Prerequisites</span>
-        </button>
-
-        <button
-          type="button"
-          class="mode-tab-btn"
-          [class.active]="activeTab() === 'launcher'"
-          (click)="setTab('launcher')"
-        >
-          @if (!isReady()) {
-            <span class="material-symbols-outlined tab-icon icon-locked">lock</span>
-          } @else {
-            <span class="material-symbols-outlined tab-icon">rocket_launch</span>
-          }
-          <span class="tab-label">Launch Autonomous Task</span>
-        </button>
-      </div>
-    </div>
 
     <!-- ========================================================================= -->
     <!-- VIEW 1: SYSTEM SETUP & FOOLPROOF STEP-BY-STEP GUIDANCE                    -->
     <!-- ========================================================================= -->
-    @if (activeTab() === 'diagnostics') {
       <section class="setup-guide-view">
 
 <!-- =================================================================== -->
@@ -282,382 +244,8 @@
 </div>
 
 <!-- =================================================================== -->
-<!-- STEP 2: AI MODEL SETUP                                              -->
-<!-- =================================================================== -->
-<div class="guide-card" [class.card-pass]="isCredentialsReady()" [class.card-warn]="!isCredentialsReady()">
+<app-setup [embedded]="true"></app-setup>
 
-  <div class="guide-card-header">
-    <div class="step-badge" [class.step-pass]="isCredentialsReady()">
-      @if (isCredentialsReady()) {
-      <span class="material-symbols-outlined step-check-icon">check</span>
-      } @else {
-      <span>2</span>
-      }
-    </div>
-    <div class="step-info">
-      <div class="step-title-row">
-        <h3 class="step-title">AI Model Setup</h3>
-      </div>
-      <p class="step-desc">Google Gemini or custom LLM providers (OpenAI, Claude, Ollama)</p>
-    </div>
-  </div>
-
-  <div class="guide-card-body">
-    <!-- 2 Big Visual Choice Cards -->
-    <div class="model-choice-cards-row">
-      <!-- Card 1: Gemini (Recommended) -->
-      <div class="choice-card" [class.selected]="modelSetupMode() === 'gemini'" (click)="setModelSetupMode('gemini')">
-        <div class="choice-card-top">
-          <div class="choice-radio">
-            <span class="radio-dot" [class.checked]="modelSetupMode() === 'gemini'"></span>
-          </div>
-          <div class="choice-icon-wrap">
-            <svg class="brand-svg gemini-svg" viewBox="0 0 24 24" fill="none">
-              <defs>
-                <linearGradient id="geminiChoiceGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-                  <stop offset="0%" stop-color="#4285F4" />
-                  <stop offset="50%" stop-color="#9B72CB" />
-                  <stop offset="100%" stop-color="#D96570" />
-                </linearGradient>
-              </defs>
-              <path
-                d="M12 2C12 7.523 7.523 12 2 12C7.523 12 12 16.477 12 22C12 16.477 16.477 12 22 12C16.477 12 12 7.523 12 2Z"
-                fill="url(#geminiChoiceGrad)" />
-            </svg>
-          </div>
-          <div class="choice-text">
-            <div class="choice-title-row">
-              <span class="choice-title">Google Gemini</span>
-              <span class="tag-badge tag-rec">Recommended</span>
-            </div>
-            <p class="choice-desc">Fast multimodal reasoning with free API key from Google AI Studio.</p>
-          </div>
-        </div>
-      </div>
-
-      <!-- Card 2: Custom Configuration -->
-      <div class="choice-card" [class.selected]="modelSetupMode() === 'custom'" (click)="setModelSetupMode('custom')">
-        <div class="choice-card-top">
-          <div class="choice-radio">
-            <span class="radio-dot" [class.checked]="modelSetupMode() === 'custom'"></span>
-          </div>
-          <div class="choice-icon-wrap icon-gear">
-            <span class="material-symbols-outlined">tune</span>
-          </div>
-          <div class="choice-text">
-            <div class="choice-title-row">
-              <span class="choice-title">Custom Configuration</span>
-            </div>
-            <p class="choice-desc">Define models in <code>config/artemis.jsonc</code> & keys in <code>.env</code>
-              (OpenAI, Claude, Ollama).</p>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- Dynamic Panel Based on Choice -->
-    @if (modelSetupMode() === 'gemini') {
-    <!-- 1. Gemini API Key Box -->
-    <div class="credentials-input-box">
-      <div class="input-box-header">
-        <div class="header-label">
-          <span class="material-symbols-outlined label-icon">vpn_key</span>
-          <span>Enter Gemini API Key:</span>
-        </div>
-        <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener noreferrer"
-          class="btn-header-link">
-          <span class="material-symbols-outlined">open_in_new</span>
-          <span>Get Free API Key (Google AI Studio)</span>
-        </a>
-      </div>
-
-      <div class="unified-key-row">
-        <div class="unified-key-wrapper">
-          <span class="material-symbols-outlined key-prefix-icon">key</span>
-          <input [type]="showGeminiKey() ? 'text' : 'password'" class="unified-key-input"
-            [class.is-masked]="!showGeminiKey()" [ngModel]="geminiKeyInput()"
-            (ngModelChange)="onGeminiKeyChange($event)" placeholder="Enter Gemini API Key (e.g. AIzaSy...)"
-            spellcheck="false" autocomplete="off" />
-
-          <!-- Visibility Toggle -->
-          <button type="button" class="btn-icon-action" [title]="showGeminiKey() ? 'Mask Key' : 'Show Plaintext'"
-            (click)="toggleGeminiKeyVisibility()">
-            <span class="material-symbols-outlined">
-              {{ showGeminiKey() ? 'visibility_off' : 'visibility' }}
-            </span>
-          </button>
-
-          <!-- Copy Button -->
-          @if (geminiKeyInput()) {
-          <button type="button" class="btn-icon-action" title="Copy API Key"
-            (click)="copyToClipboard(geminiKeyInput(), 'gemini_key_field')">
-            <span class="material-symbols-outlined" [class.text-emerald]="copiedId() === 'gemini_key_field'">
-              {{ copiedId() === 'gemini_key_field' ? 'check' : 'content_copy' }}
-            </span>
-          </button>
-          }
-        </div>
-
-        <!-- Save Button -->
-        <button type="button" class="btn-unified-save" [class.btn-dirty]="isGeminiModified()"
-          [disabled]="isSavingGeminiKey() || isTestingGeminiKey() || (!isGeminiModified() && !geminiKeyInput().trim())" (click)="saveGeminiKey()">
-          @if (isSavingGeminiKey()) {
-          <span class="material-symbols-outlined spin">sync</span>
-          <span>{{ geminiKeyInput().trim() ? 'Verifying & Saving...' : 'Clearing...' }}</span>
-          } @else {
-          <span class="material-symbols-outlined">{{ geminiKeyInput().trim() ? 'save' : 'delete_outline' }}</span>
-          <span>{{ !geminiKeyInput().trim() ? 'Clear Key' : (isGeminiModified() ? 'Save & Apply' : 'Save Key') }}</span>
-          }
-        </button>
-
-        <!-- Test Button -->
-        <button type="button" class="btn-unified-test" title="Test if Gemini API key is valid"
-          [disabled]="isTestingGeminiKey() || isSavingGeminiKey() || !geminiKeyInput().trim()" (click)="testGeminiKey()">
-          @if (isTestingGeminiKey()) {
-          <span class="material-symbols-outlined spin">sync</span>
-          <span>Testing...</span>
-          } @else {
-          <span class="material-symbols-outlined">network_check</span>
-          <span>Test Key</span>
-          }
-        </button>
-      </div>
-
-      @if (geminiSaveMessage()) {
-      <div class="feedback-msg success">
-        <span class="material-symbols-outlined">check_circle</span>
-        <span>{{ geminiSaveMessage() }}</span>
-      </div>
-      }
-      @if (geminiSaveError()) {
-      <div class="feedback-msg error">
-        <span class="material-symbols-outlined">error</span>
-        <span>{{ geminiSaveError() }}</span>
-      </div>
-      }
-    </div>
-
-    <!-- 2. OCR Enhancement Option for Gemini Mode -->
-    <div class="ocr-enhancement-card">
-      <div class="ocr-card-toggle-bar" (click)="toggleOcrConfig()">
-        <div class="toggle-bar-left">
-          <span class="material-symbols-outlined icon-ocr">document_scanner</span>
-          <div class="toggle-bar-titles">
-            <span class="ocr-main-title">Optional: Google Cloud Vision OCR</span>
-          </div>
-        </div>
-
-        <div class="toggle-bar-right">
-          @if (isOcrConfigured()) {
-            <span class="status-dot dot-pass" title="OCR Configured"></span>
-          }
-          <span class="material-symbols-outlined caret-icon">
-            {{ showOcrConfig() ? 'expand_less' : 'expand_more' }}
-          </span>
-        </div>
-      </div>
-      
-      @if (showOcrConfig()) {
-      <div class="ocr-content-body">
-        <p class="ocr-help-desc">
-          Provides screen text coordinate grounding to improve element detection and interaction accuracy on text-heavy apps.
-        </p>
-
-        <!-- Input Box -->
-        <div class="credentials-input-box ocr-box">
-          <div class="input-box-header">
-            <div class="header-label">
-              <span class="material-symbols-outlined label-icon">key</span>
-              <span>Cloud Vision API Key:</span>
-            </div>
-          </div>
-
-          <div class="unified-key-row">
-            <div class="unified-key-wrapper">
-              <span class="material-symbols-outlined key-prefix-icon">key</span>
-              <input [type]="showOcrKey() ? 'text' : 'password'" class="unified-key-input" [class.is-masked]="!showOcrKey()"
-                [ngModel]="ocrKeyInput()" (ngModelChange)="onOcrKeyChange($event)"
-                placeholder="Enter Vision OCR API Key (e.g. AIzaSy...)" spellcheck="false" autocomplete="off" />
-          
-              <!-- Visibility Toggle -->
-              <button type="button" class="btn-icon-action" [title]="showOcrKey() ? 'Mask Key' : 'Show Plaintext'"
-                (click)="toggleOcrKeyVisibility()">
-                <span class="material-symbols-outlined">
-                  {{ showOcrKey() ? 'visibility_off' : 'visibility' }}
-                </span>
-              </button>
-          
-              <!-- Copy Button -->
-              @if (ocrKeyInput()) {
-              <button type="button" class="btn-icon-action" title="Copy API Key"
-                (click)="copyToClipboard(ocrKeyInput(), 'ocr_key_field')">
-                <span class="material-symbols-outlined" [class.text-emerald]="copiedId() === 'ocr_key_field'">
-                  {{ copiedId() === 'ocr_key_field' ? 'check' : 'content_copy' }}
-                </span>
-              </button>
-              }
-            </div>
-            
-            <!-- Save Button -->
-            <button type="button" class="btn-unified-save" [class.btn-dirty]="isOcrModified()"
-              [disabled]="isSavingOcrKey() || isTestingOcrKey() || (!isOcrModified() && !ocrKeyInput().trim())" (click)="saveOcrKey()">
-              @if (isSavingOcrKey()) {
-              <span class="material-symbols-outlined spin">sync</span>
-              <span>{{ ocrKeyInput().trim() ? 'Verifying & Saving...' : 'Clearing...' }}</span>
-              } @else {
-              <span class="material-symbols-outlined">{{ ocrKeyInput().trim() ? 'save' : 'delete_outline' }}</span>
-              <span>{{ !ocrKeyInput().trim() ? 'Clear Key' : (isOcrModified() ? 'Save & Apply' : 'Save Key') }}</span>
-              }
-            </button>
-
-            <!-- Test Button -->
-            <button type="button" class="btn-unified-test" title="Test if Vision OCR key is valid"
-              [disabled]="isTestingOcrKey() || isSavingOcrKey() || !ocrKeyInput().trim()" (click)="testOcrKey()">
-              @if (isTestingOcrKey()) {
-              <span class="material-symbols-outlined spin">sync</span>
-              <span>Testing...</span>
-              } @else {
-              <span class="material-symbols-outlined">network_check</span>
-              <span>Test Key</span>
-              }
-            </button>
-          </div>
-          
-          @if (ocrSaveMessage()) {
-          <div class="feedback-msg success">
-            <span class="material-symbols-outlined">check_circle</span>
-            <span>{{ ocrSaveMessage() }}</span>
-          </div>
-          }
-          @if (ocrSaveError()) {
-          <div class="feedback-msg error">
-            <span class="material-symbols-outlined">error</span>
-            <span>{{ ocrSaveError() }}</span>
-          </div>
-          }
-        </div>
-      </div>
-      }
-    </div>
-    } @else {
-          <!-- CUSTOM CONFIGURATION & .ENV INSPECTOR (NO OCR HERE) -->
-          <div class="custom-config-inspector">
-
-      <!-- Section 1: Active Model Config (artemis.jsonc) -->
-      <div class="inspector-card">
-        <div class="inspector-card-header">
-          <div class="inspector-header-left">
-            <span class="material-symbols-outlined header-icon">tune</span>
-            <div class="inspector-header-titles">
-              <span class="inspector-title">Active Model Configuration</span>
-              <span class="inspector-subtitle">Defined in
-                <code>{{ modelConfigEnv()?.config_path || 'config/artemis.jsonc' }}</code></span>
-            </div>
-          </div>
-          <div class="inspector-header-actions">
-            <button type="button" class="btn-file-action" title="Copy file path"
-              (click)="copyToClipboard(modelConfigEnv()?.config_path || 'config/artemis.jsonc', 'config_path_btn')"
-            >
-              <span class="material-symbols-outlined" [class.text-emerald]="copiedId() === 'config_path_btn'">
-                {{ copiedId() === 'config_path_btn' ? 'check' : 'content_copy' }}
-              </span>
-              <span>Copy Path</span>
-              </button>
-              <button type="button" class="btn-file-action btn-toggle-code" (click)="toggleFullConfigFile()">
-                <span class="material-symbols-outlined">
-                  {{ showFullConfigFile() ? 'unfold_less' : 'code' }}
-                </span>
-                <span>{{ showFullConfigFile() ? 'Hide JSONC' : 'View JSONC' }}</span>
-            </button>
-          </div>
-          </div>
-          
-          <!-- Model Summary Row -->
-          <div class="inspector-summary-row">
-            <div class="summary-metric">
-              <span class="metric-label">Default Model</span>
-              <div class="metric-val-pill">
-                <span class="provider-dot"></span>
-                <span class="provider-name">{{ modelConfigEnv()?.default_model?.provider || 'google' }}</span>
-                <span class="model-divider">/</span>
-                <span class="model-name">{{ modelConfigEnv()?.default_model?.model || 'gemini-3.8-flash' }}</span>
-              </div>
-            </div>
-          
-            @if (modelConfigEnv()?.default_model?.fallback) {
-            <div class="summary-metric">
-              <span class="metric-label">Fallback Model</span>
-              <div class="metric-val-pill secondary">
-                <span>{{ modelConfigEnv()?.default_model?.fallback?.provider }}/{{
-                  modelConfigEnv()?.default_model?.fallback?.model }}</span>
-              </div>
-            </div>
-            }
-          
-          </div>
-          
-          <!-- Full JSONC Viewer -->
-          @if (showFullConfigFile()) {
-          <div class="jsonc-viewer-box">
-            <pre class="jsonc-code"><code>{{ modelConfigEnv()?.config_content }}</code></pre>
-          </div>
-          }
-          </div>
-
-      <!-- Section 2: Environment API Keys (.env) -->
-      <div class="inspector-card">
-        <div class="inspector-card-header">
-          <div class="inspector-header-left">
-            <span class="material-symbols-outlined header-icon">vpn_key</span>
-            <div class="inspector-header-titles">
-              <span class="inspector-title">Environment Variables & API Keys</span>
-              <span class="inspector-subtitle">Loaded from <code>{{ modelConfigEnv()?.env_path || '.env' }}</code></span>
-            </div>
-          </div>
-      
-          <button type="button" class="btn-file-action" title="Copy file path"
-            (click)="copyToClipboard(modelConfigEnv()?.env_path || '.env', 'env_path_btn')">
-          <span class="material-symbols-outlined" [class.text-emerald]="copiedId() === 'env_path_btn'">
-            {{ copiedId() === 'env_path_btn' ? 'check' : 'content_copy' }}
-          </span>
-          <span>Copy Path</span>
-          </button>
-        </div>
-        
-        <!-- Env Keys Table -->
-        <div class="env-keys-table">
-          @for (envItem of modelConfigEnv()?.env_vars || []; track envItem.name) {
-          <div class="env-key-row" [class.is-configured]="envItem.is_set">
-            <div class="env-name-col">
-              <code class="env-key-name">{{ envItem.name }}</code>
-            </div>
-            <div class="env-status-col">
-              @if (envItem.is_set) {
-              <span class="badge-env-pass">
-                <span class="material-symbols-outlined">check_circle</span>
-                <span>Configured</span>
-                @if (envItem.preview) {
-                <code class="key-preview">({{ envItem.preview }})</code>
-                }
-              </span>
-              } @else {
-              <span class="badge-env-unset">
-                <span class="material-symbols-outlined">radio_button_unchecked</span>
-                <span>Not Set</span>
-              </span>
-              }
-            </div>
-          </div>
-          }
-        </div>
-        </div>
-        
-        </div>
-    }
-    </div>
-    </div>
-
-        <!-- =================================================================== -->
         <!-- STEP 3: ANDROID DEVICE & EMULATOR CONNECTION                        -->
         <!-- =================================================================== -->
         <div class="guide-card" [class.card-pass]="isDeviceReady()" [class.card-warn]="!isDeviceReady()">
@@ -708,6 +296,9 @@
 
           <div class="guide-card-body">
 
+            <!-- Phones from computers and this browser, each with its source -->
+            <app-registry-phones></app-registry-phones>
+
             <!-- STATE A: CONNECTED & READY -->
             @if (isDeviceReady()) {
               <div class="connected-device-panel">
@@ -718,15 +309,20 @@
                     </span>
                   </div>
                   <div class="device-hero-details">
+                    @let hero = activeDevice();
                     <div class="device-hero-name">
-                      {{ activeDevice()?.model || activeDevice()?.serial }}
+                      {{ hero ? deviceTitle(hero) : '' }}
                     </div>
                     <div class="device-hero-meta">
-                      @if (activeDevice()?.is_emulator) {
-                        <span>Virtual Device</span>
+                      @if (hero && deviceKindLabel(hero) !== deviceTitle(hero)) {
+                        <span>{{ deviceKindLabel(hero) }}</span>
                         <span class="meta-dot">·</span>
                       }
-                      <span>{{ activeDevice()?.serial }}</span>
+                      @if (hero && deviceSource(hero); as source) {
+                        <span>{{ source }}</span>
+                        <span class="meta-dot">·</span>
+                      }
+                      <span>{{ hero?.serial }}</span>
                       @if (activeDevice()?.screen_resolution) {
                         <span class="meta-dot">·</span>
                         <span>{{ activeDevice()?.screen_resolution }}</span>
@@ -750,7 +346,7 @@
                 </div>
 
                 <!-- Multi-Device Switcher if multiple devices detected -->
-                @if (connectedDevices().length > 1) {
+                @if (!systemService.configWritesLocked() && connectedDevices().length > 1) {
                   <div class="multi-device-switcher">
                     <span class="switcher-label">Select Active Device:</span>
                     <div class="switcher-chips">
@@ -764,7 +360,13 @@
                           <span class="material-symbols-outlined chip-icon">
                             phone_android
                           </span>
-                          <span>{{ dev.model || dev.serial }}</span>
+                          <span>{{ deviceTitle(dev) }}</span>
+                          @if (deviceKindLabel(dev) !== deviceTitle(dev)) {
+                            <span class="chip-kind">{{ deviceKindLabel(dev) }}</span>
+                          }
+                          @if (deviceSource(dev); as source) {
+                            <span class="chip-kind">{{ source }}</span>
+                          }
                           @if (dev.serial === activeDevice()?.serial) {
                             <span class="active-check">✓ Active</span>
                           }
@@ -1056,7 +658,7 @@
                     <div class="active-remote-copy">
                       <span class="material-symbols-outlined">hub</span>
                       <span>
-                        Artemis is currently using
+                        SmartQA is currently using
                         <strong>{{ adbServerStatus()?.endpoint?.host }}:{{ adbServerStatus()?.endpoint?.port }}</strong>.
                         Switch to local ADB before using a local emulator, USB cable, or Wireless ADB.
                       </span>
@@ -1212,7 +814,7 @@
                               </div>
                               <div class="step-card-title">Launch Emulator</div>
                               <div class="step-card-desc">
-                                Click ▶ <strong>Play</strong> in Device Manager. Artemis will detect and connect to it automatically!
+                                Click ▶ <strong>Play</strong> in Device Manager. SmartQA will detect and connect to it automatically!
                               </div>
                             </div>
                           </div>
@@ -1419,7 +1021,7 @@
                   <div class="method-details-panel remote-adb-panel">
                     <div class="remote-guide-intro">
                       <span class="material-symbols-outlined intro-icon">hub</span>
-                      <span>Enter the host and port of an ADB server endpoint that this computer can access, so Artemis can discover and control a phone physically connected to another computer.</span>
+                      <span>Enter the host and port of an ADB server endpoint that this computer can access, so SmartQA can discover and control a phone physically connected to another computer.</span>
                     </div>
 
                     <div class="remote-adb-interactive-box">
@@ -1483,7 +1085,7 @@
                           [ngModel]="rememberRemoteAdb()"
                           (ngModelChange)="rememberRemoteAdb.set($event)"
                         />
-                        <span>Remember this endpoint for future Artemis launches</span>
+                        <span>Remember this endpoint for future SmartQA sessions</span>
                       </label>
 
                       @if (remoteAdbMessage()) {
@@ -1535,7 +1137,7 @@
                     </div>
 
                     <p class="remote-adb-explanation">
-                      Artemis sends all ADB commands to this server instead of the default local server. Any phone visible to that server becomes available to Artemis.
+                      SmartQA sends all ADB commands to this server instead of the default local server. Any phone visible to that server becomes available to SmartQA.
                     </p>
                   </div>
                 }
@@ -1563,7 +1165,7 @@
                 </div>
 
                 <!-- Multi-Device Switcher if multiple devices detected -->
-                @if (connectedDevices().length > 1) {
+                @if (!systemService.configWritesLocked() && connectedDevices().length > 1) {
                   <div class="multi-device-switcher" style="margin-top: 12px;">
                     <span class="switcher-label">Select Active Device:</span>
                     <div class="switcher-chips">
@@ -1679,427 +1281,6 @@
           </div>
         </div>
 
-        <!-- Ready Banner Footer: Direct One-Click Launch -->
-        @if (isReady()) {
-          <div class="ready-banner-footer">
-            <div class="ready-banner-left">
-              <div class="step-badge step-pass">
-                <span class="material-symbols-outlined step-check-icon">check</span>
-              </div>
-              <div class="ready-text-group">
-                <h4 class="ready-title">System Ready for Autonomous Tasks</h4>
-                <p class="ready-desc">All dependencies, AI model credentials, and Android device are verified and ready to run.</p>
-              </div>
-            </div>
-            <button type="button" class="btn-proceed-launch" (click)="setTab('launcher')">
-              <span>Launch Autonomous Task</span>
-              <span class="material-symbols-outlined rocket-icon">rocket_launch</span>
-            </button>
-          </div>
-        }
-
       </section>
-    }
-
-    <!-- ========================================================================= -->
-    <!-- VIEW 2: TASK EXECUTION LAUNCHER (UNIFIED SCULPTURED COMPOSER)            -->
-    <!-- ========================================================================= -->
-    @if (activeTab() === 'launcher') {
-      <section class="task-launcher-view">
-
-        <!-- Prerequisites Drop Alert if any blocker probe is not passing -->
-        @if (hasReadinessReport() && !isReady()) {
-          <div class="launcher-warning-bar" (click)="setTab('diagnostics')">
-            <span class="material-symbols-outlined warn-icon">{{ adbProbe()?.summary === 'Device Locked' ? 'lock' : 'warning' }}</span>
-            <span>
-              {{ adbProbe()?.summary === 'Device Locked'
-                ? 'Android device is locked. Unlock it and enter the home screen before running a task.'
-                : 'Prerequisites incomplete: runtime, credentials, or Android device is not ready. Click here to open Setup Guide.' }}
-            </span>
-            <span class="material-symbols-outlined arrow">arrow_forward</span>
-          </div>
-        }
-
-        <!-- Task composer -->
-        <div class="composer-card" [class.is-pro-active]="selectedProfile() === 'pro'">
-          
-          <!-- Smart Intent Recommendation Strip (if detected) -->
-          @if (showIntentSuggestion()) {
-            <div class="intent-suggestion-strip">
-              <div class="suggestion-left">
-                <span class="material-symbols-outlined sparkle-icon">auto_awesome</span>
-                <span class="suggestion-text">
-                  Continuous monitoring or complex task detected. Recommended: <strong>Pro Mode</strong>
-                </span>
-              </div>
-              <button type="button" class="btn-switch-pro" (click)="setProfile('pro')">
-                <span>Switch to Pro</span>
-                <span class="material-symbols-outlined btn-arrow">arrow_forward</span>
-              </button>
-            </div>
-          }
-
-          <!-- Borderless task input -->
-          <div class="composer-input-area">
-            <textarea
-              id="task-input-field"
-              class="composer-textarea"
-              rows="3"
-              [(ngModel)]="taskGoal"
-              [disabled]="isSubmitting()"
-              placeholder="Describe what you want to achieve on your phone (e.g. Open Gmail and search for latest emails)..."
-              (keydown.control.enter)="runTask()"
-              (keydown.meta.enter)="runTask()"
-            ></textarea>
-          </div>
-
-          <!-- Contextual Model Descriptor Strip (Clean & Unified for Flash & Pro) -->
-          <div class="composer-model-descriptor" [class.is-pro]="selectedProfile() === 'pro'">
-            <div class="descriptor-icon-wrap">
-              <span class="material-symbols-outlined">{{ selectedProfile() === 'flash' ? 'bolt' : 'psychology' }}</span>
-            </div>
-            <div class="descriptor-body">
-              @if (selectedProfile() === 'flash') {
-                <p class="desc-line">
-                  <span class="mode-name">Flash</span>
-                  <span class="bullet">·</span>
-                  <span>Token-efficient, rapid <strong>3–5s/step</strong> decisions straight from the live screen. Best for everyday tasks with a clear path, however long they run.</span>
-                  <span class="limitation-tag">(No plan, no result check, no ADB commands)</span>
-                </p>
-              } @else {
-                <p class="desc-line">
-                  <span class="mode-name">Pro</span>
-                  <span class="bullet">·</span>
-                  <span>Plans first, checks its results and recovers when a tap is blocked. Handles <strong>100+ step</strong> workflows and live phone monitoring (<strong>15–40s</strong> / step).</span>
-                </p>
-              }
-            </div>
-          </div>
-
-          <!-- Error Banner if any -->
-          @if (errorMessage()) {
-            <div class="error-banner">
-              <span class="material-symbols-outlined error-icon">error</span>
-              <span>{{ errorMessage() }}</span>
-            </div>
-          }
-
-          <!-- Composer Bottom Action Bar -->
-          <div class="composer-action-bar">
-            <div class="bar-left">
-              <!-- Frosted Glass Architecture Toggle Capsule -->
-              <div class="model-toggle-capsule">
-                <button
-                  type="button"
-                  class="model-toggle-btn btn-flash"
-                  [class.active]="selectedProfile() === 'flash'"
-                  (click)="setProfile('flash')"
-                  title="Flash: fast single-look loop for everyday app tasks (3–5s/step)"
-                >
-                  <span class="material-symbols-outlined btn-icon">bolt</span>
-                  <span class="btn-text">Flash</span>
-                </button>
-                <button
-                  type="button"
-                  class="model-toggle-btn btn-pro"
-                  [class.active]="selectedProfile() === 'pro'"
-                  (click)="setProfile('pro')"
-                  title="Pro: plans first, checks results and recovers from blocked steps. For long or complex tasks (15–40s/step)"
-                >
-                  <span class="material-symbols-outlined btn-icon">psychology</span>
-                  <span class="btn-text">Pro</span>
-                </button>
-              </div>
-            </div>
-
-            <div class="bar-right">
-              @if (taskGoal().length > 0) {
-                <span class="char-count">{{ taskGoal().length }} chars</span>
-              }
-
-              <!-- Run Button -->
-              <button
-                type="button"
-                class="btn-run-composer"
-                [class.btn-run-pro]="selectedProfile() === 'pro'"
-                [disabled]="!taskGoal().trim() || isSubmitting() || !isReady()"
-                [title]="!isReady() ? (adbProbe()?.summary === 'Device Locked' ? 'Unlock the Android device before running' : 'Complete System Setup before running') : 'Run task'"
-                (click)="runTask()"
-              >
-                @if (isSubmitting()) {
-                  <span class="spinner"></span><span>Starting...</span>
-                } @else {
-                  <span class="material-symbols-outlined run-icon">play_arrow</span><span>Run Task</span>
-                }
-              </button>
-            </div>
-          </div>
-        </div>
-
-        <!-- Pro Mode Standalone Expected Output Card (Clean & Minimalist) -->
-        @if (selectedProfile() === 'pro') {
-          <div class="pro-outputter-standalone-card">
-            <div class="outputter-card-header">
-              <span class="outputter-title">Expected Output</span>
-              <span class="outputter-optional-tag">(Optional)</span>
-            </div>
-
-            <div class="outputter-input-wrapper">
-              <input
-                type="text"
-                class="outputter-standalone-input"
-                [ngModel]="expectedOutput()"
-                (ngModelChange)="expectedOutput.set($event)"
-                placeholder="Specify expected output or schema (e.g. 'Extract SMS verification code as JSON' or 'Summary of discounts and total price')..."
-                spellcheck="false"
-              />
-              @if (expectedOutput().trim()) {
-                <button
-                  type="button"
-                  class="btn-clear-standalone"
-                  (click)="expectedOutput.set('')"
-                  title="Clear expected output"
-                >
-                  <span class="material-symbols-outlined">close</span>
-                </button>
-              }
-            </div>
-          </div>
-
-          <!-- Pro Mode Tuning Card: verification depth & explorer perception sliders -->
-          <div class="pro-tuning-card" [class.tip-open]="activeTuningTip() !== null">
-            <div class="tuning-card-header">
-              <span class="tuning-title">Pro settings</span>
-              @if (!isTuningDefault()) {
-                <button type="button" class="btn-tuning-reset" (click)="resetTuning()" title="Back to the defaults">Reset</button>
-              }
-            </div>
-
-            <div class="tuning-sliders">
-              @for (slider of tuningSliders(); track slider.kind) {
-                <div
-                  class="tuning-slider"
-                  [class.verify]="slider.kind === 'verify'"
-                  [class.explore]="slider.kind === 'explore'"
-                  [class.dragging]="activeTuningTip() === slider.kind"
-                  [style.--pct]="slider.fraction"
-                >
-                  <div class="slider-head">
-                    <span class="slider-name">{{ slider.name }}</span>
-                    <span class="slider-value">{{ slider.level.label }}</span>
-                  </div>
-                  <div class="slider-ends" aria-hidden="true">
-                    <span>{{ slider.ends[0] }}</span>
-                    <span>{{ slider.ends[1] }}</span>
-                  </div>
-
-                  <div
-                    class="slider-track-wrap"
-                    (pointerenter)="showTuningTip(slider.kind)"
-                    (pointerleave)="hideTuningTip(slider.kind)"
-                  >
-                    <div class="slider-rail" aria-hidden="true">
-                      <div class="slider-fill"></div>
-                      @for (lvl of slider.ladder; track lvl.id; let i = $index) {
-                        <span
-                          class="slider-notch"
-                          [class.reached]="i <= slider.index"
-                          [style.--n]="notchFraction(i, slider.ladder.length)"
-                        ></span>
-                      }
-                      @if (slider.index === slider.ladder.length - 1) {
-                        <!-- Re-created each time the thumb reaches the end, so the spread replays. -->
-                        <div class="slider-solid"></div>
-                        <svg class="slider-dither" width="100%" height="6" aria-hidden="true">
-                          @for (px of ditherPixels; track $index) {
-                            <rect
-                              [attr.x]="px.x + '%'"
-                              [attr.y]="px.y"
-                              width="2"
-                              height="2"
-                              [style.opacity]="px.opacity"
-                              [style.animation-delay.ms]="px.delay"
-                            />
-                          }
-                        </svg>
-                      }
-                    </div>
-                    <div class="slider-thumb" aria-hidden="true"></div>
-                    @if (slider.index === slider.ladder.length - 1) {
-                      <span class="thumb-ripple" aria-hidden="true"></span>
-                    }
-                    <input
-                      type="range"
-                      class="slider-input"
-                      min="0"
-                      [max]="slider.ladder.length - 1"
-                      step="1"
-                      [value]="slider.index"
-                      (input)="setTuningIndex(slider.kind, $any($event.target).value)"
-                      (focus)="showTuningTip(slider.kind)"
-                      (blur)="hideTuningTip(slider.kind)"
-                      [attr.aria-label]="slider.name"
-                      [attr.aria-valuetext]="slider.level.label + ': ' + slider.level.tagline"
-                    />
-
-                    @if (activeTuningTip() === slider.kind) {
-                      <div class="tuning-tip-arrow" aria-hidden="true"></div>
-                      <div class="tuning-tip" role="tooltip">
-                        <div class="tip-heading">
-                          <span class="tip-title">{{ slider.level.label }}</span>
-                          <span class="tip-latency">{{ slider.level.latency }}</span>
-                        </div>
-                        <p class="tip-tagline">{{ slider.level.tagline }}</p>
-                        <div class="tip-section">
-                          <span class="tip-section-title">What happens</span>
-                          <ul>
-                            @for (line of slider.level.runs; track $index) {
-                              <li>{{ line }}</li>
-                            }
-                          </ul>
-                        </div>
-                        @if (slider.level.skips?.length) {
-                          <div class="tip-section skips">
-                            <span class="tip-section-title">Not included</span>
-                            <ul>
-                              @for (line of slider.level.skips; track $index) {
-                                <li>{{ line }}</li>
-                              }
-                            </ul>
-                          </div>
-                        }
-                        <div class="tip-best">
-                          <span class="tip-section-title">Use it for</span>
-                          <span>{{ slider.level.bestFor }}</span>
-                        </div>
-                      </div>
-                    }
-                  </div>
-                </div>
-              }
-            </div>
-          </div>
-        }
-
-        <!-- Recommended Tasks Hub (Clean & Direct) -->
-        <div class="smart-suggestions-container">
-          <!-- Header Bar: Clean Category Tabs & Shuffle -->
-          <div class="suggestions-header-bar">
-            <div class="header-left">
-              <div class="section-label">
-                <span class="material-symbols-outlined section-icon">auto_awesome</span>
-                <span class="label-text">Recommended Tasks</span>
-              </div>
-
-              <!-- Filter Tabs -->
-              <div class="category-tabs-group">
-                <button
-                  type="button"
-                  class="cat-tab-btn"
-                  [class.active]="selectedCategory() === 'all'"
-                  (click)="setCategory('all')"
-                >
-                  <span>All</span>
-                </button>
-
-                <button
-                  type="button"
-                  class="cat-tab-btn cat-flash"
-                  [class.active]="selectedCategory() === 'flash'"
-                  (click)="setCategory('flash')"
-                >
-                  <span class="material-symbols-outlined tab-mini-icon">bolt</span>
-                  <span>Flash</span>
-                </button>
-
-                <button
-                  type="button"
-                  class="cat-tab-btn cat-pro"
-                  [class.active]="selectedCategory() === 'pro'"
-                  (click)="setCategory('pro')"
-                >
-                  <span class="material-symbols-outlined tab-mini-icon">psychology</span>
-                  <span>Pro</span>
-                </button>
-
-                <button
-                  type="button"
-                  class="cat-tab-btn"
-                  [class.active]="selectedCategory() === 'cross_app'"
-                  (click)="setCategory('cross_app')"
-                >
-                  <span class="material-symbols-outlined tab-mini-icon">sync_alt</span>
-                  <span>Multi-App</span>
-                </button>
-
-                <button
-                  type="button"
-                  class="cat-tab-btn"
-                  [class.active]="selectedCategory() === 'monitor'"
-                  (click)="setCategory('monitor')"
-                >
-                  <span class="material-symbols-outlined tab-mini-icon">monitoring</span>
-                  <span>Monitor</span>
-                </button>
-              </div>
-            </div>
-
-            <div class="header-right">
-              <button type="button" class="btn-shuffle-suggestions" (click)="shuffleSuggestions()" title="Discover more tasks">
-                <span class="material-symbols-outlined shuffle-icon">shuffle</span>
-                <span>Shuffle</span>
-              </button>
-            </div>
-          </div>
-
-          <!-- Suggestions Grid -->
-          <div class="suggestions-cards-grid">
-            @for (item of filteredSuggestions(); track item.id) {
-              <div
-                class="suggestion-card"
-                [class.is-pro-card]="item.profile === 'pro'"
-                [class.is-flash-card]="item.profile === 'flash'"
-                (click)="applySuggestion(item)"
-              >
-                <!-- Top Row: App Icon + Name + Mode Badge -->
-                <div class="card-top-row">
-                  <div class="app-icons-cluster">
-                    @for (app of item.apps; track app.name) {
-                      <div class="app-icon-badge" [title]="app.name">
-                        <span class="material-symbols-outlined">{{ app.icon }}</span>
-                      </div>
-                    }
-                    <span class="app-names-label">{{ getAppNamesDisplay(item.apps) }}</span>
-                  </div>
-
-                  <span class="mode-badge" [class.mode-pro]="item.profile === 'pro'" [class.mode-flash]="item.profile === 'flash'"
-                    [title]="item.profile === 'pro' ? 'Uses ARTEMIS Pro (Multi-Agent Cognitive State Graph)' : 'Uses ARTEMIS Flash (Reactive Fast Loop)'">
-                    {{ item.profile === 'pro' ? 'Pro' : 'Flash' }}
-                  </span>
-                </div>
-
-                <!-- Middle Content: Title + Description -->
-                <div class="card-body">
-                  <h4 class="card-title">{{ item.title }}</h4>
-                  <p class="card-desc">{{ item.description }}</p>
-                </div>
-
-                <!-- Bottom Footer Row: Tag & Action -->
-                <div class="card-footer-row">
-                  <span class="tag-pill">{{ item.tag }}</span>
-                  <div class="use-prompt-action">
-                    <span>Use</span>
-                    <span class="material-symbols-outlined action-arrow">arrow_forward</span>
-                  </div>
-                </div>
-              </div>
-            }
-          </div>
-        </div>
-
-
-      </section>
-    }
-
   </main>
 </div>

@@ -1,0 +1,146 @@
+{
+  "receipt_version": 1,
+  "issue": "CHE-948",
+  "parent_issue": "CHE-656",
+  "candidate_kind": "testcase",
+  "source_candidate": {
+    "runner_source": {
+      "repository": "https://github.com/cheese-work/artemis",
+      "commit_sha": "cbf2fea84cbd47ea54053239679ab521b01d4d23"
+    },
+    "testcase_source": {
+      "path": "qualification/journeys/che656_flash_ac4_pilot.md",
+      "digest_sha256": "b01d8b8f2f4460dc7b8ed1231bf16ed445104673ad33bd2b39042d1a8c419176"
+    },
+    "config_source": {
+      "issue": "CHE-656",
+      "attachment_id": "01a0f55e-b007-725c-9253-4a07a907c5c3",
+      "filename": "che656-nova-pilot-artemis-v2.jsonc",
+      "digest_sha256": "2c06c1661b4f6cb65cadfa3b2141fa3f6ee7e0d5c399f43aee8bc481a7781274"
+    }
+  },
+  "offline_route_evidence": {
+    "issue_comment_id": "01a0f566-9757-7dc7-8ce3-8dab64e6ff77",
+    "verified_at": "2026-10-01T02:58:56Z",
+    "config_digest_sha256": "2c06c1661b4f6cb65cadfa3b2141fa3f6ee7e0d5c399f43aee8bc481a7781274",
+    "verdict": "FLASH_ALL_CLAUDE_SONNET_5"
+  },
+  "pilot": {
+    "goal": "Open Settings, find Battery and tell me the current level",
+    "profile": "flash",
+    "model": "anthropic:claude-sonnet-5",
+    "device_class": "x99_api35_medium_phone",
+    "device_serial": "emulator-5556",
+    "private_adb_port": 5043,
+    "standalone": true,
+    "attempt_count": 1,
+    "retry_count": 0
+  },
+  "attempt_identity": {
+    "session_id_argument": "--session-id",
+    "run_id_argument": "--run-id",
+    "fresh_uuidv4_values_required": true,
+    "values_must_differ": true,
+    "record_both_in_returned_evidence": true,
+    "session_id_binds_manifest_and_native_usage": true,
+    "run_id_scopes_batch_verdict_to_attempt": true
+  },
+  "execution_preflight": {
+    "must_pass_before_device_boot_or_provider_activity": true,
+    "loaded_settings_google_keys_absent": [
+      "GOOGLE_API_KEY",
+      "GEMINI_API_KEY",
+      "GCP_API_KEY"
+    ],
+    "fake_mode_environment_variable": "ARTEMIS_FAKE_LLM",
+    "fake_mode_enabled_value": "1",
+    "offline_route_source_comment_id": "01a0f55e-b366-78a3-bad8-982de49f1eaa",
+    "offline_route_script_attachment_id": "01a0f55e-b0df-72a5-a0be-36f0e3e3bca8",
+    "offline_route_script_digest_sha256": "3d963ad481f894f9955b10a46f88b5c0d8b265836c2a0758875e1d91f62b922a",
+    "offline_route_verdict": "FLASH_ALL_CLAUDE_SONNET_5",
+    "record_secret_values": false,
+    "failure_action": "stop_before_boot"
+  },
+  "execution_limits": {
+    "boot_and_unlocked_ui_readiness_timeout_seconds": 300,
+    "whole_attempt_timeout_seconds": 900,
+    "timeout_outcome": "failed_or_invalid_no_retry"
+  },
+  "battery_oracle": {
+    "required_page": "Settings > Battery",
+    "required_field": "current-charge percentage",
+    "same_attempt_privacy_safe_page_evidence_required": true,
+    "successful_task_result_required": true,
+    "reported_value_must_match_page_field": true,
+    "status_bar_only_is_sufficient": false
+  },
+  "cleanup_contract": {
+    "preserve_available_evidence_before_cleanup": true,
+    "stop_only_recorded_run_owned_processes": true,
+    "restore_settings_changed_by_run": true,
+    "verify_release_before_marking_device_available": true,
+    "release_evidence_return_owner": "Android Terra",
+    "unverified_cleanup_disposition": "leave_device_unavailable_with_named_recovery_owner"
+  },
+  "summary_verdict_expectations": [
+    {
+      "path": "attempt_reconciliation_verdict.json",
+      "accepted": true,
+      "reason": null,
+      "detail": "1 attempt(s) accepted.",
+      "invalid_attempt_count": 0
+    },
+    {
+      "path": "attempt_reconciliation_batch_verdict.json",
+      "accepted": true,
+      "reason": null,
+      "detail": "1 attempt(s) accepted.",
+      "invalid_attempt_count": 0
+    }
+  ],
+  "node_match_evidence": {
+    "required": true,
+    "usage_trace_node": "FlashRunner",
+    "manifest_node": "operator",
+    "expected_source": "anthropic:claude-sonnet-5",
+    "expected_node_verdict": "match",
+    "evidence_source": "same-run attempt manifest and native llm_usage records",
+    "false_pass_guard": "accepted summary JSON without an observed usage record and matching node identity is not sufficient"
+  },
+  "coverage_reconciliation": {
+    "reuse_from_che844_pr29": [
+      "The immutable receipt pattern that binds a testcase path and digest to an exact runner source revision.",
+      "The explicit separation between testcase review and later execution evidence."
+    ],
+    "not_reused_from_che844_pr29": [
+      "Pocket Actual app source, APK digest, save/relaunch journey, and fixture reset.",
+      "The Pro profile, PR #29 runner/testcase source commits, process-death assertions, and negative-control verdict adapter."
+    ],
+    "ac4_specific_existing_coverage": "The pinned runner's attempt-reconciliation code maps FlashRunner usage to manifest node operator; existing unit coverage proves matching source is a node-level match and accepted batch, while successful summary JSON uses reason null."
+  },
+  "review_scope": {
+    "required_reviewers": [
+      {
+        "name": "x99-codex-sol",
+        "agent_id": "5cd75ce5-d323-4004-9779-7e2ccf16bde4"
+      },
+      {
+        "name": "x99-gpt-6-astra",
+        "agent_id": "2e486c8c-88fb-4daf-829e-e96be9c645b3"
+      }
+    ],
+    "same_revision_required": true,
+    "required_verdict": "agent_accepted",
+    "must_precede_device_admission": true,
+    "scope_path": "qualification/journeys/che656_flash_ac4_pilot.md"
+  },
+  "execution_boundary": {
+    "author_role": "Terra testcase author only",
+    "device_or_adb_actions": false,
+    "emulator_actions": false,
+    "provider_calls": false,
+    "fixture_actions": false,
+    "artemis_execution": false,
+    "pin_or_config_changes": false
+  }
+}

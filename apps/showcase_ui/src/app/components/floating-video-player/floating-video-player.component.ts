@@ -14,6 +14,8 @@
  * limitations under the License.
  */
 
+import { LoggerService } from '../../services/logger.service';
+import { appUrl, mediaUrl } from '../../utils/app-url.util';
 import {
   Component,
   ChangeDetectionStrategy,
@@ -33,6 +35,7 @@ import { AgentService } from '../../services/agent.service';
 import { StepReplayFrame } from '../../core/models/stream.model';
 import { drawActionCoordinatesOnOverlay } from '../../utils/image-overlay.util';
 import { getActionIcon } from '../../utils/action-formatter.util';
+import { partialRibbonFor } from '../../utils/recording-state.util';
 import { locateTimelineTime, sessionTimeToTimelineTime } from '../../utils/recording-timeline.util';
 
 @Component({
@@ -44,12 +47,24 @@ import { locateTimelineTime, sessionTimeToTimelineTime } from '../../utils/recor
   changeDetection: ChangeDetectionStrategy.OnPush
 })
 export class FloatingVideoPlayerComponent implements OnDestroy {
+  private readonly logger = inject(LoggerService);
   public agentService = inject(AgentService);
   private zone = inject(NgZone);
 
   @ViewChild('videoRef') videoRef?: ElementRef<HTMLVideoElement>;
   @ViewChild('stepImgRef') stepImgRef?: ElementRef<HTMLImageElement>;
   @ViewChild('stepOverlayRef') stepOverlayRef?: ElementRef<HTMLElement>;
+
+  // The frame appears and disappears with the window: watch its real size so minimize/restore, theater exit and
+  // content changes re-contain it, and watch the nav clearance var (root style) so a taller nav pushes it down.
+  private frameObserver = new ResizeObserver(() => this.zone.run(() => this.containFrame()));
+  private rootStyleObserver = new MutationObserver(() => this.zone.run(() => this.containFrame()));
+  @ViewChild('frame') set frameRef(el: ElementRef<HTMLElement> | undefined) {
+    this.frameObserver.disconnect();
+    this.frameEl = el?.nativeElement ?? null;
+    if (this.frameEl) this.frameObserver.observe(this.frameEl);
+  }
+  private frameEl: HTMLElement | null = null;
 
   // Playback state signals
   public isPlaying = signal<boolean>(false);
@@ -60,12 +75,12 @@ export class FloatingVideoPlayerComponent implements OnDestroy {
   public isMuted = signal<boolean>(false);
   public isTheaterMode = signal<boolean>(false);
   public videoLoadError = signal<boolean>(false);
-  public liveStreamUrl = signal<string>('/api/stream/device-live');
+  public liveStreamUrl = signal<string>(appUrl('/api/stream/device-live'));
   public liveStreamError = signal<boolean>(false);
   public activeSegmentIndex = signal<number>(0);
   public currentVideoUrl = computed(() => {
     const segments = this.agentService.activeVideoSegments();
-    return segments[this.activeSegmentIndex()]?.url || this.agentService.activeVideoUrl();
+    return mediaUrl(segments[this.activeSegmentIndex()]?.url || this.agentService.activeVideoUrl());
   });
   private pendingLocalTime: number | null = null;
   private pendingAutoplay = false;
@@ -81,6 +96,9 @@ export class FloatingVideoPlayerComponent implements OnDestroy {
   public isStepImageLoading = signal<boolean>(false);
   public stepImageError = signal<boolean>(false);
   private stepTimer: any = null;
+
+  /** "Partial recording (stopped at mm:ss)" when the run on screen was interrupted before it ended. */
+  public partialRibbon = computed(() => partialRibbonFor(this.agentService.currentSession()));
 
   public stepFrames = computed(() => this.agentService.currentSessionStepFrames());
   public totalStepFrames = computed(() => this.stepFrames().length);
@@ -121,6 +139,7 @@ export class FloatingVideoPlayerComponent implements OnDestroy {
   private initialPosY = 0;
 
   constructor() {
+    this.rootStyleObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['style'] });
     // Reset video load error whenever active video URL changes
     effect(
       () => {
@@ -197,7 +216,7 @@ export class FloatingVideoPlayerComponent implements OnDestroy {
 
   public retryLiveStream(): void {
     this.liveStreamError.set(false);
-    this.liveStreamUrl.set(`/api/stream/device-live?t=${Date.now()}`);
+    this.liveStreamUrl.set(appUrl(`/api/stream/device-live?t=${Date.now()}`));
   }
 
   /**
@@ -246,17 +265,33 @@ export class FloatingVideoPlayerComponent implements OnDestroy {
     const deltaX = event.clientX - this.dragStartX;
     const deltaY = event.clientY - this.dragStartY;
 
-    const minX = 10;
-    const minY = 10;
-    const maxX = Math.max(10, window.innerWidth - 240);
-    const maxY = Math.max(10, window.innerHeight - 80);
-
-    const targetX = Math.max(minX, Math.min(maxX, this.initialPosX + deltaX));
-    const targetY = Math.max(minY, Math.min(maxY, this.initialPosY + deltaY));
-
-    this.posX.set(targetX);
-    this.posY.set(targetY);
+    const { x, y } = this.containedPosition(this.initialPosX + deltaX, this.initialPosY + deltaY);
+    this.posX.set(x);
+    this.posY.set(y);
   };
+
+  /**
+   * Nearest position that keeps the real frame (its current width and height, minimized or not) inside the
+   * viewport and below the floating nav. Nav clearance wins when the frame is taller than the space.
+   */
+  private containedPosition(x: number, y: number): { x: number; y: number } {
+    const margin = 10;
+    const width = this.frameEl?.offsetWidth ?? 0;
+    const height = this.frameEl?.offsetHeight ?? 0;
+    const clearance = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--nav-clearance'));
+    const minY = Math.max(margin, Number.isFinite(clearance) ? clearance : 0);
+    const maxX = Math.max(margin, window.innerWidth - width - margin);
+    const maxY = Math.max(minY, window.innerHeight - height - margin);
+    return { x: Math.min(maxX, Math.max(margin, x)), y: Math.min(maxY, Math.max(minY, y)) };
+  }
+
+  /** Re-contain the stored position after anything that changes the frame, the viewport or the nav. */
+  private containFrame(): void {
+    if (!this.frameEl || this.isTheaterMode() || this.isDragging) return;
+    const { x, y } = this.containedPosition(this.posX(), this.posY());
+    if (x !== this.posX()) this.posX.set(x);
+    if (y !== this.posY()) this.posY.set(y);
+  }
 
   private stopDrag = (): void => {
     this.isDragging = false;
@@ -266,11 +301,7 @@ export class FloatingVideoPlayerComponent implements OnDestroy {
 
   @HostListener('window:resize')
   public onResize(): void {
-    // Keep window within viewport bounds if window resized
-    const maxX = Math.max(10, window.innerWidth - 240);
-    const maxY = Math.max(10, window.innerHeight - 80);
-    if (this.posX() > maxX) this.posX.set(maxX);
-    if (this.posY() > maxY) this.posY.set(maxY);
+    this.containFrame();
   }
 
   @HostListener('window:keydown', ['$event'])
@@ -314,12 +345,13 @@ export class FloatingVideoPlayerComponent implements OnDestroy {
       }
       if (this.pendingAutoplay) {
         this.pendingAutoplay = false;
-        v.play().catch(() => {});
+        v.play().catch(error => this.logger.warn('Video playback failed:', error));
       }
       if (this.agentService.consumeVideoAutoplay()) {
         this.isMuted.set(true);
         v.muted = true;
-        v.play().catch(() => {
+        v.play().catch((error) => {
+          this.logger.warn('Video autoplay failed:', error);
           this.isPlaying.set(false);
         });
       }
@@ -373,7 +405,7 @@ export class FloatingVideoPlayerComponent implements OnDestroy {
     const v = this.videoRef?.nativeElement;
     if (!v) return;
     if (v.paused) {
-      v.play().catch(() => {});
+      v.play().catch(error => this.logger.warn('Video playback failed:', error));
     } else {
       v.pause();
     }
@@ -403,13 +435,13 @@ export class FloatingVideoPlayerComponent implements OnDestroy {
     const location = locateTimelineTime(segments, target);
     if (!location) {
       v.currentTime = target;
-      if (autoplay) v.play().catch(() => {});
+      if (autoplay) v.play().catch(error => this.logger.warn('Video playback failed:', error));
       return;
     }
     const { index, localTime } = location;
     if (index === this.activeSegmentIndex()) {
       v.currentTime = localTime;
-      if (autoplay) v.play().catch(() => {});
+      if (autoplay) v.play().catch(error => this.logger.warn('Video playback failed:', error));
     } else {
       this.pendingLocalTime = localTime;
       this.pendingAutoplay = autoplay || !v.paused;
@@ -462,7 +494,7 @@ export class FloatingVideoPlayerComponent implements OnDestroy {
   }
 
   public openInNewTab(): void {
-    const url = this.agentService.activeVideoUrl();
+    const url = this.currentVideoUrl();
     if (url) {
       window.open(url, '_blank');
     }
@@ -601,7 +633,7 @@ export class FloatingVideoPlayerComponent implements OnDestroy {
     try {
       drawActionCoordinatesOnOverlay(img, overlay, frame.action);
     } catch (err) {
-      console.warn('Failed to draw step coordinates overlay:', err);
+      this.logger.warn('Failed to draw step coordinates overlay:', err);
     }
   }
 
@@ -627,5 +659,7 @@ export class FloatingVideoPlayerComponent implements OnDestroy {
     }
     document.removeEventListener('mousemove', this.onDrag);
     document.removeEventListener('mouseup', this.stopDrag);
+    this.frameObserver.disconnect();
+    this.rootStyleObserver.disconnect();
   }
 }

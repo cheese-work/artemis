@@ -14,5 +14,16 @@
  limitations under the License.
 -->
 
-<app-nav-switcher></app-nav-switcher>
+@if (preview) {
+  <aside class="preview-banner" aria-label="Synthetic preview">
+    Synthetic preview · PR {{ preview.number }} · source {{ preview.sha }}
+  </aside>
+}
+<app-nav-switcher
+  [hasWhatsNew]="agentService.whatsNewHasUpdates()"
+  [hasUnreadWhatsNew]="agentService.whatsNewHasUnread()"
+  (showWhatsNew)="openWhatsNew()"
+></app-nav-switcher>
+<app-whats-new></app-whats-new>
 <router-outlet></router-outlet>
+<app-version-footer></app-version-footer>

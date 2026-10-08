@@ -30,7 +30,8 @@ import subprocess
 import time
 from typing import Any
 
-from artemis.toolchain import toolchain
+from artemis.runtime.adb_endpoint import AdbEndpoint, current_adb_endpoint
+from artemis.runtime.endpoint_transport import EndpointTransport
 from artemis.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -177,6 +178,14 @@ def heal_adb_keys(adb_path: str | None = None, force: bool = False) -> dict[str,
             "message": "ADB keys are healthy, no repair required.",
             "status": status.to_dict(),
         }
+    if current_adb_endpoint().is_host:
+        # Healing restarts the local server; a run on a connected computer never does.
+        return {
+            "success": False,
+            "repaired": False,
+            "message": "ADB keys are repaired on this computer only, not from a connected computer.",
+            "status": status.to_dict(),
+        }
 
     priv_path, pub_path = get_adb_key_paths()
     priv_path.parent.mkdir(parents=True, exist_ok=True)
@@ -206,35 +215,16 @@ def heal_adb_keys(adb_path: str | None = None, force: bool = False) -> dict[str,
             "status": status.to_dict(),
         }
 
-    # Resolve ADB executable
-    resolved_adb = adb_path or toolchain.resolve("adb") or shutil.which("adb") or "adb"
-
-    # Restart ADB server to trigger key generation
+    # Restart this computer's own ADB server to trigger key generation. Never a remote
+    # or host server: the keys live here and so does the server that reads them.
+    local = EndpointTransport(
+        AdbEndpoint.local(), adb_path=adb_path or EndpointTransport.adb_binary() or "adb"
+    )
     try:
-        clean_env = os.environ.copy()
-        clean_env.pop("ADB_SERVER_SOCKET", None)
-        subprocess.run(
-            [resolved_adb, "kill-server"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=5,
-            env=clean_env,
-        )
-        subprocess.run(
-            [resolved_adb, "start-server"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=5,
-            env=clean_env,
-        )
+        local.kill_server(stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
+        local.start_server(stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
         # Execute adb devices to trigger initial handshake & key material generation if needed
-        subprocess.run(
-            [resolved_adb, "devices"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=5,
-            env=clean_env,
-        )
+        local.run(["devices"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
     except Exception as e:
         logger.error(f"Error restarting ADB server during key healing: {e}")
         return {

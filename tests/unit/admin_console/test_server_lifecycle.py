@@ -20,6 +20,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 import uvicorn
 
+from artemis.runtime.lifecycle import InterruptReason, LifecycleAuthority
 from apps.admin_console.core.state import state
 from apps.admin_console.routers.tasks import stream_events
 from apps.admin_console.server import ArtemisUvicornServer, app, on_shutdown
@@ -146,12 +147,9 @@ async def test_shutdown_marks_only_ui_owned_running_sessions():
     state.current_process = None
     state.worker_task = None
 
-    update_status = MagicMock()
+    interrupt = MagicMock()
     with (
-        patch(
-            "apps.admin_console.server.session_repo.update_session_status",
-            update_status,
-        ),
+        patch.object(LifecycleAuthority, "interrupt", interrupt),
         patch(
             "apps.admin_console.server.ipc_service.stop_server",
             new=AsyncMock(),
@@ -159,7 +157,8 @@ async def test_shutdown_marks_only_ui_owned_running_sessions():
     ):
         await on_shutdown()
 
-    update_status.assert_called_once_with("ui-running", "cancelled")
+    # The server stopping interrupts the run (server_restarted); it is not a user cancel.
+    interrupt.assert_called_once_with("ui-running", InterruptReason.SERVER_RESTARTED)
     assert state.queue_items == []
     state.active_session_id = None
     state.is_shutting_down = False

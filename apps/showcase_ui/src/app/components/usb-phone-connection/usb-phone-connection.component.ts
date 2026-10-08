@@ -33,7 +33,13 @@ import { UsbDeviceRelayService } from '../../services/usb-device-relay.service';
       }
 
       @if (relay.state().error; as error) {
-        <p class="usb-phone-error" role="alert">{{ error }}</p>
+        @let errorLines = error.split('\n');
+        <p class="usb-phone-error" role="alert">
+          {{ errorLines[0] }}
+          @if (errorLines.length > 1) {
+            <small>{{ errorLines.slice(1).join('\n') }}</small>
+          }
+        </p>
       }
     </section>
   `,
@@ -89,6 +95,14 @@ import { UsbDeviceRelayService } from '../../services/usb-device-relay.service';
 
     .usb-phone-error {
       color: #b42318;
+    }
+
+    .usb-phone-error small {
+      display: block;
+      margin-top: 4px;
+      font-size: 11px;
+      font-weight: normal;
+      white-space: pre-line;
     }
   `],
   changeDetection: ChangeDetectionStrategy.Eager

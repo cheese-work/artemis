@@ -14,20 +14,33 @@ See the License for the specific language governing permissions and
 limitations under the License.
 -->
 
-<div class="workspace-container" [class.is-resizing]="isDragging()">
-  <!-- Left Main Panel: Raw Agent Log Stream -->
+<div class="workspace-container" [class.is-resizing]="isDragging()" [class.review-mode]="reviewMode">
+  <!-- Left Main Panel: Raw Agent Log Stream, or the run library / viewer in review mode -->
   <main class="left-panel glass-panel">
-    <app-agent-stream></app-agent-stream>
+    @if (reviewMode) {
+      <div class="review-surface">
+        @if (reviewRunId(); as id) {
+          <app-run-viewer [runId]="id"></app-run-viewer>
+        } @else {
+          <app-run-library></app-run-library>
+        }
+      </div>
+    } @else {
+      <app-agent-stream></app-agent-stream>
+    }
 
     <!-- Bottom Floating Command Bar Dock -->
-    <div class="workspace-floating-bar-wrapper" [class.is-expanded]="isBarExpanded()" [class.is-dormant]="!isBarExpanded()"
+    <div class="workspace-floating-bar-wrapper is-expanded"
       [class.is-focused]="isInputFocused()" [class.has-text]="!!taskInput.trim()" [class.is-running]="isTaskRunning()">
+      <!-- A run lost its phone: Reconnect, then start a new run (the old one is over) -->
+      <app-interrupted-banner (startNewRun)="startNewRunFrom($event)"></app-interrupted-banner>
+
       <!-- Floating Error / Notification Toast -->
       @if (errorMessage()) {
         <div class="floating-dock-toast error">
           <span class="material-symbols-outlined toast-icon">error</span>
           <span class="toast-text">{{ errorMessage() }}</span>
-          <button type="button" class="btn-toast-close" (click)="errorMessage.set(null)" aria-label="Close error message">
+          <button type="button" class="btn-toast-close" (click)="clearErrorMessage()" aria-label="Close error message">
             <span class="material-symbols-outlined">close</span>
           </button>
         </div>
@@ -36,8 +49,7 @@ limitations under the License.
       <!-- Dock Row (Contains the Main Card and the Separate Stop Button when running) -->
       <div class="floating-dock-row">
         <!-- Floating Dock Main Card -->
-        <div class="floating-dock-card" (click)="onCardClick($event)"
-          (mouseenter)="isHoveringCard.set(true)" (mouseleave)="isHoveringCard.set(false)">
+        <div class="floating-dock-card" (click)="onCardClick($event)">
           <!-- Ambient Liquid Wave / Aurora Background Layer (Active in both Dormant & Expanded) -->
           <div class="dock-wave-container" [class.is-pro]="selectedProfile() === 'pro'">
             <div class="wave-glow-ambient"></div>
@@ -87,18 +99,13 @@ limitations under the License.
             </div>
           </div>
 
-          <!-- Dormant / Capsule Peek View (Visible when mouse is away and input idle) -->
-          <div class="capsule-peek-view">
-            <span class="capsule-placeholder">Start a new task...</span>
-          </div>
-
-          <!-- Expanded Full View Content (Visible on hover, focus, or text) -->
           <div class="expanded-card-content">
             <div class="card-main-input-row">
               <!-- Textarea Container with Dynamic English Placeholder -->
               <div class="input-content-area">
                 <textarea #dockInput [(ngModel)]="taskInput"
                   (input)="onTextareaInput($event)"
+                  (paste)="onPaste($event)"
                   (keydown)="onKeyDown($event)"
                   (focus)="onInputFocus()"
                   (blur)="onInputBlur()"
@@ -111,6 +118,18 @@ limitations under the License.
                   spellcheck="false"
                 ></textarea>
               </div>
+
+              <!-- Attach images: a labelled button opens the (visually hidden) native file input -->
+              <input #imageInput type="file" class="visually-hidden-input" multiple
+                [accept]="imageAccept" aria-label="Choose images to attach"
+                (change)="onFilesChosen($event)" tabindex="-1">
+              <button type="button" class="dock-circle-btn btn-attach"
+                [disabled]="isSubmitting() || attachedImages().length >= maxImages"
+                (click)="imageInput.click()"
+                [title]="attachedImages().length >= maxImages ? 'Image limit reached (' + maxImages + ')' : 'Attach images (PNG, JPG, JPEG or WEBP)'"
+                aria-label="Attach images">
+                <span class="material-symbols-outlined">image</span>
+              </button>
 
               <!-- Clear Button (visible when text is entered) -->
               @if (taskInput.trim() && !isSubmitting()) {
@@ -134,9 +153,11 @@ limitations under the License.
               <!-- Send Button -->
               <button type="button" class="dock-circle-btn btn-send"
                 [class.has-content]="!!taskInput.trim()"
+                [class.is-blocked]="!phone.target()"
                 [disabled]="!taskInput.trim() || isSubmitting()"
+                [attr.aria-disabled]="phone.target() ? null : 'true'"
                 (click)="submitTask()"
-                [title]="isSubmitting() ? 'Starting task...' : 'Start task (Enter)'"
+                [title]="isSubmitting() ? 'Starting task...' : (phone.target() ? 'Start task (Enter)' : 'Connect a phone first')"
                 aria-label="Start task"
                 >
                 @if (isSubmitting()) {
@@ -147,6 +168,26 @@ limitations under the License.
                 }
               </button>
             </div>
+
+            <!-- Images attached to this message: preview and remove before sending -->
+            @if (attachedImages().length) {
+              <ul class="attached-images" aria-label="Attached images">
+                @for (image of attachedImages(); track image.id) {
+                  <li class="attached-image">
+                    <img [src]="image.previewUrl" [alt]="'Preview of ' + image.file.name">
+                    <button type="button" class="btn-remove-image" [disabled]="isSubmitting()"
+                      (click)="removeImage(image.id)"
+                      [attr.aria-label]="'Remove ' + image.file.name"
+                      [title]="'Remove ' + image.file.name">
+                      <span class="material-symbols-outlined">close</span>
+                    </button>
+                  </li>
+                }
+              </ul>
+              @if (!taskInput.trim()) {
+                <p class="attached-hint" role="status">Add a message to send with your image.</p>
+              }
+            }
 
             <!-- Bottom Segmented Controls Row -->
             <div class="card-footer-row">
@@ -171,25 +212,16 @@ limitations under the License.
           </div>
         </div>
 
-        <!-- Separate Standalone Stop Button Beside the Capsule (Visible when currently viewed task is active) -->
-        @if (isTaskRunning()) {
-          <button type="button" class="standalone-stop-btn"
-            [disabled]="isSubmitting()"
-            (click)="stopTask($event)"
-            [title]="stopButtonTitle()"
-            [attr.aria-label]="stopButtonTitle()"
-            >
-            <span class="material-symbols-outlined">stop</span>
-          </button>
-        }
       </div>
     </div>
   </main>
 
-  <!-- Split Pane Drag Resizer -->
-  <div class="resizer" (mousedown)="onDragStart($event)">
-    <div class="resizer-handle"></div>
-  </div>
+  <!-- Split Pane Drag Resizer (mouse only, so review mode leaves it out) -->
+  @if (!reviewMode) {
+    <div class="resizer" (mousedown)="onDragStart($event)">
+      <div class="resizer-handle"></div>
+    </div>
+  }
 
   <!-- Right Sidebar Panel: Chat Interface Mock -->
   <aside class="right-panel" [style.width.px]="rightPanelWidth()">

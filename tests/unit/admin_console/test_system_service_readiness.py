@@ -4,6 +4,7 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
+from apps.admin_console.core.access_control import AdminAPIError, admin_api_error_handler
 from apps.admin_console.core.security import SameOriginBoundaryMiddleware
 from apps.admin_console.routers import system
 
@@ -31,7 +32,9 @@ def test_service_readiness_accepts_only_loopback_effective_peers(monkeypatch):
         raise AssertionError("service readiness must not run diagnostic probes")
 
     monkeypatch.setattr(system.readiness_engine, "run_all", unexpected_probe)
+    monkeypatch.setenv("ARTEMIS_ALLOWED_HOSTS", "smart-qa.tevo.vn")
     app = FastAPI()
+    app.add_exception_handler(AdminAPIError, admin_api_error_handler)
     app.add_middleware(SameOriginBoundaryMiddleware)
     app.include_router(system.router)
     proxy_app = ProxyHeadersMiddleware(app, trusted_hosts="127.0.0.1")

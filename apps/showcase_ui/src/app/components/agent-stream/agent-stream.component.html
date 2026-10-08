@@ -53,11 +53,14 @@ limitations under the License.
       cdkConnectedOverlayBackdropClass="cdk-overlay-transparent-backdrop"
       (backdropClick)="isTaskDropdownOpen.set(false)"
       [cdkConnectedOverlayPositions]="dropdownPositions"
+      [cdkConnectedOverlayPush]="true"
+      [cdkConnectedOverlayViewportMargin]="12"
     >
       <div class="vscode-dropdown-menu task-dropdown">
         <div class="popover-title-header">
           <span class="material-symbols-outlined">list_alt</span>
           <span>Task Queue</span>
+          <app-scope-switch style="margin-left: auto"></app-scope-switch>
         </div>
         <div class="dropdown-section-label">
           <span class="material-symbols-outlined icon-bolt">bolt</span>
@@ -121,7 +124,8 @@ limitations under the License.
               {{ session.initial_goal || 'Unnamed Task' }}
             </div>
             <div class="item-footer">
-              <span class="item-id" [title]="session.session_id">ID: {{ session.session_id }}</span>
+              <app-run-id-copy [runId]="session.session_id"></app-run-id-copy>
+              <app-owner-label [owner]="session.requested_by"></app-owner-label>
               <span class="item-date">{{ session.start_time * 1000 | date:'MM/dd/yy' }}</span>
             </div>
           </div>
@@ -178,7 +182,8 @@ limitations under the License.
                 {{ session.initial_goal || 'Unnamed Task' }}
               </div>
               <div class="item-footer">
-                <span class="item-id" [title]="session.session_id">ID: {{ session.session_id }}</span>
+                <app-run-id-copy [runId]="session.session_id"></app-run-id-copy>
+                <app-owner-label [owner]="session.requested_by"></app-owner-label>
                 <span class="item-date">{{ session.start_time * 1000 | date:'MM/dd/yy' }}</span>
               </div>
             </div>
@@ -196,6 +201,8 @@ limitations under the License.
       cdkConnectedOverlayBackdropClass="cdk-overlay-transparent-backdrop"
       (backdropClick)="isNotesDropdownOpen.set(false)"
       [cdkConnectedOverlayPositions]="dropdownPositions"
+      [cdkConnectedOverlayPush]="true"
+      [cdkConnectedOverlayViewportMargin]="12"
     >
       <div class="vscode-dropdown-menu notes-dropdown">
         <div class="popover-title-header">
@@ -387,6 +394,16 @@ limitations under the License.
   <!-- Floating Top-Right Badges & Toolbar (Pinned overlay, hidden in empty/initial state) -->
   @if (consolidatedBlocks().length > 0 || showPlanningLoader()) {
     <div class="stream-floating-toolbar">
+      @if (agentService.currentSession()) {
+        @if (agentService.currentSession(); as session) {
+          <app-run-summary-copy
+            [session]="session"
+            [currentStatus]="agentService.agentStatus()"
+            [logs]="agentService.sessionLogs()"
+            [recordingUrl]="session.video_url"
+          />
+        }
+      }
       <!-- Active Architecture Chip: click opens the run info popover -->
       @if (agentService.viewedModel(); as model) {
         <button
