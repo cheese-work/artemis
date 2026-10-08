@@ -13,38 +13,37 @@
 # limitations under the License.
 
 import asyncio
+from contextlib import contextmanager
 import json
+import socket
+import threading
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from artemis.context import ArtemisContext
-from artemis.data_engine import engine as engine_module
 from artemis.data_engine.engine import DataEngine
 
 
-@pytest.fixture(autouse=True)
-def _no_current_data_engine(monkeypatch):
-    """Keep another test's engine from publishing IPC events during these tests.
-
-    The log handler hands every record to ``_CURRENT_DATA_ENGINE``, which publishes it over
-    that engine's own IPC socket. A stale engine left by an earlier test (reverse file order
-    leaves one) would reconnect on the patched ``socket`` and raise the connect count.
-    """
-    monkeypatch.setattr(engine_module, "_CURRENT_DATA_ENGINE", None)
-
-
+@contextmanager
 def _engine_socket(**create_connection_kwargs):
-    """Stub ``socket`` as the engine module sees it, leaving the real module untouched.
+    """Stub ``socket`` in the engine module, counting only connects made by the test thread.
 
-    ``patch("artemis.data_engine.engine.socket.create_connection")`` replaces the attribute on
-    the process-wide ``socket`` module, so any other thread that opens a connection while the
-    test runs (for example a leaked awake heartbeat probing adb) is counted as an IPC connect.
+    The engine module is shared: another thread's ``DataEngine`` (an unrelated engine, a leaked
+    daemon) reaches the same ``socket`` name while the test runs. Those connects get a refused
+    connection, as with no listener, and are not counted as the engine under test connecting.
     """
-    return patch(
-        "artemis.data_engine.engine.socket",
-        create_connection=MagicMock(**create_connection_kwargs),
-    )
+    recorded = MagicMock(**create_connection_kwargs)
+    test_thread = threading.get_ident()
+
+    def create_connection(*args, **kwargs):
+        if threading.get_ident() != test_thread:
+            raise ConnectionRefusedError("connect from a thread other than the test")
+        return recorded(*args, **kwargs)
+
+    stub = MagicMock(wraps=socket)
+    stub.create_connection = create_connection
+    with patch("artemis.data_engine.engine.socket", stub):
+        yield SimpleNamespace(create_connection=recorded)
 
 
 def test_ipc_send_reconnects_and_retries_current_event(tmp_path):
