@@ -11,7 +11,10 @@ from adbutils import AdbClient
 import pytest
 
 from apps.admin_console.core.state import state
+from apps.admin_console.core.access_control import AdminAPIError
 from apps.admin_console.database.repositories.session_repository import SessionRepository
+from apps.admin_console.routers import tasks as tasks_router
+from apps.admin_console.schemas.task_schema import RunRequest
 from apps.admin_console.services import bridge_session_service as bridge_module
 from apps.admin_console.services import host_tunnel as tunnel_module
 from apps.admin_console.services import host_registry as registry_module
@@ -229,6 +232,55 @@ def test_explicit_bridge_id_selects_its_lease_among_same_serial_leases(context):
     )
     assert item["bridge_session_id"] == "second-lease"
     assert item["device_binding"]["bridge_session_id"] == "second-lease"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("replacement_exists", [True, False])
+async def test_explicit_bridge_lease_lost_after_admission_is_rejected_before_acceptance(
+    context, monkeypatch, replacement_exists
+):
+    selected = browser_lease(context, "127.0.0.1:31415", "selected-lease")
+    request = RunRequest(
+        goal="One fake step", session_id="run", bridge_session_id=selected.session_id
+    )
+    monkeypatch.setattr(tasks_router, "bridge_session_service", context.bridge)
+    await tasks_router._bind_bridge_session(request)
+    assert request.device_serial == selected.serial
+
+    async def replace_lease_during_readiness(serial, endpoint):
+        selected.revoked = True
+        context.bridge._sessions.pop(selected.session_id)
+        if replacement_exists:
+            browser_lease(context, selected.serial, "replacement-lease")
+        return None
+
+    reservation = MagicMock(return_value="fake-ticket")
+    persistence = MagicMock(wraps=context.repository.create_queued_session)
+    trace = MagicMock(wraps=trace_store.init_trace)
+    monkeypatch.setattr(DeviceExecutionLock, "reserve", reservation)
+    monkeypatch.setattr(context.repository, "create_queued_session", persistence)
+    monkeypatch.setattr(trace_store, "init_trace", trace)
+    monkeypatch.setattr(queue_module, "current_adb_endpoint", AdbEndpoint.local)
+    monkeypatch.setattr(TaskQueueService, "ensure_worker_running", MagicMock())
+    monkeypatch.setattr(
+        TaskQueueService, "_reject_unavailable_device", replace_lease_during_readiness
+    )
+
+    with pytest.raises(AdminAPIError) as rejection:
+        await TaskQueueService.enqueue_tasks(
+            [request.goal],
+            device_serial=request.device_serial,
+            session_id=request.session_id,
+            bridge_session_id=request.bridge_session_id,
+        )
+
+    assert rejection.value.status_code == 409
+    assert rejection.value.code == "device_offline"
+    reservation.assert_not_called()
+    persistence.assert_not_called()
+    trace.assert_not_called()
+    assert context.repository.read_session("run") is None
+    assert state.queue_items == []
 
 
 @pytest.mark.asyncio

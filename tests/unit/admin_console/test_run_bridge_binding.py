@@ -5,14 +5,16 @@ bridge-close handling (CHE-1048) can tell which lease a run holds. Everything
 runs against the in-memory queue: no ADB, browser, USB or device.
 """
 
+import time
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from apps.admin_console.core.state import state
 from apps.admin_console.database.repositories.session_repository import session_repo
+from apps.admin_console.services.bridge_session_service import BridgeSession, BridgeSessionService
 from apps.admin_console.services.task_queue_service import TaskQueueService
-from artemis.runtime import DeviceExecutionLock, trace_store
+from artemis.runtime import AdbEndpoint, DeviceExecutionLock, trace_store
 
 
 @pytest.fixture
@@ -32,7 +34,19 @@ def queue(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_the_bridge_session_id_survives_admission_into_the_queue_row(queue):
+async def test_the_bridge_session_id_survives_admission_into_the_queue_row(queue, monkeypatch):
+    bridge = BridgeSessionService()
+    lease = BridgeSession("s41001", port=41001, expires_at=time.monotonic() + 60)
+    bridge._sessions[lease.session_id] = lease
+    monkeypatch.setattr(
+        "admin_console.services.bridge_session_service.bridge_session_service", bridge
+    )
+    monkeypatch.setattr(
+        "apps.admin_console.services.bridge_session_service.bridge_session_service", bridge
+    )
+    monkeypatch.setattr(
+        "apps.admin_console.services.task_queue_service.current_adb_endpoint", AdbEndpoint.local
+    )
     result = await TaskQueueService.enqueue_tasks(
         ["Open Settings"], device_serial="127.0.0.1:41001", bridge_session_id="s41001"
     )
@@ -40,6 +54,7 @@ async def test_the_bridge_session_id_survives_admission_into_the_queue_row(queue
     assert [item["bridge_session_id"] for item in queue] == ["s41001"]
     assert result["tasks"][0]["bridge_session_id"] == "s41001"
     assert queue[0]["device_serial"] == "127.0.0.1:41001"
+    assert queue[0]["device_binding"]["bridge_session_id"] == "s41001"
 
 
 @pytest.mark.asyncio

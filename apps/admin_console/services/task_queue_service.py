@@ -41,6 +41,7 @@ except ImportError:
     from apps.admin_console.services.host_admission import enabled as host_agent_enabled
     from apps.admin_console.services.media_service import media_service
 
+from apps.admin_console.core.access_control import AdminAPIError
 from apps.admin_console.services import run_images
 from artemis.config import (
     PAUSE_FILE,
@@ -1569,11 +1570,21 @@ class TaskQueueService:
             and lease.serial == assigned_serial
             and not lease.revoked
         ]
-        # An explicit bridge id (validated at admission) picks its own lease among same-serial ones.
         lease = next(
-            (lease for lease in leases if lease.session_id == bridge_session_id),
-            leases[0] if leases else None,
+            (
+                lease
+                for lease in leases
+                if bridge_session_id is None or lease.session_id == bridge_session_id
+            ),
+            None,
         )
+        if bridge_session_id is not None and lease is None:
+            raise AdminAPIError(
+                409,
+                "Your phone is not connected.",
+                "device_offline",
+                "Connect the phone again, then start the run.",
+            )
         binding = RunDeviceBinding(
             AdbTarget(endpoint, assigned_serial, host_id), lease.session_id if lease else None
         )
