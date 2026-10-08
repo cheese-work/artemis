@@ -189,7 +189,8 @@ func (registry *registry) resolve() {
 		next[entry.ID] = entry
 	}
 	for id := range registry.pins {
-		if _, live := next[id]; !live {
+		// A leased device keeps its pin while absent, so it cannot return on another transport mid-run.
+		if _, live := next[id]; !live && !registry.leases[id] {
 			delete(registry.pins, id)
 		}
 	}
