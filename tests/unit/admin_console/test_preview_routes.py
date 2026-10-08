@@ -55,6 +55,19 @@ def test_every_registered_route_is_classified():
     assert pr.unclassified_routes(server.app) == []
 
 
+@pytest.mark.parametrize(
+    "key",
+    [
+        "GET /api/system/failures",
+        "POST /api/system/failures/collect",
+        "POST /api/system/failures/digest",
+    ],
+)
+def test_failure_ledger_routes_are_disabled_in_preview(key):
+    assert key in pr.DISABLED
+    assert key not in pr.ALLOWED
+
+
 def test_classifications_are_exclusive_and_name_only_registered_routes():
     assert not pr.REAL & pr.SYNTHETIC
     assert not pr.ALLOWED & pr.DISABLED
