@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -19,12 +20,15 @@ from fastapi import HTTPException
 import pytest
 
 from apps.admin_console.routers import tasks
+from apps.admin_console.core.access_control import AdminAPIError
 from apps.admin_console.schemas.task_schema import RunRequest
 from artemis.core.diagnostics.schema import (
     ProbeCategory,
     ProbeResult,
     ProbeStatus,
 )
+from artemis.runtime.adb_endpoint import AdbEndpoint, AdbTarget
+from artemis.runtime.run_device_binding import RunDeviceBinding
 
 
 @pytest.mark.asyncio
@@ -106,14 +110,19 @@ async def test_run_task_binds_probe_verified_device_when_no_serial_requested(mon
 
 @pytest.mark.asyncio
 async def test_idempotent_retry_skips_device_probe_for_active_session(monkeypatch):
+    binding = RunDeviceBinding(AdbTarget(AdbEndpoint.local(), "pixel-10")).to_dict()
     run_probe = AsyncMock()
     monkeypatch.setattr(tasks.readiness_engine, "run_device_submission_probe", run_probe)
     monkeypatch.setattr(tasks.state, "active_session_id", "sdk-task-1")
     monkeypatch.setattr(tasks.state, "active_connections", {})
+    monkeypatch.setattr(tasks.state, "queue_items", [])
     monkeypatch.setattr(
         tasks.session_repo,
         "get_session_by_id",
-        lambda session_id: None,
+        lambda session_id: {
+            "status": "running",
+            "device_info": json.dumps({"device_binding": binding}),
+        },
     )
 
     result = await tasks.run_task(
@@ -128,6 +137,31 @@ async def test_idempotent_retry_skips_device_probe_for_active_session(monkeypatc
     assert result["status"] == "running"
     assert result["enqueued_count"] == 0
     assert result["tasks"][0]["session_id"] == "sdk-task-1"
+    assert result["tasks"][0]["device_binding"] == binding
+    run_probe.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_active_retry_without_accepted_identity_is_rejected_without_probe(monkeypatch):
+    run_probe = AsyncMock()
+    monkeypatch.setattr(tasks.readiness_engine, "run_device_submission_probe", run_probe)
+    monkeypatch.setattr(tasks.state, "active_session_id", "sdk-task-1")
+    monkeypatch.setattr(tasks.state, "active_connections", {})
+    monkeypatch.setattr(tasks.state, "queue_items", [])
+    monkeypatch.setattr(tasks.session_repo, "get_session_by_id", lambda session_id: None)
+
+    with pytest.raises(AdminAPIError) as rejected:
+        await tasks.run_task(
+            RunRequest(
+                goal="Open Settings",
+                session_id="sdk-task-1",
+                device_serial="pixel-10",
+                ingress="python_sdk",
+            )
+        )
+
+    assert rejected.value.status_code == 409
+    assert rejected.value.code == "device_ref_conflict"
     run_probe.assert_not_awaited()
 
 

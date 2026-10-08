@@ -527,6 +527,13 @@ class HostRegistry:
                 " kind, state, attention) VALUES (?,?,?,?,?,?,?,?)",
                 rows[:MAX_DEVICES_PER_HOST],
             )
+        from apps.admin_console.services.task_queue_service import TaskQueueService
+
+        TaskQueueService.validate_host_device_inventory(
+            host_id,
+            generation,
+            {row[1] for row in rows[:MAX_DEVICES_PER_HOST] if row[3]},
+        )
         return True
 
     def audit_event(self, message: dict[str, Any]) -> str | None:

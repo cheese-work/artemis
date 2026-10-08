@@ -14,6 +14,7 @@
 
 import asyncio
 from datetime import datetime
+import json
 import logging
 import os
 from pathlib import Path
@@ -40,6 +41,7 @@ except ImportError:
     from apps.admin_console.services.host_admission import enabled as host_agent_enabled
     from apps.admin_console.services.media_service import media_service
 
+from apps.admin_console.core.access_control import AdminAPIError
 from apps.admin_console.services import run_images
 from artemis.config import (
     PAUSE_FILE,
@@ -60,6 +62,8 @@ from artemis.runtime import (
 )
 from artemis.runtime.adb_endpoint import InvalidAdbEndpoint
 from artemis.runtime.host_endpoints import host_endpoints
+from artemis.runtime.lifecycle import TERMINAL_STATUSES
+from artemis.runtime.run_device_binding import RunDeviceBinding
 from artemis.utils.redaction import bind_session, goal_metadata, write_goal_file
 
 logger = logging.getLogger(__name__)
@@ -281,14 +285,97 @@ class TaskQueueService:
             raise TaskEndpointUnavailable(
                 f"The task's adb endpoint {endpoint_data!r} cannot be used: {exc}"
             ) from exc
-        if resolve_host and endpoint.is_host:
-            endpoint = host_endpoints.resolve(str(endpoint.host_id))
         serial = task_item.get("device_serial")
-        return AdbTarget(
+        target = AdbTarget(
             endpoint=endpoint,
             serial=str(serial) if serial else None,
             host_id=task_item.get("host_id"),
         )
+        binding_data = task_item.get("device_binding")
+        binding = None
+        if binding_data is not None:
+            try:
+                binding = RunDeviceBinding.from_mapping(binding_data)
+                binding.require_selection(target)
+            except (KeyError, TypeError, ValueError) as exc:
+                raise TaskEndpointUnavailable(f"Invalid run device binding: {exc}") from exc
+            if resolve_host:
+                try:
+                    session = session_repo.read_session(str(task_item.get("session_id")))
+                except (OSError, sqlite3.Error) as exc:
+                    raise TaskEndpointUnavailable("Cannot verify durable run admission") from exc
+                if session is None:
+                    raise TaskEndpointUnavailable("Bound run has no durable admission")
+                if session.get("status") in TERMINAL_STATUSES:
+                    raise TaskEndpointUnavailable(f"Bound run is already {session['status']}")
+                try:
+                    stored = json.loads(session.get("device_info") or "{}").get("device_binding")
+                except (TypeError, ValueError) as exc:
+                    raise TaskEndpointUnavailable("Invalid durable run device binding") from exc
+                if stored != binding_data:
+                    raise TaskEndpointUnavailable("Run binding differs from accepted identity")
+            if resolve_host and binding.bridge_session_id:
+                try:
+                    from admin_console.services.bridge_session_service import bridge_session_service
+                except ImportError:
+                    from apps.admin_console.services.bridge_session_service import (
+                        bridge_session_service,
+                    )
+
+                if not any(
+                    lease.session_id == binding.bridge_session_id
+                    and lease.serial == target.serial
+                    and not lease.revoked
+                    for lease in bridge_session_service.live_sessions()
+                ):
+                    TaskQueueService.interrupt_device_binding(
+                        str(task_item.get("session_id")), "bridge_closed"
+                    )
+                    raise TaskEndpointUnavailable("Bound browser lease is unavailable")
+        if resolve_host and endpoint.is_host:
+            target = AdbTarget(
+                host_endpoints.resolve(str(endpoint.host_id)), target.serial, target.host_id
+            )
+            if binding is not None:
+                try:
+                    binding.require_selection(target, recovery=True)
+                except ValueError as exc:
+                    raise TaskEndpointUnavailable(f"Invalid run device binding: {exc}") from exc
+        return target
+
+    @classmethod
+    def interrupt_device_binding(cls, session_id: str, reason: str) -> None:
+        outcome = session_repo.lifecycle.interrupt(session_id, reason)
+        if not outcome.committed:
+            return
+        for run_key, run in list(state.active_runs.items()):
+            if str(run.get("session_id") or run_key) != session_id:
+                continue
+            process = run.get("process")
+            if process is not None and process.returncode is None:
+                try:
+                    process.kill()
+                except ProcessLookupError:
+                    pass
+
+    @classmethod
+    def interrupt_bridge_binding(cls, bridge_session_id: str) -> None:
+        for item in list(state.queue_items):
+            if item.get("bridge_session_id") == bridge_session_id:
+                cls.interrupt_device_binding(str(item["session_id"]), "bridge_closed")
+
+    @classmethod
+    def validate_host_device_inventory(
+        cls, host_id: str, generation: int, shared_serials: set[str]
+    ) -> None:
+        for item in list(state.queue_items):
+            binding = item.get("device_binding") or {}
+            if (
+                binding.get("host_id") == host_id
+                and generation >= binding["endpoint"]["generation"]
+                and binding.get("serial") not in shared_serials
+            ):
+                cls.interrupt_device_binding(str(item["session_id"]), "device_offline")
 
     @classmethod
     def _broadcast_event(
@@ -354,6 +441,10 @@ class TaskQueueService:
         ]
         for item in removed_items:
             DeviceExecutionLock.cancel_reservation(item.get("queue_ticket"))
+            if item.get("host_id") and item.get("device_binding"):
+                from apps.admin_console.services.host_tunnel import host_tunnels
+
+                host_tunnels.release_run(item["host_id"], str(session_id))
         state.queue_items = [
             t
             for t in state.queue_items
@@ -767,12 +858,15 @@ class TaskQueueService:
         task_item["pid"] = proc.pid
         state.active_runs[run_key] = {
             "process": proc,
+            "session_id": str(sess_id) if sess_id else run_key,
             "device_id": str(device_serial) if device_serial else None,
             "lock_key": target.lock_key if device_serial else None,
             "adb_endpoint": target.endpoint.to_dict(),
             "goal": goal,
             "profile": profile,
             "host_id": target.host_id,
+            "device_binding": task_item.get("device_binding"),
+            "bridge_session_id": task_item.get("bridge_session_id"),
         }
         if target.host_id and sess_id:
             from apps.admin_console.services.host_tunnel import host_tunnels
@@ -830,7 +924,21 @@ class TaskQueueService:
         cls, run_key: str, sess_id: Any, proc: asyncio.subprocess.Process
     ) -> None:
         """Terminate a worker whose task was cancelled while it was being launched."""
-        if sess_id and (
+        if sess_id and cls._queue_item_for(sess_id).get("device_binding"):
+            try:
+                session = session_repo.read_session(str(sess_id))
+            except (OSError, sqlite3.Error) as exc:
+                await cls._terminate_worker_process(proc)
+                raise TaskEndpointUnavailable("Cannot verify durable run admission") from exc
+            if session is None:
+                await cls._terminate_worker_process(proc)
+                raise TaskEndpointUnavailable("Bound run has no durable admission")
+            if session.get("status") in TERMINAL_STATUSES:
+                await cls._terminate_worker_process(proc)
+                return
+        if sess_id and session_repo.get_session_status(str(sess_id)) == "interrupted":
+            await cls._terminate_worker_process(proc)
+        elif sess_id and (
             str(sess_id) in getattr(state, "cancelled_session_ids", set())
             or run_key in state.manually_stopped_run_ids
         ):
@@ -1214,6 +1322,7 @@ class TaskQueueService:
             from apps.admin_console.services.config_store import get_config_store
 
             config_snapshot = await get_config_store().snapshot_for_spawn()
+            target = cls._task_target(task_item, resolve_host=True)
             cmd, env = cls._build_worker_invocation(
                 task_item,
                 run_key,
@@ -1378,7 +1487,10 @@ class TaskQueueService:
                     and item.get("requested_by") == requested_by
                     and item.get("goal") == first_goal
                     and (not device_serial or item.get("device_serial") == device_serial)
-                    and item.get("adb_endpoint", {}).get("identity") == endpoint.identity
+                    and (
+                        host_id is not None
+                        or item.get("adb_endpoint", {}).get("identity") == endpoint.identity
+                    )
                     and item.get("host_id") == host_id
                     and (now - float(item.get("created_at", 0))) < 1.0
                 ),
@@ -1447,6 +1559,37 @@ class TaskQueueService:
         sess_id = single_session_id if single_session_id else str(uuid.uuid4())
         # enqueue_tasks resolves the device before creating queue items.
         assigned_serial = device_serial
+        try:
+            from admin_console.services.bridge_session_service import bridge_session_service
+        except ImportError:
+            from apps.admin_console.services.bridge_session_service import bridge_session_service
+
+        leases = [
+            lease
+            for lease in bridge_session_service.live_sessions()
+            if not host_id
+            and endpoint.is_local_default
+            and lease.serial == assigned_serial
+            and not lease.revoked
+        ]
+        lease = next(
+            (
+                lease
+                for lease in leases
+                if bridge_session_id is None or lease.session_id == bridge_session_id
+            ),
+            None,
+        )
+        if bridge_session_id is not None and lease is None:
+            raise AdminAPIError(
+                409,
+                "Your phone is not connected.",
+                "device_offline",
+                "Connect the phone again, then start the run.",
+            )
+        binding = RunDeviceBinding(
+            AdbTarget(endpoint, assigned_serial, host_id), lease.session_id if lease else None
+        )
 
         queue_ticket = DeviceExecutionLock.reserve(
             description=f"{ingress} task: {goal_metadata(goal)}",
@@ -1467,13 +1610,14 @@ class TaskQueueService:
             "app_path": app_path,
             "device_serial": assigned_serial,
             "adb_endpoint": endpoint.to_dict(),
+            "device_binding": binding.to_dict(),
             "ingress": ingress,
             "conversation_id": conversation_id,
             "run_id": run_id,
             "host_id": host_id,
             "requested_by": requested_by,
             # The bridge lease a browser-held phone's run was admitted under; None otherwise.
-            "bridge_session_id": bridge_session_id,
+            "bridge_session_id": binding.bridge_session_id or bridge_session_id,
             "status": "pending",
             "queue_ticket": queue_ticket,
             "created_at": now + index * 0.001,
@@ -1550,6 +1694,9 @@ class TaskQueueService:
         if duplicate_response is not None:
             return duplicate_response
 
+        if host_id:
+            endpoint = host_endpoints.resolve(host_id)
+
         # Cheap early refusal; the authoritative check follows the last await.
         cls.require_admission_open()
 
@@ -1572,6 +1719,14 @@ class TaskQueueService:
         # so a drain enabled during the awaits above is seen before any session
         # or device reservation exists.
         cls.require_admission_open()
+        if not device_serial:
+            return {
+                "status": "rejected",
+                "error": "No device could be selected. Select a device before submitting a run.",
+                "tasks": [],
+                "enqueued_count": 0,
+                "total_queued": len(state.queue_tasks),
+            }
         for i, goal in enumerate(goals):
             task_item = cls._create_queue_item(
                 goal,
@@ -1629,6 +1784,7 @@ class TaskQueueService:
                     task_item.get("start_time"),
                     notify_context,
                     requested_by,
+                    device_binding=task_item["device_binding"],
                 ):
                     raise RuntimeError(f"Could not persist queued session {session_id}")
                 if goal_images:
@@ -1657,6 +1813,10 @@ class TaskQueueService:
                     cls._remove_task(enqueued_session_id)
                 raise
             state.queue_items.append(task_item)
+            if host_id:
+                from apps.admin_console.services.host_tunnel import host_tunnels
+
+                host_tunnels.bind_run(host_id, session_id)
             enqueued_tasks.append(task_item)
             cls._broadcast_startup_progress(
                 task_item["session_id"], "queued", "Task received and queued"
