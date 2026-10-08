@@ -29,10 +29,11 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 from apps.admin_console.database.connection import get_db
 from artemis.config.host_agent import host_agent_enabled
+from artemis.runtime.host_protocol import CONTRACT
 
 # Shared protocol constants (the agent, server, UI and docs read these).
-PROTOCOL_VERSION = 1
-MIN_SUPPORTED = 1
+PROTOCOL_VERSION = CONTRACT.protocol_version
+MIN_SUPPORTED = CONTRACT.minimum_version
 CODE_TTL_SECONDS = 15 * 60
 TOKEN_TTL_SECONDS = 24 * 3600
 NONCE_TTL_SECONDS = 60
