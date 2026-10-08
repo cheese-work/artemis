@@ -48,6 +48,7 @@ from artemis.utils.video import (
     VideoRecordingResult,
     await_scrcpy_first_frame,
     build_scrcpy_record_command,
+    describe_recording_failure,
     cleanup_video_segments,
     concatenate_videos,
     detect_scrcpy_version,
@@ -543,7 +544,9 @@ class UnifiedMobileController:
             offsets.setdefault(path, max(0.0, recording_shift))
         return offsets
 
-    def _record_recording_failure(self, session: RecordingSession, message: str) -> None:
+    def _record_recording_failure(
+        self, session: RecordingSession, message: str, reason: str | None = None
+    ) -> None:
         if self.ctx and self.ctx.data_engine:
             self.ctx.data_engine.record_video_failure(
                 video_id=session.video_id,
@@ -551,6 +554,7 @@ class UnifiedMobileController:
                 local_video_path=session.local_video_path,
                 start_time=session.start_time,
                 error=message,
+                reason=reason,
             )
 
     async def _start_next_recording_segment(
@@ -729,7 +733,11 @@ class UnifiedMobileController:
                         local_video_path=local_video_path,
                         start_time=session.start_time,
                     )
-                self._record_recording_failure(session, f"{SCRCPY_START_FAILURE_PREFIX} {err_msg}")
+                self._record_recording_failure(
+                    session,
+                    f"{SCRCPY_START_FAILURE_PREFIX} {err_msg}",
+                    reason=describe_recording_failure(err_msg)[0],
+                )
                 remove_active_session(device_id)
                 # First line is the readable error for display; the full output follows so
                 # callers that classify the message (sdk.agent) still see every line.

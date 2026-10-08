@@ -179,11 +179,24 @@ def recording_error_line(raw: str | None) -> str:
     )
 
 
+_RECORDING_FAILURE_MESSAGES = {
+    "recorder_android_incompatible": _RECORDER_ANDROID_INCOMPATIBLE_MESSAGE,
+    "recorder_start_failed": _RECORDER_START_FAILED_MESSAGE,
+}
+
+
+def recording_failure_message(reason: str) -> str:
+    """Readable message for a stored reason code; unknown codes get the generic line."""
+    return _RECORDING_FAILURE_MESSAGES.get(reason, _RECORDER_START_FAILED_MESSAGE)
+
+
 def describe_recording_failure(raw: str | None) -> tuple[str, str]:
     """Map raw scrcpy start-up output to a (reason code, readable message) pair."""
     if raw and "NoSuchMethodException" in raw and "IClipboard" in raw:
-        return "recorder_android_incompatible", _RECORDER_ANDROID_INCOMPATIBLE_MESSAGE
-    return "recorder_start_failed", _RECORDER_START_FAILED_MESSAGE
+        reason = "recorder_android_incompatible"
+    else:
+        reason = "recorder_start_failed"
+    return reason, recording_failure_message(reason)
 
 
 async def await_scrcpy_first_frame(

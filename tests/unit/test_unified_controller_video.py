@@ -624,6 +624,57 @@ def test_data_engine_video_lifecycle(tmp_path):
     assert sess_updated.video_filepath == str(new_vpath)
 
 
+def test_data_engine_stores_failure_reason_beside_raw_error(tmp_path):
+    from artemis.data_engine.engine import DataEngine
+    from artemis.context import ArtemisContext
+
+    mock_c = MagicMock(spec=ArtemisContext)
+    mock_c.execution_setup = MagicMock(traces_path=str(tmp_path / "traces"))
+    mock_c.device = None
+    engine = DataEngine(mock_c)
+    engine.start_session(goal="Test Video Failure")
+    published = []
+    engine._publish = lambda event, data: published.append((event, data))
+
+    vid = uuid4()
+    engine.record_video_start(vid, "device-1", tmp_path / "recording.mp4")
+    engine.record_video_failure(
+        vid,
+        "device-1",
+        tmp_path / "recording.mp4",
+        time.time(),
+        error="scrcpy failed to start: raw output",
+        reason="recorder_start_failed",
+    )
+
+    rec = engine.storage.get_video_recording(vid)
+    assert rec.status == "failed"
+    assert rec.error == "scrcpy failed to start: raw output"
+    assert rec.reason == "recorder_start_failed"
+    assert published[-1][0] == "recording_failed"
+    assert published[-1][1]["reason"] == "recorder_start_failed"
+
+
+def test_storage_adds_reason_column_to_existing_recordings_table(tmp_path):
+    import sqlite3
+
+    from artemis.data_engine.storage import StorageManager
+
+    db_path = tmp_path / "old.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "CREATE TABLE video_recordings (video_id TEXT PRIMARY KEY, session_id TEXT, "
+            "device_id TEXT, start_time REAL, end_time REAL, local_video_path TEXT, "
+            "status TEXT NOT NULL DEFAULT 'recording', error TEXT)"
+        )
+
+    StorageManager(db_path, tmp_path / "traces")
+
+    with sqlite3.connect(db_path) as conn:
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(video_recordings)")}
+    assert "reason" in columns
+
+
 @pytest.mark.asyncio
 async def test_unified_controller_crash_recovery_and_multi_segment(mock_ctx, tmp_path):
     """Verify that if recording is interrupted, segments are auto-recovered and concatenated seamlessly."""
@@ -968,8 +1019,9 @@ async def test_unified_controller_start_failure_message_skips_push_log(
     assert result.success is False
     assert result.message.splitlines()[0] == f"scrcpy failed to start: {clipboard}"
     assert classify_recording_failure(result.message) == "recorder_incompatible"
-    stored = mock_ctx.data_engine.record_video_failure.call_args.kwargs["error"]
-    assert stored == f"scrcpy failed to start: {push_log}\n{clipboard}\n"
+    stored = mock_ctx.data_engine.record_video_failure.call_args.kwargs
+    assert stored["error"] == f"scrcpy failed to start: {push_log}\n{clipboard}\n"
+    assert stored["reason"] == "recorder_android_incompatible"
     remove_active_session("emulator-5554")
 
 
