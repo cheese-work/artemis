@@ -28,7 +28,7 @@ import time
 import uuid
 
 from artemis.config.paths import get_temp_dir
-from artemis.runtime.adb_endpoint import adb_command
+from artemis.runtime.endpoint_transport import EndpointTransport
 from artemis.runtime.process_probe import pid_is_alive
 from artemis.utils.logger import get_logger
 
@@ -57,10 +57,16 @@ class ScreenAwakeLease:
     _MALFORMED_GRACE_SECONDS = 5.0
     _MAX_REFERENCE_DRAIN = 256
 
-    def __init__(self, device_id: str):
+    def __init__(self, device_id: str, transport: EndpointTransport | None = None):
         self.device_id = device_id
+        self._transport = transport
         self.token = uuid.uuid4().hex
-        device_hash = hashlib.sha256(device_id.encode("utf-8")).hexdigest()[:16]
+        # A device is a (host, serial) pair: the same serial behind two adb servers must not
+        # share a lease. The local default server keeps the bare-serial hash so leases written
+        # by older processes still count.
+        endpoint = (transport or EndpointTransport.shared(None)).endpoint
+        scope = device_id if endpoint.is_local_default else f"{endpoint.identity}/{device_id}"
+        device_hash = hashlib.sha256(scope.encode("utf-8")).hexdigest()[:16]
         root = get_temp_dir("awake-leases")
         self.lease_dir = root / f"{device_hash}.leases"
         self.mutex_path = root / f"{device_hash}.mutex"
@@ -148,8 +154,8 @@ class ScreenAwakeLease:
 
     def _run(self, args: list[str], description: str) -> subprocess.CompletedProcess[str] | None:
         try:
-            result = subprocess.run(
-                adb_command(["-s", self.device_id, *args]),
+            result = (self._transport or EndpointTransport.shared(None)).run(
+                ["-s", self.device_id, *args],
                 stdin=subprocess.DEVNULL,
                 capture_output=True,
                 text=True,

@@ -1,0 +1,145 @@
+{
+  "receipt_version": 1,
+  "issue": "CHE-844",
+  "candidate_kind": "testcase",
+  "source_candidate": {
+    "runner_source": {
+      "repository": "https://github.com/cheese-work/artemis",
+      "pull_request": 34,
+      "commit_sha": "feefd94c72dbce0fa1afc109ffe3d8254f565d6b"
+    },
+    "testcase_source": {
+      "repository": "https://github.com/cheese-work/artemis",
+      "pull_request": 34,
+      "commit_sha": "096411113522abc37964256833fecbbac4778af4",
+      "manifest_path": "qualification/manifests/pocket_actual_save_relaunch.v1.json",
+      "manifest_digest_sha256": "ed0dbaefeabb2a86c752dd94fcd5f61c4446e918836f3ecbc03ab1bada8cd6e9",
+      "manifest_version": 9,
+      "fork_sha": "feefd94c72dbce0fa1afc109ffe3d8254f565d6b",
+      "journey_path": "qualification/journeys/pocket_actual_save_relaunch.md",
+      "journey_digest_sha256": "6470edd3ebb2f8276812ebb7e9900589e6e715656a5b76a370400601d4c232c2"
+    },
+    "app_input_source": {
+      "pull_request": 26,
+      "commit_sha": "f60e89216c5a2c4429520e68d20d17c8b07ae6b3"
+    },
+    "app_sha": "2c42481778e6f9b88a9502f55decdbe4e1a76e83",
+    "apk_digest_sha256": "04795d5f3995c8e895f6440a9763c8a003c8b6ff955541e3965f5e71564e2e12",
+    "package_name": "dev.cheese.pocketactual",
+    "app_workflow": {
+      "setup": "Build current picture",
+      "setup_semantics_id": "current-picture-setup",
+      "account_action": "Add Account",
+      "account_currency": "USD - US dollar",
+      "account_save_semantics_id": "save-account-action",
+      "balance_semantics_id": "verified-balance-amount-input",
+      "balance_action": "Confirm Verified balance",
+      "snapshot_semantics_id": "recovery-snapshot",
+      "verified_balance_input": "+123.45",
+      "persisted_markers": [
+        "qual-<run_id>",
+        "USD · +123.45",
+        "History gap",
+        "Recovery adjustment"
+      ]
+    },
+    "model_inputs": {
+      "sol": {
+        "config_path": "config/artemis.jsonc",
+        "config_digest_sha256": "06e79b5a8247be79dbb5bb74a28a7151eb557a3f6d7c5fcdd7a343e7a9298aca"
+      },
+      "nova": {
+        "config_path": "qualification/configs/nova.artemis.jsonc",
+        "config_digest_sha256": "f191cd671d6d0d748640386c912bbce98c708a2057c0af74d35277fe1aceff73"
+      }
+    }
+  },
+  "testcase": {
+    "journey_path": "qualification/journeys/pocket_actual_save_relaunch.md",
+    "journey_digest_sha256": "6470edd3ebb2f8276812ebb7e9900589e6e715656a5b76a370400601d4c232c2"
+  },
+  "shared_testcase_rationale": "PR #34 commit feefd94 (CHE-541 lens-alias, detect_objects, negative-control and Home-snapshot fixes on top of f011c33) pins the runner used for qualification, including final Checker capture linkage, finite timestamp validation, and process-death verification. PR #34 commit 0964111 is the immutable manifest/journey source and records that runner. PR #26 is retained only as the historical app/config input source. This receipt locks the revised journey digest, manifest v8, runner SHA, app SHA, and APK digest to both lanes; it does not infer X99 applicability from the Pixel PR title.",
+  "lanes": [
+    {
+      "issue": "CHE-540",
+      "target": "X99 recyclable AVD",
+      "transport": "emulator",
+      "evidence_destination": "CHE-540 execution report and attachments",
+      "fixture_reset": "Fresh fixture before every positive or negative attempt; force-stop, clear app data, cold-start, and secure-storage readiness check.",
+      "assertions": [
+        "The recovery snapshot confirms qual-<run_id>, USD · +123.45, History gap, and Recovery adjustment before relaunch.",
+        "A recorded successful post-save force-stop with empty output and pidof process-end check precede relaunch.",
+        "The relaunch reaches the Recovery snapshot.",
+        "The account and USD balance equal qual-<run_id> and USD · +123.45 byte-for-byte."
+      ],
+      "relaunch_proof": {
+        "pass_prerequisite": true,
+        "after_save_stop": "Record a successful stop_app or am force-stop after UI save and before relaunch.",
+        "process_ended": "Record a successful pidof check with no PID for the saved process before relaunch."
+      },
+      "negative_control": {
+        "expected_verdict": "fail_assertion",
+        "verdict_adapter": {
+          "path": "qualification/tools/checker_verdict_exit.py",
+          "digest_sha256": "1ff08e1e9cec00703d145714c9e7576d0be006d11c0de4d86ef7c83b3a63080a",
+          "contract": "Derives ARTEMIS_TRACES_DIR/<session-id>/check_ledger.jsonl and exits 1 only when the latest final attempt has a failed assert naming the wrong token and no non-failed item naming it, a same-session Checker trace, and its runner-bound native final capture showing the recovery-snapshot or home route tag, account and balance after a saved Recovery snapshot and successful post-save stop_app then launch_app traces ordered by finite native timestamps. stop_app succeeds only after force-stop has no output and pidof has no PID; malformed evidence exits 2 with JSON.",
+          "expected_exit": 1
+        },
+        "not_satisfied_by": "completed orchestration status",
+        "required_evidence": [
+          "Recovery snapshot confirmation for the original account and USD · +123.45 balance",
+          "recorded post-save process stop with empty force-stop output and pidof-confirmed process end",
+          "relaunch evidence for the Recovery snapshot",
+          "observed post-relaunch account name",
+          "recorded mismatch between the observed account name and qual-<run_id>-WRONG-SUFFIX",
+          "finite native timestamp-ordered saved-step and runner-bound final-capture proof, ARTEMIS_TRACES_DIR-derived latest-final check_ledger.jsonl path, and adapter JSON output with exit 1"
+        ],
+        "invalid_when_missing": "Invalid control; batch unqualified."
+      },
+      "cleanup_contract": "After every outcome, restore and confirm the cold fixture before the executor releases its claim; record verified release or leave the target unavailable with a recovery owner."
+    },
+    {
+      "issue": "CHE-541",
+      "target": "Pixel 6 Pro",
+      "transport": "usb_or_wireless_adb",
+      "evidence_destination": "CHE-541 execution report and attachments",
+      "fixture_reset": "Fresh fixture before every positive or negative attempt; force-stop, clear app data, cold-start, and secure-storage readiness check.",
+      "assertions": [
+        "The recovery snapshot confirms qual-<run_id>, USD · +123.45, History gap, and Recovery adjustment before relaunch.",
+        "A recorded successful post-save force-stop with empty output and pidof process-end check precede relaunch.",
+        "The relaunch reaches the Recovery snapshot.",
+        "The account and USD balance equal qual-<run_id> and USD · +123.45 byte-for-byte."
+      ],
+      "relaunch_proof": {
+        "pass_prerequisite": true,
+        "after_save_stop": "Record a successful stop_app or am force-stop after UI save and before relaunch.",
+        "process_ended": "Record a successful pidof check with no PID for the saved process before relaunch."
+      },
+      "negative_control": {
+        "expected_verdict": "fail_assertion",
+        "verdict_adapter": {
+          "path": "qualification/tools/checker_verdict_exit.py",
+          "digest_sha256": "1ff08e1e9cec00703d145714c9e7576d0be006d11c0de4d86ef7c83b3a63080a",
+          "contract": "Derives ARTEMIS_TRACES_DIR/<session-id>/check_ledger.jsonl and exits 1 only when the latest final attempt has a failed assert naming the wrong token and no non-failed item naming it, a same-session Checker trace, and its runner-bound native final capture showing the recovery-snapshot or home route tag, account and balance after a saved Recovery snapshot and successful post-save stop_app then launch_app traces ordered by finite native timestamps. stop_app succeeds only after force-stop has no output and pidof has no PID; malformed evidence exits 2 with JSON.",
+          "expected_exit": 1
+        },
+        "not_satisfied_by": "completed orchestration status",
+        "required_evidence": [
+          "Recovery snapshot confirmation for the original account and USD · +123.45 balance",
+          "recorded post-save process stop with empty force-stop output and pidof-confirmed process end",
+          "relaunch evidence for the Recovery snapshot",
+          "observed post-relaunch account name",
+          "recorded mismatch between the observed account name and qual-<run_id>-WRONG-SUFFIX",
+          "finite native timestamp-ordered saved-step and runner-bound final-capture proof, ARTEMIS_TRACES_DIR-derived latest-final check_ledger.jsonl path, and adapter JSON output with exit 1"
+        ],
+        "invalid_when_missing": "Invalid control; batch unqualified."
+      },
+      "cleanup_contract": "After every outcome, restore and confirm the cold fixture before the executor releases its claim; record verified release or leave the target unavailable with a recovery owner."
+    }
+  ],
+  "review_and_execution_boundary": {
+    "testcase_review": "Two independent non-author reviewers must review this exact receipt revision before a mutating qualification attempt.",
+    "author_role": "CHE-844 author only; no device claim, device command, provider call, fixture reset, execution, or qualification verdict.",
+    "evidence_role": "CHE-656/dev team may produce Gate 1 evidence only from the reviewed, immutable candidate and returned executor artifacts."
+  }
+}

@@ -315,7 +315,9 @@ def parse_llm_config() -> LLMConfig:
             expanded_dict = _expand_default_into_nodes(config_dict)
             return LLMConfig.model_validate(expanded_dict)
     except Exception as e:
-        logger.error(f"Failed to load or parse llm config: {config_path}. Error: {e}")
+        logger.error(
+            f"Failed to load or parse llm config: {config_path}. Error type: {type(e).__name__}"
+        )
         raise
 
 

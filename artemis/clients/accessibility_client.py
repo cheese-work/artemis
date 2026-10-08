@@ -35,12 +35,11 @@ only adds an adb screencap; the hierarchy is never dumped twice.
 
 from __future__ import annotations
 
-from io import BytesIO
 import json
 import subprocess
-from typing import Any
 import urllib.error
-import urllib.request
+from io import BytesIO
+from typing import Any
 
 from PIL import Image
 
@@ -49,8 +48,8 @@ from artemis.clients.ui_automator_client import (
     _parse_hierarchy_xml_to_elements,
     _pil_to_base64,
 )
-from artemis.runtime.adb_endpoint import adb_command
 from artemis.runtime.awake_service import ensure_device_awake
+from artemis.runtime.endpoint_transport import EndpointTransport
 from artemis.runtime.helper_manager import (
     DEVICE_PORT,
     PACKAGE_NAME,
@@ -59,7 +58,7 @@ from artemis.runtime.helper_manager import (
     HelperSession,
     HelperUnavailable,
     ProvisionEvent,
-    helper_manager,
+    helper_manager_for,
 )
 from artemis.utils.logger import get_logger
 
@@ -149,7 +148,7 @@ def normalize_helper_elements(elements: Any) -> list[dict[str, Any]]:
 
 
 class AccessibilityClient:
-    """Screen-data client over the helper's loopback HTTP API."""
+    """Screen-data client over the helper's HTTP API (an adb stream, see ``helper_stream``)."""
 
     backend_name = "helper"
 
@@ -160,9 +159,13 @@ class AccessibilityClient:
         *,
         provision_on_connect: bool = True,
         request_timeout: float = 6.0,
+        transport: EndpointTransport | None = None,
     ) -> None:
         self._device_id = device_id
-        self._manager = manager or helper_manager
+        self._transport = transport
+        self._manager = manager or helper_manager_for(
+            transport.endpoint if transport is not None else None
+        )
         self._provision_on_connect = provision_on_connect
         self._request_timeout = request_timeout
         self._session: HelperSession | None = None
@@ -175,6 +178,10 @@ class AccessibilityClient:
     @property
     def device_id(self) -> str:
         return self._device_id
+
+    @property
+    def _adb(self) -> EndpointTransport:
+        return self._transport or EndpointTransport.shared(None)
 
     @property
     def session(self) -> HelperSession | None:
@@ -193,14 +200,14 @@ class AccessibilityClient:
             self._device_id, provision=self._provision_on_connect, on_event=on_event
         )
         if self._awake_strategy is None:
-            self._awake_strategy = ensure_device_awake(self._device_id)
+            self._awake_strategy = ensure_device_awake(self._device_id, self._transport)
 
     def _ensure_session(self) -> HelperSession:
         """Observer-path entry: attach to a helper that is already running."""
         if self._session is None:
             self._session = self._manager.attach(self._device_id, provision=False)
             if self._awake_strategy is None:
-                self._awake_strategy = ensure_device_awake(self._device_id)
+                self._awake_strategy = ensure_device_awake(self._device_id, self._transport)
         return self._session
 
     def disconnect(self) -> None:
@@ -210,10 +217,10 @@ class AccessibilityClient:
 
     def ping(self) -> bool:
         try:
-            session = self._ensure_session()
+            self._ensure_session()
         except HelperUnavailable:
             return False
-        return self._manager.ping(session.local_port) is not None
+        return self._manager.ping(self._device_id) is not None
 
     # ------------------------------------------------------------------ #
     # Transport
@@ -277,9 +284,9 @@ class AccessibilityClient:
             headers[TOKEN_HEADER] = token
         if data is not None:
             headers["Content-Type"] = "application/json; charset=utf-8"
-        request = urllib.request.Request(f"{session.base_url}{path}", data=data, headers=headers)
-        with urllib.request.urlopen(request, timeout=timeout or self._request_timeout) as resp:
-            return resp.read()
+        return self._manager.http(
+            self._device_id, path, data, headers, timeout or self._request_timeout
+        )
 
     def _rpc(self, cmd: str, params: dict[str, Any] | None = None) -> bool:
         payload = {"cmd": cmd, **(params or {})}
@@ -331,8 +338,8 @@ class AccessibilityClient:
 
     def get_screenshot(self) -> Image.Image | None:
         try:
-            result = subprocess.run(
-                adb_command(["-s", self._device_id, "exec-out", "screencap", "-p"]),
+            result = self._adb.run(
+                ["-s", self._device_id, "exec-out", "screencap", "-p"],
                 stdin=subprocess.DEVNULL,
                 capture_output=True,
                 timeout=10,
@@ -402,17 +409,8 @@ class AccessibilityClient:
         key_lower = str(key).lower()
         if key_lower in _GLOBAL_KEYS:
             return self._rpc("global", {"action": key_lower})
-        result = subprocess.run(
-            adb_command(
-                [
-                    "-s",
-                    self._device_id,
-                    "shell",
-                    "input",
-                    "keyevent",
-                    f"KEYCODE_{key_lower.upper()}",
-                ]
-            ),
+        result = self._adb.run(
+            ["-s", self._device_id, "shell", "input", "keyevent", f"KEYCODE_{key_lower.upper()}"],
             stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,

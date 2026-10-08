@@ -33,3 +33,29 @@ same suite used by pull-request CI.
 Tests that require external state must carry the appropriate `android`,
 `cloud`, `manual`, or `e2e` marker. They must remain safely collectable when
 that dependency is unavailable.
+
+## Writing adb code
+
+Reach adb only through `artemis.runtime.endpoint_transport.EndpointTransport`,
+built from an explicit `AdbEndpoint` (or `EndpointTransport.shared(None)` for the
+process's own server). It owns every adb subprocess, adbutils client and
+uiautomator2 connection, so a run bound to one adb server cannot silently reach
+another one. `tests/unit/runtime/test_endpoint_transport_lint.py` fails on a bare
+`AdbClient(...)`, `u2.connect(...)`, `adb_command(...)` or direct `adb` spawn; its
+`ALLOWLIST` may only shrink.
+
+Test adb code against the fake adb server, never a real device:
+
+```python
+def test_something(fake_adb_server_factory):
+    server = fake_adb_server_factory("alpha")
+    server.add_device("emulator-5554")
+    transport = EndpointTransport(server.endpoint)
+```
+
+`tests/support/fake_adb.py` speaks the adb smart-socket protocol well enough for
+the pinned `adb`, adbutils and uiautomator2, and records every request.
+`tests/support/golden/adb_protocol.json` holds the requests those clients send;
+after a deliberate client upgrade regenerate it with
+`ARTEMIS_UPDATE_ADB_FIXTURES=1 uv run pytest tests/unit/runtime/test_adb_protocol_golden.py`
+and review the diff.

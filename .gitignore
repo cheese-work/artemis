@@ -116,3 +116,9 @@ live_screenshot*.png
 .Trashes
 ehthumbs.db
 Thumbs.db
+
+# Written by the deploy host (CHE-1146)
+/DEPLOYED_SHA
+
+# Created by ConfigStore (admin console tests run from the repo root)
+.artemis-config.lock

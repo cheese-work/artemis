@@ -12,12 +12,23 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any, Mapping
 
 TERMINAL_TASK_STATUSES = frozenset(
-    {"completed", "success", "failed", "cancelled", "canceled", "rejected"}
+    {"completed", "success", "failed", "cancelled", "canceled", "interrupted", "rejected"}
 )
 SUCCESS_TASK_STATUSES = frozenset({"completed", "success"})
+
+
+class InterruptReason(str, Enum):
+    """Why a run ended as ``interrupted``: the run lost its phone or its server."""
+
+    HOST_DISCONNECTED = "host_disconnected"
+    BRIDGE_CLOSED = "bridge_closed"
+    DEVICE_OFFLINE = "device_offline"
+    SERVER_RESTARTED = "server_restarted"
+    AUTH_EXPIRED = "auth_expired"
 
 
 def _string(value: Any) -> str | None:
@@ -93,11 +104,16 @@ class TaskResult:
     output: Any = None
     error: str | None = None
     turns: int | None = None
+    interrupt_reason: InterruptReason | None = None
     raw: Mapping[str, Any] = field(default_factory=dict, repr=False, compare=False)
 
     @property
     def session_id(self) -> str:
         return self.task_id
+
+    @property
+    def interrupted(self) -> bool:
+        return self.status == "interrupted"
 
     @property
     def trace_id(self) -> str:
@@ -136,9 +152,21 @@ class TaskResult:
         if output is None:
             output = payload.get("summary")
 
+        status = (_string(payload.get("status")) or "unknown").lower()
+        try:
+            interrupt_reason = (
+                InterruptReason(_string(payload.get("interrupt_reason")))
+                if status == "interrupted"
+                else None
+            )
+        except ValueError:
+            # A newer server may add reasons; the run is still interrupted.
+            interrupt_reason = None
+
         return cls(
             task_id=resolved_id,
-            status=(_string(payload.get("status")) or "unknown").lower(),
+            status=status,
+            interrupt_reason=interrupt_reason,
             goal=_string(payload.get("goal") or payload.get("initial_goal")),
             profile=_string(payload.get("profile")),
             device_serial=_device_from_payload(payload),

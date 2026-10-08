@@ -66,6 +66,7 @@ from artemis.utils.coordinates import (
 from artemis.utils.decorators import wrap_with_callbacks
 from artemis.utils.logger import get_logger
 from artemis.utils.notes import get_note_file_path
+from artemis.utils.goal_images import goal_image_messages
 from artemis.utils.plan_grammar import parse_plan
 from artemis.memory.context_policy import build_history_for
 from artemis.utils.task_tree import get_active_subgoal_hashes
@@ -265,7 +266,7 @@ class OperatorNode:
                     {"template_name": "main_template"},
                 ),
                 (ExecutionIncidentPromptComponent(), {}),
-                (ObservationPromptComponent(), {}),
+                (ObservationPromptComponent(), {"include_goal_images": True}),
                 (ScreenshotSimilarityPromptComponent(), {}),
                 (HistoricalStateHintPromptComponent(), {}),
                 (InjectedInstructionPromptComponent(), {}),
@@ -424,7 +425,7 @@ class OperatorNode:
         ledger = self._prepare_transcript_history(state, steps, task_plan)
         if not ledger.has_static_prefix:
             static_text = render_transcript_static_system(self.prompts, self.ctx, state)
-            ledger.set_static_prefix([SystemMessage(content=static_text)])
+            ledger.set_static_prefix([SystemMessage(content=static_text), *goal_image_messages()])
 
         # 4. Current tail: observation + plan recitation + injected components.
         builder = PromptBuilder()

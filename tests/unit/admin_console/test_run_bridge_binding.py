@@ -1,0 +1,87 @@
+"""A run bound to a browser phone keeps its bridge session id through admission (CHE-1049).
+
+The id is validated at ``/api/run``; the queue row must carry it so the owner of
+bridge-close handling (CHE-1048) can tell which lease a run holds. Everything
+runs against the in-memory queue: no ADB, browser, USB or device.
+"""
+
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+
+from apps.admin_console.core.state import state
+from apps.admin_console.database.repositories.session_repository import session_repo
+from apps.admin_console.routers import tasks
+from apps.admin_console.schemas.task_schema import RunRequest
+from apps.admin_console.services.task_queue_service import TaskQueueService
+from artemis.runtime import DeviceExecutionLock, trace_store
+
+
+@pytest.fixture
+def queue(tmp_path, monkeypatch):
+    monkeypatch.setattr(session_repo, "db_path", tmp_path / "sessions.db")
+    monkeypatch.setattr(trace_store, "TRACES_DIR", str(tmp_path / "traces"))
+    state.queue_items.clear()
+    state.draining = False
+    monkeypatch.setattr(DeviceExecutionLock, "reserve", MagicMock(return_value="ticket"))
+    monkeypatch.setattr(DeviceExecutionLock, "cancel_reservation", MagicMock())
+    monkeypatch.setattr(TaskQueueService, "ensure_worker_running", MagicMock())
+    monkeypatch.setattr(
+        TaskQueueService, "_reject_unavailable_device", AsyncMock(return_value=None)
+    )
+    yield state.queue_items
+    state.queue_items.clear()
+
+
+@pytest.mark.asyncio
+async def test_the_bridge_session_id_survives_admission_into_the_queue_row(queue):
+    result = await TaskQueueService.enqueue_tasks(
+        ["Open Settings"], device_serial="127.0.0.1:41001", bridge_session_id="s41001"
+    )
+
+    assert [item["bridge_session_id"] for item in queue] == ["s41001"]
+    assert result["tasks"][0]["bridge_session_id"] == "s41001"
+    assert queue[0]["device_serial"] == "127.0.0.1:41001"
+
+
+@pytest.mark.asyncio
+async def test_a_run_with_no_bridge_has_no_bridge_session_id(queue):
+    await TaskQueueService.enqueue_tasks(["Open Settings"], device_serial="emulator-5554")
+
+    assert queue[0]["bridge_session_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_merged_router_uses_bound_browser_serial_before_device_selection(monkeypatch):
+    serial = "127.0.0.1:41001"
+    monkeypatch.setattr(
+        tasks.bridge_session_service,
+        "get",
+        AsyncMock(return_value=SimpleNamespace(serial=serial, revoked=False, is_expired=False)),
+    )
+    monkeypatch.setattr(tasks, "own_default_serial", MagicMock(return_value="other-phone"))
+    monkeypatch.setattr(tasks, "require_device", MagicMock())
+    monkeypatch.setattr(
+        tasks.device_pool, "validate_explicit_serial_async", AsyncMock(return_value=None)
+    )
+    probe = AsyncMock(return_value=SimpleNamespace(summary="Ready", metadata={}))
+    monkeypatch.setattr(tasks.readiness_engine, "run_device_submission_probe", probe)
+    enqueue = AsyncMock(return_value={"status": "queued"})
+    monkeypatch.setattr(tasks.task_queue_service, "enqueue_tasks", enqueue)
+    monkeypatch.setattr(tasks.task_queue_service, "require_admission_open", MagicMock())
+
+    await tasks.run_task(RunRequest(goal="Open Settings", bridge_session_id="browser-session"))
+
+    assert probe.await_args.kwargs["target_serial"] == serial
+    assert enqueue.await_args.kwargs["device_serial"] == serial
+    assert enqueue.await_args.kwargs["bridge_session_id"] == "browser-session"
+
+
+def test_browser_and_host_references_cannot_bind_the_same_request():
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        RunRequest(
+            goal="Open Settings",
+            bridge_session_id="browser-session",
+            device_ref={"host_id": "host-a", "serial": "USB123"},
+        )

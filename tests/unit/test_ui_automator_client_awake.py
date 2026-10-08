@@ -20,9 +20,12 @@ def test_new_ui_connection_enrolls_device_in_shared_awake_strategy(
     client.connect()
     client.connect()
 
-    mock_remove_maestro.assert_called_once_with("device-123")
-    mock_ensure_awake.assert_called_once_with("device-123")
-    mock_connect.assert_called_once_with("device-123")
+    mock_remove_maestro.assert_called_once_with("device-123", None)
+    mock_ensure_awake.assert_called_once_with("device-123", None)
+    # uiautomator2 is handed the endpoint's own AdbDevice, never a bare serial that
+    # adbutils would resolve against its process-global client.
+    mock_connect.assert_called_once()
+    assert mock_connect.call_args.args[0].serial == "device-123"
 
 
 @patch("artemis.clients.ui_automator_client.u2.connect", side_effect=RuntimeError("offline"))
@@ -39,7 +42,7 @@ def test_failed_ui_connection_does_not_stop_process_awake_service(
     with pytest.raises(RuntimeError, match="offline"):
         client.connect()
 
-    mock_ensure_awake.assert_called_once_with("device-123")
+    mock_ensure_awake.assert_called_once_with("device-123", None)
     assert client._awake_strategy is None
 
 
@@ -57,7 +60,7 @@ def test_client_disconnect_does_not_send_power_cleanup_commands(
 
     client.disconnect()
 
-    mock_ensure_awake.assert_called_once_with("device-123")
+    mock_ensure_awake.assert_called_once_with("device-123", None)
     assert client._device is None
     assert client._awake_strategy is None
 

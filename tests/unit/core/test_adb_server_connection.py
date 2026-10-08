@@ -28,6 +28,14 @@ from artemis.core.diagnostics.adb_server_connection import (
 )
 from artemis.core.diagnostics.engine import ReadinessEngine
 from artemis.runtime.adb_endpoint import ADB_ENDPOINT_ID_ENV, AdbSession
+from artemis.runtime.endpoint_transport import EndpointTransport
+
+
+@pytest.fixture(autouse=True)
+def listening_server(request, monkeypatch):
+    """Tests below fake ``subprocess.run``; the endpoint's reachability pre-check is not under test."""
+    if "real_reachability" not in request.keywords:
+        monkeypatch.setattr(EndpointTransport, "reachable", lambda self, timeout=None: True)
 
 
 @pytest.mark.parametrize(
@@ -168,7 +176,7 @@ async def test_probe_never_activates_reachable_endpoint(monkeypatch):
 async def test_default_resolver_uses_the_shared_toolchain(monkeypatch):
     captured: dict[str, object] = {}
     monkeypatch.setattr(
-        "artemis.core.diagnostics.adb_server_connection.toolchain.resolve",
+        "artemis.toolchain.toolchain.resolve",
         lambda name: "sdk-platform-tools-adb" if name == "adb" else None,
     )
 
@@ -294,3 +302,40 @@ async def test_remote_endpoint_blocks_local_emulator_launch(monkeypatch):
 
     assert result["status"] == "failed"
     assert "Switch to local ADB" in result["error"]
+
+
+@pytest.mark.real_reachability
+@pytest.mark.asyncio
+async def test_probe_of_a_port_nobody_listens_on_never_starts_an_adb_server(monkeypatch):
+    """adb starts a server on a refused loopback port; the probe must not let it."""
+    import socket
+
+    spawned: list[list[str]] = []
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda command, **kwargs: (
+            spawned.append(command) or subprocess.CompletedProcess(command, 0)
+        ),
+    )
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        dead_port = sock.getsockname()[1]
+    manager = AdbServerConnectionManager(adb_resolver=lambda: "adb", env_files=[])
+
+    result = await manager.probe("127.0.0.1", dead_port)
+
+    assert result["success"] is False and result["error_code"] == "server_unreachable"
+    assert spawned == []
+
+
+def test_a_session_endpoint_is_never_persisted(monkeypatch, tmp_path):
+    monkeypatch.setenv("ARTEMIS_HOST_AGENT", "1")
+    endpoint = AdbServerEndpoint.create("127.0.0.1", 40000, host_id="lab-1")
+    env_file = tmp_path / ".env"
+    manager = AdbServerConnectionManager(env_files=[env_file])
+
+    with pytest.raises(ValueError, match="never saved"):
+        manager._persist(endpoint)
+
+    assert not env_file.exists()

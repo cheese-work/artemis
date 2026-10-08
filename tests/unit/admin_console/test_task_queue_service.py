@@ -16,16 +16,22 @@ import asyncio
 import importlib
 import json
 import os
+from pathlib import Path
+import sqlite3
 import subprocess
 import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from apps.admin_console.core.state import state
-from apps.admin_console.database.repositories.session_repository import SessionRepository
+from apps.admin_console.database.repositories.session_repository import (
+    SessionRepository,
+    session_repo,
+)
 from apps.admin_console.routers.tasks import get_status
 from apps.admin_console.services.task_queue_service import TaskQueueService, task_queue_service
 from artemis.runtime import trace_store
+from artemis.runtime.lifecycle import finish_trace
 from artemis.runtime.device_lock import DeviceLockOwner
 from artemis.runtime.adb_endpoint import AdbEndpoint
 
@@ -116,7 +122,7 @@ async def test_enqueued_task_keeps_its_adb_endpoint_snapshot():
             return_value=original,
         ),
         patch(
-            "artemis.runtime.device_pool.device_pool.select_device_async",
+            "artemis.runtime.device_pool.DevicePool.select_device_async",
             return_value="emulator-5554",
         ),
     ):
@@ -183,7 +189,7 @@ async def test_pre_session_worker_failure_persists_failed_session_and_releases_t
 async def test_enqueue_rejects_terminal_trace_without_overwriting_it(tmp_path):
     session_id = "terminal-session"
     trace_store.init_trace(session_id, "Finished goal", "flash")
-    trace_store.update_trace_status(session_id, "completed")
+    finish_trace(session_id, "completed")
 
     with (
         patch.object(TaskQueueService, "ensure_worker_running"),
@@ -227,6 +233,50 @@ async def test_enqueue_marks_existing_running_trace_failed_when_db_admission_fai
 
 
 @pytest.mark.asyncio
+async def test_enqueue_rollback_survives_a_locked_database_and_keeps_the_original_error(
+    monkeypatch,
+):
+    import sqlite3
+
+    from artemis.runtime.lifecycle import LifecycleAuthority
+
+    queue_module = importlib.import_module("apps.admin_console.services.task_queue_service")
+    repository = queue_module.session_repo
+    create_queued_session = repository.create_queued_session
+    session_ids: list[str] = []
+
+    def fail_second_queued_session(*args, **kwargs):
+        session_ids.append(args[0])
+        if len(session_ids) == 2:
+            return False
+        return create_queued_session(*args, **kwargs)
+
+    real_finish = LifecycleAuthority.finish
+
+    def finish_locked_for_the_second_task(self, session_id, *args, **kwargs):
+        if len(session_ids) == 2 and session_id == session_ids[1]:
+            raise sqlite3.OperationalError("database is locked")
+        return real_finish(self, session_id, *args, **kwargs)
+
+    monkeypatch.setattr(repository, "create_queued_session", fail_second_queued_session)
+    monkeypatch.setattr(LifecycleAuthority, "finish", finish_locked_for_the_second_task)
+    with (
+        patch.object(TaskQueueService, "ensure_worker_running"),
+        patch.object(
+            TaskQueueService, "_reject_unavailable_device", new=AsyncMock(return_value=None)
+        ),
+        pytest.raises(RuntimeError, match="Could not persist queued session"),
+    ):
+        await TaskQueueService.enqueue_tasks(
+            ["First task", "Second task"], device_serial="test-device"
+        )
+
+    # the first task was failed and removed even though recording the second failure raised
+    assert repository.get_session_status(session_ids[0]) == "failed"
+    assert state.queue_items == []
+
+
+@pytest.mark.asyncio
 async def test_enqueue_rolls_back_earlier_items_when_later_setup_fails(tmp_path, monkeypatch):
     queue_module = importlib.import_module("apps.admin_console.services.task_queue_service")
     repository = queue_module.session_repo
@@ -257,26 +307,6 @@ async def test_enqueue_rolls_back_earlier_items_when_later_setup_fails(tmp_path,
     assert trace_store.read_status(session_ids[1])["status"] == "failed"
     assert state.queue_items == []
     assert not list((tmp_path / "device-locks" / "artemis-global-device.queue").glob("*.wait"))
-
-
-@pytest.mark.parametrize(
-    ("current_status", "returncode", "stopped", "expected"),
-    [
-        ("completed", 1, False, ("completed", False)),
-        ("failed", 0, False, ("failed", False)),
-        ("cancelled", 0, False, ("cancelled", False)),
-        ("success", 1, False, ("completed", True)),
-        ("running", 0, False, ("completed", True)),
-        ("running", 1, False, ("failed", True)),
-        ("completed", 0, True, ("cancelled", True)),
-    ],
-)
-def test_resolve_terminal_status_preserves_authoritative_result(
-    current_status, returncode, stopped, expected
-):
-    assert (
-        TaskQueueService._resolve_terminal_status(current_status, returncode, stopped) == expected
-    )
 
 
 @pytest.mark.asyncio
@@ -344,7 +374,7 @@ async def test_queue_worker_execution_lifecycle():
     executed_goals = []
 
     async def fake_subprocess_exec(*args, **kwargs):
-        goal_arg = args[3]
+        goal_arg = Path(args[args.index("--goal-file") + 1]).read_text()
         executed_goals.append(goal_arg)
         proc = MagicMock()
         proc.pid = 99999
@@ -626,7 +656,6 @@ def test_stop_tasks_terminates_external_global_owner_and_preserves_local_waiter(
         patch(
             "apps.admin_console.services.task_queue_service.session_repo.update_session_status"
         ) as update_status,
-        patch("artemis.runtime.trace_store.update_trace_status") as update_trace_status,
     ):
         assert task_queue_service.stop_tasks(clear_all=False) is True
 
@@ -639,11 +668,8 @@ def test_stop_tasks_terminates_external_global_owner_and_preserves_local_waiter(
     assert "mcp-session" not in state.active_connections
     update_status.assert_called_once()
     assert update_status.call_args.args[:2] == ("mcp-session", "cancelled")
-    update_trace_status.assert_called_once_with(
-        "mcp-session",
-        "cancelled",
-        error="Task stopped from the Artemis frontend.",
-    )
+    # The lifecycle authority projects status.json from the committed outcome.
+    assert update_status.call_args.kwargs["error"] == "Task stopped from the Artemis frontend."
 
 
 def test_stop_tasks_does_not_kill_stale_reused_pid():
@@ -752,7 +778,7 @@ async def test_cancel_task_triggers_next_pending_task():
     executed_goals = []
 
     async def fake_subprocess_exec(*args, **kwargs):
-        goal_arg = args[3]
+        goal_arg = Path(args[args.index("--goal-file") + 1]).read_text()
         executed_goals.append(goal_arg)
         proc = MagicMock()
         proc.pid = 77777
@@ -806,7 +832,7 @@ async def test_immediate_cancel_ignores_stale_ipc_and_runs_next_task():
     task1_session_id = None
 
     async def fake_subprocess_exec(*args, **kwargs):
-        goal_arg = args[3]
+        goal_arg = Path(args[args.index("--goal-file") + 1]).read_text()
         executed_goals.append(goal_arg)
         proc = MagicMock()
         proc.pid = 88888
@@ -970,6 +996,19 @@ async def test_queue_worker_notifies_conversation():
         ),
     ):
         mock_repo.get_running_session_id.return_value = None
+        mock_repo.lifecycle.pending_events.side_effect = lambda sid=None: (
+            [
+                {
+                    "dedupe_id": f"{sid}:outcome",
+                    "session_id": sid,
+                    "status": "completed",
+                    "interrupt_reason": None,
+                    "created_at": 1.0,
+                }
+            ]
+            if sid
+            else []
+        )
 
         await task_queue_service.enqueue_tasks(
             ["Notify goal"],
@@ -987,7 +1026,8 @@ async def test_queue_worker_notifies_conversation():
         mock_notify.assert_called_once()
         kwargs = mock_notify.call_args[1]
         assert kwargs["conversation_id"] == "conv-789"
-        assert "Notify goal" in kwargs["message"]
+        assert "Notify goal" not in kwargs["message"]
+        assert "goal_length=11" in kwargs["message"]
 
         task = state.worker_task
         if task and not task.done():
@@ -1040,7 +1080,6 @@ def test_stop_tasks_by_session_id_targets_correct_task_among_multiple():
         patch(
             "apps.admin_console.services.task_queue_service.session_repo.update_session_status"
         ) as update_status,
-        patch("artemis.runtime.trace_store.update_trace_status") as update_trace,
     ):
         # Explicitly stop session-b
         assert task_queue_service.stop_tasks(clear_all=False, session_id="session-b") is True
@@ -1051,11 +1090,7 @@ def test_stop_tasks_by_session_id_targets_correct_task_among_multiple():
         update_status.assert_called_once()
         assert update_status.call_args[0][0] == "session-b"
         assert update_status.call_args[0][1] == "cancelled"
-        update_trace.assert_called_once_with(
-            "session-b",
-            "cancelled",
-            error="Task stopped from the Artemis frontend.",
-        )
+        assert update_status.call_args.kwargs["error"] == "Task stopped from the Artemis frontend."
 
 
 def test_stop_tasks_by_device_id_targets_specific_device():
@@ -1160,7 +1195,7 @@ async def test_enqueue_tasks_deduplicates_by_session_id():
 
 
 @pytest.mark.asyncio
-async def test_manual_stop_of_one_run_does_not_pollute_concurrent_run():
+async def test_manual_stop_of_one_run_does_not_pollute_concurrent_run(tmp_path, monkeypatch):
     """Stopping run A must not flip run B's terminal status or its payload.
 
     Regression test for the process-global ``was_stopped_manually`` flag that
@@ -1169,9 +1204,15 @@ async def test_manual_stop_of_one_run_does_not_pollute_concurrent_run():
     then finishes normally and must still be reported as completed.
     """
     ended_payloads: dict[str, dict] = {}
+    monkeypatch.setattr(session_repo, "db_path", tmp_path / "sessions.db")
+    for sid in ("run-a", "run-b"):
+        session_repo.create_queued_session(sid, "goal", "flash", None)
+        with sqlite3.connect(session_repo.db_path) as conn:
+            conn.execute("UPDATE sessions SET status = 'running' WHERE session_id = ?", (sid,))
 
     def capture(event_type, data):
         if event_type == "session_ended":
+            assert str(data.get("session_id")) not in ended_payloads, "duplicate session_ended"
             ended_payloads[str(data.get("session_id"))] = dict(data)
 
     class FakeProc:
@@ -1195,7 +1236,7 @@ async def test_manual_stop_of_one_run_does_not_pollute_concurrent_run():
     procs: dict[str, FakeProc] = {}
 
     async def fake_subprocess_exec(*args, **kwargs):
-        goal = args[3]
+        goal = Path(args[args.index("--goal-file") + 1]).read_text()
         # Use our own pid so the reaped-process watchdog keeps waiting.
         proc = FakeProc(os.getpid())
         procs[goal] = proc
@@ -1219,16 +1260,12 @@ async def test_manual_stop_of_one_run_does_not_pollute_concurrent_run():
     try:
         with (
             patch("asyncio.create_subprocess_exec", side_effect=fake_subprocess_exec),
-            patch("apps.admin_console.services.task_queue_service.session_repo") as mock_repo,
             patch("apps.admin_console.services.task_queue_service.media_service"),
             patch(
                 "apps.admin_console.services.task_queue_service.process_supervisor.terminate_tree",
                 return_value=True,
             ),
         ):
-            mock_repo.get_session_status.return_value = "running"
-            mock_repo.get_video_recording_for_session.return_value = {"status": "ready"}
-
             task_a = asyncio.create_task(TaskQueueService._execute_task_item(item_a))
             task_b = asyncio.create_task(TaskQueueService._execute_task_item(item_b))
             for _ in range(40):
@@ -1252,11 +1289,8 @@ async def test_manual_stop_of_one_run_does_not_pollute_concurrent_run():
         assert ended_payloads["run-b"]["status"] == "completed"
         assert ended_payloads["run-b"]["was_stopped_manually"] is False
 
-        persisted = {
-            call.args[0]: call.args[1] for call in mock_repo.update_session_status.call_args_list
-        }
-        assert persisted.get("run-a") == "cancelled"
-        assert persisted.get("run-b") == "completed"
+        assert session_repo.get_session_status("run-a") == "cancelled"
+        assert session_repo.get_session_status("run-b") == "completed"
         assert "run-b" not in state.cancelled_session_ids
         assert "run-b" not in state.manually_stopped_run_ids
     finally:
@@ -1292,3 +1326,195 @@ async def test_enqueue_tasks_debounces_rapid_identical_submissions():
         )
         assert len(state.queue_items) == 1
         assert res2["enqueued_count"] == 0
+
+
+# -- dispatcher admission, characterised before host admission (CHE-1128) ------
+# These pin today's behavior of _dispatch_pending_tasks, /api/stop and the
+# ticket queue so the host-admission hook cannot change it silently.
+
+
+@pytest.fixture
+def dispatch(monkeypatch):
+    """Run the real dispatcher against fake runs that finish when released."""
+    state.active_runs.clear()
+    state.executing_run_keys.clear()
+    started: list[str] = []
+    gates: dict[str, asyncio.Event] = {}
+
+    async def fake_execute(task_item):
+        sid = task_item["session_id"]
+        started.append(sid)
+        gates[sid] = asyncio.Event()
+        await gates[sid].wait()
+        TaskQueueService._remove_task(sid)
+
+    monkeypatch.setattr(TaskQueueService, "_execute_task_item", fake_execute)
+
+    def limit(value):
+        monkeypatch.setattr(TaskQueueService, "_concurrency_limit", classmethod(lambda cls: value))
+
+    async def tick():
+        TaskQueueService._dispatch_pending_tasks()
+        await asyncio.sleep(0)
+
+    async def finish(sid):
+        gates[sid].set()
+        await asyncio.sleep(0)
+
+    class Harness:
+        pass
+
+    h = Harness()
+    h.started, h.limit, h.tick, h.finish = started, limit, tick, finish
+    yield h
+    for gate in gates.values():
+        gate.set()
+    state.active_runs.clear()
+    state.executing_run_keys.clear()
+    TaskQueueService._run_tasks.clear()
+
+
+def _queued(sid, device="dev-a", ticket=None):
+    return {
+        "session_id": sid,
+        "goal": sid,
+        "profile": "flash",
+        "status": "pending",
+        "device_serial": device,
+        "queue_ticket": ticket,
+    }
+
+
+@pytest.mark.asyncio
+async def test_per_device_mode_runs_one_task_per_device_in_fifo_order(dispatch):
+    dispatch.limit(0)
+    state.queue_items.extend([_queued("a1"), _queued("a2"), _queued("b1", "dev-b")])
+
+    await dispatch.tick()
+    assert dispatch.started == ["a1", "b1"]
+    assert [i["status"] for i in state.queue_items] == ["running", "pending", "running"]
+
+    await dispatch.tick()
+    assert dispatch.started == ["a1", "b1"]  # a2 still waits for dev-a
+
+    await dispatch.finish("a1")
+    await dispatch.tick()
+    assert dispatch.started == ["a1", "b1", "a2"]
+
+
+@pytest.mark.asyncio
+async def test_run_without_device_waits_for_the_whole_scheduler_to_be_idle(dispatch):
+    dispatch.limit(0)
+    state.queue_items.extend([_queued("a1"), _queued("any", device=None)])
+
+    await dispatch.tick()
+    assert dispatch.started == ["a1"]  # the device-less run does not overlap it
+
+    await dispatch.finish("a1")
+    await dispatch.tick()
+    assert dispatch.started == ["a1", "any"]
+
+
+@pytest.mark.asyncio
+async def test_global_limit_one_serialises_runs_across_devices(dispatch):
+    dispatch.limit(1)
+    state.queue_items.extend([_queued("a1"), _queued("b1", "dev-b")])
+    # limit == 1 defers to state.is_running, which sees running queue rows.
+
+    await dispatch.tick()
+    assert dispatch.started == ["a1"]
+    await dispatch.tick()
+    assert dispatch.started == ["a1"]
+
+    await dispatch.finish("a1")
+    await dispatch.tick()
+    assert dispatch.started == ["a1", "b1"]
+
+
+@pytest.mark.asyncio
+async def test_global_limit_n_caps_runs_and_still_keeps_one_run_per_device(dispatch):
+    dispatch.limit(2)
+    state.queue_items.extend(
+        [_queued("a1"), _queued("a2"), _queued("b1", "dev-b"), _queued("c1", "dev-c")]
+    )
+
+    await dispatch.tick()
+    assert dispatch.started == ["a1", "b1"]  # a2 skipped (device busy), c1 over the limit
+
+    await dispatch.finish("b1")
+    await dispatch.tick()
+    assert dispatch.started == ["a1", "b1", "c1"]
+
+
+@pytest.mark.asyncio
+async def test_dispatch_skips_and_removes_cancelled_pending_rows(dispatch):
+    dispatch.limit(0)
+    state.queue_items.extend([_queued("gone"), _queued("kept", "dev-b")])
+    state.cancelled_session_ids.add("gone")
+
+    await dispatch.tick()
+
+    assert dispatch.started == ["kept"]
+    assert [i["session_id"] for i in state.queue_items] == ["kept"]
+
+
+@pytest.mark.asyncio
+async def test_api_stop_by_session_is_unconditional(dispatch):
+    from httpx import ASGITransport, AsyncClient
+    from apps.admin_console.server import app
+
+    state.queue_items.extend([_queued("q1", ticket="t1"), _queued("q2", ticket="t2")])
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://localhost") as client:
+        stopped = await client.post("/api/stop", json={"session_id": "q1"})
+        unknown = await client.post("/api/stop", json={"session_id": "nope"})
+
+    assert stopped.json() == {"status": "stopped", "session_id": "q1"}
+    # Unconditional: an id nobody owns still reports "stopped" (why cancel-queued exists).
+    assert unknown.json() == {"status": "stopped", "session_id": "nope"}
+    assert [i["session_id"] for i in state.queue_items] == ["q2"]
+
+
+def _device_queue(lock_id, scope="s"):
+    from artemis.runtime import DeviceExecutionLock
+    from artemis.runtime import device_lock
+
+    queue_dir = device_lock.get_temp_dir("device-locks") / "artemis-global-device.queue"
+    waits = sorted(queue_dir.glob("*.wait"))
+    queue = DeviceExecutionLock._build_device_queue(
+        waits, target_lock_id=lock_id, target_scope=scope
+    )
+    return [path.name.split("-", 1)[1].removesuffix(".wait") for path in queue]
+
+
+def test_tickets_order_each_device_queue_first_come_first_served():
+    from artemis.runtime import DeviceExecutionLock
+
+    first = DeviceExecutionLock.reserve("t", "dev-a", session_id="a1", lock_scope="s")
+    other = DeviceExecutionLock.reserve("t", "dev-b", session_id="b1", lock_scope="s")
+    second = DeviceExecutionLock.reserve("t", "dev-a", session_id="a2", lock_scope="s")
+
+    assert _device_queue("s__dev-a") == [first, second]
+    assert _device_queue("s__dev-b") == [other]
+
+
+def test_unclaimed_ticket_is_parked_on_one_idle_device_only():
+    from artemis.runtime import DeviceExecutionLock
+
+    DeviceExecutionLock.reserve("t", "dev-a", session_id="a1", lock_scope="s")
+    DeviceExecutionLock.reserve("t", "dev-b", session_id="b1", lock_scope="s")
+    parked = DeviceExecutionLock.reserve("t", "pending", session_id="p1", lock_scope="s")
+
+    assert parked in _device_queue("s__dev-a")
+    assert parked not in _device_queue("s__dev-b")
+
+
+def test_cancelled_ticket_leaves_the_rest_of_the_queue_order_intact():
+    from artemis.runtime import DeviceExecutionLock
+
+    first = DeviceExecutionLock.reserve("t", "dev-a", session_id="a1", lock_scope="s")
+    middle = DeviceExecutionLock.reserve("t", "dev-a", session_id="a2", lock_scope="s")
+    last = DeviceExecutionLock.reserve("t", "dev-a", session_id="a3", lock_scope="s")
+
+    assert DeviceExecutionLock.cancel_reservation(middle) is True
+    assert _device_queue("s__dev-a") == [first, last]

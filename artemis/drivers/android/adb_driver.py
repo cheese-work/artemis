@@ -20,15 +20,20 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any, Literal
 
-from adbutils import AdbClient, AdbDevice
+from adbutils import AdbClient, AdbDevice, AdbError
 from artemis.clients.ui_automator_client import (
     UIAutomatorClient,
     _parse_hierarchy_xml_to_elements,
 )
 from artemis.config.paths import get_temp_dir
 from artemis.drivers.base import BaseDeviceDriver, KeyCode, ScreenData, SwipeDirection
+from artemis.drivers.types import DeviceDisconnectedError, device_disconnect_reason
 from artemis.toolchain import find_ffmpeg, find_scrcpy
-from artemis.utils.video import build_scrcpy_record_command
+from artemis.utils.video import (
+    build_scrcpy_record_command,
+    detect_scrcpy_version,
+    recording_unavailable_reason,
+)
 from artemis.utils.ui_filter import filter_ui_hierarchy
 from artemis.utils.logger import get_logger
 
@@ -226,6 +231,13 @@ class AndroidAdbDriver(BaseDeviceDriver):
             platform="android",
         )
 
+    def _raise_if_disconnected(self, error: Exception) -> None:
+        """Turn adb's "device not found/offline" into the typed error the run stops on."""
+        if isinstance(error, AdbError):
+            reason = device_disconnect_reason(self._device_id, str(error))
+            if reason is not None:
+                raise DeviceDisconnectedError(self._device_id, reason) from error
+
     async def tap(
         self,
         x: int,
@@ -247,7 +259,10 @@ class AndroidAdbDriver(BaseDeviceDriver):
             logger.info(f"[ADB] {cmd}")
             await asyncio.to_thread(self.device.shell, cmd)
             return True
+        except DeviceDisconnectedError:
+            raise
         except Exception as e:
+            self._raise_if_disconnected(e)
             logger.error(f"Tap failed at ({x}, {y}): {e}")
             return False
 
@@ -268,6 +283,7 @@ class AndroidAdbDriver(BaseDeviceDriver):
             await asyncio.to_thread(self.device.shell, cmd)
             return True
         except Exception as e:
+            self._raise_if_disconnected(e)
             logger.error(f"Swipe failed from ({start_x},{start_y}) to ({end_x},{end_y}): {e}")
             return False
 
@@ -339,6 +355,7 @@ class AndroidAdbDriver(BaseDeviceDriver):
                         await asyncio.to_thread(self.device.shell, "input keyevent 279")
                         return True
                 except Exception as e:
+                    self._raise_if_disconnected(e)
                     logger.debug(f"Clipboard paste fallback to ADB input: {e}")
 
             # 2. Tier 2: Check if ADBKeyboard is currently active
@@ -352,6 +369,7 @@ class AndroidAdbDriver(BaseDeviceDriver):
                     await asyncio.to_thread(self.device.shell, broadcast_cmd)
                     return True
             except Exception as e:
+                self._raise_if_disconnected(e)
                 # ADBKeyboard probe/broadcast failed; fall through to native input.
                 logger.debug(f"ADBKeyboard IME path failed, falling back to ADB input: {e}")
 
@@ -365,8 +383,11 @@ class AndroidAdbDriver(BaseDeviceDriver):
                     escaped = _escape_for_adb_text(line)
                     await asyncio.to_thread(self.device.shell, f"input text {escaped}")
             return True
+        except DeviceDisconnectedError:
+            raise
         except Exception as e:
-            logger.error(f"Input text failed for '{text}': {e}")
+            self._raise_if_disconnected(e)
+            logger.error(f"Input text failed text_length={len(text)} error_type={type(e).__name__}")
             return False
 
     async def press_key(self, key: KeyCode | str | int) -> bool:
@@ -379,6 +400,7 @@ class AndroidAdbDriver(BaseDeviceDriver):
             await asyncio.to_thread(self.device.shell, f"input keyevent {keycode_val}")
             return True
         except Exception as e:
+            self._raise_if_disconnected(e)
             logger.error(f"Press key failed for '{key}': {e}")
             return False
 
@@ -388,14 +410,27 @@ class AndroidAdbDriver(BaseDeviceDriver):
             await asyncio.to_thread(self.device.shell, cmd)
             return True
         except Exception as e:
+            self._raise_if_disconnected(e)
             logger.error(f"Launch app failed for '{package_name}': {e}")
             return False
 
     async def stop_app(self, package_name: str) -> bool:
         try:
-            await asyncio.to_thread(self.device.shell, f"am force-stop {package_name}")
+            stop_output = await asyncio.to_thread(
+                self.device.shell, f"am force-stop {package_name}"
+            )
+            if str(stop_output or "").strip():
+                logger.error(f"Force-stop reported an error for '{package_name}': {stop_output}")
+                return False
+            process_ids = await asyncio.to_thread(self.device.shell, f"pidof {package_name}")
+            if str(process_ids or "").strip():
+                logger.error(
+                    f"Force-stop left process(es) running for '{package_name}': {process_ids}"
+                )
+                return False
             return True
         except Exception as e:
+            self._raise_if_disconnected(e)
             logger.error(f"Stop app failed for '{package_name}': {e}")
             return False
 
@@ -437,6 +472,10 @@ class AndroidAdbDriver(BaseDeviceDriver):
 
     async def start_video_recording(self, output_dir: Path | None = None) -> None:
         """Starts screen recording via scrcpy in background."""
+        unavailable = recording_unavailable_reason()
+        if unavailable:
+            logger.info(unavailable)
+            return
         out_dir = output_dir or get_temp_dir("recordings")
         out_dir.mkdir(parents=True, exist_ok=True)
         self._recording_mkv_path = out_dir / "recording.mkv"
@@ -444,11 +483,15 @@ class AndroidAdbDriver(BaseDeviceDriver):
         logger.info(f"Starting scrcpy video recording to {self._recording_mkv_path}...")
         try:
             scrcpy_bin = find_scrcpy()
+            if not scrcpy_bin:
+                raise ValueError("scrcpy executable was not found")
+            scrcpy_version = await asyncio.to_thread(detect_scrcpy_version, scrcpy_bin)
             cmd = build_scrcpy_record_command(
                 scrcpy_bin,
                 self.device_id,
                 self._recording_mkv_path,
                 lock_capture_orientation=False,
+                scrcpy_version=scrcpy_version,
             )
             self._scrcpy_process = await asyncio.create_subprocess_exec(
                 *cmd,

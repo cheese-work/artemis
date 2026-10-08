@@ -44,6 +44,7 @@ from artemis.tools.tool_wrapper import (
     invoke_tool_with_injection,
 )
 from artemis.utils.decorators import wrap_with_callbacks
+from artemis.utils.goal_images import goal_image_blocks
 from artemis.utils.logger import get_logger
 from artemis.utils.notes import get_note_file_path
 from artemis.utils.plan_grammar import (
@@ -295,7 +296,7 @@ class PlannerNode:
 
         human_message = Template(human_content).render(**render_kwargs)
 
-        human_message_content = [{"type": "text", "text": human_message}]
+        human_message_content = [{"type": "text", "text": human_message}, *goal_image_blocks()]
         if screenshot_b64:
             human_message_content.append(
                 {
@@ -351,7 +352,9 @@ class PlannerNode:
 
                 for tc in response.tool_calls:
                     tool_name = tc["name"]
-                    logger.info(f"Planner called tool: {tool_name} with args: {tc['args']}")
+                    logger.info(
+                        f"event=tool_called tool={tool_name} args_length={len(str(tc['args']))}"
+                    )
                     if ":" in tool_name:
                         tool_to_run = get_tool_by_name(tool_name, all_tools)
                     else:
@@ -372,7 +375,9 @@ class PlannerNode:
                                     f" {list(tool_to_run.args.keys())}"
                                 )
 
-                                logger.info(f"Invoking {tool_name} with args: {list(args.keys())}")
+                                logger.info(
+                                    f"event=tool_called tool={tool_name} args_length={len(str(args))}"
+                                )
                                 result_obj = await invoke_tool_with_injection(
                                     tool=tool_to_run,
                                     args=args,

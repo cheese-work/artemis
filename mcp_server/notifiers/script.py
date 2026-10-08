@@ -79,6 +79,7 @@ class ScriptNotifier(BaseNotifier):
             subprocess.run(
                 cmd,
                 shell=True,
+                env={**os.environ, "ARTEMIS_EVENT_ID": str((payload or {}).get("event_id", ""))},
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 timeout=10,

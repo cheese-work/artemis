@@ -34,6 +34,8 @@ from artemis.data_engine.models import (
     TraceRecord,
     VideoRecordingRecord,
 )
+from artemis.data_engine.run_catalog import migrate as migrate_run_catalog
+from artemis.runtime.lifecycle import ensure_lifecycle_schema
 from artemis.utils.logger import get_logger
 
 
@@ -123,6 +125,9 @@ class StorageManager:
                 conn.execute("ALTER TABLE sessions ADD COLUMN pid INTEGER")
             except sqlite3.OperationalError:
                 pass
+
+            # Outcome ownership lives in artemis.runtime.lifecycle.
+            ensure_lifecycle_schema(conn)
 
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS images (
@@ -270,6 +275,11 @@ class StorageManager:
             except sqlite3.OperationalError:
                 pass
             conn.commit()
+        try:
+            migrate_run_catalog(self.db_path)
+        except sqlite3.Error:
+            # Additive index over runs; the listing API reports "not ready" instead.
+            logger.exception("Run catalog migration failed for %s", self.db_path)
         logger.info(f"Database initialized at {self.db_path}")
 
     def create_session(self, session: SessionMetadata):
@@ -277,8 +287,22 @@ class StorageManager:
         with self._get_connection() as conn:
             conn.execute(
                 """
-                INSERT OR REPLACE INTO sessions (session_id, initial_goal, start_time, end_time, status, device_info, pid, video_filepath)
+                INSERT INTO sessions (session_id, initial_goal, start_time, end_time, status, device_info, pid, video_filepath)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(session_id) DO UPDATE SET
+                    initial_goal = excluded.initial_goal,
+                    start_time = excluded.start_time,
+                    device_info = excluded.device_info,
+                    pid = excluded.pid,
+                    video_filepath = excluded.video_filepath,
+                    -- a committed outcome is final: restarting a worker for the
+                    -- same session id must not resurrect it
+                    end_time = CASE WHEN sessions.status IN
+                        ('completed','failed','cancelled','interrupted','success')
+                        THEN sessions.end_time ELSE excluded.end_time END,
+                    status = CASE WHEN sessions.status IN
+                        ('completed','failed','cancelled','interrupted','success')
+                        THEN sessions.status ELSE excluded.status END
                 """,
                 (
                     str(session.session_id),
@@ -299,17 +323,19 @@ class StorageManager:
         logger.info(f"Session directory created at {session_dir}")
 
     def update_session(self, session: SessionMetadata):
-        """Update an existing session record."""
+        """Update an existing session record's metadata.
+
+        ``status`` and ``end_time`` belong to the lifecycle authority and are
+        never written here, so a stale read-modify-write cannot clobber an outcome.
+        """
         with self._get_connection() as conn:
             conn.execute(
                 """
                 UPDATE sessions 
-                SET end_time = ?, status = ?, device_info = ?, video_filepath = ?
+                SET device_info = ?, video_filepath = ?
                 WHERE session_id = ?
                 """,
                 (
-                    session.end_time,
-                    session.status,
                     json.dumps(session.device_info),
                     session.video_filepath,
                     str(session.session_id),
@@ -836,6 +862,7 @@ class StorageManager:
                     device_info=json.loads(row_dict["device_info"]),
                     pid=row_dict.get("pid"),
                     video_filepath=row_dict.get("video_filepath"),
+                    interrupt_reason=row_dict.get("interrupt_reason"),
                 )
         return None
 
@@ -1095,6 +1122,8 @@ class StorageManager:
                 "background_tasks",
                 "steps",
                 "images",
+                "lifecycle_outbox",
+                "lifecycle_events",
                 "sessions",
             ]
             for table in tables:
@@ -1140,8 +1169,13 @@ class StorageManager:
         except ValueError:
             return False
 
-    def delete_session(self, session_id: UUID):
-        """Delete all data associated with a session, including files on disk."""
+    def delete_session(self, session_id: UUID, *, delete_files: bool = True, vacuum: bool = True):
+        """Delete all data associated with a session, including files on disk.
+
+        ``delete_files=False`` removes only the database rows: the run library
+        deletes artifacts itself from an explicit manifest. ``vacuum=False`` lets a
+        bulk delete compact the database once at the end.
+        """
         session_id_str = str(session_id)
 
         # 1. Get video paths before deleting from DB
@@ -1184,6 +1218,8 @@ class StorageManager:
                 "background_tasks",
                 "video_recordings",
                 "steps",
+                "lifecycle_outbox",
+                "lifecycle_events",
                 "sessions",
             ]
             for table in tables:
@@ -1195,10 +1231,13 @@ class StorageManager:
                 except sqlite3.OperationalError as e:
                     logger.warning(f"Failed to delete from table {table}: {e}")
             conn.commit()
-            conn.execute("VACUUM")
-            conn.commit()
+            if vacuum:
+                conn.execute("VACUUM")
+                conn.commit()
 
         logger.info(f"Database records for session {session_id} cleared.")
+        if not delete_files:
+            return
 
         # 3. Delete session directory (notes, etc.)
         session_dir = self.base_trace_dir / session_id_str

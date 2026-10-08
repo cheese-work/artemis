@@ -1,0 +1,214 @@
+<div #scrollEl class="viewer-scroll" (scroll)="rememberPosition()">
+  @switch (state()) {
+    @case ('empty') {
+      <div class="state-page"><h1>Start a new run</h1><p>Enter a task below. Steps will appear here as they arrive.</p></div>
+    }
+    @case ('loading') {
+      <p class="sr-only" role="status">Loading run…</p>
+      <div class="skeleton" aria-hidden="true"></div>
+    }
+    @case ('not_found') {
+      <div class="state-page">
+        <h1>{{ strings.notFoundTitle }}</h1>
+        <p>{{ strings.notFoundBody }}</p>
+        <a class="back-to-runs" routerLink="/runs" [queryParams]="lastQuery()">{{ strings.backToRuns }}</a>
+      </div>
+    }
+    @case ('removed') {
+      <div class="state-page">
+        <h1>{{ strings.removedTitle }}</h1>
+        <p>{{ removedReason(removed()?.reason) }}</p>
+        <a class="back-to-runs" routerLink="/runs" [queryParams]="lastQuery()">{{ strings.backToRuns }}</a>
+      </div>
+    }
+    @case ('access') {
+      <div class="state-page">
+        <h1>{{ strings.accessTitle }}</h1>
+        <p>{{ strings.accessBody }}</p>
+        <a class="sign-in primary-link" [href]="appUrl('/runs/' + runId())">{{ strings.signIn }}</a>
+      </div>
+    }
+    @case ('ambiguous') {
+      <div class="state-page">
+        <h1>{{ strings.ambiguousTitle }}</h1>
+        <p>{{ strings.ambiguousBody }}</p>
+        <ul class="candidate-list">
+          @for (id of candidates(); track id) {
+            <li><a class="candidate" [routerLink]="['/runs', id]">{{ id }}</a></li>
+          }
+        </ul>
+        <a class="back-to-runs" routerLink="/runs" [queryParams]="lastQuery()">{{ strings.backToRuns }}</a>
+      </div>
+    }
+    @case ('error') {
+      <div class="state-page" role="alert">
+        <h1>{{ strings.viewerLoadFailed }}</h1>
+        <button type="button" class="secondary-button" (click)="reload()">{{ strings.retry }}</button>
+        <a class="back-to-runs" routerLink="/runs" [queryParams]="lastQuery()">{{ strings.backToRuns }}</a>
+      </div>
+    }
+    @case ('ready') {
+      @if (run(); as current) {
+        <a class="back-to-runs" routerLink="/runs" [queryParams]="lastQuery()">{{ strings.backToRuns }}</a>
+
+        <section class="outcome" data-section="outcome" aria-label="Outcome">
+          <span class="outcome-badge" appRunStatusBadge [status]="current.status"></span>
+          <h1 class="run-prompt">{{ current.prompt || 'Untitled run' }}</h1>
+          <div class="run-id">
+            <app-run-id-copy [runId]="current.session_id"></app-run-id-copy>
+          </div>
+          <details class="secondary-meta" [open]="!compact()">
+            <summary>Run details</summary>
+            <dl>
+              <dt>Phone</dt>
+              <dd appRunDeviceLabel [serial]="current.device_ref?.serial ?? null" [detail]="true"></dd>
+              <dt>Computer</dt>
+              <dd>{{ current.host_id === null ? 'A browser' : 'A computer (' + current.host_id.slice(0, 8) + ')' }}</dd>
+              <dt>Requested by</dt>
+              <dd>{{ current.requested_by ?? 'Unknown' }}</dd>
+              <dt>Started</dt>
+              <dd>
+                @if (current.start_time) {
+                  {{ current.start_time * 1000 | date: 'MMM d, y, h:mm a' }}
+                } @else {
+                  Date unknown
+                }
+              </dd>
+            </dl>
+          </details>
+        </section>
+
+        @if (liveState(); as live) {
+          <div class="interrupted-banner live-state" role="status">
+            <p>{{ live.title }}</p>
+            <p>{{ live.reason }}</p>
+          </div>
+        }
+
+        @if (viewingLiveSession()) {
+          <details class="run-info" (toggle)="infoOpen.set($any($event.target).open)">
+            <summary>Run information</summary>
+            <dl>
+              <dt>Model</dt>
+              <dd>{{ viewedModel()?.name ?? 'Unknown' }} ({{ viewedModel()?.id ?? 'Unknown' }})</dd>
+              @if (usage(); as totals) {
+                <dt>Session tokens</dt><dd>{{ totals.total_tokens }}</dd>
+                <dt>Input / output tokens</dt><dd>{{ totals.prompt_tokens }} / {{ totals.completion_tokens }}</dd>
+                <dt>Cached tokens</dt><dd>{{ totals.cached_tokens }}</dd>
+                <dt>Context tokens</dt><dd>{{ totals.operator_context_tokens ?? 'Unknown' }} / {{ totals.operator_context_window_tokens }}</dd>
+                <dt>LLM calls</dt><dd>{{ totals.llm_calls }}</dd>
+              }
+            </dl>
+            @if (!usage()) { <p>{{ usageFailed() ? 'Could not load usage.' : 'Open run information to load usage.' }}</p> }
+          </details>
+        }
+
+        @if (current.status === 'interrupted' && stepsLoaded()) {
+          <div class="interrupted-banner" role="status">
+            <p>{{ interruptedText() }}</p>
+            <p>{{ interruptReason(current.interrupt_reason) }}</p>
+            <button type="button" class="secondary-button" (click)="startNewRun()">{{ strings.startNewRun }}</button>
+          </div>
+        }
+        @if (current.status === 'failed') {
+          <div class="interrupted-banner failed-banner" role="status">
+            <p>Run failed.</p>
+            <p>{{ failureReason() }}</p>
+            <button type="button" class="secondary-button" (click)="startNewRun()">{{ strings.startNewRun }}</button>
+          </div>
+        }
+
+        <div class="evidence-grid">
+          @if (mode() === 'live' && startupItems().length && !steps().length) {
+            <section aria-label="Preparing the phone" class="startup-progress">
+              <h2>Preparing the phone</h2>
+              @for (item of startupItems(); track item.stage) { <p role="status">{{ item.message }}</p> }
+            </section>
+          }
+          <section class="evidence" data-section="evidence" aria-label="Evidence" appRunEvidencePanel
+            [recording]="recording()" [videoUrl]="videoUrl()" [playerFailed]="playerFailed()" [message]="copy()"
+            [retryable]="canCheckAgain()" [screenshotUrl]="screenshot()"
+            [screenshotAlt]="'Screenshot for step ' + selectedStep()?.step_number" [loaded]="stepsLoaded()"
+            (metadata)="onMetadata()" (ended)="onEnded()" (failed)="playerFailed.set(true)" (retry)="checkAgain()">
+          </section>
+
+          <section class="steps" data-section="steps" aria-label="Steps">
+            <h2>Steps</h2>
+            @if (stepsFailed()) {
+              <p class="muted">Steps couldn't be loaded.</p>
+            } @else if (stepsLoaded() && steps().length === 0) {
+              <p class="muted">No steps were recorded.</p>
+            }
+            <ol #timelineEl class="step-list" (scroll)="rememberPosition()">
+              @for (step of steps(); track trackStep($index, step)) {
+                <li>
+                  <button
+                    type="button"
+                    class="step-button" appRunStepRow [stepNumber]="step.step_number" [title]="stepTitle(step)" [failed]="stepFailed(step)"
+                    [failureDetail]="stepFailed(step) ? stepFailureDetail(step) : null"
+                    [attr.aria-current]="selectedStep()?.step_id === step.step_id ? 'step' : null"
+                    (click)="selectStep(step)"
+                    (keydown)="onStepKey($event, $index)"
+                  >
+                    @if (!stepFailed(step)) { <span class="step-outcome">{{ step.last_execution_result || postImage(step) ? 'Completed' : 'Dispatched' }}</span> }
+                  </button>
+                  @if (selectedStep()?.step_id === step.step_id) {
+                    <div class="step-screenshots">
+                      @if (preImage(step); as before) {
+                        <figure><figcaption>Before</figcaption><img [src]="before" [alt]="'Before step ' + step.step_number"></figure>
+                      }
+                      @if (postImage(step); as after) {
+                        <figure><figcaption>After</figcaption><img [src]="after" [alt]="'After step ' + step.step_number"></figure>
+                      }
+                    </div>
+                  }
+                </li>
+              }
+            </ol>
+          </section>
+        </div>
+
+        <section class="actions" data-section="actions" aria-label="Actions" appRunActionBar
+          [actions]="actions()" [feedback]="feedback()" [error]="actionError()?.text ?? null"
+          [retryable]="!!actionError()?.retry" (action)="onAction($event)">
+          @if (readOnlyNote(); as note) {
+            <p barNote class="read-only-note" role="status">{{ note }}</p>
+          }
+        </section>
+
+        @if (streamBlocks().length) {
+          <section class="live-streams" aria-label="Live thinking and text">
+            @for (block of streamBlocks(); track block.id) {
+              @for (reset of block.resets; track $index) { <p role="status">{{ reset.message }}</p> }
+              @for (event of block.events; track $index) {
+                <details open>
+                  <summary>{{ event.type === 'thinking' ? 'Thought' : 'Work' }}</summary>
+                  @if (event.data.isReset) { <p role="status">{{ event.data.resetMessage }}</p> }
+                  <pre>{{ event.data.text }}</pre>
+                </details>
+              }
+            }
+          </section>
+        }
+
+        <details class="technical-details" (toggle)="techOpen.set($any($event.target).open)">
+          <summary>{{ strings.technicalDetails }}</summary>
+          @if (techOpen()) {
+            <pre class="raw-logs">{{ rawLogs() }}</pre>
+          }
+        </details>
+      }
+    }
+  }
+
+  <dialog #dialogEl class="trust-dialog" aria-labelledby="run-dialog-title" (cancel)="onDialogCancel($event)">
+    <h2 id="run-dialog-title">{{ dialog()?.title }}</h2>
+    @for (notice of dialog()?.notices ?? []; track notice) {
+      <p class="dialog-notice">{{ notice }}</p>
+    }
+    <div class="dialog-buttons">
+      <button type="button" class="secondary-button dialog-cancel" (click)="closeDialog()">{{ strings.cancel }}</button>
+      <button type="button" class="action-button dialog-confirm" (click)="confirm()">{{ dialog()?.confirm }}</button>
+    </div>
+  </dialog>
+</div>

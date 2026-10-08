@@ -442,7 +442,7 @@ async def run_universal(
                 t_name = tc["name"]
                 t_args = tc.get("args", {})
                 t_id = tc.get("id", f"call_{iterations}")
-                logger.info(f"Executing universal tool '{t_name}' with args {t_args}")
+                logger.info(f"event=tool_called tool={t_name} args_length={len(str(t_args))}")
 
                 res = await _execute_universal_tool(analyzer, t_name, t_args)
 
