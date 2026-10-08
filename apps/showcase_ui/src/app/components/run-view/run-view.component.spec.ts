@@ -1,14 +1,16 @@
 import { Component, signal } from '@angular/core';
 import { HttpErrorResponse, HttpEventType, HttpHeaderResponse, HttpHeaders, HttpResponse } from '@angular/common/http';
-import { ComponentFixture, TestBed } from '@angular/core/testing';
+import { ComponentFixture, TestBed, fakeAsync, tick } from '@angular/core/testing';
 import { Router, provideRouter } from '@angular/router';
 import { Observable, Subject, of, throwError } from 'rxjs';
 import { AdminConfigService } from '../../services/admin-config.service';
+import { AgentService } from '../../services/agent.service';
+import { SessionUsage } from '../../core/models/session.model';
 import { RunSummary, SessionVideo } from '../../core/models/run.model';
 import { StepItemData } from '../../core/models/stream.model';
 import { RunsService } from '../../services/runs.service';
 import { SELECTED_DEVICE_SERIAL_KEY } from '../../services/system.service';
-import { RunViewerComponent } from './run-viewer.component';
+import { RunViewComponent } from './run-view.component';
 import { tinyVideoUrl } from './tiny-video.testing';
 
 @Component({ standalone: true, template: 'stub' })
@@ -61,13 +63,18 @@ const VIDEO_B = tinyVideoUrl();
 const httpError = (status: number, body: unknown = {}) =>
   throwError(() => new HttpErrorResponse({ status, error: body }));
 
-describe('RunViewerComponent', () => {
+describe('RunViewComponent', () => {
   let runs: jasmine.SpyObj<RunsService>;
   let admin: jasmine.SpyObj<AdminConfigService>;
-  let fixture: ComponentFixture<RunViewerComponent>;
+  let fixture: ComponentFixture<RunViewComponent>;
   let router: Router;
   let root: HTMLElement;
   let clipboard: jasmine.Spy;
+  let agent: Pick<AgentService, 'isPaused' | 'pausedError' | 'isRetrying' | 'retryMessage' | 'sessionLogs'
+    | 'viewedModel' | 'agentStatus' | 'currentSessionId' | 'runningSessionId'> & {
+    resumeTask: jasmine.Spy;
+    getSessionUsage: jasmine.Spy;
+  };
 
   const q = <T extends Element>(selector: string) => root.querySelector<T>(selector);
   const qa = <T extends Element>(selector: string) => Array.from(root.querySelectorAll<T>(selector));
@@ -87,7 +94,8 @@ describe('RunViewerComponent', () => {
       video = of(ready()) as Observable<SessionVideo>,
       isAdmin = false,
       email = 'qa@example.test',
-      id = ID
+      id = ID,
+      viewMode = 'review' as 'live' | 'review'
     } = {}
   ) {
     runs.get.and.returnValue(runResult);
@@ -96,9 +104,11 @@ describe('RunViewerComponent', () => {
     admin.getIdentity.and.returnValue(
       of({ email, admin: isAdmin, auth_mode: 'cloudflare', reason: null })
     );
-    fixture = TestBed.createComponent(RunViewerComponent);
+    fixture = TestBed.createComponent(RunViewComponent);
     fixture.componentRef.setInput('runId', id);
+    fixture.componentRef.setInput('mode', viewMode);
     root = fixture.nativeElement;
+    root.style.height = '480px';
     await settle();
   }
 
@@ -107,12 +117,28 @@ describe('RunViewerComponent', () => {
     runs = jasmine.createSpyObj<RunsService>(
       'RunsService',
       ['get', 'steps', 'video', 'pin', 'unpin', 'remove', 'downloadBundle'],
-      { lastLibraryQuery: signal<Record<string, string>>({ status: 'failed' }) }
+      { lastLibraryQuery: signal<Record<string, string>>({ status: 'failed' }), viewPosition: signal(null) }
     );
     admin = jasmine.createSpyObj<AdminConfigService>('AdminConfigService', ['getIdentity']);
+    agent = {
+      isPaused: signal(false),
+      pausedError: signal<string | null>(null),
+      isRetrying: signal(false),
+      retryMessage: signal<string | null>(null),
+      sessionLogs: signal<any[]>([]),
+      viewedModel: signal({ name: 'Pro', id: 'model-pro', provider: 'test' }),
+      agentStatus: signal('idle'),
+      currentSessionId: signal<string | null>(ID),
+      runningSessionId: signal<string | null>(ID),
+      resumeTask: jasmine.createSpy('resumeTask'),
+      getSessionUsage: jasmine.createSpy('getSessionUsage').and.returnValue(of({
+        session_id: ID, llm_calls: 2, prompt_tokens: 100, completion_tokens: 50, total_tokens: 150,
+        cached_tokens: 10, operator_context_tokens: 80, operator_context_window_tokens: 1000
+      } satisfies SessionUsage))
+    };
     clipboard = spyOn(navigator.clipboard, 'writeText').and.resolveTo();
     await TestBed.configureTestingModule({
-      imports: [RunViewerComponent],
+      imports: [RunViewComponent],
       providers: [
         provideRouter([
           { path: 'runs', component: StubComponent },
@@ -120,7 +146,8 @@ describe('RunViewerComponent', () => {
           { path: 'workspace', component: StubComponent }
         ]),
         { provide: RunsService, useValue: runs },
-        { provide: AdminConfigService, useValue: admin }
+        { provide: AdminConfigService, useValue: admin },
+        { provide: AgentService, useValue: agent }
       ]
     }).compileComponents();
     router = TestBed.inject(Router);
@@ -168,7 +195,7 @@ describe('RunViewerComponent', () => {
           video: status === null ? new Subject<SessionVideo>() : of(ready({ status }))
         });
         expect(q('video')).toBeNull();
-        expect(q('.recording-copy')!.textContent!.trim()).toBe(copy);
+        expect(q('.recording-copy')!.textContent!.trim()).toContain(copy);
         expect(q('.recording-copy')!.getAttribute('role')).toBe('status');
         expect(q('img.evidence-image')!.getAttribute('alt')).toBe('Screenshot for step 3');
         expect(qa('button').some((control) => control.textContent!.trim() === 'Check again')).toBe(retry);
@@ -215,7 +242,427 @@ describe('RunViewerComponent', () => {
     });
   });
 
+  for (const viewMode of ['live', 'review'] as const) {
+    describe(`${viewMode} mode parity`, () => {
+      const failure = 'Invalid target index 2. The list is empty on this screen';
+
+      it('shows the same failed outcome, reason, numbered action and before/after screenshots', async () => {
+        await open({ viewMode, runResult: of(run({ status: 'failed' })),
+          steps: of([step(1, { last_execution_result: { success: false, error: failure } })]),
+          video: of(ready({ status: 'failed', message: 'Encoder exited before writing a playable file.' })) });
+        expect(q('.outcome-badge')!.textContent).toContain('Failed');
+        expect(q('.failed-banner')!.textContent).toContain(failure);
+        expect(q('.step-failure-detail')!.textContent).toBe(failure);
+        expect(q('.step-number')!.textContent).toBe('Step 1');
+        expect(q('.step-title')!.textContent).toBe('Tapping Element');
+        expect(q('img[alt="Before step 1"]')!.getAttribute('src')).toBe('/images/pre1.png');
+        expect(q('img[alt="After step 1"]')!.getAttribute('src')).toBe('/images/post1.png');
+        expect(q('.recording-copy')!.textContent).toContain('Encoder exited before writing a playable file.');
+        expect(button('Check again')).toBeDefined();
+        expect(q('video')).toBeNull();
+        expect(button('Start new run with this prompt')).toBeDefined();
+      });
+
+      it('shows the same interrupted banner and device without selecting a new device', async () => {
+        await open({ viewMode, runResult: of(run({ status: 'interrupted', interrupt_reason: 'device_offline' })) });
+        expect(q('.interrupted-banner')!.textContent).toContain('Run interrupted at step 3');
+        expect(q('.interrupted-banner')!.textContent).toContain('The phone went offline.');
+        expect(q('.secondary-meta')!.textContent).toContain('emulator-5554');
+        expect(localStorage.getItem(SELECTED_DEVICE_SERIAL_KEY)).toBeNull();
+      });
+
+      it('supports timeline arrow, Home and End keys and focusable actions', async () => {
+        await open({ viewMode });
+        const controls = qa<HTMLButtonElement>('.step-button');
+        controls[0].focus();
+        controls[0].dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+        await settle();
+        expect(document.activeElement).toBe(controls[1]);
+        expect(fixture.componentInstance.selectedStep()?.step_id).toBe('st2');
+        controls[1].dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true }));
+        await settle();
+        expect(document.activeElement).toBe(controls[2]);
+        controls[2].dispatchEvent(new KeyboardEvent('keydown', { key: 'Home', bubbles: true }));
+        await settle();
+        expect(document.activeElement).toBe(controls[0]);
+        button('Copy link').focus();
+        button('Copy link').click();
+        await settle();
+        expect(q<HTMLDialogElement>('dialog')!.open).toBeTrue();
+      });
+
+      it('reports no screenshots when neither side of a step has one', async () => {
+        await open({ viewMode, steps: of([step(1, { pre_image_name: undefined, post_image_name: undefined })]),
+          video: of(ready({ status: 'unavailable' })) });
+        expect(q('.step-screenshots')!.querySelector('img')).toBeNull();
+        expect(q('.evidence')!.textContent).toContain('No screenshots for this run.');
+      });
+
+      it('drops an old confirmation when a different run is selected', async () => {
+        await open({ viewMode, isAdmin: true });
+        button('Delete').click();
+        await settle();
+        expect(q<HTMLDialogElement>('dialog')!.open).toBeTrue();
+        const nextId = '4f2b9c1a-5d7e-4a10-9c33-0e1f2a3b4c5d';
+        runs.get.and.returnValue(of(run({ session_id: nextId })));
+        fixture.componentRef.setInput('runId', nextId);
+        await settle();
+        expect(q<HTMLDialogElement>('dialog')!.open).toBeFalse();
+        expect(fixture.componentInstance.dialogKind()).toBeNull();
+        expect(runs.remove).not.toHaveBeenCalled();
+      });
+    });
+  }
+
+  describe('live updates and review continuity', () => {
+    it('merges arriving and updated steps with persisted steps without dropping selection', async () => {
+      await open({ viewMode: 'live', steps: of([step(1)]), runResult: of(run({ status: 'running' })) });
+      fixture.componentRef.setInput('liveSteps', [step(2)]);
+      await settle();
+      q<HTMLButtonElement>('.step-button')!.click();
+      await settle();
+      fixture.componentRef.setInput('liveSteps', [step(2, {
+        last_execution_result: { success: false, error: 'Target disappeared' }
+      }), step(3), step(4, { session_id: 'another-run' })]);
+      await settle();
+      expect(qa('.step-button').length).toBe(3);
+      expect(fixture.componentInstance.selectedStep()?.step_id).toBe('st1');
+      expect(q('.step-failure-detail')!.textContent).toBe('Target disappeared');
+    });
+
+    it('shows incoming steps when the catalog has not indexed a new live run yet', async () => {
+      await open({ viewMode: 'live', runResult: httpError(404), steps: of([]) });
+      fixture.componentRef.setInput('liveSession', {
+        session_id: ID, initial_goal: 'New live task', start_time: START, status: 'running'
+      });
+      fixture.componentRef.setInput('liveSteps', [step(1)]);
+      await settle();
+      expect(q('.run-prompt')!.textContent).toBe('New live task');
+      expect(q('.outcome-badge')!.textContent).toContain('Running');
+      expect(qa('.step-button').length).toBe(1);
+    });
+
+    it('keeps selection and both scroll positions after a live view is destroyed and reopened for review', async () => {
+      const manySteps = Array.from({ length: 70 }, (_, index) => step(index + 1));
+      await open({ viewMode: 'live', steps: of(manySteps) });
+      q<HTMLButtonElement>('.step-button')!.click();
+      await settle();
+      q<HTMLElement>('.viewer-scroll')!.scrollTop = 180;
+      q<HTMLElement>('.step-list')!.scrollTop = 210;
+      q<HTMLElement>('.viewer-scroll')!.dispatchEvent(new Event('scroll'));
+      q<HTMLElement>('.step-list')!.dispatchEvent(new Event('scroll'));
+      fixture.destroy();
+      const saved = runs.viewPosition()!;
+      expect(saved.scrollTop).toBe(180);
+      expect(saved.timelineScrollTop).toBe(210);
+      await open({ viewMode: 'review', steps: of(manySteps), id: ID.slice(0, 8) });
+      expect(fixture.componentInstance.selectedStep()?.step_id).toBe('st1');
+      expect(q<HTMLElement>('.viewer-scroll')!.scrollTop).toBe(180);
+      expect(q<HTMLElement>('.step-list')!.scrollTop).toBe(210);
+    });
+
+    it('refreshes final catalog status and evidence without resetting selection on completion', async () => {
+      await open({ viewMode: 'live', runResult: of(run({ status: 'running' })) });
+      fixture.componentRef.setInput('liveSession', {
+        session_id: ID, initial_goal: 'Live task', start_time: START, status: 'running'
+      });
+      await settle();
+      q<HTMLButtonElement>('.step-button')!.click();
+      await settle();
+      runs.get.and.returnValue(of(run({ status: 'interrupted', interrupt_reason: 'host_disconnected' })));
+      fixture.componentRef.setInput('liveSession', {
+        session_id: ID, initial_goal: 'Live task', start_time: START, status: 'cancelled'
+      });
+      await settle();
+      expect(q('.outcome-badge')!.textContent).toContain('Interrupted');
+      expect(q('.interrupted-banner')!.textContent).toContain('lost its connection');
+      expect(fixture.componentInstance.selectedStep()?.step_id).toBe('st1');
+      expect(runs.get).toHaveBeenCalledTimes(2);
+    });
+
+    it('prefills the existing live new-task box instead of navigating to the same route', async () => {
+      await open({ viewMode: 'live', runResult: of(run({ status: 'failed' })) });
+      const received = jasmine.createSpy('newRunPrompt');
+      fixture.componentInstance.newRunPrompt.subscribe(received);
+      button('Start new run with this prompt').click();
+      expect(received).toHaveBeenCalledWith('Log in and open settings');
+    });
+  });
+
+  describe('paused-task recovery characterization', () => {
+    beforeEach(() => {
+      agent.isPaused.set(true);
+      agent.agentStatus.set('paused');
+    });
+
+    it('offers a native focusable Continue control that resumes the current paused live run', async () => {
+      await open({ viewMode: 'live', runResult: of(run({ status: 'paused' })) });
+      const control = button('Continue task');
+      expect(control).toBeDefined();
+      control.focus();
+      expect(document.activeElement).toBe(control);
+      expect(control.type).toBe('button');
+      expect(control.tabIndex).toBe(0);
+      control.click();
+      expect(agent.resumeTask).toHaveBeenCalledTimes(1);
+    });
+
+    for (const scenario of [
+      { name: 'a stored run', viewMode: 'review' as const, viewedId: ID, activeId: ID, paused: true, status: 'paused' },
+      { name: 'a different live run', viewMode: 'live' as const, viewedId: 'other-run', activeId: ID, paused: true, status: 'paused' },
+      { name: 'a stale paused event', viewMode: 'live' as const, viewedId: ID, activeId: ID, paused: true, status: 'running' },
+      { name: 'a stale polled pause', viewMode: 'live' as const, viewedId: ID, activeId: ID, paused: false, status: 'paused' },
+      { name: 'a missing active task', viewMode: 'live' as const, viewedId: ID, activeId: null, paused: true, status: 'paused' }
+    ]) {
+      it(`does not resume the active task from ${scenario.name}`, async () => {
+        agent.currentSessionId.set(scenario.viewedId);
+        agent.runningSessionId.set(scenario.activeId);
+        agent.isPaused.set(scenario.paused);
+        agent.agentStatus.set(scenario.status);
+        await open({ id: scenario.viewedId, viewMode: scenario.viewMode,
+          runResult: of(run({ session_id: scenario.viewedId, status: 'paused' })) });
+        expect(button('Continue task')).toBeUndefined();
+        fixture.componentInstance.onAction({ id: 'resume', event: new Event('click') });
+        expect(agent.resumeTask).not.toHaveBeenCalled();
+      });
+    }
+
+    it('rechecks the current session before acting on an already-rendered Continue control', async () => {
+      await open({ viewMode: 'live', runResult: of(run({ status: 'paused' })) });
+      const control = button('Continue task');
+      expect(control).toBeDefined();
+      agent.currentSessionId.set('other-run');
+      control.click();
+      expect(agent.resumeTask).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('live state and run-information characterization', () => {
+    it('shows the current paused run reason beside its Continue control', async () => {
+      agent.isPaused.set(true);
+      agent.agentStatus.set('paused');
+      agent.pausedError.set('AI call failed: quota exhausted');
+      await open({ viewMode: 'live', runResult: of(run({ status: 'paused' })) });
+      expect(q('.live-state')!.getAttribute('role')).toBe('status');
+      expect(q('.live-state')!.textContent).toContain('Task paused');
+      expect(q('.live-state')!.textContent).toContain('AI call failed: quota exhausted');
+      expect(button('Continue task')).toBeDefined();
+    });
+
+    it('shows the current retry reason and removes the notice when retry ends', async () => {
+      agent.agentStatus.set('running');
+      agent.isRetrying.set(true);
+      agent.retryMessage.set('AI service is temporarily busy (Attempt 2/3); retrying in 1s...');
+      await open({ viewMode: 'live', runResult: of(run({ status: 'running' })) });
+      expect(q('.live-state')!.textContent).toContain('Retrying');
+      expect(q('.live-state')!.textContent).toContain('Attempt 2/3');
+      expect(button('Continue task')).toBeUndefined();
+      agent.isRetrying.set(false);
+      await settle();
+      expect(q('.live-state')).toBeNull();
+    });
+
+    for (const viewMode of ['live', 'review'] as const) {
+      it(`does not leak the active task reason into a different ${viewMode} run`, async () => {
+        agent.isPaused.set(true);
+        agent.agentStatus.set('paused');
+        agent.pausedError.set('Other task error');
+        agent.isRetrying.set(true);
+        agent.retryMessage.set('Other task retry');
+        agent.runningSessionId.set('other-task');
+        await open({ viewMode });
+        expect(q('.live-state')).toBeNull();
+        expect(root.textContent).not.toContain('Other task');
+      });
+    }
+
+    it('restores model, session tokens and executor context in a native live details panel', async () => {
+      await open({ viewMode: 'live' });
+      const info = q<HTMLDetailsElement>('.run-info')!;
+      expect(info.querySelector('summary')!.textContent).toContain('Run information');
+      info.open = true;
+      info.dispatchEvent(new Event('toggle'));
+      await settle();
+      expect(agent.getSessionUsage).toHaveBeenCalledWith(ID);
+      expect(info.textContent).toContain('Pro');
+      expect(info.textContent).toContain('150');
+      expect(info.textContent).toContain('80 / 1000');
+    });
+
+    it('cancels old usage on a live switch and rejects mismatched usage responses', async () => {
+      const oldUsage = new Subject<SessionUsage>();
+      agent.getSessionUsage.and.returnValue(oldUsage);
+      await open({ viewMode: 'live' });
+      const info = q<HTMLDetailsElement>('.run-info')!;
+      info.open = true;
+      info.dispatchEvent(new Event('toggle'));
+      await settle();
+      expect(oldUsage.observed).toBeTrue();
+      const nextId = 'another-task';
+      agent.getSessionUsage.and.returnValue(of({ session_id: ID, total_tokens: 9999 }));
+      runs.get.and.returnValue(of(run({ session_id: nextId })));
+      agent.currentSessionId.set(nextId);
+      fixture.componentRef.setInput('runId', nextId);
+      await settle();
+      expect(oldUsage.observed).toBeFalse();
+      expect(root.textContent).not.toContain('9999');
+    });
+
+    it('shows a usage failure without displaying stale counts', async () => {
+      agent.getSessionUsage.and.returnValue(httpError(500));
+      await open({ viewMode: 'live' });
+      const info = q<HTMLDetailsElement>('.run-info')!;
+      info.open = true;
+      info.dispatchEvent(new Event('toggle'));
+      await settle();
+      expect(info.textContent).toContain('Could not load usage');
+    });
+
+    it('does not fetch live usage or show the active model in review mode', async () => {
+      await open();
+      expect(q('.run-info')).toBeNull();
+      expect(agent.getSessionUsage).not.toHaveBeenCalled();
+    });
+
+    it('refreshes usage every three seconds only while the active run information is open', fakeAsync(() => {
+      runs.get.and.returnValue(of(run({ status: 'running' })));
+      runs.steps.and.returnValue(of([step(1)]));
+      runs.video.and.returnValue(of(ready()));
+      admin.getIdentity.and.returnValue(of({ email: null, admin: false, auth_mode: 'open', reason: null }));
+      fixture = TestBed.createComponent(RunViewComponent);
+      root = fixture.nativeElement;
+      fixture.componentRef.setInput('mode', 'live');
+      fixture.componentRef.setInput('runId', ID);
+      fixture.detectChanges();
+      const info = q<HTMLDetailsElement>('.run-info')!;
+      info.open = true;
+      info.dispatchEvent(new Event('toggle'));
+      fixture.detectChanges();
+      tick(0);
+      expect(agent.getSessionUsage).toHaveBeenCalledTimes(1);
+      tick(3000);
+      expect(agent.getSessionUsage).toHaveBeenCalledTimes(2);
+      info.open = false;
+      info.dispatchEvent(new Event('toggle'));
+      fixture.detectChanges();
+      tick(6000);
+      expect(agent.getSessionUsage).toHaveBeenCalledTimes(2);
+      fixture.destroy();
+    }));
+  });
+
+  describe('streamed thinking and text characterization', () => {
+    const logs = [
+      { type: 'llm_stream', timestamp: START, data: { execution_id: 'exec-1', step_id: 'st1', stream_type: 'thinking', text: 'Inspect the screen', isCompleted: false } },
+      { type: 'llm_stream', timestamp: START + 1, data: { execution_id: 'exec-1', step_id: 'st1', stream_type: 'text', text: '<script>work</script>', isCompleted: false } }
+    ];
+
+    it('shows live Thought and Work blocks as escaped text with native disclosure controls', async () => {
+      agent.sessionLogs.set(logs);
+      await open({ viewMode: 'live' });
+      const streams = q('.live-streams')!;
+      expect(streams.textContent).toContain('Thought');
+      expect(streams.textContent).toContain('Inspect the screen');
+      expect(streams.textContent).toContain('Work');
+      expect(streams.textContent).toContain('<script>work</script>');
+      expect(streams.querySelector('script')).toBeNull();
+      expect(streams.querySelectorAll('details > summary').length).toBe(2);
+    });
+
+    it('updates a streamed block without duplicating the execution', async () => {
+      agent.sessionLogs.set(logs);
+      await open({ viewMode: 'live' });
+      agent.sessionLogs.set([logs[0], { ...logs[1], data: { ...logs[1].data, text: 'Work completed', isCompleted: true } }]);
+      await settle();
+      expect(q('.live-streams')!.textContent).toContain('Work completed');
+      expect(q('.live-streams')!.textContent).not.toContain('<script>work</script>');
+      expect(q('.live-streams')!.querySelectorAll('details').length).toBe(2);
+    });
+
+    it('shows a discarded stream reset reason instead of the discarded output', async () => {
+      agent.sessionLogs.set([{ ...logs[1], data: { ...logs[1].data, text: '', isReset: true, resetMessage: 'Retrying after invalid output' } }]);
+      await open({ viewMode: 'live' });
+      expect(q('.live-streams')!.textContent).toContain('Retrying after invalid output');
+      expect(q('.live-streams')!.textContent).not.toContain('<script>work</script>');
+    });
+
+    for (const viewMode of ['live', 'review'] as const) {
+      it(`does not show selected-session streams on another ${viewMode} run`, async () => {
+        agent.sessionLogs.set(logs);
+        agent.currentSessionId.set('other-task');
+        await open({ viewMode });
+        expect(q('.live-streams')).toBeNull();
+      });
+    }
+  });
+
+  describe('live task-switch position characterization', () => {
+    for (const catalogMissing of [false, true]) {
+      it(`saves run A under A and resets run B with catalog ${catalogMissing ? 'missing' : 'present'}`, async () => {
+        const manySteps = Array.from({ length: 30 }, (_, index) => step(index + 1));
+        await open({ viewMode: 'live', runResult: catalogMissing ? httpError(404) : of(run()), steps: of(manySteps) });
+        fixture.componentRef.setInput('liveSession', { session_id: ID, initial_goal: 'Run A', start_time: START, status: 'running' });
+        fixture.componentRef.setInput('liveSteps', manySteps);
+        await settle();
+        fixture.componentInstance.selectStep(manySteps[0]);
+        await settle();
+        q<HTMLElement>('.viewer-scroll')!.scrollTop = 120;
+        q<HTMLElement>('.step-list')!.scrollTop = 180;
+        const oldScroll = q<HTMLElement>('.viewer-scroll')!.scrollTop;
+        const oldTimeline = q<HTMLElement>('.step-list')!.scrollTop;
+        expect(oldScroll).toBeGreaterThan(0);
+        expect(oldTimeline).toBeGreaterThan(0);
+        const nextId = 'run-b';
+        const nextSteps = manySteps.map((item) => ({ ...item, session_id: nextId, step_id: `b-${item.step_id}` }));
+        runs.get.and.returnValue(catalogMissing ? httpError(404) : of(run({ session_id: nextId })));
+        runs.steps.and.returnValue(of(nextSteps));
+        fixture.componentRef.setInput('runId', nextId);
+        fixture.componentRef.setInput('liveSession', { session_id: nextId, initial_goal: 'Run B', start_time: START, status: 'running' });
+        fixture.componentRef.setInput('liveSteps', nextSteps);
+        await settle();
+        expect(runs.viewPosition()).toEqual({ sessionId: ID, selectedStepId: 'st1', scrollTop: oldScroll, timelineScrollTop: oldTimeline });
+        expect(fixture.componentInstance.selectedStep()?.step_id).toBe('b-st30');
+        expect(q<HTMLElement>('.viewer-scroll')!.scrollTop).toBe(0);
+        expect(q<HTMLElement>('.step-list')!.scrollTop).toBe(0);
+      });
+    }
+  });
+
   describe('reading order', () => {
+    it('keeps a selected step and its screenshot when later steps arrive', async () => {
+      const updates = new Subject<StepItemData[]>();
+      await open({ steps: updates, video: of(ready({ status: 'unavailable' })) });
+      updates.next([step(1), step(2)]);
+      await settle();
+      q<HTMLButtonElement>('.step-button')!.click();
+      await settle();
+      updates.next([step(1), step(2), step(3)]);
+      await settle();
+      expect(fixture.componentInstance.selectedStep()?.step_id).toBe('st1');
+      expect(q('.step-button')!.getAttribute('aria-current')).toBe('step');
+      expect(q('img.evidence-image')!.getAttribute('src')).toBe('/images/post1.png');
+    });
+
+    it('marks an execution error as failed without depending on the run status', async () => {
+      await open({ steps: of([step(1, {
+        last_execution_result: { success: false, error: 'Invalid target index 2. The list is empty on this screen' }
+      })]) });
+      expect(q('.step-failed')!.textContent).toContain('Failed');
+      expect(q('.outcome-badge')!.textContent).toContain('Passed');
+    });
+
+    it('opens the share trust dialog from a focusable action and restores focus', async () => {
+      await open();
+      const share = button('Copy link');
+      share.focus();
+      share.click();
+      await settle();
+      expect(q<HTMLDialogElement>('dialog')!.open).toBeTrue();
+      button('Cancel').click();
+      await settle();
+      expect(document.activeElement).toBe(share);
+    });
+
     it('leads with outcome and prompt, then evidence with steps, then actions, then technical details', async () => {
       await open();
       const order = qa('[data-section], details.technical-details').map(
@@ -579,7 +1026,7 @@ describe('RunViewerComponent', () => {
       runs.get.and.returnValue(of(run()));
       runs.steps.and.returnValue(of([]));
       runs.video.and.returnValue(of(ready()));
-      fixture = TestBed.createComponent(RunViewerComponent);
+      fixture = TestBed.createComponent(RunViewComponent);
       fixture.componentRef.setInput('runId', ID);
       root = fixture.nativeElement;
       await settle();
@@ -681,7 +1128,7 @@ describe('RunViewerComponent', () => {
       runs.steps.and.returnValue(of(over.steps ?? [step(1), step(2), step(3)]));
       runs.video.and.returnValue(of(over.video ?? noVideo()));
       admin.getIdentity.and.returnValue(of({ email: 'a@x.test', admin: true, auth_mode: 'cloudflare', reason: null }));
-      fixture = TestBed.createComponent(RunViewerComponent);
+      fixture = TestBed.createComponent(RunViewComponent);
       fixture.componentRef.setInput('runId', ID);
       root = fixture.nativeElement;
       await settle();

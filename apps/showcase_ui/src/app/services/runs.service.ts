@@ -13,6 +13,9 @@ export class RunsService {
 
   /** The library's last URL query, so the viewer can link back to the same list. */
   public readonly lastLibraryQuery = signal<Record<string, string>>({});
+  public readonly viewPosition = signal<{
+    sessionId: string; selectedStepId: string | null; scrollTop: number; timelineScrollTop: number;
+  } | null>(null);
 
   public list(filters: RunFilters, options: { cursor?: string; limit?: number } = {}): Observable<RunPage> {
     let params = new HttpParams().set('limit', String(options.limit ?? 50));

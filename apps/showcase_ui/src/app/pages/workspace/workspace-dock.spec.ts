@@ -2,12 +2,10 @@ import { CUSTOM_ELEMENTS_SCHEMA, signal } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { ActivatedRoute, convertToParamMap, provideRouter } from '@angular/router';
 import { of } from 'rxjs';
-import { AgentStreamComponent } from '../../components/agent-stream/agent-stream.component';
 import { ChatInterfaceComponent } from '../../components/chat-interface/chat-interface.component';
-import { FloatingVideoPlayerComponent } from '../../components/floating-video-player/floating-video-player.component';
 import { RunLibraryComponent } from '../../components/run-library/run-library.component';
 import { InterruptedBannerComponent } from '../../components/interrupted-banner/interrupted-banner.component';
-import { RunViewerComponent } from '../../components/run-viewer/run-viewer.component';
+import { RunViewComponent } from '../../components/run-view/run-view.component';
 import { AgentService } from '../../services/agent.service';
 import { WorkspacePhoneService } from '../../services/workspace-phone.service';
 import { MAX_IMAGE_BYTES, MAX_IMAGES } from '../../utils/run-image.util';
@@ -50,16 +48,17 @@ describe('WorkspaceComponent always-open task dock', () => {
           isCurrentSessionRunning: () => false,
           currentSession: () => null,
           currentSessionId: () => null,
+          currentStartupProgress: () => [],
           runTask: jasmine.createSpy('runTask').and.returnValue(of({}))
         }
       }]
     }).overrideComponent(WorkspaceComponent, {
-      remove: { imports: [AgentStreamComponent, ChatInterfaceComponent, FloatingVideoPlayerComponent, RunLibraryComponent, InterruptedBannerComponent, RunViewerComponent] },
+      remove: { imports: [ChatInterfaceComponent, RunLibraryComponent, InterruptedBannerComponent, RunViewComponent] },
       add: { schemas: [CUSTOM_ELEMENTS_SCHEMA] }
     }).compileComponents();
   });
 
-  for (const review of [false, true]) {
+  for (const review of [false]) {
     it(`stays at its expanded size after mouse leave and focus loss in ${review ? 'review' : 'live'} mode`, async () => {
       await create(review);
       const root: HTMLElement = fixture.nativeElement;
@@ -96,14 +95,9 @@ describe('WorkspaceComponent always-open task dock', () => {
     });
   }
 
-  it('uses the same normal dock size on live and review pages', async () => {
-    await create();
-    const live = fixture.nativeElement.querySelector('.floating-dock-card').getBoundingClientRect();
-    fixture.destroy();
+  it('has no task dock on review pages: the run view offers Start new run instead', async () => {
     await create(true);
-    const review = fixture.nativeElement.querySelector('.floating-dock-card').getBoundingClientRect();
-    expect(review.width).toBe(live.width);
-    expect(review.height).toBe(live.height);
+    expect(fixture.nativeElement.querySelector('.workspace-floating-bar-wrapper')).toBeNull();
   });
 
   for (const modifier of ['ctrlKey', 'metaKey']) {

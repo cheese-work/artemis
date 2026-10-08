@@ -17,23 +17,25 @@ limitations under the License.
 <div class="workspace-container" [class.is-resizing]="isDragging()" [class.review-mode]="reviewMode">
   <!-- Left Main Panel: Raw Agent Log Stream, or the run library / viewer in review mode -->
   <main class="left-panel glass-panel">
-    @if (reviewMode) {
-      <div class="review-surface">
-        @if (reviewRunId(); as id) {
-          <app-run-viewer [runId]="id"></app-run-viewer>
-        } @else {
-          <app-run-library></app-run-library>
-        }
-      </div>
-    } @else {
-      <app-agent-stream></app-agent-stream>
-    }
+    <div class="run-surface">
+      @if (reviewMode && !reviewRunId()) {
+        <app-run-library></app-run-library>
+      } @else {
+        <app-run-view [mode]="reviewMode ? 'review' : 'live'"
+          [runId]="reviewMode ? reviewRunId()! : agentService.currentSessionId() ?? ''"
+          [liveSession]="reviewMode ? null : agentService.currentSession()"
+          [liveSteps]="reviewMode ? [] : liveSteps()"
+          [startupProgress]="reviewMode ? [] : agentService.currentStartupProgress()"
+          (newRunPrompt)="taskInput = $event"></app-run-view>
+      }
+    </div>
 
     <!-- Bottom Floating Command Bar Dock -->
+    @if (!reviewMode) {
     <div class="workspace-floating-bar-wrapper is-expanded"
       [class.is-focused]="isInputFocused()" [class.has-text]="!!taskInput.trim()" [class.is-running]="isTaskRunning()">
       <!-- A run lost its phone: Reconnect, then start a new run (the old one is over) -->
-      <app-interrupted-banner (startNewRun)="startNewRunFrom($event)"></app-interrupted-banner>
+      <app-interrupted-banner [reconnectOnly]="true" [lastStep]="liveSteps().at(-1)?.step_number ?? null" (startNewRun)="startNewRunFrom($event)"></app-interrupted-banner>
 
       <!-- Floating Error / Notification Toast -->
       @if (errorMessage()) {
@@ -214,6 +216,7 @@ limitations under the License.
 
       </div>
     </div>
+    }
   </main>
 
   <!-- Split Pane Drag Resizer (mouse only, so review mode leaves it out) -->
@@ -228,6 +231,4 @@ limitations under the License.
     <app-chat-interface></app-chat-interface>
   </aside>
 
-  <!-- Floating Video Replay Player Modal / Window -->
-  <app-floating-video-player></app-floating-video-player>
 </div>

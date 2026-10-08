@@ -1,4 +1,4 @@
-import { ChangeDetectionStrategy, Component, computed, inject, output } from '@angular/core';
+import { ChangeDetectionStrategy, Component, computed, inject, input, output } from '@angular/core';
 import { AgentService } from '../../services/agent.service';
 import { WorkspacePhoneService } from '../../services/workspace-phone.service';
 import { interruptedSentence, interruptReason, RUN_STRINGS } from '../../utils/run-library-strings';
@@ -11,7 +11,11 @@ import { interruptedSentence, interruptReason, RUN_STRINGS } from '../../utils/r
   selector: 'app-interrupted-banner',
   standalone: true,
   template: `
-    @if (phone.runInterrupted()) {
+    @if (phone.runInterrupted() && reconnectOnly()) {
+      @if (!phone.target()) {
+        <button type="button" class="action" [disabled]="!phone.canConnectFromBrowser()" (click)="reconnect()">Reconnect phone</button>
+      }
+    } @else if (phone.runInterrupted()) {
       <div class="banner" role="status" aria-live="polite">
         <p class="headline">{{ sentence() }}</p>
         <p class="reason">{{ reason() }}</p>
@@ -49,12 +53,12 @@ export class InterruptedBannerComponent {
 
   /** The interrupted run's prompt, handed back so a new run can start from it. */
   public readonly startNewRun = output<string>();
+  public readonly reconnectOnly = input(false);
 
   protected readonly prompt = computed(() => this.agent.currentSession()?.initial_goal ?? '');
-  protected readonly sentence = computed(() => {
-    const frames = this.agent.currentSessionStepFrames();
-    return interruptedSentence(frames.length ? frames[frames.length - 1].stepNumber : null);
-  });
+  /** The last step the run reached, from the run on screen; null when no step ran. */
+  public readonly lastStep = input<number | null>(null);
+  protected readonly sentence = computed(() => interruptedSentence(this.lastStep()));
   protected readonly reason = computed(() => interruptReason(this.agent.currentSession()?.interrupt_reason));
 
   protected reconnect(): void {

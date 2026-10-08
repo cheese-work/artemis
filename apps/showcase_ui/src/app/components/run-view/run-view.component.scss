@@ -180,6 +180,17 @@ video:focus-visible {
   color: var(--evidence-muted);
 }
 
+.run-info,
+.live-streams {
+  margin-bottom: 16px;
+  padding: 12px;
+  border: 1px solid var(--evidence-border);
+  border-radius: 8px;
+
+  summary { min-height: 44px; cursor: pointer; }
+  pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+}
+
 dl {
   display: grid;
   grid-template-columns: max-content 1fr;
@@ -207,6 +218,23 @@ dl {
   p {
     margin: 0 0 8px;
   }
+}
+
+.failed-banner {
+  border-color: var(--status-danger-fg);
+  color: var(--status-danger-fg);
+  background: var(--status-danger-bg);
+}
+
+.step-screenshots {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  padding: 8px;
+
+  figure { min-width: 0; margin: 0; }
+  figcaption { color: var(--evidence-muted); font-size: 12px; }
+  img { display: block; width: 100%; max-height: 220px; object-fit: contain; }
 }
 
 /* One column by default (phones, 1024 px stacked); evidence and steps side by side from 1280 px. */

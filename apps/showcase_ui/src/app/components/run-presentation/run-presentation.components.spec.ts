@@ -1,7 +1,7 @@
 import { Type } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { Capture, Playback, Transfer, mapRecording } from '../../utils/recording-state.util';
-import { tinyVideoUrl } from '../run-viewer/tiny-video.testing';
+import { tinyVideoUrl } from '../run-view/tiny-video.testing';
 import { RunStatusBadgeComponent } from './run-status-badge.component';
 import { RunDeviceLabelComponent } from './run-device-label.component';
 import { RunStepRowComponent } from './run-step-row.component';

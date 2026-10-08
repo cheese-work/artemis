@@ -2,6 +2,7 @@ import { LoggerService } from '../../services/logger.service';
 import { appUrl, mediaUrl } from '../../utils/app-url.util';
 import {
   ChangeDetectionStrategy,
+  afterEveryRender,
   Component,
   DestroyRef,
   ElementRef,
@@ -9,6 +10,7 @@ import {
   effect,
   inject,
   input,
+  output,
   signal,
   untracked,
   viewChild
@@ -16,13 +18,15 @@ import {
 import { HttpErrorResponse, HttpEvent, HttpEventType } from '@angular/common/http';
 import { DatePipe } from '@angular/common';
 import { Router, RouterLink } from '@angular/router';
-import { Subscription } from 'rxjs';
+import { Subscription, catchError, of, switchMap, timer } from 'rxjs';
 import { RunSummary, SessionVideo, VideoSegment } from '../../core/models/run.model';
 import { StepItemData } from '../../core/models/stream.model';
+import { Session, SessionUsage } from '../../core/models/session.model';
 import { OwnerScopeService } from '../../services/owner-scope.service';
 import { RunsService } from '../../services/runs.service';
 import {
   getActionObject,
+  getActionErrorMessage,
   getActionTitle,
   getStepPostImageUrl,
   getStepPreImageUrl,
@@ -30,6 +34,10 @@ import {
 } from '../../utils/action-formatter.util';
 import { Playback, mapRecording } from '../../utils/recording-state.util';
 import { locateSessionTime } from '../../utils/recording-timeline.util';
+import { runStatusView } from '../../utils/run-status.util';
+import { buildStartupWorkItems } from '../../utils/run-startup.util';
+import { consolidateLogsToBlocks, getSortedStepEvents } from '../../utils/stream-aggregator.util';
+import { AgentService, type StartupProgressEvent } from '../../services/agent.service';
 import {
   DELETE_NOTICE,
   MEDIA_NOTICE,
@@ -48,7 +56,7 @@ import { RunStepRowComponent } from '../run-presentation/run-step-row.component'
 import { RunEvidencePanelComponent } from '../run-presentation/run-evidence-panel.component';
 import { RunAction, RunActionBarComponent, RunActionEvent } from '../run-presentation/run-action-bar.component';
 
-type PageState = 'loading' | 'ready' | 'not_found' | 'removed' | 'access' | 'ambiguous' | 'error';
+type PageState = 'empty' | 'loading' | 'ready' | 'not_found' | 'removed' | 'access' | 'ambiguous' | 'error';
 type DialogKind = 'share' | 'download' | 'unpin_expired' | 'delete';
 type Retryable = 'download' | null;
 
@@ -60,34 +68,67 @@ const DIALOGS: Record<DialogKind, { title: string; notices: string[]; confirm: s
 };
 
 @Component({
-  selector: 'app-run-viewer',
+  selector: 'app-run-view',
   standalone: true,
   imports: [RouterLink, DatePipe, RunIdCopyComponent, RunStatusBadgeComponent, RunDeviceLabelComponent,
     RunStepRowComponent, RunEvidencePanelComponent, RunActionBarComponent],
-  templateUrl: './run-viewer.component.html',
-  styleUrl: './run-viewer.component.scss',
+  templateUrl: './run-view.component.html',
+  styleUrl: './run-view.component.scss',
   changeDetection: ChangeDetectionStrategy.OnPush
 })
-export class RunViewerComponent {
+export class RunViewComponent {
   public readonly appUrl = appUrl;
   private readonly logger = inject(LoggerService);
   private readonly runsApi = inject(RunsService);
+  private readonly agentService = inject(AgentService);
   private readonly ownerScope = inject(OwnerScopeService);
   private readonly router = inject(Router);
   private readonly destroyRef = inject(DestroyRef);
 
   /** Full run id or its 8-character prefix, from the URL. */
-  public readonly runId = input.required<string>();
+  public readonly runId = input<string>('');
+  public readonly mode = input<'live' | 'review'>('review');
+  public readonly liveSession = input<Session | null>(null);
+  public readonly liveSteps = input<StepItemData[]>([]);
+  public readonly startupProgress = input<StartupProgressEvent[]>([]);
+  public readonly startupItems = computed(() => buildStartupWorkItems(
+    this.startupProgress(), Date.now() / 1000, this.steps().length > 0, runStatusView(this.run()?.status).active));
+  public readonly newRunPrompt = output<string>();
 
   public readonly strings = RUN_STRINGS;
   public readonly interruptReason = interruptReason;
   public readonly removedReason = removedReason;
 
   public readonly state = signal<PageState>('loading');
-  public readonly run = signal<RunSummary | null>(null);
+  private readonly catalogRun = signal<RunSummary | null>(null);
+  public readonly run = computed<RunSummary | null>(() => {
+    const catalog = this.catalogRun();
+    const session = this.mode() === 'live' ? this.liveSession() : null;
+    if (!session || session.session_id !== this.runId()) return catalog;
+    if (catalog) {
+      return runStatusView(session.status).active || runStatusView(catalog.status).active
+        ? { ...catalog, status: session.status ?? catalog.status }
+        : catalog;
+    }
+    const serial = session.device_serial ?? session.device_id ?? null;
+    return {
+      session_id: session.session_id, prompt: session.initial_goal, status: session.status ?? 'pending',
+      interrupt_reason: null, start_time: session.start_time, end_time: session.end_time ?? null,
+      host_id: null, device_ref: serial ? { host_id: null, serial } : null,
+      requested_by: null, pinned: false, recordings: []
+    };
+  });
   public readonly removed = signal<{ reason?: string } | null>(null);
   public readonly candidates = signal<string[]>([]);
-  public readonly steps = signal<StepItemData[]>([]);
+  private readonly storedSteps = signal<StepItemData[]>([]);
+  public readonly steps = computed(() => {
+    if (this.mode() !== 'live') return this.storedSteps();
+    const merged = new Map(this.storedSteps().map((step) => [step.step_id, step]));
+    for (const step of this.liveSteps()) {
+      if (step.session_id === this.run()?.session_id) merged.set(step.step_id, { ...merged.get(step.step_id), ...step });
+    }
+    return [...merged.values()].sort((first, second) => first.step_number - second.step_number);
+  });
   public readonly stepsLoaded = signal(false);
   public readonly stepsFailed = signal(false);
   public readonly video = signal<SessionVideo | null>(null);
@@ -102,7 +143,37 @@ export class RunViewerComponent {
   public readonly dialogKind = signal<DialogKind | null>(null);
   public readonly feedback = signal('');
   public readonly actionError = signal<{ text: string; retry: Retryable } | null>(null);
+  public readonly viewingLiveSession = computed(() => this.mode() === 'live'
+    && !!this.run()?.session_id && this.run()?.session_id === this.agentService.currentSessionId());
+  private readonly activeLiveSession = computed(() => this.viewingLiveSession()
+    && !!this.agentService.runningSessionId() && this.run()?.session_id === this.agentService.runningSessionId());
+  public readonly canResume = computed(() => {
+    if (this.mode() !== 'live' || !this.agentService.isPaused() || this.agentService.agentStatus() !== 'paused') return false;
+    const pausedSessionId = this.agentService.runningSessionId();
+    return !!pausedSessionId && this.run()?.session_id === pausedSessionId
+      && this.agentService.currentSessionId() === pausedSessionId;
+  });
+  public readonly liveState = computed(() => {
+    if (!this.activeLiveSession()) return null;
+    if (this.canResume()) return { title: 'Task paused', reason: this.agentService.pausedError() || 'AI call failed.' };
+    if (this.agentService.isRetrying() && this.agentService.agentStatus() === 'running') {
+      return { title: 'Retrying', reason: this.agentService.retryMessage() || 'AI service is temporarily busy. Retrying…' };
+    }
+    return null;
+  });
+  public readonly infoOpen = signal(false);
+  public readonly usage = signal<SessionUsage | null>(null);
+  public readonly usageFailed = signal(false);
+  public readonly viewedModel = computed(() => this.viewingLiveSession() ? this.agentService.viewedModel() : null);
+  public readonly streamBlocks = computed(() => this.viewingLiveSession()
+    ? consolidateLogsToBlocks(this.agentService.sessionLogs()).map((block) => ({
+      id: block.id,
+      resets: (block.data.stream_resets ?? []) as Array<{ id: string; message: string }>,
+      events: getSortedStepEvents(block.data).filter((event) => event.type === 'thinking' || event.type === 'text')
+    })).filter((block) => block.events.length || block.resets.length)
+    : []);
   public readonly actions = computed<RunAction[]>(() => [
+    ...(this.canResume() ? [{ id: 'resume', label: 'Continue task' }] : []),
     { id: 'share', label: this.strings.copyLink },
     { id: 'download', label: this.strings.download },
     ...(this.canChange() ? [
@@ -153,7 +224,10 @@ export class RunViewerComponent {
   public readonly copy = computed(() => {
     if (this.videoFailed()) return "Couldn't check the video.";
     if (this.playerFailed()) return 'The video could not be played. Steps and screenshots are still here.';
-    return this.recording().copy;
+    const message = this.video()?.message?.trim();
+    return this.recording().state === 'prepare_failed'
+      ? `${this.recording().copy} ${message || 'The video service did not report a reason.'}`
+      : this.recording().copy;
   });
 
   public readonly videoUrl = computed(
@@ -167,6 +241,10 @@ export class RunViewerComponent {
 
   public readonly interruptedAtStep = computed(() => this.steps()[this.steps().length - 1]?.step_number ?? null);
   public readonly interruptedText = computed(() => interruptedSentence(this.interruptedAtStep()));
+  public readonly failureReason = computed(() => {
+    const failed = [...this.steps()].reverse().find((step) => this.stepFailed(step));
+    return failed ? this.stepFailureDetail(failed) : this.run()?.interrupt_reason || 'No failure reason was recorded.';
+  });
   public readonly canCheckAgain = computed(
     () =>
       this.videoFailed() ||
@@ -177,6 +255,12 @@ export class RunViewerComponent {
 
   private readonly dialogEl = viewChild<ElementRef<HTMLDialogElement>>('dialogEl');
   private readonly evidencePanel = viewChild(RunEvidencePanelComponent);
+  private readonly scrollEl = viewChild<ElementRef<HTMLElement>>('scrollEl');
+  private readonly timelineEl = viewChild<ElementRef<HTMLElement>>('timelineEl');
+  private pendingPosition: { scrollTop: number; timelineScrollTop: number } | null = null;
+  private loadedSessionId: string | null = null;
+  private renderedStepId: string | null = null;
+  private liveStateKey = '';
   private opener: HTMLElement | null = null;
   private loadRequest: Subscription | null = null;
   private evidenceRequests = new Subscription();
@@ -200,6 +284,43 @@ export class RunViewerComponent {
       const id = this.runId();
       untracked(() => this.load(id));
     });
+    effect((onCleanup) => {
+      const id = this.viewingLiveSession() && this.infoOpen() ? this.run()?.session_id : null;
+      const active = runStatusView(this.run()?.status).active;
+      this.usage.set(null);
+      this.usageFailed.set(false);
+      if (!id) return;
+      const requests = (active ? timer(0, 3000) : of(0)).pipe(
+        switchMap(() => this.agentService.getSessionUsage(id).pipe(catchError(() => of(null))))
+      ).subscribe((usage) => {
+        this.usage.set(usage?.session_id === id ? usage : null);
+        this.usageFailed.set(!usage || usage.session_id !== id);
+      });
+      onCleanup(() => requests.unsubscribe());
+    });
+    effect(() => {
+      const session = this.mode() === 'live' ? this.liveSession() : null;
+      const id = this.runId();
+      const key = session ? `${session.session_id}:${session.status}:${session.recording_status}` : '';
+      untracked(() => {
+        if (session && session.session_id === id && key !== this.liveStateKey) {
+          const previous = this.liveStateKey;
+          this.liveStateKey = key;
+          if (previous.startsWith(`${id}:`)) this.refresh(id);
+          else if (this.state() === 'not_found') {
+            this.state.set('ready');
+            this.loadEvidence(id);
+          }
+        }
+      });
+    });
+    afterEveryRender(() => {
+      if (this.state() === 'ready') this.renderedStepId = this.selectedStep()?.step_id ?? null;
+      if (this.state() !== 'ready' || !this.stepsLoaded() || !this.pendingPosition || !this.scrollEl()) return;
+      this.scrollEl()!.nativeElement.scrollTop = this.pendingPosition.scrollTop;
+      if (this.timelineEl()) this.timelineEl()!.nativeElement.scrollTop = this.pendingPosition.timelineScrollTop;
+      this.pendingPosition = null;
+    });
     this.destroyRef.onDestroy(() => {
       this.loadRequest?.unsubscribe();
       this.evidenceRequests.unsubscribe();
@@ -214,6 +335,10 @@ export class RunViewerComponent {
   }
 
   private load(id: string): void {
+    this.rememberPosition();
+    this.loadedSessionId = id || null;
+    this.renderedStepId = null;
+    this.closeDialog();
     this.loadRequest?.unsubscribe();
     this.evidenceRequests.unsubscribe(); // a slow answer for the previous run must not land on this one
     this.evidenceRequests = new Subscription();
@@ -221,21 +346,61 @@ export class RunViewerComponent {
     this.actionRequests = new Subscription();
     this.playerFailed.set(false);
     this.state.set('loading');
-    this.run.set(null);
-    this.steps.set([]);
+    this.catalogRun.set(null);
+    this.storedSteps.set([]);
     this.stepsLoaded.set(false);
     this.video.set(null);
     this.selectedStepId.set(null);
     this.activeSegmentIndex.set(0);
     this.feedback.set('');
     this.actionError.set(null);
+    const position = this.runsApi.viewPosition();
+    this.selectedStepId.set(position?.sessionId === id ? position.selectedStepId : null);
+    this.pendingPosition = position?.sessionId === id ? position : { scrollTop: 0, timelineScrollTop: 0 };
+    if (!id) {
+      this.state.set('empty');
+      return;
+    }
     this.loadRequest = this.runsApi.get(id).subscribe({
       next: (run) => {
-        this.run.set(run);
+        this.loadedSessionId = run.session_id;
+        this.catalogRun.set(run);
+        if (position?.sessionId === run.session_id) {
+          this.selectedStepId.set(position.selectedStepId);
+          this.pendingPosition = position;
+        }
         this.state.set('ready');
         this.loadEvidence(run.session_id);
       },
-      error: (error: HttpErrorResponse) => this.fail(error)
+      error: (error: HttpErrorResponse) => {
+        if (error.status === 404 && this.mode() === 'live' && this.run()) {
+          this.state.set('ready');
+          this.loadEvidence(id);
+        } else this.fail(error);
+      }
+    });
+  }
+
+  private refresh(id: string): void {
+    this.loadRequest?.unsubscribe();
+    this.loadRequest = this.runsApi.get(id).subscribe({
+      next: (run) => {
+        this.catalogRun.set(run);
+        this.state.set('ready');
+        this.evidenceRequests.unsubscribe();
+        this.evidenceRequests = new Subscription();
+        this.loadEvidence(run.session_id);
+      },
+      error: () => undefined
+    });
+  }
+
+  public rememberPosition(): void {
+    if (this.state() !== 'ready' || !this.loadedSessionId || !this.scrollEl()) return;
+    this.runsApi.viewPosition.set({
+      sessionId: this.loadedSessionId, selectedStepId: this.selectedStepId() ?? this.renderedStepId,
+      scrollTop: this.scrollEl()!.nativeElement.scrollTop,
+      timelineScrollTop: this.timelineEl()?.nativeElement.scrollTop ?? 0
     });
   }
 
@@ -265,7 +430,7 @@ export class RunViewerComponent {
     this.evidenceRequests.add(
       this.runsApi.steps(sessionId).subscribe({
         next: (steps) => {
-          this.steps.set(steps);
+          this.storedSteps.set(steps);
           this.stepsLoaded.set(true);
         },
         error: () => {
@@ -304,8 +469,30 @@ export class RunViewerComponent {
     return isActionFailed(getActionObject(step.action_taken), step);
   }
 
+  public stepFailureDetail(step: StepItemData): string {
+    return getActionErrorMessage(step.action_taken, step);
+  }
+
+  public readonly preImage = getStepPreImageUrl;
+  public readonly postImage = getStepPostImageUrl;
+
+  public onStepKey(event: KeyboardEvent, index: number): void {
+    const buttons = this.timelineEl()?.nativeElement.querySelectorAll<HTMLButtonElement>('.step-button');
+    if (!buttons?.length) return;
+    let target: number;
+    if (event.key === 'ArrowDown') target = Math.min(index + 1, buttons.length - 1);
+    else if (event.key === 'ArrowUp') target = Math.max(index - 1, 0);
+    else if (event.key === 'Home') target = 0;
+    else if (event.key === 'End') target = buttons.length - 1;
+    else return;
+    event.preventDefault();
+    buttons[target].focus();
+    this.selectStep(this.steps()[target]);
+  }
+
   public selectStep(step: StepItemData): void {
     this.selectedStepId.set(step.step_id);
+    this.rememberPosition();
     const run = this.run();
     if (!this.recording().playable) return;
     const sessionSeconds = step.timestamp - (run?.start_time ?? step.timestamp);
@@ -348,7 +535,9 @@ export class RunViewerComponent {
   // -- actions ----------------------------------------------------------------
 
   public onAction(action: RunActionEvent): void {
-    if (action.id === 'pin') this.togglePin(action.event);
+    if (action.id === 'resume') {
+      if (this.canResume()) this.agentService.resumeTask();
+    } else if (action.id === 'pin') this.togglePin(action.event);
     else if (action.id === 'retry') this.retry();
     else this.ask(action.id as DialogKind, action.event);
   }
@@ -394,7 +583,7 @@ export class RunViewerComponent {
     this.actionError.set(null);
     this.actionRequests.add(
       (pinned ? this.runsApi.pin(run.session_id) : this.runsApi.unpin(run.session_id)).subscribe({
-        next: () => this.run.set({ ...run, pinned }),
+        next: () => this.catalogRun.set({ ...run, pinned }),
         error: () => this.actionError.set({ text: RUN_STRINGS.pinFailed, retry: null })
       })
     );
@@ -461,6 +650,10 @@ export class RunViewerComponent {
   }
 
   public startNewRun(): void {
+    if (this.mode() === 'live') {
+      this.newRunPrompt.emit(this.run()?.prompt ?? '');
+      return;
+    }
     void this.router.navigate(['/workspace'], { state: { draftPrompt: this.run()?.prompt ?? '' } });
   }
 

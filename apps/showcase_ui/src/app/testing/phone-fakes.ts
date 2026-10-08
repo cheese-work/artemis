@@ -47,7 +47,6 @@ export function phoneFakes() {
     sessions: signal<{ session_id: string; status: string; device_serial?: string | null }[]>([]),
     agentStatus: signal('idle'),
     currentSession: signal<{ status?: string; initial_goal?: string; interrupt_reason?: string | null } | null>(null),
-    currentSessionStepFrames: signal<{ stepNumber: number }[]>([]),
     resumeTask: jasmine.createSpy('resumeTask')
   };
   const hosts = { list: jasmine.createSpy('list').and.returnValue(of({ enabled: true, hosts: [], devices: [] })) };
