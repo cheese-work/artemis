@@ -59,3 +59,24 @@ def test_service_readiness_accepts_only_loopback_effective_peers(monkeypatch):
     assert remote.status_code == 403
     assert spoofed_loopback.status_code == 403
     assert forwarded_remote.status_code == 403
+
+
+def test_service_readiness_denial_recommends_the_readiness_route(monkeypatch):
+    monkeypatch.setenv("ARTEMIS_ALLOWED_HOSTS", "smart-qa.tevo.vn")
+    app = FastAPI()
+    app.add_exception_handler(AdminAPIError, admin_api_error_handler)
+    app.add_middleware(SameOriginBoundaryMiddleware)
+    app.include_router(system.router)
+
+    async def request():
+        transport = ASGITransport(app=app, client=("198.51.100.23", 43100))
+        async with AsyncClient(transport=transport, base_url="http://smart-qa.tevo.vn") as client:
+            return await client.get("/api/system/service-readiness")
+
+    response = asyncio.run(request())
+    assert response.status_code == 403
+    assert response.json() == {
+        "detail": "This endpoint is local-only.",
+        "code": "loopback_required",
+        "fix": "Call this endpoint directly from the server host.",
+    }

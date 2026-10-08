@@ -281,9 +281,9 @@ async def require_effective_loopback(request: Request) -> None:
     if forwarded or not _is_loopback_request(request):
         raise AdminAPIError(
             403,
-            "Deploy drain controls are local-only.",
+            "This endpoint is local-only.",
             "loopback_required",
-            "Call the drain endpoint directly from the server host.",
+            "Call this endpoint directly from the server host.",
         )
 
 

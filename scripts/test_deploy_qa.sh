@@ -84,11 +84,14 @@ case "$*" in
       not_ready_then_ready:1) printf '{"service_ready":false}\n' ;;
       malformed_json_then_ready:1) printf '{"service_ready":' ;;
       malformed_shape_then_ready:1) printf '{"overall_ready":true}\n' ;;
+      decorated_false:1) printf '{"service_ready":false}\n' ;;
+      decorated_malformed:1) printf '{"service_ready":' ;;
+      decorated_404:1) exit 22 ;;
       *) printf '{"service_ready":true}\n' ;;
     esac
     ;;
   *"/api/system/server-status"*)
-    [[ $(git -C "$REPO" rev-parse HEAD) == "$OLD_SHA" ]] || exit 22
+    [[ $(git -C "$REPO" rev-parse HEAD) == "$OLD_SHA" || $HEALTH_MODE == decorated_* ]] || exit 22
     printf '{"running":true}\n'
     ;;
   *) exit 22 ;;
@@ -188,10 +191,29 @@ test_malformed_readiness_is_rejected_and_rolled_back() {
   done
 }
 
+test_decorated_service_readiness_rejects_invalid_reports() {
+  local mode failures=0
+  for mode in decorated_false decorated_malformed decorated_404; do
+    make_case "$mode" old
+    HEALTH_MODE=$mode
+    if run_deployer; then
+      echo "FAIL: decorated route accepted $mode health response" >&2
+      failures=$((failures + 1))
+      continue
+    fi
+    assert_eq "$(cat "$STATE/deployed_sha")" "$OLD_SHA" "$mode response promoted the candidate"
+    assert_eq "$(cat "$STATE/bad_sha")" "$NEW_SHA" "$mode response did not mark candidate bad"
+    assert_eq "$(git -C "$REPO" rev-parse HEAD)" "$OLD_SHA" "$mode response did not roll back"
+    [[ $(cat "$CURL_LOG") == *"/api/system/service-readiness"* ]] || fail "$mode did not check service readiness"
+  done
+  [[ $failures == 0 ]] || fail "$failures decorated service-readiness regressions reproduced"
+}
+
 test_interrupted_checkout_recovers_and_retries
 test_in_progress_marker_recovers_before_checkout
 test_failed_service_readiness_rolls_back
 test_legacy_rollback_clears_marker_and_allows_repair
 test_dry_run_does_not_recover_or_mutate_state
 test_malformed_readiness_is_rejected_and_rolled_back
+test_decorated_service_readiness_rejects_invalid_reports
 echo "PASS: interrupted recovery, legacy repair, dry-run safety, service-only readiness, rollback, malformed report"
