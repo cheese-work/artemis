@@ -9,6 +9,7 @@
     "build:preview": "node scripts/build-preview.mjs",
     "test:docker-build-inputs": "node scripts/test-docker-build-inputs.mjs",
     "test:keyboard": "node scripts/keyboard-walkthrough/walkthrough.mjs",
+    "test:navigation": "node scripts/keyboard-walkthrough/walkthrough.mjs --navigation-only",
     "test:keyboard-paste": "node --test scripts/keyboard-walkthrough/paste-shortcut.test.mjs",
     "test:layout": "node scripts/layout-audit/layout-audit.mjs",
     "test:preview-path": "node scripts/preview-path.test.mjs",
