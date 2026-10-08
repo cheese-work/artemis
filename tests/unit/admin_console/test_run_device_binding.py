@@ -209,11 +209,18 @@ def test_browser_lease_is_snapshotted_without_host_serial_aliasing(context, monk
 
 
 @pytest.mark.asyncio
-async def test_closed_browser_interrupts_only_its_bound_run_once(context):
+@pytest.mark.parametrize("host", ["127.0.0.1", "localhost", "[::1]"])
+async def test_closed_browser_interrupts_only_its_bound_run_once(context, host):
     first = browser_lease(context, "127.0.0.1:31415", "first-lease")
     second = browser_lease(context, "127.0.0.1:31416", "second-lease")
-    queue_item(context, AdbEndpoint.local(), first.serial)
-    queue_item(context, AdbEndpoint.local(), second.serial, session_id="other")
+    endpoint = AdbEndpoint.create(host, 5037)
+    item = queue_item(context, endpoint, first.serial)
+    queue_item(context, endpoint, second.serial, session_id="other")
+    assert item["bridge_session_id"] == first.session_id
+    assert item["adb_endpoint"] == endpoint.to_dict()
+    assert item["device_binding"]["endpoint"] == endpoint.to_dict()
+    persisted = context.repository.read_session("run")
+    assert json.loads(persisted["device_info"])["device_binding"] == item["device_binding"]
     process = fake_process()
     other = fake_process("other")
     await context.bridge.revoke(first.session_id)
@@ -225,6 +232,32 @@ async def test_closed_browser_interrupts_only_its_bound_run_once(context):
     other.kill.assert_not_called()
     with pytest.raises(RuntimeError, match="interrupted|bound|binding"):
         TaskQueueService._task_target(state.queue_items[0], resolve_host=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("host", "port", "host_id"),
+    [
+        ("127.0.0.1", 5038, None),
+        ("remote.example", 5037, None),
+        ("127.0.0.1", 5037, "host"),
+    ],
+)
+async def test_nonlocal_or_host_endpoint_does_not_capture_browser_lease(
+    context, host, port, host_id
+):
+    lease = browser_lease(context, "127.0.0.1:31415")
+    endpoint = AdbEndpoint.create(host, port, host_id=host_id)
+    item = queue_item(context, endpoint, lease.serial, host_id=host_id)
+    assert item["bridge_session_id"] is None
+    assert item["device_binding"]["bridge_session_id"] is None
+    assert item["adb_endpoint"] == endpoint.to_dict()
+    assert item["device_binding"]["endpoint"] == endpoint.to_dict()
+    process = fake_process()
+    await context.bridge.revoke(lease.session_id)
+    assert context.repository.get_session_status("run") == "queued"
+    assert context.authority.pending_events("run") == []
+    process.kill.assert_not_called()
 
 
 @pytest.mark.asyncio

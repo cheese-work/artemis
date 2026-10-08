@@ -1565,7 +1565,7 @@ class TaskQueueService:
                 lease
                 for lease in bridge_session_service.live_sessions()
                 if not host_id
-                and endpoint == AdbEndpoint.local()
+                and endpoint.is_local_default
                 and lease.serial == assigned_serial
                 and not lease.revoked
             ),
