@@ -35,10 +35,10 @@ type registry struct {
 	sharing    sharingState
 	transports []device
 	devices    map[string]device
-	pins       map[string]string    // id -> pinned transport id
-	used       map[string]time.Time // id -> last time the server routed to it
-	consent    map[string]bool      // serial|transport -> "Choose it once to share"
-	ambiguous  map[string]bool      // ids already reported as identity_ambiguous
+	pins       map[string]string // id -> pinned transport id
+	leases     map[string]bool   // ids with a server-bound run: their pin never moves
+	consent    map[string]bool   // serial|transport -> "Choose it once to share"
+	ambiguous  map[string]bool   // ids already reported as identity_ambiguous
 	events     []hostEvent
 	updates    chan []device
 	now        func() time.Time
@@ -54,7 +54,7 @@ func newDeviceRegistry(pepper []byte, file string) (*registry, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &registry{pepper: pepper, file: file, sharing: sharing, devices: map[string]device{}, pins: map[string]string{}, used: map[string]time.Time{}, consent: map[string]bool{}, ambiguous: map[string]bool{}, updates: make(chan []device, 1), now: time.Now}, nil
+	return &registry{pepper: pepper, file: file, sharing: sharing, devices: map[string]device{}, pins: map[string]string{}, leases: map[string]bool{}, consent: map[string]bool{}, ambiguous: map[string]bool{}, updates: make(chan []device, 1), now: time.Now}, nil
 }
 
 func (registry *registry) Updates() <-chan []device { return registry.updates }
@@ -66,6 +66,11 @@ func (registry *registry) replace(transports []device) {
 	defer registry.Unlock()
 	registry.transports = transports
 	registry.resolve()
+	registry.offer()
+}
+
+// offer hands the publisher the latest snapshot, replacing one it has not taken.
+func (registry *registry) offer() {
 	snapshot := registry.list()
 	select {
 	case <-registry.updates:
@@ -103,10 +108,11 @@ func preferUSB(members []device) {
 	})
 }
 
-// pin keeps the transport a device already uses. A USB arrival takes over
-// only while the device is idle; losing the pinned transport while the server
-// still uses the device holds it offline (interrupted, never failed over).
-func (registry *registry) pin(id string, members []device, now time.Time) device {
+// pin keeps the transport a device already uses. While the server holds a run
+// lease on the device, a USB arrival never takes over and losing the pinned
+// transport holds the device offline, so the run is interrupted, never failed
+// over. Without a lease the device moves at once, preferring USB.
+func (registry *registry) pin(id string, members []device) device {
 	preferUSB(members)
 	live := []device{}
 	for _, member := range members {
@@ -115,12 +121,12 @@ func (registry *registry) pin(id string, members []device, now time.Time) device
 		}
 	}
 	pinned, hadPin := registry.pins[id]
-	quiet := now.Sub(registry.used[id]) >= transportHold
+	leased := registry.leases[id]
 	current := slices.IndexFunc(live, func(member device) bool { return member.Transport == pinned })
 	switch {
-	case current >= 0 && (!quiet || !wirelessSerial(live[current].Serial) || wirelessSerial(live[0].Serial)):
+	case current >= 0 && (leased || !wirelessSerial(live[current].Serial) || wirelessSerial(live[0].Serial)):
 		return live[current]
-	case hadPin && pinned != "" && current < 0 && !quiet:
+	case hadPin && pinned != "" && current < 0 && leased:
 		held := members[0]
 		held.State = "offline"
 		return held
@@ -133,7 +139,6 @@ func (registry *registry) pin(id string, members []device, now time.Time) device
 }
 
 func (registry *registry) resolve() {
-	now := registry.now()
 	groups := map[string][]device{}
 	kinds := map[string]string{}
 	weak := []device{}
@@ -157,7 +162,7 @@ func (registry *registry) resolve() {
 			continue
 		}
 		id := opaqueDeviceID(registry.pepper, hwID)
-		entry := registry.pin(id, members, now)
+		entry := registry.pin(id, members)
 		entry.ID, entry.HWID, entry.Identity = id, hwID, "trusted"
 		for _, member := range members {
 			entry.serials = append(entry.serials, member.Serial)
@@ -186,7 +191,6 @@ func (registry *registry) resolve() {
 	for id := range registry.pins {
 		if _, live := next[id]; !live {
 			delete(registry.pins, id)
-			delete(registry.used, id)
 		}
 	}
 	connected := map[string]bool{}
@@ -340,6 +344,10 @@ func (registry *registry) share(selector string, shared bool) error {
 			next.setExcluded(entry.HWID, !shared)
 		} else {
 			next.setReference(entry, registry.now().Unix(), shared)
+			if shared {
+				// An explicit share also ends an exclusion left from auto mode.
+				next.setExcluded(entry.HWID, false)
+			}
 		}
 		if err := saveSharing(registry.file, next); err != nil {
 			return err
@@ -360,7 +368,7 @@ func (registry *registry) shareSaved(selector string, shared bool) error {
 	switch {
 	case next.Mode == "select" && !shared && index >= 0:
 		next.References = slices.Delete(next.References, index, index+1)
-	case next.Mode == "auto" && shared && slices.Contains(next.Exclusions, selector):
+	case shared && slices.Contains(next.Exclusions, selector):
 		next.setExcluded(selector, false)
 	default:
 		return failure("SQH-E205", nil)
@@ -415,17 +423,27 @@ func (registry *registry) setMode(mode string) error {
 	return nil
 }
 
-// route maps a server-facing id to its pinned local transport. Every lookup,
-// even a refused one, counts as use, which extends a transport-loss hold.
+// setLeases replaces the set of devices with a bound run, as the server reports
+// it on connect and on every run start or release.
+func (registry *registry) setLeases(ids []string) {
+	registry.Lock()
+	defer registry.Unlock()
+	registry.leases = map[string]bool{}
+	for _, id := range ids {
+		if opaqueDeviceIDPattern.MatchString(id) {
+			registry.leases[id] = true
+		}
+	}
+	registry.resolve()
+	registry.offer()
+}
+
+// route maps a server-facing id to its pinned local transport.
 func (registry *registry) route(id string) (string, bool) {
 	registry.Lock()
 	defer registry.Unlock()
 	entry, known := registry.devices[id]
-	if !known {
-		return "", false
-	}
-	registry.used[id] = registry.now()
-	if !entry.Shared || entry.State != "device" || entry.Transport == "" {
+	if !known || !entry.Shared || entry.State != "device" || entry.Transport == "" {
 		return "", false
 	}
 	return entry.Transport, true

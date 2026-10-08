@@ -24,10 +24,6 @@ var transportIDPattern = regexp.MustCompile(`^[0-9]{1,19}$`)
 // One fixed shell request reads only the identity fields, also from unshared devices.
 const identityShellCommand = "shell:getprop ro.serialno;getprop ro.boot.qemu.avd_name;getprop ro.kernel.qemu.avd_name;getprop ro.boot.qemu;getprop ro.kernel.qemu"
 
-// A run pins its transport; after losing it the device stays offline until the
-// server has stopped using it for this long, so a run is interrupted, never failed over.
-const transportHold = 10 * time.Second
-
 var placeholderSerials = map[string]bool{"": true, "unknown": true, "0123456789abcdef": true, "0123456789": true, "0000000000000000": true}
 
 type transportProps struct {

@@ -248,6 +248,8 @@ func (link *hostLink) connect(root, handshake context.Context, state agentState)
 		link.mutex.Unlock()
 	}
 	session.peer.routes = link.devices
+	session.peer.onLease = link.devices.setLeases
+	link.devices.setLeases(session.leases) // the connect snapshot replaces stale leases
 	link.mutex.Lock()
 	link.peer = session.peer
 	link.socket = session.socket

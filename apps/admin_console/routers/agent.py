@@ -188,16 +188,18 @@ async def connect(ws: WebSocket) -> None:
         tunnel = await host_tunnels.attach(host_id, generation, ws, shared_serials)
         await host_hub.replace(host_id, ws, generation)
         logger.info("event=host_connected host_id=%s generation=%d", host_id, generation)
-        await tunnel.send_json(
-            {
-                "type": "connected",
-                "token": session["token"],
-                "expires_at": session["expires_at"],
-                "generation": generation,
-                "protocol_version": hr.PROTOCOL_VERSION,
-                "min_supported": hr.MIN_SUPPORTED,
-            }
-        )
+        connected = {
+            "type": "connected",
+            "token": session["token"],
+            "expires_at": session["expires_at"],
+            "generation": generation,
+            "protocol_version": hr.PROTOCOL_VERSION,
+            "min_supported": hr.MIN_SUPPORTED,
+            "leases": host_tunnels.leased_devices(host_id),
+        }
+        # From here, lease changes are sent as they happen; nothing can precede "connected".
+        tunnel.ready = True
+        await tunnel.send_json(connected)
         deadline = session["expires_at"]
         last_seen = time.monotonic()
         next_ping = last_seen + CONTRACT.ping_seconds

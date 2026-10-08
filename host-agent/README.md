@@ -98,12 +98,14 @@ tunnel interface. Device registration uses B2's `devices` WebSocket message.
   `emulator-5554` reused by another AVD is a different device. A changed
   wireless endpoint keeps the id.
 - **Pinned transport:** the gateway maps an id to one pinned adb transport
-  (`host:transport-id:N`). A USB arrival never redirects a device that the
-  server used in the last 10 seconds; it takes over only when the device is
-  idle. When the pinned transport is lost while in use, the device stays
-  offline until the server has stopped using it for 10 seconds, so the run
-  ends `interrupted(device_offline)` with no silent failover. Device lists,
-  `get-serialno` and `tport` replies carry only shared opaque ids.
+  (`host:transport-id:N`). The server leases a device to a run when it binds
+  the run and releases the lease when it frees the run slot. It sends the
+  leased ids in the `connected` message and as a `lease` message on every
+  change. While a device is leased, a USB arrival never redirects it, and
+  losing the pinned transport holds the device offline, however long the run
+  is quiet. The run then ends `interrupted(device_offline)` with no silent
+  failover. Without a lease the device moves at once, preferring USB.
+  Device lists, `get-serialno` and `tport` replies carry only shared opaque ids.
 - v1 registers only running emulators; it never boots, snapshots or kills an AVD.
 
 **Known discovery gap:** `doctor` only checks the resolved adb executable's
@@ -184,7 +186,7 @@ The state is kept in a private `sharing.json` (0600) next to the configuration.
 
 - `mode select` (default on a fresh install, nothing selected): `share`
   saves a reference `{kind, hw_id, label, first_seen, last_serial}` that
-  re-applies whenever the device reappears, never by serial or list position.
+  re-applies whenever the device reappears, never by serial or list position. A `share` in this mode also clears an exclusion left from auto mode.
 - `mode auto`: every trusted device is shared, including devices plugged in
   later. `unshare` records an exclusion that survives rescan, replug and
   restart until the device is shared again. `status` always says

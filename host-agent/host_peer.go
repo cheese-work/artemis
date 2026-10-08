@@ -13,10 +13,12 @@ type HostPeer struct {
 	relays map[uint32]*hostRelay
 	dial   func(context.Context) (net.Conn, error)
 	routes hostRoutes
-	ctx    context.Context
-	cancel context.CancelFunc
-	tasks  sync.WaitGroup
-	closed bool
+	// onLease receives the server's set of device ids with a bound run.
+	onLease func([]string)
+	ctx     context.Context
+	cancel  context.CancelFunc
+	tasks   sync.WaitGroup
+	closed  bool
 }
 
 type hostRelay struct {

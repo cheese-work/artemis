@@ -5,6 +5,7 @@ from collections.abc import Callable
 import logging
 import time
 
+from apps.admin_console.services.host_registry import DEVICE_ID
 from artemis.config.host_agent import host_agent_enabled
 from artemis.runtime.adb_endpoint import AdbEndpoint
 from artemis.runtime.adb_gateway import Gateway
@@ -30,6 +31,7 @@ class HostTunnel:
         self.tasks: set[asyncio.Task] = set()
         self.listener: asyncio.Server | None = None
         self.sender: asyncio.Task | None = None
+        self.ready = False  # set once the agent has its "connected" message
 
     async def start(self) -> AdbEndpoint:
         self.listener = await asyncio.start_server(self.client, "127.0.0.1", self.port)
@@ -198,12 +200,46 @@ class HostTunnels:
         self.generations: dict[str, int] = {}
         self.resolved: dict[str, asyncio.Event] = {}
         self.ports: dict[str, int] = {}
+        self.leases: dict[str, dict[str, str]] = {}  # host -> run -> opaque device id
+        self.lease_tasks: set = set()
 
-    def bind_run(self, host_id: str, session_id: str) -> None:
+    def bind_run(self, host_id: str, session_id: str, device_id: str | None = None) -> None:
         self.runs.setdefault(host_id, set()).add(session_id)
+        if device_id and DEVICE_ID.match(device_id):
+            self.leases.setdefault(host_id, {})[session_id] = device_id
+            self.publish_leases(host_id)
 
     def release_run(self, host_id: str, session_id: str) -> None:
         self.runs.get(host_id, set()).discard(session_id)
+        if self.leases.get(host_id, {}).pop(session_id, None) is not None:
+            self.publish_leases(host_id)
+
+    def leased_devices(self, host_id: str) -> list[str]:
+        """Devices with a bound run: the agent keeps their transport pinned until release."""
+        return sorted(set(self.leases.get(host_id, {}).values()))
+
+    def publish_leases(self, host_id: str) -> None:
+        tunnel = self.tunnels.get(host_id)
+        if tunnel is None or not tunnel.ready:
+            return  # the next "connected" message carries the full set
+        message = {"type": "lease", "devices": self.leased_devices(host_id)}
+        try:
+            running = asyncio.get_running_loop()
+        except RuntimeError:
+            running = None
+        if running is tunnel.loop:
+            task = running.create_task(self._send_lease(tunnel, message))
+            self.lease_tasks.add(task)
+            task.add_done_callback(self.lease_tasks.discard)
+        else:
+            asyncio.run_coroutine_threadsafe(self._send_lease(tunnel, message), tunnel.loop)
+
+    @staticmethod
+    async def _send_lease(tunnel: HostTunnel, message: dict) -> None:
+        try:
+            await tunnel.send_json(message)
+        except (ConnectionError, OSError, RuntimeError, TimeoutError):
+            logger.debug("Lease update not delivered; the reconnect carries it", exc_info=True)
 
     def reconnecting(self, host_id: str) -> float | None:
         loss = self.losses.get(host_id)
@@ -331,6 +367,7 @@ class HostTunnels:
         self.losses.clear()
         self.runs.clear()
         self.generations.clear()
+        self.leases.clear()
         for event in self.resolved.values():
             event.set()
         self.resolved.clear()

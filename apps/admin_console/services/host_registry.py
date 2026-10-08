@@ -191,6 +191,14 @@ class HostRegistry:
                 for column in ("kind", "state", "attention"):  # B3a-2, additive
                     if column not in columns:
                         conn.execute(f"ALTER TABLE host_devices ADD COLUMN {column} TEXT")
+                # Rows from before B3a-2 hold raw adb serials: drop them; the agent re-registers.
+                legacy = [
+                    (row["host_id"], row["serial"])
+                    for row in conn.execute("SELECT host_id, serial FROM host_devices")
+                    if not DEVICE_ID.match(row["serial"])
+                ]
+                conn.executemany("DELETE FROM host_devices WHERE host_id=? AND serial=?", legacy)
+                conn.commit()  # close the implicit transaction before callers BEGIN IMMEDIATE
                 self._schema_ready.add(key)
             with conn:  # commit on success, roll back on any error
                 yield conn
@@ -540,7 +548,9 @@ class HostRegistry:
         with self._db() as conn:
             hosts = [dict(r) for r in conn.execute("SELECT * FROM hosts ORDER BY created_at, id")]
             devices = [
-                dict(r) for r in conn.execute("SELECT * FROM host_devices ORDER BY host_id, serial")
+                dict(r)
+                for r in conn.execute("SELECT * FROM host_devices ORDER BY host_id, serial")
+                if DEVICE_ID.match(r["serial"])  # never publish a raw serial
             ]
         by_host: dict[str, list[dict[str, Any]]] = {}
         claims: dict[str, set[str]] = {}

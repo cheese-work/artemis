@@ -104,8 +104,9 @@ func (peer *HostPeer) Serve(ctx context.Context, transport HostTransport) error 
 				return errHostProtocol
 			}
 			var event struct {
-				Type string `json:"type"`
-				Code string `json:"code"`
+				Type    string   `json:"type"`
+				Code    string   `json:"code"`
+				Devices []string `json:"devices"`
 			}
 			if err := json.Unmarshal(message.payload, &event); err != nil {
 				return errHostProtocol
@@ -114,6 +115,10 @@ func (peer *HostPeer) Serve(ctx context.Context, transport HostTransport) error 
 			case "ping":
 				if err := send([]byte(`{"type":"pong"}`), false); err != nil {
 					return err
+				}
+			case "lease":
+				if peer.onLease != nil {
+					peer.onLease(event.Devices)
 				}
 			case "pong", "renewed":
 			case "error":
