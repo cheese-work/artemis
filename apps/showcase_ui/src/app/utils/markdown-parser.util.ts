@@ -339,7 +339,9 @@ export function renderMarkdownToHtml(text: string): string {
     }
 
     // 1b. Tables: header row, separator row, then body rows (input is already escaped)
-    if (trimmed.includes('|') && i + 1 < rawLines.length && rawLines[i + 1].includes('|') && TABLE_SEPARATOR.test(rawLines[i + 1])) {
+    // GFM: the header and separator rows must have the same number of cells, otherwise it is not a table.
+    if (trimmed.includes('|') && i + 1 < rawLines.length && rawLines[i + 1].includes('|') && TABLE_SEPARATOR.test(rawLines[i + 1])
+        && splitTableRow(trimmed).length === splitTableRow(rawLines[i + 1].trim()).length) {
       closeList();
       const headerCells = splitTableRow(trimmed);
       const header = headerCells.map(cell => `<th>${formatInlineMarkdown(cell)}</th>`).join('');

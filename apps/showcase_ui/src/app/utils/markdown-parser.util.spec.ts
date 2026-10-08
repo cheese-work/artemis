@@ -104,6 +104,12 @@ describe('markdown-parser.util verification & check lines', () => {
     expect(ended).toContain('<div>after</div>');
   });
 
+  it('should not render a table when header and separator widths differ', () => {
+    const html = renderMarkdownToHtml('A | B\n--- | --- | ---\n1 | 2 | IMPORTANT');
+    expect(html).not.toContain('<table>');
+    expect(html).toContain('IMPORTANT');
+  });
+
   it('should only keep a safe language token on code fences', () => {
     const html = renderMarkdownToHtml('```"><img src=x onerror=alert(1)>\ncode\n```\n\n```c++\nx\n```');
     expect(html).not.toContain('<img');
