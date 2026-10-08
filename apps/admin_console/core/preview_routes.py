@@ -115,6 +115,8 @@ DISABLED = frozenset(
         "PUT /api/system/retention",
         "POST /api/system/retention/dry-run",
         "POST /api/system/retention/run",
+        # The failure ledger creates its tables on every call, even a read, and its
+        # collect/digest write rows and send a report. Wait for the L3 fixture store.
         "GET /api/system/failures",
         "POST /api/system/failures/collect",
         "POST /api/system/failures/digest",
