@@ -259,11 +259,21 @@ async def connect(ws: WebSocket) -> None:
                 previous_shared = shared_serials()
                 if host_registry.set_devices(host_id, generation, message.get("devices")):
                     current_shared = shared_serials()
+                    reported = message.get("devices")
+                    emulators = {
+                        str(item.get("serial"))
+                        for item in (reported if isinstance(reported, list) else [])
+                        if isinstance(item, dict) and item.get("kind") == "emulator"
+                    }
                     for serial in previous_shared - current_shared:
                         host_admission.unshare_device(host_id, serial)
                     for serial in current_shared:
-                        host_admission.share_device(host_id, serial)
+                        host_admission.share_device(host_id, serial, emulator=serial in emulators)
                     tunnel.unshare()
+            elif kind == "event":
+                fields = host_registry.audit_event(message)
+                if fields is not None:  # never echo an unvalidated value into the log
+                    logger.info("event=%s host_id=%s%s", message["event"], host_id, fields)
     except (ProtocolError, json.JSONDecodeError):
         reason = "bad_frame"
         if ws.application_state == WebSocketState.CONNECTED:

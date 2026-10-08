@@ -12,6 +12,7 @@ type HostPeer struct {
 	shared map[string]bool
 	relays map[uint32]*hostRelay
 	dial   func(context.Context) (net.Conn, error)
+	routes hostRoutes
 	ctx    context.Context
 	cancel context.CancelFunc
 	tasks  sync.WaitGroup
@@ -157,7 +158,7 @@ func (peer *HostPeer) relay(relay *hostRelay) {
 	}
 	relay.connection = connection
 	peer.mutex.Unlock()
-	gateway := hostGateway{shared: peer.isShared, selected: func(serial string) {
+	gateway := hostGateway{shared: peer.isShared, routes: peer.routes, selected: func(serial string) {
 		peer.mutex.Lock()
 		relay.serial = serial
 		if !peer.shared[serial] {

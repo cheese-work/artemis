@@ -34,14 +34,28 @@ type hostLink struct {
 }
 
 type hostCommand struct {
-	Command string `json:"command"`
-	Serial  string `json:"serial,omitempty"`
+	Command  string `json:"command"`
+	Selector string `json:"selector,omitempty"`
+	Mode     string `json:"mode,omitempty"`
 }
 
 type hostReply struct {
-	Code      string   `json:"code,omitempty"`
-	Connected bool     `json:"connected"`
-	Devices   []device `json:"devices,omitempty"`
+	Code      string          `json:"code,omitempty"`
+	Connected bool            `json:"connected"`
+	Devices   []device        `json:"devices,omitempty"`
+	Sharing   *sharingSummary `json:"sharing,omitempty"`
+}
+
+// serverDevice is everything the server learns about a device: the opaque id
+// in the serial field, never a raw serial, hw id or AVD name.
+type serverDevice struct {
+	Serial    string `json:"serial"`
+	State     string `json:"state"`
+	Model     string `json:"model,omitempty"`
+	Kind      string `json:"kind"`
+	Shared    bool   `json:"shared"`
+	Auto      bool   `json:"auto_shared,omitempty"`
+	Attention string `json:"attention,omitempty"`
 }
 
 func controlPath(path string) string { return filepath.Join(filepath.Dir(path), "control.sock") }
@@ -138,16 +152,28 @@ func localHostCommand(ctx context.Context, path string, command hostCommand) (ho
 	return reply, nil
 }
 
-func (link *hostLink) SetShare(ctx context.Context, serial string, shared bool) error {
+func (link *hostLink) SetShare(ctx context.Context, selector string, shared bool) error {
 	link.mutex.Lock()
 	defer link.mutex.Unlock()
 	if link.peer == nil || link.socket == nil || link.unenrolling {
 		return failure("SQH-E009", nil)
 	}
-	if !hostSerialPattern.MatchString(serial) {
+	if len(selector) > 128 {
 		return failure("SQH-E205", nil)
 	}
-	if err := link.devices.share(serial, shared); err != nil {
+	if err := link.devices.share(selector, shared); err != nil {
+		return err
+	}
+	return link.publish(ctx)
+}
+
+func (link *hostLink) SetMode(ctx context.Context, mode string) error {
+	link.mutex.Lock()
+	defer link.mutex.Unlock()
+	if link.peer == nil || link.socket == nil || link.unenrolling {
+		return failure("SQH-E009", nil)
+	}
+	if err := link.devices.setMode(mode); err != nil {
 		return err
 	}
 	return link.publish(ctx)
@@ -159,10 +185,15 @@ func (link *hostLink) publish(ctx context.Context) error {
 		entries = entries[:64]
 	}
 	shares := map[string]bool{}
+	view := make([]serverDevice, 0, len(entries))
 	for _, entry := range entries {
-		if entry.Shared && entry.State == "device" && hostSerialPattern.MatchString(entry.Serial) {
-			shares[entry.Serial] = true
+		if !opaqueDeviceIDPattern.MatchString(entry.ID) {
+			continue
 		}
+		if entry.Shared && entry.State == "device" {
+			shares[entry.ID] = true
+		}
+		view = append(view, serverDevice{entry.ID, entry.State, entry.Model, entry.Kind, entry.Shared, entry.Auto, entry.Attention})
 	}
 	for serial := range link.shared {
 		if !shares[serial] {
@@ -179,9 +210,24 @@ func (link *hostLink) publish(ctx context.Context) error {
 		}
 	}
 	link.shared = shares
-	if err := sendHostJSON(ctx, link.socket, map[string]any{"type": "devices", "devices": entries}); err != nil {
+	if err := sendHostJSON(ctx, link.socket, map[string]any{"type": "devices", "devices": view}); err != nil {
 		link.socket.fail(err)
 		return failure("SQH-E104", err)
+	}
+	for _, event := range link.devices.takeEvents() {
+		message := map[string]any{"type": "event", "event": event.Event}
+		for key, value := range map[string]string{"device": event.Device, "mode": event.Mode, "by": event.By} {
+			if value != "" {
+				message[key] = value
+			}
+		}
+		if event.Shared != nil {
+			message["shared"] = *event.Shared
+		}
+		if err := sendHostJSON(ctx, link.socket, message); err != nil {
+			link.socket.fail(err)
+			return failure("SQH-E104", err)
+		}
 	}
 	return nil
 }
@@ -201,6 +247,7 @@ func (link *hostLink) connect(root, handshake context.Context, state agentState)
 		}
 		link.mutex.Unlock()
 	}
+	session.peer.routes = link.devices
 	link.mutex.Lock()
 	link.peer = session.peer
 	link.socket = session.socket
@@ -328,11 +375,15 @@ func (link *hostLink) handleControl(output http.ResponseWriter, request *http.Re
 	} else {
 		switch command.Command {
 		case "share", "unshare":
-			err = link.SetShare(request.Context(), command.Serial, command.Command == "share")
+			err = link.SetShare(request.Context(), command.Selector, command.Command == "share")
+		case "mode":
+			err = link.SetMode(request.Context(), command.Mode)
 		case "status", "devices":
 			link.mutex.Lock()
 			reply.Connected = link.socket != nil && !link.unenrolling
 			reply.Devices = link.devices.snapshot()
+			summary := link.devices.summary()
+			reply.Sharing = &summary
 			link.mutex.Unlock()
 		case "unenroll":
 			err = link.unenroll(request.Context())

@@ -19,11 +19,13 @@ import (
 )
 
 type agentState struct {
-	HostID     string                     `json:"host_id"`
-	PrivateKey string                     `json:"private_key"`
-	Server     string                     `json:"server"`
-	Devices    []device                   `json:"devices"`
-	Extra      map[string]json.RawMessage `json:"-"`
+	HostID     string   `json:"host_id"`
+	PrivateKey string   `json:"private_key"`
+	Server     string   `json:"server"`
+	Devices    []device `json:"devices"`
+	// DevicePepper is the org pepper from enrollment; device ids are HMACs under it.
+	DevicePepper string                     `json:"device_pepper,omitempty"`
+	Extra        map[string]json.RawMessage `json:"-"`
 }
 type enrollment struct {
 	Code            string `json:"code"`
@@ -38,6 +40,7 @@ type enrollmentResult struct {
 	HostID          string `json:"host_id"`
 	ProtocolVersion int    `json:"protocol_version"`
 	MinSupported    int    `json:"min_supported"`
+	DevicePepper    string `json:"device_pepper"`
 }
 
 func statePath(configPath string) string {
@@ -83,7 +86,7 @@ func saveState(filename string, state agentState) error {
 	if values == nil {
 		values = map[string]json.RawMessage{}
 	}
-	for _, key := range []string{"host_id", "private_key", "server", "devices"} {
+	for _, key := range []string{"host_id", "private_key", "server", "devices", "device_pepper"} {
 		delete(values, key)
 	}
 	var known map[string]json.RawMessage
@@ -202,10 +205,11 @@ func enroll(ctx context.Context, configPath string, config configuration, code, 
 	if result.MinSupported > 1 {
 		return state, failure("SQH-E006", nil)
 	}
-	if result.HostID == "" {
-		return state, failure("SQH-E004", nil)
+	if pepper, err := base64.StdEncoding.DecodeString(result.DevicePepper); result.HostID == "" || err != nil || len(pepper) != 32 {
+		return state, failure("SQH-E004", err)
 	}
 	state.HostID = result.HostID
+	state.DevicePepper = result.DevicePepper
 	if err = saveState(statePath(configPath), state); err != nil {
 		return state, err
 	}
