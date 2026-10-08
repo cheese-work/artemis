@@ -20,8 +20,15 @@ from fastapi.responses import FileResponse, HTMLResponse
 from artemis.config import IMAGES_DIR, TRACES_PATH, WORKSPACE_ROOT
 from artemis.data_engine.run_catalog import validate_session_id
 
-from apps.admin_console.core.ownership import OwnerScope, actor_scope, present_session_data
+from apps.admin_console.core.ownership import (
+    OwnerScope,
+    actor_scope,
+    present_session_data,
+    require_access,
+    scope_or_open,
+)
 from apps.admin_console.services import run_media
+from apps.admin_console.services.run_artifacts import goal_image_session
 
 try:
     from admin_console.database.repositories.session_repository import session_repo
@@ -48,8 +55,13 @@ class _LeasedFileResponse(FileResponse):
             await asyncio.shield(asyncio.to_thread(run_media.release, self._lease_ids))
 
 
-async def _leased_file(path: Path, media_type: str, owners: list[str]) -> FileResponse:
+async def _leased_file(
+    path: Path, media_type: str, owners: list[str], actor: OwnerScope
+) -> FileResponse:
     """A download that defers deleting its runs until it ends; 404 once they are all deleted."""
+    session_id = await asyncio.to_thread(goal_image_session, path)
+    if session_id is not None:
+        await asyncio.to_thread(require_access, scope_or_open(actor), session_id)
     lease_ids = await asyncio.to_thread(run_media.lease, owners)
     if lease_ids is None:
         raise HTTPException(status_code=404, detail="Media file not found")
@@ -125,7 +137,7 @@ async def get_admin_index():
 
 @router.get("/images/{image_name}")
 @router.get("/api/images/{image_name}")
-async def get_image(image_name: str):
+async def get_image(image_name: str, actor: OwnerScope = Depends(actor_scope)):
     if not image_name.endswith(".jpg"):
         image_name += ".jpg"
     try:
@@ -137,14 +149,14 @@ async def get_image(image_name: str):
         raise HTTPException(status_code=404, detail="Image not found")
 
     owners = await asyncio.to_thread(run_media.owners_of_image, image_path.name)
-    return await _leased_file(image_path, "image/jpeg", owners)
+    return await _leased_file(image_path, "image/jpeg", owners, actor)
 
 
 @router.get("/videos/{video_path:path}")
-async def get_video(video_path: str):
+async def get_video(video_path: str, actor: OwnerScope = Depends(actor_scope)):
     path = _resolve_media_path(video_path, set(_VIDEO_MEDIA_TYPES))
     owners = await asyncio.to_thread(run_media.owners_of_file, path)
-    return await _leased_file(path, _VIDEO_MEDIA_TYPES[path.suffix.lower()], owners)
+    return await _leased_file(path, _VIDEO_MEDIA_TYPES[path.suffix.lower()], owners, actor)
 
 
 @router.get("/api/sessions/{session_id}/video")
@@ -218,10 +230,10 @@ def _get_session_video_sync(session_id: str):
 
 
 @router.get("/local_file")
-async def get_local_file(path: str):
+async def get_local_file(path: str, actor: OwnerScope = Depends(actor_scope)):
     p, media_type = media_service.get_safe_local_file(path)
     owners = await asyncio.to_thread(run_media.owners_of_file, Path(p))
-    return await _leased_file(Path(p), media_type, owners)
+    return await _leased_file(Path(p), media_type, owners, actor)
 
 
 @router.get("/api/sessions/{session_id}/plan")

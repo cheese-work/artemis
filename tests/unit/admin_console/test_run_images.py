@@ -24,6 +24,7 @@ A test token *is* the email: the verifier fake echoes it back as the claim.
 import base64
 import io
 import json
+from urllib.parse import quote
 import uuid
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -37,6 +38,7 @@ from apps.admin_console.core.state import state
 from apps.admin_console.database.repositories.run_catalog_repository import run_catalog_repo
 from apps.admin_console.database.repositories.session_repository import session_repo
 from apps.admin_console.routers import sessions as sessions_router
+from apps.admin_console.routers import media as media_router
 from apps.admin_console.routers import tasks as tasks_router
 from apps.admin_console.server import app
 from apps.admin_console.services import run_images
@@ -328,6 +330,116 @@ async def test_only_the_owner_or_an_admin_can_fetch_an_image(cloudflare):
     assert mine.content == _image_bytes()
     assert other.status_code == 403
     assert other.content != _image_bytes()
+
+
+@pytest.fixture
+def generic_media_roots(env, monkeypatch):
+    traces = env / "traces"
+    monkeypatch.setattr(media_router, "TRACES_PATH", traces)
+    monkeypatch.setattr(media_router, "WORKSPACE_ROOT", env)
+    monkeypatch.setattr(media_router, "IMAGES_DIR", traces / "images")
+    monkeypatch.setitem(
+        media_router.media_service.get_safe_local_file.__globals__, "TRACES_PATH", traces
+    )
+    monkeypatch.setitem(
+        media_router.media_service.get_safe_local_file.__globals__, "WORKSPACE_ROOT", env
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("email,status", [(QA1, 200), (QA2, 403), (ADMIN, 200)])
+@pytest.mark.parametrize("spelling", ["plain", "parent", "symlink", "encoded", "file_uri", "case"])
+async def test_local_file_applies_goal_image_ownership_after_resolution(
+    cloudflare, generic_media_roots, email, status, spelling
+):
+    sid = _owned_run(cloudflare, QA1)
+    folder = _stored(cloudflare, sid)
+    path = folder / "0.png"
+    if spelling == "parent":
+        path = folder / ".." / "goal_images" / "0.png"
+    elif spelling == "symlink":
+        alias = cloudflare / "public.png"
+        alias.symlink_to(path)
+        path = alias
+    elif spelling == "case":
+        path = cloudflare / "traces" / sid / "GOAL_IMAGES" / "0.PNG"
+        path.parent.mkdir()
+        path.write_bytes(_image_bytes())
+    raw_path = str(path)
+    if spelling == "encoded":
+        raw_path = quote(raw_path, safe="")
+    elif spelling == "file_uri":
+        raw_path = path.as_uri()
+
+    response = await _get(email, f"/local_file?path={quote(raw_path, safe='')}")
+
+    assert response.status_code == status
+    if status == 200:
+        assert response.content == _image_bytes()
+    else:
+        assert response.content != _image_bytes()
+
+
+@pytest.mark.asyncio
+async def test_goal_image_generic_media_is_unchanged_in_open_mode(
+    env, generic_media_roots, monkeypatch
+):
+    monkeypatch.setattr(app.state, "access_config", AccessConfig(auth_mode="open"))
+    sid = _owned_run(env, QA1)
+    path = _stored(env, sid) / "0.png"
+
+    response = await _get(QA2, f"/local_file?path={quote(str(path), safe='')}")
+
+    assert response.status_code == 200
+    assert response.content == _image_bytes()
+
+
+@pytest.mark.asyncio
+async def test_shared_screenshots_and_recordings_remain_readable(cloudflare, generic_media_roots):
+    sid = _owned_run(cloudflare, QA1)
+    screenshot = cloudflare / "traces" / "images" / "shared.jpg"
+    screenshot.parent.mkdir(parents=True)
+    screenshot.write_bytes(_image_bytes("JPEG"))
+    recording = cloudflare / "traces" / sid / "recording.mp4"
+    recording.parent.mkdir()
+    recording.write_bytes(b"SHARED-VIDEO")
+
+    for path in (screenshot, recording):
+        response = await _get(QA2, f"/local_file?path={quote(str(path), safe='')}")
+        assert response.status_code == 200
+        assert response.content == path.read_bytes()
+    assert (await _get(QA2, "/images/shared")).content == screenshot.read_bytes()
+    assert (await _get(QA2, f"/videos/{sid}/recording.mp4")).content == b"SHARED-VIDEO"
+
+
+@pytest.mark.asyncio
+async def test_other_generic_media_routes_cannot_serve_goal_image_aliases(
+    cloudflare, generic_media_roots
+):
+    sid = _owned_run(cloudflare, QA1)
+    path = _stored(cloudflare, sid) / "0.png"
+    images = cloudflare / "traces" / "images"
+    images.mkdir()
+    (images / "alias.jpg").symlink_to(path)
+    (path.parent / "alias.mp4").symlink_to(path)
+    response = await _get(QA2, "/images/alias")
+    assert response.status_code == 404
+    response = await _get(QA2, f"/videos/{sid}/goal_images/alias.mp4")
+    assert response.status_code == 403
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("email,status", [(QA1, 200), (QA2, 403), (ADMIN, 200)])
+async def test_video_route_also_guards_goal_attachment_folders(
+    cloudflare, generic_media_roots, email, status
+):
+    sid = _owned_run(cloudflare, QA1)
+    folder = _stored(cloudflare, sid)
+    (folder / "0.mp4").write_bytes(b"PRIVATE-ATTACHMENT")
+
+    response = await _get(email, f"/videos/{sid}/goal_images/0.mp4")
+
+    assert response.status_code == status
 
 
 @pytest.mark.asyncio

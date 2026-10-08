@@ -125,6 +125,21 @@ async def test_prompt_is_redacted_too(library, qa):
     assert "log in with" in archive.read("prompt.txt").decode()
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("folder", ["goal_images", "GOAL_IMAGES"])
+async def test_bundle_does_not_export_goal_attachments_as_recordings(library, qa, folder):
+    sid = library.seed("prompt with a private attachment")
+    attachment = library.video_in(sid, f"{sid}/{folder}", "0.png", b"PRIVATE-GOAL-IMAGE")
+
+    async with qa:
+        archive = _zip(await qa.get(f"/api/runs/{sid}/bundle.zip"))
+
+    assert not any(b"PRIVATE-GOAL-IMAGE" in archive.read(name) for name in archive.namelist())
+    assert {"name": f"video/{attachment.name}", "reason": "prompt_attachment"} in json.loads(
+        archive.read("manifest.json")
+    )["skipped"]
+
+
 # -- containment -----------------------------------------------------------------
 
 

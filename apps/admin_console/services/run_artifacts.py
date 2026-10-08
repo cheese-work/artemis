@@ -73,6 +73,17 @@ def library_paths() -> tuple[Path | None, Path]:
     return run_catalog_repo.db_path, Path(run_catalog_repo.traces_dir)
 
 
+def goal_image_session(path: Path) -> str | None:
+    """The run owning a resolved prompt attachment, never a screenshot or recording."""
+    try:
+        parts = path.resolve().relative_to(library_paths()[1].resolve()).parts
+    except ValueError:
+        return None
+    if len(parts) >= 3 and any(part.casefold() == "goal_images" for part in parts[1:-1]):
+        return parts[0]
+    return None
+
+
 @dataclass(frozen=True, slots=True)
 class Artifact:
     arcname: str
@@ -400,6 +411,9 @@ def _add_videos(manifest: Manifest, traces: Path, db_path, session_id: str) -> N
         if recorded.suffix.lower() != ".mp4":
             candidates.insert(0, recorded.with_suffix(".mp4"))
         for candidate in candidates:
+            if goal_image_session(candidate) is not None:
+                _skip(manifest, f"video/{candidate.name}", "prompt_attachment")
+                continue
             path, reason = safe_file(traces, candidate)
             if reason:
                 _skip(manifest, f"video/{candidate.name}", reason)

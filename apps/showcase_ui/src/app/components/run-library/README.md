@@ -15,3 +15,5 @@ Workspace history reloads when the terminal-session revision changes, without ch
 Team links open the viewer in read-only review mode, including for administrators. Copy link and Download remain available; pin and delete are absent and their handlers are guarded. Stop and Resume are not viewer actions. URL state is not an authorization boundary: existing server ownership checks still protect mutations.
 
 Videos and screenshots are not redacted. The team tab and existing media viewer keep that warning. Compact history preserves recorded device labels without selecting a live session or changing the next run's device.
+
+Prompt attachments are not shared screenshots. In authenticated mode, goal-image bytes require the run's owner or an administrator, including through generic media URLs after path resolution. Open mode remains unchanged. Bundles exclude goal attachments, even if a recording reference points to the attachment folder; exported text is always redacted.
