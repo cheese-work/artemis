@@ -17,6 +17,7 @@ export interface RunSummary {
   host_id: string | null;
   device_ref: { host_id: string | null; serial: string } | null;
   requested_by: string | null;
+  read_only?: boolean;
   pinned: boolean;
   recordings: RunRecording[];
   /** Epoch seconds the run is due for retention deletion; absent until retention is on. */

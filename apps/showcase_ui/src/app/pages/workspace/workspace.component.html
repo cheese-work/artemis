@@ -22,6 +22,7 @@ limitations under the License.
         <app-run-library></app-run-library>
       } @else {
         <app-run-view [mode]="reviewMode ? 'review' : 'live'"
+          [readOnly]="reviewMode && reviewReadOnly()"
           [runId]="reviewMode ? reviewRunId()! : agentService.currentSessionId() ?? ''"
           [liveSession]="reviewMode ? null : agentService.currentSession()"
           [liveSteps]="reviewMode ? [] : liveSteps()"
@@ -224,11 +225,10 @@ limitations under the License.
     <div class="resizer" (mousedown)="onDragStart($event)">
       <div class="resizer-handle"></div>
     </div>
-  }
-
   <!-- Right Sidebar Panel: Chat Interface Mock -->
   <aside class="right-panel" [style.width.px]="rightPanelWidth()">
     <app-chat-interface></app-chat-interface>
   </aside>
+  }
 
 </div>

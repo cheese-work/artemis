@@ -1041,6 +1041,36 @@ describe('RunViewComponent', () => {
   });
 
   describe('pin and delete', () => {
+    it('keeps a server-marked shared run read-only, including pin and delete handlers', async () => {
+      await open({ isAdmin: true, runResult: of(run({ read_only: true })) });
+      expect(fixture.componentInstance.actions().map((action) => action.id)).toEqual(['share', 'download']);
+      fixture.componentInstance.togglePin(new Event('click'));
+      fixture.componentInstance.ask('delete');
+      expect(fixture.componentInstance.dialogKind()).toBeNull();
+      expect(runs.pin).not.toHaveBeenCalled();
+      expect(runs.unpin).not.toHaveBeenCalled();
+      expect(runs.remove).not.toHaveBeenCalled();
+    });
+
+    it('keeps the team-tab review route read-only even for an administrator', async () => {
+      await open({ isAdmin: true });
+      fixture.componentRef.setInput('readOnly', true);
+      await settle();
+      expect(fixture.componentInstance.actions().map((action) => action.id)).toEqual(['share', 'download']);
+      fixture.componentInstance.ask('unpin_expired');
+      expect(fixture.componentInstance.dialogKind()).toBeNull();
+    });
+
+    it('does not resume a paused run when the shared controller is read-only', async () => {
+      agent.isPaused.set(true);
+      agent.agentStatus.set('paused');
+      await open({ isAdmin: true, viewMode: 'live', runResult: of(run({ status: 'paused', read_only: true })) });
+      expect(fixture.componentInstance.canResume()).toBeFalse();
+      expect(fixture.componentInstance.actions().map((action) => action.id)).toEqual(['share', 'download']);
+      fixture.componentInstance.onAction({ id: 'resume', event: new MouseEvent('click') });
+      expect(agent.resumeTask).not.toHaveBeenCalled();
+    });
+
     it('pins and unpins with a pressed state', async () => {
       await open();
       const pin = button('Pin');

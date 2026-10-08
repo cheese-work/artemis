@@ -87,6 +87,8 @@ export class RunViewComponent {
 
   /** Full run id or its 8-character prefix, from the URL. */
   public readonly runId = input<string>('');
+  public readonly readOnly = input(false);
+  public readonly readOnlyRun = computed(() => this.readOnly() || !!this.run()?.read_only);
   public readonly mode = input<'live' | 'review'>('review');
   public readonly liveSession = input<Session | null>(null);
   public readonly liveSteps = input<StepItemData[]>([]);
@@ -148,7 +150,7 @@ export class RunViewComponent {
   private readonly activeLiveSession = computed(() => this.viewingLiveSession()
     && !!this.agentService.runningSessionId() && this.run()?.session_id === this.agentService.runningSessionId());
   public readonly canResume = computed(() => {
-    if (this.mode() !== 'live' || !this.agentService.isPaused() || this.agentService.agentStatus() !== 'paused') return false;
+    if (this.readOnlyRun() || this.mode() !== 'live' || !this.agentService.isPaused() || this.agentService.agentStatus() !== 'paused') return false;
     const pausedSessionId = this.agentService.runningSessionId();
     return !!pausedSessionId && this.run()?.session_id === pausedSessionId
       && this.agentService.currentSessionId() === pausedSessionId;
@@ -183,7 +185,7 @@ export class RunViewComponent {
   ]);
 
   /** Pin and Delete change the run, so only its owner or an admin gets them; the server checks too. */
-  public readonly canChange = computed(() => this.ownerScope.canAct(this.run()?.requested_by));
+  public readonly canChange = computed(() => !this.readOnlyRun() && this.ownerScope.canAct(this.run()?.requested_by));
   /** Set once we know who is looking and they may not change this run. */
   public readonly readOnlyNote = computed(() =>
     this.ownerScope.identity() && this.run() && !this.canChange() ? readOnlyText(this.run()!.requested_by) : null
@@ -543,6 +545,7 @@ export class RunViewComponent {
   }
 
   public ask(kind: DialogKind, event?: Event): void {
+    if (!this.canChange() && (kind === 'delete' || kind === 'unpin_expired')) return;
     this.opener = (event?.currentTarget as HTMLElement | null) ?? null;
     this.dialogKind.set(kind);
     this.dialogEl()?.nativeElement.showModal();
@@ -570,6 +573,7 @@ export class RunViewComponent {
   }
 
   public togglePin(event: Event): void {
+    if (!this.canChange()) return;
     const run = this.run();
     if (!run) return;
     if (!run.pinned) return this.setPinned(true);
@@ -578,6 +582,7 @@ export class RunViewComponent {
   }
 
   private setPinned(pinned: boolean): void {
+    if (!this.canChange()) return;
     const run = this.run();
     if (!run) return;
     this.actionError.set(null);
@@ -639,6 +644,7 @@ export class RunViewComponent {
   }
 
   private remove(): void {
+    if (!this.canChange()) return;
     const run = this.run();
     if (!run) return;
     this.actionRequests.add(

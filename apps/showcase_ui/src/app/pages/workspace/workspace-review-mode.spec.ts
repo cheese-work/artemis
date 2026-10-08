@@ -6,6 +6,8 @@ import { RouterTestingHarness } from '@angular/router/testing';
 import { NEVER, of } from 'rxjs';
 import { routes } from '../../app.routes';
 import { ChatInterfaceComponent } from '../../components/chat-interface/chat-interface.component';
+import { RunViewComponent } from '../../components/run-view/run-view.component';
+import { By } from '@angular/platform-browser';
 import { RunSummary } from '../../core/models/run.model';
 import { RunTarget } from '../../core/models/run-target.model';
 import { Session } from '../../core/models/session.model';
@@ -104,8 +106,18 @@ describe('Workspace review mode', () => {
     await go('/runs');
     expect(q('.workspace-container.review-mode')).not.toBeNull();
     expect(q('app-run-library')).not.toBeNull();
+    expect(q('.right-panel')).toBeNull();
     expect(q('app-agent-stream')).toBeNull();
     expect(q('.workspace-floating-bar-wrapper')).toBeNull();
+  });
+
+  it('passes team review restrictions to the unified RunView', async () => {
+    await go(`/runs/${ID}?scope=everyone&review=1`);
+    const view = harness.fixture.debugElement.query(By.directive(RunViewComponent)).componentInstance as RunViewComponent;
+    expect(view.readOnly()).toBeTrue();
+    expect(view.mode()).toBe('review');
+    expect(view.runId()).toBe(ID);
+    expect(q('.right-panel')).toBeNull();
   });
 
   it('shows the run viewer for the id in the URL on /runs/:id', async () => {

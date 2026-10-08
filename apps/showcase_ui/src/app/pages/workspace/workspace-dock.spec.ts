@@ -14,7 +14,10 @@ import { WorkspaceComponent } from './workspace.component';
 describe('WorkspaceComponent always-open task dock', () => {
   let fixture: ComponentFixture<WorkspaceComponent>;
   let component: WorkspaceComponent;
-  const route = { snapshot: { data: { review: false }, paramMap: convertToParamMap({}) }, paramMap: of(convertToParamMap({})) };
+  const route = {
+    snapshot: { data: { review: false }, paramMap: convertToParamMap({}), queryParamMap: convertToParamMap({}) },
+    paramMap: of(convertToParamMap({})), queryParamMap: of(convertToParamMap({}))
+  };
 
   async function create(review = false): Promise<void> {
     route.snapshot.data.review = review;

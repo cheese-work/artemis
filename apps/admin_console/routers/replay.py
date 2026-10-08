@@ -17,6 +17,7 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from artemis.config import WORKSPACE_ROOT
 from apps.admin_console.core.access_control import require_admin
+from apps.admin_console.core.ownership import OwnerScope, actor_scope, present_session_data
 
 try:
     from admin_console.schemas.task_schema import ReplayRequest
@@ -53,14 +54,15 @@ async def get_replay_config(tool_name: str = "ask_explorer"):
 
 
 @router.get("/api/sessions/{session_id}/replay_steps")
-async def get_replay_steps(session_id: str):
+async def get_replay_steps(session_id: str, actor: OwnerScope = Depends(actor_scope)):
     """Loads and formats metadata for all chunked steps in the session."""
     try:
-        return replay_manager.get_replay_steps(session_id)
+        steps = replay_manager.get_replay_steps(session_id)
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+    return present_session_data(actor, session_id, steps)
 
 
 @router.post(
@@ -85,11 +87,15 @@ async def trigger_step_replay_endpoint(session_id: str, step_number: int, req: R
 
 @router.get("/api/sessions/{session_id}/steps/{step_number}/replay_traces")
 async def get_step_replay_traces_endpoint(
-    session_id: str, step_number: int, tool_name: str = "ask_explorer"
+    session_id: str,
+    step_number: int,
+    tool_name: str = "ask_explorer",
+    actor: OwnerScope = Depends(actor_scope),
 ):
     """Retrieves previously generated step replay traces if they exist."""
     try:
-        return replay_manager.get_step_replay_traces(session_id, step_number, tool_name)
+        traces = replay_manager.get_step_replay_traces(session_id, step_number, tool_name)
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+    return present_session_data(actor, session_id, traces)

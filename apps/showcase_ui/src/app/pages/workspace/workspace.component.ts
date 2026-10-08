@@ -74,6 +74,8 @@ export class WorkspaceComponent implements OnInit {
   public readonly reviewMode = !!this.route.snapshot.data['review'];
   private readonly routeParams = toSignal(this.route.paramMap, { initialValue: this.route.snapshot.paramMap });
   public readonly reviewRunId = computed(() => this.routeParams().get('id'));
+  private readonly queryParams = toSignal(this.route.queryParamMap, { initialValue: this.route.snapshot.queryParamMap });
+  public readonly reviewReadOnly = computed(() => this.queryParams().get('review') === '1' || this.queryParams().get('scope') === 'everyone');
   public readonly liveSteps = computed<StepItemData[]>(() => {
     const id = this.agentService.currentSessionId();
     if (!id) return [];

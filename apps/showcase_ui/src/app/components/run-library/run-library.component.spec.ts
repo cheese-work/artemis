@@ -126,6 +126,111 @@ describe('RunLibraryComponent', () => {
   });
 
   describe('rows', () => {
+    it('compact history scrolls inside the region whose position is saved and restored', async () => {
+      runs.list.and.returnValue(of(page(Array.from({ length: 20 }, (_, index) => run({ session_id: `run-${index}` })))));
+      const fixture = TestBed.createComponent(RunLibraryComponent);
+      fixture.componentRef.setInput('compact', true);
+      fixture.detectChanges();
+      await fixture.whenStable();
+      const region = fixture.nativeElement.querySelector('.library-scroll') as HTMLElement;
+      expect(getComputedStyle(region).overflowY).toBe('auto');
+      expect(region.scrollHeight).toBeGreaterThan(region.clientHeight);
+      region.scrollTop = 150;
+      fixture.componentInstance.rememberPosition();
+      expect(runs.lastLibraryQuery()).toEqual({ scroll: '150' });
+      fixture.destroy();
+
+      await router.navigateByUrl('/runs?scroll=150');
+      const restored = TestBed.createComponent(RunLibraryComponent);
+      restored.componentRef.setInput('compact', true);
+      restored.detectChanges();
+      await restored.whenStable();
+      expect(restored.nativeElement.querySelector('.library-scroll').scrollTop).toBe(150);
+      restored.destroy();
+    });
+
+    it('refreshes the current scope and filters without navigating or reusing a page cursor', async () => {
+      await open('/runs?scope=everyone&status=completed&q=login', of(page([run()], 'old-cursor')));
+      const fixture = TestBed.createComponent(RunLibraryComponent);
+      fixture.componentRef.setInput('refreshKey', 'initial');
+      fixture.detectChanges();
+      const before = runs.list.calls.count();
+      const url = router.url;
+      runs.list.and.returnValue(of(page([run({ session_id: 'new-run' })])));
+      fixture.componentRef.setInput('refreshKey', 'completed');
+      fixture.detectChanges();
+      expect(runs.list.calls.count()).toBe(before + 1);
+      expect(runs.list.calls.mostRecent().args[0]).toEqual(jasmine.objectContaining({ status: 'completed', q: 'login' }));
+      expect(runs.list.calls.mostRecent().args[1]).toEqual({ scope: 'everyone' });
+      expect(fixture.componentInstance.nextCursor()).toBeNull();
+      expect(router.url).toBe(url);
+      fixture.destroy();
+    });
+
+    it('restores Everyone in the URL with filters and read-only owner-labelled links', async () => {
+      await open('/runs?scope=everyone&q=login&status=failed&from=2026-10-01');
+      expect(runs.list.calls.mostRecent().args[1]).toEqual({ scope: 'everyone' });
+      expect(q('.run-owner')?.textContent).toContain('qa@example.test');
+      expect(q<HTMLAnchorElement>('.run-row')?.getAttribute('href')).toContain('review=1');
+      expect(root.textContent).toContain('Videos and screenshots are not redacted');
+      expect(qa<HTMLButtonElement>('[role="tab"]').map((tab) => tab.getAttribute('aria-selected')))
+        .toEqual(['false', 'true']);
+    });
+
+    it('switches tabs by keyboard without losing search, status or date filters', async () => {
+      await open('/runs?q=login&status=failed&from=2026-10-01&to=2026-10-07&scroll=100');
+      const mine = q<HTMLButtonElement>('[role="tab"]')!;
+      mine.focus();
+      mine.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true, cancelable: true }));
+      await settle();
+      expect(router.url).toContain('scope=everyone');
+      expect(router.url).toContain('q=login');
+      expect(router.url).toContain('status=failed');
+      expect(router.url).toContain('from=2026-10-01');
+      expect(router.url).toContain('to=2026-10-07');
+      expect(router.url).not.toContain('scroll=');
+      expect(document.activeElement).toBe(qa<HTMLButtonElement>('[role="tab"]')[1]);
+      component.clearFilters();
+      await settle();
+      expect(router.url).toBe('/runs?scope=everyone');
+      qa<HTMLButtonElement>('[role="tab"]')[1].dispatchEvent(new KeyboardEvent('keydown', { key: 'Home', bubbles: true }));
+      await settle();
+      expect(router.url).toBe('/runs');
+    });
+
+    it('explains an empty team tab separately from an empty My runs tab', async () => {
+      await open('/runs?scope=everyone', of(page([])));
+      expect(root.textContent).toContain('No shared runs yet.');
+      expect(root.textContent).not.toContain('Start one in Workspace');
+    });
+
+    it('drops stale prompts and cursors before loading a different owner tab', async () => {
+      await open('/runs', of(page([run({ prompt: 'Private prompt' })], 'mine-cursor')));
+      const team = new Subject<RunPage>();
+      runs.list.and.returnValue(team);
+      qa<HTMLButtonElement>('[role="tab"]')[1].click();
+      await settle();
+      expect(root.textContent).not.toContain('Private prompt');
+      expect(component.nextCursor()).toBeNull();
+      expect(runs.list.calls.mostRecent().args[1]).toEqual({ scope: 'everyone' });
+      team.next(page([run({ prompt: 'Redacted team prompt' })], 'team-cursor'));
+      await settle();
+      runs.list.and.returnValue(of(page([])));
+      component.loadMore();
+      await settle();
+      expect(runs.list.calls.mostRecent().args[1]).toEqual({ scope: 'everyone', cursor: 'team-cursor' });
+    });
+
+    it('characterizes status and date URL filters without changing the selected device', async () => {
+      localStorage.setItem(SELECTED_DEVICE_SERIAL_KEY, 'my-phone');
+      await open('/runs?status=failed&from=2026-10-01&to=2026-10-07');
+      expect(component.filters().status).toBe('failed');
+      expect(component.filters().from).toBe('2026-10-01');
+      expect(component.filters().to).toBe('2026-10-07');
+      expect(q<HTMLAnchorElement>('.run-row')?.getAttribute('href')).toBe(`/runs/${ID}`);
+      expect(localStorage.getItem(SELECTED_DEVICE_SERIAL_KEY)).toBe('my-phone');
+    });
+
     it('lists runs newest first as links with prompt, outcome, recording, device and computer, and date', async () => {
       await open(
         '/runs',
@@ -435,7 +540,7 @@ describe('RunLibraryComponent', () => {
       await settle();
       await wait(50);
       expect(runs.list).toHaveBeenCalledTimes(2);
-      expect(runs.list.calls.mostRecent().args[1]).toEqual({ cursor: 'next-page' });
+      expect(runs.list.calls.mostRecent().args[1]).toEqual({ scope: 'mine', cursor: 'next-page' });
       expect(q<HTMLElement>('.library-scroll')!.scrollTop).toBe(700);
     });
   });
@@ -458,7 +563,7 @@ describe('RunLibraryComponent', () => {
       component.loadMore(); // a queued or programmatic call must not consume it either
       await settle();
       expect(runs.list).toHaveBeenCalledTimes(1);
-      expect(runs.list.calls.mostRecent().args[1]).toBeUndefined();
+      expect(runs.list.calls.mostRecent().args[1]).toEqual({ scope: 'mine' });
 
       reload.next(page([failedRow(1)]));
       reload.complete();
@@ -473,7 +578,7 @@ describe('RunLibraryComponent', () => {
       runs.list.and.returnValue(older);
       q<HTMLButtonElement>('button.load-more')!.click();
       await settle();
-      expect(runs.list.calls.mostRecent().args[1]).toEqual({ cursor: 'old-cursor' });
+      expect(runs.list.calls.mostRecent().args[1]).toEqual({ scope: 'mine', cursor: 'old-cursor' });
 
       runs.list.and.returnValue(of(page([failedRow(2)])));
       choose('select[aria-label="Status"]', 'failed');
@@ -541,30 +646,34 @@ describe('RunLibraryComponent', () => {
       runs.list.and.returnValue(of(page([run({ session_id: '44444444-5d7e-4a10-9c33-0e1f2a3b4c5d' })])));
       q<HTMLButtonElement>('button.load-more')!.click();
       await settle();
-      expect(runs.list.calls.mostRecent().args[1]).toEqual({ cursor: 'cursor-1' });
+      expect(runs.list.calls.mostRecent().args[1]).toEqual({ scope: 'mine', cursor: 'cursor-1' });
       expect(qa('a.run-row').length).toBe(2);
       expect(q('button.load-more')).toBeNull();
     });
   });
 
   describe('per-QA scope (CHE-1152)', () => {
-    const switchControl = () => q<HTMLButtonElement>('[role="switch"]');
-    const owners = () => qa('.owner-label').map((el) => el.textContent!.trim());
+    const teamTab = () => q<HTMLButtonElement>('[data-scope="everyone"]')!;
+    const myTab = () => q<HTMLButtonElement>('[data-scope="mine"]')!;
+    const owners = () => qa('.run-owner').map((el) => el.textContent!.trim());
 
     it('shows a QA their own runs with no switch and no owner labels', async () => {
       await open('/runs', of(page([run()])));
-      expect(switchControl()).toBeNull();
+      expect(q('[role="switch"]')).toBeNull();
+      expect(myTab().getAttribute('aria-selected')).toBe('true');
       expect(owners()).toEqual([]);
     });
 
-    it('gives an admin the All users switch, off, with no owner labels and only their own runs asked for', async () => {
+    it('gives an admin owner tabs with My runs selected and only their own runs asked for', async () => {
       adminApi.getIdentity.and.returnValue(of(ADMIN_IDENTITY));
       await open('/runs', of(page([run({ requested_by: 'admin@example.test' })])));
-      expect(switchControl()!.getAttribute('aria-checked')).toBe('false');
+      expect(teamTab().getAttribute('aria-selected')).toBe('false');
+      expect(q('[role="switch"]')).toBeNull();
+      expect(runs.list.calls.mostRecent().args[1]).toEqual({ scope: 'mine' });
       expect(owners()).toEqual([]);
     });
 
-    it('reloads the list for everyone and labels each row with its owner when an admin turns the switch on', async () => {
+    it('reloads the list for everyone and labels each row with its owner when an admin selects the team tab', async () => {
       adminApi.getIdentity.and.returnValue(of(ADMIN_IDENTITY));
       await open('/runs', of(page([run({ requested_by: 'admin@example.test' })])));
       runs.list.calls.reset();
@@ -576,20 +685,21 @@ describe('RunLibraryComponent', () => {
           ])
         )
       );
-      switchControl()!.click();
+      teamTab().click();
       await settle();
-      expect(TestBed.inject(OwnerScopeService).showAll()).toBeTrue();
+      expect(runs.list.calls.mostRecent().args[1]).toEqual({ scope: 'everyone' });
+      expect(TestBed.inject(OwnerScopeService).showAll()).toBeFalse();
       expect(runs.list).toHaveBeenCalledTimes(1);
       expect(owners()).toEqual(['Owner: qa1@example.test', 'Owner: No owner']);
     });
 
-    it('drops the owner labels and reloads again when the switch goes back off', async () => {
+    it('drops the owner labels and reloads again when My runs is selected', async () => {
       adminApi.getIdentity.and.returnValue(of(ADMIN_IDENTITY));
       await open('/runs', of(page([run({ requested_by: 'qa1@example.test' })])));
-      switchControl()!.click();
+      teamTab().click();
       await settle();
       runs.list.calls.reset();
-      switchControl()!.click();
+      myTab().click();
       await settle();
       expect(runs.list).toHaveBeenCalledTimes(1);
       expect(owners()).toEqual([]);
@@ -598,7 +708,7 @@ describe('RunLibraryComponent', () => {
     it('keeps the search text and filters when the scope changes', async () => {
       adminApi.getIdentity.and.returnValue(of(ADMIN_IDENTITY));
       await open('/runs?q=login&status=failed', of(page([])));
-      switchControl()!.click();
+      teamTab().click();
       await settle();
       expect(runs.list.calls.mostRecent().args[0]).toEqual(jasmine.objectContaining({ q: 'login', status: 'failed' }));
     });
@@ -616,28 +726,29 @@ describe('RunLibraryComponent', () => {
       await open('/runs', of(page([])));
       expect(q('.state-empty')!.textContent).toContain('No runs yet');
       runs.list.and.returnValue(of(page([])));
-      switchControl()!.click();
+      teamTab().click();
       await settle();
-      expect(q('.state-empty')!.textContent).toContain('No runs from any user yet');
+      expect(q('.state-empty')!.textContent).toContain('No shared runs yet');
     });
 
-    it('loads once, not twice, when the page opens with All users already on', async () => {
+    it('loads My runs once without inheriting the admin queue All users scope', async () => {
       adminApi.getIdentity.and.returnValue(of(ADMIN_IDENTITY));
       const scope = TestBed.inject(OwnerScopeService);
       scope.identity.set(ADMIN_IDENTITY);
       scope.setAllUsers(true);
       await open('/runs', of(page([run({ requested_by: 'qa1@example.test' })])));
       expect(runs.list).toHaveBeenCalledTimes(1);
-      expect(owners()).toEqual(['Owner: qa1@example.test']);
+      expect(owners()).toEqual([]);
+      expect(runs.list.calls.mostRecent().args[1]).toEqual({ scope: 'mine' });
     });
 
-    it('puts the switch first in the tab order for an admin, natively focusable', async () => {
+    it('puts the selected owner tab first in the tab order for an admin, natively focusable', async () => {
       adminApi.getIdentity.and.returnValue(of(ADMIN_IDENTITY));
       await open('/runs', of(page([run()])));
       const focusable = qa<HTMLElement>('a[href], button, input, select, summary').filter(
-        (el) => !(el as HTMLButtonElement).disabled && el.checkVisibility()
+        (el) => el.tabIndex >= 0 && !(el as HTMLButtonElement).disabled && el.checkVisibility()
       );
-      expect(focusable[0]).toBe(switchControl()!);
+      expect(focusable[0]).toBe(myTab());
       expect(focusable[1].getAttribute('aria-label')).toBe('Search runs');
     });
   });
@@ -648,7 +759,7 @@ describe('RunLibraryComponent', () => {
       el.getAttribute('aria-label') || (el.textContent ?? '').replace(/\s+/g, ' ').trim();
     const visibleControls = () =>
       qa<HTMLElement>(FOCUSABLE).filter(
-        (el) => !(el as HTMLButtonElement).disabled && el.checkVisibility()
+        (el) => el.tabIndex >= 0 && !(el as HTMLButtonElement).disabled && el.checkVisibility()
       );
 
     it('tabs through search, filters, then the rows, in reading order, all natively focusable', async () => {
@@ -657,10 +768,10 @@ describe('RunLibraryComponent', () => {
         of(page([run(), run({ session_id: '55555555-5d7e-4a10-9c33-0e1f2a3b4c5d', prompt: 'Second' })], 'c'))
       );
       const names = visibleControls().map(nameOf);
-      expect(names.slice(0, 6)).toEqual(['Search runs', 'Search', 'Status', 'From date', 'To date', 'More filters']);
-      expect(names[6]).toContain('Log in and open settings');
-      expect(names[7]).toContain('Second');
-      expect(names[8]).toBe('Load more');
+      expect(names.slice(0, 7)).toEqual(['My runs', 'Search runs', 'Search', 'Status', 'From date', 'To date', 'More filters']);
+      expect(names[7]).toContain('Log in and open settings');
+      expect(names[8]).toContain('Second');
+      expect(names[9]).toBe('Load more');
       for (const el of visibleControls()) {
         expect(el.tabIndex).toBeGreaterThanOrEqual(0);
         expect(nameOf(el).length).toBeGreaterThan(0);
@@ -673,7 +784,7 @@ describe('RunLibraryComponent', () => {
       details.open = true;
       harness.fixture.detectChanges();
       const names = visibleControls().map(nameOf);
-      expect(names.slice(5, 9)).toEqual(['More filters', 'Computer', 'Phone', 'Requested by']);
+      expect(names.slice(6, 10)).toEqual(['More filters', 'Computer', 'Phone', 'Requested by']);
     });
 
     it('keeps every target at least 24 px and primary targets at least 44 px', async () => {

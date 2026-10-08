@@ -21,7 +21,9 @@ from typing import Any
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import JSONResponse
 
-from apps.admin_console.core.ownership import OwnerScope, list_scope, scope_or_open
+from apps.admin_console.core.access_control import AccessIdentity, AdminAPIError, public_tier
+from apps.admin_console.core.ownership import OwnerScope, actor_scope, owner_scope, scope_or_open
+from apps.admin_console.core.redaction import redact_image_data, redact_text
 
 try:
     from admin_console.database.repositories.run_catalog_repository import (
@@ -37,6 +39,26 @@ except ImportError:
     )
 
 router = APIRouter(tags=["runs"])
+
+
+async def catalog_scope(
+    scope: str = Query("mine"), identity: AccessIdentity = Depends(public_tier)
+) -> OwnerScope:
+    if scope != "everyone":
+        return owner_scope(identity, scope)
+    if identity.auth_mode != "open" and not identity.email:
+        raise AdminAPIError(
+            403, "Sign in to see everyone's runs.", "team_requires_identity", "Sign in first."
+        )
+    return OwnerScope(identity.auth_mode != "open", identity.email, identity.admin, True)
+
+
+def _present(run: dict[str, Any], scope: OwnerScope, *, team: bool = False) -> dict[str, Any]:
+    read_only = team or not scope.may_act_on(run.get("requested_by"))
+    result = {**run, "read_only": read_only}
+    if read_only and isinstance(result.get("prompt"), str):
+        result["prompt"] = redact_text(redact_image_data(result["prompt"]))
+    return result
 
 
 def _error(status_code: int, error: str, **extra: Any) -> JSONResponse:
@@ -65,15 +87,21 @@ async def list_runs(
     until: str | None = None,
     cursor: str | None = None,
     limit: int = Query(50, ge=1, le=200),
-    scope: OwnerScope = Depends(list_scope),
+    scope: OwnerScope = Depends(catalog_scope),
+    visibility: str = Query("mine", alias="scope"),
 ):
     """Newest-first page of runs; ``next_cursor`` is null on the last page.
 
-    Callers see their own runs; admins add ``scope=all`` to see everyone's.
+    Callers see their own runs; ``scope=everyone`` is a redacted, read-only
+    catalog. Unowned runs remain admin-only in listings. Only admins may use
+    ``scope=all``; queue and event scoping are unchanged.
     """
     scope = scope_or_open(scope)
+    team = visibility == "everyone"
     owner_filter = {}
-    if scope.enforced and not scope.include_all:
+    if team and scope.enforced and not scope.admin:
+        owner_filter = {"owned_only": True}
+    if scope.enforced and (not scope.include_all or (team and q and q.strip())):
         if scope.email is None:  # no identity owns nothing
             return {"runs": [], "next_cursor": None, "warnings": []}
         owner_filter = {"owner": scope.email}
@@ -98,11 +126,15 @@ async def list_runs(
         return _error(400, "invalid_cursor")
     except CatalogNotReady:
         return _error(503, "catalog_not_ready")
-    return {"runs": page.runs, "next_cursor": page.next_cursor, "warnings": page.warnings}
+    return {
+        "runs": [_present(run, scope, team=team) for run in page.runs],
+        "next_cursor": page.next_cursor,
+        "warnings": page.warnings,
+    }
 
 
 @router.get("/api/runs/{session_id}")
-async def get_run(session_id: str):
+async def get_run(session_id: str, scope: OwnerScope = Depends(actor_scope)):
     """One run by full id or 8-character prefix (409 with candidates if ambiguous)."""
     try:
         found = await asyncio.to_thread(run_catalog_repo.get_run, session_id)
@@ -111,9 +143,13 @@ async def get_run(session_id: str):
     except CatalogNotReady:
         return _error(503, "catalog_not_ready")
     if found.run:
-        return found.run
+        return _present(found.run, scope_or_open(scope))
     if found.candidates:
-        return _error(409, "ambiguous_prefix", candidates=found.candidates)
+        return _error(
+            409,
+            "ambiguous_prefix",
+            candidates=[_present(run, scope_or_open(scope)) for run in found.candidates],
+        )
     if found.removed:
         return _error(410, "removed", **found.removed)
     return _error(404, "not_found")
