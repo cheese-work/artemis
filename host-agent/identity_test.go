@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -211,69 +212,100 @@ func TestIdentityResolverFixtures(test *testing.T) {
 	})
 }
 
-func TestTransportPinning(test *testing.T) {
+func TestTransportPinningFollowsRunLeases(test *testing.T) {
 	const id = "sd-05b42e59020251f2"
-	test.Run("USB arrival never redirects a device in use", func(test *testing.T) {
+	usb := usbPhone("R5CT1234ABC", "1", "R5CT1234ABC")
+	wireless := usbPhone("192.168.1.5:5555", "2", "R5CT1234ABC")
+	test.Run("USB arrival never redirects a leased device, however long it is quiet", func(test *testing.T) {
 		devices, clock := testRegistry(test, "")
-		devices.replace([]device{usbPhone("192.168.1.5:5555", "2", "R5CT1234ABC")})
+		devices.replace([]device{wireless})
 		if err := devices.share(id, true); err != nil {
 			test.Fatal(err)
 		}
+		devices.setLeases([]string{id})
+		clock.advance(10 * time.Minute)
+		devices.replace([]device{wireless, usb})
 		if transport, ok := devices.route(id); !ok || transport != "2" {
-			test.Fatalf("route %q %v", transport, ok)
+			test.Fatalf("USB arrival redirected an active run: %q %v", transport, ok)
 		}
-		clock.advance(time.Second)
-		devices.replace([]device{usbPhone("192.168.1.5:5555", "2", "R5CT1234ABC"), usbPhone("R5CT1234ABC", "1", "R5CT1234ABC")})
-		if transport, ok := devices.route(id); !ok || transport != "2" {
-			test.Fatalf("USB arrival redirected a live device: %q %v", transport, ok)
+		clock.advance(10 * time.Minute)
+		devices.replace([]device{wireless, usb})
+		if transport, _ := devices.route(id); transport != "2" {
+			test.Fatalf("quiet active run lost its pin: %q", transport)
 		}
-		clock.advance(transportHold + time.Second)
-		devices.replace([]device{usbPhone("192.168.1.5:5555", "2", "R5CT1234ABC"), usbPhone("R5CT1234ABC", "1", "R5CT1234ABC")})
+		devices.setLeases(nil)
 		if transport, ok := devices.route(id); !ok || transport != "1" {
-			test.Fatalf("idle device did not move to USB: %q %v", transport, ok)
+			test.Fatalf("finished run did not release the pin to USB: %q %v", transport, ok)
 		}
 	})
-	test.Run("losing the pinned transport mid-run holds the device offline", func(test *testing.T) {
+	test.Run("losing the pinned transport of a leased device holds it offline until the run ends", func(test *testing.T) {
 		devices, clock := testRegistry(test, "")
-		both := []device{usbPhone("R5CT1234ABC", "1", "R5CT1234ABC"), usbPhone("192.168.1.5:5555", "2", "R5CT1234ABC")}
-		devices.replace(both)
+		devices.replace([]device{usb, wireless})
 		if err := devices.share(id, true); err != nil {
 			test.Fatal(err)
 		}
-		if transport, ok := devices.route(id); !ok || transport != "1" {
-			test.Fatalf("route %q %v", transport, ok)
+		devices.setLeases([]string{id})
+		devices.replace([]device{wireless})
+		for range 3 {
+			clock.advance(10 * time.Minute)
+			devices.replace([]device{wireless})
+			if entry := onlyDevice(test, devices); entry.State != "offline" || entry.Shared {
+				test.Fatalf("silent failover to wireless during a run: %+v", entry)
+			}
+			if _, ok := devices.route(id); ok {
+				test.Fatal("held device routed")
+			}
 		}
-		wireless := both[1:]
-		devices.replace(wireless)
-		if entry := onlyDevice(test, devices); entry.State != "offline" || entry.Shared {
-			test.Fatalf("silent failover to wireless: %+v", entry)
-		}
-		clock.advance(5 * time.Second)
-		if _, ok := devices.route(id); ok {
-			test.Fatal("held device routed")
-		}
-		clock.advance(6 * time.Second)
-		devices.replace(wireless)
-		if _, ok := devices.route(id); ok {
-			test.Fatal("hold ended while the server still used the device")
-		}
-		clock.advance(transportHold + time.Second)
-		devices.replace(wireless)
+		devices.setLeases([]string{})
 		if transport, ok := devices.route(id); !ok || transport != "2" {
-			test.Fatalf("quiet device did not re-pin: %q %v", transport, ok)
+			test.Fatalf("device did not re-pin after the run ended: %q %v", transport, ok)
 		}
 	})
-	test.Run("an idle device moves to the remaining transport at once", func(test *testing.T) {
+	test.Run("a device without a run moves at once", func(test *testing.T) {
 		devices, _ := testRegistry(test, "")
-		devices.replace([]device{usbPhone("R5CT1234ABC", "1", "R5CT1234ABC"), usbPhone("192.168.1.5:5555", "2", "R5CT1234ABC")})
+		devices.replace([]device{wireless})
 		if err := devices.share(id, true); err != nil {
 			test.Fatal(err)
 		}
-		devices.replace([]device{usbPhone("192.168.1.5:5555", "2", "R5CT1234ABC")})
+		devices.route(id)
+		devices.replace([]device{wireless, usb})
+		if transport, _ := devices.route(id); transport != "1" {
+			test.Fatalf("idle device did not prefer USB: %q", transport)
+		}
+		devices.replace([]device{wireless})
 		if transport, ok := devices.route(id); !ok || transport != "2" {
 			test.Fatalf("idle failover: %q %v", transport, ok)
 		}
 	})
+	test.Run("leases name only opaque ids", func(test *testing.T) {
+		devices, _ := testRegistry(test, "")
+		devices.setLeases([]string{"R5CT1234ABC", id})
+		if devices.leases["R5CT1234ABC"] || !devices.leases[id] {
+			test.Fatalf("lease set: %v", devices.leases)
+		}
+	})
+}
+
+func TestServeAppliesServerRunLeases(test *testing.T) {
+	test.Setenv("ARTEMIS_HOST_AGENT", "1")
+	peer, err := newHostPeer(3, nil, func(context.Context) (net.Conn, error) { return nil, io.EOF })
+	if err != nil {
+		test.Fatal(err)
+	}
+	leases := make(chan []string, 2)
+	peer.onLease = func(ids []string) { leases <- ids }
+	transport := &fakeHostTransport{incoming: make(chan hostMessage, 4), outgoing: make(chan hostMessage, 4), closed: make(chan struct{})}
+	transport.incoming <- hostMessage{payload: []byte(`{"type":"lease","devices":["sd-05b42e59020251f2"]}`)}
+	transport.incoming <- hostMessage{payload: []byte(`{"type":"lease","devices":"bad"}`)}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	err = peer.Serve(ctx, transport)
+	if got := <-leases; len(got) != 1 || got[0] != "sd-05b42e59020251f2" {
+		test.Fatalf("lease: %v", got)
+	}
+	if !errors.Is(err, errHostProtocol) {
+		test.Fatalf("malformed lease accepted: %v", err)
+	}
 }
 
 func TestShareModesReferencesAndExclusions(test *testing.T) {
@@ -336,6 +368,25 @@ func TestShareModesReferencesAndExclusions(test *testing.T) {
 		}
 		if after := sharedIDs(devices); fmt.Sprint(after) != fmt.Sprint(before) {
 			test.Fatalf("select->auto dropped the exclusion: %v -> %v", before, after)
+		}
+	})
+	test.Run("sharing an excluded device in select mode clears its exclusion", func(test *testing.T) {
+		devices, _ := testRegistry(test, "")
+		devices.replace([]device{phoneA, phoneB})
+		idB := opaqueDeviceID(testPepper, "physical:R5CTBBBB")
+		for _, step := range []func() error{
+			func() error { return devices.setMode("auto") },
+			func() error { return devices.share(idB, false) },
+			func() error { return devices.setMode("select") },
+			func() error { return devices.share(idB, true) },
+			func() error { return devices.setMode("auto") },
+		} {
+			if err := step(); err != nil {
+				test.Fatal(err)
+			}
+		}
+		if !sharedIDs(devices)[idB] || devices.summary().Excluded != 0 {
+			test.Fatalf("explicit share lost on auto switch: %v %+v", sharedIDs(devices), devices.summary())
 		}
 	})
 	test.Run("exclusions survive replug and restart until shared again", func(test *testing.T) {

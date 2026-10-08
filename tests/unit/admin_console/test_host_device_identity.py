@@ -231,3 +231,93 @@ def test_leak_scan_over_server_payloads_logs_and_index(admin, caplog, registry):
         for name, text in [("payload", "\n".join(payloads)), ("log", logs), ("index", index)]:
             assert raw not in text, f"{raw} leaked into the {name}"
     assert PHONE in payloads[0]
+
+
+# Schema of the predecessor (main at 1eccfd7), which accepted raw adb serials.
+_PREDECESSOR_SCHEMA = """
+CREATE TABLE hosts (
+    id TEXT PRIMARY KEY, name TEXT NOT NULL, os TEXT, agent_version TEXT,
+    protocol_version INTEGER, public_key TEXT NOT NULL, key_hash TEXT NOT NULL UNIQUE,
+    created_by TEXT NOT NULL, created_at REAL NOT NULL,
+    status TEXT NOT NULL, reason TEXT, since REAL NOT NULL,
+    generation INTEGER NOT NULL DEFAULT 0, last_seen REAL, revoked_at REAL
+);
+CREATE TABLE host_devices (
+    host_id TEXT NOT NULL, serial TEXT NOT NULL, model TEXT, shared INTEGER NOT NULL,
+    updated_at REAL NOT NULL, PRIMARY KEY (host_id, serial)
+);
+INSERT INTO hosts (id, name, public_key, key_hash, created_by, created_at, status, since)
+    VALUES ('legacy-host', 'Old Lab', 'key', 'hash', 'admin', 1, 'online', 1);
+INSERT INTO host_devices VALUES ('legacy-host', 'R5CT1234ABC', 'Pixel 8', 1, 1);
+INSERT INTO host_devices VALUES ('legacy-host', 'emulator-5554', 'AVD', 0, 1);
+"""
+
+
+def test_upgrade_purges_raw_serials_from_a_predecessor_database(admin, registry):
+    with sqlite3.connect(registry) as connection:
+        connection.executescript(_PREDECESSOR_SCHEMA)
+    host_registry.reset_for_boot()
+    payload = admin.get("/api/hosts").text
+    with sqlite3.connect(registry) as connection:
+        index = "\n".join(connection.iterdump())
+    for raw in ["R5CT1234ABC", "emulator-5554"]:
+        assert raw not in payload, f"{raw} published after upgrade"
+        assert raw not in index, f"{raw} kept in the upgraded index"
+    assert "Old Lab" in payload
+
+
+def test_read_paths_never_publish_a_non_opaque_row(admin, registry):
+    _enroll(admin, "Lab Mac")
+    admin.get("/api/hosts")  # schema is ready; now a stray write bypasses set_devices
+    with sqlite3.connect(registry) as connection:
+        host_id = connection.execute("SELECT id FROM hosts").fetchone()[0]
+        connection.execute(
+            "INSERT INTO host_devices (host_id, serial, model, shared, updated_at) "
+            "VALUES (?, 'R5CT1234ABC', 'Pixel 8', 1, 1), (?, ?, 'Pixel 8', 1, 1)",
+            (host_id, host_id, PHONE),
+        )
+    hosts, devices = host_registry.list_hosts()
+    assert [device["serial"] for device in devices] == [PHONE]
+    assert "R5CT1234ABC" not in str(hosts)
+
+
+def test_run_leases_reach_the_agent_and_its_reconnect(admin):
+    from apps.admin_console.services.host_tunnel import host_tunnels
+
+    key, enrolled = _enroll(admin, "Lab Mac")
+    host_id = enrolled["host_id"]
+    context, ws = _connect(admin, key, host_id)
+    try:
+        host_tunnels.bind_run(host_id, "run-1", PHONE)
+        assert ws.receive_json() == {"type": "lease", "devices": [PHONE]}
+        host_tunnels.bind_run(host_id, "run-2", "R5CT1234ABC")  # never a raw serial
+        host_tunnels.bind_run(host_id, "run-3", AVD)
+        assert ws.receive_json() == {"type": "lease", "devices": sorted([PHONE, AVD])}
+        host_tunnels.release_run(host_id, "run-3")
+        assert ws.receive_json() == {"type": "lease", "devices": [PHONE]}
+    finally:
+        context.__exit__(None, None, None)
+    try:
+        challenge = admin.post("/api/agent/challenge", json={"host_id": host_id}).json()
+        timestamp = int(host_registry.clock())
+        message = hr.connect_message(
+            challenge["audience"], hr.PROTOCOL_VERSION, host_id, challenge["nonce"], timestamp
+        )
+        with admin.websocket_connect("/api/agent/connect", headers=HOST) as again:
+            again.send_json(
+                {
+                    "type": "hello",
+                    "host_id": host_id,
+                    "nonce": challenge["nonce"],
+                    "protocol_version": hr.PROTOCOL_VERSION,
+                    "timestamp": timestamp,
+                    "signature": _b64(key.sign(message)),
+                }
+            )
+            reply = again.receive_json()
+            assert (reply["type"], reply["leases"]) == ("connected", [PHONE])
+            host_tunnels.release_run(host_id, "run-1")
+            assert again.receive_json() == {"type": "lease", "devices": []}
+    finally:
+        for run in ["run-1", "run-2", "run-3"]:
+            host_tunnels.release_run(host_id, run)
