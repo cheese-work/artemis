@@ -191,13 +191,26 @@ const CONTRAST = `(() => {
     const cs = getComputedStyle(el);
     if (cs.visibility === 'hidden' || +cs.opacity === 0) continue;
     const fg = parse(cs.color); if (!fg) continue;
-    const bg = backdrop(el); const text = over(fg, bg);
+    // CSS opacity on the element or any ancestor fades the text into its background: compose it in.
+    let opacity = 1; for (let e = el; e; e = e.parentElement) opacity *= +getComputedStyle(e).opacity;
+    const bg = backdrop(el); const text = over({ ...fg, a: fg.a * opacity }, bg);
     const [hi, lo] = [lum(text), lum(bg)].sort((a, b) => b - a);
     const ratio = (hi + 0.05) / (lo + 0.05);
     const large = parseFloat(cs.fontSize) >= 24 || (parseFloat(cs.fontSize) >= 18.66 && +cs.fontWeight >= 700);
     if (ratio < (large ? 3 : 4.5)) out.push((el.className?.toString() || el.tagName).slice(0, 40) + ' "' + n.textContent.trim().slice(0, 24) + '" ' + ratio.toFixed(2) + ':1');
   }
   return [...new Set(out)];
+})()`;
+
+// The audit must see what it claims to see: a faded label on white has to fail. Run on every contract pass.
+const CONTRAST_SELF_TEST = `(() => {
+  const probe = document.createElement('span');
+  probe.textContent = 'opacity probe';
+  probe.style.cssText = 'position:fixed;top:0;left:0;color:var(--color-text-faint);background:#fff;opacity:.7';
+  document.body.appendChild(probe);
+  const found = (${CONTRAST}).some((m) => m.includes('opacity probe'));
+  probe.remove();
+  return found;
 })()`;
 
 const BLUR = `[...document.querySelectorAll('*')].filter((e) => { const c = getComputedStyle(e); return (c.backdropFilter && c.backdropFilter !== 'none') || /blur/.test(c.filter); }).map((e) => e.className?.toString() || e.tagName).slice(0, 5)`;
@@ -232,7 +245,7 @@ async function contract() {
   // The run list sits beside the run on Workspace and on an open run; the list page and Setup have one pane.
   for (const route of ['/workspace', '/runs/00000002-5d7e-4a10-9c33-0e1f2a3b4c5d', '/runs', '/setup']) {
     const panes = route === '/workspace' || route.startsWith('/runs/');
-    for (const width of [1280, 1024, 700, 375]) {
+    for (const width of [1280, 1024, 700, 375, 320]) {
       const where = `contract ${route.split('/').slice(0, 2).join('/')} @${width}px`;
       await open(route, width, 800);
       await setPhone(true);
@@ -249,6 +262,8 @@ async function contract() {
       await shot(`contract-${route.split('/')[1]}-${width}`);
     }
   }
+  await open('/workspace', 1280);
+  if (!(await evaluate(CONTRAST_SELF_TEST))) fail('contract audit self-test', 'a label faded to 2.7:1 by CSS opacity was not reported: the contrast check ignores opacity');
   // Open menus sit on their own surfaces: the phone picker and the user menu.
   await open('/workspace', 1280);
   for (const [name, selector] of [['phone picker', 'app-workspace-device-chip button.chip'], ['user menu', 'summary[aria-label^="User menu"]']]) {

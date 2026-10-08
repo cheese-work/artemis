@@ -124,7 +124,9 @@ export class WorkspaceComponent implements OnInit {
   }
 
   public skipToRunList(): void {
-    this.host.nativeElement.querySelector<HTMLElement>('.right-panel [role=tab][tabindex="0"], .right-panel a.run-row')?.focus();
+    // A hidden list (one column on Runs) has nothing to focus: stay put rather than lose focus.
+    this.host.nativeElement.querySelector<HTMLElement>('.right-panel')?.checkVisibility() &&
+      this.host.nativeElement.querySelector<HTMLElement>('.right-panel [role=tab][tabindex="0"], .right-panel a.run-row')?.focus();
   }
 
   constructor() {

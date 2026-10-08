@@ -436,8 +436,9 @@ $narrow: 800px;
       min-height: 320px;
     }
 
-    &.review-mode .right-panel {
-      display: none;
+    &.review-mode .right-panel,
+    &.review-mode .skip-list {
+      display: none; /* the list is hidden here, so a skip link to it would go nowhere */
     }
   }
 }

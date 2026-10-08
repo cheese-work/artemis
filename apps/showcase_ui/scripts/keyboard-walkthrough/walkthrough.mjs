@@ -378,6 +378,22 @@ try {
   await press('Enter');
   await expectTrue('Enter put focus on the first tab of the list', `document.activeElement.matches('.right-panel [role="tab"]')`);
 
+  log('Runs, one column (700 px): no skip link points at the hidden list');
+  await send('Emulation.setDeviceMetricsOverride', { width: 700, height: 800, deviceScaleFactor: 1, mobile: false });
+  await send('Page.navigate', { url: `${base}/runs/${RUNS[0].session_id}` });
+  await expectTrue('the open run loaded in one column', `!!document.querySelector('[data-section="outcome"]')`);
+  await expectTrue('the list beside the run is hidden', `!document.querySelector('.right-panel') || !document.querySelector('.right-panel').checkVisibility()`);
+  const reachable = [];
+  for (let i = 0; i < 12; i++) {
+    await press('Tab');
+    reachable.push(await describeFocus());
+  }
+  log(`  first 12 Tab stops: ${reachable.join(' | ')}`);
+  if (reachable.some((name) => name.startsWith('Skip to run list'))) throw new Error('a skip link to the hidden run list is reachable');
+  await expectTrue('every focused control is on screen', `!document.activeElement || document.activeElement === document.body || document.activeElement.checkVisibility()`);
+  await tabUntil('Back to runs', focusNamed('Back to runs'), { back: true, max: 20 }).catch(() => tabUntil('Back to runs', focusNamed('Back to runs'), { max: 60 }));
+  await send('Emulation.clearDeviceMetricsOverride');
+
   log('Workspace: Task Queue and Notes & Plans tabs, then the run list');
   await send('Page.navigate', { url: `${base}/workspace` });
   await expectTrue('workspace loaded with the queue tabs', `!!document.querySelector('.tab-selector-btn[data-tab="tasks"]')`);

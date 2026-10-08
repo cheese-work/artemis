@@ -461,7 +461,6 @@ $text-muted: var(--color-text-faint);
             }
 
             .device-kind {
-              opacity: 0.7;
               font-size: 12px;
               font-weight: 600;
             }
@@ -1126,75 +1125,7 @@ $text-muted: var(--color-text-faint);
   }
 }
 
-@container (max-width: 380px) {
-  .chat-header {
-    padding: 0 8px;
-    gap: 6px;
-    height: 36px;
-
-    .header-left {
-      display: none;
-    }
-
-    .tab-selector-bar {
-      padding: 2px;
-      gap: 1px;
-
-      .tab-selector-btn {
-        padding: 5px 8px;
-        font-size: 12px;
-        gap: 4px;
-
-        .tab-icon {
-          font-size: 14px;
-        }
-      }
-    }
-
-    .header-right {
-      .btn-clear-history {
-        height: 24px;
-        width: 30px;
-        padding: 0;
-        font-size: 12px;
-        gap: 0;
-        border-radius: 16px;
-        box-sizing: border-box;
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-
-        .material-symbols-outlined {
-          font-size: 14px;
-          line-height: 1;
-        }
-
-        .btn-text {
-          display: none;
-        }
-      }
-    }
-  }
-}
-
-@container (max-width: 340px) {
-  .chat-header {
-    .tab-selector-bar {
-      .tab-selector-btn {
-        padding: 5px 6px;
-        .tab-text {
-          display: none;
-        }
-      }
-    }
-
-    .header-right {
-      .btn-clear-history {
-        width: 26px;
-      }
-    }
-  }
-}
+/* Narrow panel (a resized sidebar or a small phone): the tab words stay; only the icons go. Controls stay 44px. */
 
 .task-goal-images {
   display: flex;

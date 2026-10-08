@@ -137,6 +137,39 @@ describe('Workspace review mode', () => {
     expect(q('.liquid-wave, .wave-glow-ambient, .dock-wave-container')).toBeNull();
   });
 
+  describe('the list beside an open run (CHE-1278 F1)', () => {
+    const listed = (id: string): RunSummary => ({
+      session_id: id, prompt: `Run ${id.slice(0, 4)}`, status: 'completed', interrupt_reason: null, start_time: 1, end_time: 2,
+      host_id: null, device_ref: { host_id: null, serial: 's' }, requested_by: null, pinned: false, recordings: []
+    });
+    const OTHER = '9a8b7c6d-5d7e-4a10-9c33-0e1f2a3b4c5d';
+    const RETURN = { q: 'login', status: 'failed', scroll: '300' };
+
+    beforeEach(() => {
+      runs.list.and.returnValue(of({ runs: [listed(ID), listed(OTHER)], next_cursor: null, warnings: [] }));
+    });
+
+    it('keeps the filters and scroll that Back to runs returns to, and lists the same filtered runs', async () => {
+      await go('/runs?q=login&status=failed&scroll=300');
+      expect(runs.lastLibraryQuery()).toEqual(RETURN);
+      await go(`/runs/${ID}`); // a row link from /runs carries no list state
+      expect(runs.lastLibraryQuery()).toEqual(RETURN);
+      expect(runs.list.calls.mostRecent().args[0]).toEqual(jasmine.objectContaining({ q: 'login', status: 'failed' }));
+      const back = (q('app-run-view a.back-to-runs') ?? q('a.back-to-runs')) as HTMLAnchorElement | null;
+      if (back) expect(back.getAttribute('href')).toBe('/runs?q=login&status=failed&scroll=300');
+    });
+
+    it('keeps them after choosing another run in the list beside the open one', async () => {
+      await go('/runs?q=login&status=failed&scroll=300');
+      await go(`/runs/${ID}`);
+      const next = Array.from(root.querySelectorAll<HTMLAnchorElement>('.right-panel a.run-row')).find((a) => a.getAttribute('href')!.includes(OTHER))!;
+      expect(next.getAttribute('href')).toContain('q=login');
+      next.click();
+      await go(`/runs/${OTHER}?q=login&status=failed`);
+      expect(runs.lastLibraryQuery()).toEqual(RETURN);
+    });
+  });
+
   it('omits the mouse-only splitter in review mode', async () => {
     await go('/runs');
     expect(q('.resizer')).toBeNull();

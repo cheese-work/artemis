@@ -29,6 +29,7 @@ limitations under the License.
           [class.active]="agentService.activeTab() === tab.id"
           [attr.aria-selected]="agentService.activeTab() === tab.id"
           [attr.tabindex]="agentService.activeTab() === tab.id ? 0 : -1"
+          [attr.aria-label]="tab.label"
           aria-controls="queue-panel"
           (click)="agentService.activeTab.set(tab.id)"
           (keydown)="onTabKey($event, tab.id)"

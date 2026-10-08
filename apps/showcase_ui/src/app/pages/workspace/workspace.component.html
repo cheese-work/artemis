@@ -18,7 +18,7 @@ limitations under the License.
   <!-- Skip links: visible only while focused -->
   <div class="skip-links">
     @if (!reviewMode) { <button type="button" class="skip-link" (click)="skipToNewTask()">Skip to new task</button> }
-    @if (!reviewMode || reviewRunId()) { <button type="button" class="skip-link" (click)="skipToRunList()">Skip to run list</button> }
+    @if (!reviewMode || reviewRunId()) { <button type="button" class="skip-link skip-list" (click)="skipToRunList()">Skip to run list</button> }
   </div>
 
   <!-- Left Main Panel: Raw Agent Log Stream, or the run library / viewer in review mode -->

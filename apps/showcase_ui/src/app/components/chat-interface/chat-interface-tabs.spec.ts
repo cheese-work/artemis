@@ -62,4 +62,20 @@ describe('ChatInterface tabs', () => {
     tabs()[1].dispatchEvent(new KeyboardEvent('keydown', { key: 'Home', bubbles: true, cancelable: true }));
     expect(activeTab()).toBe('tasks');
   });
+
+  // CHE-1278 F2: at the narrowest panel the tabs keep their words, their name and a 44px target.
+  for (const width of [300, 340, 380]) {
+    it(`keeps both tabs visible, named and 44px high in a ${width}px panel`, () => {
+      root.style.display = 'block';
+      root.style.width = `${width}px`;
+      root.style.height = '600px';
+      for (const tab of tabs()) {
+        const label = tab.querySelector<HTMLElement>('.tab-text')!;
+        expect(getComputedStyle(label).display).withContext(`${width}px text`).not.toBe('none');
+        expect(label.getBoundingClientRect().width).toBeGreaterThan(0);
+        expect(tab.getAttribute('aria-label')).toBe(label.textContent!.trim());
+        expect(tab.getBoundingClientRect().height).toBeGreaterThanOrEqual(43.5);
+      }
+    });
+  }
 });
