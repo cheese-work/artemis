@@ -50,11 +50,13 @@ for _p in (str(_workspace_root), str(_apps_dir), str(_admin_console_dir), str(_c
 # Select the profile before any import below can run an import-time side effect.
 from apps.admin_console.core.preview_profile import (
     prepare_preview_environment,
+    preview_identity_switch_selected,
     preview_profile_selected,
 )
 from apps.admin_console.core.preview_routes import PreviewRouteGuard, require_classified
 
 PREVIEW_PROFILE = preview_profile_selected()
+preview_identity_switch_selected(PREVIEW_PROFILE)
 PREVIEW_ROOT = prepare_preview_environment() if PREVIEW_PROFILE else None
 
 from fastapi import Depends, FastAPI
@@ -107,6 +109,7 @@ from apps.admin_console.core.access_control import (
     require_qa,
 )
 from apps.admin_console.core.preview_access import preview_access_verifier
+from apps.admin_console.core.preview_identity import configure_preview_identities
 from apps.admin_console.core.preview_fixtures import initialize_preview_fixtures
 from apps.admin_console.services.run_images import RequestSizeLimitMiddleware
 
@@ -191,11 +194,18 @@ app = FastAPI(
 )
 app.add_exception_handler(AdminAPIError, admin_api_error_handler)
 app.state.access_config = config_from_environment()
-app.state.access_verifier = (
-    preview_access_verifier(app.state.access_config)
-    if PREVIEW_PROFILE
-    else CloudflareAccessVerifier()
+app.state.preview_profile = PREVIEW_PROFILE
+app.state.preview_identities = configure_preview_identities(
+    app.state.access_config, preview_profile=PREVIEW_PROFILE
 )
+if app.state.preview_identities:
+    app.state.access_verifier = None
+else:
+    app.state.access_verifier = (
+        preview_access_verifier(app.state.access_config)
+        if PREVIEW_PROFILE
+        else CloudflareAccessVerifier()
+    )
 logging.getLogger(__name__).info(
     "Admin access configured: mode=%s issuer=%s audience=%s admin_count=%d",
     app.state.access_config.auth_mode,

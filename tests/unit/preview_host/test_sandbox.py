@@ -130,6 +130,15 @@ def test_untrusted_env_is_refused(bad_env):
         sb.container_create_argv(preview(), bad_env, "/srv/preview/jwks.json")
 
 
+def test_identity_switch_is_an_explicit_preview_only_input():
+    environment = {**ENV, "ARTEMIS_PREVIEW_IDENTITY_SWITCH": "1"}
+    argv = sb.container_create_argv(preview(), environment, "/srv/preview/jwks.json")
+    values_by_name = dict(value.split("=", 1) for value in values(argv, "--env"))
+    assert values_by_name["ARTEMIS_PREVIEW_IDENTITY_SWITCH"] == "1"
+    assert values_by_name["ARTEMIS_PREVIEW_PROFILE"] == "1"
+    assert "ARTEMIS_PREVIEW_IDENTITY_SWITCH=1" not in values(create_argv(), "--env")
+
+
 @pytest.mark.parametrize(
     "bundle",
     ["relative.json", "/a,b", "/a/../etc/shadow", "/a b", "/a\nb", "", "/x,readonly=false"],
