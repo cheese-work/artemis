@@ -40,6 +40,35 @@ from artemis.runtime.host_protocol import CONTRACT
 HOST = {"Host": "localhost"}
 
 
+def test_agent_unenroll_revokes_only_authenticated_identity(admin):
+    key = Ed25519PrivateKey.generate()
+    first = _enroll(admin, _new_code(admin)["code"], key).json()["host_id"]
+    second = _enroll(admin, _new_code(admin)["code"], Ed25519PrivateKey.generate()).json()[
+        "host_id"
+    ]
+    with admin.websocket_connect("/api/agent/connect", headers=HOST) as ws:
+        ws.send_json(_hello(admin, key, first))
+        reply = ws.receive_json()
+    headers = {"Authorization": f"Bearer {reply['token']}"}
+    response = admin.post("/api/agent/unenroll", headers=headers, json={"host_id": second})
+    assert response.status_code == 200, response.text
+    assert response.json() == {"status": "revoked"}
+    assert host_registry.validate_token(reply["token"], "connect") is None
+    hosts, _ = host_registry.list_hosts()
+    assert next(host for host in hosts if host["id"] == first)["status"] == "revoked"
+    assert next(host for host in hosts if host["id"] == second)["status"] != "revoked"
+
+
+def test_agent_unenroll_requires_token_and_feature_flag(admin, monkeypatch):
+    assert admin.post("/api/agent/unenroll").status_code == 401
+    assert (
+        admin.post("/api/agent/unenroll", headers={"Authorization": "Bearer forged"}).status_code
+        == 401
+    )
+    monkeypatch.setenv("ARTEMIS_HOST_AGENT", "0")
+    assert admin.post("/api/agent/unenroll").status_code == 404
+
+
 def test_installer_artifacts_require_code_and_feature_flag(admin, monkeypatch, tmp_path):
     distribution = tmp_path / "dist"
     distribution.mkdir()

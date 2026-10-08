@@ -113,6 +113,10 @@ func httpClient(config configuration) *http.Client {
 }
 
 func post(ctx context.Context, config configuration, path string, body any, result any) error {
+	return postToken(ctx, config, path, "", body, result)
+}
+
+func postToken(ctx context.Context, config configuration, path, token string, body any, result any) error {
 	if _, err := serverURL(config.Server); err != nil {
 		return err
 	}
@@ -125,11 +129,19 @@ func post(ctx context.Context, config configuration, path string, body any, resu
 		return failure("SQH-E004", err)
 	}
 	request.Header.Set("Content-Type", "application/json")
-	response, err := httpClient(config).Do(request)
+	if token != "" {
+		request.Header.Set("Authorization", "Bearer "+token)
+	}
+	client := httpClient(config)
+	defer client.CloseIdleConnections()
+	response, err := client.Do(request)
 	if err != nil {
 		return failure(networkCode(err), err)
 	}
 	defer response.Body.Close()
+	if token != "" && (response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden) {
+		return failure("SQH-E007", ErrHostAuthExpired)
+	}
 	if response.StatusCode != http.StatusOK {
 		return failure("SQH-E004", nil)
 	}

@@ -26,7 +26,7 @@ from apps.admin_console.core.agent_auth import (
     require_enrollment_code,
 )
 from apps.admin_console.services import host_registry as hr
-from apps.admin_console.services.host_hub import host_hub
+from apps.admin_console.services.host_hub import CLOSE_REVOKED, host_hub
 from apps.admin_console.services.host_registry import RegistryError, host_registry
 from apps.admin_console.services.host_tunnel import host_tunnels
 from apps.admin_console.services.host_admission import host_admission
@@ -150,6 +150,16 @@ async def renew(request: Request) -> dict:
             401, "The computer's session is not valid.", "token_invalid", "Reconnect the computer."
         )
     return {"expires_at": expires_at}
+
+
+@router.post("/unenroll")
+async def unenroll(host: dict = Depends(require_agent_token("connect"))) -> dict:
+    host_id = host["id"]
+    host_registry.revoke(host_id)
+    await host_tunnels.abort_host(host_id, "auth_expired")
+    await host_hub.close_host(host_id, CLOSE_REVOKED, "revoked")
+    logger.info("event=host_unenrolled host_id=%s", host_id)
+    return {"status": "revoked"}
 
 
 @router.websocket("/connect", dependencies=[Depends(public_tier), Depends(require_agent_websocket)])

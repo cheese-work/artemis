@@ -380,6 +380,7 @@ _AGENT_PATHS = {
     "/api/agent/enroll": {"POST"},
     "/api/agent/challenge": {"POST"},
     "/api/agent/renew": {"POST"},
+    "/api/agent/unenroll": {"POST"},
 }
 
 # Owner-or-admin actions: the route guard needs a signed-in user; the handler

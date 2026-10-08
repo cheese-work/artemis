@@ -3,7 +3,10 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"fmt"
 	"os"
 	"os/exec"
@@ -37,7 +40,7 @@ func TestServiceInstallRequiresTunnelBeforeActivation(t *testing.T) {
 	t.Setenv("COMMAND_LOG", commands)
 	t.Setenv("ARTEMIS_HOST_AGENT", "1")
 	configPath := filepath.Join(home, "agent", "config.json")
-	err := execute(context.Background(), []string{"service", "install", "--config", configPath}, &bytes.Buffer{})
+	err := executeApplication(context.Background(), []string{"service", "install", "--config", configPath}, &bytes.Buffer{}, application{})
 	if errorCode(err) != "SQH-E301" {
 		t.Fatalf("service install without B2 must fail before activation: %v", err)
 	}
@@ -52,7 +55,14 @@ func TestServiceInstallRequiresTunnelBeforeActivation(t *testing.T) {
 			t.Fatalf("service file was written without a tunnel: %s", filename)
 		}
 	}
-	if err := executeApplication(context.Background(), []string{"service", "install", "--config", configPath}, &bytes.Buffer{}, application{Tunnel: fakeTunnel{}}); err != nil {
+	_, private, _ := ed25519.GenerateKey(rand.Reader)
+	if err := saveConfig(configPath, configuration{Server: "http://127.0.0.1:1", ADB: "adb"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := saveState(statePath(configPath), agentState{HostID: "fixture-host", PrivateKey: base64.StdEncoding.EncodeToString(private), Server: "http://127.0.0.1:1"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := execute(context.Background(), []string{"service", "install", "--config", configPath}, &bytes.Buffer{}); err != nil {
 		t.Fatalf("a supplied tunnel must permit installation: %v", err)
 	}
 	data, err := os.ReadFile(commands)
@@ -100,7 +110,7 @@ func TestInstallerKeepsEnrollmentCodeOutOfArguments(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX installer")
 	}
-	for _, invocation := range []string{"default", "no-download", "readme-install-line"} {
+	for _, invocation := range []string{"default", "no-download", "readme-install-line", "service-enabled"} {
 		t.Run(invocation, func(t *testing.T) {
 			option := ""
 			if invocation == "no-download" {
@@ -118,6 +128,10 @@ if [ "$1" = enroll ]; then
   printf 'enrollment-environment-ok\n' >> "$COMMAND_LOG"
 fi
 if [ "$1 $2" = 'service install' ]; then
+  if [ "${MOCK_SERVICE_AVAILABLE:-}" = 1 ]; then
+    printf 'service-enabled\n' >> "$COMMAND_LOG"
+    exit 0
+  fi
   printf 'SQH-E301: B2 unavailable\n' >&2
   exit 1
 fi
@@ -148,6 +162,11 @@ cp "$MOCK_DIST/$filename" "$destination"
 			t.Setenv("EXPECTED_CODE", "CANARY-enrollment-code")
 			t.Setenv("TMPDIR", home)
 			t.Setenv("SERVER", "https://fixture.example")
+			if invocation == "service-enabled" {
+				t.Setenv("MOCK_SERVICE_AVAILABLE", "1")
+			} else {
+				t.Setenv("MOCK_SERVICE_AVAILABLE", "")
+			}
 			arguments := []string{"install.sh", "https://fixture.example"}
 			if option != "" {
 				arguments = append(arguments, option)
@@ -174,7 +193,11 @@ cp "$MOCK_DIST/$filename" "$destination"
 				headerCount = 3
 			}
 			output, err := exec.Command("sh", arguments...).CombinedOutput()
-			if err == nil || !bytes.Contains(output, []byte("SQH-E301")) {
+			if invocation == "service-enabled" {
+				if err != nil {
+					t.Fatalf("installer failed with a wired service: %s %v", output, err)
+				}
+			} else if err == nil || !bytes.Contains(output, []byte("SQH-E301")) {
 				t.Fatalf("installer must reach the disabled service without a code argument: %s %v", output, err)
 			}
 			data, err := os.ReadFile(commands)
@@ -187,7 +210,11 @@ cp "$MOCK_DIST/$filename" "$destination"
 			if strings.Count(string(data), "header-stdin-ok") != headerCount || !bytes.Contains(data, []byte("enrollment-environment-ok")) {
 				t.Fatalf("header stdin and enrollment environment were not observed: %s", data)
 			}
-			if bytes.Contains(data, []byte("arg:status")) {
+			if invocation == "service-enabled" {
+				if !bytes.Contains(data, []byte("service-enabled")) || !bytes.Contains(data, []byte("arg:status")) {
+					t.Fatal("wired installer did not activate and inspect service")
+				}
+			} else if bytes.Contains(data, []byte("arg:status")) {
 				t.Fatal("installer continued after service installation was refused")
 			}
 			if option != "" && strings.Count(string(data), "arg:"+option) != 2 {

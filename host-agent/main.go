@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 )
 
 var version = "dev"
@@ -25,7 +26,7 @@ func hostAgentEnabled() bool {
 }
 
 func main() {
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	if err := execute(ctx, os.Args[1:], os.Stdout); err != nil {
 		_, _ = fmt.Fprintln(os.Stderr, err)
@@ -34,7 +35,7 @@ func main() {
 }
 
 func execute(ctx context.Context, arguments []string, output io.Writer) error {
-	return executeApplication(ctx, arguments, output, application{Query: discover})
+	return executeApplication(ctx, arguments, output, application{Query: discover, Tunnel: &hostLink{}})
 }
 
 type application struct {
@@ -123,6 +124,9 @@ func executeApplication(ctx context.Context, arguments []string, output io.Write
 	if err != nil {
 		return err
 	}
+	if link, ok := app.Tunnel.(*hostLink); ok {
+		link.path = path
+	}
 	writeJSON := func(value any) error { return json.NewEncoder(output).Encode(value) }
 	switch command {
 	case "enroll":
@@ -133,14 +137,20 @@ func executeApplication(ctx context.Context, arguments []string, output io.Write
 		_, err = fmt.Fprintf(output, "Enrolled agent %s. Next: smartqa-host doctor.\n", state.HostID)
 		return err
 	case "status":
-		status := map[string]any{"version": version, "host_id": state.HostID, "enrolled": state.HostID != "", "connected": false, "tunnel": "NOT-RUN", "next_step": "Set SMARTQA_HOST_CODE, then smartqa-host enroll --server URL"}
+		status := map[string]any{"version": version, "host_id": state.HostID, "enrolled": state.HostID != "", "connected": false, "tunnel": "disconnected", "next_step": "Set SMARTQA_HOST_CODE, then smartqa-host enroll --server URL"}
 		if state.HostID != "" {
-			status["next_step"] = "B2 tunnel publication is required before smartqa-host run"
+			status["next_step"] = "Run smartqa-host run, then smartqa-host share SERIAL"
+			if reply, err := localHostCommand(ctx, path, hostCommand{Command: "status"}); err == nil {
+				status["connected"] = reply.Connected
+				if reply.Connected {
+					status["tunnel"] = "connected"
+				}
+			}
 		}
 		if *asJSON {
 			return writeJSON(status)
 		}
-		_, err = fmt.Fprintf(output, "Agent %s; enrolled=%t; connected=false. Next: %s\n", version, state.HostID != "", status["next_step"])
+		_, err = fmt.Fprintf(output, "Agent %s; enrolled=%t; connected=%t. Next: %s\n", version, state.HostID != "", status["connected"], status["next_step"])
 		return err
 	case "devices":
 		if flags.NArg() != 0 {
@@ -149,7 +159,12 @@ func executeApplication(ctx context.Context, arguments []string, output io.Write
 		if app.Query == nil {
 			return failure("SQH-E201", nil)
 		}
-		devices, err := app.Query(ctx, config)
+		var devices []device
+		if reply, controlErr := localHostCommand(ctx, path, hostCommand{Command: "devices"}); controlErr == nil {
+			devices = reply.Devices
+		} else {
+			devices, err = app.Query(ctx, config)
+		}
 		if err != nil {
 			return err
 		}
@@ -163,12 +178,21 @@ func executeApplication(ctx context.Context, arguments []string, output io.Write
 		}
 		return nil
 	case "run":
+		if _, ok := app.Tunnel.(*hostLink); ok {
+			if err := validateIdentity(config, state); err != nil {
+				return err
+			}
+		}
 		return runAgentWithQuery(ctx, config, state, app.Tunnel, app.Query)
 	case "share", "unshare":
 		if flags.NArg() != 1 {
 			return failure("SQH-E003", nil)
 		}
-		return failure("SQH-E301", nil)
+		if state.HostID == "" {
+			return failure("SQH-E005", nil)
+		}
+		_, err := localHostCommand(ctx, path, hostCommand{Command: command, Serial: flags.Arg(0)})
+		return err
 	case "doctor":
 		results, checkErr := doctor(ctx, path, config)
 		if *asJSON {
@@ -191,6 +215,14 @@ func executeApplication(ctx context.Context, arguments []string, output io.Write
 		}
 		return writeJSON(map[string]any{"server": config.Server, "adb": config.ADB, "dns_server": config.DNSServer, "proxy_configured": config.Proxy != "", "no_adb_download": config.NoADBDownload})
 	case "service":
+		if action == "install" && app.Tunnel != nil {
+			if err := validateIdentity(config, state); err != nil {
+				return err
+			}
+			if err := saveConfig(path, config); err != nil {
+				return err
+			}
+		}
 		return service(ctx, action, path, app.Tunnel != nil, output)
 	case "logs":
 		if runtime.GOOS == "linux" {
@@ -224,7 +256,7 @@ func executeApplication(ctx context.Context, arguments []string, output io.Write
 		if state.HostID == "" {
 			return nil
 		}
-		return failure("SQH-E301", nil)
+		return unenrollHost(ctx, path, config, state)
 	}
 	return failure("SQH-E003", nil)
 }
