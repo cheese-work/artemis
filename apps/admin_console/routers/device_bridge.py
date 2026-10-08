@@ -66,6 +66,7 @@ _CLIENT_CLOSE_REASONS = frozenset(
         "usb_read_error",
         "usb_write_error",
         "usb_disconnected",
+        "another_tab",
     }
 )
 

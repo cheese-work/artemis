@@ -19,6 +19,8 @@ Covers: relay forwarding, same-origin boundaries, and session cleanup.
 
 import asyncio
 import json
+from pathlib import Path
+import re
 import socket
 import struct
 import threading
@@ -747,8 +749,18 @@ def test_bridge_close_logs_sanitized_reason(reason, caplog):
     assert f"reason={reason}" in caplog.text
 
 
+def test_server_accepts_every_close_reason_the_browser_can_send():
+    source = (
+        Path(__file__).parents[3] / "apps/showcase_ui/src/app/services/usb-device-relay.service.ts"
+    ).read_text(encoding="utf-8")
+    union = re.search(r"type ClientCloseReason =([^;]+);", source).group(1)
+    assert set(re.findall(r"'(\w+)'", union)) == device_bridge._CLIENT_CLOSE_REASONS
+
+
 @pytest.mark.parametrize("connected", [False, True])
-@pytest.mark.parametrize("reason", ["manual_disconnect", "usb_read_error", "usb_write_error"])
+@pytest.mark.parametrize(
+    "reason", ["manual_disconnect", "usb_read_error", "usb_write_error", "another_tab"]
+)
 def test_client_close_diagnostic_reaches_server_log(connected, reason, caplog):
     async def scenario():
         service = BridgeSessionService()
