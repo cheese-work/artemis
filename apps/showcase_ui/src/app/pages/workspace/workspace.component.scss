@@ -39,6 +39,41 @@ $narrow: 800px;
     user-select: none;
   }
 
+  /* Out of sight until a keyboard user lands on them, then pinned above the page. */
+  .skip-links {
+    position: fixed;
+    top: var(--space-sm);
+    left: var(--space-sm);
+    z-index: 2000;
+    display: flex;
+    gap: var(--space-sm);
+
+    .skip-link {
+      min-height: var(--target);
+      padding: 0 var(--space-md);
+      background: var(--color-primary);
+      border: 1px solid var(--color-primary);
+      border-radius: var(--radius-md);
+      color: var(--color-on-primary);
+      font-family: inherit;
+      font-size: var(--text-ui);
+      font-weight: 600;
+      cursor: pointer;
+      box-shadow: var(--shadow-2);
+
+      &:not(:focus) {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        min-height: 0;
+        padding: 0;
+        overflow: hidden;
+        clip-path: inset(50%);
+        border: 0;
+      }
+    }
+  }
+
   .left-panel {
     position: relative;
     z-index: 1;
@@ -53,6 +88,7 @@ $narrow: 800px;
   }
 
   .right-panel {
+    position: relative; /* contains the list's absolutely positioned screen-reader text */
     flex: 0 1 auto;
     min-width: 250px;
     max-width: 100%;
@@ -197,6 +233,11 @@ $narrow: 800px;
             &::placeholder {
               color: var(--color-text-muted);
               font-size: var(--text-ui);
+            }
+
+            /* The hint wraps to two lines on a phone: keep both visible. */
+            @media (max-width: 599px) {
+              min-height: 3.25rem;
             }
 
             &:disabled {

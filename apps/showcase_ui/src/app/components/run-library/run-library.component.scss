@@ -24,9 +24,12 @@
 }
 
 .library-title {
-  margin: 0;
-  font-size: 22px;
+  margin: 0 0 var(--space-smd);
+  font-family: var(--font-display);
+  font-size: var(--text-section);
+  line-height: 1.4;
   font-weight: 600;
+  color: var(--color-ink);
 }
 
 :host(.compact.review-run-list) {
@@ -220,6 +223,11 @@ summary:focus-visible {
 
   &:hover {
     background: var(--color-surface-subtle);
+  }
+
+  /* The run open beside the list: a tint and the word Viewing, never colour alone. */
+  &.is-open {
+    background: var(--color-primary-tint);
   }
 }
 

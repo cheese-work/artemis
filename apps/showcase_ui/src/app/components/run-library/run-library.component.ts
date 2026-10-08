@@ -12,10 +12,10 @@ import {
   viewChild
 } from '@angular/core';
 import { HttpErrorResponse } from '@angular/common/http';
-import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
+import { takeUntilDestroyed, toSignal } from '@angular/core/rxjs-interop';
 import { Location } from '@angular/common';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
-import { Subscription } from 'rxjs';
+import { Subscription, map } from 'rxjs';
 import { Computer, RegistryDevice } from '../../core/models/host.model';
 import { RunSummary } from '../../core/models/run.model';
 import { GoalImage } from '../../core/models/session.model';
@@ -63,6 +63,8 @@ export class RunLibraryComponent implements OnChanges {
   public readonly recordedDevices = input<ReadonlyMap<string, LabelableDevice>>(new Map());
   public readonly recordedImages = input<ReadonlyMap<string, GoalImage[]>>(new Map());
   public readonly mediaNotice = MEDIA_NOTICE;
+  /** The run open beside this list on Runs, so its row can say so. */
+  public readonly openRunId = toSignal(this.route.paramMap.pipe(map((params) => params.get('id'))), { initialValue: null });
   public readonly scope = signal<'mine' | 'everyone'>('mine');
   public readonly runQuery = computed(() => this.scope() === 'everyone' ? { scope: 'everyone', review: '1' } : {});
 
@@ -271,6 +273,12 @@ export class RunLibraryComponent implements OnChanges {
   public device(run: RunSummary): LabelableDevice | null {
     return this.recordedDevices().get(run.session_id)
       ?? this.devices().find((device) => device.serial === run.device_ref?.serial) ?? null;
+  }
+
+  /** The open run's id may be a short prefix of the row's id. */
+  public isOpen(run: RunSummary): boolean {
+    const open = this.openRunId();
+    return !!open && run.session_id.startsWith(open);
   }
 
   public trackRun(_: number, run: RunSummary): string {

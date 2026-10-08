@@ -37,6 +37,7 @@ $text-muted: var(--color-text-faint);
 
   .chat-header {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     justify-content: space-between;
     gap: 16px;
@@ -93,6 +94,18 @@ $text-muted: var(--color-text-faint);
           border-bottom-color: var(--color-primary);
           color: var(--color-ink);
           font-weight: 600;
+        }
+      }
+    }
+
+    @container (max-width: 520px) {
+      padding-inline: var(--space-md);
+
+      .tab-selector-btn {
+        padding: 0 var(--space-smd);
+
+        .tab-icon {
+          display: none;
         }
       }
     }
@@ -168,6 +181,7 @@ $text-muted: var(--color-text-faint);
 
   .chat-messages {
     flex: 1;
+    position: relative; /* contains the list's absolutely positioned screen-reader text so it cannot stretch the page */
     overflow-y: auto;
     padding: var(--space-md);
     display: flex;
@@ -206,7 +220,7 @@ $text-muted: var(--color-text-faint);
       border: 1px dashed var(--color-rule-strong);
       border-radius: 8px;
       padding: 12px;
-      color: var(--color-text-faint);
+      color: var(--color-text-muted);
       font-size: 12px;
       text-align: center;
     }

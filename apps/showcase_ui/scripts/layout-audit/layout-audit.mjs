@@ -7,6 +7,8 @@
 // 2. Accessibility: the connected-phone status stays in the accessibility tree at every width; the chip is >= 44px.
 // 3. Scenarios: RunView controls and Task Queue / Notes & Plans sidebar across mock states
 //    (idle / running / paused-with-error / sessions API error / video error) and route changes.
+// 4. Contract (CHE-1278): side by side at 1280, stacked at 1024, one column at 700 and 375; the new-task box never covers
+//    the run; 44px primary targets; no blur; text at 4.5:1 on its real background; reduced motion stops animation.
 import { spawn } from 'node:child_process';
 import { mkdtempSync, mkdirSync, rmSync, existsSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -24,7 +26,7 @@ const { server, url: base } = await startMockApi(dist);
 const profile = mkdtempSync(path.join(tmpdir(), 'layout-audit-'));
 const port = 9222 + Math.floor(Math.random() * 2000);
 const chrome = spawn(process.env.CHROME_BIN || 'google-chrome',
-  ['--headless=new', '--no-sandbox', '--disable-gpu', `--remote-debugging-port=${port}`, `--user-data-dir=${profile}`, 'about:blank'], { stdio: 'ignore' });
+  ['--headless=new', '--no-sandbox', '--password-store=basic', '--disable-gpu', `--remote-debugging-port=${port}`, `--user-data-dir=${profile}`, 'about:blank'], { stdio: 'ignore' });
 chrome.on('error', (e) => { console.error(`Could not start Chrome (${e.message}). Set CHROME_BIN.`); process.exit(2); });
 
 let ws, nextId = 1;
@@ -71,7 +73,7 @@ const UNDER_NAV = `(() => {
   const out = [];
   const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
   for (let n; (n = walker.nextNode());) {
-    if (!n.textContent.trim() || n.parentElement.closest('.floating-nav-switcher,script,style,.cdk-visually-hidden,.material-symbols-outlined')) continue;
+    if (!n.textContent.trim() || n.parentElement.closest('.floating-nav-switcher,script,style,.cdk-visually-hidden,.material-symbols-outlined,.skip-link:not(:focus)')) continue;
     const range = document.createRange(); range.selectNodeContents(n);
     if ([...range.getClientRects()].some(hit)) out.push(n.textContent.trim().slice(0, 28));
   }
@@ -171,6 +173,102 @@ async function scenarios() {
   console.log(`scenarios: ${failures.length ? 'failures above' : 'all clear'}`);
 }
 
+// Contrast of every text run against the opaque background it actually sits on (WCAG relative luminance).
+const CONTRAST = `(() => {
+  const parse = (c) => { const m = c.match(/rgba?\\(([^)]+)\\)/); if (!m) return null; const p = m[1].split(/[ ,/]+/).filter(Boolean).map(Number); return { r: p[0], g: p[1], b: p[2], a: p[3] ?? 1 }; };
+  const lin = (v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; };
+  const lum = ({ r, g, b }) => 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
+  const over = (top, under) => ({ r: top.r * top.a + under.r * (1 - top.a), g: top.g * top.a + under.g * (1 - top.a), b: top.b * top.a + under.b * (1 - top.a), a: 1 });
+  const backdrop = (el) => { const stack = []; for (let e = el; e; e = e.parentElement) { const c = parse(getComputedStyle(e).backgroundColor); if (c && c.a > 0) { stack.push(c); if (c.a === 1) break; } }
+    return stack.reduceRight((under, c) => over(c, under), { r: 255, g: 255, b: 255, a: 1 }); };
+  const out = [];
+  const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+  for (let n; (n = walker.nextNode());) {
+    const el = n.parentElement;
+    if (!n.textContent.trim() || el.closest('script,style,.material-symbols-outlined,.cdk-visually-hidden,.sr-only,[disabled],[aria-disabled=true]')) continue;
+    const range = document.createRange(); range.selectNodeContents(n);
+    if (![...range.getClientRects()].some((r) => r.width > 0 && r.height > 0)) continue;
+    const cs = getComputedStyle(el);
+    if (cs.visibility === 'hidden' || +cs.opacity === 0) continue;
+    const fg = parse(cs.color); if (!fg) continue;
+    const bg = backdrop(el); const text = over(fg, bg);
+    const [hi, lo] = [lum(text), lum(bg)].sort((a, b) => b - a);
+    const ratio = (hi + 0.05) / (lo + 0.05);
+    const large = parseFloat(cs.fontSize) >= 24 || (parseFloat(cs.fontSize) >= 18.66 && +cs.fontWeight >= 700);
+    if (ratio < (large ? 3 : 4.5)) out.push((el.className?.toString() || el.tagName).slice(0, 40) + ' "' + n.textContent.trim().slice(0, 24) + '" ' + ratio.toFixed(2) + ':1');
+  }
+  return [...new Set(out)];
+})()`;
+
+const BLUR = `[...document.querySelectorAll('*')].filter((e) => { const c = getComputedStyle(e); return (c.backdropFilter && c.backdropFilter !== 'none') || /blur/.test(c.filter); }).map((e) => e.className?.toString() || e.tagName).slice(0, 5)`;
+const TARGETS = `[...document.querySelectorAll('.floating-nav-switcher .nav-tab-btn, .tab-selector-btn, .dock-circle-btn, .profile-toggle-pill, app-run-library button, app-run-library summary, app-run-library input, app-run-library select, app-run-view .action-button, app-run-view .secondary-button, app-run-view summary')]
+  .map((e) => [e, e.getBoundingClientRect()]).filter(([e, r]) => r.width > 0 && r.height > 0 && !e.disabled)
+  .filter(([, r]) => r.height < 43.5 || r.width < 43.5).map(([e, r]) => (e.getAttribute('aria-label') || e.textContent || e.className).trim().slice(0, 24) + ' ' + Math.round(r.width) + 'x' + Math.round(r.height))`;
+const BOXES = `(() => { const r = (s) => { const e = document.querySelector(s); if (!e) return null; const b = e.getBoundingClientRect(); return { l: b.left, t: b.top, r: b.right, b: b.bottom, w: b.width, h: b.height }; };
+  return { left: r('.left-panel'), right: r('.right-panel'), run: r('.run-surface'), dock: r('.workspace-floating-bar-wrapper'), scrollH: document.documentElement.scrollHeight, overflowX: document.documentElement.scrollWidth - innerWidth }; })()`;
+
+// Side by side from 1200px, stacked from 800px, one column below; the new-task box stays under the run.
+function checkPanes(where, route, width, b) {
+  const TOLERANCE = 2;
+  const listHidden = route.startsWith('/runs/') && width < 800; // Runs keeps the open run; Back to runs reaches the list.
+  if (!b.left || (!listHidden && !b.right)) return fail(where, 'run or list panel missing');
+  if (listHidden) {
+    if (b.right && b.right.w > 0) fail(where, 'review list should be hidden in one column');
+  } else if (width >= 1200) {
+    if (b.right.l < b.left.r - TOLERANCE || Math.abs(b.right.t - b.left.t) > TOLERANCE) fail(where, `list is not beside the run: ${JSON.stringify({ left: b.left, right: b.right })}`);
+  } else if (b.right.t < b.left.b - TOLERANCE || Math.abs(b.right.l - b.left.l) > TOLERANCE) {
+    fail(where, `list is not under the run: ${JSON.stringify({ left: b.left, right: b.right })}`);
+  } else if (width >= 800 && b.scrollH > 800 + TOLERANCE) {
+    fail(where, `stacked panes must fit the viewport, page is ${b.scrollH}px tall`);
+  }
+  if (!b.dock) return;
+  // One column keeps the box pinned to the bottom of the screen; otherwise it sits under the run, never over it.
+  if (width < 800) {
+    if (b.dock.b > 800 + TOLERANCE) fail(where, `new-task box is off screen: dock bottom ${b.dock.b}`);
+  } else if (b.run && b.dock.t < b.run.b - TOLERANCE) fail(where, `new-task box covers the run: dock top ${b.dock.t}, run bottom ${b.run.b}`);
+}
+
+async function contract() {
+  // The run list sits beside the run on Workspace and on an open run; the list page and Setup have one pane.
+  for (const route of ['/workspace', '/runs/00000002-5d7e-4a10-9c33-0e1f2a3b4c5d', '/runs', '/setup']) {
+    const panes = route === '/workspace' || route.startsWith('/runs/');
+    for (const width of [1280, 1024, 700, 375]) {
+      const where = `contract ${route.split('/').slice(0, 2).join('/')} @${width}px`;
+      await open(route, width, 800);
+      await setPhone(true);
+      await sleep(400);
+      const b = await evaluate(BOXES);
+      if (b.overflowX > 0) fail(where, `page scrolls sideways by ${b.overflowX}px`);
+      if (panes) checkPanes(where, route, width, b);
+      const small = await evaluate(TARGETS);
+      if (small.length) fail(where, `targets under 44px: ${small.join(' | ')}`);
+      const blur = await evaluate(BLUR);
+      if (blur.length) fail(where, `blur or glass on: ${blur.join(', ')}`);
+      const low = await evaluate(CONTRAST);
+      if (low.length) fail(where, `text under 4.5:1 on its background: ${low.slice(0, 6).join(' | ')}`);
+      await shot(`contract-${route.split('/')[1]}-${width}`);
+    }
+  }
+  // Open menus sit on their own surfaces: the phone picker and the user menu.
+  await open('/workspace', 1280);
+  for (const [name, selector] of [['phone picker', 'app-workspace-device-chip button.chip'], ['user menu', 'summary[aria-label^="User menu"]']]) {
+    if (!(await evaluate(`(() => { const e = document.querySelector(${JSON.stringify(selector)}); if (!e) return false; e.click(); return true; })()`))) { fail(`contract ${name}`, 'control not found'); continue; }
+    await sleep(300);
+    const low = await evaluate(CONTRAST);
+    if (low.length) fail(`contract ${name} open`, `text under 4.5:1 on its background: ${low.slice(0, 6).join(' | ')}`);
+    await shot(`contract-${name.replace(' ', '-')}-open`);
+    await evaluate(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`);
+    await open('/workspace', 1280);
+  }
+  // Reduced motion: nothing keeps animating.
+  await send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] });
+  await open('/workspace', 1280);
+  const moving = await evaluate(`[...document.querySelectorAll('*')].filter((e) => { const c = getComputedStyle(e); return c.animationName !== 'none' && parseFloat(c.animationDuration) > 0.05 && c.animationIterationCount === 'infinite'; }).map((e) => e.className?.toString() || e.tagName).slice(0, 5)`);
+  if (moving.length) fail('contract reduced motion', `still animating: ${moving.join(', ')}`);
+  await send('Emulation.setEmulatedMedia', { features: [] });
+  console.log(`contract: ${failures.length ? 'failures above' : 'all clear'}`);
+}
+
 try {
   for (let i = 0; i < 50 && !ws; i++) {
     try {
@@ -185,10 +283,11 @@ try {
   };
   await send('Page.enable');
   const only = process.argv[2];
-  if (only && !['clearance', 'a11y', 'scenarios'].includes(only)) throw new Error(`unknown audit phase "${only}" (clearance | a11y | scenarios)`);
+  if (only && !['clearance', 'a11y', 'scenarios', 'contract'].includes(only)) throw new Error(`unknown audit phase "${only}" (clearance | a11y | scenarios | contract)`);
   if (!only || only === 'clearance') await clearanceMatrix();
   if (!only || only === 'a11y') await phoneStatusA11y();
   if (!only || only === 'scenarios') await scenarios();
+  if (!only || only === 'contract') await contract();
 } catch (e) {
   console.error(e);
   failures.push(String(e));

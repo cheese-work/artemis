@@ -63,6 +63,7 @@ export class WorkspaceComponent implements OnInit {
   private route = inject(ActivatedRoute);
   private router = inject(Router);
   private destroyRef = inject(DestroyRef);
+  private host = inject<ElementRef<HTMLElement>>(ElementRef);
   private readonly whatsNewErrorOwner = Symbol('workspace-error');
   private errorTimeout: ReturnType<typeof setTimeout> | null = null;
 
@@ -116,6 +117,15 @@ export class WorkspaceComponent implements OnInit {
   public isInputFocused = signal<boolean>(false);
 
   @ViewChild('dockInput') public dockInputRef?: ElementRef<HTMLTextAreaElement>;
+
+  /** Skip links: the run is first in Tab order, so jump straight to the new-task box or the run list. */
+  public skipToNewTask(): void {
+    this.dockInputRef?.nativeElement.focus();
+  }
+
+  public skipToRunList(): void {
+    this.host.nativeElement.querySelector<HTMLElement>('.right-panel [role=tab][tabindex="0"], .right-panel a.run-row')?.focus();
+  }
 
   constructor() {
     effect(() => {
