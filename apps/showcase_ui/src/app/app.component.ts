@@ -20,16 +20,19 @@ import { NavSwitcherComponent } from './components/nav-switcher/nav-switcher.com
 import { WhatsNewComponent } from './components/whats-new/whats-new.component';
 import { VersionFooterComponent } from './components/version-footer/version-footer.component';
 import { AgentService } from './services/agent.service';
+import { previewInfo } from './utils/app-url.util';
 
 @Component({
   selector: 'app-root',
   imports: [RouterOutlet, NavSwitcherComponent, WhatsNewComponent, VersionFooterComponent],
   templateUrl: './app.component.html',
   changeDetection: ChangeDetectionStrategy.Eager,
-  styleUrl: './app.component.scss'
+  styleUrl: './app.component.scss',
+  host: { '[style.--preview-banner-height]': "preview ? '24px' : '0px'" }
 })
 export class AppComponent {
   public title = 'SmartQA';
+  public readonly preview = previewInfo();
   public readonly agentService = inject(AgentService);
 
   @ViewChild(WhatsNewComponent) private whatsNew?: WhatsNewComponent;

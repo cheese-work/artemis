@@ -1,6 +1,7 @@
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { of, throwError } from 'rxjs';
 import { AdminConfigService, AdminIdentity, ConfigSnapshot } from '../../services/admin-config.service';
+import { FailuresService } from '../../services/failures.service';
 import { StorageService } from '../../services/storage.service';
 import { HostsService } from '../../services/hosts.service';
 import { routes } from '../../app.routes';
@@ -125,6 +126,7 @@ describe('SetupComponent', () => {
               })
           }
         },
+        { provide: FailuresService, useValue: { report: () => of({ days: 14, counts: [], causes: [] }) } },
         {
           provide: HostsService,
           useValue: { list: () => of({ enabled: false, hosts: [], devices: [] }) }
@@ -168,7 +170,7 @@ describe('SetupComponent', () => {
     fixture.detectChanges();
     const root = fixture.nativeElement as HTMLElement;
     const tabs = Array.from(root.querySelectorAll('[role="tab"]')) as HTMLButtonElement[];
-    expect(tabs.map((tab) => tab.textContent?.trim())).toEqual(['Models', 'Computers', 'Storage']);
+    expect(tabs.map((tab) => tab.textContent?.trim())).toEqual(['Models', 'Computers', 'Storage', 'Failures']);
     expect(tabs[0].getAttribute('aria-selected')).toBe('true');
     expect(root.querySelector('app-computers')).toBeNull();
 
@@ -183,6 +185,20 @@ describe('SetupComponent', () => {
     expect(tabs[2].getAttribute('aria-selected')).toBe('true');
     expect(root.querySelector('app-storage')).not.toBeNull();
     expect(root.querySelector('app-computers')).toBeNull();
+
+    tabs[3].click();
+    fixture.detectChanges();
+    expect(root.querySelector('app-failures')).not.toBeNull();
+    expect(root.querySelector('app-storage')).toBeNull();
+  });
+
+  it('hides the Failures tab from non-admins', async () => {
+    adminConfig.getIdentity.and.returnValue(of({ ...identity, admin: false }));
+    createComponent();
+    await fixture.whenStable();
+    fixture.detectChanges();
+    const labels = Array.from(fixture.nativeElement.querySelectorAll('[role="tab"]')).map((t) => (t as HTMLElement).textContent?.trim());
+    expect(labels).toEqual(['Models', 'Computers', 'Storage']);
   });
 
   it('replaces Step 2 on the System Setup route without adding a provider-only route', () => {

@@ -23,7 +23,7 @@ $rose-dark: #dc2626;
 
 :host {
   display: block;
-  height: 100vh;
+  height: calc(100vh - var(--preview-banner-height, 0px));
   width: 100vw;
   overflow: hidden;
   font-family: $font-sans;
@@ -32,7 +32,7 @@ $rose-dark: #dc2626;
 .workspace-container {
   position: relative;
   display: flex;
-  height: 100vh;
+  height: calc(100vh - var(--preview-banner-height, 0px));
   width: 100vw;
   background-color: $bg-base;
   overflow: hidden;
@@ -123,7 +123,6 @@ $rose-dark: #dc2626;
     flex-direction: column;
     align-items: center;
     pointer-events: none;
-    transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
 
     /* Floating Toast / Error Notification */
     .floating-dock-toast {
@@ -194,55 +193,6 @@ $rose-dark: #dc2626;
       transition: gap 0.32s cubic-bezier(0.16, 1, 0.3, 1);
     }
 
-    /* Standalone Floating Stop Button (Separated from Capsule) */
-    .standalone-stop-btn {
-      pointer-events: auto;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      width: 34px;
-      height: 34px;
-      min-width: 34px;
-      border-radius: 50%;
-      border: 1px solid rgba(255, 255, 255, 0.85);
-      background: rgba(239, 68, 68, 0.9);
-      backdrop-filter: blur(24px) saturate(190%) brightness(105%);
-      -webkit-backdrop-filter: blur(24px) saturate(190%) brightness(105%);
-      color: #ffffff;
-      box-shadow: 0 6px 18px -2px rgba(239, 68, 68, 0.4), inset 0 1px 1.5px rgba(255, 255, 255, 0.7);
-      cursor: pointer;
-      outline: none;
-      flex-shrink: 0;
-      transition: opacity 0.28s cubic-bezier(0.16, 1, 0.3, 1),
-                  transform 0.28s cubic-bezier(0.16, 1, 0.3, 1),
-                  width 0.28s cubic-bezier(0.16, 1, 0.3, 1),
-                  min-width 0.28s cubic-bezier(0.16, 1, 0.3, 1),
-                  margin 0.28s cubic-bezier(0.16, 1, 0.3, 1),
-                  background 0.2s ease,
-                  box-shadow 0.2s ease;
-      animation: popIn 0.25s cubic-bezier(0.16, 1, 0.3, 1);
-
-      .material-symbols-outlined {
-        font-size: 17px;
-        line-height: 1;
-      }
-
-      &:hover:not(:disabled) {
-        background: #dc2626;
-        transform: scale(1.1);
-        box-shadow: 0 8px 22px rgba(239, 68, 68, 0.55), inset 0 1px 1.5px rgba(255, 255, 255, 0.9);
-      }
-
-      &:active:not(:disabled) {
-        transform: scale(0.93);
-      }
-
-      &:disabled {
-        opacity: 0.6;
-        cursor: not-allowed;
-      }
-    }
-
     /* Floating Dock Card Container */
     .floating-dock-card {
       pointer-events: auto;
@@ -251,12 +201,8 @@ $rose-dark: #dc2626;
       border-radius: 18px;
       box-sizing: border-box;
       overflow: hidden;
-      transition: max-width 0.32s cubic-bezier(0.16, 1, 0.3, 1),
-                  width 0.32s cubic-bezier(0.16, 1, 0.3, 1),
-                  border-radius 0.28s cubic-bezier(0.16, 1, 0.3, 1),
-                  box-shadow 0.28s ease,
+      transition: box-shadow 0.28s ease,
                   background 0.28s ease,
-                  transform 0.28s cubic-bezier(0.16, 1, 0.3, 1),
                   border-color 0.28s ease;
     }
 
@@ -351,94 +297,11 @@ $rose-dark: #dc2626;
     }
 
     /* ======================================================================= */
-    /* 1. DORMANT / RESTING CAPSULE STATE (Subtle Frosted Peek)                */
-    /* ======================================================================= */
-    &.is-dormant {
-      .floating-dock-card {
-        max-width: 160px;
-        width: 160px;
-        margin: 0;
-        background: rgba(255, 255, 255, 0.65);
-        backdrop-filter: blur(26px) saturate(190%) brightness(104%);
-        -webkit-backdrop-filter: blur(26px) saturate(190%) brightness(104%);
-        border: 1px solid rgba(255, 255, 255, 0.85);
-        border-radius: 17px;
-        box-shadow: 0 6px 18px -2px rgba(15, 23, 42, 0.07), inset 0 1px 1.5px rgba(255, 255, 255, 0.95), inset 0 -1px 1px rgba(255, 255, 255, 0.3);
-        cursor: pointer;
-        opacity: 0.92;
-        transform: translateY(2px);
-
-        .dock-wave-container {
-          opacity: 0.78;
-          .wave-tracks-wrapper {
-            height: 12px;
-          }
-        }
-
-        &:hover {
-          opacity: 1;
-          transform: translateY(0);
-          background: rgba(255, 255, 255, 0.82);
-          border-color: rgba(255, 255, 255, 1);
-          box-shadow: 0 8px 24px -2px rgba(15, 23, 42, 0.12), inset 0 1px 1.5px rgba(255, 255, 255, 1);
-
-          .dock-wave-container {
-            opacity: 0.95;
-            filter: drop-shadow(0 0 6px rgba(99, 102, 241, 0.35));
-          }
-        }
-
-        .capsule-peek-view {
-          display: flex;
-          opacity: 1;
-        }
-
-        .expanded-card-content {
-          display: none;
-          opacity: 0;
-        }
-      }
-    }
-
-    /* Capsule Peek View Layout */
-    .capsule-peek-view {
-      position: relative;
-      z-index: 1;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      padding: 6px 14px;
-      min-height: 34px;
-      box-sizing: border-box;
-      user-select: none;
-
-      .capsule-placeholder {
-        color: #475569;
-        font-size: 12px;
-        font-weight: 500;
-        letter-spacing: 0.1px;
-        white-space: nowrap;
-        text-align: center;
-      }
-    }
-
-    /* ======================================================================= */
     /* 2. EXPANDED / ACTIVE STATE (Rich Frosted Command Box)                   */
     /* ======================================================================= */
     &.is-expanded {
       .floating-dock-row {
         gap: 0;
-      }
-
-      .standalone-stop-btn {
-        opacity: 0;
-        width: 0;
-        min-width: 0;
-        margin: 0;
-        padding: 0;
-        border-width: 0;
-        transform: scale(0.5);
-        pointer-events: none;
       }
 
       .floating-dock-card {
@@ -459,15 +322,9 @@ $rose-dark: #dc2626;
           }
         }
 
-        .capsule-peek-view {
-          display: none;
-          opacity: 0;
-        }
-
         .expanded-card-content {
           display: block;
           opacity: 1;
-          animation: cardFadeIn 0.25s cubic-bezier(0.16, 1, 0.3, 1);
         }
       }
     }
@@ -622,8 +479,8 @@ $rose-dark: #dc2626;
 
           /* Stop Button (Frosted Red) */
           &.btn-stop {
-            width: 36px;
-            height: 36px;
+            width: 44px;
+            height: 44px;
             background: rgba(239, 68, 68, 0.9);
             backdrop-filter: blur(8px);
             color: #ffffff;
@@ -649,8 +506,8 @@ $rose-dark: #dc2626;
 
           /* Send Button */
           &.btn-send {
-            width: 36px;
-            height: 36px;
+            width: 44px;
+            height: 44px;
             background: rgba(15, 23, 42, 0.88);
             backdrop-filter: blur(12px);
             border: 1px solid rgba(255, 255, 255, 0.25);
@@ -679,6 +536,12 @@ $rose-dark: #dc2626;
 
             &:active:not(:disabled) {
               transform: scale(0.95);
+            }
+
+            /* No phone: looks off, but stays clickable so Run can open the phone picker. */
+            &.is-blocked {
+              opacity: 0.55;
+              cursor: not-allowed;
             }
           }
         }
@@ -828,17 +691,6 @@ $rose-dark: #dc2626;
   from {
     opacity: 0;
     transform: translateY(8px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
-@keyframes cardFadeIn {
-  from {
-    opacity: 0;
-    transform: translateY(4px);
   }
   to {
     opacity: 1;

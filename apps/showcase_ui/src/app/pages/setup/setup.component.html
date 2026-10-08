@@ -16,6 +16,9 @@
     <button type="button" role="tab" id="tab-models" [attr.aria-selected]="tab() === 'models'" aria-controls="panel-setup" (click)="tab.set('models')">Models</button>
     <button type="button" role="tab" id="tab-computers" [attr.aria-selected]="tab() === 'computers'" aria-controls="panel-setup" (click)="tab.set('computers')">Computers</button>
     <button type="button" role="tab" id="tab-storage" [attr.aria-selected]="tab() === 'storage'" aria-controls="panel-setup" (click)="tab.set('storage')">Storage</button>
+    @if (canEdit()) {
+      <button type="button" role="tab" id="tab-failures" [attr.aria-selected]="tab() === 'failures'" aria-controls="panel-setup" (click)="tab.set('failures')">Failures</button>
+    }
   </div>
 
   <div id="panel-setup" role="tabpanel" [attr.aria-labelledby]="'tab-' + tab()">
@@ -23,6 +26,8 @@
     <app-computers />
   } @else if (tab() === 'storage') {
     <app-storage />
+  } @else if (tab() === 'failures') {
+    <app-failures />
   } @else if (loading()) {
     <p class="notice" role="status">Loading provider settings…</p>
   } @else if (!snapshot()) {

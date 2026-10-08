@@ -1,5 +1,8 @@
 <div class="library-scroll" #scrollRegion (scroll)="onScroll()">
-  <h1 class="library-title">{{ strings.title }}</h1>
+  <div class="library-heading">
+    <h1 class="library-title">{{ strings.title }}</h1>
+    <app-scope-switch></app-scope-switch>
+  </div>
 
   <form class="search-form" role="search" (submit)="submitSearch($event)">
     <input
@@ -81,7 +84,11 @@
       </div>
     } @else {
       <div class="state state-empty">
-        <p>{{ strings.emptyTitle }} <a routerLink="/workspace">{{ strings.emptyAction }}</a>.</p>
+        @if (showingAll()) {
+          <p>{{ strings.emptyAllUsers }}</p>
+        } @else {
+          <p>{{ strings.emptyTitle }} <a routerLink="/workspace">{{ strings.emptyAction }}</a>.</p>
+        }
       </div>
     }
   }
@@ -110,6 +117,7 @@
                   Date unknown
                 }
               </span>
+              <app-owner-label [owner]="run.requested_by"></app-owner-label>
               @if (expires(run); as text) {
                 <span class="run-expires">{{ text }}</span>
               }
