@@ -1,0 +1,5 @@
+# Disposable network-namespace fixture for the preview firewall test (CHE-1291).
+# Debian + iproute2 + nftables + python3; built on demand, never shipped.
+FROM python:3.12-slim
+RUN apt-get update && apt-get install -y --no-install-recommends iproute2 nftables \
+    && rm -rf /var/lib/apt/lists/*
