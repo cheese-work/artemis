@@ -44,6 +44,9 @@ class RunRequest(BaseModel):
     app_path: str | None = None
     device_serial: str | None = None
     device_ref: DeviceRef | None = None
+    # The bridge session of the browser-held phone this run is bound to. It implies the phone:
+    # `device_serial` defaults to the bridge's serial, and a closed bridge refuses the run.
+    bridge_session_id: str | None = None
     ingress: str | None = "frontend"
     session_id: str | None = None
     conversation_id: str | None = None
@@ -53,6 +56,8 @@ class RunRequest(BaseModel):
 
     @model_validator(mode="after")
     def check_device_ref(self):
+        if self.device_ref and self.bridge_session_id:
+            raise ValueError("bridge_session_id and device_ref are mutually exclusive")
         if self.device_ref and self.device_serial not in {None, self.device_ref.serial}:
             raise ValueError("device_serial must match device_ref.serial")
         return self

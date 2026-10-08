@@ -1550,6 +1550,7 @@ class TaskQueueService:
         run_id: str | None = None,
         host_id: str | None = None,
         requested_by: str | None = None,
+        bridge_session_id: str | None = None,
     ) -> dict[str, Any]:
         """Reserve a device slot and build one pending queue item for a goal."""
         sess_id = single_session_id if single_session_id else str(uuid.uuid4())
@@ -1601,6 +1602,8 @@ class TaskQueueService:
             "run_id": run_id,
             "host_id": host_id,
             "requested_by": requested_by,
+            # The bridge lease a browser-held phone's run was admitted under; None otherwise.
+            "bridge_session_id": bridge_session_id,
             "status": "pending",
             "queue_ticket": queue_ticket,
             "created_at": now + index * 0.001,
@@ -1626,6 +1629,7 @@ class TaskQueueService:
         host_id: str | None = None,
         requested_by: str | None = None,
         goal_images: list[run_images.ValidatedImage] | None = None,
+        bridge_session_id: str | None = None,
     ) -> dict[str, Any]:
         """Enqueues one or more goals and wakes up the background worker.
 
@@ -1729,6 +1733,7 @@ class TaskQueueService:
                 run_id=run_id,
                 host_id=host_id,
                 requested_by=requested_by,
+                bridge_session_id=bridge_session_id,
             )
             session_id = str(task_item["session_id"])
             existing_trace = trace_store.read_status(session_id)

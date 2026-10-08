@@ -21,9 +21,12 @@ import { FormsModule } from '@angular/forms';
 import { RouterLink } from '@angular/router';
 import { HttpClient } from '@angular/common/http';
 import { AgentService, StartupProgressEvent } from '../../services/agent.service';
+import { OwnerLabelComponent } from '../owner-label/owner-label.component';
 import { RunIdCopyComponent } from '../run-id-copy/run-id-copy.component';
+import { ScopeSwitchComponent } from '../scope-switch/scope-switch.component';
 import { RunSummaryCopyComponent } from '../run-summary-copy/run-summary-copy.component';
 import { Session, ModelInfo, SessionUsage } from '../../core/models/session.model';
+import { TaskStatus, taskStatusOf } from '../../utils/task-status.util';
 import { MarkdownSegment, MarkdownLine, NoteMilestone, ParsedNote } from '../../core/models/markdown.model';
 import { OverlayModule, ConnectedPosition } from '@angular/cdk/overlay';
 import { StepBlock, PhaseBlock, StepEvent, ActionParam, CheckerResult, StreamResetNotice, DEFAULT_STREAM_RESET_MESSAGE } from '../../core/models/stream.model';
@@ -236,7 +239,7 @@ export type { MarkdownSegment, MarkdownLine, NoteMilestone, ParsedNote, StreamRe
 @Component({
   selector: 'app-agent-stream',
   standalone: true,
-  imports: [CommonModule, FormsModule, OverlayModule, RunIdCopyComponent, RunSummaryCopyComponent],
+  imports: [CommonModule, FormsModule, OverlayModule, RunIdCopyComponent, RunSummaryCopyComponent, OwnerLabelComponent, ScopeSwitchComponent],
   templateUrl: './agent-stream.component.html',
   styleUrl: './agent-stream.component.scss',
   changeDetection: ChangeDetectionStrategy.OnPush
@@ -398,7 +401,7 @@ export class AgentStreamComponent implements AfterViewInit {
   public historyTasks = computed(() => {
     return this.agentService.sessions().filter((s) => {
       const status = this.getTaskStatus(s);
-      return status === 'completed' || status === 'failed' || status === 'cancelled';
+      return status !== 'running' && status !== 'paused' && status !== 'pending';
     });
   });
 
@@ -878,20 +881,8 @@ export class AgentStreamComponent implements AfterViewInit {
     return tuningLabel(kind, id);
   }
 
-  public getTaskStatus(session: Session): 'running' | 'paused' | 'completed' | 'pending' | 'failed' | 'cancelled' {
-    if (session.status) {
-      const s = session.status.toLowerCase();
-      if (s === 'completed' || s === 'success' || s === 'failed' || s === 'cancelled') {
-        return (s === 'success' ? 'completed' : s) as any;
-      }
-      if (s === 'running' || s === 'paused' || s === 'pending') {
-        return s as any;
-      }
-    }
-    if (session.session_id === this.agentService.runningSessionId() && (this.agentService.agentStatus() === 'running' || this.agentService.agentStatus() === 'paused')) {
-      return this.agentService.agentStatus() as 'running' | 'paused';
-    }
-    return 'completed';
+  public getTaskStatus(session: Session): TaskStatus {
+    return taskStatusOf(session, { sessionId: this.agentService.runningSessionId(), status: this.agentService.agentStatus() });
   }
 
 

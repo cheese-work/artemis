@@ -121,14 +121,14 @@ SCRCPY_VERSION=""
 scrcpy_is_supported() {
     local version_output major minor
     SCRCPY_VERSION=""
-    version_output="$(scrcpy --version 2>&1)" || return 1
+    version_output="$("${1:-${ARTEMIS_SCRCPY_PATH:-scrcpy}}" --version 2>&1)" || return 1
     if [[ ! "${version_output}" =~ [Ss]crcpy[[:space:]]+v?([0-9]+)\.([0-9]+) ]]; then
         return 1
     fi
     major="${BASH_REMATCH[1]}"
     minor="${BASH_REMATCH[2]}"
     SCRCPY_VERSION="${major}.${minor}"
-    if (( major > 1 || (major == 1 && minor >= 25) )); then
+    if (( major > 2 || (major == 2 && minor >= 4) )); then
         return 0
     fi
     return 1
@@ -163,7 +163,7 @@ MISSING_CORE=()
 if ! command -v adb >/dev/null 2>&1; then MISSING_CORE+=("adb"); fi
 if ! command -v ffmpeg >/dev/null 2>&1; then MISSING_CORE+=("ffmpeg"); fi
 SCRCPY_NEEDS_FALLBACK=false
-if ! command -v scrcpy >/dev/null 2>&1; then
+if ! command -v "${ARTEMIS_SCRCPY_PATH:-scrcpy}" >/dev/null 2>&1; then
     MISSING_CORE+=("scrcpy")
 elif [ "$(uname -s)" = "Linux" ] && ! scrcpy_is_supported; then
     SCRCPY_NEEDS_FALLBACK=true
@@ -211,30 +211,41 @@ if [ ${#MISSING_CORE[@]} -gt 0 ] || [ "${SCRCPY_NEEDS_FALLBACK}" = true ]; then
         fi
 
         # Fallback: if scrcpy is still missing, install official precompiled portable scrcpy in user space
-        if ! command -v scrcpy >/dev/null 2>&1 || ! scrcpy_is_supported; then
+        if ! scrcpy_is_supported; then
             ARCH="$(uname -m)"
             SCRCPY_ARCH=""
             case "${ARCH}" in
                 x86_64|amd64) SCRCPY_ARCH="x86_64" ;;
-                aarch64|arm64) SCRCPY_ARCH="aarch64" ;;
             esac
             if [ -n "${SCRCPY_ARCH}" ]; then
-                SCRCPY_DIR="${HOME}/.local/share/scrcpy"
-                if [ ! -x "${SCRCPY_DIR}/scrcpy" ]; then
+                SCRCPY_DIR="${HOME}/.local/share/scrcpy/4.1"
+                if ! scrcpy_is_supported "${SCRCPY_DIR}/scrcpy"; then
                     echo -e "   ${CYAN}📦 Installing compatible portable scrcpy 4.1 in user space (~/.local)...${NC}"
-                    mkdir -p "${SCRCPY_DIR}" "${HOME}/.local/bin"
+                    SCRCPY_TMP="$(mktemp -d)"
+                    SCRCPY_ARCHIVE="${SCRCPY_TMP}/scrcpy.tar.gz"
+                    SCRCPY_SHA256="ad56ae8bfeedf41e824945c11dbf55fcb092b3e615b9b486f48a50e30d389635"
                     SCRCPY_URL="https://github.com/Genymobile/scrcpy/releases/download/v4.1/scrcpy-linux-${SCRCPY_ARCH}-v4.1.tar.gz"
-                    if curl -fsSL --connect-timeout 5 --max-time 30 "${SCRCPY_URL}" | tar -xz -C "${SCRCPY_DIR}" --strip-components=1 2>/dev/null; then
-                        ln -sf "${SCRCPY_DIR}/scrcpy" "${HOME}/.local/bin/scrcpy"
-                        export PATH="${SCRCPY_DIR}:${PATH}"
-                        export ARTEMIS_SCRCPY_PATH="${ARTEMIS_SCRCPY_PATH:-${SCRCPY_DIR}/scrcpy}"
-                        echo -e "   ${GREEN}✓ scrcpy installed in user space.${NC}"
+                    if curl -fsSL --connect-timeout 5 --max-time 30 "${SCRCPY_URL}" -o "${SCRCPY_ARCHIVE}" \
+                        && printf '%s  %s\n' "${SCRCPY_SHA256}" "${SCRCPY_ARCHIVE}" | sha256sum -c --status \
+                        && mkdir -p "${SCRCPY_TMP}/unpacked" \
+                        && tar -xzf "${SCRCPY_ARCHIVE}" -C "${SCRCPY_TMP}/unpacked" --strip-components=1 \
+                        && scrcpy_is_supported "${SCRCPY_TMP}/unpacked/scrcpy"; then
+                        mkdir -p "${SCRCPY_DIR}"
+                        cp -a "${SCRCPY_TMP}/unpacked/." "${SCRCPY_DIR}/"
+                    else
+                        echo -e "   ${YELLOW}⚠ Portable scrcpy download or verification failed; recording remains unavailable.${NC}"
                     fi
-                else
+                    rm -r -- "${SCRCPY_TMP}"
+                fi
+                if scrcpy_is_supported "${SCRCPY_DIR}/scrcpy"; then
+                    mkdir -p "${HOME}/.local/bin"
                     ln -sf "${SCRCPY_DIR}/scrcpy" "${HOME}/.local/bin/scrcpy"
                     export PATH="${SCRCPY_DIR}:${PATH}"
-                    export ARTEMIS_SCRCPY_PATH="${ARTEMIS_SCRCPY_PATH:-${SCRCPY_DIR}/scrcpy}"
+                    export ARTEMIS_SCRCPY_PATH="${SCRCPY_DIR}/scrcpy"
+                    echo -e "   ${GREEN}✓ Using compatible portable scrcpy ${SCRCPY_VERSION}.${NC}"
                 fi
+            else
+                echo -e "   ${YELLOW}⚠ No official portable scrcpy 4.1 archive for ${ARCH}; install scrcpy 2.4 or newer separately.${NC}"
             fi
         fi
 

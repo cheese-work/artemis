@@ -30,6 +30,8 @@ export interface TaskQueueItem {
   start_time?: number;
   device_serial?: string | null;
   device_id?: string | null;
+  /** The verified identity that submitted the run; null for a run with none. */
+  requested_by?: string | null;
 }
 
 /** A picture sent with a task's goal; `url` is owner-only. */
@@ -45,12 +47,15 @@ export interface Session {
   start_time: number;
   end_time?: number;
   status?: string;
+  /** Why an `interrupted` run stopped (e.g. `device_offline`); absent on other runs. */
+  interrupt_reason?: string | null;
   video_url?: string;
   recording_status?: 'recording' | 'finalizing' | 'processing' | 'ready' | 'failed' | 'unavailable';
   model_info?: ModelInfo;
   device_serial?: string | null;
   device_id?: string | null;
   device_info?: any;
+  requested_by?: string | null;
   goal_images?: GoalImage[];
 }
 

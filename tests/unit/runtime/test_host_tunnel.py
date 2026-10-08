@@ -9,6 +9,7 @@ import pytest
 from artemis.runtime.host_protocol import CONTRACT, Frame, FrameKind, ProtocolError, reconnect_delay
 from artemis.runtime.host_mux import ByteBudget, Multiplexer
 from artemis.runtime.adb_gateway import Gateway, filter_devices, pack_message
+from tests.support.fake_adb import FakeDevice
 
 
 def test_frame_golden_vector():
@@ -133,11 +134,38 @@ async def test_mux_fuzz_window_and_saturation():
 
 
 def test_devices_rewrite_and_utf8_limits():
-    payload = b"private\tdevice\nshared\tdevice model:Phone\n"
-    assert filter_devices(payload, {"shared"}) == b"shared\tdevice model:Phone\n"
+    payload = b"private                device\nshared                 device model:Phone\n"
+    assert filter_devices(payload, {"shared"}) == b"shared                 device model:Phone\n"
     for bad in (b"\xff", b"x" * (CONTRACT.max_text + 1), b"shared\tdevice\x00\n"):
         with pytest.raises(ProtocolError):
             filter_devices(bad, {"shared"})
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        b"emulator-5554          offline transport_id:159\n",
+        b"emulator-5554          device product:sdk model:Phone transport_id:159\n",
+        b"emulator-5554\tdevice\n",
+        b"127.0.0.1:5555         unauthorized transport_id:160\n",
+    ],
+)
+def test_devices_preserve_shared_whitespace_padded_lines(line):
+    serial = line.split()[0].decode()
+    assert filter_devices(b"private                device\n" + line, {serial}) == line
+    assert filter_devices(line, set()) == b""
+
+
+@pytest.mark.parametrize("line", [b"shared\n", b"shared   \n", b"shared\t \n", b"\n"])
+def test_devices_reject_missing_state_even_when_unshared(line):
+    with pytest.raises(ProtocolError):
+        filter_devices(line, set())
+
+
+def test_fake_adb_offline_long_listing_matches_real_adb():
+    device = FakeDevice("emulator-5554", state="offline", transport_id=159)
+    assert device.listing(True) == "emulator-5554          offline transport_id:159"
+    assert device.listing(False) == "emulator-5554\toffline"
 
 
 class FakeRemote:
@@ -154,7 +182,12 @@ class FakeRemote:
         elif service == "host:features" or service.endswith(":features"):
             self.replies.feed_data(pack_message(b"shell_v2,cmd,stat_v2"))
         elif service in {"host:devices", "host:devices-l"}:
-            self.replies.feed_data(pack_message(b"hidden\tdevice\nphone\tdevice\n"))
+            listing = (
+                b"hidden                 device transport_id:1\nphone                  offline transport_id:159\n"
+                if service.endswith("-l")
+                else b"hidden\tdevice\nphone\tdevice\n"
+            )
+            self.replies.feed_data(pack_message(listing))
         elif service.startswith("host:tport:serial:"):
             self.replies.feed_data(struct.pack("<Q", 0x0102030405060708))
         elif service.startswith("host-serial:"):
@@ -304,7 +337,9 @@ async def test_gateway_nested_transport_fragmented_and_coalesced(service, fragme
 @pytest.mark.asyncio
 async def test_gateway_devices_filter():
     writer, _, _ = await gateway_exchange(["host:devices-l"])
-    assert bytes(writer.data) == b"OKAY" + pack_message(b"phone\tdevice\n")
+    assert bytes(writer.data) == b"OKAY" + pack_message(
+        b"phone                  offline transport_id:159\n"
+    )
 
 
 @pytest.mark.asyncio
@@ -590,11 +625,15 @@ async def test_failed_transport_never_forwards_coalesced_service():
 
 
 @pytest.mark.asyncio
-async def test_track_devices_rechecks_share_set_for_every_update():
+@pytest.mark.parametrize("long_format", [False, True])
+async def test_track_devices_rechecks_share_set_for_every_update(long_format):
     shared = {"phone"}
     remote = FakeRemote()
     updates = asyncio.StreamReader()
-    updates.feed_data(b"OKAY" + pack_message(b"phone\tdevice\n") * 2)
+    listing = (
+        b"phone                  offline transport_id:159\n" if long_format else b"phone\tdevice\n"
+    )
+    updates.feed_data(b"OKAY" + pack_message(listing) * 2)
     updates.feed_eof()
     remote.replies = updates
 
@@ -603,7 +642,9 @@ async def test_track_devices_rechecks_share_set_for_every_update():
 
     remote.write = write_request
     reader = asyncio.StreamReader()
-    reader.feed_data(pack_message(b"host:track-devices"))
+    reader.feed_data(
+        pack_message(b"host:track-devices-l" if long_format else b"host:track-devices")
+    )
     writer = FakeWriter()
     drains = 0
 
@@ -615,4 +656,4 @@ async def test_track_devices_rechecks_share_set_for_every_update():
 
     writer.drain = drain
     await Gateway(lambda: shared).relay(reader, writer, remote)
-    assert bytes(writer.data).startswith(b"OKAY" + pack_message(b"phone\tdevice\n") + b"0000")
+    assert bytes(writer.data).startswith(b"OKAY" + pack_message(listing) + b"0000")
