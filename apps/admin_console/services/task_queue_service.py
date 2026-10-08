@@ -1561,16 +1561,18 @@ class TaskQueueService:
         except ImportError:
             from apps.admin_console.services.bridge_session_service import bridge_session_service
 
+        leases = [
+            lease
+            for lease in bridge_session_service.live_sessions()
+            if not host_id
+            and endpoint.is_local_default
+            and lease.serial == assigned_serial
+            and not lease.revoked
+        ]
+        # An explicit bridge id (validated at admission) picks its own lease among same-serial ones.
         lease = next(
-            (
-                lease
-                for lease in bridge_session_service.live_sessions()
-                if not host_id
-                and endpoint.is_local_default
-                and lease.serial == assigned_serial
-                and not lease.revoked
-            ),
-            None,
+            (lease for lease in leases if lease.session_id == bridge_session_id),
+            leases[0] if leases else None,
         )
         binding = RunDeviceBinding(
             AdbTarget(endpoint, assigned_serial, host_id), lease.session_id if lease else None
@@ -1596,14 +1598,13 @@ class TaskQueueService:
             "device_serial": assigned_serial,
             "adb_endpoint": endpoint.to_dict(),
             "device_binding": binding.to_dict(),
-            "bridge_session_id": binding.bridge_session_id,
             "ingress": ingress,
             "conversation_id": conversation_id,
             "run_id": run_id,
             "host_id": host_id,
             "requested_by": requested_by,
             # The bridge lease a browser-held phone's run was admitted under; None otherwise.
-            "bridge_session_id": bridge_session_id,
+            "bridge_session_id": binding.bridge_session_id or bridge_session_id,
             "status": "pending",
             "queue_ticket": queue_ticket,
             "created_at": now + index * 0.001,

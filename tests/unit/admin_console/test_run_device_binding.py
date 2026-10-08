@@ -208,6 +208,29 @@ def test_browser_lease_is_snapshotted_without_host_serial_aliasing(context, monk
     assert browser["device_binding"]["device_lease"] != hosted["device_binding"]["device_lease"]
 
 
+def test_explicit_bridge_id_selects_its_lease_among_same_serial_leases(context):
+    browser_lease(context, "127.0.0.1:31415", "first-lease")
+    second = browser_lease(context, "127.0.0.1:31415", "second-lease")
+    item = TaskQueueService._create_queue_item(
+        "One fake step",
+        0,
+        1.0,
+        AdbEndpoint.local(),
+        "run",
+        "flash",
+        None,
+        None,
+        None,
+        None,
+        second.serial,
+        "frontend",
+        None,
+        bridge_session_id="second-lease",
+    )
+    assert item["bridge_session_id"] == "second-lease"
+    assert item["device_binding"]["bridge_session_id"] == "second-lease"
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("host", ["127.0.0.1", "localhost", "[::1]"])
 async def test_closed_browser_interrupts_only_its_bound_run_once(context, host):
