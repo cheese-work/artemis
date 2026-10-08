@@ -74,7 +74,8 @@ snapshot, app build, agent model, suite version, device model).
 ### Required migration tests
 
 Upgrade from the current schema; a migration interrupted mid-backfill resumes;
-queued work across a restart is recovered or visibly interrupted; the previous
+queued work across a restart follows the
+[restart and Retry contract](board-api.md#restart-and-retry); the previous
 binary works on the upgraded database, including its retention sweep; search
 without FTS5.
 

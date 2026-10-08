@@ -89,9 +89,16 @@ The board and the run list map the two UI toggles onto these scopes.
 | `my_devices` | Lanes for devices the caller owns | Lanes for every device available to the caller: owned, shared, and unowned shared devices |
 
 - Values are `true` or `false`. Omitted or blank means `true`. Any other value
-  answers FastAPI's 422 validation error.
-- `my_devices=false` with `my_runs=true` shows lanes for the available devices
-  that the caller's runs touched, plus the caller's own devices.
+  answers [`request_invalid`](board-api.md#request_invalid).
+- The two toggles are independent. `my_devices` alone decides which lanes
+  appear. `my_runs` decides only which runs fill those lanes (`running`,
+  `queue`, `recent`) and the counts. `my_devices=false` with `my_runs=true`
+  therefore shows every device available to the caller, including a shared
+  idle phone the caller never used; its lane shows only the caller's own runs.
+- Lane `state` always describes the device, never the filter. A device running
+  a run that `my_runs=true` hides is `busy`, never `idle`. A run the caller
+  may not read keeps the `Busy · private run` marker and its redaction under
+  either toggle value.
 - An explicit `scope` wins over `my_runs`. `scope=all` therefore needs admin.
 - Repeated `device_id` parameters filter to those devices (OR). A merged-away id
   resolves through its alias (see [device identity](device-identity.md#aliases)).

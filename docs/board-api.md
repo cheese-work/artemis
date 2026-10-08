@@ -38,6 +38,7 @@ Identity headers are trusted only behind the authenticating proxy; see
 | `POST /api/inventory/devices/{device_id}/keep-separate` | Reject an uncertain match. |
 | `POST /api/inventory/devices/{device_id}/split` | Undo a wrong merge. |
 | `GET /api/runs` | Existing run list, extended with the search filters below. |
+| `POST /api/runs/{session_id}/retry` | Create linked replacement work for an interrupted run. |
 | `GET, POST /api/runs/{session_id}/annotations` | List or add annotations. |
 | `PATCH, DELETE /api/runs/{session_id}/annotations/{annotation_id}` | Edit, resolve or delete an annotation. |
 | `GET /api/runs/{session_id}/annotations/{annotation_id}/evidence` | Resolve an annotation anchor. |
@@ -53,7 +54,9 @@ Every route is classified in the access-control and preview route registries
 Request: exactly one of `device_ids` or `target`, plus the goal and the same
 run options as `POST /api/run` (`profile`, `expected_output`, and so on;
 `device_serial`, `device_ref`, `bridge_session_id`, `session_id` and `images`
-are not accepted).
+are not accepted). A request with both or neither of `device_ids` and
+`target`, or with an invalid `client_submission_id`, answers
+[`request_invalid`](#request_invalid).
 
 ```bash
 curl -sS -X POST "$ARTEMIS/api/queue" -H "$AUTH" -H 'Content-Type: application/json' -d '{
@@ -116,6 +119,53 @@ device). `target: "all_my_idle"` resolves to the caller's own devices that are
 - Ledger entries are kept 7 days.
 - `POST /api/run` keeps its existing client-chosen `session_id` retry contract.
 
+#### Restart and Retry
+
+Accepted work is never silently lost. On startup the dispatcher reads the
+durable queue table, not the in-memory list, and handles each accepted item
+that had not started:
+
+- **Recovered:** the item keeps its `session_id` and its original `position`
+  on its device. Items on one device keep their original order. A device that
+  is offline or `unknown` at startup does not prevent recovery; the item
+  waits for the device as before.
+- **Interrupted:** the item cannot keep its place because the caller may no
+  longer use the device, the device record no longer exists, or the server is
+  draining. The item gets the existing execution status `interrupted` with
+  reason `queue_interrupted_by_restart`. Its lane raises that attention with
+  the `retry` action. Merge and Split cannot cause this case, because both are
+  refused while work is queued on the device.
+- A run that was executing at shutdown is `interrupted` with the existing
+  restart recovery and raises `execution_interrupted`.
+
+`POST /api/runs/{session_id}/retry` creates replacement work for an
+`interrupted` run. It is a control action
+([permission matrix](board-permissions.md#permission-matrix)).
+
+```bash
+curl -sS -X POST "$ARTEMIS/api/runs/20261008_101502_e5f6a7b8/retry" -H "$AUTH"
+```
+
+```json
+{
+  "session_id": "20261008_101502_e5f6a7b8",
+  "replaced_by": "20261008_103011_9a8b7c6d",
+  "result": {"device_id": "dev_01J9Z3K4M6", "status": "queued", "session_id": "20261008_103011_9a8b7c6d", "position": 1}
+}
+```
+
+- The replacement copies the goal, run options and target device of the
+  interrupted run, gets a new `session_id`, and goes to the end of that
+  device's queue. `result` uses the [fan-out statuses](#fan-out-statuses), so
+  a device that is now offline answers `offline_not_queued` and creates
+  nothing.
+- The link is stored on both runs: the interrupted run gets `replaced_by`,
+  the replacement gets `replaces`. Run detail, the run list and the board
+  show both fields.
+- Retry is idempotent. A second Retry of the same run returns the existing
+  `replaced_by` and creates nothing. A run that is not `interrupted` answers
+  [`request_invalid`](#request_invalid).
+
 ### `GET /api/board`
 
 | Parameter | Default | Notes |
@@ -168,7 +218,8 @@ curl -sS "$ARTEMIS/api/board?my_devices=false&my_runs=true&limit=3" -H "$AUTH"
 ```
 
 - `state`: `running`, `busy`, `idle`, `disconnected` or `unknown`. `busy` means
-  a run the caller cannot read; `unknown` means no heartbeat within
+  a run is executing that this lane does not show to the caller: a run the
+  caller cannot read, or one hidden by `my_runs=true`; `unknown` means no heartbeat within
   `ARTEMIS_DEVICE_TTL_S` and is never shown as Idle. The UI shows
   "Needs attention" when `attention` is not empty.
 - `attention[].reason` and its actions: `review_pending` (`accept`, `reject`),
@@ -314,7 +365,7 @@ Annotation:
   `exact` returns a media URL. It never snaps to a neighbouring frame.
   `expired` keeps the note text; the UI shows "Recording expired".
 - Body: plain text, 1 to 4000 characters, rendered as text (no HTML or
-  markdown). Longer bodies answer FastAPI's 422 validation error.
+  markdown). An empty or longer body answers [`request_invalid`](#request_invalid).
 - Rate limit: 30 notes (annotations plus comments) per caller per minute;
   beyond that the existing `rate_limited` 429.
 - Deep links open through the run route, so an unreadable run shows
@@ -395,6 +446,11 @@ New routes answer errors in the existing `{detail, code, fix}` envelope plus
 }
 ```
 
+Request validation uses the same envelope. On every new route, and for the
+new parameters of `GET /api/runs`, a malformed body, path or query value
+answers [`request_invalid`](#request_invalid). A new route never returns
+FastAPI's default validation body (`{"detail": [...]}`).
+
 The showcase UI has one Angular adapter that maps legacy `{error, detail}`
 bodies to `{code: error, detail, fix: null, docs_url: null}`. The UI keeps rows
 and drafts after any error.
@@ -459,6 +515,28 @@ payload with the same key conflicts". A `POST /api/queue` reused a
 `client_submission_id` with a different request. Fix: send a new
 `client_submission_id` for a new request.
 
+#### request_invalid
+
+`422`. Not in the CHE-1332 list: added so validation failures keep the
+envelope the "Errors" decision requires. The body, a path value or a query
+value breaks the documented rules: a missing or extra field, a wrong type, a
+toggle that is not `true` or `false`, a `limit` out of range, a note body that
+is empty or over 4000 characters, both or neither of `device_ids` and
+`target`, or a Retry of a run that is not `interrupted`. `detail` names the
+first failing field and its rule. Fix: correct that field and send again. A
+well-formed annotation anchor that does not point at this run's evidence is
+[`annotation_anchor_invalid`](#annotation_anchor_invalid), not this code.
+
+```json
+{
+  "detail": "body: must be 1 to 4000 characters.",
+  "code": "request_invalid",
+  "fix": "Shorten the note to 4000 characters or fewer, then send it again.",
+  "docs_url": "https://github.com/cheese-work/artemis/blob/main/docs/board-api.md#request_invalid"
+}
+```
+
 Reused unchanged: `invalid_scope` 400, `scope_all_requires_admin` 403,
 `not_run_owner` 403 (control actions), `device_not_yours` 403 (Merge, Keep
-separate or Split by a non-owner), `rate_limited` 429 (notes).
+separate or Split by a non-owner), `rate_limited` 429 (notes). On the new
+routes they also carry `docs_url`, pointing to this section.
