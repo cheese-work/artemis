@@ -157,6 +157,7 @@ HOST_ROUTES = [
     ("/api/agent/enroll", {"POST"}, "agent"),
     ("/api/agent/challenge", {"POST"}, "agent"),
     ("/api/agent/renew", {"POST"}, "agent"),
+    ("/api/agent/unenroll", {"POST"}, "agent"),
 ]
 
 

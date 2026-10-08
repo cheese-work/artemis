@@ -97,6 +97,7 @@ from artemis.resources import get_bundled_showcase_dist
 from artemis.runtime.lifecycle import InterruptReason
 from apps.admin_console.services import failure_ledger, run_retention
 from apps.admin_console.services.host_registry import host_agent_enabled, host_registry
+from apps.admin_console.services.host_tunnel import host_tunnels
 from apps.admin_console.core.access_control import (
     AdminAPIError,
     CloudflareAccessVerifier,
@@ -178,6 +179,7 @@ async def _lifespan(_app: "FastAPI"):
     try:
         yield
     finally:
+        await host_tunnels.close()
         await on_shutdown()
 
 
@@ -628,6 +630,10 @@ class ArtemisUvicornServer(uvicorn.Server):
 
 def run_ui_server(host: str, port: int, reload: bool = False) -> None:
     """Run the UI server with bounded, signal-aware graceful shutdown."""
+    from artemis.config.host_agent import host_agent_enabled
+    from apps.admin_console.services.bridge_session_service import MAX_ADB_PACKET_BYTES
+
+    websocket_options = {"ws_max_size": MAX_ADB_PACKET_BYTES} if host_agent_enabled() else {}
     configure_logging(streams=True)
     state.host = host
     state.port = port
@@ -644,6 +650,7 @@ def run_ui_server(host: str, port: int, reload: bool = False) -> None:
                 log_config=REDACTED_UVICORN_LOGGING,
                 proxy_headers=False,
                 timeout_graceful_shutdown=5,
+                **websocket_options,
             )
             return
 
@@ -654,6 +661,7 @@ def run_ui_server(host: str, port: int, reload: bool = False) -> None:
             port=port,
             proxy_headers=False,
             timeout_graceful_shutdown=5,
+            **websocket_options,
         )
         configure_logging()
         server = ArtemisUvicornServer(config)

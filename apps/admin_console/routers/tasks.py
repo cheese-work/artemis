@@ -20,6 +20,9 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from artemis.core.diagnostics import readiness_engine
 from artemis.runtime import DeviceExecutionLock, device_pool
+from artemis.config.host_agent import host_agent_enabled
+from artemis.runtime.host_endpoints import HostOffline, host_endpoints
+from apps.admin_console.services.host_registry import host_registry
 from apps.admin_console.core.access_control import AdminAPIError
 from apps.admin_console.core.device_ownership import (
     may_use_device,
@@ -124,6 +127,12 @@ async def get_task_catalog():
 @router.post("/api/run")
 async def run_task(request: RunRequest, actor: OwnerScope = Depends(actor_scope)):
     scope = scope_or_open(actor)
+    host_id = request.device_ref.host_id if request.device_ref else None
+    requested_serial = request.device_ref.serial if request.device_ref else request.device_serial
+    if host_id and not host_agent_enabled():
+        raise AdminAPIError(
+            404, "Computers are turned off.", "host_agent_disabled", "Use a browser phone."
+        )
     incoming_goals = []
     if request.goals:
         incoming_goals = request.goals
@@ -159,9 +168,10 @@ async def run_task(request: RunRequest, actor: OwnerScope = Depends(actor_scope)
 
     if request.bridge_session_id:
         await _bind_bridge_session(request)
+        requested_serial = request.device_serial
     # A phone the caller does not own is refused before any probe or enqueue.
-    if request.device_serial:
-        require_device(scope, request.device_serial)
+    if requested_serial and not host_id:
+        require_device(scope, requested_serial)
 
     # Idempotent SDK retries must never re-run device readiness checks. A task
     # can hold the device while its admission response is lost in transit; in
@@ -183,13 +193,23 @@ async def run_task(request: RunRequest, actor: OwnerScope = Depends(actor_scope)
             or requested_sid in state.active_connections
         )
         if existing_item or persisted_session or is_active:
-            # A retry echoes the run's goal and queue item back: owner or admin only.
             require_access(scope, requested_sid)
+            existing = dict(existing_item or persisted_session or {})
+            if existing.get("host_id") != host_id or (
+                host_id and existing.get("device_serial") != requested_serial
+            ):
+                raise AdminAPIError(
+                    409,
+                    "The run is bound to another device.",
+                    "device_ref_conflict",
+                    "Use a new session id.",
+                )
+            # A retry echoes the run's goal and queue item back: owner or admin only.
             task_payload = dict(existing_item or persisted_session or {})
             task_payload.setdefault("session_id", requested_sid)
             task_payload.setdefault("goal", incoming_goals[0])
             task_payload.setdefault("profile", request.profile or "flash")
-            task_payload.setdefault("device_serial", request.device_serial)
+            task_payload.setdefault("device_serial", requested_serial)
             task_payload.setdefault("status", "running" if is_active else "queued")
             return {
                 "status": task_payload["status"],
@@ -197,6 +217,25 @@ async def run_task(request: RunRequest, actor: OwnerScope = Depends(actor_scope)
                 "enqueued_count": 0,
                 "total_queued": len(state.queue_tasks),
             }
+
+    if host_id:
+        try:
+            host_endpoints.resolve(host_id)
+        except HostOffline as error:
+            raise AdminAPIError(
+                409, "The computer is offline.", "host_offline", "Reconnect the computer."
+            ) from error
+        _, devices = host_registry.list_hosts()
+        if not any(
+            device["computer_id"] == host_id and device["serial"] == requested_serial
+            for device in devices
+        ):
+            raise AdminAPIError(
+                409,
+                "The phone is not shared by this computer.",
+                "device_not_shared",
+                "Share the phone first.",
+            )
 
     # Accepted retries returned above; anything past this point is new work.
     # Refuse before spending device probes on it. enqueue_tasks re-checks after
@@ -212,9 +251,9 @@ async def run_task(request: RunRequest, actor: OwnerScope = Depends(actor_scope)
     # never be selected. Only a successful, non-empty enumeration may reject:
     # an indeterminate one (adb blip, startup) lets the submission queue and
     # fail downstream with a clear error instead.
-    if request.device_serial:
+    if requested_serial and not host_id:
         try:
-            rejection = await device_pool.validate_explicit_serial_async(request.device_serial)
+            rejection = await device_pool.validate_explicit_serial_async(requested_serial)
         except Exception:
             rejection = None
         if rejection:
@@ -233,12 +272,16 @@ async def run_task(request: RunRequest, actor: OwnerScope = Depends(actor_scope)
     # With no explicit serial the probe itself resolves a live target (it
     # prefers the diagnostics target preference, then any unlocked ready
     # device); the verified serial is bound below.
-    target_serial = request.device_serial or own_default_serial(scope)
+    target_serial = requested_serial or own_default_serial(scope)
     # A scoped caller's auto-selection only ever considers their own and shared devices.
     scoped = scope.enforced and not scope.admin
-    device_probe = await readiness_engine.run_device_submission_probe(
-        target_serial=target_serial,
-        may_use=(lambda serial: may_use_device(scope, serial)) if scoped else None,
+    device_probe = (
+        None
+        if host_id
+        else await readiness_engine.run_device_submission_probe(
+            target_serial=target_serial,
+            may_use=(lambda serial: may_use_device(scope, serial)) if scoped else None,
+        )
     )
     if device_probe and device_probe.summary in {"Device Locked", "Lock State Unknown"}:
         locked_serial = (
@@ -260,7 +303,7 @@ async def run_task(request: RunRequest, actor: OwnerScope = Depends(actor_scope)
         # Only auto-selected targets may be re-bound to the probed device. An
         # explicitly requested serial is never silently replaced -- if it is
         # invalid, enqueue_tasks rejects the submission with a clear error.
-        if verified_serial and not request.device_serial:
+        if verified_serial and not requested_serial:
             require_device(scope, verified_serial)
             target_serial = verified_serial
 
@@ -286,6 +329,7 @@ async def run_task(request: RunRequest, actor: OwnerScope = Depends(actor_scope)
             requested_by=scope.email,
             goal_images=goal_images,
             bridge_session_id=request.bridge_session_id,
+            **({"host_id": host_id} if host_id else {}),
         )
     except ServerDraining as exc:
         raise _draining_error(exc) from exc
