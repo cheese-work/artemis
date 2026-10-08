@@ -4,8 +4,7 @@ The browser interface for SmartQA, built with **Angular 22** and **SCSS**. The r
 
 ## 🎨 Visual Design Highlights
 
-* **Aurora Glow Dynamics**: Ambient background lighting with smooth gradients.
-* **Glassmorphism Aesthetic**: Translucent frosted-glass panels with subtle borders.
+* **Visual rules**: follow [DESIGN.md](../../DESIGN.md). Surfaces are opaque; do not add glass, blur, translucency or glow.
 * **Real-time Dual-Pane Workspace**:
   - **Left Pane (`app-agent-stream`)**: Live streaming of Agent thought steps, plan breakdowns, tool actions, and status.
   - **Right Pane (`app-chat-interface`)**: Natural language chat input sidebar with interactive feedback and status pills.
