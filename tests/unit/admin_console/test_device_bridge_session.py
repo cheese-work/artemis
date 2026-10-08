@@ -274,19 +274,32 @@ def test_no_listener_survives_after_multiple_sessions_open_and_close(loopback_cl
         _assert_listener_closed(port)
 
 
+@pytest.mark.parametrize("attachment_delayed", [False, True])
 def test_expired_session_times_out_and_disconnects_adb(
-    loopback_client, monkeypatch, _mock_adb, caplog
+    loopback_client, monkeypatch, _mock_adb, caplog, attachment_delayed
 ):
     monkeypatch.setenv("ARTEMIS_BRIDGE_SESSION_TTL_SECONDS", "0.05")
+    if attachment_delayed:
+        connect = bridge_session_service.connect
+
+        async def wait_before_notifying(session):
+            await connect(session)
+            await asyncio.Future()
+
+        monkeypatch.setattr(bridge_session_service, "connect", wait_before_notifying)
 
     with loopback_client.websocket_connect(PATH, headers=_HOST_HEADER) as ws:
         payload = ws.receive_json()
         session_id = payload["session_id"]
         port = payload["listener"]["port"]
-        ws.receive_json()
 
         with pytest.raises(WebSocketDisconnect) as exc_info:
-            ws.receive_text()
+            while True:
+                ws.receive_text()
+        deadline = time.monotonic() + 2.0
+        while len(_mock_adb) < 2 and time.monotonic() < deadline:
+            time.sleep(0.005)
+        assert len(_mock_adb) >= 2, "ADB disconnect did not complete within 2 seconds"
     assert exc_info.value.code == 4008
 
     assert _mock_adb[0][0] == "connect"

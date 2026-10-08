@@ -2,9 +2,9 @@
 //
 //   npx ng build --configuration development && npm run test:layout      (CHROME_BIN overrides the browser; SHOTS=dir saves screenshots)
 //
-// 1. Clearance matrix: for every page x viewport x phone-badge state, no visible text may sit under the
+// 1. Clearance matrix: for every page x viewport x phone state, no visible text may sit under the
 //    floating nav, nothing may overflow the viewport sideways, and the nav must stay inside the viewport.
-// 2. Accessibility: the connected-phone status stays in the accessibility tree at every width.
+// 2. Accessibility: the connected-phone status stays in the accessibility tree at every width; the chip is >= 44px.
 // 3. Scenarios: Task Queue dropdown, right-hand chat panel, floating video player, across mock states
 //    (idle / running / paused-with-error / sessions API error / video error) and route changes.
 import { spawn } from 'node:child_process';
@@ -58,8 +58,10 @@ const open = async (route, width, height = 800) => {
   }
   await sleep(500);
 };
-const setPhone = (connected) => evaluate(`(() => { const el = document.querySelector('app-nav-switcher');
-  ng.getComponent(el).usbRelay.state.set(${connected ? "{ status: 'connected', serial: '127.0.0.1:35117', error: null }" : "{ status: 'idle', serial: null, error: null }"});
+// The phone lives in the Workspace chip (the nav carries no phone control), so this only has an effect on /workspace.
+const setPhone = (connected) => evaluate(`(() => { const el = document.querySelector('app-workspace-device-chip');
+  if (!el) return;
+  ng.getComponent(el).phone.relay.state.set(${connected ? "{ status: 'connected', serial: '127.0.0.1:35117', sessionId: 'audit', error: null }" : "{ status: 'idle', serial: null, sessionId: null, error: null }"});
   ng.applyChanges(el); })()`).then(() => sleep(200));
 
 // Everything a user could read or click that is not in the nav but sits under it.
@@ -96,7 +98,7 @@ async function clearanceMatrix() {
   console.log(`clearance matrix: ${failures.length ? 'failures above' : 'all clear'}`);
 }
 
-// The connected-phone status must be in the accessibility tree at every width, including where its text is visually hidden.
+// The connected-phone status must be in the accessibility tree at every width, and the chip must be a 44px target.
 async function phoneStatusA11y() {
   await send('Accessibility.enable');
   for (const width of [1770, 1024, 761, 760, 560, 375, 320]) {
@@ -106,13 +108,14 @@ async function phoneStatusA11y() {
     const { nodes } = await send('Accessibility.getFullAXTree');
     // role=status takes no name from content, so read the live region's text nodes.
     const byId = new Map(nodes.map((n) => [n.nodeId, n]));
-    const region = nodes.find((n) => !n.ignored && n.role?.value === 'status' && (n.childIds ?? []).some((c) => /Phone connected/.test(byId.get(c)?.name?.value ?? '')));
-    if (!region) fail(where, 'no role=status live region containing "Phone connected…" in the accessibility tree');
+    const region = nodes.find((n) => !n.ignored && n.role?.value === 'status' && (n.childIds ?? []).some((c) => /5117/.test(byId.get(c)?.name?.value ?? '')));
+    if (!region) fail(where, 'no role=status live region naming the connected phone in the accessibility tree');
     else console.log(`  ok   ${where}: role=status text="${region.childIds.map((c) => byId.get(c)?.name?.value).filter(Boolean).join('')}"`);
-    const hidden = await evaluate(`(() => { const l = document.querySelector('.usb-relay-badge .badge-label'); return getComputedStyle(l).display === 'none' || getComputedStyle(l).visibility === 'hidden'; })()`);
-    if (hidden) fail(where, 'status label is display:none / visibility:hidden');
+    const size = await evaluate(`(() => { const r = document.querySelector('app-workspace-device-chip .chip')?.getBoundingClientRect(); return r ? [r.width, r.height] : null; })()`);
+    if (!size) fail(where, 'the phone chip is missing');
+    else if (size[0] < 44 || size[1] < 44) fail(where, `phone chip is ${size[0]}x${size[1]}, under 44x44`);
     const nav = await evaluate(UNDER_NAV);
-    if (nav.navOffscreen || nav.overflowX > 0) fail(where, 'status label brought back nav/page overflow');
+    if (nav.navOffscreen || nav.overflowX > 0) fail(where, 'phone chip brought back nav/page overflow');
   }
 }
 
@@ -308,7 +311,7 @@ async function scenarios() {
     else {
       const hdrOverflow = await evaluate(`(() => { const h = document.querySelector('.floating-video-wrapper .window-header'); return [...h.querySelectorAll('button')].filter(b => b.getBoundingClientRect().right > h.getBoundingClientRect().right + 1).length; })()`);
       if (hdrOverflow) fail(where, `${hdrOverflow} player header buttons overflow the header`);
-      if (state !== 'idle' && !(await evaluate(`ng.getComponent(document.querySelector('app-nav-switcher')).usbRelay.state().status === 'connected'`))) fail(where, 'phone-connected state was lost before the player check');
+      if (state !== 'idle' && !(await evaluate(`ng.getComponent(document.querySelector('app-workspace-device-chip')).phone.relay.state().status === 'connected'`))) fail(where, 'phone-connected state was lost before the player check');
       await playerClear(where, 'on open');
       await shot(`player-${state}-${width}`);
       for (const route of ['/runs', '/workspace']) {

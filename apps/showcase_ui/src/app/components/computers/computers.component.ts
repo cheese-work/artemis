@@ -16,6 +16,7 @@ import {
   revokeWarning
 } from '../../utils/computer-strings';
 import { DeviceChipComponent } from '../device-chip/device-chip.component';
+import { appUrl } from '../../utils/app-url.util';
 
 type DialogState = 'closed' | 'creating' | 'waiting' | 'connected' | 'expired' | 'failed';
 
@@ -178,7 +179,8 @@ export class ComputersComponent implements OnInit {
   public async copyInstallMessage(): Promise<void> {
     const code = this.code();
     if (!code) return;
-    await navigator.clipboard?.writeText(installMessage(window.location.origin, code.code, code.expires_at));
+    const origin = new URL(appUrl('/'), document.baseURI).href.replace(/\/$/, '');
+    await navigator.clipboard?.writeText(installMessage(origin, code.code, code.expires_at));
     this.copied.set(true);
   }
 

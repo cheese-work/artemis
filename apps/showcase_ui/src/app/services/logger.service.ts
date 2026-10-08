@@ -1,4 +1,5 @@
-import { Injectable } from '@angular/core';
+import { Injectable, inject } from '@angular/core';
+import { BrowserStorageService } from './browser-storage.service';
 
 type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 const LEVELS: LogLevel[] = ['debug', 'info', 'warn', 'error'];
@@ -32,6 +33,7 @@ export function redact(value: unknown): unknown {
 
 @Injectable({ providedIn: 'root' })
 export class LoggerService {
+  private readonly browserStorage = inject(BrowserStorageService);
   debug(message: string, ...details: unknown[]): void { this.log('debug', message, details); }
   info(message: string, ...details: unknown[]): void { this.log('info', message, details); }
   warn(message: string, ...details: unknown[]): void { this.log('warn', message, details); }
@@ -40,7 +42,7 @@ export class LoggerService {
   private log(level: LogLevel, message: string, details: unknown[]): void {
     let configured = 'warn';
     try {
-      configured = localStorage.getItem('artemis.log') || configured;
+      configured = this.browserStorage.getItem('artemis.log') || configured;
     } catch (error) {
       console.warn('Logger settings are unavailable:', redact(error));
     }

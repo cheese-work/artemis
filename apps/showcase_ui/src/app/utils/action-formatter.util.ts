@@ -15,6 +15,7 @@
  */
 
 import { ActionParam, StepReplayFrame } from '../core/models/stream.model';
+import { mediaUrl } from './app-url.util';
 import { extractNumbersFromCoordinateValue, isPureDirectionString, parseSequenceCoordinates, unwrapTraceAction } from './image-overlay.util';
 import { cleanErrorMessage, joinTargetDescriptions } from './tool-formatter.util';
 
@@ -567,19 +568,19 @@ export function formatImageUrl(candidate: any): string | null {
   const trimmed = candidate.trim();
   if (!trimmed || trimmed === 'None' || trimmed === 'null' || trimmed === 'undefined') return null;
 
-  if (trimmed.startsWith('data:') || trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
-    return trimmed;
+  if (trimmed.startsWith('data:') || trimmed.startsWith('blob:') || /^https?:\/\//.test(trimmed) || trimmed.startsWith('//')) {
+    return mediaUrl(trimmed);
   }
-  if (trimmed.startsWith('/local_file') || trimmed.startsWith('/images/') || trimmed.startsWith('/api/images/')) {
-    return trimmed;
+  if (trimmed.startsWith('/local_file') || trimmed.startsWith('/images/') || trimmed.startsWith('/api/images/') || /^\/preview\/pr\/[1-9]\d*\/(?:local_file|images\/|api\/images\/)/.test(trimmed)) {
+    return mediaUrl(trimmed);
   }
   if (trimmed.startsWith('file://')) {
-    return `/local_file?path=${encodeURIComponent(trimmed)}`;
+    return mediaUrl(`/local_file?path=${encodeURIComponent(trimmed)}`);
   }
   if (trimmed.startsWith('/')) {
-    return `/local_file?path=${encodeURIComponent('file://' + trimmed)}`;
+    return mediaUrl(`/local_file?path=${encodeURIComponent('file://' + trimmed)}`);
   }
-  return `/images/${trimmed}`;
+  return mediaUrl(`/images/${trimmed}`);
 }
 
 /**

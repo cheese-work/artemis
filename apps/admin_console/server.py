@@ -47,6 +47,16 @@ for _p in (str(_workspace_root), str(_apps_dir), str(_admin_console_dir), str(_c
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
+# Select the profile before any import below can run an import-time side effect.
+from apps.admin_console.core.preview_profile import (
+    prepare_preview_environment,
+    preview_profile_selected,
+)
+from apps.admin_console.core.preview_routes import PreviewRouteGuard, require_classified
+
+PREVIEW_PROFILE = preview_profile_selected()
+PREVIEW_ROOT = prepare_preview_environment() if PREVIEW_PROFILE else None
+
 from fastapi import Depends, FastAPI
 from fastapi.responses import FileResponse, HTMLResponse
 import uvicorn
@@ -57,6 +67,9 @@ from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 configure_logging()
 
 REDACTED_UVICORN_LOGGING = deepcopy(uvicorn.config.LOGGING_CONFIG)
+REDACTED_UVICORN_LOGGING["formatters"]["access"]["fmt"] = (
+    '%(levelprefix)s session_id=%(session_id)s %(client_addr)s - "%(request_line)s" %(status_code)s'
+)
 REDACTED_UVICORN_LOGGING["filters"] = {"redaction": {"()": Redactor}}
 for handler_config in REDACTED_UVICORN_LOGGING["handlers"].values():
     handler_config["filters"] = ["redaction"]
@@ -82,7 +95,7 @@ from artemis.config import (
 )
 from artemis.resources import get_bundled_showcase_dist
 from artemis.runtime.lifecycle import InterruptReason
-from apps.admin_console.services import run_retention
+from apps.admin_console.services import failure_ledger, run_retention
 from apps.admin_console.services.host_registry import host_agent_enabled, host_registry
 from apps.admin_console.core.access_control import (
     AdminAPIError,
@@ -90,7 +103,10 @@ from apps.admin_console.core.access_control import (
     admin_api_error_handler,
     config_from_environment,
     public_tier,
+    require_qa,
 )
+from apps.admin_console.core.preview_access import preview_access_verifier
+from apps.admin_console.core.preview_fixtures import initialize_preview_fixtures
 from apps.admin_console.services.run_images import RequestSizeLimitMiddleware
 
 try:
@@ -104,8 +120,10 @@ try:
         agent,
         device_bridge,
         drain,
+        failures,
         hosts,
         media,
+        preview_synthetic,
         replay,
         run_admin,
         run_bundle,
@@ -129,8 +147,10 @@ except ImportError:
         agent,
         device_bridge,
         drain,
+        failures,
         hosts,
         media,
+        preview_synthetic,
         replay,
         run_admin,
         run_bundle,
@@ -147,7 +167,8 @@ except ImportError:
     from apps.admin_console.services.task_queue_service import task_queue_service
 
 # Initialize language server synchronization address
-init_ls_address()
+if not PREVIEW_PROFILE:
+    init_ls_address()
 
 
 @asynccontextmanager
@@ -164,11 +185,15 @@ async def _lifespan(_app: "FastAPI"):
 app = FastAPI(
     title="Artemis Admin & Trace Console",
     lifespan=_lifespan,
-    dependencies=[Depends(public_tier)],
+    dependencies=[Depends(public_tier), *([Depends(require_qa)] if PREVIEW_PROFILE else [])],
 )
 app.add_exception_handler(AdminAPIError, admin_api_error_handler)
 app.state.access_config = config_from_environment()
-app.state.access_verifier = CloudflareAccessVerifier()
+app.state.access_verifier = (
+    preview_access_verifier(app.state.access_config)
+    if PREVIEW_PROFILE
+    else CloudflareAccessVerifier()
+)
 logging.getLogger(__name__).info(
     "Admin access configured: mode=%s issuer=%s audience=%s admin_count=%d",
     app.state.access_config.auth_mode,
@@ -177,12 +202,20 @@ logging.getLogger(__name__).info(
     len(app.state.access_config.admin_emails),
 )
 logger = logging.getLogger(__name__)
-LIFECYCLE_TOKEN = os.environ.get("ARTEMIS_LIFECYCLE_TOKEN") or secrets.token_urlsafe(32)
+# A preview never adopts the live service's token: its own is fresh and container-local.
+LIFECYCLE_TOKEN = (
+    secrets.token_urlsafe(32)
+    if PREVIEW_PROFILE
+    else os.environ.get("ARTEMIS_LIFECYCLE_TOKEN") or secrets.token_urlsafe(32)
+)
 app.state.lifecycle_token = LIFECYCLE_TOKEN
 
 # The console UI is served same-origin from this process, so no CORS grants
 # exist at all; the boundary middleware rejects cross-origin browser traffic
 # and unrecognized Host headers (DNS rebinding) instead.
+if PREVIEW_PROFILE:
+    # Innermost, so the Host/Origin boundary still screens requests before this answers.
+    app.add_middleware(PreviewRouteGuard, route_source=app)
 app.add_middleware(RequestSizeLimitMiddleware)
 app.add_middleware(SameOriginBoundaryMiddleware)
 
@@ -207,6 +240,9 @@ async def on_startup():
     """Startup lifecycle hooks."""
     state.is_shutting_down = False
     state.shutdown_event.clear()
+    if PREVIEW_PROFILE:
+        initialize_preview_fixtures(PREVIEW_ROOT, app.state.access_config)
+        return
     write_server_info(
         port=getattr(state, "port", 8000),
         host=getattr(state, "host", "127.0.0.1"),
@@ -253,12 +289,18 @@ async def on_startup():
     # Finishes deferred deletions, and enforces retention only once an admin enabled it.
     state.retention_task = asyncio.create_task(run_retention.sweep_forever())
     state.retention_task.add_done_callback(run_retention.log_task_failure)
+    state.failure_task = asyncio.create_task(failure_ledger.sweep_forever())
+    state.failure_task.add_done_callback(run_retention.log_task_failure)
 
 
 async def on_shutdown():
     """Stop task and IPC children before the UI server exits."""
     state.is_shutting_down = True
     state.shutdown_event.set()
+    if PREVIEW_PROFILE:
+        state.queue_items.clear()
+        state.ipc_subscribers.clear()
+        return
     task_queue_service._broadcast_event("server_shutdown", {"status": "stopping"})
     owned_items = {
         str(item["session_id"]): item
@@ -281,6 +323,11 @@ async def on_shutdown():
         retention.cancel()
         await asyncio.gather(retention, return_exceptions=True)
     state.retention_task = None
+    failure_sweep = state.failure_task
+    if failure_sweep is not None and not failure_sweep.done():
+        failure_sweep.cancel()
+        await asyncio.gather(failure_sweep, return_exceptions=True)
+    state.failure_task = None
 
     # Cancel in-flight run coroutines and wait for their finalizers (DB status,
     # session_ended broadcast, trace sync, recording recovery) to run.
@@ -327,12 +374,16 @@ async def on_shutdown():
 
 
 # Mount modular routers
+if PREVIEW_PROFILE:
+    # Ahead of the real routers: first match wins, so these answer their real twins.
+    app.include_router(preview_synthetic.router)
 app.include_router(stream.router)
 app.include_router(media.router)
 app.include_router(sessions.router)
 app.include_router(runs.router)
 app.include_router(run_bundle.router)
 app.include_router(run_admin.router)
+app.include_router(failures.router)
 app.include_router(steps.router)
 app.include_router(tasks.router)
 app.include_router(replay.router)
@@ -507,6 +558,11 @@ async def serve_showcase_spa(full_path: str):
     return HTMLResponse(fallback_html)
 
 
+if PREVIEW_PROFILE:
+    # Refuse to boot a preview with a route nobody has classified.
+    require_classified(app)
+
+
 # ------------------------------------------------------------------------------
 # Backward compatibility exports
 # ------------------------------------------------------------------------------
@@ -575,7 +631,8 @@ def run_ui_server(host: str, port: int, reload: bool = False) -> None:
     configure_logging(streams=True)
     state.host = host
     state.port = port
-    write_server_info(port=port, host=host, lifecycle_token=LIFECYCLE_TOKEN)
+    if not PREVIEW_PROFILE:
+        write_server_info(port=port, host=host, lifecycle_token=LIFECYCLE_TOKEN)
 
     try:
         if reload:
@@ -604,7 +661,8 @@ def run_ui_server(host: str, port: int, reload: bool = False) -> None:
         server.run()
     finally:
         app.state.uvicorn_server = None
-        clear_server_info(port=port, lifecycle_token=LIFECYCLE_TOKEN)
+        if not PREVIEW_PROFILE:
+            clear_server_info(port=port, lifecycle_token=LIFECYCLE_TOKEN)
 
 
 def main(argv: list[str] | None = None) -> None:
