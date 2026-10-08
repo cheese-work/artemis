@@ -34,19 +34,13 @@ import {
   RUN_STRINGS,
   expiresText,
   interruptReason,
-  outcomeView,
   truncate
 } from '../../utils/run-library-strings';
+import { serialShape, unlistedRunDeviceTitle } from '../../utils/device-label.util';
+import { runStatusView } from '../../utils/run-status.util';
 import { classifySearch } from '../../utils/run-search.util';
 import { OwnerLabelComponent } from '../owner-label/owner-label.component';
 import { ScopeSwitchComponent } from '../scope-switch/scope-switch.component';
-
-const STATUS_LABELS: Record<string, string> = {
-  completed: 'Passed',
-  failed: 'Failed',
-  interrupted: 'Interrupted',
-  cancelled: 'Cancelled'
-};
 
 @Component({
   selector: 'app-run-library',
@@ -66,8 +60,8 @@ export class RunLibraryComponent {
   private readonly destroyRef = inject(DestroyRef);
 
   public readonly strings = RUN_STRINGS;
-  public readonly statusOptions = STATUS_FILTERS.map((value) => ({ value, label: STATUS_LABELS[value] }));
-  public readonly outcome = outcomeView;
+  public readonly statusOptions = STATUS_FILTERS.map((value) => ({ value, label: runStatusView(value).label }));
+  public readonly outcome = runStatusView;
   public readonly interruptReason = interruptReason;
 
   /** What the URL says; the list always shows exactly this. */
@@ -267,7 +261,9 @@ export class RunLibraryComponent {
   }
 
   public device(run: RunSummary): string {
-    const phone = run.device_ref?.serial ?? 'Unknown phone';
+    // The address is detail (the row's tooltip); a browser-relayed phone is named by the computer part.
+    const serial = run.device_ref?.serial;
+    const phone = !serial ? 'Unknown phone' : serialShape(serial) === 'loopback' ? 'Phone' : unlistedRunDeviceTitle(serial, false);
     const computer =
       run.host_id === null
         ? 'A browser'
