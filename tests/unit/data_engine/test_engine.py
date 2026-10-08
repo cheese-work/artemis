@@ -20,6 +20,19 @@ from artemis.context import ArtemisContext
 from artemis.data_engine.engine import DataEngine
 
 
+def _engine_socket(**create_connection_kwargs):
+    """Stub ``socket`` as the engine module sees it, leaving the real module untouched.
+
+    ``patch("artemis.data_engine.engine.socket.create_connection")`` replaces the attribute on
+    the process-wide ``socket`` module, so any other thread that opens a connection while the
+    test runs (for example a leaked awake heartbeat probing adb) is counted as an IPC connect.
+    """
+    return patch(
+        "artemis.data_engine.engine.socket",
+        create_connection=MagicMock(**create_connection_kwargs),
+    )
+
+
 def test_ipc_send_reconnects_and_retries_current_event(tmp_path):
     """A stale Windows TCP socket must not make the triggering SSE event disappear."""
     mock_ctx = MagicMock(spec=ArtemisContext)
@@ -34,15 +47,12 @@ def test_ipc_send_reconnects_and_retries_current_event(tmp_path):
 
     with (
         patch("artemis.data_engine.engine.read_ipc_port", return_value=49152),
-        patch(
-            "artemis.data_engine.engine.socket.create_connection",
-            side_effect=[stale_socket, replacement_socket],
-        ) as create_connection,
+        _engine_socket(side_effect=[stale_socket, replacement_socket]) as engine_socket,
     ):
         engine = DataEngine(mock_ctx)
         engine._publish("llm_stream", {"session_id": "s1", "chunk": "hello"})
 
-    assert create_connection.call_count == 2
+    assert engine_socket.create_connection.call_count == 2
     stale_socket.close.assert_called_once()
     replacement_socket.sendall.assert_called_once()
     frame = replacement_socket.sendall.call_args.args[0]
@@ -65,16 +75,13 @@ def test_ipc_connect_falls_back_to_refreshed_port_file(tmp_path):
     with (
         patch("artemis.data_engine.engine.read_ipc_port", return_value=49555),
         patch("artemis.data_engine.engine.get_ipc_port_file", return_value=port_file),
-        patch(
-            "artemis.data_engine.engine.socket.create_connection",
-            side_effect=[OSError("stale port"), live_socket],
-        ) as create_connection,
+        _engine_socket(side_effect=[OSError("stale port"), live_socket]) as engine_socket,
     ):
         engine = DataEngine(mock_ctx)
 
     assert engine.ipc_socket is live_socket
-    assert create_connection.call_args_list[0].args[0] == ("127.0.0.1", 49555)
-    assert create_connection.call_args_list[1].args[0] == ("127.0.0.1", 51629)
+    assert engine_socket.create_connection.call_args_list[0].args[0] == ("127.0.0.1", 49555)
+    assert engine_socket.create_connection.call_args_list[1].args[0] == ("127.0.0.1", 51629)
 
 
 def test_ipc_does_not_reconnect_after_engine_shutdown(tmp_path):
@@ -88,16 +95,13 @@ def test_ipc_does_not_reconnect_after_engine_shutdown(tmp_path):
     with (
         patch("artemis.data_engine.engine.read_ipc_port", return_value=49152),
         patch("artemis.data_engine.engine.get_ipc_port_file", return_value=tmp_path / "none"),
-        patch(
-            "artemis.data_engine.engine.socket.create_connection",
-            return_value=connected_socket,
-        ) as create_connection,
+        _engine_socket(return_value=connected_socket) as engine_socket,
     ):
         engine = DataEngine(mock_ctx)
         asyncio.run(engine.shutdown())
         engine._publish("llm_stream", {"chunk": "after shutdown"})
 
-    assert create_connection.call_count == 1
+    assert engine_socket.create_connection.call_count == 1
     connected_socket.close.assert_called_once()
 
 
@@ -112,16 +116,13 @@ def test_ipc_connection_failure_is_backed_off(tmp_path):
     with (
         patch("artemis.data_engine.engine.read_ipc_port", return_value=49152),
         patch("artemis.data_engine.engine.get_ipc_port_file", return_value=tmp_path / "none"),
-        patch(
-            "artemis.data_engine.engine.socket.create_connection",
-            side_effect=TimeoutError("stale port"),
-        ) as create_connection,
+        _engine_socket(side_effect=TimeoutError("stale port")) as engine_socket,
     ):
         engine = DataEngine(mock_ctx)
         for index in range(20):
             engine._publish("llm_stream", {"chunk": str(index)})
 
-    assert create_connection.call_count == 1
+    assert engine_socket.create_connection.call_count == 1
 
 
 def test_get_or_create_image_updates_missing_data(tmp_path):
