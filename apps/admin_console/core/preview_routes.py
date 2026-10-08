@@ -138,6 +138,9 @@ DISABLED = frozenset(
         "POST /api/system/restart",
         "POST /api/system/shutdown",
         "GET /api/system/drain",
+        "GET /api/system/failures",
+        "POST /api/system/failures/collect",
+        "POST /api/system/failures/digest",
         "POST /api/system/drain",
         "DELETE /api/system/drain",
         # Host agents, enrollment and the device bridge.
