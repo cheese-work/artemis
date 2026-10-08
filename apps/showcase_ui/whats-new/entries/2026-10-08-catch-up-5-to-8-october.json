@@ -2,6 +2,6 @@
   "id": "2026-10-08-catch-up-5-to-8-october",
   "date": "2026-10-08",
   "title": "What changed from 5 to 8 October",
-  "body": "Runs is now one list with My runs and Everyone's runs, and a live run looks the same as a past one. Attach or paste pictures with your message; the message box stays open. Connect, switch and recover phones from Workspace, find Setup in your user menu, and read long agent reports as a short summary with the full report one click away.",
+  "body": "Runs is one list, My runs and Everyone's runs, and live runs look like past ones. Attach or paste pictures; the message box stays open. Connect and switch phones in Workspace, find Setup in your user menu, and read long reports as a summary first.",
   "issues": ["CHE-1276", "CHE-1275", "CHE-1152", "CHE-1242", "CHE-1262", "CHE-1329", "CHE-1049", "CHE-1277", "CHE-1351", "CHE-1261", "CHE-1189"]
 }
