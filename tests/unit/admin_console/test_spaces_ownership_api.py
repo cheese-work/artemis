@@ -229,3 +229,77 @@ def test_no_router_module_references_the_system_principal():
     ]
 
     assert offenders == []
+
+
+# -- readiness is checked before any unscoped return ----------------------------------
+
+
+def _catalog_down(monkeypatch):
+    from artemis.data_engine import run_catalog
+
+    monkeypatch.setattr(run_catalog, "catalog_ready", lambda _conn: False)
+
+
+def test_the_system_principal_keeps_its_authority_when_the_catalog_is_ready(spaces):
+    from apps.admin_console.core.ownership import (
+        SYSTEM_PRINCIPAL,
+        present_session_data,
+        require_access_all,
+    )
+
+    run = _run(spaces, "qa@example.com")
+
+    assert present_session_data(SYSTEM_PRINCIPAL, run, {"k": "v"}) == {"k": "v"}
+    require_access_all(SYSTEM_PRINCIPAL, {run})  # does not raise
+
+
+def test_the_system_principal_never_returns_raw_data_while_the_catalog_is_unready(
+    spaces, monkeypatch
+):
+    from apps.admin_console.core.access_control import AdminAPIError
+    from apps.admin_console.core.ownership import (
+        SYSTEM_PRINCIPAL,
+        present_session_data,
+        require_access_all,
+    )
+
+    run = _run(spaces, "qa@example.com")
+    _catalog_down(monkeypatch)
+
+    with pytest.raises(AdminAPIError) as shown:
+        present_session_data(SYSTEM_PRINCIPAL, run, {"k": "v"})
+    with pytest.raises(AdminAPIError) as acted:
+        require_access_all(SYSTEM_PRINCIPAL, {run})
+
+    for refused in (shown, acted):
+        assert refused.value.status_code == 503
+        assert refused.value.retry_after
+
+
+@pytest.mark.asyncio
+async def test_a_contested_principal_gets_503_not_an_empty_list_while_the_catalog_is_unready(
+    spaces, monkeypatch
+):
+    _run(spaces, "qa@example.com")
+    await _call("GET", A, "/api/runs")
+    await _call("GET", B, "/api/runs")  # B contests the address: A and B own nothing now
+
+    ready = await _call("GET", B, "/api/runs")
+    assert ready.status_code == 200
+    assert ready.json()["runs"] == []
+
+    _catalog_down(monkeypatch)
+    for who in (A, B):
+        down = await _call("GET", who, "/api/runs")
+        assert down.status_code == 503, down.text
+        assert down.headers["retry-after"]
+        assert down.json()["retryable"] is True
+
+
+@pytest.mark.asyncio
+async def test_an_anonymous_empty_owner_list_also_waits_for_the_catalog(spaces, monkeypatch):
+    _catalog_down(monkeypatch)
+
+    down = await _call("GET", None, "/api/runs")
+
+    assert down.status_code in (401, 403, 503)  # the access tier may refuse first

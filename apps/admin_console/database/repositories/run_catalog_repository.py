@@ -263,6 +263,11 @@ class RunCatalogRepository:
             self._attach_recordings(conn, runs)
             return RunLookup(run=runs[0])
 
+    def require_ready(self) -> None:
+        """Raise ``CatalogNotReady`` unless the catalog tables exist."""
+        with db_session(self.db_path) as conn:
+            self._require_ready(conn)
+
     def owners(self, session_ids: list[str]) -> dict[str, str | None]:
         """``requested_by`` per run id; ids without a run record are left out."""
         found: dict[str, str | None] = {}

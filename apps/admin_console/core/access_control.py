@@ -9,7 +9,7 @@ import logging
 import os
 import re
 import time
-from typing import Any
+from typing import Any, cast
 
 import httpx
 import jwt
@@ -18,7 +18,8 @@ from fastapi.responses import JSONResponse
 from jwt import InvalidTokenError
 from jwt.exceptions import InvalidKeyError, PyJWTError
 from starlette.requests import HTTPConnection
-from starlette.status import WS_1008_POLICY_VIOLATION
+from starlette.websockets import WebSocket
+from starlette.status import WS_1008_POLICY_VIOLATION, WS_1013_TRY_AGAIN_LATER
 
 from apps.admin_console.database.repositories.principal_repository import (
     PrincipalStoreNotReady,
@@ -78,13 +79,32 @@ class AdminAPIError(Exception):
         self.retry_after = retry_after
 
 
-def admin_api_error_handler(_request: Request, exc: AdminAPIError) -> JSONResponse:
+def _error_response(exc: AdminAPIError) -> JSONResponse:
     content = {"detail": exc.detail, "code": exc.code, "fix": exc.fix}
     headers = {}
     if exc.retry_after is not None:
         content["retryable"] = True
         headers["Retry-After"] = str(exc.retry_after)
     return JSONResponse(status_code=exc.status_code, content=content, headers=headers)
+
+
+async def admin_api_error_handler(conn: HTTPConnection, exc: AdminAPIError) -> JSONResponse | None:
+    """An HTTP error response; a WebSocket handshake refusal for a WebSocket scope.
+
+    A retryable error is a 503 denial response when the server supports it, else
+    close code 1013 (try again later). Anything else is close code 1008 (policy).
+    """
+    response = _error_response(exc)
+    if conn.scope["type"] != "websocket":
+        return response
+    websocket = cast(WebSocket, conn)
+    if exc.retry_after is None:
+        await websocket.close(code=WS_1008_POLICY_VIOLATION, reason=exc.code)
+    elif "websocket.http.response" in conn.scope.get("extensions", {}):
+        await websocket.send_denial_response(response)
+    else:
+        await websocket.close(code=WS_1013_TRY_AGAIN_LATER, reason=exc.code)
+    return None
 
 
 def _csv(name: str) -> frozenset[str]:
@@ -313,12 +333,7 @@ async def public_tier(request: HTTPConnection) -> AccessIdentity:
     if verifier is None:
         verifier = CloudflareAccessVerifier()
         request.app.state.access_verifier = verifier
-    try:
-        identity = await authenticate_request(request, config, verifier)
-    except AdminAPIError as exc:
-        if request.scope["type"] == "websocket":  # the HTTP error handler never sees these
-            raise WebSocketException(code=WS_1008_POLICY_VIOLATION, reason=exc.code) from exc
-        raise
+    identity = await authenticate_request(request, config, verifier)
     request.state.identity = identity
     return identity
 

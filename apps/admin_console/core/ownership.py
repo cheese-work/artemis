@@ -151,19 +151,36 @@ def owners_of(session_ids: list[str]) -> dict[str, str | None]:
     try:
         return run_catalog_repo.owners(session_ids)
     except CatalogNotReady as exc:
-        raise AdminAPIError(
-            503,
-            "The run catalog is not ready, so run ownership cannot be checked.",
-            "catalog_not_ready",
-            "Retry shortly; restart the console if it persists so the catalog migration can run.",
-            RETRY_AFTER_SECONDS,
-        ) from exc
+        raise _catalog_not_ready() from exc
+
+
+def _catalog_not_ready() -> AdminAPIError:
+    return AdminAPIError(
+        503,
+        "The run catalog is not ready, so run ownership cannot be checked.",
+        "catalog_not_ready",
+        "Retry shortly; restart the console if it persists so the catalog migration can run.",
+        RETRY_AFTER_SECONDS,
+    )
+
+
+def require_catalog_ready() -> None:
+    """Raise the retryable 503 unless the run catalog is ready.
+
+    Called before any unscoped return (open mode, an admin outside spaces, the
+    ``SystemPrincipal``), so unknown readiness never yields raw data.
+    """
+    try:
+        run_catalog_repo.require_ready()
+    except CatalogNotReady as exc:
+        raise _catalog_not_ready() from exc
 
 
 def present_session_data(scope: OwnerScope, session_id: str | None, data: Any) -> Any:
     """Keep owner/admin data raw; redact text in shared session JSON otherwise."""
     scope = require_actor(scope)
     if not scope.enforced or scope.admin:
+        require_catalog_ready()
         return data
     owner = owners_of([session_id]).get(session_id) if session_id else None
     return data if scope.may_act_on(owner) else redact_json(redact_image_data(data))
@@ -180,7 +197,9 @@ def require_access_all(scope: OwnerScope, session_ids: set[str | None]) -> None:
     An empty set, a ``None`` member (a run that cannot be attributed) or a run
     with no recorded owner is admin-only.
     """
+    scope = require_actor(scope)
     if not scope.enforced or scope.admin:
+        require_catalog_ready()
         return
     ids = sorted(sid for sid in session_ids if sid)
     owners = owners_of(ids)

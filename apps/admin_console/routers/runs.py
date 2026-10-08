@@ -122,10 +122,8 @@ async def list_runs(
     if team and scope.enforced and not scope.admin:
         owner_filter = {"owned_only": True}
     if scope.enforced and (not scope.include_all or (team and q and q.strip())):
-        owners = scope.owner_emails()
-        if not owners:  # no identity owns nothing
-            return {"runs": [], "next_cursor": None, "warnings": []}
-        owner_filter = {"owners": owners}
+        # An empty list owns nothing but still queries, so an unready catalog answers 503.
+        owner_filter = {"owners": scope.owner_emails()}
     try:
         bounds = {"since": _parse_time(since), "until": _parse_time(until)}
     except ValueError:

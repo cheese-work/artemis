@@ -444,3 +444,80 @@ def test_the_server_entry_point_checks_the_bind_before_serving(monkeypatch):
 
     with pytest.raises(ValueError, match="loopback"):
         server.run_ui_server("0.0.0.0", 8000)
+
+
+# -- WebSocket authentication keeps the retryable semantics ---------------------------
+
+_BRIDGE = "/api/device-bridge/session"
+_HOST = {"Host": "127.0.0.1"}
+
+
+def _ws_client(monkeypatch, repo_, **config):
+    from fastapi.testclient import TestClient
+
+    from apps.admin_console.server import proxy_aware_app
+
+    monkeypatch.setattr(app.state, "access_config", _config(**config))
+    verifier = MagicMock()
+    verifier.verify = AsyncMock(return_value={"sub": "sub-1", "email": "qa@example.com"})
+    monkeypatch.setattr(app.state, "access_verifier", verifier)
+    monkeypatch.setattr("apps.admin_console.core.access_control.principal_repo", repo_)
+    return TestClient(proxy_aware_app, client=("203.0.113.5", 50000))
+
+
+def test_a_missing_principal_store_refuses_the_websocket_with_a_retryable_503(repo, monkeypatch):
+    from starlette.testclient import WebSocketDenialResponse
+
+    _drop_principal_tables(repo)
+    client = _ws_client(monkeypatch, repo)
+
+    with pytest.raises(WebSocketDenialResponse) as denied:
+        with client.websocket_connect(_BRIDGE, headers={**_HOST, "Cf-Access-Jwt-Assertion": "t"}):
+            pass
+
+    assert denied.value.status_code == 503
+    assert denied.value.headers["retry-after"]
+    body = denied.value.json()
+    assert (body["code"], body["retryable"]) == ("principal_store_not_ready", True)
+
+
+def test_a_policy_refusal_still_closes_the_websocket_with_1008(monkeypatch, repo):
+    from starlette.websockets import WebSocketDisconnect
+
+    from fastapi.testclient import TestClient
+
+    from apps.admin_console.server import proxy_aware_app
+
+    monkeypatch.setattr(app.state, "access_config", AccessConfig("open", spaces_enabled=True))
+    client = TestClient(proxy_aware_app, client=("203.0.113.5", 50000))
+
+    with pytest.raises(WebSocketDisconnect) as closed:
+        with client.websocket_connect(_BRIDGE, headers=_HOST):
+            pass
+
+    assert closed.value.code == 1008
+    assert closed.value.reason == "open_mode_loopback_only"
+
+
+def test_a_retryable_refusal_falls_back_to_close_code_1013_without_the_denial_extension():
+    import asyncio
+
+    from apps.admin_console.core.access_control import admin_api_error_handler
+
+    sent = []
+
+    async def send(message):
+        sent.append(message)
+
+    async def receive():
+        return {"type": "websocket.connect"}
+
+    from starlette.websockets import WebSocket
+
+    socket = WebSocket({"type": "websocket", "headers": [], "extensions": {}}, receive, send)
+    error = AdminAPIError(503, "later", "principal_store_not_ready", "retry", retry_after=5)
+
+    asyncio.run(admin_api_error_handler(socket, error))
+
+    assert sent[-1]["type"] == "websocket.close"
+    assert sent[-1]["code"] == 1013
