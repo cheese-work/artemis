@@ -160,3 +160,52 @@ denials. Production-profile and missing-opt-in selectors are refused. Live
 Access acceptance still requires the real host key-refresh
 path, runtime isolation, admitted QA accounts and independent review. Local
 synthetic signed-token checks are not evidence of live Cloudflare acceptance.
+
+## Device-free demo board (CHE-1373)
+
+One command starts the isolated preview with a demo board, from a clean checkout
+with only `uv` installed. It needs no device, ADB, credential or network:
+
+```bash
+make preview-demo        # same as: uv run python scripts/preview_demo.py [--port 8000]
+```
+
+The launcher sets the preview profile, the identity switch and
+`ARTEMIS_PREVIEW_DEMO=1` with synthetic `*@example.test` identities, and keeps
+fixture data in a fresh `.preview-demo/run-*` directory removed on exit. That
+directory sits inside the checkout because the media route serves recordings
+only under the workspace root. API only: run `make build-ui` to add the UI.
+
+```bash
+curl -sS localhost:8000/api/devices -H 'X-Artemis-Preview-Identity: admin'
+```
+
+`ARTEMIS_PREVIEW_DEMO` accepts `0`, `false`, `1` or `true`, defaults off and
+fails boot without `ARTEMIS_PREVIEW_PROFILE=1`. Without it the preview is
+unchanged (nine runs, empty device list). Seeded, with timestamps relative to
+boot time:
+
+| State | Devices | Notes |
+| --- | --- | --- |
+| idle | 6 | Shared. Demo 01 is one phone on USB and Wi-Fi (two `/api/devices` rows). |
+| private | 5 | Three for `qa-a`, two for `qa-b`; shown only to the owner and `admin`. |
+| busy | 4 | Each holds a running run (`active_session_id`). |
+| disconnected | 3 | `state: offline`. |
+| unknown | 2 | `state: unknown`. |
+
+Also seeded: four failed runs, one interrupted run (`device_offline`) with its
+`interrupted` queue item, and three completed runs with a playable
+`recording.mp4`. The route set is unchanged: the only edit is that the
+classified synthetic `GET /api/devices` answers from the demo board, so
+`test_every_registered_route_has_access_and_preview_classification` still holds.
+Rows keep the existing `/api/devices` contract; the label is `model`.
+
+### Seeding hook for later CHE-1332 layers
+
+Writable notes and the one uncertain match need the annotation store and the
+device identity record, which later layers build, so this fixture does not seed
+them. The layer that adds either appends a function to
+`preview_demo.SEED_HOOKS`. After the demo runs are created, each hook gets a
+`DemoSeed` (`root`, `owners`, `now`, `devices`, `storage`, `catalog`,
+`session_ids`) and may return extra queue items. Tests:
+`tests/unit/admin_console/test_preview_demo.py`.
