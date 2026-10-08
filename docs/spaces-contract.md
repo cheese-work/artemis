@@ -129,8 +129,8 @@ A loopback bind behind a forwarding proxy therefore fails the request check and 
 
 `CatalogNotReady` and a missing principal store answer 503 with `Retry-After` and `retryable: true` on **every** authorization path: HTTP, WebSocket, SSE, bundle, media and the system principal. No path returns raw data, a partial list or an unscoped result when readiness is unknown.
 
-- **Before any unscoped return.** Open mode, an admin outside spaces and the `SystemPrincipal` return raw data only after the catalog is confirmed ready. Their authority is unchanged when it is.
-- **Empty owner set.** A caller who owns nothing (a contested address, no email) still queries the catalog, so an unready catalog answers 503 rather than an empty list.
+- **Before any unscoped return.** Open mode, an admin outside spaces and the `SystemPrincipal` return raw data only after the catalog is confirmed ready. This covers `/api/status`, `/api/sessions` and the unscoped event stream. Their authority is unchanged when it is.
+- **Empty owner set.** A caller who owns nothing (a contested address, no email, an empty queue or no runs) still queries the catalog, so an unready catalog answers 503 rather than an empty list.
 - **WebSocket.** A handshake refusal for a retryable error is a 503 denial response with `Retry-After` and the JSON body above. A server that lacks the denial extension closes with code 1013 (try again later). A policy refusal, such as `open_mode_loopback_only`, closes with code 1008.
 
 ## Delegation
@@ -153,6 +153,7 @@ A human authorizes an agent or service to act in listed spaces until a time.
 
 Effective abilities = agent's abilities ∩ the human's abilities ∩ the delegation's spaces, evaluated **now**, not when the grant was made. A demotion or removal of either principal narrows or ends the delegation at once.
 
+- The set of needs is closed: `read` and `run`. Any other value is rejected before authorization and never falls back to `read`.
 - **Execution** (start, resume, stop, cancel) needs `mode = run`.
 - **Read-back** of a run needs `mode = read` or `run` and is limited to runs the agent submitted in a delegated space. Read-back never grants execution. The enqueue response always returns `space_id`, `audience`, `space_defaulted` and the run id, so the agent can confirm placement without read-back.
 - Runs record both principals ("Submitted by agent · on behalf of person").

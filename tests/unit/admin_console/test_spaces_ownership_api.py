@@ -1,5 +1,7 @@
+# ruff: noqa: F811
 """Stage 1 of the spaces contract at the API seam (CHE-1385): ownership, admin, readiness."""
 
+import asyncio
 from pathlib import Path
 import re
 import sqlite3
@@ -303,3 +305,99 @@ async def test_an_anonymous_empty_owner_list_also_waits_for_the_catalog(spaces, 
     down = await _call("GET", None, "/api/runs")
 
     assert down.status_code in (401, 403, 503)  # the access tier may refuse first
+
+
+# -- readiness on status, session listings and streams, in every mode ---------------
+
+
+def _open_mode(monkeypatch):
+    monkeypatch.setattr(app.state, "access_config", AccessConfig(auth_mode="open"))
+
+
+async def _local(path: str):
+    transport = ASGITransport(app=app, client=("127.0.0.1", 51000))
+    async with AsyncClient(transport=transport, base_url="http://localhost") as client:
+        return await client.get(path)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["/api/status", "/api/sessions"])
+async def test_open_mode_answers_503_not_data_while_the_catalog_is_unready(env, monkeypatch, path):
+    _open_mode(monkeypatch)
+    ready = await _local(path)
+    assert ready.status_code == 200, ready.text[:200]
+
+    _catalog_down(monkeypatch)
+    down = await _local(path)
+
+    assert down.status_code == 503, (path, down.status_code, down.text[:200])
+    assert down.headers["retry-after"]
+    assert down.json()["retryable"] is True
+
+
+@pytest.mark.asyncio
+async def test_an_unscoped_event_stream_does_not_open_while_the_catalog_is_unready(
+    env, monkeypatch
+):
+    _open_mode(monkeypatch)
+    _catalog_down(monkeypatch)
+
+    # A stream that opens never ends, so a missing refusal shows up as a timeout.
+    down = await asyncio.wait_for(_local("/api/stream"), timeout=10)
+
+    assert down.status_code == 503
+    assert down.headers["retry-after"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["/api/status", "/api/sessions"])
+async def test_a_signed_in_caller_with_nothing_to_list_still_gets_503_while_the_catalog_is_unready(
+    spaces, monkeypatch, path
+):
+    # No runs and an empty queue: the owner lookup has no ids, which used to skip the catalog.
+    ready = await _call("GET", A, path)
+    assert ready.status_code == 200, ready.text[:200]
+
+    _catalog_down(monkeypatch)
+    down = await _call("GET", A, path)
+
+    assert down.status_code == 503, (path, down.status_code, down.text[:200])
+    assert down.headers["retry-after"]
+
+
+@pytest.mark.asyncio
+async def test_an_admin_scope_all_listing_waits_for_the_catalog_outside_spaces(env, monkeypatch):
+    monkeypatch.setattr(
+        app.state,
+        "access_config",
+        AccessConfig(
+            auth_mode="cloudflare",
+            audience="aud",
+            issuer=ISSUER,
+            admin_emails=frozenset({ADMIN_EMAIL}),
+        ),
+    )
+    verifier = MagicMock()
+    verifier.verify = AsyncMock(return_value={"email": ADMIN_EMAIL, "sub": ADMIN_SUB})
+    monkeypatch.setattr(app.state, "access_verifier", verifier)
+    _catalog_down(monkeypatch)
+
+    down = await _call("GET", "jwt", "/api/status", scope="all")
+
+    assert down.status_code == 503
+
+
+# -- delegation need is a closed set --------------------------------------------------
+
+
+@pytest.mark.parametrize("need", ["delete", "", "READ", "admin", None, 1])
+def test_an_unsupported_delegation_need_is_rejected_before_any_authorization(spaces, need):
+    import time
+
+    repo = PrincipalRepository(spaces)
+    agent = repo.ensure_user(ISSUER, "agent", None)
+    human = repo.ensure_user(ISSUER, "human", "h@example.com")
+    repo.grant_delegation(agent.id, human.id, ["s1"], time.time() + 60, mode="read")
+
+    with pytest.raises(ValueError, match="unsupported delegation need"):
+        repo.delegation_covers(agent.id, human.id, "s1", need=need)

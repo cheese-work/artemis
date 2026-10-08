@@ -147,6 +147,7 @@ async def actor_scope(identity: AccessIdentity = Depends(public_tier)) -> OwnerS
 def owners_of(session_ids: list[str]) -> dict[str, str | None]:
     """Owner per known run id; ids with no run record are absent from the result."""
     if not session_ids:
+        require_catalog_ready()  # an empty listing is still an answer about the catalog
         return {}
     try:
         return run_catalog_repo.owners(session_ids)

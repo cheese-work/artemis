@@ -28,6 +28,7 @@ from apps.admin_console.core.ownership import (
     present_session_data,
     require_access,
     require_actor,
+    require_catalog_ready,
 )
 from apps.admin_console.routers.run_admin import ClearRequest
 from apps.admin_console.routers.run_bundle import library_error
@@ -70,7 +71,9 @@ def _list_sessions_sync(scope: OwnerScope):
     # listing never calls (a vanished worker is swept by the queue worker).
     rows = session_repo.get_all_sessions()
     owners: dict[str, str | None] = {}
-    if scope.enforced:
+    if not scope.enforced:
+        require_catalog_ready()  # readiness before any unscoped return
+    else:
         owners = owners_of([str(row.get("session_id")) for row in rows])
         if not scope.include_all:
             rows = [

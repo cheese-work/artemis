@@ -121,6 +121,8 @@ class PrincipalRepository:
 
         A ``run`` delegation includes ``read``; a ``read`` delegation never allows ``run``.
         """
+        if need not in ("read", "run"):
+            raise ValueError(f"unsupported delegation need {need!r}; use 'read' or 'run'")
         modes = ("run",) if need == "run" else ("read", "run")
         with db_session(self.db_path) as conn:
             self._require_ready(conn)

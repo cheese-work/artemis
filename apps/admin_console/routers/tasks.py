@@ -41,6 +41,7 @@ from apps.admin_console.core.ownership import (
     require_access,
     require_access_all,
     require_actor,
+    require_catalog_ready,
 )
 
 try:
@@ -539,6 +540,7 @@ async def get_status(scope: OwnerScope = Depends(list_scope)):
 def _scope_status(payload: dict[str, Any], scope: OwnerScope) -> dict[str, Any]:
     """Drop queue entries, device owners and the headline run the scope may not see."""
     if not scope.enforced or scope.include_all:
+        require_catalog_ready()  # readiness before any unscoped return
         return payload
     queue = list(payload.get("queue") or [])
     active = list(payload.get("active_tasks") or [])
@@ -720,6 +722,8 @@ async def stream_events(
     # named run is a get-by-id (share link): in cloudflare mode it carries that
     # run's events only, never another run's lifecycle events.
     scope = require_actor(scope)
+    if not scope.enforced or scope.include_all:
+        require_catalog_ready()  # an unscoped stream opens only on a ready catalog
     firehose = session_id in ("all", "active")
     decided: dict[str, bool] = {}
 
