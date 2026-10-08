@@ -29,6 +29,7 @@ from artemis.controllers.unified_controller import UnifiedMobileController
 from artemis.drivers.mock.mock_driver import MockDeviceDriver
 from artemis.utils import video as video_utils
 from artemis.utils.video import (
+    classify_recording_failure,
     RecordingSession,
     _parse_scrcpy_version,
     build_scrcpy_record_command,
@@ -944,7 +945,10 @@ async def test_unified_controller_start_failure_message_skips_push_log(
     controller = UnifiedMobileController(mock_ctx)
     remove_active_session("emulator-5554")
     push_log = "/usr/share/scrcpy/scrcpy-server: 1 file pushed, 0 skipped. 141.9 MB/s"
-    clipboard = "java.lang.NoSuchMethodException: android.content.IClipboard$Stub$Proxy.x"
+    clipboard = (
+        "java.lang.NoSuchMethodException: "
+        "android.content.IClipboard$Stub$Proxy.addPrimaryClipChangedListener"
+    )
     proc = MagicMock(returncode=1)
     proc.stderr.read = AsyncMock(return_value=f"{push_log}\n{clipboard}\n".encode())
 
@@ -962,7 +966,40 @@ async def test_unified_controller_start_failure_message_skips_push_log(
         result = await controller.start_video_recording(output_dir=tmp_path)
 
     assert result.success is False
-    assert result.message == f"scrcpy failed to start: {clipboard}"
+    assert result.message.splitlines()[0] == f"scrcpy failed to start: {clipboard}"
+    assert classify_recording_failure(result.message) == "recorder_incompatible"
     stored = mock_ctx.data_engine.record_video_failure.call_args.kwargs["error"]
     assert stored == f"scrcpy failed to start: {push_log}\n{clipboard}\n"
+    remove_active_session("emulator-5554")
+
+
+@pytest.mark.asyncio
+async def test_unified_controller_start_failure_message_keeps_output_for_classification(
+    mock_ctx, tmp_path, mock_scrcpy_toolchain
+):
+    controller = UnifiedMobileController(mock_ctx)
+    remove_active_session("emulator-5554")
+    header = "[server] ERROR: Could not invoke method"
+    clipboard = (
+        "java.lang.NoSuchMethodException: "
+        "android.content.IClipboard$Stub$Proxy.addPrimaryClipChangedListener"
+    )
+    proc = MagicMock(returncode=1)
+    proc.stderr.read = AsyncMock(return_value=f"{header}\n{clipboard}\n".encode())
+
+    with (
+        patch.object(controller, "_spawn_scrcpy", AsyncMock(return_value=proc)),
+        patch(
+            "artemis.controllers.unified_controller.get_android_display_state",
+            AsyncMock(return_value=None),
+        ),
+        patch(
+            "artemis.controllers.unified_controller.await_scrcpy_first_frame",
+            AsyncMock(return_value=1.0),
+        ),
+    ):
+        result = await controller.start_video_recording(output_dir=tmp_path)
+
+    assert result.message.splitlines()[0] == f"scrcpy failed to start: {header}"
+    assert classify_recording_failure(result.message) == "recorder_incompatible"
     remove_active_session("emulator-5554")

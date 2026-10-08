@@ -731,10 +731,12 @@ class UnifiedMobileController:
                     )
                 self._record_recording_failure(session, f"{SCRCPY_START_FAILURE_PREFIX} {err_msg}")
                 remove_active_session(device_id)
+                # First line is the readable error for display; the full output follows so
+                # callers that classify the message (sdk.agent) still see every line.
                 return VideoRecordingResult(
                     success=False,
                     message=f"{SCRCPY_START_FAILURE_PREFIX} "
-                    f"{recording_error_line(err_msg) or err_msg}",
+                    f"{recording_error_line(err_msg) or err_msg}\n{err_msg}",
                 )
 
             session.start_time = first_frame_at
