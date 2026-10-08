@@ -159,11 +159,17 @@ curl -sS -X POST "$ARTEMIS/api/runs/20261008_101502_e5f6a7b8/retry" -H "$AUTH"
   device's queue. `result` uses the [fan-out statuses](#fan-out-statuses), so
   a device that is now offline answers `offline_not_queued` and creates
   nothing.
-- The link is stored on both runs: the interrupted run gets `replaced_by`,
-  the replacement gets `replaces`. Run detail, the run list and the board
-  show both fields.
-- Retry is idempotent. A second Retry of the same run returns the existing
-  `replaced_by` and creates nothing. A run that is not `interrupted` answers
+- The link is stored on both runs only when the replacement was created
+  (`result.status` is `queued`, `queued_behind` or `queued_global_limit`):
+  the interrupted run gets `replaced_by`, the replacement gets `replaces`. Run
+  detail, the run list and the board show both fields.
+- A Retry whose `result` created nothing stores no link and answers
+  `"replaced_by": null`. The run stays `interrupted` and keeps its attention,
+  so the caller may Retry again later.
+- Retry is idempotent once a replacement exists. Retries of one run are
+  serialized, so at most one replacement is ever created. A Retry of a run
+  that already has `replaced_by` returns that existing link and its current
+  `result`, and creates nothing. A run that is not `interrupted` answers
   [`request_invalid`](#request_invalid).
 
 ### `GET /api/board`
