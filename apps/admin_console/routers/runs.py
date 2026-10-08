@@ -27,7 +27,13 @@ from apps.admin_console.core.access_control import (
     AdminAPIError,
     public_tier,
 )
-from apps.admin_console.core.ownership import OwnerScope, actor_scope, owner_scope, require_actor
+from apps.admin_console.core.ownership import (
+    OwnerScope,
+    actor_scope,
+    owner_scope,
+    require_actor,
+    scope_for,
+)
 from apps.admin_console.core.redaction import redact_image_data, redact_text
 
 try:
@@ -51,11 +57,18 @@ async def catalog_scope(
 ) -> OwnerScope:
     if scope != "everyone":
         return owner_scope(identity, scope)
+    if identity.spaces:
+        raise AdminAPIError(
+            400,
+            "Unknown scope 'everyone'.",
+            "invalid_scope",
+            "Spaces replace scope=everyone; use scope=mine.",
+        )
     if identity.auth_mode != "open" and not identity.email:
         raise AdminAPIError(
             403, "Sign in to see everyone's runs.", "team_requires_identity", "Sign in first."
         )
-    return OwnerScope(identity.auth_mode != "open", identity.email, identity.admin, True)
+    return scope_for(identity, include_all=True)
 
 
 def _present(run: dict[str, Any], scope: OwnerScope, *, team: bool = False) -> dict[str, Any]:
@@ -109,9 +122,10 @@ async def list_runs(
     if team and scope.enforced and not scope.admin:
         owner_filter = {"owned_only": True}
     if scope.enforced and (not scope.include_all or (team and q and q.strip())):
-        if scope.email is None:  # no identity owns nothing
+        owners = scope.owner_emails()
+        if not owners:  # no identity owns nothing
             return {"runs": [], "next_cursor": None, "warnings": []}
-        owner_filter = {"owner": scope.email}
+        owner_filter = {"owners": owners}
     try:
         bounds = {"since": _parse_time(since), "until": _parse_time(until)}
     except ValueError:

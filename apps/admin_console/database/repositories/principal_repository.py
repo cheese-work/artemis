@@ -1,4 +1,4 @@
-"""Principals and delegations (CHE-1385; contract: docs/spaces-contract.md)."""
+"""Principals, email history and delegations (CHE-1385; contract: docs/spaces-contract.md)."""
 
 from dataclasses import dataclass
 import sqlite3
@@ -19,14 +19,11 @@ class Principal:
     sub: str
     kind: str
     email: str | None
-    history_email: str | None
+    # Emails whose legacy history this principal may claim: reserved by it, not contested.
+    history_emails: frozenset[str] = frozenset()
 
 
-_COLUMNS = "id, issuer, sub, kind, email, history_email"
-
-
-def _principal(row: sqlite3.Row) -> Principal:
-    return Principal(**{key: row[key] for key in row.keys()})
+_COLUMNS = "id, issuer, sub, kind, email"
 
 
 class PrincipalRepository:
@@ -38,38 +35,57 @@ class PrincipalRepository:
             self._require_ready(conn)
             return self._find(conn, issuer, sub)
 
+    def email_state(self, email: str) -> tuple[str, bool] | None:
+        """``(reserving principal id, contested)`` for an address, or None when unreserved."""
+        with db_session(self.db_path) as conn:
+            self._require_ready(conn)
+            row = conn.execute(
+                "SELECT principal_id, contested FROM principal_emails WHERE email = ?", (email,)
+            ).fetchone()
+            return (row["principal_id"], bool(row["contested"])) if row else None
+
     def ensure_user(self, issuer: str, sub: str, email: str | None) -> Principal:
         """The user principal for a verified ``(issuer, sub)``; created on first login.
 
-        ``history_email`` is claimed only by the first principal to present an
-        email, so a later subject with the same email never inherits its history.
+        Every email a principal presents is reserved first-come in the same
+        transaction. A different principal presenting a reserved address marks it
+        ``contested`` and reserves nothing; reservations survive an email change.
         """
         with db_session(self.db_path) as conn:
             self._require_ready(conn)
             found = self._find(conn, issuer, sub)
-            if found and found.email == email:
+            if found and found.email == email and self._settled(conn, found.id, email):
                 return found
-            conn.execute("BEGIN IMMEDIATE")  # serializes first logins and the claim
+            conn.execute("BEGIN IMMEDIATE")  # serializes logins, reservations and conflicts
             with conn:  # commits, or rolls back on error
-                found = self._find(conn, issuer, sub)
-                if found:
-                    conn.execute("UPDATE principals SET email = ? WHERE id = ?", (email, found.id))
-                else:
+                found = self._find(conn, issuer, sub, with_history=False)
+                if found is None:
+                    principal_id = uuid.uuid4().hex
                     conn.execute(
-                        "INSERT INTO principals "
-                        "(id, issuer, sub, kind, email, history_email, created_at) "
-                        "VALUES (?, ?, ?, 'user', ?, "
-                        "CASE WHEN ? IS NOT NULL AND NOT EXISTS "
-                        "(SELECT 1 FROM principals WHERE history_email = ?) THEN ? END, ?)",
-                        (uuid.uuid4().hex, issuer, sub, email, email, email, email, time.time()),
+                        "INSERT INTO principals (id, issuer, sub, kind, email, created_at) "
+                        "VALUES (?, ?, ?, 'user', ?, ?)",
+                        (principal_id, issuer, sub, email, time.time()),
                     )
+                else:
+                    principal_id = found.id
+                    if found.email != email:
+                        conn.execute(
+                            "UPDATE principals SET email = ? WHERE id = ?", (email, principal_id)
+                        )
+                if email:
+                    self._reserve(conn, principal_id, email)
             result = self._find(conn, issuer, sub)
             if result is None:  # written under the write lock above
                 raise RuntimeError("principal missing after write")
             return result
 
     def grant_delegation(
-        self, agent_id: str, human_id: str, space_ids: list[str], expires_at: float
+        self,
+        agent_id: str,
+        human_id: str,
+        space_ids: list[str],
+        expires_at: float,
+        mode: str = "run",
     ) -> str:
         delegation_id = uuid.uuid4().hex
         with db_session(self.db_path) as conn:
@@ -78,9 +94,9 @@ class PrincipalRepository:
             with conn:
                 conn.execute(
                     "INSERT INTO delegations "
-                    "(id, agent_principal_id, human_principal_id, expires_at, created_at) "
-                    "VALUES (?, ?, ?, ?, ?)",
-                    (delegation_id, agent_id, human_id, expires_at, time.time()),
+                    "(id, agent_principal_id, human_principal_id, mode, expires_at, created_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (delegation_id, agent_id, human_id, mode, expires_at, time.time()),
                 )
                 conn.executemany(
                     "INSERT INTO delegation_spaces (delegation_id, space_id) VALUES (?, ?)",
@@ -98,32 +114,77 @@ class PrincipalRepository:
             conn.commit()
             return cursor.rowcount > 0
 
-    def delegation_covers(self, agent_id: str, human_id: str, space_id: str) -> bool:
-        """Whether ``human_id`` currently lets ``agent_id`` act in ``space_id``."""
+    def delegation_covers(
+        self, agent_id: str, human_id: str, space_id: str, *, need: str = "run"
+    ) -> bool:
+        """Whether ``human_id`` currently lets ``agent_id`` ``need`` (``read`` or ``run``) in ``space_id``.
+
+        A ``run`` delegation includes ``read``; a ``read`` delegation never allows ``run``.
+        """
+        modes = ("run",) if need == "run" else ("read", "run")
         with db_session(self.db_path) as conn:
             self._require_ready(conn)
             return (
                 conn.execute(
                     "SELECT 1 FROM delegations d JOIN delegation_spaces s ON s.delegation_id = d.id "
                     "WHERE d.agent_principal_id = ? AND d.human_principal_id = ? "
-                    "AND s.space_id = ? AND d.revoked_at IS NULL AND d.expires_at > ?",
-                    (agent_id, human_id, space_id, time.time()),
+                    "AND s.space_id = ? AND d.revoked_at IS NULL AND d.expires_at > ? "
+                    f"AND d.mode IN ({', '.join('?' * len(modes))})",
+                    (agent_id, human_id, space_id, time.time(), *modes),
                 ).fetchone()
                 is not None
             )
 
     @staticmethod
-    def _find(conn: sqlite3.Connection, issuer: str, sub: str) -> Principal | None:
+    def _reserve(conn: sqlite3.Connection, principal_id: str, email: str) -> None:
+        cursor = conn.execute(
+            "INSERT OR IGNORE INTO principal_emails (email, principal_id, first_seen_at) "
+            "VALUES (?, ?, ?)",
+            (email, principal_id, time.time()),
+        )
+        if cursor.rowcount == 0:  # already reserved: by this principal, or a different one
+            conn.execute(
+                "UPDATE principal_emails SET contested = 1 WHERE email = ? AND principal_id != ?",
+                (email, principal_id),
+            )
+
+    @staticmethod
+    def _settled(conn: sqlite3.Connection, principal_id: str, email: str | None) -> bool:
+        """True when this login would write nothing: the address is mine, or already contested."""
+        if not email:
+            return True
+        row = conn.execute(
+            "SELECT principal_id, contested FROM principal_emails WHERE email = ?", (email,)
+        ).fetchone()
+        return row is not None and (row["principal_id"] == principal_id or bool(row["contested"]))
+
+    @staticmethod
+    def _find(
+        conn: sqlite3.Connection, issuer: str, sub: str, *, with_history: bool = True
+    ) -> Principal | None:
         row = conn.execute(
             f"SELECT {_COLUMNS} FROM principals WHERE issuer = ? AND sub = ?", (issuer, sub)
         ).fetchone()
-        return _principal(row) if row else None
+        if row is None:
+            return None
+        history = frozenset()
+        if with_history:
+            history = frozenset(
+                r["email"]
+                for r in conn.execute(
+                    "SELECT email FROM principal_emails WHERE principal_id = ? AND contested = 0",
+                    (row["id"],),
+                )
+            )
+        return Principal(**{key: row[key] for key in row.keys()}, history_emails=history)
 
     @staticmethod
     def _require_ready(conn: sqlite3.Connection) -> None:
-        if not conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'principals'"
-        ).fetchone():
+        (found,) = conn.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' "
+            "AND name IN ('principals', 'principal_emails')"
+        ).fetchone()
+        if found != 2:
             raise PrincipalStoreNotReady
 
 

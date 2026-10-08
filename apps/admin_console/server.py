@@ -106,6 +106,7 @@ from apps.admin_console.core.access_control import (
     admin_api_error_handler,
     config_from_environment,
     public_tier,
+    require_loopback_bind,
     require_qa,
 )
 from apps.admin_console.core.preview_access import preview_access_verifier
@@ -645,6 +646,7 @@ def run_ui_server(host: str, port: int, reload: bool = False) -> None:
     from artemis.config.host_agent import host_agent_enabled
     from apps.admin_console.services.bridge_session_service import MAX_ADB_PACKET_BYTES
 
+    require_loopback_bind(app.state.access_config, host)
     websocket_options = {"ws_max_size": MAX_ADB_PACKET_BYTES} if host_agent_enabled() else {}
     configure_logging(streams=True)
     state.host = host

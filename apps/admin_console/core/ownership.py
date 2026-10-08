@@ -50,6 +50,16 @@ class OwnerScope:
     email: str | None = None
     admin: bool = False
     include_all: bool = False
+    # Emails whose runs this caller owns. None: spaces are off and the caller's own email
+    # decides. With spaces on, only emails the principal reserved and nobody contests.
+    owned_emails: frozenset[str] | None = None
+    principal_id: str | None = None
+
+    def owner_emails(self) -> list[str]:
+        """Every ``requested_by`` value this caller owns, for SQL filters."""
+        if self.owned_emails is not None:
+            return sorted(self.owned_emails)
+        return [self.email] if self.email else []
 
     def sees(self, owner: str | None) -> bool:
         """Whether a listing, queue or stream for this scope includes the run."""
@@ -60,7 +70,11 @@ class OwnerScope:
         return not self.enforced or self.admin or self._owns(owner)
 
     def _owns(self, owner: str | None) -> bool:
-        return owner is not None and owner == self.email
+        if owner is None:
+            return False
+        if self.owned_emails is not None:
+            return owner in self.owned_emails
+        return owner == self.email
 
 
 @dataclass(frozen=True)
@@ -93,15 +107,31 @@ def owner_scope(identity: AccessIdentity, scope: str = SCOPE_MINE) -> OwnerScope
             "invalid_scope",
             "Use scope=mine, or scope=all as an administrator.",
         )
-    enforced = identity.auth_mode != "open"
-    if enforced and scope == SCOPE_ALL and not identity.admin:
+    result = scope_for(identity, include_all=scope == SCOPE_ALL)
+    if result.enforced and result.include_all and not result.admin:
         raise AdminAPIError(
             403,
             "Only administrators can list every user's runs.",
             "scope_all_requires_admin",
             "Drop scope=all to list your own runs.",
         )
-    return OwnerScope(enforced, identity.email, identity.admin, scope == SCOPE_ALL)
+    return result
+
+
+def scope_for(identity: AccessIdentity, *, include_all: bool = False) -> OwnerScope:
+    """The request's ownership scope.
+
+    With spaces on, global-admin designation is not data access (docs/spaces-contract.md):
+    the scope carries no admin bit, so it never widens a listing or an action.
+    """
+    return OwnerScope(
+        identity.auth_mode != "open",
+        identity.email,
+        identity.admin and not identity.spaces,
+        include_all,
+        identity.history_emails,
+        identity.principal_id,
+    )
 
 
 async def list_scope(

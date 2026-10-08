@@ -52,6 +52,11 @@ class AccessIdentity:
     reason: str | None = None
     issuer: str | None = None
     subject: str | None = None
+    principal_id: str | None = None
+    # Emails whose legacy run history this identity may claim. None: spaces are off, so an
+    # email match alone still proves ownership (the pre-spaces rule).
+    history_emails: frozenset[str] | None = None
+    spaces: bool = False
 
 
 RETRY_AFTER_SECONDS = 5
@@ -200,6 +205,23 @@ class CloudflareAccessVerifier:
         )
 
 
+_FORWARDING_HEADERS = (b"x-forwarded-for", b"forwarded", b"x-real-ip", b"cf-connecting-ip")
+
+
+def require_loopback_bind(config: AccessConfig, host: str) -> None:
+    """Refuse to serve open mode with spaces on any address but loopback (wildcards included)."""
+    if config.auth_mode != "open" or not config.spaces_enabled:
+        return
+    try:
+        loopback = ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        loopback = host.casefold() == "localhost"
+    if not loopback:
+        raise ValueError(
+            f"ARTEMIS_SPACES_ENABLED with ARTEMIS_AUTH_MODE=open only serves loopback; got {host!r}."
+        )
+
+
 def _is_loopback_request(request: HTTPConnection) -> bool:
     peer = request.scope.get("artemis.transport_peer") or request.scope.get("client")
     host = peer[0] if isinstance(peer, (tuple, list)) and peer else None
@@ -216,7 +238,7 @@ async def authenticate_request(
 ) -> AccessIdentity:
     if config.auth_mode == "open":
         forwarded = any(
-            name.lower() == b"x-forwarded-for" for name, _value in request.scope.get("headers", ())
+            name.lower() in _FORWARDING_HEADERS for name, _value in request.scope.get("headers", ())
         )
         local_admin = _is_loopback_request(request) and not forwarded
         if config.spaces_enabled and not local_admin:
@@ -231,6 +253,7 @@ async def authenticate_request(
             admin=local_admin,
             auth_mode="open",
             reason=None if local_admin else "no_jwt",
+            spaces=config.spaces_enabled,
         )
 
     token = request.headers.get("Cf-Access-Jwt-Assertion")
@@ -252,9 +275,10 @@ async def authenticate_request(
     subject, issuer = claims.get("sub"), config.issuer  # decode() already checked iss == issuer
     if not (isinstance(subject, str) and subject and issuer):
         return AccessIdentity(None, False, config.auth_mode, "jwt_invalid")
+    principal = None
     if config.spaces_enabled:
         try:
-            await asyncio.to_thread(principal_repo.ensure_user, issuer, subject, email)
+            principal = await asyncio.to_thread(principal_repo.ensure_user, issuer, subject, email)
         except PrincipalStoreNotReady as exc:
             raise AdminAPIError(
                 503,
@@ -271,6 +295,9 @@ async def authenticate_request(
         None if admin else "not_on_allowlist",
         issuer,
         subject,
+        principal.id if principal else None,
+        principal.history_emails if principal else None,
+        config.spaces_enabled,
     )
 
 
@@ -345,9 +372,6 @@ async def require_lifecycle_token(request: Request) -> None:
             "lifecycle_required",
             "Use the local Artemis CLI lifecycle command.",
         )
-
-
-_FORWARDING_HEADERS = (b"x-forwarded-for", b"forwarded", b"x-real-ip", b"cf-connecting-ip")
 
 
 async def require_effective_loopback(request: Request) -> None:

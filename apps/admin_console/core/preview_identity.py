@@ -4,8 +4,19 @@ from apps.admin_console.core.access_control import AccessConfig, AccessIdentity,
 from apps.admin_console.core.preview_fixtures import preview_owners
 from apps.admin_console.core.preview_profile import preview_identity_switch_selected
 
+PREVIEW_ISSUER = "urn:artemis:preview"
 PREVIEW_IDENTITY_HEADER = "X-Artemis-Preview-Identity"
 PREVIEW_IDENTITY_COOKIE = "artemis_preview_identity"
+
+
+def _fixture(alias: str, email: str, admin: bool) -> AccessIdentity:
+    """A fixture identity lives in its own issuer namespace (docs/spaces-contract.md).
+
+    It has no principal row, so it never reserves an email or binds a membership.
+    """
+    return AccessIdentity(
+        email, admin, "preview", issuer=PREVIEW_ISSUER, subject=f"preview:{alias}"
+    )
 
 
 def configure_preview_identities(
@@ -17,9 +28,9 @@ def configure_preview_identities(
         raise ValueError("Fixture identities require cloudflare ownership configuration.")
     qa_emails, admin_email = preview_owners(config)
     return {
-        "qa-a": AccessIdentity(qa_emails[0], False, "preview"),
-        "qa-b": AccessIdentity(qa_emails[1], False, "preview"),
-        "admin": AccessIdentity(admin_email, True, "preview"),
+        "qa-a": _fixture("qa-a", qa_emails[0], False),
+        "qa-b": _fixture("qa-b", qa_emails[1], False),
+        "admin": _fixture("admin", admin_email, True),
     }
 
 

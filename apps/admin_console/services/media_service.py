@@ -538,7 +538,7 @@ class MediaService:
 
     @staticmethod
     def get_task_plan_content(session_id: str, actor: OwnerScope | None) -> str:
-        scope = require_actor(actor)  # before the try below, which would swallow a denial
+        scope = require_actor(actor)
         source_session_id = session_id
         plan_path = TRACES_PATH / session_id / "notes" / "task_plan.md"
         if not plan_path.exists():
@@ -547,11 +547,11 @@ class MediaService:
 
         if plan_path.exists():
             try:
-                return present_session_data(
-                    scope, source_session_id, plan_path.read_text(encoding="utf-8")
-                )
-            except Exception as e:
+                text = plan_path.read_text(encoding="utf-8")
+            except (OSError, ValueError) as e:
                 return f"Error reading task plan: {e}"
+            # Outside the try: an authorization failure (403, retryable 503) must reach the API.
+            return present_session_data(scope, source_session_id, text)
         return "No task plan created yet."
 
     @staticmethod

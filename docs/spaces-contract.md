@@ -7,7 +7,7 @@ scopes, the revocation bound, the privacy rules and the migration plan. Later
 stages implement it; they change this file first.
 
 **Revision 3.** Revision 2 resolved the five P1 design findings of CHE-1385 comment
-`01a11c49-de30-7b7c-9013-1f7ced2dbb64`. Revision 3 corrects P1-1 (email-change history) and P1-5 (grant-derived listing) after the re-check in comment `01a11c76-cbd5-74f5-966d-f7f3743c2f82`. See [Review disposition](#review-disposition).
+`01a11c49-de30-7b7c-9013-1f7ced2dbb64`. Revision 3 corrects P1-1 (email-change history) and P1-5 (grant-derived listing) after the re-check in comment `01a11c76-cbd5-74f5-966d-f7f3743c2f82`. See [Review disposition](#review-disposition). The stage 1 section records the implementation, with no design change.
 
 Related: [board permissions](board-permissions.md) · [device identity](device-identity.md) ·
 [board operations](board-operations.md)
@@ -16,7 +16,7 @@ Related: [board permissions](board-permissions.md) · [device identity](device-i
 
 | Stage | Slice | State |
 | --- | --- | --- |
-| 1 | Principals, delegations table, `SystemPrincipal`, fail-closed actor, open-mode refusal, retryable 503, admin by subject | Partly implemented in CHE-1385 (PR 128). Code gaps: [Stage 1 conformance](#stage-1-conformance) |
+| 1 | Principals, email history, delegations table, `SystemPrincipal`, fail-closed actor, open-mode refusal, retryable 503, admin by subject | Implemented in CHE-1385 (PR 128). See [Stage 1 conformance](#stage-1-conformance) |
 | 2 | Spaces, members, built-in roles, `can()`, SQL scope, admin override, revocation epochs, enqueue `space_id`, credential binding | Specified here |
 | 3 | Device lend/return/reclaim, admission fencing, system space; migration | Specified here |
 | 4 | UI, docs, demo | Specified here |
@@ -266,7 +266,7 @@ Spaces are not offered to users until all of these pass.
 | Route coverage | 2 | A test fails when any HTTP route, WebSocket route, SSE route, artifact route or mount lacks the resource authorization dependency. |
 | Concealed 404 | 2 | Hidden run, device, space and media answer the same body as unknown ones. |
 | Prefix filtering | 2 | An ambiguous prefix counts only authorized rows. |
-| Retryable 503 | 1 | A catalog or principal-store failure returns 503 with `Retry-After` on the run list, run detail, task-plan, notes, media and bundle routes. The task-plan route does not turn it into a text body. |
+| Retryable 503 | 1 | A catalog or principal-store failure returns 503 with `Retry-After` on the run list, run detail, task-plan, notes, media and bundle routes. No service turns it into a text body. |
 | Revocation | 2 | Removing a member closes an open SSE, bridge WebSocket and agent WebSocket, and cancels a download, within 10 seconds. |
 | Delegation | 2 | Forged, expired, wrong-agent and revoked claims fail. A demotion or revocation between enqueue and worker start ends the run unstarted. |
 | Admin override | 2 | A global admin without grant or override cannot read an unrelated resource. A missing reason returns 422 and writes no action. |
@@ -278,18 +278,24 @@ Spaces are not offered to users until all of these pass.
 
 ## Stage 1 conformance
 
-PR 128 at `c5b5cb58eb9b9a6aa75a64a091ad7c873f97750e` implements the principal tables, the delegations tables (without `mode`), `AccessIdentity.issuer/subject`, `SYSTEM_PRINCIPAL`, `require_actor`, the open-mode request check, retryable 503 and admin by subject. This revision adds code work for stage 1. It starts only after the independent design re-check.
+Stage 1 is implemented in PR 128. Tests: `tests/unit/admin_console/test_spaces_principals.py` (repository and identity seam) and `tests/unit/admin_console/test_spaces_ownership_api.py` (API seam).
 
-1. `OwnerScope` carries the principal id; with spaces enabled a legacy email owns a row only through an uncontested `principal_emails` reservation. `history_email` is replaced by `principal_emails` and the email-change policy.
-2. With spaces enabled, `admin` no longer widens `sees` or `may_act_on`, and `scope=all` is refused. Platform `admin` routes are unchanged.
-3. Preview fixtures use the `urn:artemis:preview` namespace.
-4. The open-mode request check uses the full forwarding-header set; startup refuses a non-loopback bind with open mode and spaces.
-5. A test fails when a router module references `SYSTEM_PRINCIPAL`.
-6. `delegations` gains `mode`.
-7. API-seam tests for the five findings. Email-only fixtures do not stand in for subject-binding tests. Required cases: same email with another subject; same subject under another issuer; concurrent first logins; the A `old@` to `new@`, B `new@` sequence; the task-plan route returning 503 when the catalog is not ready.
-8. The task-plan route (`services/media_service.py`) lets a catalog authorization failure reach the API as a retryable 503. Today a catch-all turns it into an error string.
+| # | Item | Where it is proven |
+| --- | --- | --- |
+| 1 | `AccessIdentity` and `OwnerScope` carry the principal id. With spaces on, a legacy email owns a run only through an uncontested `principal_emails` reservation. | Email-history cases in both test files, including A `old@` to `new@` then B `new@`, same subject under another issuer, and concurrent first logins. |
+| 2 | With spaces on, the scope carries no admin bit. `scope=all` is refused and a global admin cannot delete another person's run. `scope=everyone` is refused. Platform `admin` routes are unchanged. | `test_a_global_admin_without_a_grant_cannot_list_or_act_on_unrelated_runs`, `test_scope_everyone_is_refused_while_spaces_are_on`. |
+| 3 | Preview fixtures use the `urn:artemis:preview` namespace and have no principal row. | `test_preview_fixture_identities_live_in_their_own_namespace`. |
+| 4 | The open-mode request check uses the full forwarding-header set. The server refuses to start with open mode and spaces on a non-loopback bind. | Forwarding-header and bind cases in `test_spaces_principals.py`. |
+| 5 | No router module references `SystemPrincipal`. | `test_no_router_module_references_the_system_principal`. |
+| 6 | `delegations.mode` (`read` or `run`) with `need` checked in `delegation_covers`. | Delegation mode cases. |
+| 7 | Catalog readiness answers a retryable 503 on every ownership-checked route. The task-plan service no longer turns it into text. | `test_a_catalog_that_is_not_ready_answers_503_never_data` and the task-plan service case. |
 
-Not in stage 1: spaces, members, `can()`, override action, credential binding, epochs, media rewrite, migration.
+Behaviour to know about in stage 1:
+
+- While spaces are on and before stage 2 moves ownership to principal ids, a `contested` address also denies the email-keyed browser phones and queue entries of everyone who presented it. This fails closed.
+- The task-plan **route** already returned 503, because the router checks ownership a second time. The defect was in the service, which swallowed the error; the service is fixed so a caller that does not repeat the check is also safe.
+
+Not in stage 1: spaces, members, `can()`, override action, credential binding, epochs, media rewrite, migration, `requested_by_principal` column.
 
 ## Review disposition
 

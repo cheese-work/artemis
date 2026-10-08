@@ -94,41 +94,54 @@ def _restore_repo():
 # -- principals -------------------------------------------------------------------
 
 
-def test_first_login_creates_one_principal_and_claims_the_email(repo):
+def test_first_login_creates_one_principal_and_reserves_the_email(repo):
     first = repo.ensure_user(ISSUER, "sub-1", "qa@example.com")
     again = repo.ensure_user(ISSUER, "sub-1", "qa@example.com")
 
     assert first == again
     assert first.kind == "user"
-    assert first.history_email == "qa@example.com"
+    assert first.history_emails == {"qa@example.com"}
 
 
-def test_a_second_subject_with_the_same_email_never_claims_its_history(repo):
+def test_a_second_subject_with_the_same_email_contests_it_and_nobody_owns_the_history(repo):
     holder = repo.ensure_user(ISSUER, "sub-1", "qa@example.com")
     other = repo.ensure_user(ISSUER, "sub-2", "qa@example.com")
 
     assert other.id != holder.id
-    assert other.history_email is None
-    assert repo.get(ISSUER, "sub-1").history_email == "qa@example.com"
+    assert other.history_emails == frozenset()
+    assert repo.get(ISSUER, "sub-1").history_emails == frozenset()
+    assert repo.email_state("qa@example.com") == (holder.id, True)
 
 
-def test_the_same_subject_under_another_issuer_is_another_principal(repo):
+def test_the_same_subject_under_another_issuer_is_another_principal_and_contests(repo):
     one = repo.ensure_user(ISSUER, "sub-1", "qa@example.com")
     two = repo.ensure_user("https://other.cloudflareaccess.com", "sub-1", "qa@example.com")
 
     assert one.id != two.id
+    assert two.history_emails == frozenset()
+    assert repo.email_state("qa@example.com") == (one.id, True)
 
 
-def test_an_email_change_updates_contact_data_but_keeps_the_key_and_claim(repo):
+def test_an_email_change_keeps_the_old_reservation_and_adds_the_new_one(repo):
     before = repo.ensure_user(ISSUER, "sub-1", "old@example.com")
     after = repo.ensure_user(ISSUER, "sub-1", "new@example.com")
 
     assert after.id == before.id
     assert after.email == "new@example.com"
-    assert after.history_email == "old@example.com"
+    assert after.history_emails == {"old@example.com", "new@example.com"}
 
 
-def test_concurrent_first_logins_of_one_email_yield_one_claim(repo):
+def test_after_an_email_change_a_later_principal_cannot_take_the_new_address(repo):
+    a = repo.ensure_user(ISSUER, "sub-a", "old@example.com")
+    repo.ensure_user(ISSUER, "sub-a", "new@example.com")
+    b = repo.ensure_user(ISSUER, "sub-b", "new@example.com")
+
+    assert b.history_emails == frozenset()
+    assert repo.email_state("new@example.com") == (a.id, True)  # contested: quarantined
+    assert repo.get(ISSUER, "sub-a").history_emails == {"old@example.com"}  # old stays with A
+
+
+def test_concurrent_first_logins_of_one_email_yield_one_holder_and_a_contested_address(repo):
     async def go():
         return await asyncio.gather(
             *(
@@ -140,13 +153,16 @@ def test_concurrent_first_logins_of_one_email_yield_one_claim(repo):
     principals = asyncio.run(go())
 
     assert len({p.id for p in principals}) == 8
-    assert sum(p.history_email is not None for p in principals) == 1
+    holder_id, contested = repo.email_state("qa@example.com")
+    assert contested is True
+    assert holder_id in {p.id for p in principals}
+    assert all(repo.get(ISSUER, f"sub-{n}").history_emails == frozenset() for n in range(8))
 
 
 def _drop_principal_tables(repo):
     repo.get(ISSUER, "warm-up")  # get_db bootstraps the schema once per path, so do it first
     with sqlite3.connect(repo.db_path) as conn:
-        for table in ("delegation_spaces", "delegations", "principals"):
+        for table in ("delegation_spaces", "delegations", "principal_emails", "principals"):
             conn.execute(f"DROP TABLE {table}")
 
 
@@ -178,6 +194,28 @@ def test_a_delegation_covers_only_its_spaces_until_it_expires_or_is_revoked(repo
 
     repo.grant_delegation(agent.id, human.id, ["s1"], time.time() - 1)
     assert not repo.delegation_covers(agent.id, human.id, "s1")  # expired
+
+
+def test_a_read_delegation_allows_read_back_but_never_execution(repo):
+    import time
+
+    agent = repo.ensure_user(ISSUER, "agent", None)
+    human = repo.ensure_user(ISSUER, "human", "h@example.com")
+    repo.grant_delegation(agent.id, human.id, ["s1"], time.time() + 60, mode="read")
+
+    assert repo.delegation_covers(agent.id, human.id, "s1", need="read")
+    assert not repo.delegation_covers(agent.id, human.id, "s1", need="run")
+
+
+def test_a_run_delegation_includes_read(repo):
+    import time
+
+    agent = repo.ensure_user(ISSUER, "agent", None)
+    human = repo.ensure_user(ISSUER, "human", "h@example.com")
+    repo.grant_delegation(agent.id, human.id, ["s1"], time.time() + 60, mode="run")
+
+    assert repo.delegation_covers(agent.id, human.id, "s1", need="read")
+    assert repo.delegation_covers(agent.id, human.id, "s1", need="run")
 
 
 # -- identity ---------------------------------------------------------------------
@@ -259,7 +297,13 @@ def test_admin_subjects_keep_their_case(monkeypatch):
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("client", "headers"),
-    [(("203.0.113.9", 51000), {}), (("127.0.0.1", 51000), {"X-Forwarded-For": "203.0.113.9"})],
+    [
+        (("203.0.113.9", 51000), {}),
+        (("127.0.0.1", 51000), {"X-Forwarded-For": "203.0.113.9"}),
+        (("127.0.0.1", 51000), {"Forwarded": "for=203.0.113.9"}),
+        (("127.0.0.1", 51000), {"X-Real-IP": "203.0.113.9"}),
+        (("127.0.0.1", 51000), {"CF-Connecting-IP": "203.0.113.9"}),
+    ],
 )
 async def test_open_mode_with_spaces_refuses_anything_but_a_direct_loopback_caller(client, headers):
     config = AccessConfig(auth_mode="open", spaces_enabled=True)
@@ -356,3 +400,47 @@ async def test_catalog_not_ready_on_the_run_routes_is_a_retryable_503(monkeypatc
         assert response.status_code == 503
         assert response.headers["retry-after"]
         assert response.json()["retryable"] is True
+
+
+@pytest.mark.parametrize("host", ["0.0.0.0", "", "::", "192.0.2.10", "example.test"])
+def test_open_mode_with_spaces_refuses_to_start_on_a_non_loopback_bind(host):
+    from apps.admin_console.core.access_control import require_loopback_bind
+
+    with pytest.raises(ValueError, match="loopback"):
+        require_loopback_bind(AccessConfig(auth_mode="open", spaces_enabled=True), host)
+
+
+@pytest.mark.parametrize("host", ["127.0.0.1", "::1", "localhost"])
+def test_open_mode_with_spaces_starts_on_loopback(host):
+    from apps.admin_console.core.access_control import require_loopback_bind
+
+    require_loopback_bind(AccessConfig(auth_mode="open", spaces_enabled=True), host)
+
+
+@pytest.mark.parametrize(
+    "config",
+    [AccessConfig(auth_mode="open"), AccessConfig(auth_mode="cloudflare", spaces_enabled=True)],
+)
+def test_the_bind_rule_binds_only_open_mode_with_spaces(config):
+    from apps.admin_console.core.access_control import require_loopback_bind
+
+    require_loopback_bind(config, "0.0.0.0")
+
+
+def test_preview_fixture_identities_live_in_their_own_namespace():
+    from apps.admin_console.core.preview_identity import PREVIEW_ISSUER, _fixture
+
+    identity = _fixture("qa-a", "qa1@example.test", False)
+
+    assert (identity.issuer, identity.subject) == (PREVIEW_ISSUER, "preview:qa-a")
+    assert identity.principal_id is None
+    assert identity.history_emails is None  # it never reserves an email
+
+
+def test_the_server_entry_point_checks_the_bind_before_serving(monkeypatch):
+    from apps.admin_console import server
+
+    monkeypatch.setattr(app.state, "access_config", AccessConfig("open", spaces_enabled=True))
+
+    with pytest.raises(ValueError, match="loopback"):
+        server.run_ui_server("0.0.0.0", 8000)

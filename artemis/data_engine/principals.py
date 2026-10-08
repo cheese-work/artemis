@@ -1,4 +1,4 @@
-"""Principal and delegation tables (CHE-1385; contract: docs/spaces-contract.md).
+"""Principal, email-history and delegation tables (CHE-1385; contract: docs/spaces-contract.md).
 
 Additive and idempotent: nothing reads them while spaces are disabled.
 """
@@ -15,15 +15,23 @@ CREATE TABLE IF NOT EXISTS principals (
     sub TEXT NOT NULL,
     kind TEXT NOT NULL CHECK (kind IN ('user', 'agent', 'service')),
     email TEXT,
-    history_email TEXT UNIQUE,
     created_at REAL NOT NULL,
     UNIQUE (issuer, sub)
 )""",
+    """
+CREATE TABLE IF NOT EXISTS principal_emails (
+    email TEXT PRIMARY KEY,
+    principal_id TEXT NOT NULL REFERENCES principals(id),
+    contested INTEGER NOT NULL DEFAULT 0,
+    first_seen_at REAL NOT NULL
+)""",
+    "CREATE INDEX IF NOT EXISTS idx_principal_emails_principal ON principal_emails (principal_id)",
     """
 CREATE TABLE IF NOT EXISTS delegations (
     id TEXT PRIMARY KEY,
     agent_principal_id TEXT NOT NULL REFERENCES principals(id),
     human_principal_id TEXT NOT NULL REFERENCES principals(id),
+    mode TEXT NOT NULL CHECK (mode IN ('read', 'run')),
     expires_at REAL NOT NULL,
     revoked_at REAL,
     created_at REAL NOT NULL
