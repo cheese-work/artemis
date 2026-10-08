@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import hmac
 import ipaddress
 import json
@@ -24,11 +24,18 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
+class ServicePrincipal:
+    name: str
+    routes: frozenset[tuple[str, str]]  # (METHOD, exact path)
+
+
+@dataclass(frozen=True)
 class AccessConfig:
     auth_mode: str = "open"
     audience: str | None = None
     issuer: str | None = None
     admin_emails: frozenset[str] = frozenset()
+    service_principals: dict[str, ServicePrincipal] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -37,6 +44,8 @@ class AccessIdentity:
     admin: bool
     auth_mode: str
     reason: str | None = None
+    principal: str | None = None
+    service_routes: frozenset[tuple[str, str]] = frozenset()
 
 
 class AdminAPIError(Exception):
@@ -87,7 +96,43 @@ def config_from_environment() -> AccessConfig:
         audience=audience,
         issuer=f"https://{team_domain}",
         admin_emails=admin_emails,
+        service_principals=_service_principals_from_environment(),
     )
+
+
+def _service_principals_from_environment() -> dict[str, ServicePrincipal]:
+    """Parse ``ARTEMIS_SERVICE_PRINCIPALS``: ``{client_id: {"name": str, "routes": ["GET /path"]}}``."""
+    raw = os.getenv("ARTEMIS_SERVICE_PRINCIPALS", "").strip()
+    if not raw:
+        return {}
+    problem = (
+        "ARTEMIS_SERVICE_PRINCIPALS must be a JSON object mapping a client id to "
+        '{"name": "<principal>", "routes": ["GET /api/path"]}.'
+    )
+    try:
+        mapping = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError(problem) from exc
+    principals: dict[str, ServicePrincipal] = {}
+    if not isinstance(mapping, dict):
+        raise ValueError(problem)
+    for client_id, entry in mapping.items():
+        name = entry.get("name") if isinstance(entry, dict) else None
+        routes = entry.get("routes") if isinstance(entry, dict) else None
+        if not (
+            client_id.strip()
+            and isinstance(name, str)
+            and name.strip()
+            and isinstance(routes, list)
+            and routes
+            and all(isinstance(route, str) and len(route.split()) == 2 for route in routes)
+        ):
+            raise ValueError(problem)
+        principals[client_id.strip()] = ServicePrincipal(
+            name.strip(),
+            frozenset((m.upper(), path) for m, path in (route.split() for route in routes)),
+        )
+    return principals
 
 
 class CloudflareAccessVerifier:
@@ -152,7 +197,7 @@ class CloudflareAccessVerifier:
             audience=config.audience,
             issuer=config.issuer,
             options={
-                "require": ["aud", "email", "exp", "iat", "iss", "nbf", "sub"],
+                "require": ["aud", "exp", "iat", "iss", "nbf", "sub"],
             },
             leeway=30,
         )
@@ -197,6 +242,13 @@ async def authenticate_request(
         return AccessIdentity(None, False, config.auth_mode, "jwt_invalid")
 
     email = claims.get("email")
+    if email is None and "common_name" in claims:
+        # Cloudflare Access service token: no email, the token's client id is `common_name`.
+        client_id = claims["common_name"]
+        principal = config.service_principals.get(client_id) if isinstance(client_id, str) else None
+        if principal is None:
+            return AccessIdentity(None, False, config.auth_mode, "service_principal_unmapped")
+        return AccessIdentity(None, False, config.auth_mode, None, principal.name, principal.routes)
     if not isinstance(email, str) or not email.strip():
         return AccessIdentity(None, False, config.auth_mode, "jwt_invalid")
     email = email.strip().casefold()
@@ -222,7 +274,37 @@ async def public_tier(request: HTTPConnection) -> AccessIdentity:
         request.app.state.access_verifier = verifier
     identity = await authenticate_request(request, config, verifier)
     request.state.identity = identity
+    _enforce_service_principal_routes(request, identity)
     return identity
+
+
+def _enforce_service_principal_routes(request: HTTPConnection, identity: AccessIdentity) -> None:
+    """A service token reaches only the exact routes its principal maps; nothing else."""
+    if identity.reason == "service_principal_unmapped":
+        logger.warning("Service token denied: unmapped client id route=%s", request.url.path)
+        allowed = False
+    elif identity.principal is None:
+        return
+    else:
+        method = request.scope.get("method", "GET")
+        allowed = (method, request.url.path) in identity.service_routes
+        logger.info(
+            "Service principal request principal=%s route=%s %s allowed=%s",
+            identity.principal,
+            method,
+            request.url.path,
+            allowed,
+        )
+    if allowed:
+        return
+    if request.scope["type"] == "websocket":
+        raise WebSocketException(code=WS_1008_POLICY_VIOLATION, reason="service_route_denied")
+    raise AdminAPIError(
+        403,
+        "This service credential cannot call this route.",
+        "service_route_denied",
+        "Use a route listed for the principal in ARTEMIS_SERVICE_PRINCIPALS.",
+    )
 
 
 async def require_admin(identity: AccessIdentity = Depends(public_tier)) -> AccessIdentity:
@@ -241,6 +323,15 @@ async def require_admin(identity: AccessIdentity = Depends(public_tier)) -> Acce
         "admin_required",
         "Ask an administrator to add the signed-in address to ARTEMIS_ADMIN_EMAILS.",
     )
+
+
+async def require_admin_or_service_read(
+    identity: AccessIdentity = Depends(public_tier),
+) -> AccessIdentity:
+    """Admin, or a service principal whose exact route `public_tier` already allowed."""
+    if identity.principal is not None:
+        return identity
+    return await require_admin(identity)
 
 
 async def require_qa(identity: AccessIdentity = Depends(public_tier)) -> AccessIdentity:
@@ -349,7 +440,10 @@ _PUBLIC_GET_PATHS = {
     "/{full_path:path}",
 }
 
-_ADMIN_GET_PATHS = {"/api/system/failures"}
+_ADMIN_GET_PATHS: set[str] = set()
+
+# Admin reads that a mapped service principal may also call (see require_admin_or_service_read).
+_SERVICE_READ_GET_PATHS = {"/api/system/failures"}
 
 _ADMIN_MUTATING_PATHS = {
     "/api/system/failures/collect",
@@ -424,6 +518,8 @@ def route_tier(path: str, methods: set[str], is_websocket: bool = False) -> str 
         return "public"
     if methods == {"GET"} and path in _ADMIN_GET_PATHS:
         return "admin"
+    if methods == {"GET"} and path in _SERVICE_READ_GET_PATHS:
+        return "admin_or_service"
     if methods == {"POST"} and path in _PUBLIC_MUTATING_PATHS:
         return "public"
     if methods == {"POST"} and path in _QA_MUTATING_PATHS:
