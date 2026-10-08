@@ -78,7 +78,7 @@ def _list_sessions_sync(scope: OwnerScope = OPEN_SCOPE):
                 row
                 for row in rows
                 if str(row.get("session_id")) in owners
-                and scope.sees(owners[str(row["session_id"])])
+                and scope.sees(owners[str(row["session_id"])], str(row["session_id"]))
             ]
     video_rec_map = session_repo.get_video_recordings_map()
     latest_recordings = session_repo.get_latest_video_recordings_map()

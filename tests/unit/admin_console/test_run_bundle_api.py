@@ -492,6 +492,8 @@ async def test_unresolved_ids_take_no_lease(library, qa, monkeypatch):
 
     library.seed("one", sid="aaaaaaaa-0000-4000-8000-000000000001")
     library.seed("two", sid="aaaaaaaa-0000-4000-8000-000000000002")
+    with sqlite3.connect(library.db) as conn:
+        conn.execute("UPDATE run_meta SET requested_by = ?", ("qa@example.com",))
     leased: list[str] = []
     real = run_leases.acquire
     monkeypatch.setattr(run_leases, "acquire", lambda db, sid: leased.append(sid) or real(db, sid))
@@ -508,6 +510,8 @@ async def test_unresolved_ids_take_no_lease(library, qa, monkeypatch):
 @pytest.mark.asyncio
 async def test_a_prefix_download_leases_the_full_id(library, qa, monkeypatch):
     sid = library.seed("prefixed", sid="bbbbbbbb-0000-4000-8000-000000000001")
+    with sqlite3.connect(library.db) as conn:
+        conn.execute("UPDATE run_meta SET requested_by = ?", ("qa@example.com",))
     seen: list[str] = []
     real = run_bundle._build_zip
 

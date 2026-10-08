@@ -550,7 +550,9 @@ def _scope_status(payload: dict[str, Any], scope: OwnerScope) -> dict[str, Any]:
 
     def visible(session_id: Any) -> bool:
         return (
-            bool(session_id) and str(session_id) in owners and scope.sees(owners[str(session_id)])
+            bool(session_id)
+            and str(session_id) in owners
+            and scope.sees(owners[str(session_id)], str(session_id))
         )
 
     scoped = {
@@ -730,7 +732,7 @@ async def stream_events(
         if key in decided:
             return decided[key]
         owners = owners_of([key])
-        allowed = scope.sees(owners.get(key))
+        allowed = scope.sees(owners.get(key), key)
         if key in owners:  # a run not yet recorded may still gain its owner
             decided[key] = allowed
         return allowed

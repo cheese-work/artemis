@@ -26,6 +26,7 @@ from apps.admin_console.core.ownership import (
     OwnerScope,
     owner_scope,
     present_session_data,
+    record_run_read,
     scope_or_open,
 )
 from apps.admin_console.services import run_bundle
@@ -41,6 +42,8 @@ def library_error(exc: RunLibraryError, actor: OwnerScope | None = None) -> JSON
     if retry_after is not None:
         headers["Retry-After"] = str(retry_after)
     content = {"error": exc.code, **exc.extra}
+    if exc.status == 404 and exc.code == "not_found":
+        content["code"] = "run_not_visible"
     if isinstance(content.get("candidates"), list):
         content["candidates"] = [
             present_session_data(scope_or_open(actor), candidate.get("session_id"), candidate)
@@ -71,10 +74,21 @@ class _BundleResponse(FileResponse):
 @router.get("/api/runs/{session_id}/bundle.zip")
 async def download_bundle(session_id: str, identity: AccessIdentity = Depends(public_tier)):
     """Prompt, steps, images, video and logs. Text is redacted; media is not."""
+    actor = owner_scope(identity)
     try:
-        bundle = await asyncio.to_thread(run_bundle.prepare, session_id)
+        bundle = await asyncio.to_thread(
+            run_bundle.prepare,
+            session_id,
+            prefix_owner=(actor.email or "") if actor.enforced and not actor.admin else None,
+        )
     except RunLibraryError as exc:
-        return library_error(exc, owner_scope(identity))
+        return library_error(exc, actor)
+    if session_id == bundle.session_id:
+        try:
+            await asyncio.to_thread(record_run_read, actor, session_id)
+        except BaseException:
+            await asyncio.shield(asyncio.to_thread(bundle.finish))
+            raise
     logger.info(
         "event=bundle_download session_id=%s requester=%s bytes=%d entries=%d skipped=%d ms=%d",
         bundle.session_id,

@@ -230,10 +230,11 @@ async def test_team_search_does_not_match_another_owners_secret(
 
 
 @pytest.mark.asyncio
-async def test_ambiguous_prefix_redacts_non_actionable_candidates(cloudflare, monkeypatch):
-    ids = [uuid.UUID(f"deadbeef-0000-4000-8000-{suffix:012d}") for suffix in (1, 2)]
+async def test_ambiguous_prefix_excludes_non_actionable_candidates(cloudflare, monkeypatch):
+    ids = [uuid.UUID(f"deadbeef-0000-4000-8000-{suffix:012d}") for suffix in (1, 2, 3)]
     monkeypatch.setattr(uuid, "uuid4", MagicMock(side_effect=ids))
     other, mine = _run(cloudflare, QA1), _run(cloudflare, QA2)
+    also_mine = _run(cloudflare, QA2)
     with sqlite3.connect(cloudflare) as conn:
         conn.execute(
             "UPDATE sessions SET initial_goal = ?",
@@ -243,8 +244,8 @@ async def test_ambiguous_prefix_redacts_non_actionable_candidates(cloudflare, mo
     response = await _get(QA2, "/api/runs/deadbeef")
     assert response.status_code == 409
     candidates = {row["session_id"]: row for row in response.json()["candidates"]}
-    assert candidates[other]["read_only"] is True
-    assert "candidate-secret" not in candidates[other]["prompt"]
+    assert set(candidates) == {mine, also_mine}
+    assert other not in candidates
     assert candidates[mine]["read_only"] is False
     assert "candidate-secret" in candidates[mine]["prompt"]
 
@@ -274,9 +275,12 @@ async def test_bundle_ambiguous_candidates_use_the_run_owner_rule(cloudflare, mo
     ids = [
         uuid.UUID("deadbeef-0000-4000-8000-000000000003"),
         uuid.UUID("deadbeef-0000-4000-8000-000000000004"),
+        uuid.UUID("deadbeef-0000-4000-8000-000000000005"),
+        uuid.UUID("deadbeef-0000-4000-8000-000000000006"),
     ]
     monkeypatch.setattr(uuid, "uuid4", MagicMock(side_effect=ids))
     other, mine = _run(cloudflare, QA1), _run(cloudflare, QA2)
+    also_other, also_mine = _run(cloudflare, QA1), _run(cloudflare, QA2)
     with sqlite3.connect(cloudflare) as conn:
         conn.execute("UPDATE sessions SET initial_goal = ?", ('password="zebra7secret"',))
     if caller is None:
@@ -286,8 +290,16 @@ async def test_bundle_ambiguous_candidates_use_the_run_owner_rule(cloudflare, mo
 
     assert response.status_code == 409
     candidates = {row["session_id"]: row for row in response.json()["candidates"]}
-    assert set(candidates) == {other, mine}
-    for session_id, owner in ((other, QA1), (mine, QA2)):
+    expected = {
+        QA1: {other, also_other},
+        QA2: {mine, also_mine},
+        ADMIN: {other, mine, also_other, also_mine},
+        None: {other, mine, also_other, also_mine},
+    }
+    assert set(candidates) == expected[caller]
+    for session_id, owner in ((other, QA1), (mine, QA2), (also_other, QA1), (also_mine, QA2)):
+        if session_id not in candidates:
+            continue
         assert ("zebra7secret" in candidates[session_id]["prompt"]) is (
             caller in (owner, ADMIN, None)
         )

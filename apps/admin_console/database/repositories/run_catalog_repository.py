@@ -133,6 +133,7 @@ class RunCatalogRepository:
         host: str | None = None,
         requester: str | None = None,
         owner: str | None = None,
+        include_shared: bool = False,
         owned_only: bool = False,
         since: float | None = None,
         until: float | None = None,
@@ -165,8 +166,15 @@ class RunCatalogRepository:
             where.append("m.requested_by = ?")
             params.append(requester)
         if owner:
-            where.append("m.requested_by = ?")
-            params.append(owner)
+            if include_shared:
+                where.append(
+                    "(m.requested_by = ? OR EXISTS (SELECT 1 FROM run_link_shares shared "
+                    "WHERE shared.email = ? AND shared.session_id = m.session_id))"
+                )
+                params += [owner, owner]
+            else:
+                where.append("m.requested_by = ?")
+                params.append(owner)
         if owned_only:
             where.append("m.requested_by IS NOT NULL AND m.requested_by != ''")
         if since is not None:
@@ -239,8 +247,8 @@ class RunCatalogRepository:
         )
         return RunPage(runs, next_cursor, warnings)
 
-    def get_run(self, session_id: str) -> RunLookup:
-        """Resolve a full id, else an 8-character prefix. Tombstones outrank session rows."""
+    def get_run(self, session_id: str, *, prefix_owner: str | None = None) -> RunLookup:
+        """Resolve a full id or owner-filtered prefix, including the tombstone decision."""
         session_id = run_catalog.validate_session_id(session_id, base_dir=self.traces_dir)
         with db_session(self.db_path) as conn:
             self._require_ready(conn)
@@ -249,6 +257,9 @@ class RunCatalogRepository:
                 prefix = session_id.lower()
                 upper = prefix[:-1] + chr(ord(prefix[-1]) + 1)
                 where, params = "m.session_id >= ? AND m.session_id < ?", [prefix, upper]
+                if prefix_owner is not None:
+                    where += " AND m.requested_by = ?"
+                    params.append(prefix_owner)
             live = self._fetch(conn, where, params, removed=False)
             if not live:
                 gone = self._fetch(conn, where, params, removed=True)
@@ -273,6 +284,30 @@ class RunCatalogRepository:
                 ):
                     found[row["session_id"]] = row["requested_by"]
         return found
+
+    def shared_run_ids(self, email: str) -> frozenset[str]:
+        with db_session(self.db_path) as conn:
+            self._require_ready(conn)
+            return frozenset(
+                row[0]
+                for row in conn.execute(
+                    "SELECT shared.session_id FROM run_link_shares shared "
+                    "JOIN run_meta m ON m.session_id = shared.session_id "
+                    "WHERE shared.email = ? AND m.deleted_at IS NULL",
+                    (email,),
+                )
+            )
+
+    def record_link_share(self, email: str, session_id: str) -> None:
+        with db_session(self.db_path) as conn:
+            self._require_ready(conn)
+            conn.execute(
+                "INSERT OR IGNORE INTO run_link_shares (email, session_id) "
+                "SELECT ?, m.session_id FROM run_meta m JOIN sessions s "
+                "ON s.session_id = m.session_id WHERE m.session_id = ? AND m.deleted_at IS NULL",
+                (email, session_id),
+            )
+            conn.commit()
 
     # -- writes (new writes need canonical uuids) -------------------------------
 

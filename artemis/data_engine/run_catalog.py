@@ -49,6 +49,12 @@ _TRIGGERS_PLAIN = ("run_catalog_sessions_ai", "run_catalog_sessions_ad")
 
 _TABLES_DDL = (
     """
+CREATE TABLE IF NOT EXISTS run_link_shares (
+    email TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    PRIMARY KEY (email, session_id)
+)""",
+    """
 CREATE TABLE IF NOT EXISTS run_meta (
     rid INTEGER PRIMARY KEY AUTOINCREMENT,
     session_id TEXT NOT NULL UNIQUE,
@@ -170,6 +176,7 @@ def _complete(conn: sqlite3.Connection, fts: bool) -> bool:
     wanted = _TRIGGERS_FTS if fts else _TRIGGERS_PLAIN
     return (
         _has(conn, "table", "run_meta")
+        and _has(conn, "table", "run_link_shares")
         and _has(conn, "index", "idx_sessions_start_order")
         and all(_has(conn, "trigger", name) for name in wanted)
     )
