@@ -28,7 +28,7 @@ concurrency:
 
 jobs:
   core:
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    if: ${{ !startsWith(github.head_ref || github.ref_name, 'upstream-sync/') && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
     runs-on: [self-hosted, cheese-x99]
     timeout-minutes: 20
     defaults:
@@ -50,7 +50,7 @@ jobs:
           name: smartqa-host-core
           path: host-agent/dist/
   gateway:
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    if: ${{ !startsWith(github.head_ref || github.ref_name, 'upstream-sync/') && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
     runs-on: [self-hosted, cheese-x99]
     timeout-minutes: 20
     steps:
