@@ -92,6 +92,11 @@ jobs:
           mapfile -d '' -t test_files < <(find tests/unit -type f \( -name 'test_*.py' -o -name '*_test.py' -o -name '*.test.py' \) -print0 | LC_ALL=C sort -zr)
           uv run pytest "${test_files[@]}" -q
 
+      - name: Enforce B2 ADB allowlist and tunnel fuzz merge gate
+        run: >-
+          uv run pytest tests/unit/runtime/test_host_tunnel.py
+          tests/unit/admin_console/test_host_tunnel_service.py -q
+
   frontend:
     name: Frontend tests and production build
     runs-on: blacksmith-2vcpu-ubuntu-2404

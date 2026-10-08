@@ -80,7 +80,7 @@ limitations under the License.
               @if (getTaskStatus(session) === 'running') {
                 <span class="status-dot"></span>
               }
-              {{ getTaskStatus(session) | uppercase }}
+              {{ statusView(session).label }}
             </span>
             <div class="task-card-header-actions">
               @if (getDeviceChip(session); as chip) {
@@ -165,7 +165,7 @@ limitations under the License.
                   @if (getTaskStatus(session) === 'running') {
                     <span class="status-dot"></span>
                   }
-                  {{ getTaskStatus(session) | uppercase }}
+                  {{ statusView(session).label }}
                 </span>
                 <div class="task-card-header-actions">
                   @if (getDeviceChip(session); as chip) {
