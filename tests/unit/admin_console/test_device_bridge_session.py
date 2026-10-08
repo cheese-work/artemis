@@ -18,6 +18,9 @@ Covers: relay forwarding, same-origin boundaries, and session cleanup.
 """
 
 import asyncio
+import json
+from pathlib import Path
+import re
 import socket
 import struct
 import threading
@@ -791,6 +794,125 @@ def test_bridge_close_logs_sanitized_reason(reason, caplog):
 
     assert "event=bridge_close" in caplog.text
     assert f"reason={reason}" in caplog.text
+
+
+def test_server_accepts_every_close_reason_the_browser_can_send():
+    source = (
+        Path(__file__).parents[3] / "apps/showcase_ui/src/app/services/usb-device-relay.service.ts"
+    ).read_text(encoding="utf-8")
+    union = re.search(r"type ClientCloseReason =([^;]+);", source).group(1)
+    assert set(re.findall(r"'(\w+)'", union)) == device_bridge._CLIENT_CLOSE_REASONS
+
+
+@pytest.mark.parametrize("connected", [False, True])
+@pytest.mark.parametrize(
+    "reason", ["manual_disconnect", "usb_read_error", "usb_write_error", "another_tab"]
+)
+def test_client_close_diagnostic_reaches_server_log(connected, reason, caplog):
+    async def scenario():
+        service = BridgeSessionService()
+        session = await service.create_session()
+        if connected:
+            session.connected.set()
+            session.reader = asyncio.StreamReader()
+            session.writer = MagicMock()
+            session.writer.drain = AsyncMock()
+            session.writer.wait_closed = AsyncMock()
+        websocket = MagicMock()
+        websocket.receive = AsyncMock(
+            return_value={
+                "type": "websocket.receive",
+                "text": json.dumps(
+                    {
+                        "type": "client_close",
+                        "reason": reason,
+                        "usb_error": "NetworkError: transferOut failed",
+                        "visibility_state": "hidden",
+                    }
+                ),
+            }
+        )
+        await device_bridge._relay_packets(websocket, session, asyncio.Lock())
+        await service.revoke(session.session_id)
+
+    asyncio.run(scenario())
+    assert "event=bridge_close" in caplog.text
+    assert "reason=client" in caplog.text
+    assert f'"reason": "{reason}"' in caplog.text
+    assert "NetworkError: transferOut failed" in caplog.text
+    assert '"visibility_state": "hidden"' in caplog.text
+
+
+@pytest.mark.parametrize("connected", [False, True])
+def test_websocket_disconnect_logs_close_code_and_reason(connected, caplog):
+    async def scenario():
+        service = BridgeSessionService()
+        session = await service.create_session()
+        if connected:
+            session.connected.set()
+            session.reader = asyncio.StreamReader()
+            session.writer = MagicMock()
+            session.writer.wait_closed = AsyncMock()
+        websocket = MagicMock()
+        websocket.receive = AsyncMock(
+            return_value={"type": "websocket.disconnect", "code": 1006, "reason": "reset\npeer"}
+        )
+        await device_bridge._relay_packets(websocket, session, asyncio.Lock())
+        await service.revoke(session.session_id)
+
+    asyncio.run(scenario())
+    assert "close_code=1006" in caplog.text
+    assert 'close_reason="reset\\npeer"' in caplog.text
+
+
+@pytest.mark.parametrize(
+    "report",
+    [
+        {"reason": "invented", "usb_error": None},
+        {"reason": "manual_disconnect", "usb_error": {"message": "bad"}},
+        {"reason": "manual_disconnect", "usb_error": "x" * 513},
+        {"reason": "manual_disconnect", "usb_error": None, "visibility_state": "invented"},
+    ],
+)
+def test_client_close_rejects_untrusted_diagnostic_fields(report):
+    async def scenario():
+        session = BridgeSession(session_id="test")
+        websocket = MagicMock()
+        websocket.receive = AsyncMock(
+            return_value={
+                "type": "websocket.receive",
+                "text": json.dumps({"type": "client_close", **report}),
+            }
+        )
+        with pytest.raises(ValueError):
+            await device_bridge._relay_packets(websocket, session, asyncio.Lock())
+
+    asyncio.run(scenario())
+
+
+def test_client_close_redacts_secrets_and_escapes_log_lines(caplog):
+    async def scenario():
+        service = BridgeSessionService()
+        session = await service.create_session()
+        websocket = MagicMock()
+        websocket.receive = AsyncMock(
+            return_value={
+                "type": "websocket.receive",
+                "text": json.dumps(
+                    {
+                        "type": "client_close",
+                        "reason": "usb_read_error",
+                        "usb_error": "NetworkError: token=synthetic-secret\nforged-log",
+                    }
+                ),
+            }
+        )
+        await device_bridge._relay_packets(websocket, session, asyncio.Lock())
+        await service.revoke(session.session_id)
+
+    asyncio.run(scenario())
+    assert "synthetic-secret" not in caplog.text
+    assert "\\nforged-log" in caplog.text
 
 
 def test_tcp_relay_forwards_multi_megabyte_transfer_as_whole_packets():

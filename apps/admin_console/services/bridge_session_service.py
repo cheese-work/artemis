@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
+import json
 import logging
 import os
 import time
@@ -26,6 +27,7 @@ import uuid
 from artemis.runtime.adb_endpoint import AdbEndpoint
 from artemis.runtime.device_lock import DeviceExecutionLock
 from artemis.runtime.endpoint_transport import EndpointTransport
+from artemis.utils.redaction import redact_text
 
 DEFAULT_SESSION_TTL_SECONDS = 300
 DEFAULT_SESSION_MAX_LIFETIME_SECONDS = 4 * 60 * 60
@@ -109,6 +111,8 @@ class BridgeSession:
     adb_connect_attempted: bool = False
     revoked: bool = False
     close_reason: str | None = None
+    client_close: dict[str, object] | None = None
+    websocket_close_reason: str = ""
     close_code: int | None = None
     bytes_browser_to_device: int = 0
     bytes_device_to_browser: int = 0
@@ -248,12 +252,14 @@ class BridgeSessionService:
 
         TaskQueueService.interrupt_bridge_binding(session.session_id)
         logger.info(
-            "event=bridge_close session_id=%s serial=%s reason=%s close_code=%s "
-            "bytes_browser_to_device=%d bytes_device_to_browser=%d duration_ms=%d",
+            "event=bridge_close session_id=%s serial=%s reason=%s close_code=%s close_reason=%s "
+            "client_close=%s bytes_browser_to_device=%d bytes_device_to_browser=%d duration_ms=%d",
             session.session_id,
             session.serial,
             session.close_reason,
             session.close_code,
+            json.dumps(redact_text(session.websocket_close_reason[:512])),
+            json.dumps(session.client_close),
             session.bytes_browser_to_device,
             session.bytes_device_to_browser,
             int((time.monotonic() - session.created_at) * 1000),
