@@ -232,10 +232,39 @@ function formatInlineMarkdown(text: string): string {
 /** GFM table separator row, e.g. `| --- | :---: |`. */
 const TABLE_SEPARATOR = /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)*\|?\s*$/;
 
-/** Split on unescaped pipes only; `\|` stays a literal pipe in the cell. */
+/** Split on unescaped pipes only; a pipe is escaped when preceded by an odd run of backslashes. `\|` becomes a literal pipe. */
 function splitTableRow(line: string): string[] {
-  const cells = line.trim().replace(/^\|/, '').replace(/(^|[^\\])\|$/, '$1').split(/(?<!\\)\|/);
-  return cells.map(cell => cell.replace(/\\\|/g, '|').trim());
+  const text = line.trim().replace(/^\|/, '');
+  const cells: string[] = [];
+  let current = '';
+  let backslashes = 0;
+  let endedOnSeparator = false;
+  for (const char of text) {
+    endedOnSeparator = false;
+    if (char === '|' && backslashes % 2 === 0) {
+      cells.push(current);
+      current = '';
+      endedOnSeparator = true;
+    } else if (char === '|') {
+      current = `${current.slice(0, -1)}|`;
+    } else {
+      current += char;
+    }
+    backslashes = char === '\\' ? backslashes + 1 : 0;
+  }
+  if (!endedOnSeparator) cells.push(current);
+  return cells.map(cell => cell.trim());
+}
+
+/** True when the line starts a non-table block, which ends a table body. */
+function endsTableBody(line: string): boolean {
+  const trimmed = line.trim();
+  return trimmed === ''
+    || trimmed.startsWith('```')
+    || /^#{1,6}\s+/.test(trimmed)
+    || /^(\-{3,}|\*{3,}|_{3,})$/.test(trimmed)
+    || trimmed.startsWith('&gt;')
+    || /^\s*([*-]|\d+\.)\s+/.test(line);
 }
 
 /** Pad with empty cells or drop extras so every row has the header's column count. */
@@ -316,7 +345,7 @@ export function renderMarkdownToHtml(text: string): string {
       const header = headerCells.map(cell => `<th>${formatInlineMarkdown(cell)}</th>`).join('');
       const body: string[] = [];
       i += 2;
-      while (i < rawLines.length && rawLines[i].trim() !== '' && rawLines[i].includes('|')) {
+      while (i < rawLines.length && !endsTableBody(rawLines[i])) {
         const cells = normalizeCells(splitTableRow(rawLines[i]), headerCells.length).map(cell => `<td>${formatInlineMarkdown(cell)}</td>`).join('');
         body.push(`<tr>${cells}</tr>`);
         i++;

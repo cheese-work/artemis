@@ -87,6 +87,23 @@ describe('markdown-parser.util verification & check lines', () => {
     expect(html).not.toContain('thừa');
   });
 
+  it('should treat an escaped backslash before a pipe as a column separator', () => {
+    const html = renderMarkdownToHtml('| Path | Status |\n| --- | --- |\n| C:\\\\| failed |\n| a\\\\\\|b | ok |');
+    expect(html).toContain('<tr><td>C:\\\\</td><td>failed</td></tr>');
+    expect(html).toContain('<tr><td>a\\\\|b</td><td>ok</td></tr>');
+  });
+
+  it('should keep body rows without a pipe as single-cell rows until a block boundary', () => {
+    const html = renderMarkdownToHtml('A | B\n--- | ---\none\ntwo | three\n# Next');
+    expect(html).toContain('<tr><td>one</td><td></td></tr>');
+    expect(html).toContain('<tr><td>two</td><td>three</td></tr>');
+    expect(html).toContain('<h1>Next</h1>');
+    const ended = renderMarkdownToHtml('A | B\n--- | ---\none\n- item\n\nafter');
+    expect(ended).toContain('<tr><td>one</td><td></td></tr>');
+    expect(ended).toContain('<li>item</li>');
+    expect(ended).toContain('<div>after</div>');
+  });
+
   it('should only keep a safe language token on code fences', () => {
     const html = renderMarkdownToHtml('```"><img src=x onerror=alert(1)>\ncode\n```\n\n```c++\nx\n```');
     expect(html).not.toContain('<img');
