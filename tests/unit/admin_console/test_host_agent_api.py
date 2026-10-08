@@ -8,14 +8,23 @@ ARTEMIS_HOST_AGENT.
 from __future__ import annotations
 
 import base64
+import asyncio
+import json
+import socket
 import sqlite3
+import struct
 import time
+from unittest.mock import patch
 
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
 import pytest
+import pytest_asyncio
+import uvicorn
+from websockets.asyncio.client import connect as websocket_connect
+from websockets.exceptions import ConnectionClosedError
 from starlette.websockets import WebSocketDisconnect
 
 from apps.admin_console.core import agent_auth
@@ -24,8 +33,63 @@ from apps.admin_console.core.access_control import AdminAPIError, admin_api_erro
 from apps.admin_console.server import proxy_aware_app
 from apps.admin_console.services import host_registry as hr
 from apps.admin_console.services.host_registry import host_registry
+from apps.admin_console.services.host_tunnel import HostTunnels
+from artemis.runtime.host_endpoints import HostEndpointRegistry
+from artemis.runtime.host_protocol import CONTRACT
 
 HOST = {"Host": "localhost"}
+
+
+def test_installer_artifacts_require_code_and_feature_flag(admin, monkeypatch, tmp_path):
+    distribution = tmp_path / "dist"
+    distribution.mkdir()
+    (distribution / "install.sh").write_text("#!/bin/sh\nprintf installed\n")
+    (distribution / "SHA256SUMS").write_text("manifest\n")
+    monkeypatch.setenv("ARTEMIS_AGENT_DIST_DIR", str(distribution))
+    assert admin.get("/api/agent/install.sh").status_code == 401
+    code = _new_code(admin)["code"]
+    headers = {"x-artemis-enrollment-code": code}
+    response = admin.get("/api/agent/install.sh", headers=headers)
+    assert response.status_code == 200
+    assert response.text.startswith("#!/bin/sh")
+    assert admin.get("/api/agent/dist/SHA256SUMS", headers=headers).text == "manifest\n"
+    monkeypatch.setenv("ARTEMIS_HOST_AGENT", "0")
+    assert admin.get("/api/agent/install.sh", headers=headers).status_code == 404
+
+
+def test_installer_rejects_unknown_artifacts_and_symlinks(admin, monkeypatch, tmp_path):
+    distribution = tmp_path / "dist"
+    distribution.mkdir()
+    secret = tmp_path / "secret"
+    secret.write_text("CANARY-SECRET")
+    (distribution / "smartqa-host-linux-amd64").symlink_to(secret)
+    monkeypatch.setenv("ARTEMIS_AGENT_DIST_DIR", str(distribution))
+    headers = {"x-artemis-enrollment-code": _new_code(admin)["code"]}
+    for artifact in [
+        "secret",
+        "..%2Fsecret",
+        "smartqa-host-linux-amd64",
+        "smartqa-host-linux-arm64",
+    ]:
+        response = admin.get(f"/api/agent/dist/{artifact}", headers=headers)
+        assert response.status_code == 404
+        assert "CANARY-SECRET" not in response.text
+
+
+def test_installer_serves_exact_three_build_targets(admin, monkeypatch, tmp_path):
+    names = [
+        "smartqa-host-linux-amd64",
+        "smartqa-host-darwin-arm64",
+        "smartqa-host-windows-amd64.exe",
+    ]
+    for name in names:
+        (tmp_path / name).write_bytes(b"test-binary")
+    monkeypatch.setenv("ARTEMIS_AGENT_DIST_DIR", str(tmp_path))
+    headers = {"x-artemis-enrollment-code": _new_code(admin)["code"]}
+    for name in names:
+        response = admin.get(f"/api/agent/dist/{name}", headers=headers)
+        assert response.status_code == 200
+        assert response.content == b"test-binary"
 
 
 def _b64(raw: bytes) -> str:
@@ -125,6 +189,187 @@ def _handshake(client, key, host_id, **kw):
     ws = context.__enter__()
     ws.send_json(_hello(client, key, host_id, **kw))
     return context, ws, ws.receive_json()
+
+
+@pytest_asyncio.fixture
+async def wire_server(monkeypatch):
+    ready, lost = asyncio.Event(), asyncio.Event()
+    clock = {"now": 100.0}
+    outcomes = []
+    tunnels = HostTunnels(
+        endpoints=HostEndpointRegistry(),
+        clock=lambda: clock["now"],
+        interrupt=outcomes.append,
+        set_status=lambda *args: None,
+        note_loss=lambda session: lost.set(),
+        recover_loss=lambda session: None,
+    )
+    monkeypatch.setattr(agent_router, "host_tunnels", tunnels)
+
+    class ReadyServer(uvicorn.Server):
+        async def startup(self, sockets=None):
+            await super().startup(sockets=sockets)
+            ready.set()
+
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    port = listener.getsockname()[1]
+    from apps.admin_console import server as console_server
+
+    with (
+        patch.object(console_server, "configure_logging"),
+        patch.object(console_server, "write_server_info"),
+        patch.object(console_server, "clear_server_info"),
+        patch.object(console_server.ArtemisUvicornServer, "run", autospec=True) as run,
+    ):
+        console_server.run_ui_server("127.0.0.1", port)
+    config = run.call_args.args[0].config
+    config.lifespan = "off"
+    config.log_level = "error"
+    config.timeout_graceful_shutdown = 1
+    server = ReadyServer(config)
+    task = asyncio.create_task(server.serve(sockets=[listener]))
+    try:
+        await asyncio.wait_for(ready.wait(), 5)
+        yield f"localhost:{port}", tunnels, clock, outcomes, lost
+    finally:
+        server.should_exit = True
+        try:
+            await asyncio.wait_for(task, 5)
+        finally:
+            await tunnels.close()
+            listener.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("close", ["websocket", "tcp_abort"])
+async def test_real_host_socket_close_enters_grace_and_expires_once(admin, wire_server, close):
+    audience, tunnels, clock, outcomes, lost = wire_server
+    admin.headers["Host"] = audience
+    key, host_id = _enrolled(admin)
+    async with websocket_connect(f"ws://{audience}/api/agent/connect") as ws:
+        await ws.send(json.dumps(_hello(admin, key, host_id, audience=audience)))
+        connected = json.loads(await ws.recv())
+        assert connected["type"] == "connected", connected
+        tunnels.bind_run(host_id, "run")
+        tunnel = tunnels.tunnels[host_id]
+        if close == "websocket":
+            await ws.close()
+        else:
+            ws.transport.abort()
+    await asyncio.wait_for(lost.wait(), 1)
+    assert tunnels.reconnecting(host_id) == 130
+    assert outcomes == []
+    clock["now"] = 130
+    tunnels.expire()
+    tunnels.expire()
+    assert outcomes == ["run"]
+    assert tunnel.mux.closed
+    assert not tunnel.listener.is_serving()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "payload",
+    [
+        bytes(CONTRACT.max_frame + 1),
+        "€" * (CONTRACT.max_frame // 3 + 1),
+        ["x" * 32768, "x" * 32769],
+    ],
+    ids=["binary", "utf8", "fragmented"],
+)
+async def test_agent_rejects_oversize_host_message_with_bridge_transport_cap(
+    admin, wire_server, monkeypatch, payload
+):
+    from unittest.mock import Mock
+
+    audience, tunnels, _, _, lost = wire_server
+    admin.headers["Host"] = audience
+    decode = Mock(wraps=agent_router._json_message)
+    frame_decode = Mock(wraps=agent_router.Frame.decode)
+    monkeypatch.setattr(agent_router, "_json_message", decode)
+    monkeypatch.setattr(agent_router.Frame, "decode", frame_decode)
+    key, host_id = _enrolled(admin)
+    async with websocket_connect(f"ws://{audience}/api/agent/connect") as ws:
+        await ws.send(json.dumps(_hello(admin, key, host_id, audience=audience)))
+        connected = json.loads(await ws.recv())
+        assert connected["type"] == "connected", connected
+        tunnels.bind_run(host_id, "run")
+        await ws.send(payload)
+        assert json.loads(await asyncio.wait_for(ws.recv(), 2)) == {
+            "type": "error",
+            "code": "bad_frame",
+        }
+        with pytest.raises(ConnectionClosedError) as closed:
+            await asyncio.wait_for(ws.recv(), 2)
+        assert closed.value.rcvd.code == 4400
+    await asyncio.wait_for(lost.wait(), 1)
+    assert decode.call_count == (1 if isinstance(payload, bytes) else 2)
+    assert frame_decode.call_count == (1 if isinstance(payload, bytes) else 0)
+
+
+@pytest.mark.asyncio
+async def test_host_flag_preserves_maximum_device_bridge_packet(admin, wire_server, monkeypatch):
+    from apps.admin_console.routers import device_bridge
+    from apps.admin_console.services import bridge_session_service as bridge_module
+    from apps.admin_console.services.bridge_session_service import (
+        MAX_ADB_PACKET_BYTES,
+        BridgeSessionService,
+    )
+
+    audience, _, _, _, _ = wire_server
+    bridge = BridgeSessionService()
+    monkeypatch.setattr(device_bridge, "bridge_session_service", bridge)
+
+    async def fake_adb(*arguments):
+        return f"connected to {arguments[1]}" if arguments[0] == "connect" else "disconnected"
+
+    monkeypatch.setattr(bridge_module, "_run_adb_command", fake_adb)
+    command = int.from_bytes(b"WRTE", "little")
+    payload = b"x" * (1024 * 1024)
+    packet = struct.pack("<6I", command, 1, 1, len(payload), 0, command ^ 0xFFFFFFFF) + payload
+    assert len(packet) == MAX_ADB_PACKET_BYTES
+    async with websocket_connect(
+        f"ws://{audience}/api/device-bridge/session",
+        max_size=MAX_ADB_PACKET_BYTES,
+        compression=None,
+    ) as ws:
+        leased = json.loads(await asyncio.wait_for(ws.recv(), 2))
+        assert leased["type"] == "session_leased"
+        assert json.loads(await asyncio.wait_for(ws.recv(), 2))["type"] == "device_attached"
+        peer_reader, peer_writer = await asyncio.open_connection(
+            leased["listener"]["host"], leased["listener"]["port"]
+        )
+        try:
+            await ws.send(packet)
+            assert await asyncio.wait_for(peer_reader.readexactly(len(packet)), 2) == packet
+            peer_writer.write(packet)
+            await peer_writer.drain()
+            assert await asyncio.wait_for(ws.recv(), 2) == packet
+            await ws.send("close")
+            await asyncio.wait_for(ws.wait_closed(), 2)
+        finally:
+            await bridge.revoke(leased["session_id"])
+            peer_writer.close()
+            await peer_writer.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_uvicorn_bounds_messages_at_the_bridge_limit(admin, wire_server):
+    from apps.admin_console.services.bridge_session_service import MAX_ADB_PACKET_BYTES
+
+    audience, tunnels, _, _, lost = wire_server
+    admin.headers["Host"] = audience
+    key, host_id = _enrolled(admin)
+    async with websocket_connect(f"ws://{audience}/api/agent/connect", compression=None) as ws:
+        await ws.send(json.dumps(_hello(admin, key, host_id, audience=audience)))
+        assert json.loads(await ws.recv())["type"] == "connected"
+        tunnels.bind_run(host_id, "run")
+        await ws.send(bytes(MAX_ADB_PACKET_BYTES + 1))
+        with pytest.raises(ConnectionClosedError) as closed:
+            await asyncio.wait_for(ws.recv(), 2)
+        assert closed.value.rcvd.code == 1009
+    await asyncio.wait_for(lost.wait(), 1)
 
 
 # -- flag ---------------------------------------------------------------
@@ -649,6 +894,132 @@ def test_registry_refuses_device_writes_from_a_stale_generation_or_revoked_host(
     finally:
         second_context.__exit__(None, None, None)
         first_context.__exit__(None, None, None)
+
+
+def test_tunnel_listener_is_generation_bound_and_closed_on_disconnect(admin):
+    from artemis.runtime.host_endpoints import HostOffline, host_endpoints
+
+    key, host_id = _enrolled(admin)
+    context, ws, connected = _handshake(admin, key, host_id)
+    endpoint = host_endpoints.resolve(host_id)
+    assert endpoint.generation == connected["generation"]
+    assert endpoint.host == "127.0.0.1"
+    ws.send_json({"type": "ping"})
+    assert ws.receive_json()["type"] == "pong"
+    context.__exit__(None, None, None)
+    with pytest.raises(HostOffline):
+        host_endpoints.resolve(host_id)
+
+
+def test_tunnel_rejects_malformed_binary_frame(admin):
+    key, host_id = _enrolled(admin)
+    context, ws, _ = _handshake(admin, key, host_id)
+    try:
+        ws.send_bytes(b"not a frame")
+        assert ws.receive_json() == {"type": "error", "code": "bad_frame"}
+        with pytest.raises(WebSocketDisconnect) as closed:
+            ws.receive_json()
+        assert closed.value.code == 4400
+    finally:
+        context.__exit__(None, None, None)
+
+
+def test_tunnel_blackhole_without_fin_closes_at_silence_deadline(admin, monkeypatch):
+    monkeypatch.setattr(agent_router, "DEAD_AFTER_SECONDS", 0.15)
+    key, host_id = _enrolled(admin)
+    context, ws, _reply = _handshake(admin, key, host_id)
+    try:
+        with pytest.raises(WebSocketDisconnect) as closed:
+            ws.receive_json()
+        assert closed.value.code == 4408
+        assert admin.get("/api/hosts").json()["hosts"][0]["status"] == "offline"
+    finally:
+        context.__exit__(None, None, None)
+
+
+def test_tunnel_json_rejects_unencodable_host_text():
+    from artemis.runtime.host_protocol import ProtocolError
+
+    with pytest.raises(ProtocolError):
+        agent_router._json_message({"text": "\ud800"})
+
+
+def test_superseded_socket_cannot_interrupt_runs_during_replacement(admin, monkeypatch):
+    import asyncio
+    from apps.admin_console.services.host_tunnel import host_tunnels
+
+    interrupted = []
+    monkeypatch.setattr(host_tunnels, "interrupt", lambda *args: interrupted.append(args))
+    monkeypatch.setattr(host_tunnels, "note_loss", lambda session: None)
+    monkeypatch.setattr(host_tunnels, "recover_loss", lambda session: None)
+    original = agent_router.host_hub.replace
+
+    async def delayed_replace(*args):
+        await original(*args)
+        if args[2] == 2:
+            first_ws.send_json({"type": "ping"})
+        await asyncio.sleep(0.1)
+
+    monkeypatch.setattr(agent_router.host_hub, "replace", delayed_replace)
+    key, host_id = _enrolled(admin)
+    first, first_ws, _ = _handshake(admin, key, host_id)
+    host_tunnels.bind_run(host_id, "bound-run")
+    second, _second_ws, reply = _handshake(admin, key, host_id)
+    try:
+        assert reply["generation"] == 2
+        assert interrupted == []
+        assert "bound-run" in host_tunnels.runs[host_id]
+    finally:
+        host_tunnels.release_run(host_id, "bound-run")
+        second.__exit__(None, None, None)
+        first.__exit__(None, None, None)
+
+
+def test_tunnel_device_ref_routes_to_named_host_without_local_probe(admin, monkeypatch):
+    from apps.admin_console.routers import tasks
+    from unittest.mock import AsyncMock
+
+    key, host_id = _enrolled(admin)
+    context, ws, _ = _handshake(admin, key, host_id)
+    try:
+        ws.send_json({"type": "devices", "devices": [{"serial": "phone", "shared": True}]})
+        ws.send_json({"type": "ping"})
+        assert ws.receive_json()["type"] == "pong"
+        probe = AsyncMock(side_effect=AssertionError("must not probe local ADB"))
+        enqueue = AsyncMock(return_value={"status": "queued"})
+        monkeypatch.setattr(tasks.readiness_engine, "run_device_submission_probe", probe)
+        monkeypatch.setattr(tasks.task_queue_service, "enqueue_tasks", enqueue)
+        result = admin.post(
+            "/api/run", json={"goal": "fake", "device_ref": {"host_id": host_id, "serial": "phone"}}
+        )
+        assert result.status_code == 200, result.text
+        assert enqueue.call_args.kwargs["host_id"] == host_id
+        assert enqueue.call_args.kwargs["device_serial"] == "phone"
+        assert probe.call_count == 0
+    finally:
+        context.__exit__(None, None, None)
+
+
+@pytest.mark.parametrize("serial", ["hidden", "", "../phone", "phone\u0000"])
+def test_tunnel_ref_refuses_unshared_or_invalid_device(admin, serial, monkeypatch):
+    from apps.admin_console.routers import tasks
+    from unittest.mock import AsyncMock
+
+    monkeypatch.setattr(
+        tasks.readiness_engine,
+        "run_device_submission_probe",
+        AsyncMock(side_effect=AssertionError("no local discovery")),
+    )
+    monkeypatch.setattr(
+        tasks.task_queue_service,
+        "enqueue_tasks",
+        AsyncMock(side_effect=AssertionError("no enqueue")),
+    )
+    result = admin.post(
+        "/api/run",
+        json={"goal": "fake", "device_ref": {"host_id": "unknown-host", "serial": serial}},
+    )
+    assert result.status_code in {409, 422}
 
 
 def test_connect_message_golden_vector():

@@ -3,12 +3,18 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import os
+from pathlib import Path
+import time
 from typing import Any
 
+import anyio
 from fastapi import APIRouter, Depends, Request, WebSocket
 from pydantic import BaseModel, Field
 from starlette.websockets import WebSocketDisconnect, WebSocketState
+from starlette.responses import FileResponse
 
 from apps.admin_console.core.access_control import AdminAPIError, public_tier
 from apps.admin_console.core.agent_auth import (
@@ -22,17 +28,32 @@ from apps.admin_console.core.agent_auth import (
 from apps.admin_console.services import host_registry as hr
 from apps.admin_console.services.host_hub import host_hub
 from apps.admin_console.services.host_registry import RegistryError, host_registry
+from apps.admin_console.services.host_tunnel import host_tunnels
+from apps.admin_console.services.host_admission import host_admission
+from artemis.runtime.host_protocol import CONTRACT, Frame, ProtocolError
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/agent", tags=["agent"])
 
 HELLO_TIMEOUT_SECONDS = 10
-DEAD_AFTER_SECONDS = 50  # agents ping every 20 s
+DEAD_AFTER_SECONDS = CONTRACT.dead_seconds
 MIN_WAIT_SECONDS = 0.05
 
 
 def _audience(headers: Any) -> str:
     return headers.get("host", "").strip().casefold()
+
+
+def _json_message(message: dict) -> Any:
+    payload = message.get("text")
+    if not isinstance(payload, str):
+        raise ProtocolError("Invalid host message")
+    try:
+        if len(payload.encode("utf-8")) > CONTRACT.max_frame:
+            raise ProtocolError("Invalid host message")
+    except UnicodeError as error:
+        raise ProtocolError("Invalid host UTF-8") from error
+    return json.loads(payload)
 
 
 class EnrollRequest(BaseModel):
@@ -50,13 +71,40 @@ class ChallengeRequest(BaseModel):
 
 
 @router.get("/install.sh", dependencies=[Depends(require_enrollment_code)])
-async def install_script() -> None:
-    _artifact_unavailable()
+async def install_script() -> FileResponse:
+    return _release_artifact("install.sh")
 
 
 @router.get("/dist/{artifact}", dependencies=[Depends(require_enrollment_code)])
-async def download_artifact(artifact: str) -> None:
-    _artifact_unavailable()
+async def download_artifact(artifact: str) -> FileResponse:
+    return _release_artifact(artifact)
+
+
+def _release_artifact(artifact: str) -> FileResponse:
+    allowed = {
+        "install.sh",
+        "SHA256SUMS",
+        "smartqa-host-linux-amd64",
+        "smartqa-host-darwin-arm64",
+        "smartqa-host-windows-amd64.exe",
+    }
+    directory = os.environ.get("ARTEMIS_AGENT_DIST_DIR", "")
+    if not directory or artifact not in allowed:
+        _artifact_unavailable()
+    try:
+        root = Path(directory).resolve(strict=True)
+        candidate = root / artifact
+        if candidate.is_symlink():
+            _artifact_unavailable()
+        path = candidate.resolve(strict=True)
+        if path.parent != root or not path.is_file() or path.stat().st_size > 128 * 1024 * 1024:
+            _artifact_unavailable()
+    except OSError:
+        _artifact_unavailable()
+    media_type = (
+        "text/plain" if artifact in {"install.sh", "SHA256SUMS"} else "application/octet-stream"
+    )
+    return FileResponse(path, media_type=media_type, filename=artifact)
 
 
 def _artifact_unavailable() -> None:
@@ -109,10 +157,11 @@ async def connect(ws: WebSocket) -> None:
     await ws.accept()
     session: dict[str, Any] | None = None
     host_id = ""
+    tunnel = None
     reason = "disconnected"
     try:
         try:
-            hello = await asyncio.wait_for(ws.receive_json(), HELLO_TIMEOUT_SECONDS)
+            hello = _json_message(await asyncio.wait_for(ws.receive(), HELLO_TIMEOUT_SECONDS))
             host = host_registry.authenticate_hello(hello, _audience(ws.headers))
             session = host_registry.begin_connection(host)
         except RegistryError as error:
@@ -121,9 +170,15 @@ async def connect(ws: WebSocket) -> None:
             return
         host_id = host["id"]
         generation = session["generation"]
+
+        def shared_serials():
+            _, devices = host_registry.list_hosts()
+            return {device["serial"] for device in devices if device.get("computer_id") == host_id}
+
+        tunnel = await host_tunnels.attach(host_id, generation, ws, shared_serials)
         await host_hub.replace(host_id, ws, generation)
         logger.info("event=host_connected host_id=%s generation=%d", host_id, generation)
-        await ws.send_json(
+        await tunnel.send_json(
             {
                 "type": "connected",
                 "token": session["token"],
@@ -134,13 +189,23 @@ async def connect(ws: WebSocket) -> None:
             }
         )
         deadline = session["expires_at"]
+        last_seen = time.monotonic()
+        next_ping = last_seen + CONTRACT.ping_seconds
         while True:
             # Idle sockets die at the token deadline too, not only when a frame arrives.
-            wait = min(DEAD_AFTER_SECONDS, max(MIN_WAIT_SECONDS, deadline - host_registry.clock()))
+            now = time.monotonic()
+            wait = max(
+                MIN_WAIT_SECONDS,
+                min(
+                    DEAD_AFTER_SECONDS - (now - last_seen),
+                    next_ping - now,
+                    deadline - host_registry.clock(),
+                ),
+            )
             timed_out = False
             message: Any = None
             try:
-                message = await asyncio.wait_for(ws.receive_json(), wait)
+                message = await asyncio.wait_for(ws.receive(), wait)
             except TimeoutError:
                 timed_out = True
             # Every wake-up needs a live session; the stored expiry is the one authority,
@@ -150,34 +215,60 @@ async def connect(ws: WebSocket) -> None:
                 reason = "auth_expired"
                 if ws.application_state != WebSocketState.CONNECTED:
                     return  # revoked or superseded: the hub already closed this socket
-                await ws.send_json({"type": "error", "code": "auth_expired"})
+                await tunnel.send_json({"type": "error", "code": "auth_expired"})
                 await ws.close(code=4401)
                 return
             deadline = live["token_expires_at"]
             if timed_out:
-                if wait >= DEAD_AFTER_SECONDS:
+                if time.monotonic() - last_seen >= DEAD_AFTER_SECONDS:
                     raise TimeoutError  # silent for the full dead interval
+                if time.monotonic() >= next_ping:
+                    await tunnel.send_json({"type": "ping"})
+                    next_ping = time.monotonic() + CONTRACT.ping_seconds
                 continue  # woke at an outdated deadline; recompute from the stored one
+            if message.get("type") == "websocket.disconnect":
+                raise WebSocketDisconnect(message.get("code", 1000))
+            last_seen = time.monotonic()
+            if message.get("bytes") is not None:
+                tunnel.mux.receive(Frame.decode(message["bytes"]))
+                continue
+            message = _json_message(message)
             kind = message.get("type") if isinstance(message, dict) else None
             if kind == "ping":
-                await ws.send_json({"type": "pong"})
+                await tunnel.send_json({"type": "pong"})
             elif kind == "renew":
                 expires_at = host_registry.renew(session["token"])
                 if expires_at is None:
                     reason = "auth_expired"
-                    await ws.send_json({"type": "error", "code": "auth_expired"})
+                    await tunnel.send_json({"type": "error", "code": "auth_expired"})
                     await ws.close(code=4401)
                     return
                 deadline = expires_at
-                await ws.send_json({"type": "renewed", "expires_at": expires_at})
+                await tunnel.send_json({"type": "renewed", "expires_at": expires_at})
             elif kind == "devices":
-                host_registry.set_devices(host_id, generation, message.get("devices"))
+                previous_shared = shared_serials()
+                if host_registry.set_devices(host_id, generation, message.get("devices")):
+                    current_shared = shared_serials()
+                    for serial in previous_shared - current_shared:
+                        host_admission.unshare_device(host_id, serial)
+                    for serial in current_shared:
+                        host_admission.share_device(host_id, serial)
+                    tunnel.unshare()
+    except (ProtocolError, json.JSONDecodeError):
+        reason = "bad_frame"
+        if ws.application_state == WebSocketState.CONNECTED:
+            await ws.send_json({"type": "error", "code": "bad_frame"})
+            await ws.close(code=4400)
     except TimeoutError:
         reason = "timeout"
+        if ws.application_state == WebSocketState.CONNECTED:
+            await ws.close(code=4408)
     except (WebSocketDisconnect, ValueError):
         pass
     finally:
         if session is not None:
             host_hub.forget(host_id, session["generation"])
+            with anyio.CancelScope(shield=True):
+                await host_tunnels.disconnect(host_id, session["generation"], reason)
             host_registry.end_connection(host_id, session["generation"], reason)
             logger.info("event=host_lost host_id=%s reason=%s", host_id, reason)

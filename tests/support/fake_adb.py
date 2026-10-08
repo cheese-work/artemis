@@ -70,10 +70,10 @@ class FakeDevice:
     def listing(self, long_format: bool) -> str:
         if not long_format:
             return f"{self.serial}\t{self.state}"
-        return (
-            f"{self.serial:<22} {self.state} product:{self.product} model:{self.model} "
-            f"device:{self.product} transport_id:{self.transport_id}"
-        )
+        listing = f"{self.serial:<22} {self.state}"
+        if self.state == "device":
+            listing += f" product:{self.product} model:{self.model} device:{self.product}"
+        return f"{listing} transport_id:{self.transport_id}"
 
 
 @dataclass(frozen=True)
