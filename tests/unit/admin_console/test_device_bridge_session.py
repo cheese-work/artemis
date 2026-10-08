@@ -296,8 +296,9 @@ class _ManualClock:
             await asyncio.sleep(0.001)
 
 
+@pytest.mark.parametrize("attachment_delayed", [False, True])
 def test_expired_session_times_out_and_disconnects_adb(
-    loopback_client, monkeypatch, _mock_adb, caplog
+    loopback_client, monkeypatch, _mock_adb, caplog, attachment_delayed
 ):
     # Pin both limits so ambient settings cannot change which one fires after the advance.
     monkeypatch.setenv(
@@ -324,12 +325,21 @@ def test_expired_session_times_out_and_disconnects_adb(
         revoked.set()
 
     monkeypatch.setattr(bridge_session_service, "revoke", observe_revoke)
+    if attachment_delayed:
+        connect = bridge_session_service.connect
+
+        async def wait_before_notifying(session):
+            await connect(session)
+            await asyncio.Future()
+
+        monkeypatch.setattr(bridge_session_service, "connect", wait_before_notifying)
 
     with loopback_client.websocket_connect(PATH, headers=_HOST_HEADER) as ws:
         payload = ws.receive_json()
         session_id = payload["session_id"]
         port = payload["listener"]["port"]
-        ws.receive_json()
+        if not attachment_delayed:
+            ws.receive_json()
         clock.advance(bridge_session_service_module.DEFAULT_SESSION_TTL_SECONDS + 1)
 
         with pytest.raises(WebSocketDisconnect) as exc_info:
