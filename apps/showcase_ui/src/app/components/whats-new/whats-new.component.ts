@@ -7,6 +7,7 @@ import {
   hasUnseenWhatsNewEntries,
   parseWhatsNewEntries,
   shouldAutoOpenWhatsNew,
+  whatsNewSeenKey,
   WhatsNewEntry
 } from '../../utils/whats-new.util';
 
@@ -52,6 +53,9 @@ export const WHATS_NEW_LAST_SEEN_KEY = 'smartqa.whats-new.last-seen-id';
                 <h3>{{ entry.title }}</h3>
                 @if (entry.body) {
                   <p>{{ entry.body }}</p>
+                }
+                @if (entry.issues?.length) {
+                  <p class="update-issues">{{ entry.issues?.join(' · ') }}</p>
                 }
               </article>
             }
@@ -105,6 +109,7 @@ export const WHATS_NEW_LAST_SEEN_KEY = 'smartqa.whats-new.last-seen-id';
     .update-card time { color: #64748b; font-size: 12px; }
     .update-card h3 { margin: 8px 0; font-size: 17px; }
     .update-card p, .empty-state { margin: 0; color: #475569; font-size: 14px; line-height: 1.6; }
+    .update-card .update-issues { margin-top: 8px; color: #64748b; font: 12px 'JetBrains Mono', ui-monospace, monospace; font-variant-numeric: tabular-nums; }
     .sheet-footer { padding-top: 18px; border-top: 1px solid #e5eaf2; }
     .update-count { color: #64748b; font-size: 12px; }
     .done-button { padding: 10px 18px; color: #fff; background: #2563eb; font-weight: 600; }
@@ -208,10 +213,10 @@ export class WhatsNewComponent {
   }
 
   public onDialogClosed(): void {
-    const latestEntry = this.entries()[0];
-    if (latestEntry) {
+    const seenKey = whatsNewSeenKey(this.entries());
+    if (seenKey) {
       try {
-        this.browserStorage.setItem(WHATS_NEW_LAST_SEEN_KEY, latestEntry.id);
+        this.browserStorage.setItem(WHATS_NEW_LAST_SEEN_KEY, seenKey);
       } catch (error) {
         this.logger.warn('UI operation failed:', error);
       }
