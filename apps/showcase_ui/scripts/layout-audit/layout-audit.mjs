@@ -293,6 +293,6 @@ try {
   failures.push(String(e));
 }
 ws?.close(); chrome.kill(); server.close(); await sleep(200);
-rmSync(profile, { recursive: true, force: true });
+rmSync(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 console.log(failures.length ? `\nLayout audit FAILED: ${failures.length} finding(s)` : '\nLayout audit passed.');
 process.exit(failures.length ? 1 : 0);
