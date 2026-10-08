@@ -1,11 +1,11 @@
-# SmartQA host agent — B3a-1 independent core
+# SmartQA host agent — integrated Go core
 
 This candidate branches from `main`, including B1 enrollment at
-`85499732dbd0b95b1b337c437ff6a5d9ffc22dd6`. It is **not a runnable host tunnel**.
-B2/CHE-1096 has no published gateway or multiplexer contract. `run`, `share`,
-`unshare` and `unenroll` fail closed with `SQH-E301`; no local adb port is
-exposed and no device is reported connected. Completing that integration,
-live registration, local control commands, and service survival requires B2.
+`85499732dbd0b95b1b337c437ff6a5d9ffc22dd6`. It consumes CHE-1328's Go peer
+and B2's authenticated server protocol. `run` signs a fresh challenge,
+validates protocol versions, registers local devices, renews its session,
+and reconnects through `RunHostConnections`. No local adb port is exposed.
+Independent final review and native service survival remain NOT-RUN.
 
 ## Build and verification
 
@@ -41,7 +41,7 @@ cannot silently move to another server.
 ```sh
 ARTEMIS_HOST_AGENT=1 smartqa-host enroll --server https://smartqa.example
 smartqa-host status --json
-smartqa-host devices --json
+ARTEMIS_HOST_AGENT=1 smartqa-host devices --json
 smartqa-host config show
 smartqa-host doctor --no-adb-download
 smartqa-host support-info
@@ -76,11 +76,12 @@ unauthorized/offline devices, and rejects blank serials. It drops sharing on
 unplug, state changes and transport replacement, including `emulator-5554`
 reuse. Hardware identity, USB/wireless canonicalization, opaque ids and saved
 references belong to B3a-2; this candidate does not auto-share or transmit
-raw serials to a server. The CLI reads a fresh local snapshot without
+saved hardware references. The connected core registers raw adb serials;
+only explicit `share` exposes a device. The CLI reads a fresh local snapshot without
 starting or restarting adb. The connected core scans every two seconds and
 publishes bounded latest-only updates through the small tunnel interface.
-Server registration still requires the B2 implementation; scans never bypass
-its gateway.
+Device registration uses B2's `devices` WebSocket message. Run traffic always
+passes through the Go peer's fixed gateway, not the discovery executor.
 
 **Known discovery gap:** `doctor` only checks the resolved adb executable's
 version, including a downloaded platform-tools binary. A PASS does not make
@@ -117,12 +118,14 @@ HTTPS server URL. The one-line Linux/macOS installer is:
 The line verifies the binary checksum, installs into `~/.local/bin`, enrolls,
 runs doctor, then requests user-service installation. Add `--no-adb-download`
 as the second installer argument to opt out.
-**Service activation is refused with `SQH-E301` until a B2 tunnel is wired.**
-`service install` writes no service file and invokes no service manager when
-the tunnel is absent. The installer exits at that refusal and does not query
-service status or enable a restarting service. The installed binary and
-enrolled identity remain available for diagnostics. Service-start acceptance
-remains NOT-RUN until B2 is wired.
+`service install` requires an enrolled, private identity and a matching valid
+server configuration before writing a service file or invoking a manager.
+The integrated binary supplies the Go tunnel adapter. An unwired core still
+refuses service activation before creating files. The installer stops on any
+failed enrollment, doctor check, or service installation. A successful
+`unenroll` stops and joins the peer before revocation, removes the identity
+only after confirmation, and exits the service successfully rather than
+triggering an on-failure restart.
 No install on a deployed hostname is claimed. Linux uses systemd `--user`
 and attempts linger; macOS uses a LaunchAgent. No root or SYSTEM service is
 created. `service uninstall` removes only this agent's service; identity is
@@ -143,15 +146,30 @@ codes, proxy credentials, models and serials. Errors print stable catalog
 messages rather than raw server bodies or credential-bearing error strings.
 See `ERRORS.md` for every `SQH-Exxx` code.
 
+## Local control and sharing
+
+While `run` is active, Unix commands use a mode-0600 `control.sock` in the
+private configuration directory. No TCP fallback is provided. `status` and
+`devices` report the live registry; `share SERIAL` and `unshare SERIAL`
+update both the gateway allowlist and the server registration. Shares are
+not persisted across a process restart. Discovery drops a share when its
+transport disappears, changes, or becomes unauthorized.
+
+`unenroll` cancels and joins the connection loop before using its token on
+`POST /api/agent/unenroll`. The server revokes only the authenticated identity.
+If no agent is running, the command authenticates a temporary connection,
+closes the peer, and revokes that identity. Failure preserves the local key.
+The server remains authoritative for run interruption. The adapter has no
+bound-run activity feed and uses the peer's idle reconnect cap. The
+unshare-versus-live-stream design is tracked separately.
+
 ## Acceptance limits
 
-- Native Linux/macOS clean install and service survival: **NOT-RUN**; B2 is missing.
+- Native Linux/macOS clean install and service survival: **NOT-RUN**.
 - Native macOS split-DNS VPN and Windows lifecycle: **NOT-RUN**.
 - CHE-1101 deployed-hostname/Cloudflare checks: **NOT-RUN**; no binary deployed.
-- Gateway allowlist/fuzz, multiplexer and reconnect/grace acceptance: B2 scope.
-- Unix-socket/Windows-pipe local control and sharing integration: no insecure
-  TCP fallback is introduced; these commands remain fail closed pending B2.
+- Gateway, multiplexer and adapter verification uses fake sockets only.
+- Windows-pipe local control remains B3b scope; no insecure TCP fallback is introduced.
 
 This partial candidate references CHE-1097 and CHE-1087. It does not close
-CHE-1097, and must stay draft until the missing B2 integration and required
-independent verification return.
+CHE-1097, and stays draft for the required independent final verification.

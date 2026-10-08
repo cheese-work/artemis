@@ -22,7 +22,7 @@ Error codes are stable. Error details do not print credentials or raw server res
 | SQH-E203 | Unsafe, malformed or oversized archive; discard the download. |
 | SQH-E204 | Discovery request denied; this allowlist cannot be overridden. |
 | SQH-E205 | Device absent, ambiguous or unauthorized; reconnect and inspect devices. |
-| SQH-E301 | B2 transport is unpublished; run/share/unshare/unenroll cannot bypass it. |
+| SQH-E301 | No tunnel adapter was supplied; an unwired core cannot activate a service. Production commands supply the Go peer adapter. |
 | SQH-E302 | Artifact staged only; activation requires the B3a-3 launcher. |
 | SQH-E401 | User service failure; inspect service status and user-session support. |
 | SQH-E402 | Windows lifecycle/protected enrollment state is deferred to B3b. |
