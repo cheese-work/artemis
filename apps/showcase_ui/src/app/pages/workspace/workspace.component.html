@@ -16,7 +16,7 @@ limitations under the License.
 
 <div class="workspace-container" [class.is-resizing]="isDragging()" [class.review-mode]="reviewMode">
   <!-- Left Main Panel: Raw Agent Log Stream, or the run library / viewer in review mode -->
-  <main class="left-panel glass-panel">
+  <main class="left-panel">
     <div class="run-surface">
       @if (reviewMode && !reviewRunId()) {
         <app-run-library></app-run-library>
@@ -53,55 +53,6 @@ limitations under the License.
       <div class="floating-dock-row">
         <!-- Floating Dock Main Card -->
         <div class="floating-dock-card" (click)="onCardClick($event)">
-          <!-- Ambient Liquid Wave / Aurora Background Layer (Active in both Dormant & Expanded) -->
-          <div class="dock-wave-container" [class.is-pro]="selectedProfile() === 'pro'">
-            <div class="wave-glow-ambient"></div>
-            <div class="wave-tracks-wrapper">
-              <!-- Back Fluid Wave -->
-              <svg class="liquid-wave wave-back" viewBox="0 0 2400 80" preserveAspectRatio="none">
-                <defs>
-                  <linearGradient id="waveGradBack" x1="0%" y1="0%" x2="100%" y2="0%">
-                    <stop offset="0%" class="wave-stop-1" />
-                    <stop offset="25%" class="wave-stop-2" />
-                    <stop offset="50%" class="wave-stop-3" />
-                    <stop offset="75%" class="wave-stop-4" />
-                    <stop offset="100%" class="wave-stop-1" />
-                  </linearGradient>
-                </defs>
-                <path d="M 0,25 Q 300,55 600,20 T 1200,25 Q 1500,55 1800,20 T 2400,25 L 2400,80 L 0,80 Z"
-                fill="url(#waveGradBack)"></path>
-              </svg>
-
-              <!-- Mid Fluid Wave -->
-              <svg class="liquid-wave wave-mid" viewBox="0 0 2400 80" preserveAspectRatio="none">
-                <defs>
-                  <linearGradient id="waveGradMid" x1="0%" y1="0%" x2="100%" y2="0%">
-                    <stop offset="0%" class="wave-stop-3" />
-                    <stop offset="35%" class="wave-stop-1" />
-                    <stop offset="70%" class="wave-stop-4" />
-                    <stop offset="100%" class="wave-stop-3" />
-                  </linearGradient>
-                </defs>
-                <path d="M 0,35 Q 300,5 600,45 T 1200,35 Q 1500,5 1800,45 T 2400,35 L 2400,80 L 0,80 Z"
-                fill="url(#waveGradMid)"></path>
-              </svg>
-
-              <!-- Front Fluid Wave -->
-              <svg class="liquid-wave wave-front" viewBox="0 0 2400 80" preserveAspectRatio="none">
-                <defs>
-                  <linearGradient id="waveGradFront" x1="0%" y1="0%" x2="100%" y2="0%">
-                    <stop offset="0%" class="wave-stop-2" />
-                    <stop offset="30%" class="wave-stop-4" />
-                    <stop offset="65%" class="wave-stop-1" />
-                    <stop offset="100%" class="wave-stop-2" />
-                  </linearGradient>
-                </defs>
-                <path d="M 0,18 Q 300,50 600,15 T 1200,18 Q 1500,50 1800,15 T 2400,18 L 2400,80 L 0,80 Z"
-                fill="url(#waveGradFront)"></path>
-              </svg>
-            </div>
-          </div>
-
           <div class="expanded-card-content">
             <div class="card-main-input-row">
               <!-- Textarea Container with Dynamic English Placeholder -->
@@ -225,10 +176,15 @@ limitations under the License.
     <div class="resizer" (mousedown)="onDragStart($event)">
       <div class="resizer-handle"></div>
     </div>
-  <!-- Right Sidebar Panel: Chat Interface Mock -->
+  <!-- Right Sidebar Panel: Task Queue and run history -->
   <aside class="right-panel" [style.width.px]="rightPanelWidth()">
     <app-chat-interface></app-chat-interface>
   </aside>
+  } @else if (reviewRunId()) {
+    <!-- The same run list beside an open run, so Runs reads like the Workspace -->
+    <aside class="right-panel" aria-label="Runs" [style.width.px]="rightPanelWidth()">
+      <app-run-library [compact]="true" class="review-run-list"></app-run-library>
+    </aside>
   }
 
 </div>

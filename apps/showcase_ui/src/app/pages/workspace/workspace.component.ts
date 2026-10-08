@@ -128,15 +128,10 @@ export class WorkspaceComponent implements OnInit {
     });
     // The floating nav lives outside this component; tell it how much width the right panel takes.
     const rootStyle = inject(DOCUMENT).documentElement.style;
-    effect(() => rootStyle.setProperty('--right-panel-width', `${this.rightPanelWidth()}px`));
-    // Live view only: at <= 1150px the stream's own Task Queue / Notes tabs sit top right (wide, then icon-only <= 900px).
-    if (!this.reviewMode) {
-      rootStyle.setProperty('--stream-header-width', '290px');
-      rootStyle.setProperty('--stream-header-width-compact', '96px');
-    }
+    effect(() => rootStyle.setProperty('--right-panel-width', `${!this.reviewMode || this.reviewRunId() ? this.rightPanelWidth() : 0}px`));
     this.destroyRef.onDestroy(() => {
       this.attachedImages().forEach((image) => URL.revokeObjectURL(image.previewUrl));
-      ['--right-panel-width', '--stream-header-width', '--stream-header-width-compact'].forEach((v) => rootStyle.removeProperty(v));
+      rootStyle.removeProperty('--right-panel-width');
       if (this.errorTimeout) clearTimeout(this.errorTimeout);
       this.agentService.whatsNewPromptDraft.set(false);
       this.agentService.updateWhatsNewErrorVisibility(this.whatsNewErrorOwner, false);

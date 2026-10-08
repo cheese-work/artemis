@@ -145,7 +145,7 @@
             } @else if (stepsLoaded() && steps().length === 0) {
               <p class="muted">No steps were recorded.</p>
             }
-            <ol #timelineEl class="step-list" (scroll)="rememberPosition()">
+            <ol #timelineEl class="step-list" aria-label="Step timeline" (scroll)="rememberPosition()">
               @for (step of steps(); track trackStep($index, step)) {
                 <li>
                   <button

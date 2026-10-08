@@ -15,7 +15,7 @@
     "test:preview-path": "node scripts/preview-path.test.mjs",
     "watch": "ng build --watch --configuration development",
     "test": "ng test",
-    "pretest": "node scripts/validate-whats-new.mjs && node scripts/lint-ui-strings.mjs && npm run test:tango-stream-extra && npm run test:keyboard-paste",
+    "pretest": "node scripts/validate-whats-new.mjs && node scripts/lint-ui-strings.mjs && node scripts/lint-theme.mjs && npm run test:tango-stream-extra && npm run test:keyboard-paste",
     "test:tango-stream-extra": "node --test scripts/tango-stream-extra.test.mjs",
     "postinstall": "node scripts/patch-tango.mjs"
   },

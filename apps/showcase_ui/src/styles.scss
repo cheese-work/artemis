@@ -14,17 +14,10 @@
  * limitations under the License.
  */
 
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=Outfit:wght@300;400;500;600;700&family=Roboto:wght@400;500;700&display=swap');
-@import url('https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200');
 @import '@angular/cdk/overlay-prebuilt.css';
 
 .cdk-overlay-container {
   z-index: 1200 !important;
-}
-
-*, *::before, *::after {
-  box-sizing: border-box;
-  font-family: 'Google Sans', 'Google Sans Text', 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
 }
 
 .material-symbols-outlined {
@@ -46,35 +39,119 @@
   font-variation-settings: 'FILL' 0, 'wght' 300, 'GRAD' 0, 'opsz' 20;
 }
 
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+
 body, input, button, select, textarea {
-  font-family: 'Google Sans', 'Google Sans Text', 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  font-family: var(--font-ui);
 }
 
 body {
   margin: 0;
   padding: 0;
-  color: #1e293b;
-  background-color: #f8f9fa;
+  color: var(--color-text);
+  background-color: var(--color-bg);
+  font-size: var(--text-ui);
+  line-height: var(--leading-ui);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
 
-/* Review mode (run library and viewer): status colours are defined once and
-   used by badges, rows and banners. Each tone is a foreground/tint pair that
-   holds 4.5:1 on its tint and on the opaque evidence surface; status is also
-   always an icon plus text. */
+/* One set of design tokens (DESIGN.md). Every surface reads these; none carries its own hex.
+   Each text colour holds 4.5:1 on the page and on the white surface (token-contract.spec.ts). */
 :root {
-  --evidence-surface: #ffffff;
-  --evidence-text: #0f172a;
-  --evidence-muted: #475569;
-  --evidence-border: #64748b;
-  --status-ok-fg: #166534;
-  --status-ok-bg: #dcfce7;
-  --status-warn-fg: #92400e;
-  --status-warn-bg: #fef3c7;
-  --status-danger-fg: #991b1b;
-  --status-danger-bg: #fee2e2;
-  --status-neutral-fg: #334155;
-  --status-neutral-bg: #e2e8f0;
-  --focus-ring: #1d4ed8;
+  --color-bg: #f8f9fa;
+  --color-surface: #ffffff;
+  --color-surface-subtle: #f1f5f9;
+  --color-ink: #0f172a;
+  --color-text: #1e293b;
+  --color-text-muted: #475569;
+  --color-text-faint: #64748b;
+  --color-rule: #e2e8f0;
+  --color-rule-strong: #cbd5e1;
+  --color-border: #64748b;
+  --color-primary: #2563eb;
+  --color-primary-hover: #1d4ed8;
+  --color-primary-tint: #eff6ff;
+  --color-primary-edge: #bfdbfe;
+  --color-on-primary: #ffffff;
+  --color-focus: #1d4ed8;
+  --color-success: #166534;
+  --color-success-bg: #dcfce7;
+  --color-warning: #92400e;
+  --color-warning-bg: #fef3c7;
+  --color-error: #991b1b;
+  --color-error-bg: #fee2e2;
+  --color-error-solid: #dc2626;
+  --color-neutral: #334155;
+  --color-neutral-bg: #e2e8f0;
+  /* Dark navy means a physical device and nothing else. */
+  --color-device: #0f172a;
+  --color-device-edge: #1e293b;
+  --color-device-text: #e2e8f0;
+  --color-device-muted: #94a3b8;
+
+  --font-ui: 'Instrument Sans', 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  --font-display: 'General Sans', 'Instrument Sans', 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --text-label: 0.75rem;
+  --text-ui: 0.875rem;
+  --text-body: 1rem;
+  --text-section: 1.25rem;
+  --text-title: 1.5rem;
+  --leading-ui: 1.25rem;
+
+  --space-xs: 4px;
+  --space-sm: 8px;
+  --space-smd: 12px;
+  --space-md: 16px;
+  --space-lg: 24px;
+  --space-xl: 32px;
+  --target: 44px;
+
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-full: 9999px;
+
+  --shadow-1: 0 2px 6px rgb(15 23 42 / 8%);
+  --shadow-2: 0 4px 12px rgb(15 23 42 / 12%);
+  --shadow-3: 0 12px 32px rgb(15 23 42 / 16%);
+
+  --motion-fast: 120ms;
+  --motion-panel: 180ms;
+  --ease-enter: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-move: cubic-bezier(0.4, 0, 0.2, 1);
+
+  /* Run-view and run-list names from the review-mode slice; same values, one source. */
+  --evidence-surface: var(--color-surface);
+  --evidence-text: var(--color-ink);
+  --evidence-muted: var(--color-text-muted);
+  --evidence-border: var(--color-border);
+  --status-ok-fg: var(--color-success);
+  --status-ok-bg: var(--color-success-bg);
+  --status-warn-fg: var(--color-warning);
+  --status-warn-bg: var(--color-warning-bg);
+  --status-danger-fg: var(--color-error);
+  --status-danger-bg: var(--color-error-bg);
+  --status-neutral-fg: var(--color-neutral);
+  --status-neutral-bg: var(--color-neutral-bg);
+  --focus-ring: var(--color-focus);
+}
+
+/* Every control shows the same focus ring: 3px, 2px off the edge (DESIGN.md Components). */
+:where(a, button, input, select, textarea, summary, video, [tabindex]):focus-visible {
+  outline: 3px solid var(--color-focus);
+  outline-offset: 2px;
+}
+
+/* Reduced motion: no transition or animation anywhere, so nothing moves for those who ask. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }

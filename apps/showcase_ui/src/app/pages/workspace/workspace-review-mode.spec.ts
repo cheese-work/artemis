@@ -117,23 +117,24 @@ describe('Workspace review mode', () => {
     expect(view.readOnly()).toBeTrue();
     expect(view.mode()).toBe('review');
     expect(view.runId()).toBe(ID);
-    expect(q('.right-panel')).toBeNull();
+    // The same run list sits beside the open run (CHE-1278); the run itself is the main surface.
+    expect(q('.right-panel app-run-library.compact')).not.toBeNull();
   });
 
   it('shows the run viewer for the id in the URL on /runs/:id', async () => {
     await go(`/runs/${ID}`);
     expect(q('app-run-view')).not.toBeNull();
-    expect(q('app-run-library')).toBeNull();
+    expect(q('.left-panel app-run-library')).toBeNull();
+    expect(q('.right-panel app-run-library.compact')).not.toBeNull();
     expect(runs.get).toHaveBeenCalledWith(ID);
   });
 
-  it('has no looping decorative motion in review mode, unlike the live workspace', async () => {
+  it('has no decorative waves or glass in the live dock or in review mode', async () => {
     await go('/workspace');
-    expect(getComputedStyle(q('.liquid-wave')!).animationName).not.toBe('none');
+    expect(q('.liquid-wave, .wave-glow-ambient, .dock-wave-container')).toBeNull();
+    expect(getComputedStyle(q('.floating-dock-card')!).backdropFilter).toBe('none');
     await go('/runs');
-    for (const el of Array.from(root.querySelectorAll('.liquid-wave, .wave-glow-ambient'))) {
-      expect(getComputedStyle(el).animationName).toBe('none');
-    }
+    expect(q('.liquid-wave, .wave-glow-ambient, .dock-wave-container')).toBeNull();
   });
 
   it('omits the mouse-only splitter in review mode', async () => {
