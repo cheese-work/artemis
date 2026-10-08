@@ -3,7 +3,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from apps.admin_console.core.access_control import route_tier
+from apps.admin_console.core.access_control import AccessConfig, route_tier
 from apps.admin_console.core.preview_routes import registered_routes, unclassified_routes
 from apps.admin_console.database.repositories.run_catalog_repository import run_catalog_repo
 from apps.admin_console.database.repositories.session_repository import session_repo
@@ -17,9 +17,11 @@ from tests.unit.admin_console.test_run_ownership import cloudflare as cloudflare
 from tests.unit.admin_console.test_run_ownership import env as env
 
 
-def _seed(db, owner, suffix=1, prefix="abcd1234"):
+def _seed(db, owner, suffix=1, prefix="abcd1234", *, goal=None):
     session_id = f"{prefix}-0000-4000-8000-{suffix:012d}"
-    assert session_repo.create_queued_session(session_id, f"goal {suffix}", "flash", None, suffix)
+    assert session_repo.create_queued_session(
+        session_id, goal if goal is not None else f"goal {suffix}", "flash", None, suffix
+    )
     run_catalog_repo.set_meta(session_id, requested_by=owner)
     return session_id
 
@@ -89,6 +91,93 @@ async def test_available_is_own_plus_successfully_opened_full_ids(cloudflare, en
     assert (await _get(QA1, endpoint, scope="all")).status_code == 403
     assert _ids(await _get(ADMIN, endpoint, scope="all")) == {owned, shared, hidden, unowned}
     assert (await _post(QA1, f"/api/tasks/{shared}/cancel-queued")).status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_available_sessions_redacts_shared_goal_but_preserves_raw_access(
+    cloudflare, monkeypatch
+):
+    secret_goal = "Login with password=shared-goal-secret data:image/png;base64,c2VjcmV0"
+    redacted_goal = "Login with password=[REDACTED] [REDACTED]"
+    owned = _seed(cloudflare, QA1, goal=secret_goal)
+    shared = _seed(cloudflare, QA2, 2, goal=secret_goal)
+    assert (await _get(QA1, f"/api/runs/{shared}")).status_code == 200
+
+    response = await _get(QA1, "/api/sessions", scope="available")
+    assert response.status_code == 200
+    rows = {row["session_id"]: row for row in response.json()}
+    assert rows[shared]["initial_goal"] == redacted_goal
+    assert rows[owned]["initial_goal"] == secret_goal
+
+    for email, scope in ((QA2, "available"), (ADMIN, "all")):
+        response = await _get(email, "/api/sessions", scope=scope)
+        assert response.status_code == 200
+        rows = {row["session_id"]: row for row in response.json()}
+        assert rows[shared]["initial_goal"] == secret_goal
+
+    monkeypatch.setattr(app.state, "access_config", AccessConfig(auth_mode="open"))
+    response = await _get(None, "/api/sessions", scope="available")
+    assert response.status_code == 200
+    assert all(row["initial_goal"] == secret_goal for row in response.json())
+
+
+@pytest.mark.asyncio
+async def test_available_status_redacts_shared_goal_but_preserves_raw_access(
+    cloudflare, monkeypatch
+):
+    secret_goal = "Login with password=shared-goal-secret data:image/png;base64,c2VjcmV0"
+    redacted_goal = "Login with password=[REDACTED] [REDACTED]"
+    owned = _seed(cloudflare, QA1, goal=secret_goal)
+    shared = _seed(cloudflare, QA2, 2, goal=secret_goal)
+    assert (await _get(QA1, f"/api/runs/{shared}")).status_code == 200
+    with sqlite3.connect(cloudflare) as conn:
+        conn.execute(
+            "INSERT INTO background_tasks (task_id, session_id, summary, status, start_time, logs) "
+            "VALUES (?, ?, ?, 'running', 1.0, ?)",
+            ("shared-task", shared, secret_goal, secret_goal),
+        )
+    rows = [{"session_id": session_id, "goal": secret_goal} for session_id in (owned, shared)]
+    payload = {
+        "status": "paused",
+        "session_id": shared,
+        "goal": secret_goal,
+        "paused_error": secret_goal,
+        "model_info": {"description": secret_goal},
+        "queue": rows,
+        "active_tasks": rows,
+        "background_tasks": session_repo.get_background_tasks(shared),
+    }
+    monkeypatch.setattr(tasks, "_status_payload", AsyncMock(return_value=payload))
+
+    response = await _get(QA1, "/api/status", scope="available")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["session_id"] == shared
+    assert body["goal"] == body["paused_error"] == redacted_goal
+    assert body["model_info"]["description"] == redacted_goal
+    for field in ("queue", "active_tasks"):
+        entries = {row["session_id"]: row for row in body[field]}
+        assert entries[shared]["goal"] == redacted_goal
+        assert entries[owned]["goal"] == secret_goal
+    assert body["background_tasks"][0]["summary"] == redacted_goal
+    assert body["background_tasks"][0]["logs"] == redacted_goal
+
+    for email, scope in ((QA2, "available"), (ADMIN, "all")):
+        response = await _get(email, "/api/status", scope=scope)
+        assert response.status_code == 200
+        body = response.json()
+        assert body["goal"] == body["paused_error"] == secret_goal
+        assert body["model_info"]["description"] == secret_goal
+        for field in ("queue", "active_tasks"):
+            entries = {row["session_id"]: row for row in body[field]}
+            assert entries[shared]["goal"] == secret_goal
+        assert body["background_tasks"][0]["summary"] == secret_goal
+        assert body["background_tasks"][0]["logs"] == secret_goal
+
+    monkeypatch.setattr(app.state, "access_config", AccessConfig(auth_mode="open"))
+    response = await _get(None, "/api/status", scope="available")
+    assert response.status_code == 200
+    assert response.json() == payload
 
 
 @pytest.mark.asyncio
