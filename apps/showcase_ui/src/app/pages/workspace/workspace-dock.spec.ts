@@ -106,6 +106,24 @@ describe('WorkspaceComponent always-open task dock', () => {
     expect(review.height).toBe(live.height);
   });
 
+  for (const modifier of ['ctrlKey', 'metaKey']) {
+    it(`ignores a synthetic ${modifier}+V key event until clipboard data arrives`, async () => {
+      await create();
+      const textarea = fixture.nativeElement.querySelector('textarea');
+      textarea.dispatchEvent(new KeyboardEvent('keydown', {
+        key: 'v', code: 'KeyV', [modifier]: true, bubbles: true, cancelable: true
+      }));
+      fixture.detectChanges();
+      expect(component.attachedImages()).toEqual([]);
+      expect(fixture.nativeElement.querySelector('ul.attached-images')).toBeNull();
+
+      const image = new File(['image'], 'clipboard.png', { type: 'image/png' });
+      expect(paste([image]).defaultPrevented).toBeTrue();
+      expect(component.attachedImages()[0].file).toBe(image);
+      expect(fixture.nativeElement.querySelectorAll('ul.attached-images img').length).toBe(1);
+    });
+  }
+
   it('leaves plain text to the native paste operation without attaching an image', async () => {
     await create();
     expect(paste([], 'a task').defaultPrevented).toBeFalse();
