@@ -179,8 +179,18 @@ const CONTRAST = `(() => {
   const lin = (v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; };
   const lum = ({ r, g, b }) => 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
   const over = (top, under) => ({ r: top.r * top.a + under.r * (1 - top.a), g: top.g * top.a + under.g * (1 - top.a), b: top.b * top.a + under.b * (1 - top.a), a: 1 });
-  const backdrop = (el) => { const stack = []; for (let e = el; e; e = e.parentElement) { const c = parse(getComputedStyle(e).backgroundColor); if (c && c.a > 0) { stack.push(c); if (c.a === 1) break; } }
-    return stack.reduceRight((under, c) => over(c, under), { r: 255, g: 255, b: 255, a: 1 }); };
+  // CSS opacity fades a whole group: the element's background, its text and everything inside it together.
+  // Paint the chain root-first. Each node paints its background, then its subtree, then blends that result over what is
+  // behind it by its own opacity: lerp(under, painted, opacity). Run once with the text and once without it.
+  const chain = (el) => { const nodes = []; for (let e = el; e; e = e.parentElement) nodes.unshift(e); return nodes; };
+  const lerp = (under, painted, o) => ({ r: under.r + (painted.r - under.r) * o, g: under.g + (painted.g - under.g) * o, b: under.b + (painted.b - under.b) * o, a: 1 });
+  const paint = (nodes, under, text) => {
+    if (!nodes.length) return text ? over(text, under) : under;
+    const cs = getComputedStyle(nodes[0]);
+    const bg = parse(cs.backgroundColor);
+    const base = bg && bg.a > 0 ? over(bg, under) : under;
+    return lerp(under, paint(nodes.slice(1), base, text), +cs.opacity);
+  };
   const out = [];
   const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
   for (let n; (n = walker.nextNode());) {
@@ -191,9 +201,8 @@ const CONTRAST = `(() => {
     const cs = getComputedStyle(el);
     if (cs.visibility === 'hidden' || +cs.opacity === 0) continue;
     const fg = parse(cs.color); if (!fg) continue;
-    // CSS opacity on the element or any ancestor fades the text into its background: compose it in.
-    let opacity = 1; for (let e = el; e; e = e.parentElement) opacity *= +getComputedStyle(e).opacity;
-    const bg = backdrop(el); const text = over({ ...fg, a: fg.a * opacity }, bg);
+    const nodes = chain(el); const page = { r: 255, g: 255, b: 255, a: 1 };
+    const bg = paint(nodes, page, null); const text = paint(nodes, page, fg);
     const [hi, lo] = [lum(text), lum(bg)].sort((a, b) => b - a);
     const ratio = (hi + 0.05) / (lo + 0.05);
     const large = parseFloat(cs.fontSize) >= 24 || (parseFloat(cs.fontSize) >= 18.66 && +cs.fontWeight >= 700);
@@ -202,14 +211,28 @@ const CONTRAST = `(() => {
   return [...new Set(out)];
 })()`;
 
-// The audit must see what it claims to see: a faded label on white has to fail. Run on every contract pass.
+// The audit must see what it claims to see. Each probe is real DOM with a known right answer; a miss fails the contract pass.
+//  - faded label: CSS opacity on the text itself (2.7:1).
+//  - grouped background: white text on a navy panel, the whole panel at opacity .5 (3.1:1). The group fades together, so
+//    a check that fades only the text and keeps the panel navy reads 5.4:1 and misses it (CHE-1278 F3, second case).
+//  - control: the same panel at full opacity must NOT be reported.
+const CONTRAST_PROBES = [
+  { label: 'faded label', flagged: true, html: '<span style="color:var(--color-text-faint);background:#fff;opacity:.7">faded label</span>' },
+  { label: 'grouped background', flagged: true, html: '<div style="opacity:.5;background:#0f172a"><p style="margin:0;color:#fff">grouped background</p></div>' },
+  { label: 'nested group', flagged: true, html: '<div style="opacity:.8"><div style="opacity:.6;background:#0f172a"><p style="margin:0;color:#fff">nested group</p></div></div>' },
+  { label: 'control panel', flagged: false, html: '<div style="background:#0f172a"><p style="margin:0;color:#fff">control panel</p></div>' }
+];
 const CONTRAST_SELF_TEST = `(() => {
-  const probe = document.createElement('span');
-  probe.textContent = 'opacity probe';
-  probe.style.cssText = 'position:fixed;top:0;left:0;color:var(--color-text-faint);background:#fff;opacity:.7';
-  document.body.appendChild(probe);
-  const found = (${CONTRAST}).some((m) => m.includes('opacity probe'));
-  probe.remove();
+  const found = [];
+  for (const probe of ${JSON.stringify(CONTRAST_PROBES)}) {
+    const host = document.createElement('div');
+    host.style.cssText = 'position:fixed;top:0;left:0;width:200px';
+    host.innerHTML = probe.html;
+    document.body.appendChild(host);
+    const reported = (${CONTRAST}).some((m) => m.includes(probe.label));
+    host.remove();
+    if (reported !== probe.flagged) found.push(probe.label + (probe.flagged ? ' was not reported' : ' was reported'));
+  }
   return found;
 })()`;
 
@@ -263,7 +286,7 @@ async function contract() {
     }
   }
   await open('/workspace', 1280);
-  if (!(await evaluate(CONTRAST_SELF_TEST))) fail('contract audit self-test', 'a label faded to 2.7:1 by CSS opacity was not reported: the contrast check ignores opacity');
+  for (const miss of await evaluate(CONTRAST_SELF_TEST)) fail('contract audit self-test', `${miss}: the contrast check does not compose CSS opacity correctly`);
   // Open menus sit on their own surfaces: the phone picker and the user menu.
   await open('/workspace', 1280);
   for (const [name, selector] of [['phone picker', 'app-workspace-device-chip button.chip'], ['user menu', 'summary[aria-label^="User menu"]']]) {
