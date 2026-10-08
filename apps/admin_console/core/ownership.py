@@ -6,6 +6,8 @@ Open mode never filters. In cloudflare mode a caller sees and acts on the runs
 they own; an admin may widen a listing with ``scope=all`` and acts on any run.
 An unowned run is visible to ``scope=all`` and actionable by an admin only: a
 caller with no identity owns nothing (a missing owner is not a matching one).
+Shared session JSON masks secrets for non-owners. Owners, administrators and
+open-mode callers retain raw data, as on the catalog's direct run endpoint.
 """
 
 from __future__ import annotations
@@ -16,6 +18,7 @@ from typing import Any
 from fastapi import Depends, Query
 
 from apps.admin_console.core.access_control import AccessIdentity, AdminAPIError, public_tier
+from apps.admin_console.core.redaction import redact_json
 
 try:
     from admin_console.database.repositories.run_catalog_repository import (
@@ -101,6 +104,15 @@ def owners_of(session_ids: list[str]) -> dict[str, str | None]:
             "catalog_not_ready",
             "Restart the console so the catalog migration can run.",
         ) from exc
+
+
+def present_session_data(scope: OwnerScope, session_id: str | None, data: Any) -> Any:
+    """Keep owner/admin data raw; redact text in shared session JSON otherwise."""
+    scope = scope_or_open(scope)
+    if not scope.enforced or scope.admin:
+        return data
+    owner = owners_of([session_id]).get(session_id) if session_id else None
+    return data if scope.may_act_on(owner) else redact_json(data)
 
 
 def require_access(scope: OwnerScope, session_id: str | None) -> None:

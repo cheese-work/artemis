@@ -14,12 +14,13 @@
 
 import asyncio
 from pathlib import Path
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse
 
 from artemis.config import IMAGES_DIR, TRACES_PATH, WORKSPACE_ROOT
 from artemis.data_engine.run_catalog import validate_session_id
 
+from apps.admin_console.core.ownership import OwnerScope, actor_scope, present_session_data
 from apps.admin_console.services import run_media
 
 try:
@@ -147,10 +148,11 @@ async def get_video(video_path: str):
 
 
 @router.get("/api/sessions/{session_id}/video")
-async def get_session_video(session_id: str):
+async def get_session_video(session_id: str, actor: OwnerScope = Depends(actor_scope)):
     # Blocking work (sqlite, filesystem scan, possible ffmpeg conversion) runs
     # off the event loop.
-    return await asyncio.to_thread(_get_session_video_sync, session_id)
+    video = await asyncio.to_thread(_get_session_video_sync, session_id)
+    return present_session_data(actor, session_id, video)
 
 
 def _get_session_video_sync(session_id: str):
@@ -223,16 +225,19 @@ async def get_local_file(path: str):
 
 
 @router.get("/api/sessions/{session_id}/plan")
-async def get_task_plan(session_id: str):
-    return {"plan": media_service.get_task_plan_content(_safe_session_id(session_id))}
+async def get_task_plan(session_id: str, actor: OwnerScope = Depends(actor_scope)):
+    plan = {"plan": media_service.get_task_plan_content(_safe_session_id(session_id))}
+    return present_session_data(actor, session_id, plan)
 
 
 @router.get("/api/sessions/{session_id}/notes")
-async def get_all_notes(session_id: str):
-    return {"notes": media_service.get_session_notes_content(_safe_session_id(session_id))}
+async def get_all_notes(session_id: str, actor: OwnerScope = Depends(actor_scope)):
+    notes = {"notes": media_service.get_session_notes_content(_safe_session_id(session_id))}
+    return present_session_data(actor, session_id, notes)
 
 
 @router.get("/api/sessions/{session_id}/checks")
-async def get_session_checks(session_id: str):
+async def get_session_checks(session_id: str, actor: OwnerScope = Depends(actor_scope)):
     """Checker verdict ledger + run outcome (backfill for the Checker panel)."""
-    return media_service.get_session_checks(_safe_session_id(session_id))
+    checks = media_service.get_session_checks(_safe_session_id(session_id))
+    return present_session_data(actor, session_id, checks)

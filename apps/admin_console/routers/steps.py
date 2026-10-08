@@ -14,11 +14,12 @@
 
 import json
 import traceback
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import PlainTextResponse
 
 from artemis.config import TEST_OUTPUTS_DIR
 
+from apps.admin_console.core.ownership import OwnerScope, actor_scope, present_session_data
 from apps.admin_console.core.redaction import redact_json, redact_text
 
 try:
@@ -35,24 +36,28 @@ router = APIRouter(tags=["steps"])
 
 
 @router.get("/api/sessions/{session_id}/steps")
-async def get_session_steps(session_id: str, client: str | None = None):
+async def get_session_steps(
+    session_id: str, client: str | None = None, actor: OwnerScope = Depends(actor_scope)
+):
     try:
-        return step_repo.get_session_steps(session_id, client=client)
+        steps = step_repo.get_session_steps(session_id, client=client)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+    return present_session_data(actor, session_id, steps)
 
 
 @router.get("/api/steps/{step_id}/traces")
-async def get_step_traces_endpoint(step_id: str):
+async def get_step_traces_endpoint(step_id: str, actor: OwnerScope = Depends(actor_scope)):
     try:
         session_id = step_repo.get_step_session_id(step_id)
         if not session_id:
             raise HTTPException(status_code=404, detail="Step not found")
-        return trace_repo.get_step_traces_tree(session_id, step_id)
+        traces = trace_repo.get_step_traces_tree(session_id, step_id)
     except HTTPException as e:
         raise e
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+    return present_session_data(actor, session_id, traces)
 
 
 def _resolve_trace_db_path(session_id: str | None, step_number: int | None):
@@ -69,7 +74,12 @@ def _resolve_trace_db_path(session_id: str | None, step_number: int | None):
 
 
 @router.get("/api/traces/{trace_id}")
-async def get_trace(trace_id: str, session_id: str = None, step_number: int = None):
+async def get_trace(
+    trace_id: str,
+    session_id: str = None,
+    step_number: int = None,
+    actor: OwnerScope = Depends(actor_scope),
+):
     try:
         db_path = _resolve_trace_db_path(session_id, step_number)
         trace_dict = trace_repo.get_trace_by_id(trace_id, db_path=db_path)
@@ -84,12 +94,12 @@ async def get_trace(trace_id: str, session_id: str = None, step_number: int = No
                 # Non-JSON or unexpectedly shaped payload: serve it raw.
                 pass
 
-        return trace_dict
     except HTTPException as e:
         raise e
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+    return present_session_data(actor, trace_dict.get("session_id"), trace_dict)
 
 
 def _redacted_payload(payload: str) -> str:
