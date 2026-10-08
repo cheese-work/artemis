@@ -207,11 +207,13 @@ else:
         else CloudflareAccessVerifier()
     )
 logging.getLogger(__name__).info(
-    "Admin access configured: mode=%s issuer=%s audience=%s admin_count=%d",
+    "Admin access configured: mode=%s issuer=%s audience=%s admin_count=%d spaces=%s",
     app.state.access_config.auth_mode,
     app.state.access_config.issuer or "none",
     app.state.access_config.audience or "none",
-    len(app.state.access_config.admin_emails),
+    len(app.state.access_config.admin_subjects)
+    + (0 if app.state.access_config.spaces_enabled else len(app.state.access_config.admin_emails)),
+    app.state.access_config.spaces_enabled,
 )
 logger = logging.getLogger(__name__)
 # A preview never adopts the live service's token: its own is fresh and container-local.

@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
 from apps.admin_console.core.access_control import AccessIdentity, AdminAPIError, require_admin
-from apps.admin_console.core.ownership import OwnerScope, actor_scope, scope_or_open
+from apps.admin_console.core.ownership import OwnerScope, actor_scope, require_actor
 from apps.admin_console.services import host_registry as hr
 from apps.admin_console.services.host_hub import CLOSE_REVOKED, host_hub
 from apps.admin_console.services.host_registry import host_registry
@@ -46,7 +46,7 @@ def _active_run_count(host_id: str) -> int:
 @router.get("")
 async def list_hosts(actor: OwnerScope = Depends(actor_scope)) -> dict:
     """Computers, and every phone the caller can pick: shared by a computer or plugged into their browser."""
-    scope = scope_or_open(actor)
+    scope = require_actor(actor)
     if not hr.host_agent_enabled():
         return {"enabled": False, "hosts": [], "devices": []}
     hosts, devices = host_registry.list_hosts()

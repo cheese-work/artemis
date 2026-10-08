@@ -27,7 +27,7 @@ import urllib.parse
 from fastapi import HTTPException
 
 from artemis.config import IMAGES_DIR, TRACES_PATH, WORKSPACE_ROOT
-from apps.admin_console.core.ownership import OwnerScope, present_session_data, scope_or_open
+from apps.admin_console.core.ownership import OwnerScope, present_session_data, require_actor
 
 logger = logging.getLogger(__name__)
 
@@ -537,7 +537,8 @@ class MediaService:
         return p, media_type
 
     @staticmethod
-    def get_task_plan_content(session_id: str, actor: OwnerScope | None = None) -> str:
+    def get_task_plan_content(session_id: str, actor: OwnerScope | None) -> str:
+        scope = require_actor(actor)  # before the try below, which would swallow a denial
         source_session_id = session_id
         plan_path = TRACES_PATH / session_id / "notes" / "task_plan.md"
         if not plan_path.exists():
@@ -547,7 +548,7 @@ class MediaService:
         if plan_path.exists():
             try:
                 return present_session_data(
-                    scope_or_open(actor), source_session_id, plan_path.read_text(encoding="utf-8")
+                    scope, source_session_id, plan_path.read_text(encoding="utf-8")
                 )
             except Exception as e:
                 return f"Error reading task plan: {e}"
@@ -604,9 +605,7 @@ class MediaService:
         return {"records": records, "streams": streams, "run_outcome": run_outcome}
 
     @staticmethod
-    def get_session_notes_content(
-        session_id: str, actor: OwnerScope | None = None
-    ) -> dict[str, str]:
+    def get_session_notes_content(session_id: str, actor: OwnerScope | None) -> dict[str, str]:
         source_session_id = session_id
         notes_dir = TRACES_PATH / session_id / "notes"
         notes_content = {}
@@ -635,7 +634,7 @@ class MediaService:
                         except Exception as e:
                             notes_content[file.name] = f"Error reading file: {e}"
 
-        return present_session_data(scope_or_open(actor), source_session_id, notes_content)
+        return present_session_data(require_actor(actor), source_session_id, notes_content)
 
 
 media_service = MediaService()

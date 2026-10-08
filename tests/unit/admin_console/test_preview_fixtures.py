@@ -201,6 +201,7 @@ def test_identity_switch_uses_real_ownership_without_jwks(switched_preview):
         identity = client.get("/api/system/whoami", headers=headers).json()
         assert identity == {
             "email": email,
+            "subject": None,
             "admin": email == ADMIN,
             "auth_mode": "preview",
             "reason": None,

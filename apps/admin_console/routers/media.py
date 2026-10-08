@@ -26,7 +26,7 @@ from apps.admin_console.core.ownership import (
     actor_scope,
     present_session_data,
     require_access,
-    scope_or_open,
+    require_actor,
 )
 from apps.admin_console.services import run_images, run_media
 from apps.admin_console.services.run_artifacts import goal_image_session, untracked_inline_image
@@ -62,9 +62,9 @@ async def _leased_file(
     """A download that defers deleting its runs until it ends; 404 once they are all deleted."""
     session_id = await asyncio.to_thread(goal_image_session, path)
     if session_id is not None:
-        await asyncio.to_thread(require_access, scope_or_open(actor), session_id)
+        await asyncio.to_thread(require_access, require_actor(actor), session_id)
     elif await asyncio.to_thread(untracked_inline_image, path):
-        await asyncio.to_thread(require_access, scope_or_open(actor), None)
+        await asyncio.to_thread(require_access, require_actor(actor), None)
     lease_ids = await asyncio.to_thread(run_media.lease, owners)
     if lease_ids is None:
         raise HTTPException(status_code=404, detail="Media file not found")

@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from apps.admin_console.core.ownership import SYSTEM_PRINCIPAL
 from apps.admin_console.core.state import state
 from apps.admin_console.database.repositories.session_repository import session_repo
 from apps.admin_console.routers import tasks
@@ -86,7 +87,9 @@ async def test_merged_router_uses_bound_browser_serial_before_device_selection(m
     monkeypatch.setattr(tasks.task_queue_service, "enqueue_tasks", enqueue)
     monkeypatch.setattr(tasks.task_queue_service, "require_admission_open", MagicMock())
 
-    await tasks.run_task(RunRequest(goal="Open Settings", bridge_session_id="browser-session"))
+    await tasks.run_task(
+        RunRequest(goal="Open Settings", bridge_session_id="browser-session"), SYSTEM_PRINCIPAL
+    )
 
     assert probe.await_args.kwargs["target_serial"] == serial
     assert enqueue.await_args.kwargs["device_serial"] == serial

@@ -121,7 +121,7 @@ def test_verified_nonadmin_can_open_local_bridge(loopback_client, monkeypatch, _
         ),
     )
     verifier = MagicMock()
-    verifier.verify = AsyncMock(return_value={"email": "qa@example.com"})
+    verifier.verify = AsyncMock(return_value={"email": "qa@example.com", "sub": "qa-sub"})
     monkeypatch.setattr(app.state, "access_verifier", verifier)
 
     with loopback_client.websocket_connect(

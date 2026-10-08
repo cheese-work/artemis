@@ -596,7 +596,6 @@ async def test_durable_retry_reuses_only_accepted_device(
     item = queue_item(context, endpoint, "selected", host_id=host_id)
     state.queue_items.clear()
     monkeypatch.setattr(task_router, "session_repo", context.repository)
-    monkeypatch.setattr(task_router, "scope_or_open", lambda actor: OwnerScope(enforced=False))
     probe = AsyncMock(side_effect=AssertionError("Retry must not probe devices"))
     monkeypatch.setattr(task_router.readiness_engine, "run_device_submission_probe", probe)
     request = RunRequest(

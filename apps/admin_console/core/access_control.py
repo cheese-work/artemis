@@ -20,6 +20,11 @@ from jwt.exceptions import InvalidKeyError, PyJWTError
 from starlette.requests import HTTPConnection
 from starlette.status import WS_1008_POLICY_VIOLATION
 
+from apps.admin_console.database.repositories.principal_repository import (
+    PrincipalStoreNotReady,
+    principal_repo,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -29,6 +34,14 @@ class AccessConfig:
     audience: str | None = None
     issuer: str | None = None
     admin_emails: frozenset[str] = frozenset()
+    admin_subjects: frozenset[str] = frozenset()
+    spaces_enabled: bool = False
+
+    def is_admin(self, subject: str | None, email: str | None) -> bool:
+        """Global admins are keyed by subject; the email list is legacy, spaces-off only."""
+        if subject is not None and subject in self.admin_subjects:
+            return True
+        return not self.spaces_enabled and email is not None and email in self.admin_emails
 
 
 @dataclass(frozen=True)
@@ -37,20 +50,41 @@ class AccessIdentity:
     admin: bool
     auth_mode: str
     reason: str | None = None
+    issuer: str | None = None
+    subject: str | None = None
+
+
+RETRY_AFTER_SECONDS = 5
 
 
 class AdminAPIError(Exception):
-    def __init__(self, status_code: int, detail: str, code: str, fix: str):
+    def __init__(
+        self,
+        status_code: int,
+        detail: str,
+        code: str,
+        fix: str,
+        retry_after: int | None = None,
+    ):
         self.status_code = status_code
         self.detail = detail
         self.code = code
         self.fix = fix
+        self.retry_after = retry_after
 
 
 def admin_api_error_handler(_request: Request, exc: AdminAPIError) -> JSONResponse:
-    return JSONResponse(
-        status_code=exc.status_code,
-        content={"detail": exc.detail, "code": exc.code, "fix": exc.fix},
+    content = {"detail": exc.detail, "code": exc.code, "fix": exc.fix}
+    headers = {}
+    if exc.retry_after is not None:
+        content["retryable"] = True
+        headers["Retry-After"] = str(exc.retry_after)
+    return JSONResponse(status_code=exc.status_code, content=content, headers=headers)
+
+
+def _csv(name: str) -> frozenset[str]:
+    return frozenset(
+        item.strip().casefold() for item in os.getenv(name, "").split(",") if item.strip()
     )
 
 
@@ -59,8 +93,14 @@ def config_from_environment() -> AccessConfig:
     if auth_mode not in {"open", "cloudflare"}:
         raise ValueError("ARTEMIS_AUTH_MODE must be 'open' or 'cloudflare'.")
 
+    spaces_enabled = os.getenv("ARTEMIS_SPACES_ENABLED", "").strip().casefold() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
     if auth_mode == "open":
-        return AccessConfig(auth_mode="open")
+        return AccessConfig(auth_mode="open", spaces_enabled=spaces_enabled)
 
     audience = os.getenv("ARTEMIS_CF_ACCESS_AUD", "").strip()
     team_domain = os.getenv("ARTEMIS_CF_ACCESS_TEAM_DOMAIN", "").strip().casefold()
@@ -77,16 +117,18 @@ def config_from_environment() -> AccessConfig:
     if not team_domain.endswith(".cloudflareaccess.com"):
         team_domain = f"{team_domain}.cloudflareaccess.com"
 
-    admin_emails = frozenset(
-        email.strip().casefold()
-        for email in os.getenv("ARTEMIS_ADMIN_EMAILS", "congvc.dev@gmail.com").split(",")
-        if email.strip()
+    admin_subjects = frozenset(
+        item.strip() for item in os.getenv("ARTEMIS_ADMIN_SUBJECTS", "").split(",") if item.strip()
     )
+    if spaces_enabled and not admin_subjects:
+        logger.warning("Spaces are enabled but ARTEMIS_ADMIN_SUBJECTS is empty: no global admin.")
     return AccessConfig(
         auth_mode="cloudflare",
         audience=audience,
         issuer=f"https://{team_domain}",
-        admin_emails=admin_emails,
+        admin_emails=_csv("ARTEMIS_ADMIN_EMAILS"),
+        admin_subjects=admin_subjects,
+        spaces_enabled=spaces_enabled,
     )
 
 
@@ -177,6 +219,13 @@ async def authenticate_request(
             name.lower() == b"x-forwarded-for" for name, _value in request.scope.get("headers", ())
         )
         local_admin = _is_loopback_request(request) and not forwarded
+        if config.spaces_enabled and not local_admin:
+            raise AdminAPIError(
+                403,
+                "Open mode with spaces enabled only admits a direct local caller.",
+                "open_mode_loopback_only",
+                "Set ARTEMIS_AUTH_MODE=cloudflare, or call from the server host without a proxy.",
+            )
         return AccessIdentity(
             email=None,
             admin=local_admin,
@@ -200,11 +249,28 @@ async def authenticate_request(
     if not isinstance(email, str) or not email.strip():
         return AccessIdentity(None, False, config.auth_mode, "jwt_invalid")
     email = email.strip().casefold()
+    subject, issuer = claims.get("sub"), config.issuer  # decode() already checked iss == issuer
+    if not (isinstance(subject, str) and subject and issuer):
+        return AccessIdentity(None, False, config.auth_mode, "jwt_invalid")
+    if config.spaces_enabled:
+        try:
+            await asyncio.to_thread(principal_repo.ensure_user, issuer, subject, email)
+        except PrincipalStoreNotReady as exc:
+            raise AdminAPIError(
+                503,
+                "The principal store is not ready.",
+                "principal_store_not_ready",
+                "Retry shortly; restart the console if it persists so the schema can be created.",
+                RETRY_AFTER_SECONDS,
+            ) from exc
+    admin = config.is_admin(subject, email)
     return AccessIdentity(
         email,
-        email in config.admin_emails,
+        admin,
         config.auth_mode,
-        None if email in config.admin_emails else "not_on_allowlist",
+        None if admin else "not_on_allowlist",
+        issuer,
+        subject,
     )
 
 
@@ -220,7 +286,12 @@ async def public_tier(request: HTTPConnection) -> AccessIdentity:
     if verifier is None:
         verifier = CloudflareAccessVerifier()
         request.app.state.access_verifier = verifier
-    identity = await authenticate_request(request, config, verifier)
+    try:
+        identity = await authenticate_request(request, config, verifier)
+    except AdminAPIError as exc:
+        if request.scope["type"] == "websocket":  # the HTTP error handler never sees these
+            raise WebSocketException(code=WS_1008_POLICY_VIOLATION, reason=exc.code) from exc
+        raise
     request.state.identity = identity
     return identity
 

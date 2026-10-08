@@ -39,7 +39,7 @@ from apps.admin_console.core.access_control import (
     require_qa,
 )
 from apps.admin_console.core.device_ownership import hide_foreign_devices
-from apps.admin_console.core.ownership import OwnerScope, actor_scope, scope_or_open
+from apps.admin_console.core.ownership import OwnerScope, actor_scope, require_actor
 from apps.admin_console.services.deploy_version import read_deploy_version
 from apps.admin_console.services.config_store import (
     ConfigStoreError,
@@ -60,6 +60,7 @@ class ConfigWriteRequest(BaseModel):
 async def whoami(identity: AccessIdentity = Depends(public_tier)):
     return {
         "email": identity.email,
+        "subject": identity.subject,
         "admin": identity.admin,
         "auth_mode": identity.auth_mode,
         "reason": identity.reason,
@@ -178,7 +179,7 @@ async def get_system_readiness(
 ) -> dict[str, Any]:
     """Execute all diagnostic probes and return the readiness report the caller may see."""
     report = await readiness_engine.run_all(force_refresh=force)
-    return hide_foreign_devices(scope_or_open(actor), report.model_dump(mode="json"))
+    return hide_foreign_devices(require_actor(actor), report.model_dump(mode="json"))
 
 
 @router.post("/devices/select", dependencies=[Depends(require_admin)])

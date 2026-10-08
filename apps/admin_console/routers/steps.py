@@ -24,7 +24,7 @@ from apps.admin_console.core.ownership import (
     OwnerScope,
     actor_scope,
     present_session_data,
-    scope_or_open,
+    require_actor,
 )
 from apps.admin_console.core.redaction import redact_json, redact_text
 
@@ -100,7 +100,7 @@ async def get_trace(
                 trace_dict["payload"] = media_service.unwrap_payload(
                     payload_obj,
                     session_id=trace_dict.get("session_id")
-                    if scope_or_open(actor).enforced
+                    if require_actor(actor).enforced
                     else None,
                 )
             except (ValueError, TypeError, KeyError, AttributeError):

@@ -8,6 +8,10 @@ An unowned run is visible to ``scope=all`` and actionable by an admin only: a
 caller with no identity owns nothing (a missing owner is not a matching one).
 Shared session JSON masks secrets for non-owners. Owners, administrators and
 open-mode callers retain raw data, as on the catalog's direct run endpoint.
+
+Every handler resolves its actor with ``require_actor``: a missing actor is
+refused, and an in-process caller with no request acts as ``SYSTEM_PRINCIPAL``
+explicitly (CHE-1385, docs/spaces-contract.md).
 """
 
 from __future__ import annotations
@@ -17,7 +21,12 @@ from typing import Any
 
 from fastapi import Depends, Query
 
-from apps.admin_console.core.access_control import AccessIdentity, AdminAPIError, public_tier
+from apps.admin_console.core.access_control import (
+    RETRY_AFTER_SECONDS,
+    AccessIdentity,
+    AdminAPIError,
+    public_tier,
+)
 from apps.admin_console.core.redaction import redact_image_data, redact_json
 
 try:
@@ -54,12 +63,26 @@ class OwnerScope:
         return owner is not None and owner == self.email
 
 
-OPEN_SCOPE = OwnerScope(enforced=False)
+@dataclass(frozen=True)
+class SystemPrincipal(OwnerScope):
+    """The server acting on its own behalf (workers, migrations, tests); never a request."""
+
+    enforced: bool = False
 
 
-def scope_or_open(scope: Any) -> OwnerScope:
-    """A direct (in-process) call has no dependency injection; it acts unscoped."""
-    return scope if isinstance(scope, OwnerScope) else OPEN_SCOPE
+SYSTEM_PRINCIPAL = SystemPrincipal()
+
+
+def require_actor(actor: Any) -> OwnerScope:
+    """The caller's scope. A missing actor is denied, never treated as unscoped."""
+    if isinstance(actor, OwnerScope):
+        return actor
+    raise AdminAPIError(
+        401,
+        "No actor was supplied for this action.",
+        "actor_required",
+        "Call through the API, or pass SYSTEM_PRINCIPAL for server-side work.",
+    )
 
 
 def owner_scope(identity: AccessIdentity, scope: str = SCOPE_MINE) -> OwnerScope:
@@ -102,13 +125,14 @@ def owners_of(session_ids: list[str]) -> dict[str, str | None]:
             503,
             "The run catalog is not ready, so run ownership cannot be checked.",
             "catalog_not_ready",
-            "Restart the console so the catalog migration can run.",
+            "Retry shortly; restart the console if it persists so the catalog migration can run.",
+            RETRY_AFTER_SECONDS,
         ) from exc
 
 
 def present_session_data(scope: OwnerScope, session_id: str | None, data: Any) -> Any:
     """Keep owner/admin data raw; redact text in shared session JSON otherwise."""
-    scope = scope_or_open(scope)
+    scope = require_actor(scope)
     if not scope.enforced or scope.admin:
         return data
     owner = owners_of([session_id]).get(session_id) if session_id else None

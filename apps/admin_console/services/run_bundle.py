@@ -199,7 +199,9 @@ def _lookup(session_id: str) -> dict:
     except ValueError as exc:
         raise BundleError(400, "invalid_session_id") from exc
     except CatalogNotReady as exc:
-        raise BundleError(503, "catalog_not_ready") from exc
+        raise BundleError(
+            503, "catalog_not_ready", retry_after=RETRY_AFTER_SECONDS, retryable=True
+        ) from exc
     if found.run:
         return found.run
     if found.candidates:

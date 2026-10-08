@@ -40,7 +40,7 @@ from apps.admin_console.core.ownership import (
     present_session_data,
     require_access,
     require_access_all,
-    scope_or_open,
+    require_actor,
 )
 
 try:
@@ -127,7 +127,7 @@ async def get_task_catalog():
 
 @router.post("/api/run")
 async def run_task(request: RunRequest, actor: OwnerScope = Depends(actor_scope)):
-    scope = scope_or_open(actor)
+    scope = require_actor(actor)
     host_id = request.device_ref.host_id if request.device_ref else None
     requested_serial = request.device_ref.serial if request.device_ref else request.device_serial
     if host_id and not host_agent_enabled():
@@ -368,7 +368,7 @@ async def get_run_defaults():
 async def list_devices(actor: OwnerScope = Depends(actor_scope)):
     """List all connected Android devices with their busy / idle status."""
     devices = await device_pool.list_devices_async()
-    return {"devices": visible_devices(scope_or_open(actor), [d.to_dict() for d in devices])}
+    return {"devices": visible_devices(require_actor(actor), [d.to_dict() for d in devices])}
 
 
 def _owned_ids(scope: OwnerScope, ids: set[str | None]) -> list[str]:
@@ -462,7 +462,7 @@ async def stop_task(
     device_id: str | None = None,
     actor: OwnerScope = Depends(actor_scope),
 ):
-    scope = scope_or_open(actor)
+    scope = require_actor(actor)
     target_all = all
     target_sid = session_id
     target_dev = device_id
@@ -501,7 +501,7 @@ async def cancel_queued_task(session_id: str, actor: OwnerScope = Depends(actor_
     Running runs are stopped with ``/api/stop``, never through this route. Like
     stop, it needs the run's owner or an admin; a denied call has no side effect.
     """
-    scope = scope_or_open(actor)
+    scope = require_actor(actor)
     if scope.enforced and not scope.admin:
         require_access(scope, session_id)
     result = task_queue_service.cancel_queued(session_id)
@@ -524,7 +524,7 @@ async def resume_task(actor: OwnerScope = Depends(actor_scope)):
     affects (the running ones) is theirs; mixed-owner or unattributable pauses
     are admin-only. With nothing running and nothing paused the call is a no-op.
     """
-    _require_pause_authority(scope_or_open(actor))
+    _require_pause_authority(require_actor(actor))
     resumed = task_queue_service.resume_task()
     if resumed:
         return {"status": "resumed"}
@@ -533,7 +533,7 @@ async def resume_task(actor: OwnerScope = Depends(actor_scope)):
 
 @router.get("/api/status")
 async def get_status(scope: OwnerScope = Depends(list_scope)):
-    return _scope_status(await _status_payload(), scope_or_open(scope))
+    return _scope_status(await _status_payload(), require_actor(scope))
 
 
 def _scope_status(payload: dict[str, Any], scope: OwnerScope) -> dict[str, Any]:
@@ -719,7 +719,7 @@ async def stream_events(
     # The "all"/"active" firehose is scoped to the caller's runs. A stream of one
     # named run is a get-by-id (share link): in cloudflare mode it carries that
     # run's events only, never another run's lifecycle events.
-    scope = scope_or_open(scope)
+    scope = require_actor(scope)
     firehose = session_id in ("all", "active")
     decided: dict[str, bool] = {}
 
