@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -16,6 +17,8 @@ var hostSerialPattern = regexp.MustCompile(`^[A-Za-z0-9._:\-]{1,64}$`)
 var hostWaitPattern = regexp.MustCompile(`^wait-for-(any|usb|local)-(device|recovery|rescue|sideload|bootloader|any|disconnect)(-(device|recovery|rescue|sideload|bootloader|any|disconnect))*$`)
 var hostLinePattern = regexp.MustCompile(`[\r\n\x{85}\x{2028}\x{2029}]`)
 
+var hostDeviceLists = map[string]bool{"host:devices": true, "host:devices-l": true, "host:track-devices": true, "host:track-devices-l": true}
+
 var hostServices = map[string]bool{
 	"host:version": true, "host:features": true, "host:devices": true, "host:devices-l": true,
 	"host:track-devices": true, "host:track-devices-l": true,
@@ -25,6 +28,14 @@ type hostGateway struct {
 	serial   string
 	shared   func(string) bool
 	selected func(string)
+	routes   hostRoutes
+}
+
+// hostRoutes maps the server's opaque device ids to pinned local adb
+// transports (B3a-2). Without routes the gateway passes serials through.
+type hostRoutes interface {
+	route(id string) (transport string, ok bool)
+	alias(serial, transport string) (id string, ok bool)
 }
 
 func hostText(data []byte, allowNul bool) (string, error) {
@@ -74,6 +85,57 @@ func hostWriteAll(writer io.Writer, data []byte) error {
 		data = data[count:]
 	}
 	return nil
+}
+
+// hostRenameDevices rewrites a local device list for the server: each line of a
+// shared device's pinned transport carries the opaque id; every other line,
+// including raw serials of unshared or secondary transports, is dropped.
+func hostRenameDevices(data []byte, routes hostRoutes, shared func(string) bool) ([]byte, error) {
+	text, err := hostText(data, false)
+	if err != nil {
+		return nil, err
+	}
+	var result strings.Builder
+	for _, line := range strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n") {
+		entry := parseDevices(line)
+		if len(entry) != 1 {
+			continue
+		}
+		id, ok := routes.alias(entry[0].Serial, entry[0].Transport)
+		if !ok || !shared(id) {
+			continue
+		}
+		rest := line
+		if entry[0].Serial != "" {
+			rest = line[len(entry[0].Serial):]
+		} else if strings.HasPrefix(line, "(no serial number)") {
+			rest = strings.TrimPrefix(line, "(no serial number)")
+		}
+		result.WriteString(id + rest + "\n")
+	}
+	if result.Len() > hostMaxText {
+		return nil, errHostProtocol
+	}
+	return []byte(result.String()), nil
+}
+
+// hostTranslate rewrites a transport-selecting service from an opaque id to
+// the pinned local transport id; other services pass unchanged. ok=false means
+// the id has no live, shared transport.
+func (gateway *hostGateway) hostTranslate(service string) (forward, transport, id string, ok bool) {
+	for _, prefix := range []string{"host:transport:", "host:tport:serial:"} {
+		if strings.HasPrefix(service, prefix) {
+			id = strings.TrimPrefix(service, prefix)
+			transport, ok = gateway.routes.route(id)
+			return "host:transport-id:" + transport, transport, id, ok
+		}
+	}
+	if strings.HasPrefix(service, "host-serial:") {
+		id, command, _ := hostSerialCommand(service)
+		transport, ok = gateway.routes.route(id)
+		return "host-transport-id:" + transport + ":" + command, transport, id, ok
+	}
+	return service, "", "", true
 }
 
 func hostFilterDevices(data []byte, shared func(string) bool) ([]byte, error) {
@@ -206,7 +268,16 @@ func (gateway *hostGateway) exchange(ctx context.Context, stream *hostStream, re
 			serial, _, _ := hostSerialCommand(service)
 			gateway.selectSerial(serial)
 		}
-		if err := hostWriteAll(remote, hostPackMessage(request)); err != nil {
+		forward, transport := request, ""
+		if gateway.routes != nil {
+			translated, pinned, id, ok := gateway.hostTranslate(service)
+			if !ok {
+				// Same text as adb, so the worker treats it as a lost device.
+				return hostWriteAll(stream, append([]byte("FAIL"), hostPackMessage([]byte("device '"+id+"' not found"))...))
+			}
+			forward, transport = []byte(translated), pinned
+		}
+		if err := hostWriteAll(remote, hostPackMessage(forward)); err != nil {
 			return err
 		}
 		okay, err := hostRelayStatus(remote, stream)
@@ -221,7 +292,11 @@ func (gateway *hostGateway) exchange(ctx context.Context, stream *hostStream, re
 			gateway.selectSerial(strings.TrimPrefix(service, prefix))
 			if prefix == "host:tport:serial:" {
 				transportID := make([]byte, 8)
-				if _, err := io.ReadFull(remote, transportID); err != nil {
+				if gateway.routes != nil {
+					// The local request was host:transport-id, which returns no id: answer with the pinned one.
+					number, _ := strconv.ParseUint(transport, 10, 64)
+					binary.LittleEndian.PutUint64(transportID, number)
+				} else if _, err := io.ReadFull(remote, transportID); err != nil {
 					return err
 				}
 				if err := hostWriteAll(stream, transportID); err != nil {
@@ -241,8 +316,12 @@ func (gateway *hostGateway) exchange(ctx context.Context, stream *hostStream, re
 				if err != nil {
 					return err
 				}
-				if service == "host:devices" || service == "host:devices-l" || service == "host:track-devices" || service == "host:track-devices-l" {
+				if gateway.routes != nil && hostDeviceLists[service] {
+					response, err = hostRenameDevices(response, gateway.routes, gateway.shared)
+				} else if hostDeviceLists[service] {
 					response, err = hostFilterDevices(response, gateway.shared)
+				} else if gateway.routes != nil && strings.HasPrefix(service, "host-serial:") && command == "get-serialno" {
+					response = []byte(gateway.serial)
 				} else {
 					_, err = hostText(response, false)
 				}

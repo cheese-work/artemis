@@ -18,6 +18,7 @@ type configuration struct {
 	DNSServer     string                     `json:"dns_server,omitempty"`
 	NoADBDownload bool                       `json:"no_adb_download"`
 	Extra         map[string]json.RawMessage `json:"-"`
+	sharingFile   string
 }
 
 func defaultPath() string {

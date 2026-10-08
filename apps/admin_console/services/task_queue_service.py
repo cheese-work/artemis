@@ -777,7 +777,9 @@ class TaskQueueService:
         if target.host_id and sess_id:
             from apps.admin_console.services.host_tunnel import host_tunnels
 
-            host_tunnels.bind_run(target.host_id, str(sess_id))
+            host_tunnels.bind_run(
+                target.host_id, str(sess_id), str(device_serial) if device_serial else None
+            )
         if sess_id:
             try:
                 # Preserve status updates written concurrently by the worker.

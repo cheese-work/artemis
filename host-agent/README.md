@@ -69,19 +69,44 @@ X99. The downloader verifies the pinned checksum before extracting into a
 private staging directory. Traversal, symlinks and oversized archives fail.
 
 The local discovery executor has a non-overridable allowlist containing only
-`version` and `devices -l`. Run traffic must use B2's separate stateful
-gateway; this discovery allowlist is **not** a replacement for that gateway.
-The registry retains every USB, wireless and emulator transport, including
-unauthorized/offline devices, and rejects blank serials. It drops sharing on
-unplug, state changes and transport replacement, including `emulator-5554`
-reuse. Hardware identity, USB/wireless canonicalization, opaque ids and saved
-references belong to B3a-2; this candidate does not auto-share or transmit
-saved hardware references. The connected core registers raw adb serials;
-only explicit `share` exposes a device. The CLI reads a fresh local snapshot without
-starting or restarting adb. The connected core scans every two seconds and
-publishes bounded latest-only updates through the small tunnel interface.
-Device registration uses B2's `devices` WebSocket message. Run traffic always
-passes through the Go peer's fixed gateway, not the discovery executor.
+`version`, `devices -l` and one fixed identity request per new transport
+(`host:transport-id:N`, then `getprop` of `ro.serialno` and the emulator AVD
+name). Run traffic must use B2's separate stateful gateway; this discovery
+allowlist is **not** a replacement for that gateway. The CLI reads a fresh
+local snapshot without starting or restarting adb. The connected core scans
+every two seconds and publishes bounded latest-only updates through the small
+tunnel interface. Device registration uses B2's `devices` WebSocket message.
+
+## Device identity (B3a-2)
+
+- **hw id:** `physical:<ro.serialno>` for phones, `avd:<AVD name>` for
+  running emulators. A blank, `unknown` or `0123456789ABCDEF` serial number,
+  an emulator without an AVD name, and unauthorized or offline devices are
+  untrusted. Two live emulators with one AVD name, or two USB phones with one
+  serial number, are ambiguous. Both fall back to the adb serial
+  (`adb:<serial>`), show Needs attention and are never auto-shared.
+- **Opaque id:** the server sees only `sd-` + the first 16 hex digits of
+  HMAC-SHA256(org pepper, `"dev:" + hw id`). The server generates the org
+  pepper once and returns it at enrollment; the agent keeps it in
+  `identity.json`. An identity enrolled before B3a-2 has no pepper: `run`
+  fails with `SQH-E010` until it is re-enrolled. Raw serials, hw ids and AVD
+  names stay in the agent, its private files and the local CLI. Stated limit:
+  this does not protect from the server operator or from a run that itself
+  reads `ro.serialno`.
+- **One device per phone:** USB and wireless transports of one phone are one
+  device with one id. Blank adb serials are addressed by transport id.
+  `emulator-5554` reused by another AVD is a different device. A changed
+  wireless endpoint keeps the id.
+- **Pinned transport:** the gateway maps an id to one pinned adb transport
+  (`host:transport-id:N`). The server leases a device to a run when it binds
+  the run and releases the lease when it frees the run slot. It sends the
+  leased ids in the `connected` message and as a `lease` message on every
+  change. While a device is leased, a USB arrival never redirects it, and
+  losing the pinned transport holds the device offline, however long the run
+  is quiet. The run then ends `interrupted(device_offline)` with no silent
+  failover. Without a lease the device moves at once, preferring USB.
+  Device lists, `get-serialno` and `tport` replies carry only shared opaque ids.
+- v1 registers only running emulators; it never boots, snapshots or kills an AVD.
 
 **Known discovery gap:** `doctor` only checks the resolved adb executable's
 version, including a downloaded platform-tools binary. A PASS does not make
@@ -150,10 +175,42 @@ See `ERRORS.md` for every `SQH-Exxx` code.
 
 While `run` is active, Unix commands use a mode-0600 `control.sock` in the
 private configuration directory. No TCP fallback is provided. `status` and
-`devices` report the live registry; `share SERIAL` and `unshare SERIAL`
-update both the gateway allowlist and the server registration. Shares are
-not persisted across a process restart. Discovery drops a share when its
-transport disappears, changes, or becomes unauthorized.
+`devices` report the live registry; `share DEVICE` and `unshare DEVICE`
+update both the gateway allowlist and the server registration. `DEVICE` is
+the `id` (opaque id) or `hw_id` from `devices --json`, any adb serial of the
+device, or a unique label; a selector that matches two devices fails with
+`SQH-E207` (exit 3).
+
+Every scanned device is registered; the share mode decides which are runnable.
+The state is kept in a private `sharing.json` (0600) next to the configuration.
+
+- `mode select` (default on a fresh install, nothing selected): `share`
+  saves a reference `{kind, hw_id, label, first_seen, last_serial}` that
+  re-applies whenever the device reappears, never by serial or list position. A `share` in this mode also clears an exclusion left from auto mode.
+- `mode auto`: every trusted device is shared, including devices plugged in
+  later. `unshare` records an exclusion that survives rescan, replug and
+  restart until the device is shared again. `status` always says
+  "all devices, new devices auto-shared (N excluded)". The first time a phone
+  is auto-shared, the agent logs how to unshare it and sends
+  `device_auto_shared`; the desktop notification with an Unshare action is
+  tray work (B4a).
+- `mode auto` and `mode select` print their effect and need `--yes`
+  (`SQH-E206`, exit 2, otherwise). Auto to select saves exactly the current
+  shared set; select to auto keeps exclusions.
+- An untrusted or ambiguous device is shared only by an explicit `share`
+  ("Choose it once to share"). That consent is kept in memory and is cleared
+  on unplug, replug or agent restart.
+- `enroll --share-mode select|auto` (or `SMARTQA_HOST_SHARE_MODE`) picks the
+  mode at enrollment.
+
+The agent sends `share_mode_changed`, `device_share_changed{by}`,
+`device_auto_shared` and `identity_ambiguous` audit events. The server logs
+an event only when every field is allowlisted, and stores only opaque ids.
+A physical id registered by two computers is flagged `also_visible` on both
+rows, and B5a-1 admission dispatches to neither. B5a-1 holds the admin
+choice ("Use this computer", "These are different phones"); this slice adds
+no admin route for it.
+Emulators are never flagged: an AVD name is per computer.
 
 `unenroll` cancels and joins the connection loop before using its token on
 `POST /api/agent/unenroll`. The server revokes only the authenticated identity.

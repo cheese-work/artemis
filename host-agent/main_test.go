@@ -70,7 +70,7 @@ func TestCLIContractFakeServer(t *testing.T) {
 		}
 		calls++
 		writer.Header().Set("Content-Type", "application/json")
-		_, _ = writer.Write([]byte(`{"host_id":"host-1","protocol_version":1,"min_supported":1}`))
+		_, _ = writer.Write([]byte(`{"host_id":"host-1","protocol_version":1,"min_supported":1,"device_pepper":"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8="}`))
 	}))
 	defer server.Close()
 	directory := t.TempDir()

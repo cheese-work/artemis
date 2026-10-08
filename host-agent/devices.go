@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"net"
@@ -9,16 +10,24 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 )
 
 type device struct {
-	Serial    string `json:"serial"`
-	State     string `json:"state"`
-	Model     string `json:"model,omitempty"`
-	Transport string `json:"transport_id,omitempty"`
-	Shared    bool   `json:"shared"`
+	ID        string         `json:"id,omitempty"`
+	Serial    string         `json:"serial"`
+	State     string         `json:"state"`
+	Model     string         `json:"model,omitempty"`
+	Transport string         `json:"transport_id,omitempty"`
+	Kind      string         `json:"kind,omitempty"`
+	HWID      string         `json:"hw_id,omitempty"`
+	Label     string         `json:"label,omitempty"`
+	Identity  string         `json:"identity,omitempty"`
+	Attention string         `json:"attention,omitempty"`
+	Shared    bool           `json:"shared"`
+	Auto      bool           `json:"auto_shared,omitempty"`
+	Props     transportProps `json:"-"`
+	serials   []string
 }
 
 func allowedADB(arguments []string) bool {
@@ -90,19 +99,27 @@ func parseDevices(output string) []device {
 	result := []device{}
 	seen := map[string]bool{}
 	for _, line := range strings.Split(output, "\n") {
-		if strings.HasPrefix(line, "List of devices") || strings.HasPrefix(line, "*") || len(line) == 0 || line[0] == ' ' || line[0] == '\t' {
+		if strings.HasPrefix(line, "List of devices") || strings.HasPrefix(line, "*") || strings.TrimSpace(line) == "" {
 			continue
 		}
-		fields := strings.Fields(line)
-		if len(fields) < 2 || seen[fields[0]] {
+		serial := ""
+		rest := line
+		if strings.HasPrefix(line, "(no serial number)") {
+			rest = strings.TrimPrefix(line, "(no serial number)")
+		} else if line[0] != ' ' && line[0] != '\t' {
+			serial = strings.Fields(line)[0]
+			rest = line[len(serial):]
+		}
+		fields := strings.Fields(rest)
+		if len(fields) < 1 {
 			continue
 		}
-		state := fields[1]
+		state := fields[0]
 		if state != "device" && state != "offline" && state != "unauthorized" && state != "no" {
 			continue
 		}
-		entry := device{Serial: fields[0], State: state}
-		for _, field := range fields[2:] {
+		entry := device{Serial: serial, State: state}
+		for _, field := range fields[1:] {
 			if strings.HasPrefix(field, "model:") {
 				entry.Model = strings.TrimPrefix(field, "model:")
 			}
@@ -110,73 +127,22 @@ func parseDevices(output string) []device {
 				entry.Transport = strings.TrimPrefix(field, "transport_id:")
 			}
 		}
-		seen[entry.Serial] = true
+		// A blank serial is addressable only through its transport id.
+		key := serial + "|" + entry.Transport
+		if (serial == "" && !transportIDPattern.MatchString(entry.Transport)) || seen[key] {
+			continue
+		}
+		seen[key] = true
 		result = append(result, entry)
 	}
-	sort.Slice(result, func(first, second int) bool { return result[first].Serial < result[second].Serial })
+	sort.Slice(result, func(first, second int) bool {
+		return result[first].Serial+"|"+result[first].Transport < result[second].Serial+"|"+result[second].Transport
+	})
 	return result
 }
-
-type registry struct {
-	sync.Mutex
-	devices map[string]device
-	updates chan []device
-}
-
-func newRegistry() *registry {
-	return &registry{devices: map[string]device{}, updates: make(chan []device, 1)}
-}
-func (registry *registry) replace(devices []device) {
-	registry.Lock()
-	defer registry.Unlock()
-	next := map[string]device{}
-	for _, entry := range devices {
-		previous, exists := registry.devices[entry.Serial]
-		entry.Shared = exists && entry.Transport != "" && previous.Transport == entry.Transport && previous.State == "device" && entry.State == "device" && previous.Shared
-		next[entry.Serial] = entry
-	}
-	registry.devices = next
-	snapshot := make([]device, 0, len(next))
-	for _, entry := range next {
-		snapshot = append(snapshot, entry)
-	}
-	sort.Slice(snapshot, func(first, second int) bool { return snapshot[first].Serial < snapshot[second].Serial })
-	select {
-	case <-registry.updates:
-	default:
-	}
-	registry.updates <- snapshot
-}
-
-func (registry *registry) Updates() <-chan []device { return registry.updates }
 
 func discover(ctx context.Context, config configuration) ([]device, error) {
-	output, err := adb(ctx, config.ADB, "devices", "-l")
-	if err != nil {
-		return nil, err
-	}
-	return parseDevices(output), nil
-}
-func (registry *registry) share(serial string, shared bool) error {
-	registry.Lock()
-	defer registry.Unlock()
-	entry, exists := registry.devices[serial]
-	if !exists || entry.State != "device" {
-		return failure("SQH-E205", nil)
-	}
-	entry.Shared = shared
-	registry.devices[serial] = entry
-	return nil
-}
-func (registry *registry) snapshot() []device {
-	registry.Lock()
-	defer registry.Unlock()
-	result := []device{}
-	for _, entry := range registry.devices {
-		result = append(result, entry)
-	}
-	sort.Slice(result, func(first, second int) bool { return result[first].Serial < result[second].Serial })
-	return result
+	return newScanner().discover(ctx, config)
 }
 
 type tunnel interface {
@@ -198,7 +164,14 @@ func runAgentWithQuery(ctx context.Context, config configuration, state agentSta
 	if query == nil {
 		return failure("SQH-E201", nil)
 	}
-	devices := newRegistry()
+	pepper, err := base64.StdEncoding.DecodeString(state.DevicePepper)
+	if err != nil {
+		return failure("SQH-E002", err)
+	}
+	devices, err := newDeviceRegistry(pepper, config.sharingFile)
+	if err != nil {
+		return err
+	}
 	entries, err := query(ctx, config)
 	if err != nil {
 		return err

@@ -28,12 +28,15 @@ func TestPermanentErrorsHaveDistinctExitStatus(test *testing.T) {
 		}
 	}
 	for code := range errorCatalog {
-		if code == "SQH-E006" || code == "SQH-E007" || code == "SQH-E008" || code == "SQH-E009" {
+		if code == "SQH-E006" || code == "SQH-E007" || code == "SQH-E008" || code == "SQH-E009" || code == "SQH-E206" || code == "SQH-E207" {
 			continue
 		}
 		if status := processExitStatus(failure(code, nil)); status != 1 {
 			test.Errorf("%s status=%d want 1", code, status)
 		}
+	}
+	if processExitStatus(failure("SQH-E206", nil)) != 2 || processExitStatus(failure("SQH-E207", nil)) != 3 {
+		test.Fatal("confirmation/ambiguous selector exit status")
 	}
 	if processExitStatus(nil) != 0 || processExitStatus(fmt.Errorf("transient")) != 1 {
 		test.Fatal("success/transient exit status changed")

@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -27,6 +28,8 @@ type wiringServer struct {
 	renewed      chan struct{}
 	revoked      chan struct{}
 	connections  atomic.Int32
+	mutex        sync.Mutex
+	messages     []string
 	minimum      int
 	authError    bool
 	refuseRevoke bool
@@ -97,6 +100,9 @@ func newWiringServer(test *testing.T, private ed25519.PrivateKey) *wiringServer 
 				if kind != websocket.MessageText || json.Unmarshal(payload, &event) != nil {
 					return
 				}
+				fixture.mutex.Lock()
+				fixture.messages = append(fixture.messages, string(payload))
+				fixture.mutex.Unlock()
 				if event.Type == "devices" {
 					fixture.devices <- event.Devices
 				}
@@ -146,7 +152,7 @@ func wiringIdentity(test *testing.T, server string, private ed25519.PrivateKey) 
 	if err := saveConfig(path, configuration{Server: server, ADB: "adb", NoADBDownload: true}); err != nil {
 		test.Fatal(err)
 	}
-	if err := saveState(statePath(path), agentState{HostID: "fixture-host", PrivateKey: base64.StdEncoding.EncodeToString(private), Server: server}); err != nil {
+	if err := saveState(statePath(path), agentState{HostID: "fixture-host", PrivateKey: base64.StdEncoding.EncodeToString(private), Server: server, DevicePepper: base64.StdEncoding.EncodeToString(testPepper)}); err != nil {
 		test.Fatal(err)
 	}
 	return path
@@ -207,6 +213,7 @@ func TestRunShareUnshareRenewAndUnenrollThroughGoPeer(test *testing.T) {
 	if json.Unmarshal(status.Bytes(), &statusReply) != nil || !statusReply.Connected {
 		test.Fatalf("live status: %s", status.String())
 	}
+	usbID := opaqueDeviceID(testPepper, "adb:USB123")
 	if err := execute(ctx, []string{"share", "--config", path, "missing"}, &bytes.Buffer{}); errorCode(err) != "SQH-E205" {
 		test.Fatalf("shared absent device: %v", err)
 	}
@@ -215,12 +222,12 @@ func TestRunShareUnshareRenewAndUnenrollThroughGoPeer(test *testing.T) {
 			test.Fatalf("%s: %v", command, err)
 		}
 		entries := nextWiringDevices(test, fixture)
-		if len(entries) != 1 || entries[0].Shared != (command == "share") {
+		if len(entries) != 1 || entries[0].Shared != (command == "share") || entries[0].Serial != usbID {
 			test.Fatalf("%s not published: %+v", command, entries)
 		}
 		link.mutex.Lock()
 		link.peer.mutex.Lock()
-		shared := link.peer.shared["USB123"]
+		shared := link.peer.shared[usbID]
 		link.peer.mutex.Unlock()
 		link.mutex.Unlock()
 		if shared != (command == "share") {
@@ -384,5 +391,58 @@ func TestWiringRejectsUnsupportedProtocolAndRevokedIdentity(test *testing.T) {
 				test.Fatal("refused authentication erased identity")
 			}
 		})
+	}
+}
+
+func TestServerPayloadLeakScan(test *testing.T) {
+	test.Setenv("ARTEMIS_HOST_AGENT", "1")
+	_, private, _ := ed25519.GenerateKey(rand.Reader)
+	fixture := newWiringServer(test, private)
+	path := wiringIdentity(test, fixture.server.URL, private)
+	raw := []string{"R5CT1234ABC", "192.168.1.5", "CHEAP1", "emulator-5554", "Pixel_A", "physical:", "avd:", "adb:"}
+	app := application{Tunnel: &hostLink{path: path}, Query: func(context.Context, configuration) ([]device, error) {
+		return []device{
+			usbPhone("R5CT1234ABC", "1", "R5CT1234ABC"),
+			usbPhone("192.168.1.5:5555", "2", "R5CT1234ABC"),
+			usbPhone("CHEAP1", "3", "unknown"),
+			runningAVD("emulator-5554", "4", "Pixel_A"),
+			{Serial: "UNAUTH77", State: "unauthorized", Transport: "5"},
+		}, nil
+	}}
+	raw = append(raw, "UNAUTH77")
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- executeApplication(ctx, []string{"run", "--config", path}, &bytes.Buffer{}, app) }()
+	if entries := nextWiringDevices(test, fixture); len(entries) != 4 {
+		test.Fatalf("registration: %+v", entries)
+	}
+	for _, arguments := range [][]string{{"share", "R5CT1234ABC"}, {"share", "CHEAP1"}, {"mode", "--yes", "auto"}, {"unshare", "Pixel_A"}, {"mode", "--yes", "select"}} {
+		if err := execute(ctx, append([]string{arguments[0], "--config", path}, arguments[1:]...), &bytes.Buffer{}); err != nil {
+			test.Fatalf("%v: %v", arguments, err)
+		}
+		nextWiringDevices(test, fixture)
+	}
+	var local bytes.Buffer
+	if err := execute(ctx, []string{"devices", "--json", "--config", path}, &local); err != nil || !strings.Contains(local.String(), "R5CT1234ABC") {
+		test.Fatalf("local CLI must still show raw serials: %v %s", err, local.String())
+	}
+	cancel()
+	<-done
+	fixture.mutex.Lock()
+	defer fixture.mutex.Unlock()
+	events := 0
+	for _, message := range fixture.messages {
+		if strings.Contains(message, `"type":"event"`) {
+			events++
+		}
+		for _, secret := range raw {
+			if strings.Contains(message, secret) {
+				test.Fatalf("server payload leaked %q: %s", secret, message)
+			}
+		}
+	}
+	if events < 4 {
+		test.Fatalf("audit events were not sent to the server: %v", fixture.messages)
 	}
 }

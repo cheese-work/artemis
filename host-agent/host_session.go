@@ -113,6 +113,7 @@ type hostSession struct {
 	peer    *HostPeer
 	token   string
 	expires float64
+	leases  []string
 }
 
 func authenticateHost(ctx context.Context, config configuration, state agentState) (session hostSession, err error) {
@@ -173,13 +174,14 @@ func authenticateHost(ctx context.Context, config configuration, state agentStat
 		return session, err
 	}
 	var reply struct {
-		Type       string  `json:"type"`
-		Code       string  `json:"code"`
-		Token      string  `json:"token"`
-		Expires    float64 `json:"expires_at"`
-		Generation uint64  `json:"generation"`
-		Protocol   int     `json:"protocol_version"`
-		Minimum    int     `json:"min_supported"`
+		Type       string   `json:"type"`
+		Code       string   `json:"code"`
+		Token      string   `json:"token"`
+		Expires    float64  `json:"expires_at"`
+		Generation uint64   `json:"generation"`
+		Protocol   int      `json:"protocol_version"`
+		Minimum    int      `json:"min_supported"`
+		Leases     []string `json:"leases"`
 	}
 	if binary || json.Unmarshal(payload, &reply) != nil {
 		return session, failure("SQH-E008", errHostProtocol)
@@ -200,7 +202,7 @@ func authenticateHost(ctx context.Context, config configuration, state agentStat
 	if err != nil {
 		return session, err
 	}
-	return hostSession{socket, peer, reply.Token, reply.Expires}, nil
+	return hostSession{socket, peer, reply.Token, reply.Expires, reply.Leases}, nil
 }
 
 func sendHostJSON(ctx context.Context, transport HostTransport, value any) error {

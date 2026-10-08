@@ -95,12 +95,15 @@ class HostAdmission:
         self._hosts: dict[str, _Host] = {}
         self._runs: dict[str, tuple[str, RunPhase]] = {}  # session id -> (host id, phase)
         self._different: set[str] = set()  # device ids an admin declared distinct phones
+        # AVD ids repeat across computers by design (lock key = host + AVD name), never a conflict.
+        self._emulators: set[str] = set()
 
     def reset(self) -> None:
         with self._lock:
             self._hosts.clear()
             self._runs.clear()
             self._different.clear()
+            self._emulators.clear()
 
     # -- state, reported by the agent -------------------------------------
 
@@ -139,9 +142,11 @@ class HostAdmission:
 
     # -- devices ------------------------------------------------------------
 
-    def share_device(self, host_id: str, device_id: str) -> None:
+    def share_device(self, host_id: str, device_id: str, *, emulator: bool = False) -> None:
         with self._lock:
             self._host(host_id).devices.add(device_id)
+            if emulator:
+                self._emulators.add(device_id)
 
     def unshare_device(self, host_id: str, device_id: str) -> None:
         """New starts stop at once; a run already reserved is left to finish."""
@@ -149,6 +154,8 @@ class HostAdmission:
             self._host(host_id).devices.discard(device_id)
 
     def _claimants(self, device_id: str) -> list[str]:
+        if device_id in self._emulators:
+            return []
         return [hid for hid, host in self._hosts.items() if device_id in host.devices]
 
     def needs_attention(self, device_id: str) -> list[str]:

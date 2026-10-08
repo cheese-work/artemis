@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -35,7 +36,7 @@ func main() {
 }
 
 func execute(ctx context.Context, arguments []string, output io.Writer) error {
-	return executeApplication(ctx, arguments, output, application{Query: discover, Tunnel: &hostLink{}})
+	return executeApplication(ctx, arguments, output, application{Query: newScanner().discover, Tunnel: &hostLink{}})
 }
 
 type application struct {
@@ -50,7 +51,7 @@ func executeApplication(ctx context.Context, arguments []string, output io.Write
 		arguments = arguments[1:]
 	}
 	if command == "help" || command == "--help" || command == "-h" {
-		_, err := io.WriteString(output, "SmartQA host agent\nCommands: enroll run status devices share unshare doctor service install/uninstall/status logs update unenroll version config show support-info\nOptions: --config --server --code --name --adb --proxy --dns-server --no-adb-download --json\nConfiguration: flags > SMARTQA_HOST_* environment > config file.\nThe host agent requires ARTEMIS_HOST_AGENT=1.\n")
+		_, err := io.WriteString(output, "SmartQA host agent\nCommands: enroll run status devices share unshare mode doctor service install/uninstall/status logs update unenroll version config show support-info\nOptions: --config --server --code --name --share-mode --adb --proxy --dns-server --no-adb-download --json --yes\nSharing: mode select (default) shares the devices you choose; mode auto shares every device and auto-allows new ones.\nConfiguration: flags > SMARTQA_HOST_* environment > config file.\nThe host agent requires ARTEMIS_HOST_AGENT=1.\n")
 		return err
 	}
 	if command == "version" {
@@ -89,6 +90,8 @@ func executeApplication(ctx context.Context, arguments []string, output io.Write
 	dns := flags.String("dns-server", "", "DNS server IP:port")
 	noDownload := flags.Bool("no-adb-download", false, "do not download adb")
 	asJSON := flags.Bool("json", false, "machine-readable output")
+	confirmed := flags.Bool("yes", false, "confirm a sharing change")
+	shareMode := flags.String("share-mode", os.Getenv("SMARTQA_HOST_SHARE_MODE"), "select or auto at enrollment")
 	artifactURL := flags.String("url", "", "HTTPS artifact URL for staging")
 	checksum := flags.String("sha256", "", "expected artifact SHA-256")
 	artifactSize := flags.Int64("size", 0, "expected artifact bytes")
@@ -124,7 +127,8 @@ func executeApplication(ctx context.Context, arguments []string, output io.Write
 	if err != nil {
 		return err
 	}
-	if command == "enroll" || command == "run" || command == "devices" || command == "share" || command == "unshare" || command == "update" || command == "unenroll" || (command == "service" && action != "status") {
+	config.sharingFile = sharingPath(path)
+	if command == "enroll" || command == "run" || command == "devices" || command == "share" || command == "unshare" || command == "mode" || command == "update" || command == "unenroll" || (command == "service" && action != "status") {
 		if !hostAgentEnabled() {
 			return failure("SQH-E001", nil)
 		}
@@ -139,27 +143,49 @@ func executeApplication(ctx context.Context, arguments []string, output io.Write
 	writeJSON := func(value any) error { return json.NewEncoder(output).Encode(value) }
 	switch command {
 	case "enroll":
+		mode := shareModeName(*shareMode)
+		if *shareMode != "" && mode == "" {
+			return failure("SQH-E003", nil)
+		}
 		state, err = enroll(ctx, path, config, *code, *name)
 		if err != nil {
 			return err
 		}
-		_, err = fmt.Fprintf(output, "Enrolled agent %s. Next: smartqa-host doctor.\n", state.HostID)
+		sharing, err := loadSharing(config.sharingFile)
+		if err != nil {
+			return err
+		}
+		if mode != "" && mode != sharing.Mode {
+			sharing.Mode = mode
+			if err = saveSharing(config.sharingFile, sharing); err != nil {
+				return err
+			}
+		}
+		_, err = fmt.Fprintf(output, "Enrolled agent %s. Sharing: %s. Next: smartqa-host doctor.\n", state.HostID, sharingText(sharingSummary{Mode: sharing.Mode, Excluded: len(sharing.Exclusions)}, false))
 		return err
 	case "status":
 		status := map[string]any{"version": version, "host_id": state.HostID, "enrolled": state.HostID != "", "connected": false, "tunnel": "disconnected", "next_step": "Set SMARTQA_HOST_CODE, then smartqa-host enroll --server URL"}
+		summary, counted := sharingSummary{Mode: "select"}, false
+		if sharing, err := loadSharing(config.sharingFile); err == nil {
+			summary = sharingSummary{Mode: sharing.Mode, Excluded: len(sharing.Exclusions)}
+		}
 		if state.HostID != "" {
-			status["next_step"] = "Run smartqa-host run, then smartqa-host share SERIAL"
+			status["next_step"] = "Run smartqa-host run, then smartqa-host share DEVICE"
 			if reply, err := localHostCommand(ctx, path, hostCommand{Command: "status"}); err == nil {
 				status["connected"] = reply.Connected
 				if reply.Connected {
 					status["tunnel"] = "connected"
 				}
+				if reply.Sharing != nil {
+					summary, counted = *reply.Sharing, true
+				}
 			}
 		}
+		status["sharing"] = summary
 		if *asJSON {
 			return writeJSON(status)
 		}
-		_, err = fmt.Fprintf(output, "Agent %s; enrolled=%t; connected=%t. Next: %s\n", version, state.HostID != "", status["connected"], status["next_step"])
+		_, err = fmt.Fprintf(output, "Agent %s; enrolled=%t; connected=%t. Sharing: %s. Next: %s\n", version, state.HostID != "", status["connected"], sharingText(summary, counted), status["next_step"])
 		return err
 	case "devices":
 		if flags.NArg() != 0 {
@@ -171,17 +197,14 @@ func executeApplication(ctx context.Context, arguments []string, output io.Write
 		var devices []device
 		if reply, controlErr := localHostCommand(ctx, path, hostCommand{Command: "devices"}); controlErr == nil {
 			devices = reply.Devices
-		} else {
-			devices, err = app.Query(ctx, config)
-		}
-		if err != nil {
+		} else if devices, err = localDevices(ctx, config, state, app.Query); err != nil {
 			return err
 		}
 		if *asJSON {
 			return writeJSON(devices)
 		}
 		for _, entry := range devices {
-			if _, err = fmt.Fprintf(output, "%s\t%s\tshared=%t\n", entry.Serial, entry.State, entry.Shared); err != nil {
+			if _, err = fmt.Fprintf(output, "%s\t%s\t%s\t%s\tshared=%t\t%s\n", entry.ID, entry.Serial, entry.Label, entry.State, entry.Shared, entry.Attention); err != nil {
 				return err
 			}
 		}
@@ -190,6 +213,9 @@ func executeApplication(ctx context.Context, arguments []string, output io.Write
 		if _, ok := app.Tunnel.(*hostLink); ok {
 			if err := validateIdentity(config, state); err != nil {
 				return err
+			}
+			if state.DevicePepper == "" {
+				return failure("SQH-E010", nil)
 			}
 		}
 		return runAgentWithQuery(ctx, config, state, app.Tunnel, app.Query)
@@ -200,8 +226,10 @@ func executeApplication(ctx context.Context, arguments []string, output io.Write
 		if state.HostID == "" {
 			return failure("SQH-E005", nil)
 		}
-		_, err := localHostCommand(ctx, path, hostCommand{Command: command, Serial: flags.Arg(0)})
+		_, err := localHostCommand(ctx, path, hostCommand{Command: command, Selector: flags.Arg(0)})
 		return err
+	case "mode":
+		return changeMode(ctx, path, flags.Args(), *confirmed, output)
 	case "doctor":
 		results, checkErr := doctor(ctx, path, config)
 		if *asJSON {
@@ -268,4 +296,85 @@ func executeApplication(ctx context.Context, arguments []string, output io.Write
 		return unenrollHost(ctx, path, config, state)
 	}
 	return failure("SQH-E003", nil)
+}
+
+func shareModeName(value string) string {
+	switch value {
+	case "auto", "all":
+		return "auto"
+	case "select":
+		return "select"
+	}
+	return ""
+}
+
+func sharingText(summary sharingSummary, counted bool) string {
+	if summary.Mode == "auto" {
+		return fmt.Sprintf("all devices, new devices auto-shared (%d excluded)", summary.Excluded)
+	}
+	if !counted {
+		return "selected devices"
+	}
+	return fmt.Sprintf("selected devices (%d shared)", summary.Shared)
+}
+
+// localDevices resolves a fresh scan without a running agent; nothing is published.
+func localDevices(ctx context.Context, config configuration, state agentState, query func(context.Context, configuration) ([]device, error)) ([]device, error) {
+	pepper, err := base64.StdEncoding.DecodeString(state.DevicePepper)
+	if err != nil {
+		return nil, failure("SQH-E002", err)
+	}
+	// A preview registry reads the saved sharing state but never writes it.
+	devices, _ := newDeviceRegistry(pepper, "")
+	if devices.sharing, err = loadSharing(config.sharingFile); err != nil {
+		return nil, err
+	}
+	entries, err := query(ctx, config)
+	if err != nil {
+		return nil, err
+	}
+	devices.replace(entries)
+	return devices.snapshot(), nil
+}
+
+// changeMode switches the share mode after a confirmation that names its effect.
+func changeMode(ctx context.Context, path string, arguments []string, confirmed bool, output io.Writer) error {
+	reply, err := localHostCommand(ctx, path, hostCommand{Command: "status"})
+	if err != nil {
+		return err
+	}
+	if len(arguments) == 0 && reply.Sharing != nil {
+		_, err = fmt.Fprintf(output, "Sharing: %s\n", sharingText(*reply.Sharing, true))
+		return err
+	}
+	mode := ""
+	if len(arguments) == 1 {
+		mode = shareModeName(arguments[0])
+	}
+	if mode == "" || reply.Sharing == nil {
+		return failure("SQH-E003", nil)
+	}
+	if mode == reply.Sharing.Mode {
+		_, err = fmt.Fprintf(output, "Sharing: %s\n", sharingText(*reply.Sharing, true))
+		return err
+	}
+	if !confirmed {
+		if mode == "auto" {
+			_, err = fmt.Fprintf(output, "Any phone you plug in will be controllable from SmartQA, including adb shell, screenshots and installs. %d excluded devices stay unshared.\n", reply.Sharing.Excluded)
+		} else {
+			labels := []string{}
+			for _, entry := range reply.Devices {
+				if entry.Shared && entry.Identity == "trusted" {
+					labels = append(labels, entry.Label+" ("+entry.ID+")")
+				}
+			}
+			_, err = fmt.Fprintf(output, "Your saved selection will be exactly the devices shared now: %s.\n", strings.Join(labels, ", "))
+		}
+		if err != nil {
+			return err
+		}
+		return failure("SQH-E206", nil)
+	}
+	_, err = localHostCommand(ctx, path, hostCommand{Command: "mode", Mode: mode})
+	return err
 }

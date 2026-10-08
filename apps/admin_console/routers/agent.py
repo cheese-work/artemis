@@ -188,16 +188,18 @@ async def connect(ws: WebSocket) -> None:
         tunnel = await host_tunnels.attach(host_id, generation, ws, shared_serials)
         await host_hub.replace(host_id, ws, generation)
         logger.info("event=host_connected host_id=%s generation=%d", host_id, generation)
-        await tunnel.send_json(
-            {
-                "type": "connected",
-                "token": session["token"],
-                "expires_at": session["expires_at"],
-                "generation": generation,
-                "protocol_version": hr.PROTOCOL_VERSION,
-                "min_supported": hr.MIN_SUPPORTED,
-            }
-        )
+        connected = {
+            "type": "connected",
+            "token": session["token"],
+            "expires_at": session["expires_at"],
+            "generation": generation,
+            "protocol_version": hr.PROTOCOL_VERSION,
+            "min_supported": hr.MIN_SUPPORTED,
+            "leases": host_tunnels.leased_devices(host_id),
+        }
+        # From here, lease changes are sent as they happen; nothing can precede "connected".
+        tunnel.ready = True
+        await tunnel.send_json(connected)
         deadline = session["expires_at"]
         last_seen = time.monotonic()
         next_ping = last_seen + CONTRACT.ping_seconds
@@ -259,11 +261,21 @@ async def connect(ws: WebSocket) -> None:
                 previous_shared = shared_serials()
                 if host_registry.set_devices(host_id, generation, message.get("devices")):
                     current_shared = shared_serials()
+                    reported = message.get("devices")
+                    emulators = {
+                        str(item.get("serial"))
+                        for item in (reported if isinstance(reported, list) else [])
+                        if isinstance(item, dict) and item.get("kind") == "emulator"
+                    }
                     for serial in previous_shared - current_shared:
                         host_admission.unshare_device(host_id, serial)
                     for serial in current_shared:
-                        host_admission.share_device(host_id, serial)
+                        host_admission.share_device(host_id, serial, emulator=serial in emulators)
                     tunnel.unshare()
+            elif kind == "event":
+                fields = host_registry.audit_event(message)
+                if fields is not None:  # never echo an unvalidated value into the log
+                    logger.info("event=%s host_id=%s%s", message["event"], host_id, fields)
     except (ProtocolError, json.JSONDecodeError):
         reason = "bad_frame"
         if ws.application_state == WebSocketState.CONNECTED:

@@ -17,6 +17,7 @@ var errorCatalog = map[string]string{
 	"SQH-E007": "Host authentication is expired or revoked. Re-enroll this computer.",
 	"SQH-E008": "The host tunnel protocol is invalid. Check the server and agent versions.",
 	"SQH-E009": "The local agent is unavailable or already running. Check service status.",
+	"SQH-E010": "This enrollment has no device-id pepper. Run smartqa-host unenroll, then enroll again.",
 	"SQH-E101": "DNS lookup failed. Check split-DNS VPN settings or SMARTQA_HOST_DNS_SERVER.",
 	"SQH-E102": "Proxy connection failed. Check SMARTQA_HOST_PROXY and proxy authentication.",
 	"SQH-E103": "TLS verification failed. Check the certificate chain and system clock; do not disable TLS verification.",
@@ -26,6 +27,8 @@ var errorCatalog = map[string]string{
 	"SQH-E203": "Artifact archive is unsafe or exceeds the size limit.",
 	"SQH-E204": "adb request is denied by the non-overridable discovery allowlist.",
 	"SQH-E205": "Device is absent, ambiguous or not authorized. Reconnect and run devices.",
+	"SQH-E206": "This sharing change needs confirmation. Review the message above, then re-run with --yes.",
+	"SQH-E207": "The selector matches more than one device. Use the id from smartqa-host devices --json.",
 	"SQH-E301": "No host tunnel adapter is available. This core cannot expose a device.",
 	"SQH-E302": "Update activation needs the B3a-3 launcher. The verified artifact is staged only.",
 	"SQH-E401": "User service operation failed. Run service status and check OS user-session support.",
@@ -46,6 +49,10 @@ func processExitStatus(err error) int {
 	switch errorCode(err) {
 	case "SQH-E006", "SQH-E007", "SQH-E008", "SQH-E009":
 		return permanentErrorExitStatus
+	case "SQH-E206":
+		return 2
+	case "SQH-E207":
+		return 3
 	}
 	return 1
 }
