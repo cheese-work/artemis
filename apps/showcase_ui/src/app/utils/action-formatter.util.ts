@@ -451,6 +451,10 @@ export function getActionErrorMessage(action: any, stepData?: any): string {
       }
     }
   }
+  if (isReportStatusAction(act)) {
+    const explanation = getReportStatusExplanation(act);
+    if (typeof explanation === 'string' && explanation.trim()) return explanation.trim();
+  }
   return 'Action Failed';
 }
 

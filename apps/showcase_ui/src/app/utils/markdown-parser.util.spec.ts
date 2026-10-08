@@ -67,4 +67,15 @@ describe('markdown-parser.util verification & check lines', () => {
     expect(html).toContain('<span class="verify-badge">verify</span>');
     expect(html).toContain('status is ok');
   });
+  it('should render pipe tables as escaped table markup', () => {
+    const html = renderMarkdownToHtml('| Bước | **Kết quả** |\n| --- | --- |\n| 1 | <img src=x onerror=alert(1)> |\n\nsau bảng');
+    expect(html).toContain('<table><thead><tr><th>Bước</th><th><strong>Kết quả</strong></th></tr></thead>');
+    expect(html).toContain('<td>&lt;img src=x onerror=alert(1)&gt;</td>');
+    expect(html).not.toContain('<img');
+    expect(html).toContain('<div>sau bảng</div>');
+  });
+
+  it('should not treat a lone pipe line as a table', () => {
+    expect(renderMarkdownToHtml('a | b')).not.toContain('<table');
+  });
 });

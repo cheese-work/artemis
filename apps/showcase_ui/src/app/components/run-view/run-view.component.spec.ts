@@ -643,6 +643,62 @@ describe('RunViewComponent', () => {
       expect(q('img.evidence-image')!.getAttribute('src')).toBe('/images/post1.png');
     });
 
+    describe('long agent report', () => {
+      const LONG_REPORT = [
+        '## Báo cáo kiểm thử',
+        '',
+        '**Kết quả chính:** Không đăng nhập được vì nút Tiếp tục không phản hồi.',
+        '',
+        '| Bước | Trạng thái |',
+        '| --- | --- |',
+        '| 1 | Đạt |',
+        '| 2 | Lỗi |',
+        '',
+        ...Array.from({ length: 80 }, (_, i) => `- Chi tiết số ${i + 1}: thiết bị không phản hồi sau khi chạm.`)
+      ].join('\n');
+      const reportStep = (explanation: string) => step(1, {
+        action_taken: { action: 'report_task_status', status: 'failed', explanation }
+      });
+
+      it('summarises the reason and folds the full markdown report into a disclosure', async () => {
+        await open({ runResult: of(run({ status: 'failed' })), steps: of([reportStep(LONG_REPORT)]) });
+        const summary = 'Kết quả chính: Không đăng nhập được vì nút Tiếp tục không phản hồi.';
+        expect(q('.failed-banner > p:nth-child(2)')!.textContent).toBe(summary);
+        const details = q<HTMLDetailsElement>('.failed-banner details.agent-report')!;
+        expect(details.querySelector('summary')!.textContent).toBe('Agent report');
+        expect(details.open).toBeFalse();
+        expect(details.querySelector('.report-body table th')!.textContent).toBe('Bước');
+        expect(details.querySelectorAll('.report-body td').length).toBe(4);
+        expect(getComputedStyle(details.querySelector('summary')!).minHeight).toBe('44px');
+        expect(getComputedStyle(details.querySelector('.report-body')!).overflow).toBe('auto');
+        expect(q('.step-failure-detail')!.textContent).toBe(summary);
+        expect(q('.step-failure-detail')!.hasAttribute('title')).toBeFalse();
+        expect(getComputedStyle(q('.step-failure-detail')!).whiteSpace).toBe('nowrap');
+      });
+
+      it('keeps the full text as a tooltip when it is short enough', async () => {
+        const mid = `${'a'.repeat(300)} end`;
+        await open({ runResult: of(run({ status: 'failed' })), steps: of([reportStep(mid)]) });
+        expect(q('.step-failure-detail')!.getAttribute('title')).toBe(mid);
+        expect(q('.step-failure-detail')!.textContent!.length).toBeLessThanOrEqual(280);
+      });
+
+      it('shows a short reason exactly as before, without a disclosure', async () => {
+        await open({ runResult: of(run({ status: 'failed' })), steps: of([reportStep('Login button missing')]) });
+        expect(q('.failed-banner > p:nth-child(2)')!.textContent).toBe('Login button missing');
+        expect(q('.step-failure-detail')!.textContent).toBe('Login button missing');
+        expect(q('details.agent-report')).toBeNull();
+      });
+
+      it('never renders markup from the report as elements', async () => {
+        await open({ runResult: of(run({ status: 'failed' })),
+          steps: of([reportStep(`## Report\n\n<img src=x onerror=alert(1)>\n\n${'x'.repeat(300)}`)]) });
+        const body = q('.report-body')!;
+        expect(body.querySelector('img')).toBeNull();
+        expect(body.textContent).toContain('<img src=x onerror=alert(1)>');
+      });
+    });
+
     it('marks an execution error as failed without depending on the run status', async () => {
       await open({ steps: of([step(1, {
         last_execution_result: { success: false, error: 'Invalid target index 2. The list is empty on this screen' }

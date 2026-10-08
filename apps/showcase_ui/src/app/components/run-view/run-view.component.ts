@@ -32,6 +32,8 @@ import {
   getStepPreImageUrl,
   isActionFailed
 } from '../../utils/action-formatter.util';
+import { renderMarkdownToHtml } from '../../utils/markdown-parser.util';
+import { REPORT_TITLE_MAX, isLongReport, summarizeReport } from '../../utils/report-summary.util';
 import { Playback, mapRecording } from '../../utils/recording-state.util';
 import { locateSessionTime } from '../../utils/recording-timeline.util';
 import { runStatusView } from '../../utils/run-status.util';
@@ -244,6 +246,16 @@ export class RunViewComponent {
   public readonly failureReason = computed(() => {
     const failed = [...this.steps()].reverse().find((step) => this.stepFailed(step));
     return failed ? this.stepFailureDetail(failed) : this.run()?.interrupt_reason || 'No failure reason was recorded.';
+  });
+  /** Inline text for the failure banner: the reason itself, or a short summary of a long report. */
+  public readonly failureSummary = computed(() => {
+    const reason = this.failureReason();
+    return isLongReport(reason) ? summarizeReport(reason) : reason;
+  });
+  /** Full long report as escaped markdown HTML, or null when the reason is short. */
+  public readonly failureReportHtml = computed(() => {
+    const reason = this.failureReason();
+    return isLongReport(reason) ? renderMarkdownToHtml(reason) : null;
   });
   public readonly canCheckAgain = computed(
     () =>
@@ -471,6 +483,18 @@ export class RunViewComponent {
 
   public stepFailureDetail(step: StepItemData): string {
     return getActionErrorMessage(step.action_taken, step);
+  }
+
+  /** One-line failure text for a step row: long reports are summarised. */
+  public stepFailureSummary(step: StepItemData): string {
+    const detail = this.stepFailureDetail(step);
+    return isLongReport(detail) ? summarizeReport(detail) : detail;
+  }
+
+  /** Full text for the row tooltip, only when a summary was shown and the text is short enough to hover. */
+  public stepFailureTitle(step: StepItemData): string | null {
+    const detail = this.stepFailureDetail(step);
+    return isLongReport(detail) && detail.length < REPORT_TITLE_MAX ? detail : null;
   }
 
   public readonly preImage = getStepPreImageUrl;

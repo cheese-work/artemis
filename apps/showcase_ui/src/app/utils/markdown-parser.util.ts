@@ -229,6 +229,13 @@ function formatInlineMarkdown(text: string): string {
     .replace(/~~([^~]+)~~/g, '<del>$1</del>');
 }
 
+/** GFM table separator row, e.g. `| --- | :---: |`. */
+const TABLE_SEPARATOR = /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)*\|?\s*$/;
+
+function splitTableRow(line: string): string[] {
+  return line.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map(cell => cell.trim());
+}
+
 /**
  * Convert basic markdown text to safe HTML for agent logs/thinking
  */
@@ -287,6 +294,22 @@ export function renderMarkdownToHtml(text: string): string {
 
     if (inCodeBlock) {
       codeBlockLines.push(rawLine);
+      continue;
+    }
+
+    // 1b. Tables: header row, separator row, then body rows (input is already escaped)
+    if (trimmed.includes('|') && i + 1 < rawLines.length && rawLines[i + 1].includes('|') && TABLE_SEPARATOR.test(rawLines[i + 1])) {
+      closeList();
+      const header = splitTableRow(trimmed).map(cell => `<th>${formatInlineMarkdown(cell)}</th>`).join('');
+      const body: string[] = [];
+      i += 2;
+      while (i < rawLines.length && rawLines[i].trim() !== '' && rawLines[i].includes('|')) {
+        const cells = splitTableRow(rawLines[i]).map(cell => `<td>${formatInlineMarkdown(cell)}</td>`).join('');
+        body.push(`<tr>${cells}</tr>`);
+        i++;
+      }
+      i--;
+      result.push(`<div class="md-table-wrap"><table><thead><tr>${header}</tr></thead><tbody>${body.join('')}</tbody></table></div>`);
       continue;
     }
 

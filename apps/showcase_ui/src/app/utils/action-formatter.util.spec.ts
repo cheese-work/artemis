@@ -243,3 +243,14 @@ describe('extractActionExtraParams', () => {
     expect(sequence.map(p => p.key)).toContain('Interval Ms');
   });
 });
+
+describe('getActionErrorMessage for report_task_status', () => {
+  it('uses the explanation of a failed report when no error field exists', () => {
+    const action = { action: 'report_task_status', status: 'failed', explanation: ' Could not log in ' };
+    expect(getActionErrorMessage(action, { action_taken: action })).toBe('Could not log in');
+  });
+
+  it('keeps the generic text for a failed non-report action', () => {
+    expect(getActionErrorMessage({ action: 'tap', status: 'failed' })).toBe('Action Failed');
+  });
+});
