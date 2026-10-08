@@ -1186,7 +1186,11 @@ def test_websocket_revoke_logs_main_reason_and_close_code(
     loopback_client, monkeypatch, _mock_adb, caplog, closing
 ):
     if closing == "idle":
-        monkeypatch.setenv("ARTEMIS_BRIDGE_SESSION_TTL_SECONDS", "0.05")
+        monkeypatch.setenv("ARTEMIS_BRIDGE_SESSION_TTL_SECONDS", "1")
+
+    def close_records() -> list[str]:
+        return [r.message for r in caplog.records if "event=bridge_close " in r.message]
+
     with loopback_client.websocket_connect(PATH, headers=_HOST_HEADER) as websocket:
         lease = websocket.receive_json()
         assert websocket.receive_json()["type"] == "device_attached"
@@ -1198,10 +1202,13 @@ def test_websocket_revoke_logs_main_reason_and_close_code(
             with pytest.raises(WebSocketDisconnect) as error:
                 websocket.receive_json()
             assert error.value.code == (4008 if closing == "idle" else 1011)
+        # The server logs the close after the client has seen it, and leaving this block
+        # cancels the server task, so wait for the record before leaving.
+        deadline = time.monotonic() + 5
+        while not close_records() and time.monotonic() < deadline:
+            time.sleep(0.01)
 
-    records = [
-        record.message for record in caplog.records if "event=bridge_close " in record.message
-    ]
+    records = close_records()
     assert len(records) == 1
     close_record = records[0]
     expected_code = {"client": 1000, "idle": 4008, "error": 1011}[closing]
