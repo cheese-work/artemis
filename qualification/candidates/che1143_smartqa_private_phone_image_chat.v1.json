@@ -1,0 +1,142 @@
+{
+  "receipt_version": 1,
+  "issue": "CHE-1143",
+  "candidate_kind": "testcase_admission_packet",
+  "source_candidate": {
+    "runner_source": {
+      "repository": "https://github.com/cheese-work/artemis",
+      "commit_sha": "68eab0af80eecb12e5d9fcc05a8e5635b31aff94"
+    },
+    "app_source": {
+      "repository": "https://github.com/cheese-work/artemis",
+      "commit_sha": "68eab0af80eecb12e5d9fcc05a8e5635b31aff94",
+      "paths": [
+        "apps/admin_console",
+        "apps/showcase_ui"
+      ],
+      "serving_revision": "NOT-VERIFIED",
+      "build_artifact_digest": "NOT-BUILT"
+    },
+    "dependency_locks": [
+      {
+        "path": "uv.lock",
+        "digest_sha256": "fecfe4364bc321e2a77febf0616b878e38f8daacabee6aea345058e9fc523351"
+      },
+      {
+        "path": "apps/showcase_ui/package-lock.json",
+        "digest_sha256": "2e4aebe81458df7615678be7353b625bfffb96a0876f11c4db16f03164569874"
+      }
+    ],
+    "testcase_source": {
+      "path": "qualification/journeys/che1143_smartqa_private_phone_image_chat.md",
+      "digest_sha256": "e4f17b3580d25833892e00fd49d4c7f1f49e3aebfe26e0fbb689523de5a9b199",
+      "revision_binding": "The published PR head SHA is the immutable testcase revision. The handoff records the full SHA. Both independent decisions must name that same SHA."
+    },
+    "test_image": {
+      "path": "tests/tools/inputs/screenshot.jpg",
+      "media_type": "image/jpeg",
+      "digest_sha256": "1e6bbc31b77abf4701b6c54466e4feda1e816af45ba19b78a5af9d90f1ccd891"
+    }
+  },
+  "target": {
+    "compatible_class": "MBP-hosted Chrome with one physical Pixel 6 Pro on the owner's private browser bridge; USB preferred, wireless backup",
+    "shared_avd_substitute_allowed": false,
+    "host_class": "macbook-pro",
+    "exact_host": null,
+    "device_serial": null,
+    "claim_id": null,
+    "claim_owner": "x99-codex-sol selects the dedicated Android-squad executor and records the claim",
+    "admission_state": "NOT-ADMITTED"
+  },
+  "synthetic_setup": {
+    "source_document": "docs/preview-fixtures.md",
+    "profile": "ARTEMIS_PREVIEW_PROFILE=1",
+    "identity_switch": "ARTEMIS_PREVIEW_IDENTITY_SWITCH=1",
+    "synthetic_identities": [
+      "qa-a@example.test",
+      "qa-b@example.test",
+      "admin@example.test"
+    ],
+    "synthetic_aliases": [
+      "qa-a",
+      "qa-b",
+      "admin"
+    ],
+    "preview_url_and_fixture_parent": "NOT-SUPPLIED; preview owner supplies an existing isolated preview",
+    "limits": "The preview has no devices and disables device, provider, lifecycle, and real task-execution routes. It is not private-phone, live-event, or provider-delivery evidence.",
+    "started_by_author": false
+  },
+  "reused_source_coverage": {
+    "BUG-001": [
+      "tests/unit/admin_console/test_device_stream_scope.py",
+      "tests/unit/admin_console/test_task_device_readiness.py",
+      "tests/unit/admin_console/test_run_device_binding.py"
+    ],
+    "BUG-002": [
+      "tests/unit/admin_console/test_run_ownership.py",
+      "tests/unit/admin_console/test_preview_routes.py::test_status_shows_each_qa_only_their_own_queue"
+    ],
+    "REQ-003": [
+      "apps/showcase_ui/src/app/pages/workspace/workspace-image-chat.spec.ts",
+      "tests/unit/admin_console/test_run_images.py"
+    ]
+  },
+  "new_acceptance_cases": [
+    {
+      "id": "BUG-001-private-browser-phone",
+      "journey_path": "qualification/journeys/che1143_smartqa_private_phone_image_chat.md",
+      "execution_status": "NOT-RUN",
+      "requires_live_private_phone": true,
+      "target_control_contract": "UNKNOWN; host-bound /api/run bypasses require_device at the pinned source. Do not issue the control request until the served contract and a safe pre-enqueue/no-device-command negative control are verified."
+    },
+    {
+      "id": "BUG-002-owner-filtered-events",
+      "journey_path": "qualification/journeys/che1143_smartqa_private_phone_image_chat.md",
+      "execution_status": "NOT-RUN",
+      "requires_two_authorized_regular_qa_identities": true
+    },
+    {
+      "id": "REQ-003-image-delivery-current-conversation",
+      "journey_path": "qualification/journeys/che1143_smartqa_private_phone_image_chat.md",
+      "execution_status": "NOT-RUN",
+      "requires_provider_and_numeric_spend_scope": true
+    }
+  ],
+  "review_gate": {
+    "independent_non_author_decisions_required": 2,
+    "same_immutable_pr_head_required": true,
+    "before_any_execution_or_first_class_qualification": true,
+    "reviewers_selected_by": "Android device squad leader",
+    "material_change_requires_fresh_decisions": true
+  },
+  "execution_gates": {
+    "host_serial_and_exclusive_claim": "MISSING; Sol owns admission",
+    "two_regular_qa_identities": "MISSING; no account or credential action authorized",
+    "app_serving_revision_and_target_control_contract": "MISSING; source revision is not serving acceptance, and host-bound /api/run bypasses require_device at the pinned source",
+    "eligible_provider_and_account_owner_clearance": "MISSING",
+    "numeric_spend_scope": "MISSING",
+    "anthropic_android_runs": "HALTED",
+    "author_execution": "PROHIBITED BY THIS TASK"
+  },
+  "negative_controls": [
+    {
+      "id": "BUG-001-non-owner-target-control",
+      "expected_result": "UNKNOWN until the serving contract is verified and a review-approved control proves rejection before enqueue and before any device command",
+      "status": "NOT-RUN",
+      "restriction": "Do not use a host-bound request or substitute the private bridge serial for Sol's reviewed host-selected serial."
+    },
+    {
+      "id": "REQ-003-invalid-image",
+      "expected_result": "Reuse existing source regressions; reject before enqueue or provider activity",
+      "status": "NOT-RUN"
+    },
+    {
+      "id": "ARTEMIS-deliberate-assertion-failure",
+      "expected_result": "A first-class qualification control returns a non-zero assertion-failure result",
+      "status": "NOT-RUN",
+      "condition": "Sol confirms target-class qualification is required and the provider gate/spend scope covers the control."
+    }
+  ],
+  "evidence_destination": "CHE-1143 issue thread and its linked execution report/attachments, supplied by the execution owner",
+  "qualification_and_cleanup": "Follow the pinned journey and live Android-squad policy. Retain exact commands, host/serial/claim, artifact IDs, positive/rerun/negative-control outcomes, and verified release. Sol verifies release. Uncertain cleanup leaves the target unavailable with a named recovery owner."
+}
