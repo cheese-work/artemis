@@ -44,6 +44,7 @@ from artemis.utils.video import (
     ANDROID_RECORDING_SEGMENT_SECONDS,
     DEFAULT_MAX_DURATION_SECONDS,
     RecordingSession,
+    SCRCPY_START_FAILURE_PREFIX,
     VideoRecordingResult,
     await_scrcpy_first_frame,
     build_scrcpy_record_command,
@@ -54,6 +55,7 @@ from artemis.utils.video import (
     get_active_session,
     has_active_session,
     normalize_recording_to_mp4,
+    recording_error_line,
     recording_unavailable_reason,
     remux_recording_to_mp4,
     render_timeline_clip,
@@ -727,11 +729,12 @@ class UnifiedMobileController:
                         local_video_path=local_video_path,
                         start_time=session.start_time,
                     )
-                self._record_recording_failure(session, f"scrcpy failed to start: {err_msg}")
+                self._record_recording_failure(session, f"{SCRCPY_START_FAILURE_PREFIX} {err_msg}")
                 remove_active_session(device_id)
                 return VideoRecordingResult(
                     success=False,
-                    message=f"scrcpy failed to start: {err_msg}",
+                    message=f"{SCRCPY_START_FAILURE_PREFIX} "
+                    f"{recording_error_line(err_msg) or err_msg}",
                 )
 
             session.start_time = first_frame_at

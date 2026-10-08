@@ -935,3 +935,34 @@ def test_segment_session_offsets_without_data_engine_anchor(tmp_path):
     assert offsets[tmp_path / "recording_001.mp4"] == 7.5
     # An emergency fallback remux has no record; it starts at the recording anchor.
     assert offsets[fallback] == 0.0
+
+
+@pytest.mark.asyncio
+async def test_unified_controller_start_failure_message_skips_push_log(
+    mock_ctx, tmp_path, mock_scrcpy_toolchain
+):
+    controller = UnifiedMobileController(mock_ctx)
+    remove_active_session("emulator-5554")
+    push_log = "/usr/share/scrcpy/scrcpy-server: 1 file pushed, 0 skipped. 141.9 MB/s"
+    clipboard = "java.lang.NoSuchMethodException: android.content.IClipboard$Stub$Proxy.x"
+    proc = MagicMock(returncode=1)
+    proc.stderr.read = AsyncMock(return_value=f"{push_log}\n{clipboard}\n".encode())
+
+    with (
+        patch.object(controller, "_spawn_scrcpy", AsyncMock(return_value=proc)),
+        patch(
+            "artemis.controllers.unified_controller.get_android_display_state",
+            AsyncMock(return_value=None),
+        ),
+        patch(
+            "artemis.controllers.unified_controller.await_scrcpy_first_frame",
+            AsyncMock(return_value=1.0),
+        ),
+    ):
+        result = await controller.start_video_recording(output_dir=tmp_path)
+
+    assert result.success is False
+    assert result.message == f"scrcpy failed to start: {clipboard}"
+    stored = mock_ctx.data_engine.record_video_failure.call_args.kwargs["error"]
+    assert stored == f"scrcpy failed to start: {push_log}\n{clipboard}\n"
+    remove_active_session("emulator-5554")

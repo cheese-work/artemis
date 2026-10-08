@@ -157,6 +157,35 @@ def classify_recording_failure(error: str) -> str:
     return "recorder_failed"
 
 
+SCRCPY_START_FAILURE_PREFIX = "scrcpy failed to start:"
+_ADB_PUSH_LOG = re.compile(r"\d+ files? pushed", re.IGNORECASE)
+_RECORDER_ANDROID_INCOMPATIBLE_MESSAGE = (
+    "The screen recorder was not compatible with this Android version. "
+    "Fixed on 8 Oct 2026 (CHE-1264); new runs record normally."
+)
+_RECORDER_START_FAILED_MESSAGE = "The screen recorder could not start on this phone."
+
+
+def recording_error_line(raw: str | None) -> str:
+    """The meaningful line of scrcpy output, skipping the adb push log."""
+    lines = [
+        line.strip()
+        for line in (raw or "").splitlines()
+        if line.strip() and not _ADB_PUSH_LOG.search(line)
+    ]
+    return next(
+        (line for line in lines if re.search(r"exception|error", line, re.IGNORECASE)),
+        lines[-1] if lines else "",
+    )
+
+
+def describe_recording_failure(raw: str | None) -> tuple[str, str]:
+    """Map raw scrcpy start-up output to a (reason code, readable message) pair."""
+    if raw and "NoSuchMethodException" in raw and "IClipboard" in raw:
+        return "recorder_android_incompatible", _RECORDER_ANDROID_INCOMPATIBLE_MESSAGE
+    return "recorder_start_failed", _RECORDER_START_FAILED_MESSAGE
+
+
 async def await_scrcpy_first_frame(
     process: Any,
     spawned_at: float,

@@ -20,6 +20,7 @@ from fastapi.responses import FileResponse, HTMLResponse
 
 from artemis.config import IMAGES_DIR, TRACES_PATH, WORKSPACE_ROOT
 from artemis.data_engine.run_catalog import validate_session_id
+from artemis.utils.video import SCRCPY_START_FAILURE_PREFIX, describe_recording_failure
 
 from apps.admin_console.core.ownership import (
     OwnerScope,
@@ -179,6 +180,19 @@ async def get_session_video(session_id: str, actor: OwnerScope = Depends(actor_s
     return present_session_data(actor, session_id, video)
 
 
+def _failed_recording_fields(error: str | None) -> dict[str, str]:
+    """Readable message for a scrcpy start-up failure, with the raw output as ``detail``.
+
+    Rows written before the message was readable hold "scrcpy failed to start: <raw>",
+    so they are classified here on read. Other failures keep their stored text.
+    """
+    if error and error.startswith(SCRCPY_START_FAILURE_PREFIX):
+        raw = error.removeprefix(SCRCPY_START_FAILURE_PREFIX).lstrip()
+        reason, message = describe_recording_failure(raw)
+        return {"message": message, "reason": reason, "detail": raw}
+    return {"message": error or "Recording finalization failed"}
+
+
 def _get_session_video_sync(session_id: str):
     video_rec_map = session_repo.get_video_recordings_map()
     video_idx = media_service.build_video_index()
@@ -206,7 +220,7 @@ def _get_session_video_sync(session_id: str):
                 "has_video": False,
                 "video_url": None,
                 "video_segments": [],
-                "message": recording.get("error") or "Recording finalization failed",
+                **_failed_recording_fields(recording.get("error")),
             }
         # If a video was recovered/found, update DB to ready and proceed to serve it
         session_repo.mark_recording_ready(session_id, v_url)

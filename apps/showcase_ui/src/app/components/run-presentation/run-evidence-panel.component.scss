@@ -176,3 +176,22 @@
 .muted { color: var(--evidence-muted); }
 .secondary-button { min-height: 44px; font-size: 14px; padding: 0 18px; border-radius: 8px; cursor: pointer; border: 1px solid var(--evidence-border); color: var(--evidence-text); background: var(--evidence-surface); }
 .secondary-button:focus-visible, video:focus-visible { outline: 3px solid var(--focus-ring); outline-offset: 2px; }
+
+.technical-details {
+  margin: 0 0 8px;
+  summary { display: list-item; min-height: 44px; cursor: pointer; color: var(--evidence-muted); }
+  summary:focus-visible { outline: 3px solid var(--focus-ring); outline-offset: 2px; }
+  .technical-body {
+    max-height: 40vh;
+    margin: 0;
+    padding: 12px 16px;
+    overflow: auto;
+    border: 1px solid var(--evidence-border);
+    border-radius: 8px;
+    color: var(--evidence-text);
+    background: var(--evidence-surface);
+    font: 12px/20px ui-monospace, SFMono-Regular, Menlo, monospace;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+}
