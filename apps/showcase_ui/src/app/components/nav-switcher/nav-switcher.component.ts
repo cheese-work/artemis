@@ -15,7 +15,7 @@
  */
 
 import { DOCUMENT } from '@angular/common';
-import { Component, ChangeDetectionStrategy, DestroyRef, ElementRef, EventEmitter, afterNextRender, inject, Input, Output } from '@angular/core';
+import { Component, ChangeDetectionStrategy, DestroyRef, computed, ElementRef, EventEmitter, afterNextRender, inject, Input, Output } from '@angular/core';
 
 import { RouterLink, RouterLinkActive } from '@angular/router';
 import { WorkspaceDeviceChipComponent } from '../workspace-device-chip/workspace-device-chip.component';

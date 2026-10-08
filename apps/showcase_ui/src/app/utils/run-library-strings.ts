@@ -56,23 +56,6 @@ export const UNPIN_EXPIRED_NOTICE =
   'This run is past its retention date. Unpinning deletes it now.';
 export const DELETE_NOTICE = 'Delete this run for everyone? This cannot be undone.';
 
-export type Tone = 'ok' | 'warn' | 'danger' | 'neutral';
-
-const OUTCOMES: Record<string, { label: string; icon: string; tone: Tone }> = {
-  completed: { label: 'Passed', icon: 'check_circle', tone: 'ok' },
-  success: { label: 'Passed', icon: 'check_circle', tone: 'ok' },
-  failed: { label: 'Failed', icon: 'cancel', tone: 'danger' },
-  interrupted: { label: 'Interrupted', icon: 'warning', tone: 'warn' },
-  cancelled: { label: 'Cancelled', icon: 'block', tone: 'neutral' },
-  running: { label: 'Running', icon: 'play_circle', tone: 'neutral' },
-  paused: { label: 'Paused', icon: 'pause_circle', tone: 'neutral' },
-  pending: { label: 'Queued', icon: 'schedule', tone: 'neutral' }
-};
-
-export function outcomeView(status: string | null | undefined) {
-  return OUTCOMES[(status ?? '').toLowerCase()] ?? { label: 'Unknown', icon: 'help', tone: 'neutral' as Tone };
-}
-
 const INTERRUPT_REASONS: Record<string, string> = {
   host_disconnected: 'Your computer lost its connection to SmartQA.',
   bridge_closed: 'The browser tab holding the phone closed.',

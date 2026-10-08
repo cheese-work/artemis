@@ -50,11 +50,13 @@ for _p in (str(_workspace_root), str(_apps_dir), str(_admin_console_dir), str(_c
 # Select the profile before any import below can run an import-time side effect.
 from apps.admin_console.core.preview_profile import (
     prepare_preview_environment,
+    preview_identity_switch_selected,
     preview_profile_selected,
 )
 from apps.admin_console.core.preview_routes import PreviewRouteGuard, require_classified
 
 PREVIEW_PROFILE = preview_profile_selected()
+preview_identity_switch_selected(PREVIEW_PROFILE)
 PREVIEW_ROOT = prepare_preview_environment() if PREVIEW_PROFILE else None
 
 from fastapi import Depends, FastAPI
@@ -97,6 +99,7 @@ from artemis.resources import get_bundled_showcase_dist
 from artemis.runtime.lifecycle import InterruptReason
 from apps.admin_console.services import failure_ledger, run_retention
 from apps.admin_console.services.host_registry import host_agent_enabled, host_registry
+from apps.admin_console.services.host_tunnel import host_tunnels
 from apps.admin_console.core.access_control import (
     AdminAPIError,
     CloudflareAccessVerifier,
@@ -106,6 +109,7 @@ from apps.admin_console.core.access_control import (
     require_qa,
 )
 from apps.admin_console.core.preview_access import preview_access_verifier
+from apps.admin_console.core.preview_identity import configure_preview_identities
 from apps.admin_console.core.preview_fixtures import initialize_preview_fixtures
 from apps.admin_console.services.run_images import RequestSizeLimitMiddleware
 
@@ -178,6 +182,7 @@ async def _lifespan(_app: "FastAPI"):
     try:
         yield
     finally:
+        await host_tunnels.close()
         await on_shutdown()
 
 
@@ -189,11 +194,18 @@ app = FastAPI(
 )
 app.add_exception_handler(AdminAPIError, admin_api_error_handler)
 app.state.access_config = config_from_environment()
-app.state.access_verifier = (
-    preview_access_verifier(app.state.access_config)
-    if PREVIEW_PROFILE
-    else CloudflareAccessVerifier()
+app.state.preview_profile = PREVIEW_PROFILE
+app.state.preview_identities = configure_preview_identities(
+    app.state.access_config, preview_profile=PREVIEW_PROFILE
 )
+if app.state.preview_identities:
+    app.state.access_verifier = None
+else:
+    app.state.access_verifier = (
+        preview_access_verifier(app.state.access_config)
+        if PREVIEW_PROFILE
+        else CloudflareAccessVerifier()
+    )
 logging.getLogger(__name__).info(
     "Admin access configured: mode=%s issuer=%s audience=%s admin_count=%d",
     app.state.access_config.auth_mode,
@@ -628,6 +640,10 @@ class ArtemisUvicornServer(uvicorn.Server):
 
 def run_ui_server(host: str, port: int, reload: bool = False) -> None:
     """Run the UI server with bounded, signal-aware graceful shutdown."""
+    from artemis.config.host_agent import host_agent_enabled
+    from apps.admin_console.services.bridge_session_service import MAX_ADB_PACKET_BYTES
+
+    websocket_options = {"ws_max_size": MAX_ADB_PACKET_BYTES} if host_agent_enabled() else {}
     configure_logging(streams=True)
     state.host = host
     state.port = port
@@ -644,6 +660,7 @@ def run_ui_server(host: str, port: int, reload: bool = False) -> None:
                 log_config=REDACTED_UVICORN_LOGGING,
                 proxy_headers=False,
                 timeout_graceful_shutdown=5,
+                **websocket_options,
             )
             return
 
@@ -654,6 +671,7 @@ def run_ui_server(host: str, port: int, reload: bool = False) -> None:
             port=port,
             proxy_headers=False,
             timeout_graceful_shutdown=5,
+            **websocket_options,
         )
         configure_logging()
         server = ArtemisUvicornServer(config)

@@ -67,6 +67,7 @@ export function offlineText(name: string, reason: string | null): string {
 
 export const STATUS_LABEL: Record<ComputerStatus, string> = {
   online: 'Online',
+  reconnecting: 'Reconnecting…',
   offline: 'Offline',
   update_required: 'Update required',
   revoked: 'Revoked'

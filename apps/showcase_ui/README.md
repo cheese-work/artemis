@@ -30,3 +30,16 @@ This runs `ng serve --proxy-config proxy.conf.json` on **`http://localhost:4200/
 npm run build
 ```
 Build artifacts will be emitted to `dist/`, which can be served statically by `apps.admin_console` or `artemis ui`.
+
+### Keyboard Walkthrough
+```bash
+npm run test:keyboard-paste
+npm run build
+npm run test:keyboard
+```
+
+Set `CHROME_BIN` to a Chromium-based browser executable, including Brave on macOS.
+The walkthrough seeds the real browser clipboard and sends a native CDP `paste`
+editing command with Ctrl+V on Linux/Windows or Cmd+V on macOS. It verifies trusted
+paste events, PNG payloads, preview removal with Enter, and native plain-text insertion.
+It does not dispatch synthetic `ClipboardEvent` objects or invoke the component directly.

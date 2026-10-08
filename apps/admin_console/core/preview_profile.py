@@ -13,6 +13,7 @@ from pathlib import Path
 import tempfile
 
 ENV_PREVIEW_PROFILE = "ARTEMIS_PREVIEW_PROFILE"
+ENV_PREVIEW_IDENTITY_SWITCH = "ARTEMIS_PREVIEW_IDENTITY_SWITCH"
 
 _TRUTHY = {"1", "true"}
 
@@ -20,6 +21,18 @@ _TRUTHY = {"1", "true"}
 def preview_profile_selected(environ: Mapping[str, str] = os.environ) -> bool:
     """True only when the environment explicitly selects the preview profile."""
     return environ.get(ENV_PREVIEW_PROFILE, "").strip().lower() in _TRUTHY
+
+
+def preview_identity_switch_selected(
+    preview_profile: bool, environ: Mapping[str, str] = os.environ
+) -> bool:
+    value = environ.get(ENV_PREVIEW_IDENTITY_SWITCH, "").strip().lower()
+    if value not in {"", "0", "false", *_TRUTHY}:
+        raise ValueError("ARTEMIS_PREVIEW_IDENTITY_SWITCH must be 0, false, 1 or true.")
+    enabled = value in _TRUTHY
+    if enabled and not preview_profile:
+        raise ValueError("The identity switch requires the isolated preview profile.")
+    return enabled
 
 
 def prepare_preview_environment(environ: MutableMapping[str, str] = os.environ) -> Path:

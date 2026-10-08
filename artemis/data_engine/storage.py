@@ -292,7 +292,11 @@ class StorageManager:
                 ON CONFLICT(session_id) DO UPDATE SET
                     initial_goal = excluded.initial_goal,
                     start_time = excluded.start_time,
-                    device_info = excluded.device_info,
+                    device_info = CASE
+                        WHEN json_extract(sessions.device_info, '$.device_binding') IS NULL
+                        THEN excluded.device_info
+                        ELSE json_set(excluded.device_info, '$.device_binding',
+                            json_extract(sessions.device_info, '$.device_binding')) END,
                     pid = excluded.pid,
                     video_filepath = excluded.video_filepath,
                     -- a committed outcome is final: restarting a worker for the
@@ -332,10 +336,15 @@ class StorageManager:
             conn.execute(
                 """
                 UPDATE sessions 
-                SET device_info = ?, video_filepath = ?
+                SET device_info = CASE
+                    WHEN json_extract(device_info, '$.device_binding') IS NULL THEN ?
+                    ELSE json_set(?, '$.device_binding',
+                        json_extract(device_info, '$.device_binding')) END,
+                    video_filepath = ?
                 WHERE session_id = ?
                 """,
                 (
+                    json.dumps(session.device_info),
                     json.dumps(session.device_info),
                     session.video_filepath,
                     str(session.session_id),

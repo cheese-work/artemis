@@ -63,6 +63,7 @@ _SCHEMA_COLUMNS = (
     ("interrupt_reason", "TEXT"),
     ("exit_cause", "TEXT"),
     ("pending_loss_reason", "TEXT"),
+    ("pending_loss_deadline", "REAL"),
     ("notify_context", "TEXT"),  # JSON: who to notify (conversation id, ingress, goal)
     # When the run first held its device lock; the enqueue start_time cannot mean this.
     ("execution_started_at", "REAL"),
@@ -281,7 +282,7 @@ class LifecycleAuthority:
         try:
             with self._txn() as conn:
                 row = conn.execute(
-                    "SELECT status, interrupt_reason, pending_loss_reason FROM sessions "
+                    "SELECT status, interrupt_reason, pending_loss_reason, pending_loss_deadline FROM sessions "
                     "WHERE session_id = ?",
                     (session_id,),
                 ).fetchone()
@@ -297,6 +298,12 @@ class LifecycleAuthority:
                 current = canonical_status(row["status"])
                 if not can_transition(current, status):
                     return Outcome(session_id, current, _reason(row["interrupt_reason"]))
+                if (
+                    status == "failed"
+                    and row["pending_loss_deadline"] is not None
+                    and self._clock() < row["pending_loss_deadline"]
+                ):
+                    return Outcome(session_id, current)
                 final, final_reason = resolve_outcome(
                     status, reason, _reason(row["pending_loss_reason"])
                 )
@@ -344,7 +351,7 @@ class LifecycleAuthority:
         reason_value = reason.value if reason else None
         conn.execute(
             "UPDATE sessions SET status = ?, end_time = ?, interrupt_reason = ?, "
-            "pending_loss_reason = NULL WHERE session_id = ?",
+            "pending_loss_reason = NULL, pending_loss_deadline = NULL WHERE session_id = ?",
             (status, now, reason_value, session_id),
         )
         conn.execute(
@@ -358,16 +365,36 @@ class LifecycleAuthority:
     ) -> Outcome:
         return self.finish(session_id, "interrupted", reason=reason, error=error)
 
-    def note_loss(self, session_id: str, reason: InterruptReason | str) -> bool:
+    def note_loss(
+        self,
+        session_id: str,
+        reason: InterruptReason | str,
+        *,
+        grace_seconds: float | None = None,
+    ) -> bool:
         """Record a loss without publishing; a later worker failure becomes interrupted."""
         reason = InterruptReason(reason)
         with self._txn() as conn:
             cur = conn.execute(
-                "UPDATE sessions SET pending_loss_reason = ? WHERE session_id = ? "
+                "UPDATE sessions SET pending_loss_reason = ?, pending_loss_deadline = ? WHERE session_id = ? "
                 "AND pending_loss_reason IS NULL "
                 "AND COALESCE(status, 'running') NOT IN ('completed','failed','cancelled',"
                 "'interrupted','success')",
-                (reason.value, str(session_id)),
+                (
+                    reason.value,
+                    self._clock() + grace_seconds if grace_seconds is not None else None,
+                    str(session_id),
+                ),
+            )
+            return cur.rowcount > 0
+
+    def recover_loss(self, session_id: str) -> bool:
+        with self._txn() as conn:
+            cur = conn.execute(
+                "UPDATE sessions SET pending_loss_reason = NULL, pending_loss_deadline = NULL "
+                "WHERE session_id = ? AND pending_loss_reason = 'host_disconnected' "
+                "AND pending_loss_deadline > ?",
+                (str(session_id), self._clock()),
             )
             return cur.rowcount > 0
 

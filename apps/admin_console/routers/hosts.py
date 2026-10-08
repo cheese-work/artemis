@@ -15,6 +15,7 @@ from apps.admin_console.core.ownership import OwnerScope, actor_scope, scope_or_
 from apps.admin_console.services import host_registry as hr
 from apps.admin_console.services.host_hub import CLOSE_REVOKED, host_hub
 from apps.admin_console.services.host_registry import host_registry
+from apps.admin_console.services.host_tunnel import host_tunnels
 from artemis.runtime import device_pool
 
 try:
@@ -95,6 +96,7 @@ async def revoke_host(host_id: str, _admin: AccessIdentity = Depends(require_adm
     interrupted = _active_run_count(host_id)
     if not host_registry.revoke(host_id):
         raise AdminAPIError(404, "Unknown computer.", "host_unknown", "Refresh the list.")
+    await host_tunnels.abort_host(host_id, "auth_expired")
     await host_hub.close_host(host_id, CLOSE_REVOKED, "revoked")
     logger.info("event=host_revoked host_id=%s interrupted_runs=%d", host_id, interrupted)
     return {"status": "revoked", "interrupted_runs": interrupted}

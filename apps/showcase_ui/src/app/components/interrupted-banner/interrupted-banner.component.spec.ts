@@ -5,9 +5,10 @@ import { InterruptedBannerComponent } from './interrupted-banner.component';
 describe('InterruptedBannerComponent', () => {
   let fakes: ReturnType<typeof phoneFakes>;
 
-  function create() {
+  function create(lastStep: number | null = 3) {
     TestBed.configureTestingModule({ providers: fakes.providers });
     const fixture = TestBed.createComponent(InterruptedBannerComponent);
+    fixture.componentRef.setInput('lastStep', lastStep);
     fixture.detectChanges();
     const el = fixture.nativeElement as HTMLElement;
     const settle = () => { fixture.detectChanges(); TestBed.tick(); fixture.detectChanges(); };
@@ -17,7 +18,6 @@ describe('InterruptedBannerComponent', () => {
   beforeEach(() => {
     fakes = phoneFakes();
     fakes.agent.currentSession.set({ status: 'interrupted', initial_goal: 'Open Settings', interrupt_reason: 'device_offline' });
-    fakes.agent.currentSessionStepFrames.set([{ stepNumber: 1 }, { stepNumber: 2 }, { stepNumber: 3 }]);
   });
 
   it('stays out of the way unless the run on screen was interrupted', () => {
@@ -57,9 +57,8 @@ describe('InterruptedBannerComponent', () => {
   });
 
   it('says "before the first step" when no step ran, and has a safe sentence for an unknown reason', () => {
-    fakes.agent.currentSessionStepFrames.set([]);
     fakes.agent.currentSession.set({ status: 'interrupted', initial_goal: 'x', interrupt_reason: 'something_new' });
-    const text = create().el.textContent!;
+    const text = create(null).el.textContent!;
     expect(text).toContain('Run interrupted before the first step.');
     expect(text).toContain('The run stopped before it finished.');
   });
