@@ -406,6 +406,28 @@ async def test_host_fatal_loss_or_grace_expiry_stops_once(context, reason):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("in_grace", [False, True])
+async def test_host_unenroll_stops_its_bound_run_once(context, in_grace):
+    # main's /api/agent/unenroll aborts the host; a bound run must stop exactly once.
+    try:
+        await context.hosts.attach("host", 1, Socket(), lambda: {"phone"})
+        item = queue_item(context, context.hosts.endpoints.resolve("host"), "phone", host_id="host")
+        process = fake_process()
+        if in_grace:
+            await context.hosts.disconnect("host", 1, "disconnected")
+            assert context.authority.pending_events("run") == []
+        await context.hosts.abort_host("host", "auth_expired")
+        await context.hosts.abort_host("host", "auth_expired")
+        assert context.repository.get_session_status("run") == "interrupted"
+        assert len(context.authority.pending_events("run")) == 1
+        process.kill.assert_called_once()
+        with pytest.raises(RuntimeError, match="interrupted|bound|binding"):
+            TaskQueueService._task_target(item, resolve_host=True)
+    finally:
+        await context.hosts.close()
+
+
+@pytest.mark.asyncio
 async def test_reconnect_with_a_different_device_is_terminal(context):
     try:
         await context.hosts.attach("host", 1, Socket(), lambda: {"selected"})
