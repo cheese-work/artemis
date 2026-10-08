@@ -35,6 +35,7 @@ jobs:
         with:
           python-version: '3.12'
       - run: python scripts/check_dependency_sources.py
+      - run: sudo apt-get update && sudo apt-get install --no-install-recommends -y libgl1 libglib2.0-0 libxcb1
       - uses: astral-sh/setup-uv@v6
         with:
           enable-cache: false
