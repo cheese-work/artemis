@@ -12,6 +12,7 @@ import pytest
 
 from apps.admin_console.core import access_control
 from apps.admin_console.core.access_control import AccessConfig
+from apps.admin_console.core.ownership import OwnerScope
 from apps.admin_console.database.repositories.principal_repository import PrincipalRepository
 from apps.admin_console.database.repositories.run_catalog_repository import (
     CatalogNotReady,
@@ -347,6 +348,33 @@ async def test_an_unscoped_event_stream_does_not_open_while_the_catalog_is_unrea
 
     assert down.status_code == 503
     assert down.headers["retry-after"]
+
+
+@pytest.mark.asyncio
+async def test_a_signed_in_event_stream_does_not_open_while_the_catalog_is_unready(
+    spaces, monkeypatch
+):
+    # scope=mine with no active run never looks up an owner, so only the open-time check can refuse.
+    _catalog_down(monkeypatch)
+
+    down = await asyncio.wait_for(_call("GET", A, "/api/stream", scope="mine"), timeout=10)
+
+    assert down.status_code == 503
+    assert down.headers["retry-after"]
+    assert down.json()["retryable"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_signed_in_event_stream_opens_when_the_catalog_is_ready(spaces):
+    from apps.admin_console.routers import tasks
+
+    scope = OwnerScope(True, "qa@example.com", owned_emails=frozenset({"qa@example.com"}))
+
+    response = await tasks.stream_events("all", None, scope)
+
+    assert response.status_code == 200
+    assert response.media_type == "text/event-stream"
+    await response.body_iterator.aclose()  # the stream never ends by itself
 
 
 @pytest.mark.asyncio

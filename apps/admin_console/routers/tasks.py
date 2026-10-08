@@ -722,8 +722,9 @@ async def stream_events(
     # named run is a get-by-id (share link): in cloudflare mode it carries that
     # run's events only, never another run's lifecycle events.
     scope = require_actor(scope)
-    if not scope.enforced or scope.include_all:
-        require_catalog_ready()  # an unscoped stream opens only on a ready catalog
+    # Every scope: a scoped stream with no active run never looks up an owner, so an
+    # unready catalog would otherwise open it and later events would fail mid-stream.
+    require_catalog_ready()
     firehose = session_id in ("all", "active")
     decided: dict[str, bool] = {}
 
