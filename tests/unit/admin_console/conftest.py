@@ -207,6 +207,7 @@ def library(tmp_path, monkeypatch) -> RunLibrary:
 _ROLES = {
     "admin": AccessIdentity("admin@example.com", True, "cloudflare", None),
     "qa": AccessIdentity("qa@example.com", False, "cloudflare", "not_on_allowlist"),
+    "qa2": AccessIdentity("qa2@example.com", False, "cloudflare", "not_on_allowlist"),
     "anonymous": AccessIdentity(None, False, "cloudflare", "no_jwt"),
 }
 
@@ -239,6 +240,11 @@ def admin(_role_identities) -> AsyncClient:
 @pytest.fixture
 def qa(_role_identities) -> AsyncClient:
     return make_client("qa")
+
+
+@pytest.fixture
+def qa2(_role_identities) -> AsyncClient:
+    return make_client("qa2")
 
 
 @pytest.fixture

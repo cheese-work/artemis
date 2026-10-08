@@ -410,6 +410,12 @@ async def test_shared_screenshots_and_recordings_remain_readable(cloudflare, gen
     recording = cloudflare / "traces" / sid / "recording.mp4"
     recording.parent.mkdir()
     recording.write_bytes(b"SHARED-VIDEO")
+    with sqlite3.connect(cloudflare / "data_engine.db") as conn:
+        conn.execute(
+            "INSERT INTO steps (step_id, session_id, step_number, timestamp, pre_image_name) "
+            "VALUES (?, ?, 1, 1.0, 'shared')",
+            (str(uuid.uuid4()), sid),
+        )
 
     for path in (screenshot, recording):
         response = await _get(QA2, f"/local_file?path={quote(str(path), safe='')}")
@@ -545,8 +551,18 @@ async def test_legacy_unregistered_inline_cache_is_admin_only(
     )
     assert (await _get(QA2, url)).status_code == 403
     assert (await _get(ADMIN, url)).content == _image_bytes()
+    sid = _owned_run(cloudflare, QA1)
     with sqlite3.connect(cloudflare / "data_engine.db") as conn:
         conn.execute("INSERT INTO images (image_name, timestamp) VALUES (?, ?)", (digest, 1.0))
+    # Captured, but no run shows it yet: still no owning run to follow.
+    hidden = await _get(QA2, url)
+    assert hidden.status_code == 404 and hidden.json()["code"] == "run_not_visible"
+    with sqlite3.connect(cloudflare / "data_engine.db") as conn:
+        conn.execute(
+            "INSERT INTO steps (step_id, session_id, step_number, timestamp, pre_image_name) "
+            "VALUES (?, ?, 1, 1.0, ?)",
+            (str(uuid.uuid4()), sid, digest),
+        )
     assert (await _get(QA2, url)).content == _image_bytes()
 
 

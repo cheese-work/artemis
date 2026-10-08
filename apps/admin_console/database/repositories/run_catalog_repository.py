@@ -285,6 +285,22 @@ class RunCatalogRepository:
                     found[row["session_id"]] = row["requested_by"]
         return found
 
+    def live_run_ids(self, session_ids: list[str]) -> frozenset[str]:
+        """Ids among ``session_ids`` that name a run which is not removed."""
+        if not session_ids:
+            return frozenset()
+        with db_session(self.db_path) as conn:
+            self._require_ready(conn)
+            marks = ", ".join("?" * len(session_ids))
+            return frozenset(
+                row[0]
+                for row in conn.execute(
+                    "SELECT session_id FROM run_meta "
+                    f"WHERE deleted_at IS NULL AND session_id IN ({marks})",
+                    session_ids,
+                )
+            )
+
     def shared_run_ids(self, email: str) -> frozenset[str]:
         with db_session(self.db_path) as conn:
             self._require_ready(conn)

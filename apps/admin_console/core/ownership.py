@@ -13,12 +13,14 @@ open-mode callers retain raw data, as on the catalog's direct run endpoint.
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from typing import Any
 
-from fastapi import Depends, Query
+from fastapi import Depends, Query, Request
 
 from apps.admin_console.core.access_control import AccessIdentity, AdminAPIError, public_tier
+from artemis.data_engine import run_catalog
 from apps.admin_console.core.redaction import redact_image_data, redact_json
 
 try:
@@ -105,6 +107,51 @@ def owner_scope(identity: AccessIdentity, scope: str = SCOPE_MINE) -> OwnerScope
     )
 
 
+def require_signed_in(scope: OwnerScope) -> None:
+    """Refuse a caller with no verified identity (cloudflare mode only)."""
+    if scope.enforced and scope.email is None:
+        raise AdminAPIError(
+            401,
+            "Sign in through Cloudflare Access before opening a run.",
+            "not_signed_in",
+            "Open the protected SmartQA URL and sign in, then retry.",
+        )
+
+
+def require_visible_run(scope: OwnerScope, session_ids: list[str | None]) -> None:
+    """Evidence follows the run's visibility rule: any signed-in caller holding the full run id.
+
+    ``session_ids`` are the runs that own the evidence; one live run is enough.
+    A removed run, an unknown run and evidence with no owning run are all the same
+    ``run_not_visible`` 404, so the answer never says which. Admins see everything.
+    """
+    scope = scope_or_open(scope)
+    require_signed_in(scope)
+    if not scope.enforced or scope.admin:
+        return
+    for sid in session_ids:
+        try:
+            if sid:
+                run_catalog.validate_session_id(sid)
+        except ValueError:
+            raise AdminAPIError(
+                400, "Invalid run id.", "invalid_session_id", "Use the full run id."
+            ) from None
+    try:
+        live = run_catalog_repo.live_run_ids([sid for sid in session_ids if sid])
+    except CatalogNotReady as exc:
+        raise AdminAPIError(
+            503, "The run catalog is not ready.", "catalog_not_ready", "Restart the console."
+        ) from exc
+    if not live:
+        raise AdminAPIError(
+            404,
+            "Run not found.",
+            "run_not_visible",
+            "Check the run id, or ask the person who shared it.",
+        )
+
+
 def record_run_read(scope: OwnerScope, session_id: str) -> None:
     if scope.enforced and scope.email:
         run_catalog_repo.record_link_share(scope.email, session_id)
@@ -118,6 +165,17 @@ async def list_scope(
 
 async def actor_scope(identity: AccessIdentity = Depends(public_tier)) -> OwnerScope:
     return owner_scope(identity)
+
+
+async def evidence_scope(request: Request, actor: OwnerScope = Depends(actor_scope)) -> OwnerScope:
+    """``actor_scope`` for evidence routes: signed in, and a run named in the path is visible."""
+    scope = scope_or_open(actor)
+    session_id = request.path_params.get("session_id")
+    if session_id is None:
+        require_signed_in(scope)  # media and traces resolve their owning run in the handler
+    else:
+        await asyncio.to_thread(require_visible_run, scope, [session_id])
+    return actor
 
 
 def owners_of(session_ids: list[str]) -> dict[str, str | None]:

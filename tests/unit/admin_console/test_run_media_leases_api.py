@@ -103,12 +103,16 @@ async def test_a_file_in_a_shared_task_folder_leases_every_run_that_uses_it(libr
 
 
 @pytest.mark.asyncio
-async def test_files_outside_any_run_need_no_lease_and_still_download(library, qa, media_roots):
+async def test_files_outside_any_run_need_no_lease_and_only_an_admin_downloads(
+    library, admin, qa, media_roots
+):
     stray = library.traces / "stray" / "clip.mp4"
     stray.parent.mkdir()
     stray.write_bytes(b"CLIP")
 
-    async with qa:
-        response = await qa.get("/videos/stray/clip.mp4")
+    async with admin, qa:
+        response = await admin.get("/videos/stray/clip.mp4")
+        refused = await qa.get("/videos/stray/clip.mp4")
 
     assert response.status_code == 200 and response.content == b"CLIP"
+    assert refused.status_code == 404 and refused.json()["code"] == "run_not_visible"

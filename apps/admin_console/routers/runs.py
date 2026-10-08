@@ -27,6 +27,7 @@ from apps.admin_console.core.ownership import (
     actor_scope,
     owner_scope,
     record_run_read,
+    require_signed_in,
     scope_or_open,
 )
 from apps.admin_console.core.redaction import redact_image_data, redact_text
@@ -143,6 +144,7 @@ async def list_runs(
 async def get_run(session_id: str, scope: OwnerScope = Depends(actor_scope)):
     """Full-id share link, or an owner/admin-only prefix (409 for visible candidates)."""
     scope = scope_or_open(scope)
+    require_signed_in(scope)
     try:
         found = await asyncio.to_thread(
             run_catalog_repo.get_run,

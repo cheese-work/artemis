@@ -24,6 +24,7 @@ from apps.admin_console.core.ownership import (
     OPEN_SCOPE,
     OwnerScope,
     actor_scope,
+    evidence_scope,
     list_scope,
     owners_of,
     present_session_data,
@@ -163,7 +164,7 @@ def _list_sessions_sync(scope: OwnerScope = OPEN_SCOPE):
 
 
 @router.get("/api/sessions/{session_id}")
-async def get_session_details(session_id: str, actor: OwnerScope = Depends(actor_scope)):
+async def get_session_details(session_id: str, actor: OwnerScope = Depends(evidence_scope)):
     """Retrieve details for a single automation session."""
     row = session_repo.get_session_by_id(session_id)
     if not row:
@@ -172,7 +173,7 @@ async def get_session_details(session_id: str, actor: OwnerScope = Depends(actor
 
 
 @router.get("/api/sessions/{session_id}/goal-images/{index}")
-async def get_goal_image(session_id: str, index: str, actor: OwnerScope = Depends(actor_scope)):
+async def get_goal_image(session_id: str, index: str, actor: OwnerScope = Depends(evidence_scope)):
     """A picture sent with the run's goal: the run's owner or an administrator only."""
     require_access(scope_or_open(actor), session_id)
     found = (
@@ -187,7 +188,7 @@ async def get_goal_image(session_id: str, index: str, actor: OwnerScope = Depend
 
 
 @router.get("/api/sessions/{session_id}/events")
-async def get_session_events(session_id: str, actor: OwnerScope = Depends(actor_scope)):
+async def get_session_events(session_id: str, actor: OwnerScope = Depends(evidence_scope)):
     """Lifecycle events recorded for a session (``session_ended``, ``run_interrupted``).
 
     The durable record behind the live stream: a client that was offline when an
@@ -200,7 +201,7 @@ async def get_session_events(session_id: str, actor: OwnerScope = Depends(actor_
     return present_session_data(actor, session_id, events)
 
 
-@router.get("/api/sessions/{session_id}/usage")
+@router.get("/api/sessions/{session_id}/usage", dependencies=[Depends(evidence_scope)])
 async def get_session_usage(session_id: str):
     """Session-wide LLM token totals, live executor context size and run tuning."""
     try:
@@ -210,7 +211,7 @@ async def get_session_usage(session_id: str):
 
 
 @router.get("/api/sessions/{session_id}/tree")
-async def get_tree(session_id: str, actor: OwnerScope = Depends(actor_scope)):
+async def get_tree(session_id: str, actor: OwnerScope = Depends(evidence_scope)):
     try:
         tree = trace_repo.get_trace_tree(session_id)
     except Exception as e:
@@ -219,7 +220,9 @@ async def get_tree(session_id: str, actor: OwnerScope = Depends(actor_scope)):
 
 
 @router.get("/api/sessions/{session_id}/background_tasks")
-async def get_session_background_tasks(session_id: str, actor: OwnerScope = Depends(actor_scope)):
+async def get_session_background_tasks(
+    session_id: str, actor: OwnerScope = Depends(evidence_scope)
+):
     try:
         tasks = session_repo.get_background_tasks(session_id)
     except Exception:
@@ -228,7 +231,9 @@ async def get_session_background_tasks(session_id: str, actor: OwnerScope = Depe
 
 
 @router.get("/api/sessions/{session_id}/startup_progress")
-async def get_session_startup_progress(session_id: str, actor: OwnerScope = Depends(actor_scope)):
+async def get_session_startup_progress(
+    session_id: str, actor: OwnerScope = Depends(evidence_scope)
+):
     try:
         progress = state.get_startup_progress(session_id)
     except Exception:

@@ -40,6 +40,7 @@ from apps.admin_console.core.ownership import (
     present_session_data,
     require_access,
     require_access_all,
+    require_visible_run,
     scope_or_open,
 )
 from apps.admin_console.core.redaction import redact_image_data, redact_json
@@ -741,6 +742,8 @@ async def stream_events(
     # run's events only, never another run's lifecycle events.
     scope = scope_or_open(scope)
     firehose = session_id in ("all", "active")
+    if not firehose:
+        await asyncio.to_thread(require_visible_run, scope, [session_id])
     decided: dict[str, bool] = {}
 
     def may_see(event_session_id: Any) -> bool:
