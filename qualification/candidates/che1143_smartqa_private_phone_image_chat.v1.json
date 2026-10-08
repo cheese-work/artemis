@@ -118,7 +118,7 @@
   },
   "execution_gates": {
     "host_serial_and_exclusive_claim": "MISSING; Sol owns admission",
-    "two_regular_qa_identities": "Revalidate the two existing authorized QA profiles at the serving revision with read-only GET /api/system/whoami; no provisioning or credential action.",
+    "two_regular_qa_identities": "REVALIDATION MISSING; revalidate the two existing authorized QA profiles at the serving revision with read-only GET /api/system/whoami; no provisioning or credential action.",
     "app_serving_revision_and_target_control_contract": "MISSING; source revision is not serving acceptance, and host-bound /api/run bypasses require_device at the pinned source",
     "eligible_provider_and_account_owner_clearance": "MISSING",
     "numeric_spend_scope": "MISSING",
