@@ -36,7 +36,9 @@ make_case() {
   git -C "$REPO" push -q -u origin main
   OLD_SHA=$(git -C "$REPO" rev-parse HEAD)
   printf 'candidate\n' >> "$REPO/app.txt"
-  printf '@router.get("/service-readiness")\n' >> "$REPO/apps/admin_console/routers/system.py"
+  # Use the real decorator line so the detector is tested against the shipped signature.
+  grep -F '@router.get("/service-readiness"' "$ROOT/apps/admin_console/routers/system.py" >> "$REPO/apps/admin_console/routers/system.py" ||
+    fail "service-readiness decorator missing from apps/admin_console/routers/system.py"
   git -C "$REPO" add apps/admin_console/routers/system.py
   git -C "$REPO" commit -qam candidate
   git -C "$REPO" push -q origin main

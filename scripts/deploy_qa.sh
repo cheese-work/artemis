@@ -29,7 +29,7 @@ build() {
 
 healthy() {
   local revision=$1 attempt report endpoint ready_field
-  if git -C "$REPO" grep -Fq '@router.get("/service-readiness")' "$revision" -- apps/admin_console/routers/system.py; then
+  if git -C "$REPO" grep -Fq '@router.get("/service-readiness"' "$revision" -- apps/admin_console/routers/system.py; then
     endpoint=service-readiness
     ready_field=service_ready
   else
