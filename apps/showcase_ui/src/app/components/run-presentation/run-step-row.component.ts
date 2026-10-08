@@ -13,13 +13,14 @@ import { ChangeDetectionStrategy, Component, input } from '@angular/core';
         <span class="step-failed"><span class="material-symbols-outlined" aria-hidden="true">error</span> Failed</span>
       }
       @if (duration() !== null) { <span class="step-duration">{{ duration() }}</span> }
-      @if (failureDetail()) { <span class="step-failure-detail">{{ failureDetail() }}</span> }
+      @if (failureDetail()) { <span class="step-failure-detail" [attr.title]="failureTitle()">{{ failureDetail() }}</span> }
     }
     <ng-content />
   `,
   styles: [`
     .phase-worked-time { color: #71717a; font-weight: normal; }
     .step-number { font-size: 12px; color: var(--evidence-muted); }
+    .step-failure-detail { flex: 1 1 100%; min-width: 0; max-width: 100%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
     .step-failed { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; font-weight: 600; color: var(--status-danger-fg); }
   `],
   changeDetection: ChangeDetectionStrategy.OnPush
@@ -31,4 +32,6 @@ export class RunStepRowComponent {
   readonly failed = input(false);
   readonly duration = input<number | string | null>(null);
   readonly failureDetail = input<string | null>(null);
+  /** Full text for the tooltip when failureDetail is only a summary. */
+  readonly failureTitle = input<string | null>(null);
 }

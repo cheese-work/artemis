@@ -226,6 +226,33 @@ dl {
   background: var(--status-danger-bg);
 }
 
+.agent-report {
+  summary { display: list-item; cursor: pointer; }
+
+  .report-body {
+    max-height: 60vh;
+    padding: 12px 16px;
+    overflow: auto;
+    border: 1px solid var(--evidence-border);
+    border-radius: 8px;
+    color: var(--evidence-text);
+    background: var(--evidence-surface);
+    font-size: 14px;
+    line-height: 20px;
+    overflow-wrap: anywhere;
+  }
+
+  .report-body ::ng-deep {
+    h1, h2, h3, h4, h5, h6 { margin: 12px 0 4px; font-size: 14px; line-height: 20px; }
+    ul, ol { margin: 4px 0; padding-left: 20px; }
+    pre { overflow-x: auto; }
+    .md-table-wrap { max-width: 100%; margin: 8px 0; overflow-x: auto; }
+    table { border-collapse: collapse; }
+    th, td { padding: 4px 8px; border: 1px solid var(--evidence-border); text-align: left; vertical-align: top; overflow-wrap: normal; }
+    th { font-weight: 600; white-space: nowrap; }
+  }
+}
+
 .step-screenshots {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

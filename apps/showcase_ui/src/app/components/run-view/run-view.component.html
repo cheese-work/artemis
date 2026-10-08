@@ -113,7 +113,13 @@
         @if (current.status === 'failed') {
           <div class="interrupted-banner failed-banner" role="status">
             <p>Run failed.</p>
-            <p>{{ failureReason() }}</p>
+            <p>{{ failureSummary() }}</p>
+            @if (failureReportHtml(); as reportHtml) {
+              <details class="agent-report">
+                <summary>Agent report</summary>
+                <div class="report-body" [innerHTML]="reportHtml"></div>
+              </details>
+            }
             <button type="button" class="secondary-button" (click)="startNewRun()">{{ strings.startNewRun }}</button>
           </div>
         }
@@ -145,7 +151,8 @@
                   <button
                     type="button"
                     class="step-button" appRunStepRow [stepNumber]="step.step_number" [title]="stepTitle(step)" [failed]="stepFailed(step)"
-                    [failureDetail]="stepFailed(step) ? stepFailureDetail(step) : null"
+                    [failureDetail]="stepFailed(step) ? stepFailureSummary(step) : null"
+                    [failureTitle]="stepFailed(step) ? stepFailureTitle(step) : null"
                     [attr.aria-current]="selectedStep()?.step_id === step.step_id ? 'step' : null"
                     (click)="selectStep(step)"
                     (keydown)="onStepKey($event, $index)"

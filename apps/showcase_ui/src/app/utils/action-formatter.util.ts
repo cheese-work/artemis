@@ -393,6 +393,8 @@ export function isActionFailed(action: any, stepData?: any): boolean {
   const act = getActionObject(action);
   if (act) {
     if (act.status === 'failed' || act.status === 'error' || act.success === false) return true;
+    // Final report steps carry the status nested in args: {"action":"report_task_status","args":{"status":"failed",...}}
+    if (isReportStatusAction(act) && getReportStatusValue(act) === 'failed') return true;
   }
   if (stepData) {
     if (stepData.status === 'failed' || stepData.status === 'error') return true;
@@ -450,6 +452,10 @@ export function getActionErrorMessage(action: any, stepData?: any): string {
         return cleanErrorMessage(res.error || res.message || res.failure_reason);
       }
     }
+  }
+  if (isReportStatusAction(act)) {
+    const explanation = getReportStatusExplanation(act);
+    if (typeof explanation === 'string' && explanation.trim()) return explanation.trim();
   }
   return 'Action Failed';
 }
