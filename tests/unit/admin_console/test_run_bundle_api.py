@@ -15,6 +15,8 @@
 """Run bundles and trace downloads at the server API seam (CHE-1093 A5)."""
 
 import asyncio
+import base64
+import hashlib
 import io
 import json
 import logging
@@ -24,6 +26,7 @@ import sqlite3
 import threading
 import zipfile
 
+from PIL import Image
 import pytest
 
 from apps.admin_console.services import run_bundle
@@ -123,6 +126,46 @@ async def test_prompt_is_redacted_too(library, qa):
 
     assert "hunter2" not in archive.read("prompt.txt").decode()
     assert "log in with" in archive.read("prompt.txt").decode()
+
+
+@pytest.mark.asyncio
+async def test_bundles_remove_inline_images_and_references_from_every_text_artifact(library, qa):
+    picture = io.BytesIO()
+    Image.new("RGB", (8, 6), (200, 30, 30)).save(picture, "PNG")
+    encoded = base64.b64encode(picture.getvalue()).decode()
+    uri = f"data:image/png;base64,{encoded}"
+    sid = library.seed(f'password="zebra7secret" {uri}')
+    library.step(sid, 1, action={"image": uri, "ref": "image://private-hash"})
+    library.write(sid, "notes/goal.md", f"{uri} <ImageRef:private-hash>")
+    library.write(sid, "stdout.log", f"{encoded}\n")
+    library.write(
+        sid,
+        "check_ledger.jsonl",
+        json.dumps({"inline_data": {"mime_type": "image/png", "data": encoded}}) + "\n",
+    )
+
+    async with qa:
+        archive = _zip(await qa.get(f"/api/runs/{sid}/bundle.zip"))
+
+    for name, text in _text_entries(archive).items():
+        assert encoded not in text, name
+        assert "private-hash" not in text, name
+        assert "zebra7secret" not in text, name
+        assert "data:image" not in text, name
+
+
+@pytest.mark.asyncio
+async def test_bundle_refuses_legacy_inline_cache_even_if_named_as_a_recording(library, qa):
+    sid = library.seed("private attachment")
+    content = b"private-goal-image"
+    digest = hashlib.sha256(content).hexdigest()
+    library.video_in(sid, "images", f"{digest}.jpg", content)
+
+    async with qa:
+        archive = _zip(await qa.get(f"/api/runs/{sid}/bundle.zip"))
+
+    assert not any(content in archive.read(name) for name in archive.namelist())
+    assert "prompt_attachment" in archive.read("manifest.json").decode()
 
 
 @pytest.mark.asyncio

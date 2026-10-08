@@ -33,7 +33,7 @@ import re
 import stat
 from typing import BinaryIO
 
-from apps.admin_console.core.redaction import redact_json, redact_text
+from apps.admin_console.core.redaction import redact_image_data, redact_json, redact_text
 
 try:
     from admin_console.database.connection import db_session
@@ -82,6 +82,22 @@ def goal_image_session(path: Path) -> str | None:
     if len(parts) >= 3 and any(part.casefold() == "goal_images" for part in parts[1:-1]):
         return parts[0]
     return None
+
+
+def untracked_inline_image(path: Path) -> bool:
+    """Legacy trace caches have no capture record: do not silently publish their bytes."""
+    db_path, traces = library_paths()
+    if path.resolve().parent != (traces / "images").resolve() or not re.fullmatch(
+        r"[a-f0-9]{64}\.jpg", path.name, re.IGNORECASE
+    ):
+        return False
+    with db_session(db_path) as conn:
+        return (
+            conn.execute(
+                "SELECT 1 FROM images WHERE image_name IN (?, ?)", (path.stem, path.name)
+            ).fetchone()
+            is None
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -345,9 +361,11 @@ def resolve_manifest(session_id: str, prompt: str | None, *, generated: bool = T
     db_path, traces = library_paths()
     manifest = Manifest(session_id)
     if generated:
-        manifest.add(_generated("prompt.txt", redact_text(prompt or "")))
+        manifest.add(_generated("prompt.txt", redact_text(redact_image_data(prompt or ""))))
         steps = StepRepository(db_path).get_session_steps(session_id)
-        steps_json = json.dumps(redact_json(steps), ensure_ascii=False, indent=2, default=str)
+        steps_json = json.dumps(
+            redact_json(redact_image_data(steps)), ensure_ascii=False, indent=2, default=str
+        )
         manifest.add(_generated("steps.json", steps_json))
 
     _add_images(manifest, traces / "images", image_names(db_path, session_id))
@@ -376,6 +394,8 @@ def _add_file(manifest, root: Path, candidate: Path, arcname: str, kind: str, na
     path, reason = safe_file(root, candidate)
     if reason:
         _skip(manifest, name, reason)
+    elif path is not None and kind == "media" and untracked_inline_image(path):
+        _skip(manifest, name, "private_inline_image")
     elif path is not None and (size := _size(path)) is not None:
         manifest.add(Artifact(arcname, kind, size, path=path, root=root))
 
@@ -411,7 +431,7 @@ def _add_videos(manifest: Manifest, traces: Path, db_path, session_id: str) -> N
         if recorded.suffix.lower() != ".mp4":
             candidates.insert(0, recorded.with_suffix(".mp4"))
         for candidate in candidates:
-            if goal_image_session(candidate) is not None:
+            if goal_image_session(candidate) is not None or untracked_inline_image(candidate):
                 _skip(manifest, f"video/{candidate.name}", "prompt_attachment")
                 continue
             path, reason = safe_file(traces, candidate)

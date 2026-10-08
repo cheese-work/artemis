@@ -23,7 +23,7 @@ from fastapi.responses import JSONResponse
 
 from apps.admin_console.core.access_control import AccessIdentity, AdminAPIError, public_tier
 from apps.admin_console.core.ownership import OwnerScope, actor_scope, owner_scope, scope_or_open
-from apps.admin_console.core.redaction import redact_text
+from apps.admin_console.core.redaction import redact_image_data, redact_text
 
 try:
     from admin_console.database.repositories.run_catalog_repository import (
@@ -57,7 +57,7 @@ def _present(run: dict[str, Any], scope: OwnerScope, *, team: bool = False) -> d
     read_only = team or not scope.may_act_on(run.get("requested_by"))
     result = {**run, "read_only": read_only}
     if read_only and isinstance(result.get("prompt"), str):
-        result["prompt"] = redact_text(result["prompt"])
+        result["prompt"] = redact_text(redact_image_data(result["prompt"]))
     return result
 
 

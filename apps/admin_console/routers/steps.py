@@ -19,7 +19,13 @@ from fastapi.responses import PlainTextResponse
 
 from artemis.config import TEST_OUTPUTS_DIR
 
-from apps.admin_console.core.ownership import OwnerScope, actor_scope, present_session_data
+from apps.admin_console.core.access_control import AdminAPIError
+from apps.admin_console.core.ownership import (
+    OwnerScope,
+    actor_scope,
+    present_session_data,
+    scope_or_open,
+)
 from apps.admin_console.core.redaction import redact_json, redact_text
 
 try:
@@ -86,20 +92,27 @@ async def get_trace(
         if not trace_dict:
             raise HTTPException(status_code=404, detail="Trace not found")
 
+        trace_dict = present_session_data(actor, trace_dict.get("session_id"), trace_dict)
+
         if trace_dict.get("payload"):
             try:
                 payload_obj = json.loads(trace_dict["payload"])
-                trace_dict["payload"] = media_service.unwrap_payload(payload_obj)
+                trace_dict["payload"] = media_service.unwrap_payload(
+                    payload_obj,
+                    session_id=trace_dict.get("session_id")
+                    if scope_or_open(actor).enforced
+                    else None,
+                )
             except (ValueError, TypeError, KeyError, AttributeError):
                 # Non-JSON or unexpectedly shaped payload: serve it raw.
                 pass
 
-    except HTTPException as e:
+    except (HTTPException, AdminAPIError) as e:
         raise e
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
-    return present_session_data(actor, trace_dict.get("session_id"), trace_dict)
+    return trace_dict
 
 
 def _redacted_payload(payload: str) -> str:
@@ -111,18 +124,25 @@ def _redacted_payload(payload: str) -> str:
 
 
 @router.get("/api/traces/{trace_id}/download")
-async def download_trace(trace_id: str, session_id: str = None, step_number: int = None):
+async def download_trace(
+    trace_id: str,
+    session_id: str = None,
+    step_number: int = None,
+    actor: OwnerScope = Depends(actor_scope),
+):
     try:
         db_path = _resolve_trace_db_path(session_id, step_number)
         trace_dict = trace_repo.get_trace_by_id(trace_id, db_path=db_path)
         if not trace_dict or not trace_dict.get("payload"):
             raise HTTPException(status_code=404, detail="Payload not found")
 
+        payload = present_session_data(actor, trace_dict.get("session_id"), trace_dict["payload"])
+
         return PlainTextResponse(
-            _redacted_payload(trace_dict["payload"]),
+            _redacted_payload(payload),
             headers={"Content-Disposition": f'attachment; filename="trace_{trace_id}.json"'},
         )
-    except HTTPException as e:
+    except (HTTPException, AdminAPIError) as e:
         raise e
     except Exception as e:
         traceback.print_exc()

@@ -18,7 +18,7 @@ from typing import Any
 from fastapi import Depends, Query
 
 from apps.admin_console.core.access_control import AccessIdentity, AdminAPIError, public_tier
-from apps.admin_console.core.redaction import redact_json
+from apps.admin_console.core.redaction import redact_image_data, redact_json
 
 try:
     from admin_console.database.repositories.run_catalog_repository import (
@@ -112,7 +112,7 @@ def present_session_data(scope: OwnerScope, session_id: str | None, data: Any) -
     if not scope.enforced or scope.admin:
         return data
     owner = owners_of([session_id]).get(session_id) if session_id else None
-    return data if scope.may_act_on(owner) else redact_json(data)
+    return data if scope.may_act_on(owner) else redact_json(redact_image_data(data))
 
 
 def require_access(scope: OwnerScope, session_id: str | None) -> None:

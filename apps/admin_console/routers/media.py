@@ -14,6 +14,7 @@
 
 import asyncio
 from pathlib import Path
+import re
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse
 
@@ -27,8 +28,8 @@ from apps.admin_console.core.ownership import (
     require_access,
     scope_or_open,
 )
-from apps.admin_console.services import run_media
-from apps.admin_console.services.run_artifacts import goal_image_session
+from apps.admin_console.services import run_images, run_media
+from apps.admin_console.services.run_artifacts import goal_image_session, untracked_inline_image
 
 try:
     from admin_console.database.repositories.session_repository import session_repo
@@ -62,6 +63,8 @@ async def _leased_file(
     session_id = await asyncio.to_thread(goal_image_session, path)
     if session_id is not None:
         await asyncio.to_thread(require_access, scope_or_open(actor), session_id)
+    elif await asyncio.to_thread(untracked_inline_image, path):
+        await asyncio.to_thread(require_access, scope_or_open(actor), None)
     lease_ids = await asyncio.to_thread(run_media.lease, owners)
     if lease_ids is None:
         raise HTTPException(status_code=404, detail="Media file not found")
@@ -138,6 +141,15 @@ async def get_admin_index():
 @router.get("/images/{image_name}")
 @router.get("/api/images/{image_name}")
 async def get_image(image_name: str, actor: OwnerScope = Depends(actor_scope)):
+    inline = re.fullmatch(r"inline_(.+)_([a-f0-9]{64})(?:\.jpg)?", image_name)
+    if inline:
+        try:
+            image_path = run_images.inline_image_path(inline[1], inline[2])
+        except ValueError:
+            raise HTTPException(status_code=404, detail="Image not found")
+        if not image_path.is_file():
+            raise HTTPException(status_code=404, detail="Image not found")
+        return await _leased_file(image_path.resolve(), "image/jpeg", [inline[1]], actor)
     if not image_name.endswith(".jpg"):
         image_name += ".jpg"
     try:

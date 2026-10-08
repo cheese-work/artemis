@@ -94,6 +94,9 @@ class BundleFile:
 
 def _redacted_text(arcname: str, raw: str) -> str:
     """JSON documents are redacted structurally, anything else (or bad JSON) as text."""
+    from apps.admin_console.core.redaction import redact_image_data
+
+    raw = redact_image_data(raw)
     if arcname.endswith(".json"):
         try:
             return json.dumps(redact_json(json.loads(raw)), ensure_ascii=False, indent=2)
