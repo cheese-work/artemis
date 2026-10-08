@@ -2,11 +2,21 @@
   "name": "artemis-showcase-ui",
   "version": "1.0.0",
   "scripts": {
+    "prebuild": "node scripts/validate-whats-new.mjs",
     "ng": "ng",
     "start": "ng serve --proxy-config proxy.conf.json",
     "build": "ng build",
+    "build:preview": "node scripts/build-preview.mjs",
+    "test:docker-build-inputs": "node scripts/test-docker-build-inputs.mjs",
+    "test:keyboard": "node scripts/keyboard-walkthrough/walkthrough.mjs",
+    "test:keyboard-paste": "node --test scripts/keyboard-walkthrough/paste-shortcut.test.mjs",
+    "test:layout": "node scripts/layout-audit/layout-audit.mjs",
+    "test:preview-path": "node scripts/preview-path.test.mjs",
     "watch": "ng build --watch --configuration development",
-    "test": "ng test"
+    "test": "ng test",
+    "pretest": "node scripts/validate-whats-new.mjs && node scripts/lint-ui-strings.mjs && npm run test:tango-stream-extra && npm run test:keyboard-paste",
+    "test:tango-stream-extra": "node --test scripts/tango-stream-extra.test.mjs",
+    "postinstall": "node scripts/patch-tango.mjs"
   },
   "private": true,
   "dependencies": {
@@ -30,6 +40,7 @@
     "@angular/cli": "^22.1.6",
     "@angular/compiler-cli": "^22.1.4",
     "@types/jasmine": "~5.1.0",
+    "esbuild": "0.28.2",
     "istanbul-lib-instrument": "^6.0.3",
     "jasmine-core": "~5.6.0",
     "karma": "~6.4.0",

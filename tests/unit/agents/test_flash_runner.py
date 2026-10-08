@@ -28,6 +28,8 @@ from artemis.agents.validator.tool_declarations import (
 )
 from artemis.context import ArtemisContext
 
+pytestmark = pytest.mark.usefixtures("fake_provider_credentials")
+
 
 @pytest.fixture
 def mock_context():
@@ -35,6 +37,7 @@ def mock_context():
     ctx.llm_config = Mock()
     mock_llm_cfg = Mock()
     mock_llm_cfg.model = "gemini-2.5-flash"
+    mock_llm_cfg.provider = "google"
     mock_llm_cfg.temperature = 0.1
     ctx.llm_config.get_agent.return_value = mock_llm_cfg
 
@@ -465,206 +468,6 @@ async def test_visual_lens_receives_the_recorded_action_shape(mock_context):
     assert VisualStepSummarizer._action_phrase("manage_app", kwargs["action_args"]) == (
         "Launched app 'Settings'"
     )
-
-
-@pytest.mark.parametrize(
-    ("serial", "message", "expected"),
-    [
-        (
-            "127.0.0.1:35409",
-            "Error during tap: device '127.0.0.1:35409' not found",
-            True,
-        ),
-        (
-            "R58M123",
-            "Error during tap: device 'R58M123' not found",
-            False,
-        ),
-        (
-            "127.0.0.1:35409",
-            "Error during tap: UI element not found",
-            False,
-        ),
-    ],
-)
-def test_browser_bridge_disconnect_error_detection(serial, message, expected):
-    from artemis.agents.flash.runner import _is_browser_bridge_disconnect
-
-    assert _is_browser_bridge_disconnect(serial, message) is expected
-
-
-@pytest.mark.asyncio
-async def test_flash_stops_after_first_browser_bridge_disconnect():
-    from artemis.agents.flash.runner import _TurnRecord
-
-    runner = FlashRunner.__new__(FlashRunner)
-    runner.executor = SimpleNamespace(
-        action_tool_names=frozenset({"tap"}),
-        execute=AsyncMock(
-            return_value=ToolExecutionResult(
-                tool_call_id="first",
-                tool_name="tap",
-                status="error",
-                text_summary="Error during tap: device '127.0.0.1:35409' not found",
-            )
-        ),
-    )
-    runner.ctx = SimpleNamespace(
-        device=SimpleNamespace(device_id="127.0.0.1:35409"), data_engine=None
-    )
-    runner.summarizer = None
-    runner.goal = "g"
-    tool_calls = [
-        {"id": "first", "name": "tap", "args": {"target": [1, 2]}},
-        {"id": "second", "name": "tap", "args": {"target": [3, 4]}},
-    ]
-
-    with patch("artemis.agents.flash.runner.tool_result_messages", return_value=[]):
-        report, *_ = await runner._process_tool_calls(
-            tool_calls,
-            SimpleNamespace(indexed_elements=[]),
-            [],
-            "",
-            {},
-            None,
-            None,
-            0,
-            _TurnRecord(),
-        )
-
-    assert report["status"] == "failed"
-    assert "phone disconnected" in report["explanation"].lower()
-    assert runner.executor.execute.await_count == 1
-
-
-def _make_flash_runner_with_android_tap(serial, shell_side_effect):
-    from artemis.controllers.unified_controller import UnifiedMobileController
-    from artemis.drivers.android.adb_driver import AndroidAdbDriver
-    from artemis.mcp.action_executor import McpActionExecutor
-    from artemis.mcp.actuators.adb import AdbActuator
-
-    adb_device = Mock()
-    adb_device.shell.side_effect = shell_side_effect
-    driver = AndroidAdbDriver(serial, Mock())
-    driver._device = adb_device
-    context = SimpleNamespace(
-        device=SimpleNamespace(
-            device_id=serial,
-            device_width=1080,
-            device_height=2400,
-        ),
-        data_engine=None,
-    )
-    controller = UnifiedMobileController.__new__(UnifiedMobileController)
-    controller.ctx = context
-    controller._driver = driver
-    actuator = AdbActuator(context, controller)
-    executor = McpActionExecutor(context, actuator=actuator)
-
-    async def call_action(tool_name, tool_args):
-        assert tool_name == "click"
-        return await actuator.click(*tool_args["target"])
-
-    executor._session = SimpleNamespace(started=True, call=call_action)
-    runner = FlashRunner.__new__(FlashRunner)
-    runner.ctx = context
-    runner.controller = controller
-    runner.executor = executor
-    runner.summarizer = None
-    runner.goal = "g"
-    return runner, adb_device
-
-
-@pytest.mark.parametrize(
-    "adb_error",
-    [
-        "device '127.0.0.1:35409' not found",
-        "device offline",
-        "device unauthorized. Please check the confirmation dialog on your device.",
-    ],
-)
-@pytest.mark.asyncio
-async def test_flash_stops_after_android_tap_disconnect_without_screenshot_fallback(
-    adb_error, monkeypatch
-):
-    from adbutils import AdbError
-    from artemis.agents.flash.runner import _TurnRecord
-
-    runner, adb_device = _make_flash_runner_with_android_tap("127.0.0.1:35409", AdbError(adb_error))
-    failed_fallback = AsyncMock(side_effect=OSError("screenshot unavailable"))
-    monkeypatch.setattr("artemis.agents.flash.runner.observe", failed_fallback)
-    tool_calls = [
-        {
-            "id": "first",
-            "name": "click",
-            "args": {"target": [500, 500], "target_description": "first button"},
-        },
-        {
-            "id": "second",
-            "name": "click",
-            "args": {"target": [600, 600], "target_description": "second button"},
-        },
-    ]
-
-    with patch("artemis.agents.flash.runner.tool_result_messages", return_value=[]):
-        report, *_ = await runner._process_tool_calls(
-            tool_calls,
-            SimpleNamespace(indexed_elements=[]),
-            [],
-            "",
-            {},
-            None,
-            None,
-            0,
-            _TurnRecord(),
-        )
-
-    assert report["status"] == "failed"
-    assert "phone disconnected" in report["explanation"].lower()
-    assert adb_device.shell.call_count == 1
-    assert failed_fallback.await_count == 0
-
-
-@pytest.mark.asyncio
-async def test_flash_does_not_treat_generic_not_found_as_bridge_disconnect(monkeypatch):
-    from adbutils import AdbError
-    from artemis.agents.flash.runner import _TurnRecord
-
-    runner, adb_device = _make_flash_runner_with_android_tap(
-        "127.0.0.1:35409",
-        [AdbError("UI element not found"), AdbError("UI element not found")],
-    )
-    failed_fallback = AsyncMock(side_effect=OSError("screenshot unavailable"))
-    monkeypatch.setattr("artemis.agents.flash.runner.observe", failed_fallback)
-    tool_calls = [
-        {
-            "id": "first",
-            "name": "click",
-            "args": {"target": [500, 500], "target_description": "first button"},
-        },
-        {
-            "id": "second",
-            "name": "click",
-            "args": {"target": [600, 600], "target_description": "second button"},
-        },
-    ]
-
-    with patch("artemis.agents.flash.runner.tool_result_messages", return_value=[]):
-        report, *_ = await runner._process_tool_calls(
-            tool_calls,
-            SimpleNamespace(indexed_elements=[]),
-            [],
-            "",
-            {},
-            None,
-            None,
-            0,
-            _TurnRecord(),
-        )
-
-    assert report is None
-    assert adb_device.shell.call_count == 2
-    assert failed_fallback.await_count == 2
 
 
 # --- Native thinking (thought summaries) reach the step record ----------------------

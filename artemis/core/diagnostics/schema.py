@@ -16,7 +16,33 @@
 
 from enum import Enum
 from typing import Any, Literal
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_serializer, field_validator
+
+_SENSITIVE_METADATA_KEYS = frozenset(
+    {
+        "raw_key",
+        "key",
+        "api_keys",
+        "current_key",
+        "current_gemini_key",
+        "error",
+        "exception",
+    }
+)
+
+
+def _redact_sensitive_metadata(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: _redact_sensitive_metadata(item)
+            for key, item in value.items()
+            if not isinstance(key, str) or key.casefold() not in _SENSITIVE_METADATA_KEYS
+        }
+    if isinstance(value, list):
+        return [_redact_sensitive_metadata(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_redact_sensitive_metadata(item) for item in value)
+    return value
 
 
 class ProbeStatus(str, Enum):
@@ -69,6 +95,10 @@ class DeviceInfo(BaseModel):
         description="Whether Android Keyguard currently blocks access; None when undetermined",
     )
     is_emulator: bool = Field(default=False, description="Whether the device is an emulator")
+    device_kind: Literal["phone", "emulator", "unknown"] = Field(
+        default="unknown",
+        description="Classified from adb properties; 'unknown' when they could not be read",
+    )
     installed_packages: list[str] = Field(
         default_factory=list, description="List of recognized installed package names"
     )
@@ -96,6 +126,15 @@ class ProbeResult(BaseModel):
     actions: list[ProbeAction] = Field(
         default_factory=list, description="List of actionable remediation steps"
     )
+
+    @field_validator("metadata", mode="before")
+    @classmethod
+    def redact_sensitive_metadata(cls, value: Any) -> Any:
+        return _redact_sensitive_metadata(value)
+
+    @field_serializer("metadata")
+    def serialize_metadata(self, value: dict[str, Any]) -> dict[str, Any]:
+        return _redact_sensitive_metadata(value)
 
 
 class SystemReadinessReport(BaseModel):

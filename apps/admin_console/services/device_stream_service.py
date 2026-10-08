@@ -22,9 +22,9 @@ import asyncio
 import logging
 import subprocess
 import time
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Callable
 
-from artemis.toolchain import find_adb
+from artemis.runtime.endpoint_transport import EndpointTransport
 
 logger = logging.getLogger("artemis.stream_service")
 
@@ -37,16 +37,16 @@ class DeviceStreamService:
         self._lock = asyncio.Lock()
         self._latest_frame: bytes | None = None
         self._last_frame_time: float = 0.0
+        # The phone the latest frame came from, so each listener is checked per frame.
+        self._frame_serial: str | None = None
         self._is_capturing = False
         self._capture_task: asyncio.Task | None = None
 
     async def get_device_serial(self) -> str | None:
         """Find the currently connected active ADB device serial."""
         try:
-            adb_bin = find_adb()
-            proc = await asyncio.create_subprocess_exec(
-                adb_bin,
-                "devices",
+            proc = await EndpointTransport.shared(None).create_subprocess(
+                ["devices"],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
             )
@@ -67,20 +67,20 @@ class DeviceStreamService:
             try:
                 start_t = time.time()
                 serial = await self.get_device_serial()
-                adb_bin = find_adb()
                 cmd = (
-                    [adb_bin, "-s", serial, "exec-out", "screencap", "-p"]
+                    ["-s", serial, "exec-out", "screencap", "-p"]
                     if serial
-                    else [adb_bin, "exec-out", "screencap", "-p"]
+                    else ["exec-out", "screencap", "-p"]
                 )
-                proc = await asyncio.create_subprocess_exec(
-                    *cmd,
+                proc = await EndpointTransport.shared(None).create_subprocess(
+                    cmd,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                 )
                 stdout, _ = await proc.communicate()
                 if proc.returncode == 0 and len(stdout) > 1000:
                     self._latest_frame = stdout
+                    self._frame_serial = serial
                     self._last_frame_time = time.time()
 
                 elapsed = time.time() - start_t
@@ -111,8 +111,14 @@ class DeviceStreamService:
                 self._capture_task.cancel()
                 self._is_capturing = False
 
-    async def mjpeg_frame_generator(self) -> AsyncGenerator[bytes, None]:
-        """Async generator streaming MJPEG multipart bytes to HTTP response."""
+    async def mjpeg_frame_generator(
+        self, may_use: Callable[[str], bool] | None = None
+    ) -> AsyncGenerator[bytes, None]:
+        """Async generator streaming MJPEG multipart bytes to HTTP response.
+
+        ``may_use`` limits a scoped listener to phones it may use: a frame from any
+        other phone, or one that cannot be attributed to a phone, is never sent.
+        """
         await self.start_capturing()
         try:
             last_sent_time = 0.0
@@ -120,6 +126,11 @@ class DeviceStreamService:
                 if self._latest_frame and self._last_frame_time > last_sent_time:
                     last_sent_time = self._last_frame_time
                     frame_bytes = self._latest_frame
+                    if may_use is not None and not (
+                        self._frame_serial and may_use(self._frame_serial)
+                    ):
+                        await asyncio.sleep(0.04)
+                        continue
                     yield (
                         b"--frame\r\n"
                         b"Content-Type: image/png\r\n"

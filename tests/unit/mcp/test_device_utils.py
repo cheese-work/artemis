@@ -9,6 +9,8 @@ from mcp_server.utils import device_utils
 def test_ensure_emulator_uses_windows_creation_flags(monkeypatch) -> None:
     popen = MagicMock()
     monkeypatch.setattr(device_utils.sys, "platform", "win32")
+    monkeypatch.setattr(device_utils.subprocess, "CREATE_NEW_PROCESS_GROUP", 0x200, raising=False)
+    monkeypatch.setattr(device_utils.subprocess, "DETACHED_PROCESS", 0x8, raising=False)
     monkeypatch.setattr(device_utils, "is_emulator_running", lambda _adb: False)
     monkeypatch.setattr(device_utils.os.path, "exists", lambda _path: True)
     monkeypatch.setattr(device_utils.subprocess, "Popen", popen)

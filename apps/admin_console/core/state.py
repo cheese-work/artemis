@@ -20,6 +20,11 @@ from artemis.config import PAUSE_FILE
 from artemis.runtime.process_probe import pid_is_alive
 
 
+# A queue row is in flight from dispatch ("starting": ticket held, lock not yet
+# acquired) until its slot is released ("running": lock held).
+IN_FLIGHT_STATUSES = frozenset({"starting", "running"})
+
+
 class ServerState:
     """Encapsulates all runtime states of the debug server."""
 
@@ -51,12 +56,18 @@ class ServerState:
         # `active_session_id` mirror the most recently launched run for
         # backward compatibility with single-task consumers.
         self.active_runs: dict[str, dict[str, Any]] = {}
+        # Run keys whose _execute_task_item coroutine has not finished cleanup.
+        self.executing_run_keys: set[str] = set()
+        # Deploy drain: new submissions are refused while accepted work finishes.
+        self.draining: bool = False
 
         # Unified single source of truth for task queue
         self.queue_items: list[dict[str, Any]] = []
         self._wake_event: asyncio.Event | None = None
         self._shutdown_event: asyncio.Event | None = None
         self.worker_task: asyncio.Task | None = None
+        self.retention_task: asyncio.Task | None = None
+        self.failure_task: asyncio.Task | None = None
 
     @property
     def wake_event(self) -> asyncio.Event:
@@ -158,7 +169,7 @@ class ServerState:
                     self.current_process = None
 
         has_running_item = any(
-            isinstance(t, dict) and t.get("status") == "running" for t in self.queue_items
+            isinstance(t, dict) and t.get("status") in IN_FLIGHT_STATUSES for t in self.queue_items
         )
 
         has_live_connection = False
@@ -227,7 +238,7 @@ class ServerState:
 
     def clear_queue(self):
         """Clears all pending items from the task queue."""
-        self.queue_items = [t for t in self.queue_items if t.get("status") == "running"]
+        self.queue_items = [t for t in self.queue_items if t.get("status") in IN_FLIGHT_STATUSES]
         if self._wake_event:
             self._wake_event.set()
 

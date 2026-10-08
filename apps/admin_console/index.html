@@ -3682,11 +3682,18 @@
         window.addEventListener('beforeunload', flushNodeStreamsPersist);
 
         async function cleanupHistory() {
-            if (!confirm("Are you sure you want to clean up all database history, images, and trace files? This action cannot be undone.")) {
-                return;
-            }
             try {
-                const res = await fetch('/api/cleanup', { method: 'POST' });
+                const storage = await (await fetch('/api/system/storage')).json();
+                const count = storage.clearable_count;
+                const typed = prompt(`Clear all deletes ${count} runs for everyone, with their videos and files. Pinned and running runs are kept. This cannot be undone.\n\nType ${count} to confirm.`);
+                if (typed === null || typed.trim() !== String(count)) {
+                    return;
+                }
+                const res = await fetch('/api/cleanup', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ confirm_count: count }),
+                });
                 const data = await res.json();
                 if (res.ok) {
                     alert("Cleanup successful!");

@@ -29,7 +29,6 @@ except ImportError:
 from pathlib import Path
 from platform import system
 import shutil
-from shutil import which
 import sys
 import threading
 from types import NoneType
@@ -71,8 +70,12 @@ from artemis.controllers.platform_specific_commands_controller import (
     get_first_device,
 )
 from artemis.runtime import DeviceExecutionLock, trace_store
+from artemis.runtime.adb_endpoint import AdbEndpoint
+from artemis.runtime.endpoint_transport import EndpointTransport
 from artemis.runtime.cancel_requests import watch_for_cancel_request
+from artemis.runtime.lifecycle import InterruptReason
 from artemis.data_engine.engine import DataEngine
+from artemis.drivers.types import DeviceDisconnectedError
 from artemis.data_engine.trace import DataEngineCallbackHandler
 from artemis.graph.graph import get_graph
 from artemis.graph.state import State
@@ -94,6 +97,7 @@ from artemis.sdk.types.task import (
 )
 from artemis.utils.app_launch_utils import _handle_initial_app_launch
 from artemis.utils.logger import get_logger
+from artemis.utils.redaction import bind_session, goal_metadata
 from artemis.utils.media import (
     create_gif_from_trace_folder,
     create_steps_json_from_trace_folder,
@@ -101,6 +105,7 @@ from artemis.utils.media import (
     remove_steps_json_from_trace_folder,
 )
 from artemis.utils.startup_progress import publish_startup_progress
+from artemis.utils.video import SCRCPY_TOO_OLD_REASON, classify_recording_failure
 
 logger = get_logger(__name__)
 
@@ -213,7 +218,7 @@ class Agent:
         retry_wait_seconds: int = 5,
     ):
 
-        if os.environ.get("ARTEMIS_CLOUD_MODE") != "1" and not which("adb"):
+        if os.environ.get("ARTEMIS_CLOUD_MODE") != "1" and not EndpointTransport.adb_binary():
             raise ExecutableNotFoundError("adb")
 
         if self._initialized:
@@ -518,6 +523,7 @@ class Agent:
         self,
         request: TaskRequest[TOutput],
     ) -> str | dict | TOutput | None:
+        bind_session(self._session_id or os.getenv("ARTEMIS_SESSION_ID"), request.goal)
         if not self._initialized:
             raise AgentNotInitializedError()
 
@@ -545,6 +551,7 @@ class Agent:
             or os.getenv("ARTEMIS_CLOUD_SESSION_ID")
             or uuid.uuid4()
         )
+        bind_session(task_id, request.goal)
 
         task = Task(
             id=task_id,
@@ -573,7 +580,7 @@ class Agent:
             )
             logger.info(str(output_config))
 
-        logger.info(f"[{task_name}] Starting graph with goal: `{request.goal}`")
+        logger.info(f"event=task_graph_started {goal_metadata(request.goal)}")
         state = self._get_graph_state(task=task)
         graph_input = state.model_dump()
         datetime.now(UTC)
@@ -605,7 +612,7 @@ class Agent:
                 if already_held
                 else DeviceExecutionLock(
                     self._device_context.device_id,
-                    description=f"{request.goal[:120]}",
+                    description=goal_metadata(request.goal),
                     concurrency_mode=effective_mode,
                     max_concurrency=effective_max,
                     session_id=str(sess_id) if sess_id else None,
@@ -664,18 +671,20 @@ class Agent:
                                     self._tmp_traces_dir / context.execution_setup.trace_name
                                 ).resolve()
 
-                            logger.info(f"[{task_name}] Starting automated screen recording...")
+                            logger.info("event=recorder_starting")
                             start_res = await controller.start_video_recording(
                                 output_dir=output_dir
                             )
                             if start_res and start_res.success:
                                 recording_started = True
                             else:
+                                failure = start_res.message if start_res else "unknown"
+                                self._report_recording_unavailable(failure, str(sess_id))
                                 logger.warning(
-                                    f"[{task_name}] Failed to start screen"
-                                    f" recording: {start_res.message if start_res else 'unknown'}"
+                                    f"[{task_name}] Failed to start screen recording: {failure}"
                                 )
                         except Exception as e:
+                            self._report_recording_unavailable(str(e), str(sess_id))
                             logger.error(f"[{task_name}] Failed to start screen recording: {e}")
 
                     publish_startup_progress(
@@ -719,10 +728,10 @@ class Agent:
                                     error=err,
                                 )
                                 if context.data_engine:
-                                    context.data_engine.end_session("failed")
+                                    self._end_session_for_report(context.data_engine, flash_result)
                             return output
                         else:
-                            logger.info(f"[{task_name}] Invoking graph with input: {graph_input}")
+                            logger.info(f"event=task_graph_invoked input_fields={len(graph_input)}")
                             await task.set_status(status="running", message="Invoking graph...")
                             async for chunk in (await get_graph(context)).astream(
                                 input=graph_input,
@@ -869,7 +878,12 @@ class Agent:
                     error=err,
                 )
                 if context.data_engine:
-                    context.data_engine.end_session("failed")
+                    if isinstance(e, DeviceDisconnectedError):
+                        context.data_engine.end_session(
+                            "interrupted", interrupt_reason=InterruptReason.DEVICE_OFFLINE
+                        )
+                    else:
+                        context.data_engine.end_session("failed")
 
                 raise
             finally:
@@ -917,6 +931,21 @@ class Agent:
                         await cancel_watcher
                     except asyncio.CancelledError:
                         pass
+
+    @staticmethod
+    def _report_recording_unavailable(error: str, session_id: str) -> None:
+        reason = classify_recording_failure(error)
+        detail = (
+            f"{SCRCPY_TOO_OLD_REASON}."
+            if SCRCPY_TOO_OLD_REASON in error
+            else "scrcpy is incompatible with this phone's Android version."
+            if reason == "recorder_incompatible"
+            else (error.splitlines()[0].strip()[:200] if error else "")
+            or "the recorder could not start."
+        )
+        publish_startup_progress(
+            "recording_unavailable", f"No recording: {detail}", session_id=session_id, reason=reason
+        )
 
     async def _watch_external_cancel(self, task_name: str) -> None:
         """Cancel the running task when another process drops a cancel marker.
@@ -1163,6 +1192,17 @@ class Agent:
             device_info=device_data,
             session_id=sess_uuid,
         )
+
+    @staticmethod
+    def _end_session_for_report(data_engine, report: dict) -> None:
+        """End the session for a runner report that did not complete the task."""
+        if report.get("status") == "interrupted":
+            data_engine.end_session(
+                "interrupted",
+                interrupt_reason=report.get("interrupt_reason") or InterruptReason.DEVICE_OFFLINE,
+            )
+        else:
+            data_engine.end_session("failed")
 
     async def _finalize_tracing_safely(self, task: Task, context: ArtemisContext):
         """Finalize optional trace artifacts without changing task semantics."""
@@ -1423,11 +1463,11 @@ class Agent:
         device_id: str,
         platform: DevicePlatform,
     ):
-        self._adb_client = AdbClient(
-            host=self._config.servers.adb_host,
-            port=self._config.servers.adb_port,
+        transport = EndpointTransport.shared(
+            AdbEndpoint.create(self._config.servers.adb_host, self._config.servers.adb_port)
         )
-        self._ui_adb_client = create_screen_client(device_id)
+        self._adb_client = transport.client()
+        self._ui_adb_client = create_screen_client(device_id, transport=transport)
 
     async def _get_device_context(
         self,

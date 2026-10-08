@@ -15,9 +15,11 @@ from typing import Any
 
 from artemis_client import (
     ArtemisClient,
+    InterruptReason,
     NotFoundError,
     ProtocolError,
     TaskRejectedError,
+    TaskResult,
     TaskTimeoutError,
 )
 
@@ -186,6 +188,44 @@ class ArtemisClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result.succeeded)
         self.assertEqual(result.turns, 4)
         self.assertEqual(result.output, "Battery page opened")
+
+    async def test_interrupted_is_terminal_with_a_typed_reason(self) -> None:
+        task_id = "00000000-0000-4000-8000-000000000125"
+        self.transport.add(
+            "GET",
+            f"/api/sessions/{task_id}",
+            {"session_id": task_id, "status": "running"},
+            {
+                "session_id": task_id,
+                "status": "interrupted",
+                "interrupt_reason": "device_offline",
+                "goal": "Open Settings",
+            },
+        )
+
+        result = await self.client.wait_for_task(task_id, timeout=1)
+
+        self.assertTrue(result.done)
+        self.assertFalse(result.succeeded)
+        self.assertTrue(result.interrupted)
+        self.assertIs(result.interrupt_reason, InterruptReason.DEVICE_OFFLINE)
+        self.assertEqual(len(self.transport.calls), 2)  # stopped polling at "interrupted"
+
+    async def test_unknown_interrupt_reason_is_not_fatal(self) -> None:
+        result = TaskResult.from_payload(
+            {"session_id": "t", "status": "interrupted", "interrupt_reason": "from_the_future"}
+        )
+
+        self.assertTrue(result.done)
+        self.assertIsNone(result.interrupt_reason)
+
+    async def test_non_interrupted_task_has_no_interrupt_reason(self) -> None:
+        result = TaskResult.from_payload(
+            {"session_id": "t", "status": "failed", "interrupt_reason": "device_offline"}
+        )
+
+        self.assertFalse(result.interrupted)
+        self.assertIsNone(result.interrupt_reason)
 
     async def test_get_task_returns_launching_when_not_visible_yet(self) -> None:
         self.transport.add(

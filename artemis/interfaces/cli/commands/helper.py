@@ -91,13 +91,12 @@ def helper_status(
     table.add_row("Installed version", version)
     table.add_row("Bundled version", str(status["bundled_version"]))
     table.add_row("Service enabled", _bool(status["enabled"]))
-    tunnel = {
-        "session": f"this process, host port {status['forward_port']}",
-        "shared": f"another Artemis process, host port {status['forward_port']}",
-        "probe": "none (probed through a temporary forward)",
+    connection = {
+        "session": "this process (adb stream)",
+        "probe": "none (probed through a one-off adb stream)",
         None: "none",
     }[status.get("tunnel")]
-    table.add_row("Tunnel", tunnel)
+    table.add_row("Connection", connection)
     table.add_row("Service answering", _bool(status["reachable"]))
     if status.get("reachable"):
         protocol = status.get("protocol_version")

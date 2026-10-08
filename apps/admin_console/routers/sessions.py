@@ -14,12 +14,25 @@
 
 import asyncio
 import json
-import time
-from uuid import UUID
-from fastapi import APIRouter, HTTPException
+import sqlite3
+from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import FileResponse
 
 from artemis.config import DB_PATH, TRACES_PATH
-from artemis.runtime import trace_store
+from apps.admin_console.core.access_control import AdminAPIError, require_admin, require_qa
+from apps.admin_console.core.ownership import (
+    OPEN_SCOPE,
+    OwnerScope,
+    actor_scope,
+    list_scope,
+    owners_of,
+    require_access,
+    scope_or_open,
+)
+from apps.admin_console.routers.run_admin import ClearRequest
+from apps.admin_console.routers.run_bundle import library_error
+from apps.admin_console.services import run_images, run_retention
+from apps.admin_console.services.run_artifacts import RunLibraryError
 
 try:
     from admin_console.core.state import state
@@ -39,38 +52,41 @@ router = APIRouter(tags=["sessions"])
 
 
 @router.get("/api/sessions")
-async def list_sessions():
+async def list_sessions(scope: OwnerScope = Depends(list_scope)):
     # The body does blocking work (sqlite queries, filesystem scans, ffmpeg
     # conversion on first sight of a new recording), so run it off the event
     # loop — the frontend polls this endpoint and it must not stall other
     # requests.
     try:
-        return await asyncio.to_thread(_list_sessions_sync)
+        return await asyncio.to_thread(_list_sessions_sync, scope_or_open(scope))
+    except AdminAPIError:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
-def _list_sessions_sync():
+def _list_sessions_sync(scope: OwnerScope = OPEN_SCOPE):
+    # Pure read: run outcomes are owned by the lifecycle authority, which a
+    # listing never calls (a vanished worker is swept by the queue worker).
     rows = session_repo.get_all_sessions()
+    owners: dict[str, str | None] = {}
+    if scope.enforced:
+        owners = owners_of([str(row.get("session_id")) for row in rows])
+        if not scope.include_all:
+            rows = [
+                row
+                for row in rows
+                if str(row.get("session_id")) in owners
+                and scope.sees(owners[str(row["session_id"])])
+            ]
     video_rec_map = session_repo.get_video_recordings_map()
     latest_recordings = session_repo.get_latest_video_recordings_map()
     agent_names_by_session = session_repo.get_agent_trace_names_map()
     video_idx = media_service.build_video_index()
     default_model_info = model_service.get_active_model_info()
 
-    orphaned_ids = []
     unresolved_profiles = []
     result = []
-
-    try:
-        from artemis.runtime import DeviceExecutionLock
-
-        active_owners = DeviceExecutionLock.get_active_owners()
-        active_owner_sids = {
-            str(owner.session_id) for owner in active_owners.values() if owner.session_id
-        }
-    except Exception:
-        active_owner_sids = set()
 
     for row_dict in rows:
         s_id = str(row_dict.get("session_id"))
@@ -89,18 +105,8 @@ def _list_sessions_sync():
             device_id = recording.get("device_id")
         row_dict["device_id"] = device_id
         row_dict["device_serial"] = device_id
-
-        if row_dict.get("status") == "running":
-            is_active = (
-                s_id in active_owner_sids
-                or s_id in state.active_connections
-                or (state.is_running and s_id == str(state.active_session_id))
-            )
-            worker_is_alive = session_repo.process_is_alive(row_dict.get("pid"))
-            if not is_active and not worker_is_alive:
-                row_dict["status"] = "failed"
-                row_dict["end_time"] = time.time()
-                orphaned_ids.append(s_id)
+        if scope.enforced:  # the UI labels an admin's all-users rows with the owner
+            row_dict["requested_by"] = owners.get(s_id)
 
         recording_status = str((recording or {}).get("status") or "unavailable")
         resolved_v_url = (
@@ -114,6 +120,7 @@ def _list_sessions_sync():
         else:
             row_dict["video_url"] = None
         row_dict["recording_status"] = recording_status
+        row_dict["goal_images"] = run_images.describe(s_id)
 
         agent_names = agent_names_by_session.get(s_id, [])
         sess_profile = model_service.resolve_session_profile(
@@ -145,25 +152,6 @@ def _list_sessions_sync():
             if sess_profile:
                 row_dict["model_info"] = model_service.get_active_model_info(sess_profile)
 
-    if orphaned_ids:
-        try:
-            harvested = session_repo.harvest_orphaned_sessions(orphaned_ids)
-            print(f"[list_sessions] Auto-harvested {harvested} orphaned running session(s).")
-            try:
-                for o_id in orphaned_ids:
-                    if trace_store.read_status(str(o_id)):
-                        trace_store.update_trace_status(
-                            str(o_id),
-                            "failed",
-                            error="Process terminated unexpectedly (auto-harvested).",
-                        )
-            except OSError as e:
-                # read_status never raises; this guards the lock/write side
-                # of update_trace_status.
-                print(f"[list_sessions] Could not mark harvested traces failed: {e}")
-        except Exception as e:
-            print(f"[list_sessions] Failed to update orphaned sessions: {e}")
-
     return result
 
 
@@ -174,6 +162,34 @@ async def get_session_details(session_id: str):
     if not row:
         raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
     return dict(row)
+
+
+@router.get("/api/sessions/{session_id}/goal-images/{index}")
+async def get_goal_image(session_id: str, index: str, actor: OwnerScope = Depends(actor_scope)):
+    """A picture sent with the run's goal: the run's owner or an administrator only."""
+    require_access(scope_or_open(actor), session_id)
+    found = (
+        await asyncio.to_thread(run_images.find, session_id, index)
+        if run_images.is_safe_session_id(session_id)
+        else None
+    )
+    if found is None:
+        raise HTTPException(status_code=404, detail="Image not found")
+    path, media_type = found
+    return FileResponse(path, media_type=media_type, headers={"Content-Disposition": "inline"})
+
+
+@router.get("/api/sessions/{session_id}/events")
+async def get_session_events(session_id: str):
+    """Lifecycle events recorded for a session (``session_ended``, ``run_interrupted``).
+
+    The durable record behind the live stream: a client that was offline when an
+    event was broadcast replays it from here, keyed by ``event_id``.
+    """
+    try:
+        return await asyncio.to_thread(session_repo.lifecycle.events, session_id)
+    except sqlite3.Error as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
 @router.get("/api/sessions/{session_id}/usage")
@@ -209,31 +225,26 @@ async def get_session_startup_progress(session_id: str):
         return []
 
 
-@router.post("/api/cleanup")
-async def cleanup_history_endpoint():
+@router.post("/api/cleanup", dependencies=[Depends(require_admin)])
+async def cleanup_history_endpoint(body: ClearRequest):
+    """Legacy "clear all": same rules as ``POST /api/runs/clear`` (typed count, no live or pinned)."""
     try:
-        from artemis.data_engine.storage import StorageManager
-
-        storage = StorageManager(DB_PATH, TRACES_PATH)
-        storage.clear_all_data()
-        return {
-            "status": "success",
-            "message": "History cleaned up successfully",
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        result = await asyncio.to_thread(run_retention.clear_all, body.confirm_count)
+    except RunLibraryError as exc:
+        return library_error(exc)
+    return {"status": "success", "message": "History cleaned up successfully", **result}
 
 
-@router.post("/api/sessions/{session_id}/delete")
-async def delete_session_endpoint(session_id: str):
+@router.post("/api/sessions/{session_id}/delete", dependencies=[Depends(require_qa)])
+async def delete_session_endpoint(session_id: str, actor: OwnerScope = Depends(actor_scope)):
+    """Legacy single delete: the run's owner or an admin; deletion rules as ``/api/runs/{id}/delete``."""
+    require_access(scope_or_open(actor), session_id)
     try:
-        from artemis.data_engine.storage import StorageManager
-
-        storage = StorageManager(DB_PATH, TRACES_PATH)
-        storage.delete_session(UUID(session_id))
-        return {
-            "status": "success",
-            "message": f"Session {session_id} deleted successfully",
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        result = await asyncio.to_thread(run_retention.delete_run, session_id)
+    except RunLibraryError as exc:
+        return library_error(exc)
+    return {
+        "status": "success",
+        "message": f"Session {session_id} deleted successfully",
+        **result,
+    }

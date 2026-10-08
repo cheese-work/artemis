@@ -14,6 +14,7 @@
 
 """Typed data models and geometry representations for device drivers."""
 
+import re
 from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -26,10 +27,34 @@ class TapOutput(BaseModel):
 
 
 class DeviceDisconnectedError(RuntimeError):
-    def __init__(self, device_id: str, reason: Literal["not found", "offline", "unauthorized"]):
+    """The adb device behind a run vanished; the run must stop, not retry."""
+
+    def __init__(self, device_id: str, reason: Literal["not found", "offline"]):
         self.device_id = device_id
         self.reason = reason
         super().__init__(f"device '{device_id}' {reason}")
+
+
+_ANY_DEVICE = r"""['"]?[^\s'"]+['"]?"""
+
+
+def device_disconnect_reason(
+    serial: str | None, message: str
+) -> Literal["not found", "offline"] | None:
+    """Classify an adb error message as this run's device being gone.
+
+    Matches adb's own "device '<serial>' not found" / "device offline" wording.
+    When ``serial`` is known, another device's "not found" does not count.
+    """
+    text = " ".join(str(message).split())
+    device = (
+        rf"""['"]?{re.escape(serial)}['"]?""" if isinstance(serial, str) and serial else _ANY_DEVICE
+    )
+    if re.search(rf"\bdevice\s+{device}\s+not found\b", text, re.IGNORECASE):
+        return "not found"
+    if re.search(rf"\bdevice\s+(?:{device}\s+)?offline\b", text, re.IGNORECASE):
+        return "offline"
+    return None
 
 
 class CoordinatesSelectorRequest(BaseModel):

@@ -26,7 +26,6 @@ if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
 # pylint: disable=wrong-import-position
-from adbutils import AdbClient
 from mcp.server.fastmcp import Context, FastMCP
 
 logger = logging.getLogger(__name__)
@@ -43,6 +42,7 @@ from artemis.clients.screen_client_factory import create_screen_client
 from artemis.context import ArtemisContext, DeviceContext, DevicePlatform
 from artemis.controllers.unified_controller import UnifiedMobileController
 from artemis.platform import platform
+from artemis.runtime.endpoint_transport import EndpointTransport
 from artemis.utils.app_launch_utils import launch_app_with_retries
 
 
@@ -74,6 +74,9 @@ def configure_stdio_mode() -> None:
             h for h in log_instance.handlers if not isinstance(h, logging.StreamHandler)
         ]
         fh = logging.FileHandler(log_path, encoding="utf-8")
+        from artemis.utils.redaction import redactor
+
+        fh.addFilter(redactor)
         fh.setFormatter(logging.Formatter("%(asctime)s | %(name)s | %(levelname)s | %(message)s"))
         log_instance.addHandler(fh)
 
@@ -123,12 +126,10 @@ def _get_controller(device_serial: str | None = None):
             _GLOBAL_CONTROLLER = controller
         return controller
 
-    host = os.environ.get("ADB_HOST", "localhost")
-    port_str = os.environ.get("ADB_PORT", "5037")
-    port = int(port_str) if port_str.isdigit() else 5037
-    if "ADB_SERVER_SOCKET" not in os.environ and (host != "localhost" or port != 5037):
-        os.environ["ADB_SERVER_SOCKET"] = f"tcp:{host}:{port}"
-    adb = AdbClient(host=host, port=port)
+    transport = EndpointTransport.shared(None)
+    host, port = transport.endpoint.host, transport.endpoint.port
+    transport.endpoint.apply_to_environment()
+    adb = transport.client()
 
     devices = adb.device_list()
     if not devices:
@@ -149,7 +150,7 @@ def _get_controller(device_serial: str | None = None):
     # Observer path: the helper is used only when it is already installed and
     # running; nothing is installed from here (that happens inside a task's
     # device-lock boundary or via `artemis helper install`).
-    ui_client = create_screen_client(device_id)
+    ui_client = create_screen_client(device_id, transport=transport)
     try:
         ui_data = ui_client.get_screen_data()
         width, height = ui_data.width, ui_data.height

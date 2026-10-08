@@ -16,19 +16,19 @@
 
 import asyncio
 import os
+import sqlite3
 import uuid
 from pathlib import Path
-from shutil import which
 from typing import Annotated
 
-from adbutils import AdbClient
 from langchain_core.callbacks.base import Callbacks
 from artemis.config import checker_overrides_for_level, initialize_llm_config, settings
+from artemis.runtime.endpoint_transport import EndpointTransport
 from artemis.config.attempt_lifecycle_hooks import (
     record_attempt_manifest,
     reconcile_and_store_verdict,
 )
-from artemis.runtime import trace_store
+from artemis.runtime.lifecycle import finish_trace
 from artemis.utils.startup_progress import publish_startup_progress
 from artemis import Agent, Builders
 from artemis.sdk.types.task import AgentProfile
@@ -118,8 +118,8 @@ async def execute_task(
         except Exception as exc:
             if effective_sid:
                 try:
-                    trace_store.update_trace_status(str(effective_sid), "failed", error=str(exc))
-                except OSError:
+                    finish_trace(str(effective_sid), "failed", error=str(exc))
+                except (OSError, ValueError, sqlite3.Error):
                     logger.exception(
                         "Could not record configuration failure for session %s", effective_sid
                     )
@@ -484,6 +484,8 @@ def run_command(
                             return
                         else:
                             err = final_res.get("error") or final_res.get("explanation") or ""
+                            if final_st == "interrupted":
+                                err = f"{final_res.get('interrupt_reason') or 'unknown'} {err}".strip()
                             console.print(f"\n[bold red]✖ Task {final_st}[/bold red]: {err}")
                             raise SystemExit(1)
                     except KeyboardInterrupt:
@@ -509,11 +511,8 @@ def run_command(
 
     adb_client = None
     try:
-        if which("adb"):
-            adb_client = AdbClient(
-                host=settings.ADB_HOST or "localhost",
-                port=settings.ADB_PORT or 5037,
-            )
+        if EndpointTransport.adb_binary():
+            adb_client = EndpointTransport.shared(None).client()
     except Exception as exc:
         # Optional cosmetic device-status display; run continues without it.
         logger.debug(f"Could not create ADB client for device status display: {exc}")

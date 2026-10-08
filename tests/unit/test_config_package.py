@@ -168,16 +168,22 @@ def test_llm_config_parsing_and_merging():
     assert merged.planner.temperature == 0.7
 
 
-def test_agent_config_loading():
-    """Test AgentGlobalConfig parsing from agent_config.json / artemis.jsonc."""
-    agent_cfg = load_agent_config()
+def test_agent_config_loading(tmp_path):
+    """Test AgentGlobalConfig parsing from an explicit artemis.jsonc fixture."""
+    config_path = tmp_path / "artemis.jsonc"
+    config_path.write_text(
+        '{"agent": {"explorer": {"flash_mode": "pro", "pro_mode": "pro"}, '
+        '"denylisted_tools": {"explorer": []}}}',
+        encoding="utf-8",
+    )
+    agent_cfg = load_agent_config(config_path)
     assert isinstance(agent_cfg, AgentGlobalConfig)
     # The per-agent override ships empty so the profile knobs decide; caching
     # ships unset so each tier applies its own default (off pro, on ultra).
     assert agent_cfg.explorer_versions == {}
     assert agent_cfg.explorer.default_version == "flash"
-    assert agent_cfg.explorer.flash_mode == "flash"
-    assert agent_cfg.explorer.pro_mode == "flash"
+    assert agent_cfg.explorer.flash_mode == "pro"
+    assert agent_cfg.explorer.pro_mode == "pro"
     assert agent_cfg.explorer.caching is None
     assert "explorer" in agent_cfg.denylisted_tools
     assert agent_cfg.video_analyzer.enable_ledger is True
@@ -251,7 +257,7 @@ def test_runtime_state_and_ipc(tmp_path, monkeypatch):
     assert not test_temp_file.exists()
 
 
-def test_planner_validation_builder_and_milestones():
+def test_planner_validation_builder_and_milestones(fake_provider_credentials):
     """Test AgentConfigBuilder methods for planner validation and milestone drift detection."""
     from artemis.sdk.builders.agent_config_builder import AgentConfigBuilder
     from artemis.utils.plan_grammar import milestones_changed, parse_plan
@@ -282,7 +288,7 @@ def test_planner_validation_builder_and_milestones():
 
 
 @pytest.mark.asyncio
-async def test_committee_builder_and_graph_mounting():
+async def test_committee_builder_and_graph_mounting(fake_provider_credentials):
     """Test AgentConfigBuilder committee methods and graph mounting."""
     from artemis.context import ArtemisContext, DeviceContext, DevicePlatform, ExecutionSetup
     from artemis.graph.graph import get_graph
@@ -330,7 +336,7 @@ async def test_committee_builder_and_graph_mounting():
     assert "ask_committee" not in op_tools_enabled
 
 
-def test_checker_builder_and_context_propagation():
+def test_checker_builder_and_context_propagation(fake_provider_credentials):
     """Test AgentConfigBuilder methods and context propagation for checker."""
     from unittest.mock import MagicMock
     from artemis.context import ArtemisContext, DeviceContext, DevicePlatform
@@ -401,7 +407,7 @@ def test_checker_builder_and_context_propagation():
     assert ctx.execution_setup.final_check_enabled is False
 
 
-def test_factory_default_verification_layering():
+def test_factory_default_verification_layering(fake_provider_credentials):
     """Contract: out of the box, the verification stack is layered as
     final check ON / planner validation (ratchet) ON / midway checks OFF."""
     from artemis.config.agent import AgentGlobalConfig, CheckerConfig, PlannerValidationConfig
@@ -442,7 +448,9 @@ def test_factory_default_verification_layering():
     assert AgentGlobalConfig().checker.enabled is True
 
 
-def test_explorer_builder_and_resolution(monkeypatch):
+def test_explorer_builder_and_resolution(
+    monkeypatch, fake_provider_credentials, default_agent_config
+):
     """Test AgentConfigBuilder explorer methods and multi-tier resolution logic."""
     from artemis.context import ArtemisContext, DeviceContext, DevicePlatform
     from artemis.sdk.agent import Agent
@@ -451,8 +459,7 @@ def test_explorer_builder_and_resolution(monkeypatch):
 
     monkeypatch.delenv("ARTEMIS_EXPLORER_VERSION", raising=False)
 
-    # Default builder inherits from artemis.jsonc (default="flash", flash_mode="flash",
-    # pro_mode="flash", caching unset, no per-agent override).
+    # Default builder uses schema defaults with no per-agent override.
     builder = AgentConfigBuilder()
     cfg = builder.build()
     assert cfg.explorer.default_version == "flash"
@@ -547,7 +554,7 @@ def test_explorer_builder_and_resolution(monkeypatch):
     assert ctx.execution_setup.explorer_caching is False
 
 
-def test_outputter_builder_and_context_propagation():
+def test_outputter_builder_and_context_propagation(fake_provider_credentials):
     """Test AgentConfigBuilder outputter methods and propagation to ExecutionSetup."""
     from artemis.context import ArtemisContext, DeviceContext, DevicePlatform
     from artemis.sdk.agent import Agent
@@ -596,7 +603,7 @@ def test_outputter_builder_and_context_propagation():
     assert ctx.execution_setup.outputter.force_synthesis is True
 
 
-def test_categorized_flash_and_pro_profile_builders():
+def test_categorized_flash_and_pro_profile_builders(fake_provider_credentials):
     """Test with_flash_config and with_pro_config fluent builders and bidirectional sync."""
     from artemis.config.agent import AgentGlobalConfig
     from artemis.sdk.builders.agent_config_builder import AgentConfigBuilder

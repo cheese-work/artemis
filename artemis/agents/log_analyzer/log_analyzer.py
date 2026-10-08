@@ -168,7 +168,7 @@ class LogAnalyzerNode:
             serialized_args = json.dumps(kwargs, sort_keys=True)
             cache_key = f"{tool.name}:{serialized_args}"
             if cache_key in self._log_cache:
-                logger.info(f"Cache hit for tool {tool.name} with args {kwargs}")
+                logger.info(f"event=tool_cache_hit tool={tool.name} args_length={len(str(kwargs))}")
                 return self._log_cache[cache_key]
 
             logger.info(

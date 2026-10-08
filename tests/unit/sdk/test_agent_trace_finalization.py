@@ -64,7 +64,9 @@ async def test_device_context_uses_adb_size_without_starting_ui_client():
 
 
 @pytest.mark.asyncio
-async def test_task_that_never_acquires_queue_does_not_create_trace_session():
+async def test_task_that_never_acquires_queue_does_not_create_trace_session(
+    fake_provider_credentials,
+):
     agent = Agent()
     agent._initialized = True
     agent._device_context = DeviceContext(
@@ -114,7 +116,9 @@ async def test_locked_work_profile_does_not_block_unlocked_device_owner():
 
 
 @pytest.mark.asyncio
-async def test_agent_inherits_session_id_from_env_and_propagates_to_tracing(monkeypatch):
+async def test_agent_inherits_session_id_from_env_and_propagates_to_tracing(
+    monkeypatch, fake_provider_credentials
+):
     import uuid
 
     canonical_sid = "a1b2c3d4-e5f6-4a5b-8c9d-0e1f2a3b4c5d"

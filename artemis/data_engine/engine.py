@@ -41,6 +41,7 @@ from artemis.data_engine.models import (
 )
 from artemis.data_engine.storage import StorageManager
 from artemis.data_engine.trace import CURRENT_TRACE_ID
+from artemis.runtime.lifecycle import InterruptReason, LifecycleAuthority
 from artemis.utils.coordinates import (
     normalize_any_structure,
     normalize_step_actions,
@@ -416,6 +417,7 @@ class DataEngine:
         self._trace_counter = 0
         self._pending_tasks = set()
         self._pending_threads = []
+        self._pending_threads_lock = threading.Lock()
         self._accumulated_logs = {}
         self._bg_task_to_trace_id = {}
         self._trace_name_cache = {}
@@ -593,14 +595,7 @@ class DataEngine:
         self.current_session_id = session_id
         self.session_start_time = time.time()
 
-        # Clear old pause file if it exists
-        pause_file = PAUSE_FILE
-        if pause_file.exists():
-            try:
-                pause_file.unlink()
-                logger.info("Removed old pause file on session start.")
-            except Exception as e:
-                logger.error(f"Failed to delete old pause file: {e}")
+        self._clear_stale_pause_file("start")
 
         session = SessionMetadata(
             session_id=session_id,
@@ -641,30 +636,73 @@ class DataEngine:
         self._publish("session_started", session.model_dump())
         return session_id
 
-    def end_session(self, status: str = "completed"):
-        """End the current session, updating its status and end time."""
+    def _other_live_run_exists(self) -> bool:
+        """Whether a run other than this worker's is live, or cannot be ruled out.
+
+        Counts other processes' device-lock owners (an unnamed or unreadable
+        record is unattributable, so it counts) and other running sessions
+        with a live process. Any error fails closed.
+        """
+        from artemis.runtime import DeviceExecutionLock
+        from artemis.runtime.process_probe import pid_is_alive
+
+        me = os.getpid()
+        try:
+            if DeviceExecutionLock.has_unreadable_owner_record():
+                return True
+            if any(o.pid != me for o in DeviceExecutionLock.get_active_owners().values()):
+                return True
+            with sqlite3.connect(self.storage.db_path) as conn:
+                rows = conn.execute(
+                    "SELECT pid FROM sessions WHERE status = 'running' AND session_id != ?",
+                    (str(self.current_session_id),),
+                ).fetchall()
+        except (OSError, sqlite3.Error):
+            return True
+        return any(pid and pid != me and pid_is_alive(pid) for (pid,) in rows)
+
+    def _clear_stale_pause_file(self, when: str) -> None:
+        """Drop a leftover pause marker unless another live run would be resumed by it.
+
+        The marker is shared by every run and the console lets only an owner or
+        admin clear it, so a session start/end (e.g. from an allowed cancel) must
+        not do it behind their back. The sole live run still clears it.
+        """
+        if not PAUSE_FILE.exists():
+            return
+        if self._other_live_run_exists():
+            logger.info(f"Kept pause file on session {when}: another run is live.")
+            return
+        try:
+            PAUSE_FILE.unlink()
+            logger.info(f"Removed pause file on session {when}.")
+        except Exception as e:
+            logger.error(f"Failed to delete pause file on session {when}: {e}")
+
+    def end_session(
+        self,
+        status: str = "completed",
+        interrupt_reason: InterruptReason | str | None = None,
+    ):
+        """End the current session through the lifecycle authority.
+
+        The authority commits the first outcome only; a later call (or a
+        cancel/loss that already won) is a no-op and publishes nothing.
+        """
         if not self.current_session_id:
             return
 
-        # Session-level terminal statuses are canonically "completed" /
-        # "failed" / "cancelled"; "success" is a legacy alias some callers
-        # still pass and must never reach the sessions table.
-        if status == "success":
-            status = "completed"
-
-        # Clear pause file if it exists
-        pause_file = PAUSE_FILE
-        if pause_file.exists():
-            try:
-                pause_file.unlink()
-                logger.info("Removed pause file on session end.")
-            except Exception as e:
-                logger.error(f"Failed to delete pause file on session end: {e}")
+        self._clear_stale_pause_file("end")
 
         session_id = self.current_session_id
-        end_time = time.time()
-        session = self.storage.get_session(session_id)
-        if session and session.end_time is not None and session.status not in ("running", "paused"):
+        try:
+            outcome = LifecycleAuthority(self.storage.db_path).finish(
+                str(session_id), status, reason=interrupt_reason
+            )
+        except (OSError, ValueError, sqlite3.Error) as e:
+            logger.error(f"Failed to end session in DataEngine: {e}")
+            return
+        if not outcome.committed:
             logger.debug(f"Session end already published for {session_id}; skipping duplicate")
             return
         # Session-level LLM usage line (cache-hit ratios per source), best-effort.
@@ -674,27 +712,10 @@ class DataEngine:
             log_session_summary(session_id)
         except Exception as e:
             logger.debug(f"Session usage summary skipped: {e}")
+        session = self.storage.get_session(session_id)
         if session:
-            session.end_time = end_time
-            session.status = status
-        else:
-            session = SessionMetadata(
-                session_id=session_id,
-                initial_goal="",
-                start_time=self.session_start_time or end_time,
-                end_time=end_time,
-                status=status,
-                device_info=self.ctx.device.model_dump()
-                if getattr(self, "ctx", None) and self.ctx.device
-                else {},
-            )
-
-        try:
-            self.storage.update_session(session)
-            logger.info(f"Session ended: {session_id} with status: {status}")
+            logger.info(f"Session ended: {session_id} with status: {outcome.status}")
             self._publish("session_ended", session.model_dump())
-        except Exception as e:
-            logger.error(f"Failed to end session in DataEngine: {e}")
 
     def record_video_start(
         self,
@@ -1083,10 +1104,9 @@ class DataEngine:
 
     def has_pending_operations(self) -> bool:
         """Check if there are any pending background tasks or threads."""
-        return (
-            len(self._pending_tasks) > 0
-            or len([t for t in self._pending_threads if t.is_alive()]) > 0
-        )
+        with self._pending_threads_lock:
+            has_pending_threads = any(thread.is_alive() for thread in self._pending_threads)
+        return len(self._pending_tasks) > 0 or has_pending_threads
 
     async def shutdown(self):
         """Wait for all pending background tasks and threads to complete."""
@@ -1096,9 +1116,10 @@ class DataEngine:
             )
             await asyncio.gather(*self._pending_tasks, return_exceptions=True)
 
-        if self._pending_threads:
-            logger.info(f"Waiting for {len(self._pending_threads)} pending threads to complete...")
+        with self._pending_threads_lock:
             threads_to_join = list(self._pending_threads)
+        if threads_to_join:
+            logger.info(f"Waiting for {len(threads_to_join)} pending threads to complete...")
             for thread in threads_to_join:
                 if thread.is_alive():
                     await asyncio.to_thread(thread.join)
@@ -1222,12 +1243,14 @@ class DataEngine:
                     logger.error(f"Background storage operation failed: {exc}", exc_info=exc)
                 finally:
                     curr_thread = threading.current_thread()
-                    if curr_thread in self._pending_threads:
-                        self._pending_threads.remove(curr_thread)
+                    with self._pending_threads_lock:
+                        if curr_thread in self._pending_threads:
+                            self._pending_threads.remove(curr_thread)
 
             thread = threading.Thread(target=run_and_cleanup, name="artemis-storage", daemon=True)
-            self._pending_threads.append(thread)
-            thread.start()
+            with self._pending_threads_lock:
+                thread.start()
+                self._pending_threads.append(thread)
         else:
             task = loop.create_task(asyncio.to_thread(fn, *args))
             self._pending_tasks.add(task)

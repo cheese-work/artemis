@@ -19,6 +19,8 @@ from fastapi.responses import PlainTextResponse
 
 from artemis.config import TEST_OUTPUTS_DIR
 
+from apps.admin_console.core.redaction import redact_json, redact_text
+
 try:
     from admin_console.database.repositories.step_repository import step_repo
     from admin_console.database.repositories.trace_repository import trace_repo
@@ -90,6 +92,14 @@ async def get_trace(trace_id: str, session_id: str = None, step_number: int = No
         raise HTTPException(status_code=500, detail=str(e))
 
 
+def _redacted_payload(payload: str) -> str:
+    """A downloaded trace leaves the server: secrets are removed, JSON stays JSON."""
+    try:
+        return json.dumps(redact_json(json.loads(payload)), ensure_ascii=False)
+    except (ValueError, TypeError):
+        return redact_text(str(payload))
+
+
 @router.get("/api/traces/{trace_id}/download")
 async def download_trace(trace_id: str, session_id: str = None, step_number: int = None):
     try:
@@ -99,7 +109,7 @@ async def download_trace(trace_id: str, session_id: str = None, step_number: int
             raise HTTPException(status_code=404, detail="Payload not found")
 
         return PlainTextResponse(
-            trace_dict["payload"],
+            _redacted_payload(trace_dict["payload"]),
             headers={"Content-Disposition": f'attachment; filename="trace_{trace_id}.json"'},
         )
     except HTTPException as e:

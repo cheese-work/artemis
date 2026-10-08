@@ -1,3 +1,5 @@
+import { LoggerService } from './logger.service';
+import { appUrl } from '../utils/app-url.util';
 import { DOCUMENT } from '@angular/common';
 import { computed, inject, Injectable, InjectionToken, OnDestroy, signal } from '@angular/core';
 import {
@@ -6,6 +8,7 @@ import {
   calculateChecksum
 } from '@yume-chan/adb';
 import type { AdbPacketData, AdbPacketInit } from '@yume-chan/adb';
+import { PhoneTabService } from './phone-tab.service';
 import {
   AdbDaemonWebUsbDevice,
   AdbDaemonWebUsbDeviceManager
@@ -20,11 +23,14 @@ import type {
   WritableStreamDefaultWriter as TangoWritableStreamDefaultWriter
 } from '@yume-chan/stream-extra';
 
-export type UsbDeviceRelayStatus = 'idle' | 'connecting' | 'connected' | 'error';
+/** `dropped` is a connection that was up and then lost; `error` is one that never came up. */
+export type UsbDeviceRelayStatus = 'idle' | 'connecting' | 'connected' | 'dropped' | 'error';
 
 export interface UsbDeviceRelayState {
   status: UsbDeviceRelayStatus;
   serial: string | null;
+  /** The server's bridge session this tab holds; runs bind to it. Null unless connected. */
+  sessionId: string | null;
   error: string | null;
 }
 
@@ -51,17 +57,25 @@ const DEVICE_ATTACH_TIMEOUT_MS = 30_000;
 
 @Injectable({ providedIn: 'root' })
 export class UsbDeviceRelayService implements OnDestroy {
+  private readonly logger = inject(LoggerService);
   private readonly document = inject(DOCUMENT);
   private readonly deviceManager = inject(WEBUSB_DEVICE_MANAGER);
   private readonly socketFactory = inject(DEVICE_BRIDGE_SOCKET_FACTORY);
   private readonly browserWindow = this.document.defaultView;
+  private readonly tabs = inject(PhoneTabService);
 
   public readonly isSupported = computed(() => this.deviceManager !== undefined);
   public readonly state = signal<UsbDeviceRelayState>({
     status: 'idle',
     serial: null,
+    sessionId: null,
     error: null
   });
+
+  /** The USB chooser is done and the bridge has not reported the phone yet. */
+  public readonly attaching = signal(false);
+  /** The phone another tab of this browser holds; null when none does. */
+  public readonly heldInAnotherTab = this.tabs.heldElsewhere;
 
   private generation = 0;
   private socket: WebSocket | null = null;
@@ -69,6 +83,7 @@ export class UsbDeviceRelayService implements OnDestroy {
   private reader: TangoReadableStreamDefaultReader<AdbPacketData> | null = null;
   private writer: TangoWritableStreamDefaultWriter<Consumable<AdbPacketInit>> | null = null;
   private sessionLeased = false;
+  private leasedSessionId: string | null = null;
   private socketOpenTimer: ReturnType<typeof setTimeout> | null = null;
   private attachmentTimer: ReturnType<typeof setTimeout> | null = null;
   private incomingPackets = Promise.resolve();
@@ -82,6 +97,13 @@ export class UsbDeviceRelayService implements OnDestroy {
     }
   };
 
+  constructor() {
+    // Another tab asked for the phone this tab holds: let go and say so.
+    this.tabs.onReleaseRequest(() => {
+      void this.finishConnection(this.generation, 'This phone is now used in another tab.');
+    });
+  }
+
   public ngOnDestroy(): void {
     void this.disconnect();
   }
@@ -92,7 +114,8 @@ export class UsbDeviceRelayService implements OnDestroy {
     }
 
     const generation = ++this.generation;
-    this.state.set({ status: 'connecting', serial: null, error: null });
+    this.attaching.set(false);
+    this.state.set({ status: 'connecting', serial: null, sessionId: null, error: null });
     this.registerUnloadWarning();
 
     try {
@@ -105,14 +128,15 @@ export class UsbDeviceRelayService implements OnDestroy {
         throw namedError('DeviceSelectionCancelledError');
       }
       if (generation !== this.generation) {
-        await device.raw.close().catch(() => undefined);
+        await device.raw.close().catch((error: unknown) => this.logger.warn('Device close failed:', error));
         return;
       }
 
+      this.attaching.set(true);
       this.device = device;
       const connection = await device.connect();
       if (generation !== this.generation) {
-        await device.raw.close().catch(() => undefined);
+        await device.raw.close().catch((error: unknown) => this.logger.warn('Device close failed:', error));
         return;
       }
 
@@ -126,7 +150,8 @@ export class UsbDeviceRelayService implements OnDestroy {
       await this.openSocket(socket, generation);
     } catch (error) {
       if (generation === this.generation) {
-        await this.finishConnection(generation, this.toUserMessage(error));
+        // Closing the chooser is a choice, not a failure: back to no phone, with no error.
+        await this.finishConnection(generation, isChooserCancel(error) ? null : this.toUserMessage(error));
       }
     }
   }
@@ -235,7 +260,8 @@ export class UsbDeviceRelayService implements OnDestroy {
         return;
       }
       await this.writer.write(new Consumable(packet));
-    }).catch(() => {
+    }).catch((error) => {
+      this.logger.error('Device bridge packet failed:', error);
       if (generation === this.generation) {
         void this.finishConnection(
           generation,
@@ -263,6 +289,7 @@ export class UsbDeviceRelayService implements OnDestroy {
           throw namedError('DeviceBridgeProtocolError');
         }
         this.sessionLeased = true;
+        this.leasedSessionId = value.session_id;
         return;
       }
 
@@ -274,7 +301,14 @@ export class UsbDeviceRelayService implements OnDestroy {
           clearTimeout(this.attachmentTimer);
           this.attachmentTimer = null;
         }
-        this.state.set({ status: 'connected', serial: value.serial.trim(), error: null });
+        this.attaching.set(false);
+        this.state.set({
+          status: 'connected',
+          serial: value.serial.trim(),
+          sessionId: this.leasedSessionId,
+          error: null
+        });
+        this.tabs.announceHeld(value.serial.trim());
         return;
       }
 
@@ -294,10 +328,14 @@ export class UsbDeviceRelayService implements OnDestroy {
     }
 
     this.generation += 1;
+    const wasConnected = this.state().status === 'connected';
     this.state.set(error
-      ? { status: 'error', serial: null, error }
-      : { status: 'idle', serial: null, error: null });
+      ? { status: wasConnected ? 'dropped' : 'error', serial: null, sessionId: null, error }
+      : { status: 'idle', serial: null, sessionId: null, error: null });
     this.sessionLeased = false;
+    this.leasedSessionId = null;
+    this.attaching.set(false);
+    this.tabs.announceReleased();
 
     if (this.socketOpenTimer) {
       clearTimeout(this.socketOpenTimer);
@@ -322,10 +360,13 @@ export class UsbDeviceRelayService implements OnDestroy {
         if (socket.readyState < 2) {
           socket.close(1000, 'Client disconnected');
         }
-      } catch {
+      } catch (error) {
+        this.logger.warn('Device bridge socket cleanup failed:', error);
         try {
           socket.close();
-        } catch {}
+        } catch (error) {
+          this.logger.warn('Device bridge socket close failed:', error);
+        }
       }
     }
 
@@ -339,13 +380,13 @@ export class UsbDeviceRelayService implements OnDestroy {
 
     const cleanup: Promise<unknown>[] = [];
     if (reader) {
-      cleanup.push(reader.cancel().catch(() => undefined));
+      cleanup.push(reader.cancel().catch(error => this.logger.warn('Device reader cleanup failed:', error)));
     }
     if (writer) {
-      cleanup.push(writer.abort().catch(() => undefined));
+      cleanup.push(writer.abort().catch(error => this.logger.warn('Device writer cleanup failed:', error)));
     }
     if (device && !reader && !writer) {
-      cleanup.push(device.raw.close().catch(() => undefined));
+      cleanup.push(device.raw.close().catch((error: unknown) => this.logger.warn('Device close failed:', error)));
     }
     await Promise.allSettled(cleanup);
   }
@@ -370,7 +411,7 @@ export class UsbDeviceRelayService implements OnDestroy {
       throw namedError('DeviceBridgeConnectionError');
     }
 
-    const url = new URL('/api/device-bridge/session', location.href);
+    const url = new URL(appUrl('/api/device-bridge/session', this.document.baseURI), location.href);
     if (url.protocol === 'https:') {
       url.protocol = 'wss:';
     } else if (
@@ -385,11 +426,26 @@ export class UsbDeviceRelayService implements OnDestroy {
   }
 
   private toUserMessage(error: unknown): string {
-    if (error instanceof AdbDaemonWebUsbDevice.DeviceBusyError) {
-      return 'The phone is busy. Close other ADB tools using its USB connection, then retry.';
+    const errorObject = typeof error === 'object' && error !== null
+      ? error as { name?: unknown; message?: unknown }
+      : {};
+    const name = typeof errorObject.name === 'string' ? errorObject.name : '';
+    const message = typeof errorObject.message === 'string'
+      ? errorObject.message
+      : typeof error === 'string'
+        ? error
+        : '';
+    if (
+      error instanceof AdbDaemonWebUsbDevice.DeviceBusyError ||
+      /claim(?:ing)? interface/i.test(message)
+    ) {
+      if (this.tabs.heldElsewhere()) {
+        return 'This phone is connected in another tab. Use it there, or choose Use here.';
+      }
+      return 'Another program on this computer is using the phone (adb, Android Studio, scrcpy). ' +
+        'Quit it or run adb kill-server, unplug and replug, then retry.';
     }
 
-    const name = error instanceof Error ? error.name : '';
     switch (name) {
       case 'WebUsbUnsupportedError':
         return 'WebUSB is unavailable here. Use desktop Chromium over HTTPS or localhost.';
@@ -409,9 +465,17 @@ export class UsbDeviceRelayService implements OnDestroy {
       case 'UsbDeviceDisconnectedError':
         return 'The phone disconnected. Reconnect it to continue.';
       default:
-        return 'Could not connect the phone. Check its cable and USB Debugging, then retry.';
+        this.logger.error('Device bridge connection failed:', error);
+        return 'Could not connect the phone. Check its cable and USB Debugging, then retry.\n' +
+          `Details: ${name || 'Unknown error'}${message ? `: ${message}` : ''}`;
     }
   }
+}
+
+/** The person closed the USB chooser without picking a phone. */
+function isChooserCancel(error: unknown): boolean {
+  const name = typeof error === 'object' && error !== null ? (error as { name?: unknown }).name : undefined;
+  return name === 'DeviceSelectionCancelledError' || name === 'NotFoundError';
 }
 
 function namedError(name: string): Error {

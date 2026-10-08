@@ -13,9 +13,10 @@
 # limitations under the License.
 
 import traceback
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
 from artemis.config import WORKSPACE_ROOT
+from apps.admin_console.core.access_control import require_admin
 
 try:
     from admin_console.schemas.task_schema import ReplayRequest
@@ -62,7 +63,10 @@ async def get_replay_steps(session_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/api/sessions/{session_id}/steps/{step_number}/replay")
+@router.post(
+    "/api/sessions/{session_id}/steps/{step_number}/replay",
+    dependencies=[Depends(require_admin)],
+)
 async def trigger_step_replay_endpoint(session_id: str, step_number: int, req: ReplayRequest):
     """Triggers sandbox execution of step replay and returns the resulting traces trees."""
     try:

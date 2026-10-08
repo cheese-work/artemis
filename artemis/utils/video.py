@@ -56,6 +56,59 @@ TIMELINE_GAP_EPSILON_SECONDS = 0.05
 # Target 100MB to allow 3-5min crisp video and prevent blurring for long durations.
 MAX_VIDEO_SIZE_MB = 500
 MAX_VIDEO_SIZE_BYTES = MAX_VIDEO_SIZE_MB * 1024 * 1024
+MINIMUM_SCRCPY_VERSION = (2, 4)
+SCRCPY_TOO_OLD_REASON = "scrcpy too old for this phone's Android version"
+
+
+def _parse_scrcpy_version(version_output: str) -> tuple[int, int, int]:
+    match = re.search(
+        r"\b(?:scrcpy\s+)?v?(\d+)\.(\d+)(?:\.(\d+))?\b", version_output, re.IGNORECASE
+    )
+    if not match:
+        raise ValueError(f"Could not parse scrcpy version from: {version_output!r}")
+    return tuple(int(part or 0) for part in match.groups())
+
+
+def scrcpy_recording_flags(version_output: str) -> tuple[str, str, str]:
+    """Return headless, bitrate, and orientation options for a scrcpy version."""
+    version = _parse_scrcpy_version(version_output)
+    if version[:2] < MINIMUM_SCRCPY_VERSION:
+        detected = f"{version[0]}.{version[1]}" + (f".{version[2]}" if version[2] else "")
+        minimum = ".".join(str(part) for part in MINIMUM_SCRCPY_VERSION)
+        raise ValueError(
+            f"Unsupported scrcpy {detected}: {SCRCPY_TOO_OLD_REASON}; "
+            f"recording requires scrcpy {minimum} or newer"
+        )
+
+    if version[0] == 2:
+        headless_flag = "--no-display" if version[1] < 5 else "--no-window"
+        return headless_flag, "--video-bit-rate", "--lock-video-orientation"
+    return "--no-window", "--video-bit-rate", "--capture-orientation=@"
+
+
+def detect_scrcpy_version(scrcpy_executable: str) -> str:
+    """Return the installed scrcpy version, or a diagnostic probe error."""
+    try:
+        result = subprocess.run(
+            [scrcpy_executable, "--version"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise ValueError(
+            f"Could not read scrcpy version using {scrcpy_executable!r} --version: {exc}"
+        ) from exc
+
+    output = "\n".join(part for part in (result.stdout, result.stderr) if part)
+    if result.returncode != 0:
+        raise ValueError(
+            f"{scrcpy_executable!r} --version exited with {result.returncode}: "
+            f"{output.strip() or 'no version output'}"
+        )
+    version = _parse_scrcpy_version(output)
+    return f"{version[0]}.{version[1]}" + (f".{version[2]}" if version[2] else "")
 
 
 def build_scrcpy_record_command(
@@ -64,6 +117,8 @@ def build_scrcpy_record_command(
     output_path: Path,
     video_bit_rate: str = "2M",
     lock_capture_orientation: bool = True,
+    *,
+    scrcpy_version: str,
 ) -> list[str]:
     """Build the shared scrcpy command used by all recording paths.
 
@@ -72,21 +127,34 @@ def build_scrcpy_record_command(
     segment never contains multiple coded sizes while still displaying the app
     in its natural orientation.
     """
+    headless_flag, bitrate_flag, orientation_flag = scrcpy_recording_flags(scrcpy_version)
     command = [
         scrcpy_executable,
         "--serial",
         device_id,
-        "--no-window",
+        headless_flag,
+        "--no-clipboard-autosync",
         "--record",
         str(output_path),
         "--record-format",
         "mkv",
-        "--video-bit-rate",
+        bitrate_flag,
         video_bit_rate,
     ]
     if lock_capture_orientation:
-        command.append("--capture-orientation=@")
+        command.append(orientation_flag)
     return command
+
+
+def classify_recording_failure(error: str) -> str:
+    if SCRCPY_TOO_OLD_REASON in error:
+        return "recorder_incompatible"
+    if "NoSuchMethodException" in error and (
+        "android.view.SurfaceControl.createDisplay" in error
+        or ("IClipboard" in error and "addPrimaryClipChangedListener" in error)
+    ):
+        return "recorder_incompatible"
+    return "recorder_failed"
 
 
 async def await_scrcpy_first_frame(
@@ -152,6 +220,8 @@ class RecordingSession(BaseModel):
     video_id: UUID
     device_id: str
     start_time: float
+    scrcpy_executable: str | None = None
+    scrcpy_version: str | None = None
     process: Any = None
     data_engine_start_time: float | None = None
     local_video_path: Path | None = None
@@ -429,17 +499,34 @@ async def probe_video_segment(video_path: Path) -> dict[str, float | int]:
         return {}
 
 
-async def get_android_display_state(device_id: str) -> tuple[int, int, int] | None:
+#: Why a run on a computer connected through the host agent has no screen recording yet.
+HOST_RECORDING_UNAVAILABLE = (
+    "Screen recording is not available for runs on a connected computer yet."
+)
+
+
+def recording_unavailable_reason() -> str | None:
+    """Reason the process's runs cannot record the screen, or ``None`` when they can.
+
+    Recording drives scrcpy and a 0.5 s ``dumpsys`` watchdog against the adb server of the
+    run's endpoint; neither is carried over a host agent's tunnel (release C records on
+    the host). A host run therefore skips recording rather than failing or polling a
+    server that may be offline.
+    """
+    from artemis.runtime.adb_endpoint import current_adb_endpoint
+
+    return HOST_RECORDING_UNAVAILABLE if current_adb_endpoint().is_host else None
+
+
+async def get_android_display_state(
+    device_id: str, transport: Any = None
+) -> tuple[int, int, int] | None:
     """Return Android's current (rotation, width, height)."""
+    from artemis.runtime.endpoint_transport import EndpointTransport
+
     try:
-        process = await asyncio.create_subprocess_exec(
-            "adb",
-            "-s",
-            device_id,
-            "shell",
-            "dumpsys",
-            "window",
-            "displays",
+        process = await (transport or EndpointTransport.shared(None)).create_subprocess(
+            ["-s", device_id, "shell", "dumpsys", "window", "displays"],
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
         )
@@ -625,6 +712,8 @@ async def render_timeline_clip(
             ";".join(filter_parts),
             "-map",
             "[outv]",
+            "-r",
+            str(fps),
             "-c:v",
             "libx264",
             "-preset",
@@ -633,6 +722,8 @@ async def render_timeline_clip(
             "23",
             "-movflags",
             "+faststart",
+            "-r",
+            str(fps),
             str(output_path),
         ]
     )
