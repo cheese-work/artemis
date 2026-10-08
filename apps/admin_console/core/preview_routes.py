@@ -115,6 +115,9 @@ DISABLED = frozenset(
         "PUT /api/system/retention",
         "POST /api/system/retention/dry-run",
         "POST /api/system/retention/run",
+        "GET /api/system/failures",
+        "POST /api/system/failures/collect",
+        "POST /api/system/failures/digest",
         # Live configuration, credentials, ADB, emulator and server control.
         "GET /api/system/config",
         "PUT /api/system/config",
@@ -138,6 +141,9 @@ DISABLED = frozenset(
         "POST /api/system/restart",
         "POST /api/system/shutdown",
         "GET /api/system/drain",
+        "GET /api/system/failures",
+        "POST /api/system/failures/collect",
+        "POST /api/system/failures/digest",
         "POST /api/system/drain",
         "DELETE /api/system/drain",
         # Host agents, enrollment and the device bridge.
