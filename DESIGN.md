@@ -260,3 +260,4 @@ Translucency and `backdrop-filter` are not used. The 28 existing blur surfaces (
 | 2026-10-08 | Remove all glass/blur; dark navy only for devices (R2); verdict receipt (R1) | Evidence must read as solid; device identity at a glance |
 | 2026-10-08 | Device label `<name>, <connection>, <location> (<team> team)` | Cheese review of the preview |
 | 2026-10-08 | Every stats column sortable; QA table default alphabetical | Cheese T2 override at the CHE-1331 autoplan gate |
+| 2026-10-08 | One token layer in `styles.scss`; layout splits at 1200px, stacks to 800px, one column below (800, not 768) | CHE-1278 (U5): Workspace and Runs read as one product; the issue sets 800px for the one-column break |
