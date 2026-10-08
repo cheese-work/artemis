@@ -30,7 +30,21 @@ segmented seeks, authorization, confirmation dialogs and focus restoration.
 Styles for generated children move with their component. Host layout and
 screen-specific styles remain on the screens.
 
-`run-viewer.component.spec.ts` characterizes rendering before the extraction.
+`run-view.component.spec.ts` retains the characterization tests from before the extraction.
 `run-presentation.components.spec.ts` covers both badge presentations, all
 recording states, device labels, step details, launcher priority and action
 events. The existing viewer and copy suites cover controller behavior.
+
+## Unified controller (U2)
+
+`RunViewComponent` now owns the run layout on both Workspace and `/runs/:id`.
+The Workspace supplies the selected session, consolidated streaming steps and
+phone preparation progress. The catalog remains the source of finished-run
+status, owner, device and recording metadata. Completion refreshes evidence
+without replacing the component or clearing the selected step.
+
+`RunsService.viewPosition` retains the last run's selection and both scroll
+positions across route changes. Both modes expose failed-step reasons and
+before/after screenshots, and retain the same trust dialogs and action bar.
+Only Workspace mounts the new-task box. The keyboard walkthrough runs its
+same timeline and action assertions in both modes using trusted Chrome keys.

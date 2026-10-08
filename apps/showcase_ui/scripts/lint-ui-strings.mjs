@@ -12,9 +12,12 @@ const files = [
   'src/app/components/registry-phones/registry-phones.component.ts',
   'src/app/pages/setup/setup.component.html',
   'src/app/utils/run-library-strings.ts',
+  'src/app/utils/workspace-chip.util.ts',
+  'src/app/components/workspace-device-chip/workspace-device-chip.component.ts',
+  'src/app/components/interrupted-banner/interrupted-banner.component.ts',
   'src/app/utils/recording-state.util.ts',
   'src/app/components/run-library/run-library.component.html',
-  'src/app/components/run-viewer/run-viewer.component.html',
+  'src/app/components/run-view/run-view.component.html',
 ];
 
 const failures = [];

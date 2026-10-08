@@ -1,6 +1,8 @@
 import { DatePipe } from '@angular/common';
 import { ChangeDetectionStrategy, Component, computed, input } from '@angular/core';
 import { RunSummary } from '../../core/models/run.model';
+import { GoalImage } from '../../core/models/session.model';
+import { mediaUrl } from '../../utils/app-url.util';
 import { LabelableDevice, runDeviceLabel } from '../../utils/device-label.util';
 import { mapRecording } from '../../utils/recording-state.util';
 import { expiresText, interruptReason, truncate } from '../../utils/run-library-strings';
@@ -12,6 +14,13 @@ import { RunStatusBadgeComponent } from '../run-presentation/run-status-badge.co
   imports: [DatePipe, RunStatusBadgeComponent],
   template: `
     <span class="run-prompt" [title]="run().prompt ?? ''">{{ prompt() }}</span>
+    @if (goalImages().length) {
+      <span class="task-goal-images">
+        @for (image of goalImages(); track image.index) {
+          <img [src]="mediaUrl(image.url)" [alt]="'Image ' + (image.index + 1) + ' sent with this task'" loading="lazy">
+        }
+      </span>
+    }
     <span class="run-outcome" appRunStatusBadge [status]="run().status"></span>
     <span class="run-meta">
       <span class="run-recording">{{ recording() }}</span>
@@ -41,6 +50,8 @@ import { RunStatusBadgeComponent } from '../run-presentation/run-status-badge.co
     .run-device { display: inline-flex; align-items: center; gap: 4px; }
     .run-expires { font-weight: 600; color: var(--status-warn-fg); }
     .run-owner { overflow-wrap: anywhere; }
+    .task-goal-images { display: flex; grid-column: 1 / -1; flex-wrap: wrap; gap: 8px; }
+    .task-goal-images img { width: 64px; height: 64px; object-fit: cover; border-radius: 8px; }
   `],
   changeDetection: ChangeDetectionStrategy.OnPush
 })
@@ -49,6 +60,8 @@ export class RunCardComponent {
   readonly computer = input('A browser');
   readonly device = input<LabelableDevice | null>(null);
   readonly showOwner = input(false);
+  readonly goalImages = input<GoalImage[]>([]);
+  readonly mediaUrl = mediaUrl;
   readonly interruptReason = interruptReason;
   readonly prompt = computed(() => truncate(this.run().prompt));
   readonly deviceLabel = computed(() => runDeviceLabel(this.run().device_ref?.serial ?? 'Unknown phone', this.device()));

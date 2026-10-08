@@ -11,7 +11,8 @@ import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { startMockApi } from './mock-api.mjs';
+import { startMockApi, mock, RUNS } from './mock-api.mjs';
+import { pasteShortcut } from './paste-shortcut.mjs';
 
 const dist = fileURLToPath(new URL('../../dist/frontend/browser', import.meta.url));
 if (!existsSync(path.join(dist, 'index.html'))) {
@@ -28,6 +29,10 @@ const freePort = () =>
   });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+mock.readiness = {
+  os_type: 'linux', overall_ready: true,
+  probes: [{ id: 'android_adb', status: 'pass', metadata: { devices: [{ serial: 'keyboard-fixture', state: 'device', model: 'Pixel test', device_kind: 'phone' }] } }]
+};
 const { server, url: base } = await startMockApi(dist);
 const profile = mkdtempSync(path.join(tmpdir(), 'kbd-walk-'));
 const port = await freePort();
@@ -65,18 +70,27 @@ const evaluate = async (expression) => {
 };
 
 async function cleanup(code) {
+  if (chrome.exitCode === null && chrome.signalCode === null) {
+    const stopped = new Promise((resolve) => chrome.once('exit', resolve));
+    await send('Browser.close').catch(() => chrome.kill());
+    await stopped;
+  }
   try { ws?.close(); } catch { /* already closed */ }
-  chrome.kill();
-  server.close();
+  await new Promise((resolve) => server.close(resolve));
   await sleep(200);
-  rmSync(profile, { recursive: true, force: true });
+  rmSync(profile, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
   process.exit(code);
 }
 
 const KEYS = {
   Tab: { key: 'Tab', code: 'Tab', windowsVirtualKeyCode: 9 },
+  Space: { key: ' ', code: 'Space', windowsVirtualKeyCode: 32, text: ' ' },
   Enter: { key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, text: '\r' },
-  Escape: { key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 }
+  Escape: { key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 },
+  ArrowDown: { key: 'ArrowDown', code: 'ArrowDown', windowsVirtualKeyCode: 40 },
+  ArrowUp: { key: 'ArrowUp', code: 'ArrowUp', windowsVirtualKeyCode: 38 },
+  Home: { key: 'Home', code: 'Home', windowsVirtualKeyCode: 36 },
+  End: { key: 'End', code: 'End', windowsVirtualKeyCode: 35 }
 };
 async function press(name, modifiers = 0) {
   const k = KEYS[name];
@@ -126,6 +140,36 @@ async function tabUntil(label, predicate, { back = false, max = 60 } = {}) {
 const focusIs = (selector) => `e.matches(${JSON.stringify(selector)})`;
 const focusNamed = (name) => `(e.getAttribute('aria-label') || e.textContent || '').trim().replace(/\\s+/g, ' ').startsWith(${JSON.stringify(name)})`;
 
+async function checkRunKeyboard(mode) {
+  log(`${mode}: steps, share notice, download notice, technical details`);
+  await expectTrue('four steps are loaded', `document.querySelectorAll('button.step-button').length === 4`);
+  await tabUntil('first step', focusIs('button.step-button'));
+  await press('Enter');
+  await expectTrue('Enter selected the step', `document.activeElement.getAttribute('aria-current') === 'step'`);
+  await press('ArrowDown');
+  await expectTrue('ArrowDown selected the next step', `document.activeElement.textContent.includes('Step 2') && document.activeElement.getAttribute('aria-current') === 'step'`);
+  await press('End');
+  await expectTrue('End selected the last step', `document.activeElement.textContent.includes('Step 4')`);
+  await press('Home');
+  await press('Space');
+  await expectTrue('Home and Space selected the first step', `document.activeElement.textContent.includes('Step 1') && document.activeElement.getAttribute('aria-current') === 'step'`);
+  await tabUntil('Copy link', focusNamed('Copy link'));
+  await press('Enter');
+  await expectTrue('share dialog is open, focus is inside it', `!!document.querySelector('dialog.trust-dialog[open]') && document.querySelector('dialog.trust-dialog').contains(document.activeElement)`);
+  await expectTrue('share dialog shows both notices', `document.querySelector('dialog.trust-dialog').textContent.includes('not redacted') && document.querySelector('dialog.trust-dialog').textContent.includes('Cloudflare Access')`);
+  await press('Escape');
+  await expectTrue('Escape returned focus to Copy link', `!document.querySelector('dialog.trust-dialog[open]') && ${`(() => { const e = document.activeElement; return ${focusNamed('Copy link')}; })()`}`);
+  await tabUntil('Download', focusNamed('Download'));
+  await press('Space');
+  await expectTrue('download dialog shows only the redaction notice', `!!document.querySelector('dialog.trust-dialog[open]') && document.querySelector('dialog.trust-dialog').textContent.includes('not redacted') && !document.querySelector('dialog.trust-dialog').textContent.includes('Cloudflare Access')`);
+  await press('Escape');
+  await expectTrue('Escape returned focus to Download', `!document.querySelector('dialog.trust-dialog[open]') && ${`(() => { const e = document.activeElement; return ${focusNamed('Download')}; })()`}`);
+  await tabUntil('Pin', focusNamed('Pin'));
+  await tabUntil('Technical details', focusNamed('Technical details'));
+  await press('Enter');
+  await expectTrue('Technical details opened and raw logs rendered', `!!document.querySelector('pre.raw-logs')`);
+}
+
 try {
   for (let i = 0; i < 50; i++) {
     try {
@@ -155,6 +199,13 @@ try {
   await send('Page.navigate', { url: `${base}/runs` });
   await expectTrue('library loaded', `document.querySelectorAll('a.run-row').length === 6`);
 
+  log('Library: the admin All users switch');
+  await tabUntil('All users switch', focusIs('button[role="switch"]'));
+  await press('Space');
+  await expectTrue('Space turned All users on: the other QA\'s run is listed with its owner', `document.activeElement.getAttribute('aria-checked') === 'true' && document.querySelectorAll('a.run-row').length === 7 && document.body.textContent.includes('other@example.test')`);
+  await press('Enter');
+  await expectTrue('Enter turned it off: only my runs remain', `document.activeElement.getAttribute('aria-checked') === 'false' && document.querySelectorAll('a.run-row').length === 6`);
+
   log('Library: search by text');
   await tabUntil('search box', focusIs('input[type="search"]'));
   await type('dark');
@@ -181,35 +232,79 @@ try {
   await press('Enter');
   await expectTrue('viewer opened for the run', `location.pathname.startsWith('/runs/') && !!document.querySelector('[data-section="outcome"]')`);
 
-  log('Viewer: steps, share notice, download notice, technical details');
-  await tabUntil('first step', focusIs('button.step-button'));
-  await press('Enter');
-  await expectTrue('Enter selected the step', `document.activeElement.getAttribute('aria-current') === 'step'`);
-  await tabUntil('Copy link', focusNamed('Copy link'));
-  await press('Enter');
-  await expectTrue('share dialog is open, focus is inside it', `!!document.querySelector('dialog.trust-dialog[open]') && document.querySelector('dialog.trust-dialog').contains(document.activeElement)`);
-  await expectTrue('share dialog shows both notices', `document.querySelector('dialog.trust-dialog').textContent.includes('not redacted') && document.querySelector('dialog.trust-dialog').textContent.includes('Cloudflare Access')`);
-  await press('Escape');
-  await expectTrue('Escape closed the dialog and focus returned to Copy link', `!document.querySelector('dialog.trust-dialog[open]') && ${`(() => { const e = document.activeElement; return ${focusNamed('Copy link')}; })()`}`);
-  log(`  focus is now: ${await describeFocus()}`);
-  await tabUntil('Download', focusNamed('Download'));
-  await press('Enter');
-  await expectTrue('download dialog shows only the redaction notice', `!!document.querySelector('dialog.trust-dialog[open]') && document.querySelector('dialog.trust-dialog').textContent.includes('not redacted') && !document.querySelector('dialog.trust-dialog').textContent.includes('Cloudflare Access')`);
-  await press('Escape');
-  await expectTrue('Escape closed it and focus returned to Download', `!document.querySelector('dialog.trust-dialog[open]') && ${`(() => { const e = document.activeElement; return ${focusNamed('Download')}; })()`}`);
-  await tabUntil('Pin', focusNamed('Pin'));
-  await tabUntil('Technical details', focusNamed('Technical details'));
-  await press('Enter');
-  await expectTrue('Technical details opened and raw logs rendered', `!!document.querySelector('pre.raw-logs')`);
+  await checkRunKeyboard('Review');
 
   log('Viewer: back to the library');
   await tabUntil('Back to runs', focusNamed('Back to runs'), { back: true });
   await press('Enter');
   await expectTrue('back on /runs with the list', `location.pathname === '/runs' && document.querySelectorAll('a.run-row').length === 6`);
 
+  const current = RUNS[0];
+  mock.sessions = [{ session_id: current.session_id, initial_goal: current.prompt, status: current.status,
+    start_time: current.start_time, end_time: current.end_time, device_serial: current.device_ref.serial }];
+  mock.status = { status: 'idle', session_id: null };
+  await send('Page.navigate', { url: `${base}/workspace` });
+  await expectTrue('Workspace shows the same run with its new-task box', `!!document.querySelector('app-run-view [data-section="outcome"]') && !!document.querySelector('textarea.dock-textarea')`);
+  await expectTrue('first Workspace visit opens What\'s New', `!!document.querySelector('dialog.whats-new-dialog[open]')`);
+  await press('Escape');
+  await expectTrue('Escape dismisses What\'s New', `!document.querySelector('dialog.whats-new-dialog[open]')`);
+  await checkRunKeyboard('Live');
+
+  log('Workspace: the phone chip opens and closes from the keyboard');
+  await send('Page.navigate', { url: `${base}/workspace` });
+  await expectTrue('workspace loaded with the phone chip', `!!document.querySelector('app-workspace-device-chip button.chip')`);
+  await tabUntil('phone chip', focusIs('app-workspace-device-chip button.chip'));
+  await expectTrue('chip says there is no phone and the picker is closed', `document.activeElement.textContent.includes('No phone') && document.activeElement.getAttribute('aria-expanded') === 'false'`);
+  await press('Enter');
+  await expectTrue('Enter opened the picker and focus moved inside it', `document.activeElement.getAttribute('aria-expanded') === null && !!document.querySelector('app-workspace-device-chip .panel')?.contains(document.activeElement)`);
+  await expectTrue('focus is on the first usable choice: Connect a phone from this browser', `document.activeElement.textContent.includes('Connect a phone from this browser')`);
+  await press('Escape');
+  await expectTrue('Escape closed the picker and focus returned to the chip', `!document.querySelector('app-workspace-device-chip .panel') && document.activeElement.matches('app-workspace-device-chip button.chip') && document.activeElement.getAttribute('aria-expanded') === 'false'`);
+  log(`  focus is now: ${await describeFocus()}`);
+
+  log('Task dock: stays open, and clipboard keyboard operation');
+  await send('Page.navigate', { url: `${base}/workspace` });
+  await expectTrue('empty task dock is expanded', `!!document.querySelector('.workspace-floating-bar-wrapper.is-expanded textarea') && getComputedStyle(document.querySelector('.expanded-card-content')).display !== 'none'`);
+  const dockWidth = await evaluate(`document.querySelector('.floating-dock-card').getBoundingClientRect().width`);
+  await press('Tab');
+  await expectTrue('focus loss does not collapse or resize the dock', `!document.querySelector('.is-dormant') && document.querySelector('.floating-dock-card').getBoundingClientRect().width === ${dockWidth}`);
+  await tabUntil('task textarea', focusIs('textarea.dock-textarea'));
+  await evaluate(`(() => {
+    window.dockPasteEvents = [];
+    document.querySelector('textarea.dock-textarea').addEventListener('paste', event => {
+      window.dockPasteEvents.push({
+        trusted: event.isTrusted,
+        types: Array.from(event.clipboardData?.types ?? []),
+        files: Array.from(event.clipboardData?.files ?? []).map(file => ({ type: file.type, size: file.size }))
+      });
+    }, { capture: true });
+  })()`);
+  await send('Browser.grantPermissions', { permissions: ['clipboardReadWrite', 'clipboardSanitizedWrite'], origin: base });
+  await evaluate(`(async () => {
+    const canvas = new OffscreenCanvas(1, 1);
+    canvas.getContext('2d').fillRect(0, 0, 1, 1);
+    const image = await canvas.convertToBlob({ type: 'image/png' });
+    await navigator.clipboard.write([new ClipboardItem({ 'image/png': image })]);
+  })()`);
+  await pasteShortcut(send);
+  await sleep(120);
+  await expectTrue('native image paste delivers a trusted PNG clipboard payload', `window.dockPasteEvents.length === 1 && window.dockPasteEvents[0].trusted && window.dockPasteEvents[0].files.length === 1 && window.dockPasteEvents[0].files[0].type === 'image/png' && window.dockPasteEvents[0].files[0].size > 0`);
+  await expectTrue('platform paste shortcut of an image creates a preview', `document.querySelectorAll('ul.attached-images img').length === 1`);
+  await tabUntil('Remove image', focusIs('button.btn-remove-image'));
+  await press('Enter');
+  await expectTrue('Enter removes the pasted preview', `!document.querySelector('ul.attached-images')`);
+  await tabUntil('task textarea', focusIs('textarea.dock-textarea'));
+  await evaluate(`navigator.clipboard.writeText('clipboard task text')`);
+  await pasteShortcut(send);
+  await sleep(120);
+  await expectTrue('native text paste delivers a trusted text clipboard payload', `window.dockPasteEvents.length === 2 && window.dockPasteEvents[1].trusted && window.dockPasteEvents[1].types.includes('text/plain') && window.dockPasteEvents[1].files.length === 0`);
+  await expectTrue('platform paste shortcut of text remains text without an attachment', `document.querySelector('textarea.dock-textarea').value === 'clipboard task text' && !document.querySelector('ul.attached-images')`);
+
   log('\nKeyboard walkthrough passed.');
   await cleanup(0);
 } catch (error) {
   console.error(`\nKeyboard walkthrough FAILED: ${error.message}`);
+  console.error(await evaluate(`JSON.stringify({focus: document.activeElement?.outerHTML, text: document.querySelector('app-run-view')?.textContent})`).catch(() => 'Page unavailable'));
+  console.error('Dock paste evidence:', await evaluate(`JSON.stringify({ focus: document.activeElement?.outerHTML, events: window.dockPasteEvents })`).catch(() => 'unavailable'));
   await cleanup(1);
 }

@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import { deviceKindLabel, deviceTitle, unlistedRunDeviceTitle } from './device-label.util';
+import { deviceKindLabel, deviceTitle, serialShape, unlistedDeviceTitle, unlistedRunDeviceTitle } from './device-label.util';
 
 describe('device-label.util', () => {
   const browserPhone = { serial: '127.0.0.1:36411', model: '21081111RG', device_kind: 'phone' as const };
@@ -47,10 +47,32 @@ describe('device-label.util', () => {
   });
 
   it('never titles a disconnected network phone by its address (R3)', () => {
-    for (const address of ['192.168.1.12:5555', '10.0.0.7:37099', 'pixel.local:5555', '[fe80::1]:5555']) {
+    for (const address of ['192.168.1.12:5555', '10.0.0.7:37099', 'pixel.local:5555', '[fe80::1]:5555', 'pixel:5555', 'android-phone:37099', 'Pixel_6:5555']) {
       const title = unlistedRunDeviceTitle(address, false);
       expect(title).toBe('Wireless phone');
       expect(title).not.toContain(address);
     }
+  });
+
+  it('treats mDNS wireless-debugging names as network phones (R3)', () => {
+    const name = 'adb-R58M123ABC-xYz9Qk._adb-tls-connect._tcp';
+    expect(unlistedRunDeviceTitle(name, false)).toBe('Wireless phone');
+    expect(serialShape(name)).toBe('network');
+  });
+
+  it('classifies serials by shape without touching plain serials (R3)', () => {
+    expect(serialShape('127.0.0.1:5555')).toBe('loopback');
+    expect(serialShape('[::1]:5555')).toBe('loopback');
+    expect(serialShape('pixel:5555')).toBe('network');
+    expect(serialShape('R58M123')).toBe('plain');
+    expect(serialShape('emulator-5554')).toBe('plain');
+    expect(serialShape('')).toBe('plain');
+  });
+
+  it('keeps addresses out of the title of a phone missing from the registry too (R3)', () => {
+    expect(unlistedDeviceTitle('127.0.0.1:55555')).toBe('Unknown device');
+    expect(unlistedDeviceTitle('pixel:5555')).toBe('Wireless phone');
+    expect(unlistedDeviceTitle('192.168.1.12:5555')).toBe('Wireless phone');
+    expect(unlistedDeviceTitle('R58M123')).toBe('R58M123');
   });
 });

@@ -1,5 +1,7 @@
 # Shared run list
 
+The list opens U2's `RunViewComponent`; team-route and server read-only state guard pin, delete and resume in the unified controller. Compact history retains recorded goal-image thumbnails and uses `mediaUrl` for preview-scoped image paths. Its My runs scope is explicit and does not inherit the administrator's live-queue All users setting.
+
 `RunLibraryComponent` is the full-width Runs page and the compact Workspace history panel. Both render `RunCardComponent`. The live Workspace queue remains owner-scoped and separate.
 
 My runs is the default. `scope=everyone` selects Everyone's runs. Search, status, dates, extra filters, and scroll position remain URL state. Arrow keys, Home, and End operate the owner tabs. Changing tabs resets the page cursor and clears stale rows.

@@ -1107,7 +1107,7 @@
                             <div class="remote-device-row">
                               <span class="material-symbols-outlined">phone_android</span>
                               <div class="remote-device-copy">
-                                <strong>{{ device.model || device.serial }}</strong>
+                                <strong>{{ device.model || 'Unknown device' }}</strong>
                                 <span>{{ device.serial }}</span>
                               </div>
                               <span class="remote-device-state" [class.ready]="device.state === 'device'">
@@ -1179,7 +1179,7 @@
                           <span class="material-symbols-outlined chip-icon">
                             phone_android
                           </span>
-                          <span>{{ dev.model || dev.serial }}</span>
+                          <span>{{ deviceTitle(dev) }}</span>
                           @if (dev.serial === activeDevice()?.serial) {
                             <span class="active-check">✓ Active</span>
                           }

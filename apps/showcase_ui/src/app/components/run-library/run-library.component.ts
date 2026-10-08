@@ -18,6 +18,7 @@ import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 import { Subscription } from 'rxjs';
 import { Computer, RegistryDevice } from '../../core/models/host.model';
 import { RunSummary } from '../../core/models/run.model';
+import { GoalImage } from '../../core/models/session.model';
 import { HostsService } from '../../services/hosts.service';
 import { RunsService } from '../../services/runs.service';
 import { RunCardComponent } from './run-card.component';
@@ -60,6 +61,7 @@ export class RunLibraryComponent implements OnChanges {
   public readonly compact = input(false);
   public readonly refreshKey = input('');
   public readonly recordedDevices = input<ReadonlyMap<string, LabelableDevice>>(new Map());
+  public readonly recordedImages = input<ReadonlyMap<string, GoalImage[]>>(new Map());
   public readonly mediaNotice = MEDIA_NOTICE;
   public readonly scope = signal<'mine' | 'everyone'>('mine');
   public readonly runQuery = computed(() => this.scope() === 'everyone' ? { scope: 'everyone', review: '1' } : {});
@@ -226,9 +228,7 @@ export class RunLibraryComponent implements OnChanges {
     if (!more) this.nextCursor.set(null);
     (more ? this.loadingMore : this.loading).set(true);
     this.request = this.runsApi
-      .list(this.filters(), this.scope() === 'everyone'
-        ? { scope: 'everyone', ...(more ? { cursor: this.nextCursor() ?? undefined } : {}) }
-        : more ? { cursor: this.nextCursor() ?? undefined } : undefined)
+      .list(this.filters(), { scope: this.scope(), ...(more ? { cursor: this.nextCursor() ?? undefined } : {}) })
       .subscribe({
         next: (page) => {
           this.rows.set(more ? [...this.rows(), ...page.runs] : page.runs);

@@ -343,7 +343,11 @@ _PUBLIC_GET_PATHS = {
     "/{full_path:path}",
 }
 
+_ADMIN_GET_PATHS = {"/api/system/failures"}
+
 _ADMIN_MUTATING_PATHS = {
+    "/api/system/failures/collect",
+    "/api/system/failures/digest",
     "/api/system/devices/select",
     "/api/system/adb/restart",
     "/api/system/adb/connect",
@@ -376,6 +380,7 @@ _AGENT_PATHS = {
     "/api/agent/enroll": {"POST"},
     "/api/agent/challenge": {"POST"},
     "/api/agent/renew": {"POST"},
+    "/api/agent/unenroll": {"POST"},
 }
 
 # Owner-or-admin actions: the route guard needs a signed-in user; the handler
@@ -411,6 +416,8 @@ def route_tier(path: str, methods: set[str], is_websocket: bool = False) -> str 
         return "public"
     if methods == {"GET"} and path in _PUBLIC_GET_PATHS:
         return "public"
+    if methods == {"GET"} and path in _ADMIN_GET_PATHS:
+        return "admin"
     if methods == {"POST"} and path in _PUBLIC_MUTATING_PATHS:
         return "public"
     if methods == {"POST"} and path in _QA_MUTATING_PATHS:

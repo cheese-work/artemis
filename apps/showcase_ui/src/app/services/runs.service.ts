@@ -4,17 +4,24 @@ import { Observable } from 'rxjs';
 import { RunPage, RunSummary, SessionVideo } from '../core/models/run.model';
 import { StepItemData } from '../core/models/stream.model';
 import { RunFilters, apiParams } from '../utils/run-filters.util';
+import { OwnerScopeService } from './owner-scope.service';
 
 @Injectable({ providedIn: 'root' })
 export class RunsService {
   private readonly http = inject(HttpClient);
+  private readonly ownerScope = inject(OwnerScopeService);
 
   /** The library's last URL query, so the viewer can link back to the same list. */
   public readonly lastLibraryQuery = signal<Record<string, string>>({});
+  public readonly viewPosition = signal<{
+    sessionId: string; selectedStepId: string | null; scrollTop: number; timelineScrollTop: number;
+  } | null>(null);
 
   public list(filters: RunFilters, options: { cursor?: string; limit?: number; scope?: 'mine' | 'everyone' } = {}): Observable<RunPage> {
     let params = new HttpParams().set('limit', String(options.limit ?? 50));
-    for (const [key, value] of Object.entries(apiParams(filters))) params = params.set(key, value);
+    for (const [key, value] of Object.entries({ ...apiParams(filters), ...this.ownerScope.queryParams() })) {
+      params = params.set(key, value);
+    }
     if (options.cursor) params = params.set('cursor', options.cursor);
     if (options.scope) params = params.set('scope', options.scope);
     return this.http.get<RunPage>('/api/runs', { params });
@@ -41,7 +48,7 @@ export class RunsService {
     return this.http.delete(`/api/runs/${encodeURIComponent(sessionId)}/pin`);
   }
 
-  /** Admin only on the server. */
+  /** The run's owner or an admin, on the server. */
   public remove(sessionId: string): Observable<unknown> {
     return this.http.post(`/api/sessions/${encodeURIComponent(sessionId)}/delete`, {});
   }

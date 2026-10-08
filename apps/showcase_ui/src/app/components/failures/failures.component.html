@@ -1,0 +1,47 @@
+<section class="failures" aria-labelledby="failures-heading">
+  <div class="section-heading">
+    <h2 id="failures-heading">Failures</h2>
+    <p class="intro">Failed steps and runs of the last 14 days, and whether SmartQA or the prompt caused them.</p>
+  </div>
+
+  @if (loading()) {
+    <p class="notice" role="status">Reading failures…</p>
+  } @else if (failed()) {
+    <div class="notice error" role="alert">
+      <p>Couldn’t read failures.</p>
+      <button type="button" class="secondary-button retry" (click)="load()">Retry</button>
+    </div>
+  } @else if (report(); as current) {
+    @if (current.causes.length === 0) {
+      <p class="notice" role="status">No failures in this window.</p>
+    } @else {
+      <h3>By day</h3>
+      <table class="counts">
+        <thead><tr><th scope="col">Day</th><th scope="col">Cause</th><th scope="col">Failures</th></tr></thead>
+        <tbody>
+          @for (row of current.counts; track row.day + row.category) {
+            <tr><td>{{ row.day }}</td><td>{{ labels[row.category] }}</td><td>{{ row.count }}</td></tr>
+          }
+        </tbody>
+      </table>
+
+      <h3>Top causes</h3>
+      <ul class="causes">
+        @for (cause of current.causes; track cause.rule + cause.sample) {
+          <li class="cause" [class.no-action]="cause.action === 'no action'">
+            <div class="cause-head">
+              <strong>{{ labels[cause.category] }}</strong>
+              <span class="badge">{{ cause.action === 'no action' ? 'No action' : cause.count + '×' }}</span>
+            </div>
+            <p class="sample">{{ cause.sample || cause.rule }}</p>
+            <p class="runs">
+              @for (id of cause.session_ids; track id) {
+                <a [routerLink]="['/runs', id]">{{ id.slice(0, 8) }}</a>
+              }
+            </p>
+          </li>
+        }
+      </ul>
+    }
+  }
+</section>

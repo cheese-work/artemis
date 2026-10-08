@@ -2,6 +2,7 @@ import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { TestBed } from '@angular/core/testing';
 import { EMPTY_FILTERS } from '../utils/run-filters.util';
+import { OwnerScopeService } from './owner-scope.service';
 import { RunsService } from './runs.service';
 
 describe('RunsService', () => {
@@ -42,9 +43,34 @@ describe('RunsService', () => {
     req.flush({ runs: [], next_cursor: null, warnings: [] });
   });
 
+  it('asks for every user\'s runs only while an admin has All users on', () => {
+    const scope = TestBed.inject(OwnerScopeService);
+    scope.identity.set({ email: 'admin@example.test', admin: true, auth_mode: 'cloudflare', reason: null });
+    service.list(EMPTY_FILTERS).subscribe();
+    const mine = http.expectOne((r) => r.url === '/api/runs');
+    expect(mine.request.params.has('scope')).toBeFalse();
+    mine.flush({ runs: [], next_cursor: null, warnings: [] });
+
+    scope.setAllUsers(true);
+    service.list(EMPTY_FILTERS).subscribe();
+    const all = http.expectOne((r) => r.url === '/api/runs');
+    expect(all.request.params.get('scope')).toBe('all');
+    all.flush({ runs: [], next_cursor: null, warnings: [] });
+  });
+
   it('resolves one run by full id or prefix, encoded', () => {
     service.get('3f2b/9c1a').subscribe();
     http.expectOne({ method: 'GET', url: '/api/runs/3f2b%2F9c1a' }).flush({});
+  });
+
+  it('keeps explicit My runs separate from an admin queue set to All users', () => {
+    const scope = TestBed.inject(OwnerScopeService);
+    scope.identity.set({ email: 'admin@example.test', admin: true, auth_mode: 'cloudflare', reason: null });
+    scope.setAllUsers(true);
+    service.list(EMPTY_FILTERS, { scope: 'mine' }).subscribe();
+    const request = http.expectOne((candidate) => candidate.url === '/api/runs');
+    expect(request.request.params.get('scope')).toBe('mine');
+    request.flush({ runs: [], next_cursor: null, warnings: [] });
   });
 
   it('reads steps and playback from the existing session routes', () => {

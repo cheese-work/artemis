@@ -772,7 +772,12 @@ class TaskQueueService:
             "adb_endpoint": target.endpoint.to_dict(),
             "goal": goal,
             "profile": profile,
+            "host_id": target.host_id,
         }
+        if target.host_id and sess_id:
+            from apps.admin_console.services.host_tunnel import host_tunnels
+
+            host_tunnels.bind_run(target.host_id, str(sess_id))
         if sess_id:
             try:
                 # Preserve status updates written concurrently by the worker.
@@ -846,6 +851,10 @@ class TaskQueueService:
         if item.get("requeue"):
             return "queued"
         item["settling"] = True  # before the first await: the NACK check cannot miss it
+        if item.get("host_id") and not manual_stop:
+            from apps.admin_console.services.host_tunnel import host_tunnels
+
+            await host_tunnels.wait_for_run(str(sess_id))
         try:
             outcome = await asyncio.to_thread(
                 session_repo.lifecycle.settle_worker_exit, str(sess_id), returncode, manual_stop
@@ -1165,7 +1174,11 @@ class TaskQueueService:
             # Marker cleanup is best-effort: an unwritable temp dir or an odd
             # pid value must not block releasing the run slot.
             pass
-        state.active_runs.pop(run_key, None)
+        released_run = state.active_runs.pop(run_key, None)
+        if released_run and released_run.get("host_id") and sess_id:
+            from apps.admin_console.services.host_tunnel import host_tunnels
+
+            host_tunnels.release_run(released_run["host_id"], str(sess_id))
         if proc is not None and state.current_process is proc:
             state.current_process = None
         if not state.active_runs:
@@ -1426,6 +1439,7 @@ class TaskQueueService:
         run_id: str | None = None,
         host_id: str | None = None,
         requested_by: str | None = None,
+        bridge_session_id: str | None = None,
     ) -> dict[str, Any]:
         """Reserve a device slot and build one pending queue item for a goal."""
         sess_id = single_session_id if single_session_id else str(uuid.uuid4())
@@ -1456,6 +1470,8 @@ class TaskQueueService:
             "run_id": run_id,
             "host_id": host_id,
             "requested_by": requested_by,
+            # The bridge lease a browser-held phone's run was admitted under; None otherwise.
+            "bridge_session_id": bridge_session_id,
             "status": "pending",
             "queue_ticket": queue_ticket,
             "created_at": now + index * 0.001,
@@ -1481,6 +1497,7 @@ class TaskQueueService:
         host_id: str | None = None,
         requested_by: str | None = None,
         goal_images: list[run_images.ValidatedImage] | None = None,
+        bridge_session_id: str | None = None,
     ) -> dict[str, Any]:
         """Enqueues one or more goals and wakes up the background worker.
 
@@ -1573,6 +1590,7 @@ class TaskQueueService:
                 run_id=run_id,
                 host_id=host_id,
                 requested_by=requested_by,
+                bridge_session_id=bridge_session_id,
             )
             session_id = str(task_item["session_id"])
             existing_trace = trace_store.read_status(session_id)

@@ -27,6 +27,7 @@ import cv2
 from artemis.context import ArtemisContext
 from artemis.controllers.unified_controller import UnifiedMobileController
 from artemis.drivers.mock.mock_driver import MockDeviceDriver
+from artemis.utils import video as video_utils
 from artemis.utils.video import (
     RecordingSession,
     _parse_scrcpy_version,
@@ -87,10 +88,6 @@ def test_scrcpy_recording_locks_each_segment_orientation(tmp_path):
     ("version", "expected_flags"),
     [
         (
-            "scrcpy 1.25 <https://github.com/Genymobile/scrcpy>",
-            ("--no-display", "--bit-rate", "--lock-video-orientation"),
-        ),
-        (
             "scrcpy 2.4 <https://github.com/Genymobile/scrcpy>",
             ("--no-display", "--video-bit-rate", "--lock-video-orientation"),
         ),
@@ -112,13 +109,67 @@ def test_scrcpy_recording_locks_each_segment_orientation(tmp_path):
         ),
     ],
 )
-def test_scrcpy_recording_flags_follow_installed_version(version, expected_flags):
+def test_scrcpy_recording_flags_follow_installed_version(version, expected_flags, tmp_path):
     assert scrcpy_recording_flags(version) == expected_flags
+    command = build_scrcpy_record_command(
+        "scrcpy", "device-1", tmp_path / "recording.mkv", scrcpy_version=version
+    )
+    assert command.count("--no-clipboard-autosync") == 1
+    assert all(flag in command for flag in expected_flags)
 
 
-def test_scrcpy_recording_flags_reject_versions_below_minimum():
-    with pytest.raises(ValueError, match="Unsupported scrcpy 1.24"):
-        scrcpy_recording_flags("scrcpy 1.24")
+@pytest.mark.parametrize(
+    ("error", "expected_reason"),
+    [
+        (
+            "java.lang.NoSuchMethodException: "
+            "android.content.IClipboard$Stub$Proxy.addPrimaryClipChangedListener "
+            "at com.genymobile.scrcpy.Device.<init>(Device.java:100)",
+            "recorder_incompatible",
+        ),
+        ("scrcpy failed to start: device disconnected", "recorder_failed"),
+        ("java.lang.NoSuchMethodException: some.other.Method", "recorder_failed"),
+        ("Clipboard warning: addPrimaryClipChangedListener", "recorder_failed"),
+        ("", "recorder_failed"),
+    ],
+)
+def test_recording_failure_classifies_clipboard_api_crash(error, expected_reason):
+    assert video_utils.classify_recording_failure(error) == expected_reason
+
+
+@pytest.mark.parametrize("include_clipboard", [False, True])
+def test_recording_failure_classifies_real_surface_control_crash(include_clipboard):
+    clipboard_trace = (
+        "java.lang.NoSuchMethodException: "
+        "android.content.IClipboard$Stub$Proxy.addPrimaryClipChangedListener "
+        "[interface android.content.IOnPrimaryClipChangedListener, class java.lang.String, "
+        "class java.lang.String, int]\n"
+        "\tat com.genymobile.scrcpy.Device.<init>(Device.java:100)\n"
+        "\tat com.genymobile.scrcpy.Server.scrcpy(Server.java:64)\n"
+    )
+    display_trace = (
+        "java.lang.AssertionError: java.lang.NoSuchMethodException: "
+        "android.view.SurfaceControl.createDisplay [class java.lang.String, boolean]\n"
+        "\tat com.genymobile.scrcpy.wrappers.SurfaceControl.createDisplay(SurfaceControl.java:83)\n"
+        "\tat com.genymobile.scrcpy.ScreenEncoder.createDisplay(ScreenEncoder.java:278)\n"
+        "\tat com.genymobile.scrcpy.Server.scrcpy(Server.java:100)\n"
+        "Caused by: java.lang.NoSuchMethodException: "
+        "android.view.SurfaceControl.createDisplay [class java.lang.String, boolean]\n"
+        "ERROR: Could not retrieve device information\nERROR: Server connection failed\n"
+    )
+
+    assert (
+        video_utils.classify_recording_failure(
+            (clipboard_trace if include_clipboard else "") + display_trace
+        )
+        == "recorder_incompatible"
+    )
+
+
+@pytest.mark.parametrize("version", ["1.24", "1.25", "2.0", "2.3.1"])
+def test_scrcpy_recording_flags_reject_versions_below_minimum(version):
+    with pytest.raises(ValueError, match="scrcpy too old for this phone's Android version"):
+        scrcpy_recording_flags(f"scrcpy {version}")
 
 
 def test_parse_scrcpy_version_rejects_unreadable_output():
@@ -126,19 +177,11 @@ def test_parse_scrcpy_version_rejects_unreadable_output():
         _parse_scrcpy_version("scrcpy version unavailable")
 
 
-def test_scrcpy_record_command_uses_125_compatible_flags(tmp_path):
+def test_scrcpy_record_command_refuses_125_before_spawning(tmp_path):
     output_path = tmp_path / "recording.mkv"
 
-    command = build_scrcpy_record_command(
-        "scrcpy", "device-1", output_path, scrcpy_version="scrcpy 1.25"
-    )
-
-    assert "--no-display" in command
-    assert "--no-window" not in command
-    assert command[command.index("--bit-rate") + 1] == "2M"
-    assert "--video-bit-rate" not in command
-    assert "--lock-video-orientation" in command
-    assert "--capture-orientation=@" not in command
+    with pytest.raises(ValueError, match="recording requires scrcpy 2.4 or newer"):
+        build_scrcpy_record_command("scrcpy", "device-1", output_path, scrcpy_version="scrcpy 1.25")
 
 
 @pytest.mark.asyncio
@@ -376,7 +419,7 @@ def mock_scrcpy_toolchain(monkeypatch):
     monkeypatch.setattr("artemis.controllers.unified_controller.find_scrcpy", lambda: "scrcpy")
     monkeypatch.setattr(
         "artemis.controllers.unified_controller.detect_scrcpy_version",
-        lambda executable: "1.25",
+        lambda executable: "2.4",
     )
 
 
@@ -407,6 +450,32 @@ async def test_unified_controller_start_recording(mock_ctx, tmp_path, mock_scrcp
                 assert "already in progress" in res2.message
 
     remove_active_session("emulator-5554")
+
+
+@pytest.mark.asyncio
+async def test_unified_controller_reports_old_scrcpy_without_spawning(
+    mock_ctx, tmp_path, mock_scrcpy_toolchain, monkeypatch
+):
+    controller = UnifiedMobileController(mock_ctx)
+    remove_active_session("emulator-5554")
+    monkeypatch.setattr(
+        "artemis.controllers.unified_controller.detect_scrcpy_version",
+        lambda executable: "1.25",
+    )
+    spawn = AsyncMock()
+    with (
+        patch.object(controller, "_spawn_scrcpy", spawn),
+        patch(
+            "artemis.controllers.unified_controller.get_android_display_state",
+            AsyncMock(return_value=None),
+        ),
+    ):
+        result = await controller.start_video_recording(output_dir=tmp_path)
+
+    assert result.success is False
+    assert "scrcpy too old for this phone's Android version" in result.message
+    spawn.assert_not_awaited()
+    assert get_active_session("emulator-5554") is None
 
 
 @pytest.mark.asyncio

@@ -15,19 +15,21 @@
  */
 
 import { LoggerService } from '../../services/logger.service';
+import { BrowserStorageService } from '../../services/browser-storage.service';
 import { DOCUMENT } from '@angular/common';
 import { Component, ChangeDetectionStrategy, NgZone, DestroyRef, effect, inject, computed, signal, ViewChild, ElementRef, OnInit } from '@angular/core';
 
 import { toSignal } from '@angular/core/rxjs-interop';
 import { FormsModule } from '@angular/forms';
 import { ActivatedRoute, Router } from '@angular/router';
-import { AgentStreamComponent } from '../../components/agent-stream/agent-stream.component';
 import { ChatInterfaceComponent } from '../../components/chat-interface/chat-interface.component';
-import { FloatingVideoPlayerComponent } from '../../components/floating-video-player/floating-video-player.component';
 import { RunLibraryComponent } from '../../components/run-library/run-library.component';
-import { RunTargetPickerComponent } from '../../components/run-target-picker/run-target-picker.component';
-import { RunViewerComponent } from '../../components/run-viewer/run-viewer.component';
+import { InterruptedBannerComponent } from '../../components/interrupted-banner/interrupted-banner.component';
+import { RunViewComponent } from '../../components/run-view/run-view.component';
+import { consolidateLogsToBlocks } from '../../utils/stream-aggregator.util';
+import { StepItemData } from '../../core/models/stream.model';
 import { AgentService } from '../../services/agent.service';
+import { WorkspacePhoneService } from '../../services/workspace-phone.service';
 import { IMAGE_ACCEPT, ImageChat, MAX_IMAGES, newDraftId, RunImageUpload, screenImages, toUpload } from '../../utils/run-image.util';
 
 /** A picture chosen for the next message, with the object URL its preview uses. */
@@ -43,12 +45,10 @@ export interface AttachedImage {
   standalone: true,
   imports: [
     FormsModule,
-    AgentStreamComponent,
     ChatInterfaceComponent,
-    FloatingVideoPlayerComponent,
     RunLibraryComponent,
-    RunTargetPickerComponent,
-    RunViewerComponent
+    InterruptedBannerComponent,
+    RunViewComponent
 ],
   templateUrl: './workspace.component.html',
   styleUrl: './workspace.component.scss',
@@ -56,7 +56,9 @@ export interface AttachedImage {
 })
 export class WorkspaceComponent implements OnInit {
   private readonly logger = inject(LoggerService);
+  private readonly browserStorage = inject(BrowserStorageService);
   public agentService = inject(AgentService);
+  public phone = inject(WorkspacePhoneService);
   private zone = inject(NgZone);
   private route = inject(ActivatedRoute);
   private router = inject(Router);
@@ -74,6 +76,14 @@ export class WorkspaceComponent implements OnInit {
   public readonly reviewRunId = computed(() => this.routeParams().get('id'));
   private readonly queryParams = toSignal(this.route.queryParamMap, { initialValue: this.route.snapshot.queryParamMap });
   public readonly reviewReadOnly = computed(() => this.queryParams().get('review') === '1' || this.queryParams().get('scope') === 'everyone');
+  public readonly liveSteps = computed<StepItemData[]>(() => {
+    const id = this.agentService.currentSessionId();
+    if (!id) return [];
+    const logs = this.agentService.sessionLogs().filter((log) =>
+      (log.type === 'step_recorded' || log.type === 'step_updated') && (!log.data?.session_id || log.data.session_id === id));
+    return consolidateLogsToBlocks(logs).filter((block) => block.type === 'step')
+      .map((block) => ({ ...block.data, session_id: block.data.session_id ?? id }));
+  });
 
   // Default right panel width to 1/3 of the screen (or 450px as fallback)
   public rightPanelWidth = signal<number>(
@@ -83,8 +93,6 @@ export class WorkspaceComponent implements OnInit {
   private dragWidthRafId: number | null = null;
   private pendingDragWidth = 0;
 
-  // Floating Command Bar State. taskInput is backed by a signal so computed
-  // expressions (isBarExpanded) genuinely track it under OnPush.
   private taskInputSignal = signal<string>('');
   public get taskInput(): string { return this.taskInputSignal(); }
   public set taskInput(value: string) {
@@ -105,13 +113,19 @@ export class WorkspaceComponent implements OnInit {
 
   public selectedProfile = signal<'flash' | 'pro'>('flash');
 
-  // Expand States (Signals for 0-latency reactivity)
-  public isHoveringCard = signal<boolean>(false);
   public isInputFocused = signal<boolean>(false);
 
   @ViewChild('dockInput') public dockInputRef?: ElementRef<HTMLTextAreaElement>;
 
   constructor() {
+    effect(() => {
+      try {
+        const saved = this.browserStorage.getItem('artemis_selected_profile');
+        this.selectedProfile.set(saved === 'pro' ? 'pro' : 'flash');
+      } catch (error) {
+        this.logger.warn('Unable to restore the selected profile:', error);
+      }
+    });
     // The floating nav lives outside this component; tell it how much width the right panel takes.
     const rootStyle = inject(DOCUMENT).documentElement.style;
     effect(() => rootStyle.setProperty('--right-panel-width', `${this.rightPanelWidth()}px`));
@@ -151,13 +165,6 @@ export class WorkspaceComponent implements OnInit {
     const navigation = this.router.currentNavigation() ?? this.router.lastSuccessfulNavigation();
     const handed = (navigation?.extras.state ?? history.state) as { draftPrompt?: unknown } | null;
     if (typeof handed?.draftPrompt === 'string' && handed.draftPrompt) this.taskInput = handed.draftPrompt;
-    if (typeof localStorage !== 'undefined') {
-      const saved = localStorage.getItem('artemis_selected_profile');
-      if (saved === 'flash' || saved === 'pro') {
-        this.selectedProfile.set(saved);
-      }
-    }
-
     // The global ⌘K/Ctrl+K shortcut is registered outside the Angular zone so
     // ordinary typing never schedules an extra change-detection pass.
     this.zone.runOutsideAngular(() => {
@@ -177,8 +184,10 @@ export class WorkspaceComponent implements OnInit {
       event.stopPropagation();
     }
     this.selectedProfile.set(profile);
-    if (typeof localStorage !== 'undefined') {
-      localStorage.setItem('artemis_selected_profile', profile);
+    try {
+      this.browserStorage.setItem('artemis_selected_profile', profile);
+    } catch (error) {
+      this.logger.warn('Unable to remember the selected profile:', error);
     }
   }
 
@@ -209,20 +218,6 @@ export class WorkspaceComponent implements OnInit {
   });
 
   /**
-   * Computed boolean whether the command bar should be in its expanded state:
-   * - Mouse is hovering directly on the command card
-   * - Input textarea is focused
-   * - User has entered task text (drafting)
-   */
-  public isBarExpanded = computed(() => {
-    return (
-      this.isHoveringCard() ||
-      this.isInputFocused() ||
-      this.taskInput.trim().length > 0
-    );
-  });
-
-  /**
    * Focus input handler
    */
   public onInputFocus(): void {
@@ -241,7 +236,7 @@ export class WorkspaceComponent implements OnInit {
    */
   public onCardClick(event: MouseEvent): void {
     const target = event.target as HTMLElement;
-    // Don't steal focus if clicking action buttons, the run-target picker or textarea directly
+    // Don't steal focus if clicking action buttons, or textarea directly
     if (target.closest('button, label, select') || target.tagName.toLowerCase() === 'textarea') {
       return;
     }
@@ -328,6 +323,20 @@ export class WorkspaceComponent implements OnInit {
     input.value = ''; // the same file can be chosen again after it was removed
   }
 
+  public onPaste(event: ClipboardEvent): void {
+    const clipboard = event.clipboardData;
+    if (!clipboard) return;
+    const files = Array.from(clipboard.files);
+    const hasText = clipboard.types.includes('text/plain');
+    if (files.length) {
+      if (!hasText) event.preventDefault();
+      if (!this.isSubmitting()) this.addImages(files);
+    } else if (clipboard.types.length && !hasText) {
+      event.preventDefault();
+      this.setErrorMessage('Clipboard content is not text or a PNG, JPG, JPEG or WEBP image.');
+    }
+  }
+
   public removeImage(id: number): void {
     const removed = this.attachedImages().find((image) => image.id === id);
     if (removed) URL.revokeObjectURL(removed.previewUrl);
@@ -347,6 +356,12 @@ export class WorkspaceComponent implements OnInit {
   public async submitTask(): Promise<void> {
     const goal = this.taskInput.trim();
     if (!goal || this.isSubmitting()) {
+      return;
+    }
+    // A run always goes to a phone the person chose; with none, open the picker and keep the prompt.
+    const target = this.phone.target();
+    if (!target) {
+      this.phone.requestPicker();
       return;
     }
 
@@ -372,9 +387,9 @@ export class WorkspaceComponent implements OnInit {
       imageChat = { images: uploads, sessionId: this.draftSessionId };
     }
 
-    const submission = imageChat
-      ? this.agentService.runTask(goal, this.selectedProfile(), undefined, undefined, undefined, imageChat)
-      : this.agentService.runTask(goal, this.selectedProfile());
+    const submission = this.agentService.runTask(
+      goal, this.selectedProfile(), undefined, undefined, undefined, imageChat, target
+    );
     submission.subscribe({
       next: () => {
         this.taskInput = '';
@@ -388,12 +403,24 @@ export class WorkspaceComponent implements OnInit {
       error: (err) => {
         this.logger.error('Failed to submit task:', err);
         this.isSubmitting.set(false);
+        if (err.status === 409 && err.error?.code === 'device_offline') {
+          // The phone left between choosing it and pressing Run: say so, keep the prompt, open the picker.
+          this.setErrorMessage('Your phone is not connected. Connect it again to run.');
+          this.phone.requestPicker();
+          return;
+        }
         const fallback = imageChat
           ? 'The message could not be sent. Your text and images are kept; try again.'
           : 'The runner is busy. Please wait for current task to finish.';
         this.setErrorMessage(err.error?.detail || fallback);
       }
     });
+  }
+
+  /** "Start new run with this prompt" on the interrupted banner. */
+  public startNewRunFrom(prompt: string): void {
+    this.taskInput = prompt;
+    this.focusInput();
   }
 
   /**

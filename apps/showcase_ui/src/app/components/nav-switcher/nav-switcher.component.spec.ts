@@ -1,6 +1,7 @@
 import { TestBed } from '@angular/core/testing';
 import { provideRouter } from '@angular/router';
 import { signal } from '@angular/core';
+import { phoneFakes } from '../../testing/phone-fakes';
 import { of } from 'rxjs';
 import { SystemService } from '../../services/system.service';
 import { AdminConfigService } from '../../services/admin-config.service';
@@ -11,38 +12,29 @@ import {
 import { NavSwitcherComponent } from './nav-switcher.component';
 
 describe('NavSwitcherComponent', () => {
-  it('shows the browser phone and disconnect action while connected', async () => {
+  it('has no phone control: the Workspace chip is the only one', async () => {
     const relay = {
-      state: signal<UsbDeviceRelayState>({ status: 'connected', serial: 'R58M123', error: null }),
+      state: signal<UsbDeviceRelayState>({ status: 'connected', serial: 'R58M123', sessionId: 's1', error: null }),
       disconnect: jasmine.createSpy('disconnect').and.resolveTo(undefined)
     };
 
     await TestBed.configureTestingModule({
       imports: [NavSwitcherComponent],
-      providers: [
-        provideRouter([]),
-        { provide: UsbDeviceRelayService, useValue: relay }
-      ]
+      providers: [provideRouter([]), ...phoneFakes().providers]
     }).compileComponents();
 
     const fixture = TestBed.createComponent(NavSwitcherComponent);
     fixture.detectChanges();
 
-    expect(fixture.nativeElement.textContent).toContain('Phone connected via this browser');
-    expect(fixture.nativeElement.querySelector('.usb-relay-badge')?.getAttribute('title')).toContain('R58M123');
-    expect(fixture.nativeElement.querySelector('code')).toBeNull();
-    (fixture.nativeElement.querySelector('.usb-relay-badge button') as HTMLButtonElement).click();
-    expect(relay.disconnect).toHaveBeenCalled();
+    expect(fixture.nativeElement.querySelector('.usb-relay-badge')).toBeNull();
+    expect(fixture.nativeElement.textContent).not.toContain('Phone connected');
+    expect(fixture.nativeElement.textContent).not.toContain('Disconnect');
   });
 
   it('links to the run library between Workspace and System Setup', async () => {
-    const relay = {
-      state: signal<UsbDeviceRelayState>({ status: 'idle', serial: null, error: null }),
-      disconnect: jasmine.createSpy('disconnect').and.resolveTo(undefined)
-    };
     await TestBed.configureTestingModule({
       imports: [NavSwitcherComponent],
-      providers: [provideRouter([]), { provide: UsbDeviceRelayService, useValue: relay }]
+      providers: [provideRouter([]), ...phoneFakes().providers]
     }).compileComponents();
     const fixture = TestBed.createComponent(NavSwitcherComponent);
     fixture.detectChanges();
@@ -59,33 +51,25 @@ describe('NavSwitcherComponent', () => {
     expect(names).toEqual(['Workspace', 'Runs', 'System Setup']);
   });
 
-  it('stays inside the viewport with the phone badge showing (CHE-1189)', async () => {
-    const relay = {
-      state: signal<UsbDeviceRelayState>({ status: 'connected', serial: '127.0.0.1:35117', error: null }),
-      disconnect: jasmine.createSpy('disconnect').and.resolveTo(undefined)
-    };
+  it('stays inside the viewport (CHE-1189)', async () => {
     await TestBed.configureTestingModule({
       imports: [NavSwitcherComponent],
-      providers: [provideRouter([]), { provide: UsbDeviceRelayService, useValue: relay }]
+      providers: [provideRouter([]), ...phoneFakes().providers]
     }).compileComponents();
     const fixture = TestBed.createComponent(NavSwitcherComponent);
     fixture.detectChanges();
 
-    // Phone badge + identity wrap onto a second row instead of running off-screen.
+    // The identity wraps onto a second row instead of running off-screen.
     const nav = fixture.nativeElement.querySelector('.floating-nav-switcher') as HTMLElement;
     expect(nav.getBoundingClientRect().right).toBeLessThanOrEqual(window.innerWidth);
     expect(getComputedStyle(nav).flexWrap).toBe('wrap');
   });
 
   it("hides What's New navigation when there are no entries", async () => {
-    const relay = {
-      state: signal<UsbDeviceRelayState>({ status: 'idle', serial: null, error: null }),
-      disconnect: jasmine.createSpy('disconnect').and.resolveTo(undefined)
-    };
 
     await TestBed.configureTestingModule({
       imports: [NavSwitcherComponent],
-      providers: [provideRouter([]), { provide: UsbDeviceRelayService, useValue: relay }]
+      providers: [provideRouter([]), ...phoneFakes().providers]
     }).compileComponents();
 
     const fixture = TestBed.createComponent(NavSwitcherComponent);
@@ -95,14 +79,10 @@ describe('NavSwitcherComponent', () => {
   });
 
   it('announces unread updates in the navigation', async () => {
-    const relay = {
-      state: signal<UsbDeviceRelayState>({ status: 'idle', serial: null, error: null }),
-      disconnect: jasmine.createSpy('disconnect').and.resolveTo(undefined)
-    };
 
     await TestBed.configureTestingModule({
       imports: [NavSwitcherComponent],
-      providers: [provideRouter([]), { provide: UsbDeviceRelayService, useValue: relay }]
+      providers: [provideRouter([]), ...phoneFakes().providers]
     }).compileComponents();
 
     const fixture = TestBed.createComponent(NavSwitcherComponent);
@@ -122,10 +102,6 @@ describe('NavSwitcherComponent', () => {
   });
 
   it("retains System Setup and unread What's New navigation with admin identity", async () => {
-    const relay = {
-      state: signal<UsbDeviceRelayState>({ status: 'idle', serial: null, error: null }),
-      disconnect: jasmine.createSpy('disconnect').and.resolveTo(undefined)
-    };
     const adminConfig = {
       getIdentity: () => of({
         email: 'admin@example.test',
@@ -139,7 +115,7 @@ describe('NavSwitcherComponent', () => {
       imports: [NavSwitcherComponent],
       providers: [
         provideRouter([]),
-        { provide: UsbDeviceRelayService, useValue: relay },
+        ...phoneFakes().providers,
         { provide: AdminConfigService, useValue: adminConfig }
       ]
     }).compileComponents();
@@ -163,55 +139,21 @@ describe('NavSwitcherComponent', () => {
     expect(fixture.nativeElement.querySelector('app-admin-identity-indicator')?.textContent).toContain('Admin');
   });
 
-  it('labels the browser phone by model and kind, keeping the raw address out of the bar (CHE-1261)', async () => {
-    const relay = {
-      state: signal<UsbDeviceRelayState>({ status: 'connected', serial: '127.0.0.1:44447', error: null }),
-      disconnect: jasmine.createSpy('disconnect').and.resolveTo(undefined)
-    };
+  it('puts the phone chip in the top bar, the first click of the 2-click connect (CHE-1143, OCR F6)', async () => {
     await TestBed.configureTestingModule({
       imports: [NavSwitcherComponent],
-      providers: [
-        provideRouter([]),
-        { provide: UsbDeviceRelayService, useValue: relay },
-        {
-          provide: SystemService,
-          useValue: {
-            connectedDevices: signal([
-              { serial: '127.0.0.1:44447', state: 'device', model: 'Pixel 6 Pro', device_kind: 'phone' }
-            ])
-          }
-        }
-      ]
+      providers: [provideRouter([]), ...phoneFakes().providers]
     }).compileComponents();
     const fixture = TestBed.createComponent(NavSwitcherComponent);
     fixture.detectChanges();
 
-    const badge = fixture.nativeElement.querySelector('.usb-relay-badge') as HTMLElement;
-    const text = (badge.textContent ?? '').replace(/\s+/g, ' ');
-    expect(text).toContain('Pixel 6 Pro');
-    expect(text).toContain('Phone');
-    expect(text).not.toContain('127.0.0.1');
-    expect(badge.getAttribute('title')).toContain('127.0.0.1:44447');
-  });
-
-  it('shows no raw address in the bar when the phone is not in the device list yet (CHE-1261)', async () => {
-    const relay = {
-      state: signal<UsbDeviceRelayState>({ status: 'connected', serial: '127.0.0.1:44447', error: null }),
-      disconnect: jasmine.createSpy('disconnect').and.resolveTo(undefined)
-    };
-    await TestBed.configureTestingModule({
-      imports: [NavSwitcherComponent],
-      providers: [
-        provideRouter([]),
-        { provide: UsbDeviceRelayService, useValue: relay },
-        { provide: SystemService, useValue: { connectedDevices: signal([]) } }
-      ]
-    }).compileComponents();
-    const fixture = TestBed.createComponent(NavSwitcherComponent);
-    fixture.detectChanges();
-
-    const text = (fixture.nativeElement.querySelector('.usb-relay-badge').textContent ?? '').replace(/\s+/g, ' ');
-    expect(text).toContain('Phone connected via this browser');
-    expect(text).not.toContain('127.0.0.1');
+    const nav = fixture.nativeElement.querySelector('nav.floating-nav-switcher') as HTMLElement;
+    const chip = nav.querySelector('app-workspace-device-chip button.chip') as HTMLButtonElement;
+    expect(chip).not.toBeNull();
+    expect(chip.textContent).toContain('No phone');
+    // It sits in the top bar's status area, next to who is signed in.
+    expect(chip.closest('.nav-status')).not.toBeNull();
+    expect(nav.querySelectorAll('app-workspace-device-chip').length).toBe(1);
+    expect(nav.getBoundingClientRect().top).toBeLessThan(window.innerHeight / 4);
   });
 });

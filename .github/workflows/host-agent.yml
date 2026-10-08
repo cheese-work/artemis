@@ -1,0 +1,67 @@
+name: Host agent core
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'host-agent/**'
+      - 'artemis/runtime/adb_gateway.py'
+      - 'artemis/runtime/host_*.py'
+      - 'tests/unit/runtime/test_host*.py'
+      - 'tests/support/fake_adb.py'
+      - '.github/workflows/host-agent.yml'
+  pull_request:
+    paths:
+      - 'host-agent/**'
+      - 'artemis/runtime/adb_gateway.py'
+      - 'artemis/runtime/host_*.py'
+      - 'tests/unit/runtime/test_host*.py'
+      - 'tests/support/fake_adb.py'
+      - '.github/workflows/host-agent.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: host-agent-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  core:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, cheese-x99]
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: host-agent
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.2'
+          cache: false
+      - run: go test -race ./...
+      - run: go vet ./...
+      - run: sh -n build.sh install.sh
+      - run: sh build.sh "${{ github.sha }}"
+      - run: cd dist && sha256sum -c SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: smartqa-host-core
+          path: host-agent/dist/
+  gateway:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, cheese-x99]
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python scripts/check_dependency_sources.py
+      - run: sudo apt-get update && sudo apt-get install --no-install-recommends -y libgl1 libglib2.0-0 libxcb1
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: false
+      - run: uv sync --dev --locked
+      - run: uv run pytest tests/unit/runtime/test_host_tunnel.py tests/unit/admin_console/test_host_tunnel_service.py tests/unit/runtime/test_fake_adb_lifecycle.py tests/unit/runtime/test_fake_adb_seam.py -q
