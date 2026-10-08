@@ -44,6 +44,9 @@ class RunRequest(BaseModel):
     app_path: str | None = None
     device_serial: str | None = None
     device_ref: DeviceRef | None = None
+    # The bridge session of the browser-held phone this run is bound to. It implies the phone:
+    # `device_serial` defaults to the bridge's serial, and a closed bridge refuses the run.
+    bridge_session_id: str | None = None
     ingress: str | None = "frontend"
     session_id: str | None = None
     conversation_id: str | None = None

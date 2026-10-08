@@ -1,4 +1,5 @@
 import { Session } from '../core/models/session.model';
+import { mediaUrl } from './app-url.util';
 import { redact } from '../services/logger.service';
 import { isActionFailed } from './action-formatter.util';
 import { consolidateLogsToBlocks } from './stream-aggregator.util';
@@ -354,7 +355,9 @@ function safeRecordingUrl(value: string | null | undefined): string | null {
   if (!trimmed || /[\r\n]/.test(trimmed)) return null;
 
   try {
-    const url = new URL(trimmed, window.location.origin);
+    const local = mediaUrl(trimmed);
+    if (!local) return null;
+    const url = new URL(local, window.location.origin);
     if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
     return url.href.replace(/[()]/g, character => encodeURIComponent(character));
   } catch {

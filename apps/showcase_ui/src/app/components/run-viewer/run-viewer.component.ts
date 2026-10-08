@@ -1,4 +1,5 @@
 import { LoggerService } from '../../services/logger.service';
+import { appUrl, mediaUrl } from '../../utils/app-url.util';
 import {
   ChangeDetectionStrategy,
   Component,
@@ -14,12 +15,11 @@ import {
 } from '@angular/core';
 import { HttpErrorResponse, HttpEvent, HttpEventType } from '@angular/common/http';
 import { DatePipe } from '@angular/common';
-import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { Router, RouterLink } from '@angular/router';
 import { Subscription } from 'rxjs';
 import { RunSummary, SessionVideo, VideoSegment } from '../../core/models/run.model';
 import { StepItemData } from '../../core/models/stream.model';
-import { AdminConfigService } from '../../services/admin-config.service';
+import { OwnerScopeService } from '../../services/owner-scope.service';
 import { RunsService } from '../../services/runs.service';
 import {
   getActionObject,
@@ -39,6 +39,7 @@ import {
   interruptReason,
   interruptedSentence,
   outcomeView,
+  readOnlyText,
   removedReason
 } from '../../utils/run-library-strings';
 import { RunIdCopyComponent } from '../run-id-copy/run-id-copy.component';
@@ -63,9 +64,10 @@ const DIALOGS: Record<DialogKind, { title: string; notices: string[]; confirm: s
   changeDetection: ChangeDetectionStrategy.OnPush
 })
 export class RunViewerComponent {
+  public readonly appUrl = appUrl;
   private readonly logger = inject(LoggerService);
   private readonly runsApi = inject(RunsService);
-  private readonly adminApi = inject(AdminConfigService);
+  private readonly ownerScope = inject(OwnerScopeService);
   private readonly router = inject(Router);
   private readonly destroyRef = inject(DestroyRef);
 
@@ -90,13 +92,19 @@ export class RunViewerComponent {
   public readonly playerFailed = signal(false);
   public readonly selectedStepId = signal<string | null>(null);
   public readonly activeSegmentIndex = signal(0);
-  public readonly isAdmin = signal(false);
   public readonly compact = signal(false);
   public readonly techOpen = signal(false);
 
   public readonly dialogKind = signal<DialogKind | null>(null);
   public readonly feedback = signal('');
   public readonly actionError = signal<{ text: string; retry: Retryable } | null>(null);
+
+  /** Pin and Delete change the run, so only its owner or an admin gets them; the server checks too. */
+  public readonly canChange = computed(() => this.ownerScope.canAct(this.run()?.requested_by));
+  /** Set once we know who is looking and they may not change this run. */
+  public readonly readOnlyNote = computed(() =>
+    this.ownerScope.identity() && this.run() && !this.canChange() ? readOnlyText(this.run()!.requested_by) : null
+  );
 
   public readonly lastQuery = this.runsApi.lastLibraryQuery;
   public readonly dialog = computed(() => (this.dialogKind() ? DIALOGS[this.dialogKind()!] : null));
@@ -137,7 +145,7 @@ export class RunViewerComponent {
   });
 
   public readonly videoUrl = computed(
-    () => this.segments()[this.activeSegmentIndex()]?.url ?? this.video()?.video_url ?? null
+    () => mediaUrl(this.segments()[this.activeSegmentIndex()]?.url ?? this.video()?.video_url)
   );
 
   public readonly screenshot = computed(() => {
@@ -166,10 +174,7 @@ export class RunViewerComponent {
   private continuePlaying = false;
 
   constructor() {
-    this.adminApi
-      .getIdentity()
-      .pipe(takeUntilDestroyed(this.destroyRef))
-      .subscribe({ next: (identity) => this.isAdmin.set(identity.admin), error: () => this.isAdmin.set(false) });
+    this.ownerScope.load();
 
     const query = typeof window !== 'undefined' ? window.matchMedia('(max-width: 1279px)') : null;
     if (query) {
@@ -382,7 +387,7 @@ export class RunViewerComponent {
     if (!run) return;
     this.actionError.set(null);
     try {
-      await navigator.clipboard.writeText(`${window.location.origin}/runs/${run.session_id}`);
+      await navigator.clipboard.writeText(new URL(appUrl(`/runs/${encodeURIComponent(run.session_id)}`), document.baseURI).href);
       if (this.run()?.session_id === run.session_id) this.feedback.set(RUN_STRINGS.linkCopied);
     } catch (error) {
       this.logger.warn('UI operation failed:', error);

@@ -65,3 +65,10 @@ Computers share their phones with SmartQA. Set `ARTEMIS_HOST_AGENT=enabled` on t
 - **Enrollment codes.** 128-bit, single use, 15 minutes, stored hashed, rate limited per IP and per code. A code binds to the first key that signs it; the same key may retry within the 15 minutes, any other key gets "used".
 - **Sessions.** A signed challenge (single-use nonce, 60 s) opens a 24-hour token bound to the computer and its connection. Reconnecting replaces the earlier connection. Revoking closes the live connection at once and refuses renewal and uploads.
 - **Rollback.** Turn the flag off and revoke computers. The registry tables (`hosts`, `host_devices`, `host_tokens`, `host_enrollment_codes`) are additive and ignored when the flag is off.
+
+## Failures (admins)
+
+Setup → Failures lists failed steps and failed or interrupted runs of the last 14 days, grouped by cause: `smartqa_infra` and `smartqa_agent` (SmartQA's to fix), `provider` (model gateway), `user_prompt` (shown, "No action") and `unknown`. Classification is rule-based (`services/failure_ledger.py`); the ledger is in the run catalog database, collected hourly and on demand (`POST /api/system/failures/collect`, which also backfills existing runs).
+
+- **Daily digest.** Once a day, one message lists `smartqa_*` causes not reported before, sent through the notifier channels (`ARTEMIS_WEBHOOK_URL` and the others in `mcp_server/notifiers`). A cause counts as reported only after a channel accepted the message; with no channel configured, the digest repeats daily and `POST /api/system/failures/digest` returns `"sent": false`.
+- **Evidence** is redacted and cut to 300 characters. Run causes come from the interrupt reason, else the last error line of the run's `stdout.log`.

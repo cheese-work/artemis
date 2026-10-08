@@ -15,7 +15,8 @@
  */
 
 import { LoggerService } from './logger.service';
-import { Injectable, signal, computed, inject, DestroyRef, NgZone } from '@angular/core';
+import { Injectable, signal, computed, inject, DestroyRef, NgZone, effect } from '@angular/core';
+import { BrowserStorageService } from './browser-storage.service';
 import { HttpClient } from '@angular/common/http';
 import { Observable, finalize, map, shareReplay, tap } from 'rxjs';
 import {
@@ -30,9 +31,9 @@ import {
 
 export const SELECTED_DEVICE_SERIAL_KEY = 'artemis.selected_device_serial';
 
-function rememberedRunTarget(logger: LoggerService): string | null {
+function rememberedRunTarget(logger: LoggerService, storage: BrowserStorageService): string | null {
   try {
-    return localStorage.getItem(SELECTED_DEVICE_SERIAL_KEY);
+    return storage.getItem(SELECTED_DEVICE_SERIAL_KEY);
   } catch (error) {
     logger.warn('Unable to restore the run target:', error);
     return null;
@@ -43,11 +44,12 @@ function rememberedRunTarget(logger: LoggerService): string | null {
   providedIn: 'root'
 })
 export class SystemService {
+  private readonly browserStorage = inject(BrowserStorageService);
   private readonly logger = inject(LoggerService);
   private http = inject(HttpClient);
   public configWritesLocked = signal<boolean>(true);
   /** The phone this browser runs on next; null means automatic. */
-  public selectedRunTarget = signal<string | null>(rememberedRunTarget(this.logger));
+  public selectedRunTarget = signal<string | null>(rememberedRunTarget(this.logger, this.browserStorage));
 
   /**
    * Remember which phone this browser uses for its next run. Unlike {@link selectDevice} it
@@ -56,9 +58,9 @@ export class SystemService {
   public chooseRunTarget(serial: string | null): void {
     try {
       if (serial) {
-        localStorage.setItem(SELECTED_DEVICE_SERIAL_KEY, serial);
+        this.browserStorage.setItem(SELECTED_DEVICE_SERIAL_KEY, serial);
       } else {
-        localStorage.removeItem(SELECTED_DEVICE_SERIAL_KEY);
+        this.browserStorage.removeItem(SELECTED_DEVICE_SERIAL_KEY);
       }
     } catch (error) {
       this.logger.warn('Unable to remember the run target in this browser:', error);
@@ -192,6 +194,7 @@ export class SystemService {
   };
 
   constructor() {
+    effect(() => this.selectedRunTarget.set(rememberedRunTarget(this.logger, this.browserStorage)));
     this.startAutoPolling(3000);
     if (typeof document !== 'undefined') {
       document.addEventListener('visibilitychange', this.onVisibilityChange);

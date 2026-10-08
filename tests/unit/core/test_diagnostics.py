@@ -504,8 +504,29 @@ async def test_toolchain_probe_explains_unsupported_scrcpy(monkeypatch):
 
     assert result.status == ProbeStatus.FAIL
     assert result.metadata["scrcpy_supported"] is False
-    assert "Unsupported scrcpy version (1.24)" in result.summary
-    assert "recording requires scrcpy 1.25" in result.description
+    assert "scrcpy too old for this phone's Android version (1.24)" in result.summary
+    assert "recording requires scrcpy 2.4" in result.description
+
+
+@pytest.mark.asyncio
+async def test_toolchain_probe_reports_125_too_old_for_phone(monkeypatch):
+    monkeypatch.setattr(
+        "artemis.core.diagnostics.probes.toolchain_probe.toolchain.resolve",
+        lambda name: f"/usr/bin/{name}",
+    )
+    monkeypatch.setattr(
+        "artemis.core.diagnostics.probes.toolchain_probe.detect_scrcpy_version",
+        lambda executable: "1.25",
+    )
+
+    result = await ToolchainProbe().probe()
+
+    assert result.status == ProbeStatus.FAIL
+    assert result.metadata["scrcpy_supported"] is False
+    assert result.metadata["scrcpy_version"] == "1.25"
+    assert "scrcpy too old for this phone's Android version" in result.summary
+    assert "recording requires scrcpy 2.4 or newer" in result.description
+    assert any("start.sh" in action.payload for action in result.actions)
 
 
 @pytest.mark.asyncio

@@ -135,6 +135,43 @@ def test_uvicorn_handlers_are_redacted():
         )
 
 
+@pytest.mark.parametrize(
+    ("request_path", "expected_path"),
+    [
+        ("/health", "/health"),
+        ("/login?token=access-query-sentinel", "/login?token=[REDACTED]"),
+        ("/configured-access-sentinel", "/[REDACTED]"),
+        ("/typed-goal-sentinel", "/[REDACTED]"),
+    ],
+)
+def test_uvicorn_access_records_are_emitted_and_redacted(
+    monkeypatch, capsys, request_path, expected_path
+):
+    from apps.admin_console.server import REDACTED_UVICORN_LOGGING
+    import uvicorn
+
+    monkeypatch.setenv("OPENAI_API_KEY", "configured-access-sentinel")
+    bind_session("access-regression", "password=typed-goal-sentinel")
+    uvicorn.Config(
+        "apps.admin_console.server:proxy_aware_app",
+        log_config=REDACTED_UVICORN_LOGGING,
+        use_colors=False,
+    )
+    capsys.readouterr()
+    logging.getLogger("uvicorn.access").info(
+        '%s - "%s %s HTTP/%s" %d', "127.0.0.1:12345", "GET", request_path, "1.1", 200
+    )
+
+    output = capsys.readouterr()
+    assert "127.0.0.1:12345" in output.out
+    assert f"GET {expected_path} HTTP/1.1" in output.out
+    assert "200" in output.out
+    assert "session_id=access-regression" in output.out
+    for secret in ("access-query-sentinel", "configured-access-sentinel", "typed-goal-sentinel"):
+        assert secret not in output.out + output.err
+    assert output.err == ""
+
+
 @pytest.mark.skipif(os.name == "nt", reason="POSIX permissions and symlink boundary")
 def test_goal_file_refuses_public_files_and_symlinks(tmp_path):
     public = tmp_path / "public-goal"
