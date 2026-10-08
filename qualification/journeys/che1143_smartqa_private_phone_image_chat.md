@@ -48,11 +48,12 @@ The synthetic preview returns an empty device list and disables device, provider
 ### BUG-002 — Owner-filtered events
 
 1. Use the same two authorized QA contexts. Before QA-A submits anything, open one `GET /api/stream/active` SSE connection in each context. Require HTTP `200`, an open stream, and its initial `info` message `Subscribed to session active` in both contexts. Record both handshakes. If either stream is not healthy, do not submit the run and record the case `NOT-RUN`.
-2. After both handshakes, submit the single QA-A run described in REQ-003. Keep both SSE connections open and capture each stream continuously. Require QA-A to receive positive run-scoped evidence for the exact run, including `session_started` and `session_ended`. Keep QA-B's capture through QA-A's `session_ended` event or 900 seconds after submission, whichever comes first.
-3. Verify QA-B receives no QA-A event payload, run identifier, or private image reference. Verify QA-B's own data remains scoped to QA-B. Any disconnect before the capture boundary, missing QA-A terminal event, or missing positive QA-A event evidence makes the result `NOT-RUN`, not a pass. Do not reconnect and do not add another run for event capture.
-4. Preserve read-only access through any already-authorized share link. Do not create, revoke, or modify a link. If no owner-supplied link fixture exists, record this control as `NOT-RUN`.
+2. After both handshakes, submit the single QA-A run described in REQ-003. Keep both SSE connections open and capture each stream continuously. The pinned route emits `event: keep-alive` with `{}` after each 5.0-second wait with no queued event. During every quiet interval, require and timestamp that keep-alive on each channel; a run-scoped event also confirms channel activity. Require QA-A to receive positive run-scoped evidence for the exact run, including `session_started` and `session_ended`.
+3. Keep both captures open through QA-A's `session_ended` event, with a hard limit of 900 seconds after submission. QA-A's terminal event must arrive within that limit. If either stream disconnects, either channel misses its expected keep-alive during a quiet interval, or the 900-second limit arrives before QA-A's terminal event, record `NOT-RUN`; do not accept silence as evidence of owner filtering. Do not reconnect and do not add another run for event capture.
+4. Verify QA-B receives no QA-A event payload, run identifier, or private image reference through the capture boundary. Verify QA-B's own data remains scoped to QA-B. Any unhealthy or incomplete QA-B capture makes the result `NOT-RUN`, not a pass.
+5. Preserve read-only access through any already-authorized share link. Do not create, revoke, or modify a link. If no owner-supplied link fixture exists, record this control as `NOT-RUN`.
 
-**Pass evidence:** both successful subscription handshakes; continuous owner/non-owner captures tied to the same run ID; QA-A's positive `session_started` and `session_ended` evidence; QA-B's bounded capture; and a separate record that the allowed share-link read was preserved or `NOT-RUN` because no authorized link fixture was supplied.
+**Pass evidence:** both successful subscription handshakes; timestamped keep-alive health on both channels during every quiet interval; continuous owner/non-owner captures tied to the same run ID; QA-A's positive `session_started` and `session_ended` evidence within 900 seconds; QA-B's complete bounded capture through the owner terminal event; and a separate record that the allowed share-link read was preserved or `NOT-RUN` because no authorized link fixture was supplied.
 
 ### REQ-003 — Image delivery in the current conversation
 
@@ -67,26 +68,8 @@ The synthetic preview returns an empty device list and disables device, provider
 
 - Reuse the existing unsupported/malformed/oversize image regressions; they must reject before enqueue or provider activity. Do not duplicate them in a second source-level suite.
 - The live non-owner phone-control contract is `UNKNOWN` and `NOT-RUN`. The safe pre-enqueue control is the read-only QA-B selector denial in BUG-001; it must stop before `/api/run`, enqueue, or device command. It does not prove server-side task-control authorization. The pinned source's `host_id` branch bypasses `require_device`; do not send a host-bound request or claim that the branch denies it. Sol must verify the serving revision and approve a separate reviewed control that proves rejection before enqueue and before any device command. Shared-device visibility and authorized share-link reads are preservation controls, not denials.
-- If Sol determines this target class needs first-class qualification, run the Android squad's clean representative pass, clean rerun, and deliberate assertion-failure control against this same reviewed revision. For the control only, copy the journey and change only the expected answer assertion from `11/07/2016` to `11/07/2017`; keep the reviewed journey unchanged. The control goal is: `Open the same QA-A SmartQA conversation, attach the pinned screenshot.jpg, ask "What date does the yellow instruction ask me to select? Reply with only the date.", and assert that the returned assistant answer is exactly 11/07/2017.`
-
-  Run the control only after both reviews, Sol's admission, QA-profile revalidation at the serving revision, and provider/account-owner/numeric-spend gates. Use a fresh session ID and the exact claim serial. Preserve the outcome artifact before evaluating it. The runner command must return `0`; the outcome must show `task_status="completed"`, exactly one failed assertion, and that failed assertion must name `11/07/2017`. The validator's expected exit is `1`; any other runner or validator result invalidates the control.
-
-  ```bash
-  CONTROL_GOAL='Open the same QA-A SmartQA conversation, attach the pinned screenshot.jpg, ask "What date does the yellow instruction ask me to select? Reply with only the date.", and assert that the returned assistant answer is exactly 11/07/2017.'
-  CONTROL_SESSION_ID='<fresh session UUID>'
-  CLAIM_SERIAL='<exact device serial in Sol claim>'
-  CONTROL_TRACE_ROOT='<private control trace directory>'
-  EVIDENCE_DIR='<authorized evidence destination>'
-  set +e
-  timeout --signal=TERM --kill-after=30s 900s env ARTEMIS_TRACES_DIR="$CONTROL_TRACE_ROOT" uv run artemis run "$CONTROL_GOAL" --profile pro --device-serial "$CLAIM_SERIAL" --standalone --session-id "$CONTROL_SESSION_ID" --enable-checker --verification-level final
-  runner_status=$?
-  set -e
-  cp "$CONTROL_TRACE_ROOT/$CONTROL_SESSION_ID/run_outcome.json" "$EVIDENCE_DIR/qualification-control-run_outcome.json"
-  test "$runner_status" -eq 0
-  uv run python -c 'import json,sys; o=json.load(open(sys.argv[1])); t=o.get("tests",{}); f=t.get("failed_items",[]); ok=o.get("task_status")=="completed" and t.get("failed")==1 and len(f)==1 and "11/07/2017" in f[0].get("item_text","") and "11/07/2016" in f[0].get("evidence",""); print(json.dumps({"task_status":o.get("task_status"),"failed":t.get("failed"),"failed_items":f})); sys.exit(1 if ok else 2)' "$EVIDENCE_DIR/qualification-control-run_outcome.json"
-  ```
-
-  Keep the control `NOT-RUN` if any gate is missing. Include provider use inside the recorded numeric spend scope; Anthropic Android runs remain halted.
+- First-class qualification is `BLOCKED` and `NOT-RUN` if Sol determines it applies to this target class. The missing reviewed representative case is `CHE-1143-MBP-Chrome-Pixel6Pro-qualification`: it must bind the nominated MBP Chrome host and authorized QA-A browser profile, verified protected-site URL and serving revision, the QA-A conversation, the staged JPEG with the pinned digest, and the exact Pixel 6 Pro serial in Sol's exclusive claim. It must specify one clean representative pass, a clean rerun, and a deliberate failure control on the same immutable testcase and runner revisions.
+- For the deliberate failure control, copy the representative case and change only the expected answer assertion from `11/07/2016` to `11/07/2017`. The expected result is exactly one failed answer assertion naming `11/07/2017`, with the observed answer `11/07/2016`; preserve the raw failure artifact in Sol's authorized evidence directory before evaluating or approving it. No reviewed browser-capable runner command currently binds the required Chrome context, URL, conversation, image, and claimed phone. `artemis run --device-serial` selects an Android target and does not bind that browser context; do not use it for this qualification. Keep qualification `BLOCKED` until the missing case pins a compatible command and both independent reviewers approve the same immutable revision. Run no qualification control during authoring. Include any provider use inside the recorded numeric spend scope; Anthropic Android runs remain halted.
 - Do not execute a control against a real phone or provider during authoring.
 
 ## Cleanup and evidence

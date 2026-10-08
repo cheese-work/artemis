@@ -29,7 +29,7 @@
     ],
     "testcase_source": {
       "path": "qualification/journeys/che1143_smartqa_private_phone_image_chat.md",
-      "digest_sha256": "e4378aa7c2587af6b48a522e88d0da6b7f81e3a1da452d728d0251d6a951c7e8",
+      "digest_sha256": "3ee89bccebb6592a15ee23e1688139492a11924aef07f4633af620d6dfaa73ed",
       "revision_binding": "The published PR head SHA is the immutable testcase revision. The handoff records the full SHA. Both independent decisions must name that same SHA."
     },
     "test_image": {
@@ -98,7 +98,7 @@
       "execution_status": "NOT-RUN",
       "requires_two_authorized_regular_qa_identities": true,
       "subscription_handshake": "Before submission, both GET /api/stream/active SSE connections must return HTTP 200, remain open, and deliver info: Subscribed to session active.",
-      "capture": "Submit the sole QA-A image run after both handshakes; require QA-A session_started and session_ended for its exact run. Keep QA-B capture through QA-A session_ended or 900 seconds after submission, whichever comes first. Disconnect, missing positive owner evidence, or missing owner terminal event means NOT-RUN.",
+      "capture": "Submit the sole QA-A image run after both handshakes and keep both SSE connections open. During every quiet interval, record the pinned route's event: keep-alive with {} after its 5.0-second idle wait; a run-scoped event also confirms channel activity. Require QA-A session_started and session_ended for the exact run within 900 seconds. Keep QA-B capture through QA-A session_ended. A disconnect, missing expected keep-alive on either quiet channel, or 900-second timeout before QA-A session_ended means NOT-RUN; empty QA-B silence is never a pass.",
       "additional_provider_run_for_event_capture": false
     },
     {
@@ -116,6 +116,7 @@
     "reviewers_selected_by": "Android device squad leader",
     "material_change_requires_fresh_decisions": true
   },
+  "qualification_status": "BLOCKED pending Sol's first-class qualification determination and a reviewed browser-bound representative case",
   "execution_gates": {
     "host_serial_and_exclusive_claim": "MISSING; Sol owns admission",
     "two_regular_qa_identities": "REVALIDATION MISSING; revalidate the two existing authorized QA profiles at the serving revision with read-only GET /api/system/whoami; no provisioning or credential action.",
@@ -138,21 +139,34 @@
       "status": "NOT-RUN"
     },
     {
-      "id": "ARTEMIS-deliberate-assertion-failure",
+      "id": "CHE-1143-MBP-Chrome-Pixel6Pro-qualification-control",
+      "qualification_status": "BLOCKED",
+      "applies_if": "Sol determines first-class qualification applies to this target class",
+      "missing_representative_case": {
+        "id": "CHE-1143-MBP-Chrome-Pixel6Pro-qualification",
+        "required_bindings": [
+          "Nominated MBP Chrome host and authorized QA-A browser profile",
+          "Verified protected-site URL and serving revision",
+          "QA-A conversation used for the image request",
+          "Staged tests/tools/inputs/screenshot.jpg with the pinned SHA-256",
+          "Exact Pixel 6 Pro serial in Sol's exclusive claim",
+          "Immutable browser-capable runner revision and exact command"
+        ],
+        "positive_runs": "One clean representative pass and one clean rerun on the same immutable testcase and runner revisions"
+      },
       "assertion_mutation": {
-        "scope": "Temporary control copy only; do not edit the reviewed journey.",
+        "scope": "Temporary qualification control copy only; do not edit the reviewed journey.",
         "original": "The returned assistant answer is exactly 11/07/2016.",
         "mutated": "The returned assistant answer is exactly 11/07/2017.",
         "only_mutation": true
       },
-      "goal": "Open the same QA-A SmartQA conversation, attach the pinned screenshot.jpg, ask \"What date does the yellow instruction ask me to select? Reply with only the date.\", and assert that the returned assistant answer is exactly 11/07/2017.",
-      "command": "timeout --signal=TERM --kill-after=30s 900s env ARTEMIS_TRACES_DIR=\"$CONTROL_TRACE_ROOT\" uv run artemis run \"$CONTROL_GOAL\" --profile pro --device-serial \"$CLAIM_SERIAL\" --standalone --session-id \"$CONTROL_SESSION_ID\" --enable-checker --verification-level final",
-      "artifact_path": "$CONTROL_TRACE_ROOT/$CONTROL_SESSION_ID/run_outcome.json",
-      "preserve_command": "cp \"$CONTROL_TRACE_ROOT/$CONTROL_SESSION_ID/run_outcome.json\" \"$EVIDENCE_DIR/qualification-control-run_outcome.json\"",
-      "validator": "uv run python -c 'import json,sys; o=json.load(open(sys.argv[1])); t=o.get(\"tests\",{}); f=t.get(\"failed_items\",[]); ok=o.get(\"task_status\")==\"completed\" and t.get(\"failed\")==1 and len(f)==1 and \"11/07/2017\" in f[0].get(\"item_text\",\"\") and \"11/07/2016\" in f[0].get(\"evidence\",\"\"); print(json.dumps({\"task_status\":o.get(\"task_status\"),\"failed\":t.get(\"failed\"),\"failed_items\":f})); sys.exit(1 if ok else 2)' \"$EVIDENCE_DIR/qualification-control-run_outcome.json\"",
-      "expected_result": "Artemis runner exits 0; preserved run_outcome.json has task_status=completed and exactly one failed assertion whose item names 11/07/2017 and evidence records the observed 11/07/2016; validator exits 1 only for that expected assertion failure and 2 for any other result.",
+      "goal": "Open the QA-A SmartQA conversation in the bound MBP Chrome context, attach the pinned screenshot.jpg, ask \"What date does the yellow instruction ask me to select? Reply with only the date.\", and assert that the returned assistant answer is exactly 11/07/2017.",
+      "runner_command": null,
+      "runner_command_blocker": "No reviewed browser-capable command pins the required Chrome context, protected-site URL, conversation, staged image, and claimed phone. artemis run --device-serial selects an Android target and does not bind that browser context; do not use it for this qualification.",
+      "failure_artifact": "Preserve the raw runner result in Sol's authorized evidence directory before evaluating or approving it; the future reviewed case must pin its exact artifact path.",
+      "expected_result": "NOT-RUN while qualification is BLOCKED. In the missing reviewed case, the control must produce exactly one failed answer assertion naming 11/07/2017 and recording the observed answer 11/07/2016; the runner exit expectation remains unpinned until the compatible command is reviewed.",
       "status": "NOT-RUN",
-      "condition": "Run only if Sol confirms first-class qualification applies, both fresh reviews and Sol's admission are recorded, QA profiles are revalidated at the serving revision, and provider/account-owner/numeric-spend gates cover the control. Use the exact claim serial and a fresh session ID. Anthropic Android runs remain halted.",
+      "condition": "Do not run until the missing browser-bound case is authored, both fresh reviews approve the same immutable revision, Sol records admission, QA profiles are revalidated at the serving revision, and provider/account-owner/numeric-spend gates cover the control. Anthropic Android runs remain halted.",
       "author_execution": "PROHIBITED"
     }
   ],
