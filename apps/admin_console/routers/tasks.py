@@ -168,6 +168,7 @@ async def run_task(request: RunRequest, actor: OwnerScope = Depends(actor_scope)
 
     if request.bridge_session_id:
         await _bind_bridge_session(request)
+        requested_serial = request.device_serial
     # A phone the caller does not own is refused before any probe or enqueue.
     if requested_serial and not host_id:
         require_device(scope, requested_serial)

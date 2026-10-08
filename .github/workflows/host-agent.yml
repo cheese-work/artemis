@@ -1,6 +1,7 @@
 name: Host agent core
 
 on:
+  workflow_dispatch:
   push:
     paths:
       - 'host-agent/**'

@@ -56,6 +56,8 @@ class RunRequest(BaseModel):
 
     @model_validator(mode="after")
     def check_device_ref(self):
+        if self.device_ref and self.bridge_session_id:
+            raise ValueError("bridge_session_id and device_ref are mutually exclusive")
         if self.device_ref and self.device_serial not in {None, self.device_ref.serial}:
             raise ValueError("device_serial must match device_ref.serial")
         return self
