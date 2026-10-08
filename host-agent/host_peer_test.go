@@ -179,8 +179,8 @@ func TestHostGatewayAllowlistAndText(test *testing.T) {
 			test.Fatal("untrusted text accepted")
 		}
 	}
-	filtered, err := hostFilterDevices([]byte("usb-1\tdevice\nprivate\tdevice\n"), func(serial string) bool { return serial == "usb-1" })
-	if err != nil || string(filtered) != "usb-1\tdevice\n" {
+	filtered, err := hostFilterDevices([]byte("usb-1                  device\nprivate                device\n"), func(serial string) bool { return serial == "usb-1" })
+	if err != nil || string(filtered) != "usb-1                  device\n" {
 		test.Fatalf("devices: %q %v", filtered, err)
 	}
 	maximal := append([]byte("usb-1\test"), bytes.Repeat([]byte("x"), hostMaxText-6)...)

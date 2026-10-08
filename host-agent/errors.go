@@ -14,6 +14,9 @@ var errorCatalog = map[string]string{
 	"SQH-E004": "Enrollment failed. Create a new code in Setup → Computers.",
 	"SQH-E005": "Enroll this agent before running it.",
 	"SQH-E006": "The server requires a newer agent protocol. Update the agent.",
+	"SQH-E007": "Host authentication is expired or revoked. Re-enroll this computer.",
+	"SQH-E008": "The host tunnel protocol is invalid. Check the server and agent versions.",
+	"SQH-E009": "The local agent is unavailable or already running. Check service status.",
 	"SQH-E101": "DNS lookup failed. Check split-DNS VPN settings or SMARTQA_HOST_DNS_SERVER.",
 	"SQH-E102": "Proxy connection failed. Check SMARTQA_HOST_PROXY and proxy authentication.",
 	"SQH-E103": "TLS verification failed. Check the certificate chain and system clock; do not disable TLS verification.",
@@ -32,6 +35,19 @@ var errorCatalog = map[string]string{
 type agentError struct {
 	Code  string
 	Cause error
+}
+
+const permanentErrorExitStatus = 78
+
+func processExitStatus(err error) int {
+	if err == nil {
+		return 0
+	}
+	switch errorCode(err) {
+	case "SQH-E006", "SQH-E007", "SQH-E008", "SQH-E009":
+		return permanentErrorExitStatus
+	}
+	return 1
 }
 
 func (err *agentError) Error() string        { return fmt.Sprintf("%s: %s", err.Code, errorCatalog[err.Code]) }

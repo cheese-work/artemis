@@ -93,6 +93,14 @@ automatic downloaded-adb startup remains unimplemented before ready.
 
 ## Install and user services
 
+Permanent tunnel failures (`SQH-E006`, `SQH-E007`, `SQH-E008`, `SQH-E009`)
+exit with status 78. The systemd unit uses `RestartPreventExitStatus=78`.
+The LaunchAgent uses `service run`, which logs those errors and exits 0,
+with `KeepAlive.SuccessfulExit=false`. Other failures still exit 1 and
+remain eligible for restart. Correct the identity, protocol, or duplicate
+instance before manually starting the service again. Native systemd and
+launchd lifecycle acceptance is NOT-RUN.
+
 An operator must deploy the built distribution directory and set
 `ARTEMIS_AGENT_DIST_DIR` on the server. B1's existing authenticated install
 and artifact routes then serve only the three supported targets, installer

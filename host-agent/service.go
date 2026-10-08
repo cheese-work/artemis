@@ -24,14 +24,14 @@ func serviceTemplate(platform, binary, configPath, logPath string) (string, erro
 		quote := func(value string) string {
 			return strconv.Quote(strings.ReplaceAll(strings.ReplaceAll(value, "%", "%%"), "$", "$$"))
 		}
-		return "[Unit]\nDescription=SmartQA host agent\nAfter=network-online.target\n\n[Service]\nType=simple\nEnvironment=ARTEMIS_HOST_AGENT=1\nExecStart=" + quote(binary) + " run --config " + quote(configPath) + "\nRestart=on-failure\nRestartSec=5\nUMask=0077\n\n[Install]\nWantedBy=default.target\n", nil
+		return "[Unit]\nDescription=SmartQA host agent\nAfter=network-online.target\n\n[Service]\nType=simple\nEnvironment=ARTEMIS_HOST_AGENT=1\nExecStart=" + quote(binary) + " run --config " + quote(configPath) + "\nRestart=on-failure\nRestartPreventExitStatus=" + strconv.Itoa(permanentErrorExitStatus) + "\nRestartSec=5\nUMask=0077\n\n[Install]\nWantedBy=default.target\n", nil
 	case "darwin":
 		escape := func(value string) string {
 			var output strings.Builder
 			_ = xml.EscapeText(&output, []byte(value))
 			return output.String()
 		}
-		return `<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>Label</key><string>work.cheese.smartqa-host</string><key>ProgramArguments</key><array><string>` + escape(binary) + `</string><string>run</string><string>--config</string><string>` + escape(configPath) + `</string></array><key>EnvironmentVariables</key><dict><key>ARTEMIS_HOST_AGENT</key><string>1</string></dict><key>RunAtLoad</key><true/><key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict><key>StandardOutPath</key><string>` + escape(logPath) + `</string><key>StandardErrorPath</key><string>` + escape(logPath) + `</string></dict></plist>`, nil
+		return `<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>Label</key><string>work.cheese.smartqa-host</string><key>ProgramArguments</key><array><string>` + escape(binary) + `</string><string>service</string><string>run</string><string>--config</string><string>` + escape(configPath) + `</string></array><key>EnvironmentVariables</key><dict><key>ARTEMIS_HOST_AGENT</key><string>1</string></dict><key>RunAtLoad</key><true/><key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict><key>StandardOutPath</key><string>` + escape(logPath) + `</string><key>StandardErrorPath</key><string>` + escape(logPath) + `</string></dict></plist>`, nil
 	}
 	return "", failure("SQH-E402", nil)
 }
