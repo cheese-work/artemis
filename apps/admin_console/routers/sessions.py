@@ -174,8 +174,7 @@ async def get_session_details(session_id: str, actor: OwnerScope = Depends(evide
 
 @router.get("/api/sessions/{session_id}/goal-images/{index}")
 async def get_goal_image(session_id: str, index: str, actor: OwnerScope = Depends(evidence_scope)):
-    """A picture sent with the run's goal: the run's owner or an administrator only."""
-    require_access(scope_or_open(actor), session_id)
+    """A picture sent with the run's goal: any signed-in holder of the full run id may read it."""
     found = (
         await asyncio.to_thread(run_images.find, session_id, index)
         if run_images.is_safe_session_id(session_id)

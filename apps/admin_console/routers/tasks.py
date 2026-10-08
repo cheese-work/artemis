@@ -38,6 +38,7 @@ from apps.admin_console.core.ownership import (
     list_scope,
     owners_of,
     present_session_data,
+    record_run_read,
     require_access,
     require_access_all,
     require_visible_run,
@@ -744,6 +745,7 @@ async def stream_events(
     firehose = session_id in ("all", "active")
     if not firehose:
         await asyncio.to_thread(require_visible_run, scope, [session_id])
+        await asyncio.to_thread(record_run_read, scope, session_id)
     decided: dict[str, bool] = {}
 
     def may_see(event_session_id: Any) -> bool:
