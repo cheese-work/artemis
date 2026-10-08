@@ -28,6 +28,17 @@ describe('AdminIdentityIndicatorComponent', () => {
     expect(root.querySelector('.identity-role')?.textContent?.trim()).toBe('Admin');
   });
 
+  it('keeps live announcements on the identity text, not the user menu panel', () => {
+    const { root } = create(true);
+    const identity = root.querySelector<HTMLElement>('[aria-live="polite"]');
+    expect(identity).not.toBeNull();
+    expect(root.querySelector('details')?.hasAttribute('aria-live')).toBeFalse();
+    expect(identity?.textContent).toContain('person@example.test');
+    expect(identity?.textContent).toContain('Admin');
+    expect(identity?.textContent).not.toContain('Setup');
+    expect(identity?.querySelector('.identity-panel')).toBeNull();
+  });
+
   for (const failed of [false, true]) {
     it(`does not expose Setup to a non-admin${failed ? ' when identity lookup fails' : ''}`, () => {
       const { root } = create(false, failed);

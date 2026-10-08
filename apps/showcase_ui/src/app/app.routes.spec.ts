@@ -63,6 +63,30 @@ describe('first-run navigation', () => {
     expect(await open(true, true)).toBe('/workspace');
   });
 
+  it('stays in Workspace with the backend gemini_api_key shape when only one provider is set', async () => {
+    const probes = [
+      { id: 'system_config', status: 'pass' },
+      {
+        id: 'gemini_api_key', status: 'fail', metadata: {
+          configured_count: 2,
+          is_set: false,
+          providers: [
+            { provider: 'openai', label: 'OpenAI', is_set: true, masked: '****test' },
+            { provider: 'gemini', label: 'Gemini', is_set: false, masked: null }
+          ]
+        }
+      }
+    ];
+    TestBed.configureTestingModule({
+      providers: [
+        provideRouter(routes.map(route => route.component ? { ...route, component: PageStub } : route)),
+        { provide: SystemService, useValue: { fetchReadiness: () => of({ probes }) } }
+      ]
+    });
+    await RouterTestingHarness.create('/workspace');
+    expect(TestBed.inject(Router).url).toBe('/workspace');
+  });
+
   it('does not hide the run library behind first-run Setup', async () => {
     expect(await open(false, false, false, '/runs')).toBe('/runs');
   });

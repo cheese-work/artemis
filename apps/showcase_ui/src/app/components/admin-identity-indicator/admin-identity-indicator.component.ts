@@ -8,11 +8,13 @@ import { AdminConfigService, AdminIdentity } from '../../services/admin-config.s
   imports: [RouterLink],
   template: `
     @if (identity(); as current) {
-      <details #userMenu class="identity-menu" aria-live="polite" (keydown.escape)="closeMenu(true)" (focusout)="onFocusOut($event)">
+      <details #userMenu class="identity-menu" (keydown.escape)="closeMenu(true)" (focusout)="onFocusOut($event)">
         <summary class="identity-indicator" [attr.aria-label]="'User menu, ' + (current.email || (current.auth_mode === 'open' ? 'Local access' : 'Not signed in')) + ', ' + (current.admin ? 'Admin' : 'Read-only')">
-          <span class="identity-email" [attr.title]="current.email">{{ current.email || (current.auth_mode === 'open' ? 'Local access' : 'Not signed in') }}</span>
-          <span class="identity-role" [class.admin-role]="current.admin">
-            {{ current.admin ? 'Admin' : 'Read-only' }}
+          <span class="identity-text" aria-live="polite">
+            <span class="identity-email" [attr.title]="current.email">{{ current.email || (current.auth_mode === 'open' ? 'Local access' : 'Not signed in') }}</span>
+            <span class="identity-role" [class.admin-role]="current.admin">
+              {{ current.admin ? 'Admin' : 'Read-only' }}
+            </span>
           </span>
         </summary>
         <div class="identity-panel" role="group" aria-label="User options">
@@ -31,6 +33,7 @@ import { AdminConfigService, AdminIdentity } from '../../services/admin-config.s
     .identity-indicator { display: flex; align-items: center; gap: .5rem; min-width: 0; min-height: 44px; padding: 0 .5rem; color: #475569; font-size: .8rem; cursor: pointer; border-radius: 12px; }
     .identity-indicator::after { content: '▾'; }
     .identity-indicator::-webkit-details-marker { display: none; }
+    .identity-text { display: inline-flex; align-items: center; gap: .5rem; min-width: 0; }
     .identity-email { min-width: 0; max-width: 16rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .identity-role { flex: none; border: 1px solid #94a3b8; border-radius: 999px; padding: .15rem .5rem; }
     .admin-role { border-color: #86efac; color: #166534; }
