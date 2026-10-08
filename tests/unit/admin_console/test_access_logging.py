@@ -90,6 +90,24 @@ async def test_api_request_emits_redacted_well_formed_access_line(
     assert records[0].session_id == "access-test"
 
 
+@pytest.mark.asyncio
+async def test_error_access_line_preserves_status_phrase_and_session(access_logging, capsys):
+    config, output, records = access_logging
+    bind_session("access-error-test")
+    response = await request_through_server(
+        config, "/api/no-such-route?password=access-error-sentinel"
+    )
+
+    assert response.startswith(b"HTTP/1.1 404 Not Found")
+    rendered = output.getvalue()
+    assert 'HTTP/1.1" 404 Not Found' in rendered
+    assert "session_id=access-error-test" in rendered
+    assert "access-error-sentinel" not in rendered
+    assert "Logging error" not in capsys.readouterr().err
+    assert len(records) == 1
+    assert records[0].args[-1] == 404
+
+
 @pytest.mark.parametrize("failure_point", ["message", "arguments", "extra"])
 @pytest.mark.asyncio
 async def test_api_request_keeps_safe_access_line_when_redaction_fails(
