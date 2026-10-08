@@ -27,6 +27,7 @@ import urllib.parse
 from fastapi import HTTPException
 
 from artemis.config import IMAGES_DIR, TRACES_PATH, WORKSPACE_ROOT
+from apps.admin_console.core.ownership import OwnerScope, present_session_data, scope_or_open
 
 logger = logging.getLogger(__name__)
 
@@ -527,14 +528,18 @@ class MediaService:
         return p, media_type
 
     @staticmethod
-    def get_task_plan_content(session_id: str) -> str:
+    def get_task_plan_content(session_id: str, actor: OwnerScope | None = None) -> str:
+        source_session_id = session_id
         plan_path = TRACES_PATH / session_id / "notes" / "task_plan.md"
         if not plan_path.exists():
+            source_session_id = None
             plan_path = TRACES_PATH / "notes" / "task_plan.md"
 
         if plan_path.exists():
             try:
-                return plan_path.read_text(encoding="utf-8")
+                return present_session_data(
+                    scope_or_open(actor), source_session_id, plan_path.read_text(encoding="utf-8")
+                )
             except Exception as e:
                 return f"Error reading task plan: {e}"
         return "No task plan created yet."
@@ -590,7 +595,10 @@ class MediaService:
         return {"records": records, "streams": streams, "run_outcome": run_outcome}
 
     @staticmethod
-    def get_session_notes_content(session_id: str) -> dict[str, str]:
+    def get_session_notes_content(
+        session_id: str, actor: OwnerScope | None = None
+    ) -> dict[str, str]:
+        source_session_id = session_id
         notes_dir = TRACES_PATH / session_id / "notes"
         notes_content = {}
 
@@ -603,6 +611,7 @@ class MediaService:
                         notes_content[file.name] = f"Error reading file: {e}"
 
         if not notes_content:
+            source_session_id = None
             global_notes_dir = TRACES_PATH / "notes"
             if global_notes_dir.exists() and global_notes_dir.is_dir():
                 for file in global_notes_dir.iterdir():
@@ -617,7 +626,7 @@ class MediaService:
                         except Exception as e:
                             notes_content[file.name] = f"Error reading file: {e}"
 
-        return notes_content
+        return present_session_data(scope_or_open(actor), source_session_id, notes_content)
 
 
 media_service = MediaService()

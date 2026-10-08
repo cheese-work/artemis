@@ -37,6 +37,7 @@ from apps.admin_console.core.ownership import (
     actor_scope,
     list_scope,
     owners_of,
+    present_session_data,
     require_access,
     require_access_all,
     scope_or_open,
@@ -735,15 +736,21 @@ async def stream_events(
             return data
         if isinstance(data, list):  # e.g. background_tasks_updated: one row per task
             rows = [r for r in data if isinstance(r, dict) and row_allowed(r.get("session_id"))]
-            return rows or _DROP
+            return [
+                present_session_data(scope, row.get("session_id"), row) for row in rows
+            ] or _DROP
         if isinstance(data, dict):
             event_session_id = data.get("session_id")
             if firehose:
-                return data if may_see(event_session_id) else _DROP
+                return (
+                    present_session_data(scope, event_session_id, data)
+                    if may_see(event_session_id)
+                    else _DROP
+                )
             if event_type in _RUN_BOUND_EVENTS and str(event_session_id) != session_id:
                 return _DROP
-            return data
-        return _DROP if firehose else data
+            return present_session_data(scope, session_id, data)
+        return _DROP if firehose else present_session_data(scope, session_id, data)
 
     async def event_generator():
         queue = asyncio.Queue()
@@ -803,11 +810,14 @@ async def stream_events(
             if active_sid:
                 goal = state.current_goal or ""
                 profile = state.current_profile or "flash"
-                yield (
-                    "event: session_started\n"
-                    f"data: {json.dumps({'session_id': str(active_sid), 'initial_goal': goal, 'profile': profile}, default=str)}\n\n"
+                session_data = present_session_data(
+                    scope,
+                    str(active_sid),
+                    {"session_id": str(active_sid), "initial_goal": goal, "profile": profile},
                 )
+                yield (f"event: session_started\ndata: {json.dumps(session_data, default=str)}\n\n")
                 for progress_event in state.get_startup_progress(str(active_sid)):
+                    progress_event = present_session_data(scope, str(active_sid), progress_event)
                     yield (
                         "event: startup_progress\n"
                         f"data: {json.dumps(progress_event, default=str)}\n\n"
@@ -817,6 +827,7 @@ async def stream_events(
 
                     recorded_steps = step_repo.get_session_steps(str(active_sid))
                     for step_dict in recorded_steps:
+                        step_dict = present_session_data(scope, str(active_sid), step_dict)
                         yield (
                             f"event: step_recorded\ndata: {json.dumps(step_dict, default=str)}\n\n"
                         )
@@ -824,6 +835,7 @@ async def stream_events(
                     print(f"[Stream] Could not replay active steps: {exc}")
         else:
             for progress_event in state.get_startup_progress(session_id):
+                progress_event = present_session_data(scope, session_id, progress_event)
                 yield (
                     f"event: startup_progress\ndata: {json.dumps(progress_event, default=str)}\n\n"
                 )

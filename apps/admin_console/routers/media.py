@@ -226,13 +226,13 @@ async def get_local_file(path: str):
 
 @router.get("/api/sessions/{session_id}/plan")
 async def get_task_plan(session_id: str, actor: OwnerScope = Depends(actor_scope)):
-    plan = {"plan": media_service.get_task_plan_content(_safe_session_id(session_id))}
+    plan = {"plan": media_service.get_task_plan_content(_safe_session_id(session_id), actor)}
     return present_session_data(actor, session_id, plan)
 
 
 @router.get("/api/sessions/{session_id}/notes")
 async def get_all_notes(session_id: str, actor: OwnerScope = Depends(actor_scope)):
-    notes = {"notes": media_service.get_session_notes_content(_safe_session_id(session_id))}
+    notes = {"notes": media_service.get_session_notes_content(_safe_session_id(session_id), actor)}
     return present_session_data(actor, session_id, notes)
 
 
