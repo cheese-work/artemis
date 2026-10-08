@@ -78,4 +78,19 @@ describe('markdown-parser.util verification & check lines', () => {
   it('should not treat a lone pipe line as a table', () => {
     expect(renderMarkdownToHtml('a | b')).not.toContain('<table');
   });
+
+  it('should keep escaped pipes inside a table cell and normalise row width', () => {
+    const html = renderMarkdownToHtml('| Lệnh | Ghi chú |\n| --- | --- |\n| `a\\|b` | ok |\n| chỉ một |\n| 1 | 2 | thừa |');
+    expect(html).toContain('<tr><td><code class="inline-code">a|b</code></td><td>ok</td></tr>');
+    expect(html).toContain('<tr><td>chỉ một</td><td></td></tr>');
+    expect(html).toContain('<tr><td>1</td><td>2</td></tr>');
+    expect(html).not.toContain('thừa');
+  });
+
+  it('should only keep a safe language token on code fences', () => {
+    const html = renderMarkdownToHtml('```"><img src=x onerror=alert(1)>\ncode\n```\n\n```c++\nx\n```');
+    expect(html).not.toContain('<img');
+    expect(html).toMatch(/<code class="lang-[A-Za-z0-9_+-]*">code<\/code>/);
+    expect(html).toContain('<code class="lang-c++">x</code>');
+  });
 });

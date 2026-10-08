@@ -232,8 +232,20 @@ function formatInlineMarkdown(text: string): string {
 /** GFM table separator row, e.g. `| --- | :---: |`. */
 const TABLE_SEPARATOR = /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)*\|?\s*$/;
 
+/** Split on unescaped pipes only; `\|` stays a literal pipe in the cell. */
 function splitTableRow(line: string): string[] {
-  return line.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map(cell => cell.trim());
+  const cells = line.trim().replace(/^\|/, '').replace(/(^|[^\\])\|$/, '$1').split(/(?<!\\)\|/);
+  return cells.map(cell => cell.replace(/\\\|/g, '|').trim());
+}
+
+/** Pad with empty cells or drop extras so every row has the header's column count. */
+function normalizeCells(cells: string[], count: number): string[] {
+  return Array.from({ length: count }, (_, index) => cells[index] ?? '');
+}
+
+/** Keep only a safe language token for the code-fence class name. */
+function safeFenceLang(info: string): string {
+  return (info.split(/\s+/)[0] ?? '').replace(/[^A-Za-z0-9_+-]/g, '');
 }
 
 /**
@@ -286,7 +298,7 @@ export function renderMarkdownToHtml(text: string): string {
       } else {
         closeList();
         inCodeBlock = true;
-        codeBlockLang = trimmed.substring(3).trim();
+        codeBlockLang = safeFenceLang(trimmed.substring(3).trim());
         codeBlockLines = [];
       }
       continue;
@@ -300,11 +312,12 @@ export function renderMarkdownToHtml(text: string): string {
     // 1b. Tables: header row, separator row, then body rows (input is already escaped)
     if (trimmed.includes('|') && i + 1 < rawLines.length && rawLines[i + 1].includes('|') && TABLE_SEPARATOR.test(rawLines[i + 1])) {
       closeList();
-      const header = splitTableRow(trimmed).map(cell => `<th>${formatInlineMarkdown(cell)}</th>`).join('');
+      const headerCells = splitTableRow(trimmed);
+      const header = headerCells.map(cell => `<th>${formatInlineMarkdown(cell)}</th>`).join('');
       const body: string[] = [];
       i += 2;
       while (i < rawLines.length && rawLines[i].trim() !== '' && rawLines[i].includes('|')) {
-        const cells = splitTableRow(rawLines[i]).map(cell => `<td>${formatInlineMarkdown(cell)}</td>`).join('');
+        const cells = normalizeCells(splitTableRow(rawLines[i]), headerCells.length).map(cell => `<td>${formatInlineMarkdown(cell)}</td>`).join('');
         body.push(`<tr>${cells}</tr>`);
         i++;
       }

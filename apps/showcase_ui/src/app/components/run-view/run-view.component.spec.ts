@@ -657,7 +657,7 @@ describe('RunViewComponent', () => {
         ...Array.from({ length: 80 }, (_, i) => `- Chi tiết số ${i + 1}: thiết bị không phản hồi sau khi chạm.`)
       ].join('\n');
       const reportStep = (explanation: string) => step(1, {
-        action_taken: { action: 'report_task_status', status: 'failed', explanation }
+        action_taken: { action: 'report_task_status', args: { status: 'failed', explanation } }
       });
 
       it('summarises the reason and folds the full markdown report into a disclosure', async () => {

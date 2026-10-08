@@ -26,6 +26,16 @@ describe('report summary', () => {
       .toBe('First real paragraph. Second line.');
   });
 
+  it('summarises the content that follows a bare bold result label', () => {
+    expect(summarizeReport('**Kết quả chính:**\n\n- Không đăng nhập được vì nút Tiếp tục không phản hồi.\n- Ghi chú phụ'))
+      .toBe('Kết quả chính: Không đăng nhập được vì nút Tiếp tục không phản hồi. Ghi chú phụ');
+  });
+
+  it('summarises the content under a result heading instead of an earlier intro', () => {
+    const report = '## Báo cáo kiểm thử\n\nĐã chạy 12 bước trên thiết bị.\n\n## Kết quả chính\n\nKhông đăng nhập được vì nút Tiếp tục không phản hồi.';
+    expect(summarizeReport(report)).toBe('Kết quả chính: Không đăng nhập được vì nút Tiếp tục không phản hồi.');
+  });
+
   it('caps the summary with an ellipsis', () => {
     const summary = summarizeReport(`## T\n\n${'từ '.repeat(300)}`);
     expect(summary.length).toBeLessThanOrEqual(REPORT_SUMMARY_MAX);

@@ -250,6 +250,13 @@ describe('getActionErrorMessage for report_task_status', () => {
     expect(getActionErrorMessage(action, { action_taken: action })).toBe('Could not log in');
   });
 
+  it('detects a failed report whose status is nested in args', () => {
+    const action = { action: 'report_task_status', args: { status: 'failed', explanation: 'Could not log in' } };
+    expect(isActionFailed(action)).toBeTrue();
+    expect(getActionErrorMessage(action, { action_taken: action })).toBe('Could not log in');
+    expect(isActionFailed({ action: 'report_task_status', args: { status: 'completed', explanation: 'ok' } })).toBeFalse();
+  });
+
   it('keeps the generic text for a failed non-report action', () => {
     expect(getActionErrorMessage({ action: 'tap', status: 'failed' })).toBe('Action Failed');
   });

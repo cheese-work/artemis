@@ -393,6 +393,8 @@ export function isActionFailed(action: any, stepData?: any): boolean {
   const act = getActionObject(action);
   if (act) {
     if (act.status === 'failed' || act.status === 'error' || act.success === false) return true;
+    // Final report steps carry the status nested in args: {"action":"report_task_status","args":{"status":"failed",...}}
+    if (isReportStatusAction(act) && getReportStatusValue(act) === 'failed') return true;
   }
   if (stepData) {
     if (stepData.status === 'failed' || stepData.status === 'error') return true;
