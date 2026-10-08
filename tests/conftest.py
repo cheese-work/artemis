@@ -61,6 +61,25 @@ def isolate_provider_credentials(monkeypatch):
             monkeypatch.setattr(settings, field, None)
 
 
+@pytest.fixture(autouse=True)
+def isolate_current_data_engine():
+    """``DataEngine.start_session`` publishes ``self`` to a module global.
+
+    The logger drain thread and tools read it later, so an engine left over from an earlier
+    test would receive this test's log records and open IPC sockets / call ``urlopen`` mid-test.
+    """
+    import sys
+
+    def clear():
+        engine_mod = sys.modules.get("artemis.data_engine.engine")
+        if engine_mod is not None:
+            engine_mod._CURRENT_DATA_ENGINE = None
+
+    clear()
+    yield
+    clear()
+
+
 ADB_ENVIRONMENT_KEYS = (
     "ADB_HOST",
     "ADB_PORT",
