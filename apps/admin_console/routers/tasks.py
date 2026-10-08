@@ -340,8 +340,8 @@ async def run_task(request: RunRequest, actor: OwnerScope = Depends(actor_scope)
             run_id=request.run_id,
             requested_by=scope.email,
             goal_images=goal_images,
-            **({"host_id": host_id} if host_id else {}),
             bridge_session_id=request.bridge_session_id,
+            **({"host_id": host_id} if host_id else {}),
         )
     except ServerDraining as exc:
         raise _draining_error(exc) from exc

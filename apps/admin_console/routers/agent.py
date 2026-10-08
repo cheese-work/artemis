@@ -5,13 +5,16 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
+from pathlib import Path
 import time
-import anyio
 from typing import Any
 
+import anyio
 from fastapi import APIRouter, Depends, Request, WebSocket
 from pydantic import BaseModel, Field
 from starlette.websockets import WebSocketDisconnect, WebSocketState
+from starlette.responses import FileResponse
 
 from apps.admin_console.core.access_control import AdminAPIError, public_tier
 from apps.admin_console.core.agent_auth import (
@@ -23,7 +26,7 @@ from apps.admin_console.core.agent_auth import (
     require_enrollment_code,
 )
 from apps.admin_console.services import host_registry as hr
-from apps.admin_console.services.host_hub import host_hub
+from apps.admin_console.services.host_hub import CLOSE_REVOKED, host_hub
 from apps.admin_console.services.host_registry import RegistryError, host_registry
 from apps.admin_console.services.host_tunnel import host_tunnels
 from apps.admin_console.services.host_admission import host_admission
@@ -68,13 +71,40 @@ class ChallengeRequest(BaseModel):
 
 
 @router.get("/install.sh", dependencies=[Depends(require_enrollment_code)])
-async def install_script() -> None:
-    _artifact_unavailable()
+async def install_script() -> FileResponse:
+    return _release_artifact("install.sh")
 
 
 @router.get("/dist/{artifact}", dependencies=[Depends(require_enrollment_code)])
-async def download_artifact(artifact: str) -> None:
-    _artifact_unavailable()
+async def download_artifact(artifact: str) -> FileResponse:
+    return _release_artifact(artifact)
+
+
+def _release_artifact(artifact: str) -> FileResponse:
+    allowed = {
+        "install.sh",
+        "SHA256SUMS",
+        "smartqa-host-linux-amd64",
+        "smartqa-host-darwin-arm64",
+        "smartqa-host-windows-amd64.exe",
+    }
+    directory = os.environ.get("ARTEMIS_AGENT_DIST_DIR", "")
+    if not directory or artifact not in allowed:
+        _artifact_unavailable()
+    try:
+        root = Path(directory).resolve(strict=True)
+        candidate = root / artifact
+        if candidate.is_symlink():
+            _artifact_unavailable()
+        path = candidate.resolve(strict=True)
+        if path.parent != root or not path.is_file() or path.stat().st_size > 128 * 1024 * 1024:
+            _artifact_unavailable()
+    except OSError:
+        _artifact_unavailable()
+    media_type = (
+        "text/plain" if artifact in {"install.sh", "SHA256SUMS"} else "application/octet-stream"
+    )
+    return FileResponse(path, media_type=media_type, filename=artifact)
 
 
 def _artifact_unavailable() -> None:
@@ -120,6 +150,16 @@ async def renew(request: Request) -> dict:
             401, "The computer's session is not valid.", "token_invalid", "Reconnect the computer."
         )
     return {"expires_at": expires_at}
+
+
+@router.post("/unenroll")
+async def unenroll(host: dict = Depends(require_agent_token("connect"))) -> dict:
+    host_id = host["id"]
+    host_registry.revoke(host_id)
+    await host_tunnels.abort_host(host_id, "auth_expired")
+    await host_hub.close_host(host_id, CLOSE_REVOKED, "revoked")
+    logger.info("event=host_unenrolled host_id=%s", host_id)
+    return {"status": "revoked"}
 
 
 @router.websocket("/connect", dependencies=[Depends(public_tier), Depends(require_agent_websocket)])

@@ -40,6 +40,87 @@ from artemis.runtime.host_protocol import CONTRACT
 HOST = {"Host": "localhost"}
 
 
+def test_agent_unenroll_revokes_only_authenticated_identity(admin):
+    key = Ed25519PrivateKey.generate()
+    first = _enroll(admin, _new_code(admin)["code"], key).json()["host_id"]
+    second = _enroll(admin, _new_code(admin)["code"], Ed25519PrivateKey.generate()).json()[
+        "host_id"
+    ]
+    with admin.websocket_connect("/api/agent/connect", headers=HOST) as ws:
+        ws.send_json(_hello(admin, key, first))
+        reply = ws.receive_json()
+    headers = {"Authorization": f"Bearer {reply['token']}"}
+    response = admin.post("/api/agent/unenroll", headers=headers, json={"host_id": second})
+    assert response.status_code == 200, response.text
+    assert response.json() == {"status": "revoked"}
+    assert host_registry.validate_token(reply["token"], "connect") is None
+    hosts, _ = host_registry.list_hosts()
+    assert next(host for host in hosts if host["id"] == first)["status"] == "revoked"
+    assert next(host for host in hosts if host["id"] == second)["status"] != "revoked"
+
+
+def test_agent_unenroll_requires_token_and_feature_flag(admin, monkeypatch):
+    assert admin.post("/api/agent/unenroll").status_code == 401
+    assert (
+        admin.post("/api/agent/unenroll", headers={"Authorization": "Bearer forged"}).status_code
+        == 401
+    )
+    monkeypatch.setenv("ARTEMIS_HOST_AGENT", "0")
+    assert admin.post("/api/agent/unenroll").status_code == 404
+
+
+def test_installer_artifacts_require_code_and_feature_flag(admin, monkeypatch, tmp_path):
+    distribution = tmp_path / "dist"
+    distribution.mkdir()
+    (distribution / "install.sh").write_text("#!/bin/sh\nprintf installed\n")
+    (distribution / "SHA256SUMS").write_text("manifest\n")
+    monkeypatch.setenv("ARTEMIS_AGENT_DIST_DIR", str(distribution))
+    assert admin.get("/api/agent/install.sh").status_code == 401
+    code = _new_code(admin)["code"]
+    headers = {"x-artemis-enrollment-code": code}
+    response = admin.get("/api/agent/install.sh", headers=headers)
+    assert response.status_code == 200
+    assert response.text.startswith("#!/bin/sh")
+    assert admin.get("/api/agent/dist/SHA256SUMS", headers=headers).text == "manifest\n"
+    monkeypatch.setenv("ARTEMIS_HOST_AGENT", "0")
+    assert admin.get("/api/agent/install.sh", headers=headers).status_code == 404
+
+
+def test_installer_rejects_unknown_artifacts_and_symlinks(admin, monkeypatch, tmp_path):
+    distribution = tmp_path / "dist"
+    distribution.mkdir()
+    secret = tmp_path / "secret"
+    secret.write_text("CANARY-SECRET")
+    (distribution / "smartqa-host-linux-amd64").symlink_to(secret)
+    monkeypatch.setenv("ARTEMIS_AGENT_DIST_DIR", str(distribution))
+    headers = {"x-artemis-enrollment-code": _new_code(admin)["code"]}
+    for artifact in [
+        "secret",
+        "..%2Fsecret",
+        "smartqa-host-linux-amd64",
+        "smartqa-host-linux-arm64",
+    ]:
+        response = admin.get(f"/api/agent/dist/{artifact}", headers=headers)
+        assert response.status_code == 404
+        assert "CANARY-SECRET" not in response.text
+
+
+def test_installer_serves_exact_three_build_targets(admin, monkeypatch, tmp_path):
+    names = [
+        "smartqa-host-linux-amd64",
+        "smartqa-host-darwin-arm64",
+        "smartqa-host-windows-amd64.exe",
+    ]
+    for name in names:
+        (tmp_path / name).write_bytes(b"test-binary")
+    monkeypatch.setenv("ARTEMIS_AGENT_DIST_DIR", str(tmp_path))
+    headers = {"x-artemis-enrollment-code": _new_code(admin)["code"]}
+    for name in names:
+        response = admin.get(f"/api/agent/dist/{name}", headers=headers)
+        assert response.status_code == 200
+        assert response.content == b"test-binary"
+
+
 def _b64(raw: bytes) -> str:
     return base64.b64encode(raw).decode()
 

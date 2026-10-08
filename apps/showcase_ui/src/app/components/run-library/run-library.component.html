@@ -109,7 +109,7 @@
             </span>
             <span class="run-meta">
               <span class="run-recording">{{ recordingBadge(run) }}</span>
-              <span class="run-device">{{ device(run) }}</span>
+              <span class="run-device" [attr.title]="run.device_ref?.serial ?? null">{{ device(run) }}</span>
               <span class="run-date">
                 @if (run.start_time) {
                   {{ run.start_time * 1000 | date: 'MMM d, y, h:mm a' }}

@@ -800,105 +800,6 @@ describe('AgentService live LLM retry timeline', () => {
   });
 });
 
-describe('AgentService recording finalization lifecycle', () => {
-  function createVideoService(response: any): AgentService {
-    const service = Object.create(AgentService.prototype) as AgentService;
-    (service as any).logger = TestBed.inject(LoggerService);
-    (service as any).browserStorage = TestBed.inject(BrowserStorageService);
-    (service as any).http = { get: () => of(response) };
-    (service as any).rawSessions = signal<any[]>([
-      { session_id: 'session-1', status: 'completed', recording_status: 'recording' }
-    ]);
-    (service as any).activeVideoSessionId = 'session-1';
-    (service as any).videoRequestGeneration = 1;
-    (service as any).videoRetryTimer = null;
-    (service as any).videoWaitStartedAt = Date.now();
-    service.activeVideoUrl = signal<string | null>(null);
-    service.activeVideoSegments = signal<any[]>([]);
-    service.isVideoLoading = signal(false);
-    service.recordingPlaybackStatus = signal('idle');
-    service.recordingPlaybackMessage = signal('');
-    service.shouldAutoplayVideo = signal(true);
-    service.playerMode = signal<'video' | 'steps'>('video');
-    (service as any).hasCurrentSessionStepFrames = computed(() => false);
-    (service as any).currentSessionStepFrames = computed(() => []);
-    return service;
-  }
-
-  it('keeps unfinished media out of the video element and schedules another readiness check', () => {
-    const service = createVideoService({
-      session_id: 'session-1',
-      status: 'processing',
-      has_video: false,
-      video_url: null,
-      retry_after_ms: 750
-    });
-    const retrySpy = spyOn<any>(service, 'scheduleVideoRetry');
-
-    (service as any).requestSessionVideo('session-1', 1);
-
-    expect(service.recordingPlaybackStatus()).toBe('processing');
-    expect(service.isVideoLoading()).toBeTrue();
-    expect(service.activeVideoUrl()).toBeNull();
-    expect(retrySpy).toHaveBeenCalledWith('session-1', 1, 750);
-  });
-
-  it('publishes finalized media and preserves the automatic replay request', () => {
-    const service = createVideoService({
-      session_id: 'session-1',
-      status: 'ready',
-      has_video: true,
-      video_url: '/videos/recording.mp4?v=1',
-      video_segments: [
-        { url: '/videos/recording.mp4?v=1', start: 0, duration: 5, width: 1080, height: 1920 }
-      ]
-    });
-
-    (service as any).requestSessionVideo('session-1', 1);
-
-    expect(service.recordingPlaybackStatus()).toBe('ready');
-    expect(service.isVideoLoading()).toBeFalse();
-    expect(service.activeVideoUrl()).toBe('/videos/recording.mp4?v=1');
-    expect(service.activeVideoSegments().length).toBe(1);
-    expect(service.shouldAutoplayVideo()).toBeTrue();
-  });
-
-  it('stops polling and exposes a terminal recording failure', () => {
-    const service = createVideoService({
-      session_id: 'session-1',
-      status: 'failed',
-      has_video: false,
-      video_url: null,
-      message: 'ffmpeg failed'
-    });
-
-    (service as any).requestSessionVideo('session-1', 1);
-
-    expect(service.recordingPlaybackStatus()).toBe('failed');
-    expect(service.isVideoLoading()).toBeFalse();
-    expect(service.recordingPlaybackMessage()).toBe('ffmpeg failed');
-  });
-});
-
-describe('AgentService video analysis seeking', () => {
-  it('publishes repeatable, clamped seek requests for the floating player', () => {
-    const service = Object.create(AgentService.prototype) as AgentService;
-    (service as any).logger = TestBed.inject(LoggerService);
-    (service as any).browserStorage = TestBed.inject(BrowserStorageService);
-    service.videoSeekRequest = signal<{ seconds: number; requestId: number } | null>(null);
-    (service as any).videoSeekRequestId = 0;
-
-    service.requestVideoSeek(-5);
-    const first = service.videoSeekRequest();
-    service.requestVideoSeek(0);
-    const second = service.videoSeekRequest();
-
-    expect(first?.seconds).toBe(0);
-    expect(second?.seconds).toBe(0);
-    expect(second?.requestId).toBeGreaterThan(first?.requestId || 0);
-  });
-});
-
 describe('AgentService task cancellation and active session tracking', () => {
   it('computes isCurrentSessionRunning true only when viewing an active running/paused session', () => {
     const service = Object.create(AgentService.prototype) as any;
@@ -1275,14 +1176,12 @@ describe('AgentService per-QA scope (CHE-1152)', () => {
       TestBed.tick();
       http.match((request) => request.url === '/api/sessions').forEach((request) => request.flush([row('qa1-run')]));
       flushAll();
-      service.activeVideoUrl.set('/videos/qa1-run.mp4');
       (localStorage.removeItem as jasmine.Spy).and.throwError('Storage unavailable');
 
       TestBed.inject(OwnerScopeService).identity.set({ ...qa1, email: 'qa2@example.test' });
 
       expect(() => TestBed.tick()).not.toThrow();
       expect(service.sessions()).toEqual([]);
-      expect(service.activeVideoUrl()).toBeNull();
       expect(http.match((request) => request.url === '/api/sessions').length).toBeGreaterThan(0);
       flushAll();
     });

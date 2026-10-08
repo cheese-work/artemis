@@ -10,6 +10,16 @@ describe('buildRunSummary', () => {
     device_serial: 'pixel-qa-01'
   };
 
+  for (const [status, caption] of [
+    ['completed', 'Completed'], ['success', 'Completed'], ['failed', 'Failed'], ['error', 'Failed'],
+    ['pending', 'Pending'], ['queued', 'Pending'], ['running', 'Running'], ['paused', 'Paused'],
+    ['cancelled', 'Cancelled'], ['interrupted', 'Unknown'], ['future_status', 'Unknown']
+  ]) {
+    it(`preserves the legacy summary caption for ${status}`, () => {
+      expect(buildRunSummary({ ...session, status }, 'running', [], null)).toContain(`- Outcome: ${caption}`);
+    });
+  }
+
   it('copies the run id, device, outcome, failing step, and recording link without the goal', () => {
     const logs = [
       {

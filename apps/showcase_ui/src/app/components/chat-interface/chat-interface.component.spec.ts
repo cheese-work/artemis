@@ -51,16 +51,18 @@ function device(overrides: Partial<DeviceInfo>): DeviceInfo {
 
 describe('ChatInterfaceComponent device chip', () => {
   const sessions = signal<Session[]>([]);
+  const agentStatus = signal('running');
   let systemService: SystemService;
   let registryDevices: RegistryDevice[];
 
   beforeEach(async () => {
     sessions.set([]);
+    agentStatus.set('running');
     registryDevices = [];
     const agentService = {
       sessions,
       activeTab: signal('tasks'),
-      agentStatus: signal('running'),
+      agentStatus,
       runningSessionId: signal('s1'),
       currentSessionId: signal('s1'),
       currentNotes: signal([]),
@@ -122,10 +124,81 @@ describe('ChatInterfaceComponent device chip', () => {
     expect(text).toContain('Emulator');
   });
 
-  it('shows Unknown device for a loopback address that is no longer listed', () => {
+  it('never says Unknown device for a loopback address that is no longer listed', () => {
     const text = chipText('127.0.0.1:55555', []);
-    expect(text).toContain('Unknown device');
+    expect(text).toContain('Phone via a browser');
+    expect(text).not.toContain('Unknown device');
     expect(text).not.toContain('127.0.0.1');
+  });
+
+  function chipTitle(serial: string): string {
+    systemService.readinessReport.set(null);
+    sessions.set([session(serial)]);
+    const fixture = TestBed.createComponent(ChatInterfaceComponent);
+    fixture.detectChanges();
+    return (fixture.nativeElement as HTMLElement).querySelector('.task-device .device-name')?.textContent?.trim() ?? '';
+  }
+
+  it('never titles a disconnected wireless phone by its address (R3)', () => {
+    for (const address of ['192.168.1.12:5555', '[::1]:39129', 'pixel:5555', 'android-phone:37099']) {
+      const text = chipText(address, []);
+      expect(text).not.toContain(address);
+      expect(text).not.toContain('Unknown device');
+    }
+    for (const address of ['192.168.1.12:5555', 'pixel:5555', 'android-phone:37099']) {
+      expect(chipText(address, [])).toContain('Wireless phone');
+      expect(chipTitle(address)).toBe('Wireless phone');
+    }
+  });
+
+  it('keeps the wireless phone address in the tooltip only (R3)', () => {
+    systemService.readinessReport.set(null);
+    for (const address of ['192.168.1.12:5555', 'pixel:5555', 'android-phone:37099']) {
+      sessions.set([session(address)]);
+      const fixture = TestBed.createComponent(ChatInterfaceComponent);
+      fixture.detectChanges();
+      const chip = (fixture.nativeElement as HTMLElement).querySelector('.task-device');
+      expect(chip?.getAttribute('title')).toContain(address);
+    }
+  });
+
+  it('labels a past run by the model recorded with it when the phone is gone', () => {
+    systemService.readinessReport.set(null);
+    sessions.set([
+      {
+        ...session('127.0.0.1:55555'),
+        status: 'interrupted',
+        device_serial: undefined,
+        device_info: { device_id: '127.0.0.1:55555', model: 'Pixel 8', device_kind: 'phone' }
+      }
+    ]);
+    const fixture = TestBed.createComponent(ChatInterfaceComponent);
+    fixture.detectChanges();
+    const chip = (fixture.nativeElement as HTMLElement).querySelector('.task-device');
+    const text = (chip?.textContent ?? '').replace(/\s+/g, ' ').trim();
+    expect(text).toContain('Pixel 8');
+    expect(text).not.toContain('Unknown device');
+    expect(text).not.toContain('127.0.0.1');
+    expect(chip?.getAttribute('title')).toContain('127.0.0.1:55555');
+  });
+
+  it('labels a past run by the registry model when only the registry knows the phone', () => {
+    registryDevices = [
+      {
+        serial: '127.0.0.1:55555',
+        model: 'Pixel 6 Pro',
+        device_kind: 'phone',
+        source: 'browser',
+        computer_id: null,
+        computer_name: null,
+        computer_status: 'online',
+        reason: null,
+        since: 1
+      }
+    ];
+    const text = chipText('127.0.0.1:55555', []);
+    expect(text).toContain('Pixel 6 Pro');
+    expect(text).not.toContain('Unknown device');
   });
 
   it('keeps the raw serial in the tooltip detail', () => {
@@ -188,20 +261,42 @@ describe('ChatInterfaceComponent device chip', () => {
     expect((fixture.nativeElement as HTMLElement).querySelector('.task-goal-images')).toBeNull();
   });
 
-  it('lists an interrupted run as interrupted, and a status it does not know as unknown, never completed', () => {
-    sessions.set([
-      { ...session('a'), session_id: 's2', status: 'interrupted' },
-      { ...session('a'), session_id: 's3', status: 'brand_new_status' }
-    ]);
-    const fixture = TestBed.createComponent(ChatInterfaceComponent);
-    fixture.detectChanges();
+  describe('run status badges', () => {
+    const rows: Array<[string | undefined, string, 'queue' | 'history']> = [
+      ['running', 'Running', 'queue'],
+      ['pending', 'Queued', 'queue'],
+      ['paused', 'Paused', 'queue'],
+      ['completed', 'Passed', 'history'],
+      ['failed', 'Failed', 'history'],
+      ['cancelled', 'Cancelled', 'history'],
+      ['interrupted', 'Interrupted', 'history'],
+      ['something_new', 'Unknown', 'history'],
+      [undefined, 'Unknown', 'history']
+    ];
 
-    const badges = Array.from((fixture.nativeElement as HTMLElement).querySelectorAll('.task-badge')).map((b) =>
-      (b.textContent ?? '').trim()
-    );
-    expect(badges).toContain('INTERRUPTED');
-    expect(badges).toContain('UNKNOWN');
-    expect(badges).not.toContain('COMPLETED');
+    for (const live of ['running', 'paused']) {
+      it(`shows an unrecognised stored status as Unknown for the live session while ${live} (R1)`, () => {
+        agentStatus.set(live);
+        sessions.set([{ ...session('emulator-5554'), session_id: 's1', status: 'something_new' }]);
+        const fixture = TestBed.createComponent(ChatInterfaceComponent);
+        fixture.detectChanges();
+        const badge = (fixture.nativeElement as HTMLElement).querySelector('.task-badge');
+        expect(badge?.textContent?.trim()).toBe('Unknown');
+      });
+    }
+
+    for (const [status, label, where] of rows) {
+      it(`shows ${status ?? 'a missing status'} as ${label} in the ${where}`, () => {
+        sessions.set([{ ...session('emulator-5554'), session_id: 'other', status }]);
+        const fixture = TestBed.createComponent(ChatInterfaceComponent);
+        fixture.detectChanges();
+        const root = fixture.nativeElement as HTMLElement;
+        const badge = root.querySelector('.task-badge');
+        expect(badge?.textContent?.trim()).toBe(label);
+        const inHistory = root.querySelector('.history-section .task-badge') !== null;
+        expect(inHistory).toBe(where === 'history');
+      });
+    }
   });
 });
 
