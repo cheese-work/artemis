@@ -261,6 +261,30 @@ func TestTransportPinningFollowsRunLeases(test *testing.T) {
 			test.Fatalf("device did not re-pin after the run ended: %q %v", transport, ok)
 		}
 	})
+	test.Run("an empty scan never drops the pin of a leased device", func(test *testing.T) {
+		devices, _ := testRegistry(test, "")
+		devices.replace([]device{usb})
+		if err := devices.share(id, true); err != nil {
+			test.Fatal(err)
+		}
+		devices.setLeases([]string{id})
+		devices.replace([]device{})
+		devices.replace([]device{wireless})
+		if entry := onlyDevice(test, devices); entry.State != "offline" || entry.Shared {
+			test.Fatalf("leased device failed over after an empty scan: %+v", entry)
+		}
+		if _, ok := devices.route(id); ok {
+			test.Fatal("leased device routed to a replacement transport")
+		}
+		devices.setLeases(nil)
+		if transport, ok := devices.route(id); !ok || transport != "2" {
+			test.Fatalf("released device did not re-pin: %q %v", transport, ok)
+		}
+		devices.replace([]device{})
+		if _, kept := devices.pins[id]; kept {
+			test.Fatal("pin of an absent, unleased device was kept")
+		}
+	})
 	test.Run("a device without a run moves at once", func(test *testing.T) {
 		devices, _ := testRegistry(test, "")
 		devices.replace([]device{wireless})
