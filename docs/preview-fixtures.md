@@ -172,7 +172,7 @@ make preview-demo        # same as: uv run python scripts/preview_demo.py [--por
 
 The launcher sets the preview profile, the identity switch and
 `ARTEMIS_PREVIEW_DEMO=1` with synthetic `*@example.test` identities, and keeps
-fixture data in a fresh `.preview-demo/run-*` directory removed on exit. That
+fixture data in a fresh `.preview-demo/run-*` directory removed on a clean exit. That
 directory sits inside the checkout because the media route serves recordings
 only under the workspace root. API only: run `make build-ui` to add the UI.
 

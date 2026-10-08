@@ -2,7 +2,7 @@
 
     uv run python scripts/preview_demo.py [--port 8000]
 
-Fixture data lives in a fresh ``.preview-demo/run-*`` directory, removed on exit. Select an
+Fixture data lives in a fresh ``.preview-demo/run-*`` directory, removed on a clean exit. Select an
 identity with ``X-Artemis-Preview-Identity: qa-a|qa-b|admin``.
 """
 
