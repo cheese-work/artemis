@@ -98,6 +98,7 @@ async def _forward_tcp_packets(
             raise ValueError("ADB packet exceeds relay limit")
         payload = await reader.readexactly(payload_size)
         await _send_bytes(websocket, header + payload, send_lock)
+        session.bytes_device_to_browser += _ADB_HEADER_BYTES + payload_size
         if not await _renew_lease(session, websocket, send_lock):
             return
 
@@ -133,9 +134,12 @@ async def _forward_websocket_packets(
         message = await receive_task
         if message["type"] == "websocket.disconnect":
             session.close_reason = "client"
+            code = message.get("code")
+            session.close_code = code if isinstance(code, int) else None
             return
         if message.get("text") == "close":
             session.close_reason = "client"
+            session.close_code = 1000
             return
         frame = message.get("bytes")
         if frame is None:
@@ -144,6 +148,7 @@ async def _forward_websocket_packets(
         if packet is not None:
             writer.write(packet)
             await writer.drain()
+            session.bytes_browser_to_device += len(packet)
             if not await _renew_lease(session, websocket, send_lock):
                 return
         receive_task = asyncio.create_task(websocket.receive())
@@ -170,9 +175,12 @@ async def _relay_packets(
                 message = receive_task.result()
                 if message["type"] == "websocket.disconnect":
                     session.close_reason = "client"
+                    code = message.get("code")
+                    session.close_code = code if isinstance(code, int) else None
                     return
                 if message.get("text") == "close":
                     session.close_reason = "client"
+                    session.close_code = 1000
                     return
                 frame = message.get("bytes")
                 if frame is None:
@@ -198,6 +206,7 @@ async def _relay_packets(
             writer.write(packet)
         if pending_packets:
             await writer.drain()
+            session.bytes_browser_to_device += pending_bytes
             for _packet in pending_packets:
                 if not await _renew_lease(session, websocket, send_lock):
                     return
@@ -214,9 +223,14 @@ async def _relay_packets(
         )
         for task in done:
             task.result()
-    except WebSocketDisconnect:
+    except WebSocketDisconnect as error:
         session.close_reason = "client"
+        session.close_code = error.code
         return
+    except (asyncio.IncompleteReadError, OSError):
+        session.close_reason = "error"
+        session.close_code = _CLOSE_BRIDGE_ERROR
+        raise
     finally:
         for task in (
             accept_task,
@@ -250,6 +264,7 @@ async def _expire_session(
         remaining_seconds = session.remaining_seconds()
         if remaining_seconds <= 0:
             session.close_reason = session.expiration_reason()
+            session.close_code = _CLOSE_SESSION_EXPIRED
             await _close_websocket(websocket, _CLOSE_SESSION_EXPIRED, send_lock)
             return
         await _sleep(remaining_seconds)
@@ -263,6 +278,7 @@ async def _renew_lease(
     if session.renew():
         return True
     session.close_reason = session.expiration_reason()
+    session.close_code = _CLOSE_SESSION_EXPIRED
     await _close_websocket(websocket, _CLOSE_SESSION_EXPIRED, send_lock)
     return False
 
@@ -334,14 +350,20 @@ async def open_bridge_session(websocket: WebSocket) -> None:
                 expiry_task.result()
                 return
             relay_task.result()
-    except WebSocketDisconnect:
+    except WebSocketDisconnect as error:
         if session is not None:
             session.close_reason = "client"
+            session.close_code = error.code
         return
-    except Exception:
+    except Exception as error:
         if session is not None:
             session.close_reason = "error"
-        logger.exception("Device bridge session failed")
+            session.close_code = _CLOSE_BRIDGE_ERROR
+        logger.warning(
+            "Device bridge session failed session_id=%s error_type=%s",
+            session.session_id if session is not None else None,
+            type(error).__name__,
+        )
         await _close_websocket(websocket, _CLOSE_BRIDGE_ERROR, send_lock)
     finally:
         for task in tasks:
