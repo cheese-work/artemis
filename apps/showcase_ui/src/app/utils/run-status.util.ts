@@ -19,13 +19,13 @@ export interface RunStatusView {
   active: boolean;
 }
 
-const VIEWS: Record<Exclude<RunStatusKey, 'unknown'>, Omit<RunStatusView, 'key'>> = {
-  pending: { label: 'Queued', icon: 'schedule', tone: 'neutral', active: true },
+const VIEWS: Record<Exclude<RunStatusKey, 'unknown'>, Omit<RunStatusView, 'key'> & { summaryLabel?: string }> = {
+  pending: { label: 'Queued', summaryLabel: 'Pending', icon: 'schedule', tone: 'neutral', active: true },
   running: { label: 'Running', icon: 'play_circle', tone: 'neutral', active: true },
   paused: { label: 'Paused', icon: 'pause_circle', tone: 'neutral', active: true },
-  completed: { label: 'Passed', icon: 'check_circle', tone: 'ok', active: false },
+  completed: { label: 'Passed', summaryLabel: 'Completed', icon: 'check_circle', tone: 'ok', active: false },
   failed: { label: 'Failed', icon: 'cancel', tone: 'danger', active: false },
-  interrupted: { label: 'Interrupted', icon: 'warning', tone: 'warn', active: false },
+  interrupted: { label: 'Interrupted', summaryLabel: 'Unknown', icon: 'warning', tone: 'warn', active: false },
   cancelled: { label: 'Cancelled', icon: 'block', tone: 'neutral', active: false }
 };
 
@@ -39,7 +39,15 @@ const UNKNOWN: RunStatusView = { key: 'unknown', label: 'Unknown', icon: 'help',
 export function runStatusView(status: string | null | undefined): RunStatusView {
   const raw = (status ?? '').toLowerCase();
   const key = (raw === 'success' ? 'completed' : raw) as RunStatusKey;
-  return Object.hasOwn(VIEWS, key) ? { key, ...VIEWS[key as keyof typeof VIEWS] } : UNKNOWN;
+  if (!Object.hasOwn(VIEWS, key)) return UNKNOWN;
+  const { summaryLabel, ...view } = VIEWS[key as keyof typeof VIEWS];
+  return { key, ...view };
+}
+
+export function runSummaryStatusLabel(status: string): string {
+  const raw = status.toLowerCase();
+  const view = runStatusView(raw === 'error' ? 'failed' : raw === 'queued' ? 'pending' : raw);
+  return view.key === 'unknown' ? view.label : VIEWS[view.key].summaryLabel ?? view.label;
 }
 
 /**
