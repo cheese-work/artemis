@@ -6,8 +6,8 @@ definition of principals, delegation, enqueue defaults, verbs, error codes,
 scopes, the revocation bound, the privacy rules and the migration plan. Later
 stages implement it; they change this file first.
 
-**Revision 2.** Resolves the five P1 design findings of CHE-1385 comment
-`01a11c49-de30-7b7c-9013-1f7ced2dbb64` (see [Review disposition](#review-disposition)).
+**Revision 3.** Revision 2 resolved the five P1 design findings of CHE-1385 comment
+`01a11c49-de30-7b7c-9013-1f7ced2dbb64`. Revision 3 corrects P1-1 (email-change history) and P1-5 (grant-derived listing) after the re-check in comment `01a11c76-cbd5-74f5-966d-f7f3743c2f82`. See [Review disposition](#review-disposition).
 
 Related: [board permissions](board-permissions.md) · [device identity](device-identity.md) ·
 [board operations](board-operations.md)
@@ -41,20 +41,36 @@ contact data and never a key.
 | `issuer`, `sub` | The key. `UNIQUE (issuer, sub)`. The same `sub` under another issuer is another principal. |
 | `kind` | `user`, `agent` or `service`. |
 | `email` | Latest verified email, lower-cased. Not unique. Contact data only. |
-| `history_email` | Set once, at first insert, to the email only if no principal of any issuer already holds it. `UNIQUE` on the email alone. It names the only principal that may claim email-keyed history. |
+
+Email history lives in its own table, `principal_emails`:
+
+| Field | Meaning |
+| --- | --- |
+| `email` | Primary key. Lower-cased. One row per address, across all issuers. |
+| `principal_id` | The first principal that presented this address in a verified login. |
+| `contested` | `1` once a different principal has presented the same address. Never reset by code. |
+
+#### Email history policy
+
+- Every verified email a principal presents is recorded in the **same `BEGIN IMMEDIATE` transaction** as the login or the email change. The first presenter reserves the address.
+- Reservations stay with their principal. An email change adds a reservation for the new address and keeps the old one: principal A who moves from `old@` to `new@` still holds `old@`.
+- If a different principal presents an address that another principal reserved, in the same transaction the address becomes `contested` and the presenter reserves nothing. The reserved row keeps its `principal_id`.
+- Because a principal that is the **current** holder of an address always reserves it at presentation, no address can be both current for one principal and free for another.
+- A legacy run row (principal id NULL) whose email is `contested` is owned by **no one**. Stage 3 puts it in the quarantine list. Only a global-admin override reads it. Ambiguity is quarantined, never guessed.
+- Required case (principal A changes `old@` to `new@`, then principal B first signs in as `new@`): A holds `old@` and `new@`. B reserves nothing and `new@` becomes `contested`. B never owns A's runs filed under `new@`, and A does not own B's.
 
 ### Namespaces
 
-| Namespace | Issuer | Sub | May hold `history_email`, pending membership or global admin |
+| Namespace | Issuer | Sub | May reserve an email, bind a pending membership or be global admin |
 | --- | --- | --- | --- |
 | Real | The Cloudflare Access team issuer | The JWT `sub` | Yes |
-| Preview fixture | `urn:artemis:preview` | `preview:<alias>` | No. A fixture identity never claims real email history, never binds a pending membership and never matches `ARTEMIS_ADMIN_SUBJECTS`. |
+| Preview fixture | `urn:artemis:preview` | `preview:<alias>` | No. A fixture identity never reserves an email, never binds a pending membership and never matches `ARTEMIS_ADMIN_SUBJECTS`. |
 | Open mode, anonymous | none | none | No principal exists. |
 
 ### Ownership follows the principal
 
 - A run records `requested_by_principal` (principal id) beside the legacy `requested_by` email. Enqueue writes both. From the stage 2 reader release, ownership is decided by principal id.
-- A legacy row (principal id NULL) is owned only by the principal that holds `history_email` for that row's email. Same email with another `sub`, or the same `sub` under another issuer, owns nothing.
+- A legacy row (principal id NULL) is owned only by the principal that reserved the row's email in `principal_emails`, and only while that email is not `contested`. Same email with another `sub`, or the same `sub` under another issuer, owns nothing.
 - `OwnerScope` carries the principal id, issuer and subject. An email match alone never proves ownership while spaces are enabled.
 - Binding the legacy email is atomic: it happens in the first-insert transaction under `BEGIN IMMEDIATE`, so concurrent first logins yield exactly one holder.
 
@@ -182,7 +198,9 @@ Device use (`run on this phone`) is **not** permission to watch the screen. Live
 The admitted rule stays: anyone signed in with the full run link can open the run, and only the run owner revokes the grant.
 
 - Removing a member does **not** revoke a link grant that member already holds.
-- A grant authorizes reading that one run's evidence (detail, media, bundle, annotations). It never authorizes execution, never appears in listings, search, counts or board lanes, and never makes the run `available` by scope.
+- A grant is a **direct resource authorization**, not a listing or search inclusion. It authorizes reading that one run's evidence (detail, media, bundle, annotations) by its full id. It never authorizes execution, never appears in listings, search results, counts or board lanes, and never makes the run `available` by scope.
+- The grant branch is evaluated only by the single-run read check (`can_read_run`: owner, or member with the ability, or grant). No list, search, count, queue, stream-scope or stats query reads grants.
+- This supersedes the CHE-1332 wording in `board-permissions.md` that adds link-opened runs to `available`. Stage 2 updates that file with the scope change.
 - A stream or download opened through space membership closes on removal. The same person can reopen the run through the grant.
 
 ### Concealment
@@ -223,14 +241,20 @@ Every 503 carries `Retry-After` and `retryable: true`. `run_not_visible` 404 (CH
 
 ## Scopes
 
-`mine`, `everyone` and `all` are replaced by `space`, `mine` and `available` across library, search, queue, stream and stats. The visible-scope predicate runs in SQL: `space_id IN (…) OR requested_by_principal = me OR id IN grants`, with an index on `run_meta(space_id, created_at)`. `available` includes link grants the caller opened by full id; listings of other scopes never include them.
+`mine`, `everyone` and `all` are replaced by `space`, `mine` and `available` across library, search, queue, stream and stats. The visible-scope predicate runs in SQL: `space_id IN (visible spaces) OR requested_by_principal = me`, with an index on `run_meta(space_id, created_at)`. There is **no grant term** in any listing, search, count, queue, stream or stats predicate.
+
+| Scope | Returns |
+| --- | --- |
+| `space` | Runs in the selected space, if the caller may see runs there. |
+| `mine` | Runs the caller owns, in any space. |
+| `available` | Runs in every space where the caller may see runs, plus the caller's own runs. Link grants are not included. |
 
 ## Migration plan
 
 1. **Stage 1 (additive).** `principals`, `delegations` and `delegation_spaces` are created with `CREATE TABLE IF NOT EXISTS`. Nothing reads them while spaces are off. Rollback: ignore the tables.
 2. **Reader release first.** It enforces `space_id` when present, **denies every non-owner when `space_id` is NULL**, and reads `requested_by_principal` before the email. No writer sets `space_id` yet.
 3. **Writer release second.** It writes `space_id` and `requested_by_principal` on every insert and every worker upsert. The old writer cannot insert a row the reader would show to the wrong person.
-4. **Backfill.** Runs map from the recorded submitter, devices from established ownership, never from the migration caller. A record without a clear owner goes to the **quarantine** list, visible to global admins only through an override. A preview bound to a data version lists access gained and lost before the admin confirms.
+4. **Backfill.** Runs map from the recorded submitter, devices from established ownership, never from the migration caller. A record without a clear owner, or whose email is `contested`, goes to the **quarantine** list, visible to global admins only through an override. A preview bound to a data version lists access gained and lost before the admin confirms.
 5. **Rollback** never returns to `scope=everyone` or to email-only ownership. Otherwise use maintenance mode until forward repair.
 
 ## Release gates
@@ -242,10 +266,12 @@ Spaces are not offered to users until all of these pass.
 | Route coverage | 2 | A test fails when any HTTP route, WebSocket route, SSE route, artifact route or mount lacks the resource authorization dependency. |
 | Concealed 404 | 2 | Hidden run, device, space and media answer the same body as unknown ones. |
 | Prefix filtering | 2 | An ambiguous prefix counts only authorized rows. |
+| Retryable 503 | 1 | A catalog or principal-store failure returns 503 with `Retry-After` on the run list, run detail, task-plan, notes, media and bundle routes. The task-plan route does not turn it into a text body. |
 | Revocation | 2 | Removing a member closes an open SSE, bridge WebSocket and agent WebSocket, and cancels a download, within 10 seconds. |
 | Delegation | 2 | Forged, expired, wrong-agent and revoked claims fail. A demotion or revocation between enqueue and worker start ends the run unstarted. |
 | Admin override | 2 | A global admin without grant or override cannot read an unrelated resource. A missing reason returns 422 and writes no action. |
 | Media | 2 | An empty owner set is denied. Run-scoped URLs carry the lease. |
+| Link grant scope | 2 | A run opened only through a grant is absent from list, search, counts, board lanes and `available`, and cannot be stopped or resumed. |
 | Reader-before-writer | 3 | An old-writer insert and a worker upsert after cutover stay confined. A NULL-space row denies non-owners. |
 | Rollback | 3 | After space-scoped writes, rollback keeps confidentiality and never restores `everyone`. |
 | Interrupted migration | 3 | An interrupted migration reruns to the same result. |
@@ -254,13 +280,14 @@ Spaces are not offered to users until all of these pass.
 
 PR 128 at `c5b5cb58eb9b9a6aa75a64a091ad7c873f97750e` implements the principal tables, the delegations tables (without `mode`), `AccessIdentity.issuer/subject`, `SYSTEM_PRINCIPAL`, `require_actor`, the open-mode request check, retryable 503 and admin by subject. This revision adds code work for stage 1. It starts only after the independent design re-check.
 
-1. `OwnerScope` carries the principal id; with spaces enabled a legacy email owns a row only through `history_email`.
+1. `OwnerScope` carries the principal id; with spaces enabled a legacy email owns a row only through an uncontested `principal_emails` reservation. `history_email` is replaced by `principal_emails` and the email-change policy.
 2. With spaces enabled, `admin` no longer widens `sees` or `may_act_on`, and `scope=all` is refused. Platform `admin` routes are unchanged.
 3. Preview fixtures use the `urn:artemis:preview` namespace.
 4. The open-mode request check uses the full forwarding-header set; startup refuses a non-loopback bind with open mode and spaces.
 5. A test fails when a router module references `SYSTEM_PRINCIPAL`.
 6. `delegations` gains `mode`.
-7. API-seam tests for the five findings. Email-only fixtures do not stand in for subject-binding tests.
+7. API-seam tests for the five findings. Email-only fixtures do not stand in for subject-binding tests. Required cases: same email with another subject; same subject under another issuer; concurrent first logins; the A `old@` to `new@`, B `new@` sequence; the task-plan route returning 503 when the catalog is not ready.
+8. The task-plan route (`services/media_service.py`) lets a catalog authorization failure reach the API as a retryable 503. Today a catch-all turns it into an error string.
 
 Not in stage 1: spaces, members, `can()`, override action, credential binding, epochs, media rewrite, migration.
 
@@ -268,15 +295,15 @@ Not in stage 1: spaces, members, `can()`, override action, credential binding, e
 
 | Finding (comment `01a11c49-…`) | Resolved in |
 | --- | --- |
-| P1-1 Subject re-key must reach ownership | [Principals](#principals): namespaces, ownership follows the principal, pending membership |
+| P1-1 Subject re-key must reach ownership | [Principals](#principals): namespaces, [email history policy](#email-history-policy), ownership follows the principal, pending membership |
 | P1-2 No blanket global-admin bypass | [Global admins](#global-admins), [Global admin override](#global-admin-override) |
 | P1-3 SystemPrincipal is internal authority | [SystemPrincipal](#systemprincipal), [Open mode](#open-mode), [Retryable 503](#retryable-503) |
 | P1-4 Delegation credential binding and live checks | [Delegation](#delegation) |
-| P1-5 Privacy contract now | [Enablement gate](#enablement-gate), [Privacy rules](#privacy-rules), [Migration plan](#migration-plan), [Release gates](#release-gates) |
+| P1-5 Privacy contract now | [Enablement gate](#enablement-gate), [Privacy rules](#privacy-rules), [Link grants](#link-grants-che-1332), [Scopes](#scopes), [Migration plan](#migration-plan), [Release gates](#release-gates) |
 
 ## Accepted risks
 
 - Saved run links survive member removal until the owner revokes them.
 - Copies already downloaded cannot be recalled.
 - The audit table shares the SQLite database.
-- `history_email` stays with its principal after an email change. A new holder of the old address gets no history.
+- A reassigned email address that two people have presented is `contested`: its legacy rows are quarantined for both until a global admin resolves them. This can hide a legitimate owner's old runs.
