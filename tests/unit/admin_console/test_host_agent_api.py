@@ -639,8 +639,8 @@ def test_devices_report_counts_shared_and_unshared_phones(admin):
             {
                 "type": "devices",
                 "devices": [
-                    {"serial": "R5CT1", "model": "Pixel 8", "shared": True},
-                    {"serial": "emulator-5554", "model": "AVD", "shared": False},
+                    {"serial": "sd-00000000000000a1", "model": "Pixel 8", "shared": True},
+                    {"serial": "sd-00000000000000a2", "model": "AVD", "shared": False},
                 ],
             }
         )
@@ -649,12 +649,12 @@ def test_devices_report_counts_shared_and_unshared_phones(admin):
         body = admin.get("/api/hosts").json()
         host = body["hosts"][0]
         assert (host["phones_shared"], host["phones_not_shared"]) == (1, 1)
-        assert host["unshared_serials"] == ["emulator-5554"]
+        assert host["unshared_serials"] == ["sd-00000000000000a2"]
         assert host["share_command"] == "smartqa-host share <serial>"
         shared = [d for d in body["devices"] if d["source"] == "computer"]
         assert shared == [
             {
-                "serial": "R5CT1",
+                "serial": "sd-00000000000000a1",
                 "model": "Pixel 8",
                 "source": "computer",
                 "computer_id": host_id,
@@ -662,6 +662,8 @@ def test_devices_report_counts_shared_and_unshared_phones(admin):
                 "computer_status": "online",
                 "reason": None,
                 "since": shared[0]["since"],
+                "attention": None,
+                "also_visible_on": [],
             }
         ]
     finally:
@@ -814,7 +816,9 @@ def test_expired_session_stops_pong_and_device_publishing(admin, clock):
             ).status_code
             == 401
         )
-        ws.send_json({"type": "devices", "devices": [{"serial": "AFTER-EXPIRY", "shared": True}]})
+        ws.send_json(
+            {"type": "devices", "devices": [{"serial": "sd-00000000000000e1", "shared": True}]}
+        )
         ws.send_json({"type": "ping"})
         assert ws.receive_json() == {"type": "error", "code": "auth_expired"}
         with pytest.raises(WebSocketDisconnect) as closed:
@@ -898,13 +902,17 @@ def test_superseded_socket_cannot_publish_devices(admin):
             first_ws.receive_json()
         assert closed.value.code == 4409
         # A frame already in flight on the old socket arrives after the 4409 close.
-        first_ws.send_json({"type": "devices", "devices": [{"serial": "STALE", "shared": True}]})
+        first_ws.send_json(
+            {"type": "devices", "devices": [{"serial": "sd-00000000000000b1", "shared": True}]}
+        )
         time.sleep(0.3)
-        second_ws.send_json({"type": "devices", "devices": [{"serial": "CURRENT", "shared": True}]})
+        second_ws.send_json(
+            {"type": "devices", "devices": [{"serial": "sd-00000000000000c1", "shared": True}]}
+        )
         second_ws.send_json({"type": "ping"})
         assert second_ws.receive_json()["type"] == "pong"
         serials = [d["serial"] for d in admin.get("/api/hosts").json()["devices"]]
-        assert serials == ["CURRENT"]
+        assert serials == ["sd-00000000000000c1"]
     finally:
         second_context.__exit__(None, None, None)
         first_context.__exit__(None, None, None)
@@ -915,7 +923,7 @@ def test_registry_refuses_device_writes_from_a_stale_generation_or_revoked_host(
     first_context, _ws1, first = _handshake(admin, key, host_id)
     second_context, _ws2, second = _handshake(admin, key, host_id)
     try:
-        devices = [{"serial": "X1", "shared": True}]
+        devices = [{"serial": "sd-00000000000000d1", "shared": True}]
         assert host_registry.set_devices(host_id, first["generation"], devices) is False
         assert host_registry.set_devices(host_id, second["generation"], devices) is True
         admin.post(f"/api/hosts/{host_id}/revoke")
@@ -1011,7 +1019,9 @@ def test_tunnel_device_ref_routes_to_named_host_without_local_probe(admin, monke
     key, host_id = _enrolled(admin)
     context, ws, _ = _handshake(admin, key, host_id)
     try:
-        ws.send_json({"type": "devices", "devices": [{"serial": "phone", "shared": True}]})
+        ws.send_json(
+            {"type": "devices", "devices": [{"serial": "sd-00000000000000f1", "shared": True}]}
+        )
         ws.send_json({"type": "ping"})
         assert ws.receive_json()["type"] == "pong"
         probe = AsyncMock(side_effect=AssertionError("must not probe local ADB"))
@@ -1019,11 +1029,15 @@ def test_tunnel_device_ref_routes_to_named_host_without_local_probe(admin, monke
         monkeypatch.setattr(tasks.readiness_engine, "run_device_submission_probe", probe)
         monkeypatch.setattr(tasks.task_queue_service, "enqueue_tasks", enqueue)
         result = admin.post(
-            "/api/run", json={"goal": "fake", "device_ref": {"host_id": host_id, "serial": "phone"}}
+            "/api/run",
+            json={
+                "goal": "fake",
+                "device_ref": {"host_id": host_id, "serial": "sd-00000000000000f1"},
+            },
         )
         assert result.status_code == 200, result.text
         assert enqueue.call_args.kwargs["host_id"] == host_id
-        assert enqueue.call_args.kwargs["device_serial"] == "phone"
+        assert enqueue.call_args.kwargs["device_serial"] == "sd-00000000000000f1"
         assert probe.call_count == 0
     finally:
         context.__exit__(None, None, None)

@@ -400,6 +400,11 @@ func hostTestExchange(test *testing.T, requests []byte, fragmented bool, serve f
 	if err != nil {
 		test.Fatal(err)
 	}
+	return hostTestPeerExchange(test, peer, remote, requests, fragmented, serve)
+}
+
+func hostTestPeerExchange(test *testing.T, peer *HostPeer, remote net.Conn, requests []byte, fragmented bool, serve func(net.Conn) error) []byte {
+	test.Helper()
 	test.Cleanup(peer.Close)
 	done := make(chan error, 1)
 	go func() {
