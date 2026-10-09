@@ -168,6 +168,7 @@ def _ensure(conn: sqlite3.Connection) -> None:
             else "CASE WHEN step_number = 0 THEN 'stuck_run' ELSE 'run_step' END"
         )
         conn.execute("SAVEPOINT failure_ledger_signal_migration")
+        migration_complete = False
         try:
             conn.execute("ALTER TABLE failure_ledger RENAME TO failure_ledger_legacy")
             conn.execute(_CREATE_LEDGER)
@@ -193,10 +194,11 @@ def _ensure(conn: sqlite3.Connection) -> None:
                     )
             conn.execute("DROP TABLE failure_ledger_legacy")
             conn.execute("RELEASE SAVEPOINT failure_ledger_signal_migration")
-        except Exception:
-            conn.execute("ROLLBACK TO SAVEPOINT failure_ledger_signal_migration")
-            conn.execute("RELEASE SAVEPOINT failure_ledger_signal_migration")
-            raise
+            migration_complete = True
+        finally:
+            if not migration_complete:
+                conn.execute("ROLLBACK TO SAVEPOINT failure_ledger_signal_migration")
+                conn.execute("RELEASE SAVEPOINT failure_ledger_signal_migration")
     for statement in _DDL:
         conn.execute(statement)
 
