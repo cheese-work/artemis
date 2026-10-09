@@ -150,11 +150,14 @@ class DeviceRepository:
         hardware_hash: str | None,
         readable: bool,
         label: str | None = None,
+        previous_serials: tuple[str, ...] = (),
     ) -> Match:
         """Match one connection to a device (docs/device-identity.md, "Matching rules").
 
         ``hardware_hash`` is None when the connection has no hardware identity;
         ``readable`` is False when adb could not read one yet (provisional).
+        ``previous_serials`` are routing keys this connection used before it had a
+        hardware identity; such a connection is re-keyed, never duplicated.
         """
         with db_session(self.db_path) as conn:
             self._require_ready(conn)
@@ -162,6 +165,8 @@ class DeviceRepository:
             with conn:
                 now = time.time()
                 row = self._find_connection(conn, source, host_id, serial)
+                if row is None and hardware_hash is not None:
+                    row = self._rekey(conn, source, host_id, serial, previous_serials)
                 if row is not None:
                     device_id, connection_id = row["device_id"], row["connection_id"]
                     current = conn.execute(
@@ -204,6 +209,30 @@ class DeviceRepository:
                     (connection_id, device_id, kind, source, host_id, serial, now, now),
                 )
                 return Match(device_id, connection_id, outcome)
+
+    def _rekey(
+        self,
+        conn: sqlite3.Connection,
+        source: str,
+        host_id: str | None,
+        serial: str,
+        previous_serials: tuple[str, ...],
+    ):
+        """The connection a routing-key change left behind, now under ``serial``."""
+        for previous in previous_serials:
+            row = self._find_connection(conn, source, host_id, previous)
+            if row is None:
+                continue
+            (hashed,) = conn.execute(
+                "SELECT hardware_hash FROM devices WHERE device_id = ?", (row["device_id"],)
+            ).fetchone()
+            if hashed is None:  # a hardware identity is never re-keyed away from its device
+                conn.execute(
+                    "UPDATE device_connections SET serial = ? WHERE connection_id = ?",
+                    (serial, row["connection_id"]),
+                )
+                return self._find_connection(conn, source, host_id, serial)
+        return None
 
     def _identify(
         self, conn: sqlite3.Connection, device_id: str, current, hardware_hash: str, now: float

@@ -25,12 +25,14 @@ from apps.admin_console.database.repositories.device_repository import (
     DeviceStoreNotReady,
     Match,
 )
+from apps.admin_console.services.host_registry import DEVICE_ID
 from artemis.runtime.adb_endpoint import AdbEndpoint
 from artemis.utils.device_kind import DeviceKind, classify_properties
 
 logger = logging.getLogger(__name__)
 
 HARDWARE_ID = re.compile(r"^[0-9a-f]{64}$")
+MAX_PREVIOUS_IDS = 8
 # ro.serialno values many phones share; host-agent/identity.go ignores the same ones.
 PLACEHOLDER_SERIALS = frozenset(
     {"", "unknown", "0123456789abcdef", "0123456789", "0000000000000000"}
@@ -64,9 +66,15 @@ class DeviceIdentity:
             return None
         return self._mac(value)
 
-    def avd_hash(self, host_id: str | None, avd: str) -> str:
-        """The AVD is the device: one identity per ``(host_id, AVD name)``."""
-        return self._mac(f"avd\0{host_id or ''}\0{avd}")
+    def avd_hash(self, scope: str, avd: str) -> str:
+        """The AVD is the device: one identity per (host or adb server, AVD name)."""
+        return self._mac(f"avd\0{scope}\0{avd}")
+
+    def transport_key(self, endpoint: AdbEndpoint, serial: str) -> str:
+        """Routing key of a server adb connection. On USB the transport serial is
+        ro.serialno, so only this keyed hash is stored; the adb server keeps two
+        servers' equal serials apart."""
+        return "ad-" + self._mac(f"adb\0{endpoint.identity}\0{serial}")
 
     def _mac(self, message: str) -> str:
         registry = _registry()
@@ -85,7 +93,7 @@ class DeviceIdentity:
         """Server adb discovery: ``(serial, state, model, getprop)`` per listed device."""
         if endpoint.host_id is not None:
             return []  # a host tunnel lists the agent's phones; observe_host owns them
-        return self._guarded(self._adb_rows, devices)
+        return self._guarded(self._adb_rows, endpoint, devices)
 
     def observe_host(self, host_id: str, devices: list[dict[str, Any]]) -> list[Match]:
         """Host registration: the agent's validated device rows plus its ``hardware_id``."""
@@ -103,9 +111,8 @@ class DeviceIdentity:
         return matches
 
     def _adb_rows(
-        self, devices: list[tuple[str, str, str | None, dict[str, str]]]
+        self, endpoint: AdbEndpoint, devices: list[tuple[str, str, str | None, dict[str, str]]]
     ) -> list[dict[str, Any]]:
-        # ponytail: every server adb endpoint shares source "local"; key by endpoint if two are ever live.
         bridged = _bridge_serials()
         observed = []
         for serial, state, model, props in devices:
@@ -118,7 +125,7 @@ class DeviceIdentity:
             ):
                 kind, source = "avd", "local"
                 avd = props.get("ro.boot.qemu.avd_name") or props.get("ro.kernel.qemu.avd_name")
-                hardware = self.avd_hash(None, avd) if readable and avd else None
+                hardware = self.avd_hash(endpoint.identity, avd) if readable and avd else None
             else:
                 wifi = ":" in serial or "._adb" in serial
                 kind, source = ("wifi" if wifi else "usb"), "local"
@@ -129,10 +136,11 @@ class DeviceIdentity:
                     kind=kind,
                     source=source,
                     host_id=None,
-                    serial=serial,
+                    serial=self.transport_key(endpoint, serial),
                     hardware_hash=hardware,
                     readable=readable,
                     label=model,
+                    previous_serials=(),
                 )
             )
         return observed
@@ -146,11 +154,18 @@ class DeviceIdentity:
             hardware = None
             if readable and emulator and not item.get("attention"):
                 # The agent's emulator id is an HMAC of its AVD name: stable across instances.
-                hardware = self.avd_hash(host_id, serial)
+                hardware = self.avd_hash(f"host:{host_id}", serial)
             elif (
                 readable and not emulator and HARDWARE_ID.match(str(item.get("hardware_id") or ""))
             ):
                 hardware = item["hardware_id"]
+            previous = item.get("previous_ids")
+            # Weak ids the agent used for this phone before it was authorized (CHE-1473).
+            previous = tuple(
+                str(value)
+                for value in (previous if isinstance(previous, list) and hardware else [])
+                if DEVICE_ID.match(str(value)) and value != serial
+            )[:MAX_PREVIOUS_IDS]
             # The agent publishes one entry per phone; its transport is not on the wire.
             observed.append(
                 dict(
@@ -161,6 +176,7 @@ class DeviceIdentity:
                     hardware_hash=hardware,
                     readable=readable,
                     label=item.get("model"),
+                    previous_serials=previous,
                 )
             )
         return observed
@@ -170,7 +186,12 @@ class DeviceIdentity:
         repo = DeviceRepository(db_path)
         for item in observed:
             key = (str(db_path), item["source"], item["host_id"], item["serial"])
-            fingerprint = (item["kind"], item["hardware_hash"], item["readable"])
+            fingerprint = (
+                item["kind"],
+                item["hardware_hash"],
+                item["readable"],
+                item["previous_serials"],
+            )
             with self._lock:
                 seen = self._seen.get(key)
             if seen is None or seen[0] != fingerprint:

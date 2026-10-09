@@ -345,7 +345,11 @@ class DevicePool:
                 and (
                     serial not in self._identity_cache
                     or (
-                        self._identity_cache[serial][1] is DeviceKind.UNKNOWN
+                        # An unknown kind or a missing ro.serialno (no hardware identity) is retried.
+                        (
+                            self._identity_cache[serial][1] is DeviceKind.UNKNOWN
+                            or not self._snapshot().props.get(serial, {}).get("ro.serialno")
+                        )
                         and now - self._identity_cache[serial][0] > self.UNKNOWN_KIND_RETRY_SECONDS
                     )
                 )

@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -454,5 +455,20 @@ func TestServerPayloadLeakScan(test *testing.T) {
 	}
 	if len(hardware) != 1 || !hardware["359e41333185ec8960b7be84c5ddeee55b34b6805c51b0102f60b5ee5bcc5d38"] {
 		test.Fatalf("hardware ids sent: %v", hardware)
+	}
+}
+
+func TestTrustedPhoneListsTheWeakIDsItReplaced(test *testing.T) {
+	devices, _ := newDeviceRegistry(testPepper, "")
+	devices.replace([]device{{Serial: "R5CT1234ABC", State: "unauthorized", Transport: "1"}})
+	weak := devices.snapshot()[0]
+	devices.replace([]device{usbPhone("R5CT1234ABC", "1", "R5CT1234ABC"), usbPhone("192.168.1.5:5555", "2", "R5CT1234ABC")})
+	trusted := devices.snapshot()[0]
+	// Vector shared with tests/unit/admin_console/test_device_identity_resolution.py (WEAK).
+	if weak.ID != "sd-3a5eede39742af70" || !slices.Contains(previousIDs(testPepper, trusted), weak.ID) {
+		test.Fatalf("weak %s, previous %v", weak.ID, previousIDs(testPepper, trusted))
+	}
+	if len(previousIDs(testPepper, trusted)) != 2 || previousIDs(testPepper, weak) != nil {
+		test.Fatalf("previous ids: %v / %v", previousIDs(testPepper, trusted), previousIDs(testPepper, weak))
 	}
 }

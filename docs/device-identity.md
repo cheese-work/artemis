@@ -35,12 +35,15 @@ identity.
 | Emulator (AVD) | `(host_id, AVD name)`. The AVD is the device; each booted instance is a connection. A recycled AVD with the same name stays the same device. |
 | Old host agent (no hashed id) | No hardware identity. Matched to the existing connection with the same `(host_id, opaque serial)`; if none exists, an **uncertain match** is offered. It never creates a new device per reconnect. |
 
-The salt is the org device pepper the server issues at enrolment
-(`device_pepper`); it is one key for the whole server, so every source hashes a
-phone to the same value. The host agent sends the hash as `hardware_id` (64
-lowercase hex) on each trusted phone in its `devices` message; an agent that
-sends none is an old host agent. An AVD seen through a host agent is keyed by
-its opaque id, which the agent derives from the AVD name. A different phone that
+The host agent sends the hash as `hardware_id` (64 lowercase hex) on each
+trusted phone in its `devices` message; an agent that sends none is an old host
+agent. With it, the agent sends `previous_ids`: the opaque ids the phone's
+transports had before its identity was read, so the server re-keys that
+connection after authorization instead of creating a second device. A server
+adb connection stores only a keyed hash of its transport serial and its adb
+server, never the serial itself. An AVD seen through a host agent is keyed by
+its opaque id, which the agent derives from the AVD name; a server AVD is keyed
+by its adb server and AVD name. A different phone that
 appears on a reused transport key (a bridge port, a Wi-Fi address) retires the
 old key, so the old connection keeps its device and history. A `provisional` or
 `uncertain` record that turns out to be a known phone joins that device when

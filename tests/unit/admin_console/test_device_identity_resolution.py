@@ -29,6 +29,8 @@ SERIALNO = "R5CT1234ABC"
 PEPPER = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8="
 HARDWARE_ID = "359e41333185ec8960b7be84c5ddeee55b34b6805c51b0102f60b5ee5bcc5d38"
 PHONE = "sd-05b42e59020251f2"
+# The agent's weak id for the same phone before authorization: "dev:adb:" + transport serial.
+WEAK = "sd-3a5eede39742af70"
 AVD = "sd-8bcfa99c1405b169"
 device_pool_module = importlib.import_module("artemis.runtime.device_pool")
 PHONE_PROPS = {"ro.serialno": SERIALNO, "ro.product.model": "Pixel 6 Pro"}
@@ -107,9 +109,9 @@ def test_the_raw_serial_is_never_stored(db, identity):
 
     dump = "\n".join(sqlite3.connect(db).iterdump())
     assert HARDWARE_ID in dump
-    # The USB transport serial is the routing key; ro.serialno itself appears nowhere else.
-    assert dump.count(SERIALNO) == 1
-    assert f"'usb','local',NULL,'{SERIALNO}'" in dump
+    # On USB the transport serial is ro.serialno: the routing key stores only its keyed hash.
+    assert SERIALNO not in dump
+    assert identity.transport_key(AdbEndpoint.local(), SERIALNO) in dump
 
 
 # -- acceptance: one phone, one device ----------------------------------------
@@ -126,7 +128,8 @@ def test_usb_and_wifi_of_one_phone_resolve_to_one_device(db, identity, repo):
     assert usb.connection_id != wifi.connection_id
     assert (usb.outcome, wifi.outcome) == ("confirmed", "confirmed")
     assert _devices(db) == [(usb.device_id, "confirmed")]
-    assert repo.device_for_connection("local", None, "192.168.1.5:5555") == usb.device_id
+    wifi_key = identity.transport_key(AdbEndpoint.local(), "192.168.1.5:5555")
+    assert repo.device_for_connection("local", None, wifi_key) == usb.device_id
 
 
 def test_host_agent_usb_and_server_wifi_of_one_phone_resolve_to_one_device(db, admin, identity):
@@ -278,8 +281,97 @@ def test_another_phone_on_a_recycled_transport_key_gets_its_own_device(db, ident
 
     assert second.device_id != first.device_id
     assert second.connection_id != first.connection_id  # the old connection keeps its history
-    assert repo.device_for_connection("local", None, "192.168.1.5:5555") == second.device_id
+    wifi_key = identity.transport_key(AdbEndpoint.local(), "192.168.1.5:5555")
+    assert repo.device_for_connection("local", None, wifi_key) == second.device_id
     assert repo.get(first.device_id).match_state == "confirmed"
+
+
+def test_host_authorization_promotes_the_provisional_device(db, admin, repo):
+    # The agent names an unauthorized phone by its transport (weak id); once authorized it
+    # switches to the hardware id and lists the weak ids it replaced.
+    key, enrolled = _enroll(admin, "Lab Mac")
+    host_id = enrolled["host_id"]
+    context, ws = _connect(admin, key, host_id)
+    try:
+        ws.send_json(
+            {
+                "type": "devices",
+                "devices": [{"serial": WEAK, "state": "unauthorized", "kind": "physical"}],
+            }
+        )
+        _sync(ws)
+        ((pending, state),) = _devices(db)
+        assert state == "provisional"
+        trusted = {
+            "serial": PHONE,
+            "state": "device",
+            "kind": "physical",
+            "shared": True,
+            "hardware_id": HARDWARE_ID,
+            "previous_ids": [WEAK],
+        }
+        ws.send_json({"type": "devices", "devices": [trusted]})
+        _sync(ws)
+    finally:
+        context.__exit__(None, None, None)
+
+    assert _devices(db) == [(pending, "confirmed")]
+    assert repo.device_for_connection("host", host_id, PHONE) == pending
+    assert repo.device_for_connection("host", host_id, WEAK) is None
+
+
+def test_host_authorization_joins_a_phone_the_server_already_knows(db, admin, identity, repo):
+    (usb,) = _local(identity, (SERIALNO, "device", "Pixel 6 Pro", PHONE_PROPS))
+    host_id = _host_devices(admin, [{"serial": WEAK, "state": "unauthorized", "kind": "physical"}])
+    weak = {"serial": PHONE, "state": "device", "kind": "physical", "hardware_id": HARDWARE_ID}
+
+    identity.observe_host(host_id, [{**weak, "previous_ids": [WEAK]}])
+
+    assert _devices(db) == [(usb.device_id, "confirmed")]
+    assert repo.device_for_connection("host", host_id, PHONE) == usb.device_id
+
+
+def test_two_adb_servers_keep_their_avds_and_serials_apart(db, identity, repo):
+    lab = AdbEndpoint.create("10.0.0.2", 5037)
+    here = identity.observe_adb(
+        AdbEndpoint.local(), [("emulator-5554", "device", "sdk", _avd_props("Pixel_A"))]
+    )
+    there = identity.observe_adb(lab, [("emulator-5554", "device", "sdk", _avd_props("Pixel_A"))])
+    assert here[0].device_id != there[0].device_id
+
+    other = {"ro.serialno": "OTHERPHONE1"}
+    for _ in range(3):
+        identity.observe_adb(
+            AdbEndpoint.local(), [("192.168.1.5:5555", "device", "P6", PHONE_PROPS)]
+        )
+        identity.observe_adb(lab, [("192.168.1.5:5555", "device", "P3a", other)])
+
+    with sqlite3.connect(db) as conn:
+        (wifi,) = conn.execute(
+            "SELECT COUNT(*) FROM device_connections WHERE kind = 'wifi'"
+        ).fetchone()
+    assert wifi == 2
+    assert len(_devices(db)) == 4
+
+
+def test_a_missing_ro_serialno_is_read_again(monkeypatch):
+    pool = DevicePool()
+    monkeypatch.setattr(pool, "_resolve_adb", lambda: "adb")
+    monkeypatch.setattr(pool, "UNKNOWN_KIND_RETRY_SECONDS", 0.0)
+    monkeypatch.setattr(
+        pool, "_query_adb_devices_sync", lambda: [(SERIALNO, "device", "Pixel 6 Pro", "raven")]
+    )
+    reads = [{"ro.product.model": "Pixel 6 Pro"}, dict(PHONE_PROPS)]
+    monkeypatch.setattr(pool, "_read_properties_sync", lambda serial: reads.pop(0))
+    seen = []
+    monkeypatch.setattr(device_pool_module, "identity_observer", lambda _e, d: seen.append(d))
+
+    pool.list_devices()
+    pool._snapshot().raw = None  # force a fresh enumeration
+    pool.list_devices()
+
+    assert reads == []
+    assert seen[-1] == [(SERIALNO, "device", "Pixel 6 Pro", PHONE_PROPS)]
 
 
 # -- hooks never break their source -------------------------------------------
