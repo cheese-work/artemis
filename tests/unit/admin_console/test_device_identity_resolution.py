@@ -7,6 +7,7 @@ through DevicePool, and the browser bridge serial on the server's adb.
 
 from __future__ import annotations
 
+import asyncio
 import importlib
 import sqlite3
 
@@ -437,6 +438,93 @@ def test_two_adb_servers_keep_their_avds_and_serials_apart(db, identity, repo):
         ).fetchone()
     assert wifi == 2
     assert len(_devices(db)) == 4
+
+
+def _pool(monkeypatch, identity, listings: list[list[tuple]], reads: dict[str, list[dict]]):
+    """A pool whose fresh enumerations return ``listings`` in turn and whose
+    property reads pop from ``reads[serial]``; the observer is the real one."""
+    pool = DevicePool()
+    monkeypatch.setattr(pool, "_resolve_adb", lambda: "adb")
+    monkeypatch.setattr(pool, "_query_adb_devices_sync", lambda: listings.pop(0))
+    monkeypatch.setattr(pool, "_read_properties_sync", lambda serial: reads[serial].pop(0))
+    monkeypatch.setattr(device_pool_module, "identity_observer", identity.observe_adb)
+
+    def enumerate_all() -> None:
+        while listings:
+            pool._snapshot().raw = None  # force a fresh enumeration
+            pool.list_devices()
+
+    return enumerate_all
+
+
+def test_another_phone_at_the_same_wifi_address_is_read_again(db, identity, monkeypatch):
+    wifi, usb = "192.168.1.5:5555", "ZY22USB1"
+    other = {"ro.serialno": "OTHERPHONE1", "ro.product.model": "Pixel 3a"}
+    usb_props = {"ro.serialno": "ZY22USB1", "ro.product.model": "Moto"}
+    listing = [(wifi, "device", "P", None), (usb, "device", "Moto", None)]
+    reads = {wifi: [dict(PHONE_PROPS), other], usb: [usb_props]}
+    _pool(monkeypatch, identity, [listing, list(listing)], reads)()
+
+    assert reads == {wifi: [], usb: []}  # Wi-Fi identity re-read; the USB phone read once
+    assert [state for _, state in _devices(db)] == ["confirmed", "confirmed", "confirmed"]
+    with sqlite3.connect(db) as conn:
+        hashes = {row[0] for row in conn.execute("SELECT hardware_hash FROM devices")}
+    assert hashes == {
+        HARDWARE_ID,
+        identity.hardware_hash("OTHERPHONE1"),
+        identity.hardware_hash(usb),
+    }
+
+
+def test_the_async_listing_reads_a_reused_wifi_address_again(db, identity, monkeypatch):
+    wifi = "192.168.1.5:5555"
+    pool = DevicePool()
+    monkeypatch.setattr(pool, "_resolve_adb", lambda: "adb")
+
+    async def query():
+        return [(wifi, "device", "P", None)]
+
+    reads = [dict(PHONE_PROPS), {"ro.serialno": "OTHERPHONE1"}]
+
+    async def read(serial):
+        return reads.pop(0)
+
+    monkeypatch.setattr(pool, "_query_adb_devices_async", query)
+    monkeypatch.setattr(pool, "_read_properties_async", read)
+    monkeypatch.setattr(device_pool_module, "identity_observer", identity.observe_adb)
+
+    async def twice():
+        for _ in range(2):
+            pool._snapshot().raw = None
+            await pool.list_devices_async()
+
+    asyncio.run(twice())
+
+    assert reads == []
+    assert len(_devices(db)) == 2
+
+
+def test_another_avd_after_an_offline_listing_is_read_again(db, identity, monkeypatch):
+    listings = [
+        [("emulator-5554", "device", "sdk", None)],
+        [("emulator-5554", "offline", None, None)],
+        [("emulator-5554", "device", "sdk", None)],
+    ]
+    reads = {"emulator-5554": [_avd_props("Pixel_A"), _avd_props("Pixel_B")]}
+    _pool(monkeypatch, identity, listings, reads)()
+
+    assert reads == {"emulator-5554": []}
+    assert len(_devices(db)) == 2  # Pixel_B is not taken for Pixel_A
+
+
+def test_a_phone_that_leaves_and_returns_is_read_again(db, identity, monkeypatch):
+    # Control: an absent listing already forgets the transport.
+    wifi = "192.168.1.5:5555"
+    other = {"ro.serialno": "OTHERPHONE1"}
+    listings = [[(wifi, "device", "P", None)], [], [(wifi, "device", "P", None)]]
+    _pool(monkeypatch, identity, listings, {wifi: [dict(PHONE_PROPS), other]})()
+
+    assert len(_devices(db)) == 2
 
 
 def test_a_missing_ro_serialno_is_read_again(monkeypatch):
