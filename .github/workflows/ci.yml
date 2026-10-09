@@ -119,8 +119,8 @@ jobs:
       - name: Install locked frontend dependencies
         run: npm ci
 
-      - name: Run frontend tests
-        run: npm test -- --watch=false --browsers=ChromeHeadless
+      - name: Run frontend tests at 800 px and 1440 px
+        run: npm test -- --watch=false --browsers=ChromeHeadlessNarrow,ChromeHeadlessWide
 
       - name: Build frontend for production
         run: npm run build

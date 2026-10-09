@@ -48,9 +48,13 @@ describe('WorkspaceDeviceChipComponent', () => {
     expect(el.querySelector('.phone-card-serial')?.textContent).toBe(phone().serial);
     expect(el.querySelector('.phone-card-state')?.textContent).toContain('Running');
     expect(el.querySelector('.phone-card-state')?.textContent).toContain('1 queued');
+    const header = el.querySelector<HTMLElement>('.phone-card-header')!;
+    expect(getComputedStyle(header).display).toBe(window.innerWidth >= 1024 ? 'flex' : 'none');
     chip().click();
     settle();
-    for (const control of el.querySelectorAll<HTMLElement>('button, a')) expectHitBox(control);
+    const controls = el.querySelectorAll<HTMLElement>('button, a');
+    expect(controls.length).toBeGreaterThan(0);
+    for (const control of controls) expectHitBox(control);
   });
 
   it('opens the picker with the device list, Connect a phone from this browser, and no Disconnect', () => {

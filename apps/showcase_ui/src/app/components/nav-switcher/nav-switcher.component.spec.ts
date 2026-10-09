@@ -67,6 +67,10 @@ describe('NavSwitcherComponent', () => {
     const nav = fixture.nativeElement.querySelector('.floating-nav-switcher') as HTMLElement;
     expect(nav.getBoundingClientRect().right).toBeLessThanOrEqual(window.innerWidth);
     expect(getComputedStyle(nav).flexWrap).toBe(window.innerWidth >= 1024 ? 'nowrap' : 'wrap');
+    if (window.innerWidth >= 1024) {
+      expect(getComputedStyle(nav).flexDirection).toBe('column');
+      expect(nav.getBoundingClientRect().width).toBe(224);
+    }
   });
 
   it("hides What's New navigation when there are no entries", async () => {
@@ -247,6 +251,7 @@ describe('NavSwitcherComponent', () => {
     expect(root.querySelector('.run-count')?.textContent?.trim()).toBe('2');
     expect(root.querySelector('.nav-new-label')?.textContent?.trim()).toBe('New');
     const controls = Array.from(root.querySelectorAll<HTMLElement>('nav > a, nav > button, button.chip, summary'));
+    expect(controls.length).toBe(5);
     for (const control of controls) expectHitBox(control);
     const navItems = controls.filter(control => control.matches('.nav-tab-btn'));
     for (let index = 1; index < navItems.length; index++) {
