@@ -57,7 +57,6 @@ describe('Workspace review mode', () => {
       currentSessionId: () => liveSession()?.session_id ?? null,
       currentStartupProgress: () => [],
       runningSessionId: () => null,
-      sessions: () => [],
       agentStatus: () => 'idle',
       isPaused: () => false,
       viewedModel: () => null,

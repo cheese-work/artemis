@@ -53,7 +53,6 @@ describe('WorkspaceComponent image chat', () => {
       currentSessionId: () => null,
       sessions: () => [],
       currentStartupProgress: () => [],
-      sessions: () => [],
       runningSessionId: () => null,
       agentStatus: () => 'idle',
       runTask,
