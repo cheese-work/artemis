@@ -35,6 +35,7 @@ from artemis.data_engine.models import (
     VideoRecordingRecord,
 )
 from artemis.data_engine import principals
+from artemis.data_engine.devices import migrate as migrate_devices
 from artemis.data_engine.run_catalog import migrate as migrate_run_catalog
 from artemis.runtime.lifecycle import ensure_lifecycle_schema
 from artemis.utils.logger import get_logger
@@ -285,6 +286,11 @@ class StorageManager:
         except sqlite3.Error:
             # Additive index over runs; the listing API reports "not ready" instead.
             logger.exception("Run catalog migration failed for %s", self.db_path)
+        try:
+            migrate_devices(self.db_path)
+        except sqlite3.Error:
+            # Additive device tables; nothing reads them until the reconciler lands.
+            logger.exception("Device migration failed for %s", self.db_path)
         logger.info(f"Database initialized at {self.db_path}")
 
     def create_session(self, session: SessionMetadata):
