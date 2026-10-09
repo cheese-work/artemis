@@ -53,15 +53,18 @@ const CHECK_INTERVAL_MS = 5 * 60_000;
     }
     .deployed, [role="status"], button { white-space: nowrap; }
     button {
-      padding: 0;
+      min-height: var(--target);
+      min-width: var(--target);
+      padding: 0 var(--space-sm);
       border: 0;
+      border-radius: var(--radius-md);
       color: inherit;
-      background: none;
+      background: var(--color-surface-subtle);
       font: inherit;
       cursor: pointer;
     }
     .reload { text-decoration: underline; }
-    button:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+    button:focus-visible { outline: 3px solid var(--focus-ring); outline-offset: 2px; }
   `],
   changeDetection: ChangeDetectionStrategy.OnPush
 })
