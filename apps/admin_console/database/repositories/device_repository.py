@@ -89,6 +89,32 @@ class DeviceRepository:
             self._require_ready(conn)
             return self._resolve(conn, device_id)
 
+    def connection(
+        self,
+        *,
+        connection_id: str | None = None,
+        source: str | None = None,
+        host_id: str | None = None,
+        serial: str | None = None,
+    ) -> Match | None:
+        with db_session(self.db_path) as conn:
+            self._require_ready(conn)
+            row = (
+                conn.execute(
+                    "SELECT connection_id, device_id FROM device_connections WHERE connection_id = ?",
+                    (connection_id,),
+                ).fetchone()
+                if connection_id
+                else self._find_connection(conn, source, host_id, serial)
+            )
+            if row is None:
+                return None
+            canonical = self._resolve(conn, row["device_id"])
+            outcome = conn.execute(
+                "SELECT match_state FROM devices WHERE device_id = ?", (canonical,)
+            ).fetchone()[0]
+            return Match(canonical, row["connection_id"], outcome)
+
     def add_alias(self, alias_device_id: str, device_id: str) -> None:
         """Keep ``alias_device_id`` resolvable to ``device_id``; existing chains collapse to one hop."""
         with db_session(self.db_path) as conn:

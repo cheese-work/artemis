@@ -344,6 +344,7 @@ def mobile_run_task(
                         "status": "failed",
                         "error": rejection_error,
                         "message": f"Task rejected by Artemis Daemon: {rejection_error}",
+                        **({"code": resp["code"]} if resp.get("code") else {}),
                     }
                 if resp and resp.get("tasks"):
                     assigned_sid = resp["tasks"][0].get("session_id", trace_id)
