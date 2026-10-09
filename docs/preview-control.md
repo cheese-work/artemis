@@ -3,7 +3,7 @@
 This layer supplies code, uninstalled systemd templates and disposable-fixture
 tests. It does **not** install accounts, start a daemon, register a runner,
 inspect credentials, read runner environments or admit a preview. Receipt
-verification and admission belong to L5a2/L5a3. The runtime owner provisions
+verification and admission belong to [L5a2](preview-receipts.md)/L5a3. The runtime owner provisions
 reviewed files only after the remaining implementation and activation gates.
 
 Cheese's Plan A decision on CHE-1283 (2026-10-09) permits X99-hosted previews
@@ -128,7 +128,8 @@ allowed. These represent the native issue/comment/reviewer-run/agent metadata
 reads required by L5a2. Wildcards, writes, administration, impersonation, missing
 reads and duplicate grants fail. `complete`, `supported_identity` and
 `exclusive_custody` must be true. Positive epoch-second `checked_at` and
-`expires_at` must bracket the check time. Reassess before expiry and whenever
+`expires_at` must bracket the check time. L5a2 caps this window at 24 hours and
+re-checks it before and after every native credential use. Reassess before expiry and whenever
 custody or effective grants change. UTC epoch seconds are machine evidence,
 not a human-facing time format.
 
