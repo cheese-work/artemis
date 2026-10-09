@@ -13,6 +13,7 @@ from pathlib import Path
 
 MAX_BYTES = 128 * 1024
 MAX_ENTRIES = 1000
+MAX_SCOPE_WINDOW = 24 * 60 * 60
 DOCUMENT_NAMES = ("policy.json", "registry.json", "scope.json")
 READ_PERMISSIONS = frozenset({"issue.read", "comment.read", "task.read", "agent.read"})
 POLICY_FIELDS = {
@@ -70,6 +71,7 @@ class Control:
     project_id: str
     platform_identity_id: str
     platform_credential_id: str
+    scope_checked_at: int
     scope_expires_at: int
     authors: tuple[Participant, ...]
     reviewers: tuple[Participant, ...]
@@ -109,6 +111,15 @@ def _fields(document, fields):
 def _version(document):
     if type(document["schema_version"]) is not int or document["schema_version"] != 1:
         raise ValueError("unsupported schema version")
+
+
+def _scope_window(checked_at, expires_at, observed_at):
+    _number(checked_at)
+    _number(expires_at)
+    if not checked_at <= observed_at < expires_at:
+        raise ValueError("credential-scope assessment is stale or future-dated")
+    if expires_at - checked_at > MAX_SCOPE_WINDOW:
+        raise ValueError("credential-scope assessment window exceeds 24 hours")
 
 
 def _participants(entries):
@@ -175,8 +186,7 @@ def validate_documents(policy, registry, scope, *, now=None) -> Control:
     checked_at = _number(scope["checked_at"])
     expires_at = _number(scope["expires_at"])
     observed_at = time.time() if now is None else now
-    if not checked_at <= observed_at < expires_at:
-        raise ValueError("credential-scope assessment is stale or future-dated")
+    _scope_window(checked_at, expires_at, observed_at)
 
     _fields(registry, {"schema_version", "policy_revision", "entries"})
     _version(registry)
@@ -212,6 +222,7 @@ def validate_documents(policy, registry, scope, *, now=None) -> Control:
         policy["project_id"],
         policy["platform_identity_id"],
         policy["platform_credential_id"],
+        checked_at,
         expires_at,
         authors,
         reviewers,
