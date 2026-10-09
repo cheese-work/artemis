@@ -50,8 +50,8 @@ import { VersionFooterComponent } from '../version-footer/version-footer.compone
     .identity-indicator::-webkit-details-marker { display: none; }
     .identity-text { display: inline-flex; align-items: center; gap: .5rem; min-width: 0; }
     .identity-email { min-width: 0; max-width: 16rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .identity-role { flex: none; border: 1px solid var(--color-text-faint); border-radius: 999px; padding: .15rem .5rem; }
-    .admin-role { border-color: var(--color-rule-strong); color: var(--color-success); }
+    .identity-role { flex: none; border: 0; border-radius: var(--radius-full); background: var(--color-surface-subtle); padding: .15rem .5rem; }
+    .admin-role { background: var(--color-success-bg); color: var(--color-success); }
     .identity-panel { position: absolute; top: calc(100% + 8px); right: 0; z-index: 60; width: 16rem; max-width: calc(100vw - 3rem); box-sizing: border-box; padding: .75rem; border: 1px solid var(--color-rule); border-radius: 14px; background: var(--color-surface); color: var(--color-ink); box-shadow: 0 12px 32px -8px rgb(15 23 42 / 25%); font-size: .85rem; }
     .identity-panel p { margin: 0; }
     .identity-panel a { display: flex; align-items: center; min-height: 44px; padding: 0 .75rem; border-radius: 10px; color: inherit; text-decoration: none; }

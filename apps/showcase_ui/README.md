@@ -65,7 +65,10 @@ npx ng build --configuration development
 npm run test:layout                      # clearance, a11y, scenarios and the CHE-1278 contract phase
 npm run test:layout -- contract          # one phase: panes, 44 px targets, 4.5:1 on real backgrounds, no blur, reduced motion
 node scripts/layout-audit/screenshots.mjs <outDir> <label>   # Workspace, Runs, an open run and Setup at 1280 and 1024 px
+node scripts/layout-audit/screenshots.mjs <outDir> <label> --controls
 ```
+
+The control audit captures Workspace, Runs and Setup at 1440 and 390 px using a mock API. It checks unoutlined controls and panels, overlay-only shadows, each control's own 44 × 44 px box, keyboard focus rings and at least 3:1 focus contrast. It also captures the Setup model panel. `npm run test:controls` writes the same evidence to `screenshots/`. Run a development build first; no phone or backend is used.
 
 ### Direction B responsive shell
 

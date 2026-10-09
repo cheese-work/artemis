@@ -131,14 +131,13 @@ let nextId = 0;
     }
     .chip {
       display: inline-flex; align-items: center; gap: .45rem; max-width: 22rem; padding: 0 .9rem;
-      border: 1px solid var(--color-rule-strong); border-radius: 22px; background: var(--color-surface); color: var(--color-ink);
+      border: 0; border-radius: var(--radius-full); background: var(--color-surface-subtle); color: var(--color-ink);
       font-size: .85rem; font-weight: 600;
     }
     .chip .text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .chip-visual { display: contents; }
-    .chip.connected { border-color: var(--color-rule-strong); }
     .chip.connected .icon { color: var(--color-success); }
-    .chip.dropped, .chip.interrupted, .chip.other-tab { border-color: var(--color-warning); background: var(--color-warning-bg); }
+    .chip.dropped, .chip.interrupted, .chip.other-tab { background: var(--color-warning-bg); }
     .chip.dropped .icon, .chip.interrupted .icon, .chip.other-tab .icon { color: var(--color-warning); }
     .chip.none .icon { color: var(--color-text-faint); }
     .spinning { animation: chip-spin 1s linear infinite; }
@@ -155,13 +154,13 @@ let nextId = 0;
     .options { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: .25rem; }
     .option, .action {
       display: flex; align-items: center; justify-content: space-between; gap: .5rem; width: 100%; padding: 0 .75rem;
-      border: 1px solid var(--color-rule-strong); border-radius: 10px; background: var(--color-bg); color: inherit; font-size: .9rem; text-align: left;
+      border: 0; border-radius: var(--radius-md); background: var(--color-surface-subtle); color: inherit; font-size: .9rem; text-align: left;
     }
-    .option[aria-pressed='true'] { border-color: var(--color-success); background: var(--color-surface-subtle); }
+    .option[aria-pressed='true'] { color: var(--color-success); background: var(--color-success-bg); font-weight: 600; }
     a.action { text-decoration: none; }
     .option:disabled, .action:disabled { opacity: .55; cursor: not-allowed; }
     .action { justify-content: center; }
-    .action.danger { border-color: var(--color-error-solid); color: var(--color-error); }
+    .action.danger { background: var(--color-error-bg); color: var(--color-error); }
     .confirm { display: flex; gap: .5rem; }
     button:focus-visible { outline: 3px solid var(--color-focus); outline-offset: 2px; }
     .phone-card-header, .phone-card-state, .phone-card-action { display: none; }

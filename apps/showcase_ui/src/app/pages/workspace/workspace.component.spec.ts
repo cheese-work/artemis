@@ -7,7 +7,7 @@ import { AgentService } from '../../services/agent.service';
 import { RunViewComponent } from '../../components/run-view/run-view.component';
 import { WorkspacePhoneService } from '../../services/workspace-phone.service';
 import { InterruptedBannerComponent } from '../../components/interrupted-banner/interrupted-banner.component';
-import { ChatInterfaceComponent } from '../../components/chat-interface/chat-interface.component';
+import { RunLibraryComponent } from '../../components/run-library/run-library.component';
 import { WorkspaceComponent } from './workspace.component';
 
 describe('WorkspaceComponent error lifetime', () => {
@@ -17,6 +17,7 @@ describe('WorkspaceComponent error lifetime', () => {
     isCurrentSessionRunning: () => boolean;
     currentSession: () => null;
     currentSessionId: () => null;
+    sessions: () => [];
     currentStartupProgress: () => [];
     runTask: jasmine.Spy;
     fetchStatus: jasmine.Spy;
@@ -35,6 +36,7 @@ describe('WorkspaceComponent error lifetime', () => {
       isCurrentSessionRunning: () => false,
       currentSession: () => null,
       currentSessionId: () => null,
+      sessions: () => [],
       currentStartupProgress: () => [],
       runTask: jasmine.createSpy('runTask').and.returnValue(of({})),
       fetchStatus: jasmine.createSpy('fetchStatus'),
@@ -50,7 +52,7 @@ describe('WorkspaceComponent error lifetime', () => {
       ],
       schemas: [CUSTOM_ELEMENTS_SCHEMA]
     }).overrideComponent(WorkspaceComponent, {
-      remove: { imports: [RunViewComponent, ChatInterfaceComponent, InterruptedBannerComponent] },
+      remove: { imports: [RunViewComponent, RunLibraryComponent, InterruptedBannerComponent] },
       add: { schemas: [CUSTOM_ELEMENTS_SCHEMA] }
     }).compileComponents();
   });
@@ -77,36 +79,46 @@ describe('WorkspaceComponent error lifetime', () => {
     expect(errorOwners.size).toBe(0);
   }));
 
-  for (const width of [1280, 1199, 1024, 799, 390]) {
-    it(`keeps the task-switcher and notes panel visible at ${width}px`, () => {
+  for (const width of [1440, 1200, 1024, 1023, 800, 390]) {
+    it(`uses a fixed run list or one detail pane at ${width}px`, () => {
       const frame = document.createElement('iframe');
       frame.style.width = `${width}px`;
       frame.style.height = '768px';
+      frame.style.border = '0';
       document.body.appendChild(frame);
       const fixture = TestBed.createComponent(WorkspaceComponent);
       try {
         fixture.detectChanges();
         const frameDocument = frame.contentDocument!;
+        expect(frame.contentWindow!.innerWidth).toBe(width);
+        frameDocument.body.style.cssText = 'margin: 0; height: 100vh';
+        const tokens = getComputedStyle(document.documentElement);
+        for (const property of Array.from(tokens)) {
+          if (property.startsWith('--')) frameDocument.documentElement.style.setProperty(property, tokens.getPropertyValue(property));
+        }
         for (const style of Array.from(document.head.querySelectorAll('style'))) {
           frameDocument.head.appendChild(style.cloneNode(true));
         }
         frameDocument.body.appendChild(fixture.nativeElement);
-        const panel = frameDocument.querySelector<HTMLElement>('.right-panel')!;
-        const left = frameDocument.querySelector<HTMLElement>('.left-panel')!;
-        expect(frame.contentWindow!.getComputedStyle(panel).display).not.toBe('none');
-        expect(panel.querySelector('app-chat-interface')).not.toBeNull();
-        if (width >= 1200) {
-          // Side by side: the list starts at the run's right edge, at the same height.
-          expect(panel.getBoundingClientRect().left).toBeGreaterThanOrEqual(left.getBoundingClientRect().right - 1);
-          expect(panel.getBoundingClientRect().top).toBe(left.getBoundingClientRect().top);
+        const list = frameDocument.querySelector<HTMLElement>('.run-list-pane')!;
+        const detail = frameDocument.querySelector<HTMLElement>('.detail-pane')!;
+        const navigation = frameDocument.querySelector<HTMLAnchorElement>('.pane-navigation')!;
+        expect(list.querySelector('app-run-library')).not.toBeNull();
+        expect(frameDocument.querySelector('.right-panel, .resizer, app-chat-interface')).toBeNull();
+        expect(detail.getBoundingClientRect().height).toBeGreaterThan(0);
+        if (width >= 1024) {
+          expect(list.getBoundingClientRect().width).toBe(360);
+          expect(list.getBoundingClientRect().right).toBeCloseTo(detail.getBoundingClientRect().left, 0);
+          expect(list.getBoundingClientRect().top).toBe(detail.getBoundingClientRect().top);
+          expect(frame.contentWindow!.getComputedStyle(navigation).display).toBe('none');
         } else {
-          // Stacked (below 1200px) or one column (below 800px): the list sits under the run.
-          expect(panel.getBoundingClientRect().top).toBeGreaterThanOrEqual(left.getBoundingClientRect().bottom - 1);
-          expect(panel.getBoundingClientRect().left).toBe(left.getBoundingClientRect().left);
-          expect(panel.getBoundingClientRect().width).toBe(left.getBoundingClientRect().width);
+          expect(frame.contentWindow!.getComputedStyle(list).display).toBe('none');
+          expect(frame.contentWindow!.getComputedStyle(navigation).display).not.toBe('none');
+          expect(navigation.getBoundingClientRect().height).toBeGreaterThanOrEqual(44);
+          expect(navigation.getBoundingClientRect().width).toBeGreaterThanOrEqual(44);
+          expect(navigation.getAttribute('href')).toBe('/runs');
         }
-        expect(panel.getBoundingClientRect().height).toBeGreaterThan(0);
-        expect(panel.getBoundingClientRect().width).toBeLessThanOrEqual(width);
+        expect(detail.getBoundingClientRect().right).toBeLessThanOrEqual(width);
       } finally {
         fixture.destroy();
         frame.remove();
@@ -139,6 +151,7 @@ describe('WorkspaceComponent phone binding', () => {
       isCurrentSessionRunning: () => false,
       currentSession: () => null,
       currentSessionId: () => null,
+      sessions: () => [],
       currentStartupProgress: () => [],
       runTask,
       fetchStatus: jasmine.createSpy('fetchStatus'),
@@ -153,7 +166,7 @@ describe('WorkspaceComponent phone binding', () => {
       ],
       schemas: [CUSTOM_ELEMENTS_SCHEMA]
     }).overrideComponent(WorkspaceComponent, {
-      remove: { imports: [RunViewComponent, ChatInterfaceComponent, InterruptedBannerComponent] },
+      remove: { imports: [RunViewComponent, RunLibraryComponent, InterruptedBannerComponent] },
       add: { schemas: [CUSTOM_ELEMENTS_SCHEMA] }
     }).compileComponents();
     fixture = TestBed.createComponent(WorkspaceComponent);

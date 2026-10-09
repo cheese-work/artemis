@@ -2,17 +2,16 @@
       display: inline-flex;
       align-items: center;
       gap: 5px;
-      height: 30px;
+      min-height: var(--target);
+      min-width: var(--target);
       padding: 0 12px;
       box-sizing: border-box;
-      background: var(--color-surface);
-      border: 1px solid color-mix(in srgb, var(--color-rule) 85%, transparent);
-      border-radius: 15px;
-      box-shadow: 0 2px 6px -1px rgb(15 23 42 / 5%), inset 0 1px 1px var(--color-surface);
+      background: var(--color-surface-subtle);
+      border: 0;
+      border-radius: var(--radius-md);
       cursor: pointer;
       transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
       user-select: none;
-      outline: none;
       font-family: var(--font-ui);
 
       .video-icon {
@@ -40,14 +39,11 @@
         height: 6px;
         border-radius: 50%;
         background: var(--color-error-solid);
-        box-shadow: 0 0 6px var(--color-error-solid);
         animation: pulseRed 1.5s infinite;
       }
 
       &.recording {
         background: var(--color-bg);
-        border-color: color-mix(in srgb, var(--color-error-solid) 60%, transparent);
-        box-shadow: 0 2px 6px -1px color-mix(in srgb, var(--color-error-solid) 15%, transparent), inset 0 1px 1px var(--color-surface);
 
         .video-icon {
           color: var(--color-error-solid);
@@ -67,8 +63,6 @@
 
       &:hover:not(.active) {
         background: var(--color-surface);
-        border-color: var(--color-rule-strong);
-        box-shadow: 0 4px 12px -2px rgb(15 23 42 / 8%), inset 0 1px 1px var(--color-surface);
         color: var(--color-ink);
 
         .video-icon {
@@ -83,13 +77,10 @@
 
       &:active {
         transform: translateY(0);
-        box-shadow: 0 1px 3px rgb(15 23 42 / 8%);
       }
 
       &.has-steps {
         background: var(--color-surface-subtle);
-        border-color: color-mix(in srgb, var(--color-primary-edge) 70%, transparent);
-        box-shadow: 0 2px 6px -1px color-mix(in srgb, var(--color-text-muted) 12%, transparent), inset 0 1px 1px var(--color-surface);
 
         .steps-icon {
           color: var(--color-success);
@@ -138,8 +129,6 @@
 
       &.active {
         background: var(--color-primary);
-        border-color: var(--color-primary);
-        box-shadow: 0 2px 8px color-mix(in srgb, var(--color-primary) 35%, transparent);
 
         .video-icon, .btn-text {
           color: var(--color-on-primary);
@@ -147,7 +136,6 @@
 
         .video-pulse-dot {
           background: var(--color-surface);
-          box-shadow: 0 0 6px var(--color-surface);
         }
 
         .steps-count-badge {
@@ -172,7 +160,7 @@
 .recording-ribbon { margin: 0 0 8px; padding: 6px 12px; border-radius: 6px; font-weight: 600; color: var(--status-warn-fg); background: var(--status-warn-bg); }
 .recording-copy { margin: 0 0 8px; font-weight: 600; }
 .muted { color: var(--evidence-muted); }
-.secondary-button { min-height: 44px; font-size: 14px; padding: 0 18px; border-radius: 8px; cursor: pointer; border: 1px solid var(--evidence-border); color: var(--evidence-text); background: var(--evidence-surface); }
+.secondary-button { min-height: var(--target); min-width: var(--target); font-size: var(--text-ui); padding: 0 18px; border-radius: var(--radius-md); cursor: pointer; border: 0; color: var(--evidence-text); background: var(--color-surface-subtle); }
 .secondary-button:focus-visible, video:focus-visible { outline: 3px solid var(--focus-ring); outline-offset: 2px; }
 
 .technical-details {
@@ -184,7 +172,7 @@
     margin: 0;
     padding: 12px 16px;
     overflow: auto;
-    border: 1px solid var(--evidence-border);
+    border: 0;
     border-radius: 8px;
     color: var(--evidence-text);
     background: var(--evidence-surface);
