@@ -174,14 +174,14 @@ The launcher sets the preview profile, the identity switch and
 `ARTEMIS_PREVIEW_DEMO=1` with synthetic `*@example.test` identities, and keeps
 fixture data in a fresh `.preview-demo/run-*` directory removed on a clean exit. That
 directory sits inside the checkout because the media route serves recordings
-only under the workspace root. API only: run `make build-ui` to add the UI.
+only under the workspace root. The server serves the bundled UI; rendering of the board in it is not verified.
 
 ```bash
 curl -sS localhost:8000/api/devices -H 'X-Artemis-Preview-Identity: admin'
 ```
 
 `ARTEMIS_PREVIEW_DEMO` accepts `0`, `false`, `1` or `true`, defaults off and
-fails boot without `ARTEMIS_PREVIEW_PROFILE=1`. Without it the preview is
+fails boot without `ARTEMIS_PREVIEW_PROFILE=1`, in the same early check as the identity switch. `scripts/preview_sandbox.py` admits it in its environment allowlist. The demo clip ships in the wheel (`setup.py` package data). Without it the preview is
 unchanged (nine runs, empty device list). Seeded, with timestamps relative to
 boot time:
 
@@ -198,7 +198,7 @@ Also seeded: four failed runs, one interrupted run (`device_offline`) with its
 `recording.mp4`. The route set is unchanged: the only edit is that the
 classified synthetic `GET /api/devices` answers from the demo board, so
 `test_every_registered_route_has_access_and_preview_classification` still holds.
-Rows keep the existing `/api/devices` contract; the label is `model`.
+Rows keep the existing `/api/devices` contract; the label is `model`. A busy row is visible to everyone, but its `active_session_id` and `active_task_desc` show only to the run's owner and `admin` (otherwise `null`), so the board never leaks a run outside run visibility.
 
 ### Seeding hook for later CHE-1332 layers
 

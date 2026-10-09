@@ -55,7 +55,9 @@ SeedHook = Callable[[DemoSeed], list[dict] | None]
 SEED_HOOKS: list[SeedHook] = []
 
 _devices: tuple[DemoDevice, ...] = ()
-_busy: dict[str, tuple[str, str, float]] = {}  # serial -> (session id, goal, acquired_at)
+_busy: dict[
+    str, tuple[str, str, float, str]
+] = {}  # serial -> (session id, goal, acquired_at, owner)
 
 
 def demo_devices(qa_a: str, qa_b: str) -> tuple[DemoDevice, ...]:
@@ -118,7 +120,7 @@ def seed_demo_board(root: Path, owners: tuple[str, str, str], now: float, storag
         serial, owner = device.serials[0], owners[(0, 1, 2, 0)[index]]
         goal = f"Synthetic demo: run on {device.label}"
         session_id = add(f"busy/{index}", owner, goal, "running", 600 + index * 60, None, serial)
-        _busy[serial] = (session_id, goal, now - 600 - index * 60)
+        _busy[serial] = (session_id, goal, now - 600 - index * 60, owner)
         queue.append(_item(session_id, goal, "running", owner, serial))
     broken = [d for d in devices if d.state in ("disconnected", "unknown")]
     for index, device in enumerate(broken[:4]):
@@ -161,7 +163,10 @@ def _item(session_id: str, goal: str, status: str, owner: str, device_id: str) -
 
 
 def visible_device_rows(scope: OwnerScope) -> list[dict[str, Any]]:
-    """``/api/devices`` rows (one per connection); a private device shows to its owner and admin."""
+    """``/api/devices`` rows (one per connection).
+
+    A private device shows to its owner and admin; a busy row shows the run only to its owner and admin.
+    """
     from artemis.runtime.device_pool import DeviceStatus
 
     rows = []
@@ -170,6 +175,8 @@ def visible_device_rows(scope: OwnerScope) -> list[dict[str, Any]]:
             continue
         for serial in device.serials:
             active = _busy.get(serial)
+            # Busy stays visible to all; the run behind it follows run visibility.
+            run = active if active and scope.may_act_on(active[3]) else None
             rows.append(
                 DeviceStatus(
                     serial=serial,
@@ -180,8 +187,8 @@ def visible_device_rows(scope: OwnerScope) -> list[dict[str, Any]]:
                     product=f"demo-{device.state}",
                     device_kind="phone",
                     is_busy=active is not None,
-                    active_task_desc=active[1] if active else None,
-                    active_session_id=active[0] if active else None,
+                    active_task_desc=run[1] if run else None,
+                    active_session_id=run[0] if run else None,
                     acquired_at=datetime.fromtimestamp(active[2]).isoformat() if active else None,
                 ).to_dict()
             )

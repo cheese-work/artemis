@@ -150,6 +150,7 @@ setup(
         "artemis": ["**/*.json", "**/*.md"],
         "artemis.resources": ["config/*.jsonc", "showcase_ui/*", "showcase_ui/**/*"],
         "apps.admin_console": ["index.html"],
+        "apps.admin_console.core": ["preview_demo_clip.mp4"],
     },
     include_package_data=False,
     ext_modules=ext_modules,

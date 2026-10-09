@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+import zipfile
 import time
 
 import pytest
@@ -62,7 +63,23 @@ def test_rows_follow_the_device_listing_contract(board):
     busy = [row for row in rows if row["is_busy"]]
     assert len(busy) == 4
     for row in busy:
+        assert row["active_session_id"] and row["active_task_desc"]  # open scope sees the run
         assert session_repo.get_session_by_id(row["active_session_id"])["status"] == "running"
+
+
+def test_busy_rows_hide_runs_the_caller_cannot_see(board):
+    def busy(scope):
+        return [r for r in visible_device_rows(scope) if r["is_busy"]]
+
+    running = [i for i in board[2] if i["status"] == "running" and i["device_id"]]
+    assert len(running) == 4
+    for email, admin in ((QA_A, False), (QA_B, False), (ADMIN, True)):
+        rows = busy(OwnerScope(enforced=True, email=email, admin=admin))
+        assert len(rows) == 4  # the busy indication is not hidden
+        shown = {r["active_session_id"] for r in rows if r["active_session_id"]}
+        assert shown == {i["session_id"] for i in running if admin or i["requested_by"] == email}
+        for row in rows:
+            assert (row["active_session_id"] is None) == (row["active_task_desc"] is None)
 
 
 def test_private_devices_show_only_to_their_owner_and_admin(board):
@@ -145,6 +162,11 @@ _BOOT = textwrap.dedent("""
             devices = client.get("/api/devices", headers=h).json()["devices"]
             runs = client.get("/api/runs?scope=available", headers=h).json()["runs"]
             out[alias] = [len(devices), len(runs)]
+            ids = {r["session_id"] for r in runs}
+            busy = [d for d in devices if d["is_busy"]]
+            out[alias + "-busy"] = [len(busy), sum(d["active_session_id"] is None for d in busy)]
+            if alias != "admin":  # scope=available lists only the caller's own runs for admin too
+                assert {d["active_session_id"] for d in busy if d["active_session_id"]} <= ids
         h = {"X-Artemis-Preview-Identity": "admin"}
         done = next(r for r in client.get("/api/runs?scope=all", headers=h).json()["runs"]
                     if r["status"] == "completed" and r["session_id"] in
@@ -183,3 +205,67 @@ def test_real_boot_with_the_launcher_environment_serves_the_demo_board(tmp_path,
     out = json.loads(result.stdout.strip().splitlines()[-1])
     assert out["effects"] == [] and out["video"] == "ready" and out["bytes"] == 200
     assert [out[alias][0] for alias in ("qa-a", "qa-b", "admin")] == [19, 18, 21]
+    # [busy rows, busy rows with the run hidden]: qa-a owns two runs, qa-b one, admin all.
+    assert [out[alias + "-busy"] for alias in ("qa-a", "qa-b", "admin")] == [[4, 2], [4, 3], [4, 0]]
+
+
+def test_normal_boot_refuses_the_demo_selector_before_live_imports(tmp_path):
+    sentinel = tmp_path / "data_engine.db"
+    sentinel.write_bytes(b"production database sentinel")
+    result = subprocess.run(
+        [sys.executable, "-c", "import apps.admin_console.server"],
+        env={
+            **os.environ,
+            "ARTEMIS_PREVIEW_PROFILE": "0",
+            "ARTEMIS_PREVIEW_DEMO": "1",
+            "ARTEMIS_APP_DIR": str(tmp_path),
+        },
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert result.returncode != 0
+    assert "demo board requires the isolated preview profile" in result.stderr
+    assert list(tmp_path.iterdir()) == [sentinel]
+
+
+@pytest.mark.skipif(shutil.which("uv") is None, reason="needs uv to build the wheel")
+def test_built_wheel_boots_the_demo_fixture(tmp_path):
+    """The clip must ship in the wheel, not only sit in the checkout."""
+    root = Path(__file__).resolve().parents[3]
+    source = tmp_path / "source"  # a clean copy, so a stale build/ directory cannot supply the clip
+    files = subprocess.run(
+        ["git", "ls-files", "-co", "--exclude-standard", "-z"],
+        cwd=root, capture_output=True, text=True, check=True,
+    ).stdout.split("\0")  # fmt: skip
+    for name in filter(None, files):
+        if (root / name).is_file():
+            (source / name).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(root / name, source / name)
+    built = subprocess.run(
+        ["uv", "build", "--wheel", "--out-dir", str(tmp_path / "dist"), str(source)],
+        capture_output=True, text=True, timeout=600, check=False,
+    )  # fmt: skip
+    assert built.returncode == 0, built.stderr
+    site = tmp_path / "site"
+    with zipfile.ZipFile(next((tmp_path / "dist").glob("*.whl"))) as wheel:
+        wheel.extractall(site)
+    probe = (
+        "import time, pathlib, sys;"
+        "from apps.admin_console.core import preview_demo as d;"
+        "from apps.admin_console.core.preview_fixtures import seed_preview_fixtures;"
+        "assert d.CLIP.is_file() and str(d.CLIP).startswith(sys.argv[1]), d.CLIP;"
+        "root = pathlib.Path(sys.argv[2]);"
+        "seed_preview_fixtures(root, ('a@x.test', 'b@x.test'), 'c@x.test', demo_now=time.time());"
+        "print(len(list(root.glob('traces/*/recording.mp4'))))"
+    )
+    fixtures = tmp_path / "fixtures"
+    fixtures.mkdir()
+    ran = subprocess.run(
+        [sys.executable, "-c", probe, str(site), str(fixtures)],
+        cwd=tmp_path, env={**os.environ, "PYTHONPATH": str(site)},
+        capture_output=True, text=True, timeout=120, check=False,
+    )  # fmt: skip
+    assert ran.returncode == 0, ran.stderr
+    assert ran.stdout.strip().splitlines()[-1] == "3"
