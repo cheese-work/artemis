@@ -2,7 +2,10 @@
 
 This layer supplies code, uninstalled systemd templates and disposable-fixture
 tests. It does **not** install accounts, start a daemon, register a runner,
-inspect credentials, read runner environments or admit a preview. Receipt
+inspect credentials, read runner environments or admit a preview. The
+[L5b1 runner/workspace contract](preview-runner.md) supplies isolated allocation
+and inactive service plans; it supersedes this foundation's runner placeholder.
+Receipt
 verification and admission belong to [L5a2](preview-receipts.md)/L5a3. The runtime owner provisions
 reviewed files only after the remaining implementation and activation gates.
 
