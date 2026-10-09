@@ -34,9 +34,6 @@ def get_db(db_path: Path | None = None) -> sqlite3.Connection:
             from artemis.data_engine.storage import StorageManager
 
             StorageManager(db_path=path, base_trace_dir=path.parent)
-            from apps.admin_console.database.repositories import annotation_repository
-
-            annotation_repository.migrate(path)
             _initialized_dbs.add(path_key)
         except (ImportError, OSError, sqlite3.Error) as exc:
             # Schema bootstrap is best-effort here; queries against a missing

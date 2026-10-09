@@ -36,6 +36,7 @@ from apps.admin_console.database.repositories.run_catalog_repository import run_
 from apps.admin_console.services import evidence_resolver
 from apps.admin_console.services.host_registry import host_registry
 from apps.admin_console.services.run_artifacts import library_paths, relative_parts, safe_file
+from artemis.config import DB_PATH
 
 
 class AnnotationRoute(APIRoute):
@@ -60,6 +61,13 @@ class AnnotationRoute(APIRoute):
 
 
 router = APIRouter(tags=["annotations"], route_class=AnnotationRoute)
+
+
+def initialize_notes() -> None:
+    db_path = run_catalog_repo.db_path or DB_PATH
+    with db_session(db_path):
+        pass
+    notes.migrate(db_path)
 
 
 class StepAnchor(BaseModel):
@@ -340,6 +348,8 @@ def annotation_evidence(
             ]
         elif evidence:
             row, _window = notes.recording_evidence(conn, session_id, annotation.recording_id)
+            if row is None or not row[2] or row[3] != "ready":
+                return {"status": "missing", "evidence": None}
             path = Path(row[2])
             found = relative_parts(traces, path)
             if found is None or safe_file(traces, path)[0] is None:

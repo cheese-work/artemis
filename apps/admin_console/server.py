@@ -262,7 +262,9 @@ async def on_startup():
     state.shutdown_event.clear()
     if PREVIEW_PROFILE:
         initialize_preview_fixtures(PREVIEW_ROOT, app.state.access_config)
+        await asyncio.to_thread(run_annotations.initialize_notes)
         return
+    await asyncio.to_thread(run_annotations.initialize_notes)
     write_server_info(
         port=getattr(state, "port", 8000),
         host=getattr(state, "host", "127.0.0.1"),

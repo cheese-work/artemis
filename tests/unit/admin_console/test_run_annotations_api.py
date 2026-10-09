@@ -7,6 +7,7 @@ import pytest
 from apps.admin_console.core.access_control import AccessIdentity, public_tier, route_tier
 from apps.admin_console.core.preview_routes import REAL, registered_routes, unclassified_routes
 from apps.admin_console.database.repositories import annotation_repository as notes
+from apps.admin_console.routers.run_annotations import initialize_notes
 from apps.admin_console.server import app
 from apps.admin_console.services.host_registry import host_registry
 from tests.unit.admin_console.conftest import make_client
@@ -14,6 +15,8 @@ from tests.unit.admin_console.conftest import make_client
 
 @pytest.fixture
 def annotation_run(library, monkeypatch):
+    initialize_notes()
+
     def identity(request: Request):
         role = request.headers["x-test-role"]
         if role == "anonymous":
@@ -532,3 +535,61 @@ async def test_out_of_recording_window_is_anchor_invalid(annotation_run, library
     )
     assert response.status_code == 422 and response.json()["code"] == "annotation_anchor_invalid"
     assert (await _call("qa", "GET", run)).json()["annotations"] == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("change", ["removed", "path_cleared", "failed"])
+async def test_recording_removed_during_resolution_is_missing(
+    annotation_run, library, monkeypatch, change
+):
+    run, _step = annotation_run
+    library.video(run)
+    with sqlite3.connect(library.db) as conn:
+        started = conn.execute(
+            "SELECT start_time FROM sessions WHERE session_id = ?", (run,)
+        ).fetchone()[0]
+        conn.execute(
+            "UPDATE video_recordings SET start_time = ?, end_time = ? WHERE session_id = ?",
+            (started, started + 60, run),
+        )
+        recording = conn.execute(
+            "SELECT video_id FROM video_recordings WHERE session_id = ?", (run,)
+        ).fetchone()[0]
+    created = await _call(
+        "qa",
+        "POST",
+        run,
+        json={
+            "anchor": {"kind": "recording", "recording_id": recording, "offset_ms": 42000},
+            "body": "retention race",
+        },
+    )
+    assert created.status_code == 201
+    original = notes.recording_evidence
+    calls = 0
+
+    def expiring_evidence(conn, session_id, recording_id):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            if change == "removed":
+                conn.execute("DELETE FROM video_recordings WHERE video_id = ?", (recording_id,))
+            elif change == "path_cleared":
+                conn.execute(
+                    "UPDATE video_recordings SET local_video_path = NULL WHERE video_id = ?",
+                    (recording_id,),
+                )
+            else:
+                conn.execute(
+                    "UPDATE video_recordings SET status = 'failed' WHERE video_id = ?",
+                    (recording_id,),
+                )
+            conn.commit()
+        return original(conn, session_id, recording_id)
+
+    monkeypatch.setattr(notes, "recording_evidence", expiring_evidence)
+    response = await _call("qa", "GET", run, f"/{created.json()['annotation_id']}/evidence")
+    assert response.status_code == 200 and response.json() == {
+        "status": "missing",
+        "evidence": None,
+    }

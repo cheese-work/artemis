@@ -78,8 +78,18 @@ def _assert_routes_have_declared_tiers(routes):
                     "/api/tasks/{session_id}/cancel-queued",
                     "/api/resume",
                 }
+                public_note_controls = {
+                    "/api/runs/{session_id}/annotations",
+                    "/api/runs/{session_id}/annotations/{annotation_id}",
+                }
+                if path in public_note_controls:
+                    from apps.admin_console.core.ownership import evidence_scope
+
+                    assert evidence_scope in dependency_calls, (
+                        f"Missing note visibility guard: {path}"
+                    )
                 assert tier in {"admin", "qa", "lifecycle", "loopback", "agent"} or (
-                    tier == "public" and path in public_task_controls
+                    tier == "public" and path in public_task_controls | public_note_controls
                 ), f"Unprotected mutation: {path}"
 
 
