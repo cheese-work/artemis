@@ -3,8 +3,10 @@ import {
   Component,
   DestroyRef,
   ElementRef,
+  Injector,
   OnChanges,
   SimpleChanges,
+  afterNextRender,
   computed,
   inject,
   input,
@@ -13,6 +15,8 @@ import {
   viewChild
 } from '@angular/core';
 import { HttpErrorResponse } from '@angular/common/http';
+import { A11yModule } from '@angular/cdk/a11y';
+import { CdkOverlayOrigin, ConnectedPosition, OverlayModule } from '@angular/cdk/overlay';
 import { takeUntilDestroyed, toSignal } from '@angular/core/rxjs-interop';
 import { Location } from '@angular/common';
 import { ActivatedRoute, Router, RouterLink, convertToParamMap } from '@angular/router';
@@ -26,12 +30,19 @@ import { RunCardComponent } from './run-card.component';
 import { LabelableDevice } from '../../utils/device-label.util';
 import {
   EMPTY_FILTERS,
+  DATE_PRESETS,
+  DatePreset,
+  RUN_FILTER_DEFINITIONS,
+  RunFilterKey,
   RunFilters,
   STATUS_FILTERS,
   filtersFromQuery,
   filtersToQuery,
   hasActiveFilters,
-  scrollFromQuery
+  scrollFromQuery,
+  dateFilterLabel,
+  datePresetRange,
+  validDate
 } from '../../utils/run-filters.util';
 import {
   RUN_STRINGS,
@@ -44,7 +55,7 @@ import { runTitle } from '../../utils/run-title.util';
 @Component({
   selector: 'app-run-library',
   standalone: true,
-  imports: [RouterLink, RunCardComponent],
+  imports: [RouterLink, RunCardComponent, OverlayModule, A11yModule],
   templateUrl: './run-library.component.html',
   styleUrl: './run-library.component.scss',
   host: { '[class.compact]': 'compact()', '(document:keydown)': 'focusSearch($event)' },
@@ -57,9 +68,30 @@ export class RunLibraryComponent implements OnChanges {
   private readonly route = inject(ActivatedRoute);
   private readonly location = inject(Location);
   private readonly destroyRef = inject(DestroyRef);
+  private readonly injector = inject(Injector);
+  private readonly hostElement = inject<ElementRef<HTMLElement>>(ElementRef);
 
   public readonly strings = RUN_STRINGS;
   public readonly statusOptions = STATUS_FILTERS.map((value) => ({ value, label: value === 'completed' ? 'Completed' : runStatusView(value).label }));
+  public readonly datePresets = DATE_PRESETS;
+  public readonly filterDefinitions = RUN_FILTER_DEFINITIONS;
+  public readonly openFilter = signal<RunFilterKey | 'add' | null>(null);
+  public readonly popoverOrigin = signal<CdkOverlayOrigin | null>(null);
+  public readonly addedFilters = signal<RunFilterKey[]>([]);
+  public readonly draftFilter = signal('');
+  public readonly draftFrom = signal('');
+  public readonly draftTo = signal('');
+  public readonly dateError = signal(false);
+  public readonly openDefinition = computed(() => this.filterDefinitions.find((definition) => definition.key === this.openFilter()));
+  public readonly visibleFilters = computed(() => this.filterDefinitions.filter((definition) =>
+    definition.primary || this.chipActive(definition.key) || this.addedFilters().includes(definition.key)));
+  public readonly additionalFilters = computed(() => this.filterDefinitions.filter((definition) => !definition.primary));
+  public readonly popoverPositions: ConnectedPosition[] = [
+    { originX: 'start', originY: 'bottom', overlayX: 'start', overlayY: 'top', offsetY: 4 },
+    { originX: 'end', originY: 'bottom', overlayX: 'end', overlayY: 'top', offsetY: 4 },
+    { originX: 'start', originY: 'top', overlayX: 'start', overlayY: 'bottom', offsetY: -4 },
+    { originX: 'end', originY: 'top', overlayX: 'end', overlayY: 'bottom', offsetY: -4 }
+  ];
   public readonly compact = input(false);
   public readonly sessions = input<Session[]>([]);
   public readonly liveSessionId = input<string | null>(null);
@@ -140,17 +172,10 @@ export class RunLibraryComponent implements OnChanges {
   });
 
   public readonly active = computed(() => hasActiveFilters(this.filters()));
-  public readonly filterChips = computed(() => Object.entries(this.filters())
-    .filter(([key, value]) => key !== 'q' && !!value)
-    .map(([key, value]) => ({ key: key as keyof RunFilters, label: key === 'status'
-      ? this.statusOptions.find((option) => option.value === value)?.label ?? value : `${key}: ${value}` })));
-  public readonly moreOpen = computed(() => {
-    const { device, host, requester } = this.filters();
-    return !!(device || host || requester);
-  });
 
   private readonly scrollRegion = viewChild<ElementRef<HTMLElement>>('scrollRegion');
   private readonly searchInput = viewChild<ElementRef<HTMLInputElement>>('searchInput');
+  private readonly filterPopover = viewChild<ElementRef<HTMLElement>>('filterPopover');
   private request: Subscription | null = null;
   private pendingScroll = 0;
   private scrollTimer: ReturnType<typeof setTimeout> | null = null;
@@ -183,6 +208,7 @@ export class RunLibraryComponent implements OnChanges {
       // Restore the saved position on the first load only: a changed filter is a different list.
       this.pendingScroll = this.lastFiltersKey === null ? scroll : 0;
       this.lastFiltersKey = key;
+      this.closeFilter();
       this.filters.set(filters);
       this.searchText.set(filters.q);
       this.load(false);
@@ -207,6 +233,7 @@ export class RunLibraryComponent implements OnChanges {
   }
 
   public focusSearch(event: KeyboardEvent): void {
+    if (this.openFilter()) return;
     if (event.key !== '/' || event.ctrlKey || event.metaKey || event.altKey || event.defaultPrevented) return;
     if (event.target instanceof Element && event.target.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"])')) return;
     const search = this.searchInput()?.nativeElement;
@@ -241,6 +268,107 @@ export class RunLibraryComponent implements OnChanges {
 
   public setFilter(key: keyof RunFilters, value: string): void {
     this.apply({ [key]: value } as Partial<RunFilters>);
+  }
+
+  public chipActive(key: RunFilterKey): boolean {
+    return key === 'date' ? !!(this.filters().from || this.filters().to) : key === 'app' ? false : !!this.filters()[key];
+  }
+
+  public chipLabel(key: RunFilterKey): string {
+    if (key === 'date') return dateFilterLabel(this.filters());
+    const definition = this.filterDefinitions.find((entry) => entry.key === key)!;
+    if (key === 'app' || !this.filters()[key]) return definition.label;
+    return this.optionsFor(key).find((option) => option.value === this.filters()[key])?.label ?? this.filters()[key];
+  }
+
+  public optionsFor(key: RunFilterKey): { value: string; label: string }[] {
+    if (key === 'status') return [{ value: '', label: 'Any status' }, ...this.statusOptions];
+    if (key === 'host') return [{ value: '', label: 'Any computer' }, { value: 'local', label: 'A browser (no computer)' },
+      ...this.computers().map((computer) => ({ value: computer.id, label: computer.name }))];
+    return [];
+  }
+
+  public toggleFilter(key: RunFilterKey | 'add', origin: CdkOverlayOrigin): void {
+    if (this.filterDefinitions.find((definition) => definition.key === key)?.kind === 'unavailable') return;
+    if (this.openFilter() === key) return this.closeFilter();
+    origin.elementRef.nativeElement.focus();
+    this.popoverOrigin.set(origin);
+    this.prepareFilter(key);
+  }
+
+  public addFilter(key: RunFilterKey): void {
+    this.addedFilters.update((keys) => keys.includes(key) ? keys : [...keys, key]);
+    this.prepareFilter(key);
+    afterNextRender(() => this.filterPopover()?.nativeElement.querySelector<HTMLElement>('[cdkFocusInitial]')?.focus(), { injector: this.injector });
+  }
+
+  private prepareFilter(key: RunFilterKey | 'add'): void {
+    this.draftFilter.set(key === 'date' || key === 'app' || key === 'add' ? '' : this.filters()[key]);
+    this.draftFrom.set(this.filters().from);
+    this.draftTo.set(this.filters().to);
+    this.dateError.set(false);
+    this.openFilter.set(key);
+  }
+
+  public closeFilter(): void {
+    this.openFilter.set(null);
+  }
+
+  public selectFilter(key: RunFilterKey, value: string): void {
+    if (key === 'date' || key === 'app') return;
+    this.setFilter(key, value);
+    this.closeFilter();
+  }
+
+  public selectDate(preset: DatePreset): void {
+    this.apply(datePresetRange(preset));
+    this.closeFilter();
+  }
+
+  public dateSelected(preset: DatePreset): boolean {
+    const range = datePresetRange(preset);
+    return range.from === this.filters().from && range.to === this.filters().to;
+  }
+
+  public submitFilter(event: Event, key: RunFilterKey): void {
+    event.preventDefault();
+    if (key !== 'date') return this.selectFilter(key, this.draftFilter().trim());
+    const from = this.draftFrom().trim();
+    const to = this.draftTo().trim();
+    if ((from && !validDate(from)) || (to && !validDate(to)) || (from && to && from > to)) {
+      this.dateError.set(true);
+      return;
+    }
+    this.apply({ from, to });
+    this.closeFilter();
+  }
+
+  public clearChip(key: RunFilterKey): void {
+    const primary = this.filterDefinitions.find((definition) => definition.key === key)?.primary;
+    this.hostElement.nativeElement.querySelector<HTMLButtonElement>(`[data-filter="${primary ? key : 'add'}"]`)?.focus();
+    if (key === 'date') this.apply({ from: '', to: '' });
+    else if (key !== 'app') this.setFilter(key, '');
+    this.addedFilters.update((keys) => keys.filter((entry) => entry !== key));
+    this.closeFilter();
+  }
+
+  public onFilterKey(event: KeyboardEvent): void {
+    if (event.defaultPrevented) return;
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      event.stopPropagation();
+      this.closeFilter();
+      return;
+    }
+    if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
+    const target = event.target as HTMLElement;
+    if (!target.matches('[data-filter-option], [data-add-filter]')) return;
+    const options = Array.from(target.closest('.filter-popover')!.querySelectorAll<HTMLButtonElement>('[data-filter-option], [data-add-filter]'));
+    const index = options.indexOf(target as HTMLButtonElement);
+    const next = event.key === 'Home' ? 0 : event.key === 'End' ? options.length - 1
+      : (index + (event.key === 'ArrowDown' ? 1 : options.length - 1)) % options.length;
+    event.preventDefault();
+    options[next]?.focus();
   }
 
   public clearFilters(): void {

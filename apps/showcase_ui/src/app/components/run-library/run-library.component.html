@@ -37,61 +37,86 @@
     <button type="submit" class="search-button" aria-label="Search runs"><span class="material-symbols-outlined" aria-hidden="true">search</span></button>
   </form>
 
-  @if (filterChips().length) {
-    <div class="filter-chips" aria-label="Active filters">
-      @for (chip of filterChips(); track chip.key) {
-        <button type="button" [attr.aria-label]="'Remove filter: ' + chip.label" (click)="setFilter(chip.key, '')">
-          <span>{{ chip.label }} <span class="material-symbols-outlined" aria-hidden="true">close</span></span>
+  <div class="filter-chips" role="group" aria-label="Run filters">
+    @for (definition of visibleFilters(); track definition.key) {
+      <div class="filter-chip-group" [class.is-active]="chipActive(definition.key)">
+        <button type="button" class="filter-chip" cdkOverlayOrigin #origin="cdkOverlayOrigin"
+          [attr.data-filter]="definition.key" [attr.aria-label]="chipActive(definition.key) ? definition.label + ': ' + chipLabel(definition.key) : definition.label"
+          [attr.aria-disabled]="definition.kind === 'unavailable' ? 'true' : null" [title]="definition.kind === 'unavailable' ? 'Needs backend support' : chipLabel(definition.key)"
+          [attr.aria-haspopup]="definition.kind === 'unavailable' ? null : 'dialog'" [attr.aria-expanded]="definition.kind === 'unavailable' ? null : openFilter() === definition.key"
+          [attr.aria-controls]="openFilter() === definition.key ? 'run-filter-popover' : null"
+          (click)="toggleFilter(definition.key, origin)">
+          <span><span class="filter-chip-label">{{ chipLabel(definition.key) }}</span>@if (definition.kind !== 'unavailable') { <span class="material-symbols-outlined" aria-hidden="true">expand_more</span> }</span>
         </button>
-      }
-    </div>
-  }
-  <details class="filter-options" [open]="active()">
-    <summary>Filters{{ active() ? ' · Active' : '' }}</summary>
-  <div class="filters">
-    <label class="field">
-      <span>Status</span>
-      <select aria-label="Status" [value]="filters().status" (change)="setFilter('status', $any($event.target).value)">
-        <option value="">Any status</option>
-        @for (option of statusOptions; track option.value) {
-          <option [value]="option.value" [selected]="filters().status === option.value">{{ option.label }}</option>
+        @if (chipActive(definition.key)) {
+          <button type="button" class="filter-clear" [attr.aria-label]="'Clear ' + definition.label + ' filter'" (click)="clearChip(definition.key)">
+            <span class="material-symbols-outlined" aria-hidden="true">close</span>
+          </button>
         }
-      </select>
-    </label>
-    <label class="field">
-      <span>From</span>
-      <input type="date" aria-label="From date" [value]="filters().from" (change)="setFilter('from', $any($event.target).value)" />
-    </label>
-    <label class="field">
-      <span>To</span>
-      <input type="date" aria-label="To date" [value]="filters().to" (change)="setFilter('to', $any($event.target).value)" />
-    </label>
+      </div>
+    }
+    <button type="button" class="filter-chip" data-filter="add" cdkOverlayOrigin #addOrigin="cdkOverlayOrigin"
+      aria-label="+ Filter" aria-haspopup="dialog" [attr.aria-expanded]="openFilter() === 'add'"
+      [attr.aria-controls]="openFilter() === 'add' ? 'run-filter-popover' : null" (click)="toggleFilter('add', addOrigin)">
+      <span>+ Filter</span>
+    </button>
   </div>
 
-  <details class="more-filters" [open]="moreOpen()">
-    <summary>{{ strings.moreFilters }}</summary>
-    <div class="filters">
-      <label class="field">
-        <span>Computer</span>
-        <select aria-label="Computer" [value]="filters().host" (change)="setFilter('host', $any($event.target).value)">
-          <option value="">Any computer</option>
-          <option value="local" [selected]="filters().host === 'local'">A browser (no computer)</option>
-          @for (computer of computers(); track computer.id) {
-            <option [value]="computer.id" [selected]="filters().host === computer.id">{{ computer.name }}</option>
+  <ng-template cdkConnectedOverlay [cdkConnectedOverlayOrigin]="popoverOrigin()!"
+    [cdkConnectedOverlayOpen]="openFilter() !== null" [cdkConnectedOverlayPositions]="popoverPositions"
+    [cdkConnectedOverlayWidth]="'min(296px, calc(100vw - 24px))'" [cdkConnectedOverlayViewportMargin]="12"
+    [cdkConnectedOverlayPush]="true"
+    [cdkConnectedOverlayHasBackdrop]="true" cdkConnectedOverlayBackdropClass="cdk-overlay-transparent-backdrop"
+    (backdropClick)="closeFilter()" (overlayKeydown)="onFilterKey($event)">
+    <section class="filter-popover" id="run-filter-popover" #filterPopover role="dialog" aria-modal="true"
+      [attr.aria-label]="openFilter() === 'add' ? 'Add filter' : openDefinition()?.label + ' filter'"
+      cdkTrapFocus [cdkTrapFocusAutoCapture]="true" (keydown)="onFilterKey($event)">
+      <header><h3>{{ openFilter() === 'add' ? 'Add filter' : openDefinition()?.label }}</h3>
+        <button type="button" class="popover-close" aria-label="Close filter" (click)="closeFilter()"><span class="material-symbols-outlined" aria-hidden="true">close</span></button>
+      </header>
+      @if (openFilter() === 'add') {
+        @for (definition of additionalFilters(); track definition.key; let first = $first) {
+          <button type="button" class="filter-option" [attr.cdkFocusInitial]="first ? '' : null" [attr.data-add-filter]="definition.key" (click)="addFilter(definition.key)">{{ definition.label }}</button>
+        }
+      } @else if (openDefinition(); as definition) {
+        @switch (definition.kind) {
+          @case ('options') {
+            @for (option of optionsFor(definition.key); track option.value; let first = $first) {
+              <button type="button" class="filter-option" [attr.cdkFocusInitial]="first ? '' : null" [attr.data-filter-option]="option.value"
+                [attr.aria-pressed]="draftFilter() === option.value" (click)="selectFilter(definition.key, option.value)">
+                <span>{{ option.label }}</span><span class="material-symbols-outlined" aria-hidden="true">{{ draftFilter() === option.value ? 'check' : '' }}</span>
+              </button>
+            }
           }
-        </select>
-      </label>
-      <label class="field">
-        <span>Phone</span>
-        <input type="text" class="mono" aria-label="Phone" placeholder="Serial" [value]="filters().device" (change)="setFilter('device', $any($event.target).value.trim())" />
-      </label>
-      <label class="field">
-        <span>Requested by</span>
-        <input type="text" aria-label="Requested by" placeholder="Email" [value]="filters().requester" (change)="setFilter('requester', $any($event.target).value.trim())" />
-      </label>
-    </div>
-  </details>
-  </details>
+          @case ('date') {
+            @for (preset of datePresets; track preset.value; let first = $first) {
+              <button type="button" class="filter-option" [attr.cdkFocusInitial]="first ? '' : null" [attr.data-filter-option]="preset.value"
+                [attr.aria-pressed]="dateSelected(preset.value)" (click)="selectDate(preset.value)">
+                <span>{{ preset.label }}</span><span class="material-symbols-outlined" aria-hidden="true">{{ dateSelected(preset.value) ? 'check' : '' }}</span>
+              </button>
+            }
+            <form (submit)="submitFilter($event, 'date')">
+              <p class="filter-hint">Custom range · YYYY-MM-DD</p>
+              <label class="field"><span>From</span><input type="text" aria-label="From date" placeholder="YYYY-MM-DD" [value]="draftFrom()"
+                [attr.aria-invalid]="dateError()" [attr.aria-describedby]="dateError() ? 'date-filter-error' : null" (input)="draftFrom.set($any($event.target).value)" /></label>
+              <label class="field"><span>To</span><input type="text" aria-label="To date" placeholder="YYYY-MM-DD" [value]="draftTo()"
+                [attr.aria-invalid]="dateError()" [attr.aria-describedby]="dateError() ? 'date-filter-error' : null" (input)="draftTo.set($any($event.target).value)" /></label>
+              @if (dateError()) { <p class="filter-error" id="date-filter-error" role="alert">Use valid YYYY-MM-DD dates. From must be on or before To.</p> }
+              <button type="submit" class="secondary-button">Apply dates</button>
+            </form>
+          }
+          @case ('text') {
+            <form (submit)="submitFilter($event, definition.key)">
+              <label class="field"><span>{{ definition.label }}</span><input type="text" cdkFocusInitial [attr.aria-label]="definition.label"
+                [class.mono]="definition.key === 'device'" [placeholder]="definition.key === 'device' ? 'Serial' : 'Email'"
+                [value]="draftFilter()" (input)="draftFilter.set($any($event.target).value)" /></label>
+              <button type="submit" class="secondary-button">Apply filter</button>
+            </form>
+          }
+        }
+      }
+    </section>
+  </ng-template>
 
   @if (queueRuns().length) {
     <section class="queue-section" aria-label="Queue">

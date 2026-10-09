@@ -52,6 +52,16 @@ const evaluate = async (expression) => {
   assert.ok(!response.exceptionDetails, JSON.stringify(response.exceptionDetails));
   return response.result.value;
 };
+const click = async (selector) => {
+  await waitFor(() => evaluate(`(() => { const target = document.querySelector(${JSON.stringify(selector)}); if (!target) return false; const box = target.getBoundingClientRect(); return box.width > 0 && target.contains(document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2)); })()`));
+  const point = await evaluate(`(() => { const box = document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect(); return { x: box.x + box.width / 2, y: box.y + box.height / 2 }; })()`);
+  await send('Input.dispatchMouseEvent', { type: 'mousePressed', ...point, button: 'left', clickCount: 1 });
+  await send('Input.dispatchMouseEvent', { type: 'mouseReleased', ...point, button: 'left', clickCount: 1 });
+};
+const key = async (value) => {
+  await send('Input.dispatchKeyEvent', { type: 'keyDown', key: value });
+  await send('Input.dispatchKeyEvent', { type: 'keyUp', key: value });
+};
 const timeout = setTimeout(() => { console.error('Run-list audit timed out'); chrome.kill(); server.close(); }, 110000);
 
 try {
@@ -86,7 +96,9 @@ try {
         header: box(document.querySelector('.library-heading')),
         nav: box(document.querySelector('.floating-nav-switcher')),
         pane: box(document.querySelector('.run-list-pane')),
-        controls: [...document.querySelectorAll('app-run-library [role=tab], app-run-library input[type=search], .new-run, .queue-stop, .queue-cancel')].map(box),
+        controls: [...document.querySelectorAll('app-run-library [role=tab], app-run-library input[type=search], .new-run, .queue-stop, .queue-cancel, .filter-chips button')].map(box),
+        chipVisuals: [...document.querySelectorAll('.filter-chips button > span')].map(box),
+        chipGap: getComputedStyle(document.querySelector('.filter-chips')).gap,
         rows: [...document.querySelectorAll('app-run-library .run-row')].map(box),
         overflow: document.documentElement.scrollWidth - innerWidth,
         groups: [...document.querySelectorAll('.date-group-title')].map((heading) => heading.textContent.trim()),
@@ -97,6 +109,9 @@ try {
     assert.ok(layout.header.left >= layout.nav.right || layout.header.top >= layout.nav.bottom, `${width}px header under navigation`);
     if (width === 1440) assert.equal(layout.pane.width, 360);
     for (const box of layout.controls) assert.ok(box.width >= 44 && box.height >= 44, `${width}px control ${JSON.stringify(box)}`);
+    for (const box of layout.chipVisuals) assert.equal(box.height, 32, `${width}px chip visual`);
+    assert.equal(layout.chipGap, '8px');
+    assert.equal(await evaluate("document.querySelector('app-run-library select, app-run-library input[type=date]') === null"), true);
     for (const box of layout.rows) assert.equal(box.height, 56, `${width}px row height`);
     assert.ok(layout.groups.includes('Today') && layout.groups.includes('Yesterday'));
     assert.ok(layout.statuses.includes('Completed') && !layout.statuses.includes('Passed'));
@@ -121,6 +136,55 @@ try {
     await evaluate('document.activeElement.blur()');
     const screenshot = await send('Page.captureScreenshot', { format: 'png' });
     writeFileSync(path.join(evidence, `run-list-${width}.png`), Buffer.from(screenshot.data, 'base64'));
+    writeFileSync(path.join(evidence, `filter-chips-closed-${width}.png`), Buffer.from(screenshot.data, 'base64'));
+    await click('[data-filter=app]');
+    assert.equal(await evaluate("document.querySelector('[data-filter=app]').getAttribute('aria-disabled')"), 'true');
+    assert.equal(await evaluate("document.querySelector('[data-filter=app]').title"), 'Needs backend support');
+    assert.equal(await evaluate('location.search'), '');
+    assert.equal(await evaluate("document.querySelector('.filter-popover') === null"), true);
+    await click('[data-filter=status]');
+    await waitFor(() => evaluate("document.activeElement?.getAttribute('data-filter-option') === ''"));
+    const popover = await evaluate(`(() => {
+      const box = document.querySelector('.filter-popover').getBoundingClientRect();
+      return { left: box.left, right: box.right, top: box.top, bottom: box.bottom,
+        targets: [...document.querySelectorAll('.filter-popover button')].map((button) => ({ width: button.getBoundingClientRect().width, height: button.getBoundingClientRect().height })) };
+    })()`);
+    assert.ok(popover.left >= 0 && popover.right <= width && popover.top >= 0 && popover.bottom <= 900, `${width}px popover bounds`);
+    for (const box of popover.targets) assert.ok(box.width >= 44 && box.height >= 44, `${width}px popover target`);
+    const openShot = await send('Page.captureScreenshot', { format: 'png' });
+    writeFileSync(path.join(evidence, `filter-chips-open-${width}.png`), Buffer.from(openShot.data, 'base64'));
+    await key('ArrowDown');
+    assert.equal(await evaluate("document.activeElement.getAttribute('data-filter-option')"), 'completed');
+    await key('End');
+    assert.equal(await evaluate("document.activeElement.getAttribute('data-filter-option')"), 'cancelled');
+    await key('Tab');
+    assert.equal(await evaluate("document.activeElement.closest('.filter-popover') !== null"), true);
+    await key('Escape');
+    await waitFor(() => evaluate("document.querySelector('.filter-popover') === null"));
+    assert.equal(await evaluate("document.activeElement.getAttribute('data-filter')"), 'status');
+    await click('[data-filter=status]');
+    await waitFor(() => evaluate("document.querySelector('.filter-popover') !== null"));
+    await waitFor(() => evaluate(`document.elementFromPoint(${width - 12}, 880)?.classList.contains('cdk-overlay-backdrop')`));
+    await send('Input.dispatchMouseEvent', { type: 'mousePressed', x: width - 12, y: 880, button: 'left', clickCount: 1 });
+    await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: width - 12, y: 880, button: 'left', clickCount: 1 });
+    await waitFor(() => evaluate("document.querySelector('.filter-popover') === null"));
+    await click('[data-filter=date]');
+    await waitFor(() => evaluate("document.querySelector('[data-filter-option=week]') !== null"));
+    await click('[data-filter-option=week]');
+    await waitFor(() => evaluate("location.search.includes('from=') && location.search.includes('to=') && document.querySelector('.filter-popover') === null"));
+    assert.equal(await evaluate("document.querySelector('[data-filter=date]').textContent.includes('Last 7 days')"), true);
+    await click('[aria-label="Clear Date filter"]');
+    await waitFor(() => evaluate(`location.search === '' && document.querySelector('[aria-label="Clear Date filter"]') === null`));
+    await click('[data-filter=add]');
+    await waitFor(() => evaluate("document.querySelector('[data-add-filter=device]') !== null"));
+    assert.equal(await evaluate(`(() => { const box = document.querySelector('.filter-popover').getBoundingClientRect(); return box.left >= 0 && box.right <= ${width} && box.top >= 0 && box.bottom <= 900; })()`), true, `${width}px + Filter popover bounds`);
+    await click('[data-add-filter=device]');
+    await waitFor(() => evaluate("document.activeElement?.getAttribute('aria-label') === 'Phone'"));
+    await evaluate("(() => { const input = document.querySelector('.filter-popover input'); input.value = 'emulator-5554'; input.dispatchEvent(new Event('input', { bubbles: true })); })()");
+    await click('.filter-popover button[type=submit]');
+    await waitFor(() => evaluate("location.search.includes('device=emulator-5554') && document.querySelector('.filter-popover') === null"));
+    await click('[aria-label="Clear Phone filter"]');
+    await waitFor(() => evaluate(`location.search === '' && document.querySelector('[aria-label="Clear Phone filter"]') === null`));
     await evaluate(`(() => {
       const workspace = ng.getComponent(document.querySelector('app-workspace'));
       window.stopCalls = [];
@@ -132,7 +196,7 @@ try {
     await evaluate("document.querySelector('[data-scope=everyone]').click()");
     await waitFor(() => evaluate("ng.getComponent(document.querySelector('app-run-library')).scope() === 'everyone' && !ng.getComponent(document.querySelector('app-run-library')).loading()"));
     assert.equal(await evaluate("document.querySelector('[data-scope=everyone]').getAttribute('aria-selected')"), 'true');
-    receipt.push({ width, result: 'PASS', ...layout, completedRows, checks: ['44px targets', '56px rows', 'date groups', 'status words', 'neutral completion icons', 'package separator gap', 'slash focus and editable guard', 'targeted Stop/Cancel', 'Everyone tab'] });
+    receipt.push({ width, result: 'PASS', ...layout, completedRows, popover, checks: ['44px targets', '32px chips and 8px gap', 'unavailable App inert', 'popover bounds', 'native pointer and keyboard input', 'arrow keys and focus trapping', 'Escape and outside dismissal', 'focus restoration', 'date preset URL round-trip', '+ Filter text URL round-trip', '56px rows', 'date groups', 'status words', 'neutral completion icons', 'package separator gap', 'slash focus and editable guard', 'targeted Stop/Cancel', 'Everyone tab'] });
     console.log(`PASS run-list audit ${width}px`);
   }
   assert.deepEqual(errors, [], 'Uncaught browser errors');

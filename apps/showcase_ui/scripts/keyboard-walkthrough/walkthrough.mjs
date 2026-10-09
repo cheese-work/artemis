@@ -310,19 +310,27 @@ try {
   await expectTrue('Enter searched: URL has q=dark and one row', `location.search.includes('q=dark') && document.querySelectorAll('a.run-row').length === 1`);
 
   log('Library: filter with the keyboard, then reach "no match" and clear it');
-  await tabUntil('Search button', focusNamed('Search'));
-  await tabUntil('Status select', focusIs('select[aria-label="Status"]'));
-  await type('F'); // type-ahead picks "Failed"
+  await tabUntil('Search button', focusIs('button.search-button'));
+  await tabUntil('Status chip', focusIs('[data-filter="status"]'));
+  await press('Enter');
+  await expectTrue('Status popover focuses Any status', `document.activeElement.matches('[data-filter-option=""]')`);
+  await press('ArrowDown');
+  await press('ArrowDown');
+  await expectTrue('Arrow keys reach Failed', `document.activeElement.matches('[data-filter-option="failed"]')`);
+  await press('Enter');
   await expectTrue('status=failed is in the URL, no rows match', `location.search.includes('status=failed') && !!document.querySelector('.state-no-match')`);
   await tabUntil('Clear filters', focusNamed('Clear filters'));
   await press('Enter');
   await expectTrue('Clear filters emptied the URL query and restored all rows', `location.search === '' && document.querySelectorAll('a.run-row').length === 6`);
 
-  log('Library: More filters opens from the keyboard');
-  await tabUntil('More filters', focusNamed('More filters'));
+  log('Library: + Filter opens from the keyboard');
+  await tabUntil('+ Filter', focusIs('[data-filter="add"]'));
   await press('Enter');
-  await expectTrue('More filters is open', `document.querySelector('details.more-filters').open`);
-  await tabUntil('Computer select', focusIs('select[aria-label="Computer"]'));
+  await expectTrue('Add filter focuses Computer', `document.activeElement.matches('[data-add-filter="host"]')`);
+  await press('Enter');
+  await expectTrue('Computer options open without a native select', `document.activeElement.matches('[data-filter-option=""]') && !document.querySelector('app-run-library select')`);
+  await press('Escape');
+  await expectTrue('Escape closes the filter and restores + Filter focus', `!document.querySelector('.filter-popover') && document.activeElement.matches('[data-filter="add"]')`);
 
   log('Library: open a run');
   await tabUntil('first run row', focusIs('a.run-row'));
