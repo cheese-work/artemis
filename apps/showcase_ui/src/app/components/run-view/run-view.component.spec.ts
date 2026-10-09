@@ -235,7 +235,7 @@ describe('RunViewComponent', () => {
       const image = getComputedStyle(q('.evidence-image')!);
       expect(image.display).toBe('block');
       expect(image.objectFit).toBe('contain');
-      expect(image.backgroundColor).toBe('rgb(0, 0, 0)');
+      expect(image.backgroundColor).toBe('rgb(15, 23, 42)');
       const copy = getComputedStyle(q('.recording-copy')!);
       expect(copy.margin).toBe('0px 0px 8px');
       expect(copy.fontWeight).toBe('600');

@@ -11,9 +11,9 @@ import { LabelableDevice, runDeviceLabel } from '../../utils/device-label.util';
     }
   `,
   styles: [`
-    .device-icon { font-size: 12px; width: 12px; height: 12px; line-height: 12px; color: #64748b; opacity: 0.75; flex-shrink: 0; }
+    .device-icon { font-size: 12px; width: 12px; height: 12px; line-height: 12px; color: var(--color-text-faint); opacity: 0.75; flex-shrink: 0; }
     .device-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; font-family: inherit; letter-spacing: -0.15px; }
-    :host(:hover) .device-icon { color: #334155; opacity: 1; }
+    :host(:hover) .device-icon { color: var(--color-text); opacity: 1; }
   `],
   changeDetection: ChangeDetectionStrategy.OnPush
 })

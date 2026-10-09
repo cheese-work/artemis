@@ -43,10 +43,10 @@ const CHECK_INTERVAL_MS = 5 * 60_000;
     :host { display: block; flex: none; position: relative; z-index: 6; }
     .version-footer {
       padding: 2px 10px;
-      border-top: 1px solid #e2e8f0;
-      color: #475569;
-      background: #fff;
-      font: 11px 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+      border-top: 1px solid var(--color-rule);
+      color: var(--color-text-muted);
+      background: var(--color-surface);
+      font: 11px var(--font-mono);
       line-height: 14px;
       font-variant-numeric: tabular-nums;
       text-align: right;

@@ -8,9 +8,9 @@
   height: 100%;
   overflow-y: auto;
   /* Top: clears the floating navigation. Bottom: keeps the last rows and focused controls above the dock. */
-  padding: var(--nav-clearance, 88px) 24px 168px;
+  padding: var(--nav-clearance, 88px) var(--space-lg) var(--space-lg);
   scroll-padding-top: var(--nav-clearance, 88px);
-  scroll-padding-bottom: 168px;
+  scroll-padding-bottom: var(--space-lg);
   background: var(--evidence-surface);
   color: var(--evidence-text);
 }
@@ -24,9 +24,22 @@
 }
 
 .library-title {
-  margin: 0;
-  font-size: 22px;
+  margin: 0 0 var(--space-smd);
+  font-family: var(--font-display);
+  font-size: var(--text-section);
+  line-height: 1.4;
   font-weight: 600;
+  color: var(--color-ink);
+}
+
+:host(.compact.review-run-list) {
+  height: 100%;
+  padding: 0 var(--space-md);
+
+  .library-scroll {
+    height: 100%;
+    max-height: none;
+  }
 }
 
 :host(.compact) {
@@ -111,10 +124,15 @@ button {
 
 .search-button {
   min-width: 96px;
-  border: 1px solid var(--evidence-text);
-  color: #ffffff;
-  background: var(--evidence-text);
+  border: 1px solid var(--color-primary);
+  color: var(--color-on-primary);
+  background: var(--color-primary);
   font-weight: 600;
+
+  &:hover {
+    border-color: var(--color-primary-hover);
+    background: var(--color-primary-hover);
+  }
 }
 
 .secondary-button {
@@ -204,7 +222,12 @@ summary:focus-visible {
   text-decoration: none;
 
   &:hover {
-    background: #f1f5f9;
+    background: var(--color-surface-subtle);
+  }
+
+  /* The run open beside the list: a tint and the word Viewing, never colour alone. */
+  &.is-open {
+    background: var(--color-primary-tint);
   }
 }
 

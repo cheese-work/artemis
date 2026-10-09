@@ -5,9 +5,10 @@ The browser interface for SmartQA, built with **Angular 22** and **SCSS**. The r
 ## 🎨 Visual Design Highlights
 
 * **Visual rules**: follow [DESIGN.md](../../DESIGN.md). Surfaces are opaque; do not add glass, blur, translucency or glow.
-* **Real-time Dual-Pane Workspace**:
-  - **Left Pane (`app-agent-stream`)**: Live streaming of Agent thought steps, plan breakdowns, tool actions, and status.
-  - **Right Pane (`app-chat-interface`)**: Natural language chat input sidebar with interactive feedback and status pills.
+* **One set of tokens**: `src/styles.scss` defines colours, spacing, radius, type, shadows, motion and the 44 px target as CSS custom properties (`--color-*`, `--space-*`, `--radius-*`, `--font-*`, `--target`). Every surface reads them; `npm test` runs `scripts/lint-theme.mjs`, which fails on a hex colour, an `rgba()` colour or a blur in the listed styles. Dark navy (`--color-device*`) is for a physical device only.
+* **Workspace and Runs share one shell**: the run (`app-run-view`) on the left, the run list (`app-run-library`) on the right. From 1200 px they sit side by side. From 800 px they stack, with both visible. Below 800 px the page is one column and scrolls as a whole. On Runs the list sits beside an open run; below 800 px it is dropped and Back to runs reaches it.
+* **New-task box**: always expanded, in normal flow under the run. Below 800 px it stays pinned to the bottom of the screen.
+* **Keyboard**: Tab order is the top bar, the run, the new-task box, then the list. Skip links reach the new-task box and the run list. Task Queue / Notes & Plans and My runs / Everyone's runs are tabs with arrow keys, Home and End.
 
 ## 🚀 How to Run
 
@@ -37,7 +38,9 @@ npm run build
 npm run test:keyboard
 ```
 
-Set `CHROME_BIN` to a Chromium-based browser executable, including Brave on macOS.
+Add `-- --record=<dir>` to also write `<dir>/keyboard-walkthrough.mp4`, a screen recording with a caption of each key and the focused control (needs `ffmpeg`).
+
+Set `CHROME_BIN` to a Chromium-based browser executable, including Brave on macOS. The scripts start Chrome with `--password-store=basic`; without it Chrome on a Linux host with no keyring can stall before its first page load.
 The walkthrough seeds the real browser clipboard and sends a native CDP `paste`
 editing command with Ctrl+V on Linux/Windows or Cmd+V on macOS. It verifies trusted
 paste events, PNG payloads, preview removal with Enter, and native plain-text insertion.
@@ -55,3 +58,11 @@ Use Tab and Enter/Space to open the device and user controls. Escape closes eith
 control and restores focus to its trigger.
 Run `npm run build && npm run test:navigation` for the navigation-only native keyboard
 walkthrough. It mocks the USB chooser; it does not access a real device.
+
+### Layout audit and evidence screenshots
+```bash
+npx ng build --configuration development
+npm run test:layout                      # clearance, a11y, scenarios and the CHE-1278 contract phase
+npm run test:layout -- contract          # one phase: panes, 44 px targets, 4.5:1 on real backgrounds, no blur, reduced motion
+node scripts/layout-audit/screenshots.mjs <outDir> <label>   # Workspace, Runs, an open run and Setup at 1280 and 1024 px
+```

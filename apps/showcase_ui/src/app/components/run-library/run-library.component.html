@@ -113,6 +113,7 @@
       @for (run of rows(); track trackRun($index, run)) {
         <li>
           <a class="run-row" appRunCard [run]="run" [computer]="computer(run)" [device]="device(run)"
+            [current]="isOpen(run)" [attr.aria-current]="isOpen(run) ? 'page' : null" [class.is-open]="isOpen(run)"
             [goalImages]="recordedImages().get(run.session_id) ?? []"
             [showOwner]="scope() === 'everyone'" [routerLink]="['/runs', run.session_id]"
             [queryParams]="runQuery()" (click)="rememberPosition()"></a>

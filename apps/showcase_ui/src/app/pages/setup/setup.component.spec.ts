@@ -427,7 +427,8 @@ describe('SetupComponent', () => {
       const host = await render(true);
       const save = host.querySelector('.primary-button') as Element;
 
-      expect(getComputedStyle(save).backgroundColor).toBe('rgb(26, 115, 232)');
+      // DESIGN.md primary (#2563eb); the old #1a73e8 was 4.27:1 on the page background.
+      expect(getComputedStyle(save).backgroundColor).toBe('rgb(37, 99, 235)');
       expect(contrast(fg(save), bg(save))).toBeGreaterThanOrEqual(MIN_TEXT_CONTRAST);
     });
 
@@ -490,8 +491,13 @@ describe('SetupComponent', () => {
         .find((r) => /input(\[[^\]]*\])?:focus/.test(r.selectorText));
 
       expect(rule).withContext('input:focus rule').toBeDefined();
-      expect(rule!.style.outlineStyle).toBe('solid');
-      expect(contrast(parseColor(rule!.style.outlineColor), bg(input))).toBeGreaterThanOrEqual(3);
+      // The ring is the shared focus token: a 3px solid line in --color-focus.
+      expect(rule!.cssText).toMatch(/outline: 3px solid var\(--color-focus\)/);
+      const probe = document.body.appendChild(document.createElement('span'));
+      probe.style.color = 'var(--color-focus)';
+      const ring = getComputedStyle(probe).color;
+      probe.remove();
+      expect(contrast(parseColor(ring), bg(input))).toBeGreaterThanOrEqual(3);
     });
 
     it('keeps the standalone page light too', async () => {

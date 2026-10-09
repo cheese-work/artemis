@@ -12,10 +12,10 @@ import {
   viewChild
 } from '@angular/core';
 import { HttpErrorResponse } from '@angular/common/http';
-import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
+import { takeUntilDestroyed, toSignal } from '@angular/core/rxjs-interop';
 import { Location } from '@angular/common';
-import { ActivatedRoute, Router, RouterLink } from '@angular/router';
-import { Subscription } from 'rxjs';
+import { ActivatedRoute, Router, RouterLink, convertToParamMap } from '@angular/router';
+import { Subscription, map } from 'rxjs';
 import { Computer, RegistryDevice } from '../../core/models/host.model';
 import { RunSummary } from '../../core/models/run.model';
 import { GoalImage } from '../../core/models/session.model';
@@ -63,8 +63,17 @@ export class RunLibraryComponent implements OnChanges {
   public readonly recordedDevices = input<ReadonlyMap<string, LabelableDevice>>(new Map());
   public readonly recordedImages = input<ReadonlyMap<string, GoalImage[]>>(new Map());
   public readonly mediaNotice = MEDIA_NOTICE;
+  /** The run open beside this list on Runs, so its row can say so. */
+  public readonly openRunId = toSignal(this.route.paramMap.pipe(map((params) => params.get('id'))), { initialValue: null });
   public readonly scope = signal<'mine' | 'everyone'>('mine');
-  public readonly runQuery = computed(() => this.scope() === 'everyone' ? { scope: 'everyone', review: '1' } : {});
+  /**
+   * Query for a row's link. Beside an open run the list keeps its own filters across rows, so
+   * moving to another run neither resets the list nor loses the state "Back to runs" returns to.
+   */
+  public readonly runQuery = computed(() => {
+    const review = this.scope() === 'everyone' ? { review: '1' } : {};
+    return this.openRunId() ? { ...this.query(this.filters(), this.scope()), ...review } : this.scope() === 'everyone' ? { scope: 'everyone', ...review } : {};
+  });
 
   /** What the URL says; the list always shows exactly this. */
   public readonly filters = signal<RunFilters>(EMPTY_FILTERS);
@@ -99,14 +108,20 @@ export class RunLibraryComponent implements OnChanges {
         this.devices.set(response.devices);
       }, error: () => undefined });
 
-    this.route.queryParamMap.pipe(takeUntilDestroyed(this.destroyRef)).subscribe((params) => {
+    this.route.queryParamMap.pipe(takeUntilDestroyed(this.destroyRef)).subscribe((urlParams) => {
+      // Beside an open run the URL carries no list state yet: start from the list the QA came from.
+      const beside = !!this.openRunId();
+      const params = beside && this.lastFiltersKey === null
+        ? convertToParamMap({ ...this.runsApi.lastLibraryQuery(), ...Object.fromEntries(urlParams.keys.map((k) => [k, urlParams.get(k)!])) })
+        : urlParams;
       const filters = filtersFromQuery(params);
       const scroll = scrollFromQuery(params);
       const scope = params.get('scope') === 'everyone' ? 'everyone' : 'mine';
       const key = JSON.stringify({ filters, scope });
       if (scope !== this.scope()) this.rows.set([]);
       this.scope.set(scope);
-      this.runsApi.lastLibraryQuery.set({ ...this.query(filters), ...(scroll ? { scroll: String(scroll) } : {}) });
+      // The list beside an open run must not overwrite what "Back to runs" returns to.
+      if (!beside) this.runsApi.lastLibraryQuery.set({ ...this.query(filters), ...(scroll ? { scroll: String(scroll) } : {}) });
       if (key === this.lastFiltersKey) return; // only the scroll position changed
       // Restore the saved position on the first load only: a changed filter is a different list.
       this.pendingScroll = this.lastFiltersKey === null ? scroll : 0;
@@ -203,6 +218,14 @@ export class RunLibraryComponent implements OnChanges {
     this.scrollTimer = null;
     const top = Math.floor(this.scrollRegion()?.nativeElement.scrollTop ?? 0);
     const query = { ...this.query(), ...(top > 0 ? { scroll: String(top) } : {}) };
+    // Beside an open run the saved scroll belongs to the page the QA came from, not to this list.
+    if (this.openRunId()) {
+      const { scroll: savedScroll, ...saved } = this.runsApi.lastLibraryQuery();
+      const current = this.query();
+      const same = JSON.stringify(saved) === JSON.stringify(current);
+      this.runsApi.lastLibraryQuery.set({ ...current, ...(same && savedScroll ? { scroll: savedScroll } : {}) });
+      return;
+    }
     this.runsApi.lastLibraryQuery.set(query);
     const [path, search = ''] = this.router
       .serializeUrl(this.router.createUrlTree([], { relativeTo: this.route, queryParams: query }))
@@ -271,6 +294,12 @@ export class RunLibraryComponent implements OnChanges {
   public device(run: RunSummary): LabelableDevice | null {
     return this.recordedDevices().get(run.session_id)
       ?? this.devices().find((device) => device.serial === run.device_ref?.serial) ?? null;
+  }
+
+  /** The open run's id may be a short prefix of the row's id. */
+  public isOpen(run: RunSummary): boolean {
+    const open = this.openRunId();
+    return !!open && run.session_id.startsWith(open);
   }
 
   public trackRun(_: number, run: RunSummary): string {

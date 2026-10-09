@@ -8,9 +8,9 @@
   height: 100%;
   overflow-y: auto;
   /* Top: clears the floating navigation. Bottom: keeps the last rows and focused controls above the dock. */
-  padding: var(--nav-clearance, 88px) 24px 168px;
+  padding: var(--nav-clearance, 88px) var(--space-lg) var(--space-lg);
   scroll-padding-top: var(--nav-clearance, 88px);
-  scroll-padding-bottom: 168px;
+  scroll-padding-bottom: var(--space-lg);
   background: var(--evidence-surface);
   color: var(--evidence-text);
 }
@@ -60,9 +60,9 @@ video:focus-visible {
 
 .action-button {
   min-width: 96px;
-  border: 1px solid var(--evidence-text);
-  color: #ffffff;
-  background: var(--evidence-text);
+  border: 1px solid var(--color-primary);
+  color: var(--color-on-primary);
+  background: var(--color-primary);
   font-weight: 600;
 
   &[aria-pressed='true'] {
@@ -84,8 +84,8 @@ video:focus-visible {
   min-height: 44px;
   padding: 0 18px;
   border-radius: 8px;
-  color: #ffffff;
-  background: var(--evidence-text);
+  color: var(--color-on-primary);
+  background: var(--color-primary);
   text-decoration: none;
 }
 
@@ -121,7 +121,7 @@ video:focus-visible {
     display: inline-flex;
     align-items: center;
     min-height: 44px;
-    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-family: var(--font-mono);
   }
 }
 
@@ -370,7 +370,7 @@ dl {
   background: var(--evidence-surface);
 
   &::backdrop {
-    background: rgba(15, 23, 42, 0.6);
+    background: rgb(15 23 42 / 60%);
   }
 
   h2 {

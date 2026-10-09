@@ -48,6 +48,10 @@ export type { MarkdownSegment, MarkdownLine, NoteMilestone, ParsedNote };
 })
 export class ChatInterfaceComponent {
   public readonly mediaUrl = mediaUrl;
+  public readonly queueTabs = [
+    { id: 'tasks', label: 'Task Queue', icon: 'list_alt' },
+    { id: 'notes', label: 'Notes & Plans', icon: 'description' }
+  ] as const;
   private readonly logger = inject(LoggerService);
   public agentService = inject(AgentService);
   private readonly systemService = inject(SystemService);
@@ -113,6 +117,15 @@ export class ChatInterfaceComponent {
   /**
    * Submit a new task goal to the backend
    */
+  /** Arrow keys, Home and End move between the two tabs, like the run list's owner tabs. */
+  public onTabKey(event: KeyboardEvent, tab: 'tasks' | 'notes'): void {
+    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+    event.preventDefault();
+    const next = event.key === 'Home' ? 'tasks' : event.key === 'End' ? 'notes' : tab === 'tasks' ? 'notes' : 'tasks';
+    this.agentService.activeTab.set(next);
+    (event.currentTarget as HTMLElement).parentElement?.querySelector<HTMLButtonElement>(`[data-tab="${next}"]`)?.focus();
+  }
+
   public submitTask(): void {
     const goal = this.taskInput.trim();
     if (!goal) {
