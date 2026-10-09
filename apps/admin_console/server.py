@@ -23,6 +23,7 @@ from contextlib import asynccontextmanager
 import logging
 import os
 from pathlib import Path
+import re
 import secrets
 import signal
 import sqlite3
@@ -480,6 +481,21 @@ async def serve_showcase_spa(full_path: str):
         raise HTTPException(status_code=404, detail="Endpoint not found")
 
     clean_path = full_path.strip("/")
+
+    if not PREVIEW_PROFILE and (
+        preview_path := re.match(r"preview/pr/([0-9]+)(?:/|$)", clean_path)
+    ):
+        return HTMLResponse(
+            f"""<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Preview not available</title></head>
+<body><main><h1>Preview for PR #{preview_path[1]} is not available</h1>
+<p>No live preview is available at this URL.</p></main></body>
+</html>""",
+            status_code=404,
+            headers={"Cache-Control": "no-store"},
+        )
 
     # Admin / Debug Console routes
     if (

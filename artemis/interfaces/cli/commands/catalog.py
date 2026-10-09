@@ -19,7 +19,7 @@ import sqlite3
 from typing import Annotated
 
 from artemis.config import DB_PATH
-from artemis.data_engine import run_catalog
+from artemis.data_engine import run_catalog, run_snapshot
 from rich.console import Console
 import typer
 
@@ -56,15 +56,19 @@ def migrate(db: DbOption = DB_PATH) -> None:
     console.print(
         f"Catalog ready: {report.backfilled} runs backfilled{backup}, search={report.search_mode}"
     )
+    snapshot = run_snapshot.migrate(db)
+    backup = f", backup {snapshot.backup_path}" if snapshot.backup_path else ""
+    console.print(f"Run snapshot: {snapshot.backfilled} runs backfilled{backup}")
 
 
 @catalog_app.command("backfill")
 def backfill(db: DbOption = DB_PATH) -> None:
-    """Create catalog rows for sessions that have none."""
+    """Create catalog rows for sessions that have none; resume the run snapshot backfill."""
     _require_database(db)
     with sqlite3.connect(db, timeout=30.0) as conn:
         _require_catalog(conn)
         console.print(f"{run_catalog.backfill(conn)} runs backfilled")
+    console.print(f"Run snapshot: {run_snapshot.migrate(db).backfilled} runs backfilled")
 
 
 @catalog_app.command("rebuild")
