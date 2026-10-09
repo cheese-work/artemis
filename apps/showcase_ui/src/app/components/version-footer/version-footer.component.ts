@@ -4,7 +4,7 @@ import { DatePipe, formatDate } from '@angular/common';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { catchError, fromEvent, interval, merge, of, startWith, switchMap } from 'rxjs';
 import { BUILD_INFO } from '../../../build-info';
-import { DeployVersion, parseDeployVersion } from '../../core/models/deploy-version.model';
+import { DeployVersion, FULL_SHA, parseDeployVersion } from '../../core/models/deploy-version.model';
 
 export interface BuildInfo {
   sha: string;
@@ -44,14 +44,20 @@ const CHECK_INTERVAL_MS = 5 * 60_000;
       right: 10px;
       /* 2px + 14px line stays under the workspace composer (bottom: 18px). */
       bottom: 2px;
-      z-index: 1;
+      /* Above page content (Workspace panel 2, Setup 5); below the composer (50), menus (60) and nav. */
+      z-index: 6;
+      max-width: calc(100vw - 20px);
+      padding: 0 4px;
+      border-radius: 4px;
       color: #475569;
+      background: #fff;
       font: 11px 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
       line-height: 14px;
       font-variant-numeric: tabular-nums;
-      white-space: nowrap;
+      text-align: right;
       pointer-events: none;
     }
+    .deployed, [role="status"], button { white-space: nowrap; }
     button {
       padding: 0;
       border: 0;
@@ -75,8 +81,8 @@ export class VersionFooterComponent {
   public readonly title = `Build ${this.page.sha}, built ${formatDate(this.page.builtAt, 'yyyy-MM-dd HH:mm', 'en-US', '+0700')} ICT`;
   public readonly feedback = signal('');
   public readonly newer = computed(() => {
-    const server = this.version()?.shortSha.toLowerCase();
-    return !!server && this.page.sha !== 'unknown' && !this.page.sha.startsWith(server);
+    const server = this.version()?.sha;
+    return !!server && FULL_SHA.test(this.page.sha) && this.page.sha.toLowerCase() !== server;
   });
 
   constructor() {

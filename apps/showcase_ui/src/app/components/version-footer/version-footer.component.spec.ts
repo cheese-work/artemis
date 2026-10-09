@@ -110,6 +110,18 @@ describe('VersionFooterComponent', () => {
     expect(reload).toHaveBeenCalled();
   });
 
+  it('offers a reload when the server sha shares only the first seven characters', () => {
+    const { text } = render(server('abc1234111111111111111111111111111111111'), 'abc1234000000000000000000000000000000000');
+
+    expect(text()).toBe('SmartQA 20261009-0838 · Build abc1234 · New version available · Reload');
+  });
+
+  it('shows no notice when the server sends no full sha', () => {
+    const { text } = render({ status: 'known', sha: 'ef3a314', short_sha: 'ef3a314', deployed_at: '2026-10-09T01:38:04Z' });
+
+    expect(text()).toBe('SmartQA 20261009-0838 · Build abc1234');
+  });
+
   it('shows no notice when the server build is unknown or the check fails', () => {
     expect(render({ status: 'unknown', sha: null, short_sha: null, deployed_at: null }).text())
       .toBe('SmartQA version unknown · Build abc1234');
