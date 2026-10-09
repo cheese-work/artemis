@@ -36,18 +36,21 @@ class DeviceReservations:
         target = binding.target
         try:
             repo = DeviceRepository(db_path)
+            source = (
+                "host" if target.host_id else "bridge" if binding.bridge_session_id else "local"
+            )
+            serial = (
+                target.serial
+                if target.host_id
+                else device_identity.transport_key(target.endpoint, target.serial)
+            )
             if connection_id:
                 match = repo.connection(connection_id=connection_id)
             else:
-                source = (
-                    "host" if target.host_id else "bridge" if binding.bridge_session_id else "local"
-                )
-                serial = (
-                    target.serial
-                    if target.host_id
-                    else device_identity.transport_key(target.endpoint, target.serial)
-                )
                 match = repo.connection(source=source, host_id=target.host_id, serial=serial)
+            latest = device_identity.latest_outcome(
+                repo.db_path, source=source, host_id=target.host_id, serial=serial
+            )
         except (DeviceStoreNotReady, sqlite3.Error, ValueError) as exc:
             raise AdminAPIError(
                 503,
@@ -56,7 +59,8 @@ class DeviceReservations:
                 "Try again shortly.",
             ) from exc
         if match is None:
-            return ReservationSnapshot(f"connection:{target.lock_key}", None, None)
+            return ReservationSnapshot(f"connection:{target.lock_key}", None, latest)
+        outcome = latest if latest in {"uncertain", "provisional"} else match.outcome
         key = (
             "uncertain"
             if match.outcome == "uncertain"
@@ -64,7 +68,7 @@ class DeviceReservations:
             if match.outcome == "confirmed"
             else f"connection:{target.lock_key}"
         )
-        return ReservationSnapshot(key, match.connection_id, match.outcome)
+        return ReservationSnapshot(key, match.connection_id, outcome)
 
     def claim(
         self,

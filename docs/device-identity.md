@@ -127,6 +127,10 @@ in-memory reservation. A second submission to the same confirmed device gets
 existing multi-goal batch holds that reservation until its last run leaves.
 An unobserved connection reserves its routing key; a known `uncertain` or
 `provisional` connection gets `device_identity_unresolved` before a run exists.
+Admission checks the route's latest observation, not only the device's persisted
+match state. A known route without a fresh identity is refused even when its
+last device remains `confirmed`; another confirmed route to that device can
+still run. A fresh confirmed observation restores admission on the route.
 Uncertain records use one conservative reservation key until identity is
 confirmed. Store or pepper failures refuse admission rather than bypassing it.
 

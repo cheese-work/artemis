@@ -269,6 +269,60 @@ async def test_uncertain_and_provisional_connections_cannot_execute(context, adb
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "adb_state,props",
+    [("device", {}), ("unauthorized", {}), ("device", {"ro.product.model": "Pixel"})],
+)
+async def test_known_route_without_fresh_identity_cannot_execute(context, adb_state, props):
+    usb, wifi = observe(USB, WIFI)
+    assert usb.device_id == wifi.device_id
+    latest = device_identity.observe_adb(AdbEndpoint.local(), [(WIFI, adb_state, "Pixel", props)])[
+        0
+    ]
+    assert latest.outcome in {"provisional", "uncertain"}
+    stored = DeviceRepository(context.db_path).connection(connection_id=wifi.connection_id)
+    assert stored.outcome == "confirmed"
+
+    for _attempt in range(2):
+        with pytest.raises(AdminAPIError) as error:
+            await TaskQueueService.enqueue_tasks(["unresolved"], device_serial=WIFI)
+        assert error.value.code == "device_identity_unresolved"
+        assert error.value.status_code == 409
+    DeviceExecutionLock.reserve.assert_not_called()
+    assert state.queue_items == []
+    with sqlite3.connect(context.db_path) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
+
+    accepted = await TaskQueueService.enqueue_tasks(["confirmed USB"], device_serial=USB)
+    session_id = accepted["tasks"][0]["session_id"]
+    assert context.get_session_by_id(session_id)["connection_id"] == usb.connection_id
+    TaskQueueService._remove_task(session_id)
+    assert observe(WIFI)[0].outcome == "confirmed"
+    recovered = await TaskQueueService.enqueue_tasks(["confirmed Wi-Fi"], device_serial=WIFI)
+    assert recovered["tasks"][0]["connection_id"] == wifi.connection_id
+
+
+@pytest.mark.asyncio
+async def test_unresolved_route_keeps_existing_claim_exclusive_after_alias_resolution(context):
+    usb, wifi = observe(USB, WIFI)
+    await TaskQueueService.enqueue_tasks(["first"], device_serial=WIFI)
+    latest = device_identity.observe_adb(
+        AdbEndpoint.local(), [(WIFI, "unauthorized", "Pixel", {})]
+    )[0]
+    assert latest.outcome == "provisional"
+    repo = DeviceRepository(context.db_path)
+    canonical = repo.create_device(owner_principal_id=None, label="Pixel", match_state="confirmed")
+    repo.add_alias(wifi.device_id, canonical.device_id)
+    assert repo.connection(connection_id=usb.connection_id).device_id == canonical.device_id
+
+    with pytest.raises(AdminAPIError) as error:
+        await TaskQueueService.enqueue_tasks(["second"], device_serial=USB)
+    assert error.value.code == "device_claimed"
+    assert error.value.status_code == 409
+    assert len(state.queue_items) == 1
+
+
+@pytest.mark.asyncio
 async def test_retry_is_idempotent_and_one_batch_retains_claim_until_last_run(context):
     observe(USB, WIFI)
     first = await TaskQueueService.enqueue_tasks(["first"], device_serial=USB, session_id="retry")
