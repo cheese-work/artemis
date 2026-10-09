@@ -19,7 +19,6 @@ integration and end-to-end trees remain directly runnable, and receive stable
 markers here so callers can select them without relying on filename patterns.
 """
 
-import sys
 from pathlib import Path
 
 import pytest
