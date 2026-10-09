@@ -25,7 +25,9 @@ def blocked_drain_callback(request):
     if request.param == "logger-attached":
         logger.addHandler(handler)
     engine_mod._CURRENT_DATA_ENGINE = engine
-    handler.emit(logging.LogRecord(logger.name, logging.WARNING, __file__, 1, "in flight", (), None))
+    handler.emit(
+        logging.LogRecord(logger.name, logging.WARNING, __file__, 1, "in flight", (), None)
+    )
     assert entered.wait(5)
     try:
         yield release
