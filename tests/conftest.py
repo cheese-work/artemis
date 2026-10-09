@@ -19,6 +19,7 @@ integration and end-to-end trees remain directly runnable, and receive stable
 markers here so callers can select them without relying on filename patterns.
 """
 
+import sys
 from pathlib import Path
 
 import pytest
@@ -59,6 +60,26 @@ def isolate_provider_credentials(monkeypatch):
         monkeypatch.delenv(field, raising=False)
         if hasattr(settings, field):
             monkeypatch.setattr(settings, field, None)
+
+
+@pytest.fixture(autouse=True)
+def isolate_current_data_engine():
+    """Drop the module-global DataEngine around every test.
+
+    The log handler's drain thread forwards every record to that global, and the engine
+    then publishes IPC events through ``socket.create_connection`` and ``urlopen``. A
+    leaked engine would use up the finite ``side_effect`` lists of tests that patch those
+    two process-wide functions.
+    """
+
+    def clear() -> None:
+        module = sys.modules.get("artemis.data_engine.engine")
+        if module is not None:
+            module._CURRENT_DATA_ENGINE = None
+
+    clear()
+    yield
+    clear()
 
 
 ADB_ENVIRONMENT_KEYS = (

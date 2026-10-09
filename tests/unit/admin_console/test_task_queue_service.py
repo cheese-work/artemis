@@ -23,6 +23,7 @@ import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
+from apps.admin_console.core.ownership import SYSTEM_PRINCIPAL
 from apps.admin_console.core.state import state
 from apps.admin_console.database.repositories.session_repository import (
     SessionRepository,
@@ -782,7 +783,7 @@ async def test_status_reports_external_global_owner_without_ipc_connection():
         repo.get_latest_session.return_value = None
         repo.get_session_by_id.return_value = None
         models.get_active_model_info.return_value = None
-        result = await get_status()
+        result = await get_status(SYSTEM_PRINCIPAL)
 
     assert result["status"] == "running"
     assert result["session_id"] == "cli-session"

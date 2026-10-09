@@ -133,6 +133,7 @@ class RunCatalogRepository:
         host: str | None = None,
         requester: str | None = None,
         owner: str | None = None,
+        owners: list[str] | None = None,
         owned_only: bool = False,
         since: float | None = None,
         until: float | None = None,
@@ -167,6 +168,9 @@ class RunCatalogRepository:
         if owner:
             where.append("m.requested_by = ?")
             params.append(owner)
+        if owners is not None:
+            where.append(f"m.requested_by IN ({', '.join('?' * len(owners)) or 'NULL'})")
+            params += owners
         if owned_only:
             where.append("m.requested_by IS NOT NULL AND m.requested_by != ''")
         if since is not None:
@@ -258,6 +262,11 @@ class RunCatalogRepository:
                 return RunLookup(candidates=runs[:_MAX_CANDIDATES])
             self._attach_recordings(conn, runs)
             return RunLookup(run=runs[0])
+
+    def require_ready(self) -> None:
+        """Raise ``CatalogNotReady`` unless the catalog tables exist."""
+        with db_session(self.db_path) as conn:
+            self._require_ready(conn)
 
     def owners(self, session_ids: list[str]) -> dict[str, str | None]:
         """``requested_by`` per run id; ids without a run record are left out."""

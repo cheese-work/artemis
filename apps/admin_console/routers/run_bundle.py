@@ -26,7 +26,7 @@ from apps.admin_console.core.ownership import (
     OwnerScope,
     owner_scope,
     present_session_data,
-    scope_or_open,
+    require_actor,
 )
 from apps.admin_console.services import run_bundle
 from apps.admin_console.services.run_artifacts import RunLibraryError
@@ -43,7 +43,7 @@ def library_error(exc: RunLibraryError, actor: OwnerScope | None = None) -> JSON
     content = {"error": exc.code, **exc.extra}
     if isinstance(content.get("candidates"), list):
         content["candidates"] = [
-            present_session_data(scope_or_open(actor), candidate.get("session_id"), candidate)
+            present_session_data(require_actor(actor), candidate.get("session_id"), candidate)
             for candidate in content["candidates"]
         ]
     return JSONResponse(status_code=exc.status, content=content, headers=headers)

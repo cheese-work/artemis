@@ -21,6 +21,7 @@ import pytest
 import uvicorn
 
 from artemis.runtime.lifecycle import InterruptReason, LifecycleAuthority
+from apps.admin_console.core.ownership import SYSTEM_PRINCIPAL
 from apps.admin_console.core.state import state
 from apps.admin_console.routers.tasks import stream_events
 from apps.admin_console.server import ArtemisUvicornServer, app, on_shutdown
@@ -67,7 +68,7 @@ async def test_cancelled_event_stream_reaps_queue_waiter():
     subscribers_before = list(state.ipc_subscribers)
     queue_tasks_before = _pending_queue_get_tasks()
 
-    response = await stream_events("test-session")
+    response = await stream_events("test-session", scope=SYSTEM_PRINCIPAL)
     iterator = response.body_iterator
     first_event = await anext(iterator)
     assert "Subscribed to session test-session" in first_event
@@ -99,7 +100,7 @@ async def test_stream_events_active_session_replay():
         mock_step_repo.get_session_steps.return_value = [
             {"step_number": 1, "description": "Step 1", "status": "completed"}
         ]
-        response = await stream_events()
+        response = await stream_events(scope=SYSTEM_PRINCIPAL)
         iterator = response.body_iterator
         first_event = await anext(iterator)
         assert "Subscribed to session active" in first_event
