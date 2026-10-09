@@ -128,6 +128,17 @@ jobs:
       - name: Build frontend from Docker stage inputs
         run: npm run test:docker-build-inputs
 
+      # The check drives the real Angular UI in headless Chrome and needs the
+      # development build (production builds strip the `ng` debug API).
+      - name: Build development UI for the preview-path check
+        run: npm run build -- --configuration development
+
+      - name: Check root and /preview/pr/70/ browser requests
+        run: |
+          export CHROME_BIN="$(command -v google-chrome || command -v chromium-browser || command -v chromium)"
+          "$CHROME_BIN" --version
+          npm run test:preview-path
+
   package:
     name: Build and smoke-test Python packages
     runs-on: blacksmith-2vcpu-ubuntu-2404

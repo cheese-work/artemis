@@ -46,4 +46,8 @@ export interface SessionVideo {
   video_url: string | null;
   video_segments: VideoSegment[];
   message?: string;
+  /** Short code for a failed recording, e.g. `recorder_start_failed`. */
+  reason?: string;
+  /** Raw recorder output behind `message`, for a collapsed technical-details block. */
+  detail?: string;
 }

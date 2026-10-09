@@ -21,7 +21,7 @@ from apps.admin_console.core.ownership import (
     owners_of,
     require_access,
     require_access_all,
-    scope_or_open,
+    require_actor,
 )
 from apps.admin_console.routers.tasks import _scope_status
 from artemis.core.diagnostics.schema import SystemReadinessReport
@@ -115,7 +115,7 @@ async def get_status(scope: OwnerScope = Depends(list_scope)) -> dict[str, Any]:
     }
     if active:
         payload.update(goal=active[0]["goal"], pid=None, paused_error=None)
-    return _scope_status(payload, scope_or_open(scope))
+    return _scope_status(payload, require_actor(scope))
 
 
 @router.post("/api/stop")
@@ -126,7 +126,7 @@ async def stop_task(
     device_id: str | None = None,
     actor: OwnerScope = Depends(actor_scope),
 ) -> dict[str, Any]:
-    scope = scope_or_open(actor)
+    scope = require_actor(actor)
     try:
         body = await request.json()
     except ValueError:
@@ -163,7 +163,7 @@ async def stop_task(
 async def cancel_queued_task(
     session_id: str, actor: OwnerScope = Depends(actor_scope)
 ) -> dict[str, Any]:
-    scope = scope_or_open(actor)
+    scope = require_actor(actor)
     if scope.enforced and not scope.admin:
         require_access(scope, session_id)
     item = next(
@@ -185,7 +185,7 @@ async def cancel_queued_task(
 
 @router.post("/api/resume")
 async def resume_task(actor: OwnerScope = Depends(actor_scope)) -> dict[str, str]:
-    scope = scope_or_open(actor)
+    scope = require_actor(actor)
     if scope.enforced and not scope.admin:
         affected = {
             str(i["session_id"]) if i.get("session_id") else None
@@ -228,9 +228,9 @@ def _delete_fixture(session_id: str, scope: OwnerScope) -> dict[str, str]:
 
 @router.post("/api/sessions/{session_id}/delete", dependencies=[Depends(require_qa)])
 async def delete_session(session_id: str, actor: OwnerScope = Depends(actor_scope)):
-    return _delete_fixture(session_id, scope_or_open(actor))
+    return _delete_fixture(session_id, require_actor(actor))
 
 
 @router.post("/api/runs/{session_id}/delete", dependencies=[Depends(require_admin)])
 async def delete_run(session_id: str, actor: OwnerScope = Depends(actor_scope)):
-    return _delete_fixture(session_id, scope_or_open(actor))
+    return _delete_fixture(session_id, require_actor(actor))

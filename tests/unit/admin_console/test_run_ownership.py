@@ -34,6 +34,7 @@ from unittest.mock import AsyncMock, MagicMock
 from httpx import ASGITransport, AsyncClient
 import pytest
 
+from apps.admin_console.core.ownership import SYSTEM_PRINCIPAL
 from apps.admin_console.core.access_control import AccessConfig, AccessIdentity
 from apps.admin_console.core.state import state
 from apps.admin_console.database.repositories.run_catalog_repository import run_catalog_repo
@@ -106,7 +107,7 @@ def _use_cloudflare(monkeypatch) -> None:
         ),
     )
     verifier = MagicMock()
-    verifier.verify = AsyncMock(side_effect=lambda token, _config: {"email": token})
+    verifier.verify = AsyncMock(side_effect=lambda token, _config: {"email": token, "sub": token})
     monkeypatch.setattr(app.state, "access_verifier", verifier)
 
 
@@ -558,8 +559,9 @@ async def _next_event(stream) -> tuple[str, dict]:
 
 
 async def _open_stream(scope=None):
-    kwargs = {} if scope is None else {"scope": scope}
-    response = await tasks_router.stream_events(session_id="all", **kwargs)
+    response = await tasks_router.stream_events(
+        session_id="all", scope=SYSTEM_PRINCIPAL if scope is None else scope
+    )
     stream = response.body_iterator
     assert (await _next_event(stream))[0] == "info"
     return stream
@@ -1316,7 +1318,7 @@ async def test_named_stream_gets_only_its_own_runs_lifecycle_events(cloudflare):
 
 @pytest.mark.asyncio
 async def test_named_stream_in_open_mode_keeps_delivering_global_lifecycle_events(env):
-    response = await tasks_router.stream_events(session_id="mine")
+    response = await tasks_router.stream_events(session_id="mine", scope=SYSTEM_PRINCIPAL)
     stream = response.body_iterator
     assert (await _next_event(stream))[0] == "info"
     try:

@@ -175,6 +175,32 @@ def browser_lease(context, serial, lease_id="browser-lease"):
     return session
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("preferred_host", ["127.0.0.1", "remote-adb.example"])
+async def test_browser_run_uses_local_bridge_despite_adb_preference(
+    context, monkeypatch, preferred_host
+):
+    lease = browser_lease(context, "127.0.0.1:31415")
+    preferred = AdbEndpoint.create(preferred_host, 5037)
+    probe = AsyncMock(return_value=None)
+    monkeypatch.setattr(queue_module, "current_adb_endpoint", lambda: preferred)
+    monkeypatch.setattr(TaskQueueService, "ensure_worker_running", MagicMock())
+    monkeypatch.setattr(TaskQueueService, "_reject_unavailable_device", probe)
+
+    result = await TaskQueueService.enqueue_tasks(
+        ["One fake step"],
+        device_serial=lease.serial,
+        session_id="browser-run",
+        bridge_session_id=lease.session_id,
+    )
+
+    item = result["tasks"][0]
+    probe.assert_awaited_once_with(lease.serial, AdbEndpoint.local())
+    assert item["bridge_session_id"] == lease.session_id
+    assert item["device_binding"]["endpoint"] == AdbEndpoint.local().to_dict()
+    assert TaskQueueService._task_target(item, resolve_host=True).serial == lease.serial
+
+
 def test_selected_fake_device_is_not_retargeted(context, fake_adb_server_factory):
     selected = fake_adb_server_factory("selected")
     wrong = fake_adb_server_factory("wrong")
@@ -596,7 +622,6 @@ async def test_durable_retry_reuses_only_accepted_device(
     item = queue_item(context, endpoint, "selected", host_id=host_id)
     state.queue_items.clear()
     monkeypatch.setattr(task_router, "session_repo", context.repository)
-    monkeypatch.setattr(task_router, "scope_or_open", lambda actor: OwnerScope(enforced=False))
     probe = AsyncMock(side_effect=AssertionError("Retry must not probe devices"))
     monkeypatch.setattr(task_router.readiness_engine, "run_device_submission_probe", probe)
     request = RunRequest(

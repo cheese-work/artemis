@@ -20,8 +20,12 @@ clients do not receive admin access. Route tiers still determine which public
 and QA operations they can use. For SmartQA behind Cloudflare Access, set
 `ARTEMIS_AUTH_MODE=cloudflare`, `ARTEMIS_CF_ACCESS_TEAM_DOMAIN`,
 `ARTEMIS_CF_ACCESS_AUD`, and a comma-separated `ARTEMIS_ADMIN_EMAILS` allowlist.
-If unset, the initial allowlist contains `congvc.dev@gmail.com`; setting the
-variable to an empty value disables Cloudflare admins.
+There is no default admin: with the variable unset or empty, Cloudflare mode has
+no admins. Spaces (`ARTEMIS_SPACES_ENABLED=1`, see
+[spaces contract](spaces-contract.md)) key admins by Cloudflare subject instead:
+read your `subject` from `GET /api/system/whoami` and list it in
+`ARTEMIS_ADMIN_SUBJECTS`; the email list is then ignored, and open mode only
+admits direct loopback callers.
 The service verifies the signed `Cf-Access-Jwt-Assertion` against the team
 JWKS, issuer, and audience before using its email claim. Forwarded email headers
 are not trusted.

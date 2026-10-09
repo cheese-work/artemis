@@ -121,6 +121,16 @@ export function mapRecording(
   }
 }
 
+/** Player-area copy for a video that could not be prepared: the fixed sentence plus the reported reason. */
+export function prepareFailedCopy(base: string, message: string | null | undefined): string {
+  return `${base} ${message?.trim() || 'The video service did not report a reason.'}`;
+}
+
+/** Raw recorder output for the collapsed "Technical details" block; null when there is none worth showing. */
+export function technicalDetail(detail: string | null | undefined): string | null {
+  return detail?.trim() || null;
+}
+
 /**
  * The ribbon over a live run's recording when the run was interrupted: the video stops where
  * the phone was lost. Null for any other status.
