@@ -1,14 +1,14 @@
 ❯ Building...
 ✔ Building...
 Initial chunk files                                     | Names                                                |  Raw size
-chunk-MZH5TRE2.js                                       | -                                                    |   2.54 MB | 
-polyfills.js                                            | polyfills                                            |   1.05 MB | 
-spec-app-components-run-view-run-view.component.spec.js | spec-app-components-run-view-run-view.component.spec | 703.89 kB | 
-jasmine-cleanup-1.js                                    | jasmine-cleanup-1                                    |  67.21 kB | 
-test_main.js                                            | test_main                                            |  22.21 kB | 
-chunk-3OQY4ED3.js                                       | -                                                    |   7.40 kB | 
-styles.css                                              | styles                                               |   6.16 kB | 
-jasmine-cleanup-0.js                                    | jasmine-cleanup-0                                    | 483 bytes | 
+chunk-MZH5TRE2.js                                       | -                                                    |   2.54 MB |
+polyfills.js                                            | polyfills                                            |   1.05 MB |
+spec-app-components-run-view-run-view.component.spec.js | spec-app-components-run-view-run-view.component.spec | 703.89 kB |
+jasmine-cleanup-1.js                                    | jasmine-cleanup-1                                    |  67.21 kB |
+test_main.js                                            | test_main                                            |  22.21 kB |
+chunk-3OQY4ED3.js                                       | -                                                    |   7.40 kB |
+styles.css                                              | styles                                               |   6.16 kB |
+jasmine-cleanup-0.js                                    | jasmine-cleanup-0                                    | 483 bytes |
 
                                                         | Initial total                                        |   4.40 MB
 

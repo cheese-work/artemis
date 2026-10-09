@@ -5,7 +5,7 @@
 - Last known-good workspace UI: `e93cf6a` (PR #87).
 - Regressed `main`: `56edc235feff8cf11da0a8d72a17a2db4c0b0f25`.
 - Restored implementation: `b7bd5b97f375431861cf4e3d3099f0bc2475868c`.
-- The following evidence-only commit adds this report, screenshots and reproduction tools. It does not change application behavior.
+- Following evidence-only commits add this report, screenshots and reproduction tools. They do not change application behavior.
 
 The source comparison starts with `git diff e93cf6a origin/main -- apps/showcase_ui`.
 The historical workspace used `AgentStreamComponent`; the historical review route already used the simpler `RunViewerComponent`.
