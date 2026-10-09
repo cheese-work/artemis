@@ -14,7 +14,21 @@
  * limitations under the License.
  */
 
+/* Page area scrolls; the version footer keeps its own strip below it (CHE-1411). */
+:host {
+  display: flex;
+  flex-direction: column;
+  height: 100dvh;
+}
+
+.app-page {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
 .preview-banner {
+  flex: none;
   box-sizing: border-box;
   height: 24px;
   padding: 2px 8px;

@@ -164,7 +164,7 @@ $text-light: var(--color-text-faint);
 
 :host {
   display: block;
-  min-height: 100vh;
+  min-height: 100%;
   width: 100%;
   background-color: $bg-base;
   font-family: $font-sans;
@@ -179,7 +179,7 @@ $text-light: var(--color-text-faint);
 
 .home-container {
   position: relative;
-  min-height: 100vh;
+  min-height: 100%;
   display: flex;
   flex-direction: column;
   background-color: $bg-base;

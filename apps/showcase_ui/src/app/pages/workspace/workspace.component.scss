@@ -21,7 +21,7 @@ $narrow: 800px;
 
 :host {
   display: block;
-  height: calc(100vh - var(--preview-banner-height, 0px));
+  height: 100%;
   width: 100%;
   overflow: hidden;
   font-family: var(--font-ui);
@@ -446,7 +446,7 @@ $narrow: 800px;
 @media (max-width: #{$narrow - 1px}) {
   :host {
     height: auto;
-    min-height: 100vh;
+    min-height: 100%;
     overflow: visible;
   }
 }

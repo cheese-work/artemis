@@ -21,7 +21,7 @@ $glass-border: rgba(255, 255, 255, 0.6);
 .workspace-container {
   position: relative;
   display: flex;
-  height: 100vh;
+  height: 100%;
   width: 100vw;
   box-sizing: border-box;
   padding-top: var(--nav-clearance, 0px); /* panels start below the floating nav */
