@@ -80,6 +80,13 @@ describe('RunsService', () => {
     http.expectOne({ method: 'GET', url: '/api/sessions/s1/video' }).flush({ status: 'unavailable' });
   });
 
+  it('reads checker results and reports from encoded session routes', () => {
+    service.checks('s/1').subscribe();
+    http.expectOne({ method: 'GET', url: '/api/sessions/s%2F1/checks' }).flush({ records: [] });
+    service.notes('s/1').subscribe();
+    http.expectOne({ method: 'GET', url: '/api/sessions/s%2F1/notes' }).flush({ notes: {} });
+  });
+
   it('pins with POST, unpins with DELETE, and deletes through the admin session route', () => {
     service.pin('s1').subscribe();
     http.expectOne({ method: 'POST', url: '/api/runs/s1/pin' }).flush({});

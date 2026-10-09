@@ -6,7 +6,7 @@ import uuid
 
 import pytest
 
-from artemis.data_engine import run_catalog, run_snapshot, schema_revisions
+from artemis.data_engine import run_catalog, run_snapshot
 from artemis.data_engine.models import SessionMetadata
 from artemis.data_engine.storage import StorageManager
 
@@ -92,4 +92,6 @@ async def test_the_previous_binary_works_on_the_new_schema_including_its_retenti
     report = run_snapshot.migrate(library.db)
     assert report.backup_path is None and report.backfilled == 0
     with sqlite3.connect(library.db) as conn:
-        assert schema_revisions.current(conn, "run_meta_ext") == len(run_snapshot.REVISIONS)
+        assert conn.execute(
+            "SELECT revision FROM schema_revisions WHERE module = 'run_meta_ext'"
+        ).fetchone() == (len(run_snapshot.REVISIONS),)

@@ -80,7 +80,9 @@ def test_upgrade_adds_nullable_columns_after_a_backup_and_records_the_revision(t
         columns = {row[1] for row in backup.execute("PRAGMA table_info(run_meta)")}
         assert not columns & set(FIELDS)  # the backup is the pre-revision state
     with sqlite3.connect(db) as conn:
-        assert schema_revisions.current(conn, "run_meta_ext") == 1
+        assert conn.execute(
+            "SELECT revision FROM schema_revisions WHERE module = 'run_meta_ext'"
+        ).fetchone() == (1,)
     snaps = _snapshots(db)
     assert snaps[ids[0]] == ("4.2.0 (420)", None, "Pixel 6 Pro", None)
     assert snaps[ids[1]] == (None, None, "Pixel 3a", None)  # from the device record
@@ -99,8 +101,8 @@ def _rid(db: Path, sid: str) -> int:
 def test_backfill_interrupted_mid_run_resumes_without_duplicates(tmp_path):
     db = tmp_path / "data_engine.db"
     ids = _old_db(db, [{"device_id": f"emu-{i}", "app_build": f"b{i}"} for i in range(7)])
+    schema_revisions.apply(db, "run_meta_ext", run_snapshot.REVISIONS)
     with sqlite3.connect(db) as conn:
-        schema_revisions.apply(conn, "run_meta_ext", run_snapshot.REVISIONS)
         # A crash in the third batch: the first two batches are committed, the third is not.
         conn.execute(
             "CREATE TEMP TRIGGER crash BEFORE UPDATE ON run_meta "
@@ -167,3 +169,19 @@ def test_execution_fields_read_the_planner_model_and_the_device_model():
         "agent_model": "gemini-3.8-flash",
     }
     assert run_snapshot.execution_fields(Broken(), "emu-1", None) == {}  # unknown, not guessed
+
+
+def test_snapshot_and_device_modules_keep_separate_revisions_in_one_database(tmp_path):
+    from artemis.data_engine import devices
+    from artemis.data_engine.storage import StorageManager
+
+    db = tmp_path / "data_engine.db"
+    StorageManager(db, tmp_path)
+    StorageManager(db, tmp_path)  # a second start applies nothing twice
+
+    with sqlite3.connect(db) as conn:
+        revisions = dict(conn.execute("SELECT module, revision FROM schema_revisions"))
+    assert revisions == {
+        devices.MODULE: len(devices.REVISIONS),
+        run_snapshot.MODULE: len(run_snapshot.REVISIONS),
+    }

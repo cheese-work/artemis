@@ -32,6 +32,8 @@ _MAX_LEN = 128
 
 REVISIONS: tuple[tuple[str, ...], ...] = (
     (
+        "CREATE TABLE IF NOT EXISTS backfill_progress (module TEXT PRIMARY KEY, cursor TEXT, "
+        "done INTEGER NOT NULL DEFAULT 0, total INTEGER)",
         *(f"ALTER TABLE run_meta ADD COLUMN {field} TEXT" for field in FIELDS),
         # The backfill covers the runs that exist now; later runs are written at execution.
         "INSERT OR IGNORE INTO backfill_progress (module, cursor, done, total) "
@@ -118,19 +120,13 @@ class MigrationReport:
 
 
 def migrate(db_path: str | Path) -> MigrationReport:
-    """Apply pending ``run_meta_ext`` revisions (online backup first), then resume the backfill."""
-    path = Path(db_path)
-    conn = sqlite3.connect(path, timeout=30.0)
+    """Apply pending ``run_meta_ext`` revisions (``schema_revisions`` backs up first), then resume the backfill."""
+    conn = sqlite3.connect(db_path, timeout=30.0)
     try:
         if not run_catalog.catalog_ready(conn):
             return MigrationReport(0, None)
-        backup = None
-        pending = schema_revisions.current(conn, MODULE) < len(REVISIONS)
-        if pending and conn.execute("SELECT 1 FROM run_meta LIMIT 1").fetchone():
-            backup = run_catalog._online_backup(path, MODULE)
-            logger.info("Run snapshot migration: database backed up to %s", backup)
-        schema_revisions.apply(conn, MODULE, REVISIONS)
-        return MigrationReport(backfill(conn), backup)
+        report = schema_revisions.apply(db_path, MODULE, REVISIONS)
+        return MigrationReport(backfill(conn), report.backup_path)
     finally:
         conn.close()
 

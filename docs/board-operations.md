@@ -64,8 +64,8 @@ snapshot, app build, agent model, suite version, device model).
 
 Revision 1 adds `run_meta.app_build`, `suite_version`, `device_model` and
 `agent_model` (nullable `TEXT`; `artemis/data_engine/run_snapshot.py`).
-`schema_revisions` and `backfill_progress` live in
-`artemis/data_engine/schema_revisions.py`.
+The revision runs through `artemis/data_engine/schema_revisions.py`, which
+takes the backup. Revision 1 also creates `backfill_progress`.
 
 - **At execution.** The run writes its snapshot when its session is created.
   Today that is the device model (`ro.product.model`) and the planner model.
