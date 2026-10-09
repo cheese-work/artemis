@@ -378,7 +378,11 @@ async def test_local_file_applies_the_run_visibility_rule_after_resolution(
     elif spelling == "file_uri":
         raw_path = path.as_uri()
 
-    response = await _get(email, f"/local_file?path={quote(raw_path, safe='')}")
+    url = f"/local_file?path={quote(raw_path, safe='')}"
+    if email == QA2:
+        assert (await _get(email, url)).status_code == 404  # a guessed path: no link yet
+    await _get(email, f"/api/sessions/{sid}")  # opening the run by its full id is the link
+    response = await _get(email, url)
 
     assert response.status_code == status
     assert response.content == _image_bytes()
@@ -414,6 +418,8 @@ async def test_shared_screenshots_and_recordings_remain_readable(cloudflare, gen
             (str(uuid.uuid4()), sid),
         )
 
+    assert (await _get(QA2, "/images/shared")).status_code == 404  # a guess: no link yet
+    assert (await _get(QA2, f"/api/sessions/{sid}")).status_code == 200  # the full-id link
     for path in (screenshot, recording):
         response = await _get(QA2, f"/local_file?path={quote(str(path), safe='')}")
         assert response.status_code == 200
@@ -447,6 +453,7 @@ async def test_video_route_serves_goal_attachment_folders_by_the_run_rule(
     folder = _stored(cloudflare, sid)
     (folder / "0.mp4").write_bytes(b"PRIVATE-ATTACHMENT")
 
+    await _get(email, f"/api/sessions/{sid}")  # opening the run by its full id is the link
     response = await _get(email, f"/videos/{sid}/goal_images/0.mp4")
 
     assert response.status_code == status
@@ -496,7 +503,7 @@ async def test_foreign_trace_reads_hide_image_data_before_materialization(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("email", [QA1, ADMIN])
-async def test_owner_trace_images_are_cached_privately_and_not_publicly_readable(
+async def test_trace_images_are_cached_privately_and_follow_the_evidence_rule(
     cloudflare, generic_media_roots, email
 ):
     sid = _owned_run(cloudflare, QA1)
@@ -507,7 +514,10 @@ async def test_owner_trace_images_are_cached_privately_and_not_publicly_readable
     assert reference.startswith("image://")
     name = reference.removeprefix("image://")
     assert (await _get(email, f"/images/{name}")).content == _image_bytes()
-    assert (await _get(QA2, f"/images/{name}")).status_code == 403
+    guessed = await _get(QA2, f"/images/{name}")
+    assert guessed.status_code == 404 and guessed.json()["code"] == "run_not_visible"
+    await _get(QA2, f"/api/sessions/{sid}")  # a full-id link holder reads it like any evidence
+    assert (await _get(QA2, f"/images/{name}")).content == _image_bytes()
     assert not (
         cloudflare / "traces" / "images" / f"{hashlib.sha256(_image_bytes()).hexdigest()}.jpg"
     ).exists()
@@ -561,6 +571,7 @@ async def test_legacy_unregistered_inline_cache_is_admin_only(
             "VALUES (?, ?, 1, 1.0, ?)",
             (str(uuid.uuid4()), sid, digest),
         )
+    assert (await _get(QA2, f"/api/sessions/{sid}")).status_code == 200  # the full-id link
     assert (await _get(QA2, url)).content == _image_bytes()
 
 

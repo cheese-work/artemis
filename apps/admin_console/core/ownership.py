@@ -140,12 +140,18 @@ def require_signed_in(scope: OwnerScope) -> None:
         )
 
 
-def require_visible_run(scope: OwnerScope, session_ids: list[str | None]) -> None:
+def require_visible_run(
+    scope: OwnerScope, session_ids: list[str | None], *, by_link: bool = False
+) -> None:
     """Evidence follows the run's visibility rule: any signed-in caller holding the full run id.
 
     ``session_ids`` are the runs that own the evidence; one live run is enough.
     A removed run, an unknown run and evidence with no owning run are all the same
     ``run_not_visible`` 404, so the answer never says which. Admins see everything.
+
+    ``by_link`` is for evidence named by an image name or a file path, where the URL
+    carries no run id: the caller must own a live run that owns it, or have opened one
+    by its full id (``run_link_shares``). Guessing a path proves nothing.
     """
     scope = scope_or_open(scope)
     require_signed_in(scope)
@@ -165,6 +171,18 @@ def require_visible_run(scope: OwnerScope, session_ids: list[str | None]) -> Non
         raise AdminAPIError(
             503, "The run catalog is not ready.", "catalog_not_ready", "Restart the console."
         ) from exc
+    if live and by_link:
+        try:
+            mine = {
+                sid
+                for sid, owner in run_catalog_repo.owners(sorted(live)).items()
+                if owner == scope.email
+            }
+            live = frozenset(mine | (live & run_catalog_repo.shared_run_ids(scope.email)))
+        except CatalogNotReady as exc:
+            raise AdminAPIError(
+                503, "The run catalog is not ready.", "catalog_not_ready", "Restart the console."
+            ) from exc
     if not live:
         raise run_not_visible()
 

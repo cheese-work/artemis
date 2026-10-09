@@ -64,12 +64,8 @@ async def _leased_file(
 ) -> FileResponse:
     """A download that defers deleting its runs until it ends; 404 once they are all deleted."""
     scope = scope_or_open(actor)
-    await asyncio.to_thread(require_visible_run, scope, owners)
-    session_id = await asyncio.to_thread(goal_image_session, path)
-    if session_id is not None and path.name.startswith("trace_"):
-        # Trace-derived image cache: shared trace JSON masks these, so only the owner reads them.
-        await asyncio.to_thread(require_access, scope, session_id)
-    elif await asyncio.to_thread(untracked_inline_image, path):
+    await asyncio.to_thread(require_visible_run, scope, owners, by_link=True)
+    if await asyncio.to_thread(untracked_inline_image, path):
         await asyncio.to_thread(require_visible_run, scope, [])  # no capture record: no owner
     lease_ids = await asyncio.to_thread(run_media.lease, owners)
     if lease_ids is None:

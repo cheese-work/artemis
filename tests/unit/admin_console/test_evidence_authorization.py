@@ -22,6 +22,7 @@ from tests.unit.admin_console.conftest import RunLibrary
 
 UNKNOWN = "00000000-0000-4000-8000-00000000dead"
 OWNER = "qa@example.com"
+TRACE_DIGEST = "ab" * 32
 
 
 @dataclass
@@ -56,6 +57,7 @@ def evidence(library: RunLibrary, monkeypatch) -> Evidence:
     goal_image = library.traces / sid / "goal_images" / "0.png"
     goal_image.parent.mkdir(parents=True, exist_ok=True)
     goal_image.write_bytes(_png())
+    (goal_image.parent / f"trace_{TRACE_DIGEST}.jpg").write_bytes(_png())  # trace-image cache
     library.image("shot1")
     video = library.video(sid)
     return Evidence(
@@ -89,16 +91,24 @@ def _run_keyed(sid: str) -> list[str]:
     ]
 
 
-def _owned_keyed(e: Evidence) -> list[str]:
+def _path_keyed_media(e: Evidence) -> list[str]:
+    """Media named by image name or file path: the URL carries no run id."""
     return [
-        f"/api/steps/{e.step_id}/traces",
-        f"/api/traces/{e.trace_id}",
-        f"/api/traces/{e.trace_id}/download",
         f"/images/{e.image}",
         f"/api/images/{e.image}",
         f"/videos/{e.video}",
         f"/local_file?path={e.video_path}",
         f"/local_file?path={e.goal_image}",
+        f"/images/inline_{e.sid}_{TRACE_DIGEST}",
+    ]
+
+
+def _owned_keyed(e: Evidence) -> list[str]:
+    return [
+        f"/api/steps/{e.step_id}/traces",
+        f"/api/traces/{e.trace_id}",
+        f"/api/traces/{e.trace_id}/download",
+        *_path_keyed_media(e),
     ]
 
 
@@ -129,13 +139,57 @@ async def test_anonymous_is_refused_on_every_evidence_route(evidence, anonymous)
 
 
 @pytest.mark.asyncio
-async def test_owner_admin_and_other_signed_in_holder_of_the_full_id_keep_access(
-    evidence, qa, qa2, admin
-):
-    for client in (qa, qa2, admin):
+async def test_owner_and_admin_keep_access_to_every_readable_route(evidence, qa, admin):
+    for client in (qa, admin):
         for url in _readable(evidence) + [f"/api/runs/{evidence.sid}/bundle.zip"]:
             response = await client.get(url)
             assert response.status_code == 200, (url, response.text)
+
+
+@pytest.mark.asyncio
+async def test_a_full_id_holder_reads_run_keyed_routes_at_once(evidence, qa2):
+    run_keyed = [u for u in _run_keyed(evidence.sid) if u != f"/api/stream/{evidence.sid}"]
+    for url in run_keyed + [f"/api/runs/{evidence.sid}/bundle.zip"]:
+        response = await qa2.get(url)
+        assert response.status_code == 200, (url, response.text)
+
+
+@pytest.mark.asyncio
+async def test_guessed_media_paths_are_refused_until_the_caller_opens_the_run_by_full_id(
+    evidence, qa2
+):
+    for url in _path_keyed_media(evidence):
+        assert _is_not_visible(await qa2.get(url)), url
+    assert (await qa2.get(f"/api/sessions/{evidence.sid}")).status_code == 200  # the link
+    for url in _path_keyed_media(evidence):
+        response = await qa2.get(url)
+        assert response.status_code == 200, (url, response.text)
+
+
+@pytest.mark.asyncio
+async def test_opening_another_run_does_not_unlock_this_runs_media(evidence, library, qa2):
+    other = library.seed("other goal")
+    run_catalog_repo.set_meta(other, requested_by=OWNER)
+    assert (await qa2.get(f"/api/sessions/{other}")).status_code == 200
+    for url in _path_keyed_media(evidence):
+        assert _is_not_visible(await qa2.get(url)), url
+
+
+@pytest.mark.asyncio
+async def test_trace_image_caches_follow_the_evidence_rule_not_an_owner_only_exception(
+    evidence, qa, qa2
+):
+    url = f"/images/inline_{evidence.sid}_{TRACE_DIGEST}"
+    assert (await qa.get(url)).status_code == 200  # the owner
+    assert _is_not_visible(await qa2.get(url))  # a guess: no link yet
+    assert (await qa2.get(f"/api/sessions/{evidence.sid}")).status_code == 200
+    linked = await qa2.get(url)
+    assert linked.status_code == 200 and linked.content == _png()
+    # Hidden and unknown runs answer the same 404 as any other missing evidence.
+    missing = f"/images/inline_{UNKNOWN}_{TRACE_DIGEST}"
+    run_catalog_repo.tombstone(evidence.sid, "admin_delete")
+    for hidden_url in (url, missing):
+        assert _is_not_visible(await qa2.get(hidden_url)), hidden_url
 
 
 @pytest.mark.asyncio

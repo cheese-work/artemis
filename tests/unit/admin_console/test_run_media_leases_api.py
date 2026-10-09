@@ -19,6 +19,7 @@ import asyncio
 from fastapi.responses import FileResponse
 import pytest
 
+from apps.admin_console.database.repositories.run_catalog_repository import run_catalog_repo
 from apps.admin_console.routers import media as media_router
 from apps.admin_console.services import run_media
 
@@ -50,6 +51,7 @@ async def test_delete_during_a_video_download_defers_cleanup_until_it_ends(
 ):
     started, release = held_response
     sid = library.seed("watching")
+    run_catalog_repo.set_meta(sid, requested_by="qa@example.com")
     video = library.video(sid, b"VIDEO")
     rel = f"{video.parent.name}/{video.name}"
 
@@ -74,6 +76,7 @@ async def test_delete_during_an_image_download_defers_cleanup(
 ):
     started, release = held_response
     sid = library.seed("looking")
+    run_catalog_repo.set_meta(sid, requested_by="qa@example.com")
     image = library.image("shot1", b"IMG")
     library.step(sid, 1, pre="shot1")
 
