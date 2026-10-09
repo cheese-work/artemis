@@ -345,11 +345,7 @@ class DevicePool:
                 and (
                     serial not in self._identity_cache
                     or (
-                        # An unknown kind or a missing ro.serialno (no hardware identity) is retried.
-                        (
-                            self._identity_cache[serial][1] is DeviceKind.UNKNOWN
-                            or not self._snapshot().props.get(serial, {}).get("ro.serialno")
-                        )
+                        self._identity_cache[serial][1] is DeviceKind.UNKNOWN
                         and now - self._identity_cache[serial][0] > self.UNKNOWN_KIND_RETRY_SECONDS
                     )
                 )
@@ -360,21 +356,25 @@ class DevicePool:
     ) -> list[str]:
         """Serials whose hardware identity is re-read although their metadata stays cached.
 
-        Another phone can take a Wi-Fi or bridge address (``ip:port``) between two
-        enumerations, and any transport while it is not ``device``, so a cached
-        ``ro.serialno`` is never trusted there (CHE-1473).
+        Any adb serial (USB, ``ip:port``, mDNS, bridge port, ``emulator-N``) can carry
+        another device on the next enumeration without an observed disconnect, so no
+        cached identity is trusted: every listed ``device`` is read again, and a
+        non-``device`` state drops its identity (CHE-1473). Only the identity observer
+        uses these properties, and host tunnels report identity through their agent.
         """
+        # ponytail: one getprop per device per fresh enumeration; key reads on adb's
+        # transport_id (new per connection) if that cost ever shows up.
         with self._cache_lock:
             props = self._snapshot().props
             for serial, state, _, _ in raw:
                 if state != "device":
                     props.pop(serial, None)
+            if identity_observer is None or self._endpoint().host_id is not None:
+                return []
             return [
                 serial
                 for serial, state, _, _ in raw
-                if state == "device"
-                and serial not in metadata
-                and (serial not in props or ":" in serial or "._adb" in serial)
+                if state == "device" and serial not in metadata
             ]
 
     def _store_props(self, serial: str, props: dict[str, str]) -> None:
