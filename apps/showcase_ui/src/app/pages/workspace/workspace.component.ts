@@ -29,6 +29,9 @@ import { StepItemData } from '../../core/models/stream.model';
 import { AgentService } from '../../services/agent.service';
 import { WorkspacePhoneService } from '../../services/workspace-phone.service';
 import { IMAGE_ACCEPT, ImageChat, MAX_IMAGES, newDraftId, RunImageUpload, screenImages, toUpload } from '../../utils/run-image.util';
+import { GoalImage } from '../../core/models/session.model';
+import { recordedDevice } from '../../utils/session-device.util';
+import { sessionStatusView } from '../../utils/run-status.util';
 
 /** A picture chosen for the next message, with the object URL its preview uses. */
 export interface AttachedImage {
@@ -75,6 +78,23 @@ export class WorkspaceComponent implements OnInit {
   public readonly reviewRunId = computed(() => this.routeParams().get('id'));
   private readonly queryParams = toSignal(this.route.queryParamMap, { initialValue: this.route.snapshot.queryParamMap });
   public readonly reviewReadOnly = computed(() => this.queryParams().get('review') === '1' || this.queryParams().get('scope') === 'everyone');
+  public readonly historyRevision = computed(() => JSON.stringify(
+    this.agentService.sessions()
+      .filter(session => !sessionStatusView(session.status, null).active)
+      .map(session => [session.session_id, session.status, session.end_time])
+  ));
+  public readonly recordedDevices = computed(() => {
+    const devices = new Map<string, NonNullable<ReturnType<typeof recordedDevice>>>();
+    for (const session of this.agentService.sessions()) {
+      const serial = session.device_serial || session.device_id;
+      const device = serial && !['pending', 'null', 'undefined'].includes(serial) ? recordedDevice(session, serial) : null;
+      if (device) devices.set(session.session_id, device);
+    }
+    return devices;
+  });
+  public readonly recordedImages = computed(() => new Map<string, GoalImage[]>(
+    this.agentService.sessions().map(session => [session.session_id, session.goal_images ?? []])
+  ));
   public readonly liveSteps = computed<StepItemData[]>(() => {
     const id = this.agentService.currentSessionId();
     if (!id) return [];
