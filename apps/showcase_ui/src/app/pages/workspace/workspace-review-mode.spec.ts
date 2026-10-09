@@ -162,6 +162,42 @@ describe('Workspace review mode', () => {
     expect(q('.detail-pane app-run-view')).not.toBeNull();
   });
 
+  for (const status of ['pending', 'running'] as const) {
+    it(`selects a ${status} Queue session in place after the real router settles`, async () => {
+      const selectedId = '7e2b9c1a-5d7e-4a10-9c33-0e1f2a3b4c5d';
+      sessions.set([
+        { session_id: ID, initial_goal: 'Original live session', status: 'running', start_time: 1 },
+        { session_id: selectedId, initial_goal: 'Switch to selected Queue run', status, start_time: 2 }
+      ]);
+      liveSession.set(sessions()[0]);
+      const agent = TestBed.inject(AgentService);
+      (agent.selectSession as jasmine.Spy).and.callFake((sessionId: string) => {
+        liveSession.set(sessions().find(session => session.session_id === sessionId) ?? null);
+      });
+      await go('/workspace');
+      const workspace = q('app-workspace');
+      const row = Array.from(root.querySelectorAll<HTMLElement>('.queue-row .run-row'))
+        .find(item => item.textContent?.includes('Switch to selected Queue run'))!;
+      row.click();
+      await harness.fixture.whenStable();
+      harness.detectChanges();
+
+      expect(TestBed.inject(Router).url).toBe('/workspace');
+      expect(q('app-workspace')).toBe(workspace);
+      expect(q('.workspace-container.review-mode')).toBeNull();
+      expect(agent.selectSession).toHaveBeenCalledOnceWith(selectedId, true);
+      expect(agent.currentSessionId()).toBe(selectedId);
+      expect(liveSession()?.session_id).toBe(selectedId);
+      expect(agent.runTask).not.toHaveBeenCalled();
+      expect(row.tagName).toBe('BUTTON');
+      expect(row.getAttribute('aria-current')).toBe('page');
+      atWidth(1440, () => {
+        expect(row.getBoundingClientRect().width).toBeGreaterThanOrEqual(44);
+        expect(row.getBoundingClientRect().height).toBe(56);
+      });
+    });
+  }
+
   it('shows a single run list and the empty detail state without the live new-task box on /runs', async () => {
     await go('/runs');
     expect(q('.workspace-container.review-mode')).not.toBeNull();
@@ -193,7 +229,7 @@ describe('Workspace review mode', () => {
     const workspace = q('app-workspace');
     const requests = runs.list.calls.count();
     expect(q('app-run-library .date-group a.run-row')).toBeNull();
-    expect(q('app-run-library .queue-section a.run-row')).not.toBeNull();
+    expect(q('app-run-library .queue-section .run-row')).not.toBeNull();
 
     sessions.set([{ ...session, status: 'completed', end_time: 2 }]);
     harness.detectChanges();

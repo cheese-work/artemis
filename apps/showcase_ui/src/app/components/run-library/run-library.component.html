@@ -99,11 +99,17 @@
       <ol class="run-list">
         @for (run of queueRuns(); track run.session_id) {
           <li class="queue-row task-card" [class.is-open]="isOpen(run)">
-            <a class="run-row" appRunCard [run]="run" [computer]="computer(run)" [device]="device(run)"
-              [showOwner]="true" [queue]="true" [goalImages]="recordedImages().get(run.session_id) ?? []"
-              [current]="isOpen(run)" [attr.aria-current]="isOpen(run) ? 'page' : null"
-              [routerLink]="['/runs', run.session_id]" [queryParams]="runQuery()"
-              (click)="selectQueuedRun(run, $event)"></a>
+            @if (workspace()) {
+              <button type="button" class="run-row" appRunCard [run]="run" [computer]="computer(run)" [device]="device(run)"
+                [showOwner]="true" [queue]="true" [goalImages]="recordedImages().get(run.session_id) ?? []"
+                [current]="isOpen(run)" [attr.aria-current]="isOpen(run) ? 'page' : null"
+                (click)="selectRun.emit(run.session_id)"></button>
+            } @else {
+              <a class="run-row" appRunCard [run]="run" [computer]="computer(run)" [device]="device(run)"
+                [showOwner]="true" [queue]="true" [goalImages]="recordedImages().get(run.session_id) ?? []"
+                [current]="isOpen(run)" [attr.aria-current]="isOpen(run) ? 'page' : null"
+                [routerLink]="['/runs', run.session_id]" [queryParams]="runQuery()"></a>
+            }
             @if (!run.read_only) {
               <button type="button" [class.queue-stop]="run.status !== 'pending'" [class.queue-cancel]="run.status === 'pending'"
                 [attr.aria-label]="(run.status === 'pending' ? 'Cancel queued run: ' : 'Stop run: ') + runTitle(run.prompt)"

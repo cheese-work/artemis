@@ -235,6 +235,9 @@ summary {
 
 .run-row {
   border-bottom: 1px solid var(--color-surface-subtle);
+  border-radius: 0;
+  background: transparent;
+  text-align: left;
 
   &:hover {
     background: var(--color-surface-subtle);
@@ -252,9 +255,11 @@ summary {
   .run-row {
     flex: 1;
     min-width: 0;
+    padding: 4px 12px;
   }
 
-  button {
+  .queue-stop,
+  .queue-cancel {
     flex: 0 0 44px;
     padding: 0;
     color: var(--color-text-muted);

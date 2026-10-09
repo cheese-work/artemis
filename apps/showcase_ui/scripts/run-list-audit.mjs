@@ -132,7 +132,24 @@ try {
     await evaluate("document.querySelector('[data-scope=everyone]').click()");
     await waitFor(() => evaluate("ng.getComponent(document.querySelector('app-run-library')).scope() === 'everyone' && !ng.getComponent(document.querySelector('app-run-library')).loading()"));
     assert.equal(await evaluate("document.querySelector('[data-scope=everyone]').getAttribute('aria-selected')"), 'true');
-    receipt.push({ width, result: 'PASS', ...layout, completedRows, checks: ['44px targets', '56px rows', 'date groups', 'status words', 'neutral completion icons', 'package separator gap', 'slash focus and editable guard', 'targeted Stop/Cancel', 'Everyone tab'] });
+    await send('Page.navigate', { url: base + '/workspace' });
+    await waitFor(() => evaluate(`document.querySelectorAll('.queue-row').length === 2 &&
+      ng.getComponent(document.querySelector('app-workspace')).agentService.currentSessionId() === ${JSON.stringify(running.session_id)}`));
+    const selections = [];
+    for (const sessionId of [queued.session_id, running.session_id]) {
+      await evaluate(`([...document.querySelectorAll('.queue-row .run-row')]
+        .find((row) => ng.getComponent(row).run().session_id === ${JSON.stringify(sessionId)})).click()`);
+      await waitFor(() => evaluate("!ng.getComponent(document.querySelector('app-workspace')).router.currentNavigation()"));
+      const selection = await evaluate(`(() => {
+        const workspace = ng.getComponent(document.querySelector('app-workspace'));
+        return { url: location.pathname, sessionId: workspace.agentService.currentSessionId(), review: workspace.reviewMode };
+      })()`);
+      assert.equal(selection.url, '/workspace', `${width}px Queue selection must not navigate`);
+      assert.equal(selection.sessionId, sessionId);
+      assert.equal(selection.review, false);
+      selections.push(selection);
+    }
+    receipt.push({ width, result: 'PASS', ...layout, completedRows, selections, checks: ['44px targets', '56px rows', 'date groups', 'status words', 'neutral completion icons', 'package separator gap', 'slash focus and editable guard', 'targeted Stop/Cancel', 'Everyone tab', 'in-place Workspace Queue selection'] });
     console.log(`PASS run-list audit ${width}px`);
   }
   assert.deepEqual(errors, [], 'Uncaught browser errors');

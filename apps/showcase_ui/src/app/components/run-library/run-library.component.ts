@@ -215,12 +215,6 @@ export class RunLibraryComponent implements OnChanges {
     search.focus();
   }
 
-  public selectQueuedRun(run: RunSummary, event: MouseEvent): void {
-    if (!this.workspace() || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
-    event.preventDefault();
-    this.selectRun.emit(run.session_id);
-  }
-
   public submitSearch(event: Event): void {
     event.preventDefault();
     const intent = classifySearch(this.searchText());

@@ -204,7 +204,8 @@ describe('RunLibraryComponent', () => {
       expect(q('.queue-section button')).toBeNull();
     });
 
-    it('selects a queued run in Workspace without navigating or starting another run', () => {
+    it('selects a queued run in Workspace without navigating or starting another run', async () => {
+      await harness.navigateByUrl('/workspace', ViewerStubComponent);
       runs.list.and.returnValue(of(page([run({ status: 'pending' })])));
       const fixture = TestBed.createComponent(RunLibraryComponent);
       fixture.componentRef.setInput('workspace', true);
@@ -212,13 +213,24 @@ describe('RunLibraryComponent', () => {
       const select = jasmine.createSpy('selectRun');
       fixture.componentInstance.selectRun.subscribe(select);
       fixture.detectChanges();
-      const link = fixture.nativeElement.querySelector('.queue-row a') as HTMLAnchorElement;
-      const click = new MouseEvent('click', { bubbles: true, cancelable: true });
-      link.dispatchEvent(click);
-      expect(click.defaultPrevented).toBeTrue();
+      const button = fixture.nativeElement.querySelector('.queue-row button.run-row') as HTMLButtonElement;
+      button.click();
+      await fixture.whenStable();
+      fixture.detectChanges();
+      expect(router.url).toBe('/workspace');
       expect(select).toHaveBeenCalledOnceWith(ID);
-      expect(link.getAttribute('aria-current')).toBe('page');
+      expect(button.getAttribute('aria-current')).toBe('page');
       fixture.destroy();
+    });
+
+    it('navigates to the queued run when the row is outside Workspace', async () => {
+      await open('/runs', of(page([run({ status: 'pending' })])));
+      const link = q<HTMLAnchorElement>('.queue-row a.run-row')!;
+      expect(link.getAttribute('href')).toBe(`/runs/${ID}`);
+      link.click();
+      await settle();
+      expect(router.url).toBe(`/runs/${ID}`);
+      expect(root.textContent).toContain('viewer stub');
     });
 
     it('renders removable filters with 44px hit boxes and keeps search when a chip is cleared', async () => {
