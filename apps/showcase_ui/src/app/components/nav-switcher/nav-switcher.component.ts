@@ -31,6 +31,7 @@ import { AdminIdentityIndicatorComponent } from '../admin-identity-indicator/adm
       <a
         routerLink="/workspace"
         routerLinkActive="active"
+        ariaCurrentWhenActive="page"
         class="nav-tab-btn"
         title="Open Workspace"
         aria-label="Workspace"
@@ -41,22 +42,13 @@ import { AdminIdentityIndicatorComponent } from '../admin-identity-indicator/adm
       <a
         routerLink="/runs"
         routerLinkActive="active"
+        ariaCurrentWhenActive="page"
         class="nav-tab-btn"
         title="Open the run library"
         aria-label="Runs"
       >
         <span class="material-symbols-outlined tab-icon" aria-hidden="true">history</span>
         <span class="tab-label">Runs</span>
-      </a>
-      <a
-        routerLink="/setup"
-        routerLinkActive="active"
-        class="nav-tab-btn"
-        title="System Setup"
-        aria-label="System Setup"
-      >
-        <span class="material-symbols-outlined tab-icon" aria-hidden="true">tune</span>
-        <span class="tab-label">System Setup</span>
       </a>
       @if (hasWhatsNew) {
         <button type="button" class="nav-tab-btn" [attr.aria-label]="whatsNewLabel" (click)="showWhatsNew.emit()">

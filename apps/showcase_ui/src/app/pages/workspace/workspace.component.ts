@@ -63,6 +63,7 @@ export class WorkspaceComponent implements OnInit {
   private route = inject(ActivatedRoute);
   private router = inject(Router);
   private destroyRef = inject(DestroyRef);
+  private host = inject<ElementRef<HTMLElement>>(ElementRef);
   private readonly whatsNewErrorOwner = Symbol('workspace-error');
   private errorTimeout: ReturnType<typeof setTimeout> | null = null;
 
@@ -117,6 +118,17 @@ export class WorkspaceComponent implements OnInit {
 
   @ViewChild('dockInput') public dockInputRef?: ElementRef<HTMLTextAreaElement>;
 
+  /** Skip links: the run is first in Tab order, so jump straight to the new-task box or the run list. */
+  public skipToNewTask(): void {
+    this.dockInputRef?.nativeElement.focus();
+  }
+
+  public skipToRunList(): void {
+    // A hidden list (one column on Runs) has nothing to focus: stay put rather than lose focus.
+    this.host.nativeElement.querySelector<HTMLElement>('.right-panel')?.checkVisibility() &&
+      this.host.nativeElement.querySelector<HTMLElement>('.right-panel [role=tab][tabindex="0"], .right-panel a.run-row')?.focus();
+  }
+
   constructor() {
     effect(() => {
       try {
@@ -128,15 +140,10 @@ export class WorkspaceComponent implements OnInit {
     });
     // The floating nav lives outside this component; tell it how much width the right panel takes.
     const rootStyle = inject(DOCUMENT).documentElement.style;
-    effect(() => rootStyle.setProperty('--right-panel-width', `${this.rightPanelWidth()}px`));
-    // Live view only: at <= 1150px the stream's own Task Queue / Notes tabs sit top right (wide, then icon-only <= 900px).
-    if (!this.reviewMode) {
-      rootStyle.setProperty('--stream-header-width', '290px');
-      rootStyle.setProperty('--stream-header-width-compact', '96px');
-    }
+    effect(() => rootStyle.setProperty('--right-panel-width', `${!this.reviewMode || this.reviewRunId() ? this.rightPanelWidth() : 0}px`));
     this.destroyRef.onDestroy(() => {
       this.attachedImages().forEach((image) => URL.revokeObjectURL(image.previewUrl));
-      ['--right-panel-width', '--stream-header-width', '--stream-header-width-compact'].forEach((v) => rootStyle.removeProperty(v));
+      rootStyle.removeProperty('--right-panel-width');
       if (this.errorTimeout) clearTimeout(this.errorTimeout);
       this.agentService.whatsNewPromptDraft.set(false);
       this.agentService.updateWhatsNewErrorVisibility(this.whatsNewErrorOwner, false);
@@ -403,7 +410,9 @@ export class WorkspaceComponent implements OnInit {
       error: (err) => {
         this.logger.error('Failed to submit task:', err);
         this.isSubmitting.set(false);
-        if (err.status === 409 && err.error?.code === 'device_offline') {
+        if (err.status === 409 && [
+          'device_offline', 'bridge_session_unavailable', 'bridge_queue_binding_unavailable'
+        ].includes(err.error?.code)) {
           // The phone left between choosing it and pressing Run: say so, keep the prompt, open the picker.
           this.setErrorMessage('Your phone is not connected. Connect it again to run.');
           this.phone.requestPicker();

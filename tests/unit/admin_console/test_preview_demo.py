@@ -16,7 +16,7 @@ from apps.admin_console.core import preview_demo
 from apps.admin_console.core.preview_demo import STATES, demo_devices, visible_device_rows
 from apps.admin_console.core.preview_fixtures import seed_preview_fixtures
 from apps.admin_console.core.preview_profile import preview_demo_selected
-from apps.admin_console.core.ownership import OPEN_SCOPE, OwnerScope
+from apps.admin_console.core.ownership import SYSTEM_PRINCIPAL, OwnerScope
 from apps.admin_console.core.state import state
 from apps.admin_console.database.repositories.run_catalog_repository import run_catalog_repo
 from apps.admin_console.database.repositories.session_repository import session_repo
@@ -53,7 +53,7 @@ def test_demo_state_set_is_twenty_labelled_devices():
 
 
 def test_rows_follow_the_device_listing_contract(board):
-    rows = visible_device_rows(OPEN_SCOPE)
+    rows = visible_device_rows(SYSTEM_PRINCIPAL)
     assert len(rows) == 21  # 20 devices, one with two connections
     assert {tuple(row) for row in rows} == {
         ("serial", "state", "model", "product", "is_emulator", "device_kind", "is_busy",
@@ -130,7 +130,7 @@ def test_seed_hooks_run_last_with_context_and_extend_the_queue(tmp_path, monkeyp
 def test_base_fixtures_are_unchanged_without_the_demo(tmp_path, monkeypatch):
     monkeypatch.setattr(preview_demo, "_devices", ())
     assert len(seed_preview_fixtures(tmp_path, (QA_A, QA_B), ADMIN)) == 6
-    assert visible_device_rows(OPEN_SCOPE) == []
+    assert visible_device_rows(SYSTEM_PRINCIPAL) == []
 
 
 def test_demo_flag_is_validated_and_needs_the_preview_profile():

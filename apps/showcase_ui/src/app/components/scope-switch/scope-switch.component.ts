@@ -34,7 +34,7 @@ import { OwnerScopeService } from '../../services/owner-scope.service';
       cursor: pointer;
     }
     .scope-switch:focus-visible {
-      outline: 2px solid var(--focus-ring, #1d4ed8);
+      outline: 2px solid var(--color-focus);
       outline-offset: 2px;
     }
     .scope-track {

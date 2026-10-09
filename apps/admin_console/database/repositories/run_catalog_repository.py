@@ -133,7 +133,8 @@ class RunCatalogRepository:
         host: str | None = None,
         requester: str | None = None,
         owner: str | None = None,
-        include_shared: bool = False,
+        owners: list[str] | None = None,
+        shared_with: str | None = None,
         owned_only: bool = False,
         since: float | None = None,
         until: float | None = None,
@@ -166,15 +167,18 @@ class RunCatalogRepository:
             where.append("m.requested_by = ?")
             params.append(requester)
         if owner:
-            if include_shared:
-                where.append(
-                    "(m.requested_by = ? OR EXISTS (SELECT 1 FROM run_link_shares shared "
+            where.append("m.requested_by = ?")
+            params.append(owner)
+        if owners is not None:
+            mine = f"m.requested_by IN ({', '.join('?' * len(owners)) or 'NULL'})"
+            params += owners
+            if shared_with:
+                mine = (
+                    f"({mine} OR EXISTS (SELECT 1 FROM run_link_shares shared "
                     "WHERE shared.email = ? AND shared.session_id = m.session_id))"
                 )
-                params += [owner, owner]
-            else:
-                where.append("m.requested_by = ?")
-                params.append(owner)
+                params.append(shared_with)
+            where.append(mine)
         if owned_only:
             where.append("m.requested_by IS NOT NULL AND m.requested_by != ''")
         if since is not None:
@@ -247,7 +251,7 @@ class RunCatalogRepository:
         )
         return RunPage(runs, next_cursor, warnings)
 
-    def get_run(self, session_id: str, *, prefix_owner: str | None = None) -> RunLookup:
+    def get_run(self, session_id: str, *, prefix_owners: list[str] | None = None) -> RunLookup:
         """Resolve a full id or owner-filtered prefix, including the tombstone decision."""
         session_id = run_catalog.validate_session_id(session_id, base_dir=self.traces_dir)
         with db_session(self.db_path) as conn:
@@ -257,9 +261,11 @@ class RunCatalogRepository:
                 prefix = session_id.lower()
                 upper = prefix[:-1] + chr(ord(prefix[-1]) + 1)
                 where, params = "m.session_id >= ? AND m.session_id < ?", [prefix, upper]
-                if prefix_owner is not None:
-                    where += " AND m.requested_by = ?"
-                    params.append(prefix_owner)
+                if prefix_owners is not None:
+                    where += (
+                        f" AND m.requested_by IN ({', '.join('?' * len(prefix_owners)) or 'NULL'})"
+                    )
+                    params += prefix_owners
             live = self._fetch(conn, where, params, removed=False)
             if not live:
                 gone = self._fetch(conn, where, params, removed=True)
@@ -269,6 +275,11 @@ class RunCatalogRepository:
                 return RunLookup(candidates=runs[:_MAX_CANDIDATES])
             self._attach_recordings(conn, runs)
             return RunLookup(run=runs[0])
+
+    def require_ready(self) -> None:
+        """Raise ``CatalogNotReady`` unless the catalog tables exist."""
+        with db_session(self.db_path) as conn:
+            self._require_ready(conn)
 
     def owners(self, session_ids: list[str]) -> dict[str, str | None]:
         """``requested_by`` per run id; ids without a run record are left out."""

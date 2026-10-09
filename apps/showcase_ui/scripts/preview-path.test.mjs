@@ -51,7 +51,7 @@ for (const prefix of ['/', '/preview/pr/70/']) {
     '--disable-extensions', '--disable-component-extensions-with-background-pages',
     '--host-resolver-rules=MAP *.googleapis.com ~NOTFOUND, MAP *.gstatic.com ~NOTFOUND',
     '--remote-debugging-port=0', `--user-data-dir=${profile}`, 'about:blank'
-  ], { stdio: ['ignore', 'ignore', 'pipe'] });
+  ], { stdio: ['ignore', 'ignore', 'pipe'], detached: true });
   let browserErrors = '';
   chrome.stderr.on('data', chunk => { browserErrors = (browserErrors + chunk).slice(-4000); });
   let socket;
@@ -110,7 +110,7 @@ for (const prefix of ['/', '/preview/pr/70/']) {
     const bridge = await evaluate(`(() => {
       const root = ng.getComponent(document.querySelector('app-root'));
       root.agentService.ownerScope.setAllUsers(true);
-      const relay = ng.getComponent(document.querySelector('app-nav-switcher')).usbRelay;
+      const relay = ng.getComponent(document.querySelector('app-workspace-device-chip')).phone.relay;
       const target = relay.createBridgeUrl();
       new WebSocket(target);
       return target;
@@ -129,7 +129,7 @@ for (const prefix of ['/', '/preview/pr/70/']) {
     if (prefix !== '/' && process.argv.includes('--root-api-negative-control')) await evaluate(`fetch('/api/preview-root-leak-control').catch(() => {})`);
     if (prefix !== '/') assert.equal(requests.filter(request => request.startsWith('/api/') || request.startsWith('/images/') || request.startsWith('/videos/') || request.startsWith('/local_file')).length, 0);
     assert.ok(requests.some(request => request.startsWith(`${prefix}api/runs/`)));
-    console.log(`PASS ${prefix}: UI, banner, HTTP, scoped SSE, WebSocket, copied run link, images; root API escapes=0`);
+    console.log(`PASS ${prefix}: UI, banner, HTTP, scoped SSE, WebSocket, copied run link, images; root API escapes=0; requests=${requests.length}`);
   } finally {
     socket?.close();
     if (chrome.exitCode === null) {
@@ -137,8 +137,10 @@ for (const prefix of ['/', '/preview/pr/70/']) {
       chrome.kill('SIGTERM');
       await exited;
     }
+    // Chrome's helper processes outlive the main process and keep writing to the profile.
+    try { process.kill(-chrome.pid, 'SIGKILL'); } catch { /* the process group is already gone */ }
     server.closeAllConnections();
     await new Promise(resolve => server.close(resolve));
-    rmSync(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    rmSync(profile, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
   }
 }

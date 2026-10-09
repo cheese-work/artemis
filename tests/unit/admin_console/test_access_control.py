@@ -228,6 +228,7 @@ def test_whoami_uses_signed_cloudflare_identity(monkeypatch, access_keys):
     assert response.status_code == 200
     assert response.json() == {
         "email": "admin@example.com",
+        "subject": "user-1",
         "admin": True,
         "auth_mode": "cloudflare",
         "reason": None,
@@ -263,13 +264,13 @@ def test_denied_admin_action_has_no_side_effect(monkeypatch):
     action.assert_not_awaited()
 
 
-def test_cloudflare_admin_allowlist_defaults_to_cheese_and_normalizes(monkeypatch):
+def test_cloudflare_admin_allowlist_has_no_default_and_normalizes(monkeypatch):
     monkeypatch.setenv("ARTEMIS_AUTH_MODE", "cloudflare")
     monkeypatch.setenv("ARTEMIS_CF_ACCESS_AUD", "app-audience")
     monkeypatch.setenv("ARTEMIS_CF_ACCESS_TEAM_DOMAIN", "team")
     monkeypatch.delenv("ARTEMIS_ADMIN_EMAILS", raising=False)
 
-    assert config_from_environment().admin_emails == frozenset({"congvc.dev@gmail.com"})
+    assert config_from_environment().admin_emails == frozenset()
 
     monkeypatch.setenv("ARTEMIS_ADMIN_EMAILS", " QA@example.test,Admin@example.test ")
     assert config_from_environment().admin_emails == frozenset(

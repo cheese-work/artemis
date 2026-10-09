@@ -1,0 +1,28 @@
+[Unit]
+Description=Protected Artemis preview control plane (inactive template)
+After=network.target docker.service
+Requires=docker.service
+ConditionPathExists=/etc/artemis-preview/activation.ready
+
+[Service]
+User=artemis-previewd
+Group=artemis-previewd
+SupplementaryGroups=docker
+LoadCredential=multica:/etc/artemis-preview/credentials/multica
+ExecStartPre=+/usr/local/libexec/artemis-preview/venv/bin/python -m scripts.preview_control check
+ExecStart=/usr/local/libexec/artemis-preview/artemis-previewd
+WorkingDirectory=/usr/local/libexec/artemis-preview
+StateDirectory=artemis-preview
+StateDirectoryMode=0700
+UMask=0077
+Restart=on-failure
+NoNewPrivileges=true
+CapabilityBoundingSet=
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadWritePaths=/var/lib/artemis-preview /run/artemis-preview /etc/artemis-preview/routes
+
+[Install]
+WantedBy=multi-user.target

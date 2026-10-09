@@ -52,7 +52,7 @@ def cloudflare(monkeypatch):
         ),
     )
     verifier = MagicMock()
-    verifier.verify = AsyncMock(side_effect=lambda token, _config: {"email": token})
+    verifier.verify = AsyncMock(side_effect=lambda token, _config: {"email": token, "sub": token})
     monkeypatch.setattr(app.state, "access_verifier", verifier)
     session = BridgeSession(
         session_id="s41001", port=41001, created_at=0.0, expires_at=float("inf"), owner=QA1

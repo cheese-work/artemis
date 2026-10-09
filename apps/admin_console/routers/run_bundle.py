@@ -27,8 +27,8 @@ from apps.admin_console.core.ownership import (
     owner_scope,
     present_session_data,
     record_run_read,
+    require_actor,
     require_signed_in,
-    scope_or_open,
 )
 from apps.admin_console.services import run_bundle
 from apps.admin_console.services.run_artifacts import RunLibraryError
@@ -47,7 +47,7 @@ def library_error(exc: RunLibraryError, actor: OwnerScope | None = None) -> JSON
         content["code"] = "run_not_visible"
     if isinstance(content.get("candidates"), list):
         content["candidates"] = [
-            present_session_data(scope_or_open(actor), candidate.get("session_id"), candidate)
+            present_session_data(require_actor(actor), candidate.get("session_id"), candidate)
             for candidate in content["candidates"]
         ]
     return JSONResponse(status_code=exc.status, content=content, headers=headers)
@@ -81,7 +81,7 @@ async def download_bundle(session_id: str, identity: AccessIdentity = Depends(pu
         bundle = await asyncio.to_thread(
             run_bundle.prepare,
             session_id,
-            prefix_owner=(actor.email or "") if actor.enforced and not actor.admin else None,
+            prefix_owners=actor.owner_emails() if actor.enforced and not actor.admin else None,
         )
     except RunLibraryError as exc:
         return library_error(exc, actor)

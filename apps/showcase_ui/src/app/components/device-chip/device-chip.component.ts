@@ -21,14 +21,14 @@ import { deviceChipView } from '../../utils/device-chip.util';
   `,
   styles: [`
     :host { display: flex; flex-wrap: wrap; align-items: center; gap: .25rem .75rem; }
-    .chip { display: inline-flex; align-items: center; gap: .4rem; padding: .25rem .65rem; border: 1px solid #385174; border-radius: 999px; background: #111d31; color: #e8eef8; }
-    .chip.ready { border-color: #3d9a6b; }
-    .chip.offline { border-color: #8892a6; }
-    .chip.attention { border-color: #d9a441; }
-    .kind { color: #a7b4c8; font-size: .85rem; }
+    .chip { display: inline-flex; align-items: center; gap: .4rem; padding: .25rem .65rem; border: 1px solid var(--color-text-muted); border-radius: 999px; background: var(--color-ink); color: var(--color-primary-tint); }
+    .chip.ready { border-color: var(--color-text-faint); }
+    .chip.offline { border-color: var(--color-text-faint); }
+    .chip.attention { border-color: var(--color-error-solid); }
+    .kind { color: var(--color-rule-strong); font-size: .85rem; }
     .state { font-weight: 700; }
-    .source { color: #a7b4c8; }
-    .detail { color: #a7b4c8; font-size: .85rem; }
+    .source { color: var(--color-rule-strong); }
+    .detail { color: var(--color-rule-strong); font-size: .85rem; }
   `],
   changeDetection: ChangeDetectionStrategy.Eager
 })

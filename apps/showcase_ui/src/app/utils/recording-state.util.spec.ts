@@ -4,7 +4,9 @@ import {
   RECORDING_STATES,
   Transfer,
   mapRecording,
-  partialRibbonFor
+  partialRibbonFor,
+  prepareFailedCopy,
+  technicalDetail
 } from './recording-state.util';
 
 const CAPTURES: Capture[] = [
@@ -131,5 +133,27 @@ describe('partialRibbonFor', () => {
       expect(partialRibbonFor({ status, start_time: 1, end_time: 9 })).toBeNull();
     }
     expect(partialRibbonFor(null)).toBeNull();
+  });
+});
+
+describe('prepareFailedCopy', () => {
+  it('appends the readable reason to the fixed sentence', () => {
+    expect(prepareFailedCopy('The video could not be prepared.', ' The screen recorder could not start on this phone. '))
+      .toBe('The video could not be prepared. The screen recorder could not start on this phone.');
+  });
+
+  it('says no reason was reported when the message is missing or blank', () => {
+    const expected = 'The video could not be prepared. The video service did not report a reason.';
+    expect(prepareFailedCopy('The video could not be prepared.', undefined)).toBe(expected);
+    expect(prepareFailedCopy('The video could not be prepared.', '  ')).toBe(expected);
+  });
+});
+
+describe('technicalDetail', () => {
+  it('keeps the raw recorder output and hides an empty one', () => {
+    expect(technicalDetail('/usr/share/scrcpy/scrcpy-server: 1 file pushed\njava.lang.Exception: x'))
+      .toBe('/usr/share/scrcpy/scrcpy-server: 1 file pushed\njava.lang.Exception: x');
+    expect(technicalDetail('  \n')).toBeNull();
+    expect(technicalDetail(undefined)).toBeNull();
   });
 });

@@ -7,6 +7,7 @@ import {
   hasUnseenWhatsNewEntries,
   parseWhatsNewEntries,
   shouldAutoOpenWhatsNew,
+  whatsNewSeenKey,
   WhatsNewEntry
 } from '../../utils/whats-new.util';
 
@@ -53,6 +54,9 @@ export const WHATS_NEW_LAST_SEEN_KEY = 'smartqa.whats-new.last-seen-id';
                 @if (entry.body) {
                   <p>{{ entry.body }}</p>
                 }
+                @if (entry.issues?.length) {
+                  <p class="update-issues">{{ entry.issues?.join(' · ') }}</p>
+                }
               </article>
             }
           }
@@ -78,10 +82,10 @@ export const WHATS_NEW_LAST_SEEN_KEY = 'smartqa.whats-new.last-seen-id';
       border: 0;
       border-radius: 20px 0 0 20px;
       overflow: visible;
-      color: #172033;
+      color: var(--color-ink);
       background: transparent;
     }
-    .whats-new-dialog::backdrop { background: rgb(15 23 42 / 42%); backdrop-filter: blur(2px); }
+    .whats-new-dialog::backdrop { background: rgb(15 23 42 / 42%); }
     .whats-new-sheet {
       box-sizing: border-box;
       display: flex;
@@ -89,26 +93,27 @@ export const WHATS_NEW_LAST_SEEN_KEY = 'smartqa.whats-new.last-seen-id';
       width: 100%;
       height: 100%;
       padding: 28px;
-      background: #fff;
+      background: var(--color-surface);
       box-shadow: -18px 0 50px rgb(15 23 42 / 16%);
     }
     .sheet-header, .sheet-footer { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
-    .sheet-header { padding-bottom: 20px; border-bottom: 1px solid #e5eaf2; }
-    .sheet-eyebrow { margin: 0 0 6px; color: #59708f; font-size: 11px; font-weight: 700; letter-spacing: .12em; }
+    .sheet-header { padding-bottom: 20px; border-bottom: 1px solid var(--color-rule); }
+    .sheet-eyebrow { margin: 0 0 6px; color: var(--color-text-faint); font-size: 12px; font-weight: 700; letter-spacing: .12em; }
     h2 { margin: 0; font-size: 24px; letter-spacing: -.03em; }
     .close-button, .done-button { border: 0; border-radius: 10px; cursor: pointer; font: inherit; }
-    .close-button { display: grid; width: 40px; height: 40px; place-items: center; color: #334155; background: #f1f5f9; }
+    .close-button { display: grid; width: var(--target); height: var(--target); place-items: center; color: var(--color-text); background: var(--color-surface-subtle); }
     .close-button .material-symbols-outlined { font-size: 20px; }
     .sheet-content { flex: 1; overflow: auto; padding: 20px 0; }
-    .update-card { padding: 18px; border: 1px solid #e2e8f0; border-radius: 16px; background: #f8fafc; }
+    .update-card { padding: 18px; border: 1px solid var(--color-rule); border-radius: 16px; background: var(--color-bg); }
     .update-card + .update-card { margin-top: 12px; }
-    .update-card time { color: #64748b; font-size: 12px; }
+    .update-card time { color: var(--color-text-faint); font-size: 12px; }
     .update-card h3 { margin: 8px 0; font-size: 17px; }
-    .update-card p, .empty-state { margin: 0; color: #475569; font-size: 14px; line-height: 1.6; }
-    .sheet-footer { padding-top: 18px; border-top: 1px solid #e5eaf2; }
-    .update-count { color: #64748b; font-size: 12px; }
-    .done-button { padding: 10px 18px; color: #fff; background: #2563eb; font-weight: 600; }
-    :is(.close-button, .done-button):focus-visible { outline: 3px solid #93c5fd; outline-offset: 3px; }
+    .update-card p, .empty-state { margin: 0; color: var(--color-text-muted); font-size: 14px; line-height: 1.6; }
+    .update-card .update-issues { margin-top: 8px; color: var(--color-text-faint); font: 12px var(--font-mono); font-variant-numeric: tabular-nums; }
+    .sheet-footer { padding-top: 18px; border-top: 1px solid var(--color-rule); }
+    .update-count { color: var(--color-text-faint); font-size: 12px; }
+    .done-button { min-height: var(--target); padding: 10px 18px; color: var(--color-on-primary); background: var(--color-primary); font-weight: 600; }
+    :is(.close-button, .done-button):focus-visible { outline: 3px solid var(--color-focus); outline-offset: 3px; }
     @media (max-width: 520px) {
       .whats-new-dialog { width: 100vw; border-radius: 0; }
       .whats-new-sheet { padding: 22px; }
@@ -208,10 +213,10 @@ export class WhatsNewComponent {
   }
 
   public onDialogClosed(): void {
-    const latestEntry = this.entries()[0];
-    if (latestEntry) {
+    const seenKey = whatsNewSeenKey(this.entries());
+    if (seenKey) {
       try {
-        this.browserStorage.setItem(WHATS_NEW_LAST_SEEN_KEY, latestEntry.id);
+        this.browserStorage.setItem(WHATS_NEW_LAST_SEEN_KEY, seenKey);
       } catch (error) {
         this.logger.warn('UI operation failed:', error);
       }

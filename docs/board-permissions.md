@@ -19,8 +19,8 @@ Related: [board API](board-api.md) · [device identity](device-identity.md) ·
 | Admin | Signed-in caller listed in `ARTEMIS_ADMIN_EMAILS`. |
 | Unauthenticated | No verified identity. In `ARTEMIS_AUTH_MODE=cloudflare` every board route refuses this caller through the existing access tier. |
 
-In `ARTEMIS_AUTH_MODE=open` the scope is not enforced (existing
-`scope_or_open` behaviour): every caller acts as the run owner. The rules below
+In `ARTEMIS_AUTH_MODE=open` the scope is not enforced (the
+unenforced open-mode scope): every caller acts as the run owner. The rules below
 apply to `cloudflare` mode and to the opted-in preview identities.
 
 Identity headers (`Cf-Access-Jwt-Assertion`, and `X-Artemis-Preview-Identity`

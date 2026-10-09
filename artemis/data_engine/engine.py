@@ -780,8 +780,12 @@ class DataEngine:
         local_video_path: str | Path | None,
         start_time: float,
         error: str,
+        reason: str | None = None,
     ):
-        """Persist and publish a terminal recording failure."""
+        """Persist and publish a terminal recording failure.
+
+        ``error`` is the raw failure text; ``reason`` is its classified code, when known.
+        """
         if not self.storage:
             return
         try:
@@ -794,6 +798,7 @@ class DataEngine:
                 local_video_path=str(local_video_path) if local_video_path else None,
                 status="failed",
                 error=error,
+                reason=reason,
             )
             self.storage.update_video_recording(record)
             self._publish(
@@ -802,6 +807,7 @@ class DataEngine:
                     "session_id": str(self.current_session_id),
                     "video_id": str(video_id),
                     "error": error,
+                    "reason": reason,
                 },
             )
         except Exception as e:

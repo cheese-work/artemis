@@ -3,10 +3,11 @@
 // (Tab, Shift+Tab, Enter, Escape, typing); the page is never clicked or scripted.
 //
 //   npm run build && npm run test:keyboard      (CHROME_BIN overrides the browser)
+//   npm run test:keyboard -- --record=<dir>     also writes <dir>/keyboard-walkthrough.mp4 (a screen recording with a key caption)
 //
 // Prints a transcript of what had focus after each key and exits 1 on the first miss.
 import { spawn } from 'node:child_process';
-import { mkdtempSync, rmSync, existsSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, existsSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -28,17 +29,23 @@ const freePort = () =>
     });
   });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const navigationOnly = process.argv.includes('--navigation-only');
+const recordDir = process.argv.find((a) => a.startsWith('--record='))?.slice('--record='.length);
 
 mock.readiness = {
   os_type: 'linux', overall_ready: true,
-  probes: [{ id: 'android_adb', status: 'pass', metadata: { devices: [{ serial: 'keyboard-fixture', state: 'device', model: 'Pixel test', device_kind: 'phone' }] } }]
+  probes: [
+    { id: 'system_config', status: 'pass' },
+    { id: 'llm_api_key', status: 'pass', metadata: { is_set: true } },
+    { id: 'android_adb', status: 'pass', metadata: { devices: navigationOnly ? [] : [{ serial: 'keyboard-fixture', state: 'device', model: 'Pixel test', device_kind: 'phone' }] } }
+  ]
 };
 const { server, url: base } = await startMockApi(dist);
 const profile = mkdtempSync(path.join(tmpdir(), 'kbd-walk-'));
 const port = await freePort();
 const chrome = spawn(
   process.env.CHROME_BIN || 'google-chrome',
-  ['--headless=new', '--no-sandbox', '--disable-gpu', `--remote-debugging-port=${port}`, `--user-data-dir=${profile}`, '--window-size=1280,900', 'about:blank'],
+  ['--headless=new', '--no-sandbox', '--password-store=basic', '--disable-gpu', `--remote-debugging-port=${port}`, `--user-data-dir=${profile}`, '--window-size=1280,900', 'about:blank'],
   { stdio: 'ignore' }
 );
 chrome.on('error', (error) => {
@@ -69,7 +76,9 @@ const evaluate = async (expression) => {
   return result.value;
 };
 
+let stopRecording = async () => {};
 async function cleanup(code) {
+  await stopRecording();
   if (chrome.exitCode === null && chrome.signalCode === null) {
     const stopped = new Promise((resolve) => chrome.once('exit', resolve));
     await send('Browser.close').catch(() => chrome.kill());
@@ -89,6 +98,8 @@ const KEYS = {
   Escape: { key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 },
   ArrowDown: { key: 'ArrowDown', code: 'ArrowDown', windowsVirtualKeyCode: 40 },
   ArrowUp: { key: 'ArrowUp', code: 'ArrowUp', windowsVirtualKeyCode: 38 },
+  ArrowLeft: { key: 'ArrowLeft', code: 'ArrowLeft', windowsVirtualKeyCode: 37 },
+  ArrowRight: { key: 'ArrowRight', code: 'ArrowRight', windowsVirtualKeyCode: 39 },
   Home: { key: 'Home', code: 'Home', windowsVirtualKeyCode: 36 },
   End: { key: 'End', code: 'End', windowsVirtualKeyCode: 35 }
 };
@@ -97,6 +108,7 @@ async function press(name, modifiers = 0) {
   await send('Input.dispatchKeyEvent', { type: k.text ? 'keyDown' : 'rawKeyDown', modifiers, ...k });
   await send('Input.dispatchKeyEvent', { type: 'keyUp', modifiers, key: k.key, code: k.code, windowsVirtualKeyCode: k.windowsVirtualKeyCode });
   await sleep(120);
+  await caption(`${modifiers & 8 ? 'Shift+' : ''}${name}`);
 }
 async function type(text) {
   for (const ch of text) {
@@ -105,6 +117,17 @@ async function type(text) {
     await sleep(40);
   }
   await sleep(150);
+}
+
+// Recording only: a caption with the last key and what has focus, so the video reads without the transcript.
+async function caption(keys) {
+  if (!recordDir) return;
+  const label = await describeFocus().catch(() => '');
+  await evaluate(`(() => { let c = document.getElementById('kbd-caption');
+    if (!c) { c = document.createElement('div'); c.id = 'kbd-caption';
+      c.style.cssText = 'position:fixed;left:12px;bottom:12px;z-index:99999;padding:6px 10px;border-radius:6px;font:600 14px monospace;color:#fff;background:#0f172a;pointer-events:none';
+      document.body.appendChild(c); }
+    c.textContent = ${JSON.stringify(keys + '  ->  ' + label)}; })()`).catch(() => {});
 }
 
 const describeFocus = () =>
@@ -196,15 +219,89 @@ try {
     }
   };
   await send('Page.enable');
+  const frames = [];
+  if (recordDir) {
+    mkdirSync(recordDir, { recursive: true });
+    const framesDir = path.join(recordDir, 'frames');
+    mkdirSync(framesDir, { recursive: true });
+    ws.addEventListener('message', (event) => {
+      const msg = JSON.parse(event.data);
+      if (msg.method !== 'Page.screencastFrame') return;
+      const file = path.join(framesDir, `${String(frames.length).padStart(5, '0')}.jpg`);
+      writeFileSync(file, Buffer.from(msg.params.data, 'base64'));
+      frames.push({ file, ts: msg.params.metadata.timestamp });
+      send('Page.screencastFrameAck', { sessionId: msg.params.sessionId }).catch(() => {});
+    });
+    await send('Page.startScreencast', { format: 'jpeg', quality: 80, everyNthFrame: 1 });
+    stopRecording = async () => {
+      await send('Page.stopScreencast').catch(() => {});
+      if (frames.length < 2) return;
+      const list = frames.map((f, i) => `file '${f.file}'\nduration ${Math.max(0.04, ((frames[i + 1]?.ts ?? f.ts + 1) - f.ts)).toFixed(3)}`).join('\n');
+      writeFileSync(path.join(recordDir, 'frames.txt'), `${list}\nfile '${frames.at(-1).file}'\n`);
+      await new Promise((resolve) => spawn('ffmpeg', ['-y', '-loglevel', 'error', '-f', 'concat', '-safe', '0', '-i', path.join(recordDir, 'frames.txt'),
+        '-vf', 'fps=15,scale=trunc(iw/2)*2:trunc(ih/2)*2', '-pix_fmt', 'yuv420p', path.join(recordDir, 'keyboard-walkthrough.mp4')], { stdio: 'inherit' }).on('exit', resolve));
+      rmSync(framesDir, { recursive: true, force: true });
+      rmSync(path.join(recordDir, 'frames.txt'), { force: true });
+    };
+  }
+  if (navigationOnly) {
+    await send('Page.addScriptToEvaluateOnNewDocument', { source: `
+      window.phoneChooserRequests = 0;
+      Object.defineProperty(navigator, 'usb', { value: {
+        getDevices: async () => [],
+        requestDevice: async () => {
+          window.phoneChooserRequests++;
+          throw new DOMException('Cancelled fixture chooser', 'NotFoundError');
+        },
+        addEventListener: () => {}, removeEventListener: () => {}
+      } });
+    ` });
+    mock.identity = { body: { email: 'qa@example.test', admin: false, auth_mode: 'cloudflare', reason: null } };
+    for (const route of ['/workspace', '/runs']) {
+      log(`Navigation: non-admin on ${route}`);
+      await send('Page.navigate', { url: `${base}${route}` });
+      await expectTrue('user identity loaded', `!!document.querySelector('summary[aria-label^="User menu"]')`);
+      await expectTrue('no Setup tab', `!document.querySelector('nav > a[href="/setup"]')`);
+      await tabUntil('phone chip', focusIs('button.chip'));
+      await press('Enter');
+      await expectTrue('first activation opens the picker with Connect focused', `document.activeElement.textContent.includes('Connect a phone from this browser')`);
+      await expectTrue('Connect is visible without scrolling', `document.activeElement.getBoundingClientRect().bottom <= innerHeight && scrollY === 0`);
+      await press('Enter');
+      await expectTrue('second activation reaches the mocked chooser, with no device access', `window.phoneChooserRequests === 1 && !document.querySelector('.chip-host .panel') && location.pathname === '${route}'`);
+      await tabUntil('user menu', focusIs('summary[aria-label^="User menu"]'));
+      await press('Enter');
+      await expectTrue('Enter opens the QA user menu without Setup', `document.querySelector('details.identity-menu').open && !document.querySelector('app-admin-identity-indicator a[href="/setup"]')`);
+      await press('Escape');
+      await expectTrue('Escape closes the user menu and returns focus', `!document.querySelector('details.identity-menu').open && document.activeElement.matches('summary')`);
+      await tabUntil('phone chip', focusIs('button.chip'), { back: true });
+      await press('Space');
+      await tabUntil('More options', focusIs('a.more'));
+      await expectTrue('QAs can reach device settings through More options', `document.activeElement.getAttribute('href') === '/setup'`);
+      await press('Escape');
+      await expectTrue('Escape closes the phone picker with focus restored', `!document.querySelector('.chip-host .panel') && document.activeElement.matches('button.chip')`);
+    }
+    mock.identity.body.admin = true;
+    await send('Page.navigate', { url: `${base}/workspace` });
+    await expectTrue('admin identity loaded', `document.querySelector('.identity-role')?.textContent.includes('Admin')`);
+    await tabUntil('admin user menu', focusIs('summary[aria-label^="User menu"]'));
+    await press('Space');
+    await expectTrue('Space opens the admin user menu', `document.querySelector('details.identity-menu').open`);
+    await press('Tab');
+    await expectTrue('Tab reaches Setup only inside the admin user menu', `document.activeElement.matches('app-admin-identity-indicator a[href="/setup"]') && !document.querySelector('nav > a[href="/setup"]')`);
+    await press('Escape');
+    await expectTrue('Escape restores focus to the admin menu trigger', `document.activeElement.matches('summary') && !document.querySelector('details.identity-menu').open`);
+    log('\nNavigation keyboard walkthrough passed. WebUSB was mocked; no device was accessed.');
+    await cleanup(0);
+  }
   await send('Page.navigate', { url: `${base}/runs` });
   await expectTrue('library loaded', `document.querySelectorAll('a.run-row').length === 6`);
 
-  log('Library: the admin All users switch');
-  await tabUntil('All users switch', focusIs('button[role="switch"]'));
-  await press('Space');
-  await expectTrue('Space turned All users on: the other QA\'s run is listed with its owner', `document.activeElement.getAttribute('aria-checked') === 'true' && document.querySelectorAll('a.run-row').length === 7 && document.body.textContent.includes('other@example.test')`);
-  await press('Enter');
-  await expectTrue('Enter turned it off: only my runs remain', `document.activeElement.getAttribute('aria-checked') === 'false' && document.querySelectorAll('a.run-row').length === 6`);
+  log("Library: My runs and Everyone's runs tabs");
+  await tabUntil('My runs tab', focusIs('[role="tab"][data-scope="mine"]'));
+  await press('ArrowRight');
+  await expectTrue("ArrowRight showed Everyone's runs: the other QA's run is listed with its owner", `document.activeElement.matches('[data-scope="everyone"]') && location.search.includes('scope=everyone') && document.querySelectorAll('a.run-row').length === 7 && document.body.textContent.includes('other@example.test')`);
+  await press('Home');
+  await expectTrue('Home came back to My runs: only my runs remain', `document.activeElement.matches('[data-scope="mine"]') && !location.search.includes('scope=everyone') && document.querySelectorAll('a.run-row').length === 6`);
 
   log('Library: search by text');
   await tabUntil('search box', focusIs('input[type="search"]'));
@@ -234,6 +331,14 @@ try {
 
   await checkRunKeyboard('Review');
 
+  log('Runs: the list beside the open run opens another run from the keyboard');
+  const openRun = await evaluate('location.pathname');
+  await tabUntil('the open run in the list beside it', focusIs('.right-panel a.run-row[aria-current="page"]'));
+  await expectTrue('the open run says Viewing', `document.activeElement.textContent.includes('Viewing')`);
+  await tabUntil('another run in the list', `${focusIs('.right-panel a.run-row')} && !e.hasAttribute('aria-current')`);
+  await press('Enter');
+  await expectTrue('Enter opened a different run beside the list', `location.pathname.startsWith('/runs/') && location.pathname !== ${JSON.stringify(openRun)} && !!document.querySelector('[data-section="outcome"]') && !!document.querySelector('.right-panel a.run-row')`);
+
   log('Viewer: back to the library');
   await tabUntil('Back to runs', focusNamed('Back to runs'), { back: true });
   await press('Enter');
@@ -257,10 +362,52 @@ try {
   await expectTrue('chip says there is no phone and the picker is closed', `document.activeElement.textContent.includes('No phone') && document.activeElement.getAttribute('aria-expanded') === 'false'`);
   await press('Enter');
   await expectTrue('Enter opened the picker and focus moved inside it', `document.activeElement.getAttribute('aria-expanded') === null && !!document.querySelector('app-workspace-device-chip .panel')?.contains(document.activeElement)`);
-  await expectTrue('focus is on the first usable choice: Connect a phone from this browser', `document.activeElement.textContent.includes('Connect a phone from this browser')`);
+  await expectTrue('focus is on the first usable choice in the picker', `document.activeElement.matches('app-workspace-device-chip .panel button')`);
   await press('Escape');
   await expectTrue('Escape closed the picker and focus returned to the chip', `!document.querySelector('app-workspace-device-chip .panel') && document.activeElement.matches('app-workspace-device-chip button.chip') && document.activeElement.getAttribute('aria-expanded') === 'false'`);
   log(`  focus is now: ${await describeFocus()}`);
+
+  log('Workspace: skip links reach the new-task box and the run list in a few keys');
+  await send('Page.navigate', { url: `${base}/workspace` });
+  await expectTrue('workspace loaded with the skip links', `!!document.querySelector('button.skip-link')`);
+  await tabUntil('Skip to new task', focusNamed('Skip to new task'));
+  await expectTrue('the skip link shows itself while focused', `document.activeElement.getBoundingClientRect().height >= 44`);
+  await press('Enter');
+  await expectTrue('Enter put focus in the new-task box', `document.activeElement.matches('textarea.dock-textarea')`);
+  await tabUntil('Skip to run list', focusNamed('Skip to run list'), { back: true, max: 80 });
+  await press('Enter');
+  await expectTrue('Enter put focus on the first tab of the list', `document.activeElement.matches('.right-panel [role="tab"]')`);
+
+  log('Runs, one column (700 px): no skip link points at the hidden list');
+  await send('Emulation.setDeviceMetricsOverride', { width: 700, height: 800, deviceScaleFactor: 1, mobile: false });
+  await send('Page.navigate', { url: `${base}/runs/${RUNS[0].session_id}` });
+  await expectTrue('the open run loaded in one column', `!!document.querySelector('[data-section="outcome"]')`);
+  await expectTrue('the list beside the run is hidden', `!document.querySelector('.right-panel') || !document.querySelector('.right-panel').checkVisibility()`);
+  const reachable = [];
+  for (let i = 0; i < 12; i++) {
+    await press('Tab');
+    reachable.push(await describeFocus());
+  }
+  log(`  first 12 Tab stops: ${reachable.join(' | ')}`);
+  if (reachable.some((name) => name.startsWith('Skip to run list'))) throw new Error('a skip link to the hidden run list is reachable');
+  await expectTrue('every focused control is on screen', `!document.activeElement || document.activeElement === document.body || document.activeElement.checkVisibility()`);
+  await tabUntil('Back to runs', focusNamed('Back to runs'), { back: true, max: 20 }).catch(() => tabUntil('Back to runs', focusNamed('Back to runs'), { max: 60 }));
+  await send('Emulation.clearDeviceMetricsOverride');
+
+  log('Workspace: Task Queue and Notes & Plans tabs, then the run list');
+  await send('Page.navigate', { url: `${base}/workspace` });
+  await expectTrue('workspace loaded with the queue tabs', `!!document.querySelector('.tab-selector-btn[data-tab="tasks"]')`);
+  await tabUntil('Task Queue tab', focusIs('.tab-selector-btn[data-tab="tasks"]'));
+  await expectTrue('Task Queue is the selected tab and the only tab stop', `document.activeElement.getAttribute('aria-selected') === 'true' && document.querySelector('.tab-selector-btn[data-tab="notes"]').tabIndex === -1`);
+  await press('ArrowRight');
+  await expectTrue('ArrowRight selected Notes & Plans and moved focus to it', `document.activeElement.matches('.tab-selector-btn[data-tab="notes"]') && document.activeElement.getAttribute('aria-selected') === 'true'`);
+  await press('ArrowLeft');
+  await expectTrue('ArrowLeft came back to Task Queue', `document.activeElement.matches('.tab-selector-btn[data-tab="tasks"]') && document.activeElement.getAttribute('aria-selected') === 'true'`);
+  await tabUntil('My runs tab in the run list', focusIs('[role="tab"][data-scope="mine"]'));
+  await press('ArrowRight');
+  await expectTrue("ArrowRight switched the list to Everyone's runs", `document.activeElement.matches('[data-scope="everyone"]') && location.search.includes('scope=everyone')`);
+  await press('Home');
+  await expectTrue('Home came back to My runs', `document.activeElement.matches('[data-scope="mine"]')`);
 
   log('Task dock: stays open, and clipboard keyboard operation');
   await send('Page.navigate', { url: `${base}/workspace` });

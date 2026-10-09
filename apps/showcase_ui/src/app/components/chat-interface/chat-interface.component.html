@@ -18,23 +18,26 @@ limitations under the License.
   <!-- Task Queue & History Header -->
   <header class="chat-header">
     <!-- Tab Selector Header inside row -->
-    <div class="tab-selector-bar">
-      <button
-        class="tab-selector-btn"
-        [class.active]="agentService.activeTab() === 'tasks'"
-        (click)="agentService.activeTab.set('tasks')"
-        >
-        <span class="material-symbols-outlined tab-icon">list_alt</span>
-        <span class="tab-text">Task Queue</span>
-      </button>
-      <button
-        class="tab-selector-btn"
-        [class.active]="agentService.activeTab() === 'notes'"
-        (click)="agentService.activeTab.set('notes')"
-        >
-        <span class="material-symbols-outlined tab-icon">description</span>
-        <span class="tab-text">Notes & Plans</span>
-      </button>
+    <div class="tab-selector-bar" role="tablist" aria-label="Task queue and notes">
+      @for (tab of queueTabs; track tab.id) {
+        <button
+          type="button"
+          role="tab"
+          class="tab-selector-btn"
+          [id]="'queue-tab-' + tab.id"
+          [attr.data-tab]="tab.id"
+          [class.active]="agentService.activeTab() === tab.id"
+          [attr.aria-selected]="agentService.activeTab() === tab.id"
+          [attr.tabindex]="agentService.activeTab() === tab.id ? 0 : -1"
+          [attr.aria-label]="tab.label"
+          aria-controls="queue-panel"
+          (click)="agentService.activeTab.set(tab.id)"
+          (keydown)="onTabKey($event, tab.id)"
+          >
+          <span class="material-symbols-outlined tab-icon" aria-hidden="true">{{ tab.icon }}</span>
+          <span class="tab-text">{{ tab.label }}</span>
+        </button>
+      }
     </div>
 
     <div class="header-right">
@@ -56,7 +59,7 @@ limitations under the License.
   </header>
 
   <!-- Scrollable Messages/Content Area -->
-  <main class="chat-messages">
+  <main class="chat-messages" id="queue-panel" role="tabpanel" [attr.aria-labelledby]="'queue-tab-' + agentService.activeTab()">
     <!-- Tasks Tab Content -->
     @if (agentService.activeTab() === 'tasks') {
       <!-- Active Queue Section -->

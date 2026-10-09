@@ -235,7 +235,7 @@ describe('RunViewComponent', () => {
       const image = getComputedStyle(q('.evidence-image')!);
       expect(image.display).toBe('block');
       expect(image.objectFit).toBe('contain');
-      expect(image.backgroundColor).toBe('rgb(0, 0, 0)');
+      expect(image.backgroundColor).toBe('rgb(15, 23, 42)');
       const copy = getComputedStyle(q('.recording-copy')!);
       expect(copy.margin).toBe('0px 0px 8px');
       expect(copy.fontWeight).toBe('600');
@@ -261,6 +261,17 @@ describe('RunViewComponent', () => {
         expect(button('Check again')).toBeDefined();
         expect(q('video')).toBeNull();
         expect(button('Start new run with this prompt')).toBeDefined();
+      });
+
+      it('keeps raw recorder output inside collapsed technical details', async () => {
+        const raw = '/usr/share/scrcpy/scrcpy-server: 1 file pushed, 0 skipped.\njava.lang.NoSuchMethodException: IClipboard';
+        await open({ viewMode, runResult: of(run({ status: 'failed' })),
+          video: of(ready({ status: 'failed', message: 'The screen recorder could not start on this phone.', detail: raw })) });
+        expect(q('.recording-copy')!.textContent).toBe('The video could not be prepared. The screen recorder could not start on this phone.');
+        const details = q<HTMLDetailsElement>('details.technical-details')!;
+        expect(details.open).toBeFalse();
+        expect(details.querySelector('summary')!.textContent).toBe('Technical details');
+        expect(details.querySelector('.technical-body')!.textContent).toBe(raw);
       });
 
       it('shows the same interrupted banner and device without selecting a new device', async () => {

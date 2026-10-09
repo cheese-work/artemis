@@ -15,13 +15,14 @@
  */
 
 import { TestBed } from '@angular/core/testing';
-import { provideRouter } from '@angular/router';
+import { RouterOutlet, provideRouter } from '@angular/router';
 import { provideHttpClient, withXhr } from '@angular/common/http';
 import { HttpClient } from '@angular/common/http';
-import { signal } from '@angular/core';
+import { Component, EventEmitter, Input, Output, signal } from '@angular/core';
 import { of } from 'rxjs';
 import { AgentService } from './services/agent.service';
 import { AppComponent } from './app.component';
+import { VersionFooterComponent } from './components/version-footer/version-footer.component';
 
 describe('AppComponent', () => {
   beforeEach(async () => {
@@ -55,4 +56,43 @@ describe('AppComponent', () => {
     expect(app.title).toEqual('SmartQA');
   });
 
+});
+
+describe('AppComponent layout', () => {
+  @Component({ selector: 'app-nav-switcher', template: '' })
+  class NavStub {
+    @Input() hasWhatsNew = false;
+    @Input() hasUnreadWhatsNew = false;
+    @Output() showWhatsNew = new EventEmitter<void>();
+  }
+
+  @Component({ selector: 'app-whats-new', template: '' })
+  class WhatsNewStub {}
+
+  beforeEach(async () => {
+    await TestBed.configureTestingModule({
+      imports: [AppComponent],
+      providers: [
+        provideRouter([]),
+        { provide: HttpClient, useValue: { get: () => of([]) } },
+        { provide: AgentService, useValue: { whatsNewHasUpdates: signal(false), whatsNewHasUnread: signal(false) } }
+      ]
+    })
+      .overrideComponent(AppComponent, { set: { imports: [RouterOutlet, NavStub, WhatsNewStub, VersionFooterComponent] } })
+      .compileComponents();
+  });
+
+  it('reserves its own strip for the version footer below the scrolling page area', () => {
+    const fixture = TestBed.createComponent(AppComponent);
+    fixture.detectChanges();
+    const root = fixture.nativeElement as HTMLElement;
+    const page = root.querySelector<HTMLElement>('.app-page');
+    const footer = root.querySelector<HTMLElement>('app-version-footer');
+
+    expect(page).withContext('page area').not.toBeNull();
+    expect(page!.contains(footer)).toBeFalse();
+    expect(getComputedStyle(page!).overflowY).toBe('auto');
+    expect(getComputedStyle(footer!.querySelector('footer')!).position).not.toBe('fixed');
+    expect(footer!.getBoundingClientRect().top).toBeGreaterThanOrEqual(page!.getBoundingClientRect().bottom);
+  });
 });
