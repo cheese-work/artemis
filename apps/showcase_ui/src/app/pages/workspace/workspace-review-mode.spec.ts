@@ -52,7 +52,6 @@ describe('Workspace review mode', () => {
       whatsNewPromptDraft: signal(false),
       updateWhatsNewErrorVisibility: () => undefined,
       isCurrentSessionRunning: () => false,
-      sessions: () => [],
       currentSession: liveSession,
       sessions,
       currentSessionId: () => liveSession()?.session_id ?? null,
