@@ -62,7 +62,7 @@ describe('design tokens', () => {
   });
 
   it('uses Inter for UI and display text at the Workbench text sizes', () => {
-    expect(token('--font-ui')).toMatch(/^'Inter',/);
+    expect(token('--font-ui')).toMatch(/^['"]Inter['"],/);
     expect(token('--font-display')).toBe(token('--font-ui'));
     expect(['label', 'ui', 'body', 'section', 'title'].map((name) => token(`--text-${name}`))).toEqual(['0.75rem', '0.8125rem', '0.875rem', '1rem', '1.125rem']);
   });
