@@ -202,6 +202,19 @@ try {
         await wait(100);
         assert.equal(await evaluate(`document.activeElement === document.querySelectorAll('.step-button')[3] && document.querySelectorAll('.step-button')[3].getAttribute('aria-current') === 'step' && document.querySelector('.evidence-image').getAttribute('alt') === 'Screenshot for step 4'`), true);
         assert.equal(await evaluate(`ng.getComponent(document.querySelector('app-run-view')).goToStep(999)`), false);
+        assert.equal(await evaluate(`getComputedStyle(document.querySelectorAll('.step-button')[3]).outlineWidth`), '3px', 'keyboard focus outline remains');
+        await evaluate(`document.querySelectorAll('.step-button')[3].blur()`);
+        snapshot.selectedFailedShadow = await evaluate(`getComputedStyle(document.querySelectorAll('.step-button')[3]).boxShadow`);
+        assert.match(snapshot.selectedFailedShadow, /inset/, 'selected failed row keeps an inset marker after blur');
+        await evaluate(`ng.getComponent(document.querySelector('app-run-view')).goToStep(1)`);
+        await wait(50);
+        await evaluate(`document.querySelector('.step-button').blur()`);
+        snapshot.unselectedFailedShadow = await evaluate(`getComputedStyle(document.querySelectorAll('.step-button')[3]).boxShadow`);
+        assert.equal(snapshot.unselectedFailedShadow, 'none');
+        assert.notEqual(snapshot.selectedFailedShadow, snapshot.unselectedFailedShadow, 'failed-row selection is distinct without focus');
+        await evaluate(`ng.getComponent(document.querySelector('app-run-view')).goToStep(4)`);
+        await wait(50);
+        await evaluate(`document.querySelectorAll('.step-button')[3].blur()`);
         await evaluate(`(() => {
           const view = ng.getComponent(document.querySelector('app-run-view'));
           view.storedSteps.set(window.timelineSteps.map((step, index) => index === 0
@@ -225,7 +238,7 @@ try {
           writeFileSync(path.join(shots, 'finished-failed-390.png'), Buffer.from(overview.data, 'base64'));
         }
         results.push({ state, width, ...snapshot });
-        console.log(`PASS step timeline @${width}: selection, keyboard, verdict jump, details, 56px rows, 56x40 thumbnails, 44px toggles, no overflow`);
+        console.log(`PASS step timeline @${width}: selection marker after blur, keyboard focus, verdict jump, details, 56px rows, 56x40 thumbnails, 44px toggles, no overflow`);
         continue;
       }
       const snapshot = await evaluate(`(() => {

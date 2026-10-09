@@ -525,6 +525,30 @@ describe('RunViewComponent', () => {
       expect(row.getBoundingClientRect().height).toBe(56);
     });
 
+    it('keeps a selected failed step visibly distinct after focus leaves the row', async () => {
+      await open({ steps: of([
+        step(1, { last_execution_result: { success: false, error: 'Target not found' } }),
+        step(2, { last_execution_result: { success: false, error: 'Target disappeared' } })
+      ]) });
+      const rows = qa<HTMLButtonElement>('.step-button');
+      rows[0].click();
+      rows[0].focus();
+      rows[0].blur();
+      await settle();
+      const selectedShadow = getComputedStyle(rows[0]).boxShadow;
+      expect(rows[0].getAttribute('aria-current')).toBe('step');
+      expect(selectedShadow).toContain('inset');
+      expect(selectedShadow).not.toBe(getComputedStyle(rows[1]).boxShadow);
+      expect(getComputedStyle(rows[1]).boxShadow).toBe('none');
+      rows[1].click();
+      rows[1].focus();
+      rows[1].blur();
+      await settle();
+      expect(rows[0].hasAttribute('aria-current')).toBeFalse();
+      expect(getComputedStyle(rows[0]).boxShadow).toBe('none');
+      expect(getComputedStyle(rows[1]).boxShadow).toBe(selectedShadow);
+    });
+
     it('toggles inline details with a separate 44px control without changing selection', async () => {
       await open({});
       const toggle = q<HTMLButtonElement>('.step-toggle')!;

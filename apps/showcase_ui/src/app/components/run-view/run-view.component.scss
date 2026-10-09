@@ -439,6 +439,7 @@ dl {
   &[aria-current='step'] {
     font-weight: 600;
     background: var(--color-primary-tint);
+    box-shadow: inset 3px 0 0 var(--color-primary);
   }
 
   &.failed[aria-current='step'] { background: var(--status-danger-bg); }
