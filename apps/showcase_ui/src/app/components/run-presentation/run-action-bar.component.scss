@@ -1,12 +1,13 @@
-:host(.actions) button {
+:host(.actions) button, :host(.primary-actions) button {
   min-height: 44px;
+  min-width: 44px;
   font-size: 14px;
   padding: 0 18px;
   border-radius: 8px;
   cursor: pointer;
 }
 
-:host(.actions) button:focus-visible {
+:host(.actions) button:focus-visible, :host(.primary-actions) button:focus-visible {
   outline: 3px solid var(--focus-ring);
   outline-offset: 2px;
 }
@@ -39,11 +40,19 @@
 
 .action-feedback, .action-error { flex-basis: 100%; margin: 0; font-size: 14px; }
 .action-error { color: var(--status-danger-fg); }
-.run-id-copy-button { display: inline-flex; align-items: center; min-width: 24px; min-height: 24px; padding: 0; border: 0; color: inherit; background: none; font: inherit; text-align: left; cursor: pointer; }
+.run-id-copy-button { display: inline-flex; align-items: center; gap: 8px; min-width: 44px; min-height: 44px; padding: 0 8px; border: 0; color: inherit; background: none; font: inherit; text-align: left; cursor: pointer; }
+.run-id-copy-button .material-symbols-outlined { width: 16px; overflow: hidden; flex-shrink: 0; font-size: 16px; }
+.run-id-copy-button span:last-child { font-family: var(--font-mono); }
+:host(.primary-actions) button { display: inline-flex; align-items: center; gap: 8px; border: 0; }
+:host(.primary-actions) .material-symbols-outlined { width: 20px; overflow: hidden; flex-shrink: 0; font-size: 20px; }
+:host(.more-menu) { flex-direction: column; align-items: stretch; margin: 0; gap: 0; }
+:host(.more-menu) button { border: 0; background: transparent; color: var(--color-text); text-align: left; }
+:host(.more-menu) button:hover { background: var(--color-surface-subtle); }
+:host(.more-menu) button.danger { color: var(--color-error); }
 .run-id-copy-button:hover { color: var(--color-primary); text-decoration: underline; }
 .run-id-copy-button:focus-visible { outline: 3px solid var(--color-focus); outline-offset: 3px; border-radius: 3px; }
 .copy-summary-button { display: inline-flex; align-items: center; gap: 5px; height: 30px; padding: 0 11px; border: 1px solid var(--color-rule); border-radius: 15px; color: var(--color-text); background: color-mix(in srgb, var(--color-surface) 88%, transparent); font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; }
 .copy-summary-button:hover { background: var(--color-surface); color: var(--color-primary-hover); }
 .copy-summary-button:focus-visible { outline: 3px solid var(--color-focus); outline-offset: 2px; }
 .copy-summary-button .material-symbols-outlined { font-size: 15px; }
-.copy-feedback { position: absolute; z-index: 2; left: 50%; bottom: calc(100% + 6px); padding: 5px 9px; transform: translateX(-50%); border-radius: 8px; color: white; background: var(--color-ink); font-size: 11px; white-space: nowrap; }
+.copy-feedback { position: absolute; z-index: 2; left: 50%; bottom: calc(100% + 6px); padding: 5px 9px; transform: translateX(-50%); border-radius: 8px; color: white; background: var(--color-ink); font-size: 12px; white-space: nowrap; }
