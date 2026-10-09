@@ -42,7 +42,7 @@ import { ChangeDetectionStrategy, Component, input, signal } from '@angular/core
     .step-title { font-size: 13px; }
     .step-number, .step-meta { font-size: 12px; color: var(--color-text-muted); }
     .step-number, .step-failed, .step-duration { flex-shrink: 0; }
-    .step-duration { font: 11px var(--font-mono); color: var(--color-text-muted); white-space: nowrap; }
+    .step-duration { font: 12px var(--font-mono); color: var(--color-text-muted); white-space: nowrap; }
     .step-failed, :host(.failed) .step-icon { color: var(--status-danger-fg); }
     .step-failed { display: inline-flex; font-weight: 600; }
   `],

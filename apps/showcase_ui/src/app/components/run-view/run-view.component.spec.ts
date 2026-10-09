@@ -510,6 +510,7 @@ describe('RunViewComponent', () => {
       expect(rows[0].querySelector('.step-duration')!.textContent).toBe('1.5s');
       expect(rows[1].querySelector('.step-duration')!.textContent).toBe('0:20');
       expect(getComputedStyle(rows[0].querySelector('.step-duration')!).fontFamily).toContain('mono');
+      expect(getComputedStyle(rows[0].querySelector('.step-duration')!).fontSize).toBe('12px');
     });
 
     it('labels and tints a failed step without relying on color alone', async () => {

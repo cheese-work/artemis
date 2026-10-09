@@ -156,6 +156,7 @@ try {
             background: getComputedStyle(failed.closest('.step-row')).backgroundColor,
             kind: rows[1].querySelector('.step-kind').textContent,
             time: rows[1].querySelector('.step-duration').textContent,
+            durationSize: getComputedStyle(rows[1].querySelector('.step-duration')).fontSize,
             mono: getComputedStyle(rows[1].querySelector('.step-duration')).fontFamily,
             screenshotsCollapsed: !document.querySelector('.step-screenshots'),
             overflow: document.documentElement.scrollWidth - innerWidth,
@@ -173,6 +174,7 @@ try {
         assert.equal(snapshot.background, 'rgb(254, 226, 226)');
         assert.equal(snapshot.kind, 'tap');
         assert.equal(snapshot.time, '1.2s');
+        assert.equal(snapshot.durationSize, '12px');
         assert.match(snapshot.mono, /mono/i);
         assert.equal(snapshot.screenshotsCollapsed, true);
         assert.ok(snapshot.overflow <= 0 && snapshot.timelineOverflow <= 0, JSON.stringify(snapshot));
