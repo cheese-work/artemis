@@ -95,12 +95,14 @@ describe('Workspace review mode', () => {
     const frame = document.createElement('iframe');
     frame.style.width = `${width}px`;
     frame.style.height = '800px';
+    frame.style.border = '0';
     document.body.appendChild(frame);
     const workspace = q('app-workspace')!;
     const parent = workspace.parentNode!;
     const next = workspace.nextSibling;
     try {
       const frameDocument = frame.contentDocument!;
+      expect(frame.contentWindow!.innerWidth).toBe(width);
       frameDocument.body.style.cssText = 'margin: 0; height: 100vh';
       for (const style of Array.from(document.head.querySelectorAll('style'))) {
         frameDocument.head.appendChild(style.cloneNode(true));
