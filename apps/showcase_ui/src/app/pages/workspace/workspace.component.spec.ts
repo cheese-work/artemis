@@ -15,6 +15,7 @@ describe('WorkspaceComponent error lifetime', () => {
     whatsNewPromptDraft: ReturnType<typeof signal<boolean>>;
     updateWhatsNewErrorVisibility: (owner: symbol, visible: boolean) => void;
     isCurrentSessionRunning: () => boolean;
+    sessions: () => [];
     currentSession: () => null;
     currentSessionId: () => null;
     currentStartupProgress: () => [];
@@ -33,6 +34,7 @@ describe('WorkspaceComponent error lifetime', () => {
         else errorOwners.delete(owner);
       },
       isCurrentSessionRunning: () => false,
+      sessions: () => [],
       currentSession: () => null,
       currentSessionId: () => null,
       currentStartupProgress: () => [],
@@ -46,7 +48,7 @@ describe('WorkspaceComponent error lifetime', () => {
       providers: [
         provideRouter([]),
         { provide: AgentService, useValue: agentService },
-        { provide: WorkspacePhoneService, useValue: { target: () => null, requestPicker: () => undefined } }
+        { provide: WorkspacePhoneService, useValue: { target: () => null, view: () => ({ text: 'No phone' }), requestPicker: () => undefined } }
       ],
       schemas: [CUSTOM_ELEMENTS_SCHEMA]
     }).overrideComponent(WorkspaceComponent, {
@@ -134,7 +136,11 @@ describe('WorkspaceComponent error lifetime', () => {
 
 describe('WorkspaceComponent phone binding', () => {
   let runTask: jasmine.Spy;
-  let phone: { target: ReturnType<typeof signal<RunTarget | null>>; requestPicker: jasmine.Spy };
+  let phone: {
+    target: ReturnType<typeof signal<RunTarget | null>>;
+    view: () => { text: string };
+    requestPicker: jasmine.Spy;
+  };
   let fixture: ComponentFixture<WorkspaceComponent>;
   let component: WorkspaceComponent;
 
@@ -142,11 +148,16 @@ describe('WorkspaceComponent phone binding', () => {
 
   beforeEach(async () => {
     runTask = jasmine.createSpy('runTask').and.returnValue(of({}));
-    phone = { target: signal<RunTarget | null>(null), requestPicker: jasmine.createSpy('requestPicker') };
+    phone = {
+      target: signal<RunTarget | null>(null),
+      view: () => ({ text: 'No phone' }),
+      requestPicker: jasmine.createSpy('requestPicker')
+    };
     const agentService = {
       whatsNewPromptDraft: signal(false),
       updateWhatsNewErrorVisibility: () => undefined,
       isCurrentSessionRunning: () => false,
+      sessions: () => [],
       currentSession: () => null,
       currentSessionId: () => null,
       currentStartupProgress: () => [],
@@ -221,11 +232,200 @@ describe('WorkspaceComponent phone binding', () => {
   it('has no phone chip in the Prompt Dock: the chip lives in the top bar (CHE-1143, OCR F6)', () => {
     const el = fixture.nativeElement as HTMLElement;
     expect(el.querySelector('app-workspace-device-chip')).toBeNull();
-    expect(el.querySelector('.workspace-floating-bar-wrapper .dock-chip')).toBeNull();
+    expect(el.querySelector('.composer .dock-chip')).toBeNull();
   });
 
   it('starts a new run from the interrupted run’s prompt', () => {
     component.startNewRunFrom('Open Settings');
     expect(component.taskInput).toBe('Open Settings');
   });
+});
+
+describe('WorkspaceComponent pinned composer (CHE-1508)', () => {
+  let runTask: jasmine.Spy;
+  let running: ReturnType<typeof signal<boolean>>;
+  let sessions: ReturnType<typeof signal<{ session_id: string; status: string }[]>>;
+  let target: ReturnType<typeof signal<RunTarget | null>>;
+  let fixture: ComponentFixture<WorkspaceComponent>;
+  let component: WorkspaceComponent;
+  let el: HTMLElement;
+
+  const png = (name: string) => new File([new Uint8Array([137, 80, 78, 71])], name, { type: 'image/png' });
+
+  beforeEach(async () => {
+    runTask = jasmine.createSpy('runTask').and.returnValue(of({}));
+    running = signal(false);
+    sessions = signal<{ session_id: string; status: string }[]>([]);
+    target = signal<RunTarget | null>({ serial: '1A2B3C4D5E', bridgeSessionId: 'bridge-1' });
+    const agentService = {
+      whatsNewPromptDraft: signal(false),
+      updateWhatsNewErrorVisibility: () => undefined,
+      isCurrentSessionRunning: running,
+      sessions,
+      currentSession: () => null,
+      currentSessionId: () => null,
+      currentStartupProgress: () => [],
+      runTask,
+      fetchStatus: jasmine.createSpy('fetchStatus'),
+      stopTask: jasmine.createSpy('stopTask')
+    };
+    await TestBed.configureTestingModule({
+      imports: [WorkspaceComponent],
+      providers: [
+        provideRouter([]),
+        { provide: AgentService, useValue: agentService },
+        {
+          provide: WorkspacePhoneService,
+          useValue: { target, view: () => ({ text: 'Pixel 6 Pro · …4D5E' }), requestPicker: jasmine.createSpy('requestPicker') }
+        }
+      ],
+      schemas: [CUSTOM_ELEMENTS_SCHEMA]
+    }).overrideComponent(WorkspaceComponent, {
+      remove: { imports: [RunViewComponent, RunLibraryComponent, InterruptedBannerComponent] },
+      add: { schemas: [CUSTOM_ELEMENTS_SCHEMA] }
+    }).compileComponents();
+    fixture = TestBed.createComponent(WorkspaceComponent);
+    component = fixture.componentInstance;
+    el = fixture.nativeElement;
+    fixture.detectChanges();
+  });
+
+  afterEach(() => fixture.destroy());
+
+  const hint = () => el.querySelector<HTMLElement>('.composer-hint')!.textContent!.replace(/\s+/g, ' ').trim();
+  const textarea = () => el.querySelector<HTMLTextAreaElement>('.composer textarea')!;
+
+  it('pins one composer at the bottom of the detail pane, after the run surface', () => {
+    const detail = el.querySelector('.detail-pane')!;
+    const composer = detail.querySelector('.composer')!;
+    expect(composer).not.toBeNull();
+    expect(detail.lastElementChild).toBe(composer);
+    expect(el.querySelectorAll('.composer').length).toBe(1);
+  });
+
+  it('names the target phone in the hint line and sends to it', async () => {
+    expect(hint()).toBe('Runs on Pixel 6 Pro · …4D5E');
+    component.taskInput = 'open settings';
+    fixture.detectChanges();
+    el.querySelector<HTMLButtonElement>('button.btn-send')!.click();
+    await fixture.whenStable();
+    expect(runTask).toHaveBeenCalledTimes(1);
+    expect(runTask.calls.mostRecent().args[0]).toBe('open settings');
+    expect(component.taskInput).toBe('');
+  });
+
+  it('queues during a run: the placeholder says so and the hint counts the queue', () => {
+    running.set(true);
+    sessions.set([
+      { session_id: 'a', status: 'running' },
+      { session_id: 'b', status: 'pending' }
+    ]);
+    fixture.detectChanges();
+    expect(textarea().placeholder).toBe('Describe the next task. It queues after this run.');
+    expect(hint()).toBe('Runs on Pixel 6 Pro · …4D5E · 1 run already queued');
+
+    sessions.update((list) => [...list, { session_id: 'c', status: 'pending' }]);
+    fixture.detectChanges();
+    expect(hint()).toBe('Runs on Pixel 6 Pro · …4D5E · 2 runs already queued');
+  });
+
+  it('says how to get a phone when none is chosen', () => {
+    target.set(null);
+    fixture.detectChanges();
+    expect(hint()).toBe('No phone yet. Send opens the phone picker.');
+  });
+
+  it('attaches an image as a preview and removes it again', () => {
+    const revoke = spyOn(URL, 'revokeObjectURL').and.callThrough();
+    component.addImages([png('home.png')]);
+    fixture.detectChanges();
+    const previews = el.querySelectorAll('.composer .attached-image');
+    expect(previews.length).toBe(1);
+    expect(previews[0].querySelector('img')!.alt).toBe('Preview of home.png');
+
+    el.querySelector<HTMLButtonElement>('button.btn-remove-image')!.click();
+    fixture.detectChanges();
+    expect(el.querySelectorAll('.composer .attached-image').length).toBe(0);
+    expect(component.attachedImages().length).toBe(0);
+    expect(revoke).toHaveBeenCalledTimes(1);
+  });
+
+  it('toggles Flash and Pro, marks the pressed segment and remembers it', () => {
+    const [flash, pro] = Array.from(el.querySelectorAll<HTMLButtonElement>('.composer .segment'));
+    expect(flash.getAttribute('aria-pressed')).toBe('true');
+    expect(pro.getAttribute('aria-pressed')).toBe('false');
+
+    pro.click();
+    fixture.detectChanges();
+    expect(component.selectedProfile()).toBe('pro');
+    expect(pro.getAttribute('aria-pressed')).toBe('true');
+    expect(flash.getAttribute('aria-pressed')).toBe('false');
+
+    flash.click();
+    fixture.detectChanges();
+    expect(component.selectedProfile()).toBe('flash');
+  });
+
+  it('places the interrupted banner and the error toast above the input', () => {
+    component.setErrorMessage('The runner is busy.');
+    fixture.detectChanges();
+    const composer = el.querySelector('.composer')!;
+    const banner = composer.querySelector('app-interrupted-banner')!;
+    const toast = composer.querySelector('.composer-toast')!;
+    const input = textarea();
+    expect(banner).not.toBeNull();
+    expect(toast.textContent).toContain('The runner is busy.');
+    expect(banner.compareDocumentPosition(input) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(toast.compareDocumentPosition(input) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  for (const width of [1440, 390]) {
+    it(`gives every composer control a 44 px hit box at ${width}px`, () => {
+      running.set(true);
+      component.taskInput = 'open settings';
+      component.addImages([png('a.png'), png('b.png')]);
+      component.setErrorMessage('The runner is busy.');
+      fixture.detectChanges();
+
+      const frame = document.createElement('iframe');
+      frame.style.cssText = `width: ${width}px; height: 844px; border: 0`;
+      document.body.appendChild(frame);
+      try {
+        const doc = frame.contentDocument!;
+        doc.body.style.cssText = 'margin: 0; height: 100vh';
+        const tokens = getComputedStyle(document.documentElement);
+        for (const property of Array.from(tokens)) {
+          if (property.startsWith('--')) doc.documentElement.style.setProperty(property, tokens.getPropertyValue(property));
+        }
+        for (const style of Array.from(document.head.querySelectorAll('style'))) doc.head.appendChild(style.cloneNode(true));
+        doc.body.appendChild(el);
+
+        const controls = Array.from(doc.querySelectorAll<HTMLElement>('.composer button'));
+        const names = controls.map((control) => control.className);
+        for (const cls of ['btn-send', 'btn-attach', 'btn-stop', 'btn-remove-image', 'btn-toast-close', 'segment']) {
+          expect(names.some((name) => name.includes(cls))).withContext(cls).toBeTrue();
+        }
+        const boxes = controls.map((control) => ({ name: control.className, box: control.getBoundingClientRect() }));
+        for (const { name, box } of boxes) {
+          expect(box.width).withContext(`${name} width`).toBeGreaterThanOrEqual(44);
+          expect(box.height).withContext(`${name} height`).toBeGreaterThanOrEqual(44);
+          expect(box.right).withContext(`${name} inside the viewport`).toBeLessThanOrEqual(width);
+        }
+        // Hit boxes of neighbours do not overlap (spec section 3).
+        for (let i = 0; i < boxes.length; i++) {
+          for (let j = i + 1; j < boxes.length; j++) {
+            const a = boxes[i].box;
+            const b = boxes[j].box;
+            const overlap = a.left < b.right - 0.5 && b.left < a.right - 0.5 && a.top < b.bottom - 0.5 && b.top < a.bottom - 0.5;
+            expect(overlap).withContext(`${boxes[i].name} / ${boxes[j].name}`).toBeFalse();
+          }
+        }
+        // The visual stays smaller than the box: segments draw a 36 px face inside 44 px.
+        const face = doc.querySelector<HTMLElement>('.composer .segment .segment-face')!;
+        expect(face.getBoundingClientRect().height).toBe(36);
+      } finally {
+        frame.remove();
+      }
+    });
+  }
 });
