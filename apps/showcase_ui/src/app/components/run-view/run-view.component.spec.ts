@@ -885,6 +885,7 @@ describe('RunViewComponent', () => {
 
     it('opens the share trust dialog from a focusable action and restores focus', async () => {
       await open();
+      q<HTMLDetailsElement>('.more-actions')!.open = true;
       const share = button('Copy link');
       share.focus();
       share.click();
@@ -892,7 +893,7 @@ describe('RunViewComponent', () => {
       expect(q<HTMLDialogElement>('dialog')!.open).toBeTrue();
       button('Cancel').click();
       await settle();
-      expect(document.activeElement).toBe(share);
+      expect(document.activeElement).toBe(q('.more-actions > summary'));
     });
 
     it('keeps actions in the header, then evidence with steps and technical details', async () => {
@@ -1183,9 +1184,10 @@ describe('RunViewComponent', () => {
       expect(q('.action-error')).toBeNull();
     });
 
-    it('closes on Escape (cancel) or Cancel without acting, and returns focus to the button that opened it', async () => {
+    it('closes on Escape or Cancel without acting and returns focus to More actions', async () => {
       await open();
       document.body.appendChild(root);
+      q<HTMLDetailsElement>('.more-actions')!.open = true;
       const copy = button('Copy link');
       copy.focus();
       copy.click();
@@ -1195,8 +1197,9 @@ describe('RunViewComponent', () => {
       await settle();
       expect(dialog.open).toBe(false);
       expect(clipboard).not.toHaveBeenCalled();
-      expect(document.activeElement).toBe(copy);
+      expect(document.activeElement).toBe(q('.more-actions > summary'));
 
+      q<HTMLDetailsElement>('.more-actions')!.open = true;
       const download = button('Download');
       download.focus();
       download.click();
@@ -1204,7 +1207,7 @@ describe('RunViewComponent', () => {
       q<HTMLButtonElement>('.dialog-cancel')!.click();
       await settle();
       expect(runs.downloadBundle).not.toHaveBeenCalled();
-      expect(document.activeElement).toBe(download);
+      expect(document.activeElement).toBe(q('.more-actions > summary'));
       root.remove();
     });
 

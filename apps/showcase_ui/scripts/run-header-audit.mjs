@@ -165,6 +165,14 @@ try {
       await evaluate(`document.querySelector('.full-prompt summary').click()`);
       assert.equal(await evaluate(`document.querySelector('.full-prompt').open`), true);
       await evaluate(`document.querySelector('.full-prompt summary').click()`);
+      await evaluate(`(() => {
+        document.querySelector('.more-actions > summary').click();
+        document.querySelector('.more-actions button').click();
+      })()`);
+      assert.equal(await evaluate(`document.querySelector('.trust-dialog').open`), true, 'share trust dialog opens');
+      await evaluate(`document.querySelector('.dialog-cancel').click()`);
+      assert.equal(await evaluate(`document.activeElement === document.querySelector('.more-actions > summary')`), true, 'dialog focus returns to visible More trigger');
+      assert.equal(await evaluate(`document.querySelector('.more-actions').open`), false, 'More closes when an action is chosen');
       if (state === 'running') {
         const before = await evaluate(`document.querySelector('[data-fact="duration"]').textContent`);
         await wait(1200);
