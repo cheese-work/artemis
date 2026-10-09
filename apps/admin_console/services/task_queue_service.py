@@ -43,6 +43,7 @@ except ImportError:
 
 from apps.admin_console.core.access_control import AdminAPIError
 from apps.admin_console.services import run_images
+from apps.admin_console.services.device_reservation import device_reservations
 from artemis.config import (
     PAUSE_FILE,
     TEST_DATA_DIR,
@@ -431,6 +432,11 @@ class TaskQueueService:
         """Removes a task from queue_items by session_id."""
         if not session_id:
             return
+        if (
+            str(session_id) not in state.executing_run_keys
+            and str(session_id) not in state.active_runs
+        ):
+            device_reservations.release(session_id)
         removed_items = [
             t
             for t in state.queue_items
@@ -1264,11 +1270,14 @@ class TaskQueueService:
     ) -> None:
         """Clean up the finished task and release this run's scheduling slot.
 
-        ``keep_row`` leaves the queue row and its ticket for a requeued start.
+        ``keep_row`` preserves a requeued start's reservation only while its row exists.
         """
         if sess_id and not keep_row:
             cls._remove_task(sess_id)
+            device_reservations.release(sess_id)
             state.cancelled_session_ids.discard(str(sess_id))
+        elif sess_id and not cls._queue_item_for(sess_id):
+            device_reservations.release(sess_id)
         host_admission.release(run_key)
         state.cancelled_session_ids.discard(run_key)
         state.manually_stopped_run_ids.discard(run_key)
@@ -1551,6 +1560,7 @@ class TaskQueueService:
         host_id: str | None = None,
         requested_by: str | None = None,
         bridge_session_id: str | None = None,
+        reservation_group: str | None = None,
     ) -> dict[str, Any]:
         """Reserve a device slot and build one pending queue item for a goal."""
         sess_id = single_session_id if single_session_id else str(uuid.uuid4())
@@ -1591,13 +1601,20 @@ class TaskQueueService:
             AdbTarget(endpoint, assigned_serial, host_id), lease.session_id if lease else None
         )
 
-        queue_ticket = DeviceExecutionLock.reserve(
-            description=f"{ingress} task: {goal_metadata(goal)}",
-            device_id=assigned_serial or "pending",
-            session_id=sess_id,
-            ingress=ingress,
-            lock_scope=AdbTarget(endpoint, assigned_serial, host_id).lock_scope,
+        reservation = device_reservations.claim(
+            binding, session_repo.db_path, sess_id, reservation_group
         )
+        try:
+            queue_ticket = DeviceExecutionLock.reserve(
+                description=f"{ingress} task: {goal_metadata(goal)}",
+                device_id=assigned_serial or "pending",
+                session_id=sess_id,
+                ingress=ingress,
+                lock_scope=binding.target.lock_scope,
+            )
+        except (OSError, RuntimeError):
+            device_reservations.release(sess_id)
+            raise
         return {
             "session_id": sess_id,
             "goal": goal,
@@ -1611,6 +1628,7 @@ class TaskQueueService:
             "device_serial": assigned_serial,
             "adb_endpoint": endpoint.to_dict(),
             "device_binding": binding.to_dict(),
+            "connection_id": reservation.connection_id,
             "ingress": ingress,
             "conversation_id": conversation_id,
             "run_id": run_id,
@@ -1623,6 +1641,15 @@ class TaskQueueService:
             "created_at": now + index * 0.001,
             "start_time": now + index * 0.001,
         }
+
+    @classmethod
+    def _fail_queued_batch(cls, tasks: list[dict[str, Any]]) -> None:
+        for task in tasks:
+            session_id = str(task["session_id"])
+            session_repo.update_session_status(
+                session_id, "failed", time.time(), error="Task batch could not be queued."
+            )
+            cls._remove_task(session_id)
 
     @classmethod
     async def enqueue_tasks(
@@ -1727,28 +1754,34 @@ class TaskQueueService:
                 "enqueued_count": 0,
                 "total_queued": len(state.queue_tasks),
             }
+        reservation_group = uuid.uuid4().hex
         for i, goal in enumerate(goals):
-            task_item = cls._create_queue_item(
-                goal,
-                i,
-                now,
-                endpoint,
-                single_session_id,
-                profile,
-                expected_output,
-                enable_outputter,
-                locked_app_package,
-                app_path,
-                device_serial,
-                ingress,
-                conversation_id,
-                verification_level=verification_level,
-                explorer_mode=explorer_mode,
-                run_id=run_id,
-                host_id=host_id,
-                requested_by=requested_by,
-                bridge_session_id=bridge_session_id,
-            )
+            try:
+                task_item = cls._create_queue_item(
+                    goal,
+                    i,
+                    now,
+                    endpoint,
+                    single_session_id,
+                    profile,
+                    expected_output,
+                    enable_outputter,
+                    locked_app_package,
+                    app_path,
+                    device_serial,
+                    ingress,
+                    conversation_id,
+                    verification_level=verification_level,
+                    explorer_mode=explorer_mode,
+                    run_id=run_id,
+                    host_id=host_id,
+                    requested_by=requested_by,
+                    bridge_session_id=bridge_session_id,
+                    reservation_group=reservation_group,
+                )
+            except (AdminAPIError, OSError, RuntimeError):
+                cls._fail_queued_batch(enqueued_tasks)
+                raise
             session_id = str(task_item["session_id"])
             existing_trace = trace_store.read_status(session_id)
             trace_created = existing_trace is None
@@ -1785,6 +1818,7 @@ class TaskQueueService:
                     notify_context,
                     requested_by,
                     device_binding=task_item["device_binding"],
+                    connection_id=task_item["connection_id"],
                 ):
                     raise RuntimeError(f"Could not persist queued session {session_id}")
                 if goal_images:
@@ -1792,6 +1826,7 @@ class TaskQueueService:
                     task_item["goal_images"] = run_images.store(session_id, goal_images)
             except (OSError, RuntimeError) as exc:
                 DeviceExecutionLock.cancel_reservation(task_item.get("queue_ticket"))
+                device_reservations.release(session_id)
                 if trace_created or (
                     not existing_trace_is_terminal
                     and session_repo.get_session_by_id(session_id) is None
@@ -1802,15 +1837,7 @@ class TaskQueueService:
                         logger.exception(
                             "Could not mark queue setup failure for session %s", session_id
                         )
-                for enqueued_task in enqueued_tasks:
-                    enqueued_session_id = str(enqueued_task["session_id"])
-                    session_repo.update_session_status(
-                        enqueued_session_id,
-                        "failed",
-                        time.time(),
-                        error="Task batch could not be queued.",
-                    )
-                    cls._remove_task(enqueued_session_id)
+                cls._fail_queued_batch(enqueued_tasks)
                 raise
             state.queue_items.append(task_item)
             if host_id:
@@ -1916,6 +1943,7 @@ class TaskQueueService:
         for item in state.queue_items:
             if isinstance(item, dict) and item.get("status") not in IN_FLIGHT_STATUSES:
                 DeviceExecutionLock.cancel_reservation(item.get("queue_ticket"))
+                device_reservations.release(item.get("session_id"))
         state.clear_queue()
 
         # 2. Terminate all active owners across all devices
@@ -2211,6 +2239,11 @@ class TaskQueueService:
         """Drop the stopped session's queue item and cancel its reservation."""
         if not stopped_session_id:
             return
+        if (
+            str(stopped_session_id) not in state.executing_run_keys
+            and str(stopped_session_id) not in state.active_runs
+        ):
+            device_reservations.release(stopped_session_id)
         stopped_item = next(
             (
                 item

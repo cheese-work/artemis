@@ -26,11 +26,17 @@ from fastapi import Request
 from httpx import ASGITransport, AsyncClient
 import jwt
 import pytest
-
 from apps.admin_console.core.access_control import AccessIdentity, public_tier
 from apps.admin_console.server import app
 
 DAY = 86400.0
+
+
+@pytest.fixture(autouse=True)
+def isolate_execution_reservations(monkeypatch):
+    from apps.admin_console.services.device_reservation import device_reservations
+
+    monkeypatch.setattr(device_reservations, "_claims", {})
 
 
 @pytest.fixture(scope="module")

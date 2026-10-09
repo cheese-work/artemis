@@ -265,6 +265,19 @@ def submit_task_to_daemon(
         with urllib.request.urlopen(req, timeout=timeout) as response:
             if response.status in (200, 201):
                 return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        try:
+            body = json.loads(exc.read().decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError, OSError):
+            return None
+        if not isinstance(body, dict) or not body.get("code"):
+            return None
+        return {
+            "status": "rejected",
+            "error": body.get("detail") or "Task rejected by Artemis Daemon.",
+            "code": body["code"],
+            "fix": body.get("fix"),
+        }
     except Exception as exc:
         logger.debug(f"Failed to submit task to Daemon at {url}: {exc}")
         return None
