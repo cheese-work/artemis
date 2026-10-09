@@ -141,6 +141,16 @@ describe('ChatInterfaceComponent device chip', () => {
     expect(fixture.componentInstance.activeQueue().map((item) => item.session_id)).toEqual(['live']);
   });
 
+  it('uses the short title in queue rows and their Stop controls', () => {
+    sessions.set([{ ...session('emulator-5554'), initial_goal: '\n## **Open** _Settings_\nCheck every toggle.' }]);
+    const fixture = TestBed.createComponent(ChatInterfaceComponent);
+    fixture.detectChanges();
+    const root = fixture.nativeElement as HTMLElement;
+    expect(root.querySelector('.task-goal')?.textContent?.trim()).toBe('Open Settings');
+    expect(root.querySelector('.btn-stop-card')?.getAttribute('title')).toBe('Stop this task: Open Settings');
+    expect(root.querySelector('.btn-stop-card')?.getAttribute('aria-label')).toBe('Stop this task: Open Settings');
+  });
+
   it('refreshes history when a run completes after the first catalog load', () => {
     sessions.set([session('emulator-5554')]);
     const runs = TestBed.inject(RunsService);

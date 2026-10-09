@@ -18,6 +18,7 @@ import {
 import { HttpErrorResponse, HttpEvent, HttpEventType } from '@angular/common/http';
 import { DatePipe, JsonPipe, NgTemplateOutlet } from '@angular/common';
 import { Router, RouterLink } from '@angular/router';
+import { Title } from '@angular/platform-browser';
 import { Subscription, catchError, of, switchMap, timer } from 'rxjs';
 import { RunSummary, SessionVideo, VideoSegment } from '../../core/models/run.model';
 import { ActionParam, CheckerBlockData, SessionChecks, StepEvent, StepItemData } from '../../core/models/stream.model';
@@ -48,6 +49,7 @@ import { REPORT_TITLE_MAX, isLongReport, summarizeReport } from '../../utils/rep
 import { Playback, mapRecording, prepareFailedCopy, technicalDetail } from '../../utils/recording-state.util';
 import { locateSessionTime } from '../../utils/recording-timeline.util';
 import { runStatusView } from '../../utils/run-status.util';
+import { runTitle } from '../../utils/run-title.util';
 import { buildStartupWorkItems } from '../../utils/run-startup.util';
 import { buildCheckerSnapshotLogs, consolidateLogsToBlocks, getSortedStepEvents } from '../../utils/stream-aggregator.util';
 import { AgentService, type StartupProgressEvent } from '../../services/agent.service';
@@ -97,6 +99,9 @@ export class RunViewComponent {
   private readonly ownerScope = inject(OwnerScopeService);
   private readonly router = inject(Router);
   private readonly destroyRef = inject(DestroyRef);
+  private readonly pageTitle = inject(Title);
+  private readonly promptEl = viewChild<ElementRef<HTMLDetailsElement>>('promptEl');
+  public readonly title = computed(() => runTitle(this.run()?.prompt));
 
   /** Full run id or its 8-character prefix, from the URL. */
   public readonly runId = input<string>('');
@@ -326,6 +331,10 @@ export class RunViewComponent {
 
   constructor() {
     this.ownerScope.load();
+    const previousTitle = this.pageTitle.getTitle();
+    effect(() => this.pageTitle.setTitle(this.state() === 'ready'
+      ? `${this.title()} · SmartQA` : previousTitle));
+    this.destroyRef.onDestroy(() => this.pageTitle.setTitle(previousTitle));
 
     const query = typeof window !== 'undefined' ? window.matchMedia('(max-width: 1279px)') : null;
     if (query) {
@@ -390,6 +399,7 @@ export class RunViewComponent {
   }
 
   private load(id: string): void {
+    if (this.promptEl()) this.promptEl()!.nativeElement.open = false;
     this.rememberPosition();
     this.loadedSessionId = id || null;
     this.renderedStepId = null;
