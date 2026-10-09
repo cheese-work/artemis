@@ -254,6 +254,7 @@ class StorageManager:
                     local_video_path TEXT,
                     status TEXT NOT NULL DEFAULT 'recording',
                     error TEXT,
+                    reason TEXT,
                     FOREIGN KEY(session_id) REFERENCES sessions(session_id)
                 )
             """)
@@ -270,6 +271,8 @@ class StorageManager:
                 )
             if "error" not in video_recording_columns:
                 conn.execute("ALTER TABLE video_recordings ADD COLUMN error TEXT")
+            if "reason" not in video_recording_columns:
+                conn.execute("ALTER TABLE video_recordings ADD COLUMN reason TEXT")
             try:
                 conn.execute("ALTER TABLE background_tasks ADD COLUMN logs TEXT")
             except sqlite3.OperationalError:
@@ -359,9 +362,9 @@ class StorageManager:
                 """
                 INSERT INTO video_recordings (
                     video_id, session_id, device_id, start_time, end_time,
-                    local_video_path, status, error
+                    local_video_path, status, error, reason
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     str(record.video_id),
@@ -372,6 +375,7 @@ class StorageManager:
                     record.local_video_path,
                     record.status,
                     record.error,
+                    record.reason,
                 ),
             )
             conn.commit()
@@ -382,7 +386,7 @@ class StorageManager:
             conn.execute(
                 """
                 UPDATE video_recordings
-                SET end_time = ?, local_video_path = ?, status = ?, error = ?
+                SET end_time = ?, local_video_path = ?, status = ?, error = ?, reason = ?
                 WHERE video_id = ?
                 """,
                 (
@@ -390,6 +394,7 @@ class StorageManager:
                     record.local_video_path,
                     record.status,
                     record.error,
+                    record.reason,
                     str(record.video_id),
                 ),
             )
@@ -440,6 +445,7 @@ class StorageManager:
                     if "status" in row.keys()
                     else ("ready" if row["end_time"] is not None else "recording"),
                     error=row["error"] if "error" in row.keys() else None,
+                    reason=row["reason"] if "reason" in row.keys() else None,
                 )
         return None
 

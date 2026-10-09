@@ -34,7 +34,7 @@ import {
 } from '../../utils/action-formatter.util';
 import { renderMarkdownToHtml } from '../../utils/markdown-parser.util';
 import { REPORT_TITLE_MAX, isLongReport, summarizeReport } from '../../utils/report-summary.util';
-import { Playback, mapRecording } from '../../utils/recording-state.util';
+import { Playback, mapRecording, prepareFailedCopy, technicalDetail } from '../../utils/recording-state.util';
 import { locateSessionTime } from '../../utils/recording-timeline.util';
 import { runStatusView } from '../../utils/run-status.util';
 import { buildStartupWorkItems } from '../../utils/run-startup.util';
@@ -228,11 +228,15 @@ export class RunViewComponent {
   public readonly copy = computed(() => {
     if (this.videoFailed()) return "Couldn't check the video.";
     if (this.playerFailed()) return 'The video could not be played. Steps and screenshots are still here.';
-    const message = this.video()?.message?.trim();
     return this.recording().state === 'prepare_failed'
-      ? `${this.recording().copy} ${message || 'The video service did not report a reason.'}`
+      ? prepareFailedCopy(this.recording().copy, this.video()?.message)
       : this.recording().copy;
   });
+
+  /** Raw recorder output behind a failed video, shown only inside "Technical details". */
+  public readonly videoDetail = computed(() =>
+    this.recording().state === 'prepare_failed' ? technicalDetail(this.video()?.detail) : null
+  );
 
   public readonly videoUrl = computed(
     () => mediaUrl(this.segments()[this.activeSegmentIndex()]?.url ?? this.video()?.video_url)
