@@ -104,6 +104,10 @@ describe('Workspace review mode', () => {
       const frameDocument = frame.contentDocument!;
       expect(frame.contentWindow!.innerWidth).toBe(width);
       frameDocument.body.style.cssText = 'margin: 0; height: 100vh';
+      const tokens = getComputedStyle(document.documentElement);
+      for (const property of Array.from(tokens)) {
+        if (property.startsWith('--')) frameDocument.documentElement.style.setProperty(property, tokens.getPropertyValue(property));
+      }
       for (const style of Array.from(document.head.querySelectorAll('style'))) {
         frameDocument.head.appendChild(style.cloneNode(true));
       }
