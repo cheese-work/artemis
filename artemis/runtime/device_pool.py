@@ -355,6 +355,32 @@ class DevicePool:
                 )
             ]
 
+    def _identity_only_serials(
+        self, raw: list[tuple[str, str, str | None, str | None]], metadata: list[str]
+    ) -> list[str]:
+        """Serials whose hardware identity is re-read although their metadata stays cached.
+
+        Another phone can take a Wi-Fi or bridge address (``ip:port``) between two
+        enumerations, and any transport while it is not ``device``, so a cached
+        ``ro.serialno`` is never trusted there (CHE-1473).
+        """
+        with self._cache_lock:
+            props = self._snapshot().props
+            for serial, state, _, _ in raw:
+                if state != "device":
+                    props.pop(serial, None)
+            return [
+                serial
+                for serial, state, _, _ in raw
+                if state == "device"
+                and serial not in metadata
+                and (serial not in props or ":" in serial or "._adb" in serial)
+            ]
+
+    def _store_props(self, serial: str, props: dict[str, str]) -> None:
+        with self._cache_lock:
+            self._snapshot().props[serial] = props
+
     def _store_identity(self, serial: str, props: dict[str, str]) -> None:
         with self._cache_lock:
             self._snapshot().props[serial] = props
@@ -365,7 +391,8 @@ class DevicePool:
             )
 
     def _refresh_identities_sync(self, raw: list[tuple[str, str, str | None, str | None]]) -> None:
-        serials = self._stale_identity_serials(raw)
+        metadata = self._stale_identity_serials(raw)
+        serials = metadata + self._identity_only_serials(raw, metadata)
         if not serials:
             return
         # Read in parallel so N unreadable devices cost one timeout, not N.
@@ -379,15 +406,16 @@ class DevicePool:
                 )
             )
         for serial, props in zip(serials, results, strict=True):
-            self._store_identity(serial, props)
+            (self._store_identity if serial in metadata else self._store_props)(serial, props)
 
     async def _refresh_identities_async(
         self, raw: list[tuple[str, str, str | None, str | None]]
     ) -> None:
-        serials = self._stale_identity_serials(raw)
+        metadata = self._stale_identity_serials(raw)
+        serials = metadata + self._identity_only_serials(raw, metadata)
         results = await asyncio.gather(*(self._read_properties_async(s) for s in serials))
         for serial, props in zip(serials, results, strict=True):
-            self._store_identity(serial, props)
+            (self._store_identity if serial in metadata else self._store_props)(serial, props)
 
     def _cached_snapshot(
         self, *, allow_stale: bool
