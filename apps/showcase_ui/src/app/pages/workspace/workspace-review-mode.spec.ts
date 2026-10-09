@@ -49,6 +49,7 @@ describe('Workspace review mode', () => {
       whatsNewPromptDraft: signal(false),
       updateWhatsNewErrorVisibility: () => undefined,
       isCurrentSessionRunning: () => false,
+      sessions: () => [],
       currentSession: liveSession,
       currentSessionId: () => liveSession()?.session_id ?? null,
       currentStartupProgress: () => [],
@@ -70,6 +71,7 @@ describe('Workspace review mode', () => {
         { provide: RunsService, useValue: runs },
         { provide: WorkspacePhoneService, useValue: {
           target,
+          view: () => ({ text: 'Fixture phone' }),
           runInterrupted: () => liveSession()?.status === 'interrupted',
           canConnectFromBrowser: () => true,
           connectFromBrowser: reconnect,
@@ -146,7 +148,7 @@ describe('Workspace review mode', () => {
   it('shows the run list beside the shared RunView and new-task box on /workspace', async () => {
     await go('/workspace');
     expect(q('app-run-view')).not.toBeNull();
-    expect(q('textarea.dock-textarea')).not.toBeNull();
+    expect(q('textarea.composer-input')).not.toBeNull();
     expect(q('.workspace-container.review-mode')).toBeNull();
     expect(q('.resizer, .right-panel, app-chat-interface')).toBeNull();
     expect(q('.run-list-pane app-run-library')).not.toBeNull();
@@ -163,7 +165,7 @@ describe('Workspace review mode', () => {
     expect(q('app-agent-stream')).toBeNull();
     expect(q('app-run-view')).toBeNull();
     expect(runs.get).not.toHaveBeenCalled();
-    expect(q('.workspace-floating-bar-wrapper')).toBeNull();
+    expect(q('.composer')).toBeNull();
   });
 
   it('passes team review restrictions to the unified RunView', async () => {
@@ -200,7 +202,7 @@ describe('Workspace review mode', () => {
   it('has no decorative waves or glass in the live dock or in review mode', async () => {
     await go('/workspace');
     expect(q('.liquid-wave, .wave-glow-ambient, .dock-wave-container')).toBeNull();
-    expect(getComputedStyle(q('.floating-dock-card')!).backdropFilter).toBe('none');
+    expect(getComputedStyle(q('.composer-card')!).backdropFilter).toBe('none');
     await go('/runs');
     expect(q('.liquid-wave, .wave-glow-ambient, .dock-wave-container')).toBeNull();
   });
@@ -253,7 +255,7 @@ describe('Workspace review mode', () => {
 
   it('prefills the dock with a prompt handed over from the viewer', async () => {
     await go('/workspace', { draftPrompt: 'Log in and open settings' });
-    expect((q('textarea.dock-textarea') as HTMLTextAreaElement).value).toBe('Log in and open settings');
+    expect((q('textarea.composer-input') as HTMLTextAreaElement).value).toBe('Log in and open settings');
   });
 
   for (const connected of [false, true]) {
@@ -281,7 +283,7 @@ describe('Workspace review mode', () => {
       harness.fixture.detectChanges();
       await harness.fixture.whenStable();
       harness.fixture.detectChanges();
-      expect((q('textarea.dock-textarea') as HTMLTextAreaElement).value).toBe(prompt);
+      expect((q('textarea.composer-input') as HTMLTextAreaElement).value).toBe(prompt);
 
       const reconnects = buttons.filter((element) => element.textContent?.includes('Reconnect phone'));
       expect(reconnects.length).toBe(connected ? 0 : 1);

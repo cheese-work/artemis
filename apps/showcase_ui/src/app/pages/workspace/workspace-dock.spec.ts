@@ -42,13 +42,14 @@ describe('WorkspaceComponent always-open task dock', () => {
       imports: [WorkspaceComponent],
       providers: [provideRouter([]), { provide: ActivatedRoute, useValue: route }, {
         provide: WorkspacePhoneService,
-        useValue: { target: () => ({ serial: 'fixture-phone' }), requestPicker: () => undefined }
+        useValue: { target: () => ({ serial: 'fixture-phone' }), view: () => ({ text: 'Fixture phone' }), requestPicker: () => undefined }
       }, {
         provide: AgentService,
         useValue: {
           whatsNewPromptDraft: signal(false),
           updateWhatsNewErrorVisibility: () => {},
           isCurrentSessionRunning: () => false,
+          sessions: () => [],
           currentSession: () => null,
           currentSessionId: () => null,
           currentStartupProgress: () => [],
@@ -65,9 +66,9 @@ describe('WorkspaceComponent always-open task dock', () => {
     it(`stays at its expanded size after mouse leave and focus loss in ${review ? 'review' : 'live'} mode`, async () => {
       await create(review);
       const root: HTMLElement = fixture.nativeElement;
-      const card = root.querySelector<HTMLElement>('.floating-dock-card')!;
+      const card = root.querySelector<HTMLElement>('.composer-card')!;
       const textarea = root.querySelector<HTMLTextAreaElement>('textarea')!;
-      const content = root.querySelector<HTMLElement>('.expanded-card-content')!;
+      const content = root.querySelector<HTMLElement>('.composer-row')!;
       const width = card.getBoundingClientRect().width;
       expect(getComputedStyle(content).display).not.toBe('none');
       expect(root.querySelector('.capsule-peek-view')).toBeNull();
@@ -103,11 +104,11 @@ describe('WorkspaceComponent always-open task dock', () => {
     const root: HTMLElement = fixture.nativeElement;
     document.body.appendChild(root);
     try {
-      const dock = root.querySelector<HTMLElement>('.workspace-floating-bar-wrapper')!;
+      const dock = root.querySelector<HTMLElement>('.composer')!;
       expect(['static', 'relative', 'sticky']).toContain(getComputedStyle(dock).position);
       expect(getComputedStyle(dock).backgroundColor).toBe('rgb(255, 255, 255)');
-      expect(getComputedStyle(root.querySelector('.floating-dock-card')!).backdropFilter).toBe('none');
-      for (const control of Array.from(root.querySelectorAll<HTMLElement>('.dock-circle-btn, .profile-toggle-pill'))) {
+      expect(getComputedStyle(root.querySelector('.composer-card')!).backdropFilter).toBe('none');
+      for (const control of Array.from(root.querySelectorAll<HTMLElement>('.composer-btn, .composer .segment'))) {
         const { width, height } = control.getBoundingClientRect();
         expect(Math.min(width, height)).withContext(control.className).toBeGreaterThanOrEqual(44);
       }
@@ -123,7 +124,7 @@ describe('WorkspaceComponent always-open task dock', () => {
     try {
       const skip = Array.from(root.querySelectorAll<HTMLButtonElement>('button.skip-link')).find((b) => b.textContent!.includes('new task'))!;
       skip.click();
-      expect(document.activeElement).toBe(root.querySelector('textarea.dock-textarea'));
+      expect(document.activeElement).toBe(root.querySelector('textarea.composer-input'));
     } finally {
       root.remove();
     }
@@ -131,7 +132,7 @@ describe('WorkspaceComponent always-open task dock', () => {
 
   it('has no task dock on review pages: the run view offers Start new run instead', async () => {
     await create(true);
-    expect(fixture.nativeElement.querySelector('.workspace-floating-bar-wrapper')).toBeNull();
+    expect(fixture.nativeElement.querySelector('.composer')).toBeNull();
   });
 
   for (const modifier of ['ctrlKey', 'metaKey']) {

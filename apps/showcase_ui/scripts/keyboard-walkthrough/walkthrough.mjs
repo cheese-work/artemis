@@ -349,7 +349,7 @@ try {
     start_time: current.start_time, end_time: current.end_time, device_serial: current.device_ref.serial }];
   mock.status = { status: 'idle', session_id: null };
   await send('Page.navigate', { url: `${base}/workspace` });
-  await expectTrue('Workspace shows the same run with its new-task box', `!!document.querySelector('app-run-view [data-section="outcome"]') && !!document.querySelector('textarea.dock-textarea')`);
+  await expectTrue('Workspace shows the same run with its new-task box', `!!document.querySelector('app-run-view [data-section="outcome"]') && !!document.querySelector('textarea.composer-input')`);
   await expectTrue('first Workspace visit opens What\'s New', `!!document.querySelector('dialog.whats-new-dialog[open]')`);
   await press('Escape');
   await expectTrue('Escape dismisses What\'s New', `!document.querySelector('dialog.whats-new-dialog[open]')`);
@@ -373,7 +373,7 @@ try {
   await tabUntil('Skip to new task', focusNamed('Skip to new task'));
   await expectTrue('the skip link shows itself while focused', `document.activeElement.getBoundingClientRect().height >= 44`);
   await press('Enter');
-  await expectTrue('Enter put focus in the new-task box', `document.activeElement.matches('textarea.dock-textarea')`);
+  await expectTrue('Enter put focus in the new-task box', `document.activeElement.matches('textarea.composer-input')`);
   await tabUntil('Skip to run list', focusNamed('Skip to run list'), { back: true, max: 80 });
   await press('Enter');
   await expectTrue('Enter put focus on the first tab of the list', `document.activeElement.matches('.run-list-pane [role="tab"]')`);
@@ -400,14 +400,14 @@ try {
 
   log('Task dock: stays open, and clipboard keyboard operation');
   await send('Page.navigate', { url: `${base}/workspace` });
-  await expectTrue('empty task dock is expanded', `!!document.querySelector('.workspace-floating-bar-wrapper.is-expanded textarea') && getComputedStyle(document.querySelector('.expanded-card-content')).display !== 'none'`);
-  const dockWidth = await evaluate(`document.querySelector('.floating-dock-card').getBoundingClientRect().width`);
+  await expectTrue('empty task dock is expanded', `!!document.querySelector('.composer textarea') && getComputedStyle(document.querySelector('.composer-row')).display !== 'none'`);
+  const dockWidth = await evaluate(`document.querySelector('.composer-card').getBoundingClientRect().width`);
   await press('Tab');
-  await expectTrue('focus loss does not collapse or resize the dock', `!document.querySelector('.is-dormant') && document.querySelector('.floating-dock-card').getBoundingClientRect().width === ${dockWidth}`);
-  await tabUntil('task textarea', focusIs('textarea.dock-textarea'));
+  await expectTrue('focus loss does not collapse or resize the dock', `!document.querySelector('.is-dormant') && document.querySelector('.composer-card').getBoundingClientRect().width === ${dockWidth}`);
+  await tabUntil('task textarea', focusIs('textarea.composer-input'));
   await evaluate(`(() => {
     window.dockPasteEvents = [];
-    document.querySelector('textarea.dock-textarea').addEventListener('paste', event => {
+    document.querySelector('textarea.composer-input').addEventListener('paste', event => {
       window.dockPasteEvents.push({
         trusted: event.isTrusted,
         types: Array.from(event.clipboardData?.types ?? []),
@@ -429,12 +429,12 @@ try {
   await tabUntil('Remove image', focusIs('button.btn-remove-image'));
   await press('Enter');
   await expectTrue('Enter removes the pasted preview', `!document.querySelector('ul.attached-images')`);
-  await tabUntil('task textarea', focusIs('textarea.dock-textarea'));
+  await tabUntil('task textarea', focusIs('textarea.composer-input'));
   await evaluate(`navigator.clipboard.writeText('clipboard task text')`);
   await pasteShortcut(send);
   await sleep(120);
   await expectTrue('native text paste delivers a trusted text clipboard payload', `window.dockPasteEvents.length === 2 && window.dockPasteEvents[1].trusted && window.dockPasteEvents[1].types.includes('text/plain') && window.dockPasteEvents[1].files.length === 0`);
-  await expectTrue('platform paste shortcut of text remains text without an attachment', `document.querySelector('textarea.dock-textarea').value === 'clipboard task text' && !document.querySelector('ul.attached-images')`);
+  await expectTrue('platform paste shortcut of text remains text without an attachment', `document.querySelector('textarea.composer-input').value === 'clipboard task text' && !document.querySelector('ul.attached-images')`);
 
   log('\nKeyboard walkthrough passed.');
   await cleanup(0);

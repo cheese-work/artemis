@@ -211,6 +211,22 @@ export class WorkspaceComponent implements OnInit {
     return 'Stop current running task';
   });
 
+  /** Runs waiting behind the live one; the hint line counts them. */
+  public readonly queuedCount = computed(() =>
+    this.agentService.sessions().filter((session) => session.status === 'pending').length);
+
+  public readonly composerPlaceholder = computed(() => this.isTaskRunning()
+    ? 'Describe the next task. It queues after this run.'
+    : 'Describe a task for the phone.');
+
+  /** One line under the input: the phone the next run binds to, then the queue. */
+  public readonly composerHint = computed(() => {
+    if (!this.phone.target()) return 'No phone yet. Send opens the phone picker.';
+    const queued = this.queuedCount();
+    const queue = queued ? ` · ${queued} ${queued === 1 ? 'run' : 'runs'} already queued` : '';
+    return `Runs on ${this.phone.view().text}${queue}`;
+  });
+
   /**
    * Focus input handler
    */
@@ -244,20 +260,6 @@ export class WorkspaceComponent implements OnInit {
     setTimeout(() => {
       this.dockInputRef?.nativeElement?.focus();
     }, 30);
-  }
-
-  /**
-   * Clear typed task input
-   */
-  public clearInput(event?: MouseEvent): void {
-    if (event) {
-      event.stopPropagation();
-    }
-    this.taskInput = '';
-    if (this.dockInputRef?.nativeElement) {
-      this.dockInputRef.nativeElement.style.height = 'auto';
-      this.dockInputRef.nativeElement.focus();
-    }
   }
 
   /**

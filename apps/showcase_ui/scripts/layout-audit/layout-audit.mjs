@@ -232,11 +232,11 @@ const CONTRAST_SELF_TEST = `(() => {
 })()`;
 
 const BLUR = `[...document.querySelectorAll('*')].filter((e) => { const c = getComputedStyle(e); return (c.backdropFilter && c.backdropFilter !== 'none') || /blur/.test(c.filter); }).map((e) => e.className?.toString() || e.tagName).slice(0, 5)`;
-const TARGETS = `[...document.querySelectorAll('.floating-nav-switcher .nav-tab-btn, .tab-selector-btn, .dock-circle-btn, .profile-toggle-pill, app-run-library button, app-run-library summary, app-run-library input, app-run-library select, app-run-view .action-button, app-run-view .secondary-button, app-run-view summary')]
+const TARGETS = `[...document.querySelectorAll('.floating-nav-switcher .nav-tab-btn, .tab-selector-btn, .composer-btn, .composer .segment, app-run-library button, app-run-library summary, app-run-library input, app-run-library select, app-run-view .action-button, app-run-view .secondary-button, app-run-view summary')]
   .map((e) => [e, e.getBoundingClientRect()]).filter(([e, r]) => r.width > 0 && r.height > 0 && !e.disabled)
   .filter(([, r]) => r.height < 43.5 || r.width < 43.5).map(([e, r]) => (e.getAttribute('aria-label') || e.textContent || e.className).trim().slice(0, 24) + ' ' + Math.round(r.width) + 'x' + Math.round(r.height))`;
 const BOXES = `(() => { const r = (s) => { const e = document.querySelector(s); if (!e) return null; const b = e.getBoundingClientRect(); return { l: b.left, t: b.top, r: b.right, b: b.bottom, w: b.width, h: b.height }; };
-  return { list: r('.run-list-pane'), detail: r('.detail-pane'), run: r('.run-surface'), dock: r('.workspace-floating-bar-wrapper'), scrollH: document.documentElement.scrollHeight, overflowX: document.documentElement.scrollWidth - innerWidth }; })()`;
+  return { list: r('.run-list-pane'), detail: r('.detail-pane'), run: r('.run-surface'), dock: r('.composer'), scrollH: document.documentElement.scrollHeight, overflowX: document.documentElement.scrollWidth - innerWidth }; })()`;
 
 function checkPanes(where, route, width, b) {
   const TOLERANCE = 2;
