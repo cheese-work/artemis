@@ -195,7 +195,8 @@ $narrow: 800px;
 
     &.is-focused .floating-dock-card {
       border-color: var(--color-primary);
-      box-shadow: 0 0 0 1px var(--color-primary);
+      outline: 3px solid var(--color-focus);
+      outline-offset: 2px;
     }
 
     .expanded-card-content {
@@ -218,6 +219,7 @@ $narrow: 800px;
 
           .dock-textarea {
             display: block;
+            min-height: var(--target);
             width: 100%;
             max-height: 120px;
             padding: var(--space-sm) 0;
@@ -255,7 +257,7 @@ $narrow: 800px;
           width: var(--target);
           height: var(--target);
           padding: 0;
-          border: 1px solid transparent;
+          border: 0;
           border-radius: var(--radius-full);
           cursor: pointer;
           transition: background var(--motion-fast) var(--ease-move), border-color var(--motion-fast) var(--ease-move);
@@ -271,7 +273,7 @@ $narrow: 800px;
 
           &.btn-clear,
           &.btn-attach {
-            background: transparent;
+            background: var(--color-surface-subtle);
             color: var(--color-text-muted);
 
             &:hover:not(:disabled) {
@@ -299,7 +301,6 @@ $narrow: 800px;
 
             &:disabled {
               background: var(--color-surface-subtle);
-              border-color: var(--color-rule-strong);
               color: var(--color-text-muted);
               opacity: 1;
             }
@@ -330,7 +331,7 @@ $narrow: 800px;
             gap: 2px;
             padding: 2px;
             background: var(--color-surface-subtle);
-            border: 1px solid var(--color-rule-strong);
+            border: 0;
             border-radius: var(--radius-md);
 
             .profile-toggle-pill {
@@ -341,7 +342,7 @@ $narrow: 800px;
               min-width: 72px;
               height: var(--target);
               padding: 0 var(--space-smd);
-              border: 1px solid transparent;
+              border: 0;
               border-radius: var(--radius-sm);
               background: transparent;
               color: var(--color-text-muted);
@@ -362,10 +363,8 @@ $narrow: 800px;
                 background: var(--color-surface);
               }
 
-              /* Selected: a tint, an edge and a heavier word, never colour alone. */
               &.active {
                 background: var(--color-primary-tint);
-                border-color: var(--color-primary-edge);
                 color: var(--color-ink);
                 font-weight: 600;
               }

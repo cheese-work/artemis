@@ -25,7 +25,7 @@ $bg-base: var(--color-bg);
 $card-bg: var(--color-surface);
 $card-border: var(--color-rule);
 $card-border-hover: var(--color-rule-strong);
-$card-shadow: 0 1px 3px rgb(15 23 42 / 3%), 0 4px 12px rgb(15 23 42 / 2%);
+$card-shadow: none;
 
 // Brand & Semantic Colors
 $primary: var(--color-primary);
@@ -62,18 +62,19 @@ $text-light: var(--color-text-faint);
   padding: 2px;
   gap: 2px;
   background: var(--color-surface);
-  border: 1px solid color-mix(in srgb, var(--color-rule) 85%, transparent);
-  border-radius: 8px;
-  box-shadow: 0 1px 3px rgb(15 23 42 / 4%), inset 0 1px 1px color-mix(in srgb, var(--color-surface) 80%, transparent);
+  border: 0;
+  border-radius: var(--radius-md);
 
   .os-pill {
+    min-height: var(--target);
+    min-width: var(--target);
     padding: 3px 9px;
     border: 0;
     border-radius: 6px;
     background: transparent;
     color: $text-secondary;
     font-family: inherit;
-    font-size: 11px;
+    font-size: var(--text-label);
     font-weight: 600;
     line-height: 1.35;
     cursor: pointer;
@@ -87,7 +88,6 @@ $text-light: var(--color-text-faint);
     &.active {
       color: var(--color-on-primary);
       background: $primary;
-      box-shadow: 0 1px 2px rgb(15 23 42 / 12%);
     }
 
     &:focus-visible {
@@ -101,8 +101,10 @@ $text-light: var(--color-text-faint);
 // BUTTON MIXINS (solid, opaque; DESIGN.md Components)
 // =============================================================================
 @mixin glass-primary-btn {
+  min-height: var(--target);
+  min-width: var(--target);
   background: var(--color-primary);
-  border: 1px solid var(--color-primary);
+  border: 0;
   color: var(--color-on-primary) !important;
   transition: background var(--motion-fast) var(--ease-move), border-color var(--motion-fast) var(--ease-move);
 
@@ -112,12 +114,10 @@ $text-light: var(--color-text-faint);
 
   &:hover:not(:disabled) {
     background: var(--color-primary-hover);
-    border-color: var(--color-primary-hover);
   }
 
   &:disabled {
     background: var(--color-surface-subtle);
-    border-color: var(--color-rule-strong);
     color: var(--color-text-faint) !important;
     cursor: not-allowed;
 
@@ -128,9 +128,10 @@ $text-light: var(--color-text-faint);
 }
 
 @mixin glass-secondary-btn {
-  background: var(--color-surface);
-  border: 1px solid color-mix(in srgb, var(--color-rule) 88%, transparent);
-  box-shadow: 0 2px 8px -1px rgb(15 23 42 / 5%), inset 0 1px 1px var(--color-surface);
+  min-height: var(--target);
+  min-width: var(--target);
+  background: var(--color-surface-subtle);
+  border: 0;
   color: $text-secondary;
   transition: background 0.2s cubic-bezier(0.4, 0, 0.2, 1),
               border-color 0.2s cubic-bezier(0.4, 0, 0.2, 1),
@@ -140,10 +141,8 @@ $text-light: var(--color-text-faint);
               opacity 0.2s cubic-bezier(0.4, 0, 0.2, 1);
 
   &:hover:not(:disabled) {
-    background: var(--color-surface);
-    border-color: var(--color-primary-edge);
+    background: var(--color-rule);
     color: $primary;
-    box-shadow: 0 4px 12px -2px rgb(15 23 42 / 8%), inset 0 1px 1px var(--color-surface);
     transform: translateY(-0.5px);
 
     .material-symbols-outlined:not(.feedback-done) {
@@ -175,6 +174,11 @@ $text-light: var(--color-text-faint);
 
 *, *::before, *::after {
   box-sizing: border-box;
+}
+
+button, input {
+  min-height: var(--target);
+  min-width: var(--target);
 }
 
 .home-container {
@@ -239,9 +243,8 @@ $text-light: var(--color-text-faint);
       /* Unified Step Card Container */
       .guide-card {
         background: $card-bg;
-        border: 1px solid $card-border;
-        border-radius: 14px;
-        box-shadow: $card-shadow;
+        border: 0;
+        border-radius: var(--radius-lg);
         overflow: hidden;
         transition: border-color 0.2s ease, box-shadow 0.2s ease;
 
@@ -315,19 +318,16 @@ $text-light: var(--color-text-faint);
                 &.pill-pass {
                   background: $emerald-light;
                   color: $emerald;
-                  border: 1px solid $emerald-border;
                 }
 
                 &.pill-warn {
                   background: $amber-light;
                   color: $amber-dark;
-                  border: 1px solid $amber-border;
                 }
 
                 &.pill-fail {
                   background: $rose-light;
                   color: $rose-dark;
-                  border: 1px solid $rose-border;
                 }
               }
             }
@@ -440,17 +440,16 @@ $text-light: var(--color-text-faint);
               .os-selector-pills {
                 display: inline-flex;
                 align-items: center;
-                background: var(--color-surface);
-                border: 1px solid color-mix(in srgb, var(--color-rule) 85%, transparent);
+                background: var(--color-surface-subtle);
+                border: 0;
                 border-radius: 8px;
                 padding: 2px;
                 gap: 2px;
-                box-shadow: 0 1px 3px rgb(15 23 42 / 4%), inset 0 1px 1px color-mix(in srgb, var(--color-surface) 80%, transparent);
 
                 .os-pill {
                   border: none;
                   background: transparent;
-                  font-size: 11px;
+                  font-size: var(--text-label);
                   font-weight: 600;
                   color: $text-secondary;
                   padding: 3px 9px;
@@ -466,7 +465,6 @@ $text-light: var(--color-text-faint);
                   &.active {
                     background: var(--color-primary);
                     color: var(--color-on-primary) !important;
-                    box-shadow: 0 2px 6px color-mix(in srgb, var(--color-primary) 30%, transparent), inset 0 1px 1px color-mix(in srgb, var(--color-surface) 35%, transparent);
                   }
                 }
               }
@@ -636,12 +634,10 @@ $text-light: var(--color-text-faint);
           background: var(--color-surface);
           border: 1px solid var(--color-rule);
           border-radius: 12px;
-          box-shadow: 0 1px 3px rgb(15 23 42 / 2%), 0 4px 12px rgb(15 23 42 / 2%);
           transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
 
           &:hover {
             border-color: var(--color-rule-strong);
-            box-shadow: 0 2px 6px rgb(15 23 42 / 4%), 0 8px 18px rgb(15 23 42 / 3%);
           }
 
           .device-avatar {
@@ -804,7 +800,6 @@ $text-light: var(--color-text-faint);
         background: linear-gradient(180deg, var(--color-surface) 0%, var(--color-bg) 100%);
         border: 1.5px solid color-mix(in srgb, var(--color-primary) 25%, transparent);
         border-radius: 12px;
-        box-shadow: 0 4px 16px color-mix(in srgb, var(--color-primary) 6%, transparent);
 
         .tracker-header {
           display: flex;
@@ -907,7 +902,6 @@ $text-light: var(--color-text-faint);
                 background: var(--color-primary-tint);
                 color: $primary;
                 border-color: color-mix(in srgb, var(--color-primary) 40%, transparent);
-                box-shadow: 0 2px 6px color-mix(in srgb, var(--color-primary) 12%, transparent);
               }
             }
 
@@ -916,14 +910,13 @@ $text-light: var(--color-text-faint);
               align-items: center;
               gap: 5px;
               padding: 6px 13px;
-              background: color-mix(in srgb, var(--color-bg) 75%, transparent);
-              border: 1px solid color-mix(in srgb, var(--color-error-bg) 85%, transparent);
+              background: var(--color-error-bg);
+              border: 0;
               border-radius: 6px;
               color: $rose;
               font-size: 12px;
               font-weight: 600;
               cursor: pointer;
-              box-shadow: 0 1px 3px color-mix(in srgb, var(--color-error-solid) 6%, transparent), inset 0 1px 1px color-mix(in srgb, var(--color-surface) 80%, transparent);
               transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
 
               .material-symbols-outlined {
@@ -933,7 +926,6 @@ $text-light: var(--color-text-faint);
               &:hover {
                 background: var(--color-error-bg);
                 border-color: $rose;
-                box-shadow: 0 4px 12px -2px color-mix(in srgb, var(--color-error-solid) 15%, transparent);
                 transform: translateY(-0.5px);
               }
 
@@ -1128,8 +1120,8 @@ $text-light: var(--color-text-faint);
               align-items: center;
               gap: 4px;
               padding: 2px 8px;
-              background: var(--color-surface);
-              border: 1px solid var(--color-rule-strong);
+              background: var(--color-surface-subtle);
+              border: 0;
               border-radius: 4px;
               color: var(--color-ink);
               font-size: 11px;
@@ -1179,7 +1171,6 @@ $text-light: var(--color-text-faint);
         background: var(--color-bg);
         border: 1.5px solid color-mix(in srgb, var(--color-error-solid) 30%, transparent);
         border-radius: 12px;
-        box-shadow: 0 4px 14px color-mix(in srgb, var(--color-error-solid) 6%, transparent);
 
         .failed-header {
           display: flex;
@@ -1267,8 +1258,8 @@ $text-light: var(--color-text-faint);
               align-items: center;
               gap: 4px;
               padding: 2px 6px;
-              background: var(--color-surface);
-              border: 1px solid var(--color-rule-strong);
+              background: var(--color-surface-subtle);
+              border: 0;
               border-radius: 4px;
               color: var(--color-ink);
               font-size: 10px;
@@ -1368,12 +1359,11 @@ $text-light: var(--color-text-faint);
             justify-content: space-between;
             padding: 12px 14px;
             background: var(--color-bg);
-            border: 1px solid $card-border;
+            border: 0;
             border-radius: 10px;
             cursor: pointer;
             text-align: left;
             transition: all 0.18s ease;
-            outline: none;
             min-width: 0;
 
             .method-card-left {
@@ -1456,7 +1446,6 @@ $text-light: var(--color-text-faint);
             &.active {
               background: var(--color-surface);
               border-color: $primary;
-              box-shadow: 0 0 0 1px $primary;
 
               .method-icon-box {
                 background: $primary-light;
@@ -1998,19 +1987,21 @@ $text-light: var(--color-text-faint);
                   color: $text-muted;
                 }
 
-                .wifi-input-wrap {
+                  .wifi-input-wrap {
                   display: flex;
                   align-items: center;
                   background: var(--color-surface);
                   border: 1px solid $card-border;
                   border-radius: 6px;
                   padding: 0 8px;
-                  height: 34px;
+                    min-height: var(--target);
+                    border-color: var(--color-border);
                   transition: border-color 0.15s ease;
 
-                  &:focus-within {
-                    border-color: $primary;
-                    box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-primary) 10%, transparent);
+                    &:focus-within {
+                      border-color: $primary;
+                      outline: 3px solid var(--color-focus);
+                      outline-offset: 2px;
                   }
 
                   .wrap-icon {
@@ -2021,6 +2012,7 @@ $text-light: var(--color-text-faint);
                   }
 
                   .wifi-input {
+                    min-height: var(--target);
                     flex: 1;
                     min-width: 0;
                     border: none;
@@ -2155,15 +2147,17 @@ $text-light: var(--color-text-faint);
                     display: flex;
                     align-items: center;
                     height: 36px;
+                    min-height: var(--target);
                     padding: 0 9px;
                     background: var(--color-surface);
-                    border: 1px solid $card-border;
+                    border: 1px solid var(--color-border);
                     border-radius: 6px;
                     transition: border-color 0.15s ease, box-shadow 0.15s ease;
 
                     &:focus-within {
                       border-color: $primary;
-                      box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-primary) 10%, transparent);
+                      outline: 3px solid var(--color-focus);
+                      outline-offset: 2px;
                     }
 
                     .wrap-icon {
@@ -2417,9 +2411,8 @@ $text-light: var(--color-text-faint);
             padding: 0 12px;
             height: 30px;
             background: color-mix(in srgb, var(--color-warning-bg) 75%, transparent);
-            border: 1px solid color-mix(in srgb, var(--color-warning-bg) 85%, transparent);
+            border: 0;
             border-radius: 6px;
-            box-shadow: 0 1px 3px color-mix(in srgb, var(--color-error-solid) 8%, transparent), inset 0 1px 1px color-mix(in srgb, var(--color-surface) 80%, transparent);
             font-family: inherit;
             font-size: 11.5px;
             font-weight: 600;
@@ -2432,7 +2425,6 @@ $text-light: var(--color-text-faint);
               background: var(--color-warning-bg);
               border-color: $amber;
               transform: translateY(-0.5px);
-              box-shadow: 0 3px 8px color-mix(in srgb, var(--color-error-solid) 15%, transparent);
             }
 
             &:active {
@@ -2526,6 +2518,7 @@ $text-light: var(--color-text-faint);
       gap: 8px;
       padding: 0 6px 0 10px;
       height: 32px;
+      min-height: var(--target);
       background: var(--color-surface-subtle);
       color: var(--color-ink);
       border: 1px solid var(--color-rule-strong);
@@ -2563,10 +2556,11 @@ $text-light: var(--color-text-faint);
         justify-content: center;
         gap: 3px;
         padding: 0 8px;
-        height: 22px;
-        background: var(--color-surface);
+        min-height: var(--target);
+        min-width: var(--target);
+        background: var(--color-neutral-bg);
         color: var(--color-ink) !important;
-        border: 1px solid var(--color-rule-strong);
+        border: 0;
         border-radius: 5px;
         font-family: $font-sans;
         font-size: 10.5px;
@@ -2600,11 +2594,12 @@ $text-light: var(--color-text-faint);
 
       &.small-box {
         height: 30px;
+        min-height: var(--target);
         font-size: 11.5px;
         padding: 0 6px 0 10px;
 
         .btn-copy-code {
-          height: 22px;
+          min-height: var(--target);
           padding: 0 8px;
           font-size: 10.5px;
 

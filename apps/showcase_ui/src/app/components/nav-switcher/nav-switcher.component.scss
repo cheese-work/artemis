@@ -28,9 +28,8 @@
   padding: var(--space-xs);
   gap: var(--space-xs);
   background: var(--color-surface);
-  border: 1px solid var(--color-rule);
+  border: 0;
   border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-1);
   user-select: none;
   font-family: var(--font-ui);
 
@@ -60,12 +59,12 @@
     justify-content: center;
     gap: var(--space-sm);
     min-height: var(--target);
+    min-width: var(--target);
     padding: 0 var(--space-md);
     box-sizing: border-box;
     border: 0;
-    border-bottom: 3px solid transparent;
     border-radius: var(--radius-md);
-    background: transparent;
+    background: var(--color-surface-subtle);
     color: var(--color-text-muted);
     font-family: inherit;
     font-size: var(--text-ui);
@@ -97,10 +96,8 @@
       color: var(--color-ink);
     }
 
-    /* The current page: ink text, a tint and a bar under it (never colour alone). */
     &.active {
       background: var(--color-primary-tint);
-      border-bottom-color: var(--color-primary);
       color: var(--color-ink);
       font-weight: 600;
     }
