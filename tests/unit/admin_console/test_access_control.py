@@ -290,16 +290,17 @@ READER_ENV = json.dumps(
 )
 
 
-def service_token(private_key: bytes, client_id: str = READER_CLIENT_ID) -> str:
+def service_token(private_key: bytes, client_id: str = READER_CLIENT_ID, **claims) -> str:
     """Cloudflare service-token JWT: no email, the client id in `common_name`."""
     payload = {
+        "type": "app",
         "iss": "https://team.cloudflareaccess.com",
-        "aud": "app-audience",
+        "aud": ["app-audience"],
         "sub": "",
         "common_name": client_id,
         "iat": 1_790_000_000,
-        "nbf": 1_790_000_000,
         "exp": 1_900_000_000,
+        **claims,
     }
     return jwt.encode(payload, private_key, algorithm="RS256", headers={"kid": "test-key"})
 
@@ -326,8 +327,10 @@ def service_app(monkeypatch, access_keys, library):
     )
     client = TestClient(app, base_url="http://localhost")
 
-    def call(method, path, client_id=READER_CLIENT_ID, **kwargs):
-        headers = {"Cf-Access-Jwt-Assertion": service_token(private_key, client_id)}
+    def call(method, path, client_id=READER_CLIENT_ID, token_claims=None, **kwargs):
+        headers = {
+            "Cf-Access-Jwt-Assertion": service_token(private_key, client_id, **(token_claims or {}))
+        }
         return client.request(method, path, headers=headers, **kwargs)
 
     return call
@@ -339,10 +342,27 @@ def test_mapped_failures_reader_gets_200_and_the_request_is_logged(service_app, 
     response = service_app("GET", "/api/system/failures?days=7")
 
     assert response.status_code == 200
-    assert any(
-        "principal=failures-reader" in line and "/api/system/failures" in line
-        for line in caplog.messages
+    assert (
+        sum(
+            "principal=failures-reader" in line and "/api/system/failures" in line
+            for line in caplog.messages
+        )
+        == 1
     )
+
+
+@pytest.mark.parametrize(
+    "claims",
+    [
+        {"nbf": 1_900_000_000},
+        {"nbf": "invalid"},
+        {"exp": 1},
+        {"aud": ["wrong-audience"]},
+        {"iss": "https://wrong.cloudflareaccess.com"},
+    ],
+)
+def test_service_token_invalid_claims_still_fail_closed(service_app, claims):
+    assert service_app("GET", "/api/system/failures", token_claims=claims).status_code == 401
 
 
 @pytest.mark.parametrize(
@@ -357,6 +377,15 @@ def test_mapped_failures_reader_gets_200_and_the_request_is_logged(service_app, 
         ("PUT", "/api/system/config"),
         ("GET", "/api/system/whoami"),
         ("GET", "/api/system/failures/extra"),
+        ("GET", "/docs"),
+        ("GET", "/redoc"),
+        ("GET", "/openapi.json"),
+        ("GET", "/docs/oauth2-redirect"),
+        ("HEAD", "/api/system/failures"),
+        ("POST", "/api/system/failures"),
+        ("OPTIONS", "/api/system/failures"),
+        ("GET", "/api/system/failures/"),
+        ("DELETE", "/nonexistent"),
     ],
 )
 def test_failures_reader_is_denied_everywhere_else_and_the_denial_is_logged(
@@ -372,16 +401,72 @@ def test_failures_reader_is_denied_everywhere_else_and_the_denial_is_logged(
 
     assert response.status_code == 403
     collect.assert_not_called()
-    assert any(
-        "principal=failures-reader" in line and "allowed=False" in line for line in caplog.messages
+    assert (
+        sum(
+            "principal=failures-reader" in line
+            and f"route={method} {path}" in line
+            and "allowed=False" in line
+            for line in caplog.messages
+        )
+        == 1
     )
 
 
-def test_unmapped_client_id_is_denied_even_on_the_failures_route(service_app):
+def test_unmapped_client_id_is_denied_even_on_the_failures_route(service_app, caplog):
+    caplog.set_level("INFO", logger="apps.admin_console.core.access_control")
     assert (
         service_app("GET", "/api/system/failures", client_id="stranger.access").status_code == 403
     )
     assert service_app("GET", "/api/runs", client_id="stranger.access").status_code == 403
+    assert service_app("GET", "/openapi.json", client_id="stranger.access").status_code == 403
+    assert service_app("HEAD", "/nonexistent", client_id="stranger.access").status_code == 403
+    denials = [line for line in caplog.messages if "unmapped client id" in line]
+    assert [line.rsplit("route=", 1)[1] for line in denials] == [
+        "/api/system/failures",
+        "/api/runs",
+        "/openapi.json",
+        "/nonexistent",
+    ]
+
+
+@pytest.mark.parametrize("email", ["admin@example.com", "qa@example.com"])
+@pytest.mark.parametrize("path", ["/docs", "/redoc", "/openapi.json", "/docs/oauth2-redirect"])
+def test_service_boundary_preserves_human_documentation_access(
+    service_app, access_keys, email, path
+):
+    from apps.admin_console.server import app
+
+    private_key, _jwks = access_keys
+    token = make_token(private_key, email=email)
+    response = TestClient(app, base_url="http://localhost").get(
+        path, headers={"Cf-Access-Jwt-Assertion": token}
+    )
+
+    assert response.status_code == 200
+
+
+def test_service_boundary_denies_unmatched_websocket_and_logs_once(
+    service_app, access_keys, caplog
+):
+    from apps.admin_console.server import app
+    from starlette.websockets import WebSocketDisconnect
+
+    private_key, _jwks = access_keys
+    caplog.set_level("INFO", logger="apps.admin_console.core.access_control")
+    headers = {"Cf-Access-Jwt-Assertion": service_token(private_key)}
+
+    with pytest.raises(WebSocketDisconnect) as error:
+        with TestClient(app).websocket_connect("/nonexistent", headers=headers):
+            pytest.fail("Service principal reached an unlisted websocket")
+
+    assert error.value.code == 1008
+    assert (
+        sum(
+            "principal=failures-reader" in line and "allowed=False" in line
+            for line in caplog.messages
+        )
+        == 1
+    )
 
 
 @pytest.mark.asyncio

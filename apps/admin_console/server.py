@@ -103,6 +103,7 @@ from apps.admin_console.services.host_tunnel import host_tunnels
 from apps.admin_console.core.access_control import (
     AdminAPIError,
     CloudflareAccessVerifier,
+    ServicePrincipalMiddleware,
     admin_api_error_handler,
     config_from_environment,
     public_tier,
@@ -230,6 +231,7 @@ if PREVIEW_PROFILE:
     app.add_middleware(PreviewRouteGuard, route_source=app)
 app.add_middleware(RequestSizeLimitMiddleware)
 app.add_middleware(SameOriginBoundaryMiddleware)
+app.add_middleware(ServicePrincipalMiddleware)
 
 
 class TransportPeerProxyHeadersMiddleware:

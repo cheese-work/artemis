@@ -19,6 +19,7 @@ from jwt import InvalidTokenError
 from jwt.exceptions import InvalidKeyError, PyJWTError
 from starlette.requests import HTTPConnection
 from starlette.status import WS_1008_POLICY_VIOLATION
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 logger = logging.getLogger(__name__)
 
@@ -197,7 +198,7 @@ class CloudflareAccessVerifier:
             audience=config.audience,
             issuer=config.issuer,
             options={
-                "require": ["aud", "exp", "iat", "iss", "nbf", "sub"],
+                "require": ["aud", "exp", "iat", "iss", "sub"],
             },
             leeway=30,
         )
@@ -263,6 +264,9 @@ async def authenticate_request(
 async def public_tier(request: HTTPConnection) -> AccessIdentity:
     from apps.admin_console.core.preview_identity import resolve_preview_identity
 
+    identity = getattr(request.state, "identity", None)
+    if isinstance(identity, AccessIdentity):
+        return identity
     preview_identity = resolve_preview_identity(request)
     if preview_identity is not None:
         request.state.identity = preview_identity
@@ -278,6 +282,33 @@ async def public_tier(request: HTTPConnection) -> AccessIdentity:
     return identity
 
 
+class ServicePrincipalMiddleware:
+    def __init__(self, app: ASGIApp):
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] in {"http", "websocket"}:
+            try:
+                await public_tier(HTTPConnection(scope))
+            except AdminAPIError as error:
+                if scope["type"] == "websocket":
+                    await send(
+                        {
+                            "type": "websocket.close",
+                            "code": WS_1008_POLICY_VIOLATION,
+                            "reason": error.code,
+                        }
+                    )
+                else:
+                    response = admin_api_error_handler(Request(scope), error)
+                    await response(scope, receive, send)
+                return
+            except WebSocketException as error:
+                await send({"type": "websocket.close", "code": error.code, "reason": error.reason})
+                return
+        await self.app(scope, receive, send)
+
+
 def _enforce_service_principal_routes(request: HTTPConnection, identity: AccessIdentity) -> None:
     """A service token reaches only the exact routes its principal maps; nothing else."""
     if identity.reason == "service_principal_unmapped":
@@ -286,7 +317,7 @@ def _enforce_service_principal_routes(request: HTTPConnection, identity: AccessI
     elif identity.principal is None:
         return
     else:
-        method = request.scope.get("method", "GET")
+        method = request.scope.get("method", "WEBSOCKET")
         allowed = (method, request.url.path) in identity.service_routes
         logger.info(
             "Service principal request principal=%s route=%s %s allowed=%s",
