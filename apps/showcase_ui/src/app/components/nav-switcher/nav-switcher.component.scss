@@ -57,10 +57,9 @@
     gap: var(--space-sm);
     min-width: var(--target);
     min-height: var(--target);
-    padding: 0 12px;
+    padding: 0 12px 0 15px;
     box-sizing: border-box;
     border: 0;
-    border-left: 3px solid transparent;
     border-radius: var(--radius-md);
     background: var(--color-surface-subtle);
     color: var(--color-text-muted);
@@ -72,7 +71,10 @@
 
     &:hover:not(.active) { background: var(--color-surface-subtle); color: var(--color-ink); }
     &.active {
-      border-left-color: var(--color-primary);
+      background-image: linear-gradient(var(--color-primary), var(--color-primary));
+      background-repeat: no-repeat;
+      background-position: left;
+      background-size: 3px 100%;
       background: var(--color-primary-tint);
       color: var(--color-ink);
       font-weight: 600;
@@ -91,8 +93,8 @@
     padding: 8px;
     .brand-wordmark { display: none; }
     .brand-monogram { order: -1; display: grid; place-items: center; height: 44px; margin-bottom: 16px; font: 600 var(--text-title) var(--font-display); color: var(--color-ink); }
-    .nav-tab-btn { position: relative; flex-direction: column; justify-content: center; gap: 4px; width: calc(100% + 16px); height: 60px; margin-left: -8px; padding: 4px 0; border-left: 0; border-bottom: 3px solid transparent; font-size: 12px; }
-    .nav-tab-btn.active { border-bottom-color: var(--color-primary); }
+    .nav-tab-btn { position: relative; flex-direction: column; justify-content: center; gap: 4px; width: calc(100% + 16px); height: 60px; margin-left: -8px; padding: 4px 0 7px; font-size: 12px; }
+    .nav-tab-btn.active { background-position: center bottom; background-size: 100% 3px; }
     .run-count, .nav-new-label { display: none; }
     .nav-unread-indicator { position: absolute; top: 6px; right: 6px; }
     .nav-status { align-items: center; }
@@ -125,8 +127,8 @@
     }
     .brand-wordmark { padding: 0; font-size: var(--text-body); }
     .nav-status { position: fixed; top: calc(var(--preview-banner-h, 0px) + 1px); right: 8px; height: 46px; flex-direction: row; align-items: center; gap: 8px; margin: 0; padding: 0; }
-    .nav-tab-btn { position: relative; flex: 1; flex-direction: column; justify-content: center; gap: 4px; height: 100%; padding: 0 4px; border-left: 0; border-bottom: 3px solid transparent; border-radius: 0; font-size: 12px; }
-    .nav-tab-btn.active { border-bottom-color: var(--color-primary); }
+    .nav-tab-btn { position: relative; flex: 1; flex-direction: column; justify-content: center; gap: 4px; height: 100%; padding: 0 4px 3px; border-radius: 0; font-size: 12px; }
+    .nav-tab-btn.active { background-position: center bottom; background-size: 100% 3px; }
     .run-count, .nav-new-label { display: none; }
     .nav-unread-indicator { position: absolute; top: 6px; right: calc(50% - 18px); }
   }
