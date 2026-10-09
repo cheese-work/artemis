@@ -1,0 +1,22 @@
+Source: b7bd5b97f375431861cf4e3d3099f0bc2475868c
+RED baseline: 56edc235feff8cf11da0a8d72a17a2db4c0b0f25
+Chrome Headless 150.0.0.0 (Linux 0.0.0) RunViewComponent restored result summary and execution details keeps explicit unavailable summary states without hiding steps when checks or notes fail FAILED
+Chrome Headless 150.0.0.0 (Linux 0.0.0) RunViewComponent restored result summary and execution details expands and collapses step actions, output and stream in review mode FAILED
+Chrome Headless 150.0.0.0 (Linux 0.0.0) RunViewComponent restored result summary and execution details uses report-task-status when output.md is absent and escapes report HTML FAILED
+Chrome Headless 150.0.0.0 (Linux 0.0.0) RunViewComponent restored result summary and execution details shows the persisted task report at the top in live mode FAILED
+Chrome Headless 150.0.0.0 (Linux 0.0.0) RunViewComponent restored result summary and execution details shows the persisted task report at the top in review mode FAILED
+Chrome Headless 150.0.0.0 (Linux 0.0.0) RunViewComponent restored result summary and execution details expands and collapses step actions, output and stream in live mode FAILED
+Chrome Headless 150.0.0.0 (Linux 0.0.0) RunViewComponent restored result summary and execution details updates the summary from current-session live checker events FAILED
+Chrome Headless 150.0.0.0 (Linux 0.0.0) RunViewComponent restored result summary and execution details loads checker counts, findings, verdicts and persisted reasoning in review mode FAILED
+Chrome Headless 150.0.0.0 (Linux 0.0.0): Executed 135 of 135 (8 FAILED) (2.692 secs / 2.239 secs)
+
+Focused restored view:
+Chrome Headless 150.0.0.0 (Linux 0.0.0): Executed 137 of 137 SUCCESS (3.14 secs / 2.534 secs)
+
+Full frontend, final implementation:
+Chrome Headless 150.0.0.0 (Linux 0.0.0): Executed 968 of 968 SUCCESS (9.505 secs / 8.306 secs)
+
+Production build, final implementation:
+                      | Initial total |  1.08 MB |               208.93 kB
+Application bundle generation complete. [10.921 seconds] - 2026-10-09 15:17:35.821 ICT (machine: 2026-10-09T08:17:35.821Z)
+Output location: /mnt/ssd2/multica_workspaces/cheese-work-a2f69b0ef843/che-1459-ebc3aa5c101d/workdir/artemis/apps/showcase_ui/dist/frontend
