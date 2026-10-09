@@ -35,6 +35,7 @@ from apps.admin_console.core.access_control import (
     AdminAPIError,
     public_tier,
     require_admin,
+    require_effective_loopback,
     require_lifecycle_token,
     require_qa,
 )
@@ -179,6 +180,11 @@ async def get_system_readiness(
     """Execute all diagnostic probes and return the readiness report the caller may see."""
     report = await readiness_engine.run_all(force_refresh=force)
     return hide_foreign_devices(scope_or_open(actor), report.model_dump(mode="json"))
+
+
+@router.get("/service-readiness", dependencies=[Depends(require_effective_loopback)])
+async def get_service_readiness() -> dict[str, bool]:
+    return {"service_ready": True}
 
 
 @router.post("/devices/select", dependencies=[Depends(require_admin)])

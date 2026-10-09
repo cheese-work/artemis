@@ -287,9 +287,9 @@ async def require_effective_loopback(request: Request) -> None:
     if forwarded or not _is_loopback_request(request):
         raise AdminAPIError(
             403,
-            "Deploy drain controls are local-only.",
+            "This endpoint is local-only.",
             "loopback_required",
-            "Call the drain endpoint directly from the server host.",
+            "Call this endpoint directly from the server host.",
         )
 
 
@@ -417,6 +417,8 @@ def route_tier(path: str, methods: set[str], is_websocket: bool = False) -> str 
     if path == "/api/system/shutdown" and methods == {"POST"}:
         return "lifecycle"
     if path == "/api/system/drain" and methods in ({"GET"}, {"POST"}, {"DELETE"}):
+        return "loopback"
+    if path == "/api/system/service-readiness" and methods == {"GET"}:
         return "loopback"
     if path == "/api/v1" or path.startswith("/api/v1/"):
         return "public"

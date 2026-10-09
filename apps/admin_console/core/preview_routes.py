@@ -143,6 +143,7 @@ DISABLED = frozenset(
         "POST /api/system/restart",
         "POST /api/system/shutdown",
         "GET /api/system/drain",
+        "GET /api/system/service-readiness",
         "GET /api/system/failures",
         "POST /api/system/failures/collect",
         "POST /api/system/failures/digest",
