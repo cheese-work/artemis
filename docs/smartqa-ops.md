@@ -1,5 +1,17 @@
 # SmartQA Admin and Provider Setup
 
+## Deploy version
+
+Release deployments supply one timestamp through `DEPLOYED_SHA` or
+`ARTEMIS_DEPLOYED_AT`. `GET /api/system/version` keeps `status`, `sha`,
+`short_sha`, and the UTC `deployed_at`, and adds the display-only `build`
+stamp (`YYYYMMDD-hhmm`, ICT / UTC+7). The footer formats the same timestamp
+with an explicit `+0700` timezone, independent of the browser timezone.
+No timestamp is generated for local or PR builds. Missing deploy metadata
+returns an unknown version and `build: null`. A valid SHA without a usable
+timestamp keeps the SHA fallback; out-of-range time conversions do not fail
+the endpoint.
+
 ## Access
 
 `ARTEMIS_AUTH_MODE` defaults to `open`. In this mode, only direct loopback
