@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 from apps.admin_console.core.access_control import AccessIdentity, AdminAPIError, require_admin
 from apps.admin_console.core.ownership import OwnerScope, actor_scope, require_actor
 from apps.admin_console.services import host_registry as hr
+from apps.admin_console.services.bridge_session_service import bridge_session_service
 from apps.admin_console.services.host_hub import CLOSE_REVOKED, host_hub
 from apps.admin_console.services.host_registry import host_registry
 from apps.admin_console.services.host_tunnel import host_tunnels
@@ -20,10 +21,8 @@ from artemis.runtime import device_pool
 
 try:
     from admin_console.core.state import state
-    from admin_console.services.bridge_session_service import bridge_session_service
 except ImportError:
     from apps.admin_console.core.state import state
-    from apps.admin_console.services.bridge_session_service import bridge_session_service
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/hosts", tags=["hosts"])

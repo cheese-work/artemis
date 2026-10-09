@@ -184,18 +184,20 @@ describe('WorkspaceComponent phone binding', () => {
     expect(phone.requestPicker).not.toHaveBeenCalled();
   });
 
-  it('keeps the prompt and opens the picker when the server says the phone is gone', async () => {
-    phone.target.set({ serial: 's', bridgeSessionId: 'b' });
-    runTask.and.returnValue(throwError(() => ({ status: 409, error: { code: 'device_offline', detail: 'x' } })));
-    component.taskInput = 'open settings';
+  for (const code of ['device_offline', 'bridge_session_unavailable', 'bridge_queue_binding_unavailable']) {
+    it(`keeps the prompt and opens the picker when the server returns ${code}`, async () => {
+      phone.target.set({ serial: 's', bridgeSessionId: 'b' });
+      runTask.and.returnValue(throwError(() => ({ status: 409, error: { code, detail: 'x' } })));
+      component.taskInput = 'open settings';
 
-    await component.submitTask();
+      await component.submitTask();
 
-    expect(component.errorMessage()).toBe('Your phone is not connected. Connect it again to run.');
-    expect(phone.requestPicker).toHaveBeenCalled();
-    expect(component.taskInput).toBe('open settings');
-    expect(runTask).toHaveBeenCalledTimes(1);
-  });
+      expect(component.errorMessage()).toBe('Your phone is not connected. Connect it again to run.');
+      expect(phone.requestPicker).toHaveBeenCalled();
+      expect(component.taskInput).toBe('open settings');
+      expect(runTask).toHaveBeenCalledTimes(1);
+    });
+  }
 
   it('has no phone chip in the Prompt Dock: the chip lives in the top bar (CHE-1143, OCR F6)', () => {
     const el = fixture.nativeElement as HTMLElement;

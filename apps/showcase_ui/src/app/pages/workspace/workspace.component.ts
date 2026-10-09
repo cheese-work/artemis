@@ -403,7 +403,9 @@ export class WorkspaceComponent implements OnInit {
       error: (err) => {
         this.logger.error('Failed to submit task:', err);
         this.isSubmitting.set(false);
-        if (err.status === 409 && err.error?.code === 'device_offline') {
+        if (err.status === 409 && [
+          'device_offline', 'bridge_session_unavailable', 'bridge_queue_binding_unavailable'
+        ].includes(err.error?.code)) {
           // The phone left between choosing it and pressing Run: say so, keep the prompt, open the picker.
           this.setErrorMessage('Your phone is not connected. Connect it again to run.');
           this.phone.requestPicker();
