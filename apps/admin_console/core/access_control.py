@@ -71,16 +71,20 @@ class AdminAPIError(Exception):
         code: str,
         fix: str,
         retry_after: int | None = None,
+        docs_url: str | None = None,
     ):
         self.status_code = status_code
         self.detail = detail
         self.code = code
         self.fix = fix
         self.retry_after = retry_after
+        self.docs_url = docs_url
 
 
 def _error_response(exc: AdminAPIError) -> JSONResponse:
     content = {"detail": exc.detail, "code": exc.code, "fix": exc.fix}
+    if exc.docs_url is not None:
+        content["docs_url"] = exc.docs_url
     headers = {}
     if exc.retry_after is not None:
         content["retryable"] = True

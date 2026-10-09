@@ -41,17 +41,20 @@ export type { BuildInfo } from '../../services/version-info.service';
     }
     .deployed, [role="status"], button { white-space: nowrap; }
     button {
-      padding: 0;
+      min-height: var(--target);
+      min-width: var(--target);
+      padding: 0 var(--space-sm);
       border: 0;
+      border-radius: var(--radius-md);
       color: inherit;
-      background: none;
+      background: var(--color-surface-subtle);
       font: inherit;
       cursor: pointer;
     }
     .reload { text-decoration: underline; }
     :host(.account-version) .version-footer { display: flex; flex-wrap: wrap; align-items: center; gap: 0 4px; padding: 8px 0 0; font-size: 12px; text-align: left; }
     :host(.account-version) button { min-width: 44px; min-height: 44px; padding: 0 4px; }
-    button:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; }
+    button:focus-visible { outline: 3px solid var(--focus-ring); outline-offset: 2px; }
   `],
   changeDetection: ChangeDetectionStrategy.OnPush
 })

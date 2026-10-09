@@ -78,14 +78,15 @@
   button {
     flex: 1;
     color: var(--color-text-muted);
-    background: transparent;
+    background: var(--color-surface-subtle);
     border: 0;
     border-radius: 0;
     border-bottom: 2px solid transparent;
   }
 
   [aria-selected='true'] {
-    color: var(--color-primary);
+    background: var(--color-primary-tint);
+    color: var(--color-ink);
     border-bottom-color: var(--color-primary);
     font-weight: 600;
   }
@@ -346,6 +347,9 @@ input {
 
 .run-row {
   border-bottom: 1px solid var(--color-surface-subtle);
+  border-radius: 0;
+  background: transparent;
+  text-align: left;
 
   &:hover {
     background: var(--color-surface-subtle);
@@ -363,9 +367,11 @@ input {
   .run-row {
     flex: 1;
     min-width: 0;
+    padding: 4px 12px;
   }
 
-  button {
+  .queue-stop,
+  .queue-cancel {
     flex: 0 0 44px;
     padding: 0;
     color: var(--color-text-muted);
