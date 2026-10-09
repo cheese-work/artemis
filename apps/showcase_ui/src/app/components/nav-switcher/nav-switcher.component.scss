@@ -155,11 +155,15 @@
       width: 100%;
       min-width: var(--target);
       min-height: var(--target);
-      padding: 0 12px;
+      padding: 0 12px 0 15px;
       border-bottom: 0;
-      border-left: 3px solid transparent;
     }
-    .nav-tab-btn.active { border-left-color: var(--color-primary); }
+    .nav-tab-btn.active {
+      background-image: linear-gradient(var(--color-primary), var(--color-primary));
+      background-repeat: no-repeat;
+      background-position: left;
+      background-size: 3px 100%;
+    }
     .desktop-setup { display: inline-flex; }
     .run-count { display: inline; margin-left: auto; font: var(--text-label) var(--font-mono); }
     .nav-new-label { display: inline; font-size: var(--text-label); }
