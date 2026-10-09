@@ -18,6 +18,7 @@ import asyncio
 import json
 import sqlite3
 import time
+import uuid
 
 import pytest
 
@@ -69,6 +70,7 @@ def notices(monkeypatch):
 def seed_run(
     library,
     *,
+    goal="goal",
     status="failed",
     steps=(),
     interrupt=None,
@@ -78,7 +80,7 @@ def seed_run(
     sid=None,
     age_days=0.0,
 ):
-    sid = library.seed(status=status, sid=sid, age_days=age_days)
+    sid = library.seed(goal=goal, status=status, sid=sid, age_days=age_days)
     now = time.time()
     with sqlite3.connect(library.db) as conn:
         conn.execute(
@@ -106,6 +108,19 @@ def seed_run(
     if stdout is not None:
         library.write(sid, "stdout.log", stdout)
     return sid
+
+
+def seed_recording(library, sid, error, *, device=SERIAL):
+    video_id = str(uuid.uuid4())
+    now = time.time()
+    with sqlite3.connect(library.db) as conn:
+        conn.execute(
+            "INSERT INTO video_recordings "
+            "(video_id, session_id, device_id, start_time, end_time, status, error) "
+            "VALUES (?, ?, ?, ?, ?, 'failed', ?)",
+            (video_id, sid, device, now - 30, now, error),
+        )
+    return video_id
 
 
 async def collect(admin):
@@ -260,6 +275,163 @@ async def test_interrupted_run_is_infra_by_its_end_reason(library, admin):
     await collect(admin)
     (row,) = by_session(await failures(admin), sid)
     assert (row["category"], row["rule"]) == ("smartqa_infra", "run_interrupted")
+    assert row["signal"] == "stuck_run"
+
+
+@pytest.mark.asyncio
+async def test_failed_recordings_and_raw_error_messages_are_collected(library, admin):
+    goal = "Transfer the private report to customer-834"
+    failed = seed_run(library, status="completed", goal=goal)
+    seed_recording(
+        library,
+        failed,
+        f"java.lang.NoSuchMethodException: android.view.SurfaceControl.createDisplay {goal} api_key=sk-secret-1234567890123456",
+    )
+    readable = seed_run(library, status="completed")
+    seed_recording(library, readable, "Recording finalization failed; retry the run")
+
+    await collect(admin)
+    view = await failures(admin)
+    failed_rows = by_session(view, failed)
+    readable_rows = by_session(view, readable)
+
+    assert [row["signal"] for row in failed_rows].count("recording") == 1
+    assert [row["signal"] for row in failed_rows].count("raw_error_text") == 1
+    assert "raw_error_text" not in [row["signal"] for row in readable_rows]
+    recording_row = next(row for row in failed_rows if row["signal"] == "recording")
+    assert "NoSuchMethodException" in recording_row["evidence"]
+    assert all(goal not in row["evidence"] for row in failed_rows)
+    assert all("sk-secret-1234567890123456" not in row["evidence"] for row in failed_rows)
+    assert goal not in json.dumps(view)
+
+
+@pytest.mark.asyncio
+async def test_stuck_run_uses_one_hour_threshold(library, admin):
+    stuck = seed_run(library, status="running")
+    recent = seed_run(library, status="queued")
+    with sqlite3.connect(library.db) as conn:
+        conn.execute(
+            "UPDATE sessions SET start_time = ? WHERE session_id = ?",
+            (time.time() - 61 * 60, stuck),
+        )
+        conn.execute(
+            "UPDATE sessions SET start_time = ? WHERE session_id = ?",
+            (time.time() - 59 * 60, recent),
+        )
+
+    await collect(admin)
+
+    (row,) = by_session(await failures(admin), stuck)
+    assert (row["signal"], row["rule"], row["scope"]) == ("stuck_run", "run_stuck", "run")
+    assert by_session(await failures(admin), recent) == []
+
+
+@pytest.mark.asyncio
+async def test_failure_causes_have_stable_keys_counts_run_ids_and_prompt_side(library, admin):
+    error = "java.lang.NoSuchMethodException: android.view.SurfaceControl.createDisplay"
+    first = seed_run(library, status="completed")
+    second = seed_run(library, status="completed")
+    seed_recording(library, first, error)
+    seed_recording(library, second, error)
+    prompt = seed_run(
+        library,
+        status="completed",
+        steps=[("click", _bad("Error finding package for app: ClimaMap"))],
+    )
+    await collect(admin)
+    with sqlite3.connect(library.db) as conn:
+        conn.execute(
+            "UPDATE failure_ledger SET occurred_at = ? WHERE session_id = ? AND signal = 'raw_error_text'",
+            (time.time() - 3 * 86400, first),
+        )
+
+    view = await failures(admin, days=14)
+    raw_causes = [cause for cause in view["causes"] if cause["signal"] == "raw_error_text"]
+    prompt_cause = next(cause for cause in view["causes"] if cause["category"] == "user_prompt")
+
+    assert len(raw_causes) == 1
+    cause = raw_causes[0]
+    assert cause["count_24h"] == 1
+    assert cause["count_window"] == cause["count"] == 2
+    assert cause["first_seen"] < cause["last_seen"]
+    assert set(cause["run_ids"]) == {first, second}
+    assert cause["device"] == SERIAL
+    assert cause["evidence_excerpt"]
+    assert cause["defect_key"]
+    assert cause["smartqa_side"] is False
+    assert prompt_cause["smartqa_side"] is False
+    assert by_session(view, prompt)[0]["signal"] == "run_step"
+
+
+@pytest.mark.asyncio
+async def test_ledger_migration_preserves_existing_rows(library, admin):
+    goal = "legacy private goal"
+    sid = seed_run(library, status="completed", goal=goal)
+    occurred = time.time()
+    with sqlite3.connect(library.db) as conn:
+        conn.execute(
+            """CREATE TABLE failure_ledger (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                step_number INTEGER NOT NULL,
+                scope TEXT NOT NULL,
+                category TEXT NOT NULL,
+                rule TEXT NOT NULL,
+                cause TEXT NOT NULL,
+                evidence TEXT NOT NULL,
+                device TEXT,
+                source TEXT NOT NULL,
+                owner TEXT,
+                occurred_at REAL NOT NULL,
+                classified_at REAL NOT NULL,
+                UNIQUE (session_id, step_number)
+            )"""
+        )
+        conn.execute(
+            "INSERT INTO failure_ledger "
+            "(session_id, step_number, scope, category, rule, cause, evidence, device, source, "
+            "owner, occurred_at, classified_at) VALUES (?, 1, 'step', 'smartqa_agent', "
+            "'empty_target_list', ?, ?, ?, 'browser', ?, ?, ?)",
+            (
+                sid,
+                f"legacy-cause|{goal}",
+                f"legacy evidence {goal}",
+                SERIAL,
+                "qa@example.com",
+                occurred,
+                occurred,
+            ),
+        )
+
+    await collect(admin)
+    view = await failures(admin)
+    (row,) = by_session(view, sid)
+
+    assert row["signal"] == "run_step"
+    assert goal not in json.dumps(view)
+    with sqlite3.connect(library.db) as conn:
+        columns = {record[1] for record in conn.execute("PRAGMA table_info(failure_ledger)")}
+        assert "signal" in columns
+        assert (
+            goal
+            not in conn.execute(
+                "SELECT cause FROM failure_ledger WHERE session_id = ?", (sid,)
+            ).fetchone()[0]
+        )
+        conn.execute(
+            "INSERT INTO failure_ledger "
+            "(session_id, step_number, signal, scope, category, rule, cause, evidence, source, "
+            "occurred_at, classified_at) VALUES (?, 1, 'raw_error_text', 'step', 'unknown', "
+            "'raw_error_text', 'second-signal', 'second evidence', 'browser', ?, ?)",
+            (sid, occurred, occurred),
+        )
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) FROM failure_ledger WHERE session_id = ? AND step_number = 1",
+                (sid,),
+            ).fetchone()[0]
+            == 2
+        )
 
 
 @pytest.mark.asyncio
