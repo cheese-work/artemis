@@ -17,7 +17,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from contextvars import ContextVar, copy_context
@@ -70,6 +70,13 @@ class DeviceStatus:
 
 RawDevice = tuple[str, str, str | None, str | None]
 
+#: Called with ``(endpoint, [(serial, state, model, getprop)])`` after every fresh
+#: enumeration; ``getprop`` is empty until the device's properties were read. The admin
+#: console matches connections to devices with it (CHE-1473). A failure never breaks discovery.
+identity_observer: (
+    Callable[[AdbEndpoint, list[tuple[str, str, str | None, dict[str, str]]]], Any] | None
+) = None
+
 #: ``(pool id, endpoint)`` an enumeration is pinned to. A task or coroutine started inside
 #: the pin inherits it, so the query, the cache write, the stale fallback and the busy-state
 #: scope of one listing all name the endpoint the listing began on.
@@ -87,6 +94,8 @@ class _Snapshot:
     #: serial -> (read time, kind, ro.product.model). A serial is only meaningful on its
     #: own adb server, so identities live with the endpoint's snapshot.
     identities: dict[str, tuple[float, DeviceKind, str | None]] = field(default_factory=dict)
+    #: serial -> the getprop read with its identity, for ``identity_observer``.
+    props: dict[str, dict[str, str]] = field(default_factory=dict)
 
 
 class DevicePool:
@@ -328,6 +337,7 @@ class DevicePool:
         with self._cache_lock:
             for serial in [s for s in self._identity_cache if s not in listed]:
                 del self._identity_cache[serial]
+                self._snapshot().props.pop(serial, None)
             return [
                 serial
                 for serial, state, _, _ in raw
@@ -343,6 +353,7 @@ class DevicePool:
 
     def _store_identity(self, serial: str, props: dict[str, str]) -> None:
         with self._cache_lock:
+            self._snapshot().props[serial] = props
             self._identity_cache[serial] = (
                 time.monotonic(),
                 classify_properties(props),
@@ -414,6 +425,7 @@ class DevicePool:
                 return self._cached_snapshot(allow_stale=True)
             self._refresh_identities_sync(raw)
             self._store_snapshot(raw)
+            self._observe(raw)
             return raw
 
     async def _enumerate_async(self) -> list[tuple[str, str, str | None, str | None]] | None:
@@ -447,7 +459,22 @@ class DevicePool:
             return self._cached_snapshot(allow_stale=True)
         await self._refresh_identities_async(raw)
         self._store_snapshot(raw)
+        self._observe(raw)
         return raw
+
+    def _observe(self, raw: list[RawDevice]) -> None:
+        observer = identity_observer
+        if observer is None:
+            return
+        with self._cache_lock:
+            props = self._snapshot().props
+            devices = [
+                (serial, state, model, props.get(serial, {})) for serial, state, model, _ in raw
+            ]
+        try:
+            observer(self._endpoint(), devices)
+        except Exception as exc:
+            logger.warning(f"Device identity observer failed: {type(exc).__name__}: {exc}")
 
     async def _start_adb_server(self, timeout: float) -> None:
         """Best-effort bounded `adb start-server` so later queries hit a warm daemon.

@@ -47,15 +47,17 @@ type hostReply struct {
 }
 
 // serverDevice is everything the server learns about a device: the opaque id
-// in the serial field, never a raw serial, hw id or AVD name.
+// in the serial field, never a raw serial, hw id or AVD name. HardwareID is the
+// keyed hash the server matches USB, Wi-Fi and bridge connections by (CHE-1473).
 type serverDevice struct {
-	Serial    string `json:"serial"`
-	State     string `json:"state"`
-	Model     string `json:"model,omitempty"`
-	Kind      string `json:"kind"`
-	Shared    bool   `json:"shared"`
-	Auto      bool   `json:"auto_shared,omitempty"`
-	Attention string `json:"attention,omitempty"`
+	Serial     string `json:"serial"`
+	State      string `json:"state"`
+	Model      string `json:"model,omitempty"`
+	Kind       string `json:"kind"`
+	Shared     bool   `json:"shared"`
+	Auto       bool   `json:"auto_shared,omitempty"`
+	Attention  string `json:"attention,omitempty"`
+	HardwareID string `json:"hardware_id,omitempty"`
 }
 
 func controlPath(path string) string { return filepath.Join(filepath.Dir(path), "control.sock") }
@@ -193,7 +195,7 @@ func (link *hostLink) publish(ctx context.Context) error {
 		if entry.Shared && entry.State == "device" {
 			shares[entry.ID] = true
 		}
-		view = append(view, serverDevice{entry.ID, entry.State, entry.Model, entry.Kind, entry.Shared, entry.Auto, entry.Attention})
+		view = append(view, serverDevice{entry.ID, entry.State, entry.Model, entry.Kind, entry.Shared, entry.Auto, entry.Attention, hardwareID(link.devices.pepper, entry)})
 	}
 	for serial := range link.shared {
 		if !shares[serial] {

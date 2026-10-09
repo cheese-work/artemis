@@ -496,9 +496,10 @@ class HostRegistry:
 
     def set_devices(self, host_id: str, generation: int, devices: object) -> bool:
         """Replace the computer's phones; refused unless this is its current, unrevoked connection."""
-        rows = []
+        rows, hardware_ids = [], []
         for item in devices if isinstance(devices, list) else []:
             if isinstance(item, dict) and DEVICE_ID.match(str(item.get("serial", ""))):
+                hardware_ids.append(item.get("hardware_id"))  # format checked by device_identity
                 rows.append(
                     (
                         host_id,
@@ -527,8 +528,23 @@ class HostRegistry:
                 " kind, state, attention) VALUES (?,?,?,?,?,?,?,?)",
                 rows[:MAX_DEVICES_PER_HOST],
             )
+        from apps.admin_console.services.device_identity import device_identity
         from apps.admin_console.services.task_queue_service import TaskQueueService
 
+        device_identity.observe_host(
+            host_id,
+            [
+                {
+                    "serial": row[1],
+                    "model": row[2],
+                    "kind": row[5],
+                    "state": row[6],
+                    "attention": row[7],
+                    "hardware_id": hardware_id,
+                }
+                for row, hardware_id in zip(rows[:MAX_DEVICES_PER_HOST], hardware_ids)
+            ],
+        )
         TaskQueueService.validate_host_device_inventory(
             host_id,
             generation,

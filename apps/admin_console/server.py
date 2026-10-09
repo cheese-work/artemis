@@ -20,6 +20,7 @@ Modular entrypoint for full trace inspection, step replay, and task execution ma
 import argparse
 import asyncio
 from contextlib import asynccontextmanager
+import importlib
 import logging
 import os
 from pathlib import Path
@@ -100,6 +101,7 @@ from artemis.config import (
 from artemis.resources import get_bundled_showcase_dist
 from artemis.runtime.lifecycle import InterruptReason
 from apps.admin_console.services import failure_ledger, run_retention
+from apps.admin_console.services.device_identity import device_identity
 from apps.admin_console.services.host_registry import host_agent_enabled, host_registry
 from apps.admin_console.services.host_tunnel import host_tunnels
 from apps.admin_console.core.access_control import (
@@ -269,6 +271,11 @@ async def on_startup():
     cleaned_device_locks = DeviceExecutionLock.cleanup_stale_locks()
     if cleaned_device_locks:
         print(f"[ServerStartup] Removed {cleaned_device_locks} stale device lock(s).")
+
+    # Server adb and bridge phones resolve to durable devices (CHE-1473).
+    importlib.import_module(
+        "artemis.runtime.device_pool"
+    ).identity_observer = device_identity.observe_adb
 
     # Warm the adb server and complete one enumeration before requests are
     # served, so submissions in the first seconds never race an adb cold start

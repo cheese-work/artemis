@@ -445,4 +445,14 @@ func TestServerPayloadLeakScan(test *testing.T) {
 	if events < 4 {
 		test.Fatalf("audit events were not sent to the server: %v", fixture.messages)
 	}
+	// Only the trusted phone carries a hardware id; the vector is shared with the server tests.
+	hardware := map[string]bool{}
+	for _, message := range fixture.messages {
+		for _, part := range strings.Split(message, `"hardware_id":"`)[1:] {
+			hardware[part[:strings.Index(part, `"`)]] = true
+		}
+	}
+	if len(hardware) != 1 || !hardware["359e41333185ec8960b7be84c5ddeee55b34b6805c51b0102f60b5ee5bcc5d38"] {
+		test.Fatalf("hardware ids sent: %v", hardware)
+	}
 }
