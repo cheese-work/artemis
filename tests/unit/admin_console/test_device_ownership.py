@@ -57,7 +57,7 @@ def _use_cloudflare(monkeypatch) -> None:
         ),
     )
     verifier = MagicMock()
-    verifier.verify = AsyncMock(side_effect=lambda token, _config: {"email": token})
+    verifier.verify = AsyncMock(side_effect=lambda token, _config: {"email": token, "sub": token})
     monkeypatch.setattr(app.state, "access_verifier", verifier)
 
 

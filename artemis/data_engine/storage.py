@@ -34,6 +34,7 @@ from artemis.data_engine.models import (
     TraceRecord,
     VideoRecordingRecord,
 )
+from artemis.data_engine import principals
 from artemis.data_engine.run_catalog import migrate as migrate_run_catalog
 from artemis.runtime.lifecycle import ensure_lifecycle_schema
 from artemis.utils.logger import get_logger
@@ -277,6 +278,7 @@ class StorageManager:
                 conn.execute("ALTER TABLE background_tasks ADD COLUMN logs TEXT")
             except sqlite3.OperationalError:
                 pass
+            principals.ensure_schema(conn)
             conn.commit()
         try:
             migrate_run_catalog(self.db_path)
