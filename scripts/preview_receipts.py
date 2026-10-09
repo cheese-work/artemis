@@ -1,4 +1,4 @@
-"""Verify native Multica evidence and retain pending, never admitted, preview records."""
+"""Verify native Multica evidence and retain protected two-anchor admission records."""
 
 import hashlib
 import json
@@ -71,6 +71,17 @@ class Receipt:
 
 
 @dataclass(frozen=True)
+class HumanApproval:
+    review_id: int
+    approver_id: int
+    content_sha256: str
+    commit_sha: str
+    created_at: str
+    submitted_at: str
+    updated_at: str
+
+
+@dataclass(frozen=True)
 class Admission:
     schema_version: int
     id: str
@@ -80,6 +91,7 @@ class Admission:
     expires_at: int
     status: str = "pending-human"
     reason: str = ""
+    approval: HumanApproval | None = None
 
 
 def _invalid_constant(value):
@@ -393,13 +405,23 @@ def revalidate(record, policy, state, reader, *, now=None):
         )
 
 
-def require_admitted(record):
-    raise ValueError("preview admission is disabled until the L5a3 human GitHub anchor is verified")
+def require_admitted(record, *, now=None):
+    observed = int(time.time()) if now is None else control._number(now)
+    if (
+        record.status != "admitted"
+        or record.approval is None
+        or not record.prepared_at <= observed < record.expires_at
+    ):
+        raise ValueError("admission requires a live, verified L5a3 human GitHub anchor")
+    _record(_json(json.dumps(asdict(record))))
+    return record
 
 
 def _record(document):
     control._fields(document, set(Admission.__dataclass_fields__))
     control._version(document)
+    receipt = document["receipt"]
+    control._fields(receipt, set(Receipt.__dataclass_fields__))
     control._uuid(document["id"])
     if not isinstance(document["control_sha256"], str) or not re.fullmatch(
         r"[0-9a-f]{64}", document["control_sha256"]
@@ -412,8 +434,33 @@ def _record(document):
     if type(document["status"]) is not str or document["status"] not in {
         "pending-human",
         "invalidated",
+        "admitted",
     }:
-        raise ValueError("unsupported admission status; L5a3 is required")
+        raise ValueError("unsupported admission status")
+    approval = document["approval"]
+    if document["status"] == "admitted" and approval is None:
+        raise ValueError("admitted status requires verified human approval")
+    if document["status"] == "pending-human" and approval is not None:
+        raise ValueError("pending status cannot contain a human approval")
+    if approval is not None:
+        control._fields(approval, set(HumanApproval.__dataclass_fields__))
+        for field in ("review_id", "approver_id"):
+            control._number(approval[field])
+        control._sha(approval["commit_sha"])
+        if not isinstance(approval["content_sha256"], str) or not re.fullmatch(
+            r"[0-9a-f]{64}", approval["content_sha256"]
+        ):
+            raise ValueError("invalid human content hash")
+        if (
+            approval["commit_sha"] != receipt["head_sha"]
+            or not _timestamp(receipt["updated_at"])
+            <= _timestamp(approval["created_at"])
+            <= _timestamp(approval["submitted_at"])
+            <= _timestamp(approval["updated_at"])
+            <= start
+        ):
+            raise ValueError("human approval is outside the admitted tuple or timestamps")
+        approval = HumanApproval(**approval)
     reason = document["reason"]
     if (
         not isinstance(reason, str)
@@ -421,8 +468,6 @@ def _record(document):
         or (document["status"] == "invalidated") != bool(reason)
     ):
         raise ValueError("invalid invalidation reason")
-    receipt = document["receipt"]
-    control._fields(receipt, set(Receipt.__dataclass_fields__))
     for field in ("comment_id", "source_task_id", "author_id", "issue_id", "thread_id"):
         control._uuid(receipt[field])
     for field in ("revision", "repository_id", "pr", "policy_revision"):
@@ -452,7 +497,13 @@ def _record(document):
     if len(set(author_ids)) != len(author_ids) or receipt["author_id"] in author_ids:
         raise ValueError("record reviewer is not independent")
     return Admission(
-        **(document | {"receipt": Receipt(**(receipt | {"author_ids": tuple(author_ids)}))})
+        **(
+            document
+            | {
+                "receipt": Receipt(**(receipt | {"author_ids": tuple(author_ids)})),
+                "approval": approval,
+            }
+        )
     )
 
 

@@ -27,6 +27,7 @@ POLICY_FIELDS = {
     "same_origin_scope",
     "authors",
     "reviewers",
+    "human_approver_ids",
     "platform_identity_id",
     "platform_credential_id",
 }
@@ -76,6 +77,7 @@ class Control:
     authors: tuple[Participant, ...]
     reviewers: tuple[Participant, ...]
     candidates: tuple[Candidate, ...]
+    human_approver_ids: tuple[int, ...]
 
     def candidate(self, pr: int) -> Candidate:
         _number(pr)
@@ -154,6 +156,13 @@ def validate_documents(policy, registry, scope, *, now=None) -> Control:
         raise ValueError("same-origin risk acceptance scope is missing")
     authors = _participants(policy["authors"])
     reviewers = _participants(policy["reviewers"])
+    humans = policy["human_approver_ids"]
+    if type(humans) is not list or not 1 <= len(humans) <= 256:
+        raise ValueError("human approver allowlist must be bounded and nonempty")
+    for identity in humans:
+        _number(identity)
+    if len(set(humans)) != len(humans):
+        raise ValueError("duplicate human approver")
     author_ids = {entry.id for entry in authors}
     reviewer_ids = {entry.id for entry in reviewers}
     if author_ids & reviewer_ids or policy["platform_identity_id"] in author_ids | reviewer_ids:
@@ -227,6 +236,7 @@ def validate_documents(policy, registry, scope, *, now=None) -> Control:
         authors,
         reviewers,
         tuple(candidates),
+        tuple(humans),
     )
 
 

@@ -93,11 +93,16 @@ the runtime owner's separately authorized provisioning work.
 
 Policy schema 1 pins repository name and native numeric ID, workspace/project,
 revision, full protected controller SHA, same-origin trust scope, author and
-reviewer agent IDs with model/lab, and the separate daemon identity/credential
-IDs. Do not derive authorship from a shared GitHub login. The daemon identity
+reviewer agent IDs with model/lab, the separate daemon identity/credential
+IDs, and `human_approver_ids`. The human allowlist contains 1–256 unique positive
+numeric GitHub user IDs; strings and booleans fail validation. The runtime owner
+records an ID only after confirming that no agent can access that account's
+authentication or recovery paths on any host. Account names and native `User`
+type do not establish custody. Old policies without this field fail closed.
+Do not derive authorship from a shared GitHub login. The daemon identity
 must not be an author or reviewer. L5a2 owns fetched native receipt/run mapping
-and different-lab checks for **every** candidate author. L5a3 adds the protected
-numeric human allowlist and exact-tuple human approval verification.
+and different-lab checks for **every** candidate author. L5a3 implements the
+[exact-tuple human approval verifier](preview-github.md).
 
 Registry schema 1 has `policy_revision` and at most 1000 `entries`. Each entry
 has only `pr`, `issue_id`, `thread_id`, `head_sha`, `base_sha` and `author_ids`.

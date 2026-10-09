@@ -10,6 +10,7 @@
     "same_origin_scope": "trusted-root-origin-insiders",
     "authors": [],
     "reviewers": [],
+    "human_approver_ids": [],
     "platform_identity_id": "00000000-0000-0000-0000-000000000000",
     "platform_credential_id": "00000000-0000-0000-0000-000000000000"
   },
