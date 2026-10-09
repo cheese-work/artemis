@@ -43,7 +43,10 @@ connection after authorization instead of creating a second device. A server
 adb connection stores only a keyed hash of its transport serial and its adb
 server, never the serial itself. An AVD seen through a host agent is keyed by
 its opaque id, which the agent derives from the AVD name; a server AVD is keyed
-by its adb server and AVD name. A different phone that
+by its adb server and AVD name. A server adb, Wi-Fi or bridge route is
+`confirmed` only by a fresh identity read: an unreadable, placeholder or
+missing `ro.serialno` on a known route is `provisional` or `uncertain`, and the
+device that route last held stays as it is. A different phone that
 appears on a reused transport key (a bridge port, a Wi-Fi address) retires the
 old key, so the old connection keeps its device and history. A `provisional` or
 `uncertain` record that turns out to be a known phone joins that device when
