@@ -66,10 +66,9 @@ async def test_data_engine_handler_queue_buffering_and_background_worker(
             )
             handler.emit(record)
 
-    # Wait for the background worker thread of DataEngineHandler and DataEngine tasks to drain
-    await asyncio.sleep(0.4)
-    if engine._pending_tasks:
-        await asyncio.gather(*engine._pending_tasks)
+    # Wait for the handler's worker thread, then for the engine's own tasks and threads, to drain
+    await asyncio.to_thread(handler._log_queue.join)
+    await engine.shutdown()
 
     # Verify that traces were recorded and persisted accurately via direct SQLite query
     with engine.storage._get_connection() as conn:
@@ -240,10 +239,10 @@ async def test_perception_node_async_offloading(mock_artemis_ctx, tmp_path):
     # Verify injected_instruction.json was unlinked
     assert not instruction_file.exists()
 
-    # Await background tasks triggered by perception_node
-    await asyncio.sleep(0.1)
-    if engine._pending_tasks:
-        await asyncio.gather(*engine._pending_tasks)
+    # perception_node offloads the image save with a bare ``asyncio.create_task`` that the engine
+    # does not track, so await every other task on this loop, then the engine's own work.
+    await asyncio.gather(*(asyncio.all_tasks() - {asyncio.current_task()}))
+    await engine.shutdown()
 
     # Verify image record and file were created in background by perception_node
     img_record = engine.storage.get_image(expected_hash)

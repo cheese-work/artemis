@@ -19,7 +19,6 @@ integration and end-to-end trees remain directly runnable, and receive stable
 markers here so callers can select them without relying on filename patterns.
 """
 
-import sys
 from pathlib import Path
 
 import pytest
@@ -64,22 +63,31 @@ def isolate_provider_credentials(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def isolate_current_data_engine():
-    """Drop the module-global DataEngine around every test.
+    """``DataEngine.start_session`` publishes ``self`` to a module global.
 
-    The log handler's drain thread forwards every record to that global, and the engine
-    then publishes IPC events through ``socket.create_connection`` and ``urlopen``. A
-    leaked engine would use up the finite ``side_effect`` lists of tests that patch those
-    two process-wide functions.
+    The logger drain thread and tools read it later, so an engine left over from an earlier
+    test would receive this test's log records and open IPC sockets / call ``urlopen`` mid-test.
+    Teardown also waits for a drain callback that already captured the engine.
     """
+    from tests.support.data_engine_isolation import quiesce_data_engine_logs
 
-    def clear() -> None:
-        module = sys.modules.get("artemis.data_engine.engine")
-        if module is not None:
-            module._CURRENT_DATA_ENGINE = None
-
-    clear()
+    quiesce_data_engine_logs()
     yield
-    clear()
+    quiesce_data_engine_logs()
+
+
+@pytest.fixture(autouse=True)
+def isolate_awake_service():
+    """Stop heartbeat threads that an earlier test left on the process-wide awake service.
+
+    A leftover heartbeat fires ``subprocess.run`` every few seconds, so it lands in a later
+    test's ``subprocess.run`` patch and corrupts the command that test captures.
+    """
+    from tests.support.awake_service_isolation import stop_awake_service
+
+    stop_awake_service()
+    yield
+    stop_awake_service()
 
 
 ADB_ENVIRONMENT_KEYS = (
