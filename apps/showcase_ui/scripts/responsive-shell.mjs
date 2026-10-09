@@ -39,6 +39,15 @@ const click = async selector => {
   await send('Input.dispatchMouseEvent', { type: 'mouseReleased', ...point, button: 'left', clickCount: 1 });
   await delay(150);
 };
+const waitForPath = async expectedPath => {
+  const deadline = Date.now() + 5000;
+  let pathname = await evaluate('location.pathname');
+  while (pathname !== expectedPath && Date.now() < deadline) {
+    await delay(50);
+    pathname = await evaluate('location.pathname');
+  }
+  return pathname;
+};
 const escape = async () => {
   await send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape' });
   await send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape' });
@@ -94,6 +103,12 @@ try {
   }
   await evaluate('document.fonts.ready');
   assert.ok(await evaluate(`!!document.querySelector('.app-page')`), await evaluate(`JSON.stringify({ url: location.href, html: document.documentElement.outerHTML.slice(0, 1500) })`));
+
+  await send('Network.enable');
+  await send('Network.emulateNetworkConditions', {
+    offline: false, latency: 400, downloadThroughput: -1, uploadThroughput: -1
+  });
+  console.log('Network latency: 400 ms');
 
   for (const width of [1440, 1200, 1199, 1024, 1023, 800, 799, 390, 320]) {
     await send('Emulation.setDeviceMetricsOverride', { width, height: 900, deviceScaleFactor: 1, mobile: width < 800 });
@@ -180,14 +195,15 @@ try {
       .filter(element => getComputedStyle(element).display !== 'none').map(element => element.dataset.shellPane)`),
       width < 1024 ? ['detail'] : ['list', 'detail'], `${width}: single-pane hook`);
     await click('a[aria-label="Workspace"]');
+    assert.equal(await waitForPath('/workspace'), '/workspace', `${width}: native Workspace navigation`);
     assert.equal(await evaluate(`document.querySelector('.app-page').dataset.activePane`), 'list', `${width}: nav resets pane`);
     await evaluate(`document.querySelectorAll('[data-shell-pane]').forEach(element => element.remove())`);
     await evaluate(`ng.getComponent(document.querySelector('app-root')).shell.activePane.set('detail')`);
     await click('a[aria-label="Runs"]');
-    assert.equal(await evaluate(`location.pathname`), '/runs', `${width}: native Runs navigation`);
+    assert.equal(await waitForPath('/runs'), '/runs', `${width}: native Runs navigation`);
     assert.equal(await evaluate(`document.querySelector('.app-page').dataset.activePane`), 'list', `${width}: Runs resets pane`);
     await click('a[aria-label="Workspace"]');
-    assert.equal(await evaluate(`location.pathname`), '/workspace', `${width}: native Workspace navigation`);
+    assert.equal(await waitForPath('/workspace'), '/workspace', `${width}: native Workspace navigation`);
     if (process.env.SHOTS && [1440, 1199, 1024, 800, 799, 390].includes(width)) {
       const { data } = await send('Page.captureScreenshot', { format: 'png' });
       writeFileSync(path.join(process.env.SHOTS, `shell-${width}.png`), Buffer.from(data, 'base64'));
