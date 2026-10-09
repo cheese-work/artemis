@@ -6,6 +6,7 @@ import { RouterTestingHarness } from '@angular/router/testing';
 import { NEVER, of } from 'rxjs';
 import { routes } from '../../app.routes';
 import { RunViewComponent } from '../../components/run-view/run-view.component';
+import { RunLibraryComponent } from '../../components/run-library/run-library.component';
 import { By } from '@angular/platform-browser';
 import { RunSummary } from '../../core/models/run.model';
 import { RunTarget } from '../../core/models/run-target.model';
@@ -24,12 +25,14 @@ describe('Workspace review mode', () => {
   let harness: RouterTestingHarness;
   let root: HTMLElement;
   let liveSession: ReturnType<typeof signal<Session | null>>;
+  let sessions: ReturnType<typeof signal<Session[]>>;
   let target: ReturnType<typeof signal<RunTarget | null>>;
   let reconnect: jasmine.Spy;
   const q = (selector: string) => root.querySelector(selector);
 
   beforeEach(async () => {
     liveSession = signal<Session | null>(null);
+    sessions = signal<Session[]>([]);
     target = signal<RunTarget | null>(null);
     reconnect = jasmine.createSpy('connectFromBrowser').and.resolveTo(undefined);
     runs = jasmine.createSpyObj<RunsService>('RunsService', ['list', 'get', 'steps', 'video', 'checks', 'notes'], {
@@ -50,6 +53,7 @@ describe('Workspace review mode', () => {
       updateWhatsNewErrorVisibility: () => undefined,
       isCurrentSessionRunning: () => false,
       currentSession: liveSession,
+      sessions,
       currentSessionId: () => liveSession()?.session_id ?? null,
       currentStartupProgress: () => [],
       runningSessionId: () => null,
@@ -134,6 +138,10 @@ describe('Workspace review mode', () => {
           if (width >= 1024) {
             expect(list.getBoundingClientRect().width).toBe(360);
             expect(list.getBoundingClientRect().right).toBeCloseTo(detail.getBoundingClientRect().left, 0);
+          } else if (route === '/runs') {
+            const navClearance = parseFloat(frame.contentWindow!.getComputedStyle(frameDocument.documentElement).getPropertyValue('--nav-clearance')) || 88;
+            const firstControl = list.querySelector<HTMLButtonElement>('.owner-tabs button')!;
+            expect(firstControl.getBoundingClientRect().top).toBeGreaterThanOrEqual(navClearance);
           }
           const visible = showsList ? list : detail;
           expect(visible.getBoundingClientRect().height).toBeGreaterThan(0);
@@ -164,6 +172,38 @@ describe('Workspace review mode', () => {
     expect(q('app-run-view')).toBeNull();
     expect(runs.get).not.toHaveBeenCalled();
     expect(q('.workspace-floating-bar-wrapper')).toBeNull();
+  });
+
+  it('refreshes the list and recorded metadata when a run completes without leaving Workspace', async () => {
+    const session: Session = {
+      session_id: ID, initial_goal: 'Complete while Workspace stays open', status: 'running', start_time: 1,
+      device_serial: 'recorded-phone', device_info: { model: 'Recorded Pixel', device_kind: 'phone' },
+      goal_images: [{ index: 0, media_type: 'image/png', url: '/api/goal-image.png' }]
+    };
+    sessions.set([session]);
+    runs.list.and.callFake(() => of({
+      runs: sessions().filter(item => item.status === 'completed').map(item => ({
+        session_id: item.session_id, prompt: item.initial_goal, status: 'completed', interrupt_reason: null,
+        start_time: item.start_time, end_time: item.end_time ?? null, host_id: null,
+        device_ref: item.device_serial ? { host_id: null, serial: item.device_serial } : null, requested_by: null, pinned: false, recordings: []
+      })), next_cursor: null, warnings: []
+    }));
+    await go('/workspace');
+    const workspace = q('app-workspace');
+    const requests = runs.list.calls.count();
+    expect(q('app-run-library a.run-row')).toBeNull();
+
+    sessions.set([{ ...session, status: 'completed', end_time: 2 }]);
+    harness.detectChanges();
+    await harness.fixture.whenStable();
+    harness.detectChanges();
+
+    expect(q('app-workspace')).toBe(workspace);
+    expect(runs.list.calls.count()).toBe(requests + 1);
+    expect(q('app-run-library a.run-row')?.textContent).toContain(session.initial_goal);
+    const library = harness.fixture.debugElement.query(By.directive(RunLibraryComponent)).componentInstance as RunLibraryComponent;
+    expect(library.recordedDevices().get(ID)).toEqual({ serial: 'recorded-phone', model: 'Recorded Pixel', device_kind: 'phone' });
+    expect(library.recordedImages().get(ID)).toEqual(session.goal_images);
   });
 
   it('passes team review restrictions to the unified RunView', async () => {
