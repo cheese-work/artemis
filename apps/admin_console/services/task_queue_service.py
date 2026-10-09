@@ -1680,7 +1680,7 @@ class TaskQueueService:
 
         enqueued_tasks = []
         now = time.time()
-        endpoint = current_adb_endpoint()
+        endpoint = AdbEndpoint.local() if bridge_session_id else current_adb_endpoint()
 
         duplicate_response = cls._find_duplicate_submission(
             goals,
