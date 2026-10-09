@@ -129,10 +129,28 @@ video:focus-visible {
   margin-bottom: 16px;
 
   .run-prompt {
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
     margin: 8px 0;
     font-size: 24px;
     line-height: 1.3;
     overflow-wrap: anywhere;
+  }
+}
+
+.full-prompt {
+  summary {
+    min-width: 44px;
+    cursor: pointer;
+  }
+
+  pre {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    font: inherit;
   }
 }
 

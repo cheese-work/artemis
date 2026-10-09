@@ -158,6 +158,36 @@ describe('RunViewComponent', () => {
   });
 
   describe('restored result summary and execution details', () => {
+    it('uses a short title and keeps the complete prompt in a closed, 44 px disclosure', async () => {
+      const prompt = '\n## **Open** _Settings_ with `Android`\n- Check every toggle.';
+      const previousTitle = document.title;
+      await open({ runResult: of(run({ prompt })) });
+      expect(q('h1.run-prompt')?.textContent).toBe('Open Settings with Android');
+      expect(document.title).toBe('Open Settings with Android · SmartQA');
+      const disclosure = q<HTMLDetailsElement>('.full-prompt')!;
+      const control = disclosure.querySelector('summary')!;
+      expect(disclosure.open).toBeFalse();
+      expect(control.textContent).toBe('Show prompt');
+      expect(control.getBoundingClientRect().height).toBeGreaterThanOrEqual(44);
+      expect(control.getBoundingClientRect().width).toBeGreaterThanOrEqual(44);
+      control.click();
+      expect(disclosure.open).toBeTrue();
+      expect(disclosure.querySelector('pre')?.textContent).toBe(prompt);
+      fixture.destroy();
+      expect(document.title).toBe(previousTitle);
+    });
+
+    it('updates the title and closes the full prompt when another run is selected', async () => {
+      await open({ runResult: of(run({ prompt: '**First**\nDetails' })) });
+      q<HTMLDetailsElement>('.full-prompt')!.open = true;
+      runs.get.and.returnValue(of(run({ session_id: 'second', prompt: '# Second\nOther details' })));
+      fixture.componentRef.setInput('runId', 'second');
+      await settle();
+      expect(q('h1.run-prompt')?.textContent).toBe('Second');
+      expect(document.title).toBe('Second · SmartQA');
+      expect(q<HTMLDetailsElement>('.full-prompt')!.open).toBeFalse();
+    });
+
     for (const viewMode of ['live', 'review'] as const) {
       it(`shows the persisted task report at the top in ${viewMode} mode`, async () => {
         (runs as any).notes.and.returnValue(of({ notes: { 'output.md': '# Task report\nSettings verified.' } }));
