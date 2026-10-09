@@ -7,6 +7,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.hazmat.primitives.serialization import Encoding, NoEncryption, PrivateFormat
 from starlette.requests import Request
 
+import httpx
 import jwt
 import pytest
 from fastapi.testclient import TestClient
@@ -334,6 +335,7 @@ def service_app(monkeypatch, access_keys, library):
         }
         return client.request(method, path, headers=headers, **kwargs)
 
+    call.private_key = private_key
     return call
 
 
@@ -470,6 +472,79 @@ def test_service_boundary_never_touches_the_principal_store(monkeypatch, access_
     assert human.status_code == 200
     assert service.status_code == 200
     ensure_user.assert_not_called()
+
+
+def _jwks_down(_url):
+    raise httpx.ConnectError("Cloudflare Access unreachable")
+
+
+@pytest.mark.parametrize("path", ["/docs", "/api/system/version", "/api/system/failures"])
+def test_service_token_is_denied_with_503_while_jwks_is_unavailable(
+    service_app, monkeypatch, caplog, path
+):
+    from apps.admin_console.server import app
+
+    monkeypatch.setattr(app.state, "access_verifier", CloudflareAccessVerifier(_jwks_down))
+    caplog.set_level("INFO", logger="apps.admin_console.core.access_control")
+
+    response = service_app("GET", path)
+
+    assert response.status_code == 503
+    assert response.json()["code"] == "service_token_unverifiable"
+    assert response.headers["Retry-After"] == "5"
+    [denial] = [line for line in caplog.messages if "Service token denied" in line]
+    assert denial.endswith(f"verification failed reason=jwks_unavailable route=GET {path}")
+
+
+@pytest.mark.parametrize("path", ["/docs", "/api/system/version"])
+def test_service_token_with_a_bad_signature_is_denied_with_401(service_app, caplog, path):
+    from apps.admin_console.server import app
+
+    forger = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    forged = service_token(forger.private_bytes(Encoding.PEM, PrivateFormat.PKCS8, NoEncryption()))
+    caplog.set_level("INFO", logger="apps.admin_console.core.access_control")
+
+    response = TestClient(app, base_url="http://localhost").get(
+        path, headers={"Cf-Access-Jwt-Assertion": forged}
+    )
+
+    assert response.status_code == 401
+    assert response.json()["code"] == "service_token_invalid"
+    [denial] = [line for line in caplog.messages if "Service token denied" in line]
+    assert denial.endswith(f"verification failed reason=jwt_invalid route=GET {path}")
+
+
+@pytest.mark.parametrize(
+    "preview",
+    [
+        {"headers": {"X-Artemis-Preview-Identity": "qa-a"}},
+        {"cookies": {"artemis_preview_identity": "qa-a"}},
+    ],
+)
+def test_service_token_with_a_preview_identity_is_denied_and_logged_once(
+    service_app, caplog, preview
+):
+    from apps.admin_console.server import app
+
+    private_key = service_app.private_key
+    caplog.set_level("INFO", logger="apps.admin_console.core.access_control")
+    client = TestClient(app, base_url="http://localhost", cookies=preview.get("cookies"))
+
+    response = client.get(
+        "/api/system/failures",
+        headers={
+            "Cf-Access-Jwt-Assertion": service_token(private_key),
+            **preview.get("headers", {}),
+        },
+    )
+
+    assert response.status_code == 403
+    assert response.json()["code"] == "preview_identity_disabled"
+    [denial] = [line for line in caplog.messages if "principal=failures-reader" in line]
+    assert denial.endswith(
+        "Service token denied: preview identity present principal=failures-reader"
+        " route=GET /api/system/failures"
+    )
 
 
 def test_unmapped_client_id_is_denied_even_on_the_failures_route(service_app, caplog):

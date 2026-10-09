@@ -421,11 +421,12 @@ async def _enforce_service_boundary(request: HTTPConnection) -> None:
     """Resolve only a service-token identity before routing; human callers resolve per route."""
     from apps.admin_console.core.preview_identity import resolve_preview_identity
 
+    preview_error = None
     try:
         if resolve_preview_identity(request) is not None:
             return
-    except AdminAPIError:
-        return  # The route's own public_tier reports the preview identity error.
+    except AdminAPIError as error:
+        preview_error = error  # The route's own public_tier reports it, unless a service token.
     config, verifier = _access_context(request)
     token = request.headers.get("Cf-Access-Jwt-Assertion")
     if config.auth_mode != "cloudflare" or not token:
@@ -435,22 +436,47 @@ async def _enforce_service_boundary(request: HTTPConnection) -> None:
         # verified once, by its route.
         if not _is_service_token(jwt.decode(token, options={"verify_signature": False})):
             return
+    except PyJWTError:
+        return  # Not a JWT at all; the route's own public_tier reports it.
+    try:
         claims = await verifier.verify(token, config)
-    except (
-        httpx.HTTPError,
-        OSError,
-        ValueError,
-        InvalidTokenError,
-        PyJWTError,
-        TypeError,
-        KeyError,
-    ):
-        return  # The route's own public_tier reports the invalid token.
+    except (httpx.HTTPError, OSError, ValueError) as exc:
+        _deny_unverified_service_token(request, "jwks_unavailable")
+        raise AdminAPIError(
+            503,
+            "Cloudflare Access keys are unavailable, so this service credential cannot be verified.",
+            "service_token_unverifiable",
+            "Retry shortly.",
+            RETRY_AFTER_SECONDS,
+        ) from exc
+    except (InvalidTokenError, PyJWTError, TypeError, KeyError) as exc:
+        _deny_unverified_service_token(request, "jwt_invalid")
+        raise AdminAPIError(
+            401,
+            "This service credential is not a valid Cloudflare Access token.",
+            "service_token_invalid",
+            "Use a current Cloudflare Access service token for this application.",
+        ) from exc
     identity = _service_identity(claims, config)
     if identity is None:
         return
     request.state.identity = identity
+    if preview_error is not None:
+        logger.warning(
+            "Service token denied: preview identity present principal=%s route=%s",
+            identity.service_principal or "unmapped",
+            _log_safe_route(request),
+        )
+        raise preview_error
     _enforce_service_principal_routes(request, identity)
+
+
+def _deny_unverified_service_token(request: HTTPConnection, reason: str) -> None:
+    logger.warning(
+        "Service token denied: verification failed reason=%s route=%s",
+        reason,
+        _log_safe_route(request),
+    )
 
 
 class ServicePrincipalMiddleware:
@@ -473,6 +499,10 @@ class ServicePrincipalMiddleware:
 def _log_safe_path(request: HTTPConnection) -> str:
     """The routed path with control characters escaped, so it cannot split a log line."""
     return request.scope["path"].encode("unicode_escape").decode("ascii")
+
+
+def _log_safe_route(request: HTTPConnection) -> str:
+    return f"{request.scope.get('method', 'WEBSOCKET')} {_log_safe_path(request)}"
 
 
 def _enforce_service_principal_routes(request: HTTPConnection, identity: AccessIdentity) -> None:
