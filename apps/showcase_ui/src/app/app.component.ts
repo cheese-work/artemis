@@ -27,8 +27,7 @@ import { previewInfo } from './utils/app-url.util';
   imports: [RouterOutlet, NavSwitcherComponent, WhatsNewComponent, VersionFooterComponent],
   templateUrl: './app.component.html',
   changeDetection: ChangeDetectionStrategy.Eager,
-  styleUrl: './app.component.scss',
-  host: { '[style.--preview-banner-height]': "preview ? '24px' : '0px'" }
+  styleUrl: './app.component.scss'
 })
 export class AppComponent {
   public title = 'SmartQA';

@@ -23,7 +23,7 @@ $rose-dark: #dc2626;
 
 :host {
   display: block;
-  height: calc(100vh - var(--preview-banner-height, 0px));
+  height: 100%;
   width: 100vw;
   overflow: hidden;
   font-family: $font-sans;
@@ -32,7 +32,7 @@ $rose-dark: #dc2626;
 .workspace-container {
   position: relative;
   display: flex;
-  height: calc(100vh - var(--preview-banner-height, 0px));
+  height: 100%;
   width: 100vw;
   background-color: $bg-base;
   overflow: hidden;

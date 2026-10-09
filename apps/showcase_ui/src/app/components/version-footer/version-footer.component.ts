@@ -39,23 +39,17 @@ const CHECK_INTERVAL_MS = 5 * 60_000;
     </footer>
   `,
   styles: [`
+    /* A strip in the app shell below the page area, never over page controls; above fixed page backdrops. */
+    :host { display: block; flex: none; position: relative; z-index: 6; }
     .version-footer {
-      position: fixed;
-      right: 10px;
-      /* 2px + 14px line stays under the workspace composer (bottom: 18px). */
-      bottom: 2px;
-      /* Above page content (Workspace panel 2, Setup 5); below the composer (50), menus (60) and nav. */
-      z-index: 6;
-      max-width: calc(100vw - 20px);
-      padding: 0 4px;
-      border-radius: 4px;
+      padding: 2px 10px;
+      border-top: 1px solid #e2e8f0;
       color: #475569;
       background: #fff;
       font: 11px 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
       line-height: 14px;
       font-variant-numeric: tabular-nums;
       text-align: right;
-      pointer-events: none;
     }
     .deployed, [role="status"], button { white-space: nowrap; }
     button {
@@ -65,7 +59,6 @@ const CHECK_INTERVAL_MS = 5 * 60_000;
       background: none;
       font: inherit;
       cursor: pointer;
-      pointer-events: auto;
     }
     .reload { text-decoration: underline; }
     button:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
