@@ -83,15 +83,11 @@ def isolate_awake_service():
     A leftover heartbeat fires ``subprocess.run`` every few seconds, so it lands in a later
     test's ``subprocess.run`` patch and corrupts the command that test captures.
     """
-    from artemis.runtime.awake_service import screen_awake_service
+    from tests.support.awake_service_isolation import stop_awake_service
 
-    def stop():
-        screen_awake_service.shutdown()
-        screen_awake_service._shutdown_requested = False
-
-    stop()
+    stop_awake_service()
     yield
-    stop()
+    stop_awake_service()
 
 
 ADB_ENVIRONMENT_KEYS = (
