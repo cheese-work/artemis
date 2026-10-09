@@ -62,6 +62,13 @@
   }
 }
 
+@media (max-width: 1023px) {
+  :host(.compact.review-run-list) .library-scroll {
+    padding-top: var(--nav-clearance, 88px);
+    scroll-padding-top: var(--nav-clearance, 88px);
+  }
+}
+
 .owner-tabs {
   display: flex;
   gap: 8px;

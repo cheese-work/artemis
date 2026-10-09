@@ -107,11 +107,6 @@
   }
 }
 
-@media (min-width: 1200px) {
-  // The right panel sits beside the run: keep the bar inside the left panel. Below 1200px the panes stack, so the bar spans the page.
-  .floating-nav-switcher { --right-panel-reserve: var(--right-panel-width, 0px); }
-}
-
 @media (max-width: 760px) {
   .floating-nav-switcher {
     left: var(--space-smd);

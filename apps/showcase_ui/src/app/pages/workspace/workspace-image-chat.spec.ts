@@ -51,6 +51,7 @@ describe('WorkspaceComponent image chat', () => {
       isCurrentSessionRunning: () => false,
       currentSession: () => null,
       currentSessionId: () => null,
+      sessions: () => [],
       currentStartupProgress: () => [],
       sessions: () => [],
       runningSessionId: () => null,
