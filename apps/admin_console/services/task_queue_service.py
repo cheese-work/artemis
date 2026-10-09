@@ -1270,12 +1270,14 @@ class TaskQueueService:
     ) -> None:
         """Clean up the finished task and release this run's scheduling slot.
 
-        ``keep_row`` leaves the queue row and its ticket for a requeued start.
+        ``keep_row`` preserves a requeued start's reservation only while its row exists.
         """
         if sess_id and not keep_row:
             cls._remove_task(sess_id)
             device_reservations.release(sess_id)
             state.cancelled_session_ids.discard(str(sess_id))
+        elif sess_id and not cls._queue_item_for(sess_id):
+            device_reservations.release(sess_id)
         host_admission.release(run_key)
         state.cancelled_session_ids.discard(run_key)
         state.manually_stopped_run_ids.discard(run_key)

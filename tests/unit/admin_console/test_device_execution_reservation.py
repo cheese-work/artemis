@@ -114,6 +114,94 @@ async def test_pending_cancel_releases_claim_but_inflight_stop_does_not(context)
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("stop_before_cleanup", [False, True])
+async def test_host_nack_releases_claim_only_if_stop_removed_the_requeued_row(
+    context, monkeypatch, stop_before_cleanup
+):
+    from apps.admin_console.services.host_tunnel import host_tunnels
+
+    monkeypatch.setenv("ARTEMIS_HOST_AGENT", "1")
+    observe(USB, WIFI)
+    device_identity.observe_host(
+        "host",
+        [
+            {
+                "serial": "sd-phone",
+                "hardware_id": device_identity.hardware_hash(PROPS["ro.serialno"]),
+            }
+        ],
+    )
+    endpoint = AdbEndpoint.create("127.0.0.1", 40002, host_id="host", generation=1)
+    monkeypatch.setattr(queue_module.host_endpoints, "resolve", lambda host: endpoint)
+    monkeypatch.setattr(host_tunnels, "bind_run", MagicMock())
+    monkeypatch.setattr(host_tunnels, "release_run", MagicMock())
+    monkeypatch.setattr(TaskQueueService, "_run_tasks_by_session", {})
+    first = await TaskQueueService.enqueue_tasks(
+        ["first"], device_serial="sd-phone", host_id="host"
+    )
+    item = first["tasks"][0]
+    session_id = item["session_id"]
+    item["status"] = "starting"
+    snapshot_started = asyncio.Event()
+    cancellation_started = asyncio.Event()
+    finish_cleanup = asyncio.Event()
+
+    async def snapshot_for_spawn():
+        snapshot_started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancellation_started.set()
+            await finish_cleanup.wait()
+            raise
+
+    monkeypatch.setattr(
+        "apps.admin_console.services.config_store.get_config_store",
+        lambda: SimpleNamespace(snapshot_for_spawn=snapshot_for_spawn),
+    )
+    spawn = AsyncMock()
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+    worker = asyncio.create_task(TaskQueueService._execute_task_item(item))
+    TaskQueueService._run_tasks_by_session[session_id] = worker
+    nack = None
+    try:
+        await asyncio.wait_for(snapshot_started.wait(), 5)
+        nack = asyncio.create_task(TaskQueueService.requeue_starting(session_id))
+        await asyncio.wait_for(cancellation_started.wait(), 5)
+        assert item["requeue"] is True
+        assert session_id in state.executing_run_keys
+        if stop_before_cleanup:
+            TaskQueueService._remove_stopped_queue_item(session_id, False)
+            assert state.queue_items == []
+        with pytest.raises(AdminAPIError) as error:
+            await TaskQueueService.enqueue_tasks(["during cleanup"], device_serial=WIFI)
+        assert error.value.code == "device_claimed"
+        finish_cleanup.set()
+        assert await asyncio.wait_for(nack, 5) is True
+    finally:
+        finish_cleanup.set()
+        worker.cancel()
+        await asyncio.gather(worker, *([nack] if nack else []), return_exceptions=True)
+
+    spawn.assert_not_called()
+    assert session_id not in state.executing_run_keys
+    assert session_id not in state.active_runs
+    if stop_before_cleanup:
+        assert state.queue_items == []
+        DeviceExecutionLock.cancel_reservation.assert_called_with(item["queue_ticket"])
+        assert (await TaskQueueService.enqueue_tasks(["after cleanup"], device_serial=WIFI))[
+            "tasks"
+        ]
+    else:
+        assert state.queue_items == [item]
+        assert item["status"] == "pending"
+        DeviceExecutionLock.cancel_reservation.assert_not_called()
+        with pytest.raises(AdminAPIError) as error:
+            await TaskQueueService.enqueue_tasks(["after cleanup"], device_serial=WIFI)
+        assert error.value.code == "device_claimed"
+
+
+@pytest.mark.asyncio
 async def test_setup_failure_releases_claim_without_a_run(context, monkeypatch):
     observe(USB, WIFI)
     with monkeypatch.context() as patcher:
