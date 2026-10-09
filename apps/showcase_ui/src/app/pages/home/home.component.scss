@@ -1987,21 +1987,21 @@ button, input {
                   color: $text-muted;
                 }
 
-                  .wifi-input-wrap {
+                .wifi-input-wrap {
                   display: flex;
                   align-items: center;
                   background: var(--color-surface);
                   border: 1px solid $card-border;
                   border-radius: 6px;
                   padding: 0 8px;
-                    min-height: var(--target);
-                    border-color: var(--color-border);
+                  min-height: var(--target);
+                  border-color: var(--color-border);
                   transition: border-color 0.15s ease;
 
-                    &:focus-within {
-                      border-color: $primary;
-                      outline: 3px solid var(--color-focus);
-                      outline-offset: 2px;
+                  &:focus-within {
+                    border-color: $primary;
+                    outline: 3px solid var(--color-focus);
+                    outline-offset: 2px;
                   }
 
                   .wrap-icon {

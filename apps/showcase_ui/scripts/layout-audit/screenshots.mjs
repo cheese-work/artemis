@@ -93,9 +93,21 @@ for (const width of checkControls ? [1440, 390] : [1280, 1024]) {
             if (style.boxShadow !== 'none') errors.push(label + ': control shadow');
           }
         }
-        for (const element of document.querySelectorAll('.floating-nav-switcher, app-setup .panel, app-home .guide-card, .model-profile-toggle, .os-selector-pills')) {
+        for (const element of document.querySelectorAll('.floating-nav-switcher, app-setup .panel, app-home .guide-card, .model-profile-toggle, .os-selector-pills, .empty-section-placeholder')) {
           if (visible(element) && getComputedStyle(element).boxShadow !== 'none') errors.push(element.className + ': surface shadow');
           if (visible(element) && parseFloat(getComputedStyle(element).borderTopWidth) > 0) errors.push(element.className + ': surface outline');
+        }
+        if (innerWidth <= 560 && ${JSON.stringify(name !== 'setup')}) {
+          const activeTab = document.querySelector('.nav-tab-btn.active[aria-current="page"]');
+          if (!activeTab) {
+            errors.push('navigation: missing current-page tab');
+          } else {
+            const activeStyle = getComputedStyle(activeTab);
+            if (activeStyle.backgroundImage === 'none' || activeStyle.backgroundSize !== '24px 3px' || activeStyle.backgroundPosition !== '50% 100%') errors.push('navigation: missing non-colour active underline');
+          }
+          for (const tab of document.querySelectorAll('.nav-tab-btn:not(.active)')) {
+            if (getComputedStyle(tab).backgroundImage !== 'none') errors.push('navigation: inactive tab has an active underline');
+          }
         }
         return errors;
       })()`);
@@ -133,5 +145,5 @@ if (failures.length) {
   console.error(failures.join('\n'));
   process.exitCode = 1;
 } else if (checkControls) {
-  console.log('PASS: control borders, shadows, 44 px hit boxes, keyboard focus and 3:1 focus contrast at 1440 px and 390 px.');
+  console.log('PASS: control borders, shadows, 44 px hit boxes, keyboard focus, 3:1 focus contrast and mobile active underlines at 1440 px and 390 px.');
 }

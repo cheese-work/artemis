@@ -123,4 +123,11 @@
 // Phones: tabs collapse to their icon (aria-label keeps the name) so the bar stays two rows.
 @media (max-width: 560px) {
   .floating-nav-switcher .nav-tab-btn .tab-label { display: none; }
+
+  .floating-nav-switcher .nav-tab-btn.active {
+    background-image: linear-gradient(var(--color-primary), var(--color-primary));
+    background-repeat: no-repeat;
+    background-position: center bottom;
+    background-size: 24px 3px;
+  }
 }
