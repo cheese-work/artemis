@@ -1,13 +1,16 @@
 <div class="library-scroll" #scrollRegion (scroll)="onScroll()">
-  @if (compact()) { <h2 class="library-title">{{ strings.title }}</h2> }
-  @else { <h1 class="library-title">{{ strings.title }}</h1> }
+  <header class="library-heading">
+    @if (compact()) { <h2 class="library-title">{{ strings.title }}</h2> }
+    @else { <h1 class="library-title">{{ strings.title }}</h1> }
+    <a class="new-run" routerLink="/workspace" (click)="newRun.emit()"><span>New run</span></a>
+  </header>
 
   <div class="owner-tabs" role="tablist" aria-label="Run owner">
     @for (tab of ['mine', 'everyone']; track tab) {
       <button type="button" role="tab" [attr.data-scope]="tab" [id]="'runs-tab-' + tab"
         [attr.aria-selected]="scope() === tab" [attr.tabindex]="scope() === tab ? 0 : -1"
         aria-controls="runs-panel" (click)="setScope($any(tab))" (keydown)="onTabKey($event, $any(tab))">
-        {{ tab === 'mine' ? 'My runs' : "Everyone's runs" }}
+        {{ tab === 'mine' ? 'Mine' : 'Everyone' }}
       </button>
     }
   </div>
@@ -21,17 +24,30 @@
   <form class="search-form" role="search" (submit)="submitSearch($event)">
     <input
       type="search"
+      #searchInput
       class="search-input"
       [attr.aria-label]="strings.searchLabel"
-      [placeholder]="strings.searchPlaceholder"
+      placeholder="Search or paste a run ID"
+      aria-keyshortcuts="/"
       [value]="searchText()"
       autocomplete="off"
       spellcheck="false"
       (input)="searchText.set($any($event.target).value)"
     />
-    <button type="submit" class="search-button">{{ strings.search }}</button>
+    <button type="submit" class="search-button" aria-label="Search runs"><span class="material-symbols-outlined" aria-hidden="true">search</span></button>
   </form>
 
+  @if (filterChips().length) {
+    <div class="filter-chips" aria-label="Active filters">
+      @for (chip of filterChips(); track chip.key) {
+        <button type="button" [attr.aria-label]="'Remove filter: ' + chip.label" (click)="setFilter(chip.key, '')">
+          <span>{{ chip.label }} <span class="material-symbols-outlined" aria-hidden="true">close</span></span>
+        </button>
+      }
+    </div>
+  }
+  <details class="filter-options" [open]="active()">
+    <summary>Filters{{ active() ? ' · Active' : '' }}</summary>
   <div class="filters">
     <label class="field">
       <span>Status</span>
@@ -75,6 +91,33 @@
       </label>
     </div>
   </details>
+  </details>
+
+  @if (queueRuns().length) {
+    <section class="queue-section" aria-label="Queue">
+      <h3 class="date-group-title">Queue <span class="mono">{{ queueRuns().length }}</span></h3>
+      <ol class="run-list">
+        @for (run of queueRuns(); track run.session_id) {
+          <li class="queue-row task-card" [class.is-open]="isOpen(run)">
+            <a class="run-row" appRunCard [run]="run" [computer]="computer(run)" [device]="device(run)"
+              [showOwner]="true" [queue]="true" [goalImages]="recordedImages().get(run.session_id) ?? []"
+              [current]="isOpen(run)" [attr.aria-current]="isOpen(run) ? 'page' : null"
+              [routerLink]="['/runs', run.session_id]" [queryParams]="runQuery()"
+              (click)="selectQueuedRun(run, $event)"></a>
+            @if (!run.read_only) {
+              <button type="button" [class.queue-stop]="run.status !== 'pending'" [class.queue-cancel]="run.status === 'pending'"
+                [attr.aria-label]="(run.status === 'pending' ? 'Cancel queued run: ' : 'Stop run: ') + runTitle(run.prompt)"
+                [title]="(run.status === 'pending' ? 'Cancel queued run: ' : 'Stop run: ') + runTitle(run.prompt)"
+                (click)="stopRun.emit(run.session_id)">
+                <span class="material-symbols-outlined" aria-hidden="true">{{ run.status === 'pending' ? 'close' : 'stop_circle' }}</span>
+                <span class="sr-only">{{ run.status === 'pending' ? 'Cancel' : 'Stop' }}</span>
+              </button>
+            }
+          </li>
+        }
+      </ol>
+    </section>
+  }
 
   @if (error(); as kind) {
     <div class="state state-error" role="alert">
@@ -90,7 +133,7 @@
         <div class="skeleton-row"></div>
       }
     </div>
-  } @else if (!loading() && rows().length === 0 && !error()) {
+  } @else if (!loading() && rows().length === 0 && queueRuns().length === 0 && !error()) {
     @if (active()) {
       <div class="state state-no-match">
         <p>{{ strings.noMatch }}</p>
@@ -109,8 +152,11 @@
     @if (loading()) {
       <p class="updating" role="status">Updating results…</p>
     }
+    @for (group of dateGroups(); track group.key) {
+    <section class="date-group" [attr.aria-label]="group.label">
+    <h3 class="date-group-title">{{ group.label }}</h3>
     <ol class="run-list" [attr.aria-busy]="loading() ? 'true' : 'false'">
-      @for (run of rows(); track trackRun($index, run)) {
+      @for (run of group.runs; track trackRun($index, run)) {
         <li>
           <a class="run-row" appRunCard [run]="run" [computer]="computer(run)" [device]="device(run)"
             [current]="isOpen(run)" [attr.aria-current]="isOpen(run) ? 'page' : null" [class.is-open]="isOpen(run)"
@@ -120,6 +166,8 @@
         </li>
       }
     </ol>
+    </section>
+    }
     @if (nextCursor()) {
       <button type="button" class="secondary-button load-more" [disabled]="loadingMore() || loading()" (click)="loadMore()">
         {{ strings.loadMore }}

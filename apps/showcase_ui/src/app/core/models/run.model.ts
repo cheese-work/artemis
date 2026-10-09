@@ -18,6 +18,8 @@ export interface RunSummary {
   device_ref: { host_id: string | null; serial: string } | null;
   requested_by: string | null;
   read_only?: boolean;
+  app_package?: string | null;
+  verdict?: 'pass' | 'fail' | 'inconclusive' | null;
   pinned: boolean;
   recordings: RunRecording[];
   /** Epoch seconds the run is due for retention deletion; absent until retention is on. */

@@ -18,6 +18,9 @@ describe('WorkspaceComponent error lifetime', () => {
     currentSession: () => null;
     currentSessionId: () => null;
     currentStartupProgress: () => [];
+    sessions: () => [];
+    runningSessionId: () => null;
+    agentStatus: () => string;
     runTask: jasmine.Spy;
     fetchStatus: jasmine.Spy;
     stopTask: jasmine.Spy;
@@ -36,6 +39,9 @@ describe('WorkspaceComponent error lifetime', () => {
       currentSession: () => null,
       currentSessionId: () => null,
       currentStartupProgress: () => [],
+      sessions: () => [],
+      runningSessionId: () => null,
+      agentStatus: () => 'idle',
       runTask: jasmine.createSpy('runTask').and.returnValue(of({})),
       fetchStatus: jasmine.createSpy('fetchStatus'),
       stopTask: jasmine.createSpy('stopTask')
@@ -158,6 +164,9 @@ describe('WorkspaceComponent phone binding', () => {
       currentSession: () => null,
       currentSessionId: () => null,
       currentStartupProgress: () => [],
+      sessions: () => [],
+      runningSessionId: () => null,
+      agentStatus: () => 'idle',
       runTask,
       fetchStatus: jasmine.createSpy('fetchStatus'),
       stopTask: jasmine.createSpy('stopTask')

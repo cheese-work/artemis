@@ -22,7 +22,11 @@ limitations under the License.
   </div>
 
   <aside class="run-list-pane" aria-label="Runs">
-    <app-run-library [compact]="true" class="review-run-list"></app-run-library>
+    <app-run-library [compact]="true" class="review-run-list" [workspace]="!reviewMode"
+      [sessions]="agentService.sessions()" [liveSessionId]="agentService.runningSessionId()" [liveStatus]="agentService.agentStatus()"
+      [selectedRunId]="agentService.currentSessionId()"
+      (stopRun)="agentService.stopTask($event, false)" (selectRun)="agentService.selectSession($event, true)"
+      (newRun)="startNewRunFrom('')"></app-run-library>
   </aside>
 
   <main class="detail-pane">

@@ -8,6 +8,7 @@ import {
   computed,
   inject,
   input,
+  output,
   signal,
   viewChild
 } from '@angular/core';
@@ -18,7 +19,7 @@ import { ActivatedRoute, Router, RouterLink, convertToParamMap } from '@angular/
 import { Subscription, map } from 'rxjs';
 import { Computer, RegistryDevice } from '../../core/models/host.model';
 import { RunSummary } from '../../core/models/run.model';
-import { GoalImage } from '../../core/models/session.model';
+import { GoalImage, Session } from '../../core/models/session.model';
 import { HostsService } from '../../services/hosts.service';
 import { RunsService } from '../../services/runs.service';
 import { RunCardComponent } from './run-card.component';
@@ -36,8 +37,9 @@ import {
   RUN_STRINGS,
   MEDIA_NOTICE
 } from '../../utils/run-library-strings';
-import { runStatusView } from '../../utils/run-status.util';
+import { runStatusView, sessionStatusView } from '../../utils/run-status.util';
 import { classifySearch } from '../../utils/run-search.util';
+import { runTitle } from '../../utils/run-title.util';
 
 @Component({
   selector: 'app-run-library',
@@ -45,7 +47,7 @@ import { classifySearch } from '../../utils/run-search.util';
   imports: [RouterLink, RunCardComponent],
   templateUrl: './run-library.component.html',
   styleUrl: './run-library.component.scss',
-  host: { '[class.compact]': 'compact()' },
+  host: { '[class.compact]': 'compact()', '(document:keydown)': 'focusSearch($event)' },
   changeDetection: ChangeDetectionStrategy.OnPush
 })
 export class RunLibraryComponent implements OnChanges {
@@ -57,8 +59,17 @@ export class RunLibraryComponent implements OnChanges {
   private readonly destroyRef = inject(DestroyRef);
 
   public readonly strings = RUN_STRINGS;
-  public readonly statusOptions = STATUS_FILTERS.map((value) => ({ value, label: runStatusView(value).label }));
+  public readonly statusOptions = STATUS_FILTERS.map((value) => ({ value, label: value === 'completed' ? 'Completed' : runStatusView(value).label }));
   public readonly compact = input(false);
+  public readonly sessions = input<Session[]>([]);
+  public readonly liveSessionId = input<string | null>(null);
+  public readonly selectedRunId = input<string | null>(null);
+  public readonly liveStatus = input<string | null>(null);
+  public readonly workspace = input(false);
+  public readonly stopRun = output<string>();
+  public readonly selectRun = output<string>();
+  public readonly newRun = output<void>();
+  public readonly runTitle = runTitle;
   public readonly refreshKey = input('');
   public readonly recordedDevices = input<ReadonlyMap<string, LabelableDevice>>(new Map());
   public readonly recordedImages = input<ReadonlyMap<string, GoalImage[]>>(new Map());
@@ -87,13 +98,59 @@ export class RunLibraryComponent implements OnChanges {
   public readonly computers = signal<Computer[]>([]);
   public readonly devices = signal<RegistryDevice[]>([]);
 
+  public readonly queueRuns = computed(() => {
+    const queue = new Map(this.rows().filter((run) => runStatusView(run.status).active).map((run) => [run.session_id, run]));
+    if (this.scope() === 'mine' || this.workspace()) {
+      for (const session of this.sessions()) {
+        const status = sessionStatusView(session.status, session.session_id === this.liveSessionId() ? this.liveStatus() : null);
+        if (!status.active) {
+          queue.delete(session.session_id);
+          continue;
+        }
+        const catalog = queue.get(session.session_id);
+        queue.set(session.session_id, {
+          ...catalog, session_id: session.session_id, prompt: session.initial_goal, status: status.key,
+          interrupt_reason: catalog?.interrupt_reason ?? null, start_time: session.start_time, end_time: session.end_time ?? null,
+          host_id: catalog?.host_id ?? null,
+          device_ref: catalog?.device_ref ?? (session.device_serial ? { host_id: null, serial: session.device_serial } : null),
+          requested_by: session.requested_by ?? null, pinned: catalog?.pinned ?? false, recordings: catalog?.recordings ?? []
+        });
+      }
+    }
+    return [...queue.values()].sort((first, second) =>
+      Number(first.status === 'pending') - Number(second.status === 'pending') || (first.start_time ?? 0) - (second.start_time ?? 0));
+  });
+
+  public readonly dateGroups = computed(() => {
+    const groups = new Map<string, { label: string; runs: RunSummary[] }>();
+    const today = new Date();
+    const yesterday = new Date(today);
+    yesterday.setDate(yesterday.getDate() - 1);
+    for (const run of this.rows()) {
+      if (runStatusView(run.status).active) continue;
+      const date = run.start_time === null ? null : new Date(run.start_time * 1000);
+      const key = date?.toDateString() ?? 'unknown';
+      const label = !date ? 'Date unknown' : key === today.toDateString() ? 'Today'
+        : key === yesterday.toDateString() ? 'Yesterday'
+        : date.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+      if (!groups.has(key)) groups.set(key, { label, runs: [] });
+      groups.get(key)!.runs.push(run);
+    }
+    return [...groups.entries()].map(([key, group]) => ({ key, ...group }));
+  });
+
   public readonly active = computed(() => hasActiveFilters(this.filters()));
+  public readonly filterChips = computed(() => Object.entries(this.filters())
+    .filter(([key, value]) => key !== 'q' && !!value)
+    .map(([key, value]) => ({ key: key as keyof RunFilters, label: key === 'status'
+      ? this.statusOptions.find((option) => option.value === value)?.label ?? value : `${key}: ${value}` })));
   public readonly moreOpen = computed(() => {
     const { device, host, requester } = this.filters();
     return !!(device || host || requester);
   });
 
   private readonly scrollRegion = viewChild<ElementRef<HTMLElement>>('scrollRegion');
+  private readonly searchInput = viewChild<ElementRef<HTMLInputElement>>('searchInput');
   private request: Subscription | null = null;
   private pendingScroll = 0;
   private scrollTimer: ReturnType<typeof setTimeout> | null = null;
@@ -141,6 +198,27 @@ export class RunLibraryComponent implements OnChanges {
 
   public ngOnChanges(changes: SimpleChanges): void {
     if (changes['refreshKey'] && !changes['refreshKey'].firstChange) this.load(false);
+    const sessions = changes['sessions'];
+    if (sessions && !sessions.firstChange && !changes['refreshKey']) {
+      const finished = (items: Session[]) => JSON.stringify(items.filter((session) => !runStatusView(session.status).active)
+        .map((session) => [session.session_id, session.status, session.end_time]));
+      if (finished(sessions.previousValue) !== finished(sessions.currentValue)) this.load(false);
+    }
+  }
+
+  public focusSearch(event: KeyboardEvent): void {
+    if (event.key !== '/' || event.ctrlKey || event.metaKey || event.altKey || event.defaultPrevented) return;
+    if (event.target instanceof Element && event.target.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"])')) return;
+    const search = this.searchInput()?.nativeElement;
+    if (!search?.checkVisibility()) return;
+    event.preventDefault();
+    search.focus();
+  }
+
+  public selectQueuedRun(run: RunSummary, event: MouseEvent): void {
+    if (!this.workspace() || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
+    event.preventDefault();
+    this.selectRun.emit(run.session_id);
   }
 
   public submitSearch(event: Event): void {
@@ -288,7 +366,8 @@ export class RunLibraryComponent implements OnChanges {
   // -- row presentation ---------------------------------------------------
 
   public computer(run: RunSummary): string {
-    return run.host_id === null ? 'A browser' : (this.computers().find((computer) => computer.id === run.host_id)?.name ?? 'Unknown computer');
+    const source = this.devices().find((device) => device.serial === run.device_ref?.serial)?.computer_name;
+    return source ?? (run.host_id === null ? 'A browser' : (this.computers().find((computer) => computer.id === run.host_id)?.name ?? 'Unknown computer'));
   }
 
   public device(run: RunSummary): LabelableDevice | null {
@@ -298,7 +377,7 @@ export class RunLibraryComponent implements OnChanges {
 
   /** The open run's id may be a short prefix of the row's id. */
   public isOpen(run: RunSummary): boolean {
-    const open = this.openRunId();
+    const open = this.openRunId() ?? (this.workspace() ? this.selectedRunId() : null);
     return !!open && run.session_id.startsWith(open);
   }
 

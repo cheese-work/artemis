@@ -28,8 +28,6 @@ import { deviceSourceOf } from '../../utils/device-chip.util';
 import { COMPUTER_STRINGS } from '../../utils/computer-strings';
 import { deviceKindLabel, deviceTitle, isIdentifiedDevice, unlistedRunDeviceTitle } from '../../utils/device-label.util';
 import { recordedDevice } from '../../utils/session-device.util';
-import { OwnerLabelComponent } from '../owner-label/owner-label.component';
-import { RunIdCopyComponent } from '../run-id-copy/run-id-copy.component';
 import { ScopeSwitchComponent } from '../scope-switch/scope-switch.component';
 import { GoalImage, Session } from '../../core/models/session.model';
 import { RunStatusKey, RunStatusView, sessionStatusView } from '../../utils/run-status.util';
@@ -43,7 +41,7 @@ export type { MarkdownSegment, MarkdownLine, NoteMilestone, ParsedNote };
 @Component({
   selector: 'app-chat-interface',
   standalone: true,
-  imports: [CommonModule, FormsModule, RunLibraryComponent, RunIdCopyComponent, OwnerLabelComponent, ScopeSwitchComponent],
+  imports: [CommonModule, FormsModule, RunLibraryComponent, ScopeSwitchComponent],
   templateUrl: './chat-interface.component.html',
   styleUrl: './chat-interface.component.scss',
   changeDetection: ChangeDetectionStrategy.OnPush
@@ -101,7 +99,8 @@ export class ChatInterfaceComponent {
     const devices = new Map<string, NonNullable<ReturnType<typeof recordedDevice>>>();
     for (const session of this.agentService.sessions()) {
       const serial = this.getDeviceSerial(session);
-      const device = serial ? recordedDevice(session, serial) : null;
+      const live = this.systemService.connectedDevices().find((device) => device.serial === serial);
+      const device = live && isIdentifiedDevice(live) ? live : serial ? recordedDevice(session, serial) : null;
       if (device) devices.set(session.session_id, device);
     }
     return devices;
