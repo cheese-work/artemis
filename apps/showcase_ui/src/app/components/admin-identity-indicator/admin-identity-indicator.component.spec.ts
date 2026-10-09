@@ -1,14 +1,20 @@
 import { TestBed } from '@angular/core/testing';
+import { HttpClient } from '@angular/common/http';
+import { By } from '@angular/platform-browser';
 import { provideRouter } from '@angular/router';
 import { of, throwError } from 'rxjs';
 import { AdminConfigService } from '../../services/admin-config.service';
 import { AdminIdentityIndicatorComponent } from './admin-identity-indicator.component';
+import { PAGE_BUILD, VersionFooterComponent } from '../version-footer/version-footer.component';
+import { expectHitBox } from '../../testing/hit-box';
 
 describe('AdminIdentityIndicatorComponent', () => {
   function create(admin: boolean, failed = false) {
     TestBed.configureTestingModule({
       imports: [AdminIdentityIndicatorComponent],
-      providers: [provideRouter([]), {
+      providers: [provideRouter([]),
+        { provide: HttpClient, useValue: { get: () => of({ status: 'known', sha: 'b'.repeat(40), short_sha: 'bbbbbbb', deployed_at: '2026-10-09T01:38:04Z' }) } },
+        { provide: PAGE_BUILD, useValue: { sha: 'a'.repeat(40), builtAt: '2026-10-09T01:38:04Z' } }, {
         provide: AdminConfigService,
         useValue: {
           getIdentity: () => failed ? throwError(() => new Error('Unavailable')) : of({
@@ -76,5 +82,31 @@ describe('AdminIdentityIndicatorComponent', () => {
     trigger.click();
     menu.dispatchEvent(new FocusEvent('focusout', { relatedTarget: document.body, bubbles: true }));
     expect(menu.open).toBeFalse();
+  });
+
+  it('keeps the reload notice above the closed menu with a dot on the account row', () => {
+    const { fixture, root } = create(false);
+    expect(root.querySelector('details')!.open).toBeFalse();
+    expect(root.querySelector('.account-update')?.textContent).toContain('New version available');
+    expect(root.querySelector('.account-update-dot')).not.toBeNull();
+    const version = fixture.debugElement.query(By.directive(VersionFooterComponent)).componentInstance as VersionFooterComponent;
+    const reload = spyOn(version, 'reload');
+    root.querySelector<HTMLButtonElement>('.account-update button')!.click();
+    expect(reload).toHaveBeenCalled();
+  });
+
+  it('shows the version and a 44 px copy action inside the account menu', () => {
+    const { fixture, root } = create(true);
+    root.querySelector('summary')!.click();
+    fixture.detectChanges();
+    const version = fixture.debugElement.query(By.directive(VersionFooterComponent)).componentInstance as VersionFooterComponent;
+    const copy = spyOn(version, 'copy').and.resolveTo();
+    const button = root.querySelector<HTMLButtonElement>('.identity-panel button.build')!;
+    expect(root.querySelector('.identity-panel')?.textContent).toContain('20261009-0838');
+    expect(button.textContent).toContain('Build aaaaaaa');
+    button.click();
+    expect(copy).toHaveBeenCalled();
+    for (const control of root.querySelectorAll<HTMLElement>('summary, .identity-panel a, .identity-panel button')) expectHitBox(control);
+    if (window.innerWidth >= 1024) expectHitBox(root.querySelector<HTMLButtonElement>('.account-update button')!);
   });
 });

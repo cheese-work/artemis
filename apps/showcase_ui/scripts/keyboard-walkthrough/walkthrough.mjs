@@ -287,7 +287,7 @@ try {
     await press('Space');
     await expectTrue('Space opens the admin user menu', `document.querySelector('details.identity-menu').open`);
     await press('Tab');
-    await expectTrue('Tab reaches Setup only inside the admin user menu', `document.activeElement.matches('app-admin-identity-indicator a[href="/setup"]') && !document.querySelector('nav > a[href="/setup"]')`);
+    await expectTrue('Tab reaches Setup inside the admin menu; desktop navigation also offers Setup', `document.activeElement.matches('app-admin-identity-indicator a[href="/setup"]') && !!document.querySelector('nav > a[href="/setup"]')`);
     await press('Escape');
     await expectTrue('Escape restores focus to the admin menu trigger', `document.activeElement.matches('summary') && !document.querySelector('details.identity-menu').open`);
     log('\nNavigation keyboard walkthrough passed. WebUSB was mocked; no device was accessed.');
