@@ -429,3 +429,110 @@ def test_an_unsupported_delegation_need_is_rejected_before_any_authorization(spa
 
     with pytest.raises(ValueError, match="unsupported delegation need"):
         repo.delegation_covers(agent.id, human.id, "s1", need=need)
+
+
+# -- run-library delete and scope=all (Luna-2 verdict on ea1182a) -----------------------
+
+
+def _alive(db, run_id: str) -> bool:
+    with sqlite3.connect(db) as conn:
+        row = conn.execute(
+            "SELECT deleted_at FROM run_meta WHERE session_id = ?", (run_id,)
+        ).fetchone()
+    return row is not None and row[0] is None
+
+
+@pytest.mark.asyncio
+async def test_a_global_admin_cannot_delete_another_persons_run_through_the_library_route(spaces):
+    run = _run(spaces, "qa@example.com")
+    await _call("GET", A, "/api/runs")
+
+    refused = await _call("POST", ADMIN, f"/api/runs/{run}/delete")
+
+    assert refused.status_code == 403
+    assert refused.json()["code"] == "not_run_owner"
+    assert _alive(spaces, run)
+
+
+@pytest.mark.asyncio
+async def test_a_global_admin_can_delete_their_own_run_through_the_library_route(spaces):
+    mine = _run(spaces, ADMIN_EMAIL)
+    await _call("GET", ADMIN, "/api/runs")  # reserves the admin's address
+
+    deleted = await _call("POST", ADMIN, f"/api/runs/{mine}/delete")
+
+    assert deleted.status_code == 200, deleted.text
+    assert not _alive(spaces, mine)
+
+
+@pytest.mark.asyncio
+async def test_a_signed_in_non_admin_still_cannot_use_the_admin_delete_route(spaces):
+    run = _run(spaces, "qa@example.com")
+    await _call("GET", A, "/api/runs")
+
+    refused = await _call("POST", A, f"/api/runs/{run}/delete")
+
+    assert refused.status_code == 403
+    assert refused.json()["code"] == "admin_required"
+    assert _alive(spaces, run)
+
+
+@pytest.mark.asyncio
+async def test_outside_spaces_an_admin_still_deletes_any_run_through_the_library_route(
+    env, monkeypatch
+):
+    monkeypatch.setattr(
+        app.state,
+        "access_config",
+        AccessConfig(
+            auth_mode="cloudflare",
+            audience="aud",
+            issuer=ISSUER,
+            admin_emails=frozenset({ADMIN_EMAIL}),
+        ),
+    )
+    verifier = MagicMock()
+    verifier.verify = AsyncMock(return_value={"email": ADMIN_EMAIL, "sub": ADMIN_SUB})
+    monkeypatch.setattr(app.state, "access_verifier", verifier)
+    run = _run(env, "qa@example.com")
+
+    deleted = await _call("POST", "jwt", f"/api/runs/{run}/delete")
+
+    assert deleted.status_code == 200, deleted.text
+    assert not _alive(env, run)
+
+
+@pytest.mark.asyncio
+async def test_the_system_wide_clear_stays_an_admin_operation_under_spaces(spaces):
+    async with _client() as client:
+        response = await client.post(
+            "/api/runs/clear",
+            json={"confirm_count": 999},
+            headers={"Cf-Access-Jwt-Assertion": ADMIN},
+        )
+
+    assert response.status_code != 403  # reaches the typed-count check, not an ownership refusal
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["/api/status", "/api/sessions", "/api/runs"])
+async def test_open_mode_with_spaces_rejects_scope_all_for_a_direct_loopback_caller(
+    env, monkeypatch, path
+):
+    monkeypatch.setattr(
+        app.state, "access_config", AccessConfig(auth_mode="open", spaces_enabled=True)
+    )
+
+    allowed = await _local(path)
+    refused = await _local(f"{path}?scope=all")
+
+    assert allowed.status_code == 200, allowed.text[:200]
+    assert refused.status_code == 403, refused.text[:200]
+    assert refused.json()["code"] == "scope_all_requires_admin"
+
+
+@pytest.mark.asyncio
+async def test_open_mode_without_spaces_keeps_scope_all(env, monkeypatch):
+    _open_mode(monkeypatch)
+
+    assert (await _local("/api/sessions?scope=all")).status_code == 200

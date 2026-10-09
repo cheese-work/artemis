@@ -108,10 +108,13 @@ def owner_scope(identity: AccessIdentity, scope: str = SCOPE_MINE) -> OwnerScope
             "Use scope=mine, or scope=all as an administrator.",
         )
     result = scope_for(identity, include_all=scope == SCOPE_ALL)
-    if result.enforced and result.include_all and not result.admin:
+    # With spaces on nobody lists every run, open mode included (docs/spaces-contract.md).
+    if result.include_all and (identity.spaces or (result.enforced and not result.admin)):
         raise AdminAPIError(
             403,
-            "Only administrators can list every user's runs.",
+            "Listing every user's runs is not available while spaces are on."
+            if identity.spaces
+            else "Only administrators can list every user's runs.",
             "scope_all_requires_admin",
             "Drop scope=all to list your own runs.",
         )
