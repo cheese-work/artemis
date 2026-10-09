@@ -14,18 +14,24 @@ See the License for the specific language governing permissions and
 limitations under the License.
 -->
 
-<div class="workspace-container" [class.is-resizing]="isDragging()" [class.review-mode]="reviewMode">
+<div class="workspace-container" [class.review-mode]="reviewMode" [class.has-run]="!!reviewRunId()">
   <!-- Skip links: visible only while focused -->
   <div class="skip-links">
     @if (!reviewMode) { <button type="button" class="skip-link" (click)="skipToNewTask()">Skip to new task</button> }
-    @if (!reviewMode || reviewRunId()) { <button type="button" class="skip-link skip-list" (click)="skipToRunList()">Skip to run list</button> }
+    <button type="button" class="skip-link skip-list" (click)="skipToRunList()">Skip to run list</button>
   </div>
 
-  <!-- Left Main Panel: Raw Agent Log Stream, or the run library / viewer in review mode -->
-  <main class="left-panel">
+  <aside class="run-list-pane" aria-label="Runs">
+    <app-run-library [compact]="true" class="review-run-list"></app-run-library>
+  </aside>
+
+  <main class="detail-pane">
+    @if (!reviewMode) {
+      <a class="pane-navigation" routerLink="/runs">← Runs</a>
+    }
     <div class="run-surface">
       @if (reviewMode && !reviewRunId()) {
-        <app-run-library></app-run-library>
+        <div class="detail-empty" role="status">Select a run to see its steps.</div>
       } @else {
         <app-run-view [mode]="reviewMode ? 'review' : 'live'"
           [readOnly]="reviewMode && reviewReadOnly()"
@@ -176,21 +182,5 @@ limitations under the License.
     </div>
     }
   </main>
-
-  <!-- Split Pane Drag Resizer (mouse only, so review mode leaves it out) -->
-  @if (!reviewMode) {
-    <div class="resizer" (mousedown)="onDragStart($event)">
-      <div class="resizer-handle"></div>
-    </div>
-  <!-- Right Sidebar Panel: Task Queue and run history -->
-  <aside class="right-panel" [style.width.px]="rightPanelWidth()">
-    <app-chat-interface></app-chat-interface>
-  </aside>
-  } @else if (reviewRunId()) {
-    <!-- The same run list beside an open run, so Runs reads like the Workspace -->
-    <aside class="right-panel" aria-label="Runs" [style.width.px]="rightPanelWidth()">
-      <app-run-library [compact]="true" class="review-run-list"></app-run-library>
-    </aside>
-  }
 
 </div>

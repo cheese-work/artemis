@@ -16,13 +16,11 @@
 
 import { LoggerService } from '../../services/logger.service';
 import { BrowserStorageService } from '../../services/browser-storage.service';
-import { DOCUMENT } from '@angular/common';
 import { Component, ChangeDetectionStrategy, NgZone, DestroyRef, effect, inject, computed, signal, ViewChild, ElementRef, OnInit } from '@angular/core';
 
 import { toSignal } from '@angular/core/rxjs-interop';
 import { FormsModule } from '@angular/forms';
-import { ActivatedRoute, Router } from '@angular/router';
-import { ChatInterfaceComponent } from '../../components/chat-interface/chat-interface.component';
+import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 import { RunLibraryComponent } from '../../components/run-library/run-library.component';
 import { InterruptedBannerComponent } from '../../components/interrupted-banner/interrupted-banner.component';
 import { RunViewComponent } from '../../components/run-view/run-view.component';
@@ -45,7 +43,7 @@ export interface AttachedImage {
   standalone: true,
   imports: [
     FormsModule,
-    ChatInterfaceComponent,
+    RouterLink,
     RunLibraryComponent,
     InterruptedBannerComponent,
     RunViewComponent
@@ -86,14 +84,6 @@ export class WorkspaceComponent implements OnInit {
       .map((block) => ({ ...block.data, session_id: block.data.session_id ?? id }));
   });
 
-  // Default right panel width to 1/3 of the screen (or 450px as fallback)
-  public rightPanelWidth = signal<number>(
-    typeof window !== 'undefined' ? Math.round(window.innerWidth / 3) : 450
-  );
-  public isDragging = signal<boolean>(false);
-  private dragWidthRafId: number | null = null;
-  private pendingDragWidth = 0;
-
   private taskInputSignal = signal<string>('');
   public get taskInput(): string { return this.taskInputSignal(); }
   public set taskInput(value: string) {
@@ -118,15 +108,17 @@ export class WorkspaceComponent implements OnInit {
 
   @ViewChild('dockInput') public dockInputRef?: ElementRef<HTMLTextAreaElement>;
 
-  /** Skip links: the run is first in Tab order, so jump straight to the new-task box or the run list. */
   public skipToNewTask(): void {
     this.dockInputRef?.nativeElement.focus();
   }
 
   public skipToRunList(): void {
-    // A hidden list (one column on Runs) has nothing to focus: stay put rather than lose focus.
-    this.host.nativeElement.querySelector<HTMLElement>('.right-panel')?.checkVisibility() &&
-      this.host.nativeElement.querySelector<HTMLElement>('.right-panel [role=tab][tabindex="0"], .right-panel a.run-row')?.focus();
+    const list = this.host.nativeElement.querySelector<HTMLElement>('.run-list-pane');
+    if (list?.checkVisibility()) {
+      list.querySelector<HTMLElement>('[role=tab][tabindex="0"], a.run-row')?.focus();
+    } else {
+      void this.router.navigate(['/runs'], { queryParamsHandling: 'preserve' });
+    }
   }
 
   constructor() {
@@ -138,12 +130,8 @@ export class WorkspaceComponent implements OnInit {
         this.logger.warn('Unable to restore the selected profile:', error);
       }
     });
-    // The floating nav lives outside this component; tell it how much width the right panel takes.
-    const rootStyle = inject(DOCUMENT).documentElement.style;
-    effect(() => rootStyle.setProperty('--right-panel-width', `${!this.reviewMode || this.reviewRunId() ? this.rightPanelWidth() : 0}px`));
     this.destroyRef.onDestroy(() => {
       this.attachedImages().forEach((image) => URL.revokeObjectURL(image.previewUrl));
-      rootStyle.removeProperty('--right-panel-width');
       if (this.errorTimeout) clearTimeout(this.errorTimeout);
       this.agentService.whatsNewPromptDraft.set(false);
       this.agentService.updateWhatsNewErrorVisibility(this.whatsNewErrorOwner, false);
@@ -179,7 +167,6 @@ export class WorkspaceComponent implements OnInit {
     });
     this.destroyRef.onDestroy(() => {
       window.removeEventListener('keydown', this.onGlobalKeyDown);
-      this.detachDragListeners();
     });
   }
 
@@ -451,53 +438,4 @@ export class WorkspaceComponent implements OnInit {
     }, 400);
   }
 
-  /**
-   * Handle mouse down on resizer bar to start dragging. The move/up listeners
-   * are attached only for the duration of the drag and run outside the Angular
-   * zone: idle mouse movement over the workspace never triggers change
-   * detection, and drag updates are coalesced to one per animation frame.
-   */
-  public onDragStart(event: MouseEvent): void {
-    this.isDragging.set(true);
-    event.preventDefault();
-    this.zone.runOutsideAngular(() => {
-      document.addEventListener('mousemove', this.onMouseMove);
-      document.addEventListener('mouseup', this.onMouseUp);
-    });
-  }
-
-  private onMouseMove = (event: MouseEvent): void => {
-    if (!this.isDragging()) {
-      return;
-    }
-
-    const newWidth = window.innerWidth - event.clientX;
-    const minWidth = 250;
-    const maxWidth = window.innerWidth - 300;
-
-    // Apply boundary limits to prevent panels from shrinking too much
-    if (newWidth >= minWidth && newWidth <= maxWidth) {
-      this.pendingDragWidth = newWidth;
-      if (this.dragWidthRafId === null) {
-        this.dragWidthRafId = requestAnimationFrame(() => {
-          this.dragWidthRafId = null;
-          this.rightPanelWidth.set(this.pendingDragWidth);
-        });
-      }
-    }
-  };
-
-  private onMouseUp = (): void => {
-    this.isDragging.set(false);
-    this.detachDragListeners();
-  };
-
-  private detachDragListeners(): void {
-    document.removeEventListener('mousemove', this.onMouseMove);
-    document.removeEventListener('mouseup', this.onMouseUp);
-    if (this.dragWidthRafId !== null) {
-      cancelAnimationFrame(this.dragWidthRafId);
-      this.dragWidthRafId = null;
-    }
-  }
 }

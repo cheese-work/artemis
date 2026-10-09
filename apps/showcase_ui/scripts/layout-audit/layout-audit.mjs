@@ -5,10 +5,6 @@
 // 1. Clearance matrix: for every page x viewport x phone state, no visible text may sit under the
 //    floating nav, nothing may overflow the viewport sideways, and the nav must stay inside the viewport.
 // 2. Accessibility: the connected-phone status stays in the accessibility tree at every width; the chip is >= 44px.
-// 3. Scenarios: RunView controls and Task Queue / Notes & Plans sidebar across mock states
-//    (idle / running / paused-with-error / sessions API error / video error) and route changes.
-// 4. Contract (CHE-1278): side by side at 1280, stacked at 1024, one column at 700 and 375; the new-task box never covers
-//    the run; 44px primary targets; no blur; text at 4.5:1 on its real background; reduced motion stops animation.
 import { spawn } from 'node:child_process';
 import { mkdtempSync, mkdirSync, rmSync, existsSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -150,25 +146,24 @@ async function scenarios() {
     await open('/workspace', width);
     await setPhone(state !== 'idle');
     await sleep(2400); // status poll (2 s) + sessions fetch
-    // Controls in RunView and the chat header must never sit under the nav.
     const covered = await evaluate(`(() => { const nav = document.querySelector('.floating-nav-switcher').getBoundingClientRect();
-      return [...document.querySelectorAll('app-run-view button, app-run-view a, app-chat-interface .chat-header button')]
+      return [...document.querySelectorAll('app-run-view button, app-run-view a, app-run-library button')]
         .filter((e) => { const r = e.getBoundingClientRect(); return r.width > 0 && r.left < nav.right && r.right > nav.left && r.top < nav.bottom && r.bottom > nav.top; })
         .map((e) => (e.getAttribute('aria-label') || e.textContent).trim().slice(0, 24)); })()`);
     if (covered.length) fail(where, `page controls under the nav: ${covered.join(' | ')}`);
     const err = await evaluate(`document.body.innerText.includes('Failed to fetch') || document.body.innerText.includes('Something went wrong')`);
     if (err) fail(where, 'raw error text shown');
-    const panel = await evaluate(rect('app-chat-interface'));
-    const sw = await evaluate(`[...document.querySelectorAll('app-chat-interface *')].filter(e => e.scrollWidth > e.clientWidth + 1 && getComputedStyle(e).overflowX === 'visible' && e.clientWidth > 0).slice(0, 3).map(e => e.className || e.tagName)`);
-    if (!panel) fail(where, 'chat panel missing');
-    else if (!inside(panel) || panel.r > width) fail(where, `chat panel outside viewport horizontally: ${JSON.stringify(panel)}`);
-    else if (sw.length) fail(where, `chat panel content overflows its box: ${sw.join(', ')}`);
-    for (const [tab, content] of [['Notes & Plans', '.notes-tab-content'], ['Task Queue', '.queue-section-header']]) {
-      if (!(await clickByText('app-chat-interface button.tab-selector-btn', tab))) { fail(where, `${tab} tab not found`); continue; }
-      await sleep(300);
-      if (!(await evaluate(`!!document.querySelector(${JSON.stringify('app-chat-interface ' + content)})`))) fail(where, `${tab} content did not open`);
+    const panel = await evaluate(rect('.run-list-pane'));
+    if (!panel) fail(where, 'run list pane missing');
+    if (width >= 1024) {
+      if (!inside(panel) || panel.r > width) fail(where, `run list pane outside viewport horizontally: ${JSON.stringify(panel)}`);
+      for (const tab of ['My runs', "Everyone's runs"]) {
+        if (!(await clickByText('app-run-library button[role=tab]', tab))) fail(where, `${tab} tab not found`);
+        await sleep(300);
+        if (!(await evaluate(`document.querySelector('app-run-library [aria-selected=true]')?.textContent.trim() === ${JSON.stringify(tab)}`))) fail(where, `${tab} did not select`);
+      }
     }
-    await shot(`chat-${state}-${width}`);
+    await shot(`workspace-${state}-${width}`);
   }
   console.log(`scenarios: ${failures.length ? 'failures above' : 'all clear'}`);
 }
@@ -241,34 +236,29 @@ const TARGETS = `[...document.querySelectorAll('.floating-nav-switcher .nav-tab-
   .map((e) => [e, e.getBoundingClientRect()]).filter(([e, r]) => r.width > 0 && r.height > 0 && !e.disabled)
   .filter(([, r]) => r.height < 43.5 || r.width < 43.5).map(([e, r]) => (e.getAttribute('aria-label') || e.textContent || e.className).trim().slice(0, 24) + ' ' + Math.round(r.width) + 'x' + Math.round(r.height))`;
 const BOXES = `(() => { const r = (s) => { const e = document.querySelector(s); if (!e) return null; const b = e.getBoundingClientRect(); return { l: b.left, t: b.top, r: b.right, b: b.bottom, w: b.width, h: b.height }; };
-  return { left: r('.left-panel'), right: r('.right-panel'), run: r('.run-surface'), dock: r('.workspace-floating-bar-wrapper'), scrollH: document.documentElement.scrollHeight, overflowX: document.documentElement.scrollWidth - innerWidth }; })()`;
+  return { list: r('.run-list-pane'), detail: r('.detail-pane'), run: r('.run-surface'), dock: r('.workspace-floating-bar-wrapper'), scrollH: document.documentElement.scrollHeight, overflowX: document.documentElement.scrollWidth - innerWidth }; })()`;
 
-// Side by side from 1200px, stacked from 800px, one column below; the new-task box stays under the run.
 function checkPanes(where, route, width, b) {
   const TOLERANCE = 2;
-  const listHidden = route.startsWith('/runs/') && width < 800; // Runs keeps the open run; Back to runs reaches the list.
-  if (!b.left || (!listHidden && !b.right)) return fail(where, 'run or list panel missing');
-  if (listHidden) {
-    if (b.right && b.right.w > 0) fail(where, 'review list should be hidden in one column');
-  } else if (width >= 1200) {
-    if (b.right.l < b.left.r - TOLERANCE || Math.abs(b.right.t - b.left.t) > TOLERANCE) fail(where, `list is not beside the run: ${JSON.stringify({ left: b.left, right: b.right })}`);
-  } else if (b.right.t < b.left.b - TOLERANCE || Math.abs(b.right.l - b.left.l) > TOLERANCE) {
-    fail(where, `list is not under the run: ${JSON.stringify({ left: b.left, right: b.right })}`);
-  } else if (width >= 800 && b.scrollH > 800 + TOLERANCE) {
-    fail(where, `stacked panes must fit the viewport, page is ${b.scrollH}px tall`);
+  if (!b.list || !b.detail) return fail(where, 'run or list pane missing');
+  if (width >= 1024) {
+    if (Math.abs(b.list.w - 360) > TOLERANCE || Math.abs(b.list.r - b.detail.l) > TOLERANCE || Math.abs(b.list.t - b.detail.t) > TOLERANCE) {
+      fail(where, `list is not 360px left of the detail: ${JSON.stringify({ list: b.list, detail: b.detail })}`);
+    }
+  } else if (route === '/runs') {
+    if (b.list.w === 0 || b.detail.w > 0) fail(where, 'only the run list should be visible');
+  } else if (b.detail.w === 0 || b.list.w > 0) {
+    fail(where, 'only the detail should be visible');
   }
   if (!b.dock) return;
-  // One column keeps the box pinned to the bottom of the screen; otherwise it sits under the run, never over it.
-  if (width < 800) {
-    if (b.dock.b > 800 + TOLERANCE) fail(where, `new-task box is off screen: dock bottom ${b.dock.b}`);
-  } else if (b.run && b.dock.t < b.run.b - TOLERANCE) fail(where, `new-task box covers the run: dock top ${b.dock.t}, run bottom ${b.run.b}`);
+  if (b.dock.b > 800 + TOLERANCE) fail(where, `new-task box is off screen: dock bottom ${b.dock.b}`);
+  if (b.run && b.dock.t < b.run.b - TOLERANCE) fail(where, `new-task box covers the run: dock top ${b.dock.t}, run bottom ${b.run.b}`);
 }
 
 async function contract() {
-  // The run list sits beside the run on Workspace and on an open run; the list page and Setup have one pane.
   for (const route of ['/workspace', '/runs/00000002-5d7e-4a10-9c33-0e1f2a3b4c5d', '/runs', '/setup']) {
-    const panes = route === '/workspace' || route.startsWith('/runs/');
-    for (const width of [1280, 1024, 700, 375, 320]) {
+    const panes = route === '/workspace' || route.startsWith('/runs');
+    for (const width of [1440, 1200, 1024, 1023, 800, 390, 320]) {
       const where = `contract ${route.split('/').slice(0, 2).join('/')} @${width}px`;
       await open(route, width, 800);
       await setPhone(true);

@@ -19,7 +19,7 @@ import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { provideRouter } from '@angular/router';
 import { Observable, of, throwError } from 'rxjs';
 import { RunViewComponent } from '../../components/run-view/run-view.component';
-import { ChatInterfaceComponent } from '../../components/chat-interface/chat-interface.component';
+import { RunLibraryComponent } from '../../components/run-library/run-library.component';
 import { InterruptedBannerComponent } from '../../components/interrupted-banner/interrupted-banner.component';
 import { AgentService } from '../../services/agent.service';
 import { WorkspacePhoneService } from '../../services/workspace-phone.service';
@@ -66,7 +66,7 @@ describe('WorkspaceComponent image chat', () => {
       schemas: [CUSTOM_ELEMENTS_SCHEMA]
     })
       .overrideComponent(WorkspaceComponent, {
-      remove: { imports: [RunViewComponent, ChatInterfaceComponent, InterruptedBannerComponent] },
+      remove: { imports: [RunViewComponent, RunLibraryComponent, InterruptedBannerComponent] },
         add: { schemas: [CUSTOM_ELEMENTS_SCHEMA] }
       })
       .compileComponents();
