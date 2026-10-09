@@ -187,8 +187,8 @@ let nextId = 0;
     @media (max-width: 799px) {
       :host { min-width: 0; }
       .chip { max-width: calc(100vw - 168px); padding: 6px 0; border: 0; background: transparent; }
-      .chip-visual { display: flex; align-items: center; gap: .45rem; min-width: 0; height: 32px; padding: 0 8px; border: 1px solid var(--color-rule-strong); border-radius: var(--radius-full); background: var(--color-surface); }
-      .chip.dropped .chip-visual, .chip.interrupted .chip-visual, .chip.other-tab .chip-visual { background: var(--color-warning-bg); border-color: var(--color-warning); }
+      .chip-visual { display: flex; align-items: center; gap: .45rem; min-width: 0; height: 32px; padding: 0 8px; border: 0; border-radius: var(--radius-full); background: var(--color-surface-subtle); }
+      .chip.dropped .chip-visual, .chip.interrupted .chip-visual, .chip.other-tab .chip-visual { background: var(--color-warning-bg); }
       .panel { position: fixed; top: calc(var(--preview-banner-h, 0px) + var(--appbar-h) + 8px); left: 8px; right: 8px; width: auto; max-width: none; max-height: calc(100dvh - var(--appbar-h) - var(--tabbar-h) - var(--preview-banner-h, 0px) - 16px); overflow: auto; box-sizing: border-box; }
     }
   `],

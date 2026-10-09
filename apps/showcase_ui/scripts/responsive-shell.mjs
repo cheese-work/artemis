@@ -111,11 +111,13 @@ try {
         footer: !!document.querySelector('app-root > app-version-footer'),
         labels: Array.from(nav.querySelectorAll('.tab-label')).every(label => label.getClientRects().length > 0),
         labelSize: getComputedStyle(nav.querySelector('.tab-label')).fontSize,
+        activeBackgroundImage: getComputedStyle(nav.querySelector('.nav-tab-btn.active')).backgroundImage,
         overflow: document.documentElement.scrollWidth - innerWidth };
     })()`);
     assert.equal(layout.footer, false, `${width}: no fixed version footer`);
     assert.equal(layout.overflow, 0, `${width}: no viewport overflow`);
     assert.equal(layout.labels, true, `${width}: labels stay visible`);
+    assert.match(layout.activeBackgroundImage, /linear-gradient/, `${width}: active nav selection bar`);
     if (width >= 800) {
       assert.equal(layout.nav.width, width < 1200 ? 72 : 224, `${width}: sidebar/rail width`);
       assert.equal(layout.page.left, layout.nav.width, `${width}: content clears sidebar/rail`);
@@ -141,6 +143,9 @@ try {
     assert.ok(labels.every(label => label.inside), `${width}: labels fit inside their controls: ${JSON.stringify(labels)}`);
     if (width < 800) {
       assert.equal((await visibleBoxes('.chip-visual'))[0].height, 32, `${width}: 32 px device visual`);
+      assert.deepEqual(await evaluate(`['borderTopWidth', 'borderRightWidth', 'borderBottomWidth', 'borderLeftWidth']
+        .map(property => getComputedStyle(document.querySelector('.chip-visual'))[property])`),
+        ['0px', '0px', '0px', '0px'], `${width}: borderless device visual`);
       assert.equal((await visibleBoxes('.identity-avatar'))[0].height, 28, `${width}: 28 px avatar visual`);
     }
     for (const target of targets) {
@@ -188,7 +193,7 @@ try {
       writeFileSync(path.join(process.env.SHOTS, `shell-${width}.png`), Buffer.from(data, 'base64'));
     }
     evidence.push({ width, layout, targets });
-    console.log(`PASS ${width}px: shell, pane switch, hit boxes, phone picker and account menu`);
+    console.log(`PASS ${width}px: active nav linear-gradient, shell, pane switch, hit boxes, phone picker and account menu${width < 800 ? ', borderless device visual' : ''}`);
   }
   if (process.env.SHOTS) writeFileSync(path.join(process.env.SHOTS, 'assertions.json'), JSON.stringify(evidence, null, 2));
 } finally {
