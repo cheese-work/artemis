@@ -31,6 +31,7 @@ HARDWARE_ID = "359e41333185ec8960b7be84c5ddeee55b34b6805c51b0102f60b5ee5bcc5d38"
 PHONE = "sd-05b42e59020251f2"
 # The agent's weak id for the same phone before authorization: "dev:adb:" + transport serial.
 WEAK = "sd-3a5eede39742af70"
+WEAK_WIFI = "sd-b3867fe8155338ce"  # "dev:adb:192.168.1.5:5555"
 AVD = "sd-8bcfa99c1405b169"
 device_pool_module = importlib.import_module("artemis.runtime.device_pool")
 PHONE_PROPS = {"ro.serialno": SERIALNO, "ro.product.model": "Pixel 6 Pro"}
@@ -318,6 +319,90 @@ def test_host_authorization_promotes_the_provisional_device(db, admin, repo):
     assert _devices(db) == [(pending, "confirmed")]
     assert repo.device_for_connection("host", host_id, PHONE) == pending
     assert repo.device_for_connection("host", host_id, WEAK) is None
+
+
+def _report(ws, *devices: dict) -> None:
+    ws.send_json({"type": "devices", "devices": list(devices)})
+    _sync(ws)
+
+
+def _weak(serial: str) -> dict:
+    return {"serial": serial, "state": "unauthorized", "kind": "physical"}
+
+
+def _trusted(*previous: str) -> dict:
+    return {
+        "serial": PHONE,
+        "state": "device",
+        "kind": "physical",
+        "shared": True,
+        "hardware_id": HARDWARE_ID,
+        "previous_ids": list(previous),
+    }
+
+
+def test_usb_and_wifi_authorized_together_become_one_device(db, admin, repo):
+    key, enrolled = _enroll(admin, "Lab Mac")
+    host_id = enrolled["host_id"]
+    context, ws = _connect(admin, key, host_id)
+    try:
+        _report(ws, _weak(WEAK), _weak(WEAK_WIFI))
+        usb_pending, wifi_pending = (device_id for device_id, _ in _devices(db))
+        _report(ws, _trusted(WEAK, WEAK_WIFI))
+    finally:
+        context.__exit__(None, None, None)
+
+    assert _devices(db) == [(usb_pending, "confirmed")]
+    assert repo.resolve(wifi_pending) == usb_pending  # the old id stays resolvable
+    with sqlite3.connect(db) as conn:  # both connections, and their history, stay
+        assert conn.execute(
+            "SELECT COUNT(*) FROM device_connections WHERE device_id = ?", (usb_pending,)
+        ).fetchone() == (2,)
+
+
+def test_wifi_authorized_after_usb_joins_the_confirmed_phone(db, admin, repo):
+    key, enrolled = _enroll(admin, "Lab Mac")
+    host_id = enrolled["host_id"]
+    context, ws = _connect(admin, key, host_id)
+    try:
+        _report(ws, _trusted(WEAK))
+        ((phone, _),) = _devices(db)
+        _report(ws, _trusted(WEAK), _weak(WEAK_WIFI))
+        wifi_pending = _devices(db)[1][0]
+        _report(ws, _trusted(WEAK, WEAK_WIFI))
+    finally:
+        context.__exit__(None, None, None)
+
+    assert _devices(db) == [(phone, "confirmed")]
+    assert repo.resolve(wifi_pending) == phone
+    assert repo.device_for_connection("host", host_id, WEAK_WIFI) == phone
+
+
+def test_previous_ids_never_take_a_confirmed_foreign_or_other_host_record(
+    db, admin, identity, repo
+):
+    host_id = _host_devices(admin, [_weak(WEAK_WIFI)])
+    with sqlite3.connect(db) as conn:  # the Wi-Fi record belongs to someone else
+        conn.execute("UPDATE devices SET owner_principal_id = 'p-bob'")
+    ((foreign, _),) = _devices(db)
+    other = identity.hardware_hash("OTHERPHONE1")
+    identity.observe_host(host_id, [{**_trusted(), "serial": WEAK, "hardware_id": other}])
+    confirmed = repo.device_for_connection("host", host_id, WEAK)
+    elsewhere = _host_devices(admin, [_weak(WEAK)], name="Desk PC")
+    remote = repo.device_for_connection("host", elsewhere, WEAK)
+
+    identity.observe_host(host_id, [_trusted()])
+    phone = repo.device_for_connection("host", host_id, PHONE)
+
+    identity.observe_host(host_id, [_trusted(WEAK, WEAK_WIFI)])
+
+    assert repo.device_for_connection("host", host_id, PHONE) == phone
+    assert phone not in (foreign, confirmed, remote)
+    states = dict(_devices(db))
+    assert states[foreign] == "provisional"  # owners differ: the owner decides (Merge)
+    assert repo.get(confirmed).hardware_hash == other  # a confirmed identity stays put
+    assert states[remote] == "provisional"
+    assert repo.resolve(remote) == remote  # another host's record is never touched
 
 
 def test_host_authorization_joins_a_phone_the_server_already_knows(db, admin, identity, repo):

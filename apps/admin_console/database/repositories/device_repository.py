@@ -156,59 +156,87 @@ class DeviceRepository:
 
         ``hardware_hash`` is None when the connection has no hardware identity;
         ``readable`` is False when adb could not read one yet (provisional).
-        ``previous_serials`` are routing keys this connection used before it had a
-        hardware identity; such a connection is re-keyed, never duplicated.
+        ``previous_serials`` are routing keys this phone's connections used before it
+        had a hardware identity: one is re-keyed when ``serial`` is new, and every other
+        record they left behind joins the confirmed device, never duplicated.
         """
         with db_session(self.db_path) as conn:
             self._require_ready(conn)
             conn.execute("BEGIN IMMEDIATE")
             with conn:
                 now = time.time()
-                row = self._find_connection(conn, source, host_id, serial)
-                if row is None and hardware_hash is not None:
-                    row = self._rekey(conn, source, host_id, serial, previous_serials)
-                if row is not None:
-                    device_id, connection_id = row["device_id"], row["connection_id"]
-                    current = conn.execute(
-                        "SELECT hardware_hash, match_state, owner_principal_id FROM devices "
-                        "WHERE device_id = ?",
-                        (device_id,),
-                    ).fetchone()
-                    if hardware_hash is None or current["hardware_hash"] in (None, hardware_hash):
-                        conn.execute(
-                            "UPDATE device_connections SET kind = ?, last_seen_at = ? "
-                            "WHERE connection_id = ?",
-                            (kind, now, connection_id),
-                        )
-                        if hardware_hash is None or current["hardware_hash"] == hardware_hash:
-                            return Match(device_id, connection_id, current["match_state"])
-                        device_id, outcome = self._identify(
-                            conn, device_id, current, hardware_hash, now
-                        )
-                        return Match(device_id, connection_id, outcome)
-                    # Another phone took over a recycled transport key (a bridge port, a Wi-Fi
-                    # address). Retire the old key; its connection keeps its device and history.
-                    conn.execute(
-                        "UPDATE device_connections SET serial = serial || '~' || connection_id "
-                        "WHERE connection_id = ?",
-                        (connection_id,),
-                    )
-                if hardware_hash is not None:
-                    holder = self._holder(conn, hardware_hash)
-                    device_id = holder["device_id"] if holder else None
-                    outcome = "confirmed"
-                else:
-                    device_id, outcome = None, "uncertain" if readable else "provisional"
-                if device_id is None:
-                    device_id = f"dev_{uuid.uuid4().hex}"
-                    self._insert(conn, Device(device_id, None, label, hardware_hash, outcome), now)
-                connection_id = f"con_{uuid.uuid4().hex}"
-                conn.execute(
-                    "INSERT INTO device_connections (connection_id, device_id, kind, source, "
-                    "host_id, serial, created_at, last_seen_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                    (connection_id, device_id, kind, source, host_id, serial, now, now),
+                match = self._match(
+                    conn,
+                    kind,
+                    source,
+                    host_id,
+                    serial,
+                    hardware_hash,
+                    readable,
+                    label,
+                    previous_serials,
+                    now,
                 )
+                if match.outcome == "confirmed":
+                    self._absorb(conn, source, host_id, previous_serials, match.device_id, now)
+                return match
+
+    def _match(
+        self,
+        conn: sqlite3.Connection,
+        kind: str,
+        source: str,
+        host_id: str | None,
+        serial: str,
+        hardware_hash: str | None,
+        readable: bool,
+        label: str | None,
+        previous_serials: tuple[str, ...],
+        now: float,
+    ) -> Match:
+        row = self._find_connection(conn, source, host_id, serial)
+        if row is None and hardware_hash is not None:
+            row = self._rekey(conn, source, host_id, serial, previous_serials)
+        if row is not None:
+            device_id, connection_id = row["device_id"], row["connection_id"]
+            current = conn.execute(
+                "SELECT hardware_hash, match_state, owner_principal_id FROM devices "
+                "WHERE device_id = ?",
+                (device_id,),
+            ).fetchone()
+            if hardware_hash is None or current["hardware_hash"] in (None, hardware_hash):
+                conn.execute(
+                    "UPDATE device_connections SET kind = ?, last_seen_at = ? "
+                    "WHERE connection_id = ?",
+                    (kind, now, connection_id),
+                )
+                if hardware_hash is None or current["hardware_hash"] == hardware_hash:
+                    return Match(device_id, connection_id, current["match_state"])
+                device_id, outcome = self._identify(conn, device_id, current, hardware_hash, now)
                 return Match(device_id, connection_id, outcome)
+            # Another phone took over a recycled transport key (a bridge port, a Wi-Fi
+            # address). Retire the old key; its connection keeps its device and history.
+            conn.execute(
+                "UPDATE device_connections SET serial = serial || '~' || connection_id "
+                "WHERE connection_id = ?",
+                (connection_id,),
+            )
+        if hardware_hash is not None:
+            holder = self._holder(conn, hardware_hash)
+            device_id = holder["device_id"] if holder else None
+            outcome = "confirmed"
+        else:
+            device_id, outcome = None, "uncertain" if readable else "provisional"
+        if device_id is None:
+            device_id = f"dev_{uuid.uuid4().hex}"
+            self._insert(conn, Device(device_id, None, label, hardware_hash, outcome), now)
+        connection_id = f"con_{uuid.uuid4().hex}"
+        conn.execute(
+            "INSERT INTO device_connections (connection_id, device_id, kind, source, "
+            "host_id, serial, created_at, last_seen_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (connection_id, device_id, kind, source, host_id, serial, now, now),
+        )
+        return Match(device_id, connection_id, outcome)
 
     def _rekey(
         self,
@@ -252,25 +280,61 @@ class DeviceRepository:
         ):
             # Never schedulable, so nothing ran on it: the record joins the phone it turned
             # out to be, and its id stays resolvable. Owner choices (Merge) stay in CHE-1480.
-            target = holder["device_id"]
-            conn.execute(
-                "UPDATE device_connections SET device_id = ? WHERE device_id = ?",
-                (target, device_id),
-            )
-            conn.execute(
-                "UPDATE device_aliases SET device_id = ? WHERE device_id = ?", (target, device_id)
-            )
-            conn.execute(
-                "INSERT INTO device_aliases (alias_device_id, device_id, created_at) VALUES (?, ?, ?)",
-                (device_id, target, now),
-            )
-            conn.execute("DELETE FROM devices WHERE device_id = ?", (device_id,))
-            return target, "confirmed"
+            self._join(conn, device_id, holder["device_id"], now)
+            return holder["device_id"], "confirmed"
         conn.execute(
             "UPDATE devices SET match_state = 'uncertain', updated_at = ? WHERE device_id = ?",
             (now, device_id),
         )
         return device_id, "uncertain"
+
+    def _absorb(
+        self,
+        conn: sqlite3.Connection,
+        source: str,
+        host_id: str | None,
+        previous_serials: tuple[str, ...],
+        target: str,
+        now: float,
+    ) -> None:
+        """Every other record this host's previous routing keys left behind joins ``target``.
+
+        A hardware identity, an owner's choice (confirmed) and another owner's record
+        are never absorbed: those stay for Merge (CHE-1480).
+        """
+        (owner,) = conn.execute(
+            "SELECT owner_principal_id FROM devices WHERE device_id = ?", (target,)
+        ).fetchone()
+        for previous in previous_serials:
+            row = self._find_connection(conn, source, host_id, previous)
+            if row is None or row["device_id"] == target:
+                continue
+            record = conn.execute(
+                "SELECT hardware_hash, match_state, owner_principal_id FROM devices "
+                "WHERE device_id = ?",
+                (row["device_id"],),
+            ).fetchone()
+            if (
+                record["hardware_hash"] is None
+                and record["match_state"] != "confirmed"
+                and record["owner_principal_id"] == owner
+            ):
+                self._join(conn, row["device_id"], target, now)
+
+    @staticmethod
+    def _join(conn: sqlite3.Connection, device_id: str, target: str, now: float) -> None:
+        """``device_id`` joins ``target``: its connections move, its id becomes an alias."""
+        conn.execute(
+            "UPDATE device_connections SET device_id = ? WHERE device_id = ?", (target, device_id)
+        )
+        conn.execute(
+            "UPDATE device_aliases SET device_id = ? WHERE device_id = ?", (target, device_id)
+        )
+        conn.execute(
+            "INSERT INTO device_aliases (alias_device_id, device_id, created_at) VALUES (?, ?, ?)",
+            (device_id, target, now),
+        )
+        conn.execute("DELETE FROM devices WHERE device_id = ?", (device_id,))
 
     def device_for_connection(self, source: str, host_id: str | None, serial: str) -> str | None:
         with db_session(self.db_path) as conn:
