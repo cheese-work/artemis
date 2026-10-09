@@ -25,6 +25,7 @@ import { HostsService } from '../../services/hosts.service';
 import { UsbDeviceRelayService } from '../../services/usb-device-relay.service';
 import { HostsResponse } from '../../core/models/host.model';
 import { deviceSourceOf } from '../../utils/device-chip.util';
+import { COMPUTER_STRINGS } from '../../utils/computer-strings';
 import { deviceKindLabel, deviceTitle, isIdentifiedDevice, unlistedRunDeviceTitle } from '../../utils/device-label.util';
 import { recordedDevice } from '../../utils/session-device.util';
 import { OwnerLabelComponent } from '../owner-label/owner-label.component';
@@ -288,12 +289,13 @@ export class ChatInterfaceComponent {
     }
     const registry = this.registry();
     const relay = this.usbRelay.state();
-    const source = deviceSourceOf(
+    const reportedSource = deviceSourceOf(
       serial,
       registry?.devices ?? [],
       registry?.hosts ?? [],
       relay.status === 'connected' ? relay.serial : null
     );
+    const source = reportedSource === COMPUTER_STRINGS.aBrowser ? null : reportedSource;
     const where = source ? ` · ${source}` : '';
     // Newest knowledge first: the live list, then what the run recorded, then the registry.
     const device = [

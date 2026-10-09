@@ -18,6 +18,7 @@ import { ChangeDetectionStrategy, Component, input } from '@angular/core';
     <ng-content />
   `,
   styles: [`
+    .step-number, .step-duration, .phase-worked-time { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
     .phase-worked-time { color: var(--color-text-muted); font-weight: normal; }
     .step-number { font-size: 12px; color: var(--evidence-muted); }
     .step-failure-detail { flex: 1 1 100%; min-width: 0; max-width: 100%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }

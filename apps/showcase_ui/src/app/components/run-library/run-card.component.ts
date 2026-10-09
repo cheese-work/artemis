@@ -23,20 +23,20 @@ import { RunStatusBadgeComponent } from '../run-presentation/run-status-badge.co
     }
     <span class="run-outcome" appRunStatusBadge [status]="run().status"></span>
     <span class="run-meta">
-      <span class="run-recording">{{ recording() }}</span>
+      @if (recording(); as badge) { <span class="run-recording">{{ badge }}</span> }
       <span class="run-device" [title]="run().device_ref?.serial ?? 'Unknown phone'">
-        {{ deviceLabel() }} · {{ computer() }}
+        <span [class.run-serial]="deviceLabel() === run().device_ref?.serial" [class.mono]="deviceLabel() === run().device_ref?.serial">{{ deviceLabel() }}</span>
+        @if (run().host_id !== null) { <span>· {{ computer() }}</span> }
       </span>
-      <span class="run-date">
+      <span class="run-date mono">
         @if (run().start_time) { {{ run().start_time! * 1000 | date: 'MMM d, y, h:mm a' }} }
         @else { Date unknown }
       </span>
       @if (current()) { <span class="run-current">Viewing</span> }
       @if (showOwner()) {
         <span class="run-owner">Owner: {{ run().requested_by ?? 'No owner' }}</span>
-        <span class="run-read-only">Read-only</span>
       }
-      @if (expires(); as text) { <span class="run-expires">{{ text }}</span> }
+      @if (expires(); as text) { <span class="run-expires mono">{{ text }}</span> }
       @if (run().status === 'interrupted') { <span class="run-reason">{{ interruptReason(run().interrupt_reason) }}</span> }
     </span>
   `,
@@ -72,6 +72,7 @@ export class RunCardComponent {
   readonly expires = computed(() => expiresText(this.run().expires_at, Math.floor(Date.now() / 1000)));
   readonly recording = computed(() => {
     const recording = this.run().recordings[0];
-    return mapRecording({ capture: (recording?.capture ?? null) as never, transfer: (recording?.transfer ?? null) as never, playback: null }).badge;
+    const view = mapRecording({ capture: (recording?.capture ?? null) as never, transfer: (recording?.transfer ?? null) as never, playback: null });
+    return view.state === 'unknown' ? null : view.badge;
   });
 }

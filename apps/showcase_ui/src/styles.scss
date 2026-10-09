@@ -140,6 +140,11 @@ body {
   --focus-ring: var(--color-focus);
 }
 
+.mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
 /* Every control shows the same focus ring: 3px, 2px off the edge (DESIGN.md Components). */
 :where(a, button, input, select, textarea, summary, video, [tabindex]):focus-visible {
   outline: 3px solid var(--color-focus);
