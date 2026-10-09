@@ -55,6 +55,7 @@ let nextId = 0;
                       <span class="material-symbols-outlined" aria-hidden="true">check</span>
                     }
                   </button>
+                  <span class="device-detail">Connection: {{ option.serial }}</span>
                   @if (option.note) {
                     <span class="note" [id]="noteId(option.serial)">{{ option.note }}</span>
                   }
@@ -130,7 +131,8 @@ let nextId = 0;
       display: flex; flex-direction: column; gap: .5rem; padding: .75rem; border: 1px solid #e2e8f0; border-radius: 14px;
       background: #fff; color: #0f172a; box-shadow: 0 12px 32px -8px rgba(15, 23, 42, .25);
     }
-    .hint, .empty, .note { margin: 0; font-size: .85rem; color: #475569; }
+    .hint, .empty, .note, .device-detail { margin: 0; font-size: .85rem; color: #475569; }
+    .device-detail { display: block; padding: .25rem .75rem; overflow-wrap: anywhere; }
     .error { margin: 0; font-size: .85rem; color: #b91c1c; white-space: pre-line; }
     .options { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: .25rem; }
     .option, .action {

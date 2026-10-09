@@ -99,7 +99,7 @@ for (const prefix of ['/', '/preview/pr/70/']) {
       assert.fail(navigation.errorText);
     }
     try {
-      await waitFor(() => evaluate(`!!window.ng && document.querySelector('app-run-viewer')?.innerText.includes('Log in and open settings')`).catch(() => false));
+      await waitFor(() => evaluate(`!!window.ng && document.querySelector('app-run-view')?.innerText.includes('Log in and open settings')`).catch(() => false));
     } catch (error) {
       console.error(JSON.stringify({ requests, runtimeErrors, page: await evaluate('document.body.innerText') }, null, 2));
       throw error;
@@ -118,12 +118,12 @@ for (const prefix of ['/', '/preview/pr/70/']) {
     assert.equal(bridge, url.replace('http:', 'ws:') + prefix + 'api/device-bridge/session');
     await evaluate(`(async () => {
       Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async text => { window.copiedRunLink = text; } } });
-      const viewer = ng.getComponent(document.querySelector('app-run-viewer'));
+      const viewer = ng.getComponent(document.querySelector('app-run-view'));
       await viewer.copyLink();
     })()`);
     assert.equal(await evaluate('window.copiedRunLink'), url + prefix + 'runs/00000001-5d7e-4a10-9c33-0e1f2a3b4c5d');
     await waitFor(() => requests.some(request => request === `${prefix}api/stream?scope=all`));
-    const images = await evaluate(`Array.from(document.querySelectorAll('app-run-viewer img')).map(image => image.getAttribute('src'))`);
+    const images = await evaluate(`Array.from(document.querySelectorAll('app-run-view img')).map(image => image.getAttribute('src'))`);
     assert.ok(images.length > 0, 'Run screenshots were rendered');
     assert.ok(images.every(image => image.startsWith(prefix + 'images/')), JSON.stringify(images));
     if (prefix !== '/' && process.argv.includes('--root-api-negative-control')) await evaluate(`fetch('/api/preview-root-leak-control').catch(() => {})`);

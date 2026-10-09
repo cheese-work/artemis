@@ -29,10 +29,11 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 from apps.admin_console.database.connection import get_db
 from artemis.config.host_agent import host_agent_enabled
+from artemis.runtime.host_protocol import CONTRACT
 
 # Shared protocol constants (the agent, server, UI and docs read these).
-PROTOCOL_VERSION = 1
-MIN_SUPPORTED = 1
+PROTOCOL_VERSION = CONTRACT.protocol_version
+MIN_SUPPORTED = CONTRACT.minimum_version
 CODE_TTL_SECONDS = 15 * 60
 TOKEN_TTL_SECONDS = 24 * 3600
 NONCE_TTL_SECONDS = 60
@@ -44,7 +45,31 @@ MAX_PENDING_NONCES = 2048
 MAX_DEVICES_PER_HOST = 64
 SHARE_COMMAND = "smartqa-host share <serial>"
 
-_SERIAL = re.compile(r"^[A-Za-z0-9._:\-]{1,64}$")
+# B3a-2: the agent presents "sd-" + 16 hex of HMAC-SHA256(org pepper, "dev:" + hw_id).
+# Anything else could be a raw serial and is never stored, returned or logged.
+DEVICE_ID = re.compile(r"^sd-[0-9a-f]{16}$")
+_DEVICE_KINDS = {"physical", "emulator"}
+_DEVICE_STATES = {"device", "offline", "unauthorized", "no"}
+_DEVICE_ATTENTION = {
+    "offline",
+    "unauthorized",
+    "no_permissions",
+    "identity_untrusted",
+    "identity_ambiguous",
+}
+# Audit events the agent reports, with the only values each field may carry.
+AGENT_EVENTS = {
+    "share_mode_changed",
+    "device_share_changed",
+    "device_auto_shared",
+    "identity_ambiguous",
+}
+_EVENT_FIELDS = {
+    "device": lambda value: isinstance(value, str) and DEVICE_ID.match(value) is not None,
+    "mode": lambda value: value in ("auto", "select"),
+    "shared": lambda value: isinstance(value, bool),
+    "by": lambda value: value in ("cli", "tray"),
+}
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS host_enrollment_codes (
@@ -63,6 +88,7 @@ CREATE TABLE IF NOT EXISTS host_devices (
     host_id TEXT NOT NULL, serial TEXT NOT NULL, model TEXT, shared INTEGER NOT NULL,
     updated_at REAL NOT NULL, PRIMARY KEY (host_id, serial)
 );
+CREATE TABLE IF NOT EXISTS host_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS host_tokens (
     token_hash TEXT PRIMARY KEY, host_id TEXT NOT NULL, generation INTEGER NOT NULL,
     scopes TEXT NOT NULL, expires_at REAL NOT NULL
@@ -161,6 +187,18 @@ class HostRegistry:
             key = str(self.db_path)
             if key not in self._schema_ready:
                 conn.executescript(_SCHEMA)
+                columns = {row[1] for row in conn.execute("PRAGMA table_info(host_devices)")}
+                for column in ("kind", "state", "attention"):  # B3a-2, additive
+                    if column not in columns:
+                        conn.execute(f"ALTER TABLE host_devices ADD COLUMN {column} TEXT")
+                # Rows from before B3a-2 hold raw adb serials: drop them; the agent re-registers.
+                legacy = [
+                    (row["host_id"], row["serial"])
+                    for row in conn.execute("SELECT host_id, serial FROM host_devices")
+                    if not DEVICE_ID.match(row["serial"])
+                ]
+                conn.executemany("DELETE FROM host_devices WHERE host_id=? AND serial=?", legacy)
+                conn.commit()  # close the implicit transaction before callers BEGIN IMMEDIATE
                 self._schema_ready.add(key)
             with conn:  # commit on success, roll back on any error
                 yield conn
@@ -174,8 +212,20 @@ class HostRegistry:
     def allow(self, key: str, limit: int, window: float) -> bool:
         return self.limiter.allow(key, limit, window, self.clock())
 
+    def device_pepper(self) -> str:
+        """The org pepper for opaque device ids: created once, then stable."""
+        with self._db() as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO host_settings (key, value) VALUES ('device_pepper', ?)",
+                (base64.b64encode(secrets.token_bytes(32)).decode(),),
+            )
+            return conn.execute(
+                "SELECT value FROM host_settings WHERE key='device_pepper'"
+            ).fetchone()["value"]
+
     def reset_for_boot(self) -> None:
         """No connection survives a restart: every live row starts offline."""
+        self.device_pepper()
         now = self.clock()
         with self._db() as conn:
             conn.execute(
@@ -285,6 +335,7 @@ class HostRegistry:
             "host_id": host_id,
             "protocol_version": PROTOCOL_VERSION,
             "min_supported": MIN_SUPPORTED,
+            "device_pepper": self.device_pepper(),
         }
 
     # -- handshake ----------------------------------------------------------
@@ -447,7 +498,7 @@ class HostRegistry:
         """Replace the computer's phones; refused unless this is its current, unrevoked connection."""
         rows = []
         for item in devices if isinstance(devices, list) else []:
-            if isinstance(item, dict) and _SERIAL.match(str(item.get("serial", ""))):
+            if isinstance(item, dict) and DEVICE_ID.match(str(item.get("serial", ""))):
                 rows.append(
                     (
                         host_id,
@@ -455,6 +506,11 @@ class HostRegistry:
                         _clean(item.get("model"), 64) or None,
                         int(item.get("shared") is True),
                         self.clock(),
+                        item.get("kind") if item.get("kind") in _DEVICE_KINDS else None,
+                        item.get("state") if item.get("state") in _DEVICE_STATES else None,
+                        item.get("attention")
+                        if item.get("attention") in _DEVICE_ATTENTION
+                        else None,
                     )
                 )
         with self._db() as conn:
@@ -467,21 +523,54 @@ class HostRegistry:
                 return False
             conn.execute("DELETE FROM host_devices WHERE host_id=?", (host_id,))
             conn.executemany(
-                "INSERT OR REPLACE INTO host_devices VALUES (?,?,?,?,?)",
+                "INSERT OR REPLACE INTO host_devices (host_id, serial, model, shared, updated_at,"
+                " kind, state, attention) VALUES (?,?,?,?,?,?,?,?)",
                 rows[:MAX_DEVICES_PER_HOST],
             )
+        from apps.admin_console.services.task_queue_service import TaskQueueService
+
+        TaskQueueService.validate_host_device_inventory(
+            host_id,
+            generation,
+            {row[1] for row in rows[:MAX_DEVICES_PER_HOST] if row[3]},
+        )
         return True
+
+    def audit_event(self, message: dict[str, Any]) -> str | None:
+        """Log fields of an agent audit event, or None unless every field is allowlisted."""
+        if message.get("event") not in AGENT_EVENTS:
+            return None
+        parts = []
+        for name, valid in _EVENT_FIELDS.items():
+            value = message.get(name)
+            if value is None:
+                continue
+            if not valid(value):
+                return None
+            parts.append(f" {name}={str(value).lower() if isinstance(value, bool) else value}")
+        return "".join(parts)
 
     def list_hosts(self) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         """Return (computers, phones that computers share)."""
         with self._db() as conn:
             hosts = [dict(r) for r in conn.execute("SELECT * FROM hosts ORDER BY created_at, id")]
             devices = [
-                dict(r) for r in conn.execute("SELECT * FROM host_devices ORDER BY host_id, serial")
+                dict(r)
+                for r in conn.execute("SELECT * FROM host_devices ORDER BY host_id, serial")
+                if DEVICE_ID.match(r["serial"])  # never publish a raw serial
             ]
         by_host: dict[str, list[dict[str, Any]]] = {}
+        claims: dict[str, set[str]] = {}
+        names = {host["id"]: host["name"] for host in hosts if host["revoked_at"] is None}
         for device in devices:
             by_host.setdefault(device["host_id"], []).append(device)
+            # One physical id on two computers is one phone seen twice; AVD names are per computer.
+            if device["kind"] == "physical" and device["host_id"] in names:
+                claims.setdefault(device["serial"], set()).add(device["host_id"])
+        for device in devices:
+            others = sorted(claims.get(device["serial"], set()) - {device["host_id"]})
+            device["also_visible_on"] = [names[other] for other in others]
+            device["flag"] = "also_visible" if others else device["attention"]
         views, shared_phones = [], []
         for host in hosts:
             mine = by_host.get(host["id"], [])
@@ -503,6 +592,19 @@ class HostRegistry:
                     "phones_not_shared": sum(1 for d in mine if not d["shared"]),
                     "unshared_serials": [d["serial"] for d in mine if not d["shared"]],
                     "share_command": SHARE_COMMAND,
+                    "attention": [
+                        {
+                            "serial": d["serial"],
+                            "reason": d["flag"],
+                            **(
+                                {"also_visible_on": d["also_visible_on"]}
+                                if d["also_visible_on"]
+                                else {}
+                            ),
+                        }
+                        for d in mine
+                        if d["flag"]
+                    ],
                 }
             )
             shared_phones.extend(
@@ -515,6 +617,8 @@ class HostRegistry:
                     "computer_status": host["status"],
                     "reason": None if online else host["reason"],
                     "since": host["since"],
+                    "attention": "also_visible" if d["also_visible_on"] else None,
+                    "also_visible_on": d["also_visible_on"],
                 }
                 for d in mine
                 if d["shared"]

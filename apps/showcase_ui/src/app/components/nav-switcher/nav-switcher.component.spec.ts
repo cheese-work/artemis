@@ -1,22 +1,25 @@
 import { TestBed } from '@angular/core/testing';
-import { provideRouter } from '@angular/router';
-import { signal } from '@angular/core';
-import { phoneFakes } from '../../testing/phone-fakes';
+import { provideRouter, Router } from '@angular/router';
+import { Component } from '@angular/core';
+import { phone, phoneFakes } from '../../testing/phone-fakes';
 import { of } from 'rxjs';
 import { AdminConfigService } from '../../services/admin-config.service';
-import {
-  UsbDeviceRelayService,
-  UsbDeviceRelayState
-} from '../../services/usb-device-relay.service';
 import { NavSwitcherComponent } from './nav-switcher.component';
 
-describe('NavSwitcherComponent', () => {
-  it('has no phone control: the Workspace chip is the only one', async () => {
-    const relay = {
-      state: signal<UsbDeviceRelayState>({ status: 'connected', serial: 'R58M123', sessionId: 's1', error: null }),
-      disconnect: jasmine.createSpy('disconnect').and.resolveTo(undefined)
-    };
+@Component({ template: '' })
+class PageStub {}
 
+describe('NavSwitcherComponent', () => {
+  beforeEach(() => {
+    TestBed.configureTestingModule({
+      providers: [{
+        provide: AdminConfigService,
+        useValue: { getIdentity: () => of({ email: 'qa@example.test', admin: false, auth_mode: 'cloudflare', reason: null }) }
+      }]
+    });
+  });
+
+  it('has no phone control: the Workspace chip is the only one', async () => {
     await TestBed.configureTestingModule({
       imports: [NavSwitcherComponent],
       providers: [provideRouter([]), ...phoneFakes().providers]
@@ -30,7 +33,7 @@ describe('NavSwitcherComponent', () => {
     expect(fixture.nativeElement.textContent).not.toContain('Disconnect');
   });
 
-  it('links to the run library between Workspace and System Setup', async () => {
+  it('shows Workspace and Runs, with no Setup tab for a non-admin', async () => {
     await TestBed.configureTestingModule({
       imports: [NavSwitcherComponent],
       providers: [provideRouter([]), ...phoneFakes().providers]
@@ -41,13 +44,13 @@ describe('NavSwitcherComponent', () => {
     const hrefs = Array.from<HTMLAnchorElement>(fixture.nativeElement.querySelectorAll('nav a[href]')).map(a =>
       a.getAttribute('href')
     );
-    expect(hrefs).toEqual(['/workspace', '/runs', '/setup']);
+    expect(hrefs).toEqual(['/workspace', '/runs']);
     expect(fixture.nativeElement.querySelector('a[href="/runs"]').textContent).toContain('Runs');
     // Labels collapse to icons on phones, so each tab needs its own accessible name.
     const names = Array.from<HTMLAnchorElement>(fixture.nativeElement.querySelectorAll('nav a[href]')).map(a =>
       a.getAttribute('aria-label')
     );
-    expect(names).toEqual(['Workspace', 'Runs', 'System Setup']);
+    expect(names).toEqual(['Workspace', 'Runs']);
   });
 
   it('stays inside the viewport (CHE-1189)', async () => {
@@ -100,7 +103,7 @@ describe('NavSwitcherComponent', () => {
     expect(showWhatsNew).toHaveBeenCalled();
   });
 
-  it("retains System Setup and unread What's New navigation with admin identity", async () => {
+  it("puts Setup only in the admin user menu and retains unread What's New", async () => {
     const adminConfig = {
       getIdentity: () => of({
         email: 'admin@example.test',
@@ -127,7 +130,14 @@ describe('NavSwitcherComponent', () => {
     fixture.detectChanges();
 
     expect(fixture.nativeElement.querySelector('.brand-wordmark')?.textContent).toContain('SmartQA');
-    expect(fixture.nativeElement.querySelector('a[href="/setup"]')?.textContent).toContain('System Setup');
+    expect(fixture.nativeElement.querySelector('nav > a[href="/setup"]')).toBeNull();
+    const userMenu = fixture.nativeElement.querySelector('app-admin-identity-indicator details') as HTMLDetailsElement;
+    expect(userMenu).not.toBeNull();
+    if (!userMenu) return;
+    expect(userMenu.open).toBeFalse();
+    userMenu.querySelector('summary')!.click();
+    expect(userMenu.open).toBeTrue();
+    expect(userMenu.querySelector('a[href="/setup"]')?.textContent?.trim()).toBe('Setup');
     const whatsNewButton = fixture.nativeElement.querySelector(
       `[aria-label="Open What's New, unread updates"]`
     ) as HTMLButtonElement;
@@ -154,5 +164,70 @@ describe('NavSwitcherComponent', () => {
     expect(chip.closest('.nav-status')).not.toBeNull();
     expect(nav.querySelectorAll('app-workspace-device-chip').length).toBe(1);
     expect(nav.getBoundingClientRect().top).toBeLessThan(window.innerHeight / 4);
+  });
+
+  it("orders Workspace, Runs, What's New, the device chip and the user", async () => {
+    await TestBed.configureTestingModule({
+      imports: [NavSwitcherComponent],
+      providers: [provideRouter([]), ...phoneFakes().providers]
+    }).compileComponents();
+    const fixture = TestBed.createComponent(NavSwitcherComponent);
+    fixture.componentRef.setInput('hasWhatsNew', true);
+    fixture.detectChanges();
+    const controls = Array.from<HTMLElement>(fixture.nativeElement.querySelectorAll('nav > a, nav > button, .nav-status > *'));
+    expect(controls.map(control => control.getAttribute('aria-label') || control.tagName.toLowerCase()))
+      .toEqual(['Workspace', 'Runs', "Open What's New", 'app-workspace-device-chip', 'app-admin-identity-indicator']);
+  });
+
+  for (const path of ['/workspace', '/runs']) {
+    it(`reaches browser connect in exactly 2 clicks from ${path}, without Setup or scrolling`, async () => {
+      const fakes = phoneFakes();
+      await TestBed.configureTestingModule({
+        imports: [NavSwitcherComponent],
+        providers: [provideRouter([
+          { path: 'workspace', component: PageStub },
+          { path: 'runs', component: PageStub }
+        ]), ...fakes.providers]
+      }).compileComponents();
+      const router = TestBed.inject(Router);
+      await router.navigateByUrl(path);
+      const fixture = TestBed.createComponent(NavSwitcherComponent);
+      fixture.detectChanges();
+      const root = fixture.nativeElement as HTMLElement;
+      const chip = root.querySelector<HTMLButtonElement>('button.chip')!;
+      chip.click();
+      fixture.detectChanges();
+      const connect = Array.from(root.querySelectorAll<HTMLButtonElement>('.panel button'))
+        .find(button => button.textContent!.includes('Connect a phone from this browser'))!;
+      expect(connect.disabled).toBeFalse();
+      expect(connect.getBoundingClientRect().bottom).toBeLessThanOrEqual(window.innerHeight);
+      connect.click();
+      fixture.detectChanges();
+      expect(fakes.relay.connect).toHaveBeenCalledTimes(1);
+      expect(router.url).toBe(path);
+      expect(root.querySelector('.panel')).toBeNull();
+      expect(fakes.system.restartAdb).not.toHaveBeenCalled();
+    });
+  }
+
+  it('keeps raw phone addresses out of the chip and shows them only in a picker detail line', async () => {
+    const fakes = phoneFakes();
+    const serial = '127.0.0.1:41003';
+    fakes.relay.state.set({ status: 'connected', serial, sessionId: 'bridge', error: null });
+    fakes.system.connectedDevices.set([phone({ serial })]);
+    await TestBed.configureTestingModule({
+      imports: [NavSwitcherComponent],
+      providers: [provideRouter([]), ...fakes.providers]
+    }).compileComponents();
+    const fixture = TestBed.createComponent(NavSwitcherComponent);
+    fixture.detectChanges();
+    const root = fixture.nativeElement as HTMLElement;
+    const chip = root.querySelector<HTMLButtonElement>('button.chip')!;
+    expect(chip.textContent).toContain('Pixel 6 · Phone');
+    expect(root.textContent).not.toContain(serial);
+    chip.click();
+    fixture.detectChanges();
+    expect(root.querySelector('.device-detail')?.textContent).toContain(serial);
+    expect(root.querySelector('.option-text')?.textContent).not.toContain(serial);
   });
 });

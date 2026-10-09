@@ -11,7 +11,8 @@ import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { startMockApi, mock } from './mock-api.mjs';
+import { startMockApi, mock, RUNS } from './mock-api.mjs';
+import { pasteShortcut } from './paste-shortcut.mjs';
 
 const dist = fileURLToPath(new URL('../../dist/frontend/browser', import.meta.url));
 if (!existsSync(path.join(dist, 'index.html'))) {
@@ -27,10 +28,15 @@ const freePort = () =>
     });
   });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const navigationOnly = process.argv.includes('--navigation-only');
 
 mock.readiness = {
   os_type: 'linux', overall_ready: true,
-  probes: [{ id: 'android_adb', status: 'pass', metadata: { devices: [{ serial: 'keyboard-fixture', state: 'device', model: 'Pixel test', device_kind: 'phone' }] } }]
+  probes: [
+    { id: 'system_config', status: 'pass' },
+    { id: 'llm_api_key', status: 'pass', metadata: { is_set: true } },
+    { id: 'android_adb', status: 'pass', metadata: { devices: navigationOnly ? [] : [{ serial: 'keyboard-fixture', state: 'device', model: 'Pixel test', device_kind: 'phone' }] } }
+  ]
 };
 const { server, url: base } = await startMockApi(dist);
 const profile = mkdtempSync(path.join(tmpdir(), 'kbd-walk-'));
@@ -88,7 +94,8 @@ const KEYS = {
   Escape: { key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 },
   ArrowDown: { key: 'ArrowDown', code: 'ArrowDown', windowsVirtualKeyCode: 40 },
   ArrowUp: { key: 'ArrowUp', code: 'ArrowUp', windowsVirtualKeyCode: 38 },
-  v: { key: 'v', code: 'KeyV', windowsVirtualKeyCode: 86 }
+  Home: { key: 'Home', code: 'Home', windowsVirtualKeyCode: 36 },
+  End: { key: 'End', code: 'End', windowsVirtualKeyCode: 35 }
 };
 async function press(name, modifiers = 0) {
   const k = KEYS[name];
@@ -138,6 +145,36 @@ async function tabUntil(label, predicate, { back = false, max = 60 } = {}) {
 const focusIs = (selector) => `e.matches(${JSON.stringify(selector)})`;
 const focusNamed = (name) => `(e.getAttribute('aria-label') || e.textContent || '').trim().replace(/\\s+/g, ' ').startsWith(${JSON.stringify(name)})`;
 
+async function checkRunKeyboard(mode) {
+  log(`${mode}: steps, share notice, download notice, technical details`);
+  await expectTrue('four steps are loaded', `document.querySelectorAll('button.step-button').length === 4`);
+  await tabUntil('first step', focusIs('button.step-button'));
+  await press('Enter');
+  await expectTrue('Enter selected the step', `document.activeElement.getAttribute('aria-current') === 'step'`);
+  await press('ArrowDown');
+  await expectTrue('ArrowDown selected the next step', `document.activeElement.textContent.includes('Step 2') && document.activeElement.getAttribute('aria-current') === 'step'`);
+  await press('End');
+  await expectTrue('End selected the last step', `document.activeElement.textContent.includes('Step 4')`);
+  await press('Home');
+  await press('Space');
+  await expectTrue('Home and Space selected the first step', `document.activeElement.textContent.includes('Step 1') && document.activeElement.getAttribute('aria-current') === 'step'`);
+  await tabUntil('Copy link', focusNamed('Copy link'));
+  await press('Enter');
+  await expectTrue('share dialog is open, focus is inside it', `!!document.querySelector('dialog.trust-dialog[open]') && document.querySelector('dialog.trust-dialog').contains(document.activeElement)`);
+  await expectTrue('share dialog shows both notices', `document.querySelector('dialog.trust-dialog').textContent.includes('not redacted') && document.querySelector('dialog.trust-dialog').textContent.includes('Cloudflare Access')`);
+  await press('Escape');
+  await expectTrue('Escape returned focus to Copy link', `!document.querySelector('dialog.trust-dialog[open]') && ${`(() => { const e = document.activeElement; return ${focusNamed('Copy link')}; })()`}`);
+  await tabUntil('Download', focusNamed('Download'));
+  await press('Space');
+  await expectTrue('download dialog shows only the redaction notice', `!!document.querySelector('dialog.trust-dialog[open]') && document.querySelector('dialog.trust-dialog').textContent.includes('not redacted') && !document.querySelector('dialog.trust-dialog').textContent.includes('Cloudflare Access')`);
+  await press('Escape');
+  await expectTrue('Escape returned focus to Download', `!document.querySelector('dialog.trust-dialog[open]') && ${`(() => { const e = document.activeElement; return ${focusNamed('Download')}; })()`}`);
+  await tabUntil('Pin', focusNamed('Pin'));
+  await tabUntil('Technical details', focusNamed('Technical details'));
+  await press('Enter');
+  await expectTrue('Technical details opened and raw logs rendered', `!!document.querySelector('pre.raw-logs')`);
+}
+
 try {
   for (let i = 0; i < 50; i++) {
     try {
@@ -164,6 +201,55 @@ try {
     }
   };
   await send('Page.enable');
+  if (navigationOnly) {
+    await send('Page.addScriptToEvaluateOnNewDocument', { source: `
+      window.phoneChooserRequests = 0;
+      Object.defineProperty(navigator, 'usb', { value: {
+        getDevices: async () => [],
+        requestDevice: async () => {
+          window.phoneChooserRequests++;
+          throw new DOMException('Cancelled fixture chooser', 'NotFoundError');
+        },
+        addEventListener: () => {}, removeEventListener: () => {}
+      } });
+    ` });
+    mock.identity = { body: { email: 'qa@example.test', admin: false, auth_mode: 'cloudflare', reason: null } };
+    for (const route of ['/workspace', '/runs']) {
+      log(`Navigation: non-admin on ${route}`);
+      await send('Page.navigate', { url: `${base}${route}` });
+      await expectTrue('user identity loaded', `!!document.querySelector('summary[aria-label^="User menu"]')`);
+      await expectTrue('no Setup tab', `!document.querySelector('nav > a[href="/setup"]')`);
+      await tabUntil('phone chip', focusIs('button.chip'));
+      await press('Enter');
+      await expectTrue('first activation opens the picker with Connect focused', `document.activeElement.textContent.includes('Connect a phone from this browser')`);
+      await expectTrue('Connect is visible without scrolling', `document.activeElement.getBoundingClientRect().bottom <= innerHeight && scrollY === 0`);
+      await press('Enter');
+      await expectTrue('second activation reaches the mocked chooser, with no device access', `window.phoneChooserRequests === 1 && !document.querySelector('.chip-host .panel') && location.pathname === '${route}'`);
+      await tabUntil('user menu', focusIs('summary[aria-label^="User menu"]'));
+      await press('Enter');
+      await expectTrue('Enter opens the QA user menu without Setup', `document.querySelector('details.identity-menu').open && !document.querySelector('app-admin-identity-indicator a[href="/setup"]')`);
+      await press('Escape');
+      await expectTrue('Escape closes the user menu and returns focus', `!document.querySelector('details.identity-menu').open && document.activeElement.matches('summary')`);
+      await tabUntil('phone chip', focusIs('button.chip'), { back: true });
+      await press('Space');
+      await tabUntil('More options', focusIs('a.more'));
+      await expectTrue('QAs can reach device settings through More options', `document.activeElement.getAttribute('href') === '/setup'`);
+      await press('Escape');
+      await expectTrue('Escape closes the phone picker with focus restored', `!document.querySelector('.chip-host .panel') && document.activeElement.matches('button.chip')`);
+    }
+    mock.identity.body.admin = true;
+    await send('Page.navigate', { url: `${base}/workspace` });
+    await expectTrue('admin identity loaded', `document.querySelector('.identity-role')?.textContent.includes('Admin')`);
+    await tabUntil('admin user menu', focusIs('summary[aria-label^="User menu"]'));
+    await press('Space');
+    await expectTrue('Space opens the admin user menu', `document.querySelector('details.identity-menu').open`);
+    await press('Tab');
+    await expectTrue('Tab reaches Setup only inside the admin user menu', `document.activeElement.matches('app-admin-identity-indicator a[href="/setup"]') && !document.querySelector('nav > a[href="/setup"]')`);
+    await press('Escape');
+    await expectTrue('Escape restores focus to the admin menu trigger', `document.activeElement.matches('summary') && !document.querySelector('details.identity-menu').open`);
+    log('\nNavigation keyboard walkthrough passed. WebUSB was mocked; no device was accessed.');
+    await cleanup(0);
+  }
   await send('Page.navigate', { url: `${base}/runs` });
   await expectTrue('library loaded', `document.querySelectorAll('a.run-row').length === 6`);
 
@@ -200,31 +286,23 @@ try {
   await press('Enter');
   await expectTrue('viewer opened for the run', `location.pathname.startsWith('/runs/') && !!document.querySelector('[data-section="outcome"]')`);
 
-  log('Viewer: steps, share notice, download notice, technical details');
-  await tabUntil('first step', focusIs('button.step-button'));
-  await press('Enter');
-  await expectTrue('Enter selected the step', `document.activeElement.getAttribute('aria-current') === 'step'`);
-  await tabUntil('Copy link', focusNamed('Copy link'));
-  await press('Enter');
-  await expectTrue('share dialog is open, focus is inside it', `!!document.querySelector('dialog.trust-dialog[open]') && document.querySelector('dialog.trust-dialog').contains(document.activeElement)`);
-  await expectTrue('share dialog shows both notices', `document.querySelector('dialog.trust-dialog').textContent.includes('not redacted') && document.querySelector('dialog.trust-dialog').textContent.includes('Cloudflare Access')`);
-  await press('Escape');
-  await expectTrue('Escape closed the dialog and focus returned to Copy link', `!document.querySelector('dialog.trust-dialog[open]') && ${`(() => { const e = document.activeElement; return ${focusNamed('Copy link')}; })()`}`);
-  log(`  focus is now: ${await describeFocus()}`);
-  await tabUntil('Download', focusNamed('Download'));
-  await press('Enter');
-  await expectTrue('download dialog shows only the redaction notice', `!!document.querySelector('dialog.trust-dialog[open]') && document.querySelector('dialog.trust-dialog').textContent.includes('not redacted') && !document.querySelector('dialog.trust-dialog').textContent.includes('Cloudflare Access')`);
-  await press('Escape');
-  await expectTrue('Escape closed it and focus returned to Download', `!document.querySelector('dialog.trust-dialog[open]') && ${`(() => { const e = document.activeElement; return ${focusNamed('Download')}; })()`}`);
-  await tabUntil('Pin', focusNamed('Pin'));
-  await tabUntil('Technical details', focusNamed('Technical details'));
-  await press('Enter');
-  await expectTrue('Technical details opened and raw logs rendered', `!!document.querySelector('pre.raw-logs')`);
+  await checkRunKeyboard('Review');
 
   log('Viewer: back to the library');
   await tabUntil('Back to runs', focusNamed('Back to runs'), { back: true });
   await press('Enter');
   await expectTrue('back on /runs with the list', `location.pathname === '/runs' && document.querySelectorAll('a.run-row').length === 6`);
+
+  const current = RUNS[0];
+  mock.sessions = [{ session_id: current.session_id, initial_goal: current.prompt, status: current.status,
+    start_time: current.start_time, end_time: current.end_time, device_serial: current.device_ref.serial }];
+  mock.status = { status: 'idle', session_id: null };
+  await send('Page.navigate', { url: `${base}/workspace` });
+  await expectTrue('Workspace shows the same run with its new-task box', `!!document.querySelector('app-run-view [data-section="outcome"]') && !!document.querySelector('textarea.dock-textarea')`);
+  await expectTrue('first Workspace visit opens What\'s New', `!!document.querySelector('dialog.whats-new-dialog[open]')`);
+  await press('Escape');
+  await expectTrue('Escape dismisses What\'s New', `!document.querySelector('dialog.whats-new-dialog[open]')`);
+  await checkRunKeyboard('Live');
 
   log('Workspace: the phone chip opens and closes from the keyboard');
   await send('Page.navigate', { url: `${base}/workspace` });
@@ -245,6 +323,16 @@ try {
   await press('Tab');
   await expectTrue('focus loss does not collapse or resize the dock', `!document.querySelector('.is-dormant') && document.querySelector('.floating-dock-card').getBoundingClientRect().width === ${dockWidth}`);
   await tabUntil('task textarea', focusIs('textarea.dock-textarea'));
+  await evaluate(`(() => {
+    window.dockPasteEvents = [];
+    document.querySelector('textarea.dock-textarea').addEventListener('paste', event => {
+      window.dockPasteEvents.push({
+        trusted: event.isTrusted,
+        types: Array.from(event.clipboardData?.types ?? []),
+        files: Array.from(event.clipboardData?.files ?? []).map(file => ({ type: file.type, size: file.size }))
+      });
+    }, { capture: true });
+  })()`);
   await send('Browser.grantPermissions', { permissions: ['clipboardReadWrite', 'clipboardSanitizedWrite'], origin: base });
   await evaluate(`(async () => {
     const canvas = new OffscreenCanvas(1, 1);
@@ -252,19 +340,25 @@ try {
     const image = await canvas.convertToBlob({ type: 'image/png' });
     await navigator.clipboard.write([new ClipboardItem({ 'image/png': image })]);
   })()`);
-  await press('v', 2);
-  await expectTrue('Ctrl+V of an image creates a preview', `document.querySelectorAll('ul.attached-images img').length === 1`);
+  await pasteShortcut(send);
+  await sleep(120);
+  await expectTrue('native image paste delivers a trusted PNG clipboard payload', `window.dockPasteEvents.length === 1 && window.dockPasteEvents[0].trusted && window.dockPasteEvents[0].files.length === 1 && window.dockPasteEvents[0].files[0].type === 'image/png' && window.dockPasteEvents[0].files[0].size > 0`);
+  await expectTrue('platform paste shortcut of an image creates a preview', `document.querySelectorAll('ul.attached-images img').length === 1`);
   await tabUntil('Remove image', focusIs('button.btn-remove-image'));
   await press('Enter');
   await expectTrue('Enter removes the pasted preview', `!document.querySelector('ul.attached-images')`);
   await tabUntil('task textarea', focusIs('textarea.dock-textarea'));
   await evaluate(`navigator.clipboard.writeText('clipboard task text')`);
-  await press('v', 2);
-  await expectTrue('Ctrl+V of text remains text without an attachment', `document.querySelector('textarea.dock-textarea').value === 'clipboard task text' && !document.querySelector('ul.attached-images')`);
+  await pasteShortcut(send);
+  await sleep(120);
+  await expectTrue('native text paste delivers a trusted text clipboard payload', `window.dockPasteEvents.length === 2 && window.dockPasteEvents[1].trusted && window.dockPasteEvents[1].types.includes('text/plain') && window.dockPasteEvents[1].files.length === 0`);
+  await expectTrue('platform paste shortcut of text remains text without an attachment', `document.querySelector('textarea.dock-textarea').value === 'clipboard task text' && !document.querySelector('ul.attached-images')`);
 
   log('\nKeyboard walkthrough passed.');
   await cleanup(0);
 } catch (error) {
   console.error(`\nKeyboard walkthrough FAILED: ${error.message}`);
+  console.error(await evaluate(`JSON.stringify({focus: document.activeElement?.outerHTML, text: document.querySelector('app-run-view')?.textContent})`).catch(() => 'Page unavailable'));
+  console.error('Dock paste evidence:', await evaluate(`JSON.stringify({ focus: document.activeElement?.outerHTML, events: window.dockPasteEvents })`).catch(() => 'unavailable'));
   await cleanup(1);
 }

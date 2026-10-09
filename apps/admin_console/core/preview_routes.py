@@ -115,6 +115,11 @@ DISABLED = frozenset(
         "PUT /api/system/retention",
         "POST /api/system/retention/dry-run",
         "POST /api/system/retention/run",
+        # The failure ledger creates its tables on every call, even a read, and its
+        # collect/digest write rows and send a report. Wait for the L3 fixture store.
+        "GET /api/system/failures",
+        "POST /api/system/failures/collect",
+        "POST /api/system/failures/digest",
         # Live configuration, credentials, ADB, emulator and server control.
         "GET /api/system/config",
         "PUT /api/system/config",
@@ -138,6 +143,9 @@ DISABLED = frozenset(
         "POST /api/system/restart",
         "POST /api/system/shutdown",
         "GET /api/system/drain",
+        "GET /api/system/failures",
+        "POST /api/system/failures/collect",
+        "POST /api/system/failures/digest",
         "POST /api/system/drain",
         "DELETE /api/system/drain",
         # Host agents, enrollment and the device bridge.
@@ -152,6 +160,7 @@ DISABLED = frozenset(
         "POST /api/agent/enroll",
         "POST /api/agent/challenge",
         "POST /api/agent/renew",
+        "POST /api/agent/unenroll",
         f"{WEBSOCKET} /api/agent/connect",
     }
 )

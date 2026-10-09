@@ -22,8 +22,11 @@ A test token *is* the email: the verifier fake echoes it back as the claim.
 """
 
 import base64
+import hashlib
 import io
 import json
+import sqlite3
+from urllib.parse import quote
 import uuid
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -37,6 +40,8 @@ from apps.admin_console.core.state import state
 from apps.admin_console.database.repositories.run_catalog_repository import run_catalog_repo
 from apps.admin_console.database.repositories.session_repository import session_repo
 from apps.admin_console.routers import sessions as sessions_router
+from apps.admin_console.routers import media as media_router
+from apps.admin_console.routers import steps as steps_router
 from apps.admin_console.routers import tasks as tasks_router
 from apps.admin_console.server import app
 from apps.admin_console.services import run_images
@@ -328,6 +333,301 @@ async def test_only_the_owner_or_an_admin_can_fetch_an_image(cloudflare):
     assert mine.content == _image_bytes()
     assert other.status_code == 403
     assert other.content != _image_bytes()
+
+
+@pytest.fixture
+def generic_media_roots(env, monkeypatch):
+    traces = env / "traces"
+    monkeypatch.setattr(media_router, "TRACES_PATH", traces)
+    monkeypatch.setattr(media_router, "WORKSPACE_ROOT", env)
+    monkeypatch.setattr(media_router, "IMAGES_DIR", traces / "images")
+    monkeypatch.setitem(
+        media_router.media_service.unwrap_payload.__globals__, "IMAGES_DIR", traces / "images"
+    )
+    monkeypatch.setattr(steps_router.trace_repo, "db_path", env / "data_engine.db")
+    monkeypatch.setitem(
+        media_router.media_service.get_safe_local_file.__globals__, "TRACES_PATH", traces
+    )
+    monkeypatch.setitem(
+        media_router.media_service.get_safe_local_file.__globals__, "WORKSPACE_ROOT", env
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("email,status", [(QA1, 200), (QA2, 403), (ADMIN, 200)])
+@pytest.mark.parametrize("spelling", ["plain", "parent", "symlink", "encoded", "file_uri", "case"])
+async def test_local_file_applies_goal_image_ownership_after_resolution(
+    cloudflare, generic_media_roots, email, status, spelling
+):
+    sid = _owned_run(cloudflare, QA1)
+    folder = _stored(cloudflare, sid)
+    path = folder / "0.png"
+    if spelling == "parent":
+        path = folder / ".." / "goal_images" / "0.png"
+    elif spelling == "symlink":
+        alias = cloudflare / "public.png"
+        alias.symlink_to(path)
+        path = alias
+    elif spelling == "case":
+        path = cloudflare / "traces" / sid / "GOAL_IMAGES" / "0.PNG"
+        path.parent.mkdir()
+        path.write_bytes(_image_bytes())
+    raw_path = str(path)
+    if spelling == "encoded":
+        raw_path = quote(raw_path, safe="")
+    elif spelling == "file_uri":
+        raw_path = path.as_uri()
+
+    response = await _get(email, f"/local_file?path={quote(raw_path, safe='')}")
+
+    assert response.status_code == status
+    if status == 200:
+        assert response.content == _image_bytes()
+    else:
+        assert response.content != _image_bytes()
+
+
+@pytest.mark.asyncio
+async def test_goal_image_generic_media_is_unchanged_in_open_mode(
+    env, generic_media_roots, monkeypatch
+):
+    monkeypatch.setattr(app.state, "access_config", AccessConfig(auth_mode="open"))
+    sid = _owned_run(env, QA1)
+    path = _stored(env, sid) / "0.png"
+
+    response = await _get(QA2, f"/local_file?path={quote(str(path), safe='')}")
+
+    assert response.status_code == 200
+    assert response.content == _image_bytes()
+
+
+@pytest.mark.asyncio
+async def test_shared_screenshots_and_recordings_remain_readable(cloudflare, generic_media_roots):
+    sid = _owned_run(cloudflare, QA1)
+    screenshot = cloudflare / "traces" / "images" / "shared.jpg"
+    screenshot.parent.mkdir(parents=True)
+    screenshot.write_bytes(_image_bytes("JPEG"))
+    recording = cloudflare / "traces" / sid / "recording.mp4"
+    recording.parent.mkdir()
+    recording.write_bytes(b"SHARED-VIDEO")
+
+    for path in (screenshot, recording):
+        response = await _get(QA2, f"/local_file?path={quote(str(path), safe='')}")
+        assert response.status_code == 200
+        assert response.content == path.read_bytes()
+    assert (await _get(QA2, "/images/shared")).content == screenshot.read_bytes()
+    assert (await _get(QA2, f"/videos/{sid}/recording.mp4")).content == b"SHARED-VIDEO"
+
+
+@pytest.mark.asyncio
+async def test_other_generic_media_routes_cannot_serve_goal_image_aliases(
+    cloudflare, generic_media_roots
+):
+    sid = _owned_run(cloudflare, QA1)
+    path = _stored(cloudflare, sid) / "0.png"
+    images = cloudflare / "traces" / "images"
+    images.mkdir()
+    (images / "alias.jpg").symlink_to(path)
+    (path.parent / "alias.mp4").symlink_to(path)
+    response = await _get(QA2, "/images/alias")
+    assert response.status_code == 404
+    response = await _get(QA2, f"/videos/{sid}/goal_images/alias.mp4")
+    assert response.status_code == 403
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("email,status", [(QA1, 200), (QA2, 403), (ADMIN, 200)])
+async def test_video_route_also_guards_goal_attachment_folders(
+    cloudflare, generic_media_roots, email, status
+):
+    sid = _owned_run(cloudflare, QA1)
+    folder = _stored(cloudflare, sid)
+    (folder / "0.mp4").write_bytes(b"PRIVATE-ATTACHMENT")
+
+    response = await _get(email, f"/videos/{sid}/goal_images/0.mp4")
+
+    assert response.status_code == status
+
+
+def _image_trace(root, sid, payload, kind="llm_call"):
+    trace_id = str(uuid.uuid4())
+    with sqlite3.connect(root / "data_engine.db") as conn:
+        conn.execute(
+            "INSERT INTO traces (trace_id, session_id, type, name, timestamp, payload) VALUES (?, ?, ?, ?, ?, ?)",
+            (trace_id, sid, kind, "planner", 1.0, json.dumps(payload)),
+        )
+    return trace_id
+
+
+def _inline_payload(shape):
+    encoded = base64.b64encode(_image_bytes()).decode()
+    block = {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{encoded}"}}
+    if shape == "inline_data":
+        block = {"inline_data": {"mime_type": "image/png", "data": encoded}}
+    payload = {"messages": [[{"content": [block]}]], "goal": 'password="zebra7secret"'}
+    return json.dumps(payload) if shape == "serialized" else payload
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("shape", ["image_url", "inline_data", "serialized"])
+@pytest.mark.parametrize("endpoint", ["trace", "download", "tree"])
+async def test_foreign_trace_reads_hide_image_data_before_materialization(
+    cloudflare, generic_media_roots, shape, endpoint
+):
+    sid = _owned_run(cloudflare, QA1)
+    trace_id = _image_trace(cloudflare, sid, _inline_payload(shape), "raw_thinking")
+    url = f"/api/sessions/{sid}/tree" if endpoint == "tree" else f"/api/traces/{trace_id}"
+    if endpoint == "download":
+        url += "/download"
+
+    response = await _get(QA2, url)
+
+    assert response.status_code == 200
+    assert base64.b64encode(_image_bytes()).decode() not in response.text
+    assert "data:image/" not in response.text and "image://" not in response.text
+    assert "zebra7secret" not in response.text
+    images = cloudflare / "traces" / "images"
+    assert not images.exists() or not list(images.iterdir())
+    assert not (cloudflare / "traces" / sid / "goal_images").exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("email", [QA1, ADMIN])
+async def test_owner_trace_images_are_cached_privately_and_not_publicly_readable(
+    cloudflare, generic_media_roots, email
+):
+    sid = _owned_run(cloudflare, QA1)
+    trace_id = _image_trace(cloudflare, sid, _inline_payload("image_url"))
+
+    detail = await _get(email, f"/api/traces/{trace_id}")
+    reference = detail.json()["payload"]["messages"][0][0]["content"][0]["image_url"]["url"]
+    assert reference.startswith("image://")
+    name = reference.removeprefix("image://")
+    assert (await _get(email, f"/images/{name}")).content == _image_bytes()
+    assert (await _get(QA2, f"/images/{name}")).status_code == 403
+    assert not (
+        cloudflare / "traces" / "images" / f"{hashlib.sha256(_image_bytes()).hexdigest()}.jpg"
+    ).exists()
+    downloaded = await _get(email, f"/api/traces/{trace_id}/download")
+    assert base64.b64encode(_image_bytes()).decode() in downloaded.text
+    assert "zebra7secret" not in downloaded.text
+
+
+@pytest.mark.asyncio
+async def test_trace_images_keep_open_mode_behavior(env, generic_media_roots, monkeypatch):
+    monkeypatch.setattr(app.state, "access_config", AccessConfig(auth_mode="open"))
+    sid = _owned_run(env, QA1)
+    trace_id = _image_trace(env, sid, _inline_payload("image_url"))
+    detail = await _get(QA2, f"/api/traces/{trace_id}")
+    reference = detail.json()["payload"]["messages"][0][0]["content"][0]["image_url"]["url"]
+    assert (
+        await _get(QA2, f"/images/{reference.removeprefix('image://')}")
+    ).content == _image_bytes()
+    assert (
+        base64.b64encode(_image_bytes()).decode()
+        in (await _get(QA2, f"/api/traces/{trace_id}/download")).text
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("endpoint", ["images", "local_file"])
+async def test_legacy_unregistered_inline_cache_is_admin_only(
+    cloudflare, generic_media_roots, endpoint
+):
+    digest = hashlib.sha256(_image_bytes()).hexdigest()
+    image = cloudflare / "traces" / "images" / f"{digest}.jpg"
+    image.parent.mkdir(parents=True)
+    image.write_bytes(_image_bytes())
+    url = (
+        f"/images/{digest}"
+        if endpoint == "images"
+        else f"/local_file?path={quote(str(image), safe='')}"
+    )
+    assert (await _get(QA2, url)).status_code == 403
+    assert (await _get(ADMIN, url)).content == _image_bytes()
+    with sqlite3.connect(cloudflare / "data_engine.db") as conn:
+        conn.execute("INSERT INTO images (image_name, timestamp) VALUES (?, ?)", (digest, 1.0))
+    assert (await _get(QA2, url)).content == _image_bytes()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fmt", ["PNG", "JPEG", "WEBP"])
+@pytest.mark.parametrize("endpoint", ["", "/download"])
+async def test_foreign_trace_reads_mask_bare_images_and_existing_refs(
+    cloudflare, generic_media_roots, fmt, endpoint
+):
+    sid = _owned_run(cloudflare, QA1)
+    encoded = base64.b64encode(_image_bytes(fmt)).decode()
+    trace_id = _image_trace(cloudflare, sid, {})
+    payload = (
+        f'not JSON: {encoded} image://known-hash <ImageRef:known-hash> password="zebra7secret"'
+    )
+    with sqlite3.connect(cloudflare / "data_engine.db") as conn:
+        conn.execute("UPDATE traces SET payload = ? WHERE trace_id = ?", (payload, trace_id))
+
+    response = await _get(QA2, f"/api/traces/{trace_id}{endpoint}")
+
+    assert response.status_code == 200
+    assert encoded not in response.text
+    assert "known-hash" not in response.text
+    assert "zebra7secret" not in response.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("endpoint", ["", "/download"])
+async def test_trace_image_reads_fail_closed_when_ownership_is_unavailable(
+    cloudflare, generic_media_roots, monkeypatch, endpoint
+):
+    from apps.admin_console.database.repositories.run_catalog_repository import CatalogNotReady
+
+    sid = _owned_run(cloudflare, QA1)
+    trace_id = _image_trace(cloudflare, sid, _inline_payload("image_url"))
+    monkeypatch.setattr(run_catalog_repo, "owners", MagicMock(side_effect=CatalogNotReady()))
+
+    response = await _get(QA2, f"/api/traces/{trace_id}{endpoint}")
+
+    assert response.status_code == 503
+    assert "catalog_not_ready" in response.text
+    assert not (cloudflare / "traces" / sid / "goal_images").exists()
+
+
+@pytest.mark.asyncio
+async def test_real_goal_blocks_and_callback_trace_do_not_publish_foreign_goal_bytes(
+    cloudflare, generic_media_roots, monkeypatch
+):
+    from langchain_core.messages import HumanMessage
+
+    from artemis.data_engine.trace import DataEngineCallbackHandler
+    from artemis.utils.goal_images import goal_image_blocks
+
+    sid = _owned_run(cloudflare, QA1)
+    folder = _stored(cloudflare, sid)
+    monkeypatch.setenv("ARTEMIS_GOAL_IMAGES", json.dumps([str(folder / "0.png")]))
+    engine = MagicMock()
+    handler = DataEngineCallbackHandler(SimpleNamespace(data_engine=engine))
+    handler.on_chat_model_start(
+        {"name": "planner"},
+        [
+            [
+                HumanMessage(
+                    content=[
+                        {"type": "text", "text": 'password="zebra7secret"'},
+                        *goal_image_blocks(),
+                    ]
+                )
+            ]
+        ],
+        run_id=uuid.uuid4(),
+    )
+    trace_id = _image_trace(cloudflare, sid, engine.record_trace.call_args.kwargs["payload"])
+
+    for suffix in ("", "/download"):
+        response = await _get(QA2, f"/api/traces/{trace_id}{suffix}")
+        assert response.status_code == 200
+        assert base64.b64encode(_image_bytes()).decode() not in response.text
+        assert "image://" not in response.text and "data:image" not in response.text
+        assert "zebra7secret" not in response.text
+    assert not (cloudflare / "traces" / "images").exists()
 
 
 @pytest.mark.asyncio

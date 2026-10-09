@@ -18,6 +18,8 @@ import { DeviceInfo, DeviceKind } from '../core/models/system.model';
 
 export type LabelableDevice = Pick<DeviceInfo, 'serial' | 'model'> & { device_kind?: DeviceKind };
 
+export const WIRELESS_PHONE = 'Wireless phone';
+
 const KIND_LABELS: Record<DeviceKind, string> = {
   phone: 'Phone',
   emulator: 'Emulator',
@@ -34,7 +36,20 @@ export function deviceTitle(device: LabelableDevice): string {
   return device.model?.trim() || deviceKindLabel(device);
 }
 
-const LOOPBACK_ADDRESS = /^(127\.0\.0\.1|localhost):\d+$/;
+const LOOPBACK_ADDRESS = /^(127\.0\.0\.1|localhost|\[::1\]):\d+$/;
+// Any other host:port, whatever the host looks like (IPv4, dotted name, single-label name, [IPv6]),
+// or an mDNS wireless-debugging name. USB and emulator serials never contain a colon.
+const NETWORK_ADDRESS = /^(\[[0-9a-f:.]+\]|[^\s:/\[\]]+):\d+$|\._adb-tls-(connect|pairing)\._tcp\.?$/i;
+
+export type SerialShape = 'loopback' | 'network' | 'plain';
+
+/** What a device reference looks like: an address nobody should read as a name, or a plain serial. */
+export function serialShape(serial: string): SerialShape {
+  if (LOOPBACK_ADDRESS.test(serial)) {
+    return 'loopback';
+  }
+  return NETWORK_ADDRESS.test(serial) ? 'network' : 'plain';
+}
 
 /**
  * Title for a device that is not (or no longer) in the live device list. An
@@ -42,5 +57,43 @@ const LOOPBACK_ADDRESS = /^(127\.0\.0\.1|localhost):\d+$/;
  * shown as a label.
  */
 export function unlistedDeviceTitle(serial: string): string {
-  return LOOPBACK_ADDRESS.test(serial) ? KIND_LABELS.unknown : serial;
+  switch (serialShape(serial)) {
+    case 'loopback':
+      return KIND_LABELS.unknown;
+    case 'network':
+      return WIRELESS_PHONE;
+    default:
+      return serial;
+  }
+}
+
+/**
+ * Title for a past run whose phone is no longer listed. A loopback address is how a browser
+ * relays a phone and any other host:port is a wireless phone, so say that rather than showing
+ * the address or "Unknown device"; the address stays in a detail line. A plain serial is kept.
+ */
+export function unlistedRunDeviceTitle(serial: string, ownBrowser: boolean): string {
+  switch (serialShape(serial)) {
+    case 'loopback':
+      return ownBrowser ? 'Phone via this browser' : 'Phone via a browser';
+    case 'network':
+      return WIRELESS_PHONE;
+    default:
+      return serial;
+  }
+}
+
+/** True when the record says what the device is: a model name or a classified kind. */
+export function isIdentifiedDevice(device: LabelableDevice): boolean {
+  return !!device.model?.trim() || (!!device.device_kind && device.device_kind !== 'unknown');
+}
+
+export function runDeviceLabel(
+  serial: string | null,
+  device: LabelableDevice | null = null,
+  ownBrowser = false,
+  detail = false
+): string {
+  if (detail) return serial ?? 'Unknown phone';
+  return device && isIdentifiedDevice(device) ? deviceTitle(device) : unlistedRunDeviceTitle(serial ?? '', ownBrowser);
 }

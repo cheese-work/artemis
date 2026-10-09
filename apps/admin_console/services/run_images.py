@@ -169,6 +169,16 @@ def _folder(session_id: str) -> Path:
     return library_paths()[1] / require_safe_session_id(session_id) / FOLDER
 
 
+def inline_image_path(session_id: str, digest: str) -> Path:
+    """A trace-derived image stays beside private goal attachments, not shared captures."""
+    if not re.fullmatch(r"[a-f0-9]{64}", digest):
+        raise ValueError("Invalid inline image digest")
+    path = _folder(session_id) / f"trace_{digest}.jpg"
+    if path.is_symlink() or path.parent.is_symlink() or path.parent.parent.is_symlink():
+        raise ValueError("Inline image cache must not use symlinks")
+    return path
+
+
 def store(session_id: str, images: list[ValidatedImage]) -> list[dict]:
     """Write the pictures beside the run; the public description of each (no paths)."""
     folder = _folder(session_id)

@@ -8,12 +8,12 @@
   // ------------------------------------------------------------------------------
   "default": {
     "provider": "openai",
-    "model": "gpt-5.6-sol",
+    "model": "gpt-6-sol",
     // API roots come from OPENAI_BASE_URL or ANTHROPIC_BASE_URL in the environment.
     "reasoning_effort": "medium",
     "fallback": {
       "provider": "openai",
-      "model": "gpt-5.6-sol",
+      "model": "gpt-6-sol",
       "reasoning_effort": "medium"
     }
   },
@@ -74,10 +74,10 @@
     // 👁️ Object Detector & Explorer (Flash Mode): Visual coordinates grounding and bounding boxes
     "object_detector": {
       "provider": "openai",
-      "model": "gpt-5.6-sol",
+      "model": "gpt-6-sol",
       "fallback": {
         "provider": "openai",
-        "model": "gpt-5.6-sol"
+        "model": "gpt-6-sol"
       }
     },
 
@@ -95,10 +95,10 @@
     // 🔽 Hopper: Fast lightweight package name locator
     "hopper": {
       "provider": "openai",
-      "model": "gpt-5.6-sol",
+      "model": "gpt-6-sol",
       "fallback": {
         "provider": "openai",
-        "model": "gpt-5.6-sol"
+        "model": "gpt-6-sol"
       }
     },
 
@@ -145,7 +145,7 @@
       // replacing images only after strictly objective, high-density summaries are ready.
       "step_summarizer": {
         "enabled": true, // Whether background step summarization is active
-        "model": "gpt-5.6-sol", // Lightweight model for fast background inference
+        "model": "gpt-6-sol", // Lightweight model for fast background inference
         "prune_history_xml": true // Prune outdated heavy XML trees from historical steps
       }
     },
@@ -246,7 +246,7 @@
         // call each); milestone closes are exempt, the hard line waives it.
         "min_steps": 3,
         "target_source_tokens": 2000,
-        "model": "gpt-5.6-sol",
+        "model": "gpt-6-sol",
         "max_chunks": 8
         // "max_eras": 8 // independent era cap; omitted = follows max_chunks
       },

@@ -20,6 +20,9 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from artemis.core.diagnostics import readiness_engine
 from artemis.runtime import DeviceExecutionLock, device_pool
+from artemis.config.host_agent import host_agent_enabled
+from artemis.runtime.host_endpoints import HostOffline, host_endpoints
+from apps.admin_console.services.host_registry import host_registry
 from apps.admin_console.core.access_control import AdminAPIError
 from apps.admin_console.core.device_ownership import (
     may_use_device,
@@ -34,6 +37,7 @@ from apps.admin_console.core.ownership import (
     actor_scope,
     list_scope,
     owners_of,
+    present_session_data,
     require_access,
     require_access_all,
     scope_or_open,
@@ -124,6 +128,12 @@ async def get_task_catalog():
 @router.post("/api/run")
 async def run_task(request: RunRequest, actor: OwnerScope = Depends(actor_scope)):
     scope = scope_or_open(actor)
+    host_id = request.device_ref.host_id if request.device_ref else None
+    requested_serial = request.device_ref.serial if request.device_ref else request.device_serial
+    if host_id and not host_agent_enabled():
+        raise AdminAPIError(
+            404, "Computers are turned off.", "host_agent_disabled", "Use a browser phone."
+        )
     incoming_goals = []
     if request.goals:
         incoming_goals = request.goals
@@ -159,9 +169,10 @@ async def run_task(request: RunRequest, actor: OwnerScope = Depends(actor_scope)
 
     if request.bridge_session_id:
         await _bind_bridge_session(request)
+        requested_serial = request.device_serial
     # A phone the caller does not own is refused before any probe or enqueue.
-    if request.device_serial:
-        require_device(scope, request.device_serial)
+    if requested_serial and not host_id:
+        require_device(scope, requested_serial)
 
     # Idempotent SDK retries must never re-run device readiness checks. A task
     # can hold the device while its admission response is lost in transit; in
@@ -183,13 +194,35 @@ async def run_task(request: RunRequest, actor: OwnerScope = Depends(actor_scope)
             or requested_sid in state.active_connections
         )
         if existing_item or persisted_session or is_active:
-            # A retry echoes the run's goal and queue item back: owner or admin only.
             require_access(scope, requested_sid)
+            existing = dict(existing_item or persisted_session or {})
+            device_info = json.loads(existing.get("device_info") or "{}")
+            binding = existing.get("device_binding") or device_info.get("device_binding") or {}
+            accepted_host = binding.get("host_id", existing.get("host_id"))
+            accepted_serial = (
+                binding.get("serial")
+                or existing.get("device_serial")
+                or device_info.get("device_id")
+            )
+            if accepted_host != host_id or (
+                requested_serial and accepted_serial != requested_serial
+            ):
+                raise AdminAPIError(
+                    409,
+                    "The run is bound to another device.",
+                    "device_ref_conflict",
+                    "Use a new session id.",
+                )
+            # A retry echoes the run's goal and queue item back: owner or admin only.
             task_payload = dict(existing_item or persisted_session or {})
             task_payload.setdefault("session_id", requested_sid)
             task_payload.setdefault("goal", incoming_goals[0])
             task_payload.setdefault("profile", request.profile or "flash")
-            task_payload.setdefault("device_serial", request.device_serial)
+            task_payload.setdefault("device_serial", requested_serial)
+            if binding:
+                task_payload.setdefault("device_binding", binding)
+                task_payload.setdefault("bridge_session_id", binding.get("bridge_session_id"))
+                task_payload.setdefault("host_id", accepted_host)
             task_payload.setdefault("status", "running" if is_active else "queued")
             return {
                 "status": task_payload["status"],
@@ -197,6 +230,25 @@ async def run_task(request: RunRequest, actor: OwnerScope = Depends(actor_scope)
                 "enqueued_count": 0,
                 "total_queued": len(state.queue_tasks),
             }
+
+    if host_id:
+        try:
+            host_endpoints.resolve(host_id)
+        except HostOffline as error:
+            raise AdminAPIError(
+                409, "The computer is offline.", "host_offline", "Reconnect the computer."
+            ) from error
+        _, devices = host_registry.list_hosts()
+        if not any(
+            device["computer_id"] == host_id and device["serial"] == requested_serial
+            for device in devices
+        ):
+            raise AdminAPIError(
+                409,
+                "The phone is not shared by this computer.",
+                "device_not_shared",
+                "Share the phone first.",
+            )
 
     # Accepted retries returned above; anything past this point is new work.
     # Refuse before spending device probes on it. enqueue_tasks re-checks after
@@ -212,9 +264,9 @@ async def run_task(request: RunRequest, actor: OwnerScope = Depends(actor_scope)
     # never be selected. Only a successful, non-empty enumeration may reject:
     # an indeterminate one (adb blip, startup) lets the submission queue and
     # fail downstream with a clear error instead.
-    if request.device_serial:
+    if requested_serial and not host_id:
         try:
-            rejection = await device_pool.validate_explicit_serial_async(request.device_serial)
+            rejection = await device_pool.validate_explicit_serial_async(requested_serial)
         except Exception:
             rejection = None
         if rejection:
@@ -233,12 +285,16 @@ async def run_task(request: RunRequest, actor: OwnerScope = Depends(actor_scope)
     # With no explicit serial the probe itself resolves a live target (it
     # prefers the diagnostics target preference, then any unlocked ready
     # device); the verified serial is bound below.
-    target_serial = request.device_serial or own_default_serial(scope)
+    target_serial = requested_serial or own_default_serial(scope)
     # A scoped caller's auto-selection only ever considers their own and shared devices.
     scoped = scope.enforced and not scope.admin
-    device_probe = await readiness_engine.run_device_submission_probe(
-        target_serial=target_serial,
-        may_use=(lambda serial: may_use_device(scope, serial)) if scoped else None,
+    device_probe = (
+        None
+        if host_id
+        else await readiness_engine.run_device_submission_probe(
+            target_serial=target_serial,
+            may_use=(lambda serial: may_use_device(scope, serial)) if scoped else None,
+        )
     )
     if device_probe and device_probe.summary in {"Device Locked", "Lock State Unknown"}:
         locked_serial = (
@@ -260,7 +316,7 @@ async def run_task(request: RunRequest, actor: OwnerScope = Depends(actor_scope)
         # Only auto-selected targets may be re-bound to the probed device. An
         # explicitly requested serial is never silently replaced -- if it is
         # invalid, enqueue_tasks rejects the submission with a clear error.
-        if verified_serial and not request.device_serial:
+        if verified_serial and not requested_serial:
             require_device(scope, verified_serial)
             target_serial = verified_serial
 
@@ -286,6 +342,7 @@ async def run_task(request: RunRequest, actor: OwnerScope = Depends(actor_scope)
             requested_by=scope.email,
             goal_images=goal_images,
             bridge_session_id=request.bridge_session_id,
+            **({"host_id": host_id} if host_id else {}),
         )
     except ServerDraining as exc:
         raise _draining_error(exc) from exc
@@ -691,15 +748,21 @@ async def stream_events(
             return data
         if isinstance(data, list):  # e.g. background_tasks_updated: one row per task
             rows = [r for r in data if isinstance(r, dict) and row_allowed(r.get("session_id"))]
-            return rows or _DROP
+            return [
+                present_session_data(scope, row.get("session_id"), row) for row in rows
+            ] or _DROP
         if isinstance(data, dict):
             event_session_id = data.get("session_id")
             if firehose:
-                return data if may_see(event_session_id) else _DROP
+                return (
+                    present_session_data(scope, event_session_id, data)
+                    if may_see(event_session_id)
+                    else _DROP
+                )
             if event_type in _RUN_BOUND_EVENTS and str(event_session_id) != session_id:
                 return _DROP
-            return data
-        return _DROP if firehose else data
+            return present_session_data(scope, session_id, data)
+        return _DROP if firehose else present_session_data(scope, session_id, data)
 
     async def event_generator():
         queue = asyncio.Queue()
@@ -759,11 +822,14 @@ async def stream_events(
             if active_sid:
                 goal = state.current_goal or ""
                 profile = state.current_profile or "flash"
-                yield (
-                    "event: session_started\n"
-                    f"data: {json.dumps({'session_id': str(active_sid), 'initial_goal': goal, 'profile': profile}, default=str)}\n\n"
+                session_data = present_session_data(
+                    scope,
+                    str(active_sid),
+                    {"session_id": str(active_sid), "initial_goal": goal, "profile": profile},
                 )
+                yield (f"event: session_started\ndata: {json.dumps(session_data, default=str)}\n\n")
                 for progress_event in state.get_startup_progress(str(active_sid)):
+                    progress_event = present_session_data(scope, str(active_sid), progress_event)
                     yield (
                         "event: startup_progress\n"
                         f"data: {json.dumps(progress_event, default=str)}\n\n"
@@ -773,6 +839,7 @@ async def stream_events(
 
                     recorded_steps = step_repo.get_session_steps(str(active_sid))
                     for step_dict in recorded_steps:
+                        step_dict = present_session_data(scope, str(active_sid), step_dict)
                         yield (
                             f"event: step_recorded\ndata: {json.dumps(step_dict, default=str)}\n\n"
                         )
@@ -780,6 +847,7 @@ async def stream_events(
                     print(f"[Stream] Could not replay active steps: {exc}")
         else:
             for progress_event in state.get_startup_progress(session_id):
+                progress_event = present_session_data(scope, session_id, progress_event)
                 yield (
                     f"event: startup_progress\ndata: {json.dumps(progress_event, default=str)}\n\n"
                 )
