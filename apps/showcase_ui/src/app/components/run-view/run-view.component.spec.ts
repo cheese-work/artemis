@@ -5,7 +5,7 @@ import { Router, provideRouter } from '@angular/router';
 import { Observable, Subject, of, throwError } from 'rxjs';
 import { AdminConfigService } from '../../services/admin-config.service';
 import { AgentService } from '../../services/agent.service';
-import { SessionUsage } from '../../core/models/session.model';
+import { Session, SessionUsage } from '../../core/models/session.model';
 import { RunSummary, SessionVideo } from '../../core/models/run.model';
 import { StepItemData } from '../../core/models/stream.model';
 import { RunsService } from '../../services/runs.service';
@@ -72,6 +72,7 @@ describe('RunViewComponent', () => {
   let clipboard: jasmine.Spy;
   let agent: Pick<AgentService, 'isPaused' | 'pausedError' | 'isRetrying' | 'retryMessage' | 'sessionLogs'
     | 'viewedModel' | 'agentStatus' | 'currentSessionId' | 'runningSessionId'> & {
+    sessions: ReturnType<typeof signal<Session[]>>;
     resumeTask: jasmine.Spy;
     stopTask: jasmine.Spy;
     getSessionUsage: jasmine.Spy;
@@ -131,6 +132,7 @@ describe('RunViewComponent', () => {
       isRetrying: signal(false),
       retryMessage: signal<string | null>(null),
       sessionLogs: signal<any[]>([]),
+      sessions: signal<Session[]>([]),
       viewedModel: signal({ name: 'Pro', id: 'model-pro', provider: 'test' }),
       agentStatus: signal('idle'),
       currentSessionId: signal<string | null>(ID),
@@ -1436,6 +1438,12 @@ describe('RunViewComponent', () => {
       expect(q('.run-facts')!.textContent).toContain('Duration');
       expect(q('.run-facts')!.textContent).toContain('5m 0s');
       expect(q('[data-fact="model"]')!.textContent).toBe('Not recorded');
+      agent.sessions.set([{ session_id: 'other-run', initial_goal: 'Other', start_time: START, model_info: { name: 'Other model', id: 'other', provider: 'test' } }]);
+      await settle();
+      expect(q('[data-fact="model"]')!.textContent).toBe('Not recorded');
+      agent.sessions.set([{ session_id: ID, initial_goal: 'This run', start_time: START, model_info: { name: 'Flash', id: 'flash', provider: 'test' } }]);
+      await settle();
+      expect(q('[data-fact="model"]')!.textContent).toBe('Flash');
     });
 
     it('ticks Elapsed while active and tears down the clock on destroy', async () => {

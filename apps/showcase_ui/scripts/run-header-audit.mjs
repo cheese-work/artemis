@@ -34,7 +34,7 @@ const server = createServer((request, response) => {
   if (pathname.endsWith('/checks')) return json(response, { records: [], streams: [], run_outcome: null });
   if (pathname.endsWith('/video')) return json(response, { session_id: runId, status: 'unavailable', has_video: false, video_url: null, video_segments: [] });
   if (pathname === '/api/system/whoami') return json(response, { email: 'qa@example.test', admin: false, auth_mode: 'cloudflare', reason: null });
-  if (pathname === '/api/sessions') return json(response, []);
+  if (pathname === '/api/sessions') return json(response, [{ session_id: runId, initial_goal: run.prompt, start_time: started, end_time: run.end_time, status: run.status, model_info: { name: 'Flash', id: 'fixture-flash', provider: 'fixture' } }]);
   if (pathname === '/api/hosts') return json(response, { enabled: true, hosts: [], devices: [] });
   if (pathname.startsWith('/api/')) return json(response, {});
   const extension = path.extname(pathname);
@@ -136,6 +136,7 @@ try {
         return { title: header.querySelector('h1').textContent, primary: primary?.getAttribute('aria-label'), menuClosed, menu, targets,
           active: !!document.querySelector('.status-strip'), verdict: !!document.querySelector('.verdict-slot'),
           app: header.querySelector('[data-fact="app"]').textContent,
+          model: header.querySelector('[data-fact="model"]').textContent,
           overflow: document.documentElement.scrollWidth - innerWidth,
           headerOverflow: header.scrollWidth - header.clientWidth,
           outside: [...header.querySelectorAll('*')].filter(element => element.checkVisibility() && element.getBoundingClientRect().right > header.getBoundingClientRect().right + 1).map(element => ({ tag: element.tagName, class: element.className, right: element.getBoundingClientRect().right, headerRight: header.getBoundingClientRect().right })) };
@@ -150,6 +151,7 @@ try {
       assert.equal(snapshot.active, state === 'running');
       assert.equal(snapshot.verdict, state === 'completed');
       assert.equal(snapshot.app, 'com.android.settings');
+      assert.equal(snapshot.model, 'Flash');
       assert.equal(snapshot.menuClosed, true);
       assert.deepEqual(snapshot.menu, ['Copy link', 'Download', 'Pin', 'Delete']);
       assert.ok(snapshot.overflow <= 0, `page overflow: ${snapshot.overflow}`);

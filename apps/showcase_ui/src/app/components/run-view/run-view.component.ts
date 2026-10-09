@@ -194,7 +194,9 @@ export class RunViewComponent {
   public readonly usage = signal<SessionUsage | null>(null);
   public readonly usageFailed = signal(false);
   public readonly viewedModel = computed(() => {
-    const session = this.liveSession();
+    const live = this.liveSession();
+    const session = live?.session_id === this.run()?.session_id ? live
+      : this.agentService.sessions().find(session => session.session_id === this.run()?.session_id);
     return session?.session_id === this.run()?.session_id && session?.model_info
       ? session.model_info : this.viewingLiveSession() ? this.agentService.viewedModel() : null;
   });
