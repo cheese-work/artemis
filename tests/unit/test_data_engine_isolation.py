@@ -10,8 +10,8 @@ from artemis.utils.logger import DataEngineHandler
 from tests.support.data_engine_isolation import quiesce_data_engine_logs
 
 
-@pytest.fixture
-def blocked_drain_callback():
+@pytest.fixture(params=["logger-attached", "standalone"])
+def blocked_drain_callback(request):
     """A real drain thread stuck in ``record_trace`` of an engine it already captured."""
     entered, release = threading.Event(), threading.Event()
 
@@ -22,9 +22,10 @@ def blocked_drain_callback():
     engine = SimpleNamespace(current_session_id="s", record_trace=record_trace)
     handler = DataEngineHandler()
     logger = logging.getLogger("test_data_engine_isolation")
-    logger.addHandler(handler)
+    if request.param == "logger-attached":
+        logger.addHandler(handler)
     engine_mod._CURRENT_DATA_ENGINE = engine
-    logger.warning("in flight")
+    handler.emit(logging.LogRecord(logger.name, logging.WARNING, __file__, 1, "in flight", (), None))
     assert entered.wait(5)
     try:
         yield release

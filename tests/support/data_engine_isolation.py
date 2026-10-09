@@ -1,20 +1,19 @@
 """Quiesce the process-wide DataEngine log path between tests."""
 
-import logging
 import sys
+import threading
 import time
 
 from artemis.utils.logger import DataEngineHandler
 
 
 def _handlers():
-    loggers = [logging.getLogger(), *logging.Logger.manager.loggerDict.values()]
+    """Every live handler, found by its drain thread so one never attached to a logger counts."""
+    targets = (getattr(thread, "_target", None) for thread in threading.enumerate())
     return [
-        handler
-        for logger in loggers
-        if isinstance(logger, logging.Logger)
-        for handler in logger.handlers
-        if isinstance(handler, DataEngineHandler)
+        target.__self__
+        for target in targets
+        if getattr(target, "__func__", None) is DataEngineHandler._drain_queue
     ]
 
 
