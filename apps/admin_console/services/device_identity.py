@@ -85,6 +85,26 @@ class DeviceIdentity:
         """Server adb discovery: ``(serial, state, model, getprop)`` per listed device."""
         if endpoint.host_id is not None:
             return []  # a host tunnel lists the agent's phones; observe_host owns them
+        return self._guarded(self._adb_rows, devices)
+
+    def observe_host(self, host_id: str, devices: list[dict[str, Any]]) -> list[Match]:
+        """Host registration: the agent's validated device rows plus its ``hardware_id``."""
+        return self._guarded(self._host_rows, host_id, devices)
+
+    def _guarded(self, rows, *args) -> list[Match]:
+        """Never breaks the caller: a failing store or pepper logs and matches nothing more."""
+        matches: list[Match] = []
+        try:
+            self._match_all(rows(*args), matches)
+        except DeviceStoreNotReady:
+            logger.debug("Device identity skipped: the device tables are not ready")
+        except (sqlite3.Error, ValueError):  # ValueError: an unreadable pepper
+            logger.exception("Device identity resolution failed")
+        return matches
+
+    def _adb_rows(
+        self, devices: list[tuple[str, str, str | None, dict[str, str]]]
+    ) -> list[dict[str, Any]]:
         # ponytail: every server adb endpoint shares source "local"; key by endpoint if two are ever live.
         bridged = _bridge_serials()
         observed = []
@@ -115,10 +135,9 @@ class DeviceIdentity:
                     label=model,
                 )
             )
-        return self._match_all(observed)
+        return observed
 
-    def observe_host(self, host_id: str, devices: list[dict[str, Any]]) -> list[Match]:
-        """Host registration: the agent's validated device rows plus its ``hardware_id``."""
+    def _host_rows(self, host_id: str, devices: list[dict[str, Any]]) -> list[dict[str, Any]]:
         observed = []
         for item in devices:
             serial, state = item["serial"], item.get("state")
@@ -144,29 +163,21 @@ class DeviceIdentity:
                     label=item.get("model"),
                 )
             )
-        return self._match_all(observed)
+        return observed
 
-    def _match_all(self, observed: list[dict[str, Any]]) -> list[Match]:
-        """Never breaks the caller: a failing store logs and leaves the rest unmatched."""
+    def _match_all(self, observed: list[dict[str, Any]], matches: list[Match]) -> None:
         db_path = _registry().db_path
         repo = DeviceRepository(db_path)
-        matches = []
-        try:
-            for item in observed:
-                key = (str(db_path), item["source"], item["host_id"], item["serial"])
-                fingerprint = (item["kind"], item["hardware_hash"], item["readable"])
+        for item in observed:
+            key = (str(db_path), item["source"], item["host_id"], item["serial"])
+            fingerprint = (item["kind"], item["hardware_hash"], item["readable"])
+            with self._lock:
+                seen = self._seen.get(key)
+            if seen is None or seen[0] != fingerprint:
+                seen = (fingerprint, repo.match_connection(**item))
                 with self._lock:
-                    seen = self._seen.get(key)
-                if seen is None or seen[0] != fingerprint:
-                    seen = (fingerprint, repo.match_connection(**item))
-                    with self._lock:
-                        self._seen[key] = seen
-                matches.append(seen[1])
-        except DeviceStoreNotReady:
-            logger.debug("Device identity skipped: the device tables are not ready")
-        except sqlite3.Error:
-            logger.exception("Device identity resolution failed")
-        return matches
+                    self._seen[key] = seen
+            matches.append(seen[1])
 
 
 device_identity = DeviceIdentity()

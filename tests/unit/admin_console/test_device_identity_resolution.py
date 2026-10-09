@@ -285,7 +285,7 @@ def test_another_phone_on_a_recycled_transport_key_gets_its_own_device(db, ident
 # -- hooks never break their source -------------------------------------------
 
 
-def test_discovery_feeds_the_observer_and_survives_its_failure(monkeypatch):
+def test_discovery_feeds_the_observer_and_survives_a_failing_store(db, identity, monkeypatch):
     pool = DevicePool()
     monkeypatch.setattr(pool, "_resolve_adb", lambda: "adb")
     monkeypatch.setattr(
@@ -298,9 +298,12 @@ def test_discovery_feeds_the_observer_and_survives_its_failure(monkeypatch):
     )
     monkeypatch.setattr(pool, "_read_properties_sync", lambda serial: dict(PHONE_PROPS))
     seen = []
-    monkeypatch.setattr(
-        device_pool_module, "identity_observer", lambda ep, devices: seen.append(devices)
-    )
+
+    def observe(endpoint, devices):
+        seen.append(devices)
+        return identity.observe_adb(endpoint, devices)
+
+    monkeypatch.setattr(device_pool_module, "identity_observer", observe)
 
     pool.list_devices()
 
@@ -310,11 +313,13 @@ def test_discovery_feeds_the_observer_and_survives_its_failure(monkeypatch):
             ("10.0.0.9:5555", "offline", None, {}),
         ]
     ]
+    assert [state for _, state in _devices(db)] == ["confirmed", "provisional"]
 
-    def broken(_endpoint, _devices):
-        raise RuntimeError("store down")
+    def broken(self, **_observed):
+        raise sqlite3.OperationalError("database is locked")
 
-    monkeypatch.setattr(device_pool_module, "identity_observer", broken)
+    monkeypatch.setattr(DeviceRepository, "match_connection", broken)
+    monkeypatch.setattr(identity, "_seen", {})
     pool._snapshot().raw = None  # force a fresh enumeration
     assert [d.serial for d in pool.list_devices()] == [SERIALNO, "10.0.0.9:5555"]
 

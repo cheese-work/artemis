@@ -72,7 +72,7 @@ RawDevice = tuple[str, str, str | None, str | None]
 
 #: Called with ``(endpoint, [(serial, state, model, getprop)])`` after every fresh
 #: enumeration; ``getprop`` is empty until the device's properties were read. The admin
-#: console matches connections to devices with it (CHE-1473). A failure never breaks discovery.
+#: console matches connections to devices with it (CHE-1473). It must not raise.
 identity_observer: (
     Callable[[AdbEndpoint, list[tuple[str, str, str | None, dict[str, str]]]], Any] | None
 ) = None
@@ -471,10 +471,7 @@ class DevicePool:
             devices = [
                 (serial, state, model, props.get(serial, {})) for serial, state, model, _ in raw
             ]
-        try:
-            observer(self._endpoint(), devices)
-        except Exception as exc:
-            logger.warning(f"Device identity observer failed: {type(exc).__name__}: {exc}")
+        observer(self._endpoint(), devices)
 
     async def _start_adb_server(self, timeout: float) -> None:
         """Best-effort bounded `adb start-server` so later queries hit a warm daemon.
