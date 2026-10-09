@@ -6,7 +6,10 @@ if (!/^[1-9]\d*$/.test(number || '') || !/^[a-f\d]{40}$/i.test(sha || '') || pro
   console.error('Usage: npm run build:preview -- <PR number> <full source SHA>');
   process.exit(2);
 }
-const result = spawnSync('npm', ['run', 'build', '--', '--base-href', `/preview/pr/${number}/`], { stdio: 'inherit' });
+const result = spawnSync('npm', ['run', 'build', '--', '--base-href', `/preview/pr/${number}/`], {
+  stdio: 'inherit',
+  env: { ...process.env, ARTEMIS_BUILD_SHA: sha }
+});
 if (result.error) throw result.error;
 if (result.status !== 0) process.exit(result.status || 1);
 const index = 'dist/frontend/browser/index.html';
