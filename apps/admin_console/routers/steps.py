@@ -61,7 +61,7 @@ async def get_step_traces_endpoint(step_id: str, actor: OwnerScope = Depends(evi
         if not session_id:
             with non_admin_misses_are_hidden(actor):
                 raise HTTPException(status_code=404, detail="Step not found")
-        require_visible_run(actor, [session_id])
+        require_visible_run(actor, [session_id], by_link=True)
         traces = trace_repo.get_step_traces_tree(session_id, step_id)
     except (HTTPException, AdminAPIError) as e:
         raise e
@@ -96,7 +96,7 @@ async def get_trace(
         if not trace_dict:
             with non_admin_misses_are_hidden(actor):
                 raise HTTPException(status_code=404, detail="Trace not found")
-        require_visible_run(actor, [trace_dict.get("session_id")])
+        require_visible_run(actor, [trace_dict.get("session_id")], by_link=True)
 
         trace_dict = present_session_data(actor, trace_dict.get("session_id"), trace_dict)
 
@@ -142,7 +142,7 @@ async def download_trace(
         if not trace_dict:
             with non_admin_misses_are_hidden(actor):
                 raise HTTPException(status_code=404, detail="Payload not found")
-        require_visible_run(actor, [trace_dict.get("session_id")])
+        require_visible_run(actor, [trace_dict.get("session_id")], by_link=True)
         if not trace_dict.get("payload"):
             raise HTTPException(status_code=404, detail="Payload not found")
 

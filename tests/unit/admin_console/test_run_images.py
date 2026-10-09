@@ -490,6 +490,7 @@ async def test_foreign_trace_reads_hide_image_data_before_materialization(
     if endpoint == "download":
         url += "/download"
 
+    await _get(QA2, f"/api/sessions/{sid}")  # opening the run by its full id is the link
     response = await _get(QA2, url)
 
     assert response.status_code == 200
@@ -590,6 +591,7 @@ async def test_foreign_trace_reads_mask_bare_images_and_existing_refs(
     with sqlite3.connect(cloudflare / "data_engine.db") as conn:
         conn.execute("UPDATE traces SET payload = ? WHERE trace_id = ?", (payload, trace_id))
 
+    await _get(QA2, f"/api/sessions/{sid}")  # opening the run by its full id is the link
     response = await _get(QA2, f"/api/traces/{trace_id}{endpoint}")
 
     assert response.status_code == 200
@@ -647,6 +649,7 @@ async def test_real_goal_blocks_and_callback_trace_do_not_publish_foreign_goal_b
     trace_id = _image_trace(cloudflare, sid, engine.record_trace.call_args.kwargs["payload"])
 
     for suffix in ("", "/download"):
+        await _get(QA2, f"/api/sessions/{sid}")  # opening the run by its full id is the link
         response = await _get(QA2, f"/api/traces/{trace_id}{suffix}")
         assert response.status_code == 200
         assert base64.b64encode(_image_bytes()).decode() not in response.text

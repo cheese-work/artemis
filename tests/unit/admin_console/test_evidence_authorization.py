@@ -92,8 +92,11 @@ def _run_keyed(sid: str) -> list[str]:
 
 
 def _path_keyed_media(e: Evidence) -> list[str]:
-    """Media named by image name or file path: the URL carries no run id."""
+    """Evidence named by an image name, file path, trace id or step id: the URL has no run id."""
     return [
+        f"/api/steps/{e.step_id}/traces",
+        f"/api/traces/{e.trace_id}",
+        f"/api/traces/{e.trace_id}/download",
         f"/images/{e.image}",
         f"/api/images/{e.image}",
         f"/videos/{e.video}",
@@ -104,12 +107,7 @@ def _path_keyed_media(e: Evidence) -> list[str]:
 
 
 def _owned_keyed(e: Evidence) -> list[str]:
-    return [
-        f"/api/steps/{e.step_id}/traces",
-        f"/api/traces/{e.trace_id}",
-        f"/api/traces/{e.trace_id}/download",
-        *_path_keyed_media(e),
-    ]
+    return _path_keyed_media(e)
 
 
 # Routes a full-id holder can read; the stream never ends, so it is tested separately.
