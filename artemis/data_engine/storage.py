@@ -34,7 +34,7 @@ from artemis.data_engine.models import (
     TraceRecord,
     VideoRecordingRecord,
 )
-from artemis.data_engine import principals
+from artemis.data_engine import principals, run_snapshot
 from artemis.data_engine.run_catalog import migrate as migrate_run_catalog
 from artemis.runtime.lifecycle import ensure_lifecycle_schema
 from artemis.utils.logger import get_logger
@@ -282,6 +282,7 @@ class StorageManager:
             conn.commit()
         try:
             migrate_run_catalog(self.db_path)
+            run_snapshot.migrate(self.db_path)
         except sqlite3.Error:
             # Additive index over runs; the listing API reports "not ready" instead.
             logger.exception("Run catalog migration failed for %s", self.db_path)
@@ -324,6 +325,10 @@ class StorageManager:
                     session.video_filepath,
                 ),
             )
+            try:
+                run_snapshot.record(conn, str(session.session_id))
+            except sqlite3.OperationalError as exc:  # catalog or snapshot columns not installed
+                logger.debug(f"Run snapshot not recorded for {session.session_id}: {exc}")
             conn.commit()
 
         # Create session directory

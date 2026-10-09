@@ -255,9 +255,9 @@ class MigrationReport:
     search_mode: str
 
 
-def _online_backup(db_path: Path) -> Path:
+def _online_backup(db_path: Path, label: str = "run-catalog") -> Path:
     """Consistent copy including WAL content (a plain file copy would miss it)."""
-    dest = db_path.with_name(f"{db_path.name}.pre-run-catalog.{time.strftime('%Y%m%dT%H%M%S')}")
+    dest = db_path.with_name(f"{db_path.name}.pre-{label}.{time.strftime('%Y%m%dT%H%M%S')}")
     source = sqlite3.connect(db_path, timeout=30.0)
     target = sqlite3.connect(dest)
     try:
