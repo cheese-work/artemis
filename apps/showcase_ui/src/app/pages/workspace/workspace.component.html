@@ -30,6 +30,15 @@ limitations under the License.
     @if (!reviewMode) {
       <a class="pane-navigation" routerLink="/runs">← Runs</a>
     }
+    <!-- Stop run sits in the detail header, never in the composer (spec section 4). B8 (CHE-1502) adopts it into the run header. -->
+    @if (!reviewMode && isTaskRunning()) {
+      <header class="detail-header">
+        <button type="button" class="btn-stop-run" [disabled]="isSubmitting()"
+          (click)="stopTask($event)" [title]="stopButtonTitle()" aria-label="Stop run">
+          <span class="stop-face"><span class="material-symbols-outlined" aria-hidden="true">stop_circle</span>Stop run</span>
+        </button>
+      </header>
+    }
     <div class="run-surface">
       @if (reviewMode && !reviewRunId()) {
         <div class="detail-empty" role="status">Select a run to see its steps.</div>
@@ -125,16 +134,6 @@ limitations under the License.
               aria-label="Attach images">
               <span class="material-symbols-outlined" aria-hidden="true">image</span>
             </button>
-
-            <!-- Stop stays here until the detail header owns it (spec slice B8) -->
-            @if (isTaskRunning()) {
-              <button type="button" class="composer-btn btn-stop" [disabled]="isSubmitting()"
-                (click)="stopTask($event)"
-                [title]="stopButtonTitle()"
-                [attr.aria-label]="stopButtonTitle()">
-                <span class="material-symbols-outlined" aria-hidden="true">stop</span>
-              </button>
-            }
 
             <button type="button" class="composer-btn btn-send"
               [class.is-blocked]="!phone.target()"

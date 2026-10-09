@@ -2,6 +2,8 @@
   "id": "2026-10-09-pinned-composer",
   "date": "2026-10-09",
   "title": "The new-task box shows where your run goes",
-  "body": "The new-task box sits at the bottom of the run. A line under it names the phone the run goes to and how many runs are already queued. During a run, a new task queues after it. Flash, Pro, attach and send are all on one row.",
-  "issues": ["CHE-1508"]
+  "body": "The new-task box sits at the bottom of the run. A line under it names the phone the run goes to and how many runs are already queued. During a run, a new task queues after it, and Stop run sits at the top of the run. Flash, Pro, attach and send are all on one row.",
+  "issues": [
+    "CHE-1508"
+  ]
 }

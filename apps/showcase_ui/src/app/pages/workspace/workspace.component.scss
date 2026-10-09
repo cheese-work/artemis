@@ -92,6 +92,56 @@
     display: none;
   }
 
+  /* Detail header: holds Stop run during a live run; a 44 px box around a 36 px face. */
+  .detail-header {
+    flex: none;
+    display: flex;
+    justify-content: flex-end;
+    padding: var(--space-xs) var(--space-md);
+    background: var(--color-surface);
+    border-bottom: 1px solid var(--color-rule);
+  }
+
+  .btn-stop-run {
+    display: flex;
+    align-items: center;
+    min-width: var(--target);
+    height: var(--target);
+    padding: 4px 0;
+    background: transparent;
+    border: none;
+    font-family: inherit;
+    cursor: pointer;
+
+    .stop-face {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      height: 36px;
+      padding: 0 var(--space-smd);
+      border-radius: var(--radius-md);
+      background: var(--color-error-bg);
+      color: var(--color-error);
+      font-size: var(--text-ui);
+      font-weight: 600;
+      transition: background var(--motion-fast) var(--ease-move), color var(--motion-fast) var(--ease-move);
+
+      .material-symbols-outlined {
+        font-size: 18px;
+      }
+    }
+
+    &:hover:not(:disabled) .stop-face {
+      background: var(--color-error-solid);
+      color: var(--color-on-primary);
+    }
+
+    &:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
+  }
+
   /* Pinned composer: the last row of the detail pane, in normal flow so it never covers evidence. */
   .composer {
     position: relative;
@@ -278,16 +328,6 @@
       &:hover:not(:disabled) {
         background: var(--color-surface-subtle);
         color: var(--color-ink);
-      }
-    }
-
-    &.btn-stop {
-      background: var(--color-error-bg);
-      color: var(--color-error);
-
-      &:hover:not(:disabled) {
-        background: var(--color-error-solid);
-        color: var(--color-on-primary);
       }
     }
 
