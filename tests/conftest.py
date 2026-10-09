@@ -67,17 +67,13 @@ def isolate_current_data_engine():
 
     The logger drain thread and tools read it later, so an engine left over from an earlier
     test would receive this test's log records and open IPC sockets / call ``urlopen`` mid-test.
+    Teardown also waits for a drain callback that already captured the engine.
     """
-    import sys
+    from tests.support.data_engine_isolation import quiesce_data_engine_logs
 
-    def clear():
-        engine_mod = sys.modules.get("artemis.data_engine.engine")
-        if engine_mod is not None:
-            engine_mod._CURRENT_DATA_ENGINE = None
-
-    clear()
+    quiesce_data_engine_logs()
     yield
-    clear()
+    quiesce_data_engine_logs()
 
 
 ADB_ENVIRONMENT_KEYS = (
