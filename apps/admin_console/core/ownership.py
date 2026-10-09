@@ -14,10 +14,11 @@ open-mode callers retain raw data, as on the catalog's direct run endpoint.
 from __future__ import annotations
 
 import asyncio
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
 
-from fastapi import Depends, Query, Request
+from fastapi import Depends, HTTPException, Query, Request
 
 from apps.admin_console.core.access_control import AccessIdentity, AdminAPIError, public_tier
 from artemis.data_engine import run_catalog
@@ -107,6 +108,27 @@ def owner_scope(identity: AccessIdentity, scope: str = SCOPE_MINE) -> OwnerScope
     )
 
 
+def run_not_visible() -> AdminAPIError:
+    return AdminAPIError(
+        404,
+        "Run not found.",
+        "run_not_visible",
+        "Check the run id, or ask the person who shared it.",
+    )
+
+
+@contextmanager
+def non_admin_misses_are_hidden(scope: OwnerScope):
+    """A legacy resolver's 403/404 tells a non-admin which ids and paths exist: say one thing."""
+    scope = scope_or_open(scope)
+    try:
+        yield
+    except HTTPException:
+        if scope.enforced and not scope.admin:
+            raise run_not_visible() from None
+        raise
+
+
 def require_signed_in(scope: OwnerScope) -> None:
     """Refuse a caller with no verified identity (cloudflare mode only)."""
     if scope.enforced and scope.email is None:
@@ -144,12 +166,7 @@ def require_visible_run(scope: OwnerScope, session_ids: list[str | None]) -> Non
             503, "The run catalog is not ready.", "catalog_not_ready", "Restart the console."
         ) from exc
     if not live:
-        raise AdminAPIError(
-            404,
-            "Run not found.",
-            "run_not_visible",
-            "Check the run id, or ask the person who shared it.",
-        )
+        raise run_not_visible()
 
 
 def record_run_read(scope: OwnerScope, session_id: str) -> None:
@@ -167,15 +184,21 @@ async def actor_scope(identity: AccessIdentity = Depends(public_tier)) -> OwnerS
     return owner_scope(identity)
 
 
-async def evidence_scope(request: Request, actor: OwnerScope = Depends(actor_scope)) -> OwnerScope:
-    """``actor_scope`` for evidence routes: signed in, and a run named in the path is visible."""
+async def evidence_scope(request: Request, actor: OwnerScope = Depends(actor_scope)):
+    """``actor_scope`` for evidence routes: signed in, and a run named in the path is visible.
+
+    A handler that returns (it did not raise) was a successful full-id read, so the
+    run joins the caller's ``available`` set; failed reads and prefixes record nothing.
+    """
     scope = scope_or_open(actor)
     session_id = request.path_params.get("session_id")
     if session_id is None:
         require_signed_in(scope)  # media and traces resolve their owning run in the handler
-    else:
-        await asyncio.to_thread(require_visible_run, scope, [session_id])
-    return actor
+        yield actor
+        return
+    await asyncio.to_thread(require_visible_run, scope, [session_id])
+    yield actor
+    await asyncio.to_thread(record_run_read, scope, session_id)
 
 
 def owners_of(session_ids: list[str]) -> dict[str, str | None]:

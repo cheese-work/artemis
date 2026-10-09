@@ -319,7 +319,7 @@ def _owned_run(db_root, owner, sid=None):
 
 
 @pytest.mark.asyncio
-async def test_only_the_owner_or_an_admin_can_fetch_an_image(cloudflare):
+async def test_any_signed_in_holder_of_the_full_id_can_fetch_a_goal_image(cloudflare):
     sid = _owned_run(cloudflare, QA1)
     _stored(cloudflare, sid)
 
@@ -331,8 +331,8 @@ async def test_only_the_owner_or_an_admin_can_fetch_an_image(cloudflare):
     assert mine.headers["content-type"] == "image/png"
     assert mine.headers["x-content-type-options"] == "nosniff"
     assert mine.content == _image_bytes()
-    assert other.status_code == 403
-    assert other.content != _image_bytes()
+    assert other.status_code == 200
+    assert other.content == _image_bytes()
 
 
 @pytest.fixture
@@ -354,9 +354,9 @@ def generic_media_roots(env, monkeypatch):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("email,status", [(QA1, 200), (QA2, 403), (ADMIN, 200)])
+@pytest.mark.parametrize("email,status", [(QA1, 200), (QA2, 200), (ADMIN, 200)])
 @pytest.mark.parametrize("spelling", ["plain", "parent", "symlink", "encoded", "file_uri", "case"])
-async def test_local_file_applies_goal_image_ownership_after_resolution(
+async def test_local_file_applies_the_run_visibility_rule_after_resolution(
     cloudflare, generic_media_roots, email, status, spelling
 ):
     sid = _owned_run(cloudflare, QA1)
@@ -381,10 +381,7 @@ async def test_local_file_applies_goal_image_ownership_after_resolution(
     response = await _get(email, f"/local_file?path={quote(raw_path, safe='')}")
 
     assert response.status_code == status
-    if status == 200:
-        assert response.content == _image_bytes()
-    else:
-        assert response.content != _image_bytes()
+    assert response.content == _image_bytes()
 
 
 @pytest.mark.asyncio
@@ -438,12 +435,12 @@ async def test_other_generic_media_routes_cannot_serve_goal_image_aliases(
     response = await _get(QA2, "/images/alias")
     assert response.status_code == 404
     response = await _get(QA2, f"/videos/{sid}/goal_images/alias.mp4")
-    assert response.status_code == 403
+    assert response.status_code == 404 and response.json()["code"] == "run_not_visible"
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("email,status", [(QA1, 200), (QA2, 403), (ADMIN, 200)])
-async def test_video_route_also_guards_goal_attachment_folders(
+@pytest.mark.parametrize("email,status", [(QA1, 200), (QA2, 200), (ADMIN, 200)])
+async def test_video_route_serves_goal_attachment_folders_by_the_run_rule(
     cloudflare, generic_media_roots, email, status
 ):
     sid = _owned_run(cloudflare, QA1)
@@ -549,7 +546,8 @@ async def test_legacy_unregistered_inline_cache_is_admin_only(
         if endpoint == "images"
         else f"/local_file?path={quote(str(image), safe='')}"
     )
-    assert (await _get(QA2, url)).status_code == 403
+    legacy = await _get(QA2, url)  # no capture record: no owning run to follow
+    assert legacy.status_code == 404 and legacy.json()["code"] == "run_not_visible"
     assert (await _get(ADMIN, url)).content == _image_bytes()
     sid = _owned_run(cloudflare, QA1)
     with sqlite3.connect(cloudflare / "data_engine.db") as conn:

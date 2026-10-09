@@ -23,6 +23,7 @@ from apps.admin_console.core.access_control import AdminAPIError
 from apps.admin_console.core.ownership import (
     OwnerScope,
     evidence_scope,
+    non_admin_misses_are_hidden,
     present_session_data,
     require_visible_run,
     scope_or_open,
@@ -58,7 +59,8 @@ async def get_step_traces_endpoint(step_id: str, actor: OwnerScope = Depends(evi
     try:
         session_id = step_repo.get_step_session_id(step_id)
         if not session_id:
-            raise HTTPException(status_code=404, detail="Step not found")
+            with non_admin_misses_are_hidden(actor):
+                raise HTTPException(status_code=404, detail="Step not found")
         require_visible_run(actor, [session_id])
         traces = trace_repo.get_step_traces_tree(session_id, step_id)
     except (HTTPException, AdminAPIError) as e:
@@ -92,7 +94,8 @@ async def get_trace(
         db_path = _resolve_trace_db_path(session_id, step_number)
         trace_dict = trace_repo.get_trace_by_id(trace_id, db_path=db_path)
         if not trace_dict:
-            raise HTTPException(status_code=404, detail="Trace not found")
+            with non_admin_misses_are_hidden(actor):
+                raise HTTPException(status_code=404, detail="Trace not found")
         require_visible_run(actor, [trace_dict.get("session_id")])
 
         trace_dict = present_session_data(actor, trace_dict.get("session_id"), trace_dict)
@@ -136,9 +139,12 @@ async def download_trace(
     try:
         db_path = _resolve_trace_db_path(session_id, step_number)
         trace_dict = trace_repo.get_trace_by_id(trace_id, db_path=db_path)
-        if not trace_dict or not trace_dict.get("payload"):
-            raise HTTPException(status_code=404, detail="Payload not found")
+        if not trace_dict:
+            with non_admin_misses_are_hidden(actor):
+                raise HTTPException(status_code=404, detail="Payload not found")
         require_visible_run(actor, [trace_dict.get("session_id")])
+        if not trace_dict.get("payload"):
+            raise HTTPException(status_code=404, detail="Payload not found")
 
         payload = present_session_data(actor, trace_dict.get("session_id"), trace_dict["payload"])
 
