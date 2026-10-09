@@ -14,13 +14,13 @@
  * limitations under the License.
  */
 
-import { DOCUMENT } from '@angular/common';
-import { Component, ChangeDetectionStrategy, DestroyRef, computed, ElementRef, EventEmitter, afterNextRender, inject, Input, Output } from '@angular/core';
+import { Component, ChangeDetectionStrategy, computed, EventEmitter, inject, Input, Output } from '@angular/core';
 
 import { RouterLink, RouterLinkActive } from '@angular/router';
 import { WorkspaceDeviceChipComponent } from '../workspace-device-chip/workspace-device-chip.component';
 import { AdminIdentityIndicatorComponent } from '../admin-identity-indicator/admin-identity-indicator.component';
 import { AgentService } from '../../services/agent.service';
+import { ShellLayoutService } from '../../services/shell-layout.service';
 
 @Component({
   selector: 'app-nav-switcher',
@@ -28,7 +28,10 @@ import { AgentService } from '../../services/agent.service';
   imports: [RouterLink, RouterLinkActive, AdminIdentityIndicatorComponent, WorkspaceDeviceChipComponent],
   template: `
     <nav class="floating-nav-switcher" aria-label="Primary navigation">
-      <span class="brand-wordmark">SmartQA</span>
+      <div class="navigation-header">
+        <span class="brand-wordmark">SmartQA</span>
+        <span class="brand-monogram" aria-label="SmartQA">S</span>
+      </div>
       <a
         routerLink="/workspace"
         routerLinkActive="active"
@@ -36,6 +39,7 @@ import { AgentService } from '../../services/agent.service';
         class="nav-tab-btn"
         title="Open Workspace"
         aria-label="Workspace"
+        (click)="shell.activePane.set('list')"
       >
         <span class="material-symbols-outlined tab-icon" aria-hidden="true">space_dashboard</span>
         <span class="tab-label">Workspace</span>
@@ -47,6 +51,7 @@ import { AgentService } from '../../services/agent.service';
         class="nav-tab-btn"
         title="Open the run library"
         aria-label="Runs"
+        (click)="shell.activePane.set('list')"
       >
         <span class="material-symbols-outlined tab-icon" aria-hidden="true">history</span>
         <span class="tab-label">Runs</span>
@@ -69,7 +74,6 @@ import { AgentService } from '../../services/agent.service';
         </button>
       }
       <div class="nav-status">
-        <!-- The phone the next run uses: the app's only phone control -->
         <app-workspace-device-chip></app-workspace-device-chip>
         <app-admin-identity-indicator #account></app-admin-identity-indicator>
       </div>
@@ -80,29 +84,11 @@ import { AgentService } from '../../services/agent.service';
 })
 export class NavSwitcherComponent {
   private readonly agent = inject(AgentService);
+  public readonly shell = inject(ShellLayoutService);
   public readonly runCount = computed(() => this.agent.sessions().length);
   @Input() public hasWhatsNew = false;
   @Input() public hasUnreadWhatsNew = false;
   @Output() public showWhatsNew = new EventEmitter<void>();
-
-  private readonly bar = inject(ElementRef<HTMLElement>);
-
-  constructor() {
-    // Page content starts below the nav however many rows it wraps to: publish its bottom edge.
-    const rootStyle = inject(DOCUMENT).documentElement.style;
-    const destroyRef = inject(DestroyRef);
-    afterNextRender(() => {
-      const nav = (this.bar.nativeElement as HTMLElement).querySelector('nav') as HTMLElement;
-      const publish = () => rootStyle.setProperty('--nav-clearance', window.matchMedia('(min-width: 1024px)').matches ? '0px' : `${Math.ceil(nav.getBoundingClientRect().bottom) + 12}px`);
-      const observer = new ResizeObserver(publish);
-      observer.observe(nav);
-      publish();
-      destroyRef.onDestroy(() => {
-        observer.disconnect();
-        rootStyle.removeProperty('--nav-clearance');
-      });
-    });
-  }
 
   public get whatsNewLabel(): string {
     return this.hasUnreadWhatsNew ? "Open What's New, unread updates" : "Open What's New";

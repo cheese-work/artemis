@@ -66,3 +66,27 @@ npm run test:layout                      # clearance, a11y, scenarios and the CH
 npm run test:layout -- contract          # one phase: panes, 44 px targets, 4.5:1 on real backgrounds, no blur, reduced motion
 node scripts/layout-audit/screenshots.mjs <outDir> <label>   # Workspace, Runs, an open run and Setup at 1280 and 1024 px
 ```
+
+### Direction B responsive shell
+
+The shell uses a 224 px sidebar from 1200 px, a 72 px labelled rail from 800 to
+1199 px, and a 48 px top bar plus 56 px labelled tab bar below 800 px. The fixed
+version footer is removed at every width; version information stays in the account
+menu. Phone and account controls remain available in all three tiers.
+
+The next pane-layout slice can inject `ShellLayoutService`, set `activePane` to
+`list` or `detail`, and mark pane roots with `data-shell-pane="list"` or
+`data-shell-pane="detail"`. Below 1024 px the shell hides the inactive pane.
+Both panes remain visible from 1024 px. Workspace and Runs navigation reset the
+selection to `list`. This hook does not restructure the existing page panes.
+
+```bash
+npx ng build --configuration development
+SHOTS=./shell-evidence npm run test:shell
+```
+
+This X99 headless-browser check uses the existing mock API and native CDP clicks.
+It covers the 1200, 1024 and 800 px boundaries, checks non-overlapping 44 px
+control boxes and on-screen menus, and saves PNG screenshots at 1440, 1199,
+1024, 800, 799 and 390 px. `CHROME_BIN` selects the browser; `SHELL_DIST` selects
+an alternative development build for the baseline control.

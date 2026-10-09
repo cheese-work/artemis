@@ -108,7 +108,7 @@ describe('AdminIdentityIndicatorComponent', () => {
     expect(copy).toHaveBeenCalled();
     for (const control of root.querySelectorAll<HTMLElement>('summary, .identity-panel a, .identity-panel button')) expectHitBox(control);
     const update = root.querySelector<HTMLElement>('.account-update')!;
-    expect(getComputedStyle(update).display).toBe(window.innerWidth >= 1024 ? 'flex' : 'none');
-    if (window.innerWidth >= 1024) expectHitBox(update.querySelector<HTMLButtonElement>('button')!);
+    expect(getComputedStyle(update).display).toBe(window.innerWidth >= 1200 ? 'flex' : 'none');
+    if (window.innerWidth >= 1200) expectHitBox(update.querySelector<HTMLButtonElement>('button')!);
   });
 });

@@ -1,0 +1,7 @@
+{
+  "id": "2026-10-09-responsive-navigation",
+  "date": "2026-10-09",
+  "title": "Navigation now fits tablets and phones",
+  "body": "Tablets show a compact side rail. Phones show labelled tabs at the bottom, with phone and account controls at the top.",
+  "issues": ["CHE-1497"]
+}

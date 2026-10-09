@@ -18,6 +18,7 @@ import { VersionFooterComponent } from '../version-footer/version-footer.compone
       }
       <details #userMenu class="identity-menu" (keydown.escape)="closeMenu(true)" (focusout)="onFocusOut($event)">
         <summary class="identity-indicator" [attr.aria-label]="'User menu, ' + (current.email || (current.auth_mode === 'open' ? 'Local access' : 'Not signed in')) + ', ' + (current.admin ? 'Admin' : 'Read-only')">
+          <span class="identity-avatar" aria-hidden="true">{{ current.email?.slice(0, 1) || 'S' }}</span>
           <span class="identity-text" aria-live="polite">
             <span class="identity-email" [attr.title]="current.email">{{ current.email || (current.auth_mode === 'open' ? 'Local access' : 'Not signed in') }}</span>
             <span class="identity-role" [class.admin-role]="current.admin">
@@ -29,6 +30,7 @@ import { VersionFooterComponent } from '../version-footer/version-footer.compone
           }
         </summary>
         <div class="identity-panel" role="group" aria-label="User options">
+          <p class="account-details">{{ current.email || (current.auth_mode === 'open' ? 'Local access' : 'Not signed in') }} · {{ current.admin ? 'Admin' : 'Read-only' }}</p>
           @if (current.admin) {
             <a routerLink="/setup" (click)="closeMenu()">Setup</a>
           } @else {
@@ -42,6 +44,7 @@ import { VersionFooterComponent } from '../version-footer/version-footer.compone
   styles: [`
     :host { display: inline-flex; flex-direction: column; min-width: 0; }
     .identity-menu { position: relative; min-width: 0; }
+    .identity-avatar, .account-details { display: none; }
     .identity-indicator { display: flex; align-items: center; gap: .5rem; min-width: 0; min-height: 44px; padding: 0 .5rem; color: var(--color-text-muted); font-size: .8rem; cursor: pointer; border-radius: 12px; }
     .identity-indicator::after { content: '▾'; }
     .identity-indicator::-webkit-details-marker { display: none; }
@@ -57,7 +60,7 @@ import { VersionFooterComponent } from '../version-footer/version-footer.compone
     .account-update button { min-width: 44px; min-height: 44px; border: 0; padding: 0; background: none; color: var(--color-primary); font: inherit; cursor: pointer; }
     .account-update-dot { flex: none; width: 8px; height: 8px; border-radius: var(--radius-full); background: var(--color-error-solid); }
     summary:focus-visible, a:focus-visible, button:focus-visible { outline: 3px solid var(--color-focus); outline-offset: 2px; }
-    @media (min-width: 1024px) {
+    @media (min-width: 1200px) {
       :host { display: flex; width: 100%; }
       .identity-indicator { min-width: 44px; border-radius: var(--radius-md); padding: 4px 8px; }
       .identity-text { flex: 1; flex-direction: column; align-items: flex-start; gap: 4px; overflow: hidden; }
@@ -65,6 +68,18 @@ import { VersionFooterComponent } from '../version-footer/version-footer.compone
       .identity-role { border: 0; padding: 0; font-size: 12px; }
       .identity-panel { top: auto; bottom: calc(100% + 8px); right: auto; left: 0; width: 320px; max-height: calc(100dvh - 96px); overflow: auto; border-radius: var(--radius-lg); box-shadow: var(--shadow-2); }
       .account-update { display: flex; }
+    }
+    @media (max-width: 1199px) {
+      :host { flex: none; }
+      .identity-indicator { position: relative; box-sizing: border-box; width: 44px; height: 44px; padding: 8px; }
+      .identity-indicator::after, .identity-text { display: none; }
+      .identity-avatar { display: grid; place-items: center; flex: none; width: 28px; height: 28px; border-radius: var(--radius-full); background: var(--color-primary-tint); color: var(--color-primary); font: 600 var(--text-ui) var(--font-ui); text-transform: uppercase; }
+      .account-details { display: block; padding-bottom: 8px; overflow-wrap: anywhere; }
+      .account-update-dot { position: absolute; top: 6px; right: 6px; }
+      .identity-panel { max-height: calc(100dvh - var(--appbar-h) - var(--tabbar-h) - 16px); overflow: auto; }
+    }
+    @media (min-width: 800px) and (max-width: 1199px) {
+      .identity-panel { top: auto; bottom: 0; right: auto; left: calc(100% + 8px); width: 320px; }
     }
   `],
   changeDetection: ChangeDetectionStrategy.Eager

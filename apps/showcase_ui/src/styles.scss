@@ -16,6 +16,13 @@
 
 @import '@angular/cdk/overlay-prebuilt.css';
 
+@media (max-width: 1023px) {
+  app-root .app-page[data-active-pane='list'] [data-shell-pane='detail'],
+  app-root .app-page[data-active-pane='detail'] [data-shell-pane='list'] {
+    display: none;
+  }
+}
+
 .cdk-overlay-container {
   z-index: 1200 !important;
 }
