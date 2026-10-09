@@ -66,10 +66,9 @@ async def test_data_engine_handler_queue_buffering_and_background_worker(
             )
             handler.emit(record)
 
-    # Wait for the background worker thread of DataEngineHandler and DataEngine tasks to drain
-    await asyncio.sleep(0.4)
-    if engine._pending_tasks:
-        await asyncio.gather(*engine._pending_tasks)
+    # Wait for the handler's worker thread, then for the engine's own tasks and threads, to drain
+    await asyncio.to_thread(handler._log_queue.join)
+    await engine.shutdown()
 
     # Verify that traces were recorded and persisted accurately via direct SQLite query
     with engine.storage._get_connection() as conn:
