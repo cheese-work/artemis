@@ -139,6 +139,7 @@ try {
           ['Network and internet', 'Connected devices', 'Apps', 'Notifications', 'Battery'].forEach((label, index) => context.fillText(label, 16, 82 + index * 30));
           const view = ng.getComponent(document.querySelector('app-run-view'));
           view.storedSteps.set(view.steps().map(step => ({ ...step, pre_image_name: canvas.toDataURL(), post_image_name: canvas.toDataURL() })));
+          window.timelineSteps = view.steps();
           ng.applyChanges(view);
         })()`);
         await wait(100);
@@ -149,6 +150,9 @@ try {
           return { rows: rows.map(bounds), thumbnails: rows.map(row => bounds(row.querySelector('.step-thumbnail'))),
             controls: [...document.querySelectorAll('.step-toggle')].map(bounds),
             label: failed.querySelector('.step-failed').textContent, icon: failed.querySelector('.step-icon').textContent,
+            numberSize: getComputedStyle(failed.querySelector('.step-number')).fontSize,
+            failureSize: getComputedStyle(failed.querySelector('.step-failed')).fontSize,
+            failureDisplay: getComputedStyle(failed.querySelector('.step-failed')).display,
             background: getComputedStyle(failed.closest('.step-row')).backgroundColor,
             kind: rows[1].querySelector('.step-kind').textContent,
             time: rows[1].querySelector('.step-duration').textContent,
@@ -163,6 +167,9 @@ try {
         assert.ok(snapshot.controls.every(box => box.width >= 44 && box.height >= 44));
         assert.equal(snapshot.label, 'Failed');
         assert.equal(snapshot.icon, 'error');
+        assert.equal(snapshot.numberSize, '12px');
+        assert.equal(snapshot.failureSize, '12px');
+        assert.equal(snapshot.failureDisplay, 'flex');
         assert.equal(snapshot.background, 'rgb(254, 226, 226)');
         assert.equal(snapshot.kind, 'tap');
         assert.equal(snapshot.time, '1.2s');
@@ -193,6 +200,18 @@ try {
         await wait(100);
         assert.equal(await evaluate(`document.activeElement === document.querySelectorAll('.step-button')[3] && document.querySelectorAll('.step-button')[3].getAttribute('aria-current') === 'step' && document.querySelector('.evidence-image').getAttribute('alt') === 'Screenshot for step 4'`), true);
         assert.equal(await evaluate(`ng.getComponent(document.querySelector('app-run-view')).goToStep(999)`), false);
+        await evaluate(`(() => {
+          const view = ng.getComponent(document.querySelector('app-run-view'));
+          view.storedSteps.set(window.timelineSteps.map((step, index) => index === 0
+            ? { ...step, last_execution_result: { success: false, error: '# Failure report' + String.fromCharCode(10) + 'Details '.repeat(300) } } : step));
+          ng.applyChanges(view);
+        })()`);
+        assert.equal(await evaluate(`document.querySelector('.step-failure-detail').hasAttribute('title')`), false, 'long reports do not create oversized tooltips');
+        await evaluate(`(() => {
+          const view = ng.getComponent(document.querySelector('app-run-view'));
+          view.storedSteps.set(window.timelineSteps);
+          ng.applyChanges(view);
+        })()`);
         await evaluate(`document.querySelector('.steps').scrollIntoView({ block: 'end' })`);
         const screenshot = await send('Page.captureScreenshot', { format: 'png' });
         writeFileSync(path.join(shots, `failed-${width}.png`), Buffer.from(screenshot.data, 'base64'));
