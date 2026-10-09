@@ -41,6 +41,7 @@ from artemis.core.diagnostics.schema import (
     SystemReadinessReport,
 )
 from artemis.platform import platform
+from artemis.runtime.adb_endpoint import AdbEndpoint
 from artemis.runtime.endpoint_transport import EndpointTransport
 from artemis.toolchain import toolchain
 from artemis.utils.logger import get_logger
@@ -114,11 +115,11 @@ class ReadinessEngine:
         self,
         target_serial: str | None = None,
         may_use: Callable[[str], bool] | None = None,
+        endpoint: AdbEndpoint | None = None,
     ) -> ProbeResult:
         """Run the bounded device gate used by task submission."""
-        return await self._adb_probe.probe_submission_readiness(
-            target_serial=target_serial, may_use=may_use
-        )
+        probe = AdbDeviceProbe(endpoint=endpoint) if endpoint is not None else self._adb_probe
+        return await probe.probe_submission_readiness(target_serial=target_serial, may_use=may_use)
 
     def invalidate_cache(self) -> None:
         """Invalidate the UI readiness snapshot after an explicit configuration change."""

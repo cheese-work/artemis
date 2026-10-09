@@ -20,6 +20,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from artemis.core.diagnostics import readiness_engine
 from artemis.runtime import DeviceExecutionLock, device_pool
+from artemis.runtime.adb_endpoint import AdbEndpoint
 from artemis.config.host_agent import host_agent_enabled
 from artemis.runtime.host_endpoints import HostOffline, host_endpoints
 from apps.admin_console.services.host_registry import host_registry
@@ -170,6 +171,7 @@ async def run_task(request: RunRequest, actor: OwnerScope = Depends(actor_scope)
     if request.bridge_session_id:
         await _bind_bridge_session(request)
         requested_serial = request.device_serial
+    bridge_endpoint = AdbEndpoint.local() if request.bridge_session_id else None
     # A phone the caller does not own is refused before any probe or enqueue.
     if requested_serial and not host_id:
         require_device(scope, requested_serial)
@@ -266,7 +268,8 @@ async def run_task(request: RunRequest, actor: OwnerScope = Depends(actor_scope)
     # fail downstream with a clear error instead.
     if requested_serial and not host_id:
         try:
-            rejection = await device_pool.validate_explicit_serial_async(requested_serial)
+            pool = device_pool.pool_for(bridge_endpoint) if bridge_endpoint else device_pool
+            rejection = await pool.validate_explicit_serial_async(requested_serial)
         except Exception:
             rejection = None
         if rejection:
@@ -294,6 +297,7 @@ async def run_task(request: RunRequest, actor: OwnerScope = Depends(actor_scope)
         else await readiness_engine.run_device_submission_probe(
             target_serial=target_serial,
             may_use=(lambda serial: may_use_device(scope, serial)) if scoped else None,
+            **({"endpoint": bridge_endpoint} if bridge_endpoint else {}),
         )
     )
     if device_probe and device_probe.summary in {"Device Locked", "Lock State Unknown"}:
