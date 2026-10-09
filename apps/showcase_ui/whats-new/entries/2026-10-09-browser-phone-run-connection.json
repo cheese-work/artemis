@@ -1,0 +1,6 @@
+{
+  "id": "2026-10-09-browser-phone-run-connection",
+  "date": "2026-10-09",
+  "title": "Runs recognize the phone you just connected in Chrome",
+  "issues": ["CHE-1410"]
+}

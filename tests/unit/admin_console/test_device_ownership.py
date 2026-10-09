@@ -681,7 +681,7 @@ async def test_run_bound_to_a_bridge_that_is_gone_is_refused_not_rerouted(cloudf
     response = await _run(QA1, bridge_session_id="s-closed", device_serial=SHARED)
 
     assert response.status_code == 409
-    assert response.json()["code"] == "device_offline"
+    assert response.json()["code"] == "bridge_session_unavailable"
     _assert_no_side_effect(submit)
 
 
@@ -692,7 +692,7 @@ async def test_run_bound_to_an_expired_bridge_is_refused(cloudflare, submit):
     response = await _run(QA1, bridge_session_id="s41001")
 
     assert response.status_code == 409
-    assert response.json()["code"] == "device_offline"
+    assert response.json()["code"] == "bridge_session_unavailable"
     _assert_no_side_effect(submit)
 
 

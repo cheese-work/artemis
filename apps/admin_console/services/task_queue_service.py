@@ -315,12 +315,9 @@ class TaskQueueService:
                 if stored != binding_data:
                     raise TaskEndpointUnavailable("Run binding differs from accepted identity")
             if resolve_host and binding.bridge_session_id:
-                try:
-                    from admin_console.services.bridge_session_service import bridge_session_service
-                except ImportError:
-                    from apps.admin_console.services.bridge_session_service import (
-                        bridge_session_service,
-                    )
+                from apps.admin_console.services.bridge_session_service import (
+                    bridge_session_service,
+                )
 
                 if not any(
                     lease.session_id == binding.bridge_session_id
@@ -1559,10 +1556,7 @@ class TaskQueueService:
         sess_id = single_session_id if single_session_id else str(uuid.uuid4())
         # enqueue_tasks resolves the device before creating queue items.
         assigned_serial = device_serial
-        try:
-            from admin_console.services.bridge_session_service import bridge_session_service
-        except ImportError:
-            from apps.admin_console.services.bridge_session_service import bridge_session_service
+        from apps.admin_console.services.bridge_session_service import bridge_session_service
 
         leases = [
             lease
@@ -1581,10 +1575,16 @@ class TaskQueueService:
             None,
         )
         if bridge_session_id is not None and lease is None:
+            logger.warning(
+                "event=bridge_queue_admission_rejected bridge_session_id=%s device_serial=%s "
+                "reason=lease_not_found_for_target",
+                bridge_session_id,
+                assigned_serial,
+            )
             raise AdminAPIError(
                 409,
                 "Your phone is not connected.",
-                "device_offline",
+                "bridge_queue_binding_unavailable",
                 "Connect the phone again, then start the run.",
             )
         binding = RunDeviceBinding(

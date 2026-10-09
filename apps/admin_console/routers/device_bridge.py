@@ -30,18 +30,11 @@ from apps.admin_console.core.access_control import AccessIdentity, public_tier
 from artemis.utils.redaction import redact_text
 
 
-try:
-    from admin_console.services.bridge_session_service import (
-        MAX_ADB_PACKET_BYTES,
-        BridgeSession,
-        bridge_session_service,
-    )
-except ImportError:
-    from apps.admin_console.services.bridge_session_service import (
-        MAX_ADB_PACKET_BYTES,
-        BridgeSession,
-        bridge_session_service,
-    )
+from apps.admin_console.services.bridge_session_service import (
+    MAX_ADB_PACKET_BYTES,
+    BridgeSession,
+    bridge_session_service,
+)
 
 router = APIRouter(prefix="/api/device-bridge", tags=["device-bridge"])
 

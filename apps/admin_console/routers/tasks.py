@@ -15,6 +15,7 @@
 import asyncio
 from contextlib import suppress
 import json
+import logging
 from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
@@ -33,6 +34,7 @@ from apps.admin_console.core.device_ownership import (
     visible_devices,
 )
 from apps.admin_console.services import run_images
+from apps.admin_console.services.bridge_session_service import bridge_session_service
 from apps.admin_console.core.ownership import (
     OwnerScope,
     actor_scope,
@@ -49,7 +51,6 @@ try:
     from admin_console.core.state import IN_FLIGHT_STATUSES, state
     from admin_console.database.repositories.session_repository import session_repo
     from admin_console.schemas.task_schema import RunRequest
-    from admin_console.services.bridge_session_service import bridge_session_service
     from admin_console.services.ipc_service import ipc_service
     from admin_console.services.model_service import model_service
     from admin_console.services.task_preset_catalog import task_recommendation_engine
@@ -58,7 +59,6 @@ except ImportError:
     from apps.admin_console.core.state import IN_FLIGHT_STATUSES, state
     from apps.admin_console.database.repositories.session_repository import session_repo
     from apps.admin_console.schemas.task_schema import RunRequest
-    from apps.admin_console.services.bridge_session_service import bridge_session_service
     from apps.admin_console.services.ipc_service import ipc_service
     from apps.admin_console.services.model_service import model_service
     from apps.admin_console.services.task_preset_catalog import task_recommendation_engine
@@ -66,6 +66,7 @@ except ImportError:
 
 
 router = APIRouter(tags=["tasks"])
+logger = logging.getLogger(__name__)
 
 # Lifecycle events every stream historically received; each names a run.
 _RUN_BOUND_EVENTS = ("session_started", "session_ended", "background_tasks_updated")
@@ -84,10 +85,16 @@ async def _bind_bridge_session(request: RunRequest) -> None:
     """Point a run at the phone its bridge holds; a bridge that is gone refuses the run."""
     session = await bridge_session_service.get(request.bridge_session_id)
     if session is None or session.revoked or session.is_expired:
+        reason = "missing" if session is None else "revoked" if session.revoked else "expired"
+        logger.warning(
+            "event=bridge_run_bind_rejected bridge_session_id=%s reason=%s",
+            request.bridge_session_id,
+            reason,
+        )
         raise AdminAPIError(
             409,
             "Your phone is not connected.",
-            "device_offline",
+            "bridge_session_unavailable",
             "Connect the phone again, then start the run.",
         )
     named = request.device_serial
