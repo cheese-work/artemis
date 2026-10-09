@@ -249,6 +249,7 @@ describe('WorkspaceComponent pinned composer (CHE-1508)', () => {
   let fixture: ComponentFixture<WorkspaceComponent>;
   let component: WorkspaceComponent;
   let el: HTMLElement;
+  let stopTask: jasmine.Spy;
 
   const png = (name: string) => new File([new Uint8Array([137, 80, 78, 71])], name, { type: 'image/png' });
 
@@ -257,17 +258,19 @@ describe('WorkspaceComponent pinned composer (CHE-1508)', () => {
     running = signal(false);
     sessions = signal<{ session_id: string; status: string }[]>([]);
     target = signal<RunTarget | null>({ serial: '1A2B3C4D5E', bridgeSessionId: 'bridge-1' });
+    stopTask = jasmine.createSpy('stopTask');
     const agentService = {
       whatsNewPromptDraft: signal(false),
       updateWhatsNewErrorVisibility: () => undefined,
       isCurrentSessionRunning: running,
       sessions,
       currentSession: () => null,
-      currentSessionId: () => null,
+      currentSessionId: () => 'run-live-1',
+      sessionLogs: () => [],
       currentStartupProgress: () => [],
       runTask,
       fetchStatus: jasmine.createSpy('fetchStatus'),
-      stopTask: jasmine.createSpy('stopTask')
+      stopTask
     };
     await TestBed.configureTestingModule({
       imports: [WorkspaceComponent],
@@ -379,6 +382,52 @@ describe('WorkspaceComponent pinned composer (CHE-1508)', () => {
     expect(toast.compareDocumentPosition(input) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
+  it('queues a task during a run: one submission with the prompt, profile and chosen phone', async () => {
+    running.set(true);
+    const chosen: RunTarget = { serial: 'R58M123ABC', bridgeSessionId: 'bridge-7' };
+    target.set(chosen);
+    fixture.detectChanges();
+
+    const input = textarea();
+    input.value = 'Check dark mode on Home';
+    input.dispatchEvent(new Event('input'));
+    fixture.detectChanges();
+    el.querySelectorAll<HTMLButtonElement>('.composer .segment')[1].click();
+    fixture.detectChanges();
+
+    const send = el.querySelector<HTMLButtonElement>('.composer button.btn-send')!;
+    expect(send.getAttribute('aria-label')).toBe('Queue task');
+    send.click();
+    await fixture.whenStable();
+
+    expect(runTask).toHaveBeenCalledTimes(1);
+    const args = runTask.calls.mostRecent().args;
+    expect(args[0]).toBe('Check dark mode on Home');
+    expect(args[1]).toBe('pro');
+    expect(args[5]).toBeUndefined();
+    expect(args[6]).toEqual(chosen);
+  });
+
+  it('has no Stop run while idle', () => {
+    expect(el.querySelector('.detail-header')).toBeNull();
+    expect(el.querySelector('[aria-label="Stop run"]')).toBeNull();
+  });
+
+  it('puts Stop run in the detail header during a run, never in the composer', () => {
+    running.set(true);
+    fixture.detectChanges();
+    expect(el.querySelector('.composer .btn-stop, .composer [aria-label="Stop run"], .composer .btn-stop-run')).toBeNull();
+
+    const header = el.querySelector('.detail-pane > .detail-header')!;
+    const stop = header.querySelector<HTMLButtonElement>('button.btn-stop-run')!;
+    expect(stop.getAttribute('aria-label')).toBe('Stop run');
+    expect(stop.textContent).toContain('Stop run');
+    expect(header.compareDocumentPosition(el.querySelector('.run-surface')!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
+    stop.click();
+    expect(stopTask).toHaveBeenCalledOnceWith('run-live-1', false);
+  });
+
   for (const width of [1440, 390]) {
     it(`gives every composer control a 44 px hit box at ${width}px`, () => {
       running.set(true);
@@ -400,9 +449,10 @@ describe('WorkspaceComponent pinned composer (CHE-1508)', () => {
         for (const style of Array.from(document.head.querySelectorAll('style'))) doc.head.appendChild(style.cloneNode(true));
         doc.body.appendChild(el);
 
-        const controls = Array.from(doc.querySelectorAll<HTMLElement>('.composer button'));
+        expect(doc.querySelector('.composer .btn-stop, .composer .btn-stop-run')).toBeNull();
+        const controls = Array.from(doc.querySelectorAll<HTMLElement>('.composer button, .detail-header button'));
         const names = controls.map((control) => control.className);
-        for (const cls of ['btn-send', 'btn-attach', 'btn-stop', 'btn-remove-image', 'btn-toast-close', 'segment']) {
+        for (const cls of ['btn-send', 'btn-attach', 'btn-stop-run', 'btn-remove-image', 'btn-toast-close', 'segment']) {
           expect(names.some((name) => name.includes(cls))).withContext(cls).toBeTrue();
         }
         const boxes = controls.map((control) => ({ name: control.className, box: control.getBoundingClientRect() }));
@@ -423,6 +473,8 @@ describe('WorkspaceComponent pinned composer (CHE-1508)', () => {
         // The visual stays smaller than the box: segments draw a 36 px face inside 44 px.
         const face = doc.querySelector<HTMLElement>('.composer .segment .segment-face')!;
         expect(face.getBoundingClientRect().height).toBe(36);
+        const stopFace = doc.querySelector<HTMLElement>('.detail-header .btn-stop-run .stop-face')!;
+        expect(stopFace.getBoundingClientRect().height).toBe(36);
       } finally {
         frame.remove();
       }
