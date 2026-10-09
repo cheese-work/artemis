@@ -20,6 +20,7 @@ COPY apps/showcase_ui/scripts/ ./scripts/
 RUN npm ci
 COPY apps/showcase_ui/angular.json apps/showcase_ui/tsconfig*.json ./
 COPY apps/showcase_ui/public/ ./public/
+COPY apps/showcase_ui/whats-new/ ./whats-new/
 COPY apps/showcase_ui/scripts/ ./scripts/
 COPY apps/showcase_ui/src/ ./src/
 RUN npm run build
