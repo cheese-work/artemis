@@ -121,7 +121,7 @@ def test_verified_nonadmin_can_open_local_bridge(loopback_client, monkeypatch, _
         ),
     )
     verifier = MagicMock()
-    verifier.verify = AsyncMock(return_value={"email": "qa@example.com", "sub": "qa-sub"})
+    verifier.verify = AsyncMock(return_value={"email": "qa@example.com"})
     monkeypatch.setattr(app.state, "access_verifier", verifier)
 
     with loopback_client.websocket_connect(
@@ -299,10 +299,7 @@ class _ManualClock:
             await asyncio.sleep(0.001)
 
 
-@pytest.mark.parametrize("attachment_delayed", [False, True])
-def test_expired_session_times_out_and_disconnects_adb(
-    loopback_client, monkeypatch, _mock_adb, caplog, attachment_delayed
-):
+def _install_manual_clock(monkeypatch) -> _ManualClock:
     # Pin both limits so ambient settings cannot change which one fires after the advance.
     monkeypatch.setenv(
         "ARTEMIS_BRIDGE_SESSION_TTL_SECONDS",
@@ -319,6 +316,14 @@ def test_expired_session_times_out_and_disconnects_adb(
         type("FakeTime", (), {"monotonic": staticmethod(clock.monotonic)}),
     )
     monkeypatch.setattr(device_bridge, "_sleep", clock.sleep)
+    return clock
+
+
+@pytest.mark.parametrize("attachment_delayed", [False, True])
+def test_expired_session_times_out_and_disconnects_adb(
+    loopback_client, monkeypatch, _mock_adb, caplog, attachment_delayed
+):
+    clock = _install_manual_clock(monkeypatch)
     # The close frame reaches the client before the handler's cleanup revokes the session.
     revoked = threading.Event()
     revoke = bridge_session_service.revoke
@@ -1185,30 +1190,37 @@ def test_failed_tcp_drain_does_not_count_bytes():
 def test_websocket_revoke_logs_main_reason_and_close_code(
     loopback_client, monkeypatch, _mock_adb, caplog, closing
 ):
-    if closing == "idle":
-        monkeypatch.setenv("ARTEMIS_BRIDGE_SESSION_TTL_SECONDS", "1")
+    # A wall-clock TTL can lapse before `device_attached` arrives on a slow host, so the
+    # lease only expires when the test advances the clock after attachment.
+    clock = _install_manual_clock(monkeypatch) if closing == "idle" else None
+    # The close log is written by cleanup, which runs after the client sees the close frame.
+    revoked = threading.Event()
+    revoke = bridge_session_service.revoke
 
-    def close_records() -> list[str]:
-        return [r.message for r in caplog.records if "event=bridge_close " in r.message]
+    async def observe_revoke(session_id):
+        await revoke(session_id)
+        revoked.set()
 
+    monkeypatch.setattr(bridge_session_service, "revoke", observe_revoke)
     with loopback_client.websocket_connect(PATH, headers=_HOST_HEADER) as websocket:
         lease = websocket.receive_json()
         assert websocket.receive_json()["type"] == "device_attached"
         if closing == "client":
             websocket.send_text("close")
+        elif closing == "idle":
+            clock.advance(bridge_session_service_module.DEFAULT_SESSION_TTL_SECONDS + 1)
         elif closing == "error":
             websocket.send_bytes(b"private-invalid-adb-packet")
         if closing != "client":
             with pytest.raises(WebSocketDisconnect) as error:
                 websocket.receive_json()
             assert error.value.code == (4008 if closing == "idle" else 1011)
-        # The server logs the close after the client has seen it, and leaving this block
-        # cancels the server task, so wait for the record before leaving.
-        deadline = time.monotonic() + 5
-        while not close_records() and time.monotonic() < deadline:
-            time.sleep(0.01)
+        # Wait inside the `with`: leaving it tears the app task down mid-cleanup.
+        assert revoked.wait(5.0)
 
-    records = close_records()
+    records = [
+        record.message for record in caplog.records if "event=bridge_close " in record.message
+    ]
     assert len(records) == 1
     close_record = records[0]
     expected_code = {"client": 1000, "idle": 4008, "error": 1011}[closing]
