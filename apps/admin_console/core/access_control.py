@@ -9,7 +9,7 @@ import logging
 import os
 import re
 import time
-from typing import Any
+from typing import Any, cast
 
 import httpx
 import jwt
@@ -18,8 +18,14 @@ from fastapi.responses import JSONResponse
 from jwt import InvalidTokenError
 from jwt.exceptions import InvalidKeyError, PyJWTError
 from starlette.requests import HTTPConnection
-from starlette.status import WS_1008_POLICY_VIOLATION
+from starlette.websockets import WebSocket
+from starlette.status import WS_1008_POLICY_VIOLATION, WS_1013_TRY_AGAIN_LATER
 from starlette.types import ASGIApp, Receive, Scope, Send
+
+from apps.admin_console.database.repositories.principal_repository import (
+    PrincipalStoreNotReady,
+    principal_repo,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +42,15 @@ class AccessConfig:
     audience: str | None = None
     issuer: str | None = None
     admin_emails: frozenset[str] = frozenset()
+    admin_subjects: frozenset[str] = frozenset()
+    spaces_enabled: bool = False
     service_principals: dict[str, ServicePrincipal] = field(default_factory=dict)
+
+    def is_admin(self, subject: str | None, email: str | None) -> bool:
+        """Global admins are keyed by subject; the email list is legacy, spaces-off only."""
+        if subject is not None and subject in self.admin_subjects:
+            return True
+        return not self.spaces_enabled and email is not None and email in self.admin_emails
 
 
 @dataclass(frozen=True)
@@ -45,22 +59,67 @@ class AccessIdentity:
     admin: bool
     auth_mode: str
     reason: str | None = None
-    principal: str | None = None
+    issuer: str | None = None
+    subject: str | None = None
+    principal_id: str | None = None
+    # Emails whose legacy run history this identity may claim. None: spaces are off, so an
+    # email match alone still proves ownership (the pre-spaces rule).
+    history_emails: frozenset[str] | None = None
+    spaces: bool = False
+    service_principal: str | None = None
     service_routes: frozenset[tuple[str, str]] = frozenset()
 
 
+RETRY_AFTER_SECONDS = 5
+
+
 class AdminAPIError(Exception):
-    def __init__(self, status_code: int, detail: str, code: str, fix: str):
+    def __init__(
+        self,
+        status_code: int,
+        detail: str,
+        code: str,
+        fix: str,
+        retry_after: int | None = None,
+    ):
         self.status_code = status_code
         self.detail = detail
         self.code = code
         self.fix = fix
+        self.retry_after = retry_after
 
 
-def admin_api_error_handler(_request: Request, exc: AdminAPIError) -> JSONResponse:
-    return JSONResponse(
-        status_code=exc.status_code,
-        content={"detail": exc.detail, "code": exc.code, "fix": exc.fix},
+def _error_response(exc: AdminAPIError) -> JSONResponse:
+    content = {"detail": exc.detail, "code": exc.code, "fix": exc.fix}
+    headers = {}
+    if exc.retry_after is not None:
+        content["retryable"] = True
+        headers["Retry-After"] = str(exc.retry_after)
+    return JSONResponse(status_code=exc.status_code, content=content, headers=headers)
+
+
+async def admin_api_error_handler(conn: HTTPConnection, exc: AdminAPIError) -> JSONResponse | None:
+    """An HTTP error response; a WebSocket handshake refusal for a WebSocket scope.
+
+    A retryable error is a 503 denial response when the server supports it, else
+    close code 1013 (try again later). Anything else is close code 1008 (policy).
+    """
+    response = _error_response(exc)
+    if conn.scope["type"] != "websocket":
+        return response
+    websocket = cast(WebSocket, conn)
+    if exc.retry_after is None:
+        await websocket.close(code=WS_1008_POLICY_VIOLATION, reason=exc.code)
+    elif "websocket.http.response" in conn.scope.get("extensions", {}):
+        await websocket.send_denial_response(response)
+    else:
+        await websocket.close(code=WS_1013_TRY_AGAIN_LATER, reason=exc.code)
+    return None
+
+
+def _csv(name: str) -> frozenset[str]:
+    return frozenset(
+        item.strip().casefold() for item in os.getenv(name, "").split(",") if item.strip()
     )
 
 
@@ -69,8 +128,14 @@ def config_from_environment() -> AccessConfig:
     if auth_mode not in {"open", "cloudflare"}:
         raise ValueError("ARTEMIS_AUTH_MODE must be 'open' or 'cloudflare'.")
 
+    spaces_enabled = os.getenv("ARTEMIS_SPACES_ENABLED", "").strip().casefold() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
     if auth_mode == "open":
-        return AccessConfig(auth_mode="open")
+        return AccessConfig(auth_mode="open", spaces_enabled=spaces_enabled)
 
     audience = os.getenv("ARTEMIS_CF_ACCESS_AUD", "").strip()
     team_domain = os.getenv("ARTEMIS_CF_ACCESS_TEAM_DOMAIN", "").strip().casefold()
@@ -87,16 +152,18 @@ def config_from_environment() -> AccessConfig:
     if not team_domain.endswith(".cloudflareaccess.com"):
         team_domain = f"{team_domain}.cloudflareaccess.com"
 
-    admin_emails = frozenset(
-        email.strip().casefold()
-        for email in os.getenv("ARTEMIS_ADMIN_EMAILS", "congvc.dev@gmail.com").split(",")
-        if email.strip()
+    admin_subjects = frozenset(
+        item.strip() for item in os.getenv("ARTEMIS_ADMIN_SUBJECTS", "").split(",") if item.strip()
     )
+    if spaces_enabled and not admin_subjects:
+        logger.warning("Spaces are enabled but ARTEMIS_ADMIN_SUBJECTS is empty: no global admin.")
     return AccessConfig(
         auth_mode="cloudflare",
         audience=audience,
         issuer=f"https://{team_domain}",
-        admin_emails=admin_emails,
+        admin_emails=_csv("ARTEMIS_ADMIN_EMAILS"),
+        admin_subjects=admin_subjects,
+        spaces_enabled=spaces_enabled,
         service_principals=_service_principals_from_environment(),
     )
 
@@ -204,6 +271,23 @@ class CloudflareAccessVerifier:
         )
 
 
+_FORWARDING_HEADERS = (b"x-forwarded-for", b"forwarded", b"x-real-ip", b"cf-connecting-ip")
+
+
+def require_loopback_bind(config: AccessConfig, host: str) -> None:
+    """Refuse to serve open mode with spaces on any address but loopback (wildcards included)."""
+    if config.auth_mode != "open" or not config.spaces_enabled:
+        return
+    try:
+        loopback = ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        loopback = host.casefold() == "localhost"
+    if not loopback:
+        raise ValueError(
+            f"ARTEMIS_SPACES_ENABLED with ARTEMIS_AUTH_MODE=open only serves loopback; got {host!r}."
+        )
+
+
 def _is_loopback_request(request: HTTPConnection) -> bool:
     peer = request.scope.get("artemis.transport_peer") or request.scope.get("client")
     host = peer[0] if isinstance(peer, (tuple, list)) and peer else None
@@ -213,6 +297,27 @@ def _is_loopback_request(request: HTTPConnection) -> bool:
         return isinstance(host, str) and host.casefold() == "localhost"
 
 
+def _is_service_token(claims: dict[str, Any]) -> bool:
+    """A Cloudflare Access service token has no email; its client id is `common_name`."""
+    return claims.get("email") is None and "common_name" in claims
+
+
+def _service_identity(claims: dict[str, Any], config: AccessConfig) -> AccessIdentity | None:
+    if not _is_service_token(claims):
+        return None
+    client_id = claims["common_name"]
+    principal = config.service_principals.get(client_id) if isinstance(client_id, str) else None
+    if principal is None:
+        return AccessIdentity(None, False, config.auth_mode, "service_principal_unmapped")
+    return AccessIdentity(
+        None,
+        False,
+        config.auth_mode,
+        service_principal=principal.name,
+        service_routes=principal.routes,
+    )
+
+
 async def authenticate_request(
     request: HTTPConnection,
     config: AccessConfig,
@@ -220,14 +325,22 @@ async def authenticate_request(
 ) -> AccessIdentity:
     if config.auth_mode == "open":
         forwarded = any(
-            name.lower() == b"x-forwarded-for" for name, _value in request.scope.get("headers", ())
+            name.lower() in _FORWARDING_HEADERS for name, _value in request.scope.get("headers", ())
         )
         local_admin = _is_loopback_request(request) and not forwarded
+        if config.spaces_enabled and not local_admin:
+            raise AdminAPIError(
+                403,
+                "Open mode with spaces enabled only admits a direct local caller.",
+                "open_mode_loopback_only",
+                "Set ARTEMIS_AUTH_MODE=cloudflare, or call from the server host without a proxy.",
+            )
         return AccessIdentity(
             email=None,
             admin=local_admin,
             auth_mode="open",
             reason=None if local_admin else "no_jwt",
+            spaces=config.spaces_enabled,
         )
 
     token = request.headers.get("Cf-Access-Jwt-Assertion")
@@ -242,22 +355,39 @@ async def authenticate_request(
     except (InvalidTokenError, InvalidKeyError, PyJWTError, TypeError, KeyError):
         return AccessIdentity(None, False, config.auth_mode, "jwt_invalid")
 
+    service_identity = _service_identity(claims, config)
+    if service_identity is not None:
+        return service_identity
     email = claims.get("email")
-    if email is None and "common_name" in claims:
-        # Cloudflare Access service token: no email, the token's client id is `common_name`.
-        client_id = claims["common_name"]
-        principal = config.service_principals.get(client_id) if isinstance(client_id, str) else None
-        if principal is None:
-            return AccessIdentity(None, False, config.auth_mode, "service_principal_unmapped")
-        return AccessIdentity(None, False, config.auth_mode, None, principal.name, principal.routes)
     if not isinstance(email, str) or not email.strip():
         return AccessIdentity(None, False, config.auth_mode, "jwt_invalid")
     email = email.strip().casefold()
+    subject, issuer = claims.get("sub"), config.issuer  # decode() already checked iss == issuer
+    if not (isinstance(subject, str) and subject and issuer):
+        return AccessIdentity(None, False, config.auth_mode, "jwt_invalid")
+    principal = None
+    if config.spaces_enabled:
+        try:
+            principal = await asyncio.to_thread(principal_repo.ensure_user, issuer, subject, email)
+        except PrincipalStoreNotReady as exc:
+            raise AdminAPIError(
+                503,
+                "The principal store is not ready.",
+                "principal_store_not_ready",
+                "Retry shortly; restart the console if it persists so the schema can be created.",
+                RETRY_AFTER_SECONDS,
+            ) from exc
+    admin = config.is_admin(subject, email)
     return AccessIdentity(
         email,
-        email in config.admin_emails,
+        admin,
         config.auth_mode,
-        None if email in config.admin_emails else "not_on_allowlist",
+        None if admin else "not_on_allowlist",
+        issuer,
+        subject,
+        principal.id if principal else None,
+        principal.history_emails if principal else None,
+        config.spaces_enabled,
     )
 
 
@@ -271,15 +401,56 @@ async def public_tier(request: HTTPConnection) -> AccessIdentity:
     if preview_identity is not None:
         request.state.identity = preview_identity
         return preview_identity
+    config, verifier = _access_context(request)
+    identity = await authenticate_request(request, config, verifier)
+    request.state.identity = identity
+    _enforce_service_principal_routes(request, identity)
+    return identity
+
+
+def _access_context(request: HTTPConnection) -> tuple[AccessConfig, CloudflareAccessVerifier]:
     config = getattr(request.app.state, "access_config", None) or config_from_environment()
     verifier = getattr(request.app.state, "access_verifier", None)
     if verifier is None:
         verifier = CloudflareAccessVerifier()
         request.app.state.access_verifier = verifier
-    identity = await authenticate_request(request, config, verifier)
+    return config, verifier
+
+
+async def _enforce_service_boundary(request: HTTPConnection) -> None:
+    """Resolve only a service-token identity before routing; human callers resolve per route."""
+    from apps.admin_console.core.preview_identity import resolve_preview_identity
+
+    try:
+        if resolve_preview_identity(request) is not None:
+            return
+    except AdminAPIError:
+        return  # The route's own public_tier reports the preview identity error.
+    config, verifier = _access_context(request)
+    token = request.headers.get("Cf-Access-Jwt-Assertion")
+    if config.auth_mode != "cloudflare" or not token:
+        return
+    try:
+        # Same payload bytes as the verified claims, so a human token is skipped here and
+        # verified once, by its route.
+        if not _is_service_token(jwt.decode(token, options={"verify_signature": False})):
+            return
+        claims = await verifier.verify(token, config)
+    except (
+        httpx.HTTPError,
+        OSError,
+        ValueError,
+        InvalidTokenError,
+        PyJWTError,
+        TypeError,
+        KeyError,
+    ):
+        return  # The route's own public_tier reports the invalid token.
+    identity = _service_identity(claims, config)
+    if identity is None:
+        return
     request.state.identity = identity
     _enforce_service_principal_routes(request, identity)
-    return identity
 
 
 class ServicePrincipalMiddleware:
@@ -289,47 +460,41 @@ class ServicePrincipalMiddleware:
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] in {"http", "websocket"}:
             try:
-                await public_tier(HTTPConnection(scope))
+                await _enforce_service_boundary(HTTPConnection(scope))
             except AdminAPIError as error:
                 if scope["type"] == "websocket":
-                    await send(
-                        {
-                            "type": "websocket.close",
-                            "code": WS_1008_POLICY_VIOLATION,
-                            "reason": error.code,
-                        }
-                    )
+                    await admin_api_error_handler(WebSocket(scope, receive, send), error)
                 else:
-                    response = admin_api_error_handler(Request(scope), error)
-                    await response(scope, receive, send)
-                return
-            except WebSocketException as error:
-                await send({"type": "websocket.close", "code": error.code, "reason": error.reason})
+                    await _error_response(error)(scope, receive, send)
                 return
         await self.app(scope, receive, send)
+
+
+def _log_safe_path(request: HTTPConnection) -> str:
+    """The routed path with control characters escaped, so it cannot split a log line."""
+    return request.scope["path"].encode("unicode_escape").decode("ascii")
 
 
 def _enforce_service_principal_routes(request: HTTPConnection, identity: AccessIdentity) -> None:
     """A service token reaches only the exact routes its principal maps; nothing else."""
     if identity.reason == "service_principal_unmapped":
-        logger.warning("Service token denied: unmapped client id route=%s", request.url.path)
+        logger.warning("Service token denied: unmapped client id route=%s", _log_safe_path(request))
         allowed = False
-    elif identity.principal is None:
+    elif identity.service_principal is None:
         return
     else:
         method = request.scope.get("method", "WEBSOCKET")
-        allowed = (method, request.url.path) in identity.service_routes
+        # The router matches scope["path"]; request.url.path drops tabs and newlines.
+        allowed = (method, request.scope["path"]) in identity.service_routes
         logger.info(
             "Service principal request principal=%s route=%s %s allowed=%s",
-            identity.principal,
+            identity.service_principal,
             method,
-            request.url.path,
+            _log_safe_path(request),
             allowed,
         )
     if allowed:
         return
-    if request.scope["type"] == "websocket":
-        raise WebSocketException(code=WS_1008_POLICY_VIOLATION, reason="service_route_denied")
     raise AdminAPIError(
         403,
         "This service credential cannot call this route.",
@@ -360,7 +525,7 @@ async def require_admin_or_service_read(
     identity: AccessIdentity = Depends(public_tier),
 ) -> AccessIdentity:
     """Admin, or a service principal whose exact route `public_tier` already allowed."""
-    if identity.principal is not None:
+    if identity.service_principal is not None:
         return identity
     return await require_admin(identity)
 
@@ -398,9 +563,6 @@ async def require_lifecycle_token(request: Request) -> None:
         )
 
 
-_FORWARDING_HEADERS = (b"x-forwarded-for", b"forwarded", b"x-real-ip", b"cf-connecting-ip")
-
-
 async def require_effective_loopback(request: Request) -> None:
     """Admit only a direct local caller: loopback peer, no proxy forwarding."""
     forwarded = any(
@@ -409,9 +571,9 @@ async def require_effective_loopback(request: Request) -> None:
     if forwarded or not _is_loopback_request(request):
         raise AdminAPIError(
             403,
-            "Deploy drain controls are local-only.",
+            "This endpoint is local-only.",
             "loopback_required",
-            "Call the drain endpoint directly from the server host.",
+            "Call this endpoint directly from the server host.",
         )
 
 
@@ -542,6 +704,8 @@ def route_tier(path: str, methods: set[str], is_websocket: bool = False) -> str 
     if path == "/api/system/shutdown" and methods == {"POST"}:
         return "lifecycle"
     if path == "/api/system/drain" and methods in ({"GET"}, {"POST"}, {"DELETE"}):
+        return "loopback"
+    if path == "/api/system/service-readiness" and methods == {"GET"}:
         return "loopback"
     if path == "/api/v1" or path.startswith("/api/v1/"):
         return "public"

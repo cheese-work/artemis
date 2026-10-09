@@ -21,8 +21,19 @@ from typing import Any
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import JSONResponse
 
-from apps.admin_console.core.access_control import AccessIdentity, AdminAPIError, public_tier
-from apps.admin_console.core.ownership import OwnerScope, actor_scope, owner_scope, scope_or_open
+from apps.admin_console.core.access_control import (
+    RETRY_AFTER_SECONDS,
+    AccessIdentity,
+    AdminAPIError,
+    public_tier,
+)
+from apps.admin_console.core.ownership import (
+    OwnerScope,
+    actor_scope,
+    owner_scope,
+    require_actor,
+    scope_for,
+)
 from apps.admin_console.core.redaction import redact_image_data, redact_text
 
 try:
@@ -46,11 +57,18 @@ async def catalog_scope(
 ) -> OwnerScope:
     if scope != "everyone":
         return owner_scope(identity, scope)
+    if identity.spaces:
+        raise AdminAPIError(
+            400,
+            "Unknown scope 'everyone'.",
+            "invalid_scope",
+            "Spaces replace scope=everyone; use scope=mine.",
+        )
     if identity.auth_mode != "open" and not identity.email:
         raise AdminAPIError(
             403, "Sign in to see everyone's runs.", "team_requires_identity", "Sign in first."
         )
-    return OwnerScope(identity.auth_mode != "open", identity.email, identity.admin, True)
+    return scope_for(identity, include_all=True)
 
 
 def _present(run: dict[str, Any], scope: OwnerScope, *, team: bool = False) -> dict[str, Any]:
@@ -62,7 +80,9 @@ def _present(run: dict[str, Any], scope: OwnerScope, *, team: bool = False) -> d
 
 
 def _error(status_code: int, error: str, **extra: Any) -> JSONResponse:
-    return JSONResponse(status_code=status_code, content={"error": error, **extra})
+    headers = {"Retry-After": str(RETRY_AFTER_SECONDS)} if status_code == 503 else {}
+    content = {"error": error, "retryable": True, **extra} if headers else {"error": error, **extra}
+    return JSONResponse(status_code=status_code, content=content, headers=headers)
 
 
 def _parse_time(value: str | None) -> float | None:
@@ -96,15 +116,14 @@ async def list_runs(
     catalog. Unowned runs remain admin-only in listings. Only admins may use
     ``scope=all``; queue and event scoping are unchanged.
     """
-    scope = scope_or_open(scope)
+    scope = require_actor(scope)
     team = visibility == "everyone"
     owner_filter = {}
     if team and scope.enforced and not scope.admin:
         owner_filter = {"owned_only": True}
     if scope.enforced and (not scope.include_all or (team and q and q.strip())):
-        if scope.email is None:  # no identity owns nothing
-            return {"runs": [], "next_cursor": None, "warnings": []}
-        owner_filter = {"owner": scope.email}
+        # An empty list owns nothing but still queries, so an unready catalog answers 503.
+        owner_filter = {"owners": scope.owner_emails()}
     try:
         bounds = {"since": _parse_time(since), "until": _parse_time(until)}
     except ValueError:
@@ -143,12 +162,12 @@ async def get_run(session_id: str, scope: OwnerScope = Depends(actor_scope)):
     except CatalogNotReady:
         return _error(503, "catalog_not_ready")
     if found.run:
-        return _present(found.run, scope_or_open(scope))
+        return _present(found.run, require_actor(scope))
     if found.candidates:
         return _error(
             409,
             "ambiguous_prefix",
-            candidates=[_present(run, scope_or_open(scope)) for run in found.candidates],
+            candidates=[_present(run, require_actor(scope)) for run in found.candidates],
         )
     if found.removed:
         return _error(410, "removed", **found.removed)

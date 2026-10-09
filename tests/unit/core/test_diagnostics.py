@@ -20,6 +20,7 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 from artemis.core.diagnostics.engine import ReadinessEngine
+from artemis.runtime.adb_endpoint import AdbEndpoint
 from artemis.core.diagnostics.probes.adb_probe import AdbDeviceProbe
 from artemis.core.diagnostics.probes.credentials_probe import (
     LLMCredentialsProbe,
@@ -51,6 +52,38 @@ def _clear_credential_inputs(monkeypatch):
         "OPENAI_BASE_URL",
     ):
         monkeypatch.delenv(env_name, raising=False)
+
+
+@pytest.mark.asyncio
+async def test_submission_endpoint_override_does_not_change_the_shared_probe(monkeypatch):
+    engine = ReadinessEngine()
+    shared = AsyncMock(return_value="preferred-probe")
+    monkeypatch.setattr(engine._adb_probe, "probe_submission_readiness", shared)
+    endpoints = []
+
+    async def probe_submission(probe, target_serial=None, may_use=None):
+        endpoints.append(probe._endpoint)
+        assert target_serial == "browser-phone"
+        assert may_use is allowed
+        return "browser-probe"
+
+    def allowed(serial):
+        return serial == "browser-phone"
+
+    monkeypatch.setattr(AdbDeviceProbe, "probe_submission_readiness", probe_submission)
+
+    result = await engine.run_device_submission_probe(
+        target_serial="browser-phone", may_use=allowed, endpoint=AdbEndpoint.local()
+    )
+
+    assert result == "browser-probe"
+    assert endpoints == [AdbEndpoint.local()]
+    assert engine._adb_probe._endpoint is None
+    shared.assert_not_awaited()
+    assert await engine.run_device_submission_probe(target_serial="preferred-phone") == (
+        "preferred-probe"
+    )
+    shared.assert_awaited_once_with(target_serial="preferred-phone", may_use=None)
 
 
 @pytest.mark.asyncio

@@ -233,6 +233,7 @@ def test_whoami_uses_signed_cloudflare_identity(monkeypatch, access_keys):
     assert response.status_code == 200
     assert response.json() == {
         "email": "admin@example.com",
+        "subject": "user-1",
         "admin": True,
         "auth_mode": "cloudflare",
         "reason": None,
@@ -268,13 +269,13 @@ def test_denied_admin_action_has_no_side_effect(monkeypatch):
     action.assert_not_awaited()
 
 
-def test_cloudflare_admin_allowlist_defaults_to_cheese_and_normalizes(monkeypatch):
+def test_cloudflare_admin_allowlist_has_no_default_and_normalizes(monkeypatch):
     monkeypatch.setenv("ARTEMIS_AUTH_MODE", "cloudflare")
     monkeypatch.setenv("ARTEMIS_CF_ACCESS_AUD", "app-audience")
     monkeypatch.setenv("ARTEMIS_CF_ACCESS_TEAM_DOMAIN", "team")
     monkeypatch.delenv("ARTEMIS_ADMIN_EMAILS", raising=False)
 
-    assert config_from_environment().admin_emails == frozenset({"congvc.dev@gmail.com"})
+    assert config_from_environment().admin_emails == frozenset()
 
     monkeypatch.setenv("ARTEMIS_ADMIN_EMAILS", " QA@example.test,Admin@example.test ")
     assert config_from_environment().admin_emails == frozenset(
@@ -412,6 +413,65 @@ def test_failures_reader_is_denied_everywhere_else_and_the_denial_is_logged(
     )
 
 
+@pytest.mark.parametrize(
+    ("path", "logged"),
+    [
+        ("/api/system/failures%0aallowed=True", "/api/system/failures\\nallowed=True"),
+        ("/api/system/fail%0aures", "/api/system/fail\\nures"),
+        ("/api/system/failures%0a", "/api/system/failures\\n"),
+    ],
+)
+def test_service_boundary_checks_and_logs_the_routed_path_with_newlines_escaped(
+    service_app, caplog, path, logged
+):
+    caplog.set_level("INFO", logger="apps.admin_console.core.access_control")
+
+    response = service_app("GET", path)
+
+    assert response.status_code == 403
+    [line] = [line for line in caplog.messages if "principal=failures-reader" in line]
+    assert "\n" not in line
+    assert f"route=GET {logged} allowed=False" in line
+
+
+def test_service_boundary_never_touches_the_principal_store(monkeypatch, access_keys, library):
+    """The pre-routing check resolves only service tokens; human identities stay route-scoped."""
+    from apps.admin_console.core import access_control
+    from apps.admin_console.database.repositories.principal_repository import (
+        PrincipalStoreNotReady,
+    )
+    from apps.admin_console.server import app
+
+    private_key, jwks = access_keys
+    monkeypatch.setenv("ARTEMIS_SERVICE_PRINCIPALS", READER_ENV)
+    monkeypatch.setattr(
+        app.state,
+        "access_config",
+        AccessConfig(
+            auth_mode="cloudflare",
+            audience="app-audience",
+            issuer="https://team.cloudflareaccess.com",
+            spaces_enabled=True,
+            service_principals=_service_principals_from_environment(),
+        ),
+    )
+    monkeypatch.setattr(
+        app.state, "access_verifier", CloudflareAccessVerifier(fetch_jwks=lambda _url: jwks)
+    )
+    ensure_user = Mock(side_effect=PrincipalStoreNotReady("not ready"))
+    monkeypatch.setattr(access_control.principal_repo, "ensure_user", ensure_user)
+    client = TestClient(app, base_url="http://localhost")
+
+    human = client.get("/docs", headers={"Cf-Access-Jwt-Assertion": make_token(private_key)})
+    service = client.get(
+        "/api/system/failures", headers={"Cf-Access-Jwt-Assertion": service_token(private_key)}
+    )
+
+    assert human.status_code == 200
+    assert service.status_code == 200
+    ensure_user.assert_not_called()
+
+
 def test_unmapped_client_id_is_denied_even_on_the_failures_route(service_app, caplog):
     caplog.set_level("INFO", logger="apps.admin_console.core.access_control")
     assert (
@@ -503,7 +563,7 @@ async def test_token_without_email_or_client_id_fails_closed(access_keys):
         CloudflareAccessVerifier(fetch_jwks=lambda _url: jwks),
     )
 
-    assert identity.principal is None
+    assert identity.service_principal is None
     assert identity.reason == "jwt_invalid"
 
 

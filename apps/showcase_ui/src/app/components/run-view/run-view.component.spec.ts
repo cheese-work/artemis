@@ -263,6 +263,17 @@ describe('RunViewComponent', () => {
         expect(button('Start new run with this prompt')).toBeDefined();
       });
 
+      it('keeps raw recorder output inside collapsed technical details', async () => {
+        const raw = '/usr/share/scrcpy/scrcpy-server: 1 file pushed, 0 skipped.\njava.lang.NoSuchMethodException: IClipboard';
+        await open({ viewMode, runResult: of(run({ status: 'failed' })),
+          video: of(ready({ status: 'failed', message: 'The screen recorder could not start on this phone.', detail: raw })) });
+        expect(q('.recording-copy')!.textContent).toBe('The video could not be prepared. The screen recorder could not start on this phone.');
+        const details = q<HTMLDetailsElement>('details.technical-details')!;
+        expect(details.open).toBeFalse();
+        expect(details.querySelector('summary')!.textContent).toBe('Technical details');
+        expect(details.querySelector('.technical-body')!.textContent).toBe(raw);
+      });
+
       it('shows the same interrupted banner and device without selecting a new device', async () => {
         await open({ viewMode, runResult: of(run({ status: 'interrupted', interrupt_reason: 'device_offline' })) });
         expect(q('.interrupted-banner')!.textContent).toContain('Run interrupted at step 3');

@@ -10,7 +10,11 @@ import { DeployVersion, parseDeployVersion } from '../../core/models/deploy-vers
   template: `
     <footer class="version-footer" aria-label="SmartQA version">
       @if (version(); as v) {
-        SmartQA {{ v.shortSha }}@if (v.deployedAt) {, deployed <time [attr.datetime]="v.deployedAt">{{ v.deployedAt | date: 'yyyy-MM-dd HH:mm' }}</time>}
+        SmartQA @if (v.deployedAt) {
+          <time [attr.datetime]="v.deployedAt">{{ v.deployedAt | date: 'yyyyMMdd-HHmm': '+0700' }}</time>
+        } @else {
+          {{ v.shortSha }}
+        }
       } @else {
         SmartQA version unknown
       }

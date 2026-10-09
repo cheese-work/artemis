@@ -1,4 +1,5 @@
 import { HttpClient } from '@angular/common/http';
+import { DATE_PIPE_DEFAULT_OPTIONS } from '@angular/common';
 import { TestBed } from '@angular/core/testing';
 import { of, throwError } from 'rxjs';
 import { VersionFooterComponent } from './version-footer.component';
@@ -10,14 +11,17 @@ describe('VersionFooterComponent', () => {
     );
     TestBed.configureTestingModule({
       imports: [VersionFooterComponent],
-      providers: [{ provide: HttpClient, useValue: { get } }]
+      providers: [
+        { provide: HttpClient, useValue: { get } },
+        { provide: DATE_PIPE_DEFAULT_OPTIONS, useValue: { timezone: '-0800' } }
+      ]
     });
     const fixture = TestBed.createComponent(VersionFooterComponent);
     fixture.detectChanges();
     return { fixture, get, text: () => (fixture.nativeElement.textContent as string).replace(/\s+/g, ' ').trim() };
   }
 
-  it('shows the short sha and deploy time from the version endpoint', () => {
+  it('shows only the ICT deploy stamp even when the default timezone differs', () => {
     const { fixture, get, text } = render({
       status: 'known',
       sha: '52b9ed0a1b2c3d4e5f60718293a4b5c6d7e8f901',
@@ -26,12 +30,32 @@ describe('VersionFooterComponent', () => {
     });
 
     expect(get).toHaveBeenCalledOnceWith('/api/system/version');
-    expect(text()).toContain('SmartQA 52b9ed0, deployed');
+    expect(text()).toBe('SmartQA 20261005-1010');
     expect(fixture.nativeElement.querySelector('time').getAttribute('datetime')).toBe('2026-10-05T03:10:00Z');
+  });
+
+  [
+    { deployedAt: '2026-10-05T18:42:00Z', build: '20261006-0142' },
+    { deployedAt: '2026-10-05T23:42:00+05:00', build: '20261006-0142' },
+    { deployedAt: '2026-12-31T20:59:00Z', build: '20270101-0359' }
+  ].forEach(({ deployedAt, build }) => {
+    it(`formats ${deployedAt} as ${build} in ICT`, () => {
+      const { text } = render({
+        status: 'known', short_sha: '52b9ed0', deployed_at: deployedAt, build
+      });
+
+      expect(text()).toBe(`SmartQA ${build}`);
+    });
   });
 
   it('shows the sha alone when the deploy time is missing', () => {
     const { text } = render({ status: 'known', sha: 'abc1234', short_sha: 'abc1234', deployed_at: null });
+
+    expect(text()).toBe('SmartQA abc1234');
+  });
+
+  it('shows the sha alone when the deploy time is malformed', () => {
+    const { text } = render({ status: 'known', short_sha: 'abc1234', deployed_at: 'not-a-time' });
 
     expect(text()).toBe('SmartQA abc1234');
   });

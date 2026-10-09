@@ -14,6 +14,9 @@
 
 """Deployed-version contract (CHE-1146): public, never fails, degrades to unknown."""
 
+from datetime import datetime, UTC
+import os
+
 from httpx import ASGITransport, AsyncClient
 import pytest
 
@@ -22,7 +25,7 @@ from apps.admin_console.server import app
 
 SHA = "52b9ed0a1b2c3d4e5f60718293a4b5c6d7e8f901"
 VERSION = "/api/system/version"
-UNKNOWN = {"status": "unknown", "sha": None, "short_sha": None, "deployed_at": None}
+UNKNOWN = {"status": "unknown", "sha": None, "short_sha": None, "deployed_at": None, "build": None}
 
 
 @pytest.fixture(autouse=True)
@@ -55,18 +58,22 @@ async def test_file_with_sha_and_time(clean_env):
         "sha": SHA,
         "short_sha": "52b9ed0",
         "deployed_at": "2026-10-05T03:10:00Z",
+        "build": "20261005-1010",
     }
 
 
 @pytest.mark.asyncio
 async def test_file_without_time_falls_back_to_mtime(clean_env):
     clean_env.write_text(f"{SHA}\n")
+    moment = datetime(2026, 10, 5, 17, 30, tzinfo=UTC).timestamp()
+    os.utime(clean_env, (moment, moment))
 
     body = (await _get()).json()
 
     assert body["status"] == "known"
     assert body["short_sha"] == "52b9ed0"
     assert body["deployed_at"].endswith("Z")
+    assert body["build"] == "20261006-0030"
 
 
 @pytest.mark.asyncio
@@ -79,6 +86,62 @@ async def test_env_overrides_file(clean_env, monkeypatch):
 
     assert body["sha"] == SHA
     assert body["deployed_at"] == "2026-10-05T03:10:00Z"
+    assert body["build"] == "20261005-1010"
+
+
+@pytest.mark.parametrize(
+    ("stamp", "expected"),
+    [
+        ("2026-10-05T18:42:00Z", "20261006-0142"),
+        ("2026-10-05T23:42:00+05:00", "20261006-0142"),
+        ("2026-12-31T20:59:00Z", "20270101-0359"),
+        ("2026-10-05T03:10:00", "20261005-1010"),
+        ("0001-01-01T00:00:00Z", "00010101-0700"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_env_build_uses_ict(monkeypatch, stamp, expected):
+    monkeypatch.setenv("ARTEMIS_DEPLOYED_SHA", SHA)
+    monkeypatch.setenv("ARTEMIS_DEPLOYED_AT", stamp)
+
+    response = await _get()
+
+    assert response.status_code == 200
+    assert response.json()["build"] == expected
+
+
+@pytest.mark.parametrize(
+    "stamp",
+    [None, "not-a-time", "0001-01-01T00:00:00+14:00", "9999-12-31T23:59:59-12:00"],
+)
+@pytest.mark.asyncio
+async def test_env_without_usable_time_has_no_build(monkeypatch, stamp):
+    monkeypatch.setenv("ARTEMIS_DEPLOYED_SHA", SHA)
+    if stamp is not None:
+        monkeypatch.setenv("ARTEMIS_DEPLOYED_AT", stamp)
+
+    response = await _get()
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "known",
+        "sha": SHA,
+        "short_sha": "52b9ed0",
+        "deployed_at": None,
+        "build": None,
+    }
+
+
+@pytest.mark.asyncio
+async def test_ict_conversion_overflow_keeps_utc_time_without_build(monkeypatch):
+    monkeypatch.setenv("ARTEMIS_DEPLOYED_SHA", SHA)
+    monkeypatch.setenv("ARTEMIS_DEPLOYED_AT", "9999-12-31T23:59:59Z")
+
+    response = await _get()
+
+    assert response.status_code == 200
+    assert response.json()["deployed_at"] == "9999-12-31T23:59:59Z"
+    assert response.json()["build"] is None
 
 
 @pytest.mark.asyncio
@@ -112,6 +175,8 @@ async def test_malformed_time_is_dropped_not_echoed(clean_env):
 @pytest.mark.asyncio
 async def test_out_of_range_time_degrades_to_mtime_not_500(clean_env, stamp):
     clean_env.write_text(f"{SHA}\n{stamp}\n")
+    moment = datetime(2026, 10, 5, 3, 10, tzinfo=UTC).timestamp()
+    os.utime(clean_env, (moment, moment))
 
     response = await _get()
 
@@ -120,6 +185,7 @@ async def test_out_of_range_time_degrades_to_mtime_not_500(clean_env, stamp):
     assert body["status"] == "known"
     assert body["deployed_at"].endswith("Z")
     assert body["deployed_at"] != stamp
+    assert body["build"] == "20261005-1010"
 
 
 @pytest.mark.asyncio
@@ -131,3 +197,4 @@ async def test_env_time_survives_when_sha_comes_from_file(clean_env, monkeypatch
 
     assert body["sha"] == SHA
     assert body["deployed_at"] == "2026-10-05T05:00:00Z"
+    assert body["build"] == "20261005-1200"
