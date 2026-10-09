@@ -39,7 +39,7 @@ const STEPS = Array.from({ length: 4 }, (_, n) => ({
 }));
 
 // Mutable so layout audits can drive connected / disconnected / error states. Defaults match the keyboard walkthrough.
-export const mock = { sessions: [], status: null, failSessions: false, failVideo: false, identity: null, readiness: null };
+export const mock = { sessions: [], status: null, failSessions: false, failVideo: false, identity: null, readiness: null, config: null };
 
 const json = (res, code, body) => {
   res.writeHead(code, { 'content-type': 'application/json' });
@@ -55,7 +55,7 @@ export function startMockApi(distDir) {
     if (p === '/api/runs') {
       const q = (url.searchParams.get('q') ?? '').toLowerCase();
       const status = url.searchParams.get('status');
-      const all = url.searchParams.get('scope') === 'all';
+      const all = ['all', 'everyone'].includes(url.searchParams.get('scope'));
       const runs = (all ? [...RUNS, ...OTHERS] : RUNS).filter((r) => (!q || r.prompt.toLowerCase().includes(q)) && (!status || r.status === status));
       return json(res, 200, { runs, next_cursor: null, warnings: [] });
     }
@@ -71,6 +71,7 @@ export function startMockApi(distDir) {
     if (m) return json(res, 200, { session_id: m[1], status: 'unavailable', has_video: false, video_url: null, video_segments: [] });
     if (p === '/api/system/whoami') return mock.identity ? json(res, mock.identity.code ?? 200, mock.identity.body) : json(res, 200, { email: 'qa@example.test', admin: true, auth_mode: 'cloudflare', reason: null });
     if (p === '/api/system/readiness' && mock.readiness) return json(res, 200, mock.readiness);
+    if (p === '/api/system/config' && mock.config) return json(res, 200, mock.config);
     if (p === '/api/status' && mock.status) return json(res, 200, mock.status);
     if (p === '/api/sessions' && mock.failSessions) return json(res, 500, { error: 'boom' });
     if (p === '/api/sessions' && mock.sessions.length) return json(res, 200, mock.sessions);

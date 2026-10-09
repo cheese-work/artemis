@@ -8,9 +8,9 @@
   height: 100%;
   overflow-y: auto;
   /* Top: clears the floating navigation. Bottom: keeps the last rows and focused controls above the dock. */
-  padding: var(--nav-clearance, 88px) 24px 168px;
+  padding: var(--nav-clearance, 88px) var(--space-lg) var(--space-lg);
   scroll-padding-top: var(--nav-clearance, 88px);
-  scroll-padding-bottom: 168px;
+  scroll-padding-bottom: var(--space-lg);
   background: var(--evidence-surface);
   color: var(--evidence-text);
 }
@@ -27,12 +27,13 @@
 button,
 summary {
   min-height: 44px;
+  min-width: 44px;
   font-size: 14px;
 }
 
 button {
   padding: 0 18px;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   cursor: pointer;
 }
 
@@ -53,26 +54,24 @@ video:focus-visible {
 }
 
 .secondary-button {
-  border: 1px solid var(--evidence-border);
+  border: 0;
   color: var(--evidence-text);
-  background: var(--evidence-surface);
+  background: var(--color-surface-subtle);
 }
 
 .action-button {
   min-width: 96px;
-  border: 1px solid var(--evidence-text);
-  color: #ffffff;
-  background: var(--evidence-text);
+  border: 0;
+  color: var(--color-on-primary);
+  background: var(--color-primary);
   font-weight: 600;
 
   &[aria-pressed='true'] {
-    border-color: var(--status-ok-fg);
     color: var(--status-ok-fg);
     background: var(--status-ok-bg);
   }
 
   &.danger {
-    border-color: var(--status-danger-fg);
     color: var(--status-danger-fg);
     background: var(--status-danger-bg);
   }
@@ -84,8 +83,8 @@ video:focus-visible {
   min-height: 44px;
   padding: 0 18px;
   border-radius: 8px;
-  color: #ffffff;
-  background: var(--evidence-text);
+  color: var(--color-on-primary);
+  background: var(--color-primary);
   text-decoration: none;
 }
 
@@ -121,7 +120,7 @@ video:focus-visible {
     display: inline-flex;
     align-items: center;
     min-height: 44px;
-    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-family: var(--font-mono);
   }
 }
 
@@ -180,15 +179,47 @@ video:focus-visible {
   color: var(--evidence-muted);
 }
 
+.run-result-summary,
+.checker-results,
 .run-info,
 .live-streams {
   margin-bottom: 16px;
   padding: 12px;
-  border: 1px solid var(--evidence-border);
+  border: 0;
+  background: var(--color-surface-subtle);
   border-radius: 8px;
 
   summary { min-height: 44px; cursor: pointer; }
   pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+}
+
+.step-toggle {
+  min-height: 44px;
+  padding: 8px;
+  border: 0;
+  color: var(--evidence-text);
+  background: transparent;
+  cursor: pointer;
+}
+
+.step-details {
+  min-width: 0;
+  padding: 8px;
+  border-top: 1px solid var(--color-rule);
+}
+
+.step-details,
+.checker-results {
+  summary { min-height: 44px; cursor: pointer; overflow-wrap: anywhere; }
+  pre { margin: 8px 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+  details { min-width: 0; }
+  dl { grid-template-columns: minmax(0, 1fr) minmax(0, 2fr); overflow-wrap: anywhere; }
+}
+
+.report-body {
+  overflow-wrap: anywhere;
+  max-width: 100%;
+  overflow-x: auto;
 }
 
 dl {
@@ -210,7 +241,7 @@ dl {
 .interrupted-banner {
   margin-bottom: 16px;
   padding: 12px 16px;
-  border: 1px solid var(--status-warn-fg);
+  border: 0;
   border-radius: 8px;
   color: var(--status-warn-fg);
   background: var(--status-warn-bg);
@@ -221,7 +252,6 @@ dl {
 }
 
 .failed-banner {
-  border-color: var(--status-danger-fg);
   color: var(--status-danger-fg);
   background: var(--status-danger-bg);
 }
@@ -233,7 +263,7 @@ dl {
     max-height: 60vh;
     padding: 12px 16px;
     overflow: auto;
-    border: 1px solid var(--evidence-border);
+    border: 0;
     border-radius: 8px;
     color: var(--evidence-text);
     background: var(--evidence-surface);
@@ -248,7 +278,7 @@ dl {
     pre { overflow-x: auto; }
     .md-table-wrap { max-width: 100%; margin: 8px 0; overflow-x: auto; }
     table { border-collapse: collapse; }
-    th, td { padding: 4px 8px; border: 1px solid var(--evidence-border); text-align: left; vertical-align: top; overflow-wrap: normal; }
+    th, td { padding: 4px 8px; border: 1px solid var(--color-rule); text-align: left; vertical-align: top; overflow-wrap: normal; }
     th { font-weight: 600; white-space: nowrap; }
   }
 }
@@ -282,7 +312,7 @@ dl {
 .evidence,
 .steps {
   padding: 12px;
-  border: 1px solid var(--evidence-border);
+  border: 0;
   border-radius: 8px;
   background: var(--evidence-surface);
 }
@@ -314,13 +344,12 @@ dl {
   gap: 4px 12px;
   width: 100%;
   min-height: 44px;
-  border: 1px solid transparent;
+  border: 0;
   color: var(--evidence-text);
   background: var(--evidence-surface);
   text-align: left;
 
   &[aria-current='step'] {
-    border-color: var(--evidence-text);
     font-weight: 600;
     background: var(--status-neutral-bg);
   }
@@ -354,7 +383,7 @@ dl {
     max-height: 50vh;
     padding: 12px;
     overflow: auto;
-    border: 1px solid var(--evidence-border);
+    border: 0;
     border-radius: 8px;
     font-size: 12px;
     background: var(--status-neutral-bg);
@@ -364,13 +393,14 @@ dl {
 .trust-dialog {
   max-width: min(480px, calc(100vw - 32px));
   padding: 20px;
-  border: 1px solid var(--evidence-border);
+  border: 1px solid var(--color-rule);
+  box-shadow: var(--shadow-3);
   border-radius: 12px;
   color: var(--evidence-text);
   background: var(--evidence-surface);
 
   &::backdrop {
-    background: rgba(15, 23, 42, 0.6);
+    background: rgb(15 23 42 / 60%);
   }
 
   h2 {

@@ -23,6 +23,7 @@ from contextlib import asynccontextmanager
 import logging
 import os
 from pathlib import Path
+import re
 import secrets
 import signal
 import sqlite3
@@ -50,6 +51,7 @@ for _p in (str(_workspace_root), str(_apps_dir), str(_admin_console_dir), str(_c
 # Select the profile before any import below can run an import-time side effect.
 from apps.admin_console.core.preview_profile import (
     prepare_preview_environment,
+    preview_demo_selected,
     preview_identity_switch_selected,
     preview_profile_selected,
 )
@@ -57,6 +59,7 @@ from apps.admin_console.core.preview_routes import PreviewRouteGuard, require_cl
 
 PREVIEW_PROFILE = preview_profile_selected()
 preview_identity_switch_selected(PREVIEW_PROFILE)
+preview_demo_selected(PREVIEW_PROFILE)
 PREVIEW_ROOT = prepare_preview_environment() if PREVIEW_PROFILE else None
 
 from fastapi import Depends, FastAPI
@@ -480,6 +483,21 @@ async def serve_showcase_spa(full_path: str):
         raise HTTPException(status_code=404, detail="Endpoint not found")
 
     clean_path = full_path.strip("/")
+
+    if not PREVIEW_PROFILE and (
+        preview_path := re.match(r"preview/pr/([0-9]+)(?:/|$)", clean_path)
+    ):
+        return HTMLResponse(
+            f"""<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Preview not available</title></head>
+<body><main><h1>Preview for PR #{preview_path[1]} is not available</h1>
+<p>No live preview is available at this URL.</p></main></body>
+</html>""",
+            status_code=404,
+            headers={"Cache-Control": "no-store"},
+        )
 
     # Admin / Debug Console routes
     if (

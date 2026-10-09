@@ -31,18 +31,17 @@ import { interruptedSentence, interruptReason, RUN_STRINGS } from '../../utils/r
     :host { display: block; pointer-events: auto; }
     .banner {
       display: flex; flex-wrap: wrap; align-items: center; gap: .25rem .75rem; padding: .75rem 1rem;
-      border: 1px solid #fcd34d; border-radius: 14px; background: #fffbeb; color: #78350f; font-size: .9rem;
-      box-shadow: 0 8px 24px -8px rgba(15, 23, 42, .2);
+      border: 0; border-radius: var(--radius-lg); background: var(--color-warning-bg); color: var(--color-warning); font-size: .9rem;
     }
     p { margin: 0; }
     .headline { font-weight: 600; flex: 1 1 100%; }
     .reason { flex: 1 1 auto; }
     .action {
-      min-height: 44px; min-width: 44px; padding: 0 1rem; border: 1px solid #b45309; border-radius: 10px;
-      background: #fff; color: #78350f; font: inherit; font-weight: 600; cursor: pointer;
+      min-height: 44px; min-width: 44px; padding: 0 1rem; border: 0; border-radius: var(--radius-md);
+      background: var(--color-surface); color: var(--color-warning); font: inherit; font-weight: 600; cursor: pointer;
     }
     .action:disabled { opacity: .55; cursor: not-allowed; }
-    .action:focus-visible { outline: 3px solid #2563eb; outline-offset: 2px; }
+    .action:focus-visible { outline: 3px solid var(--color-focus); outline-offset: 2px; }
   `],
   changeDetection: ChangeDetectionStrategy.OnPush
 })

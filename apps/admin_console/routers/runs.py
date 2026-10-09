@@ -31,7 +31,9 @@ from apps.admin_console.core.ownership import (
     OwnerScope,
     actor_scope,
     owner_scope,
+    record_run_read,
     require_actor,
+    require_signed_in,
     scope_for,
 )
 from apps.admin_console.core.redaction import redact_image_data, redact_text
@@ -112,9 +114,9 @@ async def list_runs(
 ):
     """Newest-first page of runs; ``next_cursor`` is null on the last page.
 
-    Callers see their own runs; ``scope=everyone`` is a redacted, read-only
-    catalog. Unowned runs remain admin-only in listings. Only admins may use
-    ``scope=all``; queue and event scoping are unchanged.
+    Callers see their own runs, plus full-id link shares with ``scope=available``;
+    ``scope=everyone`` is a redacted, read-only
+    catalog. Unowned runs require a full-id link or admin ``scope=all``.
     """
     scope = require_actor(scope)
     team = visibility == "everyone"
@@ -123,7 +125,10 @@ async def list_runs(
         owner_filter = {"owned_only": True}
     if scope.enforced and (not scope.include_all or (team and q and q.strip())):
         # An empty list owns nothing but still queries, so an unready catalog answers 503.
-        owner_filter = {"owners": scope.owner_emails()}
+        owner_filter = {
+            "owners": scope.owner_emails(),
+            "shared_with": scope.email if scope.available and not team else None,
+        }
     try:
         bounds = {"since": _parse_time(since), "until": _parse_time(until)}
     except ValueError:
@@ -154,15 +159,23 @@ async def list_runs(
 
 @router.get("/api/runs/{session_id}")
 async def get_run(session_id: str, scope: OwnerScope = Depends(actor_scope)):
-    """One run by full id or 8-character prefix (409 with candidates if ambiguous)."""
+    """Full-id share link, or an owner/admin-only prefix (409 for visible candidates)."""
+    scope = require_actor(scope)
+    require_signed_in(scope)
     try:
-        found = await asyncio.to_thread(run_catalog_repo.get_run, session_id)
+        found = await asyncio.to_thread(
+            run_catalog_repo.get_run,
+            session_id,
+            prefix_owners=scope.owner_emails() if scope.enforced and not scope.admin else None,
+        )
     except ValueError:
         return _error(400, "invalid_session_id")
     except CatalogNotReady:
         return _error(503, "catalog_not_ready")
     if found.run:
-        return _present(found.run, require_actor(scope))
+        if session_id == found.run["session_id"]:
+            await asyncio.to_thread(record_run_read, scope, session_id)
+        return _present(found.run, scope)
     if found.candidates:
         return _error(
             409,
@@ -171,4 +184,4 @@ async def get_run(session_id: str, scope: OwnerScope = Depends(actor_scope)):
         )
     if found.removed:
         return _error(410, "removed", **found.removed)
-    return _error(404, "not_found")
+    return _error(404, "not_found", code="run_not_visible")

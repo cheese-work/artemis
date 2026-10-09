@@ -62,9 +62,6 @@ def context(tmp_path, monkeypatch):
     monkeypatch.setattr(DeviceExecutionLock, "cancel_reservation", lambda ticket: None)
     bridge = BridgeSessionService()
     monkeypatch.setattr(bridge_module, "bridge_session_service", bridge)
-    monkeypatch.setattr(
-        "admin_console.services.bridge_session_service.bridge_session_service", bridge
-    )
     hosts = HostTunnels(
         endpoints=HostEndpointRegistry(), clock=clock, set_status=lambda *args: None
     )
@@ -301,7 +298,7 @@ async def test_explicit_bridge_lease_lost_after_admission_is_rejected_before_acc
         )
 
     assert rejection.value.status_code == 409
-    assert rejection.value.code == "device_offline"
+    assert rejection.value.code == "bridge_queue_binding_unavailable"
     reservation.assert_not_called()
     persistence.assert_not_called()
     trace.assert_not_called()
@@ -645,7 +642,7 @@ async def test_durable_retry_reuses_only_accepted_device(
 
 
 def test_binding_captures_browser_lease_from_the_server_import_path(context, monkeypatch):
-    from admin_console.services import bridge_session_service as server_bridge
+    from apps.admin_console.services import bridge_session_service as server_bridge
 
     primary = BridgeSessionService()
     lease = BridgeSession("server-lease", port=31415, expires_at=time.monotonic() + 60)

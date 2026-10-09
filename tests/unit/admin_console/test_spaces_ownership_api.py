@@ -184,6 +184,8 @@ async def test_a_catalog_that_is_not_ready_answers_503_never_data(
         raise CatalogNotReady
 
     monkeypatch.setattr(run_catalog_repo, "owners", not_ready)
+    # Evidence routes check run visibility (live_run_ids), not ownership (CHE-1372).
+    monkeypatch.setattr(run_catalog_repo, "live_run_ids", not_ready)
 
     response = await _call(method, A, path.format(id=run))
 

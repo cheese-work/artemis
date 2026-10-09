@@ -15,6 +15,7 @@
 import asyncio
 from contextlib import suppress
 import json
+import logging
 from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
@@ -33,23 +34,26 @@ from apps.admin_console.core.device_ownership import (
     visible_devices,
 )
 from apps.admin_console.services import run_images
+from apps.admin_console.services.bridge_session_service import bridge_session_service
 from apps.admin_console.core.ownership import (
     OwnerScope,
     actor_scope,
     list_scope,
     owners_of,
     present_session_data,
+    record_run_read,
     require_access,
     require_access_all,
     require_actor,
     require_catalog_ready,
+    require_visible_run,
 )
+from apps.admin_console.core.redaction import redact_image_data, redact_json
 
 try:
     from admin_console.core.state import IN_FLIGHT_STATUSES, state
     from admin_console.database.repositories.session_repository import session_repo
     from admin_console.schemas.task_schema import RunRequest
-    from admin_console.services.bridge_session_service import bridge_session_service
     from admin_console.services.ipc_service import ipc_service
     from admin_console.services.model_service import model_service
     from admin_console.services.task_preset_catalog import task_recommendation_engine
@@ -58,7 +62,6 @@ except ImportError:
     from apps.admin_console.core.state import IN_FLIGHT_STATUSES, state
     from apps.admin_console.database.repositories.session_repository import session_repo
     from apps.admin_console.schemas.task_schema import RunRequest
-    from apps.admin_console.services.bridge_session_service import bridge_session_service
     from apps.admin_console.services.ipc_service import ipc_service
     from apps.admin_console.services.model_service import model_service
     from apps.admin_console.services.task_preset_catalog import task_recommendation_engine
@@ -66,6 +69,7 @@ except ImportError:
 
 
 router = APIRouter(tags=["tasks"])
+logger = logging.getLogger(__name__)
 
 # Lifecycle events every stream historically received; each names a run.
 _RUN_BOUND_EVENTS = ("session_started", "session_ended", "background_tasks_updated")
@@ -84,10 +88,16 @@ async def _bind_bridge_session(request: RunRequest) -> None:
     """Point a run at the phone its bridge holds; a bridge that is gone refuses the run."""
     session = await bridge_session_service.get(request.bridge_session_id)
     if session is None or session.revoked or session.is_expired:
+        reason = "missing" if session is None else "revoked" if session.revoked else "expired"
+        logger.warning(
+            "event=bridge_run_bind_rejected bridge_session_id=%s reason=%s",
+            request.bridge_session_id,
+            reason,
+        )
         raise AdminAPIError(
             409,
             "Your phone is not connected.",
-            "device_offline",
+            "bridge_session_unavailable",
             "Connect the phone again, then start the run.",
         )
     named = request.device_serial
@@ -542,7 +552,7 @@ async def get_status(scope: OwnerScope = Depends(list_scope)):
 
 
 def _scope_status(payload: dict[str, Any], scope: OwnerScope) -> dict[str, Any]:
-    """Drop queue entries, device owners and the headline run the scope may not see."""
+    """Filter visible runs and redact shared payloads while keeping owner data raw."""
     if not scope.enforced or scope.include_all:
         require_catalog_ready()  # readiness before any unscoped return
         return payload
@@ -556,20 +566,39 @@ def _scope_status(payload: dict[str, Any], scope: OwnerScope) -> dict[str, Any]:
 
     def visible(session_id: Any) -> bool:
         return (
-            bool(session_id) and str(session_id) in owners and scope.sees(owners[str(session_id)])
+            bool(session_id)
+            and str(session_id) in owners
+            and scope.sees(owners[str(session_id)], str(session_id))
+        )
+
+    def present(session_id: Any, data: Any) -> Any:
+        return (
+            data
+            if scope.may_act_on(owners.get(str(session_id)))
+            else redact_json(redact_image_data(data))
         )
 
     scoped = {
-        **payload,
-        "queue": [i for i in queue if visible(i.get("session_id"))],
-        "active_tasks": [i for i in active if visible(i.get("session_id"))],
+        **(present(headline, payload) if visible(headline) else payload),
+        "queue": [
+            present(item.get("session_id"), item)
+            for item in queue
+            if visible(item.get("session_id"))
+        ],
+        "active_tasks": [
+            present(item.get("session_id"), item)
+            for item in active
+            if visible(item.get("session_id"))
+        ],
         "background_tasks": [],
     }
     if not headline:
         return scoped
     if visible(headline):
         # Bind to the run the caller can see, not the globally latest session.
-        scoped["background_tasks"] = session_repo.get_background_tasks(str(headline))
+        scoped["background_tasks"] = present(
+            headline, session_repo.get_background_tasks(str(headline))
+        )
     else:
         scoped.update(session_id=None, goal=None, pid=None)
     return scoped
@@ -730,6 +759,9 @@ async def stream_events(
     # unready catalog would otherwise open it and later events would fail mid-stream.
     require_catalog_ready()
     firehose = session_id in ("all", "active")
+    if not firehose:
+        await asyncio.to_thread(require_visible_run, scope, [session_id])
+        await asyncio.to_thread(record_run_read, scope, session_id)
     decided: dict[str, bool] = {}
 
     def may_see(event_session_id: Any) -> bool:
@@ -739,7 +771,7 @@ async def stream_events(
         if key in decided:
             return decided[key]
         owners = owners_of([key])
-        allowed = scope.sees(owners.get(key))
+        allowed = scope.sees(owners.get(key), key)
         if key in owners:  # a run not yet recorded may still gain its owner
             decided[key] = allowed
         return allowed

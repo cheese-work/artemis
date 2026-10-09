@@ -1,23 +1,19 @@
 // Tokens mirror the Home page (SmartQA light theme) so Step 2 and Credentials
 // read as part of the same page as Step 1 and Step 3.
-$font-sans: 'Google Sans Text', 'Google Sans', 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
-$bg-base: #f8f9fa;
-$card-bg: #ffffff;
-$card-border: #e2e8f0;
-$card-border-hover: #cbd5e1;
-$card-shadow: 0 1px 3px rgba(0, 0, 0, 0.03), 0 4px 12px rgba(0, 0, 0, 0.02);
-$surface-muted: #f1f5f9;
-$primary: #1a73e8;
-$primary-dark: #1557b0;
-$primary-light: #eff6ff;
-$primary-border: #bfdbfe;
-$emerald-dark: #047857;
-$rose-dark: #b91c1c;
-$rose-light: #fef2f2;
-$rose-border: #fecaca;
-$text-main: #0f172a;
-$text-secondary: #475569;
-$text-muted: #64748b;
+$font-sans: var(--font-ui);
+$bg-base: var(--color-bg);
+$card-bg: var(--color-surface);
+$card-border: var(--color-rule);
+$surface-muted: var(--color-surface-subtle);
+$primary: var(--color-primary);
+$primary-dark: var(--color-primary-hover);
+$primary-light: var(--color-primary-tint);
+$emerald-dark: var(--color-success);
+$rose-dark: var(--color-error);
+$rose-light: var(--color-error-bg);
+$text-main: var(--color-ink);
+$text-secondary: var(--color-text-muted);
+$text-muted: var(--color-text-faint);
 
 :host {
   display: block;
@@ -63,24 +59,22 @@ h2 { margin: 0; font-size: 15px; font-weight: 600; color: $text-main; }
 h3 { margin: 0; font-size: 14px; font-weight: 600; color: $text-main; text-transform: capitalize; }
 .subtitle { margin: 0; color: $text-secondary; }
 .version-chip, .source-label { color: $text-secondary; font-size: .78rem; }
-.version-chip { border: 1px solid $card-border; border-radius: 999px; padding: .45rem .7rem; font-family: monospace; }
+.version-chip { border: 0; border-radius: var(--radius-full); background: $surface-muted; padding: .45rem .7rem; font-family: var(--font-mono); }
 .setup-grid { display: grid; gap: 1rem; }
-.panel, .notice { border: 1px solid $card-border; border-radius: 14px; background: $card-bg; padding: 1.25rem; }
-.panel { box-shadow: $card-shadow; transition: border-color .2s ease, box-shadow .2s ease; }
-.panel:hover { border-color: $card-border-hover; }
+.panel, .notice { border: 0; border-radius: var(--radius-lg); background: $card-bg; padding: var(--space-lg); }
 .notice { margin-bottom: 1rem; color: $text-secondary; }
 .notice p:last-child { margin-bottom: 0; }
 .notice a { color: $primary-dark; }
-.notice.read-only { border-color: $primary-border; background: $primary-light; }
-.notice.error { border-color: $rose-border; background: $rose-light; color: $rose-dark; }
+.notice.read-only { background: $primary-light; }
+.notice.error { background: $rose-light; color: $rose-dark; }
 .section-heading { align-items: flex-end; margin-bottom: 1.25rem; }
 .field-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; }
 label { display: grid; gap: .45rem; color: $text-secondary; font-size: .85rem; font-weight: 500; }
 input, select {
   width: 100%;
-  min-height: 2.8rem;
-  border: 1px solid $card-border-hover;
-  border-radius: .6rem;
+  min-height: var(--target);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
   background: $card-bg;
   color: $text-main;
   padding: .65rem .75rem;
@@ -88,7 +82,7 @@ input, select {
 }
 input::placeholder { color: $text-muted; }
 input:hover:not(:disabled):not([readonly]), select:hover:not(:disabled) { border-color: $text-muted; }
-input:focus, select:focus { outline: 2px solid $primary; outline-offset: 1px; }
+input:focus, select:focus { outline: 3px solid var(--color-focus); outline-offset: 2px; }
 input:disabled::placeholder, input[readonly]::placeholder { color: $text-secondary; }
 input:disabled, input[readonly], select:disabled { color: $text-secondary; background: $surface-muted; cursor: not-allowed; }
 .provider-row { display: grid; gap: .75rem; border-top: 1px solid $surface-muted; padding: 1rem 0; }
@@ -100,21 +94,22 @@ input:disabled, input[readonly], select:disabled { color: $text-secondary; backg
 .form-footer { padding-top: .5rem; }
 .save-hint { color: $text-secondary; font-size: .82rem; }
 .primary-button, .secondary-button {
-  min-height: 2.7rem;
-  border: 1px solid transparent;
-  border-radius: .65rem;
+  min-height: var(--target);
+  min-width: var(--target);
+  border: 0;
+  border-radius: var(--radius-md);
   padding: .65rem 1rem;
   font: inherit;
   font-weight: 700;
   cursor: pointer;
 }
-.primary-button { background: $primary; color: #ffffff; }
+.primary-button { background: $primary; color: var(--color-on-primary); }
 .primary-button:hover:not(:disabled) { background: $primary-dark; }
-.secondary-button { border-color: $card-border-hover; background: $card-bg; color: $text-main; }
-.secondary-button:hover:not(:disabled) { background: $surface-muted; }
-.primary-button:focus-visible, .secondary-button:focus-visible, .text-button:focus-visible { outline: 2px solid $primary; outline-offset: 2px; }
+.secondary-button { background: $surface-muted; color: $text-main; }
+.secondary-button:hover:not(:disabled) { background: var(--color-rule); }
+.primary-button:focus-visible, .secondary-button:focus-visible, .text-button:focus-visible { outline: 3px solid var(--color-focus); outline-offset: 2px; }
 .primary-button:disabled, .secondary-button:disabled { cursor: wait; opacity: .65; }
-.text-button { justify-self: start; border: 0; background: transparent; color: $rose-dark; padding: .2rem 0; cursor: pointer; }
+.text-button { justify-self: start; min-height: var(--target); min-width: var(--target); border: 0; border-radius: var(--radius-md); background: $rose-light; color: $rose-dark; padding: 0 var(--space-sm); cursor: pointer; }
 .text-button:hover:not(:disabled) { text-decoration: underline; }
 .text-button:disabled { opacity: .65; }
 
@@ -126,10 +121,11 @@ input:disabled, input[readonly], select:disabled { color: $text-secondary; backg
 
 .deploy-status {
   margin: 0 0 12px;
-  color: #64748b;
+  color: var(--color-text-faint);
   font-size: 12px;
 }
 
-.setup-tabs { display: flex; gap: .25rem; margin-bottom: 1rem; border-bottom: 1px solid #26344e; }
-.setup-tabs button { min-height: 2.5rem; border: 0; border-bottom: 3px solid transparent; background: transparent; color: #a7b4c8; padding: 0 1rem; font: inherit; cursor: pointer; }
-.setup-tabs button[aria-selected='true'] { border-bottom-color: #98c7ff; color: #e8eef8; font-weight: 700; }
+.setup-tabs { display: flex; flex-wrap: wrap; gap: var(--space-xs); margin-bottom: var(--space-md); }
+.setup-tabs button { min-height: var(--target); min-width: var(--target); border: 0; border-radius: var(--radius-md); background: $surface-muted; color: $text-secondary; padding: 0 1rem; font: inherit; cursor: pointer; }
+.setup-tabs button:hover { color: $text-main; }
+.setup-tabs button[aria-selected='true'] { background: $primary-light; color: $text-main; font-weight: 700; }

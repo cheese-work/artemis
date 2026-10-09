@@ -119,6 +119,10 @@ describe('RunViewComponent', () => {
       ['get', 'steps', 'video', 'pin', 'unpin', 'remove', 'downloadBundle'],
       { lastLibraryQuery: signal<Record<string, string>>({ status: 'failed' }), viewPosition: signal(null) }
     );
+    Object.assign(runs, {
+      checks: jasmine.createSpy('checks').and.returnValue(of({ records: [], streams: [], run_outcome: null })),
+      notes: jasmine.createSpy('notes').and.returnValue(of({ notes: {} }))
+    });
     admin = jasmine.createSpyObj<AdminConfigService>('AdminConfigService', ['getIdentity']);
     agent = {
       isPaused: signal(false),
@@ -151,6 +155,131 @@ describe('RunViewComponent', () => {
       ]
     }).compileComponents();
     router = TestBed.inject(Router);
+  });
+
+  describe('restored result summary and execution details', () => {
+    for (const viewMode of ['live', 'review'] as const) {
+      it(`shows the persisted task report at the top in ${viewMode} mode`, async () => {
+        (runs as any).notes.and.returnValue(of({ notes: { 'output.md': '# Task report\nSettings verified.' } }));
+        await open({ viewMode });
+        expect(q('.run-result-summary')?.textContent).toContain('Settings verified.');
+        expect(q('.run-result-summary')!.compareDocumentPosition(q('.evidence-grid')!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      });
+
+      it(`expands and collapses step actions, output and stream in ${viewMode} mode`, async () => {
+        await open({ viewMode, steps: of([step(1, {
+          operator_native_thinking: 'Find the settings button',
+          operator_raw_thinking: 'Opening settings',
+          action_taken: { action: 'tap', args: { x: 40, y: 80, text: 'Settings' } },
+          last_execution_result: { status: 'success', message: 'Tap delivered' },
+          generic_tools: [{ name: 'read_note', args: { name: 'plan.md' }, result: 'Settings plan' }]
+        }), step(2)]) });
+        const toggles = qa<HTMLButtonElement>('.step-toggle');
+        expect(toggles.length).toBe(2);
+        expect(toggles[0].getAttribute('aria-expanded')).toBe('false');
+        expect(q('.step-details')).toBeNull();
+        toggles[0].click();
+        await settle();
+        expect(toggles[0].getAttribute('aria-expanded')).toBe('true');
+        expect(q('.step-details')?.id).toBe(toggles[0].getAttribute('aria-controls')!);
+        expect(q('.step-details')?.textContent).toContain('Find the settings button');
+        expect(q('.step-details')?.textContent).toContain('Opening settings');
+        expect(q('.step-details')?.textContent).toContain('Tap delivered');
+        expect(q('.step-details')?.textContent).toContain('Settings plan');
+        toggles[1].click();
+        await settle();
+        expect(qa('.step-details').length).toBe(2);
+        toggles[0].click();
+        await settle();
+        expect(toggles[0].getAttribute('aria-expanded')).toBe('false');
+        expect(qa('.step-details').length).toBe(1);
+      });
+    }
+
+    it('loads checker counts, findings, verdicts and persisted reasoning in review mode', async () => {
+      (runs as any).checks.and.returnValue(of({
+        records: [{ attempt_id: 'check-1', checkpoint_id: 'final', anchor_step_id: 'st1',
+          item_text: 'Settings are visible', kind: 'assert', status: 'passed', evidence: 'Title visible', ts: START + 15 }],
+        streams: [{ attempt_id: 'check-1', segments: [{ execution_id: 'exec-1', role: 'thought', when: START + 14, text: 'Inspect the title' }] }],
+        run_outcome: { task_status: 'completed', tests: { passed: 1, failed: 0, inconclusive: 0, unchecked: 0 }, last_findings: ['No issues found'] }
+      }));
+      await open();
+      expect(q('.run-result-summary')?.textContent).toContain('Passed: 1');
+      expect(q('.run-result-summary')?.textContent).toContain('No issues found');
+      qa<HTMLButtonElement>('.step-toggle')[0].click();
+      await settle();
+      expect(q('.step-details')?.textContent).toContain('Settings are visible');
+      expect(q('.step-details')?.textContent).toContain('Title visible');
+      expect(q('.step-details')?.textContent).toContain('Inspect the title');
+    });
+
+    it('uses report-task-status when output.md is absent and escapes report HTML', async () => {
+      (runs as any).notes.and.returnValue(of({ notes: {} }));
+      await open({ steps: of([step(1, { action_taken: { action: 'report_task_status',
+        args: { status: 'completed', explanation: 'Goal met <script>alert(1)</script>' } } })]) });
+      expect(q('.run-result-summary')?.textContent).toContain('Goal met');
+      expect(q('.run-result-summary script')).toBeNull();
+    });
+
+    it('keeps explicit unavailable summary states without hiding steps when checks or notes fail', async () => {
+      (runs as any).notes.and.returnValue(httpError(500));
+      (runs as any).checks.and.returnValue(httpError(500));
+      await open();
+      expect(q('.run-result-summary')?.textContent).toContain('Could not load the task report.');
+      expect(q('.run-result-summary')?.textContent).toContain('Could not load checker results.');
+      expect(qa('.step-button').length).toBe(3);
+    });
+
+    it('updates the summary from current-session live checker events', async () => {
+      await open({ viewMode: 'live', runResult: of(run({ status: 'running', end_time: null })) });
+      agent.sessionLogs.set([{ type: 'checker_event', session_id: ID, timestamp: new Date().toISOString(),
+        data: { event: 'run_outcome', session_id: ID, task_status: 'partial', tests: { passed: 2, failed: 1, inconclusive: 0, unchecked: 0 } } }]);
+      await settle();
+      expect(q('.run-result-summary')?.textContent).toContain('Passed: 2');
+      expect(q('.run-result-summary')?.textContent).toContain('Failed: 1');
+      agent.currentSessionId.set('another-session');
+      await settle();
+      expect(q('.run-result-summary')?.textContent).not.toContain('Passed: 2');
+    });
+
+    it('cancels stale reports and checks and resets expansion when navigating to another run', async () => {
+      const oldNotes = new Subject<{ notes: Record<string, string> }>();
+      const oldChecks = new Subject<any>();
+      (runs as any).notes.and.returnValue(oldNotes);
+      (runs as any).checks.and.returnValue(oldChecks);
+      await open();
+      qa<HTMLButtonElement>('.step-toggle')[0].click();
+      await settle();
+      const nextId = '4f2b9c1a-5d7e-4a10-9c33-0e1f2a3b4c5d';
+      runs.get.and.returnValue(of(run({ session_id: nextId })));
+      (runs as any).notes.and.returnValue(of({ notes: { 'output.md': 'New run report' } }));
+      (runs as any).checks.and.returnValue(of({ records: [] }));
+      fixture.componentRef.setInput('runId', nextId);
+      await settle();
+      oldNotes.next({ notes: { 'output.md': 'Wrong old report' } });
+      oldChecks.next({ records: [], run_outcome: { tests: { passed: 99 } } });
+      await settle();
+      expect(q('.run-result-summary')?.textContent).toContain('New run report');
+      expect(q('.run-result-summary')?.textContent).not.toContain('Wrong old report');
+      expect(q('.run-result-summary')?.textContent).not.toContain('Passed: 99');
+      expect(qa('.step-details').length).toBe(0);
+    });
+
+    it('keeps unanchored checker output discoverable and renders live checker tools', async () => {
+      await open({ viewMode: 'live' });
+      agent.sessionLogs.set([
+        { type: 'checker_event', session_id: ID, timestamp: new Date().toISOString(),
+          data: { event: 'attempt_started', attempt_id: 'unanchored', trace_id: 'check-trace', phase: 'final' } },
+        { type: 'trace_recorded', session_id: ID, timestamp: new Date().toISOString(),
+          data: { type: 'tool', parent_trace_id: 'check-trace', name: 'read_note', result: 'Live checker output' } },
+        { type: 'checker_event', session_id: ID, timestamp: new Date().toISOString(),
+          data: { event: 'attempt_finished', attempt_id: 'unanchored', phase: 'final', status: 'done',
+            verdicts: [{ kind: 'assert', item_text: 'Goal verified', status: 'passed', evidence: 'Matching title' }] } }
+      ]);
+      await settle();
+      expect(q('.checker-results')?.textContent).toContain('Goal verified');
+      expect(q('.checker-results')?.textContent).toContain('Live checker output');
+    });
   });
 
   describe('U1 presentation characterization', () => {
@@ -211,7 +340,7 @@ describe('RunViewComponent', () => {
       expect(qa('.actions button').map((control) => control.textContent!.trim())).toEqual(['Copy link', 'Download', 'Pin', 'Delete']);
     });
 
-    it('preserves badge, step and action dimensions after moving their styles', async () => {
+    it('preserves badge and step dimensions while using Workbench action tokens', async () => {
       await open({ steps: of([step(1, { action_taken: { action: 'tap', status: 'failed' } })]) });
       const badge = getComputedStyle(q('.outcome-badge')!);
       expect(badge.display).toBe('inline-flex');
@@ -225,7 +354,9 @@ describe('RunViewComponent', () => {
         const style = getComputedStyle(control);
         expect(style.minHeight).toBe('44px');
         expect(style.padding).toBe('0px 18px');
-        expect(style.borderRadius).toBe('8px');
+        expect(style.borderRadius).toBe(getComputedStyle(document.documentElement).getPropertyValue('--radius-md').trim());
+        expect(style.borderTopWidth).toBe('0px');
+        expect(style.boxShadow).toBe('none');
         expect(style.fontSize).toBe('14px');
       }
     });
@@ -235,7 +366,7 @@ describe('RunViewComponent', () => {
       const image = getComputedStyle(q('.evidence-image')!);
       expect(image.display).toBe('block');
       expect(image.objectFit).toBe('contain');
-      expect(image.backgroundColor).toBe('rgb(0, 0, 0)');
+      expect(image.backgroundColor).toBe('rgb(24, 24, 27)');
       const copy = getComputedStyle(q('.recording-copy')!);
       expect(copy.margin).toBe('0px 0px 8px');
       expect(copy.fontWeight).toBe('600');

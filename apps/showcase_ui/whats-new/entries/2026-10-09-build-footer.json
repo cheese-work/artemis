@@ -1,0 +1,7 @@
+{
+  "id": "2026-10-09-build-footer",
+  "date": "2026-10-09",
+  "title": "Every page shows which SmartQA build you are using",
+  "body": "The line at the bottom shows the build. Click it to copy the build for a bug report. When a newer build is live, it says New version available; click Reload to switch.",
+  "issues": ["CHE-1411"]
+}

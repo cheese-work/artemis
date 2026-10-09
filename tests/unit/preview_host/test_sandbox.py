@@ -139,6 +139,13 @@ def test_identity_switch_is_an_explicit_preview_only_input():
     assert "ARTEMIS_PREVIEW_IDENTITY_SWITCH=1" not in values(create_argv(), "--env")
 
 
+def test_demo_board_is_an_explicit_preview_only_input():
+    environment = {**ENV, "ARTEMIS_PREVIEW_DEMO": "1"}
+    argv = sb.container_create_argv(preview(), environment, "/srv/preview/jwks.json")
+    assert "ARTEMIS_PREVIEW_DEMO=1" in values(argv, "--env")
+    assert "ARTEMIS_PREVIEW_DEMO=1" not in values(create_argv(), "--env")
+
+
 @pytest.mark.parametrize(
     "bundle",
     ["relative.json", "/a,b", "/a/../etc/shadow", "/a b", "/a\nb", "", "/x,readonly=false"],

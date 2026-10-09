@@ -14,6 +14,7 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from apps.admin_console.core.access_control import AdminAPIError, require_admin, require_qa
+from apps.admin_console.core.preview_demo import visible_device_rows
 from apps.admin_console.core.ownership import (
     OwnerScope,
     actor_scope,
@@ -70,8 +71,10 @@ def _cancel_fixture(session_id: str) -> None:
 
 
 @router.get("/api/devices")
-async def list_devices() -> dict[str, Any]:
-    return {"devices": []}
+async def list_devices(actor: OwnerScope = Depends(actor_scope)) -> dict[str, Any]:
+    return {
+        "devices": visible_device_rows(require_actor(actor))
+    }  # [] unless the demo board is seeded
 
 
 @router.get("/api/stream/device-state")

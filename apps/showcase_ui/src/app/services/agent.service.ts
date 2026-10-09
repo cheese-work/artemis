@@ -23,7 +23,7 @@ import { Session, ModelInfo, TaskQueueItem, AgentStatusResponse, SessionUsage } 
 import { ProTuningDefaults, ProTuningOptions } from '../core/models/pro-tuning.model';
 import { ImageChat } from '../utils/run-image.util';
 import { StepItemData, LLMStreamResetEventData, StreamResetNotice, DEFAULT_STREAM_RESET_MESSAGE, PersistedCheckerStream, StreamSegment } from '../core/models/stream.model';
-import { persistedStreamToSegments } from '../utils/stream-aggregator.util';
+import { buildCheckerSnapshotLogs } from '../utils/stream-aggregator.util';
 import { RunTarget } from '../core/models/run-target.model';
 import { AdminIdentity } from './admin-config.service';
 import { OwnerScopeService } from './owner-scope.service';
@@ -1720,92 +1720,8 @@ export class AgentService {
    * a reopened session interleaves Thought/Work text with tool rows exactly
    * like the live view did.
    */
-  private buildCheckerSnapshotLogs(
-    sessionId: string,
-    records: any[],
-    runOutcome: any,
-    streams: PersistedCheckerStream[] = []
-  ): any[] {
-    const byAttempt = new Map<string, any>();
-    const segmentsByAttempt = new Map<string, StreamSegment[]>();
-    for (const stream of streams || []) {
-      if (!stream || !stream.attempt_id) continue;
-      const segments = persistedStreamToSegments(stream);
-      if (segments.length > 0) segmentsByAttempt.set(String(stream.attempt_id), segments);
-    }
-    for (const rec of records) {
-      if (!rec || !rec.attempt_id) continue;
-      const attemptId = String(rec.attempt_id);
-      const checkpointId = String(rec.checkpoint_id || '');
-      let attempt = byAttempt.get(attemptId);
-      if (!attempt) {
-        attempt = {
-          event: 'attempt_finished',
-          phase: checkpointId === 'final' ? 'final' : 'checkpoint',
-          attempt_id: attemptId,
-          checkpoint_id: checkpointId,
-          subgoal_text: String(rec.subgoal_text || (checkpointId === 'final'
-            ? "Final review against the user's original goal"
-            : `Subgoal ${checkpointId.slice(0, 8)}`)),
-          anchor_step_id: rec.anchor_step_id ?? null,
-          trace_id: rec.trace_id ?? null,
-          status: 'done',
-          verdicts: [],
-          findings: [],
-          ts: typeof rec.ts === 'number' ? rec.ts : undefined,
-          session_id: sessionId
-        };
-        byAttempt.set(attemptId, attempt);
-      }
-      if (typeof rec.ts === 'number') {
-        attempt.ts = attempt.ts === undefined ? rec.ts : Math.min(attempt.ts, rec.ts);
-      }
-      if (!attempt.trace_id && rec.trace_id) {
-        attempt.trace_id = rec.trace_id;
-      }
-      attempt.verdicts.push({
-        item_text: String(rec.item_text || ''),
-        kind: String(rec.kind || ''),
-        status: String(rec.status || ''),
-        evidence: String(rec.evidence || ''),
-        suggestion: rec.suggestion ? String(rec.suggestion) : '',
-        when: rec.when ? String(rec.when) : undefined
-      });
-    }
-
-    const logs: any[] = [];
-    for (const attempt of byAttempt.values()) {
-      const statuses = new Set(attempt.verdicts.map((v: any) => v.status));
-      if (statuses.size === 1) {
-        const only = [...statuses][0];
-        if (only === 'superseded' || only === 'unchecked') attempt.status = only;
-      }
-      const ts = attempt.ts ?? Date.now() / 1000;
-      attempt.timestamp = ts;
-      const segments = segmentsByAttempt.get(attempt.attempt_id);
-      if (segments) attempt.stream_segments = segments;
-      logs.push({
-        type: 'checker_event',
-        session_id: sessionId,
-        timestamp: new Date(ts * 1000).toISOString(),
-        checks_snapshot: true,
-        data: attempt
-      });
-    }
-    if (runOutcome && typeof runOutcome === 'object') {
-      const lastTs = logs.length > 0
-        ? Math.max(...logs.map((l) => new Date(l.timestamp).getTime() / 1000))
-        : Date.now() / 1000;
-      const ts = lastTs + 0.001;
-      logs.push({
-        type: 'checker_event',
-        session_id: sessionId,
-        timestamp: new Date(ts * 1000).toISOString(),
-        checks_snapshot: true,
-        data: { event: 'run_outcome', phase: 'outcome', ...runOutcome, ts, timestamp: ts, session_id: sessionId }
-      });
-    }
-    return logs;
+  private buildCheckerSnapshotLogs(sessionId: string, records: any[], runOutcome: any, streams: PersistedCheckerStream[] = []): any[] {
+    return buildCheckerSnapshotLogs(sessionId, records, runOutcome, streams);
   }
 
   public fetchNotes(sessionId: string): void {
