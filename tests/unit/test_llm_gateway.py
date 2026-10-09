@@ -192,6 +192,43 @@ async def test_gateway_model_refusal_uses_three_total_attempts_and_reports_the_c
 
 
 @pytest.mark.asyncio
+async def test_gateway_model_refusal_budget_survives_an_unrelated_provider_pause(monkeypatch):
+    from unittest.mock import AsyncMock, MagicMock
+
+    rate_limit = RuntimeError("rate limit")
+    rate_limit.status_code = 429
+    base = SimpleNamespace(
+        ainvoke=AsyncMock(
+            side_effect=[
+                _gateway_model_refusal(),
+                rate_limit,
+                rate_limit,
+                _gateway_model_refusal(),
+                _gateway_model_refusal(),
+                AIMessage(content="wrong budget"),
+            ]
+        )
+    )
+    monkeypatch.setattr(
+        llm_service,
+        "retry_policy_for",
+        lambda category: SimpleNamespace(
+            max_attempts=3 if category.value == "gateway_model_rejected" else 2,
+            delay_for=lambda attempt: 0.0,
+        ),
+    )
+    pause = MagicMock(return_value=llm_service.PAUSE_FILE)
+    monkeypatch.setattr(llm_service, "_handle_llm_pause_and_resume", pause)
+    monkeypatch.setattr(llm_service, "_wait_for_resume", AsyncMock(return_value=True))
+
+    with pytest.raises(Exception, match="AI provider rejected the model; try again"):
+        await RobustChatModelWrapper(base).ainvoke([])
+
+    assert base.ainvoke.await_count == 5
+    pause.assert_called_once_with(rate_limit)
+
+
+@pytest.mark.asyncio
 async def test_unrelated_bad_request_keeps_the_permanent_error_and_single_attempt():
     error = _gateway_model_refusal()
     error.message = "Invalid request payload: context length exceeded"
