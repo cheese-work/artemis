@@ -20,7 +20,7 @@ import { ChangeDetectionStrategy, Component, input, signal } from '@angular/core
         <span class="step-meta">
           @if (failed()) { <span class="step-failed">Failed</span> }
           @if (kind()) { <span class="step-kind">{{ kind() }}</span> }
-          @if (failureDetail()) { <span class="step-failure-detail" [attr.title]="failureTitle() ?? failureDetail()">{{ failureDetail() }}</span> }
+          @if (failureDetail()) { <span class="step-failure-detail" [attr.title]="failureTitle()">{{ failureDetail() }}</span> }
         </span>
       </span>
       @if (duration() !== null || time() !== null) { <span class="step-duration">{{ duration() ?? time() }}</span> }
@@ -40,11 +40,11 @@ import { ChangeDetectionStrategy, Component, input, signal } from '@angular/core
     .step-summary, .step-title, .step-kind, .step-failure-detail { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
     .step-heading, .step-meta { display: flex; align-items: center; gap: 6px; min-width: 0; }
     .step-title { font-size: 13px; }
-    .step-number, .step-meta { font-size: 11px; color: var(--color-text-muted); }
+    .step-number, .step-meta { font-size: 12px; color: var(--color-text-muted); }
     .step-number, .step-failed, .step-duration { flex-shrink: 0; }
     .step-duration { font: 11px var(--font-mono); color: var(--color-text-muted); white-space: nowrap; }
     .step-failed, :host(.failed) .step-icon { color: var(--status-danger-fg); }
-    .step-failed { font-weight: 600; }
+    .step-failed { display: inline-flex; font-weight: 600; }
   `],
   changeDetection: ChangeDetectionStrategy.OnPush
 })
