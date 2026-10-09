@@ -153,6 +153,7 @@ def _cause(rule: str, evidence: str) -> str:
 
 
 def _safe_evidence(evidence: str, goal: str | None, category: str | None = None) -> str:
+    evidence = redact_text(evidence)
     if category == "user_prompt":
         evidence = "[prompt-side evidence redacted]"
     elif goal:
@@ -162,7 +163,7 @@ def _safe_evidence(evidence: str, goal: str | None, category: str | None = None)
             evidence = re.sub(
                 rf"\b{re.escape(word)}\b", "[goal redacted]", evidence, flags=re.IGNORECASE
             )
-    return redact_text(evidence)[:_EVIDENCE_MAX]
+    return evidence[:_EVIDENCE_MAX]
 
 
 def _defect_key(category: str, rule: str, cause: str) -> str:
@@ -371,7 +372,7 @@ def collect() -> dict[str, int]:
                     *base,
                     category,
                     rule,
-                    _cause(rule, raw),
+                    _cause(rule, redact_text(raw)),
                     evidence,
                     device,
                     source,
@@ -393,7 +394,7 @@ def collect() -> dict[str, int]:
                         "run" if is_run else "step",
                         raw_category,
                         raw_rule,
-                        _cause(raw_rule, raw),
+                        _cause(raw_rule, redact_text(raw)),
                         raw_error,
                         device,
                         source,
@@ -430,6 +431,8 @@ def view(days: int = DEFAULT_DAYS) -> dict[str, Any]:
             "WITH cause_counts AS ("
             "SELECT cause, signal, scope, category, rule, COUNT(*) AS count, "
             "SUM(CASE WHEN occurred_at >= ? THEN 1 ELSE 0 END) AS count_24h, "
+            "COUNT(DISTINCT CASE WHEN occurred_at >= ? THEN session_id END) AS runs_24h, "
+            "COUNT(DISTINCT session_id) AS runs_window, "
             "MIN(occurred_at) AS first_seen, MAX(occurred_at) AS last_seen, "
             "MIN(evidence) AS sample, MIN(evidence) AS evidence_excerpt, MIN(device) AS device, "
             "json_group_array(DISTINCT session_id) AS session_ids, "
@@ -440,11 +443,11 @@ def view(days: int = DEFAULT_DAYS) -> dict[str, Any]:
             "SELECT *, ROW_NUMBER() OVER (PARTITION BY smartqa_side "
             "ORDER BY count DESC, last_seen DESC, category, rule, cause) AS side_rank "
             "FROM cause_counts) "
-            "SELECT cause, signal, scope, category, rule, count, count_24h, first_seen, last_seen, "
-            "sample, evidence_excerpt, device, session_ids, smartqa_side "
+            "SELECT cause, signal, scope, category, rule, count, count_24h, runs_24h, runs_window, "
+            "first_seen, last_seen, sample, evidence_excerpt, device, session_ids, smartqa_side "
             "FROM ranked_causes WHERE side_rank <= ? "
             "ORDER BY count DESC, last_seen DESC, category, rule, cause",
-            (since_24h, since, _CAUSE_LIMIT),
+            (since_24h, since_24h, since, _CAUSE_LIMIT),
         ).fetchall()
         rows = conn.execute(
             "SELECT session_id, step_number, signal, scope, category, rule, evidence, device, source, "

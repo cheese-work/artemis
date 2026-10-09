@@ -500,6 +500,50 @@ async def test_failure_causes_have_stable_keys_counts_run_ids_and_prompt_side(li
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("goal_word", ["token", "password"])
+@pytest.mark.parametrize("path", ["recording", "step"])
+async def test_goal_credential_words_do_not_bypass_api_evidence_redaction(
+    library, admin, goal_word, path
+):
+    secret = "unredactedvalue"
+    evidence = f"Tap failed at (540, 1200) with {goal_word}={secret}"
+    sid = seed_run(
+        library,
+        status="completed",
+        goal=goal_word,
+        steps=[("click", _bad(evidence))] if path == "step" else (),
+    )
+    if path == "recording":
+        seed_recording(library, sid, evidence)
+
+    await collect(admin)
+
+    view = await failures(admin)
+    assert secret not in json.dumps(view)
+    assert "[REDACTED]" in json.dumps(view)
+
+
+@pytest.mark.asyncio
+async def test_failure_cause_counts_runs_separately_from_rows(library, admin):
+    sid = seed_run(
+        library,
+        status="completed",
+        steps=[("click", _bad(EMPTY_LIST)), ("click", _bad(EMPTY_LIST))],
+    )
+
+    await collect(admin)
+
+    causes = await failures(admin)
+    cause = next(
+        cause
+        for cause in causes["causes"]
+        if cause["signal"] == "run_step" and sid in cause["run_ids"]
+    )
+    assert cause["count"] == cause["count_24h"] == cause["count_window"] == 2
+    assert cause["runs_24h"] == cause["runs_window"] == 1
+
+
+@pytest.mark.asyncio
 async def test_goal_word_redaction_does_not_split_defect_keys_or_leak_cause(library, admin):
     error = "Tap failed at (540, 1200) on the Settings button"
     first = seed_run(
