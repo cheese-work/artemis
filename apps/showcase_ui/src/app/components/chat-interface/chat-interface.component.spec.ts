@@ -454,6 +454,7 @@ describe('ChatInterfaceComponent per-QA scope (CHE-1152)', () => {
     expect(root.querySelector('.history-section .run-owner')!.textContent).toContain('No owner');
     expect(root.querySelector('.task-card .owner-label')!.textContent).toContain('qa1@example.test');
     expect(owners()).toEqual(['Owner: qa1@example.test']);
-    expect(root.querySelector('.history-section .run-read-only')!.textContent).toContain('Read-only');
+    expect(root.querySelector('.history-section .run-read-only')).toBeNull();
+    expect(root.querySelector('.history-section .run-row')!.getAttribute('href')).toContain('review=1');
   });
 });
