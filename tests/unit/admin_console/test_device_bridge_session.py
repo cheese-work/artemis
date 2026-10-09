@@ -40,6 +40,10 @@ from apps.admin_console.services.bridge_session_service import (
     bridge_session_service,
 )
 
+# Hang guards for socket/stream waits. Generous on purpose: these bound a deadlock, they do
+# not assert latency, and coverage tracing on a loaded runner can exceed one second.
+_HANG_GUARD_SECONDS = 5
+
 PATH = "/api/device-bridge/session"
 
 # starlette's TestClient.websocket_connect always dials "ws://testserver"
@@ -185,7 +189,9 @@ def test_lease_connect_packet_relay_and_close(loopback_client, monkeypatch, _moc
             await writer.drain()
             writer.write(server_packet[7:])
             await writer.drain()
-            received = await asyncio.wait_for(reader.readexactly(len(client_packet)), 1)
+            received = await asyncio.wait_for(
+                reader.readexactly(len(client_packet)), _HANG_GUARD_SECONDS
+            )
             assert received == client_packet
             return f"connected to {arguments[1]}"
         writer = peer.get("writer")
@@ -430,8 +436,8 @@ def test_expired_session_revokes_when_tcp_drain_is_backpressured(monkeypatch):
 
         route_task = asyncio.create_task(device_bridge.open_bridge_session(websocket))
         try:
-            await asyncio.wait_for(writer.draining.wait(), 1)
-            await asyncio.wait_for(websocket.closed.wait(), 1)
+            await asyncio.wait_for(writer.draining.wait(), _HANG_GUARD_SECONDS)
+            await asyncio.wait_for(websocket.closed.wait(), _HANG_GUARD_SECONDS)
             done, _ = await asyncio.wait((route_task,), timeout=0.1)
             assert route_task in done
             assert service.revoked == [session.session_id]
@@ -495,7 +501,7 @@ def test_failed_disconnect_closes_accepted_writer_before_waiting_for_listener(mo
         service = BridgeSessionService()
         session = await service.create_session()
         _peer_reader, peer_writer = await asyncio.open_connection("127.0.0.1", session.port)
-        await asyncio.wait_for(session.connected.wait(), 1)
+        await asyncio.wait_for(session.connected.wait(), _HANG_GUARD_SECONDS)
         session.adb_connect_attempted = True
         monkeypatch.setattr(
             bridge_session_service_module,
@@ -504,7 +510,7 @@ def test_failed_disconnect_closes_accepted_writer_before_waiting_for_listener(mo
         )
 
         try:
-            await asyncio.wait_for(service.revoke(session.session_id), 1)
+            await asyncio.wait_for(service.revoke(session.session_id), _HANG_GUARD_SECONDS)
             assert session.writer.is_closing()
             assert not session.listener.is_serving()
             assert await service.get(session.session_id) is None
@@ -520,7 +526,7 @@ def test_failed_disconnect_closes_accepted_writer_before_waiting_for_listener(mo
                     session.writer.wait_closed(),
                     peer_writer.wait_closed(),
                 ),
-                1,
+                _HANG_GUARD_SECONDS,
             )
 
     asyncio.run(scenario())
@@ -537,7 +543,7 @@ def test_failed_disconnect_force_closes_buffered_accepted_socket(monkeypatch):
         service = BridgeSessionService()
         session = await service.create_session()
         _peer_reader, peer_writer = await asyncio.open_connection("127.0.0.1", session.port)
-        await asyncio.wait_for(session.connected.wait(), 1)
+        await asyncio.wait_for(session.connected.wait(), _HANG_GUARD_SECONDS)
         session.adb_connect_attempted = True
         accepted_socket = session.writer.get_extra_info("socket")
         peer_socket = peer_writer.get_extra_info("socket")
@@ -566,7 +572,7 @@ def test_failed_disconnect_force_closes_buffered_accepted_socket(monkeypatch):
             peer_writer.close()
             await asyncio.wait_for(
                 asyncio.gather(session.listener.wait_closed(), peer_writer.wait_closed()),
-                1,
+                _HANG_GUARD_SECONDS,
             )
 
     asyncio.run(scenario())
