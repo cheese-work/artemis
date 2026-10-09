@@ -22,8 +22,7 @@ import { Observable, catchError, map, of, switchMap } from 'rxjs';
 import { Session, ModelInfo, TaskQueueItem, AgentStatusResponse, SessionUsage } from '../core/models/session.model';
 import { ProTuningDefaults, ProTuningOptions } from '../core/models/pro-tuning.model';
 import { ImageChat } from '../utils/run-image.util';
-import { StepItemData, StepReplayFrame, LLMStreamResetEventData, StreamResetNotice, DEFAULT_STREAM_RESET_MESSAGE, PersistedCheckerStream, StreamSegment } from '../core/models/stream.model';
-import { extractStepReplayFrames } from '../utils/action-formatter.util';
+import { StepItemData, LLMStreamResetEventData, StreamResetNotice, DEFAULT_STREAM_RESET_MESSAGE, PersistedCheckerStream, StreamSegment } from '../core/models/stream.model';
 import { persistedStreamToSegments } from '../utils/stream-aggregator.util';
 import { RunTarget } from '../core/models/run-target.model';
 import { AdminIdentity } from './admin-config.service';
@@ -31,7 +30,7 @@ import { OwnerScopeService } from './owner-scope.service';
 import { SELECTED_DEVICE_SERIAL_KEY } from './system.service';
 import { BrowserStorageService } from './browser-storage.service';
 import { appUrl } from '../utils/app-url.util';
-export type { Session, ModelInfo, TaskQueueItem, AgentStatusResponse, StepItemData, StepReplayFrame, LLMStreamResetEventData, StreamResetNotice };
+export type { Session, ModelInfo, TaskQueueItem, AgentStatusResponse, StepItemData, LLMStreamResetEventData, StreamResetNotice };
 
 // v1 held rows with no owner; it may carry other users' runs, so it is dropped, never read.
 const LEGACY_SESSION_CACHE_KEY = 'artemis.sessions.v1';
@@ -47,41 +46,11 @@ function cacheOwnerOf(who: AdminIdentity): string | null | undefined {
   return who.auth_mode === 'open' ? null : undefined;
 }
 
-export interface VideoSegment {
-  url: string;
-  /** Back-to-back playlist timeline start (seconds); gaps between segments are not represented. */
-  start: number;
-  duration: number;
-  width: number;
-  height: number;
-  /** Session-relative first-frame offset in milliseconds (manifest v2). */
-  offset_ms?: number;
-  duration_ms?: number;
-}
-
-export type RecordingPlaybackStatus =
-  | 'idle'
-  | 'live'
-  | 'processing'
-  | 'ready'
-  | 'failed'
-  | 'unavailable';
-
 export interface StartupProgressEvent {
   session_id?: string;
   stage: string;
   message: string;
   timestamp: number;
-}
-
-interface SessionVideoResponse {
-  session_id: string;
-  status?: 'processing' | 'ready' | 'failed' | 'unavailable';
-  has_video: boolean;
-  video_url: string | null;
-  video_segments?: VideoSegment[];
-  retry_after_ms?: number;
-  message?: string;
 }
 
 @Injectable({
@@ -275,62 +244,7 @@ export class AgentService {
   public selectedNoteKey = signal<string>('task_plan.md');
   public activeTab = signal<'tasks' | 'notes'>('tasks');
 
-  // Video Replay Floating Window States
-  public isVideoWindowOpen = signal<boolean>(false);
-  public isVideoMinimized = signal<boolean>(false);
-  public activeVideoUrl = signal<string | null>(null);
-  public activeVideoSegments = signal<VideoSegment[]>([]);
-  public activeVideoTitle = signal<string>('');
-  public isVideoLoading = signal<boolean>(false);
-  public recordingPlaybackStatus = signal<RecordingPlaybackStatus>('idle');
-  public recordingPlaybackMessage = signal<string>('');
-  public shouldAutoplayVideo = signal<boolean>(false);
-  public videoSeekRequest = signal<{ seconds: number; requestId: number } | null>(null);
-  public stepSeekRequest = signal<{ index: number; requestId: number } | null>(null);
-  public playerMode = signal<'video' | 'steps'>('video');
   public streamResetEvent = signal<LLMStreamResetEventData | null>(null);
-  private activeVideoSessionId: string | null = null;
-  private videoSeekRequestId = 0;
-  private stepSeekRequestId = 0;
-  private videoRequestGeneration = 0;
-  private videoRetryTimer: ReturnType<typeof setTimeout> | null = null;
-  private videoWaitStartedAt = 0;
-
-  /**
-   * Step logs only. Streaming text chunks cannot change replay frames, so the
-   * custom equality keeps downstream frame extraction from re-running on every
-   * llm_stream update of the sessionLogs signal.
-   */
-  private stepLogsForReplay = computed<any[]>(
-    () => this.sessionLogs().filter(
-      (log) => log && (log.type === 'step_updated' || log.type === 'step_recorded')
-    ),
-    { equal: (a, b) => a.length === b.length && a.every((log, i) => log === b[i]) }
-  );
-
-  /**
-   * Computed step replay frames from current session logs
-   */
-  public currentSessionStepFrames = computed<StepReplayFrame[]>(() => {
-    return extractStepReplayFrames(this.stepLogsForReplay());
-  });
-
-  public hasCurrentSessionStepFrames = computed<boolean>(() => {
-    return this.currentSessionStepFrames().length > 0;
-  });
-
-  public setPlayerMode(mode: 'video' | 'steps'): void {
-    this.playerMode.set(mode);
-  }
-
-  public togglePlayerMode(): void {
-    this.playerMode.update((mode) => (mode === 'video' ? 'steps' : 'video'));
-  }
-
-  public requestStepSeek(index: number): void {
-    this.stepSeekRequestId++;
-    this.stepSeekRequest.set({ index, requestId: this.stepSeekRequestId });
-  }
 
   /**
    * Clear user-pinned selection so subsequent runs automatically follow active runner
@@ -383,24 +297,6 @@ export class AgentService {
     return false;
   });
 
-  /**
-   * Computed video URL for the currently viewed session
-   */
-  public currentSessionVideoUrl = computed(() => {
-    const curId = this.currentSessionId();
-    if (!curId) return null;
-    const session = this.sessions().find(s => s.session_id === curId);
-    return session?.video_url || null;
-  });
-
-  public currentSessionRecordingStatus = computed(() => {
-    const session = this.currentSession();
-    const status = session?.recording_status;
-    return status === 'recording' || status === 'finalizing' || status === 'processing'
-      ? 'processing'
-      : status;
-  });
-
   private eventSource: EventSource | null = null;
   private statusInterval: any = null;
   private sessionLoadGeneration = 0;
@@ -444,8 +340,6 @@ export class AgentService {
         if (previous) {
           this.clearSessionsCache(previous);
           this.reloadForScope();
-          this.activeVideoUrl.set(null);
-          this.activeVideoSegments.set([]);
         }
         if (who) this.restoreSessionsCache(who);
       });
@@ -800,9 +694,6 @@ export class AgentService {
 
     if (this.currentSessionId() === sessionId) {
       this.selectSession('', false);
-      if (this.isVideoWindowOpen()) {
-        this.closeVideoPlayer();
-      }
       const runningId = this.runningSessionId();
       if (runningId && this.agentStatus() === 'running') {
         this.selectSession(runningId, false);
@@ -849,9 +740,6 @@ export class AgentService {
     this.clearSessionsCache();
     this.pendingQueue.set([]);
     this.selectSession('', false);
-    if (this.isVideoWindowOpen()) {
-      this.closeVideoPlayer();
-    }
 
     // 2. Send API request
     return new Observable((obs) => {
@@ -918,11 +806,6 @@ export class AgentService {
     this.fetchNotes(sessionId);
     this.fetchChecks(sessionId);
 
-    // If video window is currently open, dynamically sync/refresh video for new session
-    if (this.isVideoWindowOpen()) {
-      this.openVideoPlayer(sessionId);
-    }
-
     this.logger.debug(`Selecting session: ${sessionId}`);
     // Start reading the persisted snapshot immediately
     this.backfillSessionSteps(sessionId, loadGeneration);
@@ -987,27 +870,7 @@ export class AgentService {
             this.flushStreamChunks();
           }
 
-          if (eventType === 'recording_ready' || eventType === 'recording_failed') {
-            if (
-              this.isVideoWindowOpen()
-              && evtSessionId
-              && String(evtSessionId) === String(this.activeVideoSessionId)
-            ) {
-              if (eventType === 'recording_ready') {
-                this.refreshActiveRecording(true);
-              } else {
-                this.cancelVideoRetry();
-                this.isVideoLoading.set(false);
-                this.activeVideoUrl.set(null);
-                this.activeVideoSegments.set([]);
-                this.recordingPlaybackStatus.set('failed');
-                this.recordingPlaybackMessage.set(
-                  parsedData?.error || 'Recording finalization failed.'
-                );
-              }
-            }
-            return;
-          }
+          if (eventType === 'recording_ready' || eventType === 'recording_failed') return;
 
           if (eventType === 'background_tasks_updated') {
             this.fetchStatus();
@@ -1065,13 +928,6 @@ export class AgentService {
                 // The exit final review / run outcome may have landed while the
                 // stream was reconnecting: reconcile from the persisted ledger.
                 this.fetchChecks(endedId);
-              }
-              if (
-                this.isVideoWindowOpen()
-                && this.activeVideoSessionId === endedId
-                && this.recordingPlaybackStatus() === 'live'
-              ) {
-                this.beginRecordingFinalization(endedId);
               }
             }
             return;
@@ -1774,17 +1630,6 @@ export class AgentService {
             this.fetchSessions();
           }
 
-          if (
-            !isActive
-            && (oldStatus === 'running' || oldStatus === 'paused')
-            && oldRunningSessionId
-            && this.isVideoWindowOpen()
-            && this.activeVideoSessionId === oldRunningSessionId
-            && this.recordingPlaybackStatus() === 'live'
-          ) {
-            this.beginRecordingFinalization(oldRunningSessionId);
-          }
-
           // Auto-select the active session if user has not explicitly pinned a historical session
           if (isActive && data.session_id) {
             const currentId = this.currentSessionId();
@@ -1837,7 +1682,6 @@ export class AgentService {
     if (typeof document !== 'undefined') {
       document.removeEventListener('visibilitychange', this.onVisibilityChange);
     }
-    this.cancelVideoRetry();
   }
 
   /**
@@ -1994,65 +1838,6 @@ export class AgentService {
     });
   }
 
-  /**
-   * Open the video player for a given session or the current session
-   */
-  public openVideoPlayer(
-    sessionId?: string,
-    videoUrl?: string,
-    title?: string,
-    seekSeconds?: number,
-    stepIndex?: number
-  ): void {
-    const targetSessionId = sessionId || this.currentSessionId();
-    const session = this.sessions().find(s => s.session_id === targetSessionId);
-    const targetUrl = videoUrl || session?.video_url || null;
-    const goalTitle = title || session?.initial_goal || (targetSessionId ? `Task: ${targetSessionId.slice(0, 8)}...` : 'Screen Recording');
-
-    this.activeVideoTitle.set(goalTitle);
-    this.isVideoWindowOpen.set(true);
-    this.isVideoMinimized.set(false);
-    this.activeVideoSessionId = targetSessionId;
-    this.cancelVideoRetry();
-    this.videoRequestGeneration++;
-    this.shouldAutoplayVideo.set(false);
-    this.recordingPlaybackMessage.set('');
-    this.activeVideoSegments.set([]);
-    if (Number.isFinite(seekSeconds)) this.requestVideoSeek(Number(seekSeconds));
-    if (Number.isFinite(stepIndex)) {
-      this.playerMode?.set('steps');
-      this.requestStepSeek(Number(stepIndex));
-    }
-    if (!targetSessionId) {
-      this.activeVideoUrl.set(null);
-      this.isVideoLoading.set(false);
-      this.recordingPlaybackStatus.set('unavailable');
-      return;
-    }
-
-    if (session?.status === 'running' || session?.status === 'paused') {
-      this.activeVideoUrl.set(null);
-      this.isVideoLoading.set(false);
-      this.recordingPlaybackStatus.set('live');
-      return;
-    }
-
-    this.activeVideoUrl.set(targetUrl);
-    this.shouldAutoplayVideo.set(true);
-    this.videoWaitStartedAt = Date.now();
-    this.isVideoLoading.set(true);
-    this.recordingPlaybackStatus.set('processing');
-    this.recordingPlaybackMessage.set('Loading screen recording...');
-    if (targetUrl) {
-      this.playerMode?.set('video');
-    } else if (this.hasCurrentSessionStepFrames?.()) {
-      this.playerMode?.set('steps');
-    } else {
-      this.playerMode?.set('video');
-    }
-    this.requestSessionVideo(targetSessionId, this.videoRequestGeneration);
-  }
-
   private appendStartupProgress(data: any, sessionId: string): void {
     if (!data?.stage || !data?.message) return;
 
@@ -2084,153 +1869,4 @@ export class AgentService {
     });
   }
 
-  private beginRecordingFinalization(sessionId: string): void {
-    if (this.activeVideoSessionId !== sessionId) return;
-    this.cancelVideoRetry();
-    this.videoRequestGeneration++;
-    this.videoWaitStartedAt = Date.now();
-    this.activeVideoUrl.set(null);
-    this.activeVideoSegments.set([]);
-    this.shouldAutoplayVideo.set(true);
-    this.isVideoLoading.set(true);
-    this.recordingPlaybackStatus.set('processing');
-    this.recordingPlaybackMessage.set('Finalizing screen recording...');
-    this.requestSessionVideo(sessionId, this.videoRequestGeneration);
-  }
-
-  private requestSessionVideo(sessionId: string, generation: number): void {
-    this.http.get<SessionVideoResponse>(`/api/sessions/${sessionId}/video`).subscribe({
-      next: (res) => {
-        if (generation !== this.videoRequestGeneration || sessionId !== this.activeVideoSessionId) {
-          return;
-        }
-        const status = res.status || (res.has_video && res.video_url ? 'ready' : 'unavailable');
-        if (status === 'ready' && res.video_url) {
-          this.cancelVideoRetry();
-          this.isVideoLoading.set(false);
-          this.recordingPlaybackStatus.set('ready');
-          this.recordingPlaybackMessage.set('');
-          this.activeVideoUrl.set(res.video_url);
-          this.activeVideoSegments.set(res.video_segments || []);
-          this.playerMode?.set('video');
-          this.rawSessions.update((list) =>
-            list.map((s) => s.session_id === sessionId
-              ? { ...s, video_url: res.video_url || undefined, recording_status: 'ready' }
-              : s)
-          );
-          return;
-        }
-        if (status === 'processing') {
-          this.activeVideoUrl.set(null);
-          this.activeVideoSegments.set([]);
-          this.isVideoLoading.set(true);
-          this.recordingPlaybackStatus.set('processing');
-          this.recordingPlaybackMessage.set('Finalizing screen recording...');
-          this.scheduleVideoRetry(sessionId, generation, res.retry_after_ms);
-          return;
-        }
-
-        this.cancelVideoRetry();
-        this.isVideoLoading.set(false);
-        this.activeVideoUrl.set(null);
-        this.activeVideoSegments.set([]);
-        this.recordingPlaybackStatus.set(status === 'failed' ? 'failed' : 'unavailable');
-        this.recordingPlaybackMessage.set(
-          res.message || (status === 'failed'
-            ? 'Recording finalization failed.'
-            : 'No screen recording is available for this task.')
-        );
-        if (this.hasCurrentSessionStepFrames?.()) {
-          this.playerMode?.set('steps');
-        }
-      },
-      error: () => {
-        if (generation !== this.videoRequestGeneration || sessionId !== this.activeVideoSessionId) {
-          return;
-        }
-        if (this.recordingPlaybackStatus() === 'processing') {
-          this.scheduleVideoRetry(sessionId, generation, 1000);
-          return;
-        }
-        this.isVideoLoading.set(false);
-        this.recordingPlaybackStatus.set('failed');
-        this.recordingPlaybackMessage.set('Unable to load the screen recording.');
-        if (this.hasCurrentSessionStepFrames?.()) {
-          this.playerMode?.set('steps');
-        }
-      }
-    });
-  }
-
-  private scheduleVideoRetry(sessionId: string, generation: number, retryAfterMs = 1000): void {
-    this.cancelVideoRetry();
-    if (Date.now() - this.videoWaitStartedAt > 120_000) {
-      this.isVideoLoading.set(false);
-      this.recordingPlaybackStatus.set('failed');
-      this.recordingPlaybackMessage.set('Recording finalization timed out. You can retry.');
-      return;
-    }
-    const delay = Math.max(500, Math.min(3000, retryAfterMs));
-    this.videoRetryTimer = setTimeout(() => {
-      this.videoRetryTimer = null;
-      this.requestSessionVideo(sessionId, generation);
-    }, delay);
-  }
-
-  private cancelVideoRetry(): void {
-    if (this.videoRetryTimer) {
-      clearTimeout(this.videoRetryTimer);
-      this.videoRetryTimer = null;
-    }
-  }
-
-  private refreshActiveRecording(autoplay: boolean): void {
-    const sessionId = this.activeVideoSessionId;
-    if (!sessionId) return;
-    this.cancelVideoRetry();
-    this.videoRequestGeneration++;
-    if (autoplay) this.shouldAutoplayVideo.set(true);
-    this.requestSessionVideo(sessionId, this.videoRequestGeneration);
-  }
-
-  public retryVideoRecording(): void {
-    const sessionId = this.activeVideoSessionId;
-    if (!sessionId) return;
-    this.beginRecordingFinalization(sessionId);
-  }
-
-  public consumeVideoAutoplay(): boolean {
-    const shouldAutoplay = this.shouldAutoplayVideo();
-    this.shouldAutoplayVideo.set(false);
-    return shouldAutoplay;
-  }
-
-  public requestVideoSeek(seconds: number): void {
-    if (!Number.isFinite(seconds)) return;
-    this.videoSeekRequest.set({
-      seconds: Math.max(0, seconds),
-      requestId: ++this.videoSeekRequestId
-    });
-  }
-
-  /**
-   * Toggle the video player for the current session
-   */
-  public toggleVideoPlayer(): void {
-    if (this.isVideoWindowOpen()) {
-      this.isVideoWindowOpen.set(false);
-    } else {
-      this.openVideoPlayer();
-    }
-  }
-
-  /**
-   * Close the video player
-   */
-  public closeVideoPlayer(): void {
-    this.isVideoWindowOpen.set(false);
-    this.cancelVideoRetry();
-    this.videoRequestGeneration++;
-    this.activeVideoSessionId = null;
-  }
 }

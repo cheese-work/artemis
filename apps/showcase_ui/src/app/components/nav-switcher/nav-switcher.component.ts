@@ -15,7 +15,7 @@
  */
 
 import { DOCUMENT } from '@angular/common';
-import { Component, ChangeDetectionStrategy, DestroyRef, ElementRef, EventEmitter, afterNextRender, inject, Input, Output } from '@angular/core';
+import { Component, ChangeDetectionStrategy, DestroyRef, computed, ElementRef, EventEmitter, afterNextRender, inject, Input, Output } from '@angular/core';
 
 import { RouterLink, RouterLinkActive } from '@angular/router';
 import { WorkspaceDeviceChipComponent } from '../workspace-device-chip/workspace-device-chip.component';
@@ -47,16 +47,6 @@ import { AdminIdentityIndicatorComponent } from '../admin-identity-indicator/adm
       >
         <span class="material-symbols-outlined tab-icon" aria-hidden="true">history</span>
         <span class="tab-label">Runs</span>
-      </a>
-      <a
-        routerLink="/setup"
-        routerLinkActive="active"
-        class="nav-tab-btn"
-        title="System Setup"
-        aria-label="System Setup"
-      >
-        <span class="material-symbols-outlined tab-icon" aria-hidden="true">tune</span>
-        <span class="tab-label">System Setup</span>
       </a>
       @if (hasWhatsNew) {
         <button type="button" class="nav-tab-btn" [attr.aria-label]="whatsNewLabel" (click)="showWhatsNew.emit()">

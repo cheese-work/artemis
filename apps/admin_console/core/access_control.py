@@ -209,6 +209,12 @@ async def authenticate_request(
 
 
 async def public_tier(request: HTTPConnection) -> AccessIdentity:
+    from apps.admin_console.core.preview_identity import resolve_preview_identity
+
+    preview_identity = resolve_preview_identity(request)
+    if preview_identity is not None:
+        request.state.identity = preview_identity
+        return preview_identity
     config = getattr(request.app.state, "access_config", None) or config_from_environment()
     verifier = getattr(request.app.state, "access_verifier", None)
     if verifier is None:
@@ -281,9 +287,9 @@ async def require_effective_loopback(request: Request) -> None:
     if forwarded or not _is_loopback_request(request):
         raise AdminAPIError(
             403,
-            "Deploy drain controls are local-only.",
+            "This endpoint is local-only.",
             "loopback_required",
-            "Call the drain endpoint directly from the server host.",
+            "Call this endpoint directly from the server host.",
         )
 
 
@@ -380,6 +386,7 @@ _AGENT_PATHS = {
     "/api/agent/enroll": {"POST"},
     "/api/agent/challenge": {"POST"},
     "/api/agent/renew": {"POST"},
+    "/api/agent/unenroll": {"POST"},
 }
 
 # Owner-or-admin actions: the route guard needs a signed-in user; the handler
@@ -410,6 +417,8 @@ def route_tier(path: str, methods: set[str], is_websocket: bool = False) -> str 
     if path == "/api/system/shutdown" and methods == {"POST"}:
         return "lifecycle"
     if path == "/api/system/drain" and methods in ({"GET"}, {"POST"}, {"DELETE"}):
+        return "loopback"
+    if path == "/api/system/service-readiness" and methods == {"GET"}:
         return "loopback"
     if path == "/api/v1" or path.startswith("/api/v1/"):
         return "public"

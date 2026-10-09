@@ -5,13 +5,17 @@ import { Router, provideRouter } from '@angular/router';
 import { RouterTestingHarness } from '@angular/router/testing';
 import { NEVER, of } from 'rxjs';
 import { routes } from '../../app.routes';
-import { AgentStreamComponent } from '../../components/agent-stream/agent-stream.component';
 import { ChatInterfaceComponent } from '../../components/chat-interface/chat-interface.component';
-import { FloatingVideoPlayerComponent } from '../../components/floating-video-player/floating-video-player.component';
+import { RunViewComponent } from '../../components/run-view/run-view.component';
+import { By } from '@angular/platform-browser';
+import { RunSummary } from '../../core/models/run.model';
+import { RunTarget } from '../../core/models/run-target.model';
+import { Session } from '../../core/models/session.model';
 import { AdminConfigService } from '../../services/admin-config.service';
 import { AgentService } from '../../services/agent.service';
 import { HostsService } from '../../services/hosts.service';
 import { RunsService } from '../../services/runs.service';
+import { WorkspacePhoneService } from '../../services/workspace-phone.service';
 import { WorkspaceComponent } from './workspace.component';
 
 const ID = '3f2b9c1a-5d7e-4a10-9c33-0e1f2a3b4c5d';
@@ -20,11 +24,17 @@ describe('Workspace review mode', () => {
   let runs: jasmine.SpyObj<RunsService>;
   let harness: RouterTestingHarness;
   let root: HTMLElement;
+  let liveSession: ReturnType<typeof signal<Session | null>>;
+  let target: ReturnType<typeof signal<RunTarget | null>>;
+  let reconnect: jasmine.Spy;
   const q = (selector: string) => root.querySelector(selector);
 
   beforeEach(async () => {
+    liveSession = signal<Session | null>(null);
+    target = signal<RunTarget | null>(null);
+    reconnect = jasmine.createSpy('connectFromBrowser').and.resolveTo(undefined);
     runs = jasmine.createSpyObj<RunsService>('RunsService', ['list', 'get', 'steps', 'video'], {
-      lastLibraryQuery: signal<Record<string, string>>({})
+      lastLibraryQuery: signal<Record<string, string>>({}), viewPosition: signal(null)
     });
     runs.list.and.returnValue(NEVER);
     runs.get.and.returnValue(NEVER);
@@ -38,8 +48,13 @@ describe('Workspace review mode', () => {
       whatsNewPromptDraft: signal(false),
       updateWhatsNewErrorVisibility: () => undefined,
       isCurrentSessionRunning: () => false,
-      currentSession: () => null,
-      currentSessionId: () => null,
+      currentSession: liveSession,
+      currentSessionId: () => liveSession()?.session_id ?? null,
+      currentStartupProgress: () => [],
+      runningSessionId: () => null,
+      isPaused: () => false,
+      viewedModel: () => null,
+      sessionLogs: () => [],
       runTask: jasmine.createSpy('runTask'),
       fetchStatus: jasmine.createSpy('fetchStatus'),
       stopTask: jasmine.createSpy('stopTask'),
@@ -52,12 +67,19 @@ describe('Workspace review mode', () => {
         provideLocationMocks(),
         { provide: AgentService, useValue: agentService },
         { provide: RunsService, useValue: runs },
+        { provide: WorkspacePhoneService, useValue: {
+          target,
+          runInterrupted: () => liveSession()?.status === 'interrupted',
+          canConnectFromBrowser: () => true,
+          connectFromBrowser: reconnect,
+          requestPicker: jasmine.createSpy('requestPicker')
+        } },
         { provide: HostsService, useValue: hosts },
         { provide: AdminConfigService, useValue: admin }
       ],
       schemas: [CUSTOM_ELEMENTS_SCHEMA]
     }).overrideComponent(WorkspaceComponent, {
-      remove: { imports: [AgentStreamComponent, ChatInterfaceComponent, FloatingVideoPlayerComponent] },
+      remove: { imports: [ChatInterfaceComponent] },
       add: { schemas: [CUSTOM_ELEMENTS_SCHEMA] }
     });
     harness = await RouterTestingHarness.create();
@@ -71,25 +93,36 @@ describe('Workspace review mode', () => {
     harness.fixture.detectChanges();
   }
 
-  it('shows the live agent stream, the splitter and no review class on /workspace', async () => {
+  it('shows the shared RunView, new-task box and splitter on /workspace', async () => {
     await go('/workspace');
-    expect(q('app-agent-stream')).not.toBeNull();
+    expect(q('app-run-view')).not.toBeNull();
+    expect(q('textarea.dock-textarea')).not.toBeNull();
     expect(q('.workspace-container.review-mode')).toBeNull();
     expect(q('.resizer')).not.toBeNull();
     expect(q('app-run-library')).toBeNull();
   });
 
-  it('shows the run library in place of the live stream on /runs, keeping the dock', async () => {
+  it('shows the run library without the live new-task box on /runs', async () => {
     await go('/runs');
     expect(q('.workspace-container.review-mode')).not.toBeNull();
     expect(q('app-run-library')).not.toBeNull();
+    expect(q('.right-panel')).toBeNull();
     expect(q('app-agent-stream')).toBeNull();
-    expect(q('.workspace-floating-bar-wrapper')).not.toBeNull();
+    expect(q('.workspace-floating-bar-wrapper')).toBeNull();
+  });
+
+  it('passes team review restrictions to the unified RunView', async () => {
+    await go(`/runs/${ID}?scope=everyone&review=1`);
+    const view = harness.fixture.debugElement.query(By.directive(RunViewComponent)).componentInstance as RunViewComponent;
+    expect(view.readOnly()).toBeTrue();
+    expect(view.mode()).toBe('review');
+    expect(view.runId()).toBe(ID);
+    expect(q('.right-panel')).toBeNull();
   });
 
   it('shows the run viewer for the id in the URL on /runs/:id', async () => {
     await go(`/runs/${ID}`);
-    expect(q('app-run-viewer')).not.toBeNull();
+    expect(q('app-run-view')).not.toBeNull();
     expect(q('app-run-library')).toBeNull();
     expect(runs.get).toHaveBeenCalledWith(ID);
   });
@@ -120,4 +153,42 @@ describe('Workspace review mode', () => {
     await go('/workspace', { draftPrompt: 'Log in and open settings' });
     expect((q('textarea.dock-textarea') as HTMLTextAreaElement).value).toBe('Log in and open settings');
   });
+
+  for (const connected of [false, true]) {
+    it(`shows one interrupted banner with a ${connected ? 'connected' : 'disconnected'} phone`, async () => {
+      const prompt = 'Open Settings';
+      liveSession.set({ session_id: ID, initial_goal: prompt, start_time: 1, status: 'interrupted' });
+      if (connected) target.set({ serial: 'phone-1' });
+      runs.get.and.returnValue(of<RunSummary>({
+        session_id: ID, prompt, status: 'interrupted', interrupt_reason: 'device_offline',
+        start_time: 1, end_time: 2, host_id: null, device_ref: null, requested_by: null,
+        pinned: false, recordings: []
+      }));
+      runs.steps.and.returnValue(of([]));
+      await go('/workspace');
+
+      expect(TestBed.inject(WorkspacePhoneService).runInterrupted()).toBeTrue();
+      const banners = Array.from(root.querySelectorAll<HTMLElement>('[role="status"]'))
+        .filter((element) => element.textContent?.includes('Run interrupted before the first step.'));
+      expect(banners.length).toBe(1);
+      expect(banners[0].closest('app-run-view')).not.toBeNull();
+      const buttons = Array.from(root.querySelectorAll<HTMLButtonElement>('button'));
+      const starts = buttons.filter((element) => element.textContent?.includes('Start new run with this prompt'));
+      expect(starts.length).toBe(1);
+      starts[0].click();
+      harness.fixture.detectChanges();
+      await harness.fixture.whenStable();
+      harness.fixture.detectChanges();
+      expect((q('textarea.dock-textarea') as HTMLTextAreaElement).value).toBe(prompt);
+
+      const reconnects = buttons.filter((element) => element.textContent?.includes('Reconnect phone'));
+      expect(reconnects.length).toBe(connected ? 0 : 1);
+      if (!connected) {
+        expect(reconnects[0].tagName).toBe('BUTTON');
+        expect(reconnects[0].disabled).toBeFalse();
+        reconnects[0].click();
+        expect(reconnect).toHaveBeenCalledTimes(1);
+      }
+    });
+  }
 });

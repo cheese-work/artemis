@@ -27,6 +27,7 @@ import urllib.parse
 from fastapi import HTTPException
 
 from artemis.config import IMAGES_DIR, TRACES_PATH, WORKSPACE_ROOT
+from apps.admin_console.core.ownership import OwnerScope, present_session_data, scope_or_open
 
 logger = logging.getLogger(__name__)
 
@@ -415,7 +416,7 @@ class MediaService:
             return []
 
     @staticmethod
-    def unwrap_payload(obj: Any) -> Any:
+    def unwrap_payload(obj: Any, session_id: str | None = None) -> Any:
         """Unwraps trace payloads, storing base64 images as disk files and
         truncating large dumps.
         """
@@ -424,7 +425,7 @@ class MediaService:
                 if (obj.startswith("{") and obj.endswith("}")) or (
                     obj.startswith("[") and obj.endswith("]")
                 ):
-                    return MediaService.unwrap_payload(json.loads(obj))
+                    return MediaService.unwrap_payload(json.loads(obj), session_id)
             except ValueError:
                 # Looks like JSON but is not: treat it as a plain string.
                 pass
@@ -448,12 +449,19 @@ class MediaService:
                     image_bytes = base64.b64decode(base64_data)
                     image_hash = hashlib.sha256(image_bytes).hexdigest()
 
-                    IMAGES_DIR.mkdir(parents=True, exist_ok=True)
-                    image_path = IMAGES_DIR / f"{image_hash}.jpg"
+                    reference = image_hash
+                    if session_id is not None:
+                        from apps.admin_console.services.run_images import inline_image_path
+
+                        image_path = inline_image_path(session_id, image_hash)
+                        reference = f"inline_{session_id}_{image_hash}"
+                    else:
+                        image_path = IMAGES_DIR / f"{image_hash}.jpg"
+                    image_path.parent.mkdir(parents=True, exist_ok=True)
                     if not image_path.exists():
                         image_path.write_bytes(image_bytes)
 
-                    return f"image://{image_hash}"
+                    return f"image://{reference}"
                 except (ValueError, OSError) as exc:
                     # Invalid base64 or image cache write failure: fall back
                     # to the truncated raw string below.
@@ -469,13 +477,15 @@ class MediaService:
                 )
             return obj
         elif isinstance(obj, dict):
-            return {k: MediaService.unwrap_payload(v) for k, v in obj.items()}
+            return {
+                key: MediaService.unwrap_payload(value, session_id) for key, value in obj.items()
+            }
         elif isinstance(obj, list):
             if len(obj) > 20 and any(
                 isinstance(x, dict) and ("bounds" in x or "resource-id" in x) for x in obj
             ):
                 return [f"<XML UI List with {len(obj)} elements truncated for UI performance>"]
-            return [MediaService.unwrap_payload(x) for x in obj]
+            return [MediaService.unwrap_payload(item, session_id) for item in obj]
         return obj
 
     _LOCAL_FILE_MEDIA_TYPES = {
@@ -527,14 +537,18 @@ class MediaService:
         return p, media_type
 
     @staticmethod
-    def get_task_plan_content(session_id: str) -> str:
+    def get_task_plan_content(session_id: str, actor: OwnerScope | None = None) -> str:
+        source_session_id = session_id
         plan_path = TRACES_PATH / session_id / "notes" / "task_plan.md"
         if not plan_path.exists():
+            source_session_id = None
             plan_path = TRACES_PATH / "notes" / "task_plan.md"
 
         if plan_path.exists():
             try:
-                return plan_path.read_text(encoding="utf-8")
+                return present_session_data(
+                    scope_or_open(actor), source_session_id, plan_path.read_text(encoding="utf-8")
+                )
             except Exception as e:
                 return f"Error reading task plan: {e}"
         return "No task plan created yet."
@@ -590,7 +604,10 @@ class MediaService:
         return {"records": records, "streams": streams, "run_outcome": run_outcome}
 
     @staticmethod
-    def get_session_notes_content(session_id: str) -> dict[str, str]:
+    def get_session_notes_content(
+        session_id: str, actor: OwnerScope | None = None
+    ) -> dict[str, str]:
+        source_session_id = session_id
         notes_dir = TRACES_PATH / session_id / "notes"
         notes_content = {}
 
@@ -603,6 +620,7 @@ class MediaService:
                         notes_content[file.name] = f"Error reading file: {e}"
 
         if not notes_content:
+            source_session_id = None
             global_notes_dir = TRACES_PATH / "notes"
             if global_notes_dir.exists() and global_notes_dir.is_dir():
                 for file in global_notes_dir.iterdir():
@@ -617,7 +635,7 @@ class MediaService:
                         except Exception as e:
                             notes_content[file.name] = f"Error reading file: {e}"
 
-        return notes_content
+        return present_session_data(scope_or_open(actor), source_session_id, notes_content)
 
 
 media_service = MediaService()

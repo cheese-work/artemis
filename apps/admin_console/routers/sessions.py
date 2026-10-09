@@ -26,6 +26,7 @@ from apps.admin_console.core.ownership import (
     actor_scope,
     list_scope,
     owners_of,
+    present_session_data,
     require_access,
     scope_or_open,
 )
@@ -156,12 +157,12 @@ def _list_sessions_sync(scope: OwnerScope = OPEN_SCOPE):
 
 
 @router.get("/api/sessions/{session_id}")
-async def get_session_details(session_id: str):
+async def get_session_details(session_id: str, actor: OwnerScope = Depends(actor_scope)):
     """Retrieve details for a single automation session."""
     row = session_repo.get_session_by_id(session_id)
     if not row:
         raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
-    return dict(row)
+    return present_session_data(actor, session_id, dict(row))
 
 
 @router.get("/api/sessions/{session_id}/goal-images/{index}")
@@ -180,16 +181,17 @@ async def get_goal_image(session_id: str, index: str, actor: OwnerScope = Depend
 
 
 @router.get("/api/sessions/{session_id}/events")
-async def get_session_events(session_id: str):
+async def get_session_events(session_id: str, actor: OwnerScope = Depends(actor_scope)):
     """Lifecycle events recorded for a session (``session_ended``, ``run_interrupted``).
 
     The durable record behind the live stream: a client that was offline when an
     event was broadcast replays it from here, keyed by ``event_id``.
     """
     try:
-        return await asyncio.to_thread(session_repo.lifecycle.events, session_id)
+        events = await asyncio.to_thread(session_repo.lifecycle.events, session_id)
     except sqlite3.Error as exc:
         raise HTTPException(status_code=500, detail=str(exc))
+    return present_session_data(actor, session_id, events)
 
 
 @router.get("/api/sessions/{session_id}/usage")
@@ -202,27 +204,30 @@ async def get_session_usage(session_id: str):
 
 
 @router.get("/api/sessions/{session_id}/tree")
-async def get_tree(session_id: str):
+async def get_tree(session_id: str, actor: OwnerScope = Depends(actor_scope)):
     try:
-        return trace_repo.get_trace_tree(session_id)
+        tree = trace_repo.get_trace_tree(session_id)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+    return present_session_data(actor, session_id, tree)
 
 
 @router.get("/api/sessions/{session_id}/background_tasks")
-async def get_session_background_tasks(session_id: str):
+async def get_session_background_tasks(session_id: str, actor: OwnerScope = Depends(actor_scope)):
     try:
-        return session_repo.get_background_tasks(session_id)
+        tasks = session_repo.get_background_tasks(session_id)
     except Exception:
         return []
+    return present_session_data(actor, session_id, tasks)
 
 
 @router.get("/api/sessions/{session_id}/startup_progress")
-async def get_session_startup_progress(session_id: str):
+async def get_session_startup_progress(session_id: str, actor: OwnerScope = Depends(actor_scope)):
     try:
-        return state.get_startup_progress(session_id)
+        progress = state.get_startup_progress(session_id)
     except Exception:
         return []
+    return present_session_data(actor, session_id, progress)
 
 
 @router.post("/api/cleanup", dependencies=[Depends(require_admin)])

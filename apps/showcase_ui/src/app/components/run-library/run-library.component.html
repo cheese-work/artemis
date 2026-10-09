@@ -1,8 +1,22 @@
 <div class="library-scroll" #scrollRegion (scroll)="onScroll()">
-  <div class="library-heading">
-    <h1 class="library-title">{{ strings.title }}</h1>
-    <app-scope-switch></app-scope-switch>
+  @if (compact()) { <h2 class="library-title">{{ strings.title }}</h2> }
+  @else { <h1 class="library-title">{{ strings.title }}</h1> }
+
+  <div class="owner-tabs" role="tablist" aria-label="Run owner">
+    @for (tab of ['mine', 'everyone']; track tab) {
+      <button type="button" role="tab" [attr.data-scope]="tab" [id]="'runs-tab-' + tab"
+        [attr.aria-selected]="scope() === tab" [attr.tabindex]="scope() === tab ? 0 : -1"
+        aria-controls="runs-panel" (click)="setScope($any(tab))" (keydown)="onTabKey($event, $any(tab))">
+        {{ tab === 'mine' ? 'My runs' : "Everyone's runs" }}
+      </button>
+    }
   </div>
+  @if (scope() === 'everyone') {
+    <p class="media-notice">{{ mediaNotice }}</p>
+    <p class="media-notice">Text search only matches your own runs.</p>
+  }
+
+  <section id="runs-panel" role="tabpanel" [attr.aria-labelledby]="'runs-tab-' + scope()">
 
   <form class="search-form" role="search" (submit)="submitSearch($event)">
     <input
@@ -84,11 +98,8 @@
       </div>
     } @else {
       <div class="state state-empty">
-        @if (showingAll()) {
-          <p>{{ strings.emptyAllUsers }}</p>
-        } @else {
-          <p>{{ strings.emptyTitle }} <a routerLink="/workspace">{{ strings.emptyAction }}</a>.</p>
-        }
+        @if (scope() === 'everyone') { <p>No shared runs yet.</p> }
+        @else { <p>{{ strings.emptyTitle }} <a routerLink="/workspace">{{ strings.emptyAction }}</a>.</p> }
       </div>
     }
   }
@@ -101,31 +112,10 @@
     <ol class="run-list" [attr.aria-busy]="loading() ? 'true' : 'false'">
       @for (run of rows(); track trackRun($index, run)) {
         <li>
-          <a class="run-row" [routerLink]="['/runs', run.session_id]" (click)="rememberPosition()">
-            <span class="run-prompt">{{ prompt(run) }}</span>
-            <span class="run-outcome tone-{{ outcome(run.status).tone }}">
-              <span class="material-symbols-outlined" aria-hidden="true">{{ outcome(run.status).icon }}</span>
-              {{ outcome(run.status).label }}
-            </span>
-            <span class="run-meta">
-              <span class="run-recording">{{ recordingBadge(run) }}</span>
-              <span class="run-device">{{ device(run) }}</span>
-              <span class="run-date">
-                @if (run.start_time) {
-                  {{ run.start_time * 1000 | date: 'MMM d, y, h:mm a' }}
-                } @else {
-                  Date unknown
-                }
-              </span>
-              <app-owner-label [owner]="run.requested_by"></app-owner-label>
-              @if (expires(run); as text) {
-                <span class="run-expires">{{ text }}</span>
-              }
-              @if (run.status === 'interrupted') {
-                <span class="run-reason">{{ interruptReason(run.interrupt_reason) }}</span>
-              }
-            </span>
-          </a>
+          <a class="run-row" appRunCard [run]="run" [computer]="computer(run)" [device]="device(run)"
+            [goalImages]="recordedImages().get(run.session_id) ?? []"
+            [showOwner]="scope() === 'everyone'" [routerLink]="['/runs', run.session_id]"
+            [queryParams]="runQuery()" (click)="rememberPosition()"></a>
         </li>
       }
     </ol>
@@ -135,4 +125,5 @@
       </button>
     }
   }
+  </section>
 </div>

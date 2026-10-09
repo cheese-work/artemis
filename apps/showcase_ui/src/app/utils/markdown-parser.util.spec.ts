@@ -67,4 +67,53 @@ describe('markdown-parser.util verification & check lines', () => {
     expect(html).toContain('<span class="verify-badge">verify</span>');
     expect(html).toContain('status is ok');
   });
+  it('should render pipe tables as escaped table markup', () => {
+    const html = renderMarkdownToHtml('| Bước | **Kết quả** |\n| --- | --- |\n| 1 | <img src=x onerror=alert(1)> |\n\nsau bảng');
+    expect(html).toContain('<table><thead><tr><th>Bước</th><th><strong>Kết quả</strong></th></tr></thead>');
+    expect(html).toContain('<td>&lt;img src=x onerror=alert(1)&gt;</td>');
+    expect(html).not.toContain('<img');
+    expect(html).toContain('<div>sau bảng</div>');
+  });
+
+  it('should not treat a lone pipe line as a table', () => {
+    expect(renderMarkdownToHtml('a | b')).not.toContain('<table');
+  });
+
+  it('should keep escaped pipes inside a table cell and normalise row width', () => {
+    const html = renderMarkdownToHtml('| Lệnh | Ghi chú |\n| --- | --- |\n| `a\\|b` | ok |\n| chỉ một |\n| 1 | 2 | thừa |');
+    expect(html).toContain('<tr><td><code class="inline-code">a|b</code></td><td>ok</td></tr>');
+    expect(html).toContain('<tr><td>chỉ một</td><td></td></tr>');
+    expect(html).toContain('<tr><td>1</td><td>2</td></tr>');
+    expect(html).not.toContain('thừa');
+  });
+
+  it('should treat an escaped backslash before a pipe as a column separator', () => {
+    const html = renderMarkdownToHtml('| Path | Status |\n| --- | --- |\n| C:\\\\| failed |\n| a\\\\\\|b | ok |');
+    expect(html).toContain('<tr><td>C:\\\\</td><td>failed</td></tr>');
+    expect(html).toContain('<tr><td>a\\\\|b</td><td>ok</td></tr>');
+  });
+
+  it('should keep body rows without a pipe as single-cell rows until a block boundary', () => {
+    const html = renderMarkdownToHtml('A | B\n--- | ---\none\ntwo | three\n# Next');
+    expect(html).toContain('<tr><td>one</td><td></td></tr>');
+    expect(html).toContain('<tr><td>two</td><td>three</td></tr>');
+    expect(html).toContain('<h1>Next</h1>');
+    const ended = renderMarkdownToHtml('A | B\n--- | ---\none\n- item\n\nafter');
+    expect(ended).toContain('<tr><td>one</td><td></td></tr>');
+    expect(ended).toContain('<li>item</li>');
+    expect(ended).toContain('<div>after</div>');
+  });
+
+  it('should not render a table when header and separator widths differ', () => {
+    const html = renderMarkdownToHtml('A | B\n--- | --- | ---\n1 | 2 | IMPORTANT');
+    expect(html).not.toContain('<table>');
+    expect(html).toContain('IMPORTANT');
+  });
+
+  it('should only keep a safe language token on code fences', () => {
+    const html = renderMarkdownToHtml('```"><img src=x onerror=alert(1)>\ncode\n```\n\n```c++\nx\n```');
+    expect(html).not.toContain('<img');
+    expect(html).toMatch(/<code class="lang-[A-Za-z0-9_+-]*">code<\/code>/);
+    expect(html).toContain('<code class="lang-c++">x</code>');
+  });
 });

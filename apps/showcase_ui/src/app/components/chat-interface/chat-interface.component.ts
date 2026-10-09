@@ -18,19 +18,20 @@ import { LoggerService } from '../../services/logger.service';
 import { Component, ChangeDetectionStrategy, inject, computed, effect, signal, untracked } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
-import { RouterLink } from '@angular/router';
+import { RunLibraryComponent } from '../run-library/run-library.component';
 import { AgentService } from '../../services/agent.service';
 import { SystemService } from '../../services/system.service';
 import { HostsService } from '../../services/hosts.service';
 import { UsbDeviceRelayService } from '../../services/usb-device-relay.service';
 import { HostsResponse } from '../../core/models/host.model';
 import { deviceSourceOf } from '../../utils/device-chip.util';
-import { deviceKindLabel, deviceTitle, unlistedDeviceTitle } from '../../utils/device-label.util';
+import { deviceKindLabel, deviceTitle, isIdentifiedDevice, unlistedRunDeviceTitle } from '../../utils/device-label.util';
+import { recordedDevice } from '../../utils/session-device.util';
 import { OwnerLabelComponent } from '../owner-label/owner-label.component';
 import { RunIdCopyComponent } from '../run-id-copy/run-id-copy.component';
 import { ScopeSwitchComponent } from '../scope-switch/scope-switch.component';
-import { Session } from '../../core/models/session.model';
-import { TaskStatus, taskStatusOf } from '../../utils/task-status.util';
+import { GoalImage, Session } from '../../core/models/session.model';
+import { RunStatusKey, RunStatusView, sessionStatusView } from '../../utils/run-status.util';
 import { MarkdownSegment, MarkdownLine, NoteMilestone, ParsedNote } from '../../core/models/markdown.model';
 import { parseNote, parseNoteLines } from '../../utils/markdown-parser.util';
 import { mediaUrl } from '../../utils/app-url.util';
@@ -40,7 +41,7 @@ export type { MarkdownSegment, MarkdownLine, NoteMilestone, ParsedNote };
 @Component({
   selector: 'app-chat-interface',
   standalone: true,
-  imports: [CommonModule, FormsModule, RouterLink, RunIdCopyComponent, OwnerLabelComponent, ScopeSwitchComponent],
+  imports: [CommonModule, FormsModule, RunLibraryComponent, RunIdCopyComponent, OwnerLabelComponent, ScopeSwitchComponent],
   templateUrl: './chat-interface.component.html',
   styleUrl: './chat-interface.component.scss',
   changeDetection: ChangeDetectionStrategy.OnPush
@@ -77,10 +78,7 @@ export class ChatInterfaceComponent {
    * Filtered computed list of active tasks (running or pending) sorted by status and submission order
    */
   public activeQueue = computed(() => {
-    const list = this.agentService.sessions().filter((s) => {
-      const status = this.getTaskStatus(s);
-      return status === 'running' || status === 'paused' || status === 'pending';
-    });
+    const list = this.agentService.sessions().filter((s) => this.statusView(s).active);
     return list.sort((a, b) => {
       const statusA = this.getTaskStatus(a);
       const statusB = this.getTaskStatus(b);
@@ -92,15 +90,25 @@ export class ChatInterfaceComponent {
     });
   });
 
-  /**
-   * Filtered computed list of historical/completed tasks (completed, failed, or cancelled)
-   */
-  public historyTasks = computed(() => {
-    return this.agentService.sessions().filter((s) => {
-      const status = this.getTaskStatus(s);
-      return status !== 'running' && status !== 'paused' && status !== 'pending';
-    });
+  public readonly recordedDevices = computed(() => {
+    const devices = new Map<string, NonNullable<ReturnType<typeof recordedDevice>>>();
+    for (const session of this.agentService.sessions()) {
+      const serial = this.getDeviceSerial(session);
+      const device = serial ? recordedDevice(session, serial) : null;
+      if (device) devices.set(session.session_id, device);
+    }
+    return devices;
   });
+
+  public readonly historyRevision = computed(() => JSON.stringify(
+    this.agentService.sessions()
+      .filter((session) => !this.statusView(session).active)
+      .map((session) => [session.session_id, session.status, session.end_time])
+  ));
+
+  public readonly recordedImages = computed(() => new Map<string, GoalImage[]>(
+    this.agentService.sessions().map((session) => [session.session_id, session.goal_images ?? []])
+  ));
 
   /**
    * Submit a new task goal to the backend
@@ -218,11 +226,13 @@ export class ChatInterfaceComponent {
     });
   }
 
-  /**
-   * Determine the current task execution status
-   */
-  public getTaskStatus(session: Session): TaskStatus {
-    return taskStatusOf(session, { sessionId: this.agentService.runningSessionId(), status: this.agentService.agentStatus() });
+  public statusView(session: Session): RunStatusView {
+    const live = session.session_id === this.agentService.runningSessionId() ? this.agentService.agentStatus() : null;
+    return sessionStatusView(session.status, live);
+  }
+
+  public getTaskStatus(session: Session): RunStatusKey {
+    return this.statusView(session).key;
   }
 
   /**
@@ -253,8 +263,8 @@ export class ChatInterfaceComponent {
   }
 
   /**
-   * Chip text for the session's device: the real model and kind when the
-   * device is currently listed, never a bare 127.0.0.1:<port> address.
+   * Chip text for the session's device: the real model and kind (live, recorded with
+   * the run, or from the registry), never a bare 127.0.0.1:<port> address.
    */
   public getDeviceChip(
     session: Session
@@ -272,18 +282,26 @@ export class ChatInterfaceComponent {
       relay.status === 'connected' ? relay.serial : null
     );
     const where = source ? ` · ${source}` : '';
-    const device = this.systemService.connectedDevices().find((d) => d.serial === serial);
+    // Newest knowledge first: the live list, then what the run recorded, then the registry.
+    const device = [
+      this.systemService.connectedDevices().find((d) => d.serial === serial),
+      recordedDevice(session, serial),
+      registry?.devices.find((d) => d.serial === serial)
+    ].find((d) => d && isIdentifiedDevice(d));
     if (!device) {
-      const title = unlistedDeviceTitle(serial);
+      const ownBrowser = relay.status === 'connected' && relay.serial === serial;
+      const title = unlistedRunDeviceTitle(serial, ownBrowser);
       return { title, kind: null, source, tooltip: `Device: ${title}${where} · ${serial}` };
     }
     const title = deviceTitle(device);
-    const kind = deviceKindLabel(device);
+    const kind = isIdentifiedDevice({ serial, model: null, device_kind: device.device_kind })
+      ? deviceKindLabel(device)
+      : null;
     return {
       title,
       kind: kind === title ? null : kind,
       source,
-      tooltip: `Device: ${title} (${kind})${where} · ${serial}`
+      tooltip: `Device: ${title}${kind ? ` (${kind})` : ''}${where} · ${serial}`
     };
   }
 

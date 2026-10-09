@@ -479,6 +479,7 @@ class SessionRepository:
         start_time: float | None = None,
         notify_context: dict[str, Any] | None = None,
         requested_by: str | None = None,
+        device_binding: dict[str, Any] | None = None,
     ) -> bool:
         """Persist a queue item before its worker starts a session.
 
@@ -503,6 +504,7 @@ class SessionRepository:
                             {
                                 "profile": profile,
                                 "device_id": device_serial,
+                                **({"device_binding": device_binding} if device_binding else {}),
                             }
                         ),
                         json.dumps(notify_context) if notify_context else None,

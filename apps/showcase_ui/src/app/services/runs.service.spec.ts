@@ -17,6 +17,13 @@ describe('RunsService', () => {
 
   afterEach(() => http.verify());
 
+  it('opts into the read-only team catalog without widening other endpoints', () => {
+    service.list(EMPTY_FILTERS, { scope: 'everyone' }).subscribe();
+    const request = http.expectOne((candidate) => candidate.url === '/api/runs');
+    expect(request.request.params.get('scope')).toBe('everyone');
+    request.flush({ runs: [], next_cursor: null, warnings: [] });
+  });
+
   it('lists runs with only the filters that are set, plus cursor and limit', () => {
     service.list({ ...EMPTY_FILTERS, q: 'login flow', status: 'failed' }, { cursor: 'abc', limit: 25 }).subscribe();
     const req = http.expectOne((r) => r.url === '/api/runs');
@@ -54,6 +61,16 @@ describe('RunsService', () => {
   it('resolves one run by full id or prefix, encoded', () => {
     service.get('3f2b/9c1a').subscribe();
     http.expectOne({ method: 'GET', url: '/api/runs/3f2b%2F9c1a' }).flush({});
+  });
+
+  it('keeps explicit My runs separate from an admin queue set to All users', () => {
+    const scope = TestBed.inject(OwnerScopeService);
+    scope.identity.set({ email: 'admin@example.test', admin: true, auth_mode: 'cloudflare', reason: null });
+    scope.setAllUsers(true);
+    service.list(EMPTY_FILTERS, { scope: 'mine' }).subscribe();
+    const request = http.expectOne((candidate) => candidate.url === '/api/runs');
+    expect(request.request.params.get('scope')).toBe('mine');
+    request.flush({ runs: [], next_cursor: null, warnings: [] });
   });
 
   it('reads steps and playback from the existing session routes', () => {

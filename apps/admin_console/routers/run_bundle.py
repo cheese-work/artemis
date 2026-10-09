@@ -22,6 +22,12 @@ from fastapi import APIRouter, Depends
 from fastapi.responses import FileResponse, JSONResponse
 
 from apps.admin_console.core.access_control import AccessIdentity, public_tier
+from apps.admin_console.core.ownership import (
+    OwnerScope,
+    owner_scope,
+    present_session_data,
+    scope_or_open,
+)
 from apps.admin_console.services import run_bundle
 from apps.admin_console.services.run_artifacts import RunLibraryError
 
@@ -29,14 +35,18 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["runs"])
 
 
-def library_error(exc: RunLibraryError) -> JSONResponse:
+def library_error(exc: RunLibraryError, actor: OwnerScope | None = None) -> JSONResponse:
     headers = {}
     retry_after = getattr(exc, "retry_after", None)
     if retry_after is not None:
         headers["Retry-After"] = str(retry_after)
-    return JSONResponse(
-        status_code=exc.status, content={"error": exc.code, **exc.extra}, headers=headers
-    )
+    content = {"error": exc.code, **exc.extra}
+    if isinstance(content.get("candidates"), list):
+        content["candidates"] = [
+            present_session_data(scope_or_open(actor), candidate.get("session_id"), candidate)
+            for candidate in content["candidates"]
+        ]
+    return JSONResponse(status_code=exc.status, content=content, headers=headers)
 
 
 class _BundleResponse(FileResponse):
@@ -64,7 +74,7 @@ async def download_bundle(session_id: str, identity: AccessIdentity = Depends(pu
     try:
         bundle = await asyncio.to_thread(run_bundle.prepare, session_id)
     except RunLibraryError as exc:
-        return library_error(exc)
+        return library_error(exc, owner_scope(identity))
     logger.info(
         "event=bundle_download session_id=%s requester=%s bytes=%d entries=%d skipped=%d ms=%d",
         bundle.session_id,

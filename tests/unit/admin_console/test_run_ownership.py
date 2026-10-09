@@ -163,6 +163,328 @@ def _run_ids(response) -> set[str]:
     return {row["session_id"] for row in response.json()["runs"]}
 
 
+@pytest.mark.asyncio
+async def test_everyone_catalog_is_redacted_read_only_and_keeps_mine_private(cloudflare):
+    other = _run(cloudflare, QA1)
+    mine = _run(cloudflare, QA2)
+    unowned = _run(cloudflare, None)
+    with sqlite3.connect(cloudflare) as conn:
+        conn.execute(
+            "UPDATE sessions SET initial_goal = ? WHERE session_id = ?",
+            ('Login with password="team-secret"', other),
+        )
+    response = await _get(QA2, "/api/runs", scope="everyone")
+    assert _run_ids(response) == {other, mine}
+    assert unowned not in _run_ids(response)
+    rows = {row["session_id"]: row for row in response.json()["runs"]}
+    assert rows[other]["requested_by"] == QA1
+    assert all(row["read_only"] for row in rows.values())
+    assert "team-secret" not in response.text
+    assert _run_ids(await _get(QA2, "/api/runs")) == {mine}
+    shared = await _get(QA2, f"/api/runs/{other}")
+    assert shared.json()["read_only"] is True
+    assert "team-secret" not in shared.text
+    own = await _get(QA1, f"/api/runs/{other}")
+    assert own.json()["read_only"] is False
+    assert "team-secret" in own.text
+
+
+@pytest.mark.asyncio
+async def test_everyone_scope_requires_identity_and_does_not_widen_queue(cloudflare):
+    _run(cloudflare, QA1, queued=True)
+    assert (await _get(None, "/api/runs", scope="everyone")).status_code == 403
+    async with _client() as client:
+        forged = await client.get(
+            "/api/runs?scope=everyone",
+            headers={"Cf-Access-Authenticated-User-Email": QA1},
+        )
+    assert forged.status_code == 403
+    assert (await _get(QA2, "/api/status", scope="everyone")).status_code == 400
+    assert (await _get(QA2, "/api/runs", scope="all")).status_code == 403
+    assert (await _get(QA2, "/api/status")).json()["queue"] == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode,query", [("fts", "zebra7*"), ("substring", "zebra7")])
+async def test_team_search_does_not_match_another_owners_secret(
+    cloudflare, monkeypatch, mode, query
+):
+    from artemis.data_engine import run_catalog
+
+    sid = _run(cloudflare, QA1)
+    with sqlite3.connect(cloudflare) as conn:
+        conn.execute(
+            "UPDATE sessions SET initial_goal = ? WHERE session_id = ?",
+            ('Login with password="zebra7secret"', sid),
+        )
+    monkeypatch.setattr(run_catalog, "search_mode", lambda conn: mode)
+
+    assert _run_ids(await _get(QA1, "/api/runs", q=query)) == {sid}
+    assert _run_ids(await _get(QA1, "/api/runs", scope="everyone", q=query)) == {sid}
+    for caller in (QA2, ADMIN):
+        response = await _get(caller, "/api/runs", scope="everyone", q=query)
+        assert _run_ids(response) == set()
+        assert response.json()["next_cursor"] is None
+    assert _run_ids(await _get(QA2, "/api/runs", scope="everyone", q=query, requester=QA1)) == set()
+    assert _run_ids(await _get(QA2, "/api/runs", scope="everyone", q=" ")) == {sid}
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_prefix_redacts_non_actionable_candidates(cloudflare, monkeypatch):
+    ids = [uuid.UUID(f"deadbeef-0000-4000-8000-{suffix:012d}") for suffix in (1, 2)]
+    monkeypatch.setattr(uuid, "uuid4", MagicMock(side_effect=ids))
+    other, mine = _run(cloudflare, QA1), _run(cloudflare, QA2)
+    with sqlite3.connect(cloudflare) as conn:
+        conn.execute(
+            "UPDATE sessions SET initial_goal = ?",
+            ('Login with password="candidate-secret"',),
+        )
+
+    response = await _get(QA2, "/api/runs/deadbeef")
+    assert response.status_code == 409
+    candidates = {row["session_id"]: row for row in response.json()["candidates"]}
+    assert candidates[other]["read_only"] is True
+    assert "candidate-secret" not in candidates[other]["prompt"]
+    assert candidates[mine]["read_only"] is False
+    assert "candidate-secret" in candidates[mine]["prompt"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("owner", [QA1, None])
+async def test_session_details_redact_another_runs_goal(cloudflare, owner):
+    sid = _run(cloudflare, owner)
+    goal = 'Login with password="zebra7secret"'
+    with sqlite3.connect(cloudflare) as conn:
+        conn.execute("UPDATE sessions SET initial_goal = ? WHERE session_id = ?", (goal, sid))
+
+    other = await _get(QA2, f"/api/sessions/{sid}")
+    assert other.status_code == 200
+    assert other.json()["session_id"] == sid
+    assert "zebra7secret" not in other.text
+    for caller in (ADMIN, owner):
+        if caller is not None:
+            own = await _get(caller, f"/api/sessions/{sid}")
+            assert own.status_code == 200
+            assert own.json()["initial_goal"] == goal
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("caller", [QA1, QA2, ADMIN, None])
+async def test_bundle_ambiguous_candidates_use_the_run_owner_rule(cloudflare, monkeypatch, caller):
+    ids = [
+        uuid.UUID("deadbeef-0000-4000-8000-000000000003"),
+        uuid.UUID("deadbeef-0000-4000-8000-000000000004"),
+    ]
+    monkeypatch.setattr(uuid, "uuid4", MagicMock(side_effect=ids))
+    other, mine = _run(cloudflare, QA1), _run(cloudflare, QA2)
+    with sqlite3.connect(cloudflare) as conn:
+        conn.execute("UPDATE sessions SET initial_goal = ?", ('password="zebra7secret"',))
+    if caller is None:
+        monkeypatch.setattr(app.state, "access_config", AccessConfig(auth_mode="open"))
+
+    response = await _get(caller, "/api/runs/deadbeef/bundle.zip")
+
+    assert response.status_code == 409
+    candidates = {row["session_id"]: row for row in response.json()["candidates"]}
+    assert set(candidates) == {other, mine}
+    for session_id, owner in ((other, QA1), (mine, QA2)):
+        assert ("zebra7secret" in candidates[session_id]["prompt"]) is (
+            caller in (owner, ADMIN, None)
+        )
+
+
+@pytest.mark.asyncio
+async def test_open_session_details_keep_the_raw_goal(env, monkeypatch):
+    monkeypatch.setattr(app.state, "access_config", AccessConfig(auth_mode="open"))
+    sid = _run(env, None)
+    goal = 'Login with password="zebra7secret"'
+    with sqlite3.connect(env) as conn:
+        conn.execute("UPDATE sessions SET initial_goal = ? WHERE session_id = ?", (goal, sid))
+    response = await _get(None, f"/api/sessions/{sid}")
+    assert response.status_code == 200
+    assert response.json()["initial_goal"] == goal
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("owned_notes", [False, True])
+@pytest.mark.parametrize("suffix", ["plan", "notes"])
+@pytest.mark.parametrize("caller", [QA1, QA2, ADMIN, None])
+async def test_legacy_notes_without_run_ownership_are_redacted(
+    cloudflare, monkeypatch, tmp_path, suffix, caller, owned_notes
+):
+    from apps.admin_console.routers import media
+
+    sid = _run(cloudflare, QA2)
+    traces = tmp_path / "legacy-traces"
+    notes = traces / sid / "notes" if owned_notes else traces / "notes"
+    notes.mkdir(parents=True)
+    (notes / "task_plan.md").write_text('password="zebra7secret"', encoding="utf-8")
+    monkeypatch.setitem(
+        media.media_service.get_task_plan_content.__globals__, "TRACES_PATH", traces
+    )
+    if caller is None:
+        monkeypatch.setattr(app.state, "access_config", AccessConfig(auth_mode="open"))
+
+    response = await _get(caller, f"/api/sessions/{sid}/{suffix}")
+
+    assert response.status_code == 200
+    assert ("zebra7secret" in response.text) is (
+        caller in (ADMIN, None) or (owned_notes and caller == QA2)
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("caller", [QA1, QA2])
+async def test_sdk_get_task_keeps_session_details_compatible(cloudflare, caller):
+    from artemis_client import ArtemisClient
+
+    sid = _run(cloudflare, QA1)
+    goal = 'Login with password="zebra7secret"'
+    with sqlite3.connect(cloudflare) as conn:
+        conn.execute("UPDATE sessions SET initial_goal = ? WHERE session_id = ?", (goal, sid))
+    transport = SimpleNamespace(
+        request=lambda method, path, **kwargs: asyncio.run(_get(caller, path)).json()
+    )
+    result = await ArtemisClient("http://localhost", transport=transport).get_task(sid)
+    assert result.task_id == sid
+    assert result.done and result.succeeded
+    assert result.goal is not None
+    assert ("zebra7secret" in result.goal) is (caller == QA1)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "suffix,provider,payload",
+    [
+        ("events", "sessions.session_repo.lifecycle.events", [{"goal": 'password="zebra7secret"'}]),
+        (
+            "tree",
+            "sessions.trace_repo.get_trace_tree",
+            [{"payload": {"goal": 'password="zebra7secret"'}}],
+        ),
+        (
+            "background_tasks",
+            "sessions.session_repo.get_background_tasks",
+            [{"description": 'password="zebra7secret"'}],
+        ),
+        (
+            "startup_progress",
+            "sessions.state.get_startup_progress",
+            [{"message": 'password="zebra7secret"'}],
+        ),
+        (
+            "steps",
+            "steps.step_repo.get_session_steps",
+            [{"action_description": 'password="zebra7secret"'}],
+        ),
+        (
+            "replay_steps",
+            "replay.replay_manager.get_replay_steps",
+            [{"instruction": 'password="zebra7secret"'}],
+        ),
+        (
+            "steps/1/replay_traces",
+            "replay.replay_manager.get_step_replay_traces",
+            [{"payload": {"goal": 'password="zebra7secret"'}}],
+        ),
+        ("plan", "media.media_service.get_task_plan_content", 'password="zebra7secret"'),
+        ("notes", "media.media_service.get_session_notes_content", 'password="zebra7secret"'),
+        (
+            "checks",
+            "media.media_service.get_session_checks",
+            {"records": [{"message": 'password="zebra7secret"'}]},
+        ),
+        (
+            "video",
+            "media._get_session_video_sync",
+            {"status": "failed", "message": 'password="zebra7secret"'},
+        ),
+    ],
+)
+async def test_shared_session_text_endpoints_redact_secrets(
+    cloudflare, monkeypatch, suffix, provider, payload
+):
+    from importlib import import_module
+
+    sid = _run(cloudflare, QA1)
+    module_name, attribute_path = provider.split(".", 1)
+    target = import_module(f"apps.admin_console.routers.{module_name}")
+    attributes = attribute_path.split(".")
+    for attribute in attributes[:-1]:
+        target = getattr(target, attribute)
+    if provider == "sessions.session_repo.lifecycle.events":
+        target = type(target)
+    monkeypatch.setattr(target, attributes[-1], lambda *args, **kwargs: payload)
+
+    for caller in (QA1, ADMIN, QA2):
+        response = await _get(caller, f"/api/sessions/{sid}/{suffix}")
+        assert response.status_code == 200, response.text
+        assert ("zebra7secret" in response.text) is (caller != QA2)
+
+
+@pytest.mark.asyncio
+async def test_trace_text_uses_the_recorded_owner_not_a_supplied_session(cloudflare, monkeypatch):
+    from apps.admin_console.routers import steps
+
+    other, mine = _run(cloudflare, QA1), _run(cloudflare, QA2)
+    monkeypatch.setattr(steps.step_repo, "get_step_session_id", lambda *args: other)
+    monkeypatch.setattr(
+        steps.trace_repo,
+        "get_step_traces_tree",
+        lambda *args: [{"goal": 'password="zebra7secret"'}],
+    )
+    monkeypatch.setattr(
+        steps.trace_repo,
+        "get_trace_by_id",
+        lambda *args, **kwargs: {
+            "session_id": other,
+            "payload": json.dumps({"goal": 'password="zebra7secret"'}),
+        },
+    )
+    for caller in (QA1, ADMIN, QA2):
+        for path in ("/api/steps/step1/traces", f"/api/traces/trace1?session_id={mine}"):
+            response = await _get(caller, path)
+            assert response.status_code == 200, response.text
+            assert ("zebra7secret" in response.text) is (caller != QA2)
+
+
+@pytest.mark.asyncio
+async def test_session_prompt_redaction_fails_closed_when_ownership_is_unavailable(
+    cloudflare, monkeypatch
+):
+    from apps.admin_console.database.repositories.run_catalog_repository import CatalogNotReady
+
+    sid = _run(cloudflare, QA1)
+    with sqlite3.connect(cloudflare) as conn:
+        conn.execute(
+            "UPDATE sessions SET initial_goal = ? WHERE session_id = ?",
+            ('password="zebra7secret"', sid),
+        )
+    monkeypatch.setattr(run_catalog_repo, "owners", MagicMock(side_effect=CatalogNotReady()))
+    response = await _get(QA2, f"/api/sessions/{sid}")
+    assert response.status_code == 503
+    assert "zebra7secret" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_everyone_filters_and_pagination_do_not_expose_unowned_runs(cloudflare):
+    wanted = [_run(cloudflare, QA1, status="failed") for _ in range(3)]
+    _run(cloudflare, None, status="failed")
+    _run(cloudflare, QA2, status="completed")
+    first = await _get(QA2, "/api/runs", scope="everyone", status="failed", limit=2)
+    assert len(first.json()["runs"]) == 2
+    second = await _get(
+        QA2,
+        "/api/runs",
+        scope="everyone",
+        status="failed",
+        limit=2,
+        cursor=first.json()["next_cursor"],
+    )
+    assert _run_ids(first) | _run_ids(second) == set(wanted)
+    assert second.json()["next_cursor"] is None
+
+
 def _queue_ids(response) -> set[str]:
     assert response.status_code == 200, response.text
     return {item["session_id"] for item in response.json()["queue"]}
@@ -890,6 +1212,79 @@ async def _open_named_stream(session_id: str, scope):
     stream = response.body_iterator
     assert (await _next_event(stream))[0] == "info"
     return stream
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("caller", [QA1, QA2, ADMIN, None])
+async def test_named_stream_redacts_foreign_live_text(cloudflare, caller):
+    from apps.admin_console.core.ownership import owner_scope
+
+    sid = _run(cloudflare, QA1, status="running")
+    scope = owner_scope(AccessIdentity(caller, caller == ADMIN, "cloudflare" if caller else "open"))
+    stream = await _open_named_stream(sid, scope)
+    payloads = [
+        ("session_started", {"session_id": sid, "initial_goal": 'password="zebra7secret"'}),
+        ("step_recorded", {"session_id": sid, "thought": 'Use password="zebra7secret"'}),
+        (
+            "trace_recorded",
+            {
+                "session_id": sid,
+                "type": "tool",
+                "payload": json.dumps({"args": {"password": "zebra7secret"}}),
+            },
+        ),
+        (
+            "background_tasks_updated",
+            [{"session_id": sid, "goal": 'password="zebra7secret"'}],
+        ),
+        ("error", 'Cannot use password="zebra7secret"'),
+    ]
+    try:
+        for event_type, payload in payloads:
+            task_queue_service._broadcast_event(event_type, payload)
+            received_type, received_data = await _next_event(stream)
+            assert received_type == event_type
+            assert ("zebra7secret" in json.dumps(received_data)) is (caller != QA2)
+    finally:
+        await stream.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("caller", [QA1, QA2, ADMIN, None])
+async def test_named_stream_http_redacts_cached_progress(cloudflare, monkeypatch, caller):
+    sid = _run(cloudflare, QA1, status="running")
+    if caller is None:
+        monkeypatch.setattr(app.state, "access_config", AccessConfig(auth_mode="open"))
+    monkeypatch.setattr(state, "is_shutting_down", True)
+    monkeypatch.setattr(
+        state,
+        "get_startup_progress",
+        lambda session_id: [{"session_id": session_id, "message": 'password="zebra7secret"'}],
+    )
+
+    response = await _get(caller, f"/api/stream/{sid}")
+
+    assert response.status_code == 200
+    assert "event: startup_progress" in response.text
+    assert ("zebra7secret" in response.text) is (caller != QA2)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("caller", [QA1, QA2, ADMIN])
+async def test_firehose_redacts_text_without_run_ownership(cloudflare, caller):
+    from apps.admin_console.core.ownership import owner_scope
+
+    scope = owner_scope(AccessIdentity(caller, caller == ADMIN, "cloudflare"))
+    stream = await _open_stream(scope)
+    try:
+        task_queue_service._broadcast_event(
+            "startup_progress", {"message": 'password="zebra7secret"'}
+        )
+        event_type, data = await _next_event(stream)
+        assert event_type == "startup_progress"
+        assert ("zebra7secret" in json.dumps(data)) is (caller == ADMIN)
+    finally:
+        await stream.aclose()
 
 
 @pytest.mark.asyncio
