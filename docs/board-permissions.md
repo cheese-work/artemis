@@ -135,6 +135,13 @@ Today these routes are open to any signed-in caller by link
   `/api/runs/{session_id}/bundle.zip`
 - named-session streams: `/api/stream/{session_id}`
 
+Evidence named only by an image name, a file path, a trace id or a step id
+(`/images/*`, `/api/images/*`, `/videos/*`, `/local_file`, `/api/steps/{id}/traces`,
+`/api/traces/{id}` and its `/download`) carries no run id in the URL. The caller must own a
+live run that owns the file, or have opened such a run by its full `session_id`
+first. Guessing a path proves nothing. Every other miss (removed, ownerless,
+unknown) is the same `run_not_visible` 404 for a non-admin.
+
 The existing `/api/sessions/{session_id}/notes` route is the agent's own notes,
 not the annotations and comments defined in [board API](board-api.md#notes).
 

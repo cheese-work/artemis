@@ -407,6 +407,7 @@ async def test_trace_download_passes_through_the_redactor(library, qa):
     trace_id = library.trace(sid, json.dumps(payload))
 
     async with qa:
+        await qa.get(f"/api/runs/{sid}")  # opening the run by its full id is the link
         response = await qa.get(f"/api/traces/{trace_id}/download")
 
     assert response.status_code == 200
@@ -423,6 +424,7 @@ async def test_trace_download_of_non_json_payload_is_redacted_text(library, qa):
     trace_id = library.trace(sid, "plain text with password=hunter2")
 
     async with qa:
+        await qa.get(f"/api/runs/{sid}")  # opening the run by its full id is the link
         response = await qa.get(f"/api/traces/{trace_id}/download")
 
     assert "hunter2" not in response.text and "plain text with" in response.text

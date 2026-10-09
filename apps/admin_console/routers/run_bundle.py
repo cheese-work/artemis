@@ -27,6 +27,7 @@ from apps.admin_console.core.ownership import (
     owner_scope,
     present_session_data,
     record_run_read,
+    require_signed_in,
     scope_or_open,
 )
 from apps.admin_console.services import run_bundle
@@ -75,6 +76,7 @@ class _BundleResponse(FileResponse):
 async def download_bundle(session_id: str, identity: AccessIdentity = Depends(public_tier)):
     """Prompt, steps, images, video and logs. Text is redacted; media is not."""
     actor = owner_scope(identity)
+    require_signed_in(actor)
     try:
         bundle = await asyncio.to_thread(
             run_bundle.prepare,

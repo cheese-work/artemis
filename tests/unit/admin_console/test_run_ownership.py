@@ -454,6 +454,7 @@ async def test_trace_text_uses_the_recorded_owner_not_a_supplied_session(cloudfl
         },
     )
     for caller in (QA1, ADMIN, QA2):
+        await _get(caller, f"/api/sessions/{other}")  # opening the run by its full id is the link
         for path in ("/api/steps/step1/traces", f"/api/traces/trace1?session_id={mine}"):
             response = await _get(caller, path)
             assert response.status_code == 200, response.text
