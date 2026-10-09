@@ -4,6 +4,7 @@ import { provideRouter } from '@angular/router';
 import { of, throwError } from 'rxjs';
 import { RunTarget } from '../../core/models/run-target.model';
 import { AgentService } from '../../services/agent.service';
+import { BrowserStorageService } from '../../services/browser-storage.service';
 import { RunViewComponent } from '../../components/run-view/run-view.component';
 import { WorkspacePhoneService } from '../../services/workspace-phone.service';
 import { InterruptedBannerComponent } from '../../components/interrupted-banner/interrupted-banner.component';
@@ -293,7 +294,11 @@ describe('WorkspaceComponent pinned composer (CHE-1508)', () => {
     fixture.detectChanges();
   });
 
-  afterEach(() => fixture.destroy());
+  // Flash/Pro choices persist in browser storage; forget them so other suites start on Flash.
+  afterEach(() => {
+    fixture.destroy();
+    TestBed.inject(BrowserStorageService).removeItem('artemis_selected_profile');
+  });
 
   const hint = () => el.querySelector<HTMLElement>('.composer-hint')!.textContent!.replace(/\s+/g, ' ').trim();
   const textarea = () => el.querySelector<HTMLTextAreaElement>('.composer textarea')!;
