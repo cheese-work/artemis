@@ -100,6 +100,19 @@ try {
     for (const box of layout.rows) assert.equal(box.height, 56, `${width}px row height`);
     assert.ok(layout.groups.includes('Today') && layout.groups.includes('Yesterday'));
     assert.ok(layout.statuses.includes('Completed') && !layout.statuses.includes('Passed'));
+    const completedRows = await evaluate(`(() => [...document.querySelectorAll('app-run-library .run-row')]
+      .filter((row) => row.querySelector('.run-outcome').textContent.trim() === 'Completed')
+      .map((row) => ({
+        tone: row.querySelector('.run-icon').className,
+        icon: row.querySelector('.run-icon .material-symbols-outlined').textContent.trim(),
+        packageGap: row.querySelector('.run-package').getBoundingClientRect().left - row.querySelector('.run-outcome').getBoundingClientRect().right
+      })))()`);
+    assert.ok(completedRows.length > 0);
+    for (const row of completedRows) {
+      assert.equal(row.tone, 'run-icon tone-neutral');
+      assert.equal(row.icon, 'description');
+      assert.ok(row.packageGap >= 4, `${width}px package separator gap`);
+    }
     assert.equal(await evaluate("document.querySelector('.queue-row .run-prompt').textContent"), 'Check checkout');
     await evaluate("document.dispatchEvent(new KeyboardEvent('keydown', { key: '/', bubbles: true, cancelable: true }))");
     assert.equal(await evaluate("document.activeElement === document.querySelector('input[type=search]')"), true);
@@ -119,7 +132,7 @@ try {
     await evaluate("document.querySelector('[data-scope=everyone]').click()");
     await waitFor(() => evaluate("ng.getComponent(document.querySelector('app-run-library')).scope() === 'everyone' && !ng.getComponent(document.querySelector('app-run-library')).loading()"));
     assert.equal(await evaluate("document.querySelector('[data-scope=everyone]').getAttribute('aria-selected')"), 'true');
-    receipt.push({ width, result: 'PASS', ...layout, checks: ['44px targets', '56px rows', 'date groups', 'status words', 'slash focus and editable guard', 'targeted Stop/Cancel', 'Everyone tab'] });
+    receipt.push({ width, result: 'PASS', ...layout, completedRows, checks: ['44px targets', '56px rows', 'date groups', 'status words', 'neutral completion icons', 'package separator gap', 'slash focus and editable guard', 'targeted Stop/Cancel', 'Everyone tab'] });
     console.log(`PASS run-list audit ${width}px`);
   }
   assert.deepEqual(errors, [], 'Uncaught browser errors');

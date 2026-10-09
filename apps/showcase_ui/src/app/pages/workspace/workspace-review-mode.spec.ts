@@ -202,7 +202,8 @@ describe('Workspace review mode', () => {
 
     expect(q('app-workspace')).toBe(workspace);
     expect(runs.list.calls.count()).toBe(requests + 1);
-    expect(q('app-run-library a.run-row')?.textContent).toContain(session.initial_goal);
+    expect(q('app-run-library .queue-section')).toBeNull();
+    expect(q('app-run-library .date-group a.run-row')?.textContent).toContain(session.initial_goal);
     const library = harness.fixture.debugElement.query(By.directive(RunLibraryComponent)).componentInstance as RunLibraryComponent;
     expect(library.recordedDevices().get(ID)).toEqual({ serial: 'recorded-phone', model: 'Recorded Pixel', device_kind: 'phone' });
     expect(library.recordedImages().get(ID)).toEqual(session.goal_images);

@@ -131,15 +131,26 @@ describe('RunLibraryComponent', () => {
       await open('/runs', of(page([run({ app_package: 'com.example.shop' })])));
       expect(q('.run-meta')!.textContent!.trim()).toBe('Completed · com.example.shop');
       expect(q('.run-row')!.textContent).not.toContain('Passed');
-      expect(q('.run-icon .material-symbols-outlined')).not.toBeNull();
+      expect(q('.run-icon')!.classList).toContain('tone-neutral');
+      expect(q('.run-icon')!.classList).not.toContain('tone-ok');
+      expect(q('.run-icon .material-symbols-outlined')!.textContent!.trim()).toBe('description');
+      expect(q('.run-package')!.getBoundingClientRect().left - q('.run-outcome')!.getBoundingClientRect().right).toBeGreaterThanOrEqual(4);
       expect(getComputedStyle(q('.run-package')!).fontFamily).toContain('JetBrains Mono');
       expect(q('.run-row')!.getBoundingClientRect().height).toBe(56);
     });
 
-    it('uses the verdict only when the catalog supplies one', async () => {
-      await open('/runs', of(page([run({ verdict: 'inconclusive' })])));
-      expect(q('.run-outcome')!.textContent).toBe('Inconclusive');
-    });
+    for (const verdictView of [
+      { verdict: 'pass', label: 'Pass', icon: 'check_circle', tone: 'ok' },
+      { verdict: 'fail', label: 'Fail', icon: 'cancel', tone: 'danger' },
+      { verdict: 'inconclusive', label: 'Inconclusive', icon: 'help', tone: 'warn' }
+    ] as const) {
+      it(`uses the ${verdictView.verdict} verdict only when the catalog supplies one`, async () => {
+        await open('/runs', of(page([run({ verdict: verdictView.verdict })])));
+        expect(q('.run-outcome')!.textContent).toBe(verdictView.label);
+        expect(q('.run-icon')!.classList).toContain(`tone-${verdictView.tone}`);
+        expect(q('.run-icon .material-symbols-outlined')!.textContent!.trim()).toBe(verdictView.icon);
+      });
+    }
 
     it('groups history by local calendar day, including yesterday, older dates and unknown dates', async () => {
       const today = new Date();
