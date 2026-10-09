@@ -70,7 +70,7 @@
     (backdropClick)="closeFilter()" (overlayKeydown)="onFilterKey($event)">
     <section class="filter-popover" id="run-filter-popover" #filterPopover role="dialog" aria-modal="true"
       [attr.aria-label]="openFilter() === 'add' ? 'Add filter' : openDefinition()?.label + ' filter'"
-      cdkTrapFocus [cdkTrapFocusAutoCapture]="true" (keydown)="onFilterKey($event)">
+      cdkTrapFocus (keydown)="onFilterKey($event)">
       <header><h3>{{ openFilter() === 'add' ? 'Add filter' : openDefinition()?.label }}</h3>
         <button type="button" class="popover-close" aria-label="Close filter" (click)="closeFilter()"><span class="material-symbols-outlined" aria-hidden="true">close</span></button>
       </header>

@@ -291,7 +291,7 @@ export class RunLibraryComponent implements OnChanges {
   public toggleFilter(key: RunFilterKey | 'add', origin: CdkOverlayOrigin): void {
     if (this.filterDefinitions.find((definition) => definition.key === key)?.kind === 'unavailable') return;
     if (this.openFilter() === key) return this.closeFilter();
-    origin.elementRef.nativeElement.focus();
+    origin.elementRef.nativeElement.focus({ preventScroll: true });
     this.popoverOrigin.set(origin);
     this.prepareFilter(key);
   }
@@ -299,7 +299,6 @@ export class RunLibraryComponent implements OnChanges {
   public addFilter(key: RunFilterKey): void {
     this.addedFilters.update((keys) => keys.includes(key) ? keys : [...keys, key]);
     this.prepareFilter(key);
-    afterNextRender(() => this.filterPopover()?.nativeElement.querySelector<HTMLElement>('[cdkFocusInitial]')?.focus(), { injector: this.injector });
   }
 
   private prepareFilter(key: RunFilterKey | 'add'): void {
@@ -308,10 +307,18 @@ export class RunLibraryComponent implements OnChanges {
     this.draftTo.set(this.filters().to);
     this.dateError.set(false);
     this.openFilter.set(key);
+    afterNextRender(() => {
+      if (this.openFilter() !== key) return;
+      const popover = this.filterPopover()?.nativeElement;
+      const target = popover?.querySelector<HTMLElement>('[cdkFocusInitial]') ?? popover?.querySelector<HTMLElement>('.popover-close');
+      target?.focus({ preventScroll: true });
+    }, { injector: this.injector });
   }
 
   public closeFilter(): void {
+    if (!this.openFilter()) return;
     this.openFilter.set(null);
+    this.popoverOrigin()?.elementRef.nativeElement.focus({ preventScroll: true });
   }
 
   public selectFilter(key: RunFilterKey, value: string): void {
@@ -345,7 +352,7 @@ export class RunLibraryComponent implements OnChanges {
 
   public clearChip(key: RunFilterKey): void {
     const primary = this.filterDefinitions.find((definition) => definition.key === key)?.primary;
-    this.hostElement.nativeElement.querySelector<HTMLButtonElement>(`[data-filter="${primary ? key : 'add'}"]`)?.focus();
+    this.hostElement.nativeElement.querySelector<HTMLButtonElement>(`[data-filter="${primary ? key : 'add'}"]`)?.focus({ preventScroll: true });
     if (key === 'date') this.apply({ from: '', to: '' });
     else if (key !== 'app') this.setFilter(key, '');
     this.addedFilters.update((keys) => keys.filter((entry) => entry !== key));

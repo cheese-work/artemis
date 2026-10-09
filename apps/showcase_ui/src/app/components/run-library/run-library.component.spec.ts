@@ -552,6 +552,20 @@ describe('RunLibraryComponent', () => {
   });
 
   describe('filter popovers', () => {
+    it('preserves list scroll when a popover captures and restores focus', async () => {
+      await open('/runs', of(page(Array.from({ length: 12 }, (_, index) => run({ session_id: `scroll-${index}` })))));
+      const region = q<HTMLElement>('.library-scroll')!;
+      region.style.height = '200px';
+      region.scrollTop = 100;
+      q<HTMLButtonElement>('[data-filter="status"]')!.click();
+      await settle();
+      expect(region.scrollTop).toBe(100);
+      q<HTMLElement>('[data-filter-option=""]')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      await settle();
+      expect(region.scrollTop).toBe(100);
+      expect(document.activeElement).toBe(q('[data-filter="status"]'));
+    });
+
     it('keeps App visibly unavailable without changing the URL or requesting a list', async () => {
       await open('/runs?q=login');
       runs.list.calls.reset();
