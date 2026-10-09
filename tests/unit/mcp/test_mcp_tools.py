@@ -39,6 +39,7 @@ def temp_trace_env(monkeypatch):
     temp_dir = tempfile.mkdtemp()
     monkeypatch.setattr(trace_store, "TRACES_DIR", temp_dir)
     monkeypatch.setenv("ARTEMIS_STANDALONE", "1")
+    monkeypatch.setattr("mcp_server.tools.task_runner._start_spawn_watchdog", MagicMock())
     yield temp_dir
     shutil.rmtree(temp_dir, ignore_errors=True)
 
@@ -97,6 +98,7 @@ def test_mobile_run_task_reserves_and_passes_global_queue_ticket(temp_trace_env)
         ) as reserve,
         patch("mcp_server.tools.task_runner.DeviceExecutionLock.transfer_reservation") as transfer,
         patch("mcp_server.tools.task_runner.subprocess.Popen", return_value=process) as popen,
+        patch("mcp_server.tools.task_runner.threading.Thread") as watchdog_thread,
     ):
         result = mobile_run_task(
             task_desc="Open Settings",
@@ -104,6 +106,7 @@ def test_mobile_run_task_reserves_and_passes_global_queue_ticket(temp_trace_env)
             model="Flash",
         )
 
+    watchdog_thread.assert_not_called()
     reserve.assert_called_once()
     transfer.assert_called_once_with(
         "queue-ticket-1",
