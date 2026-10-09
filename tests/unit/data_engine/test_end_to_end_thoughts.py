@@ -20,6 +20,7 @@ from uuid import uuid4
 
 from langchain_core.messages import AIMessage, HumanMessage
 from artemis.context import ArtemisContext
+from artemis.data_engine import engine as engine_module
 from artemis.data_engine.engine import DataEngine
 from artemis.data_engine.trace import CURRENT_TRACE_ID, DataEngineCallbackHandler
 from artemis.utils.task_tree import build_plan_and_history
@@ -34,7 +35,7 @@ def temp_workspace():
 
 
 @pytest.mark.asyncio
-async def test_end_to_end_thoughts_non_duplication(temp_workspace):
+async def test_end_to_end_thoughts_non_duplication(temp_workspace, monkeypatch):
     # 1. Setup mock context and DataEngine
     mock_ctx = MagicMock(spec=ArtemisContext)
     mock_execution_setup = MagicMock()
@@ -48,6 +49,9 @@ async def test_end_to_end_thoughts_non_duplication(temp_workspace):
 
     # Start session
     engine.start_session("Test initial goal")
+    # start_session makes this engine the process-wide log sink, so log lines keep
+    # queueing storage writes after shutdown() and race the teardown rmtree.
+    monkeypatch.setattr(engine_module, "_CURRENT_DATA_ENGINE", None)
 
     # 2. Allocate step ID
     step_id = engine.allocate_step_id()

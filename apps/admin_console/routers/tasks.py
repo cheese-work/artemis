@@ -42,6 +42,7 @@ from apps.admin_console.core.ownership import (
     require_access_all,
     scope_or_open,
 )
+from apps.admin_console.core.redaction import redact_image_data, redact_json
 
 try:
     from admin_console.core.state import IN_FLIGHT_STATUSES, state
@@ -537,7 +538,7 @@ async def get_status(scope: OwnerScope = Depends(list_scope)):
 
 
 def _scope_status(payload: dict[str, Any], scope: OwnerScope) -> dict[str, Any]:
-    """Drop queue entries, device owners and the headline run the scope may not see."""
+    """Filter visible runs and redact shared payloads while keeping owner data raw."""
     if not scope.enforced or scope.include_all:
         return payload
     queue = list(payload.get("queue") or [])
@@ -550,20 +551,39 @@ def _scope_status(payload: dict[str, Any], scope: OwnerScope) -> dict[str, Any]:
 
     def visible(session_id: Any) -> bool:
         return (
-            bool(session_id) and str(session_id) in owners and scope.sees(owners[str(session_id)])
+            bool(session_id)
+            and str(session_id) in owners
+            and scope.sees(owners[str(session_id)], str(session_id))
+        )
+
+    def present(session_id: Any, data: Any) -> Any:
+        return (
+            data
+            if scope.may_act_on(owners.get(str(session_id)))
+            else redact_json(redact_image_data(data))
         )
 
     scoped = {
-        **payload,
-        "queue": [i for i in queue if visible(i.get("session_id"))],
-        "active_tasks": [i for i in active if visible(i.get("session_id"))],
+        **(present(headline, payload) if visible(headline) else payload),
+        "queue": [
+            present(item.get("session_id"), item)
+            for item in queue
+            if visible(item.get("session_id"))
+        ],
+        "active_tasks": [
+            present(item.get("session_id"), item)
+            for item in active
+            if visible(item.get("session_id"))
+        ],
         "background_tasks": [],
     }
     if not headline:
         return scoped
     if visible(headline):
         # Bind to the run the caller can see, not the globally latest session.
-        scoped["background_tasks"] = session_repo.get_background_tasks(str(headline))
+        scoped["background_tasks"] = present(
+            headline, session_repo.get_background_tasks(str(headline))
+        )
     else:
         scoped.update(session_id=None, goal=None, pid=None)
     return scoped
@@ -730,7 +750,7 @@ async def stream_events(
         if key in decided:
             return decided[key]
         owners = owners_of([key])
-        allowed = scope.sees(owners.get(key))
+        allowed = scope.sees(owners.get(key), key)
         if key in owners:  # a run not yet recorded may still gain its owner
             decided[key] = allowed
         return allowed

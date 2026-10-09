@@ -30,6 +30,7 @@ from apps.admin_console.core.ownership import (
     require_access,
     scope_or_open,
 )
+from apps.admin_console.core.redaction import redact_image_data, redact_json
 from apps.admin_console.routers.run_admin import ClearRequest
 from apps.admin_console.routers.run_bundle import library_error
 from apps.admin_console.services import run_images, run_retention
@@ -78,7 +79,7 @@ def _list_sessions_sync(scope: OwnerScope = OPEN_SCOPE):
                 row
                 for row in rows
                 if str(row.get("session_id")) in owners
-                and scope.sees(owners[str(row["session_id"])])
+                and scope.sees(owners[str(row["session_id"])], str(row["session_id"]))
             ]
     video_rec_map = session_repo.get_video_recordings_map()
     latest_recordings = session_repo.get_latest_video_recordings_map()
@@ -153,7 +154,12 @@ def _list_sessions_sync(scope: OwnerScope = OPEN_SCOPE):
             if sess_profile:
                 row_dict["model_info"] = model_service.get_active_model_info(sess_profile)
 
-    return result
+    return [
+        row
+        if scope.may_act_on(owners.get(str(row.get("session_id"))))
+        else redact_json(redact_image_data(row))
+        for row in result
+    ]
 
 
 @router.get("/api/sessions/{session_id}")

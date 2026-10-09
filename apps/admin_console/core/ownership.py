@@ -2,9 +2,10 @@
 
 A run's owner is the verified Cloudflare identity that submitted it, stored as
 ``run_meta.requested_by``. A run submitted without an identity has no owner.
-Open mode never filters. In cloudflare mode a caller sees and acts on the runs
-they own; an admin may widen a listing with ``scope=all`` and acts on any run.
-An unowned run is visible to ``scope=all`` and actionable by an admin only: a
+Open mode never filters. In cloudflare mode a caller lists their own runs;
+``scope=available`` also includes previously opened full-id links. Only owners
+and admins may act on a run. An admin may widen a listing with ``scope=all``.
+An unowned run is discoverable through a full-id link or ``scope=all``, but actionable by an admin only: a
 caller with no identity owns nothing (a missing owner is not a matching one).
 Shared session JSON masks secrets for non-owners. Owners, administrators and
 open-mode callers retain raw data, as on the catalog's direct run endpoint.
@@ -32,6 +33,7 @@ except ImportError:
     )
 
 SCOPE_MINE = "mine"
+SCOPE_AVAILABLE = "available"
 SCOPE_ALL = "all"
 
 
@@ -41,10 +43,17 @@ class OwnerScope:
     email: str | None = None
     admin: bool = False
     include_all: bool = False
+    available: bool = False
+    shared_ids: frozenset[str] = frozenset()
 
-    def sees(self, owner: str | None) -> bool:
+    def sees(self, owner: str | None, session_id: str | None = None) -> bool:
         """Whether a listing, queue or stream for this scope includes the run."""
-        return not self.enforced or self.include_all or self._owns(owner)
+        return (
+            not self.enforced
+            or self.include_all
+            or self._owns(owner)
+            or (self.available and session_id in self.shared_ids)
+        )
 
     def may_act_on(self, owner: str | None) -> bool:
         """Whether stop, resume, delete or clear may touch the run."""
@@ -63,12 +72,12 @@ def scope_or_open(scope: Any) -> OwnerScope:
 
 
 def owner_scope(identity: AccessIdentity, scope: str = SCOPE_MINE) -> OwnerScope:
-    if scope not in (SCOPE_MINE, SCOPE_ALL):
+    if scope not in (SCOPE_MINE, SCOPE_AVAILABLE, SCOPE_ALL):
         raise AdminAPIError(
             400,
             f"Unknown scope '{scope}'.",
             "invalid_scope",
-            "Use scope=mine, or scope=all as an administrator.",
+            "Use scope=mine, scope=available, or scope=all as an administrator.",
         )
     enforced = identity.auth_mode != "open"
     if enforced and scope == SCOPE_ALL and not identity.admin:
@@ -78,7 +87,27 @@ def owner_scope(identity: AccessIdentity, scope: str = SCOPE_MINE) -> OwnerScope
             "scope_all_requires_admin",
             "Drop scope=all to list your own runs.",
         )
-    return OwnerScope(enforced, identity.email, identity.admin, scope == SCOPE_ALL)
+    shared_ids = frozenset()
+    if enforced and identity.email and scope == SCOPE_AVAILABLE:
+        try:
+            shared_ids = run_catalog_repo.shared_run_ids(identity.email)
+        except CatalogNotReady as exc:
+            raise AdminAPIError(
+                503, "The run catalog is not ready.", "catalog_not_ready", "Restart the console."
+            ) from exc
+    return OwnerScope(
+        enforced,
+        identity.email,
+        identity.admin,
+        scope == SCOPE_ALL,
+        scope == SCOPE_AVAILABLE,
+        shared_ids,
+    )
+
+
+def record_run_read(scope: OwnerScope, session_id: str) -> None:
+    if scope.enforced and scope.email:
+        run_catalog_repo.record_link_share(scope.email, session_id)
 
 
 async def list_scope(

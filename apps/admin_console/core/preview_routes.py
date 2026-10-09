@@ -3,7 +3,7 @@
 A per-PR preview serves the real FastAPI app over synthetic fixtures, so every
 registered route is classified, and a route nobody reviewed stays off:
 
-* ``REAL``: real read-only behaviour over the preview's own data.
+* ``REAL``: real reads over the preview's own data, including local link-share bookkeeping.
 * ``SYNTHETIC``: served by ``routers.preview_synthetic``, never the real handler.
 * ``DISABLED``: answered with ``preview_disabled`` before any handler runs.
 
