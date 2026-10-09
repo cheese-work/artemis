@@ -514,6 +514,28 @@ def test_service_token_with_a_bad_signature_is_denied_with_401(service_app, capl
     assert denial.endswith(f"verification failed reason=jwt_invalid route=GET {path}")
 
 
+class _BrokenVerifier(CloudflareAccessVerifier):
+    async def verify(self, token, config):
+        raise RuntimeError("unexpected verifier failure")
+
+
+@pytest.mark.parametrize("path", ["/docs", "/api/system/version", "/api/system/failures"])
+def test_service_token_is_denied_with_401_when_verification_fails_unexpectedly(
+    service_app, monkeypatch, caplog, path
+):
+    from apps.admin_console.server import app
+
+    monkeypatch.setattr(app.state, "access_verifier", _BrokenVerifier())
+    caplog.set_level("INFO", logger="apps.admin_console.core.access_control")
+
+    response = service_app("GET", path)
+
+    assert response.status_code == 401
+    assert response.json()["code"] == "service_token_invalid"
+    [denial] = [line for line in caplog.messages if "Service token denied" in line]
+    assert denial.endswith(f"verification failed reason=verification_error route=GET {path}")
+
+
 @pytest.mark.parametrize(
     "preview",
     [

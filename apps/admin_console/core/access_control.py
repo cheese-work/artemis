@@ -450,13 +450,9 @@ async def _enforce_service_boundary(request: HTTPConnection) -> None:
             RETRY_AFTER_SECONDS,
         ) from exc
     except (InvalidTokenError, PyJWTError, TypeError, KeyError) as exc:
-        _deny_unverified_service_token(request, "jwt_invalid")
-        raise AdminAPIError(
-            401,
-            "This service credential is not a valid Cloudflare Access token.",
-            "service_token_invalid",
-            "Use a current Cloudflare Access service token for this application.",
-        ) from exc
+        raise _invalid_service_token(request, "jwt_invalid") from exc
+    except Exception as exc:  # Any other verifier failure still fails closed.
+        raise _invalid_service_token(request, "verification_error") from exc
     identity = _service_identity(claims, config)
     if identity is None:
         return
@@ -476,6 +472,16 @@ def _deny_unverified_service_token(request: HTTPConnection, reason: str) -> None
         "Service token denied: verification failed reason=%s route=%s",
         reason,
         _log_safe_route(request),
+    )
+
+
+def _invalid_service_token(request: HTTPConnection, reason: str) -> AdminAPIError:
+    _deny_unverified_service_token(request, reason)
+    return AdminAPIError(
+        401,
+        "This service credential is not a valid Cloudflare Access token.",
+        "service_token_invalid",
+        "Use a current Cloudflare Access service token for this application.",
     )
 
 
