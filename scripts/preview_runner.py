@@ -1,12 +1,13 @@
 """Plan isolated preview jobs and prepare exclusive trees; never register or start runners."""
 
 import fcntl
+import json
 import os
 import re
 import secrets
 import stat
 import time
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from scripts import preview_control as control
@@ -40,7 +41,7 @@ class Job:
 
 
 @dataclass(frozen=True)
-class Allocation:
+class Reservation:
     admission_id: str
     repository_id: int
     pr: int
@@ -50,11 +51,16 @@ class Allocation:
     policy_revision: int
     run_id: int
     run_attempt: int
-    job_id: int
-    runner_id: int
+    runner_group_id: int
     controller_uid: int
     builder_uid: int
     nonce: str
+
+
+@dataclass(frozen=True)
+class Allocation(Reservation):
+    job_id: int
+    runner_id: int
 
 
 def verify_group(policy, group, repositories) -> RunnerPin:
@@ -92,7 +98,11 @@ def _uid(value):
     return value
 
 
-def _allocation(allocation):
+def _allocation(allocation, *, bound=False):
+    if type(allocation) not in (Reservation, Allocation) or (
+        bound and type(allocation) is not Allocation
+    ):
+        raise ValueError("a bound job allocation is required")
     control._uuid(allocation.admission_id)
     for field in (
         "repository_id",
@@ -100,10 +110,12 @@ def _allocation(allocation):
         "policy_revision",
         "run_id",
         "run_attempt",
-        "job_id",
-        "runner_id",
+        "runner_group_id",
     ):
         control._number(getattr(allocation, field))
+    if type(allocation) is Allocation:
+        control._number(allocation.job_id)
+        control._number(allocation.runner_id)
     for field in ("head_sha", "base_sha", "controller_sha"):
         control._sha(getattr(allocation, field))
     _uid(allocation.controller_uid)
@@ -114,7 +126,9 @@ def _allocation(allocation):
         raise ValueError("invalid run nonce")
 
 
-def allocate(policy, record, pin, job, *, controller_uid, builder_uid, now=None) -> Allocation:
+def reserve(
+    policy, record, pin, *, run_id, run_attempt, controller_uid, builder_uid, now=None
+) -> Reservation:
     observed = int(time.time()) if now is None else control._number(now)
     control._scope_window(policy.scope_checked_at, policy.scope_expires_at, observed)
     receipts.require_admitted(record, now=observed)
@@ -131,6 +145,45 @@ def allocate(policy, record, pin, job, *, controller_uid, builder_uid, now=None)
         or pin.controller_sha != policy.controller_sha
     ):
         raise ValueError("admission or runner pin is outside the protected candidate/policy")
+    reservation = Reservation(
+        record.id,
+        policy.repository_id,
+        candidate.pr,
+        candidate.head_sha,
+        candidate.base_sha,
+        policy.controller_sha,
+        policy.policy_revision,
+        run_id,
+        run_attempt,
+        pin.group_id,
+        controller_uid,
+        builder_uid,
+        secrets.token_hex(16),
+    )
+    _allocation(reservation)
+    return reservation
+
+
+def allocate(policy, record, pin, job, *, reservation, peer_uid, now=None) -> Allocation:
+    _allocation(reservation)
+    if type(reservation) is not Reservation:
+        raise ValueError("job is already bound")
+    expected = reserve(
+        policy,
+        record,
+        pin,
+        run_id=reservation.run_id,
+        run_attempt=reservation.run_attempt,
+        controller_uid=reservation.controller_uid,
+        builder_uid=reservation.builder_uid,
+        now=now,
+    )
+    if (
+        asdict(reservation) | {"nonce": expected.nonce} != asdict(expected)
+        or type(peer_uid) is not int
+        or peer_uid != reservation.controller_uid
+    ):
+        raise ValueError("reserved run and runner peer UID must match current admission/policy")
     for field in (
         "repository_id",
         "run_id",
@@ -142,6 +195,8 @@ def allocate(policy, record, pin, job, *, controller_uid, builder_uid, now=None)
         control._number(getattr(job, field))
     if (
         job.repository_id != policy.repository_id
+        or job.run_id != reservation.run_id
+        or job.run_attempt != reservation.run_attempt
         or job.workflow_ref != f"{WORKFLOW}@{policy.controller_sha}"
         or job.workflow_sha != policy.controller_sha
         or job.runner_group_id != pin.group_id
@@ -151,23 +206,8 @@ def allocate(policy, record, pin, job, *, controller_uid, builder_uid, now=None)
         or not LABELS <= set(job.labels)
     ):
         raise ValueError("job is not the pinned controller on the dedicated runner group")
-    allocation = Allocation(
-        record.id,
-        policy.repository_id,
-        candidate.pr,
-        candidate.head_sha,
-        candidate.base_sha,
-        policy.controller_sha,
-        policy.policy_revision,
-        job.run_id,
-        job.run_attempt,
-        job.job_id,
-        job.runner_id,
-        controller_uid,
-        builder_uid,
-        secrets.token_hex(16),
-    )
-    _allocation(allocation)
+    allocation = Allocation(**asdict(reservation), job_id=job.job_id, runner_id=job.runner_id)
+    _allocation(allocation, bound=True)
     return allocation
 
 
@@ -177,7 +217,7 @@ def run_name(allocation):
 
 
 def run_identity(allocation):
-    _allocation(allocation)
+    _allocation(allocation, bound=True)
     return {
         field: getattr(allocation, field)
         for field in (
@@ -239,7 +279,63 @@ def _directory(parent, name, uid, *, mode=0o700):
     return child
 
 
+def _write_record(directory, name, allocation, owner_uid):
+    descriptor = os.open(
+        name,
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+        0o600,
+        dir_fd=directory,
+    )
+    with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+        os.fchmod(stream.fileno(), 0o600)
+        os.fchown(stream.fileno(), owner_uid, owner_uid)
+        json.dump(asdict(allocation), stream, sort_keys=True)
+        stream.flush()
+        os.fsync(stream.fileno())
+    os.fsync(directory)
+
+
+def _read_record(directory, name, record_type, owner_uid):
+    descriptor = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+    with os.fdopen(descriptor, "rb") as stream:
+        metadata = os.fstat(stream.fileno())
+        control._protected(metadata, owner_uid)
+        if stat.S_IMODE(metadata.st_mode) != 0o600:
+            raise ValueError("run record must be private to its protected owner")
+        content = stream.read(control.MAX_BYTES + 1)
+        if len(content) > control.MAX_BYTES:
+            raise ValueError("run record exceeds size bound")
+        document = receipts._json(content)
+    control._fields(document, set(record_type.__dataclass_fields__))
+    result = record_type(**document)
+    _allocation(result)
+    return result
+
+
+def _run_tree(descriptor, allocation, owner_uid):
+    child = os.open(
+        run_name(allocation),
+        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+        dir_fd=descriptor,
+    )
+    try:
+        control._protected(os.fstat(child), owner_uid, directory=True)
+        if stat.S_IMODE(os.fstat(child).st_mode) != 0o700:
+            raise ValueError("run tree must be private to its protected owner")
+        stored = _read_record(child, "reservation.json", Reservation, owner_uid)
+        if asdict(stored) != {
+            field: getattr(allocation, field) for field in Reservation.__dataclass_fields__
+        }:
+            raise ValueError("protected run reservation does not match allocation")
+        return child
+    except (OSError, ValueError):
+        os.close(child)
+        raise
+
+
 def prepare_workspace(allocation, *, root=RUN_ROOT, owner_uid=0, anchor=Path("/")) -> Path:
+    if type(allocation) is not Reservation:
+        raise ValueError("workspace must be reserved before a runner receives a job")
     name = run_name(allocation)
     descriptor = _open_root(root, owner_uid, anchor)
     try:
@@ -248,8 +344,6 @@ def prepare_workspace(allocation, *, root=RUN_ROOT, owner_uid=0, anchor=Path("/"
             f"uid-{allocation.controller_uid}",
             f"uid-{allocation.builder_uid}",
             f"job-{allocation.repository_id}-{allocation.run_id}-{allocation.run_attempt}",
-            f"github-job-{allocation.job_id}",
-            f"runner-{allocation.runner_id}",
             name,
         )
         for claim in claims:
@@ -278,6 +372,7 @@ def prepare_workspace(allocation, *, root=RUN_ROOT, owner_uid=0, anchor=Path("/"
                     os.fsync(branch_fd)
                 finally:
                     os.close(branch_fd)
+            _write_record(tree, "reservation.json", allocation, owner_uid)
             os.fsync(tree)
         finally:
             os.close(tree)
@@ -287,7 +382,44 @@ def prepare_workspace(allocation, *, root=RUN_ROOT, owner_uid=0, anchor=Path("/"
     return Path(root) / name
 
 
-def controller_command(allocation) -> list[str]:
+def bind_workspace(allocation, *, root=RUN_ROOT, owner_uid=0, anchor=Path("/")):
+    _allocation(allocation, bound=True)
+    descriptor = _open_root(root, owner_uid, anchor)
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        tree = _run_tree(descriptor, allocation, owner_uid)
+        try:
+            for claim in (f"github-job-{allocation.job_id}", f"runner-{allocation.runner_id}"):
+                os.mkdir(claim, mode=0o700, dir_fd=descriptor)
+            os.fsync(descriptor)
+            _write_record(tree, "allocation.json", allocation, owner_uid)
+        finally:
+            os.close(tree)
+    finally:
+        os.close(descriptor)
+
+
+def load_allocation(reservation, *, root=RUN_ROOT, owner_uid=0, anchor=Path("/")):
+    _allocation(reservation)
+    descriptor = _open_root(root, owner_uid, anchor)
+    try:
+        tree = _run_tree(descriptor, reservation, owner_uid)
+        try:
+            result = _read_record(tree, "allocation.json", Allocation, owner_uid)
+            if {
+                field: getattr(result, field) for field in Reservation.__dataclass_fields__
+            } != asdict(reservation):
+                raise ValueError("protected bound allocation does not match reservation")
+            return result
+        finally:
+            os.close(tree)
+    finally:
+        os.close(descriptor)
+
+
+def runner_command(allocation) -> list[str]:
+    if type(allocation) is not Reservation:
+        raise ValueError("runner launch requires an unbound reservation")
     path = RUN_ROOT / run_name(allocation)
     mounts = " ".join(
         f"{path / source}:{destination}"
@@ -329,9 +461,10 @@ def controller_command(allocation) -> list[str]:
         "--working-directory=/work",
         "--setenv=HOME=/home/controller",
         "--setenv=XDG_RUNTIME_DIR=/run/controller",
+        f"--setenv=ARTEMIS_PREVIEW_NONCE={allocation.nonce}",
         "--",
         "/usr/local/libexec/artemis-preview/artemis-preview-controller",
-        "run",
+        "runner",
         "--repository-id",
         str(allocation.repository_id),
         "--run-id",
@@ -344,6 +477,7 @@ def controller_command(allocation) -> list[str]:
 
 
 def builder_command(allocation) -> list[str]:
+    _allocation(allocation, bound=True)
     path = RUN_ROOT / run_name(allocation)
     mounts = " ".join(
         f"{path / source}:{destination}"

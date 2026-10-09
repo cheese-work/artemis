@@ -27,14 +27,37 @@ The workflow selects that group and **all** of `self-hosted`, `cheese-x99` and
 the installed protected controller executes; `id-token: write` belongs to
 that trusted controller, never the PR build sandbox.
 
-`allocate()` requires an unexpired L5a3 dual-anchor admission matching the
-current protected policy fingerprint and full candidate tuple. Native job
-metadata must match repository, full workflow ref/SHA and group, with bounded
-positive run, attempt, job and runner IDs. The `Job` object is a normalized
+`reserve()` requires an unexpired L5a3 dual-anchor admission matching the
+current protected policy fingerprint and full candidate tuple. The daemon
+already knows the queued workflow's run ID and attempt, but no runner or job
+ID is required yet. It creates a `Reservation` with distinct UIDs and nonce,
+then calls `prepare_workspace()` to claim the UIDs/run and persist that exact
+reservation before starting the runner. A reservation cannot build or supply
+an authenticated run identity.
+
+`runner_command()` launches the **single-use Actions runner** as the reserved
+controller UID, with that run's private home/work/runtime and nonce. The
+installed protected controller's `runner` mode must configure/start the
+ephemeral Actions listener inside that unit; it is not a second controller
+job. The pinned workflow invokes the controller's `run` mode as an ordinary
+child of that listener. The listener, workflow step and controller therefore
+share the reserved host UID and cgroup. The job supplies the OIDC request
+environment to its controller child; no token/environment forwarding across
+UIDs or second `systemd-run` occurs. The builder never receives that environment.
+
+After assignment, `allocate()` revalidates the admission/policy, requires the
+runner's reserved peer UID and binds only native metadata for the reserved
+run/attempt. Metadata must match repository, full workflow ref/SHA and group,
+with bounded positive job and runner IDs. `bind_workspace()` verifies the
+protected reservation and persists the create-once allocation plus job/runner
+claims. Only `load_allocation()` from that protected record supplies the bound
+identity for later authorization. An unbound reservation never authorizes a
+build. The `Job` object is a normalized
 **trusted-reader contract**, not proof of a GitHub fetch or signed OIDC token.
 The daemon must revalidate both approval anchors immediately before dispatch.
-Never deserialize caller-supplied metadata as trusted `RunnerPin`, `Job` or
-`Allocation` objects. The remaining native job cross-checks, OIDC signature,
+Never deserialize caller-supplied metadata as trusted `RunnerPin`, `Job`,
+`Reservation` or `Allocation` objects. `peer_uid` is a trusted transport read,
+not a caller-supplied UID. The remaining native job cross-checks, OIDC signature,
 audience, expiry, PID/cgroup and transport checks belong to L5c1.
 
 Runner-group creation/administration, selected-workflow SHA restriction
@@ -57,9 +80,14 @@ supplementary groups. No such host changes occur in this layer.
 `O_NOFOLLOW`, then locks the root directory. Its fixed production root is
 `/var/lib/artemis-preview-runs`, owned by root with mode 0700. Paths derive
 only from validated repository/run/attempt IDs and a fresh 128-bit random
-nonce. UID, GitHub job, single-use runner and repository/run/attempt claims
-are created once and synced before the tree becomes usable. A reused UID,
-runner, job or run attempt fails even with a new nonce.
+nonce. UID and repository/run/attempt claims are created once and synced
+before the runner starts. `reservation.json` is written only after the private
+leaf directories are ready. After job assignment, GitHub job and single-use
+runner claims precede `allocation.json`. A reused UID, runner, job or run
+attempt fails even with a new nonce. Both records are root-owned 0600, bounded,
+create-once and synced. The reader rejects links, unknown fields, mismatched
+tuples, wrong owners and unsafe modes. Empty claim directories are replay
+tombstones, not the authoritative run record.
 
 ```text
 /var/lib/artemis-preview-runs/                     root:root 0700
@@ -69,6 +97,8 @@ runner, job or run attempt fails even with a new nonce.
   github-job-<job ID>/                             protected claim
   runner-<runner ID>/                             protected claim
   <repository>-<run>-<attempt>-<nonce>/            root:root 0700
+    reservation.json                             root:root 0600, before runner
+    allocation.json                              root:root 0600, after assignment
     controller/                                  root:root 0700
       home/ work/ runtime/                       controller UID:GID 0700
     builder/                                     root:root 0700
@@ -97,14 +127,19 @@ tests; actual cross-UID ownership/access denial remains **NOT-RUN**.
 
 ## Inert service plans
 
-`controller_command()` and `builder_command()` return argument lists, never
+`runner_command()` and `builder_command()` return argument lists, never
 execute them. They supersede the L5a1 runner template's placeholder
 `DynamicUser` launch: do not enable that template as this layer's execution
 mechanism. The runtime owner must install reviewed, immutable, root-owned
-controller and builder root filesystems at
+controller/Actions-runner and builder root filesystems at
 `/usr/local/lib/artemis-preview-controller` and
 `/usr/local/lib/artemis-preview-builder`. These roots and trusted executables
-are **not** supplied/provisioned by this layer.
+are **not** supplied/provisioned by this layer. In particular, the protected
+`artemis-preview-controller runner` entrypoint and real Actions registration/
+listener startup belong to L5c1's runtime wiring. It must configure single-use
+registration outside PR code and start the listener without changing UID.
+L5c1 must record the actual listener/job PID/cgroup with the persisted tuple
+and verify native metadata, Unix peer and signed OIDC before activation.
 
 The controller gets only its fresh home/work/runtime directories and the
 protected `/run/artemis-preview/controller.sock`. It has no builder state,
@@ -122,7 +157,10 @@ non-root UID, with a run-private Unix socket and native snapshotter. Process
 sandboxing remains enabled. `--oci-worker-net=host` refers to the enclosing
 RootlessKit namespace, whose network is `none`, **not** the host network.
 `IPAddressDeny=any` is an additional systemd constraint. No network-enabled
-builder is provided; L5b2/L5b3 own controlled acquisition and offline builds.
+builder is provided. L5b2 owns controlled source/base-image/dependency
+acquisition. L5b3 owns verified input staging into this run's `builder/work`,
+the build client and its use of this run's Unix socket. No input delivery or
+client execution is implemented by the BuildKit daemon plan alone.
 
 Rootless UID/GID mapping needs reviewed `newuidmap`/`newgidmap` helpers and
 subordinate ranges inside the trusted builder root. Consequently the builder
@@ -133,6 +171,13 @@ helpers, immutable root contents, systemd mount/cgroup behavior and socket
 readiness before activation. No shared Docker group or sudo authority is
 granted to either job. Real RootlessKit/BuildKit/systemd execution is
 **NOT-RUN**; a returned command list is not execution evidence.
+
+The runtime owner must also test whether `ProtectKernelTunables=yes`,
+`ProtectProc=invisible` and `PrivateDevices=yes` overmount `/proc` in a way
+that prevents rootless runc/BuildKit from creating a child procfs mount.
+Compatibility is **NOT-RUN**, not presumed from the generated plan. Do not
+disable process sandboxing to hide a conflict; return a verified runtime
+correction before activation.
 
 ## Verification
 
@@ -145,6 +190,10 @@ Fixtures cover exact pins, public/private repository handling, other
 repositories/workflows/SHAs, invalid admission/candidate substitution, shared
 or duplicate UIDs, run/runner/job replay, protected-parent/link/traversal
 rejection, partial failure retention, identity/peer denial and narrow mount
-plans. These are author checks, not an independent verdict or activation
+plans. The sequence test reserves/persists before runner launch, binds native
+job metadata to that same UID, and round-trips the protected allocation.
+The lock test probes the actual independent-descriptor `flock` conflict
+during creation; replacing `flock` with a no-op must fail that test.
+These are author checks, not an independent verdict or activation
 authorization. Live provisioning, scheduling denial, cross-UID checks,
 rootless builds, sealing, cutover and preview acceptance remain **NOT-RUN**.

@@ -1,7 +1,9 @@
+import fcntl
+import json
 import os
 import stat
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import replace
+from dataclasses import asdict, replace
 from pathlib import Path
 
 import pytest
@@ -13,6 +15,7 @@ from tests.unit.preview_host import test_github as github_fixtures
 documents = github_fixtures.documents
 fixture = github_fixtures.fixture
 approval = github_fixtures.approval
+NATIVE_FLOCK = fcntl.flock
 
 
 @pytest.fixture
@@ -55,8 +58,18 @@ def job(admitted):
 def allocate(admitted, group, job, **options):
     policy, record = admitted
     pin = runner.verify_group(policy, group, selected(policy))
+    reservation = runner.reserve(
+        policy,
+        record,
+        pin,
+        run_id=job.run_id,
+        run_attempt=job.run_attempt,
+        controller_uid=20001,
+        builder_uid=20002,
+        now=1501,
+    )
     return runner.allocate(
-        policy, record, pin, job, controller_uid=20001, builder_uid=20002, now=1501, **options
+        policy, record, pin, job, reservation=reservation, peer_uid=20001, now=1501, **options
     )
 
 
@@ -169,11 +182,12 @@ def test_shared_root_or_invalid_uid_is_rejected(admitted, group, job, controller
     policy, record = admitted
     pin = runner.verify_group(policy, group, selected(policy))
     with pytest.raises(ValueError):
-        runner.allocate(
+        runner.reserve(
             policy,
             record,
             pin,
-            job,
+            run_id=job.run_id,
+            run_attempt=job.run_attempt,
             controller_uid=controller_uid,
             builder_uid=builder_uid,
             now=1501,
@@ -181,16 +195,15 @@ def test_shared_root_or_invalid_uid_is_rejected(admitted, group, job, controller
 
 
 @pytest.fixture
-def tree(tmp_path, admitted, group, job, monkeypatch):
+def tree(tmp_path, reservation, monkeypatch):
     root = tmp_path / "runs"
     root.mkdir(mode=0o700)
     ownership = []
     monkeypatch.setattr(
         runner.os, "fchown", lambda descriptor, uid, gid: ownership.append((uid, gid))
     )
-    allocation = allocate(admitted, group, job)
     options = {"root": root, "anchor": tmp_path, "owner_uid": os.getuid()}
-    return allocation, options, ownership
+    return reservation, options, ownership
 
 
 def test_exclusive_tree_has_separate_controller_builder_and_handoff_ownership(tree):
@@ -245,15 +258,17 @@ def test_symlink_writable_parent_and_traversal_fail_closed(tree, tmp_path):
         runner.prepare_workspace(replace(allocation, nonce="../bad"), **options)
 
 
-def test_single_use_runner_and_job_cannot_be_reallocated_to_another_run(tree):
-    allocation, options, _ = tree
-    runner.prepare_workspace(allocation, **options)
-    for changed in (
-        replace(allocation, controller_uid=20003, builder_uid=20004, run_id=1235),
-        replace(allocation, controller_uid=20003, builder_uid=20004, run_id=1235, runner_id=9999),
-    ):
+def test_single_use_runner_and_job_cannot_be_reallocated_to_another_run(tree, admitted, group, job):
+    reservation, options, _ = tree
+    runner.prepare_workspace(reservation, **options)
+    allocation = bind(admitted, group, reservation, job)
+    runner.bind_workspace(allocation, **options)
+    other = replace(reservation, controller_uid=20003, builder_uid=20004, run_id=1235)
+    runner.prepare_workspace(other, **options)
+    for changed in (replace(job, run_id=1235), replace(job, run_id=1235, runner_id=9999)):
+        bound = bind(admitted, group, other, changed, peer_uid=other.controller_uid)
         with pytest.raises(FileExistsError):
-            runner.prepare_workspace(changed, **options)
+            runner.bind_workspace(bound, **options)
 
 
 def test_run_root_cannot_expose_user_owned_children(tree):
@@ -373,9 +388,9 @@ def test_rootless_builder_plan_mounts_only_own_state_and_output(admitted, group,
     assert runner.builder_command(other) != command
 
 
-def test_controller_plan_has_private_home_and_work_and_no_builder_mount(admitted, group, job):
-    allocation = allocate(admitted, group, job)
-    command = runner.controller_command(allocation)
+def test_runner_plan_has_private_home_and_work_and_no_builder_mount(reservation):
+    allocation = reservation
+    command = runner.runner_command(allocation)
     assert f"--uid={allocation.controller_uid}" in command
     assert f"--gid={allocation.controller_uid}" in command
     assert "--property=RootDirectory=/usr/local/lib/artemis-preview-controller" in command
@@ -400,3 +415,189 @@ def test_workflow_is_inert_and_selects_dedicated_group_and_labels():
     assert "actions/checkout" not in content
     assert "workflow_dispatch:" in content
     assert "github.workflow_sha" in content
+
+
+@pytest.fixture
+def reservation(admitted, group):
+    policy, record = admitted
+    pin = runner.verify_group(policy, group, selected(policy))
+    return runner.reserve(
+        policy,
+        record,
+        pin,
+        run_id=1234,
+        run_attempt=1,
+        controller_uid=20001,
+        builder_uid=20002,
+        now=1501,
+    )
+
+
+def bind(admitted, group, reservation, job, *, peer_uid=20001):
+    policy, record = admitted
+    pin = runner.verify_group(policy, group, selected(policy))
+    return runner.allocate(
+        policy, record, pin, job, reservation=reservation, peer_uid=peer_uid, now=1501
+    )
+
+
+def test_runner_job_and_oidc_controller_share_reserved_uid_before_binding(
+    admitted,
+    group,
+    reservation,
+    job,
+    tree,
+):
+    _, options, _ = tree
+    assert not hasattr(reservation, "job_id") and not hasattr(reservation, "runner_id")
+    path = runner.prepare_workspace(reservation, **options)
+    command = runner.runner_command(reservation)
+    assert f"--uid={reservation.controller_uid}" in command
+    assert f"--gid={reservation.controller_uid}" in command
+    assert "--setenv=ARTEMIS_PREVIEW_NONCE=" + reservation.nonce in command
+    assert command[command.index("--") + 1 :][:2] == [
+        "/usr/local/libexec/artemis-preview/artemis-preview-controller",
+        "runner",
+    ]
+    workflow = Path(__file__).resolve().parents[3] / ".github/workflows/preview-controller.yml"
+    content = workflow.read_text()
+    assert "systemd-run" not in content and "sudo" not in content
+    assert '--nonce "$ARTEMIS_PREVIEW_NONCE"' in content
+    allocation = bind(admitted, group, reservation, job)
+    assert allocation.controller_uid == reservation.controller_uid
+    assert runner.run_name(allocation) == path.name
+    runner.bind_workspace(allocation, **options)
+    loaded = runner.load_allocation(reservation, **options)
+    assert loaded == allocation
+    runner.check_identity(loaded, runner.run_identity(loaded), peer_uid=reservation.controller_uid)
+    assert json.loads((path / "reservation.json").read_text()) == asdict(reservation)
+    assert json.loads((path / "allocation.json").read_text()) == asdict(allocation)
+    for name in ("reservation.json", "allocation.json"):
+        assert stat.S_IMODE((path / name).stat().st_mode) == 0o600
+        assert (path / name).stat().st_uid == options["owner_uid"]
+
+
+@pytest.mark.parametrize(
+    "field,value", [("run_id", 9999), ("run_attempt", 2), ("runner_group_id", 43)]
+)
+def test_assigned_job_must_match_preallocated_run(admitted, group, reservation, job, field, value):
+    with pytest.raises(ValueError):
+        bind(admitted, group, reservation, replace(job, **{field: value}))
+
+
+@pytest.mark.parametrize("peer_uid", [0, 1000, 20002, 20003, True])
+def test_job_binding_requires_the_runner_process_reserved_uid(
+    admitted, group, reservation, job, peer_uid
+):
+    with pytest.raises(ValueError):
+        bind(admitted, group, reservation, job, peer_uid=peer_uid)
+
+
+def test_unbound_reservation_cannot_build_or_authenticate(reservation):
+    with pytest.raises(ValueError):
+        runner.builder_command(reservation)
+    with pytest.raises(ValueError):
+        runner.run_identity(reservation)
+
+
+def test_run_record_is_create_once_and_binds_job_uid_and_nonce(
+    admitted, group, reservation, job, tree
+):
+    _, options, _ = tree
+    path = runner.prepare_workspace(reservation, **options)
+    allocation = bind(admitted, group, reservation, job)
+    with pytest.raises(FileNotFoundError):
+        runner.load_allocation(reservation, **options)
+    runner.bind_workspace(allocation, **options)
+    with pytest.raises(FileExistsError):
+        runner.bind_workspace(allocation, **options)
+    with pytest.raises(ValueError):
+        runner.bind_workspace(replace(allocation, controller_uid=20003), **options)
+    record = path / "allocation.json"
+    record.write_text(json.dumps(asdict(replace(allocation, nonce="f" * 32))))
+    with pytest.raises(ValueError):
+        runner.load_allocation(reservation, **options)
+
+
+def test_run_record_rejects_links_writable_records_and_unknown_fields(
+    admitted, group, reservation, job, tree
+):
+    _, options, _ = tree
+    path = runner.prepare_workspace(reservation, **options)
+    allocation = bind(admitted, group, reservation, job)
+    runner.bind_workspace(allocation, **options)
+    record = path / "allocation.json"
+    record.chmod(0o666)
+    with pytest.raises(ValueError):
+        runner.load_allocation(reservation, **options)
+    record.chmod(0o600)
+    record.write_text(json.dumps(asdict(allocation) | {"approved": True}))
+    with pytest.raises(ValueError):
+        runner.load_allocation(reservation, **options)
+    saved = record.with_suffix(".saved")
+    record.rename(saved)
+    record.symlink_to(saved)
+    with pytest.raises(OSError):
+        runner.load_allocation(reservation, **options)
+
+
+@pytest.mark.parametrize("job_id,runner_id", [(2345, 9999), (9999, 3456)])
+def test_bound_job_and_single_use_runner_claims_each_block_reuse(
+    tree,
+    admitted,
+    group,
+    job,
+    job_id,
+    runner_id,
+):
+    reservation, options, _ = tree
+    runner.prepare_workspace(reservation, **options)
+    runner.bind_workspace(bind(admitted, group, reservation, job), **options)
+    other = replace(reservation, controller_uid=20003, builder_uid=20004, run_id=1235)
+    runner.prepare_workspace(other, **options)
+    bound = bind(
+        admitted,
+        group,
+        other,
+        replace(job, run_id=1235, job_id=job_id, runner_id=runner_id),
+        peer_uid=other.controller_uid,
+    )
+    with pytest.raises(FileExistsError):
+        runner.bind_workspace(bound, **options)
+    with pytest.raises(FileNotFoundError):
+        runner.load_allocation(other, **options)
+
+
+def test_reservation_and_allocation_stages_cannot_be_silently_reversed(
+    admitted, group, reservation, job, tree
+):
+    _, options, _ = tree
+    allocation = bind(admitted, group, reservation, job)
+    with pytest.raises(ValueError):
+        runner.prepare_workspace(allocation, **options)
+    with pytest.raises(ValueError):
+        runner.runner_command(allocation)
+    with pytest.raises(FileNotFoundError):
+        runner.bind_workspace(allocation, **options)
+    runner.prepare_workspace(reservation, **options)
+    assert not (options["root"] / runner.run_name(reservation) / "allocation.json").exists()
+
+
+def test_workspace_creation_holds_exclusive_root_lock(tree, monkeypatch):
+    allocation, options, _ = tree
+    mkdir = runner.os.mkdir
+    checked = []
+
+    def probe(name, *arguments, **keywords):
+        descriptor = os.open(options["root"], os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            with pytest.raises(BlockingIOError):
+                NATIVE_FLOCK(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        finally:
+            os.close(descriptor)
+        checked.append(name)
+        return mkdir(name, *arguments, **keywords)
+
+    monkeypatch.setattr(runner.os, "mkdir", probe)
+    runner.prepare_workspace(allocation, **options)
+    assert checked

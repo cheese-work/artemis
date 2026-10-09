@@ -28,3 +28,4 @@ jobs:
           --run-id "$PREVIEW_RUN_ID"
           --run-attempt "$PREVIEW_RUN_ATTEMPT"
           --workflow-sha "$PREVIEW_WORKFLOW_SHA"
+          --nonce "$ARTEMIS_PREVIEW_NONCE"
