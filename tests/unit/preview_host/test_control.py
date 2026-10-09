@@ -34,6 +34,7 @@ def documents():
         "same_origin_scope": "trusted-root-origin-insiders",
         "authors": [{"id": AUTHOR, "model": "author-model", "lab": "author-lab"}],
         "reviewers": [{"id": REVIEWER, "model": "reviewer-model", "lab": "reviewer-lab"}],
+        "human_approver_ids": [123456],
         "platform_identity_id": IDENTITY,
         "platform_credential_id": CREDENTIAL,
     }

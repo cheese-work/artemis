@@ -3,8 +3,9 @@
 This layer adds `scripts.preview_receipts`. It reads native Multica metadata,
 verifies the independent reviewer receipt and stores daemon-private records.
 It does not install a service, provision credentials, dispatch a build or
-publish a route. **No record can admit a preview before L5a3.** The human GitHub
-anchor remains mandatory even when every check in this layer passes.
+publish a route. **This module alone cannot admit a preview.** The
+[L5a3 human GitHub anchor](preview-github.md) remains mandatory even when every
+check in this layer passes.
 
 The protected configuration and PR-to-issue registry come from
 [preview-control.md](preview-control.md). The submitter supplies a numeric PR
@@ -121,8 +122,12 @@ changed head/base/policy/provenance, failed CI, a closed PR, API failure or
 expiry irreversibly invalidates that record. A refresh never extends its TTL.
 An invalidated record never revives. Revalidation returns the updated record;
 the daemon must persist an invalidation with `AdmissionStore.invalidate()`.
-The protected store accepts only `pending-human` and `invalidated` states.
-`require_admitted()` always rejects, including hand-constructed records.
+The protected store accepts `pending-human`, `admitted` and `invalidated` states.
+Only L5a3 creates an `admitted` record after verifying both native anchors.
+`require_admitted()` rejects pending, invalidated, expired and structurally
+incomplete records. It is a local guard, not a remote evidence refresh. A later
+daemon must load its own protected record and call L5a3 `revalidate()` before
+each use; submitters cannot supply record objects or status flags.
 
 The runtime owner provisions `/var/lib/artemis-preview/admissions` with daemon
 ownership and mode 0700. `AdmissionStore` walks protected ancestors through
@@ -133,7 +138,7 @@ synced atomic replacement. It changes no unrelated record and leaves no scratch
 on handled errors. Fixture owner/anchor/path overrides are not a daemon request
 interface. No live directory is created by this layer.
 
-L5a3 must extend admission only after independently verifying and binding the
+L5a3 extends admission only after independently verifying and binding the
 human approval. Later daemon integration must re-fetch both anchors before
 build dispatch and publication, reconcile every five minutes, withdraw failed
 revalidations and enforce TTL locally during API outages. This layer provides
