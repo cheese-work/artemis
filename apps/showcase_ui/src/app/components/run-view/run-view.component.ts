@@ -29,6 +29,7 @@ import { RunsService } from '../../services/runs.service';
 import {
   getActionObject,
   getActionErrorMessage,
+  getActionIcon,
   getActionTitle,
   extractActionExtraParams,
   getActionCoords,
@@ -584,6 +585,31 @@ export class RunViewComponent {
 
   public stepTitle(step: StepItemData): string {
     return getActionTitle(step.action_taken);
+  }
+
+  public readonly stepIcon = getActionIcon;
+
+  public stepKind(step: StepItemData): string {
+    const action = getActionObject(step.action_taken);
+    const kind = action?.name || action?.action;
+    return typeof kind === 'string' && kind ? kind : 'Action';
+  }
+
+  public stepTime(step: StepItemData): string {
+    const start = this.run()?.start_time;
+    if (start == null || !Number.isFinite(start) || !Number.isFinite(step.timestamp)) return '—';
+    const seconds = Math.max(0, Math.floor(step.timestamp - start));
+    return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
+  }
+
+  public goToStep(stepNumber: number): boolean {
+    const index = this.steps().findIndex(step => step.step_number === stepNumber);
+    if (index === -1) return false;
+    this.selectStep(this.steps()[index]);
+    const button = this.timelineEl()?.nativeElement.querySelectorAll<HTMLButtonElement>('.step-button')[index];
+    button?.scrollIntoView({ block: 'nearest' });
+    button?.focus({ preventScroll: true });
+    return true;
   }
 
   public toggleStep(step: StepItemData): void {

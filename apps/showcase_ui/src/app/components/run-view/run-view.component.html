@@ -209,22 +209,25 @@
             <ol #timelineEl class="step-list" aria-label="Step timeline" (scroll)="rememberPosition()">
               @for (step of steps(); track trackStep($index, step)) {
                 <li>
+                  <div class="step-row" [class.failed]="stepFailed(step)">
                   <button
                     type="button"
                     class="step-button" appRunStepRow [stepNumber]="step.step_number" [title]="stepTitle(step)" [failed]="stepFailed(step)"
+                    [icon]="stepIcon(step.action_taken)" [thumbnail]="postImage(step) ?? preImage(step)" [kind]="stepKind(step)"
+                    [duration]="step.duration != null ? step.duration + 's' : null" [time]="stepTime(step)"
                     [failureDetail]="stepFailed(step) ? stepFailureSummary(step) : null"
                     [failureTitle]="stepFailed(step) ? stepFailureTitle(step) : null"
                     [attr.aria-current]="selectedStep()?.step_id === step.step_id ? 'step' : null"
                     (click)="selectStep(step)"
                     (keydown)="onStepKey($event, $index)"
                   >
-                    @if (!stepFailed(step)) { <span class="step-outcome">{{ step.last_execution_result || postImage(step) ? 'Completed' : 'Dispatched' }}</span> }
                   </button>
                   <button type="button" class="step-toggle" [attr.aria-expanded]="expandedSteps().has(step.step_id)"
                     [attr.aria-controls]="'step-details-' + step.step_id" [attr.aria-label]="'Step ' + step.step_number + ' details'"
                     (click)="toggleStep(step)">
-                    {{ expandedSteps().has(step.step_id) ? 'Hide details' : 'Show details' }}
+                    <span class="material-symbols-outlined" aria-hidden="true">{{ expandedSteps().has(step.step_id) ? 'expand_less' : 'expand_more' }}</span>
                   </button>
+                  </div>
                   @if (expandedSteps().has(step.step_id)) {
                     <div class="step-details" [id]="'step-details-' + step.step_id" role="region" [attr.aria-label]="'Step ' + step.step_number + ' execution details'">
                       <dl>
@@ -241,16 +244,14 @@
                       @for (block of stepChecks(step); track block.id) {
                         <ng-container [ngTemplateOutlet]="checkerDetails" [ngTemplateOutletContext]="{ $implicit: block }"></ng-container>
                       }
-                    </div>
-                  }
-                  @if (selectedStep()?.step_id === step.step_id) {
-                    <div class="step-screenshots">
+                      <div class="step-screenshots">
                       @if (preImage(step); as before) {
                         <figure><figcaption>Before</figcaption><img [src]="before" [alt]="'Before step ' + step.step_number"></figure>
                       }
                       @if (postImage(step); as after) {
                         <figure><figcaption>After</figcaption><img [src]="after" [alt]="'After step ' + step.step_number"></figure>
                       }
+                      </div>
                     </div>
                   }
                 </li>

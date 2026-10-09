@@ -106,6 +106,21 @@ describe('shared run presentation', () => {
     expect(fixture.nativeElement.querySelector('.step-failure-detail')).toBeNull();
   });
 
+  it('keeps missing and broken thumbnails contained and recovers when the image changes', () => {
+    const fixture = render(RunStepRowComponent, { stepNumber: 1, title: 'Tap' });
+    const root = fixture.nativeElement as HTMLElement;
+    expect(root.querySelector('.step-thumbnail img')).toBeNull();
+    fixture.componentRef.setInput('thumbnail', '/images/missing.png');
+    fixture.detectChanges();
+    root.querySelector('img')!.dispatchEvent(new Event('error'));
+    fixture.detectChanges();
+    expect(root.querySelector('img')).toBeNull();
+    expect(root.querySelector('.step-thumbnail')!.textContent).toContain('image_not_supported');
+    fixture.componentRef.setInput('thumbnail', '/images/next.png');
+    fixture.detectChanges();
+    expect(root.querySelector('img')!.getAttribute('src')).toBe('/images/next.png');
+  });
+
   for (const title of ['Checked', 'Worked']) {
     it(`preserves the ${title} phase row`, () => {
       const fixture = render(RunStepRowComponent, { presentation: 'phase', title, duration: 2.5 });

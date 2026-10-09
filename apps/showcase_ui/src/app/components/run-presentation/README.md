@@ -9,8 +9,9 @@ clipboard, pin, download or trust-dialog state.
   badge and hidden running dot.
 - `appRunDeviceLabel`: serial, recorded device, browser ownership and detail
   inputs; uses `runDeviceLabel`. Detail mode preserves the viewer's raw serial.
-- `appRunStepRow`: title, step number, failed outcome, optional duration and
-  failure detail. Phase mode preserves the stream's Worked/Checked captions
+- `appRunStepRow`: 56 px rows with an action icon, 56 × 40 thumbnail, title,
+  step number, action kind, mono duration or elapsed time, and failed outcome.
+  Missing or broken thumbnails retain their fixed box. Phase mode preserves the stream's Worked/Checked captions
   and projects its existing token details.
 - `appRunEvidencePanel`: mapped recording state, video URL, screenshot fallback,
   copy and retry inputs. Player events and the native player reference return
@@ -34,6 +35,19 @@ screen-specific styles remain on the screens.
 `run-presentation.components.spec.ts` covers both badge presentations, all
 recording states, device labels, step details, launcher priority and action
 events. The existing viewer and copy suites cover controller behavior.
+
+`RunViewComponent.selectedStep` is the shared source for timeline highlighting
+and the evidence pane. Verdict links call `goToStep(stepNumber)` to select,
+scroll to and focus an existing step without changing selection for a missing
+step. The independent 44 px toggle reveals execution details and before/after
+screenshots without selecting the row. Arrow Up/Down, Home and End select and
+focus timeline rows; native Tab, Enter and Space behavior is unchanged.
+
+`npm run test:step-timeline` reuses the headless run-header fixture audit with
+a finished failed run at 1440 px and 390 px. The audit checks geometry,
+selection, keyboard navigation, details and the verdict-jump hook, and writes
+PNG screenshots plus `results.json`. The screenshots are mocked API evidence,
+not Android-device or live-backend evidence. Karma specs run in GitHub CI.
 
 ## Unified controller (U2)
 

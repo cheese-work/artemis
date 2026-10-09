@@ -7,7 +7,8 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 const dist = path.resolve('dist/frontend/browser');
-const shots = path.resolve(process.env.SHOTS || 'run-header-evidence');
+const timeline = process.argv.includes('--timeline');
+const shots = path.resolve(process.env.SHOTS || (timeline ? 'step-timeline-evidence' : 'run-header-evidence'));
 const runId = '00000001-5d7e-4a10-9c33-0e1f2a3b4c5d';
 const started = Math.floor(Date.now() / 1000) - 65;
 const run = {
@@ -20,6 +21,13 @@ const steps = [{
   session_id: runId, step_id: 'step-1', step_number: 1, timestamp: started + 1,
   action_taken: { action: 'launch_app', package_name: 'com.android.settings' }
 }];
+if (timeline) {
+  steps.push(...['tap', 'input_text', 'tap'].map((action, index) => ({
+    session_id: runId, step_id: `step-${index + 2}`, step_number: index + 2, timestamp: started + (index + 2) * 10,
+    duration: 1.2 + index, action_taken: { action, args: { text: index === 1 ? 'Settings' : 'Network and internet' } },
+    last_execution_result: index === 2 ? { success: false, error: 'Target not found on the current screen.' } : { success: true }
+  })));
+}
 const json = (response, body) => {
   response.writeHead(200, { 'content-type': 'application/json' });
   response.end(JSON.stringify(body));
@@ -105,7 +113,7 @@ try {
   await send('Network.enable');
   if (process.env.DEBUG_AUDIT) console.log('Chrome ready', base);
   mkdirSync(shots, { recursive: true });
-  for (const state of ['completed', 'running']) {
+  for (const state of timeline ? ['failed'] : ['completed', 'running']) {
     run.status = state;
     run.end_time = state === 'running' ? null : started + 60;
     for (const width of [1440, 390]) {
@@ -120,6 +128,85 @@ try {
       assert.ok(ready, `${state} @${width}: header loads`);
       await wait(250);
       await evaluate('document.fonts.ready.then(() => true)');
+      if (timeline) {
+        await evaluate(`(() => {
+          const canvas = document.createElement('canvas');
+          canvas.width = 180; canvas.height = 240;
+          const context = canvas.getContext('2d');
+          context.fillStyle = '#fafafa'; context.fillRect(0, 0, 180, 240);
+          context.fillStyle = '#27272a'; context.font = '18px sans-serif'; context.fillText('Settings', 16, 42);
+          context.font = '11px sans-serif';
+          ['Network and internet', 'Connected devices', 'Apps', 'Notifications', 'Battery'].forEach((label, index) => context.fillText(label, 16, 82 + index * 30));
+          const view = ng.getComponent(document.querySelector('app-run-view'));
+          view.storedSteps.set(view.steps().map(step => ({ ...step, pre_image_name: canvas.toDataURL(), post_image_name: canvas.toDataURL() })));
+          ng.applyChanges(view);
+        })()`);
+        await wait(100);
+        const snapshot = await evaluate(`(() => {
+          const bounds = element => { const box = element.getBoundingClientRect(); return { width: box.width, height: box.height }; };
+          const rows = [...document.querySelectorAll('.step-button')];
+          const failed = rows.at(-1);
+          return { rows: rows.map(bounds), thumbnails: rows.map(row => bounds(row.querySelector('.step-thumbnail'))),
+            controls: [...document.querySelectorAll('.step-toggle')].map(bounds),
+            label: failed.querySelector('.step-failed').textContent, icon: failed.querySelector('.step-icon').textContent,
+            background: getComputedStyle(failed.closest('.step-row')).backgroundColor,
+            kind: rows[1].querySelector('.step-kind').textContent,
+            time: rows[1].querySelector('.step-duration').textContent,
+            mono: getComputedStyle(rows[1].querySelector('.step-duration')).fontFamily,
+            screenshotsCollapsed: !document.querySelector('.step-screenshots'),
+            overflow: document.documentElement.scrollWidth - innerWidth,
+            timelineOverflow: document.querySelector('.steps').scrollWidth - document.querySelector('.steps').clientWidth };
+        })()`);
+        assert.equal(snapshot.rows.length, 4);
+        assert.ok(snapshot.rows.every(box => box.height === 56 && box.width >= 44), JSON.stringify(snapshot.rows));
+        assert.ok(snapshot.thumbnails.every(box => box.width === 56 && box.height === 40));
+        assert.ok(snapshot.controls.every(box => box.width >= 44 && box.height >= 44));
+        assert.equal(snapshot.label, 'Failed');
+        assert.equal(snapshot.icon, 'error');
+        assert.equal(snapshot.background, 'rgb(254, 226, 226)');
+        assert.equal(snapshot.kind, 'tap');
+        assert.equal(snapshot.time, '1.2s');
+        assert.match(snapshot.mono, /mono/i);
+        assert.equal(snapshot.screenshotsCollapsed, true);
+        assert.ok(snapshot.overflow <= 0 && snapshot.timelineOverflow <= 0, JSON.stringify(snapshot));
+        await evaluate(`document.querySelector('.step-button').click(); document.querySelector('.step-button').focus()`);
+        await wait(50);
+        assert.equal(await evaluate(`ng.getComponent(document.querySelector('app-run-view')).selectedStep().step_number`), 1);
+        for (const [key, expected] of [['ArrowUp', 1], ['ArrowDown', 2], ['End', 4], ['ArrowDown', 4], ['Home', 1]]) {
+          await send('Input.dispatchKeyEvent', { type: 'keyDown', key, code: key });
+          await send('Input.dispatchKeyEvent', { type: 'keyUp', key, code: key });
+          await wait(50);
+          assert.equal(await evaluate(`ng.getComponent(document.querySelector('app-run-view')).selectedStep().step_number`), expected, key);
+        }
+        await send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Tab', code: 'Tab', windowsVirtualKeyCode: 9 });
+        await send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Tab', code: 'Tab', windowsVirtualKeyCode: 9 });
+        assert.equal(await evaluate(`document.activeElement === document.querySelector('.step-toggle')`), true, 'native Tab reaches details');
+        await send('Input.dispatchKeyEvent', { type: 'keyDown', key: ' ', code: 'Space', windowsVirtualKeyCode: 32 });
+        await send('Input.dispatchKeyEvent', { type: 'keyUp', key: ' ', code: 'Space', windowsVirtualKeyCode: 32 });
+        await wait(50);
+        assert.equal(await evaluate(`!!document.querySelector('#step-details-step-1') && document.querySelector('.step-toggle').getAttribute('aria-expanded') === 'true'`), true);
+        assert.equal(await evaluate(`ng.getComponent(document.querySelector('app-run-view')).selectedStep().step_number`), 1, 'details do not select');
+        await evaluate(`document.querySelector('.step-toggle').click()`);
+        await wait(50);
+        assert.equal(await evaluate(`!!document.querySelector('#step-details-step-1')`), false);
+        assert.equal(await evaluate(`ng.getComponent(document.querySelector('app-run-view')).goToStep(4)`), true);
+        await wait(100);
+        assert.equal(await evaluate(`document.activeElement === document.querySelectorAll('.step-button')[3] && document.querySelectorAll('.step-button')[3].getAttribute('aria-current') === 'step' && document.querySelector('.evidence-image').getAttribute('alt') === 'Screenshot for step 4'`), true);
+        assert.equal(await evaluate(`ng.getComponent(document.querySelector('app-run-view')).goToStep(999)`), false);
+        await evaluate(`document.querySelector('.steps').scrollIntoView({ block: 'end' })`);
+        const screenshot = await send('Page.captureScreenshot', { format: 'png' });
+        writeFileSync(path.join(shots, `failed-${width}.png`), Buffer.from(screenshot.data, 'base64'));
+        if (width === 390) {
+          await send('Emulation.setDeviceMetricsOverride', { width, height: 1800, deviceScaleFactor: 1, mobile: true });
+          await evaluate(`document.querySelector('.viewer-scroll').scrollTop = 0`);
+          await wait(100);
+          const overview = await send('Page.captureScreenshot', { format: 'png' });
+          writeFileSync(path.join(shots, 'finished-failed-390.png'), Buffer.from(overview.data, 'base64'));
+        }
+        results.push({ state, width, ...snapshot });
+        console.log(`PASS step timeline @${width}: selection, keyboard, verdict jump, details, 56px rows, 56x40 thumbnails, 44px toggles, no overflow`);
+        continue;
+      }
       const snapshot = await evaluate(`(() => {
         const header = document.querySelector('.run-header');
         const primary = header.querySelector('.primary-actions button');
