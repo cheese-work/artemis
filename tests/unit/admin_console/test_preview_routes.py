@@ -333,7 +333,7 @@ def synthetic(tmp_path, monkeypatch):
         admin_emails=frozenset({ADMIN}),
     )
     verifier = MagicMock(spec=CloudflareAccessVerifier)
-    verifier.verify = AsyncMock(side_effect=lambda token, _config: {"email": token})
+    verifier.verify = AsyncMock(side_effect=lambda token, _config: {"email": token, "sub": token})
     app.state.access_verifier = verifier
     app.include_router(preview_synthetic.router)
     yield SimpleNamespace(client=TestClient(app), db=db, traps=traps)

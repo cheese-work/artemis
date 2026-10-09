@@ -78,6 +78,31 @@
           </details>
         </section>
 
+        <section class="run-result-summary" aria-label="Run result summary" aria-live="polite">
+          <h2>Run result summary</h2>
+          <p>Task: {{ resultOutcome()?.task_status || current.status }}</p>
+          @if (resultOutcome(); as result) {
+            @if (result.tests; as totals) {
+              <p class="check-counts">Passed: {{ totals.passed }} · Failed: {{ totals.failed }} · Inconclusive: {{ totals.inconclusive }} · Unchecked: {{ totals.unchecked }}</p>
+            }
+            @for (finding of result.last_findings ?? []; track $index) { <p>{{ finding }}</p> }
+            @for (subgoal of result.unmet_subgoals ?? []; track $index) { <p>Unmet subgoal: {{ subgoal }}</p> }
+          }
+          @if (reportHtml(); as report) {
+            <details class="task-report" open>
+              <summary>Task report</summary>
+              <div class="report-body" [innerHTML]="report"></div>
+            </details>
+          } @else if (notesFailed()) {
+            <p>Could not load the task report.</p>
+          } @else if (reportPending()) {
+            <p>Loading task report…</p>
+          } @else {
+            <p>{{ current.status === 'running' || current.status === 'pending' ? 'The run is in progress. The result will appear here.' : 'No task report was recorded.' }}</p>
+          }
+          @if (checksFailed()) { <p>Could not load checker results.</p> }
+        </section>
+
         @if (liveState(); as live) {
           <div class="interrupted-banner live-state" role="status">
             <p>{{ live.title }}</p>
@@ -132,7 +157,7 @@
             </section>
           }
           <section class="evidence" data-section="evidence" aria-label="Evidence" appRunEvidencePanel
-            [recording]="recording()" [videoUrl]="videoUrl()" [playerFailed]="playerFailed()" [message]="copy()"
+            [recording]="recording()" [videoUrl]="videoUrl()" [playerFailed]="playerFailed()" [message]="copy()" [detail]="videoDetail()"
             [retryable]="canCheckAgain()" [screenshotUrl]="screenshot()"
             [screenshotAlt]="'Screenshot for step ' + selectedStep()?.step_number" [loaded]="stepsLoaded()"
             (metadata)="onMetadata()" (ended)="onEnded()" (failed)="playerFailed.set(true)" (retry)="checkAgain()">
@@ -145,7 +170,7 @@
             } @else if (stepsLoaded() && steps().length === 0) {
               <p class="muted">No steps were recorded.</p>
             }
-            <ol #timelineEl class="step-list" (scroll)="rememberPosition()">
+            <ol #timelineEl class="step-list" aria-label="Step timeline" (scroll)="rememberPosition()">
               @for (step of steps(); track trackStep($index, step)) {
                 <li>
                   <button
@@ -159,6 +184,29 @@
                   >
                     @if (!stepFailed(step)) { <span class="step-outcome">{{ step.last_execution_result || postImage(step) ? 'Completed' : 'Dispatched' }}</span> }
                   </button>
+                  <button type="button" class="step-toggle" [attr.aria-expanded]="expandedSteps().has(step.step_id)"
+                    [attr.aria-controls]="'step-details-' + step.step_id" [attr.aria-label]="'Step ' + step.step_number + ' details'"
+                    (click)="toggleStep(step)">
+                    {{ expandedSteps().has(step.step_id) ? 'Hide details' : 'Show details' }}
+                  </button>
+                  @if (expandedSteps().has(step.step_id)) {
+                    <div class="step-details" [id]="'step-details-' + step.step_id" role="region" [attr.aria-label]="'Step ' + step.step_number + ' execution details'">
+                      <dl>
+                        <dt>Recorded</dt><dd>{{ step.timestamp * 1000 | date:'medium' }}</dd>
+                        @if (step.duration != null) { <dt>Duration</dt><dd>{{ step.duration }} seconds</dd> }
+                        @if (step.token_usage?.total_tokens != null || step.total_tokens != null) {
+                          <dt>Tokens</dt><dd>{{ step.token_usage?.total_tokens ?? step.total_tokens }}</dd>
+                        }
+                      </dl>
+                      <ng-container [ngTemplateOutlet]="executionEvents" [ngTemplateOutletContext]="{ $implicit: step }"></ng-container>
+                      @if (step.last_execution_result != null) {
+                        <details class="execution-result" open><summary>Execution result</summary><pre>{{ step.last_execution_result | json }}</pre></details>
+                      }
+                      @for (block of stepChecks(step); track block.id) {
+                        <ng-container [ngTemplateOutlet]="checkerDetails" [ngTemplateOutletContext]="{ $implicit: block }"></ng-container>
+                      }
+                    </div>
+                  }
                   @if (selectedStep()?.step_id === step.step_id) {
                     <div class="step-screenshots">
                       @if (preImage(step); as before) {
@@ -174,6 +222,15 @@
             </ol>
           </section>
         </div>
+
+        @if (unanchoredChecks().length) {
+          <section class="checker-results" aria-label="Checker output">
+            <h2>Checker output</h2>
+            @for (block of unanchoredChecks(); track block.id) {
+              <ng-container [ngTemplateOutlet]="checkerDetails" [ngTemplateOutletContext]="{ $implicit: block }"></ng-container>
+            }
+          </section>
+        }
 
         <section class="actions" data-section="actions" aria-label="Actions" appRunActionBar
           [actions]="actions()" [feedback]="feedback()" [error]="actionError()?.text ?? null"
@@ -219,3 +276,55 @@
     </div>
   </dialog>
 </div>
+
+<ng-template #executionEvents let-data>
+  @for (event of stepEvents(data); track $index) {
+    <details class="execution-event" open>
+      <summary>{{ event.type === 'thinking' ? 'Thought' : event.type === 'text' ? 'Work' : eventTitle(event) }}</summary>
+      @if (event.type === 'thinking' || event.type === 'text') {
+        @if (event.data.isReset) { <p role="status">{{ event.data.resetMessage }}</p> }
+        <div class="report-body" [innerHTML]="markdown(event.data.text || '')"></div>
+      } @else {
+        <dl>
+          @for (param of eventParameters(event); track $index) { <dt>{{ param.key }}</dt><dd>{{ param.value }}</dd> }
+          @if (event.data.status) { <dt>Status</dt><dd>{{ event.data.status }}</dd> }
+          @if (event.data.duration_ms != null) { <dt>Duration</dt><dd>{{ event.data.duration_ms }} ms</dd> }
+          @if (event.data.error) { <dt>Error</dt><dd>{{ event.data.error }}</dd> }
+        </dl>
+        @if (event.data.result != null) { <pre class="tool-output">{{ event.data.result | json }}</pre> }
+        @if (preImage(data, event.data) || postImage(data, event.data)) {
+          <div class="step-screenshots">
+            @if (preImage(data, event.data); as before) {
+              <figure><figcaption>Before</figcaption><img [src]="before" alt="Before this action or tool"></figure>
+            }
+            @if (postImage(data, event.data); as after) {
+              <figure><figcaption>After</figcaption><img [src]="after" alt="After this action or tool"></figure>
+            }
+          </div>
+        }
+        <details><summary>Raw action or tool details</summary><pre>{{ event.data | json }}</pre></details>
+      }
+    </details>
+  }
+</ng-template>
+
+<ng-template #checkerDetails let-block>
+  <details class="checker-details" open>
+    <summary>{{ block.data.phase === 'final' ? 'Final review' : 'Checkpoint' }}: {{ block.data.status }}</summary>
+    @if (block.data.subgoal_text) { <p>{{ block.data.subgoal_text }}</p> }
+    @for (item of block.data.items ?? []; track $index) { <p>{{ item.kind }}: {{ item.text }}</p> }
+    <ng-container [ngTemplateOutlet]="executionEvents" [ngTemplateOutletContext]="{ $implicit: block.data }"></ng-container>
+    @for (verdict of block.data.verdicts ?? []; track $index) {
+      <div class="checker-verdict">
+        <p>{{ verdict.kind }}: {{ verdict.item_text }} — {{ verdict.status }}</p>
+        <p>{{ verdict.evidence }}</p>
+        @if (verdict.suggestion) { <p>{{ verdict.suggestion }}</p> }
+      </div>
+    }
+    @for (finding of block.data.findings ?? []; track $index) { <p>{{ finding }}</p> }
+    @for (subgoal of block.data.unmet_subgoals ?? []; track $index) { <p>Unmet subgoal: {{ subgoal }}</p> }
+    @if (block.data.reverted) { <p>The step was sent back to be redone.</p> }
+    @if (block.data.error) { <p>{{ block.data.error }}</p> }
+    @if (block.data.route) { <p>Route: {{ block.data.route }}</p> }
+  </details>
+</ng-template>

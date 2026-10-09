@@ -77,7 +77,7 @@ describe('WorkspaceComponent error lifetime', () => {
     expect(errorOwners.size).toBe(0);
   }));
 
-  for (const width of [1150, 1024, 390]) {
+  for (const width of [1280, 1199, 1024, 799, 390]) {
     it(`keeps the task-switcher and notes panel visible at ${width}px`, () => {
       const frame = document.createElement('iframe');
       frame.style.width = `${width}px`;
@@ -95,7 +95,16 @@ describe('WorkspaceComponent error lifetime', () => {
         const left = frameDocument.querySelector<HTMLElement>('.left-panel')!;
         expect(frame.contentWindow!.getComputedStyle(panel).display).not.toBe('none');
         expect(panel.querySelector('app-chat-interface')).not.toBeNull();
-        expect(panel.getBoundingClientRect().top).toBeGreaterThanOrEqual(left.getBoundingClientRect().bottom);
+        if (width >= 1200) {
+          // Side by side: the list starts at the run's right edge, at the same height.
+          expect(panel.getBoundingClientRect().left).toBeGreaterThanOrEqual(left.getBoundingClientRect().right - 1);
+          expect(panel.getBoundingClientRect().top).toBe(left.getBoundingClientRect().top);
+        } else {
+          // Stacked (below 1200px) or one column (below 800px): the list sits under the run.
+          expect(panel.getBoundingClientRect().top).toBeGreaterThanOrEqual(left.getBoundingClientRect().bottom - 1);
+          expect(panel.getBoundingClientRect().left).toBe(left.getBoundingClientRect().left);
+          expect(panel.getBoundingClientRect().width).toBe(left.getBoundingClientRect().width);
+        }
         expect(panel.getBoundingClientRect().height).toBeGreaterThan(0);
         expect(panel.getBoundingClientRect().width).toBeLessThanOrEqual(width);
       } finally {
@@ -184,18 +193,20 @@ describe('WorkspaceComponent phone binding', () => {
     expect(phone.requestPicker).not.toHaveBeenCalled();
   });
 
-  it('keeps the prompt and opens the picker when the server says the phone is gone', async () => {
-    phone.target.set({ serial: 's', bridgeSessionId: 'b' });
-    runTask.and.returnValue(throwError(() => ({ status: 409, error: { code: 'device_offline', detail: 'x' } })));
-    component.taskInput = 'open settings';
+  for (const code of ['device_offline', 'bridge_session_unavailable', 'bridge_queue_binding_unavailable']) {
+    it(`keeps the prompt and opens the picker when the server returns ${code}`, async () => {
+      phone.target.set({ serial: 's', bridgeSessionId: 'b' });
+      runTask.and.returnValue(throwError(() => ({ status: 409, error: { code, detail: 'x' } })));
+      component.taskInput = 'open settings';
 
-    await component.submitTask();
+      await component.submitTask();
 
-    expect(component.errorMessage()).toBe('Your phone is not connected. Connect it again to run.');
-    expect(phone.requestPicker).toHaveBeenCalled();
-    expect(component.taskInput).toBe('open settings');
-    expect(runTask).toHaveBeenCalledTimes(1);
-  });
+      expect(component.errorMessage()).toBe('Your phone is not connected. Connect it again to run.');
+      expect(phone.requestPicker).toHaveBeenCalled();
+      expect(component.taskInput).toBe('open settings');
+      expect(runTask).toHaveBeenCalledTimes(1);
+    });
+  }
 
   it('has no phone chip in the Prompt Dock: the chip lives in the top bar (CHE-1143, OCR F6)', () => {
     const el = fixture.nativeElement as HTMLElement;

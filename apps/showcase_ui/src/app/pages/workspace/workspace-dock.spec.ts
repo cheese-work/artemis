@@ -98,6 +98,37 @@ describe('WorkspaceComponent always-open task dock', () => {
     });
   }
 
+  it('keeps the dock in normal flow below the run, on an opaque surface, with 44px controls (CHE-1278)', async () => {
+    await create();
+    const root: HTMLElement = fixture.nativeElement;
+    document.body.appendChild(root);
+    try {
+      const dock = root.querySelector<HTMLElement>('.workspace-floating-bar-wrapper')!;
+      expect(['static', 'relative', 'sticky']).toContain(getComputedStyle(dock).position);
+      expect(getComputedStyle(dock).backgroundColor).toBe('rgb(255, 255, 255)');
+      expect(getComputedStyle(root.querySelector('.floating-dock-card')!).backdropFilter).toBe('none');
+      for (const control of Array.from(root.querySelectorAll<HTMLElement>('.dock-circle-btn, .profile-toggle-pill'))) {
+        const { width, height } = control.getBoundingClientRect();
+        expect(Math.min(width, height)).withContext(control.className).toBeGreaterThanOrEqual(44);
+      }
+    } finally {
+      root.remove();
+    }
+  });
+
+  it('offers skip links that land in the new-task box', async () => {
+    await create();
+    const root: HTMLElement = fixture.nativeElement;
+    document.body.appendChild(root);
+    try {
+      const skip = Array.from(root.querySelectorAll<HTMLButtonElement>('button.skip-link')).find((b) => b.textContent!.includes('new task'))!;
+      skip.click();
+      expect(document.activeElement).toBe(root.querySelector('textarea.dock-textarea'));
+    } finally {
+      root.remove();
+    }
+  });
+
   it('has no task dock on review pages: the run view offers Start new run instead', async () => {
     await create(true);
     expect(fixture.nativeElement.querySelector('.workspace-floating-bar-wrapper')).toBeNull();

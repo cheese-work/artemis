@@ -29,6 +29,7 @@ from artemis.controllers.unified_controller import UnifiedMobileController
 from artemis.drivers.mock.mock_driver import MockDeviceDriver
 from artemis.utils import video as video_utils
 from artemis.utils.video import (
+    classify_recording_failure,
     RecordingSession,
     _parse_scrcpy_version,
     build_scrcpy_record_command,
@@ -623,6 +624,57 @@ def test_data_engine_video_lifecycle(tmp_path):
     assert sess_updated.video_filepath == str(new_vpath)
 
 
+def test_data_engine_stores_failure_reason_beside_raw_error(tmp_path):
+    from artemis.data_engine.engine import DataEngine
+    from artemis.context import ArtemisContext
+
+    mock_c = MagicMock(spec=ArtemisContext)
+    mock_c.execution_setup = MagicMock(traces_path=str(tmp_path / "traces"))
+    mock_c.device = None
+    engine = DataEngine(mock_c)
+    engine.start_session(goal="Test Video Failure")
+    published = []
+    engine._publish = lambda event, data: published.append((event, data))
+
+    vid = uuid4()
+    engine.record_video_start(vid, "device-1", tmp_path / "recording.mp4")
+    engine.record_video_failure(
+        vid,
+        "device-1",
+        tmp_path / "recording.mp4",
+        time.time(),
+        error="scrcpy failed to start: raw output",
+        reason="recorder_start_failed",
+    )
+
+    rec = engine.storage.get_video_recording(vid)
+    assert rec.status == "failed"
+    assert rec.error == "scrcpy failed to start: raw output"
+    assert rec.reason == "recorder_start_failed"
+    assert published[-1][0] == "recording_failed"
+    assert published[-1][1]["reason"] == "recorder_start_failed"
+
+
+def test_storage_adds_reason_column_to_existing_recordings_table(tmp_path):
+    import sqlite3
+
+    from artemis.data_engine.storage import StorageManager
+
+    db_path = tmp_path / "old.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "CREATE TABLE video_recordings (video_id TEXT PRIMARY KEY, session_id TEXT, "
+            "device_id TEXT, start_time REAL, end_time REAL, local_video_path TEXT, "
+            "status TEXT NOT NULL DEFAULT 'recording', error TEXT)"
+        )
+
+    StorageManager(db_path, tmp_path / "traces")
+
+    with sqlite3.connect(db_path) as conn:
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(video_recordings)")}
+    assert "reason" in columns
+
+
 @pytest.mark.asyncio
 async def test_unified_controller_crash_recovery_and_multi_segment(mock_ctx, tmp_path):
     """Verify that if recording is interrupted, segments are auto-recovered and concatenated seamlessly."""
@@ -935,3 +987,71 @@ def test_segment_session_offsets_without_data_engine_anchor(tmp_path):
     assert offsets[tmp_path / "recording_001.mp4"] == 7.5
     # An emergency fallback remux has no record; it starts at the recording anchor.
     assert offsets[fallback] == 0.0
+
+
+@pytest.mark.asyncio
+async def test_unified_controller_start_failure_message_skips_push_log(
+    mock_ctx, tmp_path, mock_scrcpy_toolchain
+):
+    controller = UnifiedMobileController(mock_ctx)
+    remove_active_session("emulator-5554")
+    push_log = "/usr/share/scrcpy/scrcpy-server: 1 file pushed, 0 skipped. 141.9 MB/s"
+    clipboard = (
+        "java.lang.NoSuchMethodException: "
+        "android.content.IClipboard$Stub$Proxy.addPrimaryClipChangedListener"
+    )
+    proc = MagicMock(returncode=1)
+    proc.stderr.read = AsyncMock(return_value=f"{push_log}\n{clipboard}\n".encode())
+
+    with (
+        patch.object(controller, "_spawn_scrcpy", AsyncMock(return_value=proc)),
+        patch(
+            "artemis.controllers.unified_controller.get_android_display_state",
+            AsyncMock(return_value=None),
+        ),
+        patch(
+            "artemis.controllers.unified_controller.await_scrcpy_first_frame",
+            AsyncMock(return_value=1.0),
+        ),
+    ):
+        result = await controller.start_video_recording(output_dir=tmp_path)
+
+    assert result.success is False
+    assert result.message.splitlines()[0] == f"scrcpy failed to start: {clipboard}"
+    assert classify_recording_failure(result.message) == "recorder_incompatible"
+    stored = mock_ctx.data_engine.record_video_failure.call_args.kwargs
+    assert stored["error"] == f"scrcpy failed to start: {push_log}\n{clipboard}\n"
+    assert stored["reason"] == "recorder_android_incompatible"
+    remove_active_session("emulator-5554")
+
+
+@pytest.mark.asyncio
+async def test_unified_controller_start_failure_message_keeps_output_for_classification(
+    mock_ctx, tmp_path, mock_scrcpy_toolchain
+):
+    controller = UnifiedMobileController(mock_ctx)
+    remove_active_session("emulator-5554")
+    header = "[server] ERROR: Could not invoke method"
+    clipboard = (
+        "java.lang.NoSuchMethodException: "
+        "android.content.IClipboard$Stub$Proxy.addPrimaryClipChangedListener"
+    )
+    proc = MagicMock(returncode=1)
+    proc.stderr.read = AsyncMock(return_value=f"{header}\n{clipboard}\n".encode())
+
+    with (
+        patch.object(controller, "_spawn_scrcpy", AsyncMock(return_value=proc)),
+        patch(
+            "artemis.controllers.unified_controller.get_android_display_state",
+            AsyncMock(return_value=None),
+        ),
+        patch(
+            "artemis.controllers.unified_controller.await_scrcpy_first_frame",
+            AsyncMock(return_value=1.0),
+        ),
+    ):
+        result = await controller.start_video_recording(output_dir=tmp_path)
+
+    assert result.message.splitlines()[0] == f"scrcpy failed to start: {header}"
+    assert classify_recording_failure(result.message) == "recorder_incompatible"
+    remove_active_session("emulator-5554")

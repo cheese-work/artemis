@@ -50,6 +50,7 @@ for _p in (str(_workspace_root), str(_apps_dir), str(_admin_console_dir), str(_c
 # Select the profile before any import below can run an import-time side effect.
 from apps.admin_console.core.preview_profile import (
     prepare_preview_environment,
+    preview_demo_selected,
     preview_identity_switch_selected,
     preview_profile_selected,
 )
@@ -57,6 +58,7 @@ from apps.admin_console.core.preview_routes import PreviewRouteGuard, require_cl
 
 PREVIEW_PROFILE = preview_profile_selected()
 preview_identity_switch_selected(PREVIEW_PROFILE)
+preview_demo_selected(PREVIEW_PROFILE)
 PREVIEW_ROOT = prepare_preview_environment() if PREVIEW_PROFILE else None
 
 from fastapi import Depends, FastAPI
@@ -106,6 +108,7 @@ from apps.admin_console.core.access_control import (
     admin_api_error_handler,
     config_from_environment,
     public_tier,
+    require_loopback_bind,
     require_qa,
 )
 from apps.admin_console.core.preview_access import preview_access_verifier
@@ -207,11 +210,13 @@ else:
         else CloudflareAccessVerifier()
     )
 logging.getLogger(__name__).info(
-    "Admin access configured: mode=%s issuer=%s audience=%s admin_count=%d",
+    "Admin access configured: mode=%s issuer=%s audience=%s admin_count=%d spaces=%s",
     app.state.access_config.auth_mode,
     app.state.access_config.issuer or "none",
     app.state.access_config.audience or "none",
-    len(app.state.access_config.admin_emails),
+    len(app.state.access_config.admin_subjects)
+    + (0 if app.state.access_config.spaces_enabled else len(app.state.access_config.admin_emails)),
+    app.state.access_config.spaces_enabled,
 )
 logger = logging.getLogger(__name__)
 # A preview never adopts the live service's token: its own is fresh and container-local.
@@ -643,6 +648,7 @@ def run_ui_server(host: str, port: int, reload: bool = False) -> None:
     from artemis.config.host_agent import host_agent_enabled
     from apps.admin_console.services.bridge_session_service import MAX_ADB_PACKET_BYTES
 
+    require_loopback_bind(app.state.access_config, host)
     websocket_options = {"ws_max_size": MAX_ADB_PACKET_BYTES} if host_agent_enabled() else {}
     configure_logging(streams=True)
     state.host = host

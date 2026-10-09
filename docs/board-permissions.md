@@ -19,8 +19,8 @@ Related: [board API](board-api.md) · [device identity](device-identity.md) ·
 | Admin | Signed-in caller listed in `ARTEMIS_ADMIN_EMAILS`. |
 | Unauthenticated | No verified identity. In `ARTEMIS_AUTH_MODE=cloudflare` every board route refuses this caller through the existing access tier. |
 
-In `ARTEMIS_AUTH_MODE=open` the scope is not enforced (existing
-`scope_or_open` behaviour): every caller acts as the run owner. The rules below
+In `ARTEMIS_AUTH_MODE=open` the scope is not enforced (the
+unenforced open-mode scope): every caller acts as the run owner. The rules below
 apply to `cloudflare` mode and to the opted-in preview identities.
 
 Identity headers (`Cf-Access-Jwt-Assertion`, and `X-Artemis-Preview-Identity`
@@ -134,6 +134,13 @@ Today these routes are open to any signed-in caller by link
   `/api/traces/{trace_id}`, `/api/traces/{trace_id}/download`,
   `/api/runs/{session_id}/bundle.zip`
 - named-session streams: `/api/stream/{session_id}`
+
+Evidence named only by an image name, a file path, a trace id or a step id
+(`/images/*`, `/api/images/*`, `/videos/*`, `/local_file`, `/api/steps/{id}/traces`,
+`/api/traces/{id}` and its `/download`) carries no run id in the URL. The caller must own a
+live run that owns the file, or have opened such a run by its full `session_id`
+first. Guessing a path proves nothing. Every other miss (removed, ownerless,
+unknown) is the same `run_not_visible` 404 for a non-admin.
 
 The existing `/api/sessions/{session_id}/notes` route is the agent's own notes,
 not the annotations and comments defined in [board API](board-api.md#notes).

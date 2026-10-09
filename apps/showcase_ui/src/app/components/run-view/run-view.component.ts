@@ -16,11 +16,11 @@ import {
   viewChild
 } from '@angular/core';
 import { HttpErrorResponse, HttpEvent, HttpEventType } from '@angular/common/http';
-import { DatePipe } from '@angular/common';
+import { DatePipe, JsonPipe, NgTemplateOutlet } from '@angular/common';
 import { Router, RouterLink } from '@angular/router';
 import { Subscription, catchError, of, switchMap, timer } from 'rxjs';
 import { RunSummary, SessionVideo, VideoSegment } from '../../core/models/run.model';
-import { StepItemData } from '../../core/models/stream.model';
+import { ActionParam, CheckerBlockData, SessionChecks, StepEvent, StepItemData } from '../../core/models/stream.model';
 import { Session, SessionUsage } from '../../core/models/session.model';
 import { OwnerScopeService } from '../../services/owner-scope.service';
 import { RunsService } from '../../services/runs.service';
@@ -28,17 +28,28 @@ import {
   getActionObject,
   getActionErrorMessage,
   getActionTitle,
+  extractActionExtraParams,
+  getActionCoords,
+  getActionTargetText,
+  getActionInputLabel,
+  getActionInputText,
+  getActionBounds,
+  getActionClass,
+  getActionResourceId,
+  getReportStatusExplanation,
   getStepPostImageUrl,
   getStepPreImageUrl,
-  isActionFailed
+  isActionFailed,
+  isReportStatusAction
 } from '../../utils/action-formatter.util';
+import { extractToolExtraParams, getToolCoords, getToolInputLabel, getToolInputText, getToolTargetText, getToolTitle } from '../../utils/tool-formatter.util';
 import { renderMarkdownToHtml } from '../../utils/markdown-parser.util';
 import { REPORT_TITLE_MAX, isLongReport, summarizeReport } from '../../utils/report-summary.util';
-import { Playback, mapRecording } from '../../utils/recording-state.util';
+import { Playback, mapRecording, prepareFailedCopy, technicalDetail } from '../../utils/recording-state.util';
 import { locateSessionTime } from '../../utils/recording-timeline.util';
 import { runStatusView } from '../../utils/run-status.util';
 import { buildStartupWorkItems } from '../../utils/run-startup.util';
-import { consolidateLogsToBlocks, getSortedStepEvents } from '../../utils/stream-aggregator.util';
+import { buildCheckerSnapshotLogs, consolidateLogsToBlocks, getSortedStepEvents } from '../../utils/stream-aggregator.util';
 import { AgentService, type StartupProgressEvent } from '../../services/agent.service';
 import {
   DELETE_NOTICE,
@@ -72,7 +83,7 @@ const DIALOGS: Record<DialogKind, { title: string; notices: string[]; confirm: s
 @Component({
   selector: 'app-run-view',
   standalone: true,
-  imports: [RouterLink, DatePipe, RunIdCopyComponent, RunStatusBadgeComponent, RunDeviceLabelComponent,
+  imports: [RouterLink, DatePipe, JsonPipe, NgTemplateOutlet, RunIdCopyComponent, RunStatusBadgeComponent, RunDeviceLabelComponent,
     RunStepRowComponent, RunEvidencePanelComponent, RunActionBarComponent],
   templateUrl: './run-view.component.html',
   styleUrl: './run-view.component.scss',
@@ -143,6 +154,12 @@ export class RunViewComponent {
   public readonly activeSegmentIndex = signal(0);
   public readonly compact = signal(false);
   public readonly techOpen = signal(false);
+  public readonly expandedSteps = signal<ReadonlySet<string>>(new Set());
+  private readonly checks = signal<SessionChecks | null>(null);
+  public readonly checksFailed = signal(false);
+  private readonly notes = signal<Record<string, string> | null>(null);
+  public readonly notesFailed = signal(false);
+  public readonly reportPending = computed(() => this.notes() === null && !this.notesFailed());
 
   public readonly dialogKind = signal<DialogKind | null>(null);
   public readonly feedback = signal('');
@@ -169,6 +186,26 @@ export class RunViewComponent {
   public readonly usage = signal<SessionUsage | null>(null);
   public readonly usageFailed = signal(false);
   public readonly viewedModel = computed(() => this.viewingLiveSession() ? this.agentService.viewedModel() : null);
+  private readonly resultBlocks = computed(() => {
+    const id = this.run()?.session_id;
+    if (!id) return [];
+    const checks = this.checks();
+    const logs = checks ? buildCheckerSnapshotLogs(id, checks.records ?? [], checks.run_outcome, checks.streams) : [];
+    if (this.viewingLiveSession()) logs.push(...this.agentService.sessionLogs().filter(log =>
+      (!log.session_id || log.session_id === id) && (!log.data?.session_id || log.data.session_id === id)));
+    return consolidateLogsToBlocks(logs).filter(block => block.type === 'checker');
+  });
+  public readonly resultOutcome = computed<CheckerBlockData | null>(() =>
+    this.resultBlocks().find(block => block.data.phase === 'outcome')?.data ?? null);
+  public readonly reportHtml = computed(() => {
+    const report = this.notes()?.['output.md'];
+    if (report) return renderMarkdownToHtml(report);
+    const explanation = this.steps().flatMap(step => getSortedStepEvents(step))
+      .filter(event => isReportStatusAction(event.data)).map(event => getReportStatusExplanation(event.data)).filter(Boolean).at(-1);
+    return explanation ? renderMarkdownToHtml(explanation) : null;
+  });
+  public readonly unanchoredChecks = computed(() => this.resultBlocks().filter(block =>
+    block.data.phase !== 'outcome' && !this.steps().some(step => step.step_id === block.data.anchor_step_id)));
   public readonly streamBlocks = computed(() => this.viewingLiveSession()
     ? consolidateLogsToBlocks(this.agentService.sessionLogs()).map((block) => ({
       id: block.id,
@@ -228,11 +265,15 @@ export class RunViewComponent {
   public readonly copy = computed(() => {
     if (this.videoFailed()) return "Couldn't check the video.";
     if (this.playerFailed()) return 'The video could not be played. Steps and screenshots are still here.';
-    const message = this.video()?.message?.trim();
     return this.recording().state === 'prepare_failed'
-      ? `${this.recording().copy} ${message || 'The video service did not report a reason.'}`
+      ? prepareFailedCopy(this.recording().copy, this.video()?.message)
       : this.recording().copy;
   });
+
+  /** Raw recorder output behind a failed video, shown only inside "Technical details". */
+  public readonly videoDetail = computed(() =>
+    this.recording().state === 'prepare_failed' ? technicalDetail(this.video()?.detail) : null
+  );
 
   public readonly videoUrl = computed(
     () => mediaUrl(this.segments()[this.activeSegmentIndex()]?.url ?? this.video()?.video_url)
@@ -362,6 +403,11 @@ export class RunViewComponent {
     this.state.set('loading');
     this.catalogRun.set(null);
     this.storedSteps.set([]);
+    this.expandedSteps.set(new Set());
+    this.checks.set(null);
+    this.checksFailed.set(false);
+    this.notes.set(null);
+    this.notesFailed.set(false);
     this.stepsLoaded.set(false);
     this.video.set(null);
     this.selectedStepId.set(null);
@@ -453,6 +499,14 @@ export class RunViewComponent {
         }
       })
     );
+    this.evidenceRequests.add(this.runsApi.checks(sessionId).subscribe({
+      next: checks => { this.checks.set(checks); this.checksFailed.set(false); },
+      error: () => this.checksFailed.set(true)
+    }));
+    this.evidenceRequests.add(this.runsApi.notes(sessionId).subscribe({
+      next: result => { this.notes.set(result.notes ?? {}); this.notesFailed.set(false); },
+      error: () => this.notesFailed.set(true)
+    }));
     this.loadVideo(sessionId);
   }
 
@@ -477,6 +531,40 @@ export class RunViewComponent {
 
   public stepTitle(step: StepItemData): string {
     return getActionTitle(step.action_taken);
+  }
+
+  public toggleStep(step: StepItemData): void {
+    const expanded = new Set(this.expandedSteps());
+    if (expanded.has(step.step_id)) expanded.delete(step.step_id);
+    else expanded.add(step.step_id);
+    this.expandedSteps.set(expanded);
+  }
+
+  public readonly stepEvents = getSortedStepEvents;
+  public readonly markdown = renderMarkdownToHtml;
+
+  public eventTitle(event: StepEvent): string {
+    return event.type === 'action' ? getActionTitle(event.data) : getToolTitle(event.data);
+  }
+
+  public eventParameters(event: StepEvent): ActionParam[] {
+    const action = event.type === 'action';
+    const data = event.data;
+    return [
+      { key: 'Target', value: action ? getActionTargetText(data) : getToolTargetText(data) },
+      { key: action ? getActionInputLabel(data) : getToolInputLabel(data), value: action ? getActionInputText(data) : getToolInputText(data) },
+      { key: 'Coordinates', value: action ? getActionCoords(data) : getToolCoords(data) },
+      ...(action ? [
+        { key: 'Target bounds', value: getActionBounds(data) },
+        { key: 'Target class', value: getActionClass(data) },
+        { key: 'Resource ID', value: getActionResourceId(data) }
+      ] : []),
+      ...(action ? extractActionExtraParams(data) : extractToolExtraParams(data))
+    ].filter(param => !!param.value);
+  }
+
+  public stepChecks(step: StepItemData) {
+    return this.resultBlocks().filter(block => block.data.phase !== 'outcome' && block.data.anchor_step_id === step.step_id);
   }
 
   public stepFailed(step: StepItemData): boolean {

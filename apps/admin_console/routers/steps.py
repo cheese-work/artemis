@@ -22,9 +22,11 @@ from artemis.config import TEST_OUTPUTS_DIR
 from apps.admin_console.core.access_control import AdminAPIError
 from apps.admin_console.core.ownership import (
     OwnerScope,
-    actor_scope,
+    evidence_scope,
+    non_admin_misses_are_hidden,
     present_session_data,
-    scope_or_open,
+    require_actor,
+    require_visible_run,
 )
 from apps.admin_console.core.redaction import redact_json, redact_text
 
@@ -43,7 +45,7 @@ router = APIRouter(tags=["steps"])
 
 @router.get("/api/sessions/{session_id}/steps")
 async def get_session_steps(
-    session_id: str, client: str | None = None, actor: OwnerScope = Depends(actor_scope)
+    session_id: str, client: str | None = None, actor: OwnerScope = Depends(evidence_scope)
 ):
     try:
         steps = step_repo.get_session_steps(session_id, client=client)
@@ -53,13 +55,15 @@ async def get_session_steps(
 
 
 @router.get("/api/steps/{step_id}/traces")
-async def get_step_traces_endpoint(step_id: str, actor: OwnerScope = Depends(actor_scope)):
+async def get_step_traces_endpoint(step_id: str, actor: OwnerScope = Depends(evidence_scope)):
     try:
         session_id = step_repo.get_step_session_id(step_id)
         if not session_id:
-            raise HTTPException(status_code=404, detail="Step not found")
+            with non_admin_misses_are_hidden(actor):
+                raise HTTPException(status_code=404, detail="Step not found")
+        require_visible_run(actor, [session_id], by_link=True)
         traces = trace_repo.get_step_traces_tree(session_id, step_id)
-    except HTTPException as e:
+    except (HTTPException, AdminAPIError) as e:
         raise e
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -84,13 +88,15 @@ async def get_trace(
     trace_id: str,
     session_id: str = None,
     step_number: int = None,
-    actor: OwnerScope = Depends(actor_scope),
+    actor: OwnerScope = Depends(evidence_scope),
 ):
     try:
         db_path = _resolve_trace_db_path(session_id, step_number)
         trace_dict = trace_repo.get_trace_by_id(trace_id, db_path=db_path)
         if not trace_dict:
-            raise HTTPException(status_code=404, detail="Trace not found")
+            with non_admin_misses_are_hidden(actor):
+                raise HTTPException(status_code=404, detail="Trace not found")
+        require_visible_run(actor, [trace_dict.get("session_id")], by_link=True)
 
         trace_dict = present_session_data(actor, trace_dict.get("session_id"), trace_dict)
 
@@ -100,7 +106,7 @@ async def get_trace(
                 trace_dict["payload"] = media_service.unwrap_payload(
                     payload_obj,
                     session_id=trace_dict.get("session_id")
-                    if scope_or_open(actor).enforced
+                    if require_actor(actor).enforced
                     else None,
                 )
             except (ValueError, TypeError, KeyError, AttributeError):
@@ -128,12 +134,16 @@ async def download_trace(
     trace_id: str,
     session_id: str = None,
     step_number: int = None,
-    actor: OwnerScope = Depends(actor_scope),
+    actor: OwnerScope = Depends(evidence_scope),
 ):
     try:
         db_path = _resolve_trace_db_path(session_id, step_number)
         trace_dict = trace_repo.get_trace_by_id(trace_id, db_path=db_path)
-        if not trace_dict or not trace_dict.get("payload"):
+        if not trace_dict:
+            with non_admin_misses_are_hidden(actor):
+                raise HTTPException(status_code=404, detail="Payload not found")
+        require_visible_run(actor, [trace_dict.get("session_id")], by_link=True)
+        if not trace_dict.get("payload"):
             raise HTTPException(status_code=404, detail="Payload not found")
 
         payload = present_session_data(actor, trace_dict.get("session_id"), trace_dict["payload"])

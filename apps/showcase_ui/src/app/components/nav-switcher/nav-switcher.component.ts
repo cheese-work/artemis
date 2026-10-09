@@ -31,6 +31,7 @@ import { AdminIdentityIndicatorComponent } from '../admin-identity-indicator/adm
       <a
         routerLink="/workspace"
         routerLinkActive="active"
+        ariaCurrentWhenActive="page"
         class="nav-tab-btn"
         title="Open Workspace"
         aria-label="Workspace"
@@ -41,6 +42,7 @@ import { AdminIdentityIndicatorComponent } from '../admin-identity-indicator/adm
       <a
         routerLink="/runs"
         routerLinkActive="active"
+        ariaCurrentWhenActive="page"
         class="nav-tab-btn"
         title="Open the run library"
         aria-label="Runs"

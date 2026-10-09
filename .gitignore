@@ -79,6 +79,9 @@ dmypy.json
 apps/showcase_ui/node_modules/
 apps/showcase_ui/.angular/
 apps/showcase_ui/.angular/cache/
+apps/showcase_ui/src/build-info.ts
+# Generated from apps/showcase_ui/whats-new/entries/ by scripts/validate-whats-new.mjs
+apps/showcase_ui/public/whats-new.json
 .npm/
 npm-debug.log*
 yarn-debug.log*
@@ -122,3 +125,6 @@ Thumbs.db
 
 # Created by ConfigStore (admin console tests run from the repo root)
 .artemis-config.lock
+
+# Demo board scratch (scripts/preview_demo.py)
+.preview-demo/

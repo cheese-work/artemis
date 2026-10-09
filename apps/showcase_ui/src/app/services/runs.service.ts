@@ -2,7 +2,7 @@ import { Injectable, inject, signal } from '@angular/core';
 import { HttpClient, HttpEvent, HttpParams } from '@angular/common/http';
 import { Observable } from 'rxjs';
 import { RunPage, RunSummary, SessionVideo } from '../core/models/run.model';
-import { StepItemData } from '../core/models/stream.model';
+import { SessionChecks, StepItemData } from '../core/models/stream.model';
 import { RunFilters, apiParams } from '../utils/run-filters.util';
 import { OwnerScopeService } from './owner-scope.service';
 
@@ -34,6 +34,14 @@ export class RunsService {
 
   public steps(sessionId: string): Observable<StepItemData[]> {
     return this.http.get<StepItemData[]>(`/api/sessions/${encodeURIComponent(sessionId)}/steps`);
+  }
+
+  public checks(sessionId: string): Observable<SessionChecks> {
+    return this.http.get<SessionChecks>(`/api/sessions/${encodeURIComponent(sessionId)}/checks`);
+  }
+
+  public notes(sessionId: string): Observable<{ notes: Record<string, string> }> {
+    return this.http.get<{ notes: Record<string, string> }>(`/api/sessions/${encodeURIComponent(sessionId)}/notes`);
   }
 
   public video(sessionId: string): Observable<SessionVideo> {
