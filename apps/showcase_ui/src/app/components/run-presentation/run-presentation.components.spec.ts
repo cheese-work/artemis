@@ -181,6 +181,25 @@ describe('shared run presentation', () => {
     expect(retry).toHaveBeenCalled();
   });
 
+  it('shows raw recorder output only inside collapsed technical details, as plain text', () => {
+    const raw = '/usr/share/scrcpy/scrcpy-server: 1 file pushed\n<img src=x onerror=alert(1)>';
+    const fixture = render(RunEvidencePanelComponent, { recording: mapRecording({ capture: 'stopped', transfer: 'uploaded', playback: 'failed' }),
+      message: 'The video could not be prepared. The screen recorder could not start on this phone.', detail: raw });
+    const root = fixture.nativeElement as HTMLElement;
+    expect(root.querySelector('.recording-copy')!.textContent).toContain('The screen recorder could not start on this phone.');
+    expect(root.querySelector('.recording-copy')!.textContent).not.toContain('file pushed');
+    const details = root.querySelector<HTMLDetailsElement>('details.technical-details')!;
+    expect(details.open).toBeFalse();
+    expect(details.querySelector('summary')!.textContent).toBe('Technical details');
+    expect(details.querySelector('.technical-body')!.textContent).toBe(raw);
+    expect(details.querySelector('img')).toBeNull();
+  });
+
+  it('renders no technical details without recorder output', () => {
+    const fixture = render(RunEvidencePanelComponent, { recording: mapRecording({ capture: 'stopped', transfer: 'uploaded', playback: 'failed' }) });
+    expect(fixture.nativeElement.querySelector('details')).toBeNull();
+  });
+
   const triggers = [
     [true, 'processing', '/ready.mp4', true, 'videocam', 'Recording...'],
     [false, 'processing', '/ready.mp4', true, 'progress_activity', 'Preparing...'],

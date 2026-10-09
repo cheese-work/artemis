@@ -20,6 +20,12 @@ import { RecordingView } from '../../utils/recording-state.util';
           (loadedmetadata)="metadata.emit()" (ended)="ended.emit()" (error)="failed.emit()"></video>
       } @else {
         <p class="recording-copy" role="status">{{ message() ?? recording()?.copy }}</p>
+        @if (detail(); as technical) {
+          <details class="technical-details">
+            <summary>Technical details</summary>
+            <pre class="technical-body">{{ technical }}</pre>
+          </details>
+        }
         @if (retryable()) { <button type="button" class="secondary-button" (click)="retry.emit()">Check again</button> }
         @if (screenshotUrl(); as src) { <img class="evidence-image" [src]="src" [alt]="screenshotAlt()" /> }
         @else if (loaded()) { <p class="muted">No screenshots for this run.</p> }
@@ -38,6 +44,7 @@ export class RunEvidencePanelComponent {
   readonly loaded = input(false);
   readonly playerFailed = input(false);
   readonly message = input<string | null>(null);
+  readonly detail = input<string | null>(null);
   readonly retryable = input(false);
   readonly running = input(false);
   readonly playbackStatus = input<string | null | undefined>(null);
