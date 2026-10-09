@@ -138,7 +138,9 @@ describe('ChatInterfaceComponent device chip', () => {
     expect(history?.textContent).toContain('Past prompt');
     expect(history?.textContent).toContain('Failed');
     expect(history?.textContent).not.toContain('Live prompt');
-    expect(fixture.componentInstance.activeQueue().map((item) => item.session_id)).toEqual(['live']);
+    const queue = (fixture.nativeElement as HTMLElement).querySelector('.queue-section');
+    expect(queue?.textContent).toContain('Live prompt');
+    expect(queue?.textContent).not.toContain('Past prompt');
   });
 
   it('uses the short title in queue rows and their Stop controls', () => {
@@ -163,9 +165,9 @@ describe('ChatInterfaceComponent device chip', () => {
     agentStatus.set('idle');
     sessions.set([{ ...session('emulator-5554'), status: 'completed', end_time: 2 }]);
     fixture.detectChanges();
-    expect(fixture.nativeElement.querySelector('.run-row')?.textContent).toContain('goal');
+    expect(fixture.nativeElement.querySelector('.date-group .run-row')?.textContent).toContain('goal');
     expect(list).toHaveBeenCalledTimes(2);
-    expect(fixture.componentInstance.activeQueue()).toEqual([]);
+    expect(fixture.nativeElement.querySelector('.queue-section')).toBeNull();
 
     sessions.set([{ ...session('emulator-5554'), status: 'completed', end_time: 2 }]);
     fixture.detectChanges();

@@ -79,22 +79,6 @@ export class ChatInterfaceComponent {
   // it per session object so template re-evaluation stays cheap.
   private deviceSerialCache = new WeakMap<Session, string | null>();
 
-  /**
-   * Filtered computed list of active tasks (running or pending) sorted by status and submission order
-   */
-  public activeQueue = computed(() => {
-    const list = this.agentService.sessions().filter((s) => this.statusView(s).active);
-    return list.sort((a, b) => {
-      const statusA = this.getTaskStatus(a);
-      const statusB = this.getTaskStatus(b);
-      const isRunA = statusA === 'running' || statusA === 'paused';
-      const isRunB = statusB === 'running' || statusB === 'paused';
-      if (isRunA && !isRunB) return -1;
-      if (!isRunA && isRunB) return 1;
-      return (a.start_time || 0) - (b.start_time || 0); // stable FIFO order
-    });
-  });
-
   public readonly recordedDevices = computed(() => {
     const devices = new Map<string, NonNullable<ReturnType<typeof recordedDevice>>>();
     for (const session of this.agentService.sessions()) {
@@ -215,28 +199,6 @@ export class ChatInterfaceComponent {
         this.logger.error('Failed to clear history:', err);
         this.isSubmitting.set(false);
         this.errorMessage.set(err.error?.detail || err.error?.error || 'Failed to clear history.');
-      }
-    });
-  }
-
-  /**
-   * Delete an individual task / session
-   */
-  public deleteTask(sessionId: string, event: MouseEvent): void {
-    event.stopPropagation();
-    if (!confirm(`Are you sure you want to delete this task? This cannot be undone.`)) {
-      return;
-    }
-    this.isSubmitting.set(true);
-    this.errorMessage.set(null);
-    this.agentService.deleteSession(sessionId).subscribe({
-      next: () => {
-        this.isSubmitting.set(false);
-      },
-      error: (err: any) => {
-        this.logger.error(`Failed to delete task ${sessionId}:`, err);
-        this.isSubmitting.set(false);
-        this.errorMessage.set(err.error?.detail || 'Failed to delete task.');
       }
     });
   }
