@@ -407,7 +407,7 @@ describe('SetupComponent', () => {
       expect(panels.length).toBe(2);
       for (const panel of panels) {
         expect(luminance(bg(panel))).toBeGreaterThan(LIGHT_SURFACE);
-        expect(getComputedStyle(panel).borderTopColor).toBe('rgb(226, 232, 240)');
+        expect(getComputedStyle(panel).borderTopColor).toBe('rgb(228, 228, 231)');
       }
     });
 
@@ -423,12 +423,11 @@ describe('SetupComponent', () => {
       }
     });
 
-    it('styles the primary action with the SmartQA blue and readable text', async () => {
+    it('styles the primary action with the SmartQA indigo and readable text', async () => {
       const host = await render(true);
       const save = host.querySelector('.primary-button') as Element;
 
-      // DESIGN.md primary (#2563eb); the old #1a73e8 was 4.27:1 on the page background.
-      expect(getComputedStyle(save).backgroundColor).toBe('rgb(37, 99, 235)');
+      expect(getComputedStyle(save).backgroundColor).toBe('rgb(79, 70, 229)');
       expect(contrast(fg(save), bg(save))).toBeGreaterThanOrEqual(MIN_TEXT_CONTRAST);
     });
 
