@@ -14,6 +14,7 @@
     "test:keyboard-paste": "node --test scripts/keyboard-walkthrough/paste-shortcut.test.mjs",
     "test:layout": "node scripts/layout-audit/layout-audit.mjs",
     "test:run-header": "node scripts/run-header-audit.mjs",
+    "test:controls": "node scripts/layout-audit/screenshots.mjs screenshots controls --controls",
     "test:preview-path": "node scripts/preview-path.test.mjs",
     "test:build-info": "node --test scripts/write-build-info.test.mjs",
     "test:whats-new": "node --test scripts/validate-whats-new.test.mjs scripts/check-whats-new-entry.test.mjs",
