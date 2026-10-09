@@ -1,8 +1,9 @@
 :host(.actions) button {
   min-height: 44px;
+  min-width: 44px;
   font-size: 14px;
   padding: 0 18px;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   cursor: pointer;
 }
 
@@ -12,26 +13,24 @@
 }
 
 .secondary-button {
-  border: 1px solid var(--evidence-border);
+  border: 0;
   color: var(--evidence-text);
-  background: var(--evidence-surface);
+  background: var(--color-surface-subtle);
 }
 
 .action-button {
   min-width: 96px;
-  border: 1px solid var(--color-primary);
+  border: 0;
   color: var(--color-on-primary);
   background: var(--color-primary);
   font-weight: 600;
 
   &[aria-pressed='true'] {
-    border-color: var(--status-ok-fg);
     color: var(--status-ok-fg);
     background: var(--status-ok-bg);
   }
 
   &.danger {
-    border-color: var(--status-danger-fg);
     color: var(--status-danger-fg);
     background: var(--status-danger-bg);
   }
@@ -39,10 +38,10 @@
 
 .action-feedback, .action-error { flex-basis: 100%; margin: 0; font-size: 14px; }
 .action-error { color: var(--status-danger-fg); }
-.run-id-copy-button { display: inline-flex; align-items: center; min-width: 44px; min-height: 44px; padding: 0; border: 0; color: inherit; background: none; font: inherit; text-align: left; cursor: pointer; }
+.run-id-copy-button { display: inline-flex; align-items: center; min-width: var(--target); min-height: var(--target); padding: 0 var(--space-sm); border: 0; border-radius: var(--radius-md); color: inherit; background: var(--color-surface-subtle); font: inherit; text-align: left; cursor: pointer; }
 .run-id-copy-button:hover { color: var(--color-primary); text-decoration: underline; }
 .run-id-copy-button:focus-visible { outline: 3px solid var(--color-focus); outline-offset: 3px; border-radius: 3px; }
-.copy-summary-button { display: inline-flex; align-items: center; gap: 5px; height: 30px; padding: 0 11px; border: 1px solid var(--color-rule); border-radius: 15px; color: var(--color-text); background: color-mix(in srgb, var(--color-surface) 88%, transparent); font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; }
+.copy-summary-button { display: inline-flex; align-items: center; gap: 5px; min-height: var(--target); min-width: var(--target); padding: 0 11px; border: 0; border-radius: var(--radius-md); color: var(--color-text); background: var(--color-surface-subtle); font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; }
 .copy-summary-button:hover { background: var(--color-surface); color: var(--color-primary-hover); }
 .copy-summary-button:focus-visible { outline: 3px solid var(--color-focus); outline-offset: 2px; }
 .copy-summary-button .material-symbols-outlined { font-size: 15px; }

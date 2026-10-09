@@ -153,6 +153,16 @@ describe('ChatInterfaceComponent device chip', () => {
     expect(root.querySelector('.queue-stop')?.getAttribute('aria-label')).toBe('Stop run: Open Settings');
   });
 
+  it('renders the list-owned empty state without an outline', () => {
+    const fixture = TestBed.createComponent(ChatInterfaceComponent);
+    fixture.detectChanges();
+    const root = fixture.nativeElement as HTMLElement;
+    const emptyList = root.querySelector<HTMLElement>('app-run-library .state-empty');
+    expect(root.querySelector('.empty-section-placeholder')).toBeNull();
+    expect(emptyList).not.toBeNull();
+    expect(getComputedStyle(emptyList!).borderStyle).toBe('none');
+  });
+
   it('refreshes history when a run completes after the first catalog load', () => {
     sessions.set([session('emulator-5554')]);
     const runs = TestBed.inject(RunsService);

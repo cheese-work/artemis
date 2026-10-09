@@ -74,6 +74,7 @@ from artemis.runtime.adb_endpoint import AdbEndpoint
 from artemis.runtime.endpoint_transport import EndpointTransport
 from artemis.runtime.cancel_requests import watch_for_cancel_request
 from artemis.runtime.lifecycle import InterruptReason
+from artemis.data_engine import run_snapshot
 from artemis.data_engine.engine import DataEngine
 from artemis.drivers.types import DeviceDisconnectedError
 from artemis.data_engine.trace import DataEngineCallbackHandler
@@ -1167,6 +1168,11 @@ class Agent:
 
         context.data_engine = DataEngine(ctx=context)
         device_data = context.device.model_dump() if context.device else {}
+        device_data.update(
+            run_snapshot.execution_fields(
+                context.adb_client, device_data.get("device_id"), context.llm_config
+            )
+        )
         if task.request.profile:
             device_data["profile"] = task.request.profile
         run_tuning = run_tuning_summary(self._config, task.request.profile)
