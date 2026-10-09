@@ -55,6 +55,7 @@ _ROW_LIMIT = 500
 _CAUSE_LIMIT = 20
 _IDS_PER_CAUSE = 10
 _STUCK_AFTER = 60 * 60.0
+_GOAL_STOP_WORDS = {"a", "an", "and", "for", "in", "of", "or", "the", "to", "with"}
 
 # (rule, category, pattern), first match wins. Patterns are matched case-insensitively.
 _RULES: tuple[tuple[str, str, str], ...] = (
@@ -100,8 +101,14 @@ _COMPILED = tuple((rule, category, re.compile(p, re.IGNORECASE)) for rule, categ
 _ACTION = {"user_prompt": "no action", "provider": "monitor", "unknown": "review"}
 # A traceback's last line, or the runner's own verdict, is a run's cause.
 _PREFIX = re.compile(r"^\[[^\]]+\]\s*")  # the runner's "[web_<ts>_<id>]" tag
-_RUN_EVIDENCE = re.compile(r"\b\w+(Error|Exception)\b: |FlashRunner failed:")
-_RAW_ERROR_TEXT = re.compile(r"\b[\w.$]*(?:Error|Exception)\s*:|\n\s+at\s+[\w.$]+\(")
+_RUN_EVIDENCE = re.compile(
+    r"\b\w+(Error|Exception)\b: |FlashRunner failed:|^[ \t]+at\s+[\w.$]+\(",
+    re.MULTILINE,
+)
+_RAW_ERROR_TEXT = re.compile(r"^[ \t]*(?:[\w.$]*(?:Error|Exception):|at\s+[\w.$]+\()", re.MULTILINE)
+_UUID = re.compile(r"\b[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}\b", re.IGNORECASE)
+_HEX_ID = re.compile(r"\b[0-9a-f]{12,}\b", re.IGNORECASE)
+_IDENTIFIER_WITH_DIGITS = re.compile(r"\b(?=[a-z0-9_-]*\d)[a-z0-9_-]+\b", re.IGNORECASE)
 
 _CREATE_LEDGER = """
 CREATE TABLE IF NOT EXISTS failure_ledger (
@@ -119,7 +126,7 @@ CREATE TABLE IF NOT EXISTS failure_ledger (
     owner TEXT,
     occurred_at REAL NOT NULL,
     classified_at REAL NOT NULL,
-    UNIQUE (session_id, step_number, signal)
+    UNIQUE (session_id, step_number, signal, cause)
 )"""
 _DDL = (
     "CREATE INDEX IF NOT EXISTS idx_failure_ledger_time ON failure_ledger (occurred_at)",
@@ -138,18 +145,31 @@ def classify(evidence: str) -> tuple[str, str]:
 
 
 def _cause(rule: str, evidence: str) -> str:
-    """Same cause for the same failure on another device, step or run: digits and case drop out."""
-    return f"{rule}|{re.sub(r'\d+', 'N', ' '.join(evidence.lower().split()))[:120]}"
+    """Same cause across runs when evidence contains variable identifiers or numbers."""
+    normalized = " ".join(evidence.lower().split())
+    normalized = _UUID.sub("<id>", normalized)
+    normalized = _HEX_ID.sub("<id>", normalized)
+    normalized = _IDENTIFIER_WITH_DIGITS.sub("N", normalized)
+    normalized = re.sub(r"\d+", "N", normalized)
+    return f"{rule}|{normalized[:120]}"
 
 
-def _safe_evidence(evidence: str, goal: str | None) -> str:
-    if goal:
-        evidence = re.sub(re.escape(goal), "[goal redacted]", evidence, flags=re.IGNORECASE)
+def _safe_evidence(evidence: str, goal: str | None, category: str | None = None) -> str:
+    if category == "user_prompt":
+        evidence = "[prompt-side evidence redacted]"
+    elif goal:
+        words = set(re.findall(r"[\w]+", goal.casefold()))
+        content_words = words - _GOAL_STOP_WORDS
+        for word in sorted(content_words or words, key=len, reverse=True):
+            evidence = re.sub(
+                rf"\b{re.escape(word)}\b", "[goal redacted]", evidence, flags=re.IGNORECASE
+            )
     return redact_text(evidence)[:_EVIDENCE_MAX]
 
 
-def _defect_key(signal: str, cause: str) -> str:
-    return hashlib.sha256(f"{signal}|{cause}".encode()).hexdigest()[:16]
+def _defect_key(category: str, rule: str, cause: str) -> str:
+    normalized_cause = _cause(rule, cause.split("|", 1)[-1])
+    return hashlib.sha256(f"{category}|{rule}|{normalized_cause}".encode()).hexdigest()[:16]
 
 
 def _ensure(conn: sqlite3.Connection) -> None:
@@ -161,11 +181,18 @@ def _ensure(conn: sqlite3.Connection) -> None:
             unique_keys.append(
                 tuple(row[2] for row in conn.execute(f"PRAGMA index_info('{index[1]}')"))
             )
-    if "signal" not in columns or ("session_id", "step_number", "signal") not in unique_keys:
+    if (
+        "signal" not in columns
+        or ("session_id", "step_number", "signal", "cause") not in unique_keys
+    ):
         signal = (
-            "COALESCE(signal, CASE WHEN step_number = 0 THEN 'stuck_run' ELSE 'run_step' END)"
+            "CASE WHEN failure_ledger_legacy.step_number = 0 "
+            "AND failure_ledger_legacy.signal = 'stuck_run' "
+            "AND EXISTS (SELECT 1 FROM sessions s "
+            "WHERE s.session_id = failure_ledger_legacy.session_id AND s.status = 'failed') "
+            "THEN 'run_step' ELSE COALESCE(failure_ledger_legacy.signal, 'run_step') END"
             if "signal" in columns
-            else "CASE WHEN step_number = 0 THEN 'stuck_run' ELSE 'run_step' END"
+            else "'run_step'"
         )
         conn.execute("SAVEPOINT failure_ledger_signal_migration")
         migration_complete = False
@@ -181,12 +208,12 @@ def _ensure(conn: sqlite3.Connection) -> None:
                 "occurred_at, classified_at FROM failure_ledger_legacy"
             )
             legacy_rows = conn.execute(
-                "SELECT l.id, l.evidence, l.cause, s.initial_goal "
+                "SELECT l.id, l.evidence, l.cause, s.initial_goal, l.category "
                 "FROM failure_ledger l LEFT JOIN sessions s ON s.session_id = l.session_id"
             ).fetchall()
             for legacy_row in legacy_rows:
-                safe_evidence = _safe_evidence(legacy_row[1], legacy_row[3])
-                safe_cause = _safe_evidence(legacy_row[2], legacy_row[3])
+                safe_evidence = _safe_evidence(legacy_row[1], legacy_row[3], legacy_row[4])
+                safe_cause = _safe_evidence(legacy_row[2], legacy_row[3], legacy_row[4])
                 if safe_evidence != legacy_row[1] or safe_cause != legacy_row[2]:
                     conn.execute(
                         "UPDATE failure_ledger SET evidence = ?, cause = ? WHERE id = ?",
@@ -249,10 +276,9 @@ def _device(device_info: str | None) -> str | None:
 _RUNS_SQL = """
 SELECT s.session_id, s.interrupt_reason, s.device_info, s.initial_goal AS goal, m.requested_by, m.host_id,
        coalesce(s.end_time, s.start_time, ?) AS at, 0 AS step_number, NULL AS result,
-       0 AS stuck, 'stuck_run' AS signal
+       0 AS stuck, CASE WHEN s.status = 'interrupted' THEN 'stuck_run' ELSE 'run_step' END AS signal
 FROM sessions s JOIN run_meta m ON m.session_id = s.session_id
 WHERE s.status IN ('failed', 'interrupted') AND m.deleted_at IS NULL
-  AND NOT EXISTS (SELECT 1 FROM failure_ledger f WHERE f.session_id = s.session_id AND f.signal = 'stuck_run')
 """
 _STUCK_SQL = """
 SELECT s.session_id, s.interrupt_reason, s.device_info, s.initial_goal AS goal, m.requested_by, m.host_id,
@@ -260,7 +286,6 @@ SELECT s.session_id, s.interrupt_reason, s.device_info, s.initial_goal AS goal, 
 FROM sessions s JOIN run_meta m ON m.session_id = s.session_id
 WHERE s.status IN ('queued', 'running') AND m.deleted_at IS NULL
   AND coalesce(s.start_time, ?) <= ?
-  AND NOT EXISTS (SELECT 1 FROM failure_ledger f WHERE f.session_id = s.session_id AND f.signal = 'stuck_run')
 """
 _STEPS_SQL = """
 SELECT s.session_id, s.interrupt_reason, s.device_info, s.initial_goal AS goal, m.requested_by, m.host_id,
@@ -301,13 +326,13 @@ def collect() -> dict[str, int]:
         rows = []
         for row in candidates:
             signal = row["signal"]
-            is_run = signal != "run_step"
+            is_run = row["step_number"] == 0
             if row["stuck"]:
                 raw = "Run exceeded the one-hour activity threshold"
-            elif signal == "stuck_run":
-                raw = _run_evidence(row, traces_dir)
             elif signal == "recording":
                 raw = str(row["result"] or "")
+            elif is_run:
+                raw = _run_evidence(row, traces_dir)
             else:
                 raw = _step_evidence(row["result"])
             evidence = _safe_evidence(raw, row["goal"])
@@ -321,47 +346,9 @@ def collect() -> dict[str, int]:
                 rule = classify_recording_failure(raw)
                 evidence = evidence or "Video recording failed"
                 category = "smartqa_infra"
-                rows.append(
-                    (
-                        *base,
-                        category,
-                        rule,
-                        _cause(rule, evidence),
-                        evidence,
-                        device,
-                        source,
-                        row["requested_by"],
-                        row["at"],
-                        now,
-                    )
-                )
-                if _RAW_ERROR_TEXT.search(raw or ""):
-                    raw_error = _safe_evidence(raw, row["goal"])
-                    category, rule = classify(raw_error)
-                    if rule == "no_match":
-                        rule = "raw_error_text"
-                    rows.append(
-                        (
-                            row["session_id"],
-                            row["step_number"],
-                            "raw_error_text",
-                            "run",
-                            category,
-                            rule,
-                            _cause(rule, raw_error),
-                            raw_error,
-                            device,
-                            source,
-                            row["requested_by"],
-                            row["at"],
-                            now,
-                        )
-                    )
-                continue
-            if row["stuck"]:
-                category, rule = "smartqa_infra", "run_stuck"
             else:
-                category, rule = classify(evidence)
+                category, rule = ("smartqa_infra", "run_stuck") if row["stuck"] else classify(raw)
+                evidence = _safe_evidence(raw, row["goal"], category)
             rows.append(
                 (
                     *base,
@@ -376,6 +363,28 @@ def collect() -> dict[str, int]:
                     now,
                 )
             )
+            if _RAW_ERROR_TEXT.search(raw or ""):
+                raw_category, raw_rule = classify(raw)
+                if raw_rule == "no_match":
+                    raw_rule = "raw_error_text"
+                raw_error = _safe_evidence(raw, row["goal"], raw_category)
+                rows.append(
+                    (
+                        row["session_id"],
+                        row["step_number"],
+                        "raw_error_text",
+                        "run" if is_run else "step",
+                        raw_category,
+                        raw_rule,
+                        _cause(raw_rule, raw_error),
+                        raw_error,
+                        device,
+                        source,
+                        row["requested_by"],
+                        row["at"],
+                        now,
+                    )
+                )
         before = conn.total_changes
         conn.executemany(
             "INSERT OR IGNORE INTO failure_ledger (session_id, step_number, signal, scope, category, "
@@ -401,14 +410,23 @@ def view(days: int = DEFAULT_DAYS) -> dict[str, Any]:
             (since,),
         ).fetchall()
         causes = conn.execute(
+            "WITH cause_counts AS ("
             "SELECT cause, signal, scope, category, rule, COUNT(*) AS count, "
             "SUM(CASE WHEN occurred_at >= ? THEN 1 ELSE 0 END) AS count_24h, "
             "MIN(occurred_at) AS first_seen, MAX(occurred_at) AS last_seen, "
             "MIN(evidence) AS sample, MIN(evidence) AS evidence_excerpt, MIN(device) AS device, "
-            "json_group_array(DISTINCT session_id) AS session_ids "
+            "json_group_array(DISTINCT session_id) AS session_ids, "
+            "category NOT IN ('user_prompt', 'provider') AS smartqa_side "
             f"FROM failure_ledger l WHERE occurred_at >= ? AND {_LIVE} "
-            "GROUP BY cause, signal, scope, category, rule "
-            "ORDER BY count DESC, last_seen DESC LIMIT ?",
+            "GROUP BY cause, signal, scope, category, rule"
+            "), ranked_causes AS ("
+            "SELECT *, ROW_NUMBER() OVER (PARTITION BY smartqa_side "
+            "ORDER BY count DESC, last_seen DESC, category, rule, cause) AS side_rank "
+            "FROM cause_counts) "
+            "SELECT cause, signal, scope, category, rule, count, count_24h, first_seen, last_seen, "
+            "sample, evidence_excerpt, device, session_ids, smartqa_side "
+            "FROM ranked_causes WHERE side_rank <= ? "
+            "ORDER BY count DESC, last_seen DESC, category, rule, cause",
             (since_24h, since, _CAUSE_LIMIT),
         ).fetchall()
         rows = conn.execute(
@@ -426,8 +444,8 @@ def view(days: int = DEFAULT_DAYS) -> dict[str, Any]:
                 "session_ids": json.loads(row["session_ids"])[:_IDS_PER_CAUSE],
                 "run_ids": json.loads(row["session_ids"])[:_IDS_PER_CAUSE],
                 "count_window": row["count"],
-                "defect_key": _defect_key(row["signal"], row["cause"]),
-                "smartqa_side": row["category"].startswith("smartqa_"),
+                "defect_key": _defect_key(row["category"], row["rule"], row["cause"]),
+                "smartqa_side": bool(row["smartqa_side"]),
                 "action": _action(row["category"]),
             }
             for row in causes
