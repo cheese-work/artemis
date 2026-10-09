@@ -407,6 +407,7 @@ async def test_trace_download_passes_through_the_redactor(library, qa):
     trace_id = library.trace(sid, json.dumps(payload))
 
     async with qa:
+        await qa.get(f"/api/runs/{sid}")  # opening the run by its full id is the link
         response = await qa.get(f"/api/traces/{trace_id}/download")
 
     assert response.status_code == 200
@@ -423,6 +424,7 @@ async def test_trace_download_of_non_json_payload_is_redacted_text(library, qa):
     trace_id = library.trace(sid, "plain text with password=hunter2")
 
     async with qa:
+        await qa.get(f"/api/runs/{sid}")  # opening the run by its full id is the link
         response = await qa.get(f"/api/traces/{trace_id}/download")
 
     assert "hunter2" not in response.text and "plain text with" in response.text
@@ -492,6 +494,8 @@ async def test_unresolved_ids_take_no_lease(library, qa, monkeypatch):
 
     library.seed("one", sid="aaaaaaaa-0000-4000-8000-000000000001")
     library.seed("two", sid="aaaaaaaa-0000-4000-8000-000000000002")
+    with sqlite3.connect(library.db) as conn:
+        conn.execute("UPDATE run_meta SET requested_by = ?", ("qa@example.com",))
     leased: list[str] = []
     real = run_leases.acquire
     monkeypatch.setattr(run_leases, "acquire", lambda db, sid: leased.append(sid) or real(db, sid))
@@ -508,6 +512,8 @@ async def test_unresolved_ids_take_no_lease(library, qa, monkeypatch):
 @pytest.mark.asyncio
 async def test_a_prefix_download_leases_the_full_id(library, qa, monkeypatch):
     sid = library.seed("prefixed", sid="bbbbbbbb-0000-4000-8000-000000000001")
+    with sqlite3.connect(library.db) as conn:
+        conn.execute("UPDATE run_meta SET requested_by = ?", ("qa@example.com",))
     seen: list[str] = []
     real = run_bundle._build_zip
 

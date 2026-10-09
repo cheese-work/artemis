@@ -29,9 +29,12 @@ from artemis.utils.video import (
 from apps.admin_console.core.ownership import (
     OwnerScope,
     actor_scope,
+    evidence_scope,
+    non_admin_misses_are_hidden,
     present_session_data,
     require_access,
     require_actor,
+    require_visible_run,
 )
 from apps.admin_console.services import run_images, run_media
 from apps.admin_console.services.run_artifacts import goal_image_session, untracked_inline_image
@@ -65,14 +68,14 @@ async def _leased_file(
     path: Path, media_type: str, owners: list[str], actor: OwnerScope
 ) -> FileResponse:
     """A download that defers deleting its runs until it ends; 404 once they are all deleted."""
-    session_id = await asyncio.to_thread(goal_image_session, path)
-    if session_id is not None:
-        await asyncio.to_thread(require_access, require_actor(actor), session_id)
-    elif await asyncio.to_thread(untracked_inline_image, path):
-        await asyncio.to_thread(require_access, require_actor(actor), None)
+    scope = require_actor(actor)
+    await asyncio.to_thread(require_visible_run, scope, owners, by_link=True)
+    if await asyncio.to_thread(untracked_inline_image, path):
+        await asyncio.to_thread(require_visible_run, scope, [])  # no capture record: no owner
     lease_ids = await asyncio.to_thread(run_media.lease, owners)
     if lease_ids is None:
-        raise HTTPException(status_code=404, detail="Media file not found")
+        with non_admin_misses_are_hidden(scope):
+            raise HTTPException(status_code=404, detail="Media file not found")
     if not lease_ids:
         return FileResponse(path, media_type=media_type)
     return _LeasedFileResponse(path, media_type, lease_ids)
@@ -145,7 +148,12 @@ async def get_admin_index():
 
 @router.get("/images/{image_name}")
 @router.get("/api/images/{image_name}")
-async def get_image(image_name: str, actor: OwnerScope = Depends(actor_scope)):
+async def get_image(image_name: str, actor: OwnerScope = Depends(evidence_scope)):
+    with non_admin_misses_are_hidden(actor):
+        return await _get_image(image_name, actor)
+
+
+async def _get_image(image_name: str, actor: OwnerScope):
     inline = re.fullmatch(r"inline_(.+)_([a-f0-9]{64})(?:\.jpg)?", image_name)
     if inline:
         try:
@@ -170,14 +178,15 @@ async def get_image(image_name: str, actor: OwnerScope = Depends(actor_scope)):
 
 
 @router.get("/videos/{video_path:path}")
-async def get_video(video_path: str, actor: OwnerScope = Depends(actor_scope)):
-    path = _resolve_media_path(video_path, set(_VIDEO_MEDIA_TYPES))
+async def get_video(video_path: str, actor: OwnerScope = Depends(evidence_scope)):
+    with non_admin_misses_are_hidden(actor):
+        path = _resolve_media_path(video_path, set(_VIDEO_MEDIA_TYPES))
     owners = await asyncio.to_thread(run_media.owners_of_file, path)
     return await _leased_file(path, _VIDEO_MEDIA_TYPES[path.suffix.lower()], owners, actor)
 
 
 @router.get("/api/sessions/{session_id}/video")
-async def get_session_video(session_id: str, actor: OwnerScope = Depends(actor_scope)):
+async def get_session_video(session_id: str, actor: OwnerScope = Depends(evidence_scope)):
     # Blocking work (sqlite, filesystem scan, possible ffmpeg conversion) runs
     # off the event loop.
     video = await asyncio.to_thread(_get_session_video_sync, session_id)
@@ -263,26 +272,27 @@ def _get_session_video_sync(session_id: str):
 
 
 @router.get("/local_file")
-async def get_local_file(path: str, actor: OwnerScope = Depends(actor_scope)):
-    p, media_type = media_service.get_safe_local_file(path)
+async def get_local_file(path: str, actor: OwnerScope = Depends(evidence_scope)):
+    with non_admin_misses_are_hidden(actor):
+        p, media_type = media_service.get_safe_local_file(path)
     owners = await asyncio.to_thread(run_media.owners_of_file, Path(p))
     return await _leased_file(Path(p), media_type, owners, actor)
 
 
 @router.get("/api/sessions/{session_id}/plan")
-async def get_task_plan(session_id: str, actor: OwnerScope = Depends(actor_scope)):
+async def get_task_plan(session_id: str, actor: OwnerScope = Depends(evidence_scope)):
     plan = {"plan": media_service.get_task_plan_content(_safe_session_id(session_id), actor)}
     return present_session_data(actor, session_id, plan)
 
 
 @router.get("/api/sessions/{session_id}/notes")
-async def get_all_notes(session_id: str, actor: OwnerScope = Depends(actor_scope)):
+async def get_all_notes(session_id: str, actor: OwnerScope = Depends(evidence_scope)):
     notes = {"notes": media_service.get_session_notes_content(_safe_session_id(session_id), actor)}
     return present_session_data(actor, session_id, notes)
 
 
 @router.get("/api/sessions/{session_id}/checks")
-async def get_session_checks(session_id: str, actor: OwnerScope = Depends(actor_scope)):
+async def get_session_checks(session_id: str, actor: OwnerScope = Depends(evidence_scope)):
     """Checker verdict ledger + run outcome (backfill for the Checker panel)."""
     checks = media_service.get_session_checks(_safe_session_id(session_id))
     return present_session_data(actor, session_id, checks)

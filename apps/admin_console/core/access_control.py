@@ -404,6 +404,10 @@ async def require_effective_loopback(request: Request) -> None:
 
 
 _PUBLIC_GET_PATHS = {
+    "/openapi.json",
+    "/docs",
+    "/docs/oauth2-redirect",
+    "/redoc",
     "/api/system/readiness",
     "/api/system/adb/server",
     "/api/system/emulator/status",

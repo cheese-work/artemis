@@ -14,6 +14,7 @@ import tempfile
 
 ENV_PREVIEW_PROFILE = "ARTEMIS_PREVIEW_PROFILE"
 ENV_PREVIEW_IDENTITY_SWITCH = "ARTEMIS_PREVIEW_IDENTITY_SWITCH"
+ENV_PREVIEW_DEMO = "ARTEMIS_PREVIEW_DEMO"
 
 _TRUTHY = {"1", "true"}
 
@@ -32,6 +33,16 @@ def preview_identity_switch_selected(
     enabled = value in _TRUTHY
     if enabled and not preview_profile:
         raise ValueError("The identity switch requires the isolated preview profile.")
+    return enabled
+
+
+def preview_demo_selected(preview_profile: bool, environ: Mapping[str, str] = os.environ) -> bool:
+    value = environ.get(ENV_PREVIEW_DEMO, "").strip().lower()
+    if value not in {"", "0", "false", *_TRUTHY}:
+        raise ValueError("ARTEMIS_PREVIEW_DEMO must be 0, false, 1 or true.")
+    enabled = value in _TRUTHY
+    if enabled and not preview_profile:
+        raise ValueError("The demo board requires the isolated preview profile.")
     return enabled
 
 

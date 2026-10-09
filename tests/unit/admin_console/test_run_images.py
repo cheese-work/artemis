@@ -319,7 +319,7 @@ def _owned_run(db_root, owner, sid=None):
 
 
 @pytest.mark.asyncio
-async def test_only_the_owner_or_an_admin_can_fetch_an_image(cloudflare):
+async def test_any_signed_in_holder_of_the_full_id_can_fetch_a_goal_image(cloudflare):
     sid = _owned_run(cloudflare, QA1)
     _stored(cloudflare, sid)
 
@@ -331,8 +331,8 @@ async def test_only_the_owner_or_an_admin_can_fetch_an_image(cloudflare):
     assert mine.headers["content-type"] == "image/png"
     assert mine.headers["x-content-type-options"] == "nosniff"
     assert mine.content == _image_bytes()
-    assert other.status_code == 403
-    assert other.content != _image_bytes()
+    assert other.status_code == 200
+    assert other.content == _image_bytes()
 
 
 @pytest.fixture
@@ -354,9 +354,9 @@ def generic_media_roots(env, monkeypatch):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("email,status", [(QA1, 200), (QA2, 403), (ADMIN, 200)])
+@pytest.mark.parametrize("email,status", [(QA1, 200), (QA2, 200), (ADMIN, 200)])
 @pytest.mark.parametrize("spelling", ["plain", "parent", "symlink", "encoded", "file_uri", "case"])
-async def test_local_file_applies_goal_image_ownership_after_resolution(
+async def test_local_file_applies_the_run_visibility_rule_after_resolution(
     cloudflare, generic_media_roots, email, status, spelling
 ):
     sid = _owned_run(cloudflare, QA1)
@@ -378,13 +378,14 @@ async def test_local_file_applies_goal_image_ownership_after_resolution(
     elif spelling == "file_uri":
         raw_path = path.as_uri()
 
-    response = await _get(email, f"/local_file?path={quote(raw_path, safe='')}")
+    url = f"/local_file?path={quote(raw_path, safe='')}"
+    if email == QA2:
+        assert (await _get(email, url)).status_code == 404  # a guessed path: no link yet
+    await _get(email, f"/api/sessions/{sid}")  # opening the run by its full id is the link
+    response = await _get(email, url)
 
     assert response.status_code == status
-    if status == 200:
-        assert response.content == _image_bytes()
-    else:
-        assert response.content != _image_bytes()
+    assert response.content == _image_bytes()
 
 
 @pytest.mark.asyncio
@@ -410,7 +411,15 @@ async def test_shared_screenshots_and_recordings_remain_readable(cloudflare, gen
     recording = cloudflare / "traces" / sid / "recording.mp4"
     recording.parent.mkdir()
     recording.write_bytes(b"SHARED-VIDEO")
+    with sqlite3.connect(cloudflare / "data_engine.db") as conn:
+        conn.execute(
+            "INSERT INTO steps (step_id, session_id, step_number, timestamp, pre_image_name) "
+            "VALUES (?, ?, 1, 1.0, 'shared')",
+            (str(uuid.uuid4()), sid),
+        )
 
+    assert (await _get(QA2, "/images/shared")).status_code == 404  # a guess: no link yet
+    assert (await _get(QA2, f"/api/sessions/{sid}")).status_code == 200  # the full-id link
     for path in (screenshot, recording):
         response = await _get(QA2, f"/local_file?path={quote(str(path), safe='')}")
         assert response.status_code == 200
@@ -432,18 +441,19 @@ async def test_other_generic_media_routes_cannot_serve_goal_image_aliases(
     response = await _get(QA2, "/images/alias")
     assert response.status_code == 404
     response = await _get(QA2, f"/videos/{sid}/goal_images/alias.mp4")
-    assert response.status_code == 403
+    assert response.status_code == 404 and response.json()["code"] == "run_not_visible"
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("email,status", [(QA1, 200), (QA2, 403), (ADMIN, 200)])
-async def test_video_route_also_guards_goal_attachment_folders(
+@pytest.mark.parametrize("email,status", [(QA1, 200), (QA2, 200), (ADMIN, 200)])
+async def test_video_route_serves_goal_attachment_folders_by_the_run_rule(
     cloudflare, generic_media_roots, email, status
 ):
     sid = _owned_run(cloudflare, QA1)
     folder = _stored(cloudflare, sid)
     (folder / "0.mp4").write_bytes(b"PRIVATE-ATTACHMENT")
 
+    await _get(email, f"/api/sessions/{sid}")  # opening the run by its full id is the link
     response = await _get(email, f"/videos/{sid}/goal_images/0.mp4")
 
     assert response.status_code == status
@@ -480,6 +490,7 @@ async def test_foreign_trace_reads_hide_image_data_before_materialization(
     if endpoint == "download":
         url += "/download"
 
+    await _get(QA2, f"/api/sessions/{sid}")  # opening the run by its full id is the link
     response = await _get(QA2, url)
 
     assert response.status_code == 200
@@ -493,7 +504,7 @@ async def test_foreign_trace_reads_hide_image_data_before_materialization(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("email", [QA1, ADMIN])
-async def test_owner_trace_images_are_cached_privately_and_not_publicly_readable(
+async def test_trace_images_are_cached_privately_and_follow_the_evidence_rule(
     cloudflare, generic_media_roots, email
 ):
     sid = _owned_run(cloudflare, QA1)
@@ -504,7 +515,10 @@ async def test_owner_trace_images_are_cached_privately_and_not_publicly_readable
     assert reference.startswith("image://")
     name = reference.removeprefix("image://")
     assert (await _get(email, f"/images/{name}")).content == _image_bytes()
-    assert (await _get(QA2, f"/images/{name}")).status_code == 403
+    guessed = await _get(QA2, f"/images/{name}")
+    assert guessed.status_code == 404 and guessed.json()["code"] == "run_not_visible"
+    await _get(QA2, f"/api/sessions/{sid}")  # a full-id link holder reads it like any evidence
+    assert (await _get(QA2, f"/images/{name}")).content == _image_bytes()
     assert not (
         cloudflare / "traces" / "images" / f"{hashlib.sha256(_image_bytes()).hexdigest()}.jpg"
     ).exists()
@@ -543,10 +557,22 @@ async def test_legacy_unregistered_inline_cache_is_admin_only(
         if endpoint == "images"
         else f"/local_file?path={quote(str(image), safe='')}"
     )
-    assert (await _get(QA2, url)).status_code == 403
+    legacy = await _get(QA2, url)  # no capture record: no owning run to follow
+    assert legacy.status_code == 404 and legacy.json()["code"] == "run_not_visible"
     assert (await _get(ADMIN, url)).content == _image_bytes()
+    sid = _owned_run(cloudflare, QA1)
     with sqlite3.connect(cloudflare / "data_engine.db") as conn:
         conn.execute("INSERT INTO images (image_name, timestamp) VALUES (?, ?)", (digest, 1.0))
+    # Captured, but no run shows it yet: still no owning run to follow.
+    hidden = await _get(QA2, url)
+    assert hidden.status_code == 404 and hidden.json()["code"] == "run_not_visible"
+    with sqlite3.connect(cloudflare / "data_engine.db") as conn:
+        conn.execute(
+            "INSERT INTO steps (step_id, session_id, step_number, timestamp, pre_image_name) "
+            "VALUES (?, ?, 1, 1.0, ?)",
+            (str(uuid.uuid4()), sid, digest),
+        )
+    assert (await _get(QA2, f"/api/sessions/{sid}")).status_code == 200  # the full-id link
     assert (await _get(QA2, url)).content == _image_bytes()
 
 
@@ -565,6 +591,7 @@ async def test_foreign_trace_reads_mask_bare_images_and_existing_refs(
     with sqlite3.connect(cloudflare / "data_engine.db") as conn:
         conn.execute("UPDATE traces SET payload = ? WHERE trace_id = ?", (payload, trace_id))
 
+    await _get(QA2, f"/api/sessions/{sid}")  # opening the run by its full id is the link
     response = await _get(QA2, f"/api/traces/{trace_id}{endpoint}")
 
     assert response.status_code == 200
@@ -622,6 +649,7 @@ async def test_real_goal_blocks_and_callback_trace_do_not_publish_foreign_goal_b
     trace_id = _image_trace(cloudflare, sid, engine.record_trace.call_args.kwargs["payload"])
 
     for suffix in ("", "/download"):
+        await _get(QA2, f"/api/sessions/{sid}")  # opening the run by its full id is the link
         response = await _get(QA2, f"/api/traces/{trace_id}{suffix}")
         assert response.status_code == 200
         assert base64.b64encode(_image_bytes()).decode() not in response.text
