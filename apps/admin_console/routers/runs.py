@@ -16,6 +16,7 @@
 
 import asyncio
 from datetime import datetime, timezone, UTC
+import math
 from typing import Any
 
 from fastapi import APIRouter, Depends, Query
@@ -92,16 +93,23 @@ def _parse_time(value: str | None) -> float | None:
     if value is None or not value.strip():
         return None
     try:
-        return float(value)
+        result = float(value)
     except ValueError:
         parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
-        return (parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)).timestamp()
+        result = (parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)).timestamp()
+    if not math.isfinite(result):
+        raise ValueError("time must be finite")
+    return result
 
 
 @router.get("/api/runs")
 async def list_runs(
     q: str | None = None,
     status: str | None = None,
+    review: str | None = None,
+    app_build: str | None = None,
+    model: list[str] | None = Query(None),
+    suite: str | None = None,
     device: str | None = None,
     host: str | None = None,
     requester: str | None = None,
@@ -138,6 +146,10 @@ async def list_runs(
             run_catalog_repo.list_runs,
             q=q,
             status=status,
+            review=review,
+            app_build=app_build,
+            models=model,
+            suite=suite,
             device=device,
             host=host,
             requester=requester,
@@ -154,6 +166,7 @@ async def list_runs(
         "runs": [_present(run, scope, team=team) for run in page.runs],
         "next_cursor": page.next_cursor,
         "warnings": page.warnings,
+        "total": page.total,
     }
 
 
