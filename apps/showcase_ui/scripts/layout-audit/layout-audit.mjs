@@ -73,7 +73,9 @@ const UNDER_NAV = `(() => {
     const range = document.createRange(); range.selectNodeContents(n);
     if ([...range.getClientRects()].some(hit)) out.push(n.textContent.trim().slice(0, 28));
   }
+  const firstListControl = document.querySelector('.run-list-pane .owner-tabs button');
   return { nav: [Math.round(nav.left), Math.round(nav.right), Math.round(nav.bottom)], under: out,
+    firstListControlTop: firstListControl?.getBoundingClientRect().top ?? null,
     overflowX: document.documentElement.scrollWidth - innerWidth, navOffscreen: nav.right > innerWidth || nav.left < 0 };
 })()`;
 
@@ -88,6 +90,9 @@ async function clearanceMatrix() {
       await setPhone(phone);
       const r = await evaluate(UNDER_NAV);
       if (r.under.length) fail(where, `text under nav: ${[...new Set(r.under)].join(' | ')}`);
+      if (route === '/runs' && width < 1024 && (r.firstListControlTop === null || r.firstListControlTop < r.nav[2])) {
+        fail(where, `first list control starts at ${r.firstListControlTop}, below-nav boundary is ${r.nav[2]}`);
+      }
       if (r.navOffscreen) fail(where, `nav outside viewport ${r.nav}`);
       if (r.overflowX > 0) fail(where, `page scrolls sideways by ${r.overflowX}px`);
     }

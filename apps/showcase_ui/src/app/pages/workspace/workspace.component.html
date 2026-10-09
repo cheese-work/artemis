@@ -22,7 +22,8 @@ limitations under the License.
   </div>
 
   <aside class="run-list-pane" aria-label="Runs">
-    <app-run-library [compact]="true" class="review-run-list"></app-run-library>
+    <app-run-library [compact]="true" [refreshKey]="historyRevision()"
+      [recordedDevices]="recordedDevices()" [recordedImages]="recordedImages()" class="review-run-list"></app-run-library>
   </aside>
 
   <main class="detail-pane">
