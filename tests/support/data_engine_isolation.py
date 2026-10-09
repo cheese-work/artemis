@@ -23,6 +23,7 @@ def quiesce_data_engine_logs(timeout: float = 10.0) -> None:
 
     Clearing the global stops new records and makes the drain skip queued ones, but a callback
     that already captured the old engine keeps running into the next test's IPC mocks.
+    Raises if work is still unfinished at the deadline: returning would claim isolation we lack.
     """
     engine_mod = sys.modules.get("artemis.data_engine.engine")
     if engine_mod is not None:
@@ -31,3 +32,8 @@ def quiesce_data_engine_logs(timeout: float = 10.0) -> None:
     for handler in _handlers():
         while handler._log_queue.unfinished_tasks and time.monotonic() < deadline:
             time.sleep(0.005)
+        if handler._log_queue.unfinished_tasks:
+            raise RuntimeError(
+                f"DataEngine log callbacks still running after {timeout}s; "
+                "the next test would share them"
+            )
