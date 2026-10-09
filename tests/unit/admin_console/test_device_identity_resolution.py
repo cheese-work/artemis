@@ -457,6 +457,141 @@ def _pool(monkeypatch, identity, listings: list[list[tuple]], reads: dict[str, l
     return enumerate_all
 
 
+def _async_pool(monkeypatch, identity, listings: list[list[tuple]], reads: dict[str, list[dict]]):
+    """``_pool`` for the async enumeration path."""
+    pool = DevicePool()
+    monkeypatch.setattr(pool, "_resolve_adb", lambda: "adb")
+
+    async def query():
+        return listings.pop(0)
+
+    async def read(serial):
+        return reads[serial].pop(0)
+
+    monkeypatch.setattr(pool, "_query_adb_devices_async", query)
+    monkeypatch.setattr(pool, "_read_properties_async", read)
+    monkeypatch.setattr(device_pool_module, "identity_observer", identity.observe_adb)
+
+    async def enumerate_all() -> None:
+        while listings:
+            pool._snapshot().raw = None
+            await pool.list_devices_async()
+
+    return lambda: asyncio.run(enumerate_all())
+
+
+WIFI = "192.168.1.5:5555"
+# A fresh observation that proves no hardware identity: (listing state, getprop).
+UNPROVEN = {
+    "empty getprop": ("device", {}),
+    "no ro.serialno": ("device", {"ro.product.model": "Pixel 3a"}),
+    "placeholder serial": ("device", {"ro.serialno": "0123456789ABCDEF"}),
+    "offline": ("offline", None),
+    "unauthorized": ("unauthorized", None),
+}
+
+
+def _route_state(db, identity, serial: str = WIFI):
+    with sqlite3.connect(db) as conn:
+        return conn.execute(
+            "SELECT d.device_id, d.match_state, d.hardware_hash, c.last_seen_at "
+            "FROM device_connections c JOIN devices d USING (device_id) WHERE c.serial = ?",
+            (identity.transport_key(AdbEndpoint.local(), serial),),
+        ).fetchone()
+
+
+@pytest.mark.parametrize("path", [_pool, _async_pool], ids=["sync", "async"])
+@pytest.mark.parametrize("case", list(UNPROVEN))
+def test_a_reused_route_without_a_fresh_identity_is_never_confirmed(
+    db, identity, monkeypatch, path, case
+):
+    state, props = UNPROVEN[case]
+    listings = [[(WIFI, "device", "P", None)], [(WIFI, state, None, None)]]
+    reads = {WIFI: [dict(PHONE_PROPS)] + ([props] if props is not None else [])}
+    path(monkeypatch, identity, listings[:1], reads)()
+    phone_a = _route_state(db, identity)
+    run = path(monkeypatch, identity, listings[1:], reads)
+    seen = []
+    monkeypatch.setattr(
+        device_pool_module,
+        "identity_observer",
+        lambda endpoint, devices: seen.extend(identity.observe_adb(endpoint, devices)),
+    )
+
+    run()
+
+    assert [match.outcome for match in seen] in (["uncertain"], ["provisional"])
+    assert _route_state(db, identity) == phone_a  # phone A's record and history stay as they are
+
+
+def test_a_failing_identity_read_never_confirms_a_reused_route(db, identity, monkeypatch):
+    _pool(monkeypatch, identity, [[(WIFI, "device", "P", None)]], {WIFI: [dict(PHONE_PROPS)]})()
+    phone_a = _route_state(db, identity)
+    pool = DevicePool()
+    monkeypatch.setattr(pool, "_resolve_adb", lambda: "adb")
+    monkeypatch.setattr(pool, "_query_adb_devices_sync", lambda: [(WIFI, "device", "P", None)])
+
+    class Broken:
+        def run(self, *args, **kwargs):
+            raise OSError("adb: device closed")
+
+    monkeypatch.setattr(pool, "_transport", lambda: Broken())
+    seen = []
+    monkeypatch.setattr(
+        device_pool_module,
+        "identity_observer",
+        lambda endpoint, devices: seen.extend(identity.observe_adb(endpoint, devices)),
+    )
+
+    pool.list_devices()  # the real read path: the error becomes an empty getprop
+
+    assert [match.outcome for match in seen] == ["provisional"]
+    assert _route_state(db, identity) == phone_a
+
+
+def test_wifi_back_from_unauthorized_is_confirmed_only_by_a_fresh_identity(
+    db, identity, monkeypatch
+):
+    listings = [
+        [(WIFI, "device", "P", None)],
+        [(WIFI, "unauthorized", None, None)],
+        [(WIFI, "device", "P", None)],
+    ]
+    reads = {WIFI: [dict(PHONE_PROPS), dict(PHONE_PROPS)]}
+    pool_run = _pool(monkeypatch, identity, listings, reads)
+    seen = []
+    monkeypatch.setattr(
+        device_pool_module,
+        "identity_observer",
+        lambda endpoint, devices: seen.extend(identity.observe_adb(endpoint, devices)),
+    )
+    pool_run()
+
+    assert [match.outcome for match in seen] == ["confirmed", "provisional", "confirmed"]
+    assert reads == {WIFI: []}
+    assert len(_devices(db)) == 1
+
+
+def test_an_emulator_without_an_avd_name_is_never_confirmed_by_its_serial(db, identity):
+    (first,) = _local(identity, ("emulator-5554", "device", "sdk", _avd_props("Pixel_A")))
+    nameless = {"ro.serialno": "EMULATOR35X1X1X0", "ro.boot.qemu": "1"}
+
+    (again,) = _local(identity, ("emulator-5554", "device", "sdk", nameless))
+
+    assert (first.outcome, again.outcome) == ("confirmed", "uncertain")
+
+
+def test_a_host_phone_going_offline_keeps_its_stable_identity(db, admin, identity):
+    host_id = _host_devices(admin, [_trusted()])
+    offline = {**_trusted(), "state": "offline"}
+    del offline["hardware_id"]
+
+    (match,) = identity.observe_host(host_id, [offline])
+
+    # The agent derives this opaque id from the hardware id: the route itself is the identity.
+    assert match.outcome == "confirmed"
+
+
 def test_another_phone_at_the_same_wifi_address_is_read_again(db, identity, monkeypatch):
     wifi, usb = "192.168.1.5:5555", "ZY22USB1"
     other = {"ro.serialno": "OTHERPHONE1", "ro.product.model": "Pixel 3a"}

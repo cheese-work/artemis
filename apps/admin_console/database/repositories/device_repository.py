@@ -31,7 +31,11 @@ class Device:
 
 @dataclass(frozen=True, slots=True)
 class Match:
-    """Where one connection landed: ``outcome`` is confirmed, uncertain or provisional."""
+    """Where one connection landed: ``outcome`` is confirmed, uncertain or provisional.
+
+    ``outcome`` is what this observation proves. A non-confirmed outcome on a known
+    route names the device that route last held; it is not resolved to it.
+    """
 
     device_id: str
     connection_id: str
@@ -39,6 +43,9 @@ class Match:
 
 
 _COLUMNS = "device_id, owner_principal_id, label, hardware_hash, match_state"
+# Sources whose routing key is a transport, not an identity. A host agent's opaque id is
+# derived from the phone's hardware id (or AVD name), so a host route identifies its phone.
+REUSABLE_SOURCES = frozenset({"local", "bridge"})
 _TABLES = ("devices", "device_connections", "device_aliases")
 
 
@@ -204,6 +211,10 @@ class DeviceRepository:
                 "WHERE device_id = ?",
                 (device_id,),
             ).fetchone()
+            if hardware_hash is None and source in REUSABLE_SOURCES:
+                # A server adb serial, ip:port or bridge port can carry another phone: only
+                # a fresh hardware identity proves this one, so the device stays as it is.
+                return Match(device_id, connection_id, "uncertain" if readable else "provisional")
             if hardware_hash is None or current["hardware_hash"] in (None, hardware_hash):
                 conn.execute(
                     "UPDATE device_connections SET kind = ?, last_seen_at = ? "
