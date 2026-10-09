@@ -74,6 +74,7 @@ from artemis.runtime.adb_endpoint import AdbEndpoint
 from artemis.runtime.endpoint_transport import EndpointTransport
 from artemis.runtime.cancel_requests import watch_for_cancel_request
 from artemis.runtime.lifecycle import InterruptReason
+from artemis.llm.reliability import LLMGatewayModelRejectedError
 from artemis.data_engine import run_snapshot
 from artemis.data_engine.engine import DataEngine
 from artemis.drivers.types import DeviceDisconnectedError
@@ -879,6 +880,17 @@ class Agent:
                     error=err,
                 )
                 if context.data_engine:
+                    if isinstance(e, LLMGatewayModelRejectedError):
+                        try:
+                            context.data_engine.record_step(
+                                action_taken={
+                                    "action": "report_task_status",
+                                    "args": {"status": "failed", "explanation": str(e)},
+                                },
+                                last_execution_result={"status": "failed", "error": str(e)},
+                            )
+                        except Exception as record_error:
+                            logger.warning(f"Could not record gateway failure step: {record_error}")
                     if isinstance(e, DeviceDisconnectedError):
                         context.data_engine.end_session(
                             "interrupted", interrupt_reason=InterruptReason.DEVICE_OFFLINE

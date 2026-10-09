@@ -52,6 +52,7 @@ from artemis.llm.reliability import (
     FailureCategory,
     LLMCallError,
     LLMExhaustedError,
+    LLMGatewayModelRejectedError,
     LLMPermanentError,
     classify_failure,
     retry_policy_for,
@@ -401,6 +402,8 @@ async def _run_with_recovery[T](
       transparency via _record_llm_retry.
     - Non-retryable categories (auth, bad request) raise LLMPermanentError
       immediately: retrying cannot help and pausing would hang the task.
+    - Gateway model-account refusals retry at most three total attempts,
+      then raise LLMGatewayModelRejectedError without pausing or changing models.
     - When retryable attempts are exhausted: if a fallback model is waiting
       (with_fallback), raise LLMExhaustedError so it takes over immediately;
       otherwise pause the task (bounded by settings.LLM_PAUSE_TIMEOUT_SECONDS)
@@ -474,6 +477,21 @@ async def _run_with_recovery[T](
                     return result
 
             # Retryable attempts exhausted.
+            if last_failure.category is FailureCategory.GATEWAY_MODEL_REJECTED:
+                reason = "AI provider rejected the model; try again"
+                _record_llm_event(
+                    "llm_gave_up",
+                    {
+                        "error": str(last_error)[:1000],
+                        "category": last_failure.category.value,
+                        "retryable": False,
+                        "message": reason,
+                    },
+                    status="failed",
+                )
+                raise LLMGatewayModelRejectedError(
+                    reason, failure=last_failure, cause=last_error
+                ) from last_error
             if _FALLBACK_AVAILABLE.get():
                 _record_llm_event(
                     "llm_gave_up",

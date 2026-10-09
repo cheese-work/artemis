@@ -38,6 +38,7 @@ class VideoFailureCategory(StrEnum):
     TIMEOUT = "timeout"
     CONNECTION = "connection"
     AUTHENTICATION = "authentication"
+    GATEWAY_MODEL_REJECTED = "gateway_model_rejected"
     BAD_REQUEST = "bad_request"
     MEDIA_PROCESSING = "media_processing"
     CANCELLED = "cancelled"
