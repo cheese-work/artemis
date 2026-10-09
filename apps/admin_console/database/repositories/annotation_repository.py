@@ -193,8 +193,8 @@ def add_annotation(
     author_principal_id: str,
 ) -> Annotation:
     """Validate the anchor against this run's evidence and store the note in one transaction."""
-    conn.execute("BEGIN IMMEDIATE")
-    try:
+    with conn:  # validation and insert commit together, or not at all
+        conn.execute("BEGIN IMMEDIATE")
         step_number, legacy = _validate(conn, session_id, anchor)
         annotation = Annotation(
             annotation_id=f"ann_{uuid.uuid4().hex}",
@@ -231,10 +231,6 @@ def add_annotation(
                 annotation.edited_at,
             ),
         )
-        conn.commit()
-    except BaseException:
-        conn.rollback()
-        raise
     return annotation
 
 

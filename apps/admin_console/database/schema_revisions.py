@@ -56,7 +56,7 @@ def migrate(db_path: str | Path, module: str, revisions: Sequence[Revision]) -> 
     before it stay recorded.
     """
     path = Path(db_path)
-    conn = sqlite3.connect(path, timeout=30.0, isolation_level=None)
+    conn = sqlite3.connect(path, timeout=30.0)
     try:
         conn.execute(_DDL)
         done = current_revision(conn, module)
@@ -68,8 +68,8 @@ def migrate(db_path: str | Path, module: str, revisions: Sequence[Revision]) -> 
         ).fetchone()
         backup = _online_backup(path, module) if has_data else None
         for number, statements in pending:
-            conn.execute("BEGIN IMMEDIATE")
-            try:
+            with conn:  # commits the revision, or rolls back all of it
+                conn.execute("BEGIN IMMEDIATE")
                 for statement in statements:
                     conn.execute(statement)
                 conn.execute(
@@ -78,10 +78,6 @@ def migrate(db_path: str | Path, module: str, revisions: Sequence[Revision]) -> 
                     "updated_at = excluded.updated_at",
                     (module, number, time.time()),
                 )
-                conn.execute("COMMIT")
-            except BaseException:
-                conn.execute("ROLLBACK")
-                raise
         return MigrationReport([number for number, _ in pending], backup)
     finally:
         conn.close()
