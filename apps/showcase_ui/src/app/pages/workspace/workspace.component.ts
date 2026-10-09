@@ -27,6 +27,7 @@ import { RunViewComponent } from '../../components/run-view/run-view.component';
 import { consolidateLogsToBlocks } from '../../utils/stream-aggregator.util';
 import { StepItemData } from '../../core/models/stream.model';
 import { AgentService } from '../../services/agent.service';
+import { runTitle } from '../../utils/run-title.util';
 import { WorkspacePhoneService } from '../../services/workspace-phone.service';
 import { IMAGE_ACCEPT, ImageChat, MAX_IMAGES, newDraftId, RunImageUpload, screenImages, toUpload } from '../../utils/run-image.util';
 
@@ -199,10 +200,7 @@ export class WorkspaceComponent implements OnInit {
   public stopButtonTitle = computed(() => {
     const session = this.agentService.currentSession();
     if (session?.initial_goal) {
-      const truncated = session.initial_goal.length > 45
-        ? session.initial_goal.substring(0, 42) + '...'
-        : session.initial_goal;
-      return `Stop current task: "${truncated}"`;
+      return `Stop current task: "${runTitle(session.initial_goal)}"`;
     }
     const curId = this.agentService.currentSessionId();
     if (curId) {

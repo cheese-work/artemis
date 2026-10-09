@@ -5,7 +5,8 @@ import { GoalImage } from '../../core/models/session.model';
 import { mediaUrl } from '../../utils/app-url.util';
 import { LabelableDevice, runDeviceLabel } from '../../utils/device-label.util';
 import { mapRecording } from '../../utils/recording-state.util';
-import { expiresText, interruptReason, truncate } from '../../utils/run-library-strings';
+import { expiresText, interruptReason } from '../../utils/run-library-strings';
+import { runTitle } from '../../utils/run-title.util';
 import { RunStatusBadgeComponent } from '../run-presentation/run-status-badge.component';
 
 @Component({
@@ -13,7 +14,7 @@ import { RunStatusBadgeComponent } from '../run-presentation/run-status-badge.co
   standalone: true,
   imports: [DatePipe, RunStatusBadgeComponent],
   template: `
-    <span class="run-prompt" [title]="run().prompt ?? ''">{{ prompt() }}</span>
+    <span class="run-prompt" [title]="prompt()">{{ prompt() }}</span>
     @if (goalImages().length) {
       <span class="task-goal-images">
         @for (image of goalImages(); track image.index) {
@@ -23,25 +24,25 @@ import { RunStatusBadgeComponent } from '../run-presentation/run-status-badge.co
     }
     <span class="run-outcome" appRunStatusBadge [status]="run().status"></span>
     <span class="run-meta">
-      <span class="run-recording">{{ recording() }}</span>
+      @if (recording(); as badge) { <span class="run-recording">{{ badge }}</span> }
       <span class="run-device" [title]="run().device_ref?.serial ?? 'Unknown phone'">
-        {{ deviceLabel() }} · {{ computer() }}
+        <span [class.run-serial]="deviceLabel() === run().device_ref?.serial" [class.mono]="deviceLabel() === run().device_ref?.serial">{{ deviceLabel() }}</span>
+        @if (run().host_id !== null) { <span>· {{ computer() }}</span> }
       </span>
-      <span class="run-date">
+      <span class="run-date mono">
         @if (run().start_time) { {{ run().start_time! * 1000 | date: 'MMM d, y, h:mm a' }} }
         @else { Date unknown }
       </span>
       @if (current()) { <span class="run-current">Viewing</span> }
       @if (showOwner()) {
         <span class="run-owner">Owner: {{ run().requested_by ?? 'No owner' }}</span>
-        <span class="run-read-only">Read-only</span>
       }
-      @if (expires(); as text) { <span class="run-expires">{{ text }}</span> }
+      @if (expires(); as text) { <span class="run-expires mono">{{ text }}</span> }
       @if (run().status === 'interrupted') { <span class="run-reason">{{ interruptReason(run().interrupt_reason) }}</span> }
     </span>
   `,
   styles: [`
-    .run-prompt { overflow: hidden; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+    .run-prompt { display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; font-weight: 600; }
     .run-outcome { display: inline-flex; justify-self: start; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; white-space: nowrap; }
     .tone-ok { color: var(--status-ok-fg); background: var(--status-ok-bg); }
     .tone-warn { color: var(--status-warn-fg); background: var(--status-warn-bg); }
@@ -67,11 +68,12 @@ export class RunCardComponent {
   readonly goalImages = input<GoalImage[]>([]);
   readonly mediaUrl = mediaUrl;
   readonly interruptReason = interruptReason;
-  readonly prompt = computed(() => truncate(this.run().prompt));
+  readonly prompt = computed(() => runTitle(this.run().prompt));
   readonly deviceLabel = computed(() => runDeviceLabel(this.run().device_ref?.serial ?? 'Unknown phone', this.device()));
   readonly expires = computed(() => expiresText(this.run().expires_at, Math.floor(Date.now() / 1000)));
   readonly recording = computed(() => {
     const recording = this.run().recordings[0];
-    return mapRecording({ capture: (recording?.capture ?? null) as never, transfer: (recording?.transfer ?? null) as never, playback: null }).badge;
+    const view = mapRecording({ capture: (recording?.capture ?? null) as never, transfer: (recording?.transfer ?? null) as never, playback: null });
+    return view.state === 'unknown' ? null : view.badge;
   });
 }

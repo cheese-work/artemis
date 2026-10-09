@@ -25,6 +25,7 @@ import { HostsService } from '../../services/hosts.service';
 import { UsbDeviceRelayService } from '../../services/usb-device-relay.service';
 import { HostsResponse } from '../../core/models/host.model';
 import { deviceSourceOf } from '../../utils/device-chip.util';
+import { COMPUTER_STRINGS } from '../../utils/computer-strings';
 import { deviceKindLabel, deviceTitle, isIdentifiedDevice, unlistedRunDeviceTitle } from '../../utils/device-label.util';
 import { recordedDevice } from '../../utils/session-device.util';
 import { OwnerLabelComponent } from '../owner-label/owner-label.component';
@@ -35,6 +36,7 @@ import { RunStatusKey, RunStatusView, sessionStatusView } from '../../utils/run-
 import { MarkdownSegment, MarkdownLine, NoteMilestone, ParsedNote } from '../../core/models/markdown.model';
 import { parseNote, parseNoteLines } from '../../utils/markdown-parser.util';
 import { mediaUrl } from '../../utils/app-url.util';
+import { runTitle } from '../../utils/run-title.util';
 
 export type { MarkdownSegment, MarkdownLine, NoteMilestone, ParsedNote };
 
@@ -47,6 +49,7 @@ export type { MarkdownSegment, MarkdownLine, NoteMilestone, ParsedNote };
   changeDetection: ChangeDetectionStrategy.OnPush
 })
 export class ChatInterfaceComponent {
+  public readonly runTitle = runTitle;
   public readonly mediaUrl = mediaUrl;
   public readonly queueTabs = [
     { id: 'tasks', label: 'Task Queue', icon: 'list_alt' },
@@ -288,12 +291,13 @@ export class ChatInterfaceComponent {
     }
     const registry = this.registry();
     const relay = this.usbRelay.state();
-    const source = deviceSourceOf(
+    const reportedSource = deviceSourceOf(
       serial,
       registry?.devices ?? [],
       registry?.hosts ?? [],
       relay.status === 'connected' ? relay.serial : null
     );
+    const source = reportedSource === COMPUTER_STRINGS.aBrowser ? null : reportedSource;
     const where = source ? ` · ${source}` : '';
     // Newest knowledge first: the live list, then what the run recorded, then the registry.
     const device = [

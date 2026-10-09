@@ -126,6 +126,18 @@ describe('RunLibraryComponent', () => {
   });
 
   describe('rows', () => {
+    it('shows the first prompt line without markdown in each run row', async () => {
+      runs.list.and.returnValue(of(page([run({ prompt: '\n## **Open** _Settings_\nCheck every toggle.' })])));
+      const fixture = TestBed.createComponent(RunLibraryComponent);
+      fixture.detectChanges();
+      await fixture.whenStable();
+      fixture.detectChanges();
+      const title = fixture.nativeElement.querySelector('.run-prompt') as HTMLElement;
+      expect(title.textContent).toBe('Open Settings');
+      expect(title.title).toBe('Open Settings');
+      expect(getComputedStyle(title).webkitLineClamp).toBe('2');
+    });
+
     it('compact history scrolls inside the region whose position is saved and restored', async () => {
       runs.list.and.returnValue(of(page(Array.from({ length: 20 }, (_, index) => run({ session_id: `run-${index}` })))));
       const fixture = TestBed.createComponent(RunLibraryComponent);
@@ -171,6 +183,8 @@ describe('RunLibraryComponent', () => {
       await open('/runs?scope=everyone&q=login&status=failed&from=2026-10-01');
       expect(runs.list.calls.mostRecent().args[1]).toEqual({ scope: 'everyone' });
       expect(q('.run-owner')?.textContent).toContain('qa@example.test');
+      expect(q('.run-read-only')).toBeNull();
+      expect(q('.run-row')!.textContent).not.toContain('Read-only');
       expect(q<HTMLAnchorElement>('.run-row')?.getAttribute('href')).toContain('review=1');
       expect(root.textContent).toContain('Videos and screenshots are not redacted');
       expect(qa<HTMLButtonElement>('[role="tab"]').map((tab) => tab.getAttribute('aria-selected')))
@@ -256,8 +270,33 @@ describe('RunLibraryComponent', () => {
       expect(rows[0].querySelector('.run-device')!.textContent).toContain('Desk Mac');
       expect(rows[0].querySelector('.run-date')!.textContent).toMatch(/Oct 4, 2026/);
       expect(rows[1].querySelector('.run-outcome')!.textContent).toContain('Interrupted');
-      expect(rows[1].querySelector('.run-device')!.textContent).toContain('A browser');
-      expect(rows[1].querySelector('.run-recording')!.textContent).toContain('Video unknown');
+      expect(rows[1].querySelector('.run-device')!.textContent!.trim()).toBe('emulator-5554');
+      expect(rows[1].querySelector('.run-recording')).toBeNull();
+    });
+
+    it('hides unknown video badges but preserves pending, failed and missing video states', async () => {
+      await open('/runs', of(page([
+        run({ session_id: 'unknown', recordings: [{ recording_id: 'r0', capture: null, transfer: null }] }),
+        run({ session_id: 'pending', recordings: [{ recording_id: 'r1', capture: 'pending', transfer: null }] }),
+        run({ session_id: 'failed', recordings: [{ recording_id: 'r2', capture: 'stopped', transfer: 'failed' }] }),
+        run({ session_id: 'missing', recordings: [{ recording_id: 'r3', capture: 'missing:disabled', transfer: null }] })
+      ])));
+      const rows = qa<HTMLElement>('.run-row');
+      expect(rows[0].querySelector('.run-recording')).toBeNull();
+      expect(rows.slice(1).map((row) => row.querySelector('.run-recording')!.textContent!.trim()))
+        .toEqual(['Video pending', 'Upload failed', 'No video']);
+    });
+
+    it('uses tabular mono for serials and dates without changing the row hit area', async () => {
+      await open('/runs');
+      for (const selector of ['.run-serial', '.run-date']) {
+        const style = getComputedStyle(q(selector)!);
+        expect(style.fontFamily).toContain('JetBrains Mono');
+        expect(style.fontVariantNumeric).toBe('tabular-nums');
+      }
+      const box = q('.run-row')!.getBoundingClientRect();
+      expect(box.width).toBeGreaterThanOrEqual(44);
+      expect(box.height).toBeGreaterThanOrEqual(44);
     });
 
     it('keeps a browser or network address out of the device text, and in the tooltip (R3)', async () => {
@@ -273,7 +312,7 @@ describe('RunLibraryComponent', () => {
         expect(el.textContent).not.toContain('Unknown');
         expect(el.getAttribute('title')).toContain(serials[i]);
       });
-      expect(devices[0].textContent).toContain('A browser');
+      expect(devices[0].textContent).toContain('Phone via a browser');
       expect(devices[1].textContent).toContain('Wireless phone');
     });
 

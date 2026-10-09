@@ -89,7 +89,7 @@ limitations under the License.
               @if (getDeviceChip(session); as chip) {
                 <span class="task-device" [title]="chip.tooltip">
                   <span class="material-symbols-outlined device-icon">phone_android</span>
-                  <span class="device-name">{{ chip.title }}</span>
+                  <span class="device-name" [class.mono]="chip.title === getDeviceSerial(session)">{{ chip.title }}</span>
                   @if (chip.kind) {
                     <span class="device-kind">{{ chip.kind }}</span>
                   }
@@ -101,14 +101,14 @@ limitations under the License.
               @if (getDeviceSerial(session)) {
                 <span class="task-time-divider">·</span>
               }
-              <span class="task-time">{{ session.start_time * 1000 | date:'shortTime' }}</span>
+              <span class="task-time mono">{{ session.start_time * 1000 | date:'shortTime' }}</span>
               @if (getTaskStatus(session) === 'running' || getTaskStatus(session) === 'paused') {
                 <button
                   type="button"
                   class="btn-stop-card"
                   (click)="stopTask(session.session_id, $event)"
-                  title="Stop this task"
-                  aria-label="Stop this task"
+                  [title]="'Stop this task: ' + runTitle(session.initial_goal)"
+                  [attr.aria-label]="'Stop this task: ' + runTitle(session.initial_goal)"
                   >
                   <span class="material-symbols-outlined">stop_circle</span>
                 </button>
@@ -127,8 +127,8 @@ limitations under the License.
               }
             </div>
           </div>
-          <div class="task-goal" title="{{ session.initial_goal }}">
-            {{ session.initial_goal || 'Unnamed Task' }}
+          <div class="task-goal" [title]="runTitle(session.initial_goal)">
+            {{ runTitle(session.initial_goal) }}
           </div>
           @if (session.goal_images?.length) {
             <div class="task-goal-images">
@@ -140,7 +140,7 @@ limitations under the License.
           <div class="task-card-footer">
             <app-run-id-copy [runId]="session.session_id"></app-run-id-copy>
             <app-owner-label [owner]="session.requested_by"></app-owner-label>
-            <span class="task-date">{{ session.start_time * 1000 | date:'MM/dd/yy' }}</span>
+            <span class="task-date mono">{{ session.start_time * 1000 | date:'MM/dd/yy' }}</span>
           </div>
         </div>
       }

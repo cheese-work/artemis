@@ -158,6 +158,36 @@ describe('RunViewComponent', () => {
   });
 
   describe('restored result summary and execution details', () => {
+    it('uses a short title and keeps the complete prompt in a closed, 44 px disclosure', async () => {
+      const prompt = '\n## **Open** _Settings_ with `Android`\n- Check every toggle.';
+      const previousTitle = document.title;
+      await open({ runResult: of(run({ prompt })) });
+      expect(q('h1.run-prompt')?.textContent).toBe('Open Settings with Android');
+      expect(document.title).toBe('Open Settings with Android · SmartQA');
+      const disclosure = q<HTMLDetailsElement>('.full-prompt')!;
+      const control = disclosure.querySelector('summary')!;
+      expect(disclosure.open).toBeFalse();
+      expect(control.textContent).toBe('Show prompt');
+      expect(control.getBoundingClientRect().height).toBeGreaterThanOrEqual(44);
+      expect(control.getBoundingClientRect().width).toBeGreaterThanOrEqual(44);
+      control.click();
+      expect(disclosure.open).toBeTrue();
+      expect(disclosure.querySelector('pre')?.textContent).toBe(prompt);
+      fixture.destroy();
+      expect(document.title).toBe(previousTitle);
+    });
+
+    it('updates the title and closes the full prompt when another run is selected', async () => {
+      await open({ runResult: of(run({ prompt: '**First**\nDetails' })) });
+      q<HTMLDetailsElement>('.full-prompt')!.open = true;
+      runs.get.and.returnValue(of(run({ session_id: 'second', prompt: '# Second\nOther details' })));
+      fixture.componentRef.setInput('runId', 'second');
+      await settle();
+      expect(q('h1.run-prompt')?.textContent).toBe('Second');
+      expect(document.title).toBe('Second · SmartQA');
+      expect(q<HTMLDetailsElement>('.full-prompt')!.open).toBeFalse();
+    });
+
     for (const viewMode of ['live', 'review'] as const) {
       it(`shows the persisted task report at the top in ${viewMode} mode`, async () => {
         (runs as any).notes.and.returnValue(of({ notes: { 'output.md': '# Task report\nSettings verified.' } }));
@@ -330,6 +360,36 @@ describe('RunViewComponent', () => {
         expect(qa('button').some((control) => control.textContent!.trim() === 'Check again')).toBe(retry);
       });
     }
+
+    it('omits the default browser fact but preserves a recorded computer', async () => {
+      await open();
+      expect(q('.secondary-meta')!.textContent).not.toContain('Computer');
+      expect(q('.secondary-meta')!.textContent).not.toContain('A browser');
+      fixture.destroy();
+      await open({ runResult: of(run({ host_id: 'computer-12345678' })) });
+      expect(q('.secondary-meta')!.textContent).toContain('Computer');
+      expect(q('.secondary-meta')!.textContent).toContain('computer');
+    });
+
+    it('uses tabular mono for technical facts, counts, IDs and step details', async () => {
+      (runs as any).checks.and.returnValue(of({ records: [], run_outcome: {
+        task_status: 'completed', tests: { passed: 1, failed: 0, inconclusive: 0, unchecked: 0 }
+      } }));
+      await open({ steps: of([step(1, { duration: 1.25, total_tokens: 42,
+        action_taken: { action: 'launch_app', package_name: 'com.example.settings' } })]) });
+      q<HTMLButtonElement>('.step-toggle')!.click();
+      await settle();
+      const facts = qa<HTMLElement>('.secondary-meta .mono, .check-counts .mono, .run-id-copy-button, .step-number, .step-details dd');
+      expect(facts.length).toBeGreaterThanOrEqual(10);
+      for (const fact of facts) {
+        const style = getComputedStyle(fact);
+        expect(style.fontFamily).toContain('JetBrains Mono');
+        expect(style.fontVariantNumeric).toBe('tabular-nums');
+      }
+      const box = q('.run-id-copy-button')!.getBoundingClientRect();
+      expect(box.width).toBeGreaterThanOrEqual(44);
+      expect(box.height).toBeGreaterThanOrEqual(44);
+    });
 
     it('preserves device detail, step markup and action order', async () => {
       await open({ steps: of([step(1)]) });
@@ -1194,7 +1254,8 @@ describe('RunViewComponent', () => {
       for (const control of ['Delete', 'Pin', 'Unpin', 'Stop', 'Resume', 'Stop task', 'Resume task']) {
         expect(labels()).not.toContain(control);
       }
-      expect(q('.read-only-note')!.textContent).toContain('qa@example.test');
+      expect(qa('.read-only-note').length).toBe(1);
+      expect(q('.outcome .read-only-note')!.textContent).toContain('qa@example.test');
     });
 
     it('treats a run with no owner as read-only for a QA', async () => {
