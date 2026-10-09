@@ -12,9 +12,9 @@ import uuid
 import pytest
 
 from apps.admin_console.core.access_control import AdminAPIError, _error_response
-from apps.admin_console.database import schema_revisions
 from apps.admin_console.database.repositories import annotation_repository as notes
 from apps.admin_console.services import evidence_resolver
+from artemis.data_engine import schema_revisions
 
 DOCS = "https://github.com/cheese-work/artemis/blob/main/docs/board-api.md"
 AUTHOR = "prn_dev"
@@ -327,7 +327,7 @@ def test_migration_is_additive_and_records_its_revision(library):
         assert conn.execute(
             "SELECT revision FROM schema_revisions WHERE module = 'notes'"
         ).fetchone()[0] == len(notes.REVISIONS)
-    assert first.applied == list(range(1, len(notes.REVISIONS) + 1)) and second.applied == []
+    assert first.applied == tuple(range(1, len(notes.REVISIONS) + 1)) and second.applied == ()
 
 
 def test_migration_backs_up_once_including_uncheckpointed_wal(library):
@@ -349,25 +349,21 @@ def test_migration_backs_up_once_including_uncheckpointed_wal(library):
         }
 
 
-def test_a_failed_revision_rolls_back_and_resumes(library):
+def test_a_failed_migration_rolls_back_and_a_rerun_applies_it(library):
     good = ("CREATE TABLE probe_a (id INTEGER)",)
     broken = ("CREATE TABLE probe_b (id INTEGER)", "THIS IS NOT SQL")
     fixed = ("CREATE TABLE probe_b (id INTEGER)",)
 
     with pytest.raises(sqlite3.Error):
-        schema_revisions.migrate(library.db, "probe", [good, broken])
-    names = set(_schema(library.db))
-    assert "probe_a" in names and "probe_b" not in names
+        schema_revisions.apply(library.db, "probe", [good, broken])
+    assert not {"probe_a", "probe_b"} & set(_schema(library.db))
     with sqlite3.connect(library.db) as conn:
         assert (
-            conn.execute("SELECT revision FROM schema_revisions WHERE module = 'probe'").fetchone()[
-                0
-            ]
-            == 1
+            conn.execute("SELECT 1 FROM schema_revisions WHERE module = 'probe'").fetchone() is None
         )
 
-    report = schema_revisions.migrate(library.db, "probe", [good, fixed])
-    assert report.applied == [2] and "probe_b" in set(_schema(library.db))
+    report = schema_revisions.apply(library.db, "probe", [good, fixed])
+    assert report.applied == (1, 2) and {"probe_a", "probe_b"} <= set(_schema(library.db))
 
 
 def test_previous_binary_works_on_the_upgraded_schema(library, run):

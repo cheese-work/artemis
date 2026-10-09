@@ -17,7 +17,7 @@ import time
 import uuid
 
 from apps.admin_console.core.access_control import AdminAPIError
-from apps.admin_console.database import schema_revisions
+from artemis.data_engine import schema_revisions
 
 MODULE = "notes"
 DOCS = "https://github.com/cheese-work/artemis/blob/main/docs/board-api.md"
@@ -87,13 +87,13 @@ class Annotation:
     edited_at: float | None
 
 
-def migrate(db_path: str | Path) -> schema_revisions.MigrationReport:
+def migrate(db_path: str | Path) -> schema_revisions.RevisionReport:
     """Apply pending ``notes`` revisions, then drop notes whose run is gone.
 
     The previous binary deletes whole runs without knowing these tables; the
     next upgrade finishes that deletion (docs/board-operations.md, "Rollback").
     """
-    report = schema_revisions.migrate(db_path, MODULE, REVISIONS)
+    report = schema_revisions.apply(db_path, MODULE, REVISIONS)
     with closing(sqlite3.connect(db_path, timeout=30.0)) as conn, conn:
         for table in ("run_annotations", "evidence_tombstones"):
             conn.execute(
