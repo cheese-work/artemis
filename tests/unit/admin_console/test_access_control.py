@@ -533,7 +533,14 @@ def test_service_boundary_denies_unmatched_websocket_and_logs_once(
 async def test_a_service_principal_never_satisfies_require_admin():
     from apps.admin_console.core.access_control import AdminAPIError, require_admin
 
-    identity = AccessIdentity(None, False, "cloudflare", None, "failures-reader")
+    identity = AccessIdentity(
+        None,
+        False,
+        "cloudflare",
+        service_principal="failures-reader",
+        service_routes=frozenset({("GET", "/api/system/failures")}),
+    )
+    assert identity.service_principal == "failures-reader"
 
     with pytest.raises(AdminAPIError):
         await require_admin(identity)
