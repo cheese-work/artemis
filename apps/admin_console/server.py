@@ -134,6 +134,7 @@ try:
         preview_synthetic,
         replay,
         run_admin,
+        run_annotations,
         run_bundle,
         runs,
         sessions,
@@ -161,6 +162,7 @@ except ImportError:
         preview_synthetic,
         replay,
         run_admin,
+        run_annotations,
         run_bundle,
         runs,
         sessions,
@@ -401,6 +403,7 @@ app.include_router(sessions.router)
 app.include_router(runs.router)
 app.include_router(run_bundle.router)
 app.include_router(run_admin.router)
+app.include_router(run_annotations.router)
 app.include_router(failures.router)
 app.include_router(steps.router)
 app.include_router(tasks.router)
