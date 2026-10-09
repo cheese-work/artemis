@@ -4,6 +4,7 @@
   "scripts": {
     "prebuild": "node scripts/validate-whats-new.mjs",
     "ng": "ng",
+    "prestart": "node scripts/validate-whats-new.mjs",
     "start": "ng serve --proxy-config proxy.conf.json",
     "build": "ng build",
     "build:preview": "node scripts/build-preview.mjs",
@@ -13,9 +14,11 @@
     "test:keyboard-paste": "node --test scripts/keyboard-walkthrough/paste-shortcut.test.mjs",
     "test:layout": "node scripts/layout-audit/layout-audit.mjs",
     "test:preview-path": "node scripts/preview-path.test.mjs",
+    "test:whats-new": "node --test scripts/validate-whats-new.test.mjs scripts/check-whats-new-entry.test.mjs",
+    "prewatch": "node scripts/validate-whats-new.mjs",
     "watch": "ng build --watch --configuration development",
     "test": "ng test",
-    "pretest": "node scripts/validate-whats-new.mjs && node scripts/lint-ui-strings.mjs && node scripts/lint-theme.mjs && npm run test:tango-stream-extra && npm run test:keyboard-paste",
+    "pretest": "node scripts/validate-whats-new.mjs && npm run test:whats-new && node scripts/lint-ui-strings.mjs && node scripts/lint-theme.mjs && npm run test:tango-stream-extra && npm run test:keyboard-paste",
     "test:tango-stream-extra": "node --test scripts/tango-stream-extra.test.mjs",
     "postinstall": "node scripts/patch-tango.mjs"
   },
