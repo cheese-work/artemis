@@ -2,8 +2,9 @@
   "name": "artemis-showcase-ui",
   "version": "1.0.0",
   "scripts": {
-    "prebuild": "node scripts/validate-whats-new.mjs",
+    "prebuild": "node scripts/validate-whats-new.mjs && node scripts/write-build-info.mjs",
     "ng": "ng",
+    "prestart": "node scripts/write-build-info.mjs",
     "start": "ng serve --proxy-config proxy.conf.json",
     "build": "ng build",
     "build:preview": "node scripts/build-preview.mjs",
@@ -13,9 +14,11 @@
     "test:keyboard-paste": "node --test scripts/keyboard-walkthrough/paste-shortcut.test.mjs",
     "test:layout": "node scripts/layout-audit/layout-audit.mjs",
     "test:preview-path": "node scripts/preview-path.test.mjs",
+    "test:build-info": "node --test scripts/write-build-info.test.mjs",
+    "prewatch": "node scripts/write-build-info.mjs",
     "watch": "ng build --watch --configuration development",
     "test": "ng test",
-    "pretest": "node scripts/validate-whats-new.mjs && node scripts/lint-ui-strings.mjs && npm run test:tango-stream-extra && npm run test:keyboard-paste",
+    "pretest": "node scripts/validate-whats-new.mjs && node scripts/lint-ui-strings.mjs && node scripts/write-build-info.mjs && npm run test:build-info && npm run test:tango-stream-extra && npm run test:keyboard-paste",
     "test:tango-stream-extra": "node --test scripts/tango-stream-extra.test.mjs",
     "postinstall": "node scripts/patch-tango.mjs"
   },
