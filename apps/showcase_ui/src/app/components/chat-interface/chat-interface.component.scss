@@ -59,11 +59,11 @@ $text-muted: var(--color-text-faint);
         justify-content: center;
         gap: var(--space-sm);
         min-height: var(--target);
+        min-width: var(--target);
         padding: 0 var(--space-md);
         box-sizing: border-box;
         border: none;
-        border-bottom: 3px solid transparent;
-        background: transparent;
+        background: var(--color-surface-subtle);
         border-radius: var(--radius-md);
         font-family: inherit;
         font-size: var(--text-ui);
@@ -88,10 +88,8 @@ $text-muted: var(--color-text-faint);
           background: var(--color-surface-subtle);
         }
 
-        /* Selected: tint, ink text and a bar under it, never colour alone. */
         &.active {
           background: var(--color-primary-tint);
-          border-bottom-color: var(--color-primary);
           color: var(--color-ink);
           font-weight: 600;
         }
@@ -126,7 +124,7 @@ $text-muted: var(--color-text-faint);
         margin-right: var(--space-sm);
         padding: 0 var(--space-md);
         background: var(--color-primary);
-        border: 1px solid var(--color-primary);
+        border: 0;
         border-radius: var(--radius-md);
         font-size: var(--text-ui);
         font-weight: 600;
@@ -149,8 +147,8 @@ $text-muted: var(--color-text-faint);
         height: var(--target);
         padding: 0;
         box-sizing: border-box;
-        background: var(--color-surface);
-        border: 1px solid var(--color-rule-strong);
+        background: var(--color-surface-subtle);
+        border: 0;
         border-radius: 50%;
         color: var(--color-text-muted);
         cursor: pointer;
@@ -167,8 +165,6 @@ $text-muted: var(--color-text-faint);
         &:hover:not(:disabled) {
           background: var(--color-error-bg);
           color: var(--color-error-solid);
-          border-color: var(--color-error-solid);
-          box-shadow: 0 3px 10px color-mix(in srgb, var(--color-error-solid) 15%, transparent);
         }
 
         &:disabled {
@@ -217,7 +213,7 @@ $text-muted: var(--color-text-faint);
       align-items: center;
       justify-content: center;
       background: var(--color-surface-subtle);
-      border: 1px dashed var(--color-rule-strong);
+      border: 0;
       border-radius: 8px;
       padding: 12px;
       color: var(--color-text-muted);

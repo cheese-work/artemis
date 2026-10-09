@@ -12,8 +12,8 @@ h3 { margin: 1.25rem 0 .5rem; font-size: 1rem; }
 .cause { border: 1px solid var(--color-rule); border-radius: 1rem; background: var(--color-surface); padding: .9rem 1.1rem; }
 .cause.no-action { opacity: .7; }
 .cause-head { display: flex; justify-content: space-between; gap: .75rem; }
-.badge { border: 1px solid var(--color-border); border-radius: .5rem; padding: 0 .5rem; font-size: .8rem; }
+.badge { border: 0; border-radius: var(--radius-md); background: var(--color-surface-subtle); padding: 0 .5rem; font-size: .8rem; }
 .sample { margin: .4rem 0; overflow-wrap: anywhere; font-family: var(--font-mono); font-size: .85rem; }
 .runs { display: flex; flex-wrap: wrap; gap: .5rem; margin: 0; }
 .runs a { color: var(--color-primary-hover); min-height: 1.5rem; }
-.secondary-button { min-height: var(--target); border: 1px solid var(--color-border); border-radius: .6rem; background: transparent; color: inherit; font: inherit; padding: 0 1rem; cursor: pointer; }
+.secondary-button { min-height: var(--target); min-width: var(--target); border: 0; border-radius: var(--radius-md); background: var(--color-surface-subtle); color: inherit; font: inherit; padding: 0 1rem; cursor: pointer; }

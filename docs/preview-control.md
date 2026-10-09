@@ -2,7 +2,10 @@
 
 This layer supplies code, uninstalled systemd templates and disposable-fixture
 tests. It does **not** install accounts, start a daemon, register a runner,
-inspect credentials, read runner environments or admit a preview. Receipt
+inspect credentials, read runner environments or admit a preview. The
+[L5b1 runner/workspace contract](preview-runner.md) supplies isolated allocation
+and inactive service plans; it supersedes this foundation's runner placeholder.
+Receipt
 verification and admission belong to [L5a2](preview-receipts.md)/L5a3. The runtime owner provisions
 reviewed files only after the remaining implementation and activation gates.
 
@@ -19,11 +22,16 @@ live QA acceptance remain separate gates.
 
 `config/preview/sysusers.conf` declares no-login `artemis-previewd` and
 `artemis-preview-ingress` accounts and the `artemis-preview-runner` access group.
-The runner template allocates a dynamic `artemis-prjob-<instance>` identity per
-controller run; there is no shared long-lived runner UID. L5b1 must allocate a
-bounded numeric instance, record the actual UID/PID/cgroup/run/attempt/nonce and
-exclude concurrent reuse. A dynamic UID alone does not authenticate a controller.
-L5c1 must verify the Unix peer and OIDC against that same registry.
+The runner template is an inactive L5a1 placeholder, not the L5b1 execution
+mechanism. L5b1 reserves distinct controller/builder UIDs, a nonce and an
+exclusive tree before launching the single-use Actions runner as the controller
+UID. The pinned workflow invokes its controller as a child of that runner,
+with the same host UID and the job's OIDC request environment. No second
+systemd-launched controller receives the job. L5b1 persists protected create-once
+reservation and bound-job records for the UID/run/attempt/nonce/job/runner tuple.
+L5c1 must record and verify the actual native PID/cgroup, Unix peer and signed
+OIDC against that same registry before authorizing a build or sealing request.
+A reserved UID or a run record alone does not authenticate a controller.
 
 - `artemis-previewd.service` has Docker authority and private state. Its
   privileged pre-start checks root-owned policy, registry and scope assessment.
