@@ -340,7 +340,7 @@ describe('RunViewComponent', () => {
       expect(qa('.actions button').map((control) => control.textContent!.trim())).toEqual(['Copy link', 'Download', 'Pin', 'Delete']);
     });
 
-    it('preserves badge, step and action dimensions after moving their styles', async () => {
+    it('preserves badge and step dimensions while using Workbench action tokens', async () => {
       await open({ steps: of([step(1, { action_taken: { action: 'tap', status: 'failed' } })]) });
       const badge = getComputedStyle(q('.outcome-badge')!);
       expect(badge.display).toBe('inline-flex');
@@ -354,7 +354,9 @@ describe('RunViewComponent', () => {
         const style = getComputedStyle(control);
         expect(style.minHeight).toBe('44px');
         expect(style.padding).toBe('0px 18px');
-        expect(style.borderRadius).toBe('8px');
+        expect(style.borderRadius).toBe(getComputedStyle(document.documentElement).getPropertyValue('--radius-md').trim());
+        expect(style.borderTopWidth).toBe('0px');
+        expect(style.boxShadow).toBe('none');
         expect(style.fontSize).toBe('14px');
       }
     });

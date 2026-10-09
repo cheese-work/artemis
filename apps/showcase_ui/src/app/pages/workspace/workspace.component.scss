@@ -201,12 +201,13 @@
     background: var(--color-surface);
     border: 1px solid var(--color-border);
     border-radius: var(--radius-md);
-    transition: border-color var(--motion-fast) var(--ease-move), box-shadow var(--motion-fast) var(--ease-move);
+    transition: border-color var(--motion-fast) var(--ease-move);
   }
 
   .composer.is-focused .composer-card {
     border-color: var(--color-primary);
-    box-shadow: 0 0 0 1px var(--color-primary);
+    outline: 3px solid var(--color-focus);
+    outline-offset: 2px;
   }
 
   /* Input and controls on one row; below about 480 px the controls wrap under the input. */
@@ -276,7 +277,7 @@
       height: 36px;
       padding: 0 var(--space-smd);
       background: var(--color-surface-subtle);
-      border: 1px solid transparent;
+      border: 0;
       color: var(--color-text-muted);
       font-size: var(--text-ui);
       font-weight: 500;
@@ -290,10 +291,9 @@
       color: var(--color-ink);
     }
 
-    /* Selected: a tint, an edge and a heavier word, never colour alone. */
+    /* Selected: a tint and a heavier word, never colour alone. */
     &.active .segment-face {
       background: var(--color-primary-tint);
-      border-color: var(--color-primary-edge);
       color: var(--color-ink);
       font-weight: 600;
     }
@@ -322,7 +322,7 @@
     }
 
     &.btn-attach {
-      background: transparent;
+      background: var(--color-surface-subtle);
       color: var(--color-text-muted);
 
       &:hover:not(:disabled) {
