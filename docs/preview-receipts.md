@@ -43,10 +43,17 @@ thread, not an unbounded read or a caller-selected substitute.
 
 The native issue must match protected workspace/project. The verdict's native
 author must be an allowlisted agent reviewer. Its `source_task_id` must map to
-one completed issue/workspace run, with the same agent and protected review
-dispatch root. The run must list the exact verdict in `delivered_comment_ids`.
+one completed issue/workspace run, with the same agent and native dispatch
+comment as the verdict's direct parent. That dispatch can be nested under the
+protected root; complete ancestry checks keep it inside the protected thread.
+A sibling dispatch cannot supply the verdict's run. The run must list its exact
+incoming dispatch comment in `delivered_comment_ids`. This native field records
+comments delivered to the run, not verdict comments posted by it. The outgoing
+verdict binds the run through native `source_task_id`, not that incoming list.
 Verdict creation and update must fall inside the completed run. Missing native
 revision, update time or attribution fails; the body cannot supply them.
+Every native comment author ID is type-checked as a canonical UUID before
+allowlist membership. Malformed IDs invalidate rather than raising TypeError.
 
 Model and lab provenance comes from the root-controlled participant registry,
 not a self-assertion or a shared bot identity. Native runs do not expose a

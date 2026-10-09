@@ -170,6 +170,7 @@ class MulticaReader:
                 if type(comment) is not dict:
                     raise ValueError("invalid native comment")
                 identity = control._uuid(comment.get("id"))
+                control._uuid(comment.get("author_id"))
                 if comment.get("parent_id") is not None:
                     control._uuid(comment["parent_id"])
                 if comment.get("issue_id") != candidate.issue_id or any(
@@ -300,13 +301,13 @@ def _verify(policy, candidate, verdict_id, reader, now):
             ("workspace_id", policy.workspace_id),
             ("status", "completed"),
             ("kind", "comment"),
-            ("trigger_comment_id", candidate.thread_id),
+            ("trigger_comment_id", comment["parent_id"]),
         )
     ):
         raise ValueError("native run does not match completed protected reviewer dispatch")
     delivered = run.get("delivered_comment_ids")
-    if type(delivered) is not list or verdict_id not in delivered:
-        raise ValueError("native reviewer run did not deliver the exact verdict")
+    if type(delivered) is not list or comment["parent_id"] not in delivered:
+        raise ValueError("native reviewer run did not receive the exact dispatch")
     created = _timestamp(comment.get("created_at"))
     updated = _timestamp(comment.get("updated_at"))
     if (

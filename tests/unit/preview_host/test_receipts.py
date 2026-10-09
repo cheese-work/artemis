@@ -76,7 +76,7 @@ def fixture(documents):
         "trigger_comment_id": THREAD,
         "started_at": timestamp(1300),
         "completed_at": timestamp(1450),
-        "delivered_comment_ids": [VERDICT],
+        "delivered_comment_ids": [THREAD],
     }
     issue = {"id": ISSUE, "workspace_id": policy.workspace_id, "project_id": policy.project_id}
     state = receipts.CandidateState(
@@ -147,6 +147,44 @@ def test_both_reply_cursors_are_followed_before_accepting(fixture):
     assert prepare(fixture, native).receipt.comment_id == VERDICT
     page_commands = [command for command in native.commands if "list" in command]
     assert page_commands[1][-6:-2] == ["--before", timestamp(1400), "--before-id", VERDICT]
+
+
+def test_native_review_dispatch_can_be_nested_under_protected_root(fixture):
+    dispatch = fixture[3] | {"id": NEW_VERDICT, "parent_id": THREAD}
+    fixture[2]["parent_id"] = NEW_VERDICT
+    fixture[4]["trigger_comment_id"] = NEW_VERDICT
+    fixture[4]["delivered_comment_ids"] = [NEW_VERDICT]
+    native = NativeCLI(fixture, [([fixture[3], dispatch, fixture[2]], "")])
+    assert prepare(fixture, native).receipt.source_task_id == RUN
+
+
+def test_native_run_cannot_borrow_sibling_dispatch_in_the_same_thread(fixture):
+    dispatch = fixture[3] | {"id": NEW_VERDICT, "parent_id": THREAD}
+    fixture[4]["trigger_comment_id"] = NEW_VERDICT
+    native = NativeCLI(fixture, [([fixture[3], dispatch, fixture[2]], "")])
+    with pytest.raises(ValueError, match="dispatch"):
+        prepare(fixture, native)
+
+
+def test_delivered_comment_ids_are_incoming_dispatch_not_outgoing_verdict(fixture):
+    assert fixture[4]["delivered_comment_ids"] == [THREAD]
+    assert prepare(fixture).receipt.comment_id == VERDICT
+    fixture[4]["delivered_comment_ids"] = [VERDICT]
+    with pytest.raises(ValueError, match="dispatch"):
+        prepare(fixture)
+
+
+@pytest.mark.parametrize("author_id", [[], {}, None, True, 1])
+def test_malformed_other_native_author_invalidates_instead_of_raising_type_error(
+    fixture, author_id
+):
+    record = prepare(fixture)
+    other = fixture[2] | {"id": NEW_VERDICT, "author_id": author_id}
+    native = NativeCLI(fixture, [([fixture[3], fixture[2], other], "")])
+    assert (
+        receipts.revalidate(record, fixture[0], fixture[-1], reader(native), now=1501).status
+        == "invalidated"
+    )
 
 
 @pytest.mark.parametrize(
