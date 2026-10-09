@@ -77,7 +77,7 @@ describe('WorkspaceComponent error lifetime', () => {
     expect(errorOwners.size).toBe(0);
   }));
 
-  for (const width of [1150, 1024, 390]) {
+  for (const width of [1280, 1199, 1024, 799, 390]) {
     it(`keeps the task-switcher and notes panel visible at ${width}px`, () => {
       const frame = document.createElement('iframe');
       frame.style.width = `${width}px`;
@@ -95,7 +95,16 @@ describe('WorkspaceComponent error lifetime', () => {
         const left = frameDocument.querySelector<HTMLElement>('.left-panel')!;
         expect(frame.contentWindow!.getComputedStyle(panel).display).not.toBe('none');
         expect(panel.querySelector('app-chat-interface')).not.toBeNull();
-        expect(panel.getBoundingClientRect().top).toBeGreaterThanOrEqual(left.getBoundingClientRect().bottom);
+        if (width >= 1200) {
+          // Side by side: the list starts at the run's right edge, at the same height.
+          expect(panel.getBoundingClientRect().left).toBeGreaterThanOrEqual(left.getBoundingClientRect().right - 1);
+          expect(panel.getBoundingClientRect().top).toBe(left.getBoundingClientRect().top);
+        } else {
+          // Stacked (below 1200px) or one column (below 800px): the list sits under the run.
+          expect(panel.getBoundingClientRect().top).toBeGreaterThanOrEqual(left.getBoundingClientRect().bottom - 1);
+          expect(panel.getBoundingClientRect().left).toBe(left.getBoundingClientRect().left);
+          expect(panel.getBoundingClientRect().width).toBe(left.getBoundingClientRect().width);
+        }
         expect(panel.getBoundingClientRect().height).toBeGreaterThan(0);
         expect(panel.getBoundingClientRect().width).toBeLessThanOrEqual(width);
       } finally {

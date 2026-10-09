@@ -26,7 +26,7 @@ import { DeployVersion, parseDeployVersion } from '../../core/models/deploy-vers
       right: 10px;
       bottom: 4px;
       z-index: 1;
-      color: #64748b;
+      color: var(--color-text-faint);
       font-size: 11px;
       pointer-events: none;
     }

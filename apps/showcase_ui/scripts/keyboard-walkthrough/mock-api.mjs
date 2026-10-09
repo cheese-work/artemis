@@ -55,7 +55,7 @@ export function startMockApi(distDir) {
     if (p === '/api/runs') {
       const q = (url.searchParams.get('q') ?? '').toLowerCase();
       const status = url.searchParams.get('status');
-      const all = url.searchParams.get('scope') === 'all';
+      const all = ['all', 'everyone'].includes(url.searchParams.get('scope'));
       const runs = (all ? [...RUNS, ...OTHERS] : RUNS).filter((r) => (!q || r.prompt.toLowerCase().includes(q)) && (!status || r.status === status));
       return json(res, 200, { runs, next_cursor: null, warnings: [] });
     }

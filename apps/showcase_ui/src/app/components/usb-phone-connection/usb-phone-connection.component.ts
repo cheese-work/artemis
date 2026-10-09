@@ -60,8 +60,8 @@ import { UsbDeviceRelayService } from '../../services/usb-device-relay.service';
       padding: 0 16px;
       border: 0;
       border-radius: 8px;
-      background: #1a73e8;
-      color: #fff;
+      background: var(--color-primary);
+      color: var(--color-on-primary);
       font: inherit;
       font-weight: 600;
       cursor: pointer;
@@ -81,11 +81,11 @@ import { UsbDeviceRelayService } from '../../services/usb-device-relay.service';
     }
 
     .usb-phone-support {
-      color: #475569;
+      color: var(--color-text-muted);
     }
 
     .usb-phone-status {
-      color: #166534;
+      color: var(--color-success);
     }
 
     .usb-phone-status code {
@@ -94,7 +94,7 @@ import { UsbDeviceRelayService } from '../../services/usb-device-relay.service';
     }
 
     .usb-phone-error {
-      color: #b42318;
+      color: var(--color-error);
     }
 
     .usb-phone-error small {
