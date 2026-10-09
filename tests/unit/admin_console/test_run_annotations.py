@@ -34,10 +34,14 @@ def _conn(library) -> sqlite3.Connection:
 
 def _session_start(library, sid: str) -> float:
     with _conn(library) as conn:
-        return conn.execute("SELECT start_time FROM sessions WHERE session_id = ?", (sid,)).fetchone()[0]
+        return conn.execute(
+            "SELECT start_time FROM sessions WHERE session_id = ?", (sid,)
+        ).fetchone()[0]
 
 
-def _recording(library, sid, *, start=5.0, end=65.0, clock=True, status="ready") -> tuple[str, Path]:
+def _recording(
+    library, sid, *, start=5.0, end=65.0, clock=True, status="ready"
+) -> tuple[str, Path]:
     """A recording that starts ``start`` s and ends ``end`` s into the session."""
     session_start = _session_start(library, sid)
     path = library.traces / sid / f"{uuid.uuid4().hex}.mp4"
@@ -126,7 +130,11 @@ def test_recording_anchor_resolves_exact_at_the_session_relative_moment(library,
 
     assert annotation.legacy_fallback is False
     assert resolution.status == "exact"
-    assert resolution.evidence == {"kind": "recording", "recording_id": video_id, "position_ms": 37_000}
+    assert resolution.evidence == {
+        "kind": "recording",
+        "recording_id": video_id,
+        "position_ms": 37_000,
+    }
 
 
 def test_recording_moment_outside_a_refinalized_recording_is_missing_not_clamped(library, run):
@@ -150,7 +158,9 @@ def test_recording_without_a_ready_file_resolves_missing(library, run, change):
         path.unlink()
     else:
         with _conn(library) as conn:
-            conn.execute("UPDATE video_recordings SET status = 'failed' WHERE video_id = ?", (video_id,))
+            conn.execute(
+                "UPDATE video_recordings SET status = 'failed' WHERE video_id = ?", (video_id,)
+            )
 
     assert _resolve(library, annotation).status == "missing"
 
@@ -272,7 +282,10 @@ def test_moment_outside_the_recording_is_rejected(library, run, offset_ms):
 def test_recording_bounds_are_inclusive(library, run, offset_ms):
     video_id, _ = _recording(library, run, start=5.0, end=65.0)
 
-    assert _resolve(library, _add(library, run, notes.RecordingAnchor(video_id, offset_ms))).status == "exact"
+    assert (
+        _resolve(library, _add(library, run, notes.RecordingAnchor(video_id, offset_ms))).status
+        == "exact"
+    )
 
 
 def test_negative_moment_is_rejected_for_a_legacy_recording_too(library, run):
@@ -331,7 +344,9 @@ def test_migration_backs_up_once_including_uncheckpointed_wal(library):
     assert first.backup_path is not None and second.backup_path is None
     with sqlite3.connect(first.backup_path) as backup:
         assert backup.execute("SELECT initial_goal FROM sessions").fetchone()[0] == "only in wal"
-        assert "run_annotations" not in {r[0] for r in backup.execute("SELECT name FROM sqlite_master")}
+        assert "run_annotations" not in {
+            r[0] for r in backup.execute("SELECT name FROM sqlite_master")
+        }
 
 
 def test_a_failed_revision_rolls_back_and_resumes(library):
@@ -344,7 +359,12 @@ def test_a_failed_revision_rolls_back_and_resumes(library):
     names = set(_schema(library.db))
     assert "probe_a" in names and "probe_b" not in names
     with sqlite3.connect(library.db) as conn:
-        assert conn.execute("SELECT revision FROM schema_revisions WHERE module = 'probe'").fetchone()[0] == 1
+        assert (
+            conn.execute("SELECT revision FROM schema_revisions WHERE module = 'probe'").fetchone()[
+                0
+            ]
+            == 1
+        )
 
     report = schema_revisions.migrate(library.db, "probe", [good, fixed])
     assert report.applied == [2] and "probe_b" in set(_schema(library.db))
