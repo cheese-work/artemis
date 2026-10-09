@@ -400,14 +400,15 @@ describe('SetupComponent', () => {
 
     afterEach(() => fixture.nativeElement.remove());
 
-    it('renders the Step 2 and Credentials cards on a light surface with SmartQA borders', async () => {
+    it('renders the Step 2 and Credentials cards on light surfaces without outlines or shadows', async () => {
       const host = await render(true);
       const panels = Array.from(host.querySelectorAll('.panel')) as HTMLElement[];
 
       expect(panels.length).toBe(2);
       for (const panel of panels) {
         expect(luminance(bg(panel))).toBeGreaterThan(LIGHT_SURFACE);
-        expect(getComputedStyle(panel).borderTopColor).toBe('rgb(228, 228, 231)');
+        expect(getComputedStyle(panel).borderTopWidth).toBe('0px');
+        expect(getComputedStyle(panel).boxShadow).toBe('none');
       }
     });
 
@@ -420,6 +421,23 @@ describe('SetupComponent', () => {
         expect(luminance(bg(control)))
           .withContext(`${control.tagName}.${control.className}`)
           .toBeGreaterThan(LIGHT_SURFACE);
+      }
+    });
+
+    it('uses filled tabs and secondary buttons with their own 44 px hit boxes', async () => {
+      const host = await render(true);
+      const controls = Array.from(host.querySelectorAll('.setup-tabs button, .secondary-button')) as HTMLElement[];
+
+      expect(controls.length).toBeGreaterThan(3);
+      for (const control of controls) {
+        const style = getComputedStyle(control);
+        const bounds = control.getBoundingClientRect();
+        expect(style.borderTopWidth).toBe('0px');
+        expect(style.boxShadow).toBe('none');
+        expect(style.backgroundColor).not.toBe('rgba(0, 0, 0, 0)');
+        expect(bounds.width).toBeGreaterThanOrEqual(44);
+        expect(bounds.height).toBeGreaterThanOrEqual(44);
+        expect(contrast(fg(control), bg(control))).toBeGreaterThanOrEqual(MIN_TEXT_CONTRAST);
       }
     });
 
