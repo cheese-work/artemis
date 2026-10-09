@@ -5,23 +5,31 @@ import time
 
 from artemis.runtime.awake_service import screen_awake_service
 
+THREAD_NAME_PREFIX = "artemis-awake-"
+
 
 def stop_awake_service(timeout: float = 15.0) -> None:
-    """Shut the service down and wait until its threads are gone.
+    """Shut the service down and wait until every awake thread is gone.
 
-    ``shutdown()`` joins for 2 seconds only, but a heartbeat can sit in an adb call for up to 10.
-    A survivor would run ``subprocess.run`` inside the next test's patch. Raise rather than
-    return while one is alive.
+    ``shutdown()`` and ``_stop_device()`` unregister a worker, then join it for 2 seconds only,
+    but a heartbeat can sit in an adb call for up to 10. Such a survivor is no longer in the
+    registry, so find the threads by name. One left alive would run ``subprocess.run`` inside
+    the next test's patch, so raise rather than return while one is alive.
     """
-    service = screen_awake_service
-    with service._lock:
-        threads = [*service._heartbeat_threads.values(), service._monitor_thread]
-    service.shutdown()
+    screen_awake_service.shutdown()
     deadline = time.monotonic() + timeout
-    for thread in threads:
-        if thread is not None and thread is not threading.current_thread():
-            thread.join(max(0.0, deadline - time.monotonic()))
-    service._shutdown_requested = False
-    alive = [thread.name for thread in threads if thread is not None and thread.is_alive()]
-    if alive:
-        raise RuntimeError(f"awake-service threads still running after {timeout}s: {alive}")
+    while True:
+        alive = [
+            thread
+            for thread in threading.enumerate()
+            if thread.name.startswith(THREAD_NAME_PREFIX)
+            and thread is not threading.current_thread()
+        ]
+        if not alive:
+            break
+        if time.monotonic() >= deadline:
+            raise RuntimeError(
+                f"awake-service threads still running after {timeout}s: {[t.name for t in alive]}"
+            )
+        alive[0].join(0.05)
+    screen_awake_service._shutdown_requested = False

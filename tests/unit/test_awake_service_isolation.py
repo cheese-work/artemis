@@ -6,9 +6,9 @@ from artemis.runtime import awake_service
 from tests.support.awake_service_isolation import stop_awake_service
 
 
-@pytest.fixture
-def heartbeat_in_adb_call(monkeypatch):
-    """A real heartbeat thread blocked inside its adb call, past ``shutdown()``'s 2s join."""
+@pytest.fixture(params=["registered", "unregistered-by-stop-device"])
+def heartbeat_in_adb_call(request, monkeypatch):
+    """A real heartbeat thread blocked inside its adb call, past the service's 2s join."""
     entered, release = threading.Event(), threading.Event()
 
     def blocked_adb_call(*_args, **_kwargs):
@@ -19,6 +19,9 @@ def heartbeat_in_adb_call(monkeypatch):
     monkeypatch.setattr(awake_service, "_run_awake_adb_command", blocked_adb_call)
     awake_service.screen_awake_service._start_heartbeat("test-key", "test-device", None)
     assert entered.wait(5)
+    if request.param != "registered":
+        awake_service.screen_awake_service._stop_device("test-key")
+        assert not awake_service.screen_awake_service._heartbeat_threads
     try:
         yield release
     finally:
