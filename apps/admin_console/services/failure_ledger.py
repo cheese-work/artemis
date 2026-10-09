@@ -99,13 +99,11 @@ _RULES: tuple[tuple[str, str, str], ...] = (
 )
 _COMPILED = tuple((rule, category, re.compile(p, re.IGNORECASE)) for rule, category, p in _RULES)
 _ACTION = {"user_prompt": "no action", "provider": "monitor", "unknown": "review"}
-# A traceback's last line, or the runner's own verdict, is a run's cause.
+# A traceback's exception line, or the runner's own verdict, is a run's cause.
 _PREFIX = re.compile(r"^\[[^\]]+\]\s*")  # the runner's "[web_<ts>_<id>]" tag
-_RUN_EVIDENCE = re.compile(
-    r"\b\w+(Error|Exception)\b: |FlashRunner failed:|^[ \t]+at\s+[\w.$]+\(",
-    re.MULTILINE,
-)
-_RAW_ERROR_TEXT = re.compile(r"^[ \t]*(?:[\w.$]*(?:Error|Exception):|at\s+[\w.$]+\()", re.MULTILINE)
+_RUN_EVIDENCE = re.compile(r"\b\w+(?:Error|Exception)\b: |FlashRunner failed:")
+_RUN_STACK_FRAME = re.compile(r"^[ \t]+at\s+[\w.$]+\(")
+_RAW_ERROR_TEXT = re.compile(r"^[ \t]*(?:[\w.$]+(?:Error|Exception):|at\s+[\w.$]+\()", re.MULTILINE)
 _UUID = re.compile(r"\b[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}\b", re.IGNORECASE)
 _HEX_ID = re.compile(r"\b[0-9a-f]{12,}\b", re.IGNORECASE)
 _IDENTIFIER_WITH_DIGITS = re.compile(r"\b(?=[a-z0-9_-]*\d)[a-z0-9_-]+\b", re.IGNORECASE)
@@ -185,15 +183,26 @@ def _ensure(conn: sqlite3.Connection) -> None:
         "signal" not in columns
         or ("session_id", "step_number", "signal", "cause") not in unique_keys
     ):
-        signal = (
-            "CASE WHEN failure_ledger_legacy.step_number = 0 "
-            "AND failure_ledger_legacy.signal = 'stuck_run' "
-            "AND EXISTS (SELECT 1 FROM sessions s "
-            "WHERE s.session_id = failure_ledger_legacy.session_id AND s.status = 'failed') "
-            "THEN 'run_step' ELSE COALESCE(failure_ledger_legacy.signal, 'run_step') END"
-            if "signal" in columns
-            else "'run_step'"
-        )
+        if "signal" in columns:
+            signal = (
+                "CASE WHEN failure_ledger_legacy.step_number = 0 "
+                "AND failure_ledger_legacy.signal = 'run_step' "
+                "AND EXISTS (SELECT 1 FROM sessions s "
+                "WHERE s.session_id = failure_ledger_legacy.session_id "
+                "AND s.status = 'interrupted') THEN 'stuck_run' "
+                "WHEN failure_ledger_legacy.step_number = 0 "
+                "AND failure_ledger_legacy.signal = 'stuck_run' "
+                "AND EXISTS (SELECT 1 FROM sessions s "
+                "WHERE s.session_id = failure_ledger_legacy.session_id AND s.status = 'failed') "
+                "THEN 'run_step' ELSE COALESCE(failure_ledger_legacy.signal, 'run_step') END"
+            )
+        else:
+            signal = (
+                "CASE WHEN failure_ledger_legacy.step_number = 0 "
+                "AND EXISTS (SELECT 1 FROM sessions s "
+                "WHERE s.session_id = failure_ledger_legacy.session_id "
+                "AND s.status = 'interrupted') THEN 'stuck_run' ELSE 'run_step' END"
+            )
         conn.execute("SAVEPOINT failure_ledger_signal_migration")
         migration_complete = False
         try:
@@ -252,9 +261,11 @@ def _run_evidence(row: sqlite3.Row, traces_dir: Path) -> str:
             tail = handle.read().decode("utf-8", "replace")
     except OSError:
         return ""
-    for line in reversed(tail.splitlines()):
-        if _RUN_EVIDENCE.search(line):
-            return _PREFIX.sub("", line.strip(" \t⚠ℹ✅❌"))
+    lines = tail.splitlines()
+    for pattern in (_RUN_EVIDENCE, _RUN_STACK_FRAME):
+        for line in reversed(lines):
+            if pattern.search(line):
+                return _PREFIX.sub("", line.strip(" \t⚠ℹ✅❌"))
     return ""
 
 
@@ -279,6 +290,12 @@ SELECT s.session_id, s.interrupt_reason, s.device_info, s.initial_goal AS goal, 
        0 AS stuck, CASE WHEN s.status = 'interrupted' THEN 'stuck_run' ELSE 'run_step' END AS signal
 FROM sessions s JOIN run_meta m ON m.session_id = s.session_id
 WHERE s.status IN ('failed', 'interrupted') AND m.deleted_at IS NULL
+  AND NOT EXISTS (
+      SELECT 1 FROM failure_ledger f
+      WHERE f.session_id = s.session_id AND f.step_number = 0
+        AND f.signal = CASE WHEN s.status = 'interrupted' THEN 'stuck_run' ELSE 'run_step' END
+        AND f.rule != 'run_stuck'
+  )
 """
 _STUCK_SQL = """
 SELECT s.session_id, s.interrupt_reason, s.device_info, s.initial_goal AS goal, m.requested_by, m.host_id,
@@ -354,7 +371,7 @@ def collect() -> dict[str, int]:
                     *base,
                     category,
                     rule,
-                    _cause(rule, evidence),
+                    _cause(rule, raw),
                     evidence,
                     device,
                     source,
@@ -376,7 +393,7 @@ def collect() -> dict[str, int]:
                         "run" if is_run else "step",
                         raw_category,
                         raw_rule,
-                        _cause(raw_rule, raw_error),
+                        _cause(raw_rule, raw),
                         raw_error,
                         device,
                         source,
@@ -440,7 +457,7 @@ def view(days: int = DEFAULT_DAYS) -> dict[str, Any]:
         "counts": [dict(row) for row in counts],
         "causes": [
             {
-                **dict(row),
+                **{key: row[key] for key in row.keys() if key != "cause"},
                 "session_ids": json.loads(row["session_ids"])[:_IDS_PER_CAUSE],
                 "run_ids": json.loads(row["session_ids"])[:_IDS_PER_CAUSE],
                 "count_window": row["count"],
