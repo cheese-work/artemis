@@ -192,7 +192,8 @@ describe('Workspace review mode', () => {
     await go('/workspace');
     const workspace = q('app-workspace');
     const requests = runs.list.calls.count();
-    expect(q('app-run-library a.run-row')).toBeNull();
+    expect(q('app-run-library .date-group a.run-row')).toBeNull();
+    expect(q('app-run-library .queue-section a.run-row')).not.toBeNull();
 
     sessions.set([{ ...session, status: 'completed', end_time: 2 }]);
     harness.detectChanges();
