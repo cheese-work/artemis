@@ -76,6 +76,24 @@ def isolate_current_data_engine():
     quiesce_data_engine_logs()
 
 
+@pytest.fixture(autouse=True)
+def isolate_awake_service():
+    """Stop heartbeat threads that an earlier test left on the process-wide awake service.
+
+    A leftover heartbeat fires ``subprocess.run`` every few seconds, so it lands in a later
+    test's ``subprocess.run`` patch and corrupts the command that test captures.
+    """
+    from artemis.runtime.awake_service import screen_awake_service
+
+    def stop():
+        screen_awake_service.shutdown()
+        screen_awake_service._shutdown_requested = False
+
+    stop()
+    yield
+    stop()
+
+
 ADB_ENVIRONMENT_KEYS = (
     "ADB_HOST",
     "ADB_PORT",
