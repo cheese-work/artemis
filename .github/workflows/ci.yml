@@ -137,7 +137,7 @@ jobs:
         run: |
           export CHROME_BIN="$(command -v google-chrome || command -v chromium-browser || command -v chromium)"
           "$CHROME_BIN" --version
-          npm run test:preview-path
+          npm run test:preview-path -- --root-api-negative-control
 
   package:
     name: Build and smoke-test Python packages
