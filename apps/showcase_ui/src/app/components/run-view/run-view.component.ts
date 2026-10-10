@@ -6,6 +6,7 @@ import {
   Component,
   DestroyRef,
   ElementRef,
+  NgZone,
   computed,
   effect,
   inject,
@@ -28,6 +29,7 @@ import { RunsService } from '../../services/runs.service';
 import {
   getActionObject,
   getActionErrorMessage,
+  getActionIcon,
   getActionTitle,
   extractActionExtraParams,
   getActionCoords,
@@ -99,6 +101,7 @@ export class RunViewComponent {
   private readonly ownerScope = inject(OwnerScopeService);
   private readonly router = inject(Router);
   private readonly destroyRef = inject(DestroyRef);
+  private readonly zone = inject(NgZone);
   private readonly pageTitle = inject(Title);
   private readonly promptEl = viewChild<ElementRef<HTMLDetailsElement>>('promptEl');
   public readonly title = computed(() => runTitle(this.run()?.prompt));
@@ -116,6 +119,7 @@ export class RunViewComponent {
   public readonly newRunPrompt = output<string>();
 
   public readonly strings = RUN_STRINGS;
+  public readonly statusView = runStatusView;
   public readonly interruptReason = interruptReason;
   public readonly removedReason = removedReason;
 
@@ -190,7 +194,41 @@ export class RunViewComponent {
   public readonly infoOpen = signal(false);
   public readonly usage = signal<SessionUsage | null>(null);
   public readonly usageFailed = signal(false);
-  public readonly viewedModel = computed(() => this.viewingLiveSession() ? this.agentService.viewedModel() : null);
+  public readonly viewedModel = computed(() => {
+    const live = this.liveSession();
+    const session = live?.session_id === this.run()?.session_id ? live
+      : this.agentService.sessions().find(session => session.session_id === this.run()?.session_id);
+    return session?.session_id === this.run()?.session_id && session?.model_info
+      ? session.model_info : this.viewingLiveSession() ? this.agentService.viewedModel() : null;
+  });
+  public readonly active = computed(() => runStatusView(this.run()?.status).active);
+  private readonly clock = signal(Date.now() / 1000);
+  public readonly duration = computed(() => {
+    const run = this.run();
+    const end = this.active() ? this.clock() : run?.end_time;
+    if (run?.start_time == null || end == null) return 'Not recorded';
+    const seconds = Math.max(0, Math.floor(end - run.start_time));
+    return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+  });
+  public readonly appName = computed(() => {
+    for (const step of this.steps()) {
+      const action = getActionObject(step.action_taken);
+      const app = action?.package_name ?? action?.args?.package_name ?? action?.app_name ?? action?.args?.app_name;
+      if (typeof app === 'string' && app.trim()) return app;
+    }
+    return 'Not recorded';
+  });
+  public readonly statusMessage = computed(() => {
+    const live = this.liveState();
+    if (live) return `${live.title}. ${live.reason}`;
+    if (this.run()?.status === 'pending') return 'Waiting for the phone.';
+    if (this.run()?.status === 'paused') return 'Task paused. Waiting to continue.';
+    if (!this.steps().length) return 'Preparing the phone. Steps will appear here.';
+    return `Step ${this.steps().at(-1)!.step_number} in progress. The verdict appears here when the run finishes.`;
+  });
+  public readonly headerActions = computed<RunAction[]>(() => this.active()
+    ? this.canChange() ? [{ id: 'stop', label: 'Stop run', icon: 'stop', className: 'action-button danger', ariaLabel: 'Stop run', title: `Stop ${this.title()}` }] : []
+    : this.readOnlyRun() ? [] : [{ id: 'again', label: 'Run again', icon: 'replay', ariaLabel: 'Run again' }]);
   private readonly resultBlocks = computed(() => {
     const id = this.run()?.session_id;
     if (!id) return [];
@@ -219,7 +257,6 @@ export class RunViewComponent {
     })).filter((block) => block.events.length || block.resets.length)
     : []);
   public readonly actions = computed<RunAction[]>(() => [
-    ...(this.canResume() ? [{ id: 'resume', label: 'Continue task' }] : []),
     { id: 'share', label: this.strings.copyLink },
     { id: 'download', label: this.strings.download },
     ...(this.canChange() ? [
@@ -289,6 +326,16 @@ export class RunViewComponent {
     return step ? (getStepPostImageUrl(step) ?? getStepPreImageUrl(step)) : null;
   });
 
+  public readonly evidenceSteps = computed(() => this.steps().map(step => ({
+    id: step.step_id, number: step.step_number, title: this.stepTitle(step),
+    screenshot: getStepPostImageUrl(step) ?? getStepPreImageUrl(step)
+  })));
+
+  public selectEvidenceStep(stepId: string): void {
+    const step = this.steps().find(item => item.step_id === stepId);
+    if (step) this.selectStep(step);
+  }
+
   public readonly interruptedAtStep = computed(() => this.steps()[this.steps().length - 1]?.step_number ?? null);
   public readonly interruptedText = computed(() => interruptedSentence(this.interruptedAtStep()));
   public readonly failureReason = computed(() => {
@@ -335,6 +382,13 @@ export class RunViewComponent {
     effect(() => this.pageTitle.setTitle(this.state() === 'ready'
       ? `${this.title()} · SmartQA` : previousTitle));
     this.destroyRef.onDestroy(() => this.pageTitle.setTitle(previousTitle));
+    effect((onCleanup) => {
+      const run = this.run();
+      if (!run || !this.active()) return;
+      this.clock.set(Date.now() / 1000);
+      const clock = this.zone.runOutsideAngular(() => setInterval(() => this.clock.set(Date.now() / 1000), 1000));
+      onCleanup(() => clearInterval(clock));
+    });
 
     const query = typeof window !== 'undefined' ? window.matchMedia('(max-width: 1279px)') : null;
     if (query) {
@@ -543,6 +597,31 @@ export class RunViewComponent {
     return getActionTitle(step.action_taken);
   }
 
+  public readonly stepIcon = getActionIcon;
+
+  public stepKind(step: StepItemData): string {
+    const action = getActionObject(step.action_taken);
+    const kind = action?.name || action?.action;
+    return typeof kind === 'string' && kind ? kind : 'Action';
+  }
+
+  public stepTime(step: StepItemData): string {
+    const start = this.run()?.start_time;
+    if (start == null || !Number.isFinite(start) || !Number.isFinite(step.timestamp)) return '—';
+    const seconds = Math.max(0, Math.floor(step.timestamp - start));
+    return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
+  }
+
+  public goToStep(stepNumber: number): boolean {
+    const index = this.steps().findIndex(step => step.step_number === stepNumber);
+    if (index === -1) return false;
+    this.selectStep(this.steps()[index]);
+    const button = this.timelineEl()?.nativeElement.querySelectorAll<HTMLButtonElement>('.step-button')[index];
+    button?.scrollIntoView({ block: 'nearest' });
+    button?.focus({ preventScroll: true });
+    return true;
+  }
+
   public toggleStep(step: StepItemData): void {
     const expanded = new Set(this.expandedSteps());
     if (expanded.has(step.step_id)) expanded.delete(step.step_id);
@@ -659,7 +738,11 @@ export class RunViewComponent {
   // -- actions ----------------------------------------------------------------
 
   public onAction(action: RunActionEvent): void {
-    if (action.id === 'resume') {
+    if (action.id === 'stop') {
+      if (this.canChange() && this.active()) this.agentService.stopTask(this.run()!.session_id);
+    } else if (action.id === 'again') {
+      if (!this.readOnlyRun() && !this.active()) this.startNewRun();
+    } else if (action.id === 'resume') {
       if (this.canResume()) this.agentService.resumeTask();
     } else if (action.id === 'pin') this.togglePin(action.event);
     else if (action.id === 'retry') this.retry();
@@ -668,7 +751,8 @@ export class RunViewComponent {
 
   public ask(kind: DialogKind, event?: Event): void {
     if (!this.canChange() && (kind === 'delete' || kind === 'unpin_expired')) return;
-    this.opener = (event?.currentTarget as HTMLElement | null) ?? null;
+    const control = event?.currentTarget as HTMLElement | null;
+    this.opener = control?.closest('.more-actions')?.querySelector('summary') ?? control ?? null;
     this.dialogKind.set(kind);
     this.dialogEl()?.nativeElement.showModal();
   }

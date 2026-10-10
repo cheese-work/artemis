@@ -49,22 +49,40 @@
     }
     @case ('ready') {
       @if (run(); as current) {
-        <a class="back-to-runs" routerLink="/runs" [queryParams]="lastQuery()">{{ strings.backToRuns }}</a>
-
-        <section class="outcome" data-section="outcome" aria-label="Outcome">
-          <span class="outcome-badge" appRunStatusBadge [status]="current.status"></span>
-          <h1 class="run-prompt" [title]="title()">{{ title() }}</h1>
+        <header class="run-header outcome" data-section="outcome" aria-label="Run header">
+          <div class="run-crumb">
+            <a class="back-to-runs" routerLink="/runs" [queryParams]="lastQuery()" [attr.aria-label]="strings.backToRuns">Runs</a>
+            <span aria-hidden="true">/</span>
+            <app-run-id-copy [runId]="current.session_id" [showIcon]="true"></app-run-id-copy>
+          </div>
+          <div class="run-heading">
+            <div class="run-heading-title">
+              <span class="outcome-badge" appRunStatusBadge [status]="current.status"></span>
+              <h1 class="run-prompt" [title]="title()">{{ title() }}</h1>
+            </div>
+            <div class="header-controls">
+              <div class="primary-actions" appRunActionBar [actions]="headerActions()" (action)="onAction($event)"></div>
+              <details #moreEl class="more-actions" (keydown.escape)="moreEl.open = false; moreToggle.focus()">
+                <summary #moreToggle aria-label="More actions" title="More actions">
+                  <span class="material-symbols-outlined" aria-hidden="true">more_horiz</span>
+                </summary>
+                <section class="actions more-menu" data-section="actions" aria-label="More actions" appRunActionBar
+                  [actions]="actions()" (action)="moreEl.open = false; onAction($event)"></section>
+              </details>
+            </div>
+          </div>
+          <dl class="run-facts">
+            <div><dt>App</dt><dd class="mono" data-fact="app">{{ appName() }}</dd></div>
+            <div><dt>Phone</dt><dd appRunDeviceLabel [serial]="current.device_ref?.serial ?? null" [detail]="true"></dd></div>
+            <div><dt>Started</dt><dd class="mono">{{ current.start_time == null ? 'Not recorded' : (current.start_time * 1000 | date: 'MMM d, HH:mm': '+0700') + ' ICT' }}</dd></div>
+            <div><dt>{{ active() ? 'Elapsed' : 'Duration' }}</dt><dd class="mono" data-fact="duration">{{ duration() }}</dd></div>
+            <div><dt>Model</dt><dd data-fact="model">{{ viewedModel()?.name ?? 'Not recorded' }}</dd></div>
+          </dl>
           <details #promptEl class="full-prompt">
             <summary>Show prompt</summary>
             <pre>{{ current.prompt }}</pre>
           </details>
-          <div class="run-id">
-            <app-run-id-copy [runId]="current.session_id"></app-run-id-copy>
-          </div>
-          @if (readOnlyNote(); as note) {
-            <p class="read-only-note" role="status">{{ note }}</p>
-          }
-          <details class="secondary-meta" [open]="!compact()">
+          <details class="secondary-meta">
             <summary>Run details</summary>
             <dl>
               <dt>Phone</dt>
@@ -78,16 +96,33 @@
               <dt>Started</dt>
               <dd class="mono">
                 @if (current.start_time) {
-                  {{ current.start_time * 1000 | date: 'MMM d, y, h:mm a' }}
+                  {{ current.start_time * 1000 | date: 'MMM d, y, HH:mm': '+0700' }} ICT
                 } @else {
                   Date unknown
                 }
               </dd>
             </dl>
           </details>
-        </section>
+          @if (readOnlyNote(); as note) { <p class="read-only-note">{{ note }}</p> }
+          @if (feedback()) { <p class="action-feedback" role="status">{{ feedback() }}</p> }
+          @if (actionError(); as error) {
+            <p class="action-error" role="alert">{{ error.text }}
+              @if (error.retry) { <button type="button" class="secondary-button" (click)="retry()">Retry</button> }
+            </p>
+          }
+        </header>
 
-        <section class="run-result-summary" aria-label="Run result summary" aria-live="polite">
+        <div class="run-status-slot" [class.live-state]="!!liveState()" role="status" aria-live="polite" aria-atomic="true">
+          @if (active()) {
+            <section class="status-strip" [class.warning]="current.status === 'paused' || !!liveState()" aria-label="Run status">
+              <span class="material-symbols-outlined" aria-hidden="true">{{ current.status === 'paused' ? 'pause_circle' : 'progress_activity' }}</span>
+              <p>{{ statusMessage() }}</p>
+              @if (canResume()) { <button type="button" class="action-button" (click)="onAction({ id: 'resume', event: $event })">Continue task</button> }
+            </section>
+          } @else { <span class="sr-only">Run finished: {{ statusView(current.status).label }}.</span> }
+        </div>
+        @if (!active()) {
+        <section class="run-result-summary verdict-slot" aria-label="Run result summary">
           <h2>Run result summary</h2>
           <p>Task: {{ resultOutcome()?.task_status || current.status }}</p>
           @if (resultOutcome(); as result) {
@@ -111,12 +146,6 @@
           }
           @if (checksFailed()) { <p>Could not load checker results.</p> }
         </section>
-
-        @if (liveState(); as live) {
-          <div class="interrupted-banner live-state" role="status">
-            <p>{{ live.title }}</p>
-            <p>{{ live.reason }}</p>
-          </div>
         }
 
         @if (viewingLiveSession()) {
@@ -168,8 +197,9 @@
           <section class="evidence" data-section="evidence" aria-label="Evidence" appRunEvidencePanel
             [recording]="recording()" [videoUrl]="videoUrl()" [playerFailed]="playerFailed()" [message]="copy()" [detail]="videoDetail()"
             [retryable]="canCheckAgain()" [screenshotUrl]="screenshot()"
+            [steps]="evidenceSteps()" [selectedStepId]="selectedStep()?.step_id ?? null" [running]="active()"
             [screenshotAlt]="'Screenshot for step ' + selectedStep()?.step_number" [loaded]="stepsLoaded()"
-            (metadata)="onMetadata()" (ended)="onEnded()" (failed)="playerFailed.set(true)" (retry)="checkAgain()">
+            (stepSelected)="selectEvidenceStep($event)" (metadata)="onMetadata()" (ended)="onEnded()" (failed)="playerFailed.set(true)" (retry)="checkAgain()">
           </section>
 
           <section class="steps" data-section="steps" aria-label="Steps">
@@ -182,22 +212,25 @@
             <ol #timelineEl class="step-list" aria-label="Step timeline" (scroll)="rememberPosition()">
               @for (step of steps(); track trackStep($index, step)) {
                 <li>
+                  <div class="step-row" [class.failed]="stepFailed(step)">
                   <button
                     type="button"
                     class="step-button" appRunStepRow [stepNumber]="step.step_number" [title]="stepTitle(step)" [failed]="stepFailed(step)"
+                    [icon]="stepIcon(step.action_taken)" [thumbnail]="postImage(step) ?? preImage(step)" [kind]="stepKind(step)"
+                    [duration]="step.duration != null ? step.duration + 's' : null" [time]="stepTime(step)"
                     [failureDetail]="stepFailed(step) ? stepFailureSummary(step) : null"
                     [failureTitle]="stepFailed(step) ? stepFailureTitle(step) : null"
                     [attr.aria-current]="selectedStep()?.step_id === step.step_id ? 'step' : null"
                     (click)="selectStep(step)"
                     (keydown)="onStepKey($event, $index)"
                   >
-                    @if (!stepFailed(step)) { <span class="step-outcome">{{ step.last_execution_result || postImage(step) ? 'Completed' : 'Dispatched' }}</span> }
                   </button>
                   <button type="button" class="step-toggle" [attr.aria-expanded]="expandedSteps().has(step.step_id)"
                     [attr.aria-controls]="'step-details-' + step.step_id" [attr.aria-label]="'Step ' + step.step_number + ' details'"
                     (click)="toggleStep(step)">
-                    {{ expandedSteps().has(step.step_id) ? 'Hide details' : 'Show details' }}
+                    <span class="material-symbols-outlined" aria-hidden="true">{{ expandedSteps().has(step.step_id) ? 'expand_less' : 'expand_more' }}</span>
                   </button>
+                  </div>
                   @if (expandedSteps().has(step.step_id)) {
                     <div class="step-details" [id]="'step-details-' + step.step_id" role="region" [attr.aria-label]="'Step ' + step.step_number + ' execution details'">
                       <dl>
@@ -214,16 +247,14 @@
                       @for (block of stepChecks(step); track block.id) {
                         <ng-container [ngTemplateOutlet]="checkerDetails" [ngTemplateOutletContext]="{ $implicit: block }"></ng-container>
                       }
-                    </div>
-                  }
-                  @if (selectedStep()?.step_id === step.step_id) {
-                    <div class="step-screenshots">
+                      <div class="step-screenshots">
                       @if (preImage(step); as before) {
                         <figure><figcaption>Before</figcaption><img [src]="before" [alt]="'Before step ' + step.step_number"></figure>
                       }
                       @if (postImage(step); as after) {
                         <figure><figcaption>After</figcaption><img [src]="after" [alt]="'After step ' + step.step_number"></figure>
                       }
+                      </div>
                     </div>
                   }
                 </li>
@@ -240,11 +271,6 @@
             }
           </section>
         }
-
-        <section class="actions" data-section="actions" aria-label="Actions" appRunActionBar
-          [actions]="actions()" [feedback]="feedback()" [error]="actionError()?.text ?? null"
-          [retryable]="!!actionError()?.retry" (action)="onAction($event)">
-        </section>
 
         @if (streamBlocks().length) {
           <section class="live-streams" aria-label="Live thinking and text">
