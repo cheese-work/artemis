@@ -919,6 +919,9 @@ describe('RunViewComponent', () => {
     });
 
     it('announces once per step start and once at completion, not on thought, retry or clock updates', async () => {
+      (runs as any).checks.and.returnValue(of({ records: [], streams: [], run_outcome: {
+        phase: 'outcome', task_status: 'completed', tests: { passed: 0, failed: 1, inconclusive: 0, unchecked: 0 }
+      } }));
       const result = new Subject<RunSummary>();
       await open({ viewMode: 'live', runResult: result, steps: of([]) });
       result.next(run({ status: 'running' }));
@@ -960,6 +963,33 @@ describe('RunViewComponent', () => {
       expect(q('[aria-label="Stop run"]')).toBeNull();
       expect(q('[aria-label="Run again"]')).not.toBeNull();
     });
+
+    for (const outcome of [
+      { task_status: 'completed', tests: { passed: 1, failed: 1, inconclusive: 0, unchecked: 0 }, verdict: 'Fail' },
+      { task_status: 'completed', tests: { passed: 1, failed: 0, inconclusive: 0, unchecked: 0 }, verdict: 'Pass' },
+      { task_status: 'completed', tests: { passed: 1, failed: 0, inconclusive: 1, unchecked: 0 }, verdict: 'Inconclusive' },
+      { task_status: 'completed', tests: { passed: 1, failed: 0, inconclusive: 0, unchecked: 1 }, verdict: 'Inconclusive' },
+      { task_status: 'partial', tests: { passed: 1, failed: 0, inconclusive: 0, unchecked: 0 }, verdict: 'Inconclusive' },
+      { task_status: 'blocked', tests: { passed: 1, failed: 0, inconclusive: 0, unchecked: 0 }, verdict: 'Inconclusive' }
+    ]) {
+      it(`announces the ${outcome.verdict} verdict for a completed ${outcome.task_status} outcome with ${JSON.stringify(outcome.tests)}`, async () => {
+        (runs as any).checks.and.returnValue(of({ records: [], streams: [], run_outcome: { phase: 'outcome', ...outcome } }));
+        await open({ viewMode: 'live', runResult: of(run({ status: 'completed' })) });
+        expect(q('.run-status-slot')?.textContent?.trim()).toBe(`Run finished: ${outcome.verdict}.`);
+        expect(q('.run-result-summary')?.textContent).toContain(`Failed: ${outcome.tests.failed}`);
+        expect(q('.run-result-summary')?.textContent).toContain(`Task: ${outcome.task_status}`);
+      });
+    }
+
+    for (const [status, label] of [
+      ['completed', 'Completed'], ['failed', 'Failed'], ['interrupted', 'Interrupted'], ['cancelled', 'Cancelled']
+    ]) {
+      it(`announces ${label} without inventing a verdict when a ${status} run has no outcome`, async () => {
+        await open({ viewMode: 'live', runResult: of(run({ status })) });
+        expect(fixture.componentInstance.resultOutcome()).toBeNull();
+        expect(q('.run-status-slot')?.textContent?.trim()).toBe(`Run finished: ${label}.`);
+      });
+    }
 
     it('updates startup and step elapsed time once per second and stops the clock after completion', fakeAsync(() => {
       admin.getIdentity.and.returnValue(of({ email: 'qa@example.test', admin: false, auth_mode: 'cloudflare', reason: null }));
@@ -1729,16 +1759,19 @@ describe('RunViewComponent', () => {
       expect(fixture.componentInstance.duration()).toBe(stopped);
     });
 
-    it('gives every header control its own 44 by 44 px box', async () => {
-      await open();
-      q<HTMLDetailsElement>('.more-actions')!.open = true;
-      await settle();
-      for (const control of qa<HTMLElement>('.run-header button, .run-header summary, .run-header a')) {
-        const bounds = control.getBoundingClientRect();
-        expect(bounds.width).withContext(control.textContent ?? '').toBeGreaterThanOrEqual(44);
-        expect(bounds.height).withContext(control.textContent ?? '').toBeGreaterThanOrEqual(44);
-      }
-    });
+    for (const status of ['completed', 'running']) {
+      it(`gives every header control its own 44 by 44 px box while ${status}`, async () => {
+        await open({ runResult: of(run({ status })) });
+        expect(q(`.run-header [aria-label="${status === 'running' ? 'Stop run' : 'Run again'}"]`)).not.toBeNull();
+        q<HTMLDetailsElement>('.more-actions')!.open = true;
+        await settle();
+        for (const control of qa<HTMLElement>('.run-header button, .run-header summary, .run-header a')) {
+          const bounds = control.getBoundingClientRect();
+          expect(bounds.width).withContext(control.textContent ?? '').toBeGreaterThanOrEqual(44);
+          expect(bounds.height).withContext(control.textContent ?? '').toBeGreaterThanOrEqual(44);
+        }
+      });
+    }
   });
 
   describe('review corrections', () => {

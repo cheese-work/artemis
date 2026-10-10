@@ -46,7 +46,8 @@ const server = createServer((request, response) => {
   if (pathname === `/api/runs/${runId}`) return json(response, run);
   if (pathname.endsWith('/steps')) return json(response, live ? liveSteps : steps);
   if (pathname.endsWith('/notes')) return json(response, { notes: { 'output.md': 'Settings opened. The app is ready for the next task.' } });
-  if (pathname.endsWith('/checks')) return json(response, { records: [], streams: [], run_outcome: null });
+  if (pathname.endsWith('/checks')) return json(response, { records: [], streams: [], run_outcome: live && run.status === 'completed'
+    ? { phase: 'outcome', task_status: 'completed', tests: { passed: 1, failed: 0, inconclusive: 0, unchecked: 0 } } : null });
   if (pathname.endsWith('/video')) return json(response, { session_id: runId, status: 'unavailable', has_video: false, video_url: null, video_segments: [] });
   if (pathname === '/api/system/whoami') return json(response, { email: 'qa@example.test', admin: false, auth_mode: 'cloudflare', reason: null });
   if (pathname === '/api/sessions') return json(response, [{ session_id: runId, initial_goal: run.prompt, start_time: started, end_time: run.end_time, status: run.status, model_info: { name: 'Flash', id: 'fixture-flash', provider: 'fixture' } }]);
@@ -260,6 +261,9 @@ try {
           assert.deepEqual(await evaluate(`window.announcements`), ['Step 4 in progress.'], 'clock, selection, Thought and retry do not announce');
           await evaluate(`(() => {
             const view = ng.getComponent(document.querySelector('app-run-view'));
+            view.checks.set({ records: [], streams: [], run_outcome: {
+              phase: 'outcome', task_status: 'completed', tests: { passed: 0, failed: 1, inconclusive: 0, unchecked: 0 }
+            } });
             view.agentService.runningSessionId.set(null);
             view.agentService.agentStatus.set('idle');
             view.agentService.rawSessions.update(sessions => sessions.map(session => session.session_id === '${runId}' ? { ...session, status: 'failed', end_time: Date.now() / 1000 } : session));

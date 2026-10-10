@@ -231,7 +231,16 @@ export class RunViewComponent {
   public readonly announcement = computed(() => {
     const run = this.run();
     if (!run) return '';
-    if (!this.active()) return `Run finished: ${run.status === 'failed' ? 'Fail' : run.status === 'completed' ? 'Pass' : this.statusView(run.status).label}.`;
+    if (!this.active()) {
+      const outcome = this.resultOutcome();
+      let verdict: string | null = null;
+      if (outcome?.tests?.failed) verdict = 'Fail';
+      else if (outcome?.tests?.inconclusive || outcome?.tests?.unchecked
+        || outcome?.task_status === 'partial' || outcome?.task_status === 'blocked') verdict = 'Inconclusive';
+      else if (outcome?.task_status === 'completed' && outcome.tests?.passed) verdict = 'Pass';
+      const execution = this.statusView(run.status);
+      return `Run finished: ${verdict ?? (execution.key === 'completed' ? 'Completed' : execution.label)}.`;
+    }
     const step = this.currentStep();
     return step ? `Step ${step.step_number} in progress.` : '';
   });

@@ -330,6 +330,16 @@ describe('Workspace review mode', () => {
         reconnects[0].click();
         expect(reconnect).toHaveBeenCalledTimes(1);
       }
+
+      const composer = q('textarea.composer-input') as HTMLTextAreaElement;
+      expect(composer.value).toBe('');
+      const runAgain = q('app-run-view .run-header [aria-label="Run again"]') as HTMLButtonElement;
+      expect(runAgain).not.toBeNull();
+      runAgain.click();
+      harness.fixture.detectChanges();
+      await harness.fixture.whenStable();
+      harness.fixture.detectChanges();
+      expect(composer.value).toBe(prompt);
     });
   }
 });
