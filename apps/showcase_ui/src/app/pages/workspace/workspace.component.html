@@ -30,6 +30,15 @@ limitations under the License.
     @if (!reviewMode) {
       <a class="pane-navigation" routerLink="/runs">← Runs</a>
     }
+    <!-- Stop run sits in the detail header, never in the composer (spec section 4). B8 (CHE-1502) adopts it into the run header. -->
+    @if (!reviewMode && isTaskRunning()) {
+      <header class="detail-header">
+        <button type="button" class="btn-stop-run" [disabled]="isSubmitting()"
+          (click)="stopTask($event)" [title]="stopButtonTitle()" aria-label="Stop run">
+          <span class="stop-face"><span class="material-symbols-outlined" aria-hidden="true">stop_circle</span>Stop run</span>
+        </button>
+      </header>
+    }
     <div class="run-surface">
       @if (reviewMode && !reviewRunId()) {
         <div class="detail-empty" role="status">Select a run to see its steps.</div>
@@ -44,143 +53,103 @@ limitations under the License.
       }
     </div>
 
-    <!-- Bottom Floating Command Bar Dock -->
+    <!-- Pinned composer: the bottom of the detail pane, in normal flow so it never covers evidence -->
     @if (!reviewMode) {
-    <div class="workspace-floating-bar-wrapper is-expanded"
-      [class.is-focused]="isInputFocused()" [class.has-text]="!!taskInput.trim()" [class.is-running]="isTaskRunning()">
+    <section class="composer" aria-label="New task"
+      [class.is-focused]="isInputFocused()" [class.is-running]="isTaskRunning()">
       <!-- A run lost its phone: Reconnect, then start a new run (the old one is over) -->
       <app-interrupted-banner [reconnectOnly]="true" [lastStep]="liveSteps().at(-1)?.step_number ?? null" (startNewRun)="startNewRunFrom($event)"></app-interrupted-banner>
 
-      <!-- Floating Error / Notification Toast -->
       @if (errorMessage()) {
-        <div class="floating-dock-toast error">
-          <span class="material-symbols-outlined toast-icon">error</span>
+        <div class="composer-toast" role="alert">
+          <span class="material-symbols-outlined toast-icon" aria-hidden="true">error</span>
           <span class="toast-text">{{ errorMessage() }}</span>
           <button type="button" class="btn-toast-close" (click)="clearErrorMessage()" aria-label="Close error message">
-            <span class="material-symbols-outlined">close</span>
+            <span class="material-symbols-outlined" aria-hidden="true">close</span>
           </button>
         </div>
       }
 
-      <!-- Dock Row (Contains the Main Card and the Separate Stop Button when running) -->
-      <div class="floating-dock-row">
-        <!-- Floating Dock Main Card -->
-        <div class="floating-dock-card" (click)="onCardClick($event)">
-          <div class="expanded-card-content">
-            <div class="card-main-input-row">
-              <!-- Textarea Container with Dynamic English Placeholder -->
-              <div class="input-content-area">
-                <textarea #dockInput [(ngModel)]="taskInput"
-                  (input)="onTextareaInput($event)"
-                  (paste)="onPaste($event)"
-                  (keydown)="onKeyDown($event)"
-                  (focus)="onInputFocus()"
-                  (blur)="onInputBlur()"
-                  rows="1"
-                  [disabled]="isSubmitting()"
-                  [placeholder]="selectedProfile() === 'pro' 
-                    ? 'Pro: plans first, checks results and recovers from blocked steps. For long or complex tasks'
-                    : 'Flash: fast single-look loop for everyday app tasks'"
-                  class="dock-textarea"
-                  spellcheck="false"
-                ></textarea>
-              </div>
-
-              <!-- Attach images: a labelled button opens the (visually hidden) native file input -->
-              <input #imageInput type="file" class="visually-hidden-input" multiple
-                [accept]="imageAccept" aria-label="Choose images to attach"
-                (change)="onFilesChosen($event)" tabindex="-1">
-              <button type="button" class="dock-circle-btn btn-attach"
-                [disabled]="isSubmitting() || attachedImages().length >= maxImages"
-                (click)="imageInput.click()"
-                [title]="attachedImages().length >= maxImages ? 'Image limit reached (' + maxImages + ')' : 'Attach images (PNG, JPG, JPEG or WEBP)'"
-                aria-label="Attach images">
-                <span class="material-symbols-outlined">image</span>
-              </button>
-
-              <!-- Clear Button (visible when text is entered) -->
-              @if (taskInput.trim() && !isSubmitting()) {
-                <button type="button" class="dock-circle-btn btn-clear"
-                  (click)="clearInput($event)" title="Clear input text" aria-label="Clear input text">
-                  <span class="material-symbols-outlined">close</span>
+      <div class="composer-card" (click)="onCardClick($event)">
+        <!-- Images attached to this message: preview and remove before sending -->
+        @if (attachedImages().length) {
+          <ul class="attached-images" aria-label="Attached images">
+            @for (image of attachedImages(); track image.id) {
+              <li class="attached-image">
+                <img [src]="image.previewUrl" [alt]="'Preview of ' + image.file.name">
+                <button type="button" class="btn-remove-image" [disabled]="isSubmitting()"
+                  (click)="removeImage(image.id)"
+                  [attr.aria-label]="'Remove ' + image.file.name"
+                  [title]="'Remove ' + image.file.name">
+                  <span class="remove-face"><span class="material-symbols-outlined" aria-hidden="true">close</span></span>
                 </button>
-              }
-
-              <!-- Stop Button (Visible when currently viewed task is active) -->
-              @if (isTaskRunning()) {
-                <button type="button" class="dock-circle-btn btn-stop" [disabled]="isSubmitting()"
-                  (click)="stopTask($event)"
-                  [title]="stopButtonTitle()"
-                  [attr.aria-label]="stopButtonTitle()"
-                  >
-                  <span class="material-symbols-outlined">stop</span>
-                </button>
-              }
-
-              <!-- Send Button -->
-              <button type="button" class="dock-circle-btn btn-send"
-                [class.has-content]="!!taskInput.trim()"
-                [class.is-blocked]="!phone.target()"
-                [disabled]="!taskInput.trim() || isSubmitting()"
-                [attr.aria-disabled]="phone.target() ? null : 'true'"
-                (click)="submitTask()"
-                [title]="isSubmitting() ? 'Starting task...' : (phone.target() ? 'Start task (Enter)' : 'Connect a phone first')"
-                aria-label="Start task"
-                >
-                @if (isSubmitting()) {
-                  <span class="material-symbols-outlined spinning-icon">sync</span>
-                }
-                @if (!isSubmitting()) {
-                  <span class="material-symbols-outlined">arrow_upward</span>
-                }
-              </button>
-            </div>
-
-            <!-- Images attached to this message: preview and remove before sending -->
-            @if (attachedImages().length) {
-              <ul class="attached-images" aria-label="Attached images">
-                @for (image of attachedImages(); track image.id) {
-                  <li class="attached-image">
-                    <img [src]="image.previewUrl" [alt]="'Preview of ' + image.file.name">
-                    <button type="button" class="btn-remove-image" [disabled]="isSubmitting()"
-                      (click)="removeImage(image.id)"
-                      [attr.aria-label]="'Remove ' + image.file.name"
-                      [title]="'Remove ' + image.file.name">
-                      <span class="material-symbols-outlined">close</span>
-                    </button>
-                  </li>
-                }
-              </ul>
-              @if (!taskInput.trim()) {
-                <p class="attached-hint" role="status">Add a message to send with your image.</p>
-              }
+              </li>
             }
+          </ul>
+          @if (!taskInput.trim()) {
+            <p class="attached-hint" role="status">Add a message to send with your image.</p>
+          }
+        }
 
-            <!-- Bottom Segmented Controls Row -->
-            <div class="card-footer-row">
-              <div class="footer-left-group">
-                <!-- Segmented Architecture Toggle (Flash / Pro) -->
-                <div class="model-profile-toggle" role="group" aria-label="Select Agent Architecture">
-                  <button type="button" class="profile-toggle-pill" [class.active]="selectedProfile() === 'flash'"
-                    (mousedown)="$event.preventDefault()" (click)="setProfile('flash', $event)"
-                    title="Flash: fast single-look loop for everyday app tasks (3–5s/step)">
-                    <span class="material-symbols-outlined pill-icon icon-flash">bolt</span>
-                    <span class="pill-label">Flash</span>
-                  </button>
-                  <button type="button" class="profile-toggle-pill" [class.active]="selectedProfile() === 'pro'"
-                    (mousedown)="$event.preventDefault()" (click)="setProfile('pro', $event)"
-                    title="Pro: plans first, checks results and recovers from blocked steps. For long or complex tasks (15–40s/step)">
-                    <span class="material-symbols-outlined pill-icon icon-pro">psychology</span>
-                    <span class="pill-label">Pro</span>
-                  </button>
-                </div>
-              </div>
+        <div class="composer-row">
+          <textarea #dockInput [(ngModel)]="taskInput"
+            (input)="onTextareaInput($event)"
+            (paste)="onPaste($event)"
+            (keydown)="onKeyDown($event)"
+            (focus)="onInputFocus()"
+            (blur)="onInputBlur()"
+            rows="1"
+            [disabled]="isSubmitting()"
+            [placeholder]="composerPlaceholder()"
+            aria-label="Task for the phone"
+            class="composer-input"
+            spellcheck="false"
+          ></textarea>
+
+          <div class="composer-controls">
+            <!-- Flash / Pro: each segment is a 44 px box around a 36 px face -->
+            <div class="segments" role="group" aria-label="Agent profile">
+              <button type="button" class="segment" [class.active]="selectedProfile() === 'flash'"
+                [attr.aria-pressed]="selectedProfile() === 'flash'"
+                (mousedown)="$event.preventDefault()" (click)="setProfile('flash', $event)"
+                title="Flash: fast single-look loop for everyday app tasks (3–5s/step)">
+                <span class="segment-face">Flash</span>
+              </button>
+              <button type="button" class="segment" [class.active]="selectedProfile() === 'pro'"
+                [attr.aria-pressed]="selectedProfile() === 'pro'"
+                (mousedown)="$event.preventDefault()" (click)="setProfile('pro', $event)"
+                title="Pro: plans first, checks results and recovers from blocked steps. For long or complex tasks (15–40s/step)">
+                <span class="segment-face">Pro</span>
+              </button>
             </div>
+
+            <!-- Attach images: a labelled button opens the (visually hidden) native file input -->
+            <input #imageInput type="file" class="visually-hidden-input" multiple
+              [accept]="imageAccept" aria-label="Choose images to attach"
+              (change)="onFilesChosen($event)" tabindex="-1">
+            <button type="button" class="composer-btn btn-attach"
+              [disabled]="isSubmitting() || attachedImages().length >= maxImages"
+              (click)="imageInput.click()"
+              [title]="attachedImages().length >= maxImages ? 'Image limit reached (' + maxImages + ')' : 'Attach images (PNG, JPG, JPEG or WEBP)'"
+              aria-label="Attach images">
+              <span class="material-symbols-outlined" aria-hidden="true">image</span>
+            </button>
+
+            <button type="button" class="composer-btn btn-send"
+              [class.is-blocked]="!phone.target()"
+              [disabled]="!taskInput.trim() || isSubmitting()"
+              [attr.aria-disabled]="phone.target() ? null : 'true'"
+              (click)="submitTask()"
+              [title]="isSubmitting() ? 'Starting task...' : (phone.target() ? (isTaskRunning() ? 'Queue task (Enter)' : 'Start task (Enter)') : 'Connect a phone first')"
+              [attr.aria-label]="isTaskRunning() ? 'Queue task' : 'Start task'">
+              <span class="material-symbols-outlined" [class.spinning-icon]="isSubmitting()" aria-hidden="true">{{ isSubmitting() ? 'sync' : 'arrow_upward' }}</span>
+            </button>
           </div>
         </div>
-
       </div>
-    </div>
+
+      <p class="composer-hint">{{ composerHint() }}</p>
+    </section>
     }
   </main>
 
