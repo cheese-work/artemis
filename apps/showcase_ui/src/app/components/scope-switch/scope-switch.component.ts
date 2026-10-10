@@ -34,7 +34,7 @@ import { OwnerScopeService } from '../../services/owner-scope.service';
       cursor: pointer;
     }
     .scope-switch:focus-visible {
-      outline: 2px solid var(--color-focus);
+      outline: 3px solid var(--color-focus);
       outline-offset: 2px;
     }
     .scope-track {
@@ -44,7 +44,8 @@ import { OwnerScopeService } from '../../services/owner-scope.service';
       height: 18px;
       padding: 2px;
       box-sizing: border-box;
-      border: 1px solid currentColor;
+      border: 0;
+      background: var(--color-neutral-bg);
       border-radius: 999px;
     }
     .scope-thumb {

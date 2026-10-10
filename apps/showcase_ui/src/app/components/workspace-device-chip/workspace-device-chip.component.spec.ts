@@ -3,6 +3,7 @@ import { provideRouter } from '@angular/router';
 import { phone, phoneFakes } from '../../testing/phone-fakes';
 import { WorkspacePhoneService } from '../../services/workspace-phone.service';
 import { WorkspaceDeviceChipComponent } from './workspace-device-chip.component';
+import { expectHitBox } from '../../testing/hit-box';
 
 describe('WorkspaceDeviceChipComponent', () => {
   let fakes: ReturnType<typeof phoneFakes>;
@@ -35,6 +36,25 @@ describe('WorkspaceDeviceChipComponent', () => {
     expect(chip().textContent).toContain('No phone · Connect');
     expect(chip().getAttribute('aria-expanded')).toBe('false');
     expect(panel()).toBeNull();
+  });
+
+  it('shows the sidebar device label, mono serial, running state and queue count', () => {
+    fakes.system.connectedDevices.set([phone()]);
+    fakes.system.selectedRunTarget.set(phone().serial);
+    runningOn(phone().serial);
+    fakes.agent.sessions.update(all => [...all, { session_id: 'queued', status: 'pending', device_serial: phone().serial }]);
+    const { el, chip, settle } = create();
+    expect(el.querySelector('.phone-card-label')?.textContent).toBe('Pixel 6 · Phone');
+    expect(el.querySelector('.phone-card-serial')?.textContent).toBe(phone().serial);
+    expect(el.querySelector('.phone-card-state')?.textContent).toContain('Running');
+    expect(el.querySelector('.phone-card-state')?.textContent).toContain('1 queued');
+    const header = el.querySelector<HTMLElement>('.phone-card-header')!;
+    expect(getComputedStyle(header).display).toBe(window.innerWidth >= 1024 ? 'flex' : 'none');
+    chip().click();
+    settle();
+    const controls = el.querySelectorAll<HTMLElement>('button, a');
+    expect(controls.length).toBeGreaterThan(0);
+    for (const control of controls) expectHitBox(control);
   });
 
   it('opens the picker with the device list, Connect a phone from this browser, and no Disconnect', () => {

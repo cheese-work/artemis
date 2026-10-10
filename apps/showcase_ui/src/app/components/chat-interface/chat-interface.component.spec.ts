@@ -151,6 +151,15 @@ describe('ChatInterfaceComponent device chip', () => {
     expect(root.querySelector('.btn-stop-card')?.getAttribute('aria-label')).toBe('Stop this task: Open Settings');
   });
 
+  it('renders the empty queue without an outline', () => {
+    const fixture = TestBed.createComponent(ChatInterfaceComponent);
+    fixture.detectChanges();
+    const emptyQueue = (fixture.nativeElement as HTMLElement).querySelector<HTMLElement>('.empty-section-placeholder');
+    expect(emptyQueue).not.toBeNull();
+    expect(emptyQueue?.textContent).toContain('No active or queued tasks.');
+    expect(getComputedStyle(emptyQueue!).borderStyle).toBe('none');
+  });
+
   it('refreshes history when a run completes after the first catalog load', () => {
     sessions.set([session('emulator-5554')]);
     const runs = TestBed.inject(RunsService);

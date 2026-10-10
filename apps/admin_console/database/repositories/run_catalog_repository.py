@@ -25,7 +25,7 @@ import sqlite3
 from typing import Any
 
 from artemis.config import TRACES_PATH
-from artemis.data_engine import run_catalog
+from artemis.data_engine import run_catalog, run_snapshot
 
 try:
     from admin_console.database.connection import db_session
@@ -34,7 +34,8 @@ except ImportError:
 
 _COLUMNS = (
     "m.session_id, s.initial_goal, s.start_time, s.end_time, s.status, s.interrupt_reason, "
-    "m.host_id, m.device_ref, m.requested_by, m.pinned, m.deleted_at, m.deleted_reason"
+    "m.host_id, m.device_ref, m.requested_by, m.pinned, m.deleted_at, m.deleted_reason, "
+    + ", ".join(f"m.{field}" for field in run_snapshot.FIELDS)
 )
 _PREFIX = re.compile(r"[0-9a-fA-F]{8}")
 _SETTABLE = {"host_id", "requested_by", "pinned", "device_ref"}
@@ -114,6 +115,8 @@ def _run_from_row(row: sqlite3.Row) -> dict[str, Any]:
         "device_ref": device_ref,
         "requested_by": row["requested_by"],
         "pinned": bool(row["pinned"]),
+        # Snapshotted at execution; None = unknown.
+        **{field: row[field] for field in run_snapshot.FIELDS},
         "recordings": [],
     }
 

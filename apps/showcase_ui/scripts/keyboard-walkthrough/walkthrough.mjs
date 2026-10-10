@@ -287,7 +287,7 @@ try {
     await press('Space');
     await expectTrue('Space opens the admin user menu', `document.querySelector('details.identity-menu').open`);
     await press('Tab');
-    await expectTrue('Tab reaches Setup only inside the admin user menu', `document.activeElement.matches('app-admin-identity-indicator a[href="/setup"]') && !document.querySelector('nav > a[href="/setup"]')`);
+    await expectTrue('Tab reaches Setup inside the admin menu; desktop navigation also offers Setup', `document.activeElement.matches('app-admin-identity-indicator a[href="/setup"]') && !!document.querySelector('nav > a[href="/setup"]')`);
     await press('Escape');
     await expectTrue('Escape restores focus to the admin menu trigger', `document.activeElement.matches('summary') && !document.querySelector('details.identity-menu').open`);
     log('\nNavigation keyboard walkthrough passed. WebUSB was mocked; no device was accessed.');
@@ -333,11 +333,11 @@ try {
 
   log('Runs: the list beside the open run opens another run from the keyboard');
   const openRun = await evaluate('location.pathname');
-  await tabUntil('the open run in the list beside it', focusIs('.right-panel a.run-row[aria-current="page"]'));
+  await tabUntil('the open run in the list beside it', focusIs('.run-list-pane a.run-row[aria-current="page"]'));
   await expectTrue('the open run says Viewing', `document.activeElement.textContent.includes('Viewing')`);
-  await tabUntil('another run in the list', `${focusIs('.right-panel a.run-row')} && !e.hasAttribute('aria-current')`);
+  await tabUntil('another run in the list', `${focusIs('.run-list-pane a.run-row')} && !e.hasAttribute('aria-current')`);
   await press('Enter');
-  await expectTrue('Enter opened a different run beside the list', `location.pathname.startsWith('/runs/') && location.pathname !== ${JSON.stringify(openRun)} && !!document.querySelector('[data-section="outcome"]') && !!document.querySelector('.right-panel a.run-row')`);
+  await expectTrue('Enter opened a different run beside the list', `location.pathname.startsWith('/runs/') && location.pathname !== ${JSON.stringify(openRun)} && !!document.querySelector('[data-section="outcome"]') && !!document.querySelector('.run-list-pane a.run-row')`);
 
   log('Viewer: back to the library');
   await tabUntil('Back to runs', focusNamed('Back to runs'), { back: true });
@@ -376,33 +376,22 @@ try {
   await expectTrue('Enter put focus in the new-task box', `document.activeElement.matches('textarea.dock-textarea')`);
   await tabUntil('Skip to run list', focusNamed('Skip to run list'), { back: true, max: 80 });
   await press('Enter');
-  await expectTrue('Enter put focus on the first tab of the list', `document.activeElement.matches('.right-panel [role="tab"]')`);
+  await expectTrue('Enter put focus on the first tab of the list', `document.activeElement.matches('.run-list-pane [role="tab"]')`);
 
-  log('Runs, one column (700 px): no skip link points at the hidden list');
+  log('Runs, one column (700 px): the skip link opens the hidden list');
   await send('Emulation.setDeviceMetricsOverride', { width: 700, height: 800, deviceScaleFactor: 1, mobile: false });
   await send('Page.navigate', { url: `${base}/runs/${RUNS[0].session_id}` });
   await expectTrue('the open run loaded in one column', `!!document.querySelector('[data-section="outcome"]')`);
-  await expectTrue('the list beside the run is hidden', `!document.querySelector('.right-panel') || !document.querySelector('.right-panel').checkVisibility()`);
-  const reachable = [];
-  for (let i = 0; i < 12; i++) {
-    await press('Tab');
-    reachable.push(await describeFocus());
-  }
-  log(`  first 12 Tab stops: ${reachable.join(' | ')}`);
-  if (reachable.some((name) => name.startsWith('Skip to run list'))) throw new Error('a skip link to the hidden run list is reachable');
+  await expectTrue('the list beside the run is hidden', `!document.querySelector('.run-list-pane').checkVisibility()`);
+  await tabUntil('Skip to run list', focusNamed('Skip to run list'));
+  await press('Enter');
+  await expectTrue('the skip link opens the visible run list', `location.pathname === '/runs' && document.querySelector('.run-list-pane').checkVisibility()`);
   await expectTrue('every focused control is on screen', `!document.activeElement || document.activeElement === document.body || document.activeElement.checkVisibility()`);
-  await tabUntil('Back to runs', focusNamed('Back to runs'), { back: true, max: 20 }).catch(() => tabUntil('Back to runs', focusNamed('Back to runs'), { max: 60 }));
   await send('Emulation.clearDeviceMetricsOverride');
 
-  log('Workspace: Task Queue and Notes & Plans tabs, then the run list');
+  log('Workspace: the run list owner tabs');
   await send('Page.navigate', { url: `${base}/workspace` });
-  await expectTrue('workspace loaded with the queue tabs', `!!document.querySelector('.tab-selector-btn[data-tab="tasks"]')`);
-  await tabUntil('Task Queue tab', focusIs('.tab-selector-btn[data-tab="tasks"]'));
-  await expectTrue('Task Queue is the selected tab and the only tab stop', `document.activeElement.getAttribute('aria-selected') === 'true' && document.querySelector('.tab-selector-btn[data-tab="notes"]').tabIndex === -1`);
-  await press('ArrowRight');
-  await expectTrue('ArrowRight selected Notes & Plans and moved focus to it', `document.activeElement.matches('.tab-selector-btn[data-tab="notes"]') && document.activeElement.getAttribute('aria-selected') === 'true'`);
-  await press('ArrowLeft');
-  await expectTrue('ArrowLeft came back to Task Queue', `document.activeElement.matches('.tab-selector-btn[data-tab="tasks"]') && document.activeElement.getAttribute('aria-selected') === 'true'`);
+  await expectTrue('workspace loaded with the run list', `!!document.querySelector('.run-list-pane app-run-library')`);
   await tabUntil('My runs tab in the run list', focusIs('[role="tab"][data-scope="mine"]'));
   await press('ArrowRight');
   await expectTrue("ArrowRight switched the list to Everyone's runs", `document.activeElement.matches('[data-scope="everyone"]') && location.search.includes('scope=everyone')`);
