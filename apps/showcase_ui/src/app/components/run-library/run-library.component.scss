@@ -100,9 +100,8 @@
 }
 
 input,
-select,
 button,
-summary {
+.filter-option {
   min-width: 44px;
   min-height: 44px;
   box-sizing: border-box;
@@ -110,8 +109,7 @@ summary {
   font-size: 14px;
 }
 
-button,
-summary {
+button {
   cursor: pointer;
 }
 
@@ -121,8 +119,7 @@ button {
   border-radius: 6px;
 }
 
-input,
-select {
+input {
   width: 100%;
   padding: 0 12px;
   border: 1px solid var(--evidence-border);
@@ -152,45 +149,159 @@ select {
   padding: 0;
 }
 
-.filter-options {
-  margin: 8px 0;
-}
-
 .filter-chips {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
-  margin-top: 8px;
+  margin: 8px 0;
+}
 
-  button {
-    max-width: 100%;
-    padding: 0;
-    background: transparent;
+.filter-chip-group {
+  display: flex;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.filter-chip,
+.filter-clear {
+  display: flex;
+  align-items: center;
+  padding: 0;
+  min-width: 44px;
+  max-width: 100%;
+  background: transparent;
+
+  > span {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    height: 32px;
+    width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
+    padding: 0 8px;
+    border-radius: 6px;
+    color: var(--color-text-muted);
+    background: var(--color-surface-subtle);
+  }
+
+  &:hover > span {
+    color: var(--color-primary);
+    background: var(--color-primary-tint);
+  }
+
+  &[aria-disabled='true'] {
+    cursor: not-allowed;
 
     > span {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      height: 32px;
-      padding: 0 8px;
-      border-radius: 6px;
-      color: var(--color-text-muted);
+      color: var(--color-text-faint);
       background: var(--color-surface-subtle);
-      overflow-wrap: anywhere;
     }
+  }
+
+  .material-symbols-outlined {
+    flex-shrink: 0;
+    font-size: 18px;
   }
 }
 
-summary {
+.filter-chip {
+  flex-shrink: 1;
+}
+
+.filter-chip-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.filter-clear {
+  flex: 0 0 44px;
+}
+
+.is-active {
+  .filter-chip > span,
+  .filter-clear > span {
+    color: var(--color-primary);
+    background: var(--color-primary-tint);
+  }
+
+  .filter-chip > span { border-radius: 6px 0 0 6px; }
+  .filter-clear > span { border-radius: 0 6px 6px 0; }
+}
+
+.filter-popover {
+  box-sizing: border-box;
+  width: 100%;
+  max-height: calc(100dvh - 24px);
+  overflow-y: auto;
+  padding: 8px;
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+  color: var(--color-text);
+  box-shadow: var(--shadow-2);
+
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding-left: 8px;
+  }
+
+  h3 {
+    margin: 0;
+    font-size: 14px;
+    font-weight: 600;
+  }
+
+  form {
+    display: grid;
+    gap: 8px;
+    padding: 8px;
+  }
+}
+
+.popover-close {
   display: flex;
   align-items: center;
+  justify-content: center;
+  width: 44px;
+  padding: 0;
+  color: var(--color-text-muted);
+  background: transparent;
+}
+
+.filter-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+  color: var(--color-text);
+  background: transparent;
+  overflow-wrap: anywhere;
+
+  &[aria-pressed='true'],
+  &:hover {
+    color: var(--color-primary);
+    background: var(--color-primary-tint);
+  }
+
+  .material-symbols-outlined { font-size: 18px; }
+}
+
+.filter-hint,
+.filter-error {
+  margin: 8px;
+  font-size: 12px;
+  line-height: 18px;
   color: var(--color-text-muted);
 }
 
-.filters {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
+.filter-error {
+  color: var(--status-danger-fg);
 }
 
 .field {
@@ -318,8 +429,7 @@ summary {
 a:focus-visible,
 button:focus-visible,
 input:focus-visible,
-select:focus-visible,
-summary:focus-visible {
+section:focus-visible {
   outline: 3px solid var(--focus-ring);
   outline-offset: -3px;
 }
