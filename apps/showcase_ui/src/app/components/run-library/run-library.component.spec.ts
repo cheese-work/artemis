@@ -126,6 +126,18 @@ describe('RunLibraryComponent', () => {
   });
 
   describe('rows', () => {
+    it('shows the first prompt line without markdown in each run row', async () => {
+      runs.list.and.returnValue(of(page([run({ prompt: '\n## **Open** _Settings_\nCheck every toggle.' })])));
+      const fixture = TestBed.createComponent(RunLibraryComponent);
+      fixture.detectChanges();
+      await fixture.whenStable();
+      fixture.detectChanges();
+      const title = fixture.nativeElement.querySelector('.run-prompt') as HTMLElement;
+      expect(title.textContent).toBe('Open Settings');
+      expect(title.title).toBe('Open Settings');
+      expect(getComputedStyle(title).webkitLineClamp).toBe('2');
+    });
+
     it('compact history scrolls inside the region whose position is saved and restored', async () => {
       runs.list.and.returnValue(of(page(Array.from({ length: 20 }, (_, index) => run({ session_id: `run-${index}` })))));
       const fixture = TestBed.createComponent(RunLibraryComponent);
