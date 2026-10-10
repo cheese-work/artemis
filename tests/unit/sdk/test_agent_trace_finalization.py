@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -20,6 +21,83 @@ from artemis.sdk.agent import Agent
 from artemis.context import DeviceContext, DevicePlatform
 from artemis.runtime.device_lock import DeviceBusyError
 from artemis.sdk.types.exceptions import AgentError
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("record_failure", [False, True])
+async def test_gateway_refusal_records_the_readable_failed_step_for_the_run_view(
+    monkeypatch, fake_provider_credentials, record_failure
+):
+    from artemis.context import ArtemisContext
+    from artemis.sdk import agent as agent_module
+    from artemis.services import llm as llm_service
+
+    monkeypatch.setenv("ARTEMIS_CLOUD_MODE", "1")
+    error = RuntimeError(
+        "The 'gpt-6.1-sol' model is not supported when using Codex with a ChatGPT account."
+    )
+    error.status_code = 400
+    base_model = MagicMock()
+    base_model.ainvoke = AsyncMock(side_effect=error)
+    wrapper = llm_service.RobustChatModelWrapper(base_model)
+    monkeypatch.setattr(
+        llm_service,
+        "retry_policy_for",
+        lambda category: SimpleNamespace(max_attempts=2, delay_for=lambda attempt: 0.0),
+    )
+
+    async def run_model(*args):
+        return await wrapper.ainvoke([])
+
+    context = MagicMock(spec=ArtemisContext)
+    context.data_engine = MagicMock()
+    if record_failure:
+        context.data_engine.record_step.side_effect = OSError("storage unavailable")
+    context.execution_setup = None
+    context.__aenter__ = AsyncMock(return_value=context)
+    context.__aexit__ = AsyncMock(return_value=False)
+    monkeypatch.setattr(agent_module, "ArtemisContext", lambda **kwargs: context)
+    monkeypatch.setattr(
+        agent_module, "FlashRunner", lambda *args, **kwargs: SimpleNamespace(run=run_model)
+    )
+    monkeypatch.setattr(agent_module, "DeviceExecutionLock", MagicMock())
+    monkeypatch.setattr(agent_module, "publish_startup_progress", MagicMock())
+    monkeypatch.setattr("artemis.tools.command_tool.shutdown_adb_background_tasks", AsyncMock())
+
+    agent = Agent()
+    agent._initialized = True
+    agent._device_context = DeviceContext(
+        host_platform="LINUX",
+        mobile_platform=DevicePlatform.ANDROID,
+        device_id="test-device",
+        device_width=1080,
+        device_height=2424,
+    )
+    agent._adb_client = MagicMock()
+    agent._ui_adb_client = MagicMock()
+    agent._config.video_recording_tools_enabled = False
+    agent._get_graph_state = MagicMock()
+    agent._prepare_tracing = MagicMock()
+    agent._prepare_output_files = MagicMock()
+    agent._prepare_app_installation = AsyncMock()
+    agent._prepare_device_environment = AsyncMock()
+    agent._prepare_app_lock = AsyncMock()
+
+    with pytest.raises(Exception) as raised:
+        await agent.run_task(goal="test", profile="flash")
+
+    reason = "AI provider rejected the model; try again"
+    assert str(raised.value) == reason
+    context.data_engine.record_step.assert_called_once_with(
+        action_taken={
+            "action": "report_task_status",
+            "args": {"status": "failed", "explanation": reason},
+        },
+        last_execution_result={"status": "failed", "error": reason},
+    )
+    assert agent._tasks[-1].status == "failed"
+    assert reason in agent._tasks[-1].result.error
+    assert base_model.ainvoke.await_count == 2
 
 
 @pytest.mark.asyncio

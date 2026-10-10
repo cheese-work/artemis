@@ -80,6 +80,11 @@ _RULES: tuple[tuple[str, str, str], ...] = (
     ("empty_target_list", "smartqa_agent", r"invalid target index \d+\. the list is empty"),
     ("tap_failed", "smartqa_agent", r"tap failed at"),
     ("empty_ui_hierarchy", "smartqa_agent", r"hierarchy is empty|empty (ui )?hierarchy"),
+    (
+        "gateway_model_rejected",
+        "smartqa_infra",
+        r"model is not supported when using Codex with a ChatGPT account|LLMGatewayModelRejectedError|AI provider rejected the model; try again",
+    ),
     ("llm_timeout", "provider", r"llm call timed out|timeouterror"),
     (
         "llm_unavailable",
@@ -144,6 +149,8 @@ def classify(evidence: str) -> tuple[str, str]:
 
 def _cause(rule: str, evidence: str) -> str:
     """Same cause across runs when evidence contains variable identifiers or numbers."""
+    if rule == "gateway_model_rejected":
+        return "gateway_model_rejected|AI provider rejected the model; try again"
     normalized = " ".join(evidence.lower().split())
     normalized = _UUID.sub("<id>", normalized)
     normalized = _HEX_ID.sub("<id>", normalized)
@@ -238,6 +245,13 @@ def _ensure(conn: sqlite3.Connection) -> None:
                 conn.execute("RELEASE SAVEPOINT failure_ledger_signal_migration")
     for statement in _DDL:
         conn.execute(statement)
+    conn.execute(
+        "UPDATE failure_ledger SET category = 'smartqa_infra', "
+        "rule = 'gateway_model_rejected', cause = ? "
+        "WHERE category IN ('provider', 'unknown') "
+        "AND evidence LIKE '%model is not supported when using Codex with a ChatGPT account%'",
+        (_cause("gateway_model_rejected", ""),),
+    )
 
 
 def forget(conn: sqlite3.Connection, session_id: str) -> None:

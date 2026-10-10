@@ -273,6 +273,78 @@ async def test_run_without_a_recognisable_cause_is_unknown(library, admin):
 
 
 @pytest.mark.asyncio
+async def test_gateway_model_refusals_are_smartqa_side_with_one_stable_daily_scan_key(
+    library, admin
+):
+    raw = seed_run(
+        library,
+        stdout="openai.BadRequestError: Error code: 400 - The 'gpt-6.1-sol' model is not supported when using Codex with a ChatGPT account.\n",
+    )
+    readable = seed_run(
+        library,
+        stdout="artemis.llm.reliability.LLMGatewayModelRejectedError: AI provider rejected the model; try again\n",
+    )
+    provider = seed_run(library, stdout="LLMExhaustedError: Gateway returned 503\n")
+    await collect(admin)
+    view = await failures(admin)
+
+    for session_id in (raw, readable):
+        row = next(row for row in by_session(view, session_id) if row["signal"] == "run_step")
+        assert (row["category"], row["rule"], row["action"]) == (
+            "smartqa_infra",
+            "gateway_model_rejected",
+            "fix",
+        )
+    cause = next(
+        cause
+        for cause in view["causes"]
+        if cause["rule"] == "gateway_model_rejected" and cause["signal"] == "run_step"
+    )
+    assert cause["smartqa_side"] is True
+    assert cause["count_24h"] == 2
+    assert set(cause["run_ids"]) == {raw, readable}
+    assert cause["defect_key"]
+    assert (
+        next(cause for cause in view["causes"] if provider in cause["run_ids"])["smartqa_side"]
+        is False
+    )
+
+
+@pytest.mark.asyncio
+async def test_existing_provider_gateway_rows_are_reclassified_without_losing_evidence(
+    library, admin
+):
+    session_id = seed_run(
+        library,
+        stdout="openai.BadRequestError: The 'gpt-6.1-sol' model is not supported when using Codex with a ChatGPT account.\n",
+    )
+    await collect(admin)
+    with sqlite3.connect(library.db) as conn:
+        conn.execute(
+            "UPDATE failure_ledger SET category = 'provider', rule = 'llm_unavailable', "
+            "cause = 'legacy refusal' WHERE session_id = ? AND signal = 'run_step'",
+            (session_id,),
+        )
+        old_row = conn.execute(
+            "SELECT id, evidence, occurred_at FROM failure_ledger WHERE session_id = ? AND signal = 'run_step'",
+            (session_id,),
+        ).fetchone()
+
+    for _attempt in range(2):
+        view = await failures(admin)
+        row = next(row for row in by_session(view, session_id) if row["signal"] == "run_step")
+        assert (row["category"], row["rule"]) == ("smartqa_infra", "gateway_model_rejected")
+        with sqlite3.connect(library.db) as conn:
+            assert (
+                conn.execute(
+                    "SELECT id, evidence, occurred_at FROM failure_ledger WHERE session_id = ? AND signal = 'run_step'",
+                    (session_id,),
+                ).fetchone()
+                == old_row
+            )
+
+
+@pytest.mark.asyncio
 async def test_interrupted_run_is_infra_by_its_end_reason(library, admin):
     sid = seed_run(library, status="interrupted", interrupt="server_restarted")
     await collect(admin)
