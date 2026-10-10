@@ -15,10 +15,6 @@
  */
 
 
-// Layout (CHE-1278): side by side from $split, stacked panes below it, one page-scrolling column below $narrow.
-$split: 1200px;
-$narrow: 800px;
-
 :host {
   display: block;
   height: 100%;
@@ -28,16 +24,12 @@ $narrow: 800px;
 }
 
 .workspace-container {
-  display: flex;
+  display: grid;
+  grid-template-columns: 360px minmax(0, 1fr);
   height: 100%;
   width: 100%;
   background-color: var(--color-bg);
   overflow: hidden;
-
-  &.is-resizing {
-    cursor: col-resize;
-    user-select: none;
-  }
 
   /* Out of sight until a keyboard user lands on them, then pinned above the page. */
   .skip-links {
@@ -74,52 +66,30 @@ $narrow: 800px;
     }
   }
 
-  .left-panel {
+  .detail-pane {
     position: relative;
     z-index: 1;
-    flex: 1 1 0;
     min-width: 0;
+    min-height: 0;
     height: 100%;
     display: flex;
     flex-direction: column;
     overflow: hidden;
     background: var(--color-bg);
+  }
+
+  .run-list-pane {
+    position: relative;
+    min-width: 0;
+    min-height: 0;
+    height: 100%;
+    overflow: hidden;
+    background: var(--color-surface);
     border-right: 1px solid var(--color-rule);
   }
 
-  .right-panel {
-    position: relative; /* contains the list's absolutely positioned screen-reader text */
-    flex: 0 1 auto;
-    min-width: 250px;
-    max-width: 100%;
-    height: 100%;
-    display: flex;
-    flex-direction: column;
-    background: var(--color-surface);
-  }
-
-  .resizer {
-    width: 12px;
-    margin: 0 -6px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    cursor: col-resize;
-    z-index: 10;
-
-    .resizer-handle {
-      width: 4px;
-      height: 40px;
-      background: var(--color-rule-strong);
-      border-radius: var(--radius-sm);
-      transition: background var(--motion-fast) var(--ease-move), height var(--motion-fast) var(--ease-move);
-    }
-
-    &:hover .resizer-handle,
-    .workspace-container.is-resizing & .resizer-handle {
-      height: 60px;
-      background: var(--color-primary);
-    }
+  .pane-navigation {
+    display: none;
   }
 
   /* The new-task box: always expanded, in normal flow under the run so it never covers evidence. */
@@ -195,7 +165,8 @@ $narrow: 800px;
 
     &.is-focused .floating-dock-card {
       border-color: var(--color-primary);
-      box-shadow: 0 0 0 1px var(--color-primary);
+      outline: 3px solid var(--color-focus);
+      outline-offset: 2px;
     }
 
     .expanded-card-content {
@@ -218,6 +189,7 @@ $narrow: 800px;
 
           .dock-textarea {
             display: block;
+            min-height: var(--target);
             width: 100%;
             max-height: 120px;
             padding: var(--space-sm) 0;
@@ -255,7 +227,7 @@ $narrow: 800px;
           width: var(--target);
           height: var(--target);
           padding: 0;
-          border: 1px solid transparent;
+          border: 0;
           border-radius: var(--radius-full);
           cursor: pointer;
           transition: background var(--motion-fast) var(--ease-move), border-color var(--motion-fast) var(--ease-move);
@@ -271,7 +243,7 @@ $narrow: 800px;
 
           &.btn-clear,
           &.btn-attach {
-            background: transparent;
+            background: var(--color-surface-subtle);
             color: var(--color-text-muted);
 
             &:hover:not(:disabled) {
@@ -299,7 +271,6 @@ $narrow: 800px;
 
             &:disabled {
               background: var(--color-surface-subtle);
-              border-color: var(--color-rule-strong);
               color: var(--color-text-muted);
               opacity: 1;
             }
@@ -330,7 +301,7 @@ $narrow: 800px;
             gap: 2px;
             padding: 2px;
             background: var(--color-surface-subtle);
-            border: 1px solid var(--color-rule-strong);
+            border: 0;
             border-radius: var(--radius-md);
 
             .profile-toggle-pill {
@@ -341,7 +312,7 @@ $narrow: 800px;
               min-width: 72px;
               height: var(--target);
               padding: 0 var(--space-smd);
-              border: 1px solid transparent;
+              border: 0;
               border-radius: var(--radius-sm);
               background: transparent;
               color: var(--color-text-muted);
@@ -362,10 +333,8 @@ $narrow: 800px;
                 background: var(--color-surface);
               }
 
-              /* Selected: a tint, an edge and a heavier word, never colour alone. */
               &.active {
                 background: var(--color-primary-tint);
-                border-color: var(--color-primary-edge);
                 color: var(--color-ink);
                 font-weight: 600;
               }
@@ -376,79 +345,43 @@ $narrow: 800px;
     }
   }
 
-  /* Stacked panes: run above, list below, both visible. */
-  @media (max-width: #{$split - 1px}) {
-    flex-direction: column;
+  @media (max-width: 1023px) {
+    grid-template-columns: minmax(0, 1fr);
 
-    .resizer {
+    .run-list-pane {
       display: none;
-    }
-
-    .left-panel {
-      flex: 1 1 66%;
-      width: 100%;
-      height: auto;
       border-right: none;
     }
 
-    .right-panel {
-      flex: 0 0 34%;
-      width: 100% !important;
-      min-width: 0;
-      min-height: 220px;
-      height: auto;
-      border-top: 1px solid var(--color-rule);
-    }
-  }
-
-  /* Review mode: the list sits beside the run like the Workspace history. */
-  &.review-mode .right-panel {
-    border-left: none;
-  }
-
-  @media (min-width: $split) {
-    .right-panel {
-      border-left: none;
-    }
-  }
-
-  /* One column: the page scrolls as a whole, the run first and the list under it. */
-  @media (max-width: #{$narrow - 1px}) {
-    display: block;
-    height: auto;
-    min-height: 100%;
-    overflow: visible;
-
-    .left-panel {
-      display: block;
-      height: auto;
-      overflow: visible;
+    .pane-navigation {
+      display: inline-flex;
+      flex: none;
+      align-items: center;
+      align-self: flex-start;
+      min-width: var(--target);
+      min-height: var(--target);
+      margin: var(--nav-clearance, 88px) var(--space-md) 0;
+      color: var(--color-primary);
     }
 
-    .workspace-floating-bar-wrapper {
-      position: sticky;
-      bottom: 0;
+    &:not(.review-mode) .run-surface {
+      --nav-clearance: 0px;
     }
 
-    .right-panel {
-      display: block;
-      height: 70vh;
-      min-height: 320px;
-    }
-
-    &.review-mode .right-panel,
-    &.review-mode .skip-list {
-      display: none; /* the list is hidden here, so a skip link to it would go nowhere */
+    &.review-mode:not(.has-run) {
+      .run-list-pane { display: block; }
+      .detail-pane { display: none; }
     }
   }
 }
 
-@media (max-width: #{$narrow - 1px}) {
-  :host {
-    height: auto;
-    min-height: 100%;
-    overflow: visible;
-  }
+.detail-empty {
+  display: grid;
+  place-items: center;
+  height: 100%;
+  padding: var(--space-lg);
+  color: var(--color-text-muted);
+  text-align: center;
 }
 
 @keyframes spin {
@@ -461,9 +394,6 @@ $narrow: 800px;
   min-height: 0;
   overflow: hidden;
 
-  @media (max-width: #{$narrow - 1px}) {
-    overflow: visible;
-  }
 }
 
 /* Image chat: the native file input stays focusable-by-script only; the labelled button opens it. */

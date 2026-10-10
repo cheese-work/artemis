@@ -57,6 +57,13 @@
   }
 }
 
+@media (max-width: 1023px) {
+  :host(.compact.review-run-list) .library-scroll {
+    padding-top: var(--nav-clearance, 88px);
+    scroll-padding-top: var(--nav-clearance, 88px);
+  }
+}
+
 .owner-tabs {
   display: flex;
   gap: 8px;
@@ -64,12 +71,13 @@
 
   button {
     color: var(--evidence-text);
-    background: var(--evidence-surface);
-    border: 1px solid var(--evidence-border);
+    background: var(--color-surface-subtle);
+    border: 0;
   }
 
   [aria-selected='true'] {
-    border-color: var(--evidence-text);
+    background: var(--color-primary-tint);
+    color: var(--color-ink);
     font-weight: 600;
   }
 }
@@ -104,6 +112,7 @@ select,
 button,
 summary {
   min-height: 44px;
+  min-width: 44px;
   font-size: 14px;
 }
 
@@ -111,34 +120,33 @@ input,
 select {
   padding: 0 12px;
   border: 1px solid var(--evidence-border);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   color: var(--evidence-text);
   background: var(--evidence-surface);
 }
 
 button {
   padding: 0 18px;
-  border-radius: 8px;
+  border: 0;
+  border-radius: var(--radius-md);
   cursor: pointer;
 }
 
 .search-button {
   min-width: 96px;
-  border: 1px solid var(--color-primary);
   color: var(--color-on-primary);
   background: var(--color-primary);
   font-weight: 600;
 
   &:hover {
-    border-color: var(--color-primary-hover);
     background: var(--color-primary-hover);
   }
 }
 
 .secondary-button {
-  border: 1px solid var(--evidence-border);
+  border: 0;
   color: var(--evidence-text);
-  background: var(--evidence-surface);
+  background: var(--color-surface-subtle);
 }
 
 .filters {
@@ -178,16 +186,15 @@ summary:focus-visible {
 .state {
   margin: 24px 0;
   padding: 16px;
-  border: 1px solid var(--evidence-border);
+  border: 0;
   border-radius: 8px;
-  background: var(--evidence-surface);
+  background: var(--color-surface-subtle);
 
   p {
     margin: 0 0 12px;
   }
 
   &.state-error {
-    border-color: var(--status-danger-fg);
     color: var(--status-danger-fg);
     background: var(--status-danger-bg);
   }

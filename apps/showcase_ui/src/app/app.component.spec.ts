@@ -82,7 +82,7 @@ describe('AppComponent layout', () => {
       .compileComponents();
   });
 
-  it('reserves its own strip for the version footer below the scrolling page area', () => {
+  it('hides the legacy footer on desktop and reserves its strip below the scrolling page on mobile', () => {
     const fixture = TestBed.createComponent(AppComponent);
     fixture.detectChanges();
     const root = fixture.nativeElement as HTMLElement;
@@ -92,7 +92,12 @@ describe('AppComponent layout', () => {
     expect(page).withContext('page area').not.toBeNull();
     expect(page!.contains(footer)).toBeFalse();
     expect(getComputedStyle(page!).overflowY).toBe('auto');
-    expect(getComputedStyle(footer!.querySelector('footer')!).position).not.toBe('fixed');
-    expect(footer!.getBoundingClientRect().top).toBeGreaterThanOrEqual(page!.getBoundingClientRect().bottom);
+    if (window.innerWidth >= 1024) {
+      expect(getComputedStyle(footer!).display).toBe('none');
+      expect(page!.getBoundingClientRect().left).toBe(224);
+    } else {
+      expect(getComputedStyle(footer!.querySelector('footer')!).position).not.toBe('fixed');
+      expect(footer!.getBoundingClientRect().top).toBeGreaterThanOrEqual(page!.getBoundingClientRect().bottom);
+    }
   });
 });

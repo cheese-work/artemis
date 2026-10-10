@@ -31,6 +31,9 @@ describe('design tokens', () => {
       expect(contrastRatio(token(`--color-${name}`), bg())).toBeGreaterThanOrEqual(4.5, `${name} on bg`);
       expect(contrastRatio(token(`--color-${name}`), surface())).toBeGreaterThanOrEqual(4.5, `${name} on surface`);
     }
+    for (const name of ['surface-subtle', 'primary-tint']) {
+      expect(contrastRatio(token('--color-text-faint'), token(`--color-${name}`))).toBeGreaterThanOrEqual(4.5, `text-faint on ${name}`);
+    }
   });
 
   it('keeps white text on the primary and the solid red at 4.5:1, and the tint readable under ink', () => {
@@ -58,9 +61,16 @@ describe('design tokens', () => {
     expect(token('--focus-ring').toLowerCase()).toBe(token('--color-focus').toLowerCase());
   });
 
-  it('sets the spacing, radius and 44px target scale', () => {
+  it('uses Inter for UI and display text at the Workbench text sizes', () => {
+    expect(token('--font-ui')).toMatch(/^['"]Inter['"],/);
+    expect(token('--font-display')).toBe(token('--font-ui'));
+    expect(['label', 'ui', 'body', 'section', 'title'].map((name) => token(`--text-${name}`))).toEqual(['0.75rem', '0.8125rem', '0.875rem', '1rem', '1.125rem']);
+  });
+
+  it('sets the spacing, radius, layout and 44px target scale', () => {
     expect(token('--target')).toBe('44px');
     expect(['xs', 'sm', 'smd', 'md', 'lg', 'xl'].map((n) => token(`--space-${n}`))).toEqual(['4px', '8px', '12px', '16px', '24px', '32px']);
-    expect(['sm', 'md', 'lg'].map((n) => token(`--radius-${n}`))).toEqual(['4px', '8px', '12px']);
+    expect(['sm', 'md', 'lg'].map((name) => token(`--radius-${name}`))).toEqual(['4px', '6px', '8px']);
+    expect(['sidebar-w', 'list-w', 'row-h', 'appbar-h', 'tabbar-h'].map((name) => token(`--${name}`))).toEqual(['224px', '360px', '56px', '48px', '56px']);
   });
 });

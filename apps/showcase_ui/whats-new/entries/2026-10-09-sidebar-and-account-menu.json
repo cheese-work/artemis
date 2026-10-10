@@ -1,0 +1,7 @@
+{
+  "id": "2026-10-09-sidebar-and-account-menu",
+  "date": "2026-10-09",
+  "title": "Wide screens put navigation and your phone in a sidebar",
+  "body": "Open Workspace, Runs and Setup from the left. Connect or switch phones near the bottom. Open your account to copy the build; the reload notice stays visible.",
+  "issues": ["CHE-1496"]
+}
