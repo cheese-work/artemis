@@ -107,8 +107,8 @@ limitations under the License.
                   type="button"
                   class="btn-stop-card"
                   (click)="stopTask(session.session_id, $event)"
-                  title="Stop this task"
-                  aria-label="Stop this task"
+                  [title]="'Stop this task: ' + runTitle(session.initial_goal)"
+                  [attr.aria-label]="'Stop this task: ' + runTitle(session.initial_goal)"
                   >
                   <span class="material-symbols-outlined">stop_circle</span>
                 </button>
@@ -127,8 +127,8 @@ limitations under the License.
               }
             </div>
           </div>
-          <div class="task-goal" title="{{ session.initial_goal }}">
-            {{ session.initial_goal || 'Unnamed Task' }}
+          <div class="task-goal" [title]="runTitle(session.initial_goal)">
+            {{ runTitle(session.initial_goal) }}
           </div>
           @if (session.goal_images?.length) {
             <div class="task-goal-images">

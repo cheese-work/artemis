@@ -57,6 +57,14 @@ describe('WorkspaceComponent error lifetime', () => {
     }).compileComponents();
   });
 
+  it('uses the first prompt line without markdown in the Stop button title', () => {
+    spyOn(TestBed.inject(AgentService), 'currentSession').and.returnValue({
+      session_id: 'run-title', initial_goal: '## **Open** _Settings_\nCheck every toggle.', start_time: 1
+    });
+    const fixture = TestBed.createComponent(WorkspaceComponent);
+    expect(fixture.componentInstance.stopButtonTitle()).toBe('Stop current task: "Open Settings"');
+  });
+
   it('cancels a destroyed route error timer without releasing a newer error', fakeAsync(() => {
     const olderFixture = TestBed.createComponent(WorkspaceComponent);
     olderFixture.detectChanges();

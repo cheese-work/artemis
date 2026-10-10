@@ -5,7 +5,7 @@ import { Router, provideRouter } from '@angular/router';
 import { Observable, Subject, of, throwError } from 'rxjs';
 import { AdminConfigService } from '../../services/admin-config.service';
 import { AgentService } from '../../services/agent.service';
-import { SessionUsage } from '../../core/models/session.model';
+import { Session, SessionUsage } from '../../core/models/session.model';
 import { RunSummary, SessionVideo } from '../../core/models/run.model';
 import { StepItemData } from '../../core/models/stream.model';
 import { RunsService } from '../../services/runs.service';
@@ -72,7 +72,9 @@ describe('RunViewComponent', () => {
   let clipboard: jasmine.Spy;
   let agent: Pick<AgentService, 'isPaused' | 'pausedError' | 'isRetrying' | 'retryMessage' | 'sessionLogs'
     | 'viewedModel' | 'agentStatus' | 'currentSessionId' | 'runningSessionId'> & {
+    sessions: ReturnType<typeof signal<Session[]>>;
     resumeTask: jasmine.Spy;
+    stopTask: jasmine.Spy;
     getSessionUsage: jasmine.Spy;
   };
 
@@ -130,11 +132,13 @@ describe('RunViewComponent', () => {
       isRetrying: signal(false),
       retryMessage: signal<string | null>(null),
       sessionLogs: signal<any[]>([]),
+      sessions: signal<Session[]>([]),
       viewedModel: signal({ name: 'Pro', id: 'model-pro', provider: 'test' }),
       agentStatus: signal('idle'),
       currentSessionId: signal<string | null>(ID),
       runningSessionId: signal<string | null>(ID),
       resumeTask: jasmine.createSpy('resumeTask'),
+      stopTask: jasmine.createSpy('stopTask'),
       getSessionUsage: jasmine.createSpy('getSessionUsage').and.returnValue(of({
         session_id: ID, llm_calls: 2, prompt_tokens: 100, completion_tokens: 50, total_tokens: 150,
         cached_tokens: 10, operator_context_tokens: 80, operator_context_window_tokens: 1000
@@ -158,6 +162,36 @@ describe('RunViewComponent', () => {
   });
 
   describe('restored result summary and execution details', () => {
+    it('uses a short title and keeps the complete prompt in a closed, 44 px disclosure', async () => {
+      const prompt = '\n## **Open** _Settings_ with `Android`\n- Check every toggle.';
+      const previousTitle = document.title;
+      await open({ runResult: of(run({ prompt })) });
+      expect(q('h1.run-prompt')?.textContent).toBe('Open Settings with Android');
+      expect(document.title).toBe('Open Settings with Android · SmartQA');
+      const disclosure = q<HTMLDetailsElement>('.full-prompt')!;
+      const control = disclosure.querySelector('summary')!;
+      expect(disclosure.open).toBeFalse();
+      expect(control.textContent).toBe('Show prompt');
+      expect(control.getBoundingClientRect().height).toBeGreaterThanOrEqual(44);
+      expect(control.getBoundingClientRect().width).toBeGreaterThanOrEqual(44);
+      control.click();
+      expect(disclosure.open).toBeTrue();
+      expect(disclosure.querySelector('pre')?.textContent).toBe(prompt);
+      fixture.destroy();
+      expect(document.title).toBe(previousTitle);
+    });
+
+    it('updates the title and closes the full prompt when another run is selected', async () => {
+      await open({ runResult: of(run({ prompt: '**First**\nDetails' })) });
+      q<HTMLDetailsElement>('.full-prompt')!.open = true;
+      runs.get.and.returnValue(of(run({ session_id: 'second', prompt: '# Second\nOther details' })));
+      fixture.componentRef.setInput('runId', 'second');
+      await settle();
+      expect(q('h1.run-prompt')?.textContent).toBe('Second');
+      expect(document.title).toBe('Second · SmartQA');
+      expect(q<HTMLDetailsElement>('.full-prompt')!.open).toBeFalse();
+    });
+
     for (const viewMode of ['live', 'review'] as const) {
       it(`shows the persisted task report at the top in ${viewMode} mode`, async () => {
         (runs as any).notes.and.returnValue(of({ notes: { 'output.md': '# Task report\nSettings verified.' } }));
@@ -230,16 +264,18 @@ describe('RunViewComponent', () => {
       expect(qa('.step-button').length).toBe(3);
     });
 
-    it('updates the summary from current-session live checker events', async () => {
+    it('retains live checker outcomes without showing a finished verdict during a run', async () => {
       await open({ viewMode: 'live', runResult: of(run({ status: 'running', end_time: null })) });
       agent.sessionLogs.set([{ type: 'checker_event', session_id: ID, timestamp: new Date().toISOString(),
         data: { event: 'run_outcome', session_id: ID, task_status: 'partial', tests: { passed: 2, failed: 1, inconclusive: 0, unchecked: 0 } } }]);
       await settle();
-      expect(q('.run-result-summary')?.textContent).toContain('Passed: 2');
-      expect(q('.run-result-summary')?.textContent).toContain('Failed: 1');
+      expect(fixture.componentInstance.resultOutcome()?.tests?.passed).toBe(2);
+      expect(fixture.componentInstance.resultOutcome()?.tests?.failed).toBe(1);
+      expect(q('.run-result-summary')).toBeNull();
+      expect(q('.status-strip')).not.toBeNull();
       agent.currentSessionId.set('another-session');
       await settle();
-      expect(q('.run-result-summary')?.textContent).not.toContain('Passed: 2');
+      expect(fixture.componentInstance.resultOutcome()).toBeNull();
     });
 
     it('cancels stale reports and checks and resets expansion when navigating to another run', async () => {
@@ -851,6 +887,7 @@ describe('RunViewComponent', () => {
 
     it('opens the share trust dialog from a focusable action and restores focus', async () => {
       await open();
+      q<HTMLDetailsElement>('.more-actions')!.open = true;
       const share = button('Copy link');
       share.focus();
       share.click();
@@ -858,15 +895,15 @@ describe('RunViewComponent', () => {
       expect(q<HTMLDialogElement>('dialog')!.open).toBeTrue();
       button('Cancel').click();
       await settle();
-      expect(document.activeElement).toBe(share);
+      expect(document.activeElement).toBe(q('.more-actions > summary'));
     });
 
-    it('leads with outcome and prompt, then evidence with steps, then actions, then technical details', async () => {
+    it('keeps actions in the header, then evidence with steps and technical details', async () => {
       await open();
       const order = qa('[data-section], details.technical-details').map(
         (el) => el.getAttribute('data-section') ?? 'technical'
       );
-      expect(order).toEqual(['outcome', 'evidence', 'steps', 'actions', 'technical']);
+      expect(order).toEqual(['outcome', 'actions', 'evidence', 'steps', 'technical']);
       const outcome = q('[data-section="outcome"]')!;
       expect(outcome.querySelector('.outcome-badge')!.textContent).toContain('Passed');
       expect(outcome.querySelector('.outcome-badge .material-symbols-outlined')).not.toBeNull();
@@ -1149,9 +1186,10 @@ describe('RunViewComponent', () => {
       expect(q('.action-error')).toBeNull();
     });
 
-    it('closes on Escape (cancel) or Cancel without acting, and returns focus to the button that opened it', async () => {
+    it('closes on Escape or Cancel without acting and returns focus to More actions', async () => {
       await open();
       document.body.appendChild(root);
+      q<HTMLDetailsElement>('.more-actions')!.open = true;
       const copy = button('Copy link');
       copy.focus();
       copy.click();
@@ -1161,8 +1199,9 @@ describe('RunViewComponent', () => {
       await settle();
       expect(dialog.open).toBe(false);
       expect(clipboard).not.toHaveBeenCalled();
-      expect(document.activeElement).toBe(copy);
+      expect(document.activeElement).toBe(q('.more-actions > summary'));
 
+      q<HTMLDetailsElement>('.more-actions')!.open = true;
       const download = button('Download');
       download.focus();
       download.click();
@@ -1170,7 +1209,7 @@ describe('RunViewComponent', () => {
       q<HTMLButtonElement>('.dialog-cancel')!.click();
       await settle();
       expect(runs.downloadBundle).not.toHaveBeenCalled();
-      expect(document.activeElement).toBe(download);
+      expect(document.activeElement).toBe(q('.more-actions > summary'));
       root.remove();
     });
 
@@ -1343,6 +1382,99 @@ describe('RunViewComponent', () => {
     });
   });
 
+  describe('Workbench header', () => {
+    for (const status of ['completed', 'failed', 'interrupted', 'cancelled']) {
+      it(`offers Run again, not Stop run, for ${status}`, async () => {
+        await open({ runResult: of(run({ status })) });
+        expect(q('[aria-label="Run again"]')).not.toBeNull();
+        expect(q('[aria-label="Stop run"]')).toBeNull();
+        expect(q('.verdict-slot')).not.toBeNull();
+        expect(q('.status-strip')).toBeNull();
+      });
+    }
+
+    for (const status of ['pending', 'running', 'paused']) {
+      it(`offers a scoped Stop run and a status strip for ${status}`, async () => {
+        await open({ runResult: of(run({ status })) });
+        expect(q('[aria-label="Run again"]')).toBeNull();
+        q<HTMLButtonElement>('[aria-label="Stop run"]')!.click();
+        expect(agent.stopTask).toHaveBeenCalledOnceWith(ID);
+        expect(q('.status-strip')).not.toBeNull();
+        expect(q('.verdict-slot')).toBeNull();
+      });
+    }
+
+    it('never stops another owner\'s run or a read-only run', async () => {
+      await open({ runResult: of(run({ status: 'running', requested_by: 'other@example.test' })) });
+      expect(q('[aria-label="Stop run"]')).toBeNull();
+      fixture.componentInstance.onAction({ id: 'stop', event: new Event('click') });
+      expect(agent.stopTask).not.toHaveBeenCalled();
+      fixture.componentRef.setInput('readOnly', true);
+      await settle();
+      expect(q('[aria-label="Run again"]')).toBeNull();
+    });
+
+    it('copies the full ID from the crumb and discloses the More actions', async () => {
+      await open();
+      q<HTMLButtonElement>('.run-header .run-id-copy-button')!.click();
+      await settle();
+      expect(clipboard).toHaveBeenCalledWith(ID);
+      const more = q<HTMLDetailsElement>('.more-actions')!;
+      expect(more.open).toBeFalse();
+      more.querySelector('summary')!.click();
+      await settle();
+      expect(more.open).toBeTrue();
+      expect(qa('.more-actions button').map(control => control.textContent!.trim()))
+        .toEqual(['Copy link', 'Download', 'Pin', 'Delete']);
+      more.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      await settle();
+      expect(more.open).toBeFalse();
+      expect(document.activeElement).toBe(more.querySelector('summary'));
+      more.querySelector('summary')!.click();
+      button('Copy link').click();
+      await settle();
+      expect(more.open).toBeFalse();
+      expect(fixture.componentInstance.dialogKind()).toBe('share');
+    });
+
+    it('shows facts without borrowing another run\'s model', async () => {
+      await open({ runResult: of(run({ start_time: START, end_time: START + 300 })) });
+      expect(q('.run-facts')!.textContent).toContain('App');
+      expect(q('.run-facts')!.textContent).toContain('Duration');
+      expect(q('.run-facts')!.textContent).toContain('5m 0s');
+      expect(q('[data-fact="model"]')!.textContent).toBe('Not recorded');
+      agent.sessions.set([{ session_id: 'other-run', initial_goal: 'Other', start_time: START, model_info: { name: 'Other model', id: 'other', provider: 'test' } }]);
+      await settle();
+      expect(q('[data-fact="model"]')!.textContent).toBe('Not recorded');
+      agent.sessions.set([{ session_id: ID, initial_goal: 'This run', start_time: START, model_info: { name: 'Flash', id: 'flash', provider: 'test' } }]);
+      await settle();
+      expect(q('[data-fact="model"]')!.textContent).toBe('Flash');
+    });
+
+    it('ticks Elapsed while active and tears down the clock on destroy', async () => {
+      await open({ runResult: of(run({ status: 'running', start_time: Date.now() / 1000 - 60, end_time: null })) });
+      const before = fixture.componentInstance.duration();
+      await new Promise(resolve => setTimeout(resolve, 1100));
+      await settle();
+      expect(fixture.componentInstance.duration()).not.toBe(before);
+      const stopped = fixture.componentInstance.duration();
+      fixture.destroy();
+      await new Promise(resolve => setTimeout(resolve, 1100));
+      expect(fixture.componentInstance.duration()).toBe(stopped);
+    });
+
+    it('gives every header control its own 44 by 44 px box', async () => {
+      await open();
+      q<HTMLDetailsElement>('.more-actions')!.open = true;
+      await settle();
+      for (const control of qa<HTMLElement>('.run-header button, .run-header summary, .run-header a')) {
+        const bounds = control.getBoundingClientRect();
+        expect(bounds.width).withContext(control.textContent ?? '').toBeGreaterThanOrEqual(44);
+        expect(bounds.height).withContext(control.textContent ?? '').toBeGreaterThanOrEqual(44);
+      }
+    });
+  });
+
   describe('review corrections', () => {
     const OTHER = '9a8b7c6d-1111-4222-8333-444455556666';
     const noVideo = (): SessionVideo => ({ session_id: ID, status: 'unavailable', has_video: false, video_url: null, video_segments: [] });
@@ -1473,12 +1605,13 @@ describe('RunViewComponent', () => {
 
     it('tabs from back link through steps and actions to technical details, all natively focusable', async () => {
       await open({ isAdmin: true });
+      q<HTMLDetailsElement>('.more-actions')!.open = true;
       const names = controls().map(nameOf);
       expect(names[0]).toBe('Back to runs');
       const stepsAt = names.findIndex((n) => n.startsWith('Step 1'));
       const copyAt = names.indexOf('Copy link');
       expect(stepsAt).toBeGreaterThan(0);
-      expect(copyAt).toBeGreaterThan(stepsAt);
+      expect(copyAt).toBeLessThan(stepsAt);
       expect(names.slice(copyAt, copyAt + 4)).toEqual(['Copy link', 'Download', 'Pin', 'Delete']);
       expect(names[names.length - 1]).toBe('Technical details');
       for (const el of controls()) {
@@ -1488,6 +1621,7 @@ describe('RunViewComponent', () => {
 
     it('keeps targets at least 24 px, primary actions at least 44 px', async () => {
       await open({ isAdmin: true });
+      q<HTMLDetailsElement>('.more-actions')!.open = true;
       for (const el of controls()) {
         if (el.tagName === 'VIDEO') continue;
         const box = el.getBoundingClientRect();
