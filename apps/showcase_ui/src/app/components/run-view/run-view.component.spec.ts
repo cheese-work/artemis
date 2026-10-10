@@ -422,6 +422,8 @@ describe('RunViewComponent', () => {
         expect(q('.step-failure-detail')!.textContent).toBe(failure);
         expect(q('.step-number')!.textContent).toBe('Step 1');
         expect(q('.step-title')!.textContent).toBe('Tapping Element');
+        q<HTMLButtonElement>('.step-toggle')!.click();
+        await settle();
         expect(q('img[alt="Before step 1"]')!.getAttribute('src')).toBe('/images/pre1.png');
         expect(q('img[alt="After step 1"]')!.getAttribute('src')).toBe('/images/post1.png');
         expect(q('.recording-copy')!.textContent).toContain('Encoder exited before writing a playable file.');
@@ -472,6 +474,8 @@ describe('RunViewComponent', () => {
       it('reports no screenshots when neither side of a step has one', async () => {
         await open({ viewMode, steps: of([step(1, { pre_image_name: undefined, post_image_name: undefined })]),
           video: of(ready({ status: 'unavailable' })) });
+        q<HTMLButtonElement>('.step-toggle')!.click();
+        await settle();
         expect(q('.step-screenshots')!.querySelector('img')).toBeNull();
         expect(q('.evidence')!.textContent).toContain('No screenshots for this run.');
       });
@@ -491,6 +495,105 @@ describe('RunViewComponent', () => {
       });
     });
   }
+
+  describe('Workbench step timeline', () => {
+    it('renders compact rows with action icons, thumbnails, kind and mono time', async () => {
+      const image = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aT0YAAAAASUVORK5CYII=';
+      await open({ steps: of([step(1, { duration: 1.5, post_image_name: image }), step(2)]) });
+      const rows = qa<HTMLButtonElement>('.step-button');
+      expect(q('.step-screenshots')).toBeNull();
+      expect(rows[0].getBoundingClientRect().height).toBe(56);
+      expect(rows[0].querySelector('.step-icon')!.textContent).toBe('ads_click');
+      expect(rows[0].querySelector('img')!.getAttribute('src')).toBe(image);
+      const thumbnail = rows[0].querySelector('.step-thumbnail')!.getBoundingClientRect();
+      expect(thumbnail.width).toBe(56);
+      expect(thumbnail.height).toBe(40);
+      expect(rows[0].querySelector('.step-kind')!.textContent).toBe('tap');
+      expect(rows[0].querySelector('.step-duration')!.textContent).toBe('1.5s');
+      expect(rows[1].querySelector('.step-duration')!.textContent).toBe('0:20');
+      expect(getComputedStyle(rows[0].querySelector('.step-duration')!).fontFamily).toContain('mono');
+      expect(getComputedStyle(rows[0].querySelector('.step-duration')!).fontSize).toBe('12px');
+    });
+
+    it('labels and tints a failed step without relying on color alone', async () => {
+      await open({ steps: of([step(1, { last_execution_result: { success: false, error: 'Target not found' } })]) });
+      const row = q<HTMLButtonElement>('.step-button')!;
+      expect(row.querySelector('.step-failed')!.textContent).toContain('Failed');
+      expect(row.querySelector('.step-icon')!.textContent).toBe('error');
+      expect(row.classList.contains('failed')).toBeTrue();
+      expect(q('.step-failure-detail')!.textContent).toBe('Target not found');
+      expect(row.getBoundingClientRect().height).toBe(56);
+    });
+
+    it('keeps a selected failed step visibly distinct after focus leaves the row', async () => {
+      await open({ steps: of([
+        step(1, { last_execution_result: { success: false, error: 'Target not found' } }),
+        step(2, { last_execution_result: { success: false, error: 'Target disappeared' } })
+      ]) });
+      const rows = qa<HTMLButtonElement>('.step-button');
+      rows[0].click();
+      rows[0].focus();
+      rows[0].blur();
+      await settle();
+      const selectedShadow = getComputedStyle(rows[0]).boxShadow;
+      expect(rows[0].getAttribute('aria-current')).toBe('step');
+      expect(selectedShadow).toContain('inset');
+      expect(selectedShadow).not.toBe(getComputedStyle(rows[1]).boxShadow);
+      expect(getComputedStyle(rows[1]).boxShadow).toBe('none');
+      rows[1].click();
+      rows[1].focus();
+      rows[1].blur();
+      await settle();
+      expect(rows[0].hasAttribute('aria-current')).toBeFalse();
+      expect(getComputedStyle(rows[0]).boxShadow).toBe('none');
+      expect(getComputedStyle(rows[1]).boxShadow).toBe(selectedShadow);
+    });
+
+    it('toggles inline details with a separate 44px control without changing selection', async () => {
+      await open({});
+      const toggle = q<HTMLButtonElement>('.step-toggle')!;
+      const selected = fixture.componentInstance.selectedStep()?.step_id;
+      expect(toggle.getBoundingClientRect().width).toBeGreaterThanOrEqual(44);
+      expect(toggle.getBoundingClientRect().height).toBeGreaterThanOrEqual(44);
+      expect(toggle.getAttribute('aria-expanded')).toBe('false');
+      toggle.click();
+      await settle();
+      expect(toggle.getAttribute('aria-expanded')).toBe('true');
+      expect(q('#step-details-st1')).not.toBeNull();
+      expect(fixture.componentInstance.selectedStep()?.step_id).toBe(selected);
+      toggle.click();
+      await settle();
+      expect(toggle.getAttribute('aria-expanded')).toBe('false');
+      expect(q('#step-details-st1')).toBeNull();
+    });
+
+    it('uses the same selection for a verdict jump, timeline and evidence pane', async () => {
+      await open({ video: of(ready({ status: 'unavailable' })) });
+      expect(fixture.componentInstance.goToStep(1)).toBeTrue();
+      await settle();
+      expect(fixture.componentInstance.selectedStep()?.step_id).toBe('st1');
+      expect(q('.step-button[aria-current="step"]')!.textContent).toContain('Step 1');
+      expect(q('.evidence-image')!.getAttribute('src')).toBe('/images/post1.png');
+      expect(document.activeElement).toBe(q('.step-button'));
+      expect(fixture.componentInstance.goToStep(999)).toBeFalse();
+      expect(fixture.componentInstance.selectedStep()?.step_id).toBe('st1');
+    });
+
+    it('keeps keyboard selection bounded and leaves Tab to the browser', async () => {
+      await open({});
+      const rows = qa<HTMLButtonElement>('.step-button');
+      rows[0].focus();
+      rows[0].dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }));
+      await settle();
+      expect(fixture.componentInstance.selectedStep()?.step_id).toBe('st1');
+      rows[2].dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+      await settle();
+      expect(fixture.componentInstance.selectedStep()?.step_id).toBe('st3');
+      const tab = new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true });
+      rows[2].dispatchEvent(tab);
+      expect(tab.defaultPrevented).toBeFalse();
+    });
+  });
 
   describe('live updates and review continuity', () => {
     it('merges arriving and updated steps with persisted steps without dropping selection', async () => {

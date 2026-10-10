@@ -280,6 +280,9 @@ video:focus-visible {
 }
 
 .step-toggle {
+  flex: 0 0 44px;
+  width: 44px;
+  height: 44px;
   min-height: 44px;
   padding: 8px;
   border: 0;
@@ -424,21 +427,31 @@ dl {
 }
 
 .step-button {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 4px 12px;
-  width: 100%;
-  min-height: 44px;
+  flex: 1;
+  min-width: 44px;
+  padding: 8px;
   border: 0;
   color: var(--evidence-text);
-  background: var(--evidence-surface);
   text-align: left;
+  border-radius: var(--radius-sm);
+  background: transparent;
 
   &[aria-current='step'] {
     font-weight: 600;
-    background: var(--status-neutral-bg);
+    background: var(--color-primary-tint);
+    box-shadow: inset 3px 0 0 var(--color-primary);
   }
+
+  &.failed[aria-current='step'] { background: var(--status-danger-bg); }
+}
+
+.step-row {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  height: 56px;
+  border-radius: var(--radius-sm);
+  &.failed { background: var(--status-danger-bg); }
 }
 
 
