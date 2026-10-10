@@ -311,18 +311,16 @@ describe('Workspace review mode', () => {
       await go('/workspace');
 
       expect(TestBed.inject(WorkspacePhoneService).runInterrupted()).toBeTrue();
-      const banners = Array.from(root.querySelectorAll<HTMLElement>('[role="status"]'))
+      const banners = Array.from(root.querySelectorAll<HTMLElement>('.composer app-interrupted-banner .banner'))
         .filter((element) => element.textContent?.includes('Run interrupted before the first step.'));
       expect(banners.length).toBe(1);
-      expect(banners[0].closest('app-run-view')).not.toBeNull();
+      expect(banners[0].closest('.composer')).not.toBeNull();
+      expect(banners[0].getAttribute('aria-live')).toBeNull();
+      expect(q('app-run-view .interrupted-banner')).toBeNull();
       const buttons = Array.from(root.querySelectorAll<HTMLButtonElement>('button'));
       const starts = buttons.filter((element) => element.textContent?.includes('Start new run with this prompt'));
-      expect(starts.length).toBe(1);
-      starts[0].click();
-      harness.fixture.detectChanges();
-      await harness.fixture.whenStable();
-      harness.fixture.detectChanges();
-      expect((q('textarea.composer-input') as HTMLTextAreaElement).value).toBe(prompt);
+      expect(starts.length).toBe(0);
+      expect(q('textarea.composer-input')).not.toBeNull();
 
       const reconnects = buttons.filter((element) => element.textContent?.includes('Reconnect phone'));
       expect(reconnects.length).toBe(connected ? 0 : 1);

@@ -459,7 +459,7 @@ describe('WorkspaceComponent pinned composer (CHE-1508)', () => {
         expect(doc.querySelector('.composer .btn-stop, .composer .btn-stop-run')).toBeNull();
         const controls = Array.from(doc.querySelectorAll<HTMLElement>('.composer button, .detail-header button'));
         const names = controls.map((control) => control.className);
-        for (const cls of ['btn-send', 'btn-attach', 'btn-stop-run', 'btn-remove-image', 'btn-toast-close', 'segment']) {
+        for (const cls of ['btn-send', 'btn-attach', 'btn-remove-image', 'btn-toast-close', 'segment']) {
           expect(names.some((name) => name.includes(cls))).withContext(cls).toBeTrue();
         }
         const boxes = controls.map((control) => ({ name: control.className, box: control.getBoundingClientRect() }));

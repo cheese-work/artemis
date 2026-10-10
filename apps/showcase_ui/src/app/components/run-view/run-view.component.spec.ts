@@ -910,6 +910,8 @@ describe('RunViewComponent', () => {
       const scroll = spyOn(qa<HTMLButtonElement>('.step-button').at(-1)!, 'scrollIntoView');
       button('Follow latest').click();
       await settle();
+      TestBed.tick();
+      await settle();
       expect(view.followLatest()).toBeTrue();
       expect(view.selectedStep()?.step_number).toBe(4);
       expect(button('Follow latest').getAttribute('aria-pressed')).toBe('true');
@@ -922,26 +924,35 @@ describe('RunViewComponent', () => {
       result.next(run({ status: 'running' }));
       await settle();
       const announcements: string[] = [];
-      const observer = new MutationObserver(() => announcements.push(q('.run-status-slot')!.textContent!.trim()));
-      observer.observe(q('.run-status-slot')!, { childList: true, subtree: true, characterData: true });
+      const observer = new MutationObserver(records => {
+        const strip = q('.run-status-slot')!;
+        if (records.some(record => strip.contains(record.target) || Array.from(record.addedNodes).some(node => node.contains(strip)))) {
+          announcements.push(strip.textContent!.trim());
+        }
+      });
+      observer.observe(root, { childList: true, subtree: true, characterData: true });
+      const render = async () => {
+        await settle();
+        await new Promise<void>(resolve => setTimeout(resolve, 0));
+      };
       fixture.componentRef.setInput('liveSteps', [step(1)]);
-      await settle();
+      await render();
       agent.agentStatus.set('running');
       agent.isRetrying.set(true);
       agent.retryMessage.set('Retrying in 2s');
       agent.sessionLogs.set([{ type: 'llm_stream', timestamp: NOW, data: {
         execution_id: 'live', step_id: 'st1', stream_type: 'thinking', text: 'New thought'
       } }]);
-      await settle();
+      await render();
       (fixture.componentInstance as any).clock.set(NOW + 1);
-      await settle();
+      await render();
       agent.isPaused.set(true);
       agent.agentStatus.set('paused');
-      await settle();
+      await render();
       fixture.componentRef.setInput('liveSteps', [step(1), step(2)]);
-      await settle();
+      await render();
       result.next(run({ status: 'failed' }));
-      await settle();
+      await render();
       observer.disconnect();
       expect(announcements).toEqual(['Step 1 in progress.', 'Step 2 in progress.', 'Run finished: Fail.']);
       expect(qa('[aria-live="polite"]').length).toBe(1);
@@ -1028,7 +1039,7 @@ describe('RunViewComponent', () => {
 
   describe('live task-switch position characterization', () => {
     for (const catalogMissing of [false, true]) {
-      it(`saves run A under A and resets run B with catalog ${catalogMissing ? 'missing' : 'present'}`, async () => {
+      it(`saves run A under A and follows run B with catalog ${catalogMissing ? 'missing' : 'present'}`, async () => {
         const manySteps = Array.from({ length: 30 }, (_, index) => step(index + 1));
         await open({ viewMode: 'live', runResult: catalogMissing ? httpError(404) : of(run()), steps: of(manySteps) });
         fixture.componentRef.setInput('liveSession', { session_id: ID, initial_goal: 'Run A', start_time: START, status: 'running' });
@@ -1052,8 +1063,11 @@ describe('RunViewComponent', () => {
         await settle();
         expect(runs.viewPosition()).toEqual({ sessionId: ID, selectedStepId: 'st1', scrollTop: oldScroll, timelineScrollTop: oldTimeline });
         expect(fixture.componentInstance.selectedStep()?.step_id).toBe('b-st30');
-        expect(q<HTMLElement>('.viewer-scroll')!.scrollTop).toBe(0);
-        expect(q<HTMLElement>('.step-list')!.scrollTop).toBe(0);
+        expect(fixture.componentInstance.followLatest()).toBeTrue();
+        const timeline = q<HTMLElement>('.step-list')!;
+        const latest = q<HTMLElement>('.step-button[aria-current="step"]')!;
+        expect(latest.getBoundingClientRect().bottom).toBeLessThanOrEqual(timeline.getBoundingClientRect().bottom + 1);
+        expect(timeline.scrollTop).toBeGreaterThan(0);
       });
     }
   });
