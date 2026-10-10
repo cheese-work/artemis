@@ -957,8 +957,8 @@ describe('RunViewComponent', () => {
       expect(announcements).toEqual(['Step 1 in progress.', 'Step 2 in progress.', 'Run finished: Fail.']);
       expect(qa('[aria-live="polite"]').length).toBe(1);
       expect(q('.status-strip')).toBeNull();
-      expect(button('Stop run')).toBeUndefined();
-      expect(button('Run again')).toBeDefined();
+      expect(q('[aria-label="Stop run"]')).toBeNull();
+      expect(q('[aria-label="Run again"]')).not.toBeNull();
     });
 
     it('updates startup and step elapsed time once per second and stops the clock after completion', fakeAsync(() => {
@@ -1007,7 +1007,7 @@ describe('RunViewComponent', () => {
       expect(streams.textContent).toContain('Work');
       expect(streams.textContent).toContain('<script>work</script>');
       expect(streams.querySelector('script')).toBeNull();
-      expect(streams.querySelectorAll('details > summary').length).toBe(2);
+      expect(streams.querySelectorAll(':scope > details > summary').length).toBe(2);
     });
 
     it('updates a streamed block without duplicating the execution', async () => {

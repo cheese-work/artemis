@@ -457,7 +457,7 @@ export class RunViewComponent {
       }
       const latest = this.currentStep();
       if (this.followLatest() && latest && latest.step_id !== this.followedStepId) {
-        const row = this.timelineEl()?.nativeElement.querySelector<HTMLElement>('.step-button[aria-current="step"]');
+        const row = this.timelineEl()?.nativeElement.querySelector<HTMLElement>('.current-step .step-button');
         if (row) {
           row.scrollIntoView({ block: 'nearest', behavior: 'instant' });
           this.followedStepId = latest.step_id;
