@@ -52,6 +52,7 @@ describe('WorkspaceComponent always-open task dock', () => {
           sessions: () => [],
           currentSession: () => null,
           currentSessionId: () => null,
+          sessions: () => [],
           currentStartupProgress: () => [],
           runTask: jasmine.createSpy('runTask').and.returnValue(of({}))
         }
