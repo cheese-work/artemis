@@ -241,3 +241,91 @@ const TARGETS = `[...document.querySelectorAll('.floating-nav-switcher .nav-tab-
   .map((e) => [e, e.getBoundingClientRect()]).filter(([e, r]) => r.width > 0 && r.height > 0 && !e.disabled)
   .filter(([, r]) => r.height < 43.5 || r.width < 43.5).map(([e, r]) => (e.getAttribute('aria-label') || e.textContent || e.className).trim().slice(0, 24) + ' ' + Math.round(r.width) + 'x' + Math.round(r.height))`;
 const BOXES = `(() => { const r = (s) => { const e = document.querySelector(s); if (!e) return null; const b = e.getBoundingClientRect(); return { l: b.left, t: b.top, r: b.right, b: b.bottom, w: b.width, h: b.height }; };
+  return { list: r('.run-list-pane'), detail: r('.detail-pane'), run: r('.run-surface'), dock: r('.composer'), scrollH: document.documentElement.scrollHeight, overflowX: document.documentElement.scrollWidth - innerWidth }; })()`;
+
+function checkPanes(where, route, width, b) {
+  const TOLERANCE = 2;
+  if (!b.list || !b.detail) return fail(where, 'run or list pane missing');
+  if (width >= 1024) {
+    if (Math.abs(b.list.w - 360) > TOLERANCE || Math.abs(b.list.r - b.detail.l) > TOLERANCE || Math.abs(b.list.t - b.detail.t) > TOLERANCE) {
+      fail(where, `list is not 360px left of the detail: ${JSON.stringify({ list: b.list, detail: b.detail })}`);
+    }
+  } else if (route === '/runs') {
+    if (b.list.w === 0 || b.detail.w > 0) fail(where, 'only the run list should be visible');
+  } else if (b.detail.w === 0 || b.list.w > 0) {
+    fail(where, 'only the detail should be visible');
+  }
+  if (!b.dock) return;
+  if (b.dock.b > 800 + TOLERANCE) fail(where, `new-task box is off screen: dock bottom ${b.dock.b}`);
+  if (b.run && b.dock.t < b.run.b - TOLERANCE) fail(where, `new-task box covers the run: dock top ${b.dock.t}, run bottom ${b.run.b}`);
+}
+
+async function contract() {
+  for (const route of ['/workspace', '/runs/00000002-5d7e-4a10-9c33-0e1f2a3b4c5d', '/runs', '/setup']) {
+    const panes = route === '/workspace' || route.startsWith('/runs');
+    for (const width of [1440, 1200, 1024, 1023, 800, 390, 320]) {
+      const where = `contract ${route.split('/').slice(0, 2).join('/')} @${width}px`;
+      await open(route, width, 800);
+      await setPhone(true);
+      await sleep(400);
+      const b = await evaluate(BOXES);
+      if (b.overflowX > 0) fail(where, `page scrolls sideways by ${b.overflowX}px`);
+      if (panes) checkPanes(where, route, width, b);
+      const small = await evaluate(TARGETS);
+      if (small.length) fail(where, `targets under 44px: ${small.join(' | ')}`);
+      const blur = await evaluate(BLUR);
+      if (blur.length) fail(where, `blur or glass on: ${blur.join(', ')}`);
+      const low = await evaluate(CONTRAST);
+      if (low.length) fail(where, `text under 4.5:1 on its background: ${low.slice(0, 6).join(' | ')}`);
+      await shot(`contract-${route.split('/')[1]}-${width}`);
+    }
+  }
+  await open('/workspace', 1280);
+  for (const miss of await evaluate(CONTRAST_SELF_TEST)) fail('contract audit self-test', `${miss}: the contrast check does not compose CSS opacity correctly`);
+  // Open menus sit on their own surfaces: the phone picker and the user menu.
+  await open('/workspace', 1280);
+  for (const [name, selector] of [['phone picker', 'app-workspace-device-chip button.chip'], ['user menu', 'summary[aria-label^="User menu"]']]) {
+    if (!(await evaluate(`(() => { const e = document.querySelector(${JSON.stringify(selector)}); if (!e) return false; e.click(); return true; })()`))) { fail(`contract ${name}`, 'control not found'); continue; }
+    await sleep(300);
+    const low = await evaluate(CONTRAST);
+    if (low.length) fail(`contract ${name} open`, `text under 4.5:1 on its background: ${low.slice(0, 6).join(' | ')}`);
+    await shot(`contract-${name.replace(' ', '-')}-open`);
+    await evaluate(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`);
+    await open('/workspace', 1280);
+  }
+  // Reduced motion: nothing keeps animating.
+  await send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] });
+  await open('/workspace', 1280);
+  const moving = await evaluate(`[...document.querySelectorAll('*')].filter((e) => { const c = getComputedStyle(e); return c.animationName !== 'none' && parseFloat(c.animationDuration) > 0.05 && c.animationIterationCount === 'infinite'; }).map((e) => e.className?.toString() || e.tagName).slice(0, 5)`);
+  if (moving.length) fail('contract reduced motion', `still animating: ${moving.join(', ')}`);
+  await send('Emulation.setEmulatedMedia', { features: [] });
+  console.log(`contract: ${failures.length ? 'failures above' : 'all clear'}`);
+}
+
+try {
+  for (let i = 0; i < 50 && !ws; i++) {
+    try {
+      const page = (await (await fetch(`http://127.0.0.1:${port}/json/list`)).json()).find((t) => t.type === 'page');
+      if (page) { ws = new WebSocket(page.webSocketDebuggerUrl); await new Promise((a, b) => { ws.onopen = a; ws.onerror = b; }); }
+    } catch { await sleep(100); }
+  }
+  if (!ws) throw new Error('could not reach Chrome');
+  ws.onmessage = (e) => {
+    const m = JSON.parse(e.data);
+    if (m.id && pending.has(m.id)) { const p = pending.get(m.id); pending.delete(m.id); m.error ? p.reject(new Error(m.error.message)) : p.resolve(m.result); }
+  };
+  await send('Page.enable');
+  const only = process.argv[2];
+  if (only && !['clearance', 'a11y', 'scenarios', 'contract'].includes(only)) throw new Error(`unknown audit phase "${only}" (clearance | a11y | scenarios | contract)`);
+  if (!only || only === 'clearance') await clearanceMatrix();
+  if (!only || only === 'a11y') await phoneStatusA11y();
+  if (!only || only === 'scenarios') await scenarios();
+  if (!only || only === 'contract') await contract();
+} catch (e) {
+  console.error(e);
+  failures.push(String(e));
+}
+ws?.close(); chrome.kill(); server.close(); await sleep(200);
+rmSync(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+console.log(failures.length ? `\nLayout audit FAILED: ${failures.length} finding(s)` : '\nLayout audit passed.');
+process.exit(failures.length ? 1 : 0);

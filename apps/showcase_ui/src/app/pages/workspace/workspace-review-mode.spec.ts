@@ -173,3 +173,165 @@ describe('Workspace review mode', () => {
     expect(q('app-run-view')).toBeNull();
     expect(runs.get).not.toHaveBeenCalled();
     expect(q('.composer')).toBeNull();
+  });
+
+  it('refreshes the list and recorded metadata when a run completes without leaving Workspace', async () => {
+    const session: Session = {
+      session_id: ID, initial_goal: 'Complete while Workspace stays open', status: 'running', start_time: 1,
+      device_serial: 'recorded-phone', device_info: { model: 'Recorded Pixel', device_kind: 'phone' },
+      goal_images: [{ index: 0, media_type: 'image/png', url: '/api/goal-image.png' }]
+    };
+    sessions.set([session]);
+    runs.list.and.callFake(() => of({
+      runs: sessions().filter(item => item.status === 'completed').map(item => ({
+        session_id: item.session_id, prompt: item.initial_goal, status: 'completed', interrupt_reason: null,
+        start_time: item.start_time, end_time: item.end_time ?? null, host_id: null,
+        device_ref: item.device_serial ? { host_id: null, serial: item.device_serial } : null, requested_by: null, pinned: false, recordings: []
+      })), next_cursor: null, warnings: []
+    }));
+    await go('/workspace');
+    const workspace = q('app-workspace');
+    const requests = runs.list.calls.count();
+    expect(q('app-run-library a.run-row')).toBeNull();
+
+    sessions.set([{ ...session, status: 'completed', end_time: 2 }]);
+    harness.detectChanges();
+    await harness.fixture.whenStable();
+    harness.detectChanges();
+
+    expect(q('app-workspace')).toBe(workspace);
+    expect(runs.list.calls.count()).toBe(requests + 1);
+    expect(q('app-run-library a.run-row')?.textContent).toContain(session.initial_goal);
+    const library = harness.fixture.debugElement.query(By.directive(RunLibraryComponent)).componentInstance as RunLibraryComponent;
+    expect(library.recordedDevices().get(ID)).toEqual({ serial: 'recorded-phone', model: 'Recorded Pixel', device_kind: 'phone' });
+    expect(library.recordedImages().get(ID)).toEqual(session.goal_images);
+  });
+
+  it('passes team review restrictions to the unified RunView', async () => {
+    await go(`/runs/${ID}?scope=everyone&review=1`);
+    const view = harness.fixture.debugElement.query(By.directive(RunViewComponent)).componentInstance as RunViewComponent;
+    expect(view.readOnly()).toBeTrue();
+    expect(view.mode()).toBe('review');
+    expect(view.runId()).toBe(ID);
+    expect(q('.run-list-pane app-run-library.compact')).not.toBeNull();
+  });
+
+  it('shows the run viewer for the id in the URL on /runs/:id', async () => {
+    await go(`/runs/${ID}`);
+    expect(q('app-run-view')).not.toBeNull();
+    expect(q('.detail-pane app-run-library, .detail-empty')).toBeNull();
+    expect(q('.run-list-pane app-run-library.compact')).not.toBeNull();
+    expect(runs.get).toHaveBeenCalledWith(ID);
+  });
+
+  it('updates the viewer when a reused /runs/:id route changes, then restores empty detail on /runs', async () => {
+    await go(`/runs/${ID}?scope=everyone`);
+    const workspace = harness.fixture.debugElement.query(By.directive(WorkspaceComponent)).componentInstance;
+    await go('/runs/other-run');
+    expect(harness.fixture.debugElement.query(By.directive(WorkspaceComponent)).componentInstance).toBe(workspace);
+    const view = harness.fixture.debugElement.query(By.directive(RunViewComponent)).componentInstance as RunViewComponent;
+    expect(view.runId()).toBe('other-run');
+    expect(view.readOnly()).toBeFalse();
+    expect(q('.workspace-container.has-run')).not.toBeNull();
+    await go('/runs');
+    expect(q('app-run-view, .workspace-container.has-run')).toBeNull();
+    expect(q('.detail-empty')?.textContent?.trim()).toBe('Select a run to see its steps.');
+  });
+
+  it('has no decorative waves or glass in the live dock or in review mode', async () => {
+    await go('/workspace');
+    expect(q('.liquid-wave, .wave-glow-ambient, .dock-wave-container')).toBeNull();
+    expect(getComputedStyle(q('.composer-card')!).backdropFilter).toBe('none');
+    await go('/runs');
+    expect(q('.liquid-wave, .wave-glow-ambient, .dock-wave-container')).toBeNull();
+  });
+
+  describe('the list beside an open run (CHE-1278 F1)', () => {
+    const listed = (id: string): RunSummary => ({
+      session_id: id, prompt: `Run ${id.slice(0, 4)}`, status: 'completed', interrupt_reason: null, start_time: 1, end_time: 2,
+      host_id: null, device_ref: { host_id: null, serial: 's' }, requested_by: null, pinned: false, recordings: []
+    });
+    const OTHER = '9a8b7c6d-5d7e-4a10-9c33-0e1f2a3b4c5d';
+    const RETURN = { q: 'login', status: 'failed', scroll: '300' };
+
+    beforeEach(() => {
+      runs.list.and.returnValue(of({ runs: [listed(ID), listed(OTHER)], next_cursor: null, warnings: [] }));
+    });
+
+    it('keeps the filters and scroll that Back to runs returns to, and lists the same filtered runs', async () => {
+      await go('/runs?q=login&status=failed&scroll=300');
+      expect(runs.lastLibraryQuery()).toEqual(RETURN);
+      await go(`/runs/${ID}`); // a row link from /runs carries no list state
+      expect(runs.lastLibraryQuery()).toEqual(RETURN);
+      expect(runs.list.calls.mostRecent().args[0]).toEqual(jasmine.objectContaining({ q: 'login', status: 'failed' }));
+      const back = (q('app-run-view a.back-to-runs') ?? q('a.back-to-runs')) as HTMLAnchorElement | null;
+      if (back) expect(back.getAttribute('href')).toBe('/runs?q=login&status=failed&scroll=300');
+    });
+
+    it('keeps them after choosing another run in the list beside the open one', async () => {
+      await go('/runs?q=login&status=failed&scroll=300');
+      await go(`/runs/${ID}`);
+      const next = Array.from(root.querySelectorAll<HTMLAnchorElement>('.run-list-pane a.run-row')).find((a) => a.getAttribute('href')!.includes(OTHER))!;
+      expect(next.getAttribute('href')).toContain('q=login');
+      next.click();
+      await go(`/runs/${OTHER}?q=login&status=failed`);
+      expect(runs.lastLibraryQuery()).toEqual(RETURN);
+    });
+  });
+
+  it('omits the mouse-only splitter in review mode', async () => {
+    await go('/runs');
+    expect(q('.resizer')).toBeNull();
+  });
+
+  it('opening history never selects a session or changes the device for the next run', async () => {
+    localStorage.setItem('artemis.selected_device_serial', 'R58M123');
+    await go('/runs');
+    await go(`/runs/${ID}`);
+    expect(TestBed.inject(AgentService).selectSession).not.toHaveBeenCalled();
+    expect(localStorage.getItem('artemis.selected_device_serial')).toBe('R58M123');
+  });
+
+  it('prefills the dock with a prompt handed over from the viewer', async () => {
+    await go('/workspace', { draftPrompt: 'Log in and open settings' });
+    expect((q('textarea.composer-input') as HTMLTextAreaElement).value).toBe('Log in and open settings');
+  });
+
+  for (const connected of [false, true]) {
+    it(`shows one interrupted banner with a ${connected ? 'connected' : 'disconnected'} phone`, async () => {
+      const prompt = 'Open Settings';
+      liveSession.set({ session_id: ID, initial_goal: prompt, start_time: 1, status: 'interrupted' });
+      if (connected) target.set({ serial: 'phone-1' });
+      runs.get.and.returnValue(of<RunSummary>({
+        session_id: ID, prompt, status: 'interrupted', interrupt_reason: 'device_offline',
+        start_time: 1, end_time: 2, host_id: null, device_ref: null, requested_by: null,
+        pinned: false, recordings: []
+      }));
+      runs.steps.and.returnValue(of([]));
+      await go('/workspace');
+
+      expect(TestBed.inject(WorkspacePhoneService).runInterrupted()).toBeTrue();
+      const banners = Array.from(root.querySelectorAll<HTMLElement>('[role="status"]'))
+        .filter((element) => element.textContent?.includes('Run interrupted before the first step.'));
+      expect(banners.length).toBe(1);
+      expect(banners[0].closest('app-run-view')).not.toBeNull();
+      const buttons = Array.from(root.querySelectorAll<HTMLButtonElement>('button'));
+      const starts = buttons.filter((element) => element.textContent?.includes('Start new run with this prompt'));
+      expect(starts.length).toBe(1);
+      starts[0].click();
+      harness.fixture.detectChanges();
+      await harness.fixture.whenStable();
+      harness.fixture.detectChanges();
+      expect((q('textarea.composer-input') as HTMLTextAreaElement).value).toBe(prompt);
+
+      const reconnects = buttons.filter((element) => element.textContent?.includes('Reconnect phone'));
+      expect(reconnects.length).toBe(connected ? 0 : 1);
+      if (!connected) {
+        expect(reconnects[0].tagName).toBe('BUTTON');
+        expect(reconnects[0].disabled).toBeFalse();
+        reconnects[0].click();
+        expect(reconnect).toHaveBeenCalledTimes(1);
+      }
+    });
+  }
+});
