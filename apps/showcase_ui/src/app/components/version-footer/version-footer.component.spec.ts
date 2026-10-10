@@ -144,6 +144,22 @@ describe('VersionFooterComponent', () => {
     discardPeriodicTasks();
   }));
 
+  it('shares one version poll between the legacy footer and account menu', () => {
+    const { get } = render(server(pageSha));
+    const accountVersion = TestBed.createComponent(VersionFooterComponent);
+    accountVersion.detectChanges();
+    expect(get).toHaveBeenCalledOnceWith('/api/system/version');
+  });
+
+  it('announces clipboard failure without claiming a build was copied', async () => {
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: () => Promise.reject(new Error('Denied')) } });
+    const { fixture, root } = render(server(pageSha));
+    await fixture.componentInstance.copy();
+    fixture.detectChanges();
+    expect(root.querySelector('[role="status"]')?.textContent).toContain('Copy failed');
+    expect(root.textContent).not.toContain('Build copied');
+  });
+
   it('copies the full sha and announces it politely', async () => {
     const writeText = jasmine.createSpy('writeText').and.resolveTo(undefined);
     Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });

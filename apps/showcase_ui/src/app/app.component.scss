@@ -38,3 +38,9 @@
   font-size: 12px;
   line-height: 20px;
 }
+
+@media (min-width: 1024px) {
+  .app-page { margin-left: var(--sidebar-w); }
+  .legacy-version-footer { display: none; }
+  :host:has(.preview-banner) { --preview-banner-h: 24px; }
+}

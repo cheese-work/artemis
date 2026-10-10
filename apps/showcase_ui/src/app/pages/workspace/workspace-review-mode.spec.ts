@@ -5,8 +5,8 @@ import { Router, provideRouter } from '@angular/router';
 import { RouterTestingHarness } from '@angular/router/testing';
 import { NEVER, of } from 'rxjs';
 import { routes } from '../../app.routes';
-import { ChatInterfaceComponent } from '../../components/chat-interface/chat-interface.component';
 import { RunViewComponent } from '../../components/run-view/run-view.component';
+import { RunLibraryComponent } from '../../components/run-library/run-library.component';
 import { By } from '@angular/platform-browser';
 import { RunSummary } from '../../core/models/run.model';
 import { RunTarget } from '../../core/models/run-target.model';
@@ -25,12 +25,14 @@ describe('Workspace review mode', () => {
   let harness: RouterTestingHarness;
   let root: HTMLElement;
   let liveSession: ReturnType<typeof signal<Session | null>>;
+  let sessions: ReturnType<typeof signal<Session[]>>;
   let target: ReturnType<typeof signal<RunTarget | null>>;
   let reconnect: jasmine.Spy;
   const q = (selector: string) => root.querySelector(selector);
 
   beforeEach(async () => {
     liveSession = signal<Session | null>(null);
+    sessions = signal<Session[]>([]);
     target = signal<RunTarget | null>(null);
     reconnect = jasmine.createSpy('connectFromBrowser').and.resolveTo(undefined);
     runs = jasmine.createSpyObj<RunsService>('RunsService', ['list', 'get', 'steps', 'video', 'checks', 'notes'], {
@@ -51,6 +53,7 @@ describe('Workspace review mode', () => {
       updateWhatsNewErrorVisibility: () => undefined,
       isCurrentSessionRunning: () => false,
       currentSession: liveSession,
+      sessions,
       currentSessionId: () => liveSession()?.session_id ?? null,
       currentStartupProgress: () => [],
       runningSessionId: () => null,
@@ -80,9 +83,6 @@ describe('Workspace review mode', () => {
         { provide: AdminConfigService, useValue: admin }
       ],
       schemas: [CUSTOM_ELEMENTS_SCHEMA]
-    }).overrideComponent(WorkspaceComponent, {
-      remove: { imports: [ChatInterfaceComponent] },
-      add: { schemas: [CUSTOM_ELEMENTS_SCHEMA] }
     });
     harness = await RouterTestingHarness.create();
     root = harness.fixture.nativeElement;
@@ -95,22 +95,115 @@ describe('Workspace review mode', () => {
     harness.fixture.detectChanges();
   }
 
-  it('shows the shared RunView, new-task box and splitter on /workspace', async () => {
+  function atWidth(width: number, check: (frame: HTMLIFrameElement) => void): void {
+    const frame = document.createElement('iframe');
+    frame.style.width = `${width}px`;
+    frame.style.height = '800px';
+    frame.style.border = '0';
+    document.body.appendChild(frame);
+    const workspace = q('app-workspace')!;
+    const parent = workspace.parentNode!;
+    const next = workspace.nextSibling;
+    try {
+      const frameDocument = frame.contentDocument!;
+      expect(frame.contentWindow!.innerWidth).toBe(width);
+      frameDocument.body.style.cssText = 'margin: 0; height: 100vh';
+      const tokens = getComputedStyle(document.documentElement);
+      for (const property of Array.from(tokens)) {
+        if (property.startsWith('--')) frameDocument.documentElement.style.setProperty(property, tokens.getPropertyValue(property));
+      }
+      for (const style of Array.from(document.head.querySelectorAll('style'))) {
+        frameDocument.head.appendChild(style.cloneNode(true));
+      }
+      frameDocument.body.appendChild(workspace);
+      check(frame);
+    } finally {
+      parent.insertBefore(workspace, next);
+      frame.remove();
+    }
+  }
+
+  for (const width of [1440, 1200, 1024, 1023, 800, 390]) {
+    it(`shows list and detail on desktop, only the route's pane below 1024 px at ${width}px`, async () => {
+      for (const route of ['/runs', `/runs/${ID}`]) {
+        await go(route);
+        atWidth(width, frame => {
+          const frameDocument = frame.contentDocument!;
+          const list = frameDocument.querySelector<HTMLElement>('.run-list-pane')!;
+          const detail = frameDocument.querySelector<HTMLElement>('.detail-pane')!;
+          const showsList = width >= 1024 || route === '/runs';
+          const showsDetail = width >= 1024 || route !== '/runs';
+          expect(frame.contentWindow!.getComputedStyle(list).display === 'none').toBe(!showsList);
+          expect(frame.contentWindow!.getComputedStyle(detail).display === 'none').toBe(!showsDetail);
+          if (width >= 1024) {
+            expect(list.getBoundingClientRect().width).toBe(360);
+            expect(list.getBoundingClientRect().right).toBeCloseTo(detail.getBoundingClientRect().left, 0);
+          } else if (route === '/runs') {
+            const navClearance = parseFloat(frame.contentWindow!.getComputedStyle(frameDocument.documentElement).getPropertyValue('--nav-clearance')) || 88;
+            const firstControl = list.querySelector<HTMLButtonElement>('.owner-tabs button')!;
+            expect(firstControl.getBoundingClientRect().top).toBeGreaterThanOrEqual(navClearance);
+          }
+          const visible = showsList ? list : detail;
+          expect(visible.getBoundingClientRect().height).toBeGreaterThan(0);
+          expect(visible.getBoundingClientRect().right).toBeLessThanOrEqual(width);
+        });
+      }
+    });
+  }
+
+  it('shows the run list beside the shared RunView and new-task box on /workspace', async () => {
     await go('/workspace');
     expect(q('app-run-view')).not.toBeNull();
     expect(q('textarea.dock-textarea')).not.toBeNull();
     expect(q('.workspace-container.review-mode')).toBeNull();
-    expect(q('.resizer')).not.toBeNull();
-    expect(q('app-run-library')).toBeNull();
+    expect(q('.resizer, .right-panel, app-chat-interface')).toBeNull();
+    expect(q('.run-list-pane app-run-library')).not.toBeNull();
+    expect(q('.detail-pane app-run-view')).not.toBeNull();
   });
 
-  it('shows the run library without the live new-task box on /runs', async () => {
+  it('shows a single run list and the empty detail state without the live new-task box on /runs', async () => {
     await go('/runs');
     expect(q('.workspace-container.review-mode')).not.toBeNull();
-    expect(q('app-run-library')).not.toBeNull();
+    expect(root.querySelectorAll('app-run-library').length).toBe(1);
+    expect(q('.detail-empty')?.textContent?.trim()).toBe('Select a run to see its steps.');
+    expect(q('.detail-empty')?.getAttribute('role')).toBe('status');
     expect(q('.right-panel')).toBeNull();
     expect(q('app-agent-stream')).toBeNull();
+    expect(q('app-run-view')).toBeNull();
+    expect(runs.get).not.toHaveBeenCalled();
     expect(q('.workspace-floating-bar-wrapper')).toBeNull();
+  });
+
+  it('refreshes the list and recorded metadata when a run completes without leaving Workspace', async () => {
+    const session: Session = {
+      session_id: ID, initial_goal: 'Complete while Workspace stays open', status: 'running', start_time: 1,
+      device_serial: 'recorded-phone', device_info: { model: 'Recorded Pixel', device_kind: 'phone' },
+      goal_images: [{ index: 0, media_type: 'image/png', url: '/api/goal-image.png' }]
+    };
+    sessions.set([session]);
+    runs.list.and.callFake(() => of({
+      runs: sessions().filter(item => item.status === 'completed').map(item => ({
+        session_id: item.session_id, prompt: item.initial_goal, status: 'completed', interrupt_reason: null,
+        start_time: item.start_time, end_time: item.end_time ?? null, host_id: null,
+        device_ref: item.device_serial ? { host_id: null, serial: item.device_serial } : null, requested_by: null, pinned: false, recordings: []
+      })), next_cursor: null, warnings: []
+    }));
+    await go('/workspace');
+    const workspace = q('app-workspace');
+    const requests = runs.list.calls.count();
+    expect(q('app-run-library a.run-row')).toBeNull();
+
+    sessions.set([{ ...session, status: 'completed', end_time: 2 }]);
+    harness.detectChanges();
+    await harness.fixture.whenStable();
+    harness.detectChanges();
+
+    expect(q('app-workspace')).toBe(workspace);
+    expect(runs.list.calls.count()).toBe(requests + 1);
+    expect(q('app-run-library a.run-row')?.textContent).toContain(session.initial_goal);
+    const library = harness.fixture.debugElement.query(By.directive(RunLibraryComponent)).componentInstance as RunLibraryComponent;
+    expect(library.recordedDevices().get(ID)).toEqual({ serial: 'recorded-phone', model: 'Recorded Pixel', device_kind: 'phone' });
+    expect(library.recordedImages().get(ID)).toEqual(session.goal_images);
   });
 
   it('passes team review restrictions to the unified RunView', async () => {
@@ -119,16 +212,29 @@ describe('Workspace review mode', () => {
     expect(view.readOnly()).toBeTrue();
     expect(view.mode()).toBe('review');
     expect(view.runId()).toBe(ID);
-    // The same run list sits beside the open run (CHE-1278); the run itself is the main surface.
-    expect(q('.right-panel app-run-library.compact')).not.toBeNull();
+    expect(q('.run-list-pane app-run-library.compact')).not.toBeNull();
   });
 
   it('shows the run viewer for the id in the URL on /runs/:id', async () => {
     await go(`/runs/${ID}`);
     expect(q('app-run-view')).not.toBeNull();
-    expect(q('.left-panel app-run-library')).toBeNull();
-    expect(q('.right-panel app-run-library.compact')).not.toBeNull();
+    expect(q('.detail-pane app-run-library, .detail-empty')).toBeNull();
+    expect(q('.run-list-pane app-run-library.compact')).not.toBeNull();
     expect(runs.get).toHaveBeenCalledWith(ID);
+  });
+
+  it('updates the viewer when a reused /runs/:id route changes, then restores empty detail on /runs', async () => {
+    await go(`/runs/${ID}?scope=everyone`);
+    const workspace = harness.fixture.debugElement.query(By.directive(WorkspaceComponent)).componentInstance;
+    await go('/runs/other-run');
+    expect(harness.fixture.debugElement.query(By.directive(WorkspaceComponent)).componentInstance).toBe(workspace);
+    const view = harness.fixture.debugElement.query(By.directive(RunViewComponent)).componentInstance as RunViewComponent;
+    expect(view.runId()).toBe('other-run');
+    expect(view.readOnly()).toBeFalse();
+    expect(q('.workspace-container.has-run')).not.toBeNull();
+    await go('/runs');
+    expect(q('app-run-view, .workspace-container.has-run')).toBeNull();
+    expect(q('.detail-empty')?.textContent?.trim()).toBe('Select a run to see its steps.');
   });
 
   it('has no decorative waves or glass in the live dock or in review mode', async () => {
@@ -164,7 +270,7 @@ describe('Workspace review mode', () => {
     it('keeps them after choosing another run in the list beside the open one', async () => {
       await go('/runs?q=login&status=failed&scroll=300');
       await go(`/runs/${ID}`);
-      const next = Array.from(root.querySelectorAll<HTMLAnchorElement>('.right-panel a.run-row')).find((a) => a.getAttribute('href')!.includes(OTHER))!;
+      const next = Array.from(root.querySelectorAll<HTMLAnchorElement>('.run-list-pane a.run-row')).find((a) => a.getAttribute('href')!.includes(OTHER))!;
       expect(next.getAttribute('href')).toContain('q=login');
       next.click();
       await go(`/runs/${OTHER}?q=login&status=failed`);

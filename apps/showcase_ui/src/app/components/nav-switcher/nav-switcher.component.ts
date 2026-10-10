@@ -20,6 +20,7 @@ import { Component, ChangeDetectionStrategy, DestroyRef, computed, ElementRef, E
 import { RouterLink, RouterLinkActive } from '@angular/router';
 import { WorkspaceDeviceChipComponent } from '../workspace-device-chip/workspace-device-chip.component';
 import { AdminIdentityIndicatorComponent } from '../admin-identity-indicator/admin-identity-indicator.component';
+import { AgentService } from '../../services/agent.service';
 
 @Component({
   selector: 'app-nav-switcher',
@@ -49,20 +50,28 @@ import { AdminIdentityIndicatorComponent } from '../admin-identity-indicator/adm
       >
         <span class="material-symbols-outlined tab-icon" aria-hidden="true">history</span>
         <span class="tab-label">Runs</span>
+        <span class="run-count">{{ runCount() }}</span>
       </a>
+      @if (account.identity()?.admin) {
+        <a routerLink="/setup" routerLinkActive="active" ariaCurrentWhenActive="page" class="nav-tab-btn desktop-setup" aria-label="Setup">
+          <span class="material-symbols-outlined tab-icon" aria-hidden="true">settings</span>
+          <span class="tab-label">Setup</span>
+        </a>
+      }
       @if (hasWhatsNew) {
         <button type="button" class="nav-tab-btn" [attr.aria-label]="whatsNewLabel" (click)="showWhatsNew.emit()">
           <span class="material-symbols-outlined tab-icon" aria-hidden="true">campaign</span>
           <span class="tab-label">What's New</span>
           @if (hasUnreadWhatsNew) {
             <span class="nav-unread-indicator" aria-hidden="true"></span>
+            <span class="nav-new-label" aria-hidden="true">New</span>
           }
         </button>
       }
       <div class="nav-status">
         <!-- The phone the next run uses: the app's only phone control -->
         <app-workspace-device-chip></app-workspace-device-chip>
-        <app-admin-identity-indicator></app-admin-identity-indicator>
+        <app-admin-identity-indicator #account></app-admin-identity-indicator>
       </div>
     </nav>
   `,
@@ -70,6 +79,8 @@ import { AdminIdentityIndicatorComponent } from '../admin-identity-indicator/adm
   styleUrls: ['./nav-switcher.component.scss']
 })
 export class NavSwitcherComponent {
+  private readonly agent = inject(AgentService);
+  public readonly runCount = computed(() => this.agent.sessions().length);
   @Input() public hasWhatsNew = false;
   @Input() public hasUnreadWhatsNew = false;
   @Output() public showWhatsNew = new EventEmitter<void>();
@@ -82,7 +93,7 @@ export class NavSwitcherComponent {
     const destroyRef = inject(DestroyRef);
     afterNextRender(() => {
       const nav = (this.bar.nativeElement as HTMLElement).querySelector('nav') as HTMLElement;
-      const publish = () => rootStyle.setProperty('--nav-clearance', `${Math.ceil(nav.getBoundingClientRect().bottom) + 12}px`);
+      const publish = () => rootStyle.setProperty('--nav-clearance', window.matchMedia('(min-width: 1024px)').matches ? '0px' : `${Math.ceil(nav.getBoundingClientRect().bottom) + 12}px`);
       const observer = new ResizeObserver(publish);
       observer.observe(nav);
       publish();
