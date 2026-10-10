@@ -179,7 +179,7 @@ try {
           return { strip: document.querySelector('.status-strip')?.textContent, current: !!document.querySelector('.current-step'),
             checklist: [...document.querySelectorAll('.startup-item')].map(bounds),
             announcement: document.querySelector('.run-status-slot').textContent.trim(),
-            polite: document.querySelectorAll('[aria-live="polite"]').length,
+            polite: document.querySelectorAll('app-run-view [aria-live="polite"]').length,
             stop: document.querySelectorAll('[aria-label="Stop run"]').length,
             composerStop: !!document.querySelector('.composer [aria-label="Stop run"]'),
             placeholder: document.querySelector('.composer-input').placeholder, hint: document.querySelector('.composer-hint').textContent,
@@ -196,6 +196,7 @@ try {
         const active = !['finished', 'interrupted'].includes(state);
         assert.equal(snapshot.stop, active ? 1 : 0, 'one Stop in the run header');
         assert.equal(snapshot.composerStop, false);
+        assert.equal(snapshot.polite, 1, 'only the run status strip announces');
         assert.equal(snapshot.dialogs, 0, 'screenshots show the run, not an overlay');
         assert.ok(snapshot.overflow <= 0, JSON.stringify(snapshot));
         assert.ok(snapshot.controls.every(box => box.width >= 44 && box.height >= 44), JSON.stringify(snapshot.controls));
@@ -223,8 +224,51 @@ try {
           assert.equal(snapshot.announcement, 'Run finished: Pass.');
           assert.equal(snapshot.current, false);
         }
+        if (width === 390) {
+          await evaluate(`(document.querySelector('.status-strip') ?? document.querySelector('.run-result-summary')).scrollIntoView({ block: 'start', behavior: 'instant' })`);
+          await wait(50);
+        }
         const screenshot = await send('Page.captureScreenshot', { format: 'png' });
         writeFileSync(path.join(shots, `${state}-${width}.png`), Buffer.from(screenshot.data, 'base64'));
+        if (state === 'running') {
+          await evaluate(`(() => {
+            window.announcements = [];
+            const strip = document.querySelector('.run-status-slot');
+            window.announcementObserver = new MutationObserver(() => window.announcements.push(strip.textContent.trim()));
+            window.announcementObserver.observe(strip, { subtree: true, childList: true, characterData: true });
+            document.querySelector('.step-button').click();
+          })()`);
+          await wait(50);
+          assert.equal(await evaluate(`ng.getComponent(document.querySelector('app-run-view')).followLatest()`), false);
+          await evaluate(`(() => {
+            const view = ng.getComponent(document.querySelector('app-run-view'));
+            view.storedSteps.update(steps => [...steps, { session_id: '${runId}', step_id: 'step-4', step_number: 4, timestamp: Date.now() / 1000, action_taken: { action: 'tap' } }]);
+          })()`);
+          await wait(50);
+          assert.equal(await evaluate(`ng.getComponent(document.querySelector('app-run-view')).selectedStep().step_number`), 1, 'manual evidence stays selected');
+          await evaluate(`document.querySelector('.follow-latest').click()`);
+          await wait(50);
+          assert.equal(await evaluate(`ng.getComponent(document.querySelector('app-run-view')).selectedStep().step_number`), 4, 'Follow latest resumes');
+          await evaluate(`(() => {
+            const view = ng.getComponent(document.querySelector('app-run-view'));
+            view.clock.set(Date.now() / 1000 + 1);
+            view.agentService.sessionLogs.set([{ type: 'llm_stream', timestamp: Date.now() / 1000, data: { execution_id: 'four', step_id: 'step-4', stream_type: 'thinking', text: 'A new thought' } }]);
+            view.agentService.isRetrying.set(true);
+            view.agentService.retryMessage.set('Retrying in 2s');
+          })()`);
+          await wait(50);
+          assert.deepEqual(await evaluate(`window.announcements`), ['Step 4 in progress.'], 'clock, selection, Thought and retry do not announce');
+          await evaluate(`(() => {
+            const view = ng.getComponent(document.querySelector('app-run-view'));
+            view.agentService.runningSessionId.set(null);
+            view.agentService.agentStatus.set('idle');
+            view.agentService.rawSessions.update(sessions => sessions.map(session => session.session_id === '${runId}' ? { ...session, status: 'failed', end_time: Date.now() / 1000 } : session));
+          })()`);
+          await wait(100);
+          assert.deepEqual(await evaluate(`window.announcements`), ['Step 4 in progress.', 'Run finished: Fail.'], 'one terminal announcement');
+          await evaluate(`window.announcementObserver.disconnect()`);
+          snapshot.behavior = 'PASS: manual selection, follow toggle and announcement count';
+        }
         results.push({ state, width, ...snapshot });
         console.log(`PASS ${state} @${width}: strip, controls, composer, reduced motion, no overflow`);
         continue;
