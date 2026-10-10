@@ -40,17 +40,3 @@
   font-size: 12px;
   line-height: 20px;
 }
-
-:host:has(.preview-banner) { --preview-banner-h: 24px; }
-
-@media (min-width: 800px) and (max-width: 1199px) {
-  .app-page { margin-left: 72px; }
-}
-
-@media (max-width: 799px) {
-  .app-page {
-    margin-left: 0;
-    margin-top: var(--appbar-h);
-    margin-bottom: var(--tabbar-h);
-  }
-}

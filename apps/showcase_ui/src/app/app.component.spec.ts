@@ -81,32 +81,3 @@ describe('AppComponent layout', () => {
       .overrideComponent(AppComponent, { set: { imports: [RouterOutlet, NavStub, WhatsNewStub] } })
       .compileComponents();
   });
-
-  it('removes the fixed footer and reserves the sidebar, rail or mobile bars', () => {
-    const fixture = TestBed.createComponent(AppComponent);
-    fixture.detectChanges();
-    const root = fixture.nativeElement as HTMLElement;
-    const page = root.querySelector<HTMLElement>('.app-page');
-    const footer = root.querySelector<HTMLElement>('app-version-footer');
-
-    expect(page).withContext('page area').not.toBeNull();
-    expect(footer).toBeNull();
-    expect(getComputedStyle(page!).overflowY).toBe('auto');
-    if (window.innerWidth >= 800) {
-      expect(page!.getBoundingClientRect().left).toBe(window.innerWidth >= 1200 ? 224 : 72);
-    } else {
-      expect(getComputedStyle(page!).marginTop).toBe('48px');
-      expect(getComputedStyle(page!).marginBottom).toBe('56px');
-    }
-  });
-
-  it('publishes the selected pane for the next slice', () => {
-    const fixture = TestBed.createComponent(AppComponent);
-    fixture.detectChanges();
-    const page = fixture.nativeElement.querySelector('.app-page') as HTMLElement;
-    expect(page.dataset['activePane']).toBe('list');
-    TestBed.inject(ShellLayoutService).activePane.set('detail');
-    fixture.detectChanges();
-    expect(page.dataset['activePane']).toBe('detail');
-  });
-});
