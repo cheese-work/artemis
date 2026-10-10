@@ -8,8 +8,10 @@ import path from 'node:path';
 
 const dist = path.resolve('dist/frontend/browser');
 const timeline = process.argv.includes('--timeline');
-const shots = path.resolve(process.env.SHOTS || (timeline ? 'step-timeline-evidence' : 'run-header-evidence'));
+const evidence = process.argv.includes('--evidence');
+const shots = path.resolve(process.env.SHOTS || (evidence ? 'device-pane-evidence' : timeline ? 'step-timeline-evidence' : 'run-header-evidence'));
 const runId = '00000001-5d7e-4a10-9c33-0e1f2a3b4c5d';
+let videoChecks = 0;
 const started = Math.floor(Date.now() / 1000) - 65;
 const run = {
   session_id: runId, prompt: '# Open Settings and check the app\n\nVerify that Settings opens without an error.',
@@ -21,7 +23,7 @@ const steps = [{
   session_id: runId, step_id: 'step-1', step_number: 1, timestamp: started + 1,
   action_taken: { action: 'launch_app', package_name: 'com.android.settings' }
 }];
-if (timeline) {
+if (timeline || evidence) {
   steps.push(...['tap', 'input_text', 'tap'].map((action, index) => ({
     session_id: runId, step_id: `step-${index + 2}`, step_number: index + 2, timestamp: started + (index + 2) * 10,
     duration: 1.2 + index, action_taken: { action, args: { text: index === 1 ? 'Settings' : 'Network and internet' } },
@@ -40,7 +42,10 @@ const server = createServer((request, response) => {
   if (pathname.endsWith('/steps')) return json(response, steps);
   if (pathname.endsWith('/notes')) return json(response, { notes: { 'output.md': 'Settings opened. The app is ready for the next task.' } });
   if (pathname.endsWith('/checks')) return json(response, { records: [], streams: [], run_outcome: null });
-  if (pathname.endsWith('/video')) return json(response, { session_id: runId, status: 'unavailable', has_video: false, video_url: null, video_segments: [] });
+  if (pathname.endsWith('/video')) {
+    videoChecks++;
+    return json(response, { session_id: runId, status: 'unavailable', has_video: false, video_url: null, video_segments: [] });
+  }
   if (pathname === '/api/system/whoami') return json(response, { email: 'qa@example.test', admin: false, auth_mode: 'cloudflare', reason: null });
   if (pathname === '/api/sessions') return json(response, [{ session_id: runId, initial_goal: run.prompt, start_time: started, end_time: run.end_time, status: run.status, model_info: { name: 'Flash', id: 'fixture-flash', provider: 'fixture' } }]);
   if (pathname === '/api/hosts') return json(response, { enabled: true, hosts: [], devices: [] });
@@ -113,10 +118,10 @@ try {
   await send('Network.enable');
   if (process.env.DEBUG_AUDIT) console.log('Chrome ready', base);
   mkdirSync(shots, { recursive: true });
-  for (const state of timeline ? ['failed'] : ['completed', 'running']) {
+  for (const state of timeline || evidence ? ['failed'] : ['completed', 'running']) {
     run.status = state;
     run.end_time = state === 'running' ? null : started + 60;
-    for (const width of [1440, 390]) {
+    for (const width of evidence ? [1440, 1200, 1024, 390] : [1440, 390]) {
       await send('Emulation.setDeviceMetricsOverride', { width, height: 1000, deviceScaleFactor: 1, mobile: width < 800 });
       await send('Page.navigate', { url: `${base}/runs/${runId}` });
       let ready = false;
@@ -128,6 +133,96 @@ try {
       assert.ok(ready, `${state} @${width}: header loads`);
       await wait(250);
       await evaluate('document.fonts.ready.then(() => true)');
+      if (evidence) {
+        await evaluate(`(() => {
+          const canvas = document.createElement('canvas');
+          canvas.width = 180; canvas.height = 320;
+          const context = canvas.getContext('2d');
+          context.fillStyle = '#fafafa'; context.fillRect(0, 0, 180, 320);
+          context.fillStyle = '#27272a'; context.font = '18px sans-serif'; context.fillText('Settings', 16, 42);
+          context.font = '11px sans-serif';
+          ['Network and internet', 'Connected devices', 'Apps', 'Notifications', 'Battery'].forEach((label, index) => context.fillText(label, 16, 82 + index * 38));
+          const view = ng.getComponent(document.querySelector('app-run-view'));
+          view.storedSteps.set(view.steps().map(step => ({ ...step, post_image_name: canvas.toDataURL() })));
+        })()`);
+        await wait(150);
+        assert.equal(await evaluate(`!!document.querySelector('.step-scrubber')`), true, 'B10 native step scrubber exists');
+        await evaluate(`document.querySelector('.step-scrubber').focus()`);
+        for (const [key, code, expected] of [['Home', 36, 1], ['ArrowRight', 39, 2], ['End', 35, 4], ['ArrowLeft', 37, 3]]) {
+          await send('Input.dispatchKeyEvent', { type: 'keyDown', key, code: key, windowsVirtualKeyCode: code });
+          await send('Input.dispatchKeyEvent', { type: 'keyUp', key, code: key, windowsVirtualKeyCode: code });
+          await wait(80);
+          assert.equal(await evaluate(`ng.getComponent(document.querySelector('app-run-view')).selectedStep().step_number`), expected, `${key} selects step ${expected}`);
+        }
+        const snapshot = await evaluate(`(() => {
+          const panel = document.querySelector('.evidence');
+          const frame = panel.querySelector('.phone-frame');
+          const filmstrip = panel.querySelector('.screenshot-filmstrip');
+          return { paneWidth: panel.getBoundingClientRect().width,
+            frameDisplay: getComputedStyle(frame).display, filmstripDisplay: getComputedStyle(filmstrip).display,
+            filmstripAboveTimeline: panel.getBoundingClientRect().top < document.querySelector('.steps').getBoundingClientRect().top,
+            overflow: document.documentElement.scrollWidth - innerWidth,
+            controls: [...panel.querySelectorAll('button, input, summary')].filter(control => control.getBoundingClientRect().width > 0).map(control => {
+              const box = control.getBoundingClientRect(); return { width: box.width, height: box.height };
+            }) };
+        })()`);
+        assert.ok(snapshot.overflow <= 0, 'no page overflow');
+        assert.ok(snapshot.controls.every(box => box.width >= 44 && box.height >= 44), JSON.stringify(snapshot));
+        if (width >= 1440) {
+          assert.equal(snapshot.paneWidth, 300);
+          assert.equal(snapshot.filmstripDisplay, 'none');
+          assert.notEqual(snapshot.frameDisplay, 'none');
+        } else {
+          assert.equal(snapshot.frameDisplay, 'none');
+          assert.notEqual(snapshot.filmstripDisplay, 'none');
+          assert.equal(snapshot.filmstripAboveTimeline, true);
+          await evaluate(`document.querySelector('.filmstrip-step').click()`);
+          await wait(80);
+          assert.equal(await evaluate(`ng.getComponent(document.querySelector('app-run-view')).selectedStep().step_number`), 1);
+        }
+        const videoSource = readFileSync('src/app/components/run-view/tiny-video.testing.ts', 'utf8').match(/const WEBM_BASE64 = '([^']+)'/)[1];
+        await evaluate(`(() => {
+          const view = ng.getComponent(document.querySelector('app-run-view'));
+          const bytes = Uint8Array.from(atob('${videoSource}'), character => character.charCodeAt(0));
+          view.video.set({ session_id: '${runId}', status: 'ready', has_video: true,
+            video_url: URL.createObjectURL(new Blob([bytes], { type: 'video/webm' })), video_segments: [] });
+        })()`);
+        await wait(150);
+        assert.equal(await evaluate(`!!document.querySelector('.evidence video')`), true, 'finished run defaults to playable video');
+        assert.ok(await evaluate(`[...document.querySelectorAll('.media-switch button')].every(button => {
+          const box = button.getBoundingClientRect(); return box.width >= 44 && box.height >= 44;
+        })`), 'media buttons have their own 44px boxes');
+        await evaluate(`document.querySelector('[data-media="screenshot"]').click()`);
+        await wait(80);
+        assert.equal(await evaluate(`!!document.querySelector('.evidence video')`), false, 'screenshot switch hides video');
+        await evaluate(`document.querySelector('[data-media="video"]').click()`);
+        await wait(150);
+        assert.equal(await evaluate(`!!document.querySelector('.evidence video')`), true, 'video switch restores player');
+        assert.ok(await evaluate(`document.querySelector('.evidence video').readyState > 0`), 'real fixture video decodes');
+        if (width === 1440) {
+          const screenshot = await send('Page.captureScreenshot', { format: 'png' });
+          writeFileSync(path.join(shots, 'device-video-1440.png'), Buffer.from(screenshot.data, 'base64'));
+        }
+        await evaluate(`document.querySelector('.evidence video').dispatchEvent(new Event('error'))`);
+        await wait(80);
+        assert.equal(await evaluate(`!!document.querySelector('.evidence video')`), false, 'player failure falls back');
+        assert.equal(await evaluate(`document.querySelector('.evidence-caption .secondary-button').textContent.trim()`), 'Check again');
+        assert.match(await evaluate(`document.querySelector('.evidence-caption .recording-copy').textContent`), /could not be played/);
+        assert.ok(await evaluate(`(() => {
+          const box = document.querySelector('.evidence-caption .secondary-button').getBoundingClientRect();
+          return box.width >= 44 && box.height >= 44;
+        })()`), 'retry has its own 44px box');
+        const screenshot = await send('Page.captureScreenshot', { format: 'png' });
+        writeFileSync(path.join(shots, `device-pane-${width}.png`), Buffer.from(screenshot.data, 'base64'));
+        const previousChecks = videoChecks;
+        await evaluate(`document.querySelector('.evidence-caption .secondary-button').click()`);
+        await wait(150);
+        assert.equal(videoChecks, previousChecks + 1, 'Check again rechecks the video API');
+        assert.equal(await evaluate(`ng.getComponent(document.querySelector('app-run-view')).playerFailed()`), false, 'retry clears player failure');
+        results.push({ state, width, ...snapshot, keyboard: 'PASS', mediaSwitch: 'PASS', failureCaption: 'PASS' });
+        console.log(`PASS device pane @${width}: layout, keyboard, media switch, failure caption, 44px controls`);
+        continue;
+      }
       if (timeline) {
         await evaluate(`(() => {
           const canvas = document.createElement('canvas');

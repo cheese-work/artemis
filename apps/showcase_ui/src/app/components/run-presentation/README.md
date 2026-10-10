@@ -49,6 +49,21 @@ selection, keyboard navigation, details and the verdict-jump hook, and writes
 PNG screenshots plus `results.json`. The screenshots are mocked API evidence,
 not Android-device or live-backend evidence. Karma specs run in GitHub CI.
 
+## Device evidence (B10)
+
+The shared evidence panel renders a 300 px navy phone pane from 1440 px and a
+horizontal step screenshot filmstrip above the timeline below 1440 px. The
+native 44 px range control and filmstrip emit step IDs to the existing viewer
+selection and seek path. Finished runs default to playable video; active runs
+default to screenshots. Screenshot/Video buttons change only the media view.
+Recording failure, technical details and Check again stay inside the caption.
+
+`npm run test:device-pane` checks the mock fixture at 1440, 1200, 1024 and 390 px,
+including trusted Chrome scrubber keys, media switching, player failure, 44 px
+controls and responsive geometry. Build with the development configuration for
+these audits. PNG screenshots and `results.json` go to `device-pane-evidence`
+or the `SHOTS` directory. These are UI fixtures, not device acceptance evidence.
+
 ## Unified controller (U2)
 
 `RunViewComponent` now owns the run layout on both Workspace and `/runs/:id`.

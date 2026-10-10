@@ -195,8 +195,9 @@
           <section class="evidence" data-section="evidence" aria-label="Evidence" appRunEvidencePanel
             [recording]="recording()" [videoUrl]="videoUrl()" [playerFailed]="playerFailed()" [message]="copy()" [detail]="videoDetail()"
             [retryable]="canCheckAgain()" [screenshotUrl]="screenshot()"
+            [steps]="evidenceSteps()" [selectedStepId]="selectedStep()?.step_id ?? null" [running]="active()"
             [screenshotAlt]="'Screenshot for step ' + selectedStep()?.step_number" [loaded]="stepsLoaded()"
-            (metadata)="onMetadata()" (ended)="onEnded()" (failed)="playerFailed.set(true)" (retry)="checkAgain()">
+            (stepSelected)="selectEvidenceStep($event)" (metadata)="onMetadata()" (ended)="onEnded()" (failed)="playerFailed.set(true)" (retry)="checkAgain()">
           </section>
 
           <section class="steps" data-section="steps" aria-label="Steps">

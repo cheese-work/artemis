@@ -16,6 +16,7 @@
     "test:run-header": "node scripts/run-header-audit.mjs",
     "test:step-timeline": "node scripts/run-header-audit.mjs --timeline",
     "test:controls": "node scripts/layout-audit/screenshots.mjs screenshots controls --controls",
+    "test:device-pane": "node scripts/run-header-audit.mjs --evidence",
     "test:preview-path": "node scripts/preview-path.test.mjs",
     "test:build-info": "node --test scripts/write-build-info.test.mjs",
     "test:whats-new": "node --test scripts/validate-whats-new.test.mjs scripts/check-whats-new-entry.test.mjs",

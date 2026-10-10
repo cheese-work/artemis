@@ -326,6 +326,16 @@ export class RunViewComponent {
     return step ? (getStepPostImageUrl(step) ?? getStepPreImageUrl(step)) : null;
   });
 
+  public readonly evidenceSteps = computed(() => this.steps().map(step => ({
+    id: step.step_id, number: step.step_number, title: this.stepTitle(step),
+    screenshot: getStepPostImageUrl(step) ?? getStepPreImageUrl(step)
+  })));
+
+  public selectEvidenceStep(stepId: string): void {
+    const step = this.steps().find(item => item.step_id === stepId);
+    if (step) this.selectStep(step);
+  }
+
   public readonly interruptedAtStep = computed(() => this.steps()[this.steps().length - 1]?.step_number ?? null);
   public readonly interruptedText = computed(() => interruptedSentence(this.interruptedAtStep()));
   public readonly failureReason = computed(() => {

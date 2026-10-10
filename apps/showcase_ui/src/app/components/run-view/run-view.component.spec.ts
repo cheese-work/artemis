@@ -397,15 +397,15 @@ describe('RunViewComponent', () => {
       }
     });
 
-    it('preserves evidence media sizing and fallback message spacing', async () => {
+    it('uses navy evidence media and compact caption copy', async () => {
       await open({ video: new Subject<SessionVideo>() });
       const image = getComputedStyle(q('.evidence-image')!);
       expect(image.display).toBe('block');
       expect(image.objectFit).toBe('contain');
-      expect(image.backgroundColor).toBe('rgb(24, 24, 27)');
+      expect(image.backgroundColor).toBe('rgb(15, 23, 42)');
       const copy = getComputedStyle(q('.recording-copy')!);
       expect(copy.margin).toBe('0px 0px 8px');
-      expect(copy.fontWeight).toBe('600');
+      expect(copy.fontWeight).toBe('400');
     });
   });
 
@@ -1087,6 +1087,24 @@ describe('RunViewComponent', () => {
   });
 
   describe('evidence', () => {
+    it('shares scrubber and filmstrip selection with the timeline and ignores unknown steps', async () => {
+      await open({ video: of({ session_id: ID, status: 'unavailable', has_video: false, video_url: null, video_segments: [] }) });
+      const scrubber = q<HTMLInputElement>('.step-scrubber')!;
+      scrubber.value = '0';
+      scrubber.dispatchEvent(new Event('input'));
+      await settle();
+      expect(fixture.componentInstance.selectedStep()?.step_id).toBe('st1');
+      expect(q('.step-button')!.getAttribute('aria-current')).toBe('step');
+      expect(q('.filmstrip-step')!.getAttribute('aria-current')).toBe('step');
+      expect(q('.evidence-image')!.getAttribute('src')).toContain('post1.png');
+      qa<HTMLButtonElement>('.filmstrip-step')[1].click();
+      await settle();
+      expect(fixture.componentInstance.selectedStep()?.step_id).toBe('st2');
+      expect(scrubber.value).toBe('1');
+      fixture.componentInstance.selectEvidenceStep('unknown');
+      expect(fixture.componentInstance.selectedStep()?.step_id).toBe('st2');
+    });
+
     it('is never blocked on video: steps and screenshot show while playback is still loading', async () => {
       await open({ video: new Subject<SessionVideo>() });
       expect(qa('ol.step-list li').length).toBe(3);
