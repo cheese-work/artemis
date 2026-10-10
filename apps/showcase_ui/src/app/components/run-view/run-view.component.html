@@ -34,7 +34,7 @@
         <p>{{ strings.ambiguousBody }}</p>
         <ul class="candidate-list">
           @for (id of candidates(); track id) {
-            <li><a class="candidate" [routerLink]="['/runs', id]">{{ id }}</a></li>
+            <li><a class="candidate mono" [routerLink]="['/runs', id]">{{ id }}</a></li>
           }
         </ul>
         <a class="back-to-runs" routerLink="/runs" [queryParams]="lastQuery()">{{ strings.backToRuns }}</a>
@@ -86,13 +86,15 @@
             <summary>Run details</summary>
             <dl>
               <dt>Phone</dt>
-              <dd appRunDeviceLabel [serial]="current.device_ref?.serial ?? null" [detail]="true"></dd>
-              <dt>Computer</dt>
-              <dd>{{ current.host_id === null ? 'A browser' : 'A computer (' + current.host_id.slice(0, 8) + ')' }}</dd>
+              <dd class="mono" appRunDeviceLabel [serial]="current.device_ref?.serial ?? null" [detail]="true"></dd>
+              @if (current.host_id !== null) {
+                <dt>Computer</dt>
+                <dd>A computer (<span class="mono">{{ current.host_id.slice(0, 8) }}</span>)</dd>
+              }
               <dt>Requested by</dt>
               <dd>{{ current.requested_by ?? 'Unknown' }}</dd>
               <dt>Started</dt>
-              <dd>
+              <dd class="mono">
                 @if (current.start_time) {
                   {{ current.start_time * 1000 | date: 'MMM d, y, HH:mm': '+0700' }} ICT
                 } @else {
@@ -125,7 +127,7 @@
           <p>Task: {{ resultOutcome()?.task_status || current.status }}</p>
           @if (resultOutcome(); as result) {
             @if (result.tests; as totals) {
-              <p class="check-counts">Passed: {{ totals.passed }} · Failed: {{ totals.failed }} · Inconclusive: {{ totals.inconclusive }} · Unchecked: {{ totals.unchecked }}</p>
+              <p class="check-counts">Passed: <span class="mono">{{ totals.passed }}</span> · Failed: <span class="mono">{{ totals.failed }}</span> · Inconclusive: <span class="mono">{{ totals.inconclusive }}</span> · Unchecked: <span class="mono">{{ totals.unchecked }}</span></p>
             }
             @for (finding of result.last_findings ?? []; track $index) { <p>{{ finding }}</p> }
             @for (subgoal of result.unmet_subgoals ?? []; track $index) { <p>Unmet subgoal: {{ subgoal }}</p> }
@@ -153,11 +155,11 @@
               <dt>Model</dt>
               <dd>{{ viewedModel()?.name ?? 'Unknown' }} ({{ viewedModel()?.id ?? 'Unknown' }})</dd>
               @if (usage(); as totals) {
-                <dt>Session tokens</dt><dd>{{ totals.total_tokens }}</dd>
-                <dt>Input / output tokens</dt><dd>{{ totals.prompt_tokens }} / {{ totals.completion_tokens }}</dd>
-                <dt>Cached tokens</dt><dd>{{ totals.cached_tokens }}</dd>
-                <dt>Context tokens</dt><dd>{{ totals.operator_context_tokens ?? 'Unknown' }} / {{ totals.operator_context_window_tokens }}</dd>
-                <dt>LLM calls</dt><dd>{{ totals.llm_calls }}</dd>
+                <dt>Session tokens</dt><dd class="mono">{{ totals.total_tokens }}</dd>
+                <dt>Input / output tokens</dt><dd class="mono">{{ totals.prompt_tokens }} / {{ totals.completion_tokens }}</dd>
+                <dt>Cached tokens</dt><dd class="mono">{{ totals.cached_tokens }}</dd>
+                <dt>Context tokens</dt><dd class="mono">{{ totals.operator_context_tokens ?? 'Unknown' }} / {{ totals.operator_context_window_tokens }}</dd>
+                <dt>LLM calls</dt><dd class="mono">{{ totals.llm_calls }}</dd>
               }
             </dl>
             @if (!usage()) { <p>{{ usageFailed() ? 'Could not load usage.' : 'Open run information to load usage.' }}</p> }
@@ -232,10 +234,10 @@
                   @if (expandedSteps().has(step.step_id)) {
                     <div class="step-details" [id]="'step-details-' + step.step_id" role="region" [attr.aria-label]="'Step ' + step.step_number + ' execution details'">
                       <dl>
-                        <dt>Recorded</dt><dd>{{ step.timestamp * 1000 | date:'medium' }}</dd>
-                        @if (step.duration != null) { <dt>Duration</dt><dd>{{ step.duration }} seconds</dd> }
+                        <dt>Recorded</dt><dd class="mono">{{ step.timestamp * 1000 | date:'medium' }}</dd>
+                        @if (step.duration != null) { <dt>Duration</dt><dd class="mono">{{ step.duration }} seconds</dd> }
                         @if (step.token_usage?.total_tokens != null || step.total_tokens != null) {
-                          <dt>Tokens</dt><dd>{{ step.token_usage?.total_tokens ?? step.total_tokens }}</dd>
+                          <dt>Tokens</dt><dd class="mono">{{ step.token_usage?.total_tokens ?? step.total_tokens }}</dd>
                         }
                       </dl>
                       <ng-container [ngTemplateOutlet]="executionEvents" [ngTemplateOutletContext]="{ $implicit: step }"></ng-container>
@@ -316,9 +318,9 @@
         <div class="report-body" [innerHTML]="markdown(event.data.text || '')"></div>
       } @else {
         <dl>
-          @for (param of eventParameters(event); track $index) { <dt>{{ param.key }}</dt><dd>{{ param.value }}</dd> }
+          @for (param of eventParameters(event); track $index) { <dt>{{ param.key }}</dt><dd class="mono">{{ param.value }}</dd> }
           @if (event.data.status) { <dt>Status</dt><dd>{{ event.data.status }}</dd> }
-          @if (event.data.duration_ms != null) { <dt>Duration</dt><dd>{{ event.data.duration_ms }} ms</dd> }
+          @if (event.data.duration_ms != null) { <dt>Duration</dt><dd class="mono">{{ event.data.duration_ms }} ms</dd> }
           @if (event.data.error) { <dt>Error</dt><dd>{{ event.data.error }}</dd> }
         </dl>
         @if (event.data.result != null) { <pre class="tool-output">{{ event.data.result | json }}</pre> }

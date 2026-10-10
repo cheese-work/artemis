@@ -32,6 +32,7 @@ import { ChangeDetectionStrategy, Component, input, signal } from '@angular/core
     '[class.failed]': 'failed()'
   },
   styles: [`
+    .step-number, .step-duration, .phase-worked-time { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
     :host(.timeline-step) { display: grid; grid-template-columns: 20px 56px minmax(0, 1fr) auto; align-items: center; gap: 8px; height: 56px; box-sizing: border-box; }
     .phase-worked-time { color: var(--color-text-muted); font-weight: normal; }
     .step-icon { font-size: 20px; }

@@ -367,6 +367,36 @@ describe('RunViewComponent', () => {
       });
     }
 
+    it('omits the default browser fact but preserves a recorded computer', async () => {
+      await open();
+      expect(q('.secondary-meta')!.textContent).not.toContain('Computer');
+      expect(q('.secondary-meta')!.textContent).not.toContain('A browser');
+      fixture.destroy();
+      await open({ runResult: of(run({ host_id: 'computer-12345678' })) });
+      expect(q('.secondary-meta')!.textContent).toContain('Computer');
+      expect(q('.secondary-meta')!.textContent).toContain('computer');
+    });
+
+    it('uses tabular mono for technical facts, counts, IDs and step details', async () => {
+      (runs as any).checks.and.returnValue(of({ records: [], run_outcome: {
+        task_status: 'completed', tests: { passed: 1, failed: 0, inconclusive: 0, unchecked: 0 }
+      } }));
+      await open({ steps: of([step(1, { duration: 1.25, total_tokens: 42,
+        action_taken: { action: 'launch_app', package_name: 'com.example.settings' } })]) });
+      q<HTMLButtonElement>('.step-toggle')!.click();
+      await settle();
+      const facts = qa<HTMLElement>('.secondary-meta .mono, .check-counts .mono, .run-id-copy-button, .step-number, .step-details dd');
+      expect(facts.length).toBeGreaterThanOrEqual(10);
+      for (const fact of facts) {
+        const style = getComputedStyle(fact);
+        expect(style.fontFamily).toContain('JetBrains Mono');
+        expect(style.fontVariantNumeric).toBe('tabular-nums');
+      }
+      const box = q('.run-id-copy-button')!.getBoundingClientRect();
+      expect(box.width).toBeGreaterThanOrEqual(44);
+      expect(box.height).toBeGreaterThanOrEqual(44);
+    });
+
     it('preserves device detail, step markup and action order', async () => {
       await open({ steps: of([step(1)]) });
       expect(q('.secondary-meta dd')!.textContent!.trim()).toBe('emulator-5554');
@@ -1356,7 +1386,8 @@ describe('RunViewComponent', () => {
       for (const control of ['Delete', 'Pin', 'Unpin', 'Stop', 'Resume', 'Stop task', 'Resume task']) {
         expect(labels()).not.toContain(control);
       }
-      expect(q('.read-only-note')!.textContent).toContain('qa@example.test');
+      expect(qa('.read-only-note').length).toBe(1);
+      expect(q('.outcome .read-only-note')!.textContent).toContain('qa@example.test');
     });
 
     it('treats a run with no owner as read-only for a QA', async () => {
