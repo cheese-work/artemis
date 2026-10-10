@@ -49,9 +49,9 @@ describe('WorkspaceComponent image chat', () => {
       whatsNewPromptDraft: signal(false),
       updateWhatsNewErrorVisibility: () => {},
       isCurrentSessionRunning: () => false,
+      sessions: () => [],
       currentSession: () => null,
       currentSessionId: () => null,
-      sessions: () => [],
       currentStartupProgress: () => [],
       runTask,
       fetchStatus: jasmine.createSpy('fetchStatus'),
@@ -62,7 +62,7 @@ describe('WorkspaceComponent image chat', () => {
       providers: [
         provideRouter([]),
         { provide: AgentService, useValue: agentService },
-        { provide: WorkspacePhoneService, useValue: { target: () => TARGET, requestPicker: jasmine.createSpy('requestPicker') } }
+        { provide: WorkspacePhoneService, useValue: { target: () => TARGET, view: () => ({ text: 'Fixture phone' }), requestPicker: jasmine.createSpy('requestPicker') } }
       ],
       schemas: [CUSTOM_ELEMENTS_SCHEMA]
     })

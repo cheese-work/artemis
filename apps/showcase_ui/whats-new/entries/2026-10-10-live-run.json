@@ -1,0 +1,7 @@
+{
+  "id": "2026-10-10-live-run",
+  "date": "2026-10-10",
+  "title": "Follow a run while the phone works.",
+  "body": "See phone preparation, the current step and its live thought. Follow the latest step or select earlier evidence without losing your place. Retry and pause notes explain what happens next.",
+  "issues": ["CHE-1512"]
+}

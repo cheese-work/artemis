@@ -29,6 +29,7 @@ import { ChangeDetectionStrategy, Component, input, signal } from '@angular/core
   `,
   host: {
     '[class.timeline-step]': "presentation() === 'step'",
+    '[class.working]': 'working()',
     '[class.failed]': 'failed()'
   },
   styles: [`
@@ -37,6 +38,7 @@ import { ChangeDetectionStrategy, Component, input, signal } from '@angular/core
     .step-icon { font-size: 20px; }
     .step-thumbnail { display: flex; align-items: center; justify-content: center; width: 56px; height: 40px; overflow: hidden; border-radius: var(--radius-sm); color: var(--color-text-muted); background: var(--color-surface-subtle); }
     .step-thumbnail img { display: block; width: 100%; height: 100%; object-fit: contain; }
+    :host(.working) .step-thumbnail { box-sizing: border-box; border: 1px dashed var(--color-primary-edge); background: transparent; }
     .step-summary, .step-title, .step-kind, .step-failure-detail { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
     .step-heading, .step-meta { display: flex; align-items: center; gap: 6px; min-width: 0; }
     .step-title { font-size: 13px; }
@@ -53,6 +55,7 @@ export class RunStepRowComponent {
   readonly title = input.required<string>();
   readonly stepNumber = input<number | null>(null);
   readonly failed = input(false);
+  readonly working = input(false);
   readonly icon = input('ads_click');
   readonly thumbnail = input<string | null>(null);
   readonly kind = input<string | null>(null);

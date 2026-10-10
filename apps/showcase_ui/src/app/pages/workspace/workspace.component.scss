@@ -92,257 +92,271 @@
     display: none;
   }
 
-  /* The new-task box: always expanded, in normal flow under the run so it never covers evidence. */
-  .workspace-floating-bar-wrapper {
+  /* Detail header: holds Stop run during a live run; a 44 px box around a 36 px face. */
+  .detail-header {
+    flex: none;
+    display: flex;
+    justify-content: flex-end;
+    padding: var(--space-xs) var(--space-md);
+    background: var(--color-surface);
+    border-bottom: 1px solid var(--color-rule);
+  }
+
+  .btn-stop-run {
+    display: flex;
+    align-items: center;
+    min-width: var(--target);
+    height: var(--target);
+    padding: 4px 0;
+    background: transparent;
+    border: none;
+    font-family: inherit;
+    cursor: pointer;
+
+    .stop-face {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      height: 36px;
+      padding: 0 var(--space-smd);
+      border-radius: var(--radius-md);
+      background: var(--color-error-bg);
+      color: var(--color-error);
+      font-size: var(--text-ui);
+      font-weight: 600;
+      transition: background var(--motion-fast) var(--ease-move), color var(--motion-fast) var(--ease-move);
+
+      .material-symbols-outlined {
+        font-size: 18px;
+      }
+    }
+
+    &:hover:not(:disabled) .stop-face {
+      background: var(--color-error-solid);
+      color: var(--color-on-primary);
+    }
+
+    &:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
+  }
+
+  /* Pinned composer: the last row of the detail pane, in normal flow so it never covers evidence. */
+  .composer {
     position: relative;
     flex: none;
     z-index: 50;
     display: flex;
     flex-direction: column;
     gap: var(--space-sm);
-    padding: var(--space-smd) var(--space-md);
+    padding: var(--space-smd) var(--space-md) var(--space-sm);
     background: var(--color-surface);
     border-top: 1px solid var(--color-rule);
+  }
 
-    .floating-dock-toast {
+  .composer-toast {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    padding: 0 0 0 var(--space-smd);
+    background: var(--color-error-bg);
+    border: 1px solid var(--color-error);
+    border-radius: var(--radius-md);
+    color: var(--color-error);
+    font-size: var(--text-ui);
+    font-weight: 500;
+
+    .toast-icon {
+      flex-shrink: 0;
+    }
+
+    .toast-text {
+      flex: 1;
+      line-height: 1.4;
+    }
+
+    .btn-toast-close {
       display: flex;
       align-items: center;
-      gap: var(--space-sm);
-      padding: var(--space-sm) var(--space-smd);
+      justify-content: center;
+      flex: none;
+      width: var(--target);
+      height: var(--target);
+      padding: 0;
+      background: transparent;
+      border: none;
       border-radius: var(--radius-md);
+      color: var(--color-error);
+      cursor: pointer;
+
+      &:hover {
+        background: var(--color-surface);
+      }
+    }
+  }
+
+  /* Outline only on the input card (spec section 1, --color-border). */
+  .composer-card {
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    transition: border-color var(--motion-fast) var(--ease-move);
+  }
+
+  .composer.is-focused .composer-card {
+    border-color: var(--color-primary);
+    outline: 3px solid var(--color-focus);
+    outline-offset: 2px;
+  }
+
+  /* Input and controls on one row; below about 480 px the controls wrap under the input. */
+  .composer-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-xs) var(--space-sm);
+    padding: var(--space-xs) var(--space-xs) var(--space-xs) var(--space-md);
+  }
+
+  .composer-input {
+    flex: 1 1 200px;
+    min-width: 0;
+    max-height: 120px;
+    padding: 12px 0;
+    border: none;
+    outline: none;
+    background: transparent;
+    resize: none;
+    font-family: inherit;
+    font-size: var(--text-body);
+    line-height: 20px;
+    color: var(--color-ink);
+
+    &::placeholder {
+      color: var(--color-text-faint);
+    }
+
+    &:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
+  }
+
+  .composer-controls {
+    display: flex;
+    align-items: center;
+    gap: var(--space-xs);
+    flex: none;
+    margin-left: auto;
+  }
+
+  /* Flash / Pro: each 44 px box draws a 36 px face (spec section 3). */
+  .segments {
+    display: inline-flex;
+  }
+
+  .segment {
+    display: flex;
+    align-items: center;
+    min-width: var(--target);
+    height: var(--target);
+    padding: 4px 0;
+    background: transparent;
+    border: none;
+    font-family: inherit;
+    cursor: pointer;
+    user-select: none;
+
+    .segment-face {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-sizing: border-box;
+      width: 100%;
+      height: 36px;
+      padding: 0 var(--space-smd);
+      background: var(--color-surface-subtle);
+      border: 0;
+      color: var(--color-text-muted);
       font-size: var(--text-ui);
       font-weight: 500;
+      transition: background var(--motion-fast) var(--ease-move), color var(--motion-fast) var(--ease-move);
+    }
 
-      &.error {
-        background: var(--color-error-bg);
-        border: 1px solid var(--color-error);
-        color: var(--color-error);
+    &:first-child .segment-face { border-radius: var(--radius-md) 0 0 var(--radius-md); }
+    &:last-child .segment-face { border-radius: 0 var(--radius-md) var(--radius-md) 0; }
 
-        .toast-icon {
-          flex-shrink: 0;
-        }
+    &:hover:not(.active) .segment-face {
+      color: var(--color-ink);
+    }
 
-        .toast-text {
-          flex: 1;
-          line-height: 1.4;
-        }
+    /* Selected: a tint and a heavier word, never colour alone. */
+    &.active .segment-face {
+      background: var(--color-primary-tint);
+      color: var(--color-ink);
+      font-weight: 600;
+    }
+  }
 
-        .btn-toast-close {
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          width: var(--target);
-          height: var(--target);
-          margin: -10px -8px -10px 0;
-          padding: 0;
-          background: transparent;
-          border: none;
-          border-radius: var(--radius-md);
-          color: var(--color-error);
-          cursor: pointer;
+  .composer-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex: none;
+    width: var(--target);
+    height: var(--target);
+    padding: 0;
+    border: none;
+    border-radius: var(--radius-md);
+    cursor: pointer;
+    transition: background var(--motion-fast) var(--ease-move);
 
-          &:hover {
-            background: var(--color-surface);
-          }
-        }
+    .spinning-icon {
+      animation: spin 1s linear infinite;
+    }
+
+    &:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
+
+    &.btn-attach {
+      background: var(--color-surface-subtle);
+      color: var(--color-text-muted);
+
+      &:hover:not(:disabled) {
+        background: var(--color-surface-subtle);
+        color: var(--color-ink);
       }
     }
 
-    .floating-dock-row {
-      display: flex;
-      width: 100%;
-      max-width: 880px;
-      margin: 0 auto;
-    }
+    &.btn-send {
+      background: var(--color-primary);
+      color: var(--color-on-primary);
 
-    .floating-dock-card {
-      width: 100%;
-      background: var(--color-surface);
-      border: 1px solid var(--color-border);
-      border-radius: var(--radius-md);
-      transition: border-color var(--motion-fast) var(--ease-move), box-shadow var(--motion-fast) var(--ease-move);
-    }
-
-    &.is-focused .floating-dock-card {
-      border-color: var(--color-primary);
-      outline: 3px solid var(--color-focus);
-      outline-offset: 2px;
-    }
-
-    .expanded-card-content {
-      display: flex;
-      flex-direction: column;
-      width: 100%;
-
-      .card-main-input-row {
-        display: flex;
-        align-items: center;
-        gap: var(--space-sm);
-        padding: var(--space-sm) var(--space-sm) 0 var(--space-md);
-        min-height: 56px;
-
-        .input-content-area {
-          flex: 1;
-          min-width: 0;
-          display: flex;
-          align-items: center;
-
-          .dock-textarea {
-            display: block;
-            min-height: var(--target);
-            width: 100%;
-            max-height: 120px;
-            padding: var(--space-sm) 0;
-            border: none;
-            outline: none;
-            background: transparent;
-            resize: none;
-            font-family: inherit;
-            font-size: var(--text-body);
-            line-height: 1.5;
-            color: var(--color-ink);
-
-            &::placeholder {
-              color: var(--color-text-muted);
-              font-size: var(--text-ui);
-            }
-
-            /* The hint wraps to two lines on a phone: keep both visible. */
-            @media (max-width: 599px) {
-              min-height: 3.25rem;
-            }
-
-            &:disabled {
-              opacity: 0.6;
-              cursor: not-allowed;
-            }
-          }
-        }
-
-        .dock-circle-btn {
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          flex-shrink: 0;
-          width: var(--target);
-          height: var(--target);
-          padding: 0;
-          border: 0;
-          border-radius: var(--radius-full);
-          cursor: pointer;
-          transition: background var(--motion-fast) var(--ease-move), border-color var(--motion-fast) var(--ease-move);
-
-          .spinning-icon {
-            animation: spin 1s linear infinite;
-          }
-
-          &:disabled {
-            opacity: 0.6;
-            cursor: not-allowed;
-          }
-
-          &.btn-clear,
-          &.btn-attach {
-            background: var(--color-surface-subtle);
-            color: var(--color-text-muted);
-
-            &:hover:not(:disabled) {
-              background: var(--color-surface-subtle);
-              color: var(--color-ink);
-            }
-          }
-
-          &.btn-stop {
-            background: var(--color-error-solid);
-            color: var(--color-on-primary);
-
-            &:hover:not(:disabled) {
-              background: var(--color-error);
-            }
-          }
-
-          &.btn-send {
-            background: var(--color-primary);
-            color: var(--color-on-primary);
-
-            &:hover:not(:disabled) {
-              background: var(--color-primary-hover);
-            }
-
-            &:disabled {
-              background: var(--color-surface-subtle);
-              color: var(--color-text-muted);
-              opacity: 1;
-            }
-
-            /* No phone: looks off, but stays clickable so Run can open the phone picker. */
-            &.is-blocked {
-              opacity: 0.55;
-              cursor: not-allowed;
-            }
-          }
-        }
+      &:hover:not(:disabled) {
+        background: var(--color-primary-hover);
       }
 
-      .card-footer-row {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        padding: var(--space-xs) var(--space-sm) var(--space-sm) var(--space-md);
+      &:disabled {
+        background: var(--color-surface-subtle);
+        color: var(--color-text-muted);
+        opacity: 1;
+      }
 
-        .footer-left-group {
-          display: flex;
-          align-items: center;
-          gap: var(--space-sm);
-
-          .model-profile-toggle {
-            display: inline-flex;
-            align-items: center;
-            gap: 2px;
-            padding: 2px;
-            background: var(--color-surface-subtle);
-            border: 0;
-            border-radius: var(--radius-md);
-
-            .profile-toggle-pill {
-              display: inline-flex;
-              align-items: center;
-              justify-content: center;
-              gap: var(--space-xs);
-              min-width: 72px;
-              height: var(--target);
-              padding: 0 var(--space-smd);
-              border: 0;
-              border-radius: var(--radius-sm);
-              background: transparent;
-              color: var(--color-text-muted);
-              font-family: inherit;
-              font-size: var(--text-ui);
-              font-weight: 500;
-              cursor: pointer;
-              user-select: none;
-              transition: background var(--motion-fast) var(--ease-move), color var(--motion-fast) var(--ease-move);
-
-              .pill-icon {
-                font-size: 18px;
-                flex-shrink: 0;
-              }
-
-              &:hover:not(.active) {
-                color: var(--color-ink);
-                background: var(--color-surface);
-              }
-
-              &.active {
-                background: var(--color-primary-tint);
-                color: var(--color-ink);
-                font-weight: 600;
-              }
-            }
-          }
-        }
+      /* No phone: looks off, but stays clickable so Send can open the phone picker. */
+      &.is-blocked {
+        opacity: 0.55;
+        cursor: not-allowed;
       }
     }
+  }
+
+  .composer-hint {
+    margin: 0;
+    font-size: var(--text-label);
+    color: var(--color-text-faint);
   }
 
   @media (max-width: 1023px) {
@@ -414,7 +428,7 @@
   flex-wrap: wrap;
   gap: var(--space-sm);
   list-style: none;
-  margin: var(--space-sm) var(--space-md) 0;
+  margin: var(--space-md) var(--space-md) 0;
   padding: 0;
 
   .attached-image {
@@ -431,6 +445,7 @@
       border: 1px solid var(--color-rule-strong);
     }
 
+    /* A 44 px hit box over the corner; the visible mark is the 20 px face inside it. */
     .btn-remove-image {
       position: absolute;
       top: -14px;
@@ -446,10 +461,10 @@
       border-radius: var(--radius-full);
       cursor: pointer;
 
-      /* The 44px target is invisible; the visible mark stays 20px. */
-      &::before {
-        content: '';
-        position: absolute;
+      .remove-face {
+        display: flex;
+        align-items: center;
+        justify-content: center;
         width: 20px;
         height: 20px;
         border-radius: var(--radius-full);
@@ -457,7 +472,6 @@
       }
 
       .material-symbols-outlined {
-        position: relative;
         font-size: 14px;
         color: var(--color-on-primary);
       }

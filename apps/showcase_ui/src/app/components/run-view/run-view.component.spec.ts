@@ -361,7 +361,7 @@ describe('RunViewComponent', () => {
         });
         expect(q('video')).toBeNull();
         expect(q('.recording-copy')!.textContent!.trim()).toContain(copy);
-        expect(q('.recording-copy')!.getAttribute('role')).toBe('status');
+        expect(q('.recording-copy')!.getAttribute('role')).toBeNull();
         expect(q('img.evidence-image')!.getAttribute('alt')).toBe('Screenshot for step 3');
         expect(qa('button').some((control) => control.textContent!.trim() === 'Check again')).toBe(retry);
       });
@@ -445,8 +445,13 @@ describe('RunViewComponent', () => {
 
       it('shows the same interrupted banner and device without selecting a new device', async () => {
         await open({ viewMode, runResult: of(run({ status: 'interrupted', interrupt_reason: 'device_offline' })) });
-        expect(q('.interrupted-banner')!.textContent).toContain('Run interrupted at step 3');
-        expect(q('.interrupted-banner')!.textContent).toContain('The phone went offline.');
+        if (viewMode === 'review') {
+          expect(q('.interrupted-banner')!.textContent).toContain('Run interrupted at step 3');
+          expect(q('.interrupted-banner')!.textContent).toContain('The phone went offline.');
+        } else {
+          expect(q('.interrupted-banner')).toBeNull();
+          expect(q('.run-status-slot')!.textContent).toContain('Run finished: Interrupted.');
+        }
         expect(q('.secondary-meta')!.textContent).toContain('emulator-5554');
         expect(localStorage.getItem(SELECTED_DEVICE_SERIAL_KEY)).toBeNull();
       });
@@ -656,7 +661,8 @@ describe('RunViewComponent', () => {
       });
       await settle();
       expect(q('.outcome-badge')!.textContent).toContain('Interrupted');
-      expect(q('.interrupted-banner')!.textContent).toContain('lost its connection');
+      expect(q('.interrupted-banner')).toBeNull();
+      expect(q('.run-status-slot')!.textContent).toContain('Run finished: Interrupted.');
       expect(fixture.componentInstance.selectedStep()?.step_id).toBe('st1');
       expect(runs.get).toHaveBeenCalledTimes(2);
     });
@@ -724,7 +730,7 @@ describe('RunViewComponent', () => {
       agent.agentStatus.set('paused');
       agent.pausedError.set('AI call failed: quota exhausted');
       await open({ viewMode: 'live', runResult: of(run({ status: 'paused' })) });
-      expect(q('.live-state')!.getAttribute('role')).toBe('status');
+      expect(q('.run-status-slot')!.getAttribute('aria-live')).toBe('polite');
       expect(q('.live-state')!.textContent).toContain('Task paused');
       expect(q('.live-state')!.textContent).toContain('AI call failed: quota exhausted');
       expect(button('Continue task')).toBeDefined();
@@ -832,6 +838,190 @@ describe('RunViewComponent', () => {
     }));
   });
 
+  describe('Workbench live run', () => {
+    for (const [capture, videoStatus, label] of [
+      ['recording', 'unavailable', 'Recording'], ['stopped', 'processing', 'Preparing video']
+    ] as const) {
+      it(`shows the ${label} neutral chip without additional announcements`, async () => {
+        await open({ viewMode: 'live', runResult: of(run({ status: 'running', recordings: [{ recording_id: 'r1', capture, transfer: 'uploaded' }] })),
+          video: of(ready({ status: videoStatus, has_video: false })) });
+        expect(q('.recording-chip')?.textContent?.trim()).toBe(label);
+        expect(q('.recording-dot') !== null).toBe(capture === 'recording');
+        expect(q('.recording-copy')?.getAttribute('role')).toBeNull();
+      });
+    }
+
+    it('shows the queued strip without a current step', async () => {
+      await open({ viewMode: 'live', runResult: of(run({ status: 'pending' })), steps: of([]) });
+      expect(q('.status-strip')?.textContent).toContain('Waiting for the phone.');
+      expect(q('.current-step')).toBeNull();
+      expect(q('.run-status-slot')?.textContent?.trim()).toBe('');
+    });
+
+    it('renders preparation as 44 px checklist rows with mono elapsed time and no live announcements', async () => {
+      await open({ viewMode: 'live', runResult: of(run({ status: 'running' })), steps: of([]) });
+      fixture.componentRef.setInput('startupProgress', [
+        { stage: 'device_check', message: 'Checking the Android device', timestamp: NOW - 3 },
+        { stage: 'device_ready', message: 'Android device connected', timestamp: NOW - 2 },
+        { stage: 'uiautomator', message: 'Connecting to the UI hierarchy service', timestamp: NOW - 2 }
+      ]);
+      await settle();
+      expect(qa('.startup-item').length).toBe(2);
+      expect(q('.startup-item')?.textContent).toContain('Android device connected');
+      expect(q('.startup-item')?.textContent).toContain('1.0s');
+      for (const item of qa('.startup-item')) expect(item.getBoundingClientRect().height).toBeGreaterThanOrEqual(44);
+      expect(getComputedStyle(q('.startup-elapsed')!).fontFamily).toContain('Mono');
+      expect(q('.startup-progress [role="status"]')).toBeNull();
+      expect(q('.steps')?.textContent).not.toContain('No steps were recorded.');
+    });
+
+    it('shows the current step and a three-line Thought without announcing streamed text', async () => {
+      agent.sessionLogs.set([{ type: 'llm_stream', timestamp: NOW, data: {
+        execution_id: 'live', step_id: 'st1', stream_type: 'thinking', text: '<script>Inspect the screen</script>'
+      } }]);
+      await open({ viewMode: 'live', runResult: of(run({ status: 'running' })), steps: of([step(1, { timestamp: NOW - 5 })]) });
+      expect(q('.current-step')?.textContent).toContain('working');
+      expect(q('.live-thought')?.textContent).toContain('<script>Inspect the screen</script>');
+      expect(q('.live-thought script')).toBeNull();
+      expect(getComputedStyle(q('.live-thought')!).getPropertyValue('-webkit-line-clamp')).toBe('3');
+      expect(q('.live-thought')?.closest('[aria-live]')).toBeNull();
+      expect(q('.current-step .step-thumbnail')?.querySelector('img')).toBeNull();
+      expect(q<HTMLDetailsElement>('.live-streams')!.open).toBeFalse();
+      button('Show live log').click();
+      await settle();
+      expect(q<HTMLDetailsElement>('.live-streams')!.open).toBeTrue();
+      expect(document.activeElement).toBe(q('.live-streams > summary'));
+    });
+
+    it('follows new steps, preserves manually selected evidence, and follows again on request', async () => {
+      await open({ viewMode: 'live', runResult: of(run({ status: 'running' })), steps: of([step(1), step(2)]) });
+      const view = fixture.componentInstance;
+      expect(view.followLatest()).toBeTrue();
+      expect(view.selectedStep()?.step_number).toBe(2);
+      fixture.componentRef.setInput('liveSteps', [step(3)]);
+      await settle();
+      expect(view.selectedStep()?.step_number).toBe(3);
+      qa<HTMLButtonElement>('.step-button')[0].click();
+      await settle();
+      expect(view.followLatest()).toBeFalse();
+      fixture.componentRef.setInput('liveSteps', [step(3), step(4)]);
+      await settle();
+      expect(view.selectedStep()?.step_number).toBe(1);
+      const scroll = spyOn(qa<HTMLButtonElement>('.step-button').at(-1)!, 'scrollIntoView');
+      button('Follow latest').click();
+      await settle();
+      TestBed.tick();
+      await settle();
+      expect(view.followLatest()).toBeTrue();
+      expect(view.selectedStep()?.step_number).toBe(4);
+      expect(button('Follow latest').getAttribute('aria-pressed')).toBe('true');
+      expect(scroll).toHaveBeenCalled();
+    });
+
+    it('announces once per step start and once at completion, not on thought, retry or clock updates', async () => {
+      (runs as any).checks.and.returnValue(of({ records: [], streams: [], run_outcome: {
+        phase: 'outcome', task_status: 'completed', tests: { passed: 0, failed: 1, inconclusive: 0, unchecked: 0 }
+      } }));
+      const result = new Subject<RunSummary>();
+      await open({ viewMode: 'live', runResult: result, steps: of([]) });
+      result.next(run({ status: 'running' }));
+      await settle();
+      const announcements: string[] = [];
+      const observer = new MutationObserver(records => {
+        const strip = q('.run-status-slot')!;
+        if (records.some(record => strip.contains(record.target) || Array.from(record.addedNodes).some(node => node.contains(strip)))) {
+          announcements.push(strip.textContent!.trim());
+        }
+      });
+      observer.observe(root, { childList: true, subtree: true, characterData: true });
+      const render = async () => {
+        await settle();
+        await new Promise<void>(resolve => setTimeout(resolve, 0));
+      };
+      fixture.componentRef.setInput('liveSteps', [step(1)]);
+      await render();
+      agent.agentStatus.set('running');
+      agent.isRetrying.set(true);
+      agent.retryMessage.set('Retrying in 2s');
+      agent.sessionLogs.set([{ type: 'llm_stream', timestamp: NOW, data: {
+        execution_id: 'live', step_id: 'st1', stream_type: 'thinking', text: 'New thought'
+      } }]);
+      await render();
+      (fixture.componentInstance as any).clock.set(NOW + 1);
+      await render();
+      agent.isPaused.set(true);
+      agent.agentStatus.set('paused');
+      await render();
+      fixture.componentRef.setInput('liveSteps', [step(1), step(2)]);
+      await render();
+      result.next(run({ status: 'failed' }));
+      await render();
+      observer.disconnect();
+      expect(announcements).toEqual(['Step 1 in progress.', 'Step 2 in progress.', 'Run finished: Fail.']);
+      expect(qa('[aria-live="polite"]').length).toBe(1);
+      expect(q('.status-strip')).toBeNull();
+      expect(q('[aria-label="Stop run"]')).toBeNull();
+      expect(q('[aria-label="Run again"]')).not.toBeNull();
+    });
+
+    for (const outcome of [
+      { task_status: 'completed', tests: { passed: 1, failed: 1, inconclusive: 0, unchecked: 0 }, verdict: 'Fail' },
+      { task_status: 'completed', tests: { passed: 1, failed: 0, inconclusive: 0, unchecked: 0 }, verdict: 'Pass' },
+      { task_status: 'completed', tests: { passed: 1, failed: 0, inconclusive: 1, unchecked: 0 }, verdict: 'Inconclusive' },
+      { task_status: 'completed', tests: { passed: 1, failed: 0, inconclusive: 0, unchecked: 1 }, verdict: 'Inconclusive' },
+      { task_status: 'partial', tests: { passed: 1, failed: 0, inconclusive: 0, unchecked: 0 }, verdict: 'Inconclusive' },
+      { task_status: 'blocked', tests: { passed: 1, failed: 0, inconclusive: 0, unchecked: 0 }, verdict: 'Inconclusive' }
+    ]) {
+      it(`announces the ${outcome.verdict} verdict for a completed ${outcome.task_status} outcome with ${JSON.stringify(outcome.tests)}`, async () => {
+        (runs as any).checks.and.returnValue(of({ records: [], streams: [], run_outcome: { phase: 'outcome', ...outcome } }));
+        await open({ viewMode: 'live', runResult: of(run({ status: 'completed' })) });
+        expect(q('.run-status-slot')?.textContent?.trim()).toBe(`Run finished: ${outcome.verdict}.`);
+        expect(q('.run-result-summary')?.textContent).toContain(`Failed: ${outcome.tests.failed}`);
+        expect(q('.run-result-summary')?.textContent).toContain(`Task: ${outcome.task_status}`);
+      });
+    }
+
+    for (const [status, label] of [
+      ['completed', 'Completed'], ['failed', 'Failed'], ['interrupted', 'Interrupted'], ['cancelled', 'Cancelled']
+    ]) {
+      it(`announces ${label} without inventing a verdict when a ${status} run has no outcome`, async () => {
+        await open({ viewMode: 'live', runResult: of(run({ status })) });
+        expect(fixture.componentInstance.resultOutcome()).toBeNull();
+        expect(q('.run-status-slot')?.textContent?.trim()).toBe(`Run finished: ${label}.`);
+      });
+    }
+
+    it('updates startup and step elapsed time once per second and stops the clock after completion', fakeAsync(() => {
+      admin.getIdentity.and.returnValue(of({ email: 'qa@example.test', admin: false, auth_mode: 'cloudflare', reason: null }));
+      runs.get.and.returnValue(of(run({ status: 'running', start_time: Date.now() / 1000 - 10 })));
+      runs.steps.and.returnValue(of([]));
+      runs.video.and.returnValue(of(ready({ status: 'unavailable', has_video: false })));
+      fixture = TestBed.createComponent(RunViewComponent);
+      fixture.componentRef.setInput('runId', ID);
+      fixture.componentRef.setInput('mode', 'live');
+      fixture.componentRef.setInput('startupProgress', [{ stage: 'device_check', message: 'Checking phone', timestamp: Date.now() / 1000 }]);
+      root = fixture.nativeElement;
+      fixture.detectChanges();
+      tick(999);
+      fixture.detectChanges();
+      expect(q('.startup-elapsed')?.textContent).toBe('0.0s');
+      tick(1);
+      fixture.detectChanges();
+      expect(q('.startup-elapsed')?.textContent).toBe('1.0s');
+      fixture.componentRef.setInput('liveSteps', [step(1, { timestamp: Date.now() / 1000 })]);
+      fixture.detectChanges();
+      tick(1000);
+      fixture.detectChanges();
+      expect(q('.current-step .step-duration')?.textContent).toBe('1s');
+      (fixture.componentInstance as any).catalogRun.set(run());
+      fixture.detectChanges();
+      const endClock = (fixture.componentInstance as any).clock();
+      tick(2000);
+      expect((fixture.componentInstance as any).clock()).toBe(endClock);
+      fixture.destroy();
+    }));
+  });
+
   describe('streamed thinking and text characterization', () => {
     const logs = [
       { type: 'llm_stream', timestamp: START, data: { execution_id: 'exec-1', step_id: 'st1', stream_type: 'thinking', text: 'Inspect the screen', isCompleted: false } },
@@ -847,7 +1037,7 @@ describe('RunViewComponent', () => {
       expect(streams.textContent).toContain('Work');
       expect(streams.textContent).toContain('<script>work</script>');
       expect(streams.querySelector('script')).toBeNull();
-      expect(streams.querySelectorAll('details > summary').length).toBe(2);
+      expect(streams.querySelectorAll(':scope > details > summary').length).toBe(2);
     });
 
     it('updates a streamed block without duplicating the execution', async () => {
@@ -879,7 +1069,7 @@ describe('RunViewComponent', () => {
 
   describe('live task-switch position characterization', () => {
     for (const catalogMissing of [false, true]) {
-      it(`saves run A under A and resets run B with catalog ${catalogMissing ? 'missing' : 'present'}`, async () => {
+      it(`saves run A under A and follows run B with catalog ${catalogMissing ? 'missing' : 'present'}`, async () => {
         const manySteps = Array.from({ length: 30 }, (_, index) => step(index + 1));
         await open({ viewMode: 'live', runResult: catalogMissing ? httpError(404) : of(run()), steps: of(manySteps) });
         fixture.componentRef.setInput('liveSession', { session_id: ID, initial_goal: 'Run A', start_time: START, status: 'running' });
@@ -903,8 +1093,11 @@ describe('RunViewComponent', () => {
         await settle();
         expect(runs.viewPosition()).toEqual({ sessionId: ID, selectedStepId: 'st1', scrollTop: oldScroll, timelineScrollTop: oldTimeline });
         expect(fixture.componentInstance.selectedStep()?.step_id).toBe('b-st30');
-        expect(q<HTMLElement>('.viewer-scroll')!.scrollTop).toBe(0);
-        expect(q<HTMLElement>('.step-list')!.scrollTop).toBe(0);
+        expect(fixture.componentInstance.followLatest()).toBeTrue();
+        const timeline = q<HTMLElement>('.step-list')!;
+        const latest = q<HTMLElement>('.step-button[aria-current="step"]')!;
+        expect(latest.getBoundingClientRect().bottom).toBeLessThanOrEqual(timeline.getBoundingClientRect().bottom + 1);
+        expect(timeline.scrollTop).toBeGreaterThan(0);
       });
     }
   });
@@ -1584,16 +1777,19 @@ describe('RunViewComponent', () => {
       expect(fixture.componentInstance.duration()).toBe(stopped);
     });
 
-    it('gives every header control its own 44 by 44 px box', async () => {
-      await open();
-      q<HTMLDetailsElement>('.more-actions')!.open = true;
-      await settle();
-      for (const control of qa<HTMLElement>('.run-header button, .run-header summary, .run-header a')) {
-        const bounds = control.getBoundingClientRect();
-        expect(bounds.width).withContext(control.textContent ?? '').toBeGreaterThanOrEqual(44);
-        expect(bounds.height).withContext(control.textContent ?? '').toBeGreaterThanOrEqual(44);
-      }
-    });
+    for (const status of ['completed', 'running']) {
+      it(`gives every header control its own 44 by 44 px box while ${status}`, async () => {
+        await open({ runResult: of(run({ status })) });
+        expect(q(`.run-header [aria-label="${status === 'running' ? 'Stop run' : 'Run again'}"]`)).not.toBeNull();
+        q<HTMLDetailsElement>('.more-actions')!.open = true;
+        await settle();
+        for (const control of qa<HTMLElement>('.run-header button, .run-header summary, .run-header a')) {
+          const bounds = control.getBoundingClientRect();
+          expect(bounds.width).withContext(control.textContent ?? '').toBeGreaterThanOrEqual(44);
+          expect(bounds.height).withContext(control.textContent ?? '').toBeGreaterThanOrEqual(44);
+        }
+      });
+    }
   });
 
   describe('review corrections', () => {

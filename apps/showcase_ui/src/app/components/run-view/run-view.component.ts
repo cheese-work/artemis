@@ -115,7 +115,7 @@ export class RunViewComponent {
   public readonly liveSteps = input<StepItemData[]>([]);
   public readonly startupProgress = input<StartupProgressEvent[]>([]);
   public readonly startupItems = computed(() => buildStartupWorkItems(
-    this.startupProgress(), Date.now() / 1000, this.steps().length > 0, runStatusView(this.run()?.status).active));
+    this.startupProgress(), this.clock(), this.steps().length > 0, this.active()));
   public readonly newRunPrompt = output<string>();
 
   public readonly strings = RUN_STRINGS;
@@ -160,6 +160,8 @@ export class RunViewComponent {
   /** The media element itself could not load or decode the file. */
   public readonly playerFailed = signal(false);
   public readonly selectedStepId = signal<string | null>(null);
+  public readonly followLatest = signal(true);
+  public readonly liveLogOpen = signal(false);
   public readonly activeSegmentIndex = signal(0);
   public readonly compact = signal(false);
   public readonly techOpen = signal(false);
@@ -226,6 +228,27 @@ export class RunViewComponent {
     if (!this.steps().length) return 'Preparing the phone. Steps will appear here.';
     return `Step ${this.steps().at(-1)!.step_number} in progress. The verdict appears here when the run finishes.`;
   });
+  public readonly announcement = computed(() => {
+    const run = this.run();
+    if (!run) return '';
+    if (!this.active()) {
+      const outcome = this.resultOutcome();
+      let verdict: string | null = null;
+      if (outcome?.tests?.failed) verdict = 'Fail';
+      else if (outcome?.tests?.inconclusive || outcome?.tests?.unchecked
+        || outcome?.task_status === 'partial' || outcome?.task_status === 'blocked') verdict = 'Inconclusive';
+      else if (outcome?.task_status === 'completed' && outcome.tests?.passed) verdict = 'Pass';
+      const execution = this.statusView(run.status);
+      return `Run finished: ${verdict ?? (execution.key === 'completed' ? 'Completed' : execution.label)}.`;
+    }
+    const step = this.currentStep();
+    return step ? `Step ${step.step_number} in progress.` : '';
+  });
+  public readonly currentStep = computed(() => this.active() && this.run()?.status !== 'pending' ? this.steps().at(-1) ?? null : null);
+  public readonly currentStepElapsed = computed(() => {
+    const step = this.currentStep();
+    return step ? `${Math.max(0, Math.floor(this.clock() - step.timestamp))}s` : null;
+  });
   public readonly headerActions = computed<RunAction[]>(() => this.active()
     ? this.canChange() ? [{ id: 'stop', label: 'Stop run', icon: 'stop', className: 'action-button danger', ariaLabel: 'Stop run', title: `Stop ${this.title()}` }] : []
     : this.readOnlyRun() ? [] : [{ id: 'again', label: 'Run again', icon: 'replay', ariaLabel: 'Run again' }]);
@@ -252,10 +275,18 @@ export class RunViewComponent {
   public readonly streamBlocks = computed(() => this.viewingLiveSession()
     ? consolidateLogsToBlocks(this.agentService.sessionLogs()).map((block) => ({
       id: block.id,
+      stepId: block.data.step_id as string | undefined,
       resets: (block.data.stream_resets ?? []) as Array<{ id: string; message: string }>,
       events: getSortedStepEvents(block.data).filter((event) => event.type === 'thinking' || event.type === 'text')
     })).filter((block) => block.events.length || block.resets.length)
     : []);
+  public readonly liveThought = computed(() => {
+    const step = this.currentStep();
+    if (!step) return '';
+    const block = this.streamBlocks().filter(block => block.stepId === step.step_id).at(-1);
+    if (block) return block.events.filter(event => event.type === 'thinking').at(-1)?.data.text ?? '';
+    return step.operator_native_thinking || step.operator_raw_thinking || '';
+  });
   public readonly actions = computed<RunAction[]>(() => [
     { id: 'share', label: this.strings.copyLink },
     { id: 'download', label: this.strings.download },
@@ -286,6 +317,7 @@ export class RunViewComponent {
 
   public readonly selectedStep = computed(() => {
     const steps = this.steps();
+    if (this.followLatest()) return steps.at(-1) ?? null;
     return steps.find((s) => s.step_id === this.selectedStepId()) ?? steps[steps.length - 1] ?? null;
   });
 
@@ -364,6 +396,9 @@ export class RunViewComponent {
   private readonly evidencePanel = viewChild(RunEvidencePanelComponent);
   private readonly scrollEl = viewChild<ElementRef<HTMLElement>>('scrollEl');
   private readonly timelineEl = viewChild<ElementRef<HTMLElement>>('timelineEl');
+  private readonly liveLogEl = viewChild<ElementRef<HTMLDetailsElement>>('liveLogEl');
+  private followedStepId: string | null = null;
+  private focusLiveLog = false;
   private pendingPosition: { scrollTop: number; timelineScrollTop: number } | null = null;
   private loadedSessionId: string | null = null;
   private renderedStepId: string | null = null;
@@ -434,10 +469,23 @@ export class RunViewComponent {
     });
     afterEveryRender(() => {
       if (this.state() === 'ready') this.renderedStepId = this.selectedStep()?.step_id ?? null;
-      if (this.state() !== 'ready' || !this.stepsLoaded() || !this.pendingPosition || !this.scrollEl()) return;
-      this.scrollEl()!.nativeElement.scrollTop = this.pendingPosition.scrollTop;
-      if (this.timelineEl()) this.timelineEl()!.nativeElement.scrollTop = this.pendingPosition.timelineScrollTop;
-      this.pendingPosition = null;
+      if (this.state() === 'ready' && this.stepsLoaded() && this.pendingPosition && this.scrollEl()) {
+        this.scrollEl()!.nativeElement.scrollTop = this.pendingPosition.scrollTop;
+        if (this.timelineEl()) this.timelineEl()!.nativeElement.scrollTop = this.pendingPosition.timelineScrollTop;
+        this.pendingPosition = null;
+      }
+      const latest = this.currentStep();
+      if (this.followLatest() && latest && latest.step_id !== this.followedStepId) {
+        const row = this.timelineEl()?.nativeElement.querySelector<HTMLElement>('.current-step .step-button');
+        if (row) {
+          row.scrollIntoView({ block: 'nearest', behavior: 'instant' });
+          this.followedStepId = latest.step_id;
+        }
+      }
+      if (this.focusLiveLog && this.liveLogEl()) {
+        this.liveLogEl()!.nativeElement.querySelector<HTMLElement>('summary')?.focus();
+        this.focusLiveLog = false;
+      }
     });
     this.destroyRef.onDestroy(() => {
       this.loadRequest?.unsubscribe();
@@ -475,11 +523,16 @@ export class RunViewComponent {
     this.stepsLoaded.set(false);
     this.video.set(null);
     this.selectedStepId.set(null);
+    this.followLatest.set(true);
+    this.followedStepId = null;
+    this.liveLogOpen.set(false);
+    this.focusLiveLog = false;
     this.activeSegmentIndex.set(0);
     this.feedback.set('');
     this.actionError.set(null);
     const position = this.runsApi.viewPosition();
     this.selectedStepId.set(position?.sessionId === id ? position.selectedStepId : null);
+    if (position?.sessionId === id && position.selectedStepId) this.followLatest.set(false);
     this.pendingPosition = position?.sessionId === id ? position : { scrollTop: 0, timelineScrollTop: 0 };
     if (!id) {
       this.state.set('empty');
@@ -491,6 +544,7 @@ export class RunViewComponent {
         this.catalogRun.set(run);
         if (position?.sessionId === run.session_id) {
           this.selectedStepId.set(position.selectedStepId);
+          this.followLatest.set(!position.selectedStepId);
           this.pendingPosition = position;
         }
         this.state.set('ready');
@@ -694,6 +748,7 @@ export class RunViewComponent {
   }
 
   public selectStep(step: StepItemData): void {
+    this.followLatest.set(false);
     this.selectedStepId.set(step.step_id);
     this.rememberPosition();
     const run = this.run();
@@ -709,6 +764,18 @@ export class RunViewComponent {
     this.pendingSeek = located.localTime;
     if (located.index === this.activeSegmentIndex()) this.applySeek();
     else this.activeSegmentIndex.set(located.index);
+  }
+
+  public toggleFollowLatest(): void {
+    const selected = this.selectedStep();
+    this.followLatest.update(value => !value);
+    this.followedStepId = null;
+    if (!this.followLatest()) this.selectedStepId.set(selected?.step_id ?? null);
+  }
+
+  public showLiveLog(): void {
+    this.liveLogOpen.set(true);
+    this.focusLiveLog = true;
   }
 
   public onMetadata(): void {
