@@ -22,8 +22,12 @@ limitations under the License.
   </div>
 
   <aside class="run-list-pane" aria-label="Runs">
-    <app-run-library [compact]="true" [refreshKey]="historyRevision()"
-      [recordedDevices]="recordedDevices()" [recordedImages]="recordedImages()" class="review-run-list"></app-run-library>
+    <app-run-library [compact]="true" class="review-run-list" [workspace]="!reviewMode"
+      [refreshKey]="historyRevision()" [recordedDevices]="recordedDevices()" [recordedImages]="recordedImages()"
+      [sessions]="agentService.sessions()" [liveSessionId]="agentService.runningSessionId()" [liveStatus]="agentService.agentStatus()"
+      [selectedRunId]="agentService.currentSessionId()"
+      (stopRun)="agentService.stopTask($event, false)" (selectRun)="agentService.selectSession($event, true)"
+      (newRun)="startNewRunFrom('')"></app-run-library>
   </aside>
 
   <main class="detail-pane">
@@ -78,7 +82,7 @@ limitations under the License.
                   (blur)="onInputBlur()"
                   rows="1"
                   [disabled]="isSubmitting()"
-                  [placeholder]="selectedProfile() === 'pro' 
+                  [placeholder]="selectedProfile() === 'pro'
                     ? 'Pro: plans first, checks results and recovers from blocked steps. For long or complex tasks'
                     : 'Flash: fast single-look loop for everyday app tasks'"
                   class="dock-textarea"

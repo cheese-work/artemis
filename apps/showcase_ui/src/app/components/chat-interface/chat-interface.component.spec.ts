@@ -134,11 +134,13 @@ describe('ChatInterfaceComponent device chip', () => {
     ]);
     const fixture = TestBed.createComponent(ChatInterfaceComponent);
     fixture.detectChanges();
-    const history = (fixture.nativeElement as HTMLElement).querySelector('.history-section');
+    const history = (fixture.nativeElement as HTMLElement).querySelector('.date-group');
     expect(history?.textContent).toContain('Past prompt');
     expect(history?.textContent).toContain('Failed');
     expect(history?.textContent).not.toContain('Live prompt');
-    expect(fixture.componentInstance.activeQueue().map((item) => item.session_id)).toEqual(['live']);
+    const queue = (fixture.nativeElement as HTMLElement).querySelector('.queue-section');
+    expect(queue?.textContent).toContain('Live prompt');
+    expect(queue?.textContent).not.toContain('Past prompt');
   });
 
   it('uses the short title in queue rows and their Stop controls', () => {
@@ -147,17 +149,18 @@ describe('ChatInterfaceComponent device chip', () => {
     fixture.detectChanges();
     const root = fixture.nativeElement as HTMLElement;
     expect(root.querySelector('.task-goal')?.textContent?.trim()).toBe('Open Settings');
-    expect(root.querySelector('.btn-stop-card')?.getAttribute('title')).toBe('Stop this task: Open Settings');
-    expect(root.querySelector('.btn-stop-card')?.getAttribute('aria-label')).toBe('Stop this task: Open Settings');
+    expect(root.querySelector('.queue-stop')?.getAttribute('title')).toBe('Stop run: Open Settings');
+    expect(root.querySelector('.queue-stop')?.getAttribute('aria-label')).toBe('Stop run: Open Settings');
   });
 
-  it('renders the empty queue without an outline', () => {
+  it('renders the list-owned empty state without an outline', () => {
     const fixture = TestBed.createComponent(ChatInterfaceComponent);
     fixture.detectChanges();
-    const emptyQueue = (fixture.nativeElement as HTMLElement).querySelector<HTMLElement>('.empty-section-placeholder');
-    expect(emptyQueue).not.toBeNull();
-    expect(emptyQueue?.textContent).toContain('No active or queued tasks.');
-    expect(getComputedStyle(emptyQueue!).borderStyle).toBe('none');
+    const root = fixture.nativeElement as HTMLElement;
+    const emptyList = root.querySelector<HTMLElement>('app-run-library .state-empty');
+    expect(root.querySelector('.empty-section-placeholder')).toBeNull();
+    expect(emptyList).not.toBeNull();
+    expect(getComputedStyle(emptyList!).borderStyle).toBe('none');
   });
 
   it('refreshes history when a run completes after the first catalog load', () => {
@@ -166,15 +169,15 @@ describe('ChatInterfaceComponent device chip', () => {
     const list = spyOn(runs, 'list').and.callThrough();
     const fixture = TestBed.createComponent(ChatInterfaceComponent);
     fixture.detectChanges();
-    expect(fixture.nativeElement.querySelector('.run-row')).toBeNull();
+    expect(fixture.nativeElement.querySelector('.date-group .run-row')).toBeNull();
     expect(list).toHaveBeenCalledTimes(1);
 
     agentStatus.set('idle');
     sessions.set([{ ...session('emulator-5554'), status: 'completed', end_time: 2 }]);
     fixture.detectChanges();
-    expect(fixture.nativeElement.querySelector('.run-row')?.textContent).toContain('goal');
+    expect(fixture.nativeElement.querySelector('.date-group .run-row')?.textContent).toContain('goal');
     expect(list).toHaveBeenCalledTimes(2);
-    expect(fixture.componentInstance.activeQueue()).toEqual([]);
+    expect(fixture.nativeElement.querySelector('.queue-section')).toBeNull();
 
     sessions.set([{ ...session('emulator-5554'), status: 'completed', end_time: 2 }]);
     fixture.detectChanges();
@@ -209,6 +212,22 @@ describe('ChatInterfaceComponent device chip', () => {
     fixture.detectChanges();
     return (fixture.nativeElement as HTMLElement).querySelector('.task-device .device-name')?.textContent?.trim() ?? '';
   }
+
+  it('uses tabular mono for serials and times with a 44 px queue action', () => {
+    systemService.readinessReport.set(null);
+    sessions.set([session('emulator-5554')]);
+    const fixture = TestBed.createComponent(ChatInterfaceComponent);
+    fixture.detectChanges();
+    const root = fixture.nativeElement as HTMLElement;
+    for (const selector of ['.device-name', '.run-date']) {
+      const style = getComputedStyle(root.querySelector(selector)!);
+      expect(style.fontFamily).toContain('JetBrains Mono');
+      expect(style.fontVariantNumeric).toBe('tabular-nums');
+    }
+    const box = root.querySelector('.queue-stop')!.getBoundingClientRect();
+    expect(box.width).toBeGreaterThanOrEqual(44);
+    expect(box.height).toBeGreaterThanOrEqual(44);
+  });
 
   it('never titles a disconnected wireless phone by its address (R3)', () => {
     for (const address of ['192.168.1.12:5555', '[::1]:39129', 'pixel:5555', 'android-phone:37099']) {
@@ -270,6 +289,7 @@ describe('ChatInterfaceComponent device chip', () => {
     const text = chipText('127.0.0.1:55555', []);
     expect(text).toContain('Pixel 6 Pro');
     expect(text).not.toContain('Unknown device');
+    expect(text).not.toContain('A browser');
   });
 
   it('keeps the raw serial in the tooltip detail', () => {
@@ -337,7 +357,7 @@ describe('ChatInterfaceComponent device chip', () => {
       ['running', 'Running', 'queue'],
       ['pending', 'Queued', 'queue'],
       ['paused', 'Paused', 'queue'],
-      ['completed', 'Passed', 'history'],
+      ['completed', 'Completed', 'history'],
       ['failed', 'Failed', 'history'],
       ['cancelled', 'Cancelled', 'history'],
       ['interrupted', 'Interrupted', 'history'],
@@ -364,7 +384,7 @@ describe('ChatInterfaceComponent device chip', () => {
         const root = fixture.nativeElement as HTMLElement;
         const badge = root.querySelector('.task-badge, .run-outcome');
         expect(badge?.textContent).toContain(label);
-        const inHistory = root.querySelector('.history-section .run-outcome') !== null;
+        const inHistory = root.querySelector('.date-group .run-outcome') !== null;
         expect(inHistory).toBe(where === 'history');
       });
     }
@@ -453,9 +473,10 @@ describe('ChatInterfaceComponent per-QA scope (CHE-1152)', () => {
     const { fixture, owners } = render();
     fixture.detectChanges();
     const root = fixture.nativeElement as HTMLElement;
-    expect(root.querySelector('.history-section .run-owner')!.textContent).toContain('No owner');
+    expect(root.querySelector('.date-group .run-owner')!.textContent).toContain('No owner');
     expect(root.querySelector('.task-card .owner-label')!.textContent).toContain('qa1@example.test');
     expect(owners()).toEqual(['Owner: qa1@example.test']);
-    expect(root.querySelector('.history-section .run-read-only')!.textContent).toContain('Read-only');
+    expect(root.querySelector('.date-group .run-read-only')).toBeNull();
+    expect(root.querySelector('.date-group .run-row')!.getAttribute('href')).toContain('review=1');
   });
 });

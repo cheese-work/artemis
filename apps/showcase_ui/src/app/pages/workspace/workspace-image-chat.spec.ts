@@ -53,6 +53,8 @@ describe('WorkspaceComponent image chat', () => {
       currentSessionId: () => null,
       sessions: () => [],
       currentStartupProgress: () => [],
+      runningSessionId: () => null,
+      agentStatus: () => 'idle',
       runTask,
       fetchStatus: jasmine.createSpy('fetchStatus'),
       stopTask: jasmine.createSpy('stopTask')

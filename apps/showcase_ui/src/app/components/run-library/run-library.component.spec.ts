@@ -8,6 +8,7 @@ import { RouterTestingHarness } from '@angular/router/testing';
 import { Observable, Subject, of, throwError } from 'rxjs';
 import { HostsResponse } from '../../core/models/host.model';
 import { RunPage, RunSummary } from '../../core/models/run.model';
+import { Session } from '../../core/models/session.model';
 import { AdminConfigService, AdminIdentity } from '../../services/admin-config.service';
 import { HostsService } from '../../services/hosts.service';
 import { OwnerScopeService } from '../../services/owner-scope.service';
@@ -126,6 +127,151 @@ describe('RunLibraryComponent', () => {
   });
 
   describe('rows', () => {
+    it('renders 56px rows with an execution word, package and mono time, never a Passed chip', async () => {
+      await open('/runs', of(page([run({ app_package: 'com.example.shop' })])));
+      expect(q('.run-meta')!.textContent!.trim()).toBe('Completed · com.example.shop');
+      expect(q('.run-row')!.textContent).not.toContain('Passed');
+      expect(q('.run-icon')!.classList).toContain('tone-neutral');
+      expect(q('.run-icon')!.classList).not.toContain('tone-ok');
+      expect(q('.run-icon .material-symbols-outlined')!.textContent!.trim()).toBe('description');
+      expect(q('.run-package')!.getBoundingClientRect().left - q('.run-outcome')!.getBoundingClientRect().right).toBeGreaterThanOrEqual(4);
+      expect(getComputedStyle(q('.run-package')!).fontFamily).toContain('JetBrains Mono');
+      expect(q('.run-row')!.getBoundingClientRect().height).toBe(56);
+    });
+
+    for (const verdictView of [
+      { verdict: 'pass', label: 'Pass', icon: 'check_circle', tone: 'ok' },
+      { verdict: 'fail', label: 'Fail', icon: 'cancel', tone: 'danger' },
+      { verdict: 'inconclusive', label: 'Inconclusive', icon: 'help', tone: 'warn' }
+    ] as const) {
+      it(`uses the ${verdictView.verdict} verdict only when the catalog supplies one`, async () => {
+        await open('/runs', of(page([run({ verdict: verdictView.verdict })])));
+        expect(q('.run-outcome')!.textContent).toBe(verdictView.label);
+        expect(q('.run-icon')!.classList).toContain(`tone-${verdictView.tone}`);
+        expect(q('.run-icon .material-symbols-outlined')!.textContent!.trim()).toBe(verdictView.icon);
+      });
+    }
+
+    it('groups history by local calendar day, including yesterday, older dates and unknown dates', async () => {
+      const today = new Date();
+      today.setHours(12, 0, 0, 0);
+      const yesterday = new Date(today);
+      yesterday.setDate(yesterday.getDate() - 1);
+      const older = new Date(today);
+      older.setDate(older.getDate() - 8);
+      await open('/runs', of(page([
+        run({ session_id: 'a', start_time: today.getTime() / 1000 }),
+        run({ session_id: 'b', start_time: today.getTime() / 1000 - 3600 }),
+        run({ session_id: 'c', start_time: yesterday.getTime() / 1000 }),
+        run({ session_id: 'd', start_time: older.getTime() / 1000 }),
+        run({ session_id: 'e', start_time: null })
+      ])));
+      const headings = qa('.date-group-title').map((heading) => heading.textContent!.trim());
+      expect(headings.slice(0, 2)).toEqual(['Today', 'Yesterday']);
+      expect(headings[2]).toBe(older.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }));
+      expect(headings[3]).toBe('Date unknown');
+      expect(qa('.date-group')[0].querySelectorAll('.run-row').length).toBe(2);
+    });
+
+    it('puts running and queued runs in Queue without duplicating history and emits targeted actions', async () => {
+      runs.list.and.returnValue(of(page([run({ session_id: 'running', status: 'running' }), run()])));
+      const fixture = TestBed.createComponent(RunLibraryComponent);
+      const sessions: Session[] = [
+        { session_id: 'queued', initial_goal: '**Next** task', status: 'pending', start_time: 2 },
+        { session_id: 'running', initial_goal: 'Current task', status: 'running', start_time: 3 }
+      ];
+      fixture.componentRef.setInput('sessions', sessions);
+      const stop = jasmine.createSpy('stopRun');
+      fixture.componentInstance.stopRun.subscribe(stop);
+      fixture.detectChanges();
+      const queue = fixture.nativeElement.querySelector('.queue-section') as HTMLElement;
+      expect(Array.from(queue.querySelectorAll('.run-prompt')).map((title) => title.textContent)).toEqual(['Current task', 'Next task']);
+      (queue.querySelector('.queue-stop') as HTMLButtonElement).click();
+      (queue.querySelector('.queue-cancel') as HTMLButtonElement).click();
+      expect(stop.calls.allArgs()).toEqual([['running'], ['queued']]);
+      expect(fixture.nativeElement.querySelectorAll('.date-group .run-row').length).toBe(1);
+      for (const button of Array.from(queue.querySelectorAll('button'))) {
+        const box = button.getBoundingClientRect();
+        expect(box.width).toBeGreaterThanOrEqual(44);
+        expect(box.height).toBeGreaterThanOrEqual(44);
+      }
+      fixture.destroy();
+    });
+
+    it('hides queue mutations on read-only catalog runs', async () => {
+      await open('/runs?scope=everyone', of(page([run({ status: 'running', read_only: true })])));
+      expect(q('.queue-section .run-row')).not.toBeNull();
+      expect(q('.queue-section button')).toBeNull();
+    });
+
+    it('selects a queued run in Workspace without navigating or starting another run', async () => {
+      await harness.navigateByUrl('/workspace', ViewerStubComponent);
+      runs.list.and.returnValue(of(page([run({ status: 'pending' })])));
+      const fixture = TestBed.createComponent(RunLibraryComponent);
+      fixture.componentRef.setInput('workspace', true);
+      fixture.componentRef.setInput('selectedRunId', ID);
+      const select = jasmine.createSpy('selectRun');
+      fixture.componentInstance.selectRun.subscribe(select);
+      fixture.detectChanges();
+      const button = fixture.nativeElement.querySelector('.queue-row button.run-row') as HTMLButtonElement;
+      button.click();
+      await fixture.whenStable();
+      fixture.detectChanges();
+      expect(router.url).toBe('/workspace');
+      expect(select).toHaveBeenCalledOnceWith(ID);
+      expect(button.getAttribute('aria-current')).toBe('page');
+      fixture.destroy();
+    });
+
+    it('navigates to the queued run when the row is outside Workspace', async () => {
+      await open('/runs', of(page([run({ status: 'pending' })])));
+      const link = q<HTMLAnchorElement>('.queue-row a.run-row')!;
+      expect(link.getAttribute('href')).toBe(`/runs/${ID}`);
+      link.click();
+      await settle();
+      expect(router.url).toBe(`/runs/${ID}`);
+      expect(root.textContent).toContain('viewer stub');
+    });
+
+    it('renders removable filters with 44px hit boxes and keeps search when a chip is cleared', async () => {
+      await open('/runs?q=login&status=failed');
+      const chip = q<HTMLButtonElement>('.filter-chips button')!;
+      const box = chip.getBoundingClientRect();
+      expect(box.width).toBeGreaterThanOrEqual(44);
+      expect(box.height).toBeGreaterThanOrEqual(44);
+      chip.click();
+      await settle();
+      expect(router.url).toBe('/runs?q=login');
+      expect(q('.filter-chips')).toBeNull();
+    });
+
+    it('focuses search with / but leaves editable controls and modified shortcuts alone', async () => {
+      await open('/runs');
+      const search = q<HTMLInputElement>('input[type="search"]')!;
+      const shortcut = new KeyboardEvent('keydown', { key: '/', bubbles: true, cancelable: true });
+      document.dispatchEvent(shortcut);
+      expect(document.activeElement).toBe(search);
+      expect(shortcut.defaultPrevented).toBeTrue();
+      const typed = new KeyboardEvent('keydown', { key: '/', bubbles: true, cancelable: true });
+      search.dispatchEvent(typed);
+      expect(typed.defaultPrevented).toBeFalse();
+      q<HTMLButtonElement>('[role="tab"]')!.focus();
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: '/', ctrlKey: true }));
+      expect(document.activeElement).not.toBe(search);
+    });
+
+    it('gives tabs, search and New run their own 44px hit boxes at column and mobile widths', async () => {
+      await open('/runs');
+      for (const width of [360, 390]) {
+        root.style.width = `${width}px`;
+        for (const control of qa<HTMLElement>('[role="tab"], input[type="search"], .new-run')) {
+          const box = control.getBoundingClientRect();
+          expect(box.width).withContext(`${width}px width`).toBeGreaterThanOrEqual(44);
+          expect(box.height).withContext(`${width}px height`).toBeGreaterThanOrEqual(44);
+        }
+      }
+    });
+
     it('shows the first prompt line without markdown in each run row', async () => {
       runs.list.and.returnValue(of(page([run({ prompt: '\n## **Open** _Settings_\nCheck every toggle.' })])));
       const fixture = TestBed.createComponent(RunLibraryComponent);
@@ -183,6 +329,8 @@ describe('RunLibraryComponent', () => {
       await open('/runs?scope=everyone&q=login&status=failed&from=2026-10-01');
       expect(runs.list.calls.mostRecent().args[1]).toEqual({ scope: 'everyone' });
       expect(q('.run-owner')?.textContent).toContain('qa@example.test');
+      expect(q('.run-read-only')).toBeNull();
+      expect(q('.run-row')!.textContent).not.toContain('Read-only');
       expect(q<HTMLAnchorElement>('.run-row')?.getAttribute('href')).toContain('review=1');
       expect(root.textContent).toContain('Videos and screenshots are not redacted');
       expect(qa<HTMLButtonElement>('[role="tab"]').map((tab) => tab.getAttribute('aria-selected')))
@@ -266,10 +414,35 @@ describe('RunLibraryComponent', () => {
       expect(rows[0].querySelector('.run-recording')!.textContent).toContain('Video uploaded');
       expect(rows[0].querySelector('.run-device')!.textContent).toContain('emulator-5554');
       expect(rows[0].querySelector('.run-device')!.textContent).toContain('Desk Mac');
-      expect(rows[0].querySelector('.run-date')!.textContent).toMatch(/Oct 4, 2026/);
+      expect(rows[0].querySelector('.run-date')!.getAttribute('title')).toMatch(/Oct 4, 2026/);
       expect(rows[1].querySelector('.run-outcome')!.textContent).toContain('Interrupted');
-      expect(rows[1].querySelector('.run-device')!.textContent).toContain('A browser');
-      expect(rows[1].querySelector('.run-recording')!.textContent).toContain('Video unknown');
+      expect(rows[1].querySelector('.run-device')!.textContent!.trim()).toBe('emulator-5554');
+      expect(rows[1].querySelector('.run-recording')).toBeNull();
+    });
+
+    it('hides unknown video badges but preserves pending, failed and missing video states', async () => {
+      await open('/runs', of(page([
+        run({ session_id: 'unknown', recordings: [{ recording_id: 'r0', capture: null, transfer: null }] }),
+        run({ session_id: 'pending', recordings: [{ recording_id: 'r1', capture: 'pending', transfer: null }] }),
+        run({ session_id: 'failed', recordings: [{ recording_id: 'r2', capture: 'stopped', transfer: 'failed' }] }),
+        run({ session_id: 'missing', recordings: [{ recording_id: 'r3', capture: 'missing:disabled', transfer: null }] })
+      ])));
+      const rows = qa<HTMLElement>('.run-row');
+      expect(rows[0].querySelector('.run-recording')).toBeNull();
+      expect(rows.slice(1).map((row) => row.querySelector('.run-recording')!.textContent!.trim()))
+        .toEqual(['Video pending', 'Upload failed', 'No video']);
+    });
+
+    it('uses tabular mono for serials and dates without changing the row hit area', async () => {
+      await open('/runs');
+      for (const selector of ['.run-serial', '.run-date']) {
+        const style = getComputedStyle(q(selector)!);
+        expect(style.fontFamily).toContain('JetBrains Mono');
+        expect(style.fontVariantNumeric).toBe('tabular-nums');
+      }
+      const box = q('.run-row')!.getBoundingClientRect();
+      expect(box.width).toBeGreaterThanOrEqual(44);
+      expect(box.height).toBeGreaterThanOrEqual(44);
     });
 
     it('keeps a browser or network address out of the device text, and in the tooltip (R3)', async () => {
@@ -285,15 +458,14 @@ describe('RunLibraryComponent', () => {
         expect(el.textContent).not.toContain('Unknown');
         expect(el.getAttribute('title')).toContain(serials[i]);
       });
-      expect(devices[0].textContent).toContain('A browser');
+      expect(devices[0].textContent).toContain('Phone via a browser');
       expect(devices[1].textContent).toContain('Wireless phone');
     });
 
     it('shows status as an icon plus text, never colour alone', async () => {
       await open('/runs');
-      const badge = q('.run-outcome')!;
-      expect(badge.querySelector('.material-symbols-outlined')).not.toBeNull();
-      expect(badge.textContent!.replace(/\s+/g, ' ')).toContain('Passed');
+      expect(q('.run-icon .material-symbols-outlined')).not.toBeNull();
+      expect(q('.run-outcome')!.textContent).toContain('Completed');
     });
 
     it('shows "Expires on" only when 7 days or fewer remain', async () => {
@@ -760,8 +932,9 @@ describe('RunLibraryComponent', () => {
       const focusable = qa<HTMLElement>('a[href], button, input, select, summary').filter(
         (el) => el.tabIndex >= 0 && !(el as HTMLButtonElement).disabled && el.checkVisibility()
       );
-      expect(focusable[0]).toBe(myTab());
-      expect(focusable[1].getAttribute('aria-label')).toBe('Search runs');
+      expect(focusable[0].textContent!.trim()).toBe('New run');
+      expect(focusable[1]).toBe(myTab());
+      expect(focusable[2].getAttribute('aria-label')).toBe('Search runs');
     });
   });
 
@@ -780,10 +953,10 @@ describe('RunLibraryComponent', () => {
         of(page([run(), run({ session_id: '55555555-5d7e-4a10-9c33-0e1f2a3b4c5d', prompt: 'Second' })], 'c'))
       );
       const names = visibleControls().map(nameOf);
-      expect(names.slice(0, 7)).toEqual(['My runs', 'Search runs', 'Search', 'Status', 'From date', 'To date', 'More filters']);
-      expect(names[7]).toContain('Log in and open settings');
-      expect(names[8]).toContain('Second');
-      expect(names[9]).toBe('Load more');
+      expect(names.slice(0, 5)).toEqual(['New run', 'Mine', 'Search runs', 'Search runs', 'Filters']);
+      expect(names[5]).toContain('Log in and open settings');
+      expect(names[6]).toContain('Second');
+      expect(names[7]).toBe('Load more');
       for (const el of visibleControls()) {
         expect(el.tabIndex).toBeGreaterThanOrEqual(0);
         expect(nameOf(el).length).toBeGreaterThan(0);
@@ -792,11 +965,12 @@ describe('RunLibraryComponent', () => {
 
     it('reveals the More filters controls in order once opened', async () => {
       await open('/runs');
+      q<HTMLDetailsElement>('details.filter-options')!.open = true;
       const details = q<HTMLDetailsElement>('details.more-filters')!;
       details.open = true;
       harness.fixture.detectChanges();
       const names = visibleControls().map(nameOf);
-      expect(names.slice(6, 10)).toEqual(['More filters', 'Computer', 'Phone', 'Requested by']);
+      expect(names.slice(8, 12)).toEqual(['More filters', 'Computer', 'Phone', 'Requested by']);
     });
 
     it('keeps every target at least 24 px and primary targets at least 44 px', async () => {

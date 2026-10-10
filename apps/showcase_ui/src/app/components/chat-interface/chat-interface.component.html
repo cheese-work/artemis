@@ -62,96 +62,11 @@ limitations under the License.
   <main class="chat-messages" id="queue-panel" role="tabpanel" [attr.aria-labelledby]="'queue-tab-' + agentService.activeTab()">
     <!-- Tasks Tab Content -->
     @if (agentService.activeTab() === 'tasks') {
-      <!-- Active Queue Section -->
-      <div class="queue-section-header">
-        <span class="material-symbols-outlined section-icon">bolt</span> Active Queue ({{ activeQueue().length }})
-      </div>
-      @if (activeQueue().length === 0) {
-        <div class="empty-section-placeholder">
-          No active or queued tasks.
-        </div>
-      }
-      @for (session of activeQueue(); track trackSession($index, session)) {
-        <div
-          class="task-card"
-          [class.selected]="agentService.currentSessionId() === session.session_id"
-          [class.running]="getTaskStatus(session) === 'running'"
-          (click)="selectTask(session.session_id)"
-          >
-          <div class="task-card-header">
-            <span class="task-badge" [ngClass]="getTaskStatus(session)">
-              @if (getTaskStatus(session) === 'running') {
-                <span class="status-dot"></span>
-              }
-              {{ statusView(session).label }}
-            </span>
-            <div class="task-card-header-actions">
-              @if (getDeviceChip(session); as chip) {
-                <span class="task-device" [title]="chip.tooltip">
-                  <span class="material-symbols-outlined device-icon">phone_android</span>
-                  <span class="device-name">{{ chip.title }}</span>
-                  @if (chip.kind) {
-                    <span class="device-kind">{{ chip.kind }}</span>
-                  }
-                  @if (chip.source) {
-                    <span class="device-kind">{{ chip.source }}</span>
-                  }
-                </span>
-              }
-              @if (getDeviceSerial(session)) {
-                <span class="task-time-divider">·</span>
-              }
-              <span class="task-time">{{ session.start_time * 1000 | date:'shortTime' }}</span>
-              @if (getTaskStatus(session) === 'running' || getTaskStatus(session) === 'paused') {
-                <button
-                  type="button"
-                  class="btn-stop-card"
-                  (click)="stopTask(session.session_id, $event)"
-                  [title]="'Stop this task: ' + runTitle(session.initial_goal)"
-                  [attr.aria-label]="'Stop this task: ' + runTitle(session.initial_goal)"
-                  >
-                  <span class="material-symbols-outlined">stop_circle</span>
-                </button>
-              }
-              @if (getTaskStatus(session) !== 'running' && getTaskStatus(session) !== 'paused') {
-                <button
-                  type="button"
-                  class="btn-delete-card"
-                  (click)="deleteTask(session.session_id, $event)"
-                  title="Delete this task"
-                  aria-label="Delete this task"
-                  [disabled]="isSubmitting()"
-                  >
-                  <span class="material-symbols-outlined">delete</span>
-                </button>
-              }
-            </div>
-          </div>
-          <div class="task-goal" [title]="runTitle(session.initial_goal)">
-            {{ runTitle(session.initial_goal) }}
-          </div>
-          @if (session.goal_images?.length) {
-            <div class="task-goal-images">
-              @for (image of session.goal_images; track image.index) {
-                <img [src]="mediaUrl(image.url)" [alt]="'Image ' + (image.index + 1) + ' sent with this task'" loading="lazy">
-              }
-            </div>
-          }
-          <div class="task-card-footer">
-            <app-run-id-copy [runId]="session.session_id"></app-run-id-copy>
-            <app-owner-label [owner]="session.requested_by"></app-owner-label>
-            <span class="task-date">{{ session.start_time * 1000 | date:'MM/dd/yy' }}</span>
-          </div>
-        </div>
-      }
-      <details class="history-section" open>
-        <summary class="history-summary">
-          <span class="material-symbols-outlined section-icon">history</span> Run history
-        </summary>
-        <div class="history-list-wrapper">
-          <app-run-library [compact]="true" [recordedDevices]="recordedDevices()" [recordedImages]="recordedImages()" [refreshKey]="historyRevision()"></app-run-library>
-        </div>
-      </details>
+      <app-run-library [compact]="true" [workspace]="true" [sessions]="agentService.sessions()"
+        [liveSessionId]="agentService.runningSessionId()" [liveStatus]="agentService.agentStatus()"
+        [selectedRunId]="agentService.currentSessionId()"
+        [recordedDevices]="recordedDevices()" [recordedImages]="recordedImages()" [refreshKey]="historyRevision()"
+        (stopRun)="agentService.stopTask($event, false)" (selectRun)="selectTask($event)"></app-run-library>
     }
 
     <!-- Notes Tab Content -->
