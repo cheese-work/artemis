@@ -41,9 +41,11 @@ let nextId = 0;
         [title]="phone.view().text"
         (click)="toggle()"
       >
-        <span class="material-symbols-outlined icon" [class.spinning]="phone.view().kind === 'connecting'" aria-hidden="true">{{ phone.view().icon }}</span>
-        <span class="text">{{ phone.view().text }}</span>
-        <span class="phone-card-action">{{ phone.target() ? 'Phones' : 'Connect a phone' }}</span>
+        <span class="chip-visual">
+          <span class="material-symbols-outlined icon" [class.spinning]="phone.view().kind === 'connecting'" aria-hidden="true">{{ phone.view().icon }}</span>
+          <span class="text">{{ phone.view().text }}</span>
+          <span class="phone-card-action">{{ phone.target() ? 'Phones' : 'Connect a phone' }}</span>
+        </span>
       </button>
       <span [id]="statusId" class="visually-hidden" role="status" aria-live="polite">{{ phone.view().text }}. {{ phone.view().hint }}</span>
 
@@ -133,6 +135,7 @@ let nextId = 0;
       font-size: .85rem; font-weight: 600;
     }
     .chip .text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .chip-visual { display: contents; }
     .chip.connected .icon { color: var(--color-success); }
     .chip.dropped, .chip.interrupted, .chip.other-tab { background: var(--color-warning-bg); }
     .chip.dropped .icon, .chip.interrupted .icon, .chip.other-tab .icon { color: var(--color-warning); }
@@ -161,7 +164,7 @@ let nextId = 0;
     .confirm { display: flex; gap: .5rem; }
     button:focus-visible { outline: 3px solid var(--color-focus); outline-offset: 2px; }
     .phone-card-header, .phone-card-state, .phone-card-action { display: none; }
-    @media (min-width: 1024px) {
+    @media (min-width: 1200px) {
       :host { display: block; width: 100%; }
       .chip-host { background: var(--color-surface); border-radius: var(--radius-lg); }
       .phone-card-header { display: flex; align-items: center; gap: 8px; padding: 12px; border-radius: var(--radius-lg) var(--radius-lg) 0 0; background: var(--color-device); color: var(--color-device-text); }
@@ -175,6 +178,18 @@ let nextId = 0;
       .phone-card-action { display: inline; }
       .panel { top: auto; bottom: calc(100% + 8px); max-height: calc(100dvh - 96px); overflow: auto; border-radius: var(--radius-lg); box-shadow: var(--shadow-2); }
       .option, .action { min-width: 44px; min-height: 44px; }
+    }
+    @media (min-width: 800px) and (max-width: 1199px) {
+      .chip { width: 44px; padding: 0; justify-content: center; border-radius: var(--radius-md); }
+      .chip .text { display: none; }
+      .panel { top: auto; bottom: 0; left: calc(100% + 8px); max-height: calc(100dvh - 96px); overflow: auto; }
+    }
+    @media (max-width: 799px) {
+      :host { min-width: 0; }
+      .chip { max-width: calc(100vw - 168px); padding: 6px 0; border: 0; background: transparent; }
+      .chip-visual { display: flex; align-items: center; gap: .45rem; min-width: 0; height: 32px; padding: 0 8px; border: 0; border-radius: var(--radius-full); background: var(--color-surface-subtle); }
+      .chip.dropped .chip-visual, .chip.interrupted .chip-visual, .chip.other-tab .chip-visual { background: var(--color-warning-bg); }
+      .panel { position: fixed; top: calc(var(--preview-banner-h, 0px) + var(--appbar-h) + 8px); left: 8px; right: 8px; width: auto; max-width: none; max-height: calc(100dvh - var(--appbar-h) - var(--tabbar-h) - var(--preview-banner-h, 0px) - 16px); overflow: auto; box-sizing: border-box; }
     }
   `],
   changeDetection: ChangeDetectionStrategy.OnPush

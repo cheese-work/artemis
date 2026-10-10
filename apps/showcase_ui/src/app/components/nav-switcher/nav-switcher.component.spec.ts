@@ -7,6 +7,7 @@ import { of } from 'rxjs';
 import { AdminConfigService } from '../../services/admin-config.service';
 import { NavSwitcherComponent } from './nav-switcher.component';
 import { expectHitBox } from '../../testing/hit-box';
+import { ShellLayoutService } from '../../services/shell-layout.service';
 
 @Component({ template: '' })
 class PageStub {}
@@ -66,10 +67,10 @@ describe('NavSwitcherComponent', () => {
     // The identity wraps onto a second row instead of running off-screen.
     const nav = fixture.nativeElement.querySelector('.floating-nav-switcher') as HTMLElement;
     expect(nav.getBoundingClientRect().right).toBeLessThanOrEqual(window.innerWidth);
-    expect(getComputedStyle(nav).flexWrap).toBe(window.innerWidth >= 1024 ? 'nowrap' : 'wrap');
-    if (window.innerWidth >= 1024) {
+    expect(getComputedStyle(nav).flexWrap).toBe('nowrap');
+    if (window.innerWidth >= 800) {
       expect(getComputedStyle(nav).flexDirection).toBe('column');
-      expect(nav.getBoundingClientRect().width).toBe(224);
+      expect(nav.getBoundingClientRect().width).toBe(window.innerWidth >= 1200 ? 224 : 72);
     }
   });
 
@@ -169,7 +170,8 @@ describe('NavSwitcherComponent', () => {
     // It sits in the top bar's status area, next to who is signed in.
     expect(chip.closest('.nav-status')).not.toBeNull();
     expect(nav.querySelectorAll('app-workspace-device-chip').length).toBe(1);
-    expect(nav.getBoundingClientRect().top).toBeLessThan(window.innerHeight / 4);
+    const header = fixture.nativeElement.querySelector('.navigation-header') as HTMLElement;
+    expect((window.innerWidth < 800 ? header : nav).getBoundingClientRect().top).toBeLessThan(window.innerHeight / 4);
   });
 
   it("orders Workspace, Runs, What's New, the device chip and the user", async () => {
@@ -258,6 +260,21 @@ describe('NavSwitcherComponent', () => {
       const previous = navItems[index - 1].getBoundingClientRect();
       const current = navItems[index].getBoundingClientRect();
       expect(previous.bottom <= current.top || previous.right <= current.left).toBeTrue();
+    }
+  });
+
+  it('returns to the list pane when a primary route is selected', async () => {
+    await TestBed.configureTestingModule({
+      imports: [NavSwitcherComponent],
+      providers: [provideRouter([]), ...phoneFakes().providers]
+    }).compileComponents();
+    const fixture = TestBed.createComponent(NavSwitcherComponent);
+    fixture.detectChanges();
+    const shell = TestBed.inject(ShellLayoutService);
+    for (const label of ['Workspace', 'Runs']) {
+      shell.activePane.set('detail');
+      fixture.nativeElement.querySelector(`a[aria-label="${label}"]`).click();
+      expect(shell.activePane()).toBe('list');
     }
   });
 });

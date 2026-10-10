@@ -49,7 +49,7 @@ describe('WorkspaceDeviceChipComponent', () => {
     expect(el.querySelector('.phone-card-state')?.textContent).toContain('Running');
     expect(el.querySelector('.phone-card-state')?.textContent).toContain('1 queued');
     const header = el.querySelector<HTMLElement>('.phone-card-header')!;
-    expect(getComputedStyle(header).display).toBe(window.innerWidth >= 1024 ? 'flex' : 'none');
+    expect(getComputedStyle(header).display).toBe(window.innerWidth >= 1200 ? 'flex' : 'none');
     chip().click();
     settle();
     const controls = el.querySelectorAll<HTMLElement>('button, a');

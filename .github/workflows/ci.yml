@@ -133,6 +133,9 @@ jobs:
       - name: Build development UI for the preview-path check
         run: npm run build -- --configuration development
 
+      - name: Check responsive shell and 44 px controls
+        run: npm run test:shell
+
       - name: Check root and /preview/pr/70/ browser requests
         run: |
           export CHROME_BIN="$(command -v google-chrome || command -v chromium-browser || command -v chromium)"

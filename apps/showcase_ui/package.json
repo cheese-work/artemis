@@ -13,6 +13,7 @@
     "test:navigation": "node scripts/keyboard-walkthrough/walkthrough.mjs --navigation-only",
     "test:keyboard-paste": "node --test scripts/keyboard-walkthrough/paste-shortcut.test.mjs",
     "test:layout": "node scripts/layout-audit/layout-audit.mjs",
+    "test:shell": "node scripts/responsive-shell.mjs",
     "test:run-header": "node scripts/run-header-audit.mjs",
     "test:step-timeline": "node scripts/run-header-audit.mjs --timeline",
     "test:controls": "node scripts/layout-audit/screenshots.mjs screenshots controls --controls",
