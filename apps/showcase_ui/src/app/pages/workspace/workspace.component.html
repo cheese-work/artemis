@@ -30,15 +30,6 @@ limitations under the License.
     @if (!reviewMode) {
       <a class="pane-navigation" routerLink="/runs">← Runs</a>
     }
-    <!-- Stop run sits in the detail header, never in the composer (spec section 4). B8 (CHE-1502) adopts it into the run header. -->
-    @if (!reviewMode && isTaskRunning()) {
-      <header class="detail-header">
-        <button type="button" class="btn-stop-run" [disabled]="isSubmitting()"
-          (click)="stopTask($event)" [title]="stopButtonTitle()" aria-label="Stop run">
-          <span class="stop-face"><span class="material-symbols-outlined" aria-hidden="true">stop_circle</span>Stop run</span>
-        </button>
-      </header>
-    }
     <div class="run-surface">
       @if (reviewMode && !reviewRunId()) {
         <div class="detail-empty" role="status">Select a run to see its steps.</div>

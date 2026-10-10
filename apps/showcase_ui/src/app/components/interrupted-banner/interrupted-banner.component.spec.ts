@@ -67,4 +67,18 @@ describe('InterruptedBannerComponent', () => {
     const { el } = create();
     expect(el.querySelector('button')!.getBoundingClientRect().height).toBeGreaterThanOrEqual(44);
   });
+
+  it('keeps the phone-lost message and recovery in the composer without a second live announcement', () => {
+    const { fixture, el, settle } = create();
+    fixture.componentRef.setInput('reconnectOnly', true);
+    settle();
+    expect(el.querySelector('.banner')!.textContent).toContain('The phone went offline.');
+    expect(el.querySelector('[aria-live]')).toBeNull();
+    expect(el.querySelector('button')!.textContent).toContain('Reconnect phone');
+    fakes.relay.state.set({ status: 'connected', serial: '127.0.0.1:41003', sessionId: 'b', error: null });
+    fakes.system.connectedDevices.set([phone({ serial: '127.0.0.1:41003' })]);
+    settle();
+    expect(el.querySelector('button')).toBeNull();
+    expect(el.querySelector('.banner')!.textContent).toContain('Reconnecting will not resume this run.');
+  });
 });

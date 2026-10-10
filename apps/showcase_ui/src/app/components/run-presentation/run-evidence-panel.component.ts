@@ -14,12 +14,18 @@ import { RecordingView } from '../../utils/recording-state.util';
       @if (running()) { <span class="video-pulse-dot red"></span> }
       @if (!running() && !videoUrl() && hasSteps()) { <span class="steps-count-badge">{{ screenshotCount() }}</span> }
     } @else {
+      @if (recording()?.state === 'in_progress' || recording()?.state === 'preparing') {
+        <span class="recording-chip">
+          @if (recording()?.state === 'in_progress') { <span class="recording-dot" aria-hidden="true"></span> }
+          {{ recording()?.badge }}
+        </span>
+      }
       @if (recording()?.playable && videoUrl() && !playerFailed()) {
         @if (recording()?.ribbon; as ribbon) { <p class="recording-ribbon">{{ ribbon }}</p> }
         <video #player class="evidence-video" controls controlsList="nodownload" playsinline [src]="videoUrl()"
           (loadedmetadata)="metadata.emit()" (ended)="ended.emit()" (error)="failed.emit()"></video>
       } @else {
-        <p class="recording-copy" role="status">{{ message() ?? recording()?.copy }}</p>
+        <p class="recording-copy" [attr.role]="announce() ? 'status' : null">{{ message() ?? recording()?.copy }}</p>
         @if (detail(); as technical) {
           <details class="technical-details">
             <summary>Technical details</summary>
@@ -38,6 +44,7 @@ import { RecordingView } from '../../utils/recording-state.util';
 export class RunEvidencePanelComponent {
   readonly presentation = input<'panel' | 'trigger'>('panel');
   readonly recording = input<RecordingView | null>(null);
+  readonly announce = input(true);
   readonly videoUrl = input<string | null>(null);
   readonly screenshotUrl = input<string | null>(null);
   readonly screenshotAlt = input('');

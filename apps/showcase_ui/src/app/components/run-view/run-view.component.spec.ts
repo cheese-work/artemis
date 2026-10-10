@@ -361,7 +361,7 @@ describe('RunViewComponent', () => {
         });
         expect(q('video')).toBeNull();
         expect(q('.recording-copy')!.textContent!.trim()).toContain(copy);
-        expect(q('.recording-copy')!.getAttribute('role')).toBe('status');
+        expect(q('.recording-copy')!.getAttribute('role')).toBeNull();
         expect(q('img.evidence-image')!.getAttribute('alt')).toBe('Screenshot for step 3');
         expect(qa('button').some((control) => control.textContent!.trim() === 'Check again')).toBe(retry);
       });
@@ -445,8 +445,13 @@ describe('RunViewComponent', () => {
 
       it('shows the same interrupted banner and device without selecting a new device', async () => {
         await open({ viewMode, runResult: of(run({ status: 'interrupted', interrupt_reason: 'device_offline' })) });
-        expect(q('.interrupted-banner')!.textContent).toContain('Run interrupted at step 3');
-        expect(q('.interrupted-banner')!.textContent).toContain('The phone went offline.');
+        if (viewMode === 'review') {
+          expect(q('.interrupted-banner')!.textContent).toContain('Run interrupted at step 3');
+          expect(q('.interrupted-banner')!.textContent).toContain('The phone went offline.');
+        } else {
+          expect(q('.interrupted-banner')).toBeNull();
+          expect(q('.run-status-slot')!.textContent).toContain('Run finished: Interrupted.');
+        }
         expect(q('.secondary-meta')!.textContent).toContain('emulator-5554');
         expect(localStorage.getItem(SELECTED_DEVICE_SERIAL_KEY)).toBeNull();
       });
@@ -656,7 +661,8 @@ describe('RunViewComponent', () => {
       });
       await settle();
       expect(q('.outcome-badge')!.textContent).toContain('Interrupted');
-      expect(q('.interrupted-banner')!.textContent).toContain('lost its connection');
+      expect(q('.interrupted-banner')).toBeNull();
+      expect(q('.run-status-slot')!.textContent).toContain('Run finished: Interrupted.');
       expect(fixture.componentInstance.selectedStep()?.step_id).toBe('st1');
       expect(runs.get).toHaveBeenCalledTimes(2);
     });
@@ -724,7 +730,7 @@ describe('RunViewComponent', () => {
       agent.agentStatus.set('paused');
       agent.pausedError.set('AI call failed: quota exhausted');
       await open({ viewMode: 'live', runResult: of(run({ status: 'paused' })) });
-      expect(q('.live-state')!.getAttribute('role')).toBe('status');
+      expect(q('.run-status-slot')!.getAttribute('aria-live')).toBe('polite');
       expect(q('.live-state')!.textContent).toContain('Task paused');
       expect(q('.live-state')!.textContent).toContain('AI call failed: quota exhausted');
       expect(button('Continue task')).toBeDefined();
@@ -828,6 +834,149 @@ describe('RunViewComponent', () => {
       fixture.detectChanges();
       tick(6000);
       expect(agent.getSessionUsage).toHaveBeenCalledTimes(2);
+      fixture.destroy();
+    }));
+  });
+
+  describe('Workbench live run', () => {
+    for (const [capture, videoStatus, label] of [
+      ['recording', 'unavailable', 'Recording'], ['stopped', 'processing', 'Preparing video']
+    ] as const) {
+      it(`shows the ${label} neutral chip without additional announcements`, async () => {
+        await open({ viewMode: 'live', runResult: of(run({ status: 'running', recordings: [{ recording_id: 'r1', capture, transfer: 'uploaded' }] })),
+          video: of(ready({ status: videoStatus, has_video: false })) });
+        expect(q('.recording-chip')?.textContent?.trim()).toBe(label);
+        expect(q('.recording-dot') !== null).toBe(capture === 'recording');
+        expect(q('.recording-copy')?.getAttribute('role')).toBeNull();
+      });
+    }
+
+    it('shows the queued strip without a current step', async () => {
+      await open({ viewMode: 'live', runResult: of(run({ status: 'pending' })), steps: of([]) });
+      expect(q('.status-strip')?.textContent).toContain('Waiting for the phone.');
+      expect(q('.current-step')).toBeNull();
+      expect(q('.run-status-slot')?.textContent?.trim()).toBe('');
+    });
+
+    it('renders preparation as 44 px checklist rows with mono elapsed time and no live announcements', async () => {
+      await open({ viewMode: 'live', runResult: of(run({ status: 'running' })), steps: of([]) });
+      fixture.componentRef.setInput('startupProgress', [
+        { stage: 'device_check', message: 'Checking the Android device', timestamp: NOW - 3 },
+        { stage: 'device_ready', message: 'Android device connected', timestamp: NOW - 2 },
+        { stage: 'uiautomator', message: 'Connecting to the UI hierarchy service', timestamp: NOW - 2 }
+      ]);
+      await settle();
+      expect(qa('.startup-item').length).toBe(2);
+      expect(q('.startup-item')?.textContent).toContain('Android device connected');
+      expect(q('.startup-item')?.textContent).toContain('1.0s');
+      for (const item of qa('.startup-item')) expect(item.getBoundingClientRect().height).toBeGreaterThanOrEqual(44);
+      expect(getComputedStyle(q('.startup-elapsed')!).fontFamily).toContain('Mono');
+      expect(q('.startup-progress [role="status"]')).toBeNull();
+      expect(q('.steps')?.textContent).not.toContain('No steps were recorded.');
+    });
+
+    it('shows the current step and a three-line Thought without announcing streamed text', async () => {
+      agent.sessionLogs.set([{ type: 'llm_stream', timestamp: NOW, data: {
+        execution_id: 'live', step_id: 'st1', stream_type: 'thinking', text: '<script>Inspect the screen</script>'
+      } }]);
+      await open({ viewMode: 'live', runResult: of(run({ status: 'running' })), steps: of([step(1, { timestamp: NOW - 5 })]) });
+      expect(q('.current-step')?.textContent).toContain('working');
+      expect(q('.live-thought')?.textContent).toContain('<script>Inspect the screen</script>');
+      expect(q('.live-thought script')).toBeNull();
+      expect(getComputedStyle(q('.live-thought')!).getPropertyValue('-webkit-line-clamp')).toBe('3');
+      expect(q('.live-thought')?.closest('[aria-live]')).toBeNull();
+      expect(q('.current-step .step-thumbnail')?.querySelector('img')).toBeNull();
+      expect(q<HTMLDetailsElement>('.live-streams')!.open).toBeFalse();
+      button('Show live log').click();
+      await settle();
+      expect(q<HTMLDetailsElement>('.live-streams')!.open).toBeTrue();
+      expect(document.activeElement).toBe(q('.live-streams > summary'));
+    });
+
+    it('follows new steps, preserves manually selected evidence, and follows again on request', async () => {
+      await open({ viewMode: 'live', runResult: of(run({ status: 'running' })), steps: of([step(1), step(2)]) });
+      const view = fixture.componentInstance;
+      expect(view.followLatest()).toBeTrue();
+      expect(view.selectedStep()?.step_number).toBe(2);
+      fixture.componentRef.setInput('liveSteps', [step(3)]);
+      await settle();
+      expect(view.selectedStep()?.step_number).toBe(3);
+      qa<HTMLButtonElement>('.step-button')[0].click();
+      await settle();
+      expect(view.followLatest()).toBeFalse();
+      fixture.componentRef.setInput('liveSteps', [step(3), step(4)]);
+      await settle();
+      expect(view.selectedStep()?.step_number).toBe(1);
+      const scroll = spyOn(qa<HTMLButtonElement>('.step-button').at(-1)!, 'scrollIntoView');
+      button('Follow latest').click();
+      await settle();
+      expect(view.followLatest()).toBeTrue();
+      expect(view.selectedStep()?.step_number).toBe(4);
+      expect(button('Follow latest').getAttribute('aria-pressed')).toBe('true');
+      expect(scroll).toHaveBeenCalled();
+    });
+
+    it('announces once per step start and once at completion, not on thought, retry or clock updates', async () => {
+      const result = new Subject<RunSummary>();
+      await open({ viewMode: 'live', runResult: result, steps: of([]) });
+      result.next(run({ status: 'running' }));
+      await settle();
+      const announcements: string[] = [];
+      const observer = new MutationObserver(() => announcements.push(q('.run-status-slot')!.textContent!.trim()));
+      observer.observe(q('.run-status-slot')!, { childList: true, subtree: true, characterData: true });
+      fixture.componentRef.setInput('liveSteps', [step(1)]);
+      await settle();
+      agent.agentStatus.set('running');
+      agent.isRetrying.set(true);
+      agent.retryMessage.set('Retrying in 2s');
+      agent.sessionLogs.set([{ type: 'llm_stream', timestamp: NOW, data: {
+        execution_id: 'live', step_id: 'st1', stream_type: 'thinking', text: 'New thought'
+      } }]);
+      await settle();
+      (fixture.componentInstance as any).clock.set(NOW + 1);
+      await settle();
+      agent.isPaused.set(true);
+      agent.agentStatus.set('paused');
+      await settle();
+      fixture.componentRef.setInput('liveSteps', [step(1), step(2)]);
+      await settle();
+      result.next(run({ status: 'failed' }));
+      await settle();
+      observer.disconnect();
+      expect(announcements).toEqual(['Step 1 in progress.', 'Step 2 in progress.', 'Run finished: Fail.']);
+      expect(qa('[aria-live="polite"]').length).toBe(1);
+      expect(q('.status-strip')).toBeNull();
+      expect(button('Stop run')).toBeUndefined();
+      expect(button('Run again')).toBeDefined();
+    });
+
+    it('updates startup and step elapsed time once per second and stops the clock after completion', fakeAsync(() => {
+      admin.getIdentity.and.returnValue(of({ email: 'qa@example.test', admin: false, auth_mode: 'cloudflare', reason: null }));
+      runs.get.and.returnValue(of(run({ status: 'running', start_time: Date.now() / 1000 - 10 })));
+      runs.steps.and.returnValue(of([]));
+      runs.video.and.returnValue(of(ready({ status: 'unavailable', has_video: false })));
+      fixture = TestBed.createComponent(RunViewComponent);
+      fixture.componentRef.setInput('runId', ID);
+      fixture.componentRef.setInput('mode', 'live');
+      fixture.componentRef.setInput('startupProgress', [{ stage: 'device_check', message: 'Checking phone', timestamp: Date.now() / 1000 }]);
+      root = fixture.nativeElement;
+      fixture.detectChanges();
+      tick(999);
+      fixture.detectChanges();
+      expect(q('.startup-elapsed')?.textContent).toBe('0.0s');
+      tick(1);
+      fixture.detectChanges();
+      expect(q('.startup-elapsed')?.textContent).toBe('1.0s');
+      fixture.componentRef.setInput('liveSteps', [step(1, { timestamp: Date.now() / 1000 })]);
+      fixture.detectChanges();
+      tick(1000);
+      fixture.detectChanges();
+      expect(q('.current-step .step-duration')?.textContent).toBe('1s');
+      (fixture.componentInstance as any).catalogRun.set(run());
+      fixture.detectChanges();
+      const endClock = (fixture.componentInstance as any).clock();
+      tick(2000);
+      expect((fixture.componentInstance as any).clock()).toBe(endClock);
       fixture.destroy();
     }));
   });

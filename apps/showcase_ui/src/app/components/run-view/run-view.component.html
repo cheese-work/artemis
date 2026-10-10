@@ -110,15 +110,16 @@
           }
         </header>
 
-        <div class="run-status-slot" [class.live-state]="!!liveState()" role="status" aria-live="polite" aria-atomic="true">
-          @if (active()) {
-            <section class="status-strip" [class.warning]="current.status === 'paused' || !!liveState()" aria-label="Run status">
+        <div class="run-status-slot" role="status" aria-live="polite" aria-atomic="true">
+          <span class="sr-only">{{ announcement() }}</span>
+        </div>
+        @if (active()) {
+            <section class="status-strip" [class.live-state]="!!liveState()" [class.warning]="current.status === 'paused' || !!liveState()" aria-label="Run status">
               <span class="material-symbols-outlined" aria-hidden="true">{{ current.status === 'paused' ? 'pause_circle' : 'progress_activity' }}</span>
               <p>{{ statusMessage() }}</p>
               @if (canResume()) { <button type="button" class="action-button" (click)="onAction({ id: 'resume', event: $event })">Continue task</button> }
             </section>
-          } @else { <span class="sr-only">Run finished: {{ statusView(current.status).label }}.</span> }
-        </div>
+        }
         @if (!active()) {
         <section class="run-result-summary verdict-slot" aria-label="Run result summary">
           <h2>Run result summary</h2>
@@ -164,7 +165,7 @@
           </details>
         }
 
-        @if (current.status === 'interrupted' && stepsLoaded()) {
+        @if (current.status === 'interrupted' && stepsLoaded() && mode() !== 'live') {
           <div class="interrupted-banner" role="status">
             <p>{{ interruptedText() }}</p>
             <p>{{ interruptReason(current.interrupt_reason) }}</p>
@@ -186,13 +187,8 @@
         }
 
         <div class="evidence-grid">
-          @if (mode() === 'live' && startupItems().length && !steps().length) {
-            <section aria-label="Preparing the phone" class="startup-progress">
-              <h2>Preparing the phone</h2>
-              @for (item of startupItems(); track item.stage) { <p role="status">{{ item.message }}</p> }
-            </section>
-          }
           <section class="evidence" data-section="evidence" aria-label="Evidence" appRunEvidencePanel
+            [announce]="false"
             [recording]="recording()" [videoUrl]="videoUrl()" [playerFailed]="playerFailed()" [message]="copy()" [detail]="videoDetail()"
             [retryable]="canCheckAgain()" [screenshotUrl]="screenshot()"
             [screenshotAlt]="'Screenshot for step ' + selectedStep()?.step_number" [loaded]="stepsLoaded()"
@@ -200,21 +196,42 @@
           </section>
 
           <section class="steps" data-section="steps" aria-label="Steps">
-            <h2>Steps</h2>
+            <div class="timeline-heading">
+              <h2>Steps</h2>
+              @if (active()) {
+                <button type="button" class="follow-latest" [attr.aria-pressed]="followLatest()" (click)="toggleFollowLatest()">Follow latest</button>
+              }
+            </div>
+            @if (active() && mode() === 'live' && startupItems().length && !steps().length) {
+              <section aria-label="Preparing the phone" class="startup-progress">
+                <h3>Preparing the phone</h3>
+                <ul>
+                  @for (item of startupItems(); track item.stage) {
+                    <li class="startup-item">
+                      <span class="material-symbols-outlined" aria-hidden="true">{{ item.isActive ? 'progress_activity' : 'check_circle' }}</span>
+                      <span>{{ item.message }}</span>
+                      <span class="startup-elapsed">{{ item.elapsed }}</span>
+                    </li>
+                  }
+                </ul>
+              </section>
+            }
             @if (stepsFailed()) {
               <p class="muted">Steps couldn't be loaded.</p>
-            } @else if (stepsLoaded() && steps().length === 0) {
+            } @else if (!active() && stepsLoaded() && steps().length === 0) {
               <p class="muted">No steps were recorded.</p>
             }
             <ol #timelineEl class="step-list" aria-label="Step timeline" (scroll)="rememberPosition()">
               @for (step of steps(); track trackStep($index, step)) {
-                <li>
+                <li [class.current-step]="currentStep()?.step_id === step.step_id">
                   <div class="step-row" [class.failed]="stepFailed(step)">
                   <button
                     type="button"
-                    class="step-button" appRunStepRow [stepNumber]="step.step_number" [title]="stepTitle(step)" [failed]="stepFailed(step)"
-                    [icon]="stepIcon(step.action_taken)" [thumbnail]="postImage(step) ?? preImage(step)" [kind]="stepKind(step)"
-                    [duration]="step.duration != null ? step.duration + 's' : null" [time]="stepTime(step)"
+                    class="step-button" appRunStepRow [stepNumber]="step.step_number" [title]="currentStep()?.step_id === step.step_id ? '· working' : stepTitle(step)" [failed]="stepFailed(step)"
+                    [working]="currentStep()?.step_id === step.step_id"
+                    [icon]="currentStep()?.step_id === step.step_id ? 'progress_activity' : stepIcon(step.action_taken)"
+                    [thumbnail]="currentStep()?.step_id === step.step_id ? null : postImage(step) ?? preImage(step)" [kind]="stepKind(step)"
+                    [duration]="currentStep()?.step_id === step.step_id ? currentStepElapsed() : step.duration != null ? step.duration + 's' : null" [time]="stepTime(step)"
                     [failureDetail]="stepFailed(step) ? stepFailureSummary(step) : null"
                     [failureTitle]="stepFailed(step) ? stepFailureTitle(step) : null"
                     [attr.aria-current]="selectedStep()?.step_id === step.step_id ? 'step' : null"
@@ -228,6 +245,13 @@
                     <span class="material-symbols-outlined" aria-hidden="true">{{ expandedSteps().has(step.step_id) ? 'expand_less' : 'expand_more' }}</span>
                   </button>
                   </div>
+                  @if (currentStep()?.step_id === step.step_id) {
+                    <div class="current-step-detail">
+                      <h3>Thought</h3>
+                      <p class="live-thought">{{ liveThought() || 'Waiting for the next thought…' }}</p>
+                      <button type="button" class="show-live-log" (click)="showLiveLog()">Show live log</button>
+                    </div>
+                  }
                   @if (expandedSteps().has(step.step_id)) {
                     <div class="step-details" [id]="'step-details-' + step.step_id" role="region" [attr.aria-label]="'Step ' + step.step_number + ' execution details'">
                       <dl>
@@ -269,19 +293,20 @@
           </section>
         }
 
-        @if (streamBlocks().length) {
-          <section class="live-streams" aria-label="Live thinking and text">
+        @if (streamBlocks().length || liveLogOpen()) {
+          <details #liveLogEl class="live-streams" aria-label="Live thinking and text" [open]="liveLogOpen()" (toggle)="liveLogOpen.set($any($event.target).open)">
+            <summary>Live log</summary>
             @for (block of streamBlocks(); track block.id) {
-              @for (reset of block.resets; track $index) { <p role="status">{{ reset.message }}</p> }
+              @for (reset of block.resets; track $index) { <p>{{ reset.message }}</p> }
               @for (event of block.events; track $index) {
                 <details open>
                   <summary>{{ event.type === 'thinking' ? 'Thought' : 'Work' }}</summary>
-                  @if (event.data.isReset) { <p role="status">{{ event.data.resetMessage }}</p> }
+                  @if (event.data.isReset) { <p>{{ event.data.resetMessage }}</p> }
                   <pre>{{ event.data.text }}</pre>
                 </details>
               }
             }
-          </section>
+          </details>
         }
 
         <details class="technical-details" (toggle)="techOpen.set($any($event.target).open)">

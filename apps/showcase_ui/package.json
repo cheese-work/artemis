@@ -15,6 +15,7 @@
     "test:layout": "node scripts/layout-audit/layout-audit.mjs",
     "test:run-header": "node scripts/run-header-audit.mjs",
     "test:step-timeline": "node scripts/run-header-audit.mjs --timeline",
+    "test:live-run": "node scripts/run-header-audit.mjs --live",
     "test:controls": "node scripts/layout-audit/screenshots.mjs screenshots controls --controls",
     "test:preview-path": "node scripts/preview-path.test.mjs",
     "test:build-info": "node --test scripts/write-build-info.test.mjs",

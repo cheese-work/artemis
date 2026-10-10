@@ -454,6 +454,62 @@ dl {
   &.failed { background: var(--status-danger-bg); }
 }
 
+.timeline-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+
+  h2 { margin: 0; }
+}
+
+.follow-latest, .show-live-log {
+  padding: 0 8px;
+  border: 0;
+  color: var(--color-primary);
+  background: transparent;
+}
+
+.follow-latest[aria-pressed='true'] { background: var(--color-primary-tint); }
+
+.startup-progress {
+  h3 { font-size: 14px; margin: 12px 0 4px; }
+  ul { margin: 0; padding: 0; list-style: none; }
+}
+
+.startup-item {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  overflow-wrap: anywhere;
+  font-size: 14px;
+
+  .material-symbols-outlined { font-size: 20px; color: var(--color-primary); }
+}
+
+.startup-elapsed { font: 12px var(--font-mono); color: var(--color-text-muted); }
+
+.current-step-detail {
+  padding: 8px 12px 0;
+  background: var(--color-primary-tint);
+
+  h3 { margin: 0 0 4px; color: var(--color-text-muted); font-size: 12px; }
+}
+
+.live-thought {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  margin: 0;
+  font-size: 14px;
+  line-height: 20px;
+}
+
 
 
 .actions {
