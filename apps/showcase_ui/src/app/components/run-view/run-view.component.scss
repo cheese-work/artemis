@@ -133,10 +133,28 @@ video:focus-visible {
   margin-bottom: 16px;
 
   .run-prompt {
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
     margin: 8px 0;
-    font-size: 24px;
+    font-size: var(--text-title);
     line-height: 1.3;
     overflow-wrap: anywhere;
+  }
+}
+
+.full-prompt {
+  summary {
+    min-width: 44px;
+    cursor: pointer;
+  }
+
+  pre {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    font: inherit;
   }
 }
 
@@ -148,6 +166,74 @@ video:focus-visible {
   border-radius: 999px;
   font-weight: 600;
 }
+
+.run-header {
+  border-bottom: 1px solid var(--color-rule);
+  padding-bottom: 16px;
+}
+
+.run-crumb, .run-heading, .header-controls, .primary-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.run-crumb { color: var(--color-text-muted); font-size: var(--text-label); }
+.run-crumb .back-to-runs { min-width: 44px; margin: 0; }
+.run-heading { justify-content: space-between; flex-wrap: wrap; gap: 12px; margin: 8px 0; }
+.run-heading-title { min-width: 0; flex: 1 1 220px; }
+.header-controls { flex-shrink: 0; }
+.more-actions { position: relative; }
+.more-actions > summary {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  border-radius: var(--radius-md);
+  list-style: none;
+  cursor: pointer;
+  background: var(--color-surface-subtle);
+}
+.more-actions > summary::-webkit-details-marker { display: none; }
+.more-actions > summary .material-symbols-outlined { width: 24px; height: 24px; overflow: hidden; }
+.more-menu {
+  position: absolute;
+  z-index: 5;
+  top: calc(100% + 4px);
+  right: 0;
+  min-width: 180px;
+  padding: 4px;
+  background: var(--color-surface);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-2);
+}
+.run-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 24px;
+  margin: 16px 0 8px;
+}
+.run-facts > div { min-width: 0; max-width: 100%; }
+.run-facts dt { color: var(--color-text-muted); font-size: var(--text-label); }
+.run-facts dd { margin: 4px 0 0; font-size: var(--text-ui); overflow-wrap: anywhere; }
+.mono { font-family: var(--font-mono); }
+.run-header summary { min-width: 44px; }
+.action-feedback, .action-error { font-size: var(--text-ui); }
+.action-error { color: var(--color-error); }
+.status-strip {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 16px;
+  padding: 12px 16px;
+  background: var(--color-surface-subtle);
+  border-radius: var(--radius-md);
+  font-size: var(--text-ui);
+}
+.status-strip p { flex: 1 1 180px; margin: 0; }
+.status-strip.warning { background: var(--color-warning-bg); color: var(--color-warning); }
 
 .tone-ok {
   color: var(--status-ok-fg);
@@ -199,6 +285,9 @@ video:focus-visible {
 }
 
 .step-toggle {
+  flex: 0 0 44px;
+  width: 44px;
+  height: 44px;
   min-height: 44px;
   padding: 8px;
   border: 0;
@@ -299,7 +388,6 @@ dl {
   img { display: block; width: 100%; max-height: 220px; object-fit: contain; }
 }
 
-/* One column by default (phones, 1024 px stacked); evidence and steps side by side from 1280 px. */
 .evidence-grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
@@ -307,11 +395,14 @@ dl {
   margin-bottom: 16px;
 }
 
-@media (min-width: 1280px) {
+@media (min-width: 1440px) {
   .evidence-grid {
-    grid-template-columns: minmax(0, 1fr) minmax(280px, 380px);
+    grid-template-columns: minmax(0, 1fr) 300px;
     align-items: start;
   }
+  .evidence { order: 2; }
+  .steps { order: 1; }
+  .startup-progress { grid-column: 1 / -1; order: 0; }
 }
 
 .evidence,
@@ -343,21 +434,31 @@ dl {
 }
 
 .step-button {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 4px 12px;
-  width: 100%;
-  min-height: 44px;
+  flex: 1;
+  min-width: 44px;
+  padding: 8px;
   border: 0;
   color: var(--evidence-text);
-  background: var(--evidence-surface);
   text-align: left;
+  border-radius: var(--radius-sm);
+  background: transparent;
 
   &[aria-current='step'] {
     font-weight: 600;
-    background: var(--status-neutral-bg);
+    background: var(--color-primary-tint);
+    box-shadow: inset 3px 0 0 var(--color-primary);
   }
+
+  &.failed[aria-current='step'] { background: var(--status-danger-bg); }
+}
+
+.step-row {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  height: 56px;
+  border-radius: var(--radius-sm);
+  &.failed { background: var(--status-danger-bg); }
 }
 
 
