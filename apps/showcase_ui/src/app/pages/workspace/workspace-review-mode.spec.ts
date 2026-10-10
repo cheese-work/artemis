@@ -74,6 +74,7 @@ describe('Workspace review mode', () => {
         { provide: RunsService, useValue: runs },
         { provide: WorkspacePhoneService, useValue: {
           target,
+          view: () => ({ text: 'Fixture phone' }),
           runInterrupted: () => liveSession()?.status === 'interrupted',
           canConnectFromBrowser: () => true,
           connectFromBrowser: reconnect,
@@ -154,7 +155,7 @@ describe('Workspace review mode', () => {
   it('shows the run list beside the shared RunView and new-task box on /workspace', async () => {
     await go('/workspace');
     expect(q('app-run-view')).not.toBeNull();
-    expect(q('textarea.dock-textarea')).not.toBeNull();
+    expect(q('textarea.composer-input')).not.toBeNull();
     expect(q('.workspace-container.review-mode')).toBeNull();
     expect(q('.resizer, .right-panel, app-chat-interface')).toBeNull();
     expect(q('.run-list-pane app-run-library')).not.toBeNull();
@@ -171,7 +172,7 @@ describe('Workspace review mode', () => {
     expect(q('app-agent-stream')).toBeNull();
     expect(q('app-run-view')).toBeNull();
     expect(runs.get).not.toHaveBeenCalled();
-    expect(q('.workspace-floating-bar-wrapper')).toBeNull();
+    expect(q('.composer')).toBeNull();
   });
 
   it('refreshes the list and recorded metadata when a run completes without leaving Workspace', async () => {
@@ -240,7 +241,7 @@ describe('Workspace review mode', () => {
   it('has no decorative waves or glass in the live dock or in review mode', async () => {
     await go('/workspace');
     expect(q('.liquid-wave, .wave-glow-ambient, .dock-wave-container')).toBeNull();
-    expect(getComputedStyle(q('.floating-dock-card')!).backdropFilter).toBe('none');
+    expect(getComputedStyle(q('.composer-card')!).backdropFilter).toBe('none');
     await go('/runs');
     expect(q('.liquid-wave, .wave-glow-ambient, .dock-wave-container')).toBeNull();
   });
@@ -293,7 +294,7 @@ describe('Workspace review mode', () => {
 
   it('prefills the dock with a prompt handed over from the viewer', async () => {
     await go('/workspace', { draftPrompt: 'Log in and open settings' });
-    expect((q('textarea.dock-textarea') as HTMLTextAreaElement).value).toBe('Log in and open settings');
+    expect((q('textarea.composer-input') as HTMLTextAreaElement).value).toBe('Log in and open settings');
   });
 
   for (const connected of [false, true]) {
@@ -310,18 +311,16 @@ describe('Workspace review mode', () => {
       await go('/workspace');
 
       expect(TestBed.inject(WorkspacePhoneService).runInterrupted()).toBeTrue();
-      const banners = Array.from(root.querySelectorAll<HTMLElement>('[role="status"]'))
+      const banners = Array.from(root.querySelectorAll<HTMLElement>('.composer app-interrupted-banner .banner'))
         .filter((element) => element.textContent?.includes('Run interrupted before the first step.'));
       expect(banners.length).toBe(1);
-      expect(banners[0].closest('app-run-view')).not.toBeNull();
+      expect(banners[0].closest('.composer')).not.toBeNull();
+      expect(banners[0].getAttribute('aria-live')).toBeNull();
+      expect(q('app-run-view .interrupted-banner')).toBeNull();
       const buttons = Array.from(root.querySelectorAll<HTMLButtonElement>('button'));
       const starts = buttons.filter((element) => element.textContent?.includes('Start new run with this prompt'));
-      expect(starts.length).toBe(1);
-      starts[0].click();
-      harness.fixture.detectChanges();
-      await harness.fixture.whenStable();
-      harness.fixture.detectChanges();
-      expect((q('textarea.dock-textarea') as HTMLTextAreaElement).value).toBe(prompt);
+      expect(starts.length).toBe(0);
+      expect(q('textarea.composer-input')).not.toBeNull();
 
       const reconnects = buttons.filter((element) => element.textContent?.includes('Reconnect phone'));
       expect(reconnects.length).toBe(connected ? 0 : 1);
@@ -331,6 +330,16 @@ describe('Workspace review mode', () => {
         reconnects[0].click();
         expect(reconnect).toHaveBeenCalledTimes(1);
       }
+
+      const composer = q('textarea.composer-input') as HTMLTextAreaElement;
+      expect(composer.value).toBe('');
+      const runAgain = q('app-run-view .run-header [aria-label="Run again"]') as HTMLButtonElement;
+      expect(runAgain).not.toBeNull();
+      runAgain.click();
+      harness.fixture.detectChanges();
+      await harness.fixture.whenStable();
+      harness.fixture.detectChanges();
+      expect(composer.value).toBe(prompt);
     });
   }
 });
