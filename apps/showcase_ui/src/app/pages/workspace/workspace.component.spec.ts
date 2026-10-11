@@ -20,6 +20,8 @@ describe('WorkspaceComponent error lifetime', () => {
     currentSession: () => null;
     currentSessionId: () => null;
     currentStartupProgress: () => [];
+    runningSessionId: () => null;
+    agentStatus: () => string;
     runTask: jasmine.Spy;
     fetchStatus: jasmine.Spy;
     stopTask: jasmine.Spy;
@@ -39,6 +41,8 @@ describe('WorkspaceComponent error lifetime', () => {
       currentSession: () => null,
       currentSessionId: () => null,
       currentStartupProgress: () => [],
+      runningSessionId: () => null,
+      agentStatus: () => 'idle',
       runTask: jasmine.createSpy('runTask').and.returnValue(of({})),
       fetchStatus: jasmine.createSpy('fetchStatus'),
       stopTask: jasmine.createSpy('stopTask')
@@ -170,6 +174,8 @@ describe('WorkspaceComponent phone binding', () => {
       currentSession: () => null,
       currentSessionId: () => null,
       currentStartupProgress: () => [],
+      runningSessionId: () => null,
+      agentStatus: () => 'idle',
       runTask,
       fetchStatus: jasmine.createSpy('fetchStatus'),
       stopTask: jasmine.createSpy('stopTask')
@@ -275,6 +281,8 @@ describe('WorkspaceComponent pinned composer (CHE-1508)', () => {
       sessions,
       currentSession: () => null,
       currentSessionId: () => 'run-live-1',
+      runningSessionId: () => running() ? 'run-live-1' : null,
+      agentStatus: () => running() ? 'running' : 'idle',
       sessionLogs: () => [],
       currentStartupProgress: () => [],
       runTask,

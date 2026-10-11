@@ -1,4 +1,5 @@
 import { Component } from '@angular/core';
+import { OverlayContainer } from '@angular/cdk/overlay';
 import { Location } from '@angular/common';
 import { provideLocationMocks } from '@angular/common/testing';
 import { HttpErrorResponse } from '@angular/common/http';
@@ -8,6 +9,7 @@ import { RouterTestingHarness } from '@angular/router/testing';
 import { Observable, Subject, of, throwError } from 'rxjs';
 import { HostsResponse } from '../../core/models/host.model';
 import { RunPage, RunSummary } from '../../core/models/run.model';
+import { Session } from '../../core/models/session.model';
 import { AdminConfigService, AdminIdentity } from '../../services/admin-config.service';
 import { HostsService } from '../../services/hosts.service';
 import { OwnerScopeService } from '../../services/owner-scope.service';
@@ -15,6 +17,7 @@ import { RunsService } from '../../services/runs.service';
 import { SELECTED_DEVICE_SERIAL_KEY } from '../../services/system.service';
 import { signal } from '@angular/core';
 import { RunLibraryComponent } from './run-library.component';
+import { datePresetRange } from '../../utils/run-filters.util';
 
 @Component({ standalone: true, template: 'viewer stub' })
 class ViewerStubComponent {}
@@ -64,8 +67,9 @@ describe('RunLibraryComponent', () => {
   let root: HTMLElement;
   let component: RunLibraryComponent;
 
-  const q = <T extends Element>(selector: string) => root.querySelector<T>(selector);
-  const qa = <T extends Element>(selector: string) => Array.from(root.querySelectorAll<T>(selector));
+  const overlayRoot = () => TestBed.inject(OverlayContainer).getContainerElement();
+  const q = <T extends Element>(selector: string) => root.querySelector<T>(selector) ?? overlayRoot().querySelector<T>(selector);
+  const qa = <T extends Element>(selector: string) => [...root.querySelectorAll<T>(selector), ...overlayRoot().querySelectorAll<T>(selector)];
 
   async function open(url: string, list: Observable<RunPage> = of(page([run()]))) {
     runs.list.and.returnValue(list);
@@ -92,10 +96,10 @@ describe('RunLibraryComponent', () => {
     q<HTMLFormElement>('form[role="search"]')!.dispatchEvent(new Event('submit', { cancelable: true }));
   }
 
-  function choose(selector: string, value: string) {
-    const select = q<HTMLSelectElement>(selector)!;
-    select.value = value;
-    select.dispatchEvent(new Event('change'));
+  function chooseStatus(value: string) {
+    q<HTMLButtonElement>('[data-filter="status"]')!.click();
+    harness.fixture.detectChanges();
+    q<HTMLButtonElement>(`[data-filter-option="${value}"]`)!.click();
   }
 
   beforeEach(async () => {
@@ -126,6 +130,152 @@ describe('RunLibraryComponent', () => {
   });
 
   describe('rows', () => {
+    it('renders 56px rows with an execution word, package and mono time, never a Passed chip', async () => {
+      await open('/runs', of(page([run({ app_package: 'com.example.shop' })])));
+      expect(q('.run-meta')!.textContent!.trim()).toBe('Completed · com.example.shop');
+      expect(q('.run-row')!.textContent).not.toContain('Passed');
+      expect(q('.run-icon')!.classList).toContain('tone-neutral');
+      expect(q('.run-icon')!.classList).not.toContain('tone-ok');
+      expect(q('.run-icon .material-symbols-outlined')!.textContent!.trim()).toBe('description');
+      expect(q('.run-package')!.getBoundingClientRect().left - q('.run-outcome')!.getBoundingClientRect().right).toBeGreaterThanOrEqual(4);
+      expect(getComputedStyle(q('.run-package')!).fontFamily).toContain('JetBrains Mono');
+      expect(q('.run-row')!.getBoundingClientRect().height).toBe(56);
+    });
+
+    for (const verdictView of [
+      { verdict: 'pass', label: 'Pass', icon: 'check_circle', tone: 'ok' },
+      { verdict: 'fail', label: 'Fail', icon: 'cancel', tone: 'danger' },
+      { verdict: 'inconclusive', label: 'Inconclusive', icon: 'help', tone: 'warn' }
+    ] as const) {
+      it(`uses the ${verdictView.verdict} verdict only when the catalog supplies one`, async () => {
+        await open('/runs', of(page([run({ verdict: verdictView.verdict })])));
+        expect(q('.run-outcome')!.textContent).toBe(verdictView.label);
+        expect(q('.run-icon')!.classList).toContain(`tone-${verdictView.tone}`);
+        expect(q('.run-icon .material-symbols-outlined')!.textContent!.trim()).toBe(verdictView.icon);
+      });
+    }
+
+    it('groups history by local calendar day, including yesterday, older dates and unknown dates', async () => {
+      const today = new Date();
+      today.setHours(12, 0, 0, 0);
+      const yesterday = new Date(today);
+      yesterday.setDate(yesterday.getDate() - 1);
+      const older = new Date(today);
+      older.setDate(older.getDate() - 8);
+      await open('/runs', of(page([
+        run({ session_id: 'a', start_time: today.getTime() / 1000 }),
+        run({ session_id: 'b', start_time: today.getTime() / 1000 - 3600 }),
+        run({ session_id: 'c', start_time: yesterday.getTime() / 1000 }),
+        run({ session_id: 'd', start_time: older.getTime() / 1000 }),
+        run({ session_id: 'e', start_time: null })
+      ])));
+      const headings = qa('.date-group-title').map((heading) => heading.textContent!.trim());
+      expect(headings.slice(0, 2)).toEqual(['Today', 'Yesterday']);
+      expect(headings[2]).toBe(older.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }));
+      expect(headings[3]).toBe('Date unknown');
+      expect(qa('.date-group')[0].querySelectorAll('.run-row').length).toBe(2);
+    });
+
+    it('puts running and queued runs in Queue without duplicating history and emits targeted actions', async () => {
+      runs.list.and.returnValue(of(page([run({ session_id: 'running', status: 'running' }), run()])));
+      const fixture = TestBed.createComponent(RunLibraryComponent);
+      const sessions: Session[] = [
+        { session_id: 'queued', initial_goal: '**Next** task', status: 'pending', start_time: 2 },
+        { session_id: 'running', initial_goal: 'Current task', status: 'running', start_time: 3 }
+      ];
+      fixture.componentRef.setInput('sessions', sessions);
+      const stop = jasmine.createSpy('stopRun');
+      fixture.componentInstance.stopRun.subscribe(stop);
+      fixture.detectChanges();
+      const queue = fixture.nativeElement.querySelector('.queue-section') as HTMLElement;
+      expect(Array.from(queue.querySelectorAll('.run-prompt')).map((title) => title.textContent)).toEqual(['Current task', 'Next task']);
+      (queue.querySelector('.queue-stop') as HTMLButtonElement).click();
+      (queue.querySelector('.queue-cancel') as HTMLButtonElement).click();
+      expect(stop.calls.allArgs()).toEqual([['running'], ['queued']]);
+      expect(fixture.nativeElement.querySelectorAll('.date-group .run-row').length).toBe(1);
+      for (const button of Array.from(queue.querySelectorAll('button'))) {
+        const box = button.getBoundingClientRect();
+        expect(box.width).toBeGreaterThanOrEqual(44);
+        expect(box.height).toBeGreaterThanOrEqual(44);
+      }
+      fixture.destroy();
+    });
+
+    it('hides queue mutations on read-only catalog runs', async () => {
+      await open('/runs?scope=everyone', of(page([run({ status: 'running', read_only: true })])));
+      expect(q('.queue-section .run-row')).not.toBeNull();
+      expect(q('.queue-section button')).toBeNull();
+    });
+
+    it('selects a queued run in Workspace without navigating or starting another run', async () => {
+      await harness.navigateByUrl('/workspace', ViewerStubComponent);
+      runs.list.and.returnValue(of(page([run({ status: 'pending' })])));
+      const fixture = TestBed.createComponent(RunLibraryComponent);
+      fixture.componentRef.setInput('workspace', true);
+      fixture.componentRef.setInput('selectedRunId', ID);
+      const select = jasmine.createSpy('selectRun');
+      fixture.componentInstance.selectRun.subscribe(select);
+      fixture.detectChanges();
+      const button = fixture.nativeElement.querySelector('.queue-row button.run-row') as HTMLButtonElement;
+      button.click();
+      await fixture.whenStable();
+      fixture.detectChanges();
+      expect(router.url).toBe('/workspace');
+      expect(select).toHaveBeenCalledOnceWith(ID);
+      expect(button.getAttribute('aria-current')).toBe('page');
+      fixture.destroy();
+    });
+
+    it('navigates to the queued run when the row is outside Workspace', async () => {
+      await open('/runs', of(page([run({ status: 'pending' })])));
+      const link = q<HTMLAnchorElement>('.queue-row a.run-row')!;
+      expect(link.getAttribute('href')).toBe(`/runs/${ID}`);
+      link.click();
+      await settle();
+      expect(router.url).toBe(`/runs/${ID}`);
+      expect(root.textContent).toContain('viewer stub');
+    });
+
+    it('renders removable filters with 44px hit boxes and keeps search when a chip is cleared', async () => {
+      await open('/runs?q=login&status=failed');
+      const chip = q<HTMLButtonElement>('[aria-label="Clear Status filter"]')!;
+      const box = chip.getBoundingClientRect();
+      expect(box.width).toBeGreaterThanOrEqual(44);
+      expect(box.height).toBeGreaterThanOrEqual(44);
+      chip.click();
+      await settle();
+      expect(router.url).toBe('/runs?q=login');
+      expect(q('[data-filter="status"]')!.textContent).toContain('Status');
+      expect(q('[aria-label="Clear Status filter"]')).toBeNull();
+    });
+
+    it('focuses search with / but leaves editable controls and modified shortcuts alone', async () => {
+      await open('/runs');
+      const search = q<HTMLInputElement>('input[type="search"]')!;
+      const shortcut = new KeyboardEvent('keydown', { key: '/', bubbles: true, cancelable: true });
+      document.dispatchEvent(shortcut);
+      expect(document.activeElement).toBe(search);
+      expect(shortcut.defaultPrevented).toBeTrue();
+      const typed = new KeyboardEvent('keydown', { key: '/', bubbles: true, cancelable: true });
+      search.dispatchEvent(typed);
+      expect(typed.defaultPrevented).toBeFalse();
+      q<HTMLButtonElement>('[role="tab"]')!.focus();
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: '/', ctrlKey: true }));
+      expect(document.activeElement).not.toBe(search);
+    });
+
+    it('gives tabs, search and New run their own 44px hit boxes at column and mobile widths', async () => {
+      await open('/runs');
+      for (const width of [360, 390]) {
+        root.style.width = `${width}px`;
+        for (const control of qa<HTMLElement>('[role="tab"], input[type="search"], .new-run')) {
+          const box = control.getBoundingClientRect();
+          expect(box.width).withContext(`${width}px width`).toBeGreaterThanOrEqual(44);
+          expect(box.height).withContext(`${width}px height`).toBeGreaterThanOrEqual(44);
+        }
+      }
+    });
+
     it('shows the first prompt line without markdown in each run row', async () => {
       runs.list.and.returnValue(of(page([run({ prompt: '\n## **Open** _Settings_\nCheck every toggle.' })])));
       const fixture = TestBed.createComponent(RunLibraryComponent);
@@ -268,7 +418,7 @@ describe('RunLibraryComponent', () => {
       expect(rows[0].querySelector('.run-recording')!.textContent).toContain('Video uploaded');
       expect(rows[0].querySelector('.run-device')!.textContent).toContain('emulator-5554');
       expect(rows[0].querySelector('.run-device')!.textContent).toContain('Desk Mac');
-      expect(rows[0].querySelector('.run-date')!.textContent).toMatch(/Oct 4, 2026/);
+      expect(rows[0].querySelector('.run-date')!.getAttribute('title')).toMatch(/Oct 4, 2026/);
       expect(rows[1].querySelector('.run-outcome')!.textContent).toContain('Interrupted');
       expect(rows[1].querySelector('.run-device')!.textContent!.trim()).toBe('emulator-5554');
       expect(rows[1].querySelector('.run-recording')).toBeNull();
@@ -318,9 +468,8 @@ describe('RunLibraryComponent', () => {
 
     it('shows status as an icon plus text, never colour alone', async () => {
       await open('/runs');
-      const badge = q('.run-outcome')!;
-      expect(badge.querySelector('.material-symbols-outlined')).not.toBeNull();
-      expect(badge.textContent!.replace(/\s+/g, ' ')).toContain('Passed');
+      expect(q('.run-icon .material-symbols-outlined')).not.toBeNull();
+      expect(q('.run-outcome')!.textContent).toContain('Completed');
     });
 
     it('shows "Expires on" only when 7 days or fewer remain', async () => {
@@ -414,19 +563,145 @@ describe('RunLibraryComponent', () => {
     });
   });
 
+  describe('filter popovers', () => {
+    it('preserves list scroll when a popover captures and restores focus', async () => {
+      await open('/runs', of(page(Array.from({ length: 12 }, (_, index) => run({ session_id: `scroll-${index}` })))));
+      const region = q<HTMLElement>('.library-scroll')!;
+      region.style.height = '200px';
+      region.scrollTop = 100;
+      q<HTMLButtonElement>('[data-filter="status"]')!.click();
+      await settle();
+      expect(region.scrollTop).toBe(100);
+      q<HTMLElement>('[data-filter-option=""]')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      await settle();
+      expect(region.scrollTop).toBe(100);
+      expect(document.activeElement).toBe(q('[data-filter="status"]'));
+    });
+
+    it('keeps App visibly unavailable without changing the URL or requesting a list', async () => {
+      await open('/runs?q=login');
+      runs.list.calls.reset();
+      const chip = q<HTMLButtonElement>('[data-filter="app"]')!;
+      expect(chip.getAttribute('aria-disabled')).toBe('true');
+      expect(chip.title).toBe('Needs backend support');
+      chip.click();
+      await settle();
+      expect(router.url).toBe('/runs?q=login');
+      expect(runs.list).not.toHaveBeenCalled();
+      expect(q('[role="dialog"]')).toBeNull();
+    });
+
+    it('opens with focus, supports arrow keys, and restores the trigger on Escape', async () => {
+      await open('/runs?status=failed');
+      const trigger = q<HTMLButtonElement>('[data-filter="status"]')!;
+      trigger.focus();
+      trigger.click();
+      await settle();
+      expect(trigger.getAttribute('aria-expanded')).toBe('true');
+      expect(q('[role="dialog"]')!.getAttribute('aria-label')).toBe('Status filter');
+      const options = qa<HTMLButtonElement>('[data-filter-option]');
+      expect(document.activeElement).toBe(options[0]);
+      options[0].dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true }));
+      expect(document.activeElement).toBe(options[1]);
+      options[1].dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true, cancelable: true }));
+      expect(document.activeElement).toBe(options.at(-1)!);
+      options.at(-1)!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+      await settle();
+      expect(q('[role="dialog"]')).toBeNull();
+      expect(trigger.getAttribute('aria-expanded')).toBe('false');
+      expect(document.activeElement).toBe(trigger);
+    });
+
+    it('closes on outside click or selection and preserves search and owner scope', async () => {
+      await open('/runs?q=login&scope=everyone');
+      const trigger = q<HTMLButtonElement>('[data-filter="status"]')!;
+      trigger.click();
+      await settle();
+      q<HTMLElement>('.cdk-overlay-backdrop')!.click();
+      await settle();
+      expect(q('[role="dialog"]')).toBeNull();
+      chooseStatus('interrupted');
+      await settle();
+      expect(router.url).toBe('/runs?q=login&status=interrupted&scope=everyone');
+      expect(q('[role="dialog"]')).toBeNull();
+      expect(q('[data-filter="status"]')!.textContent).toContain('Interrupted');
+    });
+
+    it('applies and clears both date bounds with a single URL update', async () => {
+      await open('/runs?q=login');
+      runs.list.calls.reset();
+      q<HTMLButtonElement>('[data-filter="date"]')!.click();
+      await settle();
+      q<HTMLButtonElement>('[data-filter-option="week"]')!.click();
+      await settle();
+      expect(component.filters()).toEqual({ ...component.filters(), ...datePresetRange('week') });
+      expect(q('[data-filter="date"]')!.textContent).toContain('Last 7 days');
+      expect(runs.list).toHaveBeenCalledTimes(1);
+      q<HTMLButtonElement>('[aria-label="Clear Date filter"]')!.click();
+      await settle();
+      expect(router.url).toBe('/runs?q=login');
+    });
+
+    it('adds optional filters, applies text values, and restores them from the URL', async () => {
+      await open('/runs?q=login');
+      q<HTMLButtonElement>('[data-filter="add"]')!.click();
+      await settle();
+      q<HTMLButtonElement>('[data-add-filter="device"]')!.click();
+      await settle();
+      const input = q<HTMLInputElement>('input[aria-label="Phone"]')!;
+      input.value = '  emulator-5554  ';
+      input.dispatchEvent(new Event('input'));
+      q<HTMLFormElement>('.filter-popover form')!.dispatchEvent(new Event('submit', { cancelable: true }));
+      await settle();
+      expect(router.url).toBe('/runs?q=login&device=emulator-5554');
+      expect(q('[data-filter="device"]')!.textContent).toContain('emulator-5554');
+      expect(q('[role="dialog"]')).toBeNull();
+    });
+
+    it('rejects malformed and reversed custom date ranges without changing the URL', async () => {
+      await open('/runs');
+      q<HTMLButtonElement>('[data-filter="date"]')!.click();
+      await settle();
+      type('input[aria-label="From date"]', '2026-02-30');
+      type('input[aria-label="To date"]', '2026-03-01');
+      q<HTMLFormElement>('.filter-popover form')!.dispatchEvent(new Event('submit', { cancelable: true }));
+      await settle();
+      expect(router.url).toBe('/runs');
+      expect(q('.filter-error')).not.toBeNull();
+      type('input[aria-label="From date"]', '2026-03-02');
+      q<HTMLFormElement>('.filter-popover form')!.dispatchEvent(new Event('submit', { cancelable: true }));
+      await settle();
+      expect(router.url).toBe('/runs');
+      type('input[aria-label="From date"]', '2026-02-28');
+      q<HTMLFormElement>('.filter-popover form')!.dispatchEvent(new Event('submit', { cancelable: true }));
+      await settle();
+      expect(router.url).toBe('/runs?from=2026-02-28&to=2026-03-01');
+    });
+
+    it('gives chips 32px visuals inside separate 44px hit boxes with an 8px gap', async () => {
+      await open('/runs?status=failed');
+      const chips = qa<HTMLElement>('.filter-chip, .filter-clear');
+      for (const chip of chips) {
+        expect(chip.getBoundingClientRect().width).toBeGreaterThanOrEqual(44);
+        expect(chip.getBoundingClientRect().height).toBeGreaterThanOrEqual(44);
+        expect(chip.querySelector('span')!.getBoundingClientRect().height).toBe(32);
+      }
+      expect(getComputedStyle(q('.filter-chips')!).gap).toBe('8px');
+    });
+  });
+
   describe('filter persistence', () => {
     it('restores every control and the request from the URL', async () => {
       await open(
         '/runs?q=login&status=failed&from=2026-10-01&to=2026-10-03&device=emulator-5554&host=local&requester=qa%40example.test'
       );
       expect(q<HTMLInputElement>('input[type="search"]')!.value).toBe('login');
-      expect(q<HTMLSelectElement>('select[aria-label="Status"]')!.value).toBe('failed');
-      expect(q<HTMLInputElement>('input[aria-label="From date"]')!.value).toBe('2026-10-01');
-      expect(q<HTMLInputElement>('input[aria-label="To date"]')!.value).toBe('2026-10-03');
-      expect(q<HTMLDetailsElement>('details.more-filters')!.open).toBe(true);
-      expect(q<HTMLInputElement>('input[aria-label="Phone"]')!.value).toBe('emulator-5554');
-      expect(q<HTMLSelectElement>('select[aria-label="Computer"]')!.value).toBe('local');
-      expect(q<HTMLInputElement>('input[aria-label="Requested by"]')!.value).toBe('qa@example.test');
+      expect(q('[data-filter="status"]')!.textContent).toContain('Failed');
+      expect(q('[data-filter="date"]')!.textContent).toContain('2026-10-01 – 2026-10-03');
+      expect(q('[data-filter="device"]')!.textContent).toContain('emulator-5554');
+      expect(q('[data-filter="host"]')!.textContent).toContain('A browser (no computer)');
+      expect(q('[data-filter="requester"]')!.textContent).toContain('qa@example.test');
+      expect(q('[role="dialog"]')).toBeNull();
       expect(runs.list.calls.mostRecent().args[0]).toEqual({
         q: 'login',
         status: 'failed',
@@ -438,9 +713,11 @@ describe('RunLibraryComponent', () => {
       });
     });
 
-    it('keeps "More filters" closed until one of its filters is set', async () => {
+    it('keeps optional chips hidden until one of their filters is set or added', async () => {
       await open('/runs?status=failed');
-      expect(q<HTMLDetailsElement>('details.more-filters')!.open).toBe(false);
+      expect(q('[data-filter="host"]')).toBeNull();
+      expect(q('[data-filter="device"]')).toBeNull();
+      expect(q('[data-filter="requester"]')).toBeNull();
     });
 
     it('writes a changed filter to the URL without adding a history entry, and reloads', async () => {
@@ -448,7 +725,7 @@ describe('RunLibraryComponent', () => {
       const location = TestBed.inject(Location);
       const before = (location as unknown as { historyLength?: number }).historyLength;
       runs.list.calls.reset();
-      choose('select[aria-label="Status"]', 'failed');
+      chooseStatus('failed');
       await settle();
       expect(router.url).toBe('/runs?status=failed');
       expect(runs.list.calls.mostRecent().args[0].status).toBe('failed');
@@ -484,7 +761,7 @@ describe('RunLibraryComponent', () => {
     it('P2: the busy list keeps full text contrast: nothing on the rows is dimmed, and it says so in words', async () => {
       await open('/runs', of(page([run(), run({ status: 'failed', session_id: '66666666-5d7e-4a10-9c33-0e1f2a3b4c5d' })])));
       runs.list.and.returnValue(new Subject<RunPage>());
-      choose('select[aria-label="Status"]', 'failed');
+      chooseStatus('failed');
       await settle();
       expect(q('ol.run-list')!.getAttribute('aria-busy')).toBe('true');
       const effectiveOpacity = (el: Element) => {
@@ -502,7 +779,7 @@ describe('RunLibraryComponent', () => {
       await open('/runs');
       const next = new Subject<RunPage>();
       runs.list.and.returnValue(next);
-      choose('select[aria-label="Status"]', 'failed');
+      chooseStatus('failed');
       await settle();
       expect(qa('a.run-row').length).toBe(1);
       expect(q('ol.run-list')!.getAttribute('aria-busy')).toBe('true');
@@ -594,7 +871,7 @@ describe('RunLibraryComponent', () => {
       const reload = new Subject<RunPage>();
       runs.list.calls.reset();
       runs.list.and.returnValue(reload);
-      choose('select[aria-label="Status"]', 'failed');
+      chooseStatus('failed');
       await settle();
       expect(runs.list).toHaveBeenCalledTimes(1);
       expect(q('button.load-more')).toBeNull(); // the old cursor belongs to the old query
@@ -620,7 +897,7 @@ describe('RunLibraryComponent', () => {
       expect(runs.list.calls.mostRecent().args[1]).toEqual({ scope: 'mine', cursor: 'old-cursor' });
 
       runs.list.and.returnValue(of(page([failedRow(2)])));
-      choose('select[aria-label="Status"]', 'failed');
+      chooseStatus('failed');
       await settle();
       older.next(page([run({ status: 'completed', prompt: 'Stale completed row' })]));
       await settle();
@@ -638,7 +915,7 @@ describe('RunLibraryComponent', () => {
       root = harness.fixture.nativeElement;
       q<HTMLElement>('.library-scroll')!.style.height = '200px';
       runs.list.and.returnValue(of(page(Array.from({ length: 12 }, (_, i) => failedRow(i + 10)))));
-      choose('select[aria-label="Status"]', 'failed');
+      chooseStatus('failed');
       await settle();
       await new Promise((resolve) => setTimeout(resolve, 60));
       expect(q<HTMLElement>('.library-scroll')!.scrollTop).toBe(0);
@@ -787,8 +1064,9 @@ describe('RunLibraryComponent', () => {
       const focusable = qa<HTMLElement>('a[href], button, input, select, summary').filter(
         (el) => el.tabIndex >= 0 && !(el as HTMLButtonElement).disabled && el.checkVisibility()
       );
-      expect(focusable[0]).toBe(myTab());
-      expect(focusable[1].getAttribute('aria-label')).toBe('Search runs');
+      expect(focusable[0].textContent!.trim()).toBe('New run');
+      expect(focusable[1]).toBe(myTab());
+      expect(focusable[2].getAttribute('aria-label')).toBe('Search runs');
     });
   });
 
@@ -807,23 +1085,22 @@ describe('RunLibraryComponent', () => {
         of(page([run(), run({ session_id: '55555555-5d7e-4a10-9c33-0e1f2a3b4c5d', prompt: 'Second' })], 'c'))
       );
       const names = visibleControls().map(nameOf);
-      expect(names.slice(0, 7)).toEqual(['My runs', 'Search runs', 'Search', 'Status', 'From date', 'To date', 'More filters']);
-      expect(names[7]).toContain('Log in and open settings');
-      expect(names[8]).toContain('Second');
-      expect(names[9]).toBe('Load more');
+      expect(names.slice(0, 8)).toEqual(['New run', 'Mine', 'Search runs', 'Search runs', 'Status', 'Date', 'App', '+ Filter']);
+      expect(names[8]).toContain('Log in and open settings');
+      expect(names[9]).toContain('Second');
+      expect(names[10]).toBe('Load more');
       for (const el of visibleControls()) {
         expect(el.tabIndex).toBeGreaterThanOrEqual(0);
         expect(nameOf(el).length).toBeGreaterThan(0);
       }
     });
 
-    it('reveals the More filters controls in order once opened', async () => {
+    it('reveals the additional filter entries without native selects or date pickers', async () => {
       await open('/runs');
-      const details = q<HTMLDetailsElement>('details.more-filters')!;
-      details.open = true;
-      harness.fixture.detectChanges();
-      const names = visibleControls().map(nameOf);
-      expect(names.slice(6, 10)).toEqual(['More filters', 'Computer', 'Phone', 'Requested by']);
+      q<HTMLButtonElement>('[data-filter="add"]')!.click();
+      await settle();
+      expect(qa('[data-add-filter]').map(nameOf)).toEqual(['Computer', 'Phone', 'Requested by']);
+      expect(q('select, input[type="date"]')).toBeNull();
     });
 
     it('keeps every target at least 24 px and primary targets at least 44 px', async () => {
