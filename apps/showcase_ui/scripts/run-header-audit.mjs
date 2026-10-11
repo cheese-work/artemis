@@ -9,7 +9,8 @@ import path from 'node:path';
 const dist = path.resolve('dist/frontend/browser');
 const timeline = process.argv.includes('--timeline');
 const evidence = process.argv.includes('--evidence');
-const shots = path.resolve(process.env.SHOTS || (evidence ? 'device-pane-evidence' : timeline ? 'step-timeline-evidence' : 'run-header-evidence'));
+const live = process.argv.includes('--live');
+const shots = path.resolve(process.env.SHOTS || (live ? 'live-run-evidence' : evidence ? 'device-pane-evidence' : timeline ? 'step-timeline-evidence' : 'run-header-evidence'));
 const runId = '00000001-5d7e-4a10-9c33-0e1f2a3b4c5d';
 let videoChecks = 0;
 const started = Math.floor(Date.now() / 1000) - 65;
@@ -23,6 +24,11 @@ const steps = [{
   session_id: runId, step_id: 'step-1', step_number: 1, timestamp: started + 1,
   action_taken: { action: 'launch_app', package_name: 'com.android.settings' }
 }];
+const fixtureSteps = [1, 2, 3].map(number => ({
+  session_id: runId, step_id: `step-${number}`, step_number: number, timestamp: started + number * 10,
+  duration: number < 3 ? 1.2 : undefined, action_taken: { action: 'tap', args: { text: 'Network and internet' } }
+}));
+let liveSteps = [];
 if (timeline || evidence) {
   steps.push(...['tap', 'input_text', 'tap'].map((action, index) => ({
     session_id: runId, step_id: `step-${index + 2}`, step_number: index + 2, timestamp: started + (index + 2) * 10,
@@ -37,11 +43,13 @@ const json = (response, body) => {
 const server = createServer((request, response) => {
   if (process.env.DEBUG_AUDIT) console.log('HTTP', request.url);
   const pathname = new URL(request.url, 'http://localhost').pathname;
+  if (pathname === '/whats-new.json') return json(response, []);
   if (pathname === '/api/runs') return json(response, { runs: [run], next_cursor: null, warnings: [] });
   if (pathname === `/api/runs/${runId}`) return json(response, run);
-  if (pathname.endsWith('/steps')) return json(response, steps);
+  if (pathname.endsWith('/steps')) return json(response, live ? liveSteps : steps);
   if (pathname.endsWith('/notes')) return json(response, { notes: { 'output.md': 'Settings opened. The app is ready for the next task.' } });
-  if (pathname.endsWith('/checks')) return json(response, { records: [], streams: [], run_outcome: null });
+  if (pathname.endsWith('/checks')) return json(response, { records: [], streams: [], run_outcome: live && run.status === 'completed'
+    ? { phase: 'outcome', task_status: 'completed', tests: { passed: 1, failed: 0, inconclusive: 0, unchecked: 0 } } : null });
   if (pathname.endsWith('/video')) {
     videoChecks++;
     return json(response, { session_id: runId, status: 'unavailable', has_video: false, video_url: null, video_segments: [] });
@@ -49,6 +57,8 @@ const server = createServer((request, response) => {
   if (pathname === '/api/system/whoami') return json(response, { email: 'qa@example.test', admin: false, auth_mode: 'cloudflare', reason: null });
   if (pathname === '/api/sessions') return json(response, [{ session_id: runId, initial_goal: run.prompt, start_time: started, end_time: run.end_time, status: run.status, model_info: { name: 'Flash', id: 'fixture-flash', provider: 'fixture' } }]);
   if (pathname === '/api/hosts') return json(response, { enabled: true, hosts: [], devices: [] });
+  if (pathname === '/api/status') return json(response, { status: 'idle', active_tasks: [] });
+  if (pathname === '/api/system/readiness') return json(response, { os_type: 'linux', overall_ready: true, probes: [] });
   if (pathname.startsWith('/api/')) return json(response, {});
   const extension = path.extname(pathname);
   const file = path.join(dist, extension ? pathname : 'index.html');
@@ -118,20 +128,160 @@ try {
   await send('Network.enable');
   if (process.env.DEBUG_AUDIT) console.log('Chrome ready', base);
   mkdirSync(shots, { recursive: true });
-  for (const state of timeline || evidence ? ['failed'] : ['completed', 'running']) {
-    run.status = state;
-    run.end_time = state === 'running' ? null : started + 60;
+  for (const state of live ? ['preparing', 'running', 'retrying', 'paused', 'interrupted', 'finished'] : timeline || evidence ? ['failed'] : ['completed', 'running']) {
+    run.status = state === 'finished' ? 'completed' : ['preparing', 'retrying'].includes(state) ? 'running' : state;
+    run.end_time = ['completed', 'interrupted'].includes(run.status) ? started + 60 : null;
+    run.interrupt_reason = state === 'interrupted' ? 'device_offline' : null;
+    liveSteps = state === 'preparing' ? [] : fixtureSteps;
     for (const width of evidence ? [1440, 1200, 1024, 390] : [1440, 390]) {
       await send('Emulation.setDeviceMetricsOverride', { width, height: 1000, deviceScaleFactor: 1, mobile: width < 800 });
-      await send('Page.navigate', { url: `${base}/runs/${runId}` });
+      await send('Page.navigate', { url: live ? `${base}/workspace` : `${base}/runs/${runId}` });
       let ready = false;
       for (let attempt = 0; attempt < 100; attempt++) {
-        ready = await evaluate(`!!document.querySelector('.run-header')`).catch(() => false);
+        ready = await evaluate(`!!document.querySelector('${live ? 'app-workspace' : '.run-header'}')`).catch(() => false);
         if (ready) break;
         await wait(100);
       }
       assert.ok(ready, `${state} @${width}: header loads`);
       await wait(250);
+      if (live) {
+        await send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] });
+        await evaluate(`(() => {
+          const workspace = ng.getComponent(document.querySelector('app-workspace'));
+          const agent = workspace.agentService;
+          const state = ${JSON.stringify(state)};
+          const session = { session_id: '${runId}', initial_goal: ${JSON.stringify(run.prompt)}, start_time: ${started}, end_time: ${run.end_time},
+            status: '${run.status}', interrupt_reason: ${JSON.stringify(run.interrupt_reason)}, device_serial: 'emulator-5554' };
+          agent.rawSessions.set([session, { session_id: 'queued-fixture', initial_goal: 'Next task', status: 'pending', start_time: ${started + 60} }]);
+          agent.currentSessionId.set(session.session_id);
+          agent.runningSessionId.set(['preparing', 'running', 'retrying', 'paused'].includes(state) ? session.session_id : null);
+          agent.agentStatus.set(state === 'paused' ? 'paused' : ['interrupted', 'finished'].includes(state) ? 'idle' : 'running');
+          agent.isPaused.set(state === 'paused');
+          agent.pausedError.set('The AI call failed. Continue when the service is available.');
+          agent.isRetrying.set(state === 'retrying');
+          agent.retryMessage.set('The AI service is temporarily busy. Attempt 2 of 3.');
+          agent.startupProgressBySession.set({ [session.session_id]: [
+            { stage: 'device_check', message: 'Checking the Android device', timestamp: ${started} },
+            { stage: 'device_ready', message: 'Android device connected', timestamp: ${started + 0.8} },
+            { stage: 'uiautomator', message: 'Connecting to the UI hierarchy service', timestamp: ${started + 1} }
+          ] });
+          agent.sessionLogs.set(state === 'preparing' ? [] : [{ type: 'llm_stream', session_id: session.session_id, timestamp: ${started + 30}, data: {
+            execution_id: 'fixture-live', step_id: 'step-3', stream_type: 'thinking', text: 'Settings is open. I will check Network and internet, then verify that the expected controls are present.\\nThe screen matches the task.\\nI will keep the existing evidence available.\\nThis fourth line stays in the full live log.'
+          } }]);
+          workspace.phone.system.selectedRunTarget.set(state === 'interrupted' ? null : 'emulator-5554');
+          workspace.phone.system.readinessReport.set({ os_type: 'linux', overall_ready: true, probes: [{ id: 'android_adb', status: 'pass', metadata: {
+            devices: state === 'interrupted' ? [] : [{ serial: 'emulator-5554', state: 'device', model: 'Pixel fixture', device_kind: 'emulator', is_emulator: true }]
+          } }] });
+          ng.applyChanges(workspace);
+        })()`);
+        for (let attempt = 0; attempt < 100; attempt++) {
+          if (await evaluate(`!!document.querySelector('.run-header')`).catch(() => false)) break;
+          await wait(50);
+        }
+        await wait(150);
+        const snapshot = await evaluate(`(() => {
+          const view = ng.getComponent(document.querySelector('app-run-view'));
+          const bounds = element => { const box = element.getBoundingClientRect(); return { width: box.width, height: box.height }; };
+          return { strip: document.querySelector('.status-strip')?.textContent, current: !!document.querySelector('.current-step'),
+            checklist: [...document.querySelectorAll('.startup-item')].map(bounds),
+            announcement: document.querySelector('.run-status-slot').textContent.trim(),
+            polite: document.querySelectorAll('app-run-view [aria-live="polite"]').length,
+            stop: document.querySelectorAll('[aria-label="Stop run"]').length,
+            composerStop: !!document.querySelector('.composer [aria-label="Stop run"]'),
+            placeholder: document.querySelector('.composer-input').placeholder, hint: document.querySelector('.composer-hint').textContent,
+            paused: !!document.querySelector('.status-strip .action-button'),
+            banner: document.querySelector('.composer app-interrupted-banner .banner')?.textContent,
+            duplicateBanner: !!document.querySelector('app-run-view .interrupted-banner'),
+            thought: document.querySelector('.live-thought')?.textContent,
+            clamp: document.querySelector('.live-thought') ? getComputedStyle(document.querySelector('.live-thought')).webkitLineClamp : null,
+            animations: [...document.querySelectorAll('.status-strip .material-symbols-outlined, .current-step .step-icon, .startup-item .material-symbols-outlined')].map(element => getComputedStyle(element).animationName),
+            dialogs: document.querySelectorAll('dialog[open]').length,
+            controls: [...document.querySelectorAll('.follow-latest, .show-live-log, .status-strip button, .composer app-interrupted-banner button')].map(bounds),
+            overflow: document.documentElement.scrollWidth - innerWidth };
+        })()`);
+        const active = !['finished', 'interrupted'].includes(state);
+        assert.equal(snapshot.stop, active ? 1 : 0, 'one Stop in the run header');
+        assert.equal(snapshot.composerStop, false);
+        assert.equal(snapshot.polite, 1, 'only the run status strip announces');
+        assert.equal(snapshot.dialogs, 0, 'screenshots show the run, not an overlay');
+        assert.ok(snapshot.overflow <= 0, JSON.stringify(snapshot));
+        assert.ok(snapshot.controls.every(box => box.width >= 44 && box.height >= 44), JSON.stringify(snapshot.controls));
+        assert.ok(snapshot.animations.every(name => name === 'none'), 'reduced motion');
+        assert.equal(snapshot.paused, state === 'paused');
+        if (active) {
+          assert.equal(snapshot.placeholder, 'Describe the next task. It queues after this run.');
+          assert.match(snapshot.hint, /Pixel fixture.*1 run already queued/);
+        }
+        if (state === 'preparing') {
+          assert.equal(snapshot.checklist.length, 2);
+          assert.ok(snapshot.checklist.every(box => box.height >= 44));
+        } else if (active) {
+          assert.equal(snapshot.clamp, '3');
+          assert.match(snapshot.thought, /Settings is open/);
+          assert.equal(snapshot.current, true);
+        }
+        if (state === 'retrying') assert.match(snapshot.strip, /Retrying.*Attempt 2 of 3/s);
+        if (state === 'paused') assert.match(snapshot.strip, /Task paused.*Continue task/s);
+        if (state === 'interrupted') {
+          assert.match(snapshot.banner, /phone went offline/);
+          assert.equal(snapshot.duplicateBanner, false);
+        }
+        if (state === 'finished') {
+          assert.equal(snapshot.announcement, 'Run finished: Pass.');
+          assert.equal(snapshot.current, false);
+        }
+        if (width === 390) {
+          await evaluate(`(document.querySelector('.status-strip') ?? document.querySelector('.run-result-summary')).scrollIntoView({ block: 'start', behavior: 'instant' })`);
+          await wait(50);
+        }
+        const screenshot = await send('Page.captureScreenshot', { format: 'png' });
+        writeFileSync(path.join(shots, `${state}-${width}.png`), Buffer.from(screenshot.data, 'base64'));
+        if (state === 'running') {
+          await evaluate(`(() => {
+            window.announcements = [];
+            const strip = document.querySelector('.run-status-slot');
+            window.announcementObserver = new MutationObserver(() => window.announcements.push(strip.textContent.trim()));
+            window.announcementObserver.observe(strip, { subtree: true, childList: true, characterData: true });
+            document.querySelector('.step-button').click();
+          })()`);
+          await wait(50);
+          assert.equal(await evaluate(`ng.getComponent(document.querySelector('app-run-view')).followLatest()`), false);
+          await evaluate(`(() => {
+            const view = ng.getComponent(document.querySelector('app-run-view'));
+            view.storedSteps.update(steps => [...steps, { session_id: '${runId}', step_id: 'step-4', step_number: 4, timestamp: Date.now() / 1000, action_taken: { action: 'tap' } }]);
+          })()`);
+          await wait(50);
+          assert.equal(await evaluate(`ng.getComponent(document.querySelector('app-run-view')).selectedStep().step_number`), 1, 'manual evidence stays selected');
+          await evaluate(`document.querySelector('.follow-latest').click()`);
+          await wait(50);
+          assert.equal(await evaluate(`ng.getComponent(document.querySelector('app-run-view')).selectedStep().step_number`), 4, 'Follow latest resumes');
+          await evaluate(`(() => {
+            const view = ng.getComponent(document.querySelector('app-run-view'));
+            view.clock.set(Date.now() / 1000 + 1);
+            view.agentService.sessionLogs.set([{ type: 'llm_stream', timestamp: Date.now() / 1000, data: { execution_id: 'four', step_id: 'step-4', stream_type: 'thinking', text: 'A new thought' } }]);
+            view.agentService.isRetrying.set(true);
+            view.agentService.retryMessage.set('Retrying in 2s');
+          })()`);
+          await wait(50);
+          assert.deepEqual(await evaluate(`window.announcements`), ['Step 4 in progress.'], 'clock, selection, Thought and retry do not announce');
+          await evaluate(`(() => {
+            const view = ng.getComponent(document.querySelector('app-run-view'));
+            view.checks.set({ records: [], streams: [], run_outcome: {
+              phase: 'outcome', task_status: 'completed', tests: { passed: 0, failed: 1, inconclusive: 0, unchecked: 0 }
+            } });
+            view.agentService.runningSessionId.set(null);
+            view.agentService.agentStatus.set('idle');
+            view.agentService.rawSessions.update(sessions => sessions.map(session => session.session_id === '${runId}' ? { ...session, status: 'failed', end_time: Date.now() / 1000 } : session));
+          })()`);
+          await wait(100);
+          assert.deepEqual(await evaluate(`window.announcements`), ['Step 4 in progress.', 'Run finished: Fail.'], 'one terminal announcement');
+          await evaluate(`window.announcementObserver.disconnect()`);
+          snapshot.behavior = 'PASS: manual selection, follow toggle and announcement count';
+        }
+        results.push({ state, width, ...snapshot });
+        console.log(`PASS ${state} @${width}: strip, controls, composer, reduced motion, no overflow`);
+        continue;
+      }
       await evaluate('document.fonts.ready.then(() => true)');
       if (evidence) {
         await evaluate(`(() => {
