@@ -93,4 +93,14 @@ describe('UsbPhoneConnectionComponent', () => {
     expect(fixture.nativeElement.textContent).toContain('Keep this tab open');
     expect(fixture.nativeElement.querySelector('button')).toBeNull();
   });
+
+  it('announces when the same phone bridge is reconnecting', () => {
+    relay.state.set({ status: 'reconnecting', serial: 'R58M123', sessionId: 'bridge', error: null });
+    fixture.detectChanges();
+
+    expect(fixture.nativeElement.querySelector('[role="status"]')?.textContent)
+      .toContain('Reconnecting this browser bridge to the same phone');
+    expect(fixture.nativeElement.querySelector('code')?.textContent).toBe('R58M123');
+    expect(fixture.nativeElement.querySelector('button')).toBeNull();
+  });
 });

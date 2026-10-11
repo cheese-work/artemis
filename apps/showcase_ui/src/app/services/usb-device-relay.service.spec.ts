@@ -86,6 +86,7 @@ class FakeSocket {
 describe('UsbDeviceRelayService', () => {
   let service: UsbDeviceRelayService | null = null;
   let socket: FakeSocket;
+  let queuedSockets: FakeSocket[];
   let tabChannel: FakeTabChannel;
   let socketUrl: string | undefined;
   let manager: { requestDevice: jasmine.Spy };
@@ -105,6 +106,7 @@ describe('UsbDeviceRelayService', () => {
     tabChannel = new FakeTabChannel();
     service = null;
     socket = new FakeSocket();
+    queuedSockets = [];
     socketUrl = undefined;
     receivedPackets = [];
     writeError = null;
@@ -147,7 +149,7 @@ describe('UsbDeviceRelayService', () => {
           provide: DEVICE_BRIDGE_SOCKET_FACTORY,
           useValue: (url: string) => {
             socketUrl = url;
-            return socket as unknown as WebSocket;
+            return (queuedSockets.shift() ?? socket) as unknown as WebSocket;
           }
         }
       ]
@@ -492,7 +494,8 @@ describe('UsbDeviceRelayService', () => {
     socket.open();
     await connecting;
     socket.message(JSON.stringify({
-      type: 'session_leased', session_id: 'lease-1', expires_in_seconds: 300
+      type: 'session_leased', session_id: 'lease-1', expires_in_seconds: 300,
+      reconnect_token: 'resume-secret'
     }));
     socket.message(JSON.stringify({ type: 'device_attached', serial: 'R58M123' }));
   }
@@ -589,6 +592,47 @@ describe('UsbDeviceRelayService', () => {
       reason: 'socket_closed', usb_error: null
     }));
     expect(socket.sent).toEqual([]);
+  });
+
+  it('reconnects the same bridge session and keeps forwarding from the selected USB device', async () => {
+    jasmine.clock().install();
+    try {
+      await openRelay();
+      const resumedSocket = new FakeSocket();
+      queuedSockets.push(resumedSocket);
+
+      socket.drop(1006, 'network reset');
+      await flushMicrotasks();
+      expect(service!.state().status).toBe('reconnecting');
+
+      jasmine.clock().tick(500);
+      await flushMicrotasks();
+      expect(socketUrl).toContain('/api/device-bridge/resume');
+      resumedSocket.open();
+      expect(JSON.parse(resumedSocket.sent[0] as string)).toEqual({
+        type: 'resume', session_id: 'lease-1', reconnect_token: 'resume-secret'
+      });
+      resumedSocket.message(JSON.stringify({
+        type: 'session_leased', session_id: 'lease-1', expires_in_seconds: 300,
+        reconnect_token: 'resume-secret'
+      }));
+      resumedSocket.message(JSON.stringify({ type: 'device_attached', serial: 'R58M123' }));
+      await flushMicrotasks();
+      expect(service!.state()).toEqual({
+        status: 'connected', serial: 'R58M123', sessionId: 'lease-1', error: null
+      });
+
+      packetController.enqueue({
+        command: AdbCommand.Okay, arg0: 1, arg1: 2, checksum: 0,
+        magic: (AdbCommand.Okay ^ 0xffffffff) >>> 0, payload: new Uint8Array([9])
+      } as AdbPacketData);
+      await flushMicrotasks();
+      expect(resumedSocket.sent.some(frame => frame instanceof ArrayBuffer)).toBeTrue();
+      expect(manager.requestDevice).toHaveBeenCalledTimes(1);
+      expect(device.connect).toHaveBeenCalledTimes(1);
+    } finally {
+      jasmine.clock().uninstall();
+    }
   });
 
   it('reports a socket error before closing', async () => {

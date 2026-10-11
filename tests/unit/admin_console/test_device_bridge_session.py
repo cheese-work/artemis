@@ -41,6 +41,7 @@ from apps.admin_console.services.bridge_session_service import (
 )
 
 PATH = "/api/device-bridge/session"
+RESUME_PATH = "/api/device-bridge/resume"
 
 # starlette's TestClient.websocket_connect always dials "ws://testserver"
 # regardless of base_url, so the Host header must be overridden explicitly on
@@ -214,6 +215,65 @@ def test_lease_connect_packet_relay_and_close(loopback_client, monkeypatch, _moc
     assert _mock_adb == [("connect", f"127.0.0.1:{port}"), ("disconnect", f"127.0.0.1:{port}")]
     assert asyncio.run(bridge_session_service.get(session_id)) is None
     _assert_listener_closed(port)
+
+
+def test_transient_websocket_close_resumes_same_bridge_session(
+    loopback_client, monkeypatch, _mock_adb
+):
+    peer = {}
+
+    async def fake_adb_command(*arguments):
+        _mock_adb.append(arguments)
+        if arguments[0] == "connect":
+            host, port = arguments[1].split(":")
+            peer["reader"], peer["writer"] = await asyncio.open_connection(host, int(port))
+            return f"connected to {arguments[1]}"
+        writer = peer.get("writer")
+        if writer is not None:
+            writer.close()
+            await writer.wait_closed()
+        return "disconnected"
+
+    monkeypatch.setattr(bridge_session_service_module, "_run_adb_command", fake_adb_command)
+
+    with loopback_client.websocket_connect(PATH, headers=_HOST_HEADER) as websocket:
+        leased = websocket.receive_json()
+        assert leased["type"] == "session_leased"
+        session_id = leased["session_id"]
+        token = leased["reconnect_token"]
+        serial = f"127.0.0.1:{leased['listener']['port']}"
+        assert websocket.receive_json() == {"type": "device_attached", "serial": serial}
+        websocket.send_text(
+            json.dumps(
+                {
+                    "type": "client_close",
+                    "reason": "socket_error",
+                    "usb_error": None,
+                    "visibility_state": "visible",
+                }
+            )
+        )
+
+    retained = asyncio.run(bridge_session_service.get(session_id))
+    assert retained is not None
+    assert retained.serial == serial
+    assert not retained.revoked
+
+    with loopback_client.websocket_connect(RESUME_PATH, headers=_HOST_HEADER) as websocket:
+        websocket.send_text(
+            json.dumps({"type": "resume", "session_id": session_id, "reconnect_token": token})
+        )
+        resumed_lease = websocket.receive_json()
+        assert resumed_lease["type"] == "session_leased"
+        assert resumed_lease["session_id"] == session_id
+        assert resumed_lease["serial"] == serial
+        assert resumed_lease["reconnect_token"] == token
+        assert websocket.receive_json() == {"type": "device_attached", "serial": serial}
+        websocket.send_text("close")
+
+    assert _mock_adb == [("connect", serial), ("disconnect", serial)]
+    assert asyncio.run(bridge_session_service.get(session_id)) is None
+    _assert_listener_closed(int(serial.rsplit(":", 1)[1]))
 
 
 def test_loopback_session_binds_listener_and_closes(loopback_client, _mock_adb):
@@ -799,6 +859,43 @@ def test_bridge_close_logs_sanitized_reason(reason, caplog):
 
     assert "event=bridge_close" in caplog.text
     assert f"reason={reason}" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_bridge_session_resumes_with_same_serial_and_rejects_wrong_credentials():
+    service = BridgeSessionService()
+    session = await service.create_session(owner="qa@example.com")
+    session.connected.set()
+    serial = session.serial
+    generation = session.connection_generation
+
+    assert await service.begin_reconnect(session.session_id, generation, grace_seconds=1)
+    with pytest.raises(ValueError, match="unavailable"):
+        await service.resume(session.session_id, "wrong-token", "qa@example.com")
+    with pytest.raises(ValueError, match="unavailable"):
+        await service.resume(session.session_id, session.reconnect_token, "other@example.com")
+
+    resumed = await service.resume(session.session_id, session.reconnect_token, "qa@example.com")
+    assert resumed is session
+    assert resumed.serial == serial
+    assert resumed.connection_generation == generation + 1
+    assert resumed.websocket_attached
+    assert await service.active_session_ids() == {session.session_id}
+    await service.revoke(session.session_id)
+
+
+@pytest.mark.asyncio
+async def test_bridge_session_expires_after_reconnect_grace():
+    service = BridgeSessionService()
+    session = await service.create_session()
+    session.connected.set()
+
+    assert await service.begin_reconnect(
+        session.session_id, session.connection_generation, grace_seconds=0.01
+    )
+    await asyncio.sleep(0.03)
+
+    assert await service.get(session.session_id) is None
 
 
 def test_server_accepts_every_close_reason_the_browser_can_send():
