@@ -1046,6 +1046,49 @@ def test_tcp_relay_forwards_multi_megabyte_transfer_as_whole_packets():
     assert session.bytes_device_to_browser == sum(map(len, packets))
 
 
+def test_tcp_relay_resumes_packet_after_disconnect_between_header_and_payload():
+    packet = _adb_packet(b"WRTE", b"DATA")
+    header = packet[:24]
+    session = BridgeSession(session_id="partial-packet", expires_at=float("inf"))
+
+    class CapturingWebSocket:
+        def __init__(self):
+            self.frames = []
+
+        async def send_bytes(self, frame):
+            self.frames.append(frame)
+
+    async def scenario():
+        reader = asyncio.StreamReader()
+        reader.feed_data(header)
+        detached_socket = CapturingWebSocket()
+        relay_task = asyncio.create_task(
+            device_bridge._forward_tcp_packets(reader, detached_socket, asyncio.Lock(), session)
+        )
+        await asyncio.sleep(0)
+        assert session.pending_device_packet == header
+        relay_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await relay_task
+
+        reader.feed_data(packet[len(header) :])
+        reader.feed_eof()
+        resumed_socket = CapturingWebSocket()
+        with pytest.raises(asyncio.IncompleteReadError):
+            await device_bridge._forward_tcp_packets(
+                reader, resumed_socket, asyncio.Lock(), session
+            )
+        return detached_socket.frames, resumed_socket.frames
+
+    detached_frames, resumed_frames = asyncio.run(scenario())
+
+    assert detached_frames == []
+    assert resumed_frames == [packet]
+    assert resumed_frames[0].startswith(b"WRTE")
+    assert session.pending_device_packet is None
+    assert session.bytes_device_to_browser == len(packet)
+
+
 def test_websocket_relay_counts_bytes_after_tcp_drain():
     packet = _adb_packet(b"WRTE", b"payload")
     session = BridgeSession(session_id="browser-transfer", expires_at=float("inf"))

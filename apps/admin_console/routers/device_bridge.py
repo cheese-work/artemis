@@ -108,13 +108,21 @@ async def _forward_tcp_packets(
     session: BridgeSession,
 ) -> None:
     while True:
-        header = await reader.readexactly(_ADB_HEADER_BYTES)
+        packet = session.pending_device_packet
+        if packet is None:
+            packet = await reader.readexactly(_ADB_HEADER_BYTES)
+            session.pending_device_packet = packet
+        header = packet[:_ADB_HEADER_BYTES]
         payload_size = struct.unpack_from("<I", header, 12)[0]
         if payload_size + _ADB_HEADER_BYTES > MAX_ADB_PACKET_BYTES:
             raise ValueError("ADB packet exceeds relay limit")
-        payload = await reader.readexactly(payload_size)
-        await _send_bytes(websocket, header + payload, send_lock)
-        session.bytes_device_to_browser += _ADB_HEADER_BYTES + payload_size
+        if len(packet) == _ADB_HEADER_BYTES:
+            payload = await reader.readexactly(payload_size)
+            packet += payload
+            session.pending_device_packet = packet
+        await _send_bytes(websocket, packet, send_lock)
+        session.bytes_device_to_browser += len(packet)
+        session.pending_device_packet = None
         if not await _renew_lease(session, websocket, send_lock):
             return
 

@@ -120,6 +120,7 @@ class BridgeSession:
     close_code: int | None = None
     bytes_browser_to_device: int = 0
     bytes_device_to_browser: int = 0
+    pending_device_packet: bytes | None = None
     # Verified email of the person who connected the phone; None when no one was signed in.
     owner: str | None = None
     reconnect_token: str = field(default_factory=lambda: secrets.token_urlsafe(32))

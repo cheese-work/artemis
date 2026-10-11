@@ -317,6 +317,12 @@ export class UsbDeviceRelayService implements OnDestroy {
       current.sessionId && this.reconnectToken && this.device && this.reader && this.writer &&
       (reason === 'socket_closed' || reason === 'socket_error')
     ) {
+      this.logger.warn('Device bridge reconnecting:', {
+        reason,
+        error: errorDetails(error),
+        session_id: current.sessionId,
+        visibility_state: this.document.visibilityState
+      });
       if (reason === 'socket_error' && socket.readyState === SOCKET_OPEN) {
         try {
           socket.send(JSON.stringify({
