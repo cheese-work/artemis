@@ -110,6 +110,7 @@ class LLMWithFallback(LLM):
     """LLM configuration with automatic secondary fallback and timeout specs."""
 
     fallback: LLM
+    fallback_enabled: bool = True
     fix_model: str | None = None
     timeout: float | None = None
 

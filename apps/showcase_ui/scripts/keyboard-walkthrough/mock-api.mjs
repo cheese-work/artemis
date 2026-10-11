@@ -52,6 +52,13 @@ export function startMockApi(distDir) {
   const server = http.createServer((req, res) => {
     const url = new URL(req.url, 'http://x');
     const p = url.pathname;
+    if (p === '/api/models') return json(res, 200, {
+      default: { provider: 'openai', model: 'fixture-default' },
+      models: [
+        { provider: 'openai', model: 'fixture-default', source: 'fixture' },
+        { provider: 'openai', model: 'gemini-via-proxy', source: 'fixture' }
+      ], errors: []
+    });
     if (p === '/api/runs') {
       const q = (url.searchParams.get('q') ?? '').toLowerCase();
       const status = url.searchParams.get('status');

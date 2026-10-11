@@ -70,6 +70,20 @@ def _cancel_fixture(session_id: str) -> None:
         raise HTTPException(status_code=503, detail="The preview outcome could not be persisted.")
 
 
+@router.get("/api/models")
+async def get_models(actor: OwnerScope = Depends(actor_scope)) -> dict[str, Any]:
+    require_actor(actor)
+    default = {"provider": "openai", "model": "preview-model"}
+    return {
+        "default": default,
+        "models": [
+            {**default, "source": "preview fixture"},
+            {"provider": "openai", "model": "preview-alternate", "source": "preview fixture"},
+        ],
+        "errors": [],
+    }
+
+
 @router.get("/api/devices")
 async def list_devices(actor: OwnerScope = Depends(actor_scope)) -> dict[str, Any]:
     return {

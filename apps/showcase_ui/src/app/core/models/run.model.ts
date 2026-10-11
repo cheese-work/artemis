@@ -18,6 +18,7 @@ export interface RunSummary {
   device_ref: { host_id: string | null; serial: string } | null;
   requested_by: string | null;
   read_only?: boolean;
+  agent_model?: string | null;
   app_package?: string | null;
   verdict?: 'pass' | 'fail' | 'inconclusive' | null;
   pinned: boolean;

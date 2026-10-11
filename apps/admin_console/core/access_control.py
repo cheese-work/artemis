@@ -445,6 +445,7 @@ _PUBLIC_GET_PATHS = {
     "/api/tasks/presets",
     "/api/tasks/catalog",
     "/api/run/defaults",
+    "/api/models",
     "/api/devices",
     "/api/status",
     "/api/stream",

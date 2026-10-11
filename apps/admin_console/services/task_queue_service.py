@@ -1318,7 +1318,13 @@ class TaskQueueService:
             target = cls._task_target(task_item, resolve_host=True)
             from apps.admin_console.services.config_store import get_config_store
 
-            config_snapshot = await get_config_store().snapshot_for_spawn()
+            config_snapshot = await get_config_store().snapshot_for_spawn(
+                **(
+                    {"operator_model": task_item["model"]}
+                    if task_item.get("model") and task_item.get("model_explicit")
+                    else {}
+                )
+            )
             target = cls._task_target(task_item, resolve_host=True)
             cmd, env = cls._build_worker_invocation(
                 task_item,
@@ -1644,6 +1650,8 @@ class TaskQueueService:
         requested_by: str | None = None,
         goal_images: list[run_images.ValidatedImage] | None = None,
         bridge_session_id: str | None = None,
+        model: dict[str, str] | None = None,
+        model_explicit: bool = False,
     ) -> dict[str, Any]:
         """Enqueues one or more goals and wakes up the background worker.
 
@@ -1750,6 +1758,9 @@ class TaskQueueService:
                 bridge_session_id=bridge_session_id,
             )
             session_id = str(task_item["session_id"])
+            if model:
+                task_item["model"] = dict(model)
+                task_item["model_explicit"] = model_explicit
             existing_trace = trace_store.read_status(session_id)
             trace_created = existing_trace is None
             existing_trace_is_terminal = bool(
@@ -1785,6 +1796,7 @@ class TaskQueueService:
                     notify_context,
                     requested_by,
                     device_binding=task_item["device_binding"],
+                    **({"model": model} if model else {}),
                 ):
                     raise RuntimeError(f"Could not persist queued session {session_id}")
                 if goal_images:

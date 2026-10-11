@@ -12,6 +12,7 @@ import { startMockApi, mock, RUNS } from '../keyboard-walkthrough/mock-api.mjs';
 
 const [outDir = 'screenshots', label = 'shot', audit] = process.argv.slice(2);
 const checkControls = audit === '--controls';
+const checkModels = audit === '--models';
 const failures = [];
 const iconNames = readFileSync(new URL('../../public/fonts/material-symbols-outlined.txt', import.meta.url), 'utf8').trim().split(',');
 mkdirSync(outDir, { recursive: true });
@@ -62,7 +63,10 @@ if (checkControls) {
 }
 const pages = { workspace: '/workspace', runs: '/runs', 'run-detail': `/runs/${RUNS[1].session_id}`, setup: '/setup', check: '/check' };
 if (checkControls) delete pages['run-detail'];
-for (const width of checkControls ? [1440, 390] : [1280, 1024]) {
+if (checkModels) for (const name of Object.keys(pages)) if (name !== 'workspace') delete pages[name];
+if (checkModels) for (const run of RUNS) run.agent_model = 'fixture-default';
+if (checkModels) for (const session of mock.sessions) session.model_info = { name: 'Flash', id: 'fixture-default', provider: 'openai' };
+for (const width of checkControls || checkModels ? [1440, 390] : [1280, 1024]) {
   for (const [name, route] of Object.entries(pages)) {
     await send('Emulation.setDeviceMetricsOverride', { width, height: 800, deviceScaleFactor: 1, mobile: false });
     await send('Page.navigate', { url: base + route });
@@ -94,6 +98,24 @@ for (const width of checkControls ? [1440, 390] : [1280, 1024]) {
       failures.push(...disclosureErrors.map(error => `${name}-${width}: ${error}`));
     }
     await evaluate('document.fonts.ready.then(() => true)');
+    if (checkModels) {
+      const modelErrors = await evaluate(`(() => {
+        const select = document.querySelector('select[aria-label="Run model"]');
+        if (!select) return ['Model select is missing'];
+        const errors = [];
+        const box = select.getBoundingClientRect();
+        if (box.width < 44 || box.height < 44) errors.push('Model select is smaller than 44 px');
+        if (box.left < 0 || box.right > innerWidth) errors.push('Model select is outside the viewport');
+        const send = document.querySelector('.btn-send').getBoundingClientRect();
+        if (Math.abs(send.top - box.top) > 4) errors.push('Send and the model select must stay on one row');
+        if (select.options.length !== 3 || !select.options[0].text.startsWith('Default')) errors.push('Default is not first or discovery is missing');
+        select.value = select.options[2].value;
+        select.dispatchEvent(new Event('change', { bubbles: true }));
+        return errors;
+      })()`);
+      failures.push(...modelErrors.map(error => name + '-' + width + ': ' + error));
+      await sleep(150);
+    }
     const geometry = await evaluate(`(() => {
       const nav = document.querySelector('.floating-nav-switcher').getBoundingClientRect();
       const underNav = [];
@@ -121,6 +143,7 @@ for (const width of checkControls ? [1440, 390] : [1280, 1024]) {
       return { overflowX: document.documentElement.scrollWidth - innerWidth, underNav, targets };
     })()`);
     writeFileSync(path.join(outDir, `${label}-${name}-${width}.json`), JSON.stringify(geometry, null, 2));
+    if (checkModels && geometry.overflowX > 0) failures.push(name + '-' + width + ': horizontal overflow');
     if (name === 'workspace') {
       const iconErrors = await evaluate(`(() => {
         const errors = [];
@@ -217,4 +240,6 @@ if (failures.length) {
   process.exitCode = 1;
 } else if (checkControls) {
   console.log('PASS: control borders, shadows, 44 px hit boxes, keyboard focus, 3:1 focus contrast and mobile active underlines at 1440 px and 390 px.');
+} else if (checkModels) {
+  console.log('PASS: discovered model choice, default-first list, 44 px target and composer layout at 1440 px and 390 px. Fonts ready before capture.');
 }

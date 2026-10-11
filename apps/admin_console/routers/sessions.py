@@ -131,9 +131,10 @@ def _list_sessions_sync(scope: OwnerScope):
         sess_profile = model_service.resolve_session_profile(
             row_dict, None, state.current_profile, agent_names=agent_names
         )
+        recorded = model_service.get_recorded_model(row_dict)
         row_dict["model_info"] = (
-            model_service.get_active_model_info(sess_profile)
-            if sess_profile
+            model_service.get_active_model_info(sess_profile, recorded)
+            if sess_profile or recorded
             else default_model_info
         )
         if not sess_profile:
@@ -155,7 +156,9 @@ def _list_sessions_sync(scope: OwnerScope):
                 row_dict, llm_traces, state.current_profile
             )
             if sess_profile:
-                row_dict["model_info"] = model_service.get_active_model_info(sess_profile)
+                row_dict["model_info"] = model_service.get_active_model_info(
+                    sess_profile, model_service.get_recorded_model(row_dict)
+                )
 
     return [
         row

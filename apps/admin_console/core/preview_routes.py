@@ -76,6 +76,7 @@ REAL = frozenset(
 # ``routers.preview_synthetic``; the dispatch tests prove the real one never runs.
 SYNTHETIC = frozenset(
     {
+        "GET /api/models",
         "GET /api/devices",
         "GET /api/status",
         "GET /api/stream/device-state",

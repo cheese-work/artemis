@@ -1793,7 +1793,15 @@ describe('RunViewComponent', () => {
       expect(q('[data-fact="model"]')!.textContent).toBe('Not recorded');
       agent.sessions.set([{ session_id: ID, initial_goal: 'This run', start_time: START, model_info: { name: 'Flash', id: 'flash', provider: 'test' } }]);
       await settle();
-      expect(q('[data-fact="model"]')!.textContent).toBe('Flash');
+      expect(q('[data-fact="model"]')!.textContent).toBe('flash');
+    });
+
+    it('shows the immutable run model instead of the current server model', async () => {
+      await open({ runResult: of(run({ agent_model: 'recorded-model' })) });
+      agent.sessions.set([{ session_id: ID, initial_goal: 'This run', start_time: START,
+        model_info: { name: 'Flash', id: 'new-server-default', provider: 'test' } }]);
+      await settle();
+      expect(q('[data-fact="model"]')!.textContent).toBe('recorded-model');
     });
 
     it('ticks Elapsed while active and tears down the clock on destroy', async () => {

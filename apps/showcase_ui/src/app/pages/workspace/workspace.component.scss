@@ -249,6 +249,32 @@
     gap: var(--space-xs);
     flex: none;
     margin-left: auto;
+    max-width: 100%;
+    flex-wrap: wrap;
+  }
+
+  .model-select {
+    min-width: var(--target);
+    min-height: var(--target);
+    width: 180px;
+    max-width: 100%;
+    padding: 0 var(--space-sm);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    background: var(--color-surface);
+    color: var(--color-ink);
+    font-family: inherit;
+    font-size: var(--text-ui);
+    text-overflow: ellipsis;
+
+    &:focus-visible {
+      outline: 3px solid var(--color-focus);
+      outline-offset: 2px;
+    }
+
+    @media (max-width: 480px) {
+      width: 112px;
+    }
   }
 
   /* Flash / Pro: each 44 px box draws a 36 px face (spec section 3). */

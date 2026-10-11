@@ -118,6 +118,15 @@ limitations under the License.
               </button>
             </div>
 
+            <select class="model-select" aria-label="Run model"
+              (focus)="models.load()"
+              [ngModel]="models.selectedKey()" (ngModelChange)="models.choose($event)"
+              [disabled]="isSubmitting()" [title]="models.selection()?.model ?? models.catalog()?.default?.model ?? 'Server default'">
+              @for (option of models.options(); track option.key) {
+                <option [value]="option.key">{{ option.label }}</option>
+              }
+            </select>
+
             <!-- Attach images: a labelled button opens the (visually hidden) native file input -->
             <input #imageInput type="file" class="visually-hidden-input" multiple
               [accept]="imageAccept" aria-label="Choose images to attach"
@@ -144,6 +153,9 @@ limitations under the License.
       </div>
 
       <p class="composer-hint">{{ composerHint() }}</p>
+      @if (models.warning(); as warning) {
+        <p class="composer-hint" role="status">{{ warning }}</p>
+      }
     </section>
     }
   </main>
