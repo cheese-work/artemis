@@ -52,6 +52,7 @@ from artemis.llm.reliability import (
     FailureCategory,
     LLMCallError,
     LLMExhaustedError,
+    LLMGatewayModelRejectedError,
     LLMPermanentError,
     classify_failure,
     retry_policy_for,
@@ -401,11 +402,14 @@ async def _run_with_recovery[T](
       transparency via _record_llm_retry.
     - Non-retryable categories (auth, bad request) raise LLMPermanentError
       immediately: retrying cannot help and pausing would hang the task.
+    - Gateway model-account refusals retry at most three total attempts,
+      then raise LLMGatewayModelRejectedError without pausing or changing models.
     - When retryable attempts are exhausted: if a fallback model is waiting
       (with_fallback), raise LLMExhaustedError so it takes over immediately;
       otherwise pause the task (bounded by settings.LLM_PAUSE_TIMEOUT_SECONDS)
       and retry from scratch on resume.
     """
+    gateway_attempts = 0
     while True:
         request_token = _begin_llm_request(provider)
         last_error: Exception | None = None
@@ -445,6 +449,9 @@ async def _run_with_recovery[T](
                         raise LLMPermanentError(str(e), failure=failure, cause=e) from e
                     last_error, last_failure = e, failure
                     attempt = attempts.get(failure.category, 0) + 1
+                    if failure.category is FailureCategory.GATEWAY_MODEL_REJECTED:
+                        gateway_attempts += 1
+                        attempt = gateway_attempts
                     attempts[failure.category] = attempt
                     policy = retry_policy_for(failure.category)
                     if attempt >= policy.max_attempts:
@@ -474,6 +481,21 @@ async def _run_with_recovery[T](
                     return result
 
             # Retryable attempts exhausted.
+            if last_failure.category is FailureCategory.GATEWAY_MODEL_REJECTED:
+                reason = "AI provider rejected the model; try again"
+                _record_llm_event(
+                    "llm_gave_up",
+                    {
+                        "error": str(last_error)[:1000],
+                        "category": last_failure.category.value,
+                        "retryable": False,
+                        "message": reason,
+                    },
+                    status="failed",
+                )
+                raise LLMGatewayModelRejectedError(
+                    reason, failure=last_failure, cause=last_error
+                ) from last_error
             if _FALLBACK_AVAILABLE.get():
                 _record_llm_event(
                     "llm_gave_up",
