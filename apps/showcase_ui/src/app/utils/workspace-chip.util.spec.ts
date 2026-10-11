@@ -129,6 +129,16 @@ describe('workspaceChipView', () => {
     expect(workspaceChipView(input({ relay })).kind).toBe('connected');
   });
 
+  it('shows a reconnecting bridge without exposing it as a new run target', () => {
+    const relay: UsbDeviceRelayState = {
+      status: 'reconnecting', serial: '127.0.0.1:41003', sessionId: 'bridge-9', error: null
+    };
+    const view = workspaceChipView(input({ relay }));
+    expect(view.kind).toBe('connecting');
+    expect(view.text).toBe('Reconnecting…');
+    expect(view.target).toBeNull();
+  });
+
   it('names the computer for a shared phone, with no bridge session', () => {
     const view = workspaceChipView(
       input({

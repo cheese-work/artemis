@@ -530,7 +530,15 @@ def route_tier(path: str, methods: set[str], is_websocket: bool = False) -> str 
     if is_websocket:
         if path == "/api/agent/connect":
             return "agent"
-        return "public" if path == "/api/device-bridge/session" else None
+        return (
+            "public"
+            if path
+            in {
+                "/api/device-bridge/session",
+                "/api/device-bridge/resume",
+            }
+            else None
+        )
     if methods == _AGENT_PATHS.get(path):
         return "agent"
     if path == "/api/system/shutdown" and methods == {"POST"}:
