@@ -50,7 +50,7 @@ export const PROMPT_CRITIQUE = {
   ],
   lessons: ['Give the task a clear stopping point.', 'Name the visible result that proves the check passed.']
 };
-export const mock = { critiques: [], lessonsError: false, improveCalls: 0, improveError: false, improveDelay: 0, sessions: [], status: null, failSessions: false, failVideo: false, identity: null, readiness: null, config: null };
+export const mock = { critiques: [], lessonsError: false, improveCalls: 0, improveError: false, improveDelay: 0, sessions: [], status: null, failSessions: false, failVideo: false, identity: null, readiness: null, config: null, providers: null };
 
 const json = (res, code, body) => {
   res.writeHead(code, { 'content-type': 'application/json' });
@@ -88,6 +88,7 @@ export function startMockApi(distDir) {
         }, mock.improveDelay);
       }
     }
+    if (p === '/api/system/providers' && mock.providers) return json(res, 200, mock.providers);
     if (p === '/api/models') return json(res, 200, {
       default: { provider: 'openai', model: 'fixture-default' },
       models: [

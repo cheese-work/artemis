@@ -1,23 +1,17 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import io
-import time
 from typing import Any
 
 import httpx
 
 from apps.admin_console.core.access_control import AdminAPIError
 from apps.admin_console.services.config_store import (
-    PROVIDER_BASE_URL_ENV,
-    PROVIDER_KEY_ENV,
     ConfigStore,
-    _validate_base_url,
     get_config_store,
 )
 from artemis.config.llm import _expand_default_into_nodes
-from artemis.config.settings import is_placeholder_key
 from artemis.utils.file import load_jsonc
 
 BASES = {
@@ -67,7 +61,6 @@ class ModelDiscovery:
         self.store = store
         self.transport = transport
         self._lock = asyncio.Lock()
-        self._cache: dict[str, dict[str, Any]] = {}
 
     async def _scan(self, client, provider, key, base):
         path = {"google": "/v1beta/models", "anthropic": "/v1/models"}.get(provider, "/models")
@@ -100,6 +93,8 @@ class ModelDiscovery:
         raise ValueError("Model list exceeds pagination limit")
 
     async def catalog(self) -> dict[str, Any]:
+        from apps.admin_console.services.provider_settings import ProviderSettings
+
         async with self._lock:
             config_bytes, environment = await (
                 self.store or get_config_store()
@@ -110,73 +105,9 @@ class ModelDiscovery:
             deny = config.get("model_discovery", {}).get("deny", DEFAULT_DENY)
             if not isinstance(deny, list) or not all(isinstance(model, str) for model in deny):
                 raise ValueError("model_discovery.deny must be a list of model IDs")
-            active = {}
-            for provider, base in BASES.items():
-                key = next(
-                    (
-                        environment.get(name)
-                        for name in PROVIDER_KEY_ENV[provider]
-                        if not is_placeholder_key(environment.get(name))
-                    ),
-                    None,
-                )
-                if not key:
-                    continue
-                base = environment.get(PROVIDER_BASE_URL_ENV[provider]) or base
-                if operator["provider"] == provider and operator.get("api_base"):
-                    base = operator["api_base"]
-                _validate_base_url(provider, base)
-                active[provider] = (key, base.rstrip("/"))
-            self._cache = {
-                provider: entry for provider, entry in self._cache.items() if provider in active
-            }
-            async with httpx.AsyncClient(
-                timeout=10, transport=self.transport, follow_redirects=False
-            ) as client:
-                await asyncio.gather(
-                    *(
-                        self._refresh(client, provider, key, base)
-                        for provider, (key, base) in active.items()
-                    )
-                )
-            return {
-                "models": [
-                    row
-                    for entry in self._cache.values()
-                    for row in entry["rows"]
-                    if row["model"] not in deny and f"{row['provider']}/{row['model']}" not in deny
-                ],
-                "default": default,
-                "errors": [
-                    {"provider": provider, "error": entry["error"]}
-                    for provider, entry in self._cache.items()
-                    if entry["error"]
-                ],
-            }
-
-    async def _refresh(self, client, provider, key, base):
-        fingerprint = hashlib.sha256(f"{key}\n{base}".encode()).hexdigest()
-        previous = self._cache.get(provider)
-        if (
-            previous
-            and previous["fingerprint"] == fingerprint
-            and time.monotonic() - previous["time"] < self.TTL
-        ):
-            return
-        rows = previous["rows"] if previous and previous["fingerprint"] == fingerprint else []
-        error = None
-        try:
-            rows = await self._scan(client, provider, key, base)
-        except httpx.HTTPStatusError as exc:
-            error = f"Model scan failed (HTTP {exc.response.status_code})."
-        except (httpx.HTTPError, ValueError, TypeError):
-            error = "Model scan failed. The last successful list is retained."
-        self._cache[provider] = {
-            "fingerprint": fingerprint,
-            "time": time.monotonic(),
-            "rows": rows,
-            "error": error,
-        }
+            return await ProviderSettings(
+                self.store or get_config_store(), transport=self.transport
+            ).catalog(default, deny)
 
     async def resolve(self, selection: dict[str, str] | None) -> dict[str, str]:
         if selection is None:
@@ -186,7 +117,7 @@ class ModelDiscovery:
             operator = _expand_default_into_nodes(
                 load_jsonc(io.StringIO(config_bytes.decode("utf-8")))
             )["operator"]
-            return {"provider": operator["provider"], "model": operator["model"]}
+            selection = {"provider": operator["provider"], "model": operator["model"]}
         catalog = await self.catalog()
         if not any(
             all(row[key] == selection.get(key) for key in ("provider", "model"))
@@ -196,7 +127,7 @@ class ModelDiscovery:
                 400,
                 "The selected model is not available.",
                 "model_not_available",
-                "Refresh the model list or use the server default.",
+                "Ask an admin to enable and sync the provider, then choose an available model.",
             )
         return {"provider": selection["provider"], "model": selection["model"]}
 

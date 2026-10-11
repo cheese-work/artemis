@@ -50,7 +50,9 @@ export function serialSuffix(serial: string): string {
 }
 
 function sourceText(input: WorkspaceChipInput, serial: string): string | null {
-  const ownBrowser = input.relay.status === 'connected' ? input.relay.serial : null;
+  const ownBrowser = ['connected', 'reconnecting'].includes(input.relay.status)
+    ? input.relay.serial
+    : null;
   const source = deviceSourceOf(serial, input.registry, input.computers, ownBrowser);
   if (source === 'This browser') return 'via this browser';
   return source ? `via ${source}` : null;
@@ -99,11 +101,22 @@ export function workspaceChipView(input: WorkspaceChipInput): WorkspaceChipView 
       : view('connecting', 'Connecting…', 'Choose the phone, then unlock it and tap Allow.', 'progress_activity');
   }
 
+  if (relay.status === 'reconnecting') {
+    return view(
+      'connecting',
+      'Reconnecting…',
+      'Restoring the same phone bridge. Keep this tab open.',
+      'progress_activity'
+    );
+  }
+
   // The phone this tab holds counts as soon as the bridge says it is attached; the adb list may
   // lag a few seconds. A phone the person picked counts only while it is listed and ready. A
   // picked phone that is gone, offline or unauthorized is never swapped for another phone: the
   // person reconnects it or picks again.
-  const own = relay.status === 'connected' && relay.serial ? relay.serial : null;
+  const own = ['connected', 'reconnecting'].includes(relay.status) && relay.serial
+    ? relay.serial
+    : null;
   const listed = input.selected ? input.devices.find((device) => device.serial === input.selected) : undefined;
   const serial = input.selected
     ? input.selected === own || listed?.state === 'device'

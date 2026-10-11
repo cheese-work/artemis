@@ -86,6 +86,7 @@ class FakeSocket {
 describe('UsbDeviceRelayService', () => {
   let service: UsbDeviceRelayService | null = null;
   let socket: FakeSocket;
+  let queuedSockets: FakeSocket[];
   let tabChannel: FakeTabChannel;
   let socketUrl: string | undefined;
   let manager: { requestDevice: jasmine.Spy };
@@ -105,6 +106,7 @@ describe('UsbDeviceRelayService', () => {
     tabChannel = new FakeTabChannel();
     service = null;
     socket = new FakeSocket();
+    queuedSockets = [];
     socketUrl = undefined;
     receivedPackets = [];
     writeError = null;
@@ -112,22 +114,24 @@ describe('UsbDeviceRelayService', () => {
       resolvePacketWrite = resolve;
     });
 
-    const readable = new ReadableStream<AdbPacketData>({
-      start(controller) {
-        packetController = controller;
-      }
-    });
-    const writable = new WritableStream<Consumable<AdbPacketInit>>({
-      write(packet) {
-        if (writeError) {
-          throw writeError;
+    const createConnection = () => ({
+      readable: new ReadableStream<AdbPacketData>({
+        start(controller) {
+          packetController = controller;
         }
-        receivedPackets.push(packet.value);
-        resolvePacketWrite();
-      }
+      }),
+      writable: new WritableStream<Consumable<AdbPacketInit>>({
+        write(packet) {
+          if (writeError) {
+            throw writeError;
+          }
+          receivedPackets.push(packet.value);
+          resolvePacketWrite();
+        }
+      })
     });
     device = {
-      connect: jasmine.createSpy('connect').and.resolveTo({ readable, writable }),
+      connect: jasmine.createSpy('connect').and.callFake(async () => createConnection()),
       raw: { close: jasmine.createSpy('close').and.resolveTo(undefined) }
     };
     manager = {
@@ -147,7 +151,7 @@ describe('UsbDeviceRelayService', () => {
           provide: DEVICE_BRIDGE_SOCKET_FACTORY,
           useValue: (url: string) => {
             socketUrl = url;
-            return socket as unknown as WebSocket;
+            return (queuedSockets.shift() ?? socket) as unknown as WebSocket;
           }
         }
       ]
@@ -446,9 +450,18 @@ describe('UsbDeviceRelayService', () => {
     });
 
     // Dropped is not "still connected": a new connect goes back to the USB chooser.
-    void service.connect();
+    const reconnectedSocket = new FakeSocket();
+    queuedSockets.push(reconnectedSocket);
+    const reconnecting = service.connect();
     await flushMicrotasks();
+    reconnectedSocket.open();
+    await reconnecting;
+    reconnectedSocket.message(JSON.stringify({
+      type: 'session_leased', session_id: 'lease-2', expires_in_seconds: 300
+    }));
+    reconnectedSocket.message(JSON.stringify({ type: 'device_attached', serial: 'R58M123' }));
     expect(manager.requestDevice).toHaveBeenCalledTimes(2);
+    expect(device.connect).toHaveBeenCalledTimes(2);
   });
 
   it('warns before leaving while the bridge is active', async () => {
@@ -492,7 +505,8 @@ describe('UsbDeviceRelayService', () => {
     socket.open();
     await connecting;
     socket.message(JSON.stringify({
-      type: 'session_leased', session_id: 'lease-1', expires_in_seconds: 300
+      type: 'session_leased', session_id: 'lease-1', expires_in_seconds: 300,
+      reconnect_token: 'resume-secret'
     }));
     socket.message(JSON.stringify({ type: 'device_attached', serial: 'R58M123' }));
   }
@@ -578,24 +592,88 @@ describe('UsbDeviceRelayService', () => {
     expectClose('page_unload');
   });
 
-  it('logs the received WebSocket close code and reason without sending on a closed socket', async () => {
+  it('logs and retries a WebSocket close without sending on the closed socket', async () => {
     await openRelay();
     socket.drop(1011, 'upstream reset');
     await flushMicrotasks();
+    expect(service!.state().status).toBe('reconnecting');
     expect(closeLog).toHaveBeenCalledWith('Device bridge socket closed:', jasmine.objectContaining({
       code: 1011, reason: 'upstream reset', was_clean: false
     }));
-    expect(closeLog).toHaveBeenCalledWith('Device bridge closing:', jasmine.objectContaining({
-      reason: 'socket_closed', usb_error: null
+    expect(closeLog).toHaveBeenCalledWith('Device bridge reconnecting:', jasmine.objectContaining({
+      reason: 'socket_closed', session_id: 'lease-1'
     }));
     expect(socket.sent).toEqual([]);
   });
 
-  it('reports a socket error before closing', async () => {
+  it('reconnects the same bridge session and keeps forwarding from the selected USB device', async () => {
+    jasmine.clock().install();
+    try {
+      await openRelay();
+      const resumedSocket = new FakeSocket();
+      queuedSockets.push(resumedSocket);
+      const packet: AdbPacketData = {
+        command: AdbCommand.Okay, arg0: 1, arg1: 2, checksum: 0,
+        magic: (AdbCommand.Okay ^ 0xffffffff) >>> 0, payload: new Uint8Array([9])
+      } as AdbPacketData;
+      const expectedFrame = AdbPacket.serialize(packet as AdbPacketInit);
+      let resolveFailedSend!: () => void;
+      const failedSend = new Promise<void>(resolve => {
+        resolveFailedSend = resolve;
+      });
+      spyOn(socket, 'send').and.callFake(frame => {
+        if (frame instanceof ArrayBuffer) {
+          socket.drop(1006, 'network reset');
+          resolveFailedSend();
+          throw new DOMException('socket closed before packet send', 'InvalidStateError');
+        }
+        socket.sent.push(frame);
+      });
+      packetController.enqueue(packet);
+      await failedSend;
+      expect(service!.state().status).toBe('reconnecting');
+
+      jasmine.clock().tick(500);
+      await flushMicrotasks();
+      expect(socketUrl).toContain('/api/device-bridge/resume');
+      resumedSocket.open();
+      expect(JSON.parse(resumedSocket.sent[0] as string)).toEqual({
+        type: 'resume', session_id: 'lease-1', reconnect_token: 'resume-secret'
+      });
+      resumedSocket.message(JSON.stringify({
+        type: 'session_leased', session_id: 'lease-1', expires_in_seconds: 300,
+        reconnect_token: 'resume-secret'
+      }));
+      resumedSocket.message(JSON.stringify({ type: 'device_attached', serial: 'R58M123' }));
+      await flushMicrotasks();
+      expect(service!.state()).toEqual({
+        status: 'connected', serial: 'R58M123', sessionId: 'lease-1', error: null
+      });
+
+      await resumedSocket.firstBinaryFrame;
+      const forwardedFrames = resumedSocket.sent.filter(
+        (frame): frame is ArrayBuffer => frame instanceof ArrayBuffer
+      );
+      expect(forwardedFrames.length).toBe(1);
+      expect([...new Uint8Array(forwardedFrames[0])]).toEqual([...expectedFrame]);
+      expect(manager.requestDevice).toHaveBeenCalledTimes(1);
+      expect(device.connect).toHaveBeenCalledTimes(1);
+    } finally {
+      jasmine.clock().uninstall();
+    }
+  });
+
+  it('logs and retries an open socket error', async () => {
     await openRelay();
     socket.onerror?.(new Event('error'));
     await flushMicrotasks();
-    expectClose('socket_error');
+    expect(service!.state().status).toBe('reconnecting');
+    expect(closeLog).toHaveBeenCalledWith('Device bridge reconnecting:', jasmine.objectContaining({
+      reason: 'socket_error', session_id: 'lease-1'
+    }));
+    expect(JSON.parse(socket.sent.at(-1) as string)).toEqual(jasmine.objectContaining({
+      type: 'client_close', reason: 'socket_error'
+    }));
   });
 
   it('reports invalid control messages before closing', async () => {

@@ -256,7 +256,7 @@ export class ChatInterfaceComponent {
       serial,
       registry?.devices ?? [],
       registry?.hosts ?? [],
-      relay.status === 'connected' ? relay.serial : null
+      relay.status === 'connected' || relay.status === 'reconnecting' ? relay.serial : null
     );
     const source = reportedSource === COMPUTER_STRINGS.aBrowser ? null : reportedSource;
     const where = source ? ` · ${source}` : '';
@@ -267,7 +267,8 @@ export class ChatInterfaceComponent {
       registry?.devices.find((d) => d.serial === serial)
     ].find((d) => d && isIdentifiedDevice(d));
     if (!device) {
-      const ownBrowser = relay.status === 'connected' && relay.serial === serial;
+      const ownBrowser =
+        (relay.status === 'connected' || relay.status === 'reconnecting') && relay.serial === serial;
       const title = unlistedRunDeviceTitle(serial, ownBrowser);
       return { title, kind: null, source, tooltip: `Device: ${title}${where} · ${serial}` };
     }

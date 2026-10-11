@@ -56,6 +56,21 @@ describe('NavSwitcherComponent', () => {
     expect(names).toEqual(['Workspace', 'Runs', 'Prompt lessons']);
   });
 
+  it('uses a compact provider label and a full accessible name for admins', async () => {
+    TestBed.overrideProvider(AdminConfigService, {
+      useValue: { getIdentity: () => of({ email: 'admin@example.test', admin: true, auth_mode: 'cloudflare', reason: null }) }
+    });
+    await TestBed.configureTestingModule({
+      imports: [NavSwitcherComponent],
+      providers: [provideRouter([]), ...phoneFakes().providers]
+    }).compileComponents();
+    const fixture = TestBed.createComponent(NavSwitcherComponent);
+    fixture.detectChanges();
+    const provider = fixture.nativeElement.querySelector('a[href="/providers"]') as HTMLAnchorElement;
+    expect(provider.getAttribute('aria-label')).toBe('LLM providers');
+    expect(provider.querySelector('.tab-label')?.textContent).toBe('Providers');
+  });
+
   it('stays inside the viewport (CHE-1189)', async () => {
     await TestBed.configureTestingModule({
       imports: [NavSwitcherComponent],

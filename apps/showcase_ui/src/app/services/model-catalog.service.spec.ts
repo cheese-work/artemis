@@ -39,7 +39,7 @@ describe('ModelCatalogService', () => {
 
   it('shows the server default first without making it a free-text selection', () => {
     load();
-    expect(service.options().map(option => option.label)).toEqual(['Default · default-model', 'openai · default-model', 'openai · proxy-gemini']);
+    expect(service.options().map(option => option.label)).toEqual(['Default · default-model', 'OpenAI · default-model', 'OpenAI · proxy-gemini']);
     expect(service.selection()).toBeUndefined();
     service.choose(JSON.stringify(catalog.default));
     expect(service.selection()).toEqual(catalog.default);

@@ -94,6 +94,10 @@ SYNTHETIC = frozenset(
 DISABLED = frozenset(
     {
         "POST /api/sessions/{session_id}/improve-prompt",
+        "GET /api/system/providers",
+        "PUT /api/system/providers/{provider}",
+        "POST /api/system/providers/{provider}/test",
+        "POST /api/system/providers/{provider}/sync",
         # Framework docs and the legacy console UI (root-absolute links).
         "GET /openapi.json",
         "GET /docs",
@@ -155,6 +159,7 @@ DISABLED = frozenset(
         "DELETE /api/system/drain",
         # Host agents, enrollment and the device bridge.
         f"{WEBSOCKET} /api/device-bridge/session",
+        f"{WEBSOCKET} /api/device-bridge/resume",
         "GET /api/hosts",
         "POST /api/hosts/enrollment-codes",
         "GET /api/hosts/enrollment-codes/{code_id}",
