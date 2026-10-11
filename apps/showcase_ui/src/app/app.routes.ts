@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+import { LessonsComponent } from './pages/lessons/lessons.component';
 import { Routes } from '@angular/router';
 import { HomeComponent } from './pages/home/home.component';
 import { WorkspaceComponent } from './pages/workspace/workspace.component';
@@ -27,6 +28,7 @@ export const routes: Routes = [
   // Run library and viewer: the same shell in review mode, so history stays one click from a new run.
   { path: 'runs', component: WorkspaceComponent, data: { review: true } },
   { path: 'runs/:id', component: WorkspaceComponent, data: { review: true } },
+  { path: 'lessons', component: LessonsComponent },
   { path: 'check', component: LegacyWorkspaceComponent },
   { path: '**', redirectTo: 'workspace' }
 ];

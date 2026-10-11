@@ -1,3 +1,5 @@
+import { PromptCritiquesService } from '../../services/prompt-critiques.service';
+import { ModelCatalogService } from '../../services/model-catalog.service';
 import { Component, signal } from '@angular/core';
 import { HttpErrorResponse, HttpEventType, HttpHeaderResponse, HttpHeaders, HttpResponse } from '@angular/common/http';
 import { ComponentFixture, TestBed, fakeAsync, tick } from '@angular/core/testing';
@@ -154,6 +156,8 @@ describe('RunViewComponent', () => {
           { path: 'workspace', component: StubComponent }
         ]),
         { provide: RunsService, useValue: runs },
+        { provide: PromptCritiquesService, useValue: { newest: () => httpError(404) } },
+        { provide: ModelCatalogService, useValue: { load: () => undefined } },
         { provide: AdminConfigService, useValue: admin },
         { provide: AgentService, useValue: agent }
       ]

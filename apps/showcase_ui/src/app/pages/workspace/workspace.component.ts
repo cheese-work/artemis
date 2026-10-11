@@ -184,8 +184,14 @@ export class WorkspaceComponent implements OnInit {
     this.models.load();
     // "Start new run with this prompt" hands the prompt over as router state.
     const navigation = this.router.currentNavigation() ?? this.router.lastSuccessfulNavigation();
-    const handed = (navigation?.extras.state ?? history.state) as { draftPrompt?: unknown } | null;
+    const handed = (navigation?.extras.state ?? history.state) as { draftPrompt?: unknown; autoStart?: boolean } | null;
     if (typeof handed?.draftPrompt === 'string' && handed.draftPrompt) this.taskInput = handed.draftPrompt;
+    if (handed?.autoStart) {
+      const { autoStart: _consumed, ...remaining } = handed;
+      if (navigation) navigation.extras.state = remaining;
+      history.replaceState({ ...history.state, ...remaining, autoStart: undefined }, '');
+      if (typeof handed.draftPrompt === 'string' && handed.draftPrompt.trim()) void this.submitTask();
+    }
     // The global ⌘K/Ctrl+K shortcut is registered outside the Angular zone so
     // ordinary typing never schedules an extra change-detection pass.
     this.zone.runOutsideAngular(() => {

@@ -1,3 +1,4 @@
+import { PromptImprovementComponent } from '../prompt-improvement/prompt-improvement.component';
 import { LoggerService } from '../../services/logger.service';
 import { appUrl, mediaUrl } from '../../utils/app-url.util';
 import {
@@ -87,7 +88,7 @@ const DIALOGS: Record<DialogKind, { title: string; notices: string[]; confirm: s
 @Component({
   selector: 'app-run-view',
   standalone: true,
-  imports: [RouterLink, DatePipe, JsonPipe, NgTemplateOutlet, RunIdCopyComponent, RunStatusBadgeComponent, RunDeviceLabelComponent,
+  imports: [PromptImprovementComponent, RouterLink, DatePipe, JsonPipe, NgTemplateOutlet, RunIdCopyComponent, RunStatusBadgeComponent, RunDeviceLabelComponent,
     RunStepRowComponent, RunEvidencePanelComponent, RunActionBarComponent],
   templateUrl: './run-view.component.html',
   styleUrl: './run-view.component.scss',

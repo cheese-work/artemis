@@ -459,6 +459,8 @@ _PUBLIC_GET_PATHS = {
     "/local_file",
     "/api/sessions/{session_id}/plan",
     "/api/sessions/{session_id}/notes",
+    "/api/sessions/{session_id}/prompt-critique",
+    "/api/prompt-lessons",
     "/api/sessions/{session_id}/checks",
     "/api/replay/tools",
     "/api/replay/config",
@@ -511,6 +513,7 @@ _AGENT_PATHS = {
 # Owner-or-admin actions: the route guard needs a signed-in user; the handler
 # then checks the caller owns the run (see core/ownership.py).
 _QA_MUTATING_PATHS = {
+    "/api/sessions/{session_id}/improve-prompt",
     "/api/sessions/{session_id}/delete",
     "/api/system/adb/heal-keys",
     "/api/system/emulator/dismiss",

@@ -47,13 +47,13 @@ describe('NavSwitcherComponent', () => {
     const hrefs = Array.from<HTMLAnchorElement>(fixture.nativeElement.querySelectorAll('nav a[href]')).map(a =>
       a.getAttribute('href')
     );
-    expect(hrefs).toEqual(['/workspace', '/runs']);
+    expect(hrefs).toEqual(['/workspace', '/runs', '/lessons']);
     expect(fixture.nativeElement.querySelector('a[href="/runs"]').textContent).toContain('Runs');
     // Labels collapse to icons on phones, so each tab needs its own accessible name.
     const names = Array.from<HTMLAnchorElement>(fixture.nativeElement.querySelectorAll('nav a[href]')).map(a =>
       a.getAttribute('aria-label')
     );
-    expect(names).toEqual(['Workspace', 'Runs']);
+    expect(names).toEqual(['Workspace', 'Runs', 'Prompt lessons']);
   });
 
   it('stays inside the viewport (CHE-1189)', async () => {
@@ -184,7 +184,7 @@ describe('NavSwitcherComponent', () => {
     fixture.detectChanges();
     const controls = Array.from<HTMLElement>(fixture.nativeElement.querySelectorAll('nav > a, nav > button, .nav-status > *'));
     expect(controls.map(control => control.getAttribute('aria-label') || control.tagName.toLowerCase()))
-      .toEqual(['Workspace', 'Runs', "Open What's New", 'app-workspace-device-chip', 'app-admin-identity-indicator']);
+      .toEqual(['Workspace', 'Runs', 'Prompt lessons', "Open What's New", 'app-workspace-device-chip', 'app-admin-identity-indicator']);
   });
 
   for (const path of ['/workspace', '/runs']) {

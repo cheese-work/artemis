@@ -45,6 +45,8 @@ REAL = frozenset(
         "GET /api/sessions/{session_id}/video",
         "GET /api/sessions/{session_id}/plan",
         "GET /api/sessions/{session_id}/notes",
+        "GET /api/sessions/{session_id}/prompt-critique",
+        "GET /api/prompt-lessons",
         "GET /api/sessions/{session_id}/checks",
         "GET /api/sessions/{session_id}/goal-images/{index}",
         "GET /api/sessions/{session_id}/events",
@@ -91,6 +93,7 @@ SYNTHETIC = frozenset(
 
 DISABLED = frozenset(
     {
+        "POST /api/sessions/{session_id}/improve-prompt",
         # Framework docs and the legacy console UI (root-absolute links).
         "GET /openapi.json",
         "GET /docs",
