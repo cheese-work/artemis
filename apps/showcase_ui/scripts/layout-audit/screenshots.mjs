@@ -4,7 +4,7 @@
 //
 // Writes <outDir>/<label>-<page>-<width>.png. CHROME_BIN overrides the browser.
 import { spawn } from 'node:child_process';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -13,6 +13,7 @@ import { startMockApi, mock, RUNS } from '../keyboard-walkthrough/mock-api.mjs';
 const [outDir = 'screenshots', label = 'shot', audit] = process.argv.slice(2);
 const checkControls = audit === '--controls';
 const failures = [];
+const iconNames = readFileSync(new URL('../../public/fonts/material-symbols-outlined.txt', import.meta.url), 'utf8').trim().split(',');
 mkdirSync(outDir, { recursive: true });
 const dist = fileURLToPath(new URL('../../dist/frontend/browser', import.meta.url));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -59,13 +60,83 @@ if (checkControls) {
     sources: { default: 'fixture', env: 'fixture' }
   };
 }
-const pages = { workspace: '/workspace', runs: '/runs', 'run-detail': `/runs/${RUNS[1].session_id}`, setup: '/setup' };
+const pages = { workspace: '/workspace', runs: '/runs', 'run-detail': `/runs/${RUNS[1].session_id}`, setup: '/setup', check: '/check' };
 if (checkControls) delete pages['run-detail'];
 for (const width of checkControls ? [1440, 390] : [1280, 1024]) {
   for (const [name, route] of Object.entries(pages)) {
     await send('Emulation.setDeviceMetricsOverride', { width, height: 800, deviceScaleFactor: 1, mobile: false });
     await send('Page.navigate', { url: base + route });
     await sleep(2500);
+    if (name === 'check') {
+      await evaluate(`(() => {
+        const element = document.querySelector('app-legacy-agent-stream');
+        const component = ng.getComponent(element);
+        component.agentService.sessionLogs.set([
+          { type: 'step_recorded', timestamp: Date.now() / 1000, data: {
+            summary: 'Verify the settings screen', operator_native_thinking: 'Find the settings control.',
+            operator_raw_thinking: 'Open settings, then verify the saved state.',
+            action_taken: { action: 'tap', target: 'Settings' }, last_execution_result: { success: true }
+          } },
+          { type: 'trace_recorded', timestamp: Date.now() / 1000, data: { message: 'Stream connected' } }
+        ]);
+        ng.applyChanges(element);
+      })()`);
+      const disclosureErrors = await evaluate(`(() => {
+        const errors = [];
+        for (const summary of document.querySelectorAll('app-legacy-agent-stream summary')) {
+          const box = summary.getBoundingClientRect();
+          const parent = summary.parentElement.getBoundingClientRect();
+          if (box.width < parent.width - 6) errors.push(summary.textContent + ': disclosure does not span the card');
+          if (box.height > 80) errors.push(summary.textContent + ': disclosure squeezed into a tall column');
+        }
+        return errors;
+      })()`);
+      failures.push(...disclosureErrors.map(error => `${name}-${width}: ${error}`));
+    }
+    await evaluate('document.fonts.ready.then(() => true)');
+    const geometry = await evaluate(`(() => {
+      const nav = document.querySelector('.floating-nav-switcher').getBoundingClientRect();
+      const underNav = [];
+      const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+      for (let node; (node = walker.nextNode());) {
+        if (!node.textContent.trim() || node.parentElement.closest('.floating-nav-switcher, script, style, .material-symbols-outlined')) continue;
+        const range = document.createRange();
+        range.selectNodeContents(node);
+        for (const box of range.getClientRects()) {
+          if (!box.width || !box.height || box.left >= nav.right || box.right <= nav.left || box.top >= nav.bottom || box.bottom <= nav.top) continue;
+          let top = box.top, bottom = box.bottom, left = box.left, right = box.right;
+          for (let parent = node.parentElement; parent; parent = parent.parentElement) {
+            const style = getComputedStyle(parent);
+            const clip = parent.getBoundingClientRect();
+            if (/(auto|scroll|hidden|clip)/.test(style.overflowY)) { top = Math.max(top, clip.top); bottom = Math.min(bottom, clip.bottom); }
+            if (/(auto|scroll|hidden|clip)/.test(style.overflowX)) { left = Math.max(left, clip.left); right = Math.min(right, clip.right); }
+          }
+          underNav.push({ text: node.textContent.trim().slice(0, 80), clipped: bottom <= top || right <= left || bottom <= nav.top || top >= nav.bottom || left >= nav.right || right <= nav.left });
+        }
+      }
+      const targets = [...document.querySelectorAll('app-legacy-agent-stream select, app-legacy-agent-stream button, app-legacy-agent-stream summary')].map(element => {
+        const box = element.getBoundingClientRect();
+        return { label: element.textContent.trim().slice(0, 80), width: box.width, height: box.height };
+      });
+      return { overflowX: document.documentElement.scrollWidth - innerWidth, underNav, targets };
+    })()`);
+    writeFileSync(path.join(outDir, `${label}-${name}-${width}.json`), JSON.stringify(geometry, null, 2));
+    if (name === 'workspace') {
+      const iconErrors = await evaluate(`(() => {
+        const errors = [];
+        for (const name of ${JSON.stringify(iconNames)}) {
+          const icon = document.createElement('span');
+          icon.className = 'material-symbols-outlined';
+          icon.textContent = name;
+          document.body.appendChild(icon);
+          const width = icon.getBoundingClientRect().width;
+          if (Math.abs(width - 20) > 1) errors.push(name + ': icon did not shape to a single glyph (' + width + 'px)');
+          icon.remove();
+        }
+        return errors;
+      })()`);
+      failures.push(...iconErrors.map(error => `${name}-${width}: ${error}`));
+    }
     if (checkControls) {
       const errors = await evaluate(`(() => {
         const errors = [];
@@ -116,7 +187,7 @@ for (const width of checkControls ? [1440, 390] : [1280, 1024]) {
       await send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Tab', code: 'Tab', windowsVirtualKeyCode: 9 });
       const focusErrors = await evaluate(`(async () => {
         const errors = [];
-        for (const element of document.querySelectorAll('button:not(:disabled), .nav-tab-btn')) {
+        for (const element of document.querySelectorAll('button:not(:disabled), app-legacy-agent-stream summary, app-legacy-agent-stream select, .nav-tab-btn')) {
           if (!element.checkVisibility() || element.closest('.skip-links')) continue;
           element.focus({ preventScroll: true });
           await new Promise(resolve => setTimeout(resolve, 200));
