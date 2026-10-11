@@ -87,8 +87,7 @@ limitations under the License.
         }
 
         <div class="composer-row">
-          <textarea #dockInput [(ngModel)]="taskInput"
-            (input)="onTextareaInput($event)"
+          <textarea #dockInput [(ngModel)]="taskInput" cdkTextareaAutosize
             (paste)="onPaste($event)"
             (keydown)="onKeyDown($event)"
             (focus)="onInputFocus()"

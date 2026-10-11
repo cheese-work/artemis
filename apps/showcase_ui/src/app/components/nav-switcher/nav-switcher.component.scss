@@ -24,7 +24,7 @@
   align-items: stretch;
   width: var(--sidebar-w);
   padding: var(--space-md);
-  gap: 4px;
+  gap: var(--space-xs);
   border-right: 1px solid var(--color-rule);
   background: var(--color-surface-subtle);
   font-family: var(--font-ui);
@@ -33,7 +33,7 @@
   .navigation-header { display: contents; }
   .brand-wordmark {
     order: -1;
-    padding: 8px 12px 24px;
+    padding: var(--space-sm) var(--space-smd) var(--space-lg);
     color: var(--color-ink);
     font: 600 var(--text-title) var(--font-display);
     letter-spacing: -0.01em;
@@ -45,10 +45,10 @@
     display: flex;
     flex-direction: column;
     align-items: stretch;
-    gap: 12px;
+    gap: var(--space-smd);
     min-width: 0;
     margin-top: auto;
-    padding-top: 16px;
+    padding-top: var(--space-md);
   }
   .nav-tab-btn {
     flex: none;
@@ -57,7 +57,7 @@
     gap: var(--space-sm);
     min-width: var(--target);
     min-height: var(--target);
-    padding: 0 12px 0 15px;
+    padding: 0 var(--space-smd) 0 15px;
     box-sizing: border-box;
     border: 0;
     border-radius: var(--radius-md);
@@ -90,10 +90,10 @@
 @media (min-width: 800px) and (max-width: 1199px) {
   .floating-nav-switcher {
     width: 72px;
-    padding: 8px;
+    padding: var(--space-sm);
     .brand-wordmark { display: none; }
-    .brand-monogram { order: -1; display: grid; place-items: center; height: 44px; margin-bottom: 16px; font: 600 var(--text-title) var(--font-display); color: var(--color-ink); }
-    .nav-tab-btn { position: relative; flex-direction: column; justify-content: center; gap: 4px; width: calc(100% + 16px); height: 60px; margin-left: -8px; padding: 4px 0 7px; font-size: 12px; }
+    .brand-monogram { order: -1; display: grid; place-items: center; height: 44px; margin-bottom: var(--space-md); font: 600 var(--text-title) var(--font-display); color: var(--color-ink); }
+    .nav-tab-btn { position: relative; flex-direction: column; justify-content: center; gap: var(--space-xs); width: calc(100% + 2 * var(--space-sm)); height: 60px; margin-left: calc(-1 * var(--space-sm)); padding: var(--space-xs) 0 7px; font-size: 12px; }
     .nav-tab-btn.active { background-position: center bottom; background-size: 100% 3px; }
     .run-count, .nav-new-label { display: none; }
     .nav-unread-indicator { position: absolute; top: 6px; right: 6px; }
@@ -119,15 +119,15 @@
       display: flex;
       align-items: center;
       justify-content: space-between;
-      gap: 8px;
+      gap: var(--space-sm);
       height: var(--appbar-h);
-      padding: 0 8px;
+      padding: 0 var(--space-sm);
       background: var(--color-surface);
       border-bottom: 1px solid var(--color-rule);
     }
     .brand-wordmark { padding: 0; font-size: var(--text-body); }
-    .nav-status { position: fixed; top: calc(var(--preview-banner-h, 0px) + 1px); right: 8px; height: 46px; flex-direction: row; align-items: center; gap: 8px; margin: 0; padding: 0; }
-    .nav-tab-btn { position: relative; flex: 1; flex-direction: column; justify-content: center; gap: 4px; height: 100%; padding: 0 4px 3px; border-radius: 0; font-size: 12px; }
+    .nav-status { position: fixed; top: calc(var(--preview-banner-h, 0px) + 1px); right: 8px; height: 46px; flex-direction: row; align-items: center; gap: var(--space-sm); margin: 0; padding: 0; }
+    .nav-tab-btn { position: relative; flex: 1; flex-direction: column; justify-content: center; gap: var(--space-xs); height: 100%; padding: 0 var(--space-xs) 3px; border-radius: 0; font-size: 12px; }
     .nav-tab-btn.active { background-position: center bottom; background-size: 100% 3px; }
     .run-count, .nav-new-label { display: none; }
     .nav-unread-indicator { position: absolute; top: 6px; right: calc(50% - 18px); }

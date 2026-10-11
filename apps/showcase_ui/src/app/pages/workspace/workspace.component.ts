@@ -21,6 +21,7 @@ import { Component, ChangeDetectionStrategy, NgZone, DestroyRef, effect, inject,
 
 import { toSignal } from '@angular/core/rxjs-interop';
 import { FormsModule } from '@angular/forms';
+import { CdkTextareaAutosize } from '@angular/cdk/text-field';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 import { RunLibraryComponent } from '../../components/run-library/run-library.component';
 import { InterruptedBannerComponent } from '../../components/interrupted-banner/interrupted-banner.component';
@@ -48,6 +49,7 @@ export interface AttachedImage {
   standalone: true,
   imports: [
     FormsModule,
+    CdkTextareaAutosize,
     RouterLink,
     RunLibraryComponent,
     InterruptedBannerComponent,
@@ -284,17 +286,6 @@ export class WorkspaceComponent implements OnInit {
   }
 
   /**
-   * Auto-resize textarea as user types multi-line tasks
-   */
-  public onTextareaInput(event: Event): void {
-    const textarea = event.target as HTMLTextAreaElement;
-    if (!textarea) return;
-    textarea.style.height = 'auto';
-    const newHeight = Math.min(Math.max(textarea.scrollHeight, 24), 120);
-    textarea.style.height = `${newHeight}px`;
-  }
-
-  /**
    * Global keyboard shortcut (⌘K or Ctrl+K) to focus input bar from anywhere
    */
   private onGlobalKeyDown = (event: KeyboardEvent): void => {
@@ -411,9 +402,6 @@ export class WorkspaceComponent implements OnInit {
       next: () => {
         this.taskInput = '';
         this.clearImages();
-        if (this.dockInputRef?.nativeElement) {
-          this.dockInputRef.nativeElement.style.height = 'auto';
-        }
         this.isSubmitting.set(false);
         this.agentService.fetchStatus();
       },

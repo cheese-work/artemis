@@ -82,12 +82,12 @@ rounded:
   lg: 8px
   full: 9999px
 spacing:
-  xs: 4px
-  sm: 8px
-  smd: 12px
-  md: 16px
-  lg: 24px
-  xl: 32px
+  xs: 3px
+  sm: 5px
+  smd: 8px
+  md: 11px
+  lg: 16px
+  xl: 21px
   2xl: 48px
 layout:
   sidebar-w: 224px

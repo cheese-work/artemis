@@ -6,6 +6,7 @@ The browser interface for SmartQA, built with **Angular 22** and **SCSS**. The r
 
 * **Visual rules**: follow [DESIGN.md](../../DESIGN.md). Surfaces are opaque; do not add glass, blur, translucency or glow.
 * **One set of tokens**: `src/styles.scss` defines colours, spacing, radius, type, shadows, motion and the 44 px target as CSS custom properties (`--color-*`, `--space-*`, `--radius-*`, `--font-*`, `--target`). Every surface reads them; `npm test` runs `scripts/lint-theme.mjs`, which fails on a hex colour, an `rgba()` colour or a blur in the listed styles. Dark navy (`--color-device*`) is for a physical device only.
+* **Compact Workbench**: the spacing scale is 3, 5, 8, 11, 16 and 21 px. Controls keep their 44 × 44 px targets. The pinned prompt grows with typed or restored text up to 40% of the viewport height, then scrolls inside; sending clears it back to one line.
 * **Workspace and Runs share one shell**: the run (`app-run-view`) on the left, the run list (`app-run-library`) on the right. From 1200 px they sit side by side. From 800 px they stack, with both visible. Below 800 px the page is one column and scrolls as a whole. On Runs the list sits beside an open run; below 800 px it is dropped and Back to runs reaches it.
 * **New-task box**: always expanded, in normal flow under the run. Below 800 px it stays pinned to the bottom of the screen.
 * **Keyboard**: Tab order is the top bar, the run, the new-task box, then the list. Skip links reach the new-task box and the run list. Task Queue / Notes & Plans and My runs / Everyone's runs are tabs with arrow keys, Home and End.
@@ -69,6 +70,8 @@ node scripts/layout-audit/screenshots.mjs <outDir> <label> --controls
 ```
 
 The control audit captures Workspace, Runs and Setup at 1440 and 390 px using a mock API. It checks unoutlined controls and panels, overlay-only shadows, each control's own 44 × 44 px box, keyboard focus rings and at least 3:1 focus contrast. It also captures the Setup model panel. `npm run test:controls` writes the same evidence to `screenshots/`. Run a development build first; no phone or backend is used.
+
+After a development build, `node scripts/layout-audit/screenshots.mjs screenshots after --composer` captures Workspace and Run at 1440 and 390 px after `document.fonts.ready`. It checks prompt growth, the viewport cap, internal scrolling, shrinking, restored prompts, pinned flow and 44 px targets. Use the label `before` on the baseline to capture the same fixtures without the new sizing assertions.
 
 ### Direction B responsive shell
 

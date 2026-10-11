@@ -406,11 +406,11 @@ describe('RunViewComponent', () => {
       expect(qa('.actions button').map((control) => control.textContent!.trim())).toEqual(['Copy link', 'Download', 'Pin', 'Delete']);
     });
 
-    it('preserves badge and step dimensions while using Workbench action tokens', async () => {
+    it('uses compact badge spacing and preserves step dimensions with Workbench action tokens', async () => {
       await open({ steps: of([step(1, { action_taken: { action: 'tap', status: 'failed' } })]) });
       const badge = getComputedStyle(q('.outcome-badge')!);
       expect(badge.display).toBe('inline-flex');
-      expect(badge.padding).toBe('4px 12px');
+      expect(badge.padding).toBe('3px 8px');
       expect(badge.borderRadius).toBe('999px');
       expect(badge.fontWeight).toBe('600');
       expect(getComputedStyle(q('.step-number')!).fontSize).toBe('12px');
@@ -434,7 +434,7 @@ describe('RunViewComponent', () => {
       expect(image.objectFit).toBe('contain');
       expect(image.backgroundColor).toBe('rgb(15, 23, 42)');
       const copy = getComputedStyle(q('.recording-copy')!);
-      expect(copy.margin).toBe('0px 0px 8px');
+      expect(copy.margin).toBe('0px 0px 5px');
       expect(copy.fontWeight).toBe('400');
     });
   });

@@ -1,0 +1,7 @@
+{
+  "id": "2026-10-11-compact-workbench",
+  "date": "2026-10-11",
+  "title": "Long prompts have more room",
+  "body": "The prompt box grows as you type, then scrolls for longer tasks. Tighter spacing leaves more room for runs and evidence.",
+  "issues": ["CHE-1540"]
+}

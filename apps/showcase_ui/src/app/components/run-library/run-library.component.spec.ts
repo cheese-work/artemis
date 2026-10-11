@@ -137,7 +137,7 @@ describe('RunLibraryComponent', () => {
       expect(q('.run-icon')!.classList).toContain('tone-neutral');
       expect(q('.run-icon')!.classList).not.toContain('tone-ok');
       expect(q('.run-icon .material-symbols-outlined')!.textContent!.trim()).toBe('description');
-      expect(q('.run-package')!.getBoundingClientRect().left - q('.run-outcome')!.getBoundingClientRect().right).toBeGreaterThanOrEqual(4);
+      expect(q('.run-package')!.getBoundingClientRect().left - q('.run-outcome')!.getBoundingClientRect().right).toBeGreaterThanOrEqual(3);
       expect(getComputedStyle(q('.run-package')!).fontFamily).toContain('JetBrains Mono');
       expect(q('.run-row')!.getBoundingClientRect().height).toBe(56);
     });
@@ -678,7 +678,7 @@ describe('RunLibraryComponent', () => {
       expect(router.url).toBe('/runs?from=2026-02-28&to=2026-03-01');
     });
 
-    it('gives chips 32px visuals inside separate 44px hit boxes with an 8px gap', async () => {
+    it('gives chips 32px visuals inside separate 44px hit boxes with a compact 5px gap', async () => {
       await open('/runs?status=failed');
       const chips = qa<HTMLElement>('.filter-chip, .filter-clear');
       for (const chip of chips) {
@@ -686,7 +686,7 @@ describe('RunLibraryComponent', () => {
         expect(chip.getBoundingClientRect().height).toBeGreaterThanOrEqual(44);
         expect(chip.querySelector('span')!.getBoundingClientRect().height).toBe(32);
       }
-      expect(getComputedStyle(q('.filter-chips')!).gap).toBe('8px');
+      expect(getComputedStyle(q('.filter-chips')!).gap).toBe('5px');
     });
   });
 
