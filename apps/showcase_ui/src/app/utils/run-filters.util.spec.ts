@@ -3,6 +3,8 @@ import {
   EMPTY_FILTERS,
   RunFilters,
   apiParams,
+  datePresetRange,
+  dateFilterLabel,
   filtersFromQuery,
   filtersToQuery,
   hasActiveFilters,
@@ -69,5 +71,33 @@ describe('run filters in the URL', () => {
     expect(params['since']).toBe(String(new Date(2026, 9, 1).getTime() / 1000));
     expect(params['until']).toBe(String(new Date(2026, 9, 4).getTime() / 1000));
     expect(apiParams(EMPTY_FILTERS)).toEqual({});
+  });
+});
+
+describe('date filter presets', () => {
+  const today = new Date(2026, 0, 2, 12);
+
+  it('uses local calendar dates across month and year boundaries', () => {
+    expect(datePresetRange('today', today)).toEqual({ from: '2026-01-02', to: '2026-01-02' });
+    expect(datePresetRange('yesterday', today)).toEqual({ from: '2026-01-01', to: '2026-01-01' });
+    expect(datePresetRange('week', today)).toEqual({ from: '2025-12-27', to: '2026-01-02' });
+    expect(datePresetRange('month', today)).toEqual({ from: '2025-12-04', to: '2026-01-02' });
+    expect(datePresetRange('', today)).toEqual({ from: '', to: '' });
+  });
+
+  it('labels presets and preserves custom or one-sided URL ranges', () => {
+    expect(dateFilterLabel({ from: '', to: '' }, today)).toBe('Date');
+    expect(dateFilterLabel(datePresetRange('week', today), today)).toBe('Last 7 days');
+    expect(dateFilterLabel({ from: '2025-12-01', to: '2025-12-03' }, today)).toBe('2025-12-01 – 2025-12-03');
+    expect(dateFilterLabel({ from: '2025-12-01', to: '' }, today)).toBe('From 2025-12-01');
+    expect(dateFilterLabel({ from: '', to: '2025-12-03' }, today)).toBe('Until 2025-12-03');
+  });
+
+  it('keeps the existing exclusive API end for preset ranges', () => {
+    const filters = { ...EMPTY_FILTERS, ...datePresetRange('week', today) };
+    expect(apiParams(filters)).toEqual({
+      since: String(new Date(2025, 11, 27).getTime() / 1000),
+      until: String(new Date(2026, 0, 3).getTime() / 1000)
+    });
   });
 });
