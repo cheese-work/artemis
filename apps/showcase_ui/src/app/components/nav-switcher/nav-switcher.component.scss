@@ -133,3 +133,8 @@
     .nav-unread-indicator { position: absolute; top: 6px; right: calc(50% - 18px); }
   }
 }
+
+// Five 64 px tabs at 320 px: tighten tracking so "Workspace" stays inside its tab.
+@media (max-width: 359px) {
+  :host .tab-label { letter-spacing: -0.05em; }
+}
