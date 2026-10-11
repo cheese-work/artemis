@@ -16,6 +16,7 @@
 
 import { LoggerService } from '../../services/logger.service';
 import { BrowserStorageService } from '../../services/browser-storage.service';
+import { ModelCatalogService } from '../../services/model-catalog.service';
 import { Component, ChangeDetectionStrategy, NgZone, DestroyRef, effect, inject, computed, signal, ViewChild, ElementRef, OnInit } from '@angular/core';
 
 import { toSignal } from '@angular/core/rxjs-interop';
@@ -61,6 +62,7 @@ export class WorkspaceComponent implements OnInit {
   private readonly browserStorage = inject(BrowserStorageService);
   public agentService = inject(AgentService);
   public phone = inject(WorkspacePhoneService);
+  public models = inject(ModelCatalogService);
   private zone = inject(NgZone);
   private route = inject(ActivatedRoute);
   private router = inject(Router);
@@ -177,6 +179,7 @@ export class WorkspaceComponent implements OnInit {
   }
 
   ngOnInit(): void {
+    this.models.load();
     // "Start new run with this prompt" hands the prompt over as router state.
     const navigation = this.router.currentNavigation() ?? this.router.lastSuccessfulNavigation();
     const handed = (navigation?.extras.state ?? history.state) as { draftPrompt?: unknown } | null;
@@ -402,7 +405,7 @@ export class WorkspaceComponent implements OnInit {
     }
 
     const submission = this.agentService.runTask(
-      goal, this.selectedProfile(), undefined, undefined, undefined, imageChat, target
+      goal, this.selectedProfile(), undefined, undefined, undefined, imageChat, target, this.models.selection()
     );
     submission.subscribe({
       next: () => {

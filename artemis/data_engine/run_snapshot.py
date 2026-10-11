@@ -132,15 +132,19 @@ def migrate(db_path: str | Path) -> MigrationReport:
 
 
 def execution_fields(adb_client: Any, device_id: str | None, llm_config: Any) -> dict[str, str]:
-    """Facts known when a run starts: device model (adb) and planner model. Unknown ones are left out."""
+    """Facts known when a run starts: device model and operator model. Unknown ones are left out."""
     fields: dict[str, str] = {}
     try:
         model = adb_client.device(device_id).prop.model if adb_client and device_id else None
     except (AdbError, OSError, RuntimeError) as exc:
         logger.debug("Could not read the device model of %s: %s", device_id, exc)
         model = None
-    agent_model = getattr(getattr(llm_config, "planner", None), "model", None)
+    operator = getattr(llm_config, "operator", None) or getattr(llm_config, "planner", None)
+    agent_model = getattr(operator, "model", None)
     for field, value in (("device_model", model), ("agent_model", agent_model)):
         if isinstance(value, str) and value.strip():
             fields[field] = value.strip()
+    provider = getattr(operator, "provider", None)
+    if isinstance(provider, str) and provider:
+        fields["agent_provider"] = provider
     return fields

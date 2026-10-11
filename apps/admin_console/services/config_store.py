@@ -34,6 +34,9 @@ PROVIDER_KEY_ENV = {
 PROVIDER_BASE_URL_ENV = {
     "openai": "OPENAI_BASE_URL",
     "anthropic": "ANTHROPIC_BASE_URL",
+    "google": "GOOGLE_BASE_URL",
+    "openrouter": "OPEN_ROUTER_BASE_URL",
+    "xai": "XAI_BASE_URL",
 }
 PROVIDERS = ("openai", "google", "anthropic", "openrouter", "xai", "vertexai", "ocr")
 
@@ -766,23 +769,66 @@ class ConfigStore:
                     os.environ.pop(env_key, None)
             return self._read_snapshot_locked()
 
-    async def snapshot_for_spawn(self) -> SpawnConfigSnapshot:
+    async def model_discovery_inputs(self) -> tuple[bytes, dict[str, str]]:
         async with self._async_lock:
-            return await asyncio.to_thread(self._snapshot_for_spawn_locked)
+            return await asyncio.to_thread(self._model_discovery_inputs_locked)
 
-    def _snapshot_for_spawn_locked(self) -> SpawnConfigSnapshot:
+    def _model_discovery_inputs_locked(self) -> tuple[bytes, dict[str, str]]:
         with self._file_lock():
-            config_bytes, env_bytes = self._read_bytes()
-            env_values = dotenv_values(stream=io.StringIO(env_bytes.decode("utf-8")))
-            environment = os.environ.copy()
-            managed_keys = {key for keys in PROVIDER_KEY_ENV.values() for key in keys} | set(
-                PROVIDER_BASE_URL_ENV.values()
-            )
-            for key in managed_keys - SERVICE_ENVIRONMENT_KEYS:
-                environment.pop(key, None)
-            for key, value in env_values.items():
-                if value is not None and key not in SERVICE_ENVIRONMENT_KEYS:
-                    environment[key] = value
+            return self._runtime_inputs()
+
+    def _runtime_inputs(self) -> tuple[bytes, dict[str, str]]:
+        config_bytes, env_bytes = self._read_bytes()
+        env_values = dotenv_values(stream=io.StringIO(env_bytes.decode("utf-8")))
+        environment = os.environ.copy()
+        managed_keys = {key for keys in PROVIDER_KEY_ENV.values() for key in keys} | set(
+            PROVIDER_BASE_URL_ENV.values()
+        )
+        for key in managed_keys - SERVICE_ENVIRONMENT_KEYS:
+            environment.pop(key, None)
+        for key, value in env_values.items():
+            if value is not None and key not in SERVICE_ENVIRONMENT_KEYS:
+                environment[key] = value
+        return config_bytes, environment
+
+    async def snapshot_for_spawn(
+        self, operator_model: dict[str, str] | None = None
+    ) -> SpawnConfigSnapshot:
+        async with self._async_lock:
+            return await asyncio.to_thread(self._snapshot_for_spawn_locked, operator_model)
+
+    def _snapshot_for_spawn_locked(
+        self, operator_model: dict[str, str] | None = None
+    ) -> SpawnConfigSnapshot:
+        with self._file_lock():
+            config_bytes, environment = self._runtime_inputs()
+            if operator_model:
+                config = load_jsonc(io.StringIO(config_bytes.decode("utf-8")))
+                previous = _expand_default_into_nodes(config)["operator"]
+                selected = (
+                    dict(previous)
+                    if previous["provider"] == operator_model["provider"]
+                    else {
+                        key: None
+                        for key in LLMWithFallback.model_fields
+                        if key not in {"provider", "model", "fallback"}
+                    }
+                )
+                selected.update(
+                    {
+                        **operator_model,
+                        "fallback": dict(operator_model),
+                        "fallback_enabled": False,
+                        "fix_model": None,
+                    }
+                )
+                if previous["provider"] != operator_model["provider"]:
+                    selected["api_base"] = None
+                if "planner" in config and "utils" in config:
+                    config["operator"] = selected
+                else:
+                    config.setdefault("nodes", {})["operator"] = selected
+                config_bytes = json.dumps(config).encode("utf-8")
             fd, name = tempfile.mkstemp(prefix="artemis-run-config-", suffix=".jsonc")
             try:
                 with os.fdopen(fd, "wb") as stream:

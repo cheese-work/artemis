@@ -25,21 +25,30 @@ from artemis.sdk.types.exceptions import AgentError
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("record_failure", [False, True])
+@pytest.mark.parametrize("explicit_quota", [False, True])
 async def test_gateway_refusal_records_the_readable_failed_step_for_the_run_view(
-    monkeypatch, fake_provider_credentials, record_failure
+    monkeypatch, fake_provider_credentials, record_failure, explicit_quota
 ):
     from artemis.context import ArtemisContext
     from artemis.sdk import agent as agent_module
     from artemis.services import llm as llm_service
 
     monkeypatch.setenv("ARTEMIS_CLOUD_MODE", "1")
+    monkeypatch.setattr(llm_service, "_wait_for_breaker", AsyncMock())
     error = RuntimeError(
         "The 'gpt-6.1-sol' model is not supported when using Codex with a ChatGPT account."
     )
-    error.status_code = 400
+    if explicit_quota:
+        error = RuntimeError("429 quota exhausted: secret-provider-body")
+    error.status_code = 429 if explicit_quota else 400
     base_model = MagicMock()
     base_model.ainvoke = AsyncMock(side_effect=error)
-    wrapper = llm_service.RobustChatModelWrapper(base_model)
+    wrapper = llm_service.RobustChatModelWrapper(
+        base_model, selected_model="google/gemini-chosen" if explicit_quota else None
+    )
+    fallback = AsyncMock()
+    pause = MagicMock(side_effect=AssertionError("Explicit model must not pause"))
+    monkeypatch.setattr(llm_service, "_handle_llm_pause_and_resume", pause)
     monkeypatch.setattr(
         llm_service,
         "retry_policy_for",
@@ -47,7 +56,7 @@ async def test_gateway_refusal_records_the_readable_failed_step_for_the_run_view
     )
 
     async def run_model(*args):
-        return await wrapper.ainvoke([])
+        return await llm_service.with_fallback(lambda: wrapper.ainvoke([]), fallback)
 
     context = MagicMock(spec=ArtemisContext)
     context.data_engine = MagicMock()
@@ -86,7 +95,11 @@ async def test_gateway_refusal_records_the_readable_failed_step_for_the_run_view
     with pytest.raises(Exception) as raised:
         await agent.run_task(goal="test", profile="flash")
 
-    reason = "AI provider rejected the model; try again"
+    reason = (
+        "google/gemini-chosen: quota exhausted. Pick another model and run again."
+        if explicit_quota
+        else "AI provider rejected the model; try again"
+    )
     assert str(raised.value) == reason
     context.data_engine.record_step.assert_called_once_with(
         action_taken={
@@ -98,6 +111,9 @@ async def test_gateway_refusal_records_the_readable_failed_step_for_the_run_view
     assert agent._tasks[-1].status == "failed"
     assert reason in agent._tasks[-1].result.error
     assert base_model.ainvoke.await_count == 2
+    fallback.assert_not_awaited()
+    pause.assert_not_called()
+    context.data_engine.end_session.assert_called_with(status="failed")
 
 
 @pytest.mark.asyncio

@@ -21,6 +21,7 @@
   // ------------------------------------------------------------------------------
   // 2. Ready-to-Use Presets (Switch easily in code or CLI)
   // ------------------------------------------------------------------------------
+  "model_discovery": {"deny": ["codex-auto-review", "gpt-reserve"]},
   "presets": {
     "gemini-flagship": {
       "provider": "google",

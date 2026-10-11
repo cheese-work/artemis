@@ -50,10 +50,12 @@ from artemis.llm.google import is_google_chat_model, is_google_provider
 from artemis.llm.reliability import (
     CircuitBreaker,
     FailureCategory,
+    Failure,
     LLMCallError,
     LLMExhaustedError,
     LLMGatewayModelRejectedError,
     LLMPermanentError,
+    LLMSelectedModelError,
     classify_failure,
     retry_policy_for,
 )
@@ -388,11 +390,39 @@ async def _wait_for_breaker(key: str) -> None:
             break
 
 
+def _selected_model_error(model: str, error: Exception, failure: Failure) -> LLMSelectedModelError:
+    message = str(error).lower()
+    if any(marker in message for marker in ("quota", "resource_exhausted")):
+        cause = "quota exhausted"
+    elif "model_not_found" in message or "model not found" in message:
+        cause = "model not found"
+    else:
+        cause = {
+            FailureCategory.RATE_LIMIT: "rate limited (429)",
+            FailureCategory.PROVIDER_UNAVAILABLE: "provider unavailable after retries",
+            FailureCategory.GATEWAY_MODEL_REJECTED: "provider rejected the model",
+            FailureCategory.AUTHENTICATION: "authentication failed",
+            FailureCategory.TIMEOUT: "request timed out after retries",
+            FailureCategory.CONNECTION: "connection failed after retries",
+            FailureCategory.BAD_REQUEST: "provider rejected the request",
+        }.get(failure.category, "provider call failed")
+    reason = f"{model}: {cause}. Pick another model and run again."
+    _record_llm_event(
+        "llm_gave_up",
+        {"error": reason, "category": failure.category.value, "retryable": False},
+        status="failed",
+    )
+    return LLMSelectedModelError(
+        reason, failure=Failure(failure.category, False, False), cause=error
+    )
+
+
 async def _run_with_recovery[T](
     call_once: Callable[[], Awaitable[T]],
     *,
     provider: str | None = None,
     endpoint_key: str | None = None,
+    selected_model: str | None = None,
 ) -> T:
     """Execute one LLM call under the classified retry / pause / breaker policy.
 
@@ -434,6 +464,8 @@ async def _run_with_recovery[T](
                     if endpoint_key:
                         _ENDPOINT_BREAKER.record_failure(endpoint_key, failure)
                     if not failure.retryable:
+                        if selected_model:
+                            raise _selected_model_error(selected_model, e, failure) from e
                         llm_logger.warning(
                             f"LLM call failed permanently ({failure.category.value}): {e}"
                         )
@@ -481,6 +513,10 @@ async def _run_with_recovery[T](
                     return result
 
             # Retryable attempts exhausted.
+            if selected_model:
+                raise _selected_model_error(
+                    selected_model, last_error, last_failure
+                ) from last_error
             if last_failure.category is FailureCategory.GATEWAY_MODEL_REJECTED:
                 reason = "AI provider rejected the model; try again"
                 _record_llm_event(
@@ -557,10 +593,12 @@ class RobustChatModelWrapper:
         base_model: BaseChatModel,
         ctx: ArtemisContext = None,
         endpoint: ModelEndpoint | None = None,
+        selected_model: str | None = None,
     ):
         self.base_model = base_model
         self.ctx = ctx
         self.endpoint = endpoint
+        self.selected_model = selected_model
 
     def __getattr__(self, item: str):
         return getattr(self.base_model, item)
@@ -612,13 +650,16 @@ class RobustChatModelWrapper:
             ]
 
         bound = self.base_model.bind_tools(processed_tools, *other_args, **kwargs)
-        return RobustChatModelWrapper(bound, self.ctx, endpoint=self.endpoint)
+        return RobustChatModelWrapper(
+            bound, self.ctx, endpoint=self.endpoint, selected_model=self.selected_model
+        )
 
     def with_config(self, *args, **kwargs):
         return RobustChatModelWrapper(
             self.base_model.with_config(*args, **kwargs),
             self.ctx,
             endpoint=self.endpoint,
+            selected_model=self.selected_model,
         )
 
     def with_structured_output(self, *args, **kwargs):
@@ -627,17 +668,24 @@ class RobustChatModelWrapper:
                 self.base_model.with_structured_output(*args, **kwargs),
                 self.ctx,
                 endpoint=self.endpoint,
+                selected_model=self.selected_model,
             )
         raise AttributeError(f"{type(self.base_model)} does not support with_structured_output")
 
     def __or__(self, other):
         return RobustChatModelWrapper(
-            self.base_model.__or__(other), self.ctx, endpoint=self.endpoint
+            self.base_model.__or__(other),
+            self.ctx,
+            endpoint=self.endpoint,
+            selected_model=self.selected_model,
         )
 
     def __ror__(self, other):
         return RobustChatModelWrapper(
-            self.base_model.__ror__(other), self.ctx, endpoint=self.endpoint
+            self.base_model.__ror__(other),
+            self.ctx,
+            endpoint=self.endpoint,
+            selected_model=self.selected_model,
         )
 
     def _provider_value(self) -> str | None:
@@ -690,6 +738,7 @@ class RobustChatModelWrapper:
             functools.partial(self.base_model.ainvoke, *args, **kwargs),
             provider=self._provider_value(),
             endpoint_key=self._endpoint_key(),
+            selected_model=self.selected_model,
         )
         self._meter_usage(response)
         return response
@@ -710,6 +759,7 @@ class RobustChatModelWrapper:
             functools.partial(self._complete_attempt, emit_deltas, *args, **kwargs),
             provider=self._provider_value(),
             endpoint_key=self._endpoint_key(),
+            selected_model=self.selected_model,
         )
         self._meter_usage(response)
         return response
@@ -1101,7 +1151,7 @@ def _resolve_endpoint(
 
     cfg = ctx.llm_config.get_utils(name) if is_utils else ctx.llm_config.get_agent(name)
 
-    if use_fallback:
+    if use_fallback and getattr(cfg, "fallback_enabled", True):
         if isinstance(cfg, LLMWithFallback) or (hasattr(cfg, "fallback") and cfg.fallback):
             cfg = cfg.fallback
         else:
@@ -1181,7 +1231,15 @@ def get_llm(
     handler = DataEngineCallbackHandler(ctx)
     bound_model = raw_model.with_config(callbacks=[handler])
 
-    return RobustChatModelWrapper(bound_model, ctx, endpoint=endpoint)  # type: ignore
+    cfg = ctx.llm_config.get_utils(name) if is_utils else ctx.llm_config.get_agent(name)
+    selected_model = (
+        f"{endpoint.provider.value}/{endpoint.model_name}"
+        if not getattr(cfg, "fallback_enabled", True)
+        else None
+    )
+    return RobustChatModelWrapper(
+        bound_model, ctx, endpoint=endpoint, selected_model=selected_model
+    )  # type: ignore
 
 
 async def with_fallback[T](

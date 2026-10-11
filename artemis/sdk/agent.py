@@ -75,7 +75,7 @@ from artemis.runtime.adb_endpoint import AdbEndpoint
 from artemis.runtime.endpoint_transport import EndpointTransport
 from artemis.runtime.cancel_requests import watch_for_cancel_request
 from artemis.runtime.lifecycle import InterruptReason
-from artemis.llm.reliability import LLMGatewayModelRejectedError
+from artemis.llm.reliability import LLMGatewayModelRejectedError, LLMSelectedModelError
 from artemis.data_engine import run_snapshot
 from artemis.data_engine.engine import DataEngine
 from artemis.drivers.types import DeviceDisconnectedError
@@ -881,7 +881,7 @@ class Agent:
                     error=err,
                 )
                 if context.data_engine:
-                    if isinstance(e, LLMGatewayModelRejectedError):
+                    if isinstance(e, (LLMGatewayModelRejectedError, LLMSelectedModelError)):
                         try:
                             context.data_engine.record_step(
                                 action_taken={

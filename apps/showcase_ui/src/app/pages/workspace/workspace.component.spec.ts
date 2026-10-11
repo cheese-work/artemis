@@ -5,11 +5,17 @@ import { of, throwError } from 'rxjs';
 import { RunTarget } from '../../core/models/run-target.model';
 import { AgentService } from '../../services/agent.service';
 import { BrowserStorageService } from '../../services/browser-storage.service';
+import { ModelCatalogService } from '../../services/model-catalog.service';
 import { RunViewComponent } from '../../components/run-view/run-view.component';
 import { WorkspacePhoneService } from '../../services/workspace-phone.service';
 import { InterruptedBannerComponent } from '../../components/interrupted-banner/interrupted-banner.component';
 import { RunLibraryComponent } from '../../components/run-library/run-library.component';
 import { WorkspaceComponent } from './workspace.component';
+
+const modelCatalog = {
+  load: () => undefined, selection: () => undefined, selectedKey: () => '', catalog: () => null,
+  options: () => [{ key: '', label: 'Server default' }], warning: () => null, choose: () => undefined
+};
 
 describe('WorkspaceComponent error lifetime', () => {
   let agentService: {
@@ -52,6 +58,7 @@ describe('WorkspaceComponent error lifetime', () => {
       imports: [WorkspaceComponent],
       providers: [
         provideRouter([]),
+        { provide: ModelCatalogService, useValue: modelCatalog },
         { provide: AgentService, useValue: agentService },
         { provide: WorkspacePhoneService, useValue: { target: () => null, view: () => ({ text: 'No phone' }), requestPicker: () => undefined } }
       ],
@@ -184,6 +191,7 @@ describe('WorkspaceComponent phone binding', () => {
       imports: [WorkspaceComponent],
       providers: [
         provideRouter([]),
+        { provide: ModelCatalogService, useValue: modelCatalog },
         { provide: AgentService, useValue: agentService },
         { provide: WorkspacePhoneService, useValue: phone }
       ],
@@ -293,6 +301,7 @@ describe('WorkspaceComponent pinned composer (CHE-1508)', () => {
       imports: [WorkspaceComponent],
       providers: [
         provideRouter([]),
+        { provide: ModelCatalogService, useValue: modelCatalog },
         { provide: AgentService, useValue: agentService },
         {
           provide: WorkspacePhoneService,

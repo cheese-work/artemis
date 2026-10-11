@@ -139,6 +139,10 @@ class LLMExhaustedError(LLMCallError):
     """Retryable failures exhausted every attempt and the pause deadline."""
 
 
+class LLMSelectedModelError(LLMCallError):
+    """An explicitly selected model failed; no model switch or pause is allowed."""
+
+
 # ---------------------------------------------------------------------------
 # Retry policies
 # ---------------------------------------------------------------------------

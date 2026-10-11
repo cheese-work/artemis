@@ -480,6 +480,7 @@ class SessionRepository:
         notify_context: dict[str, Any] | None = None,
         requested_by: str | None = None,
         device_binding: dict[str, Any] | None = None,
+        model: dict[str, str] | None = None,
     ) -> bool:
         """Persist a queue item before its worker starts a session.
 
@@ -504,6 +505,14 @@ class SessionRepository:
                             {
                                 "profile": profile,
                                 "device_id": device_serial,
+                                **(
+                                    {
+                                        "agent_model": model["model"],
+                                        "agent_provider": model["provider"],
+                                    }
+                                    if model
+                                    else {}
+                                ),
                                 **({"device_binding": device_binding} if device_binding else {}),
                             }
                         ),

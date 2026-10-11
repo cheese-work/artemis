@@ -76,7 +76,7 @@
             <div><dt>Phone</dt><dd appRunDeviceLabel [serial]="current.device_ref?.serial ?? null" [detail]="true"></dd></div>
             <div><dt>Started</dt><dd class="mono">{{ current.start_time == null ? 'Not recorded' : (current.start_time * 1000 | date: 'MMM d, HH:mm': '+0700') + ' ICT' }}</dd></div>
             <div><dt>{{ active() ? 'Elapsed' : 'Duration' }}</dt><dd class="mono" data-fact="duration">{{ duration() }}</dd></div>
-            <div><dt>Model</dt><dd data-fact="model">{{ viewedModel()?.name ?? 'Not recorded' }}</dd></div>
+            <div><dt>Model</dt><dd data-fact="model">{{ current.agent_model ?? viewedModel()?.id ?? 'Not recorded' }}</dd></div>
           </dl>
           <details #promptEl class="full-prompt">
             <summary>Show prompt</summary>

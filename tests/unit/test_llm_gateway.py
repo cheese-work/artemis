@@ -93,6 +93,83 @@ def _gateway_model_refusal():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize(
+    ("status", "message", "cause", "attempts"),
+    [
+        (429, "quota exhausted", "quota exhausted", 2),
+        (429, "rate limited", "rate limited (429)", 2),
+        (404, "model_not_found", "model not found", 1),
+        (503, "service unavailable", "provider unavailable after retries", 2),
+    ],
+)
+async def test_explicit_choice_survives_binding_and_never_uses_another_model(
+    monkeypatch, streaming, status, message, cause, attempts
+):
+    from unittest.mock import AsyncMock
+
+    from artemis.config.llm import LLM, LLMWithFallback
+    from artemis.llm.reliability import LLMSelectedModelError
+
+    error = RuntimeError(message + ": secret-provider-body")
+    error.status_code = status
+
+    class SelectedProvider:
+        calls = 0
+
+        def with_config(self, **kwargs):
+            return self
+
+        def bind_tools(self, tools):
+            return self
+
+        async def ainvoke(self, *args, **kwargs):
+            self.calls += 1
+            raise error
+
+        async def astream(self, *args, **kwargs):
+            self.calls += 1
+            raise error
+            yield
+
+    base = SelectedProvider()
+    configured = LLMWithFallback(
+        provider="openai",
+        model="chosen-model",
+        fallback=LLM(provider="google", model="never-called"),
+        fallback_enabled=False,
+    )
+    context = SimpleNamespace(
+        llm_config=SimpleNamespace(get_agent=lambda name: configured), data_engine=None
+    )
+    endpoints = []
+
+    def create_model(endpoint):
+        endpoints.append((endpoint.provider.value, endpoint.model_name))
+        return base
+
+    monkeypatch.setattr(llm_service.ModelFactory, "get_model", create_model)
+    wrapper = llm_service.get_llm(context, "operator").with_config().bind_tools([])
+    llm_service.get_llm(context, "operator", use_fallback=True)
+    fallback = AsyncMock()
+    pause = AsyncMock()
+    monkeypatch.setattr(llm_service, "_wait_for_resume", pause)
+
+    async def main():
+        return await wrapper.complete([]) if streaming else await wrapper.ainvoke([])
+
+    with pytest.raises(LLMSelectedModelError) as raised:
+        await with_fallback(main, fallback)
+    assert str(raised.value) == f"openai/chosen-model: {cause}. Pick another model and run again."
+    assert not raised.value.failure.should_fallback
+    assert base.calls == attempts
+    assert endpoints == [("openai", "chosen-model"), ("openai", "chosen-model")]
+    fallback.assert_not_awaited()
+    pause.assert_not_awaited()
+    assert not llm_service.PAUSE_FILE.exists()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("streaming", [True, False])
 async def test_gateway_model_refusal_retries_then_succeeds(streaming):
     class RejectsOnce:
