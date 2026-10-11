@@ -55,8 +55,8 @@ def add(conn, session_id, *, requested_by, model, original_prompt, improvement):
                 data["model"],
                 data["original_prompt"],
                 data["improved_prompt"],
-                json.dumps(data["changes"]),
-                json.dumps(data["lessons"]),
+                json.dumps(data["changes"], ensure_ascii=False),
+                json.dumps(data["lessons"], ensure_ascii=False),
             ),
         )
     return data

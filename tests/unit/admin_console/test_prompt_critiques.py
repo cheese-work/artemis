@@ -320,3 +320,17 @@ async def test_removal_during_generation_does_not_leave_a_critique(library, qa, 
     response = await qa.post(f"/api/sessions/{sid}/improve-prompt")
     assert response.status_code == 404
     assert library.count("prompt_critiques", sid) == 0
+
+
+@pytest.mark.asyncio
+async def test_lessons_search_matches_non_ascii_changes_and_lessons(library, qa, model):
+    _, complete = model
+    complete.return_value = service.PromptImprovement(
+        improved_prompt="Mở cài đặt",
+        changes=[{"what": "Nêu rõ màn hình", "why": "Lời nhắc gốc mơ hồ"}],
+        lessons=["Viết bằng Tiếng Việt rõ ràng"],
+    )
+    sid = owned_run(library, goal="Settings")
+    assert (await qa.post(f"/api/sessions/{sid}/improve-prompt")).status_code == 200
+    for q in ("màn hình", "Tiếng"):
+        assert (await qa.get("/api/prompt-lessons", params={"q": q})).json()["critiques"], q
