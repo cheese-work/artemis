@@ -69,3 +69,27 @@ node scripts/layout-audit/screenshots.mjs <outDir> <label> --controls
 ```
 
 The control audit captures Workspace, Runs and Setup at 1440 and 390 px using a mock API. It checks unoutlined controls and panels, overlay-only shadows, each control's own 44 × 44 px box, keyboard focus rings and at least 3:1 focus contrast. It also captures the Setup model panel. `npm run test:controls` writes the same evidence to `screenshots/`. Run a development build first; no phone or backend is used.
+
+### Direction B responsive shell
+
+The shell uses a 224 px sidebar from 1200 px, a 72 px labelled rail from 800 to
+1199 px, and a 48 px top bar plus 56 px labelled tab bar below 800 px. The fixed
+version footer is removed at every width; version information stays in the account
+menu. Phone and account controls remain available in all three tiers.
+
+The next pane-layout slice can inject `ShellLayoutService`, set `activePane` to
+`list` or `detail`, and mark pane roots with `data-shell-pane="list"` or
+`data-shell-pane="detail"`. Below 1024 px the shell hides the inactive pane.
+Both panes remain visible from 1024 px. Workspace and Runs navigation reset the
+selection to `list`. This hook does not restructure the existing page panes.
+
+```bash
+npx ng build --configuration development
+SHOTS=./shell-evidence npm run test:shell
+```
+
+This X99 headless-browser check uses the existing mock API and native CDP clicks.
+It covers the 1200, 1024 and 800 px boundaries, checks non-overlapping 44 px
+control boxes and on-screen menus, and saves PNG screenshots at 1440, 1199,
+1024, 800, 799 and 390 px. `CHROME_BIN` selects the browser; `SHELL_DIST` selects
+an alternative development build for the baseline control.

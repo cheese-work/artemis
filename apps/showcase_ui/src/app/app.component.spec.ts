@@ -22,7 +22,7 @@ import { Component, EventEmitter, Input, Output, signal } from '@angular/core';
 import { of } from 'rxjs';
 import { AgentService } from './services/agent.service';
 import { AppComponent } from './app.component';
-import { VersionFooterComponent } from './components/version-footer/version-footer.component';
+import { ShellLayoutService } from './services/shell-layout.service';
 
 describe('AppComponent', () => {
   beforeEach(async () => {
@@ -78,11 +78,11 @@ describe('AppComponent layout', () => {
         { provide: AgentService, useValue: { whatsNewHasUpdates: signal(false), whatsNewHasUnread: signal(false) } }
       ]
     })
-      .overrideComponent(AppComponent, { set: { imports: [RouterOutlet, NavStub, WhatsNewStub, VersionFooterComponent] } })
+      .overrideComponent(AppComponent, { set: { imports: [RouterOutlet, NavStub, WhatsNewStub] } })
       .compileComponents();
   });
 
-  it('hides the legacy footer on desktop and reserves its strip below the scrolling page on mobile', () => {
+  it('removes the fixed footer and reserves the sidebar, rail or mobile bars', () => {
     const fixture = TestBed.createComponent(AppComponent);
     fixture.detectChanges();
     const root = fixture.nativeElement as HTMLElement;
@@ -90,14 +90,23 @@ describe('AppComponent layout', () => {
     const footer = root.querySelector<HTMLElement>('app-version-footer');
 
     expect(page).withContext('page area').not.toBeNull();
-    expect(page!.contains(footer)).toBeFalse();
+    expect(footer).toBeNull();
     expect(getComputedStyle(page!).overflowY).toBe('auto');
-    if (window.innerWidth >= 1024) {
-      expect(getComputedStyle(footer!).display).toBe('none');
-      expect(page!.getBoundingClientRect().left).toBe(224);
+    if (window.innerWidth >= 800) {
+      expect(page!.getBoundingClientRect().left).toBe(window.innerWidth >= 1200 ? 224 : 72);
     } else {
-      expect(getComputedStyle(footer!.querySelector('footer')!).position).not.toBe('fixed');
-      expect(footer!.getBoundingClientRect().top).toBeGreaterThanOrEqual(page!.getBoundingClientRect().bottom);
+      expect(getComputedStyle(page!).marginTop).toBe('48px');
+      expect(getComputedStyle(page!).marginBottom).toBe('56px');
     }
+  });
+
+  it('publishes the selected pane for the next slice', () => {
+    const fixture = TestBed.createComponent(AppComponent);
+    fixture.detectChanges();
+    const page = fixture.nativeElement.querySelector('.app-page') as HTMLElement;
+    expect(page.dataset['activePane']).toBe('list');
+    TestBed.inject(ShellLayoutService).activePane.set('detail');
+    fixture.detectChanges();
+    expect(page.dataset['activePane']).toBe('detail');
   });
 });
