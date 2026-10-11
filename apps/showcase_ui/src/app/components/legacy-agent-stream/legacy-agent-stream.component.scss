@@ -25,6 +25,7 @@ $bg-main: #f9fafb;
   flex-direction: column;
   height: 100%;
   width: 100%;
+  min-width: 0;
   overflow: hidden;
 }
 
@@ -64,6 +65,8 @@ $bg-main: #f9fafb;
     .session-selector-wrapper {
       display: flex;
       align-items: center;
+      flex-wrap: wrap;
+      max-width: 100%;
       gap: 12px;
 
       label {
@@ -73,15 +76,16 @@ $bg-main: #f9fafb;
       }
 
       .session-dropdown {
+        min-height: var(--target);
+        flex: 1;
         padding: 8px 12px;
         border: 1px solid rgba(0, 0, 0, 0.12);
         border-radius: 8px;
         font-size: 13.5px;
         background-color: #ffffff;
-        outline: none;
         color: $text-primary;
-        min-width: 250px;
-        max-width: 400px;
+        min-width: min(250px, 100%);
+        max-width: 100%;
         cursor: pointer;
         transition: border-color 0.2s;
 
@@ -91,9 +95,12 @@ $bg-main: #f9fafb;
       }
 
       .btn-refresh {
+        min-height: var(--target);
+        min-width: var(--target);
+        flex-shrink: 0;
         padding: 8px 14px;
-        background: #ffffff;
-        border: 1px solid rgba(0, 0, 0, 0.12);
+        background: var(--color-surface-subtle);
+        border: 0;
         border-radius: 8px;
         font-size: 13px;
         font-weight: 600;
@@ -113,6 +120,19 @@ $bg-main: #f9fafb;
         }
       }
     }
+  }
+
+  .details-summary {
+    display: list-item;
+    min-height: var(--target);
+    width: 100%;
+    overflow-wrap: anywhere;
+  }
+
+  .details-summary:focus-visible,
+  .session-dropdown:focus-visible {
+    outline: 3px solid var(--color-focus);
+    outline-offset: -3px;
   }
 
   .stream-logs-content {
@@ -293,7 +313,6 @@ $bg-main: #f9fafb;
                 color: $text-secondary;
                 cursor: pointer;
                 user-select: none;
-                outline: none;
                 background: #ffffff;
                 transition: background 0.2s;
 
@@ -365,7 +384,6 @@ $bg-main: #f9fafb;
                 font-weight: 600;
                 color: $text-secondary;
                 cursor: pointer;
-                outline: none;
                 background: #ffffff;
               }
 
@@ -401,6 +419,26 @@ $bg-main: #f9fafb;
           }
         }
       }
+    }
+  }
+}
+
+@media (max-width: 799px) {
+  .agent-stream-container {
+    .stream-header,
+    .stream-logs-content {
+      padding: 16px;
+    }
+
+    .stream-header .session-selector-wrapper {
+      width: 100%;
+      gap: 8px;
+      label { flex-basis: 100%; }
+      .session-dropdown { min-width: 0; }
+    }
+
+    .stream-logs-content .logs-list .log-card {
+      padding: 16px;
     }
   }
 }
