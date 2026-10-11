@@ -130,13 +130,13 @@
                 [(ngModel)]="credentialInputs[provider.name]"
                 (input)="onCredentialInput(provider.name, $any($event.target).value)"
                 [placeholder]="provider.configured ? 'Enter a new key to replace' : 'Enter API key'"
-                [readonly]="!canEdit() || saving() || provider.key_source === 'service environment (read-only)'"
+                [readonly]="!canEdit() || saving() || provider.key_source.includes('read-only')"
                 autocomplete="new-password"
                 spellcheck="false"
               />
             </label>
             @if (provider.configured && canEdit()) {
-              <button type="button" class="text-button" (click)="clearCredential(provider.name)" [disabled]="saving() || provider.key_source === 'service environment (read-only)'">
+              <button type="button" class="text-button" (click)="clearCredential(provider.name)" [disabled]="saving() || provider.key_source.includes('read-only')">
                 Clear saved key
               </button>
             }
@@ -147,7 +147,7 @@
                   [name]="'base-url-' + provider.name"
                   type="url"
                   [(ngModel)]="baseUrls[provider.name]"
-                  [readonly]="!canEdit() || saving() || provider.base_url_source === 'service environment (read-only)'"
+                  [readonly]="!canEdit() || saving() || provider.base_url_source.includes('read-only')"
                   placeholder="https://"
                   autocomplete="url"
                 />

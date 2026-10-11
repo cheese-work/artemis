@@ -33,6 +33,7 @@ import { VersionFooterComponent } from '../version-footer/version-footer.compone
           <p class="account-details">{{ current.email || (current.auth_mode === 'open' ? 'Local access' : 'Not signed in') }} · {{ current.admin ? 'Admin' : 'Read-only' }}</p>
           @if (current.admin) {
             <a routerLink="/setup" (click)="closeMenu()">Setup</a>
+            <a routerLink="/providers" (click)="closeMenu()">LLM providers</a>
           } @else {
             <p>Configuration is managed by an admin. Device options are in the phone menu.</p>
           }

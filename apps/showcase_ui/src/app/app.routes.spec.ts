@@ -7,6 +7,7 @@ import { provideRouter, Router } from '@angular/router';
 import { RouterTestingHarness } from '@angular/router/testing';
 import { of, throwError } from 'rxjs';
 import { SystemService } from './services/system.service';
+import { ModelCatalogService } from './services/model-catalog.service';
 
 describe('app routes', () => {
   it('redirects the root path to the workspace', () => {
@@ -35,7 +36,7 @@ describe('app routes', () => {
 class PageStub {}
 
 describe('first-run navigation', () => {
-  async function open(configured: boolean, credentials: boolean, failed = false, path = '/workspace') {
+  async function open(configured: boolean, credentials: boolean, failed = false, path = '/workspace', models: unknown[] = []) {
     const probes = [
       { id: 'system_config', status: configured ? 'pass' : 'fail' },
       { id: 'llm_api_key', status: credentials ? 'pass' : 'fail', metadata: { is_set: credentials } },
@@ -44,6 +45,7 @@ describe('first-run navigation', () => {
     TestBed.configureTestingModule({
       providers: [
         provideRouter(routes.map(route => route.component ? { ...route, component: PageStub } : route)),
+        { provide: ModelCatalogService, useValue: { fetch: () => of({ models }) } },
         { provide: SystemService, useValue: { fetchReadiness: () => failed ? throwError(() => new Error('Unavailable')) : of({ probes }) } }
       ]
     });
@@ -63,6 +65,10 @@ describe('first-run navigation', () => {
     expect(await open(true, true)).toBe('/workspace');
   });
 
+  it('admits a QA when another enabled slot has synced models despite missing default credentials', async () => {
+    expect(await open(true, false, false, '/workspace', [{ provider: 'google', model: 'synced-model' }])).toBe('/workspace');
+  });
+
   it('stays in Workspace with the backend gemini_api_key shape when only one provider is set', async () => {
     const probes = [
       { id: 'system_config', status: 'pass' },
@@ -80,7 +86,8 @@ describe('first-run navigation', () => {
     TestBed.configureTestingModule({
       providers: [
         provideRouter(routes.map(route => route.component ? { ...route, component: PageStub } : route)),
-        { provide: SystemService, useValue: { fetchReadiness: () => of({ probes }) } }
+        { provide: SystemService, useValue: { fetchReadiness: () => of({ probes }) } },
+        { provide: ModelCatalogService, useValue: { fetch: () => of({ models: [] }) } }
       ]
     });
     await RouterTestingHarness.create('/workspace');

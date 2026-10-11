@@ -125,6 +125,8 @@ Thumbs.db
 
 # Created by ConfigStore (admin console tests run from the repo root)
 .artemis-config.lock
+artemis-providers.json
+artemis-admin-audit.jsonl
 
 # Demo board scratch (scripts/preview_demo.py)
 .preview-demo/

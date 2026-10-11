@@ -29,7 +29,7 @@ export class ModelCatalogService {
     return [
       { key: '', label: catalog ? `Default · ${catalog.default.model}` : 'Server default' },
       ...(catalog?.models ?? [])
-        .map(row => ({ key: JSON.stringify({ provider: row.provider, model: row.model }), label: `${row.provider} · ${row.model}` }))
+        .map(row => ({ key: JSON.stringify({ provider: row.provider, model: row.model }), label: `${({ openai: 'OpenAI', google: 'Google', anthropic: 'Anthropic', xai: 'xAI', openrouter: 'OpenRouter' } as Record<string, string>)[row.provider] ?? row.provider} · ${row.model}` }))
     ];
   });
   public readonly selection = computed<ModelSelection | undefined>(() => {
@@ -58,7 +58,7 @@ export class ModelCatalogService {
     this.ownerScope.load();
     if (this.requested || (this.catalog() && Date.now() - this.fetchedAt < 600000)) return;
     this.requested = true;
-    this.http.get<ModelCatalog>('/api/models').subscribe({
+    this.fetch().subscribe({
       next: catalog => {
         this.requested = false;
         this.fetchedAt = Date.now();
@@ -70,6 +70,14 @@ export class ModelCatalogService {
         this.warning.set('Models could not be loaded. The server default is still available.');
       }
     });
+  }
+
+  public fetch() {
+    return this.http.get<ModelCatalog>('/api/models');
+  }
+
+  public invalidate(): void {
+    this.fetchedAt = 0;
   }
 
   public choose(key: string): void {

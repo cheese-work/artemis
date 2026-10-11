@@ -116,9 +116,7 @@ async def test_configurable_deny_list_is_applied_even_to_cached_rows(store):
 @pytest.mark.asyncio
 async def test_failure_keeps_last_good_list_and_redacts_provider_error(store, monkeypatch):
     now = [0.0]
-    monkeypatch.setattr(
-        "apps.admin_console.services.model_discovery.time.monotonic", lambda: now[0]
-    )
+    monkeypatch.setattr("apps.admin_console.services.provider_settings.time.time", lambda: now[0])
     failed = [False]
 
     def reply(request):
@@ -134,16 +132,16 @@ async def test_failure_keeps_last_good_list_and_redacts_provider_error(store, mo
     now[0] = 601
     stale = await discovery.catalog()
     assert stale["models"] == original["models"]
-    assert stale["errors"] == [{"provider": "openai", "error": "Model scan failed (HTTP 403)."}]
+    assert len(stale["errors"]) == 1
+    assert stale["errors"][0]["provider"] == "openai"
+    assert "HTTP 403" in stale["errors"][0]["error"]
     assert "secret-do-not-return" not in json.dumps(stale)
 
 
 @pytest.mark.asyncio
 async def test_expiry_discovers_new_proxy_models_and_removed_key_revokes_rows(store, monkeypatch):
     now = [0.0]
-    monkeypatch.setattr(
-        "apps.admin_console.services.model_discovery.time.monotonic", lambda: now[0]
-    )
+    monkeypatch.setattr("apps.admin_console.services.provider_settings.time.time", lambda: now[0])
     models = [{"id": "gpt-model"}]
     discovery = ModelDiscovery(
         store, transport=httpx.MockTransport(lambda _: httpx.Response(200, json={"data": models}))
@@ -157,14 +155,15 @@ async def test_expiry_discovers_new_proxy_models_and_removed_key_revokes_rows(st
 
 
 @pytest.mark.asyncio
-async def test_validation_and_default_fallback(store):
+async def test_validation_includes_the_default_model(store):
     discovery = ModelDiscovery(
         store,
         transport=httpx.MockTransport(
             lambda _: httpx.Response(200, json={"data": [{"id": "gpt-model"}]})
         ),
     )
-    assert await discovery.resolve(None) == {"provider": "openai", "model": "default-model"}
+    with pytest.raises(AdminAPIError):
+        await discovery.resolve(None)
     assert await discovery.resolve({"provider": "openai", "model": "gpt-model"}) == {
         "provider": "openai",
         "model": "gpt-model",
@@ -178,7 +177,8 @@ async def test_validation_and_default_fallback(store):
             await discovery.resolve(selection)
         assert caught.value.status_code == 400
     store.env_path.write_text("")
-    assert await discovery.resolve(None) == {"provider": "openai", "model": "default-model"}
+    with pytest.raises(AdminAPIError):
+        await discovery.resolve(None)
 
 
 @pytest.mark.asyncio

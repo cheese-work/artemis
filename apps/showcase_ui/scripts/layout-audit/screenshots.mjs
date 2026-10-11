@@ -14,6 +14,7 @@ const [outDir = 'screenshots', label = 'shot', audit] = process.argv.slice(2);
 const checkControls = audit === '--controls';
 const checkModels = audit === '--models';
 const checkComposer = audit === '--composer';
+const checkProviders = audit === '--providers';
 const failures = [];
 const iconNames = readFileSync(new URL('../../public/fonts/material-symbols-outlined.txt', import.meta.url), 'utf8').trim().split(',');
 mkdirSync(outDir, { recursive: true });
@@ -49,6 +50,20 @@ const evaluate = async (expression) => {
 };
 await send("Page.enable");
 const T0 = Math.floor(Date.now() / 1000) - 600;
+if (checkProviders) {
+  const root = 'https://congvc-c00.taila6fa8a.ts.net:31344';
+  const official = { openai: 'https://api.openai.com/v1', google: 'https://generativelanguage.googleapis.com', anthropic: 'https://api.anthropic.com', xai: 'https://api.x.ai/v1', openrouter: 'https://openrouter.ai/api/v1' };
+  mock.providers = {
+    version: 'synthetic-provider-fixture',
+    slots: Object.entries({ openai: 'OpenAI', google: 'Google', anthropic: 'Anthropic', xai: 'xAI', openrouter: 'OpenRouter' }).map(([provider, label], index) => ({
+      provider, label, base_url: index ? official[provider] : root + '/v1', configured: index < 3, key_preview: index < 3 ? '****abcd' : null,
+      enabled: index === 0 || index === 2, saved: true, model_count: index === 0 ? 12 : index === 2 ? 4 : 0,
+      last_sync: index === 0 || index === 2 ? T0 : null, sync_error: null,
+      last_test: index === 0 || index === 2 ? { ok: true, latency_ms: 248, error: null, at: T0 } : index === 1 ? { ok: false, latency_ms: 113, error: 'Google protocol request failed (HTTP 503). Gemini-native endpoint unavailable.', at: T0 } : null,
+      presets: [{ name: 'Official', url: official[provider] }, { name: 'sub2api (C00)', url: root + (provider === 'google' || provider === 'anthropic' ? '' : '/v1') }]
+    }))
+  };
+}
 mock.readiness = { os_type: 'linux', overall_ready: true, probes: [{ id: 'system_config', status: 'pass' }, { id: 'llm_api_key', status: 'pass', metadata: { is_set: true } }, { id: 'android_adb', status: 'pass', metadata: { devices: [] } }] };
 mock.sessions = [
   { session_id: 'aaaaaaaa-1', initial_goal: 'Open settings and verify the accessibility toggles', start_time: T0, end_time: T0 + 90, status: 'completed' },
@@ -63,14 +78,18 @@ if (checkControls) {
   };
 }
 const pages = { workspace: '/workspace', runs: '/runs', 'run-detail': `/runs/${RUNS[1].session_id}`, setup: '/setup', check: '/check' };
+if (checkProviders) {
+  for (const name of Object.keys(pages)) delete pages[name];
+  pages.providers = '/providers';
+}
 if (checkControls) delete pages['run-detail'];
 if (checkModels) for (const name of Object.keys(pages)) if (name !== 'workspace') delete pages[name];
 if (checkComposer) for (const name of Object.keys(pages)) if (!['workspace', 'run-detail'].includes(name)) delete pages[name];
 if (checkModels) for (const run of RUNS) run.agent_model = 'fixture-default';
 if (checkModels) for (const session of mock.sessions) session.model_info = { name: 'Flash', id: 'fixture-default', provider: 'openai' };
-for (const width of checkControls || checkModels || checkComposer ? [1440, 390] : [1280, 1024]) {
+for (const width of checkControls || checkModels || checkComposer || checkProviders ? [1440, 390] : [1280, 1024]) {
   for (const [name, route] of Object.entries(pages)) {
-    await send('Emulation.setDeviceMetricsOverride', { width, height: 800, deviceScaleFactor: 1, mobile: false });
+    await send('Emulation.setDeviceMetricsOverride', { width, height: checkProviders ? (width === 390 ? 3450 : 2200) : 800, deviceScaleFactor: 1, mobile: false });
     await send('Page.navigate', { url: base + route });
     await sleep(2500);
     if (name === 'check') {
@@ -100,6 +119,16 @@ for (const width of checkControls || checkModels || checkComposer ? [1440, 390] 
       failures.push(...disclosureErrors.map(error => `${name}-${width}: ${error}`));
     }
     await evaluate('document.fonts.ready.then(() => true)');
+    if (checkProviders) {
+      const providerErrors = await evaluate(`(() => {
+        const errors = [];
+        if (document.querySelectorAll('app-providers article').length !== 5) errors.push('Missing provider cards');
+        if ([...document.querySelectorAll('input[type=password]')].some(input => input.value)) errors.push('Key field is not blank');
+        if (document.documentElement.scrollWidth > innerWidth) errors.push('Horizontal overflow');
+        return errors;
+      })()`);
+      failures.push(...providerErrors.map(error => name + '-' + width + ': ' + error));
+    }
     if (checkComposer && name === 'workspace') {
       await evaluate(`(() => {
         const textarea = document.querySelector('textarea.composer-input');
