@@ -14,17 +14,19 @@
  * limitations under the License.
  */
 
-/* Page area scrolls; the version footer keeps its own strip below it (CHE-1411). */
 :host {
   display: flex;
   flex-direction: column;
   height: 100dvh;
+  --nav-clearance: 0px;
+  --preview-banner-h: 0px;
 }
 
 .app-page {
   flex: 1;
   min-height: 0;
   overflow: auto;
+  margin-left: var(--sidebar-w);
 }
 
 .preview-banner {
@@ -39,8 +41,16 @@
   line-height: 20px;
 }
 
-@media (min-width: 1024px) {
-  .app-page { margin-left: var(--sidebar-w); }
-  .legacy-version-footer { display: none; }
-  :host:has(.preview-banner) { --preview-banner-h: 24px; }
+:host:has(.preview-banner) { --preview-banner-h: 24px; }
+
+@media (min-width: 800px) and (max-width: 1199px) {
+  .app-page { margin-left: 72px; }
+}
+
+@media (max-width: 799px) {
+  .app-page {
+    margin-left: 0;
+    margin-top: var(--appbar-h);
+    margin-bottom: var(--tabbar-h);
+  }
 }

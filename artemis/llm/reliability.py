@@ -41,6 +41,7 @@ class FailureCategory(StrEnum):
     TIMEOUT = "timeout"
     CONNECTION = "connection"
     AUTHENTICATION = "authentication"
+    GATEWAY_MODEL_REJECTED = "gateway_model_rejected"
     BAD_REQUEST = "bad_request"
     CANCELLED = "cancelled"
     UNKNOWN = "unknown"
@@ -90,6 +91,8 @@ def classify_failure(error: BaseException) -> Failure:
     code = extract_status_code(error)
     message = str(error).lower()
 
+    if code == 400 and "model is not supported when using codex with a chatgpt account" in message:
+        return Failure(FailureCategory.GATEWAY_MODEL_REJECTED, True, False)
     if code == 429 or any(marker in message for marker in _RATE_LIMIT_MARKERS):
         return Failure(FailureCategory.RATE_LIMIT, True, True)
     if code in {500, 502, 503, 504} or any(marker in message for marker in _UNAVAILABLE_MARKERS):
@@ -128,6 +131,10 @@ class LLMPermanentError(LLMCallError):
     """A non-retryable failure (auth, bad request). Retrying cannot help."""
 
 
+class LLMGatewayModelRejectedError(LLMCallError):
+    """The gateway exhausted retries on accounts that cannot serve the model."""
+
+
 class LLMExhaustedError(LLMCallError):
     """Retryable failures exhausted every attempt and the pause deadline."""
 
@@ -158,6 +165,9 @@ _DEFAULT_RETRY_POLICIES: dict[FailureCategory, RetryPolicy] = {
     ),
     FailureCategory.TIMEOUT: RetryPolicy(max_attempts=3, base_delay=2.0, max_delay=15.0),
     FailureCategory.CONNECTION: RetryPolicy(max_attempts=3, base_delay=2.0, max_delay=15.0),
+    FailureCategory.GATEWAY_MODEL_REJECTED: RetryPolicy(
+        max_attempts=3, base_delay=1.0, max_delay=5.0
+    ),
     FailureCategory.UNKNOWN: RetryPolicy(max_attempts=2, base_delay=1.0, max_delay=5.0),
     # Non-retryable categories get a single attempt by definition.
     FailureCategory.AUTHENTICATION: RetryPolicy(max_attempts=1, base_delay=0.0, max_delay=0.0),

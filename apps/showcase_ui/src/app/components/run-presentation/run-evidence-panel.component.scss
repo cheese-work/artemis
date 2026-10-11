@@ -1,3 +1,17 @@
+.recording-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  margin-bottom: 8px;
+  border-radius: var(--radius-full);
+  color: var(--color-neutral);
+  background: var(--color-neutral-bg);
+  font-size: 12px;
+}
+
+.recording-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--color-error-solid); }
+
 :host(.btn-screen-recording) {
       display: inline-flex;
       align-items: center;

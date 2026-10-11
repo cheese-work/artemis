@@ -21,6 +21,12 @@ export interface RunEvidenceStep {
       @if (running()) { <span class="video-pulse-dot red"></span> }
       @if (!running() && !videoUrl() && hasSteps()) { <span class="steps-count-badge">{{ screenshotCount() }}</span> }
     } @else {
+      @if (recording()?.state === 'in_progress' || recording()?.state === 'preparing') {
+        <span class="recording-chip">
+          @if (recording()?.state === 'in_progress') { <span class="recording-dot" aria-hidden="true"></span> }
+          {{ recording()?.badge }}
+        </span>
+      }
       @if (canPlay() && hasScreenshots()) {
         <div class="media-switch" role="group" aria-label="Evidence view">
           <button type="button" data-media="screenshot" [attr.aria-pressed]="!showVideo()" (click)="media.set('screenshot')">Screenshot</button>
@@ -56,7 +62,7 @@ export interface RunEvidenceStep {
       <div class="evidence-caption">
         @if (selectedStep(); as step) { <p class="step-caption">Step {{ step.number }} · {{ step.title }}</p> }
         @if (recording()?.ribbon; as ribbon) { <p class="recording-ribbon">{{ ribbon }}</p> }
-        @if (!showVideo()) { <p class="recording-copy" role="status">{{ message() ?? recording()?.copy }}</p> }
+        @if (!showVideo()) { <p class="recording-copy" [attr.role]="announce() ? 'status' : null">{{ message() ?? recording()?.copy }}</p> }
         @if (detail(); as technical) {
           <details class="technical-details">
             <summary>Technical details</summary>
@@ -74,6 +80,7 @@ export interface RunEvidenceStep {
 export class RunEvidencePanelComponent {
   readonly presentation = input<'panel' | 'trigger'>('panel');
   readonly recording = input<RecordingView | null>(null);
+  readonly announce = input(true);
   readonly videoUrl = input<string | null>(null);
   readonly screenshotUrl = input<string | null>(null);
   readonly screenshotAlt = input('');
