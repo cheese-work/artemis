@@ -60,7 +60,7 @@ import { ShellLayoutService } from '../../services/shell-layout.service';
       @if (account.identity()?.admin) {
         <a routerLink="/providers" routerLinkActive="active" ariaCurrentWhenActive="page" class="nav-tab-btn desktop-setup" aria-label="LLM providers">
           <span class="material-symbols-outlined tab-icon" aria-hidden="true">lock</span>
-          <span class="tab-label">LLM providers</span>
+          <span class="tab-label">Providers</span>
         </a>
         <a routerLink="/setup" routerLinkActive="active" ariaCurrentWhenActive="page" class="nav-tab-btn desktop-setup" aria-label="Setup">
           <span class="material-symbols-outlined tab-icon" aria-hidden="true">settings</span>
