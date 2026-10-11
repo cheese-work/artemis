@@ -222,8 +222,11 @@
   .composer-input {
     flex: 1 1 200px;
     min-width: 0;
-    max-height: 120px;
-    padding: 12px 0;
+    box-sizing: content-box;
+    min-height: calc(var(--target) - 2 * var(--space-sm));
+    max-height: calc(40dvh - 2 * var(--space-sm));
+    overflow-y: auto;
+    padding: var(--space-sm) 0;
     border: none;
     outline: none;
     background: transparent;

@@ -1,7 +1,7 @@
 import { CUSTOM_ELEMENTS_SCHEMA, signal } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { ActivatedRoute, convertToParamMap, provideRouter } from '@angular/router';
-import { of } from 'rxjs';
+import { of, throwError } from 'rxjs';
 import { ChatInterfaceComponent } from '../../components/chat-interface/chat-interface.component';
 import { RunLibraryComponent } from '../../components/run-library/run-library.component';
 import { InterruptedBannerComponent } from '../../components/interrupted-banner/interrupted-banner.component';
@@ -55,13 +55,68 @@ describe('WorkspaceComponent always-open task dock', () => {
           currentStartupProgress: () => [],
           runningSessionId: () => null,
           agentStatus: () => 'idle',
-          runTask: jasmine.createSpy('runTask').and.returnValue(of({}))
+          runTask: jasmine.createSpy('runTask').and.returnValue(of({})),
+          fetchStatus: jasmine.createSpy('fetchStatus')
         }
       }]
     }).overrideComponent(WorkspaceComponent, {
       remove: { imports: [ChatInterfaceComponent, RunLibraryComponent, InterruptedBannerComponent, RunViewComponent] },
       add: { schemas: [CUSTOM_ELEMENTS_SCHEMA] }
     }).compileComponents();
+  });
+
+  async function enterPrompt(prompt: string): Promise<HTMLTextAreaElement> {
+    const textarea = fixture.nativeElement.querySelector('textarea') as HTMLTextAreaElement;
+    textarea.value = prompt;
+    textarea.dispatchEvent(new Event('input', { bubbles: true }));
+    fixture.detectChanges();
+    await fixture.whenStable();
+    return textarea;
+  }
+
+  it('grows past 120px, caps at 40% of the viewport and scrolls internally', async () => {
+    await create();
+    const textarea = await enterPrompt('Open Settings');
+    const restingHeight = textarea.getBoundingClientRect().height;
+    expect(restingHeight).toBeGreaterThanOrEqual(44);
+    await enterPrompt('Open Settings\n'.repeat(9));
+    expect(textarea.getBoundingClientRect().height).toBeGreaterThan(120);
+    await enterPrompt('Open Settings\n'.repeat(100));
+    expect(textarea.getBoundingClientRect().height).toBeCloseTo(window.innerHeight * 0.4, 0);
+    expect(textarea.scrollHeight).toBeGreaterThan(textarea.clientHeight);
+    expect(getComputedStyle(textarea).overflowY).toBe('auto');
+    await enterPrompt('Open Settings');
+    expect(textarea.getBoundingClientRect().height).toBe(restingHeight);
+  });
+
+  it('resizes a restored prompt and shrinks after a successful send', async () => {
+    await create();
+    const textarea = await enterPrompt('Open Settings');
+    const restingHeight = textarea.getBoundingClientRect().height;
+    component.startNewRunFrom('Open Settings\n'.repeat(9));
+    fixture.detectChanges();
+    await fixture.whenStable();
+    fixture.detectChanges();
+    expect(textarea.getBoundingClientRect().height).toBeGreaterThan(120);
+    await component.submitTask();
+    fixture.detectChanges();
+    await fixture.whenStable();
+    fixture.detectChanges();
+    expect(textarea.value).toBe('');
+    expect(textarea.getBoundingClientRect().height).toBe(restingHeight);
+  });
+
+  it('keeps a tall draft after a failed send', async () => {
+    await create();
+    const prompt = 'Open Settings\n'.repeat(9);
+    const textarea = await enterPrompt(prompt);
+    const height = textarea.getBoundingClientRect().height;
+    (component.agentService.runTask as jasmine.Spy).and.returnValue(throwError(() => ({ status: 503 })));
+    await component.submitTask();
+    fixture.detectChanges();
+    await fixture.whenStable();
+    expect(textarea.value).toBe(prompt);
+    expect(textarea.getBoundingClientRect().height).toBe(height);
   });
 
   for (const review of [false]) {

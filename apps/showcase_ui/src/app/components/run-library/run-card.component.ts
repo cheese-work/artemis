@@ -53,7 +53,7 @@ import { OwnerLabelComponent } from '../owner-label/owner-label.component';
     </span>
   `,
   styles: [`
-    :host { position: relative; display: grid; grid-template-columns: 24px minmax(0, 1fr) auto; align-items: center; gap: 8px; height: 56px; min-width: 44px; padding: 4px 12px; box-sizing: border-box; color: var(--color-ink); text-decoration: none; }
+    :host { position: relative; display: grid; grid-template-columns: 24px minmax(0, 1fr) auto; align-items: center; gap: var(--space-sm); height: 56px; min-width: 44px; padding: var(--space-xs) var(--space-smd); box-sizing: border-box; color: var(--color-ink); text-decoration: none; }
     .run-icon { display: flex; align-items: center; justify-content: center; }
     .run-icon .material-symbols-outlined { font-size: 20px; }
     .tone-ok { color: var(--status-ok-fg); }
@@ -62,9 +62,9 @@ import { OwnerLabelComponent } from '../owner-label/owner-label.component';
     .tone-neutral { color: var(--color-text-muted); }
     .run-content { min-width: 0; }
     .run-prompt { display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; font-size: 14px; line-height: 16px; font-weight: 500; }
-    .run-meta { display: flex; gap: 4px; overflow: hidden; white-space: nowrap; color: var(--color-text-muted); font-size: 12px; line-height: 16px; }
+    .run-meta { display: flex; gap: var(--space-xs); overflow: hidden; white-space: nowrap; color: var(--color-text-muted); font-size: 12px; line-height: 16px; }
     .run-package { overflow: hidden; text-overflow: ellipsis; }
-    .run-date { align-self: start; margin-top: 4px; color: var(--color-text-faint); font-size: 12px; line-height: 16px; }
+    .run-date { align-self: start; margin-top: var(--space-xs); color: var(--color-text-faint); font-size: 12px; line-height: 16px; }
     .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
   `],
   changeDetection: ChangeDetectionStrategy.OnPush

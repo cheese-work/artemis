@@ -69,7 +69,7 @@ describe('design tokens', () => {
 
   it('sets the spacing, radius, layout and 44px target scale', () => {
     expect(token('--target')).toBe('44px');
-    expect(['xs', 'sm', 'smd', 'md', 'lg', 'xl'].map((n) => token(`--space-${n}`))).toEqual(['4px', '8px', '12px', '16px', '24px', '32px']);
+    expect(['xs', 'sm', 'smd', 'md', 'lg', 'xl'].map((n) => token(`--space-${n}`))).toEqual(['3px', '5px', '8px', '11px', '16px', '21px']);
     expect(['sm', 'md', 'lg'].map((name) => token(`--radius-${name}`))).toEqual(['4px', '6px', '8px']);
     expect(['sidebar-w', 'list-w', 'row-h', 'appbar-h', 'tabbar-h'].map((name) => token(`--${name}`))).toEqual(['224px', '360px', '56px', '48px', '56px']);
   });

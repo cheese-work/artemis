@@ -13,6 +13,7 @@ import { startMockApi, mock, RUNS } from '../keyboard-walkthrough/mock-api.mjs';
 const [outDir = 'screenshots', label = 'shot', audit] = process.argv.slice(2);
 const checkControls = audit === '--controls';
 const checkModels = audit === '--models';
+const checkComposer = audit === '--composer';
 const failures = [];
 const iconNames = readFileSync(new URL('../../public/fonts/material-symbols-outlined.txt', import.meta.url), 'utf8').trim().split(',');
 mkdirSync(outDir, { recursive: true });
@@ -64,9 +65,10 @@ if (checkControls) {
 const pages = { workspace: '/workspace', runs: '/runs', 'run-detail': `/runs/${RUNS[1].session_id}`, setup: '/setup', check: '/check' };
 if (checkControls) delete pages['run-detail'];
 if (checkModels) for (const name of Object.keys(pages)) if (name !== 'workspace') delete pages[name];
+if (checkComposer) for (const name of Object.keys(pages)) if (!['workspace', 'run-detail'].includes(name)) delete pages[name];
 if (checkModels) for (const run of RUNS) run.agent_model = 'fixture-default';
 if (checkModels) for (const session of mock.sessions) session.model_info = { name: 'Flash', id: 'fixture-default', provider: 'openai' };
-for (const width of checkControls || checkModels ? [1440, 390] : [1280, 1024]) {
+for (const width of checkControls || checkModels || checkComposer ? [1440, 390] : [1280, 1024]) {
   for (const [name, route] of Object.entries(pages)) {
     await send('Emulation.setDeviceMetricsOverride', { width, height: 800, deviceScaleFactor: 1, mobile: false });
     await send('Page.navigate', { url: base + route });
@@ -98,6 +100,45 @@ for (const width of checkControls || checkModels ? [1440, 390] : [1280, 1024]) {
       failures.push(...disclosureErrors.map(error => `${name}-${width}: ${error}`));
     }
     await evaluate('document.fonts.ready.then(() => true)');
+    if (checkComposer && name === 'workspace') {
+      await evaluate(`(() => {
+        const textarea = document.querySelector('textarea.composer-input');
+        textarea.value = 'Open Settings and check the accessibility toggles.\\n'.repeat(9).trim();
+        textarea.dispatchEvent(new Event('input', { bubbles: true }));
+      })()`);
+      await sleep(100);
+      if (label !== 'before') {
+        const composerErrors = await evaluate(`(async () => {
+          const textarea = document.querySelector('textarea.composer-input');
+          const prompt = textarea.value;
+          const errors = [];
+          if (textarea.getBoundingClientRect().height <= 120) errors.push('Prompt did not grow past 120 px');
+          textarea.value = prompt.repeat(20);
+          textarea.dispatchEvent(new Event('input', { bubbles: true }));
+          await new Promise(resolve => setTimeout(resolve, 100));
+          if (Math.abs(textarea.getBoundingClientRect().height - innerHeight * 0.4) > 1) errors.push('Prompt must cap at 40% of viewport height');
+          if (textarea.scrollHeight <= textarea.clientHeight || getComputedStyle(textarea).overflowY !== 'auto') errors.push('Long prompt must scroll internally');
+          const composer = document.querySelector('.composer');
+          if (composer.getBoundingClientRect().bottom > innerHeight + 1 || getComputedStyle(composer).position !== 'relative') errors.push('Composer must stay pinned in normal flow');
+          textarea.value = '';
+          textarea.dispatchEvent(new Event('input', { bubbles: true }));
+          await new Promise(resolve => setTimeout(resolve, 100));
+          if (Math.abs(textarea.getBoundingClientRect().height - 44) > 1) errors.push('Empty prompt must shrink to 44 px');
+          ng.getComponent(document.querySelector('app-workspace')).startNewRunFrom(prompt);
+          await new Promise(resolve => setTimeout(resolve, 100));
+          if (textarea.getBoundingClientRect().height <= 120) errors.push('Restored prompt did not grow past 120 px');
+          return errors;
+        })()`);
+        failures.push(...composerErrors.map(error => `${name}-${width}: ${error}`));
+      }
+    }
+    if (checkComposer && label !== 'before') {
+      const targetErrors = await evaluate(`(() => [...document.querySelectorAll('app-nav-switcher a, app-nav-switcher button, .run-row, .composer button, .composer select, .composer textarea, .status-strip button, .header-controls button, .header-controls summary')]
+        .filter(element => element.checkVisibility())
+        .filter(element => { const box = element.getBoundingClientRect(); return box.width < 44 || box.height < 44; })
+        .map(element => element.className + ': target smaller than 44 px'))()`);
+      failures.push(...targetErrors.map(error => `${name}-${width}: ${error}`));
+    }
     if (checkModels) {
       const modelErrors = await evaluate(`(() => {
         const select = document.querySelector('select[aria-label="Run model"]');
@@ -143,7 +184,7 @@ for (const width of checkControls || checkModels ? [1440, 390] : [1280, 1024]) {
       return { overflowX: document.documentElement.scrollWidth - innerWidth, underNav, targets };
     })()`);
     writeFileSync(path.join(outDir, `${label}-${name}-${width}.json`), JSON.stringify(geometry, null, 2));
-    if (checkModels && geometry.overflowX > 0) failures.push(name + '-' + width + ': horizontal overflow');
+    if ((checkModels || checkComposer) && geometry.overflowX > 0) failures.push(name + '-' + width + ': horizontal overflow');
     if (name === 'workspace') {
       const iconErrors = await evaluate(`(() => {
         const errors = [];
@@ -242,4 +283,6 @@ if (failures.length) {
   console.log('PASS: control borders, shadows, 44 px hit boxes, keyboard focus, 3:1 focus contrast and mobile active underlines at 1440 px and 390 px.');
 } else if (checkModels) {
   console.log('PASS: discovered model choice, default-first list, 44 px target and composer layout at 1440 px and 390 px. Fonts ready before capture.');
+} else if (checkComposer && label !== 'before') {
+  console.log('PASS: composer growth, viewport cap, internal scrolling, shrink, pinned flow and 44 px targets at 1440 px and 390 px. Fonts ready before capture.');
 }
