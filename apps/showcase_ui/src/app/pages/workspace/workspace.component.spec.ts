@@ -58,6 +58,14 @@ describe('WorkspaceComponent error lifetime', () => {
     }).compileComponents();
   });
 
+  it('uses the first prompt line without markdown in the Stop button title', () => {
+    spyOn(TestBed.inject(AgentService), 'currentSession').and.returnValue({
+      session_id: 'run-title', initial_goal: '## **Open** _Settings_\nCheck every toggle.', start_time: 1
+    });
+    const fixture = TestBed.createComponent(WorkspaceComponent);
+    expect(fixture.componentInstance.stopButtonTitle()).toBe('Stop current task: "Open Settings"');
+  });
+
   it('cancels a destroyed route error timer without releasing a newer error', fakeAsync(() => {
     const olderFixture = TestBed.createComponent(WorkspaceComponent);
     olderFixture.detectChanges();
@@ -418,19 +426,13 @@ describe('WorkspaceComponent pinned composer (CHE-1508)', () => {
     expect(el.querySelector('[aria-label="Stop run"]')).toBeNull();
   });
 
-  it('puts Stop run in the detail header during a run, never in the composer', () => {
+  it('leaves Stop run to the run-view header instead of duplicating it beside the composer', () => {
     running.set(true);
     fixture.detectChanges();
     expect(el.querySelector('.composer .btn-stop, .composer [aria-label="Stop run"], .composer .btn-stop-run')).toBeNull();
 
-    const header = el.querySelector('.detail-pane > .detail-header')!;
-    const stop = header.querySelector<HTMLButtonElement>('button.btn-stop-run')!;
-    expect(stop.getAttribute('aria-label')).toBe('Stop run');
-    expect(stop.textContent).toContain('Stop run');
-    expect(header.compareDocumentPosition(el.querySelector('.run-surface')!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-
-    stop.click();
-    expect(stopTask).toHaveBeenCalledOnceWith('run-live-1', false);
+    expect(el.querySelector('.detail-pane > .detail-header')).toBeNull();
+    expect(el.querySelector('app-run-view')).not.toBeNull();
   });
 
   for (const width of [1440, 390]) {
@@ -457,7 +459,7 @@ describe('WorkspaceComponent pinned composer (CHE-1508)', () => {
         expect(doc.querySelector('.composer .btn-stop, .composer .btn-stop-run')).toBeNull();
         const controls = Array.from(doc.querySelectorAll<HTMLElement>('.composer button, .detail-header button'));
         const names = controls.map((control) => control.className);
-        for (const cls of ['btn-send', 'btn-attach', 'btn-stop-run', 'btn-remove-image', 'btn-toast-close', 'segment']) {
+        for (const cls of ['btn-send', 'btn-attach', 'btn-remove-image', 'btn-toast-close', 'segment']) {
           expect(names.some((name) => name.includes(cls))).withContext(cls).toBeTrue();
         }
         const boxes = controls.map((control) => ({ name: control.className, box: control.getBoundingClientRect() }));
@@ -478,8 +480,7 @@ describe('WorkspaceComponent pinned composer (CHE-1508)', () => {
         // The visual stays smaller than the box: segments draw a 36 px face inside 44 px.
         const face = doc.querySelector<HTMLElement>('.composer .segment .segment-face')!;
         expect(face.getBoundingClientRect().height).toBe(36);
-        const stopFace = doc.querySelector<HTMLElement>('.detail-header .btn-stop-run .stop-face')!;
-        expect(stopFace.getBoundingClientRect().height).toBe(36);
+        expect(doc.querySelector('.detail-header .btn-stop-run')).toBeNull();
       } finally {
         frame.remove();
       }

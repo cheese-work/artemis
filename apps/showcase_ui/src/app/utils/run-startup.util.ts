@@ -72,9 +72,9 @@ export function buildStartupWorkItems(
       : nextStageStarted;
     const completed = explicitlyCompleted || inferredCompletion;
     const isActive = !completed && !executionHasOutput && agentIsActive;
-    const startTimestamp = started?.timestamp || explicitlyCompleted?.timestamp || nowSeconds;
+    const startTimestamp = started?.timestamp ?? explicitlyCompleted?.timestamp ?? nowSeconds;
     const endTimestamp = completed?.timestamp
-      || (isActive ? nowSeconds : events[events.length - 1]?.timestamp || startTimestamp);
+      ?? (isActive ? nowSeconds : events[events.length - 1]?.timestamp ?? startTimestamp);
 
     const liveDetail = (stage.liveDetailStages || [])
       .map((detailStage) => byStage.get(detailStage))

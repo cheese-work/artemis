@@ -1,0 +1,7 @@
+{
+  "id": "2026-10-09-step-timeline",
+  "date": "2026-10-09",
+  "title": "Scan run steps in a compact timeline.",
+  "body": "Each step shows an action icon, screenshot thumbnail, action kind and time. Failed steps carry a label and tint. Expand details separately, or use arrow keys, Home and End to select a step and its evidence.",
+  "issues": ["CHE-1504"]
+}
