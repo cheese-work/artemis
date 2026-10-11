@@ -1,15 +1,21 @@
 from __future__ import annotations
 
+import json
+from unittest.mock import Mock
+
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.hazmat.primitives.serialization import Encoding, NoEncryption, PrivateFormat
 from starlette.requests import Request
 
+import httpx
 import jwt
 import pytest
 from fastapi.testclient import TestClient
 
 from apps.admin_console.core.access_control import (
     AccessConfig,
+    AccessIdentity,
+    _service_principals_from_environment,
     CloudflareAccessVerifier,
     authenticate_request,
     config_from_environment,
@@ -276,3 +282,411 @@ def test_cloudflare_admin_allowlist_has_no_default_and_normalizes(monkeypatch):
     assert config_from_environment().admin_emails == frozenset(
         {"qa@example.test", "admin@example.test"}
     )
+
+
+# -- service principals (Cloudflare Access service tokens) ----------------------------------
+
+READER_CLIENT_ID = "reader-client.access"
+READER_ENV = json.dumps(
+    {READER_CLIENT_ID: {"name": "failures-reader", "routes": ["GET /api/system/failures"]}}
+)
+
+
+def service_token(private_key: bytes, client_id: str = READER_CLIENT_ID, **claims) -> str:
+    """Cloudflare service-token JWT: no email, the client id in `common_name`."""
+    payload = {
+        "type": "app",
+        "iss": "https://team.cloudflareaccess.com",
+        "aud": ["app-audience"],
+        "sub": "",
+        "common_name": client_id,
+        "iat": 1_790_000_000,
+        "exp": 1_900_000_000,
+        **claims,
+    }
+    return jwt.encode(payload, private_key, algorithm="RS256", headers={"kid": "test-key"})
+
+
+@pytest.fixture
+def service_app(monkeypatch, access_keys, library):
+    from apps.admin_console.server import app
+
+    private_key, jwks = access_keys
+    monkeypatch.setenv("ARTEMIS_SERVICE_PRINCIPALS", READER_ENV)
+    monkeypatch.setattr(
+        app.state,
+        "access_config",
+        AccessConfig(
+            auth_mode="cloudflare",
+            audience="app-audience",
+            issuer="https://team.cloudflareaccess.com",
+            admin_emails=frozenset({"admin@example.com"}),
+            service_principals=_service_principals_from_environment(),
+        ),
+    )
+    monkeypatch.setattr(
+        app.state, "access_verifier", CloudflareAccessVerifier(fetch_jwks=lambda _url: jwks)
+    )
+    client = TestClient(app, base_url="http://localhost")
+
+    def call(method, path, client_id=READER_CLIENT_ID, token_claims=None, **kwargs):
+        headers = {
+            "Cf-Access-Jwt-Assertion": service_token(private_key, client_id, **(token_claims or {}))
+        }
+        return client.request(method, path, headers=headers, **kwargs)
+
+    call.private_key = private_key
+    return call
+
+
+def test_mapped_failures_reader_gets_200_and_the_request_is_logged(service_app, caplog):
+    caplog.set_level("INFO", logger="apps.admin_console.core.access_control")
+
+    response = service_app("GET", "/api/system/failures?days=7")
+
+    assert response.status_code == 200
+    assert (
+        sum(
+            "principal=failures-reader" in line and "/api/system/failures" in line
+            for line in caplog.messages
+        )
+        == 1
+    )
+
+
+@pytest.mark.parametrize(
+    "claims",
+    [
+        {"nbf": 1_900_000_000},
+        {"nbf": "invalid"},
+        {"exp": 1},
+        {"aud": ["wrong-audience"]},
+        {"iss": "https://wrong.cloudflareaccess.com"},
+    ],
+)
+def test_service_token_invalid_claims_still_fail_closed(service_app, claims):
+    assert service_app("GET", "/api/system/failures", token_claims=claims).status_code == 401
+
+
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [
+        ("POST", "/api/system/failures/collect"),
+        ("POST", "/api/system/failures/digest"),
+        ("GET", "/api/runs"),
+        ("POST", "/api/run"),
+        ("POST", "/api/runs/clear"),
+        ("GET", "/api/system/config"),
+        ("PUT", "/api/system/config"),
+        ("GET", "/api/system/whoami"),
+        ("GET", "/api/system/failures/extra"),
+        ("GET", "/docs"),
+        ("GET", "/redoc"),
+        ("GET", "/openapi.json"),
+        ("GET", "/docs/oauth2-redirect"),
+        ("HEAD", "/api/system/failures"),
+        ("POST", "/api/system/failures"),
+        ("OPTIONS", "/api/system/failures"),
+        ("GET", "/api/system/failures/"),
+        ("DELETE", "/nonexistent"),
+    ],
+)
+def test_failures_reader_is_denied_everywhere_else_and_the_denial_is_logged(
+    service_app, caplog, monkeypatch, method, path
+):
+    from apps.admin_console.services import failure_ledger
+
+    collect = Mock()
+    monkeypatch.setattr(failure_ledger, "collect", collect)
+    caplog.set_level("INFO", logger="apps.admin_console.core.access_control")
+
+    response = service_app(method, path)
+
+    assert response.status_code == 403
+    collect.assert_not_called()
+    assert (
+        sum(
+            "principal=failures-reader" in line
+            and f"route={method} {path}" in line
+            and "allowed=False" in line
+            for line in caplog.messages
+        )
+        == 1
+    )
+
+
+@pytest.mark.parametrize(
+    ("path", "logged"),
+    [
+        ("/api/system/failures%0aallowed=True", "/api/system/failures\\nallowed=True"),
+        ("/api/system/fail%0aures", "/api/system/fail\\nures"),
+        ("/api/system/failures%0a", "/api/system/failures\\n"),
+    ],
+)
+def test_service_boundary_checks_and_logs_the_routed_path_with_newlines_escaped(
+    service_app, caplog, path, logged
+):
+    caplog.set_level("INFO", logger="apps.admin_console.core.access_control")
+
+    response = service_app("GET", path)
+
+    assert response.status_code == 403
+    [line] = [line for line in caplog.messages if "principal=failures-reader" in line]
+    assert "\n" not in line
+    assert f"route=GET {logged} allowed=False" in line
+
+
+def test_service_boundary_never_touches_the_principal_store(monkeypatch, access_keys, library):
+    """The pre-routing check resolves only service tokens; human identities stay route-scoped."""
+    from apps.admin_console.core import access_control
+    from apps.admin_console.database.repositories.principal_repository import (
+        PrincipalStoreNotReady,
+    )
+    from apps.admin_console.server import app
+
+    private_key, jwks = access_keys
+    monkeypatch.setenv("ARTEMIS_SERVICE_PRINCIPALS", READER_ENV)
+    monkeypatch.setattr(
+        app.state,
+        "access_config",
+        AccessConfig(
+            auth_mode="cloudflare",
+            audience="app-audience",
+            issuer="https://team.cloudflareaccess.com",
+            spaces_enabled=True,
+            service_principals=_service_principals_from_environment(),
+        ),
+    )
+    monkeypatch.setattr(
+        app.state, "access_verifier", CloudflareAccessVerifier(fetch_jwks=lambda _url: jwks)
+    )
+    ensure_user = Mock(side_effect=PrincipalStoreNotReady("not ready"))
+    monkeypatch.setattr(access_control.principal_repo, "ensure_user", ensure_user)
+    client = TestClient(app, base_url="http://localhost")
+
+    human = client.get("/docs", headers={"Cf-Access-Jwt-Assertion": make_token(private_key)})
+    service = client.get(
+        "/api/system/failures", headers={"Cf-Access-Jwt-Assertion": service_token(private_key)}
+    )
+
+    assert human.status_code == 200
+    assert service.status_code == 200
+    ensure_user.assert_not_called()
+
+
+def _jwks_down(_url):
+    raise httpx.ConnectError("Cloudflare Access unreachable")
+
+
+@pytest.mark.parametrize("path", ["/docs", "/api/system/version", "/api/system/failures"])
+def test_service_token_is_denied_with_503_while_jwks_is_unavailable(
+    service_app, monkeypatch, caplog, path
+):
+    from apps.admin_console.server import app
+
+    monkeypatch.setattr(app.state, "access_verifier", CloudflareAccessVerifier(_jwks_down))
+    caplog.set_level("INFO", logger="apps.admin_console.core.access_control")
+
+    response = service_app("GET", path)
+
+    assert response.status_code == 503
+    assert response.json()["code"] == "service_token_unverifiable"
+    assert response.headers["Retry-After"] == "5"
+    [denial] = [line for line in caplog.messages if "Service token denied" in line]
+    assert denial.endswith(f"verification failed reason=jwks_unavailable route=GET {path}")
+
+
+@pytest.mark.parametrize("path", ["/docs", "/api/system/version"])
+def test_service_token_with_a_bad_signature_is_denied_with_401(service_app, caplog, path):
+    from apps.admin_console.server import app
+
+    forger = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    forged = service_token(forger.private_bytes(Encoding.PEM, PrivateFormat.PKCS8, NoEncryption()))
+    caplog.set_level("INFO", logger="apps.admin_console.core.access_control")
+
+    response = TestClient(app, base_url="http://localhost").get(
+        path, headers={"Cf-Access-Jwt-Assertion": forged}
+    )
+
+    assert response.status_code == 401
+    assert response.json()["code"] == "service_token_invalid"
+    [denial] = [line for line in caplog.messages if "Service token denied" in line]
+    assert denial.endswith(f"verification failed reason=jwt_invalid route=GET {path}")
+
+
+class _BrokenVerifier(CloudflareAccessVerifier):
+    async def verify(self, token, config):
+        raise RuntimeError("unexpected verifier failure")
+
+
+@pytest.mark.parametrize("path", ["/docs", "/api/system/version", "/api/system/failures"])
+def test_service_token_is_denied_with_401_when_verification_fails_unexpectedly(
+    service_app, monkeypatch, caplog, path
+):
+    from apps.admin_console.server import app
+
+    monkeypatch.setattr(app.state, "access_verifier", _BrokenVerifier())
+    caplog.set_level("INFO", logger="apps.admin_console.core.access_control")
+
+    response = service_app("GET", path)
+
+    assert response.status_code == 401
+    assert response.json()["code"] == "service_token_invalid"
+    [denial] = [line for line in caplog.messages if "Service token denied" in line]
+    assert denial.endswith(f"verification failed reason=verification_error route=GET {path}")
+
+
+@pytest.mark.parametrize(
+    "preview",
+    [
+        {"headers": {"X-Artemis-Preview-Identity": "qa-a"}},
+        {"cookies": {"artemis_preview_identity": "qa-a"}},
+    ],
+)
+def test_service_token_with_a_preview_identity_is_denied_and_logged_once(
+    service_app, caplog, preview
+):
+    from apps.admin_console.server import app
+
+    private_key = service_app.private_key
+    caplog.set_level("INFO", logger="apps.admin_console.core.access_control")
+    client = TestClient(app, base_url="http://localhost", cookies=preview.get("cookies"))
+
+    response = client.get(
+        "/api/system/failures",
+        headers={
+            "Cf-Access-Jwt-Assertion": service_token(private_key),
+            **preview.get("headers", {}),
+        },
+    )
+
+    assert response.status_code == 403
+    assert response.json()["code"] == "preview_identity_disabled"
+    [denial] = [line for line in caplog.messages if "principal=failures-reader" in line]
+    assert denial.endswith(
+        "Service token denied: preview identity present principal=failures-reader"
+        " route=GET /api/system/failures"
+    )
+
+
+def test_unmapped_client_id_is_denied_even_on_the_failures_route(service_app, caplog):
+    caplog.set_level("INFO", logger="apps.admin_console.core.access_control")
+    assert (
+        service_app("GET", "/api/system/failures", client_id="stranger.access").status_code == 403
+    )
+    assert service_app("GET", "/api/runs", client_id="stranger.access").status_code == 403
+    assert service_app("GET", "/openapi.json", client_id="stranger.access").status_code == 403
+    assert service_app("HEAD", "/nonexistent", client_id="stranger.access").status_code == 403
+    denials = [line for line in caplog.messages if "unmapped client id" in line]
+    assert [line.rsplit("route=", 1)[1] for line in denials] == [
+        "/api/system/failures",
+        "/api/runs",
+        "/openapi.json",
+        "/nonexistent",
+    ]
+
+
+@pytest.mark.parametrize("email", ["admin@example.com", "qa@example.com"])
+@pytest.mark.parametrize("path", ["/docs", "/redoc", "/openapi.json", "/docs/oauth2-redirect"])
+def test_service_boundary_preserves_human_documentation_access(
+    service_app, access_keys, email, path
+):
+    from apps.admin_console.server import app
+
+    private_key, _jwks = access_keys
+    token = make_token(private_key, email=email)
+    response = TestClient(app, base_url="http://localhost").get(
+        path, headers={"Cf-Access-Jwt-Assertion": token}
+    )
+
+    assert response.status_code == 200
+
+
+def test_service_boundary_denies_unmatched_websocket_and_logs_once(
+    service_app, access_keys, caplog
+):
+    from apps.admin_console.server import app
+    from starlette.websockets import WebSocketDisconnect
+
+    private_key, _jwks = access_keys
+    caplog.set_level("INFO", logger="apps.admin_console.core.access_control")
+    headers = {"Cf-Access-Jwt-Assertion": service_token(private_key)}
+
+    with pytest.raises(WebSocketDisconnect) as error:
+        with TestClient(app).websocket_connect("/nonexistent", headers=headers):
+            pytest.fail("Service principal reached an unlisted websocket")
+
+    assert error.value.code == 1008
+    assert (
+        sum(
+            "principal=failures-reader" in line and "allowed=False" in line
+            for line in caplog.messages
+        )
+        == 1
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_service_principal_never_satisfies_require_admin():
+    from apps.admin_console.core.access_control import AdminAPIError, require_admin
+
+    identity = AccessIdentity(
+        None,
+        False,
+        "cloudflare",
+        service_principal="failures-reader",
+        service_routes=frozenset({("GET", "/api/system/failures")}),
+    )
+    assert identity.service_principal == "failures-reader"
+
+    with pytest.raises(AdminAPIError):
+        await require_admin(identity)
+
+
+@pytest.mark.asyncio
+async def test_token_without_email_or_client_id_fails_closed(access_keys):
+    private_key, jwks = access_keys
+    config = AccessConfig(
+        auth_mode="cloudflare",
+        audience="app-audience",
+        issuer="https://team.cloudflareaccess.com",
+    )
+    payload = {
+        "iss": config.issuer,
+        "aud": "app-audience",
+        "sub": "",
+        "iat": 1_790_000_000,
+        "nbf": 1_790_000_000,
+        "exp": 1_900_000_000,
+    }
+    token = jwt.encode(payload, private_key, algorithm="RS256", headers={"kid": "test-key"})
+
+    identity = await authenticate_request(
+        request_with_headers({"Cf-Access-Jwt-Assertion": token}),
+        config,
+        CloudflareAccessVerifier(fetch_jwks=lambda _url: jwks),
+    )
+
+    assert identity.service_principal is None
+    assert identity.reason == "jwt_invalid"
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "not json",
+        "[]",
+        '{"c": {"name": "x"}}',
+        '{"c": {"name": "x", "routes": []}}',
+        '{"c": {"name": "x", "routes": ["/api/system/failures"]}}',
+        '{"c": {"routes": ["GET /api/system/failures"]}}',
+    ],
+)
+def test_malformed_service_principal_mapping_fails_startup(monkeypatch, raw):
+    monkeypatch.setenv("ARTEMIS_AUTH_MODE", "cloudflare")
+    monkeypatch.setenv("ARTEMIS_CF_ACCESS_AUD", "app-audience")
+    monkeypatch.setenv("ARTEMIS_CF_ACCESS_TEAM_DOMAIN", "team")
+    monkeypatch.setenv("ARTEMIS_SERVICE_PRINCIPALS", raw)
+
+    with pytest.raises(ValueError, match="ARTEMIS_SERVICE_PRINCIPALS"):
+        config_from_environment()
