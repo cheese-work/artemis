@@ -253,7 +253,7 @@ describe('NavSwitcherComponent', () => {
     expect(root.querySelector('.run-count')?.textContent?.trim()).toBe('2');
     expect(root.querySelector('.nav-new-label')?.textContent?.trim()).toBe('New');
     const controls = Array.from(root.querySelectorAll<HTMLElement>('nav > a, nav > button, button.chip, summary'));
-    expect(controls.length).toBe(5);
+    expect(controls.length).toBe(6);
     for (const control of controls) expectHitBox(control);
     const navItems = controls.filter(control => control.matches('.nav-tab-btn'));
     for (let index = 1; index < navItems.length; index++) {
