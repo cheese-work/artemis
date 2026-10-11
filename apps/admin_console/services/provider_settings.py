@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import io
 import json
+import logging
 import os
 import time
 from typing import Any
@@ -27,7 +28,7 @@ from apps.admin_console.services.model_discovery import BASES, ModelDiscovery
 from artemis.config.llm import _expand_default_into_nodes
 from artemis.config.settings import is_placeholder_key, settings
 from artemis.utils.file import load_jsonc
-from artemis.utils.redaction import REDACTED, redact, register_secrets
+from artemis.utils.redaction import REDACTED, redact, redactor, register_secrets
 
 SLOTS = ("openai", "google", "anthropic", "xai", "openrouter")
 LABELS = {
@@ -266,6 +267,7 @@ class ProviderSettings:
         error = None
         rows = None
         keys = [entry["key"] for entry in document["slots"].values()]
+        logging.getLogger("httpx").addFilter(redactor)
         try:
             async with httpx.AsyncClient(
                 timeout=10, transport=self.transport, follow_redirects=False, trust_env=False

@@ -1,4 +1,5 @@
 import asyncio
+import io
 import json
 import logging
 import stat
@@ -190,10 +191,15 @@ async def test_errors_are_secret_safe_and_last_good_sync_survives(providers, cap
 @pytest.mark.asyncio
 @pytest.mark.parametrize("encoded", [False, True])
 async def test_cross_slot_keys_in_urls_are_redacted_from_responses_and_traces(
-    providers, encoded, caplog
+    providers, encoded, caplog, monkeypatch
 ):
     from artemis.utils.redaction import Redactor, redact
 
+    output = io.StringIO()
+    http_logger = logging.getLogger("httpx")
+    monkeypatch.setattr(http_logger, "handlers", [logging.StreamHandler(output)])
+    monkeypatch.setattr(http_logger, "filters", [])
+    caplog.set_level(logging.INFO, logger="httpx")
     key = "google/fixture+credential"
     embedded = quote(key, safe="") if encoded else key
     await save(providers, "google", key=key, enabled=False)
@@ -212,6 +218,10 @@ async def test_cross_slot_keys_in_urls_are_redacted_from_responses_and_traces(
     assert embedded not in record.getMessage()
     assert embedded not in json.dumps(redact({"trace": base}))
     assert embedded not in caplog.text
+    assert "HTTP Request: GET" in output.getvalue()
+    assert "REDACTED" in output.getvalue()
+    assert embedded not in output.getvalue()
+    assert key not in output.getvalue()
 
 
 @pytest.mark.asyncio
