@@ -21,9 +21,10 @@ import { RunActionBarComponent } from '../run-presentation/run-action-bar.compon
     </span>
   `,
   styles: [`
+    :host { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
     .run-id-copy { position: relative; display: inline-flex; }
     .copy-fallback { position: absolute; z-index: 3; top: calc(100% + 4px); left: 0; display: grid; gap: 5px; width: min(300px, 80vw); padding: 8px; border-radius: 8px; color: var(--color-surface); background: var(--color-ink); font-size: 12px; }
-    .copy-fallback input { box-sizing: border-box; width: 100%; min-height: var(--target); padding: 5px; border: 1px solid var(--color-border); border-radius: var(--radius-sm); color: var(--color-ink); background: var(--color-surface); font: var(--text-label) var(--font-mono); user-select: all; }
+    .copy-fallback input { box-sizing: border-box; width: 100%; min-height: var(--target); padding: 5px; border: 1px solid var(--color-border); border-radius: var(--radius-sm); color: var(--color-ink); background: var(--color-surface); font: var(--text-label) var(--font-mono); font-variant-numeric: tabular-nums; user-select: all; }
   `],
   changeDetection: ChangeDetectionStrategy.OnPush
 })

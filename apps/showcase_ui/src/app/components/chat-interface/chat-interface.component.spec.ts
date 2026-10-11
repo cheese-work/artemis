@@ -210,6 +210,22 @@ describe('ChatInterfaceComponent device chip', () => {
     return (fixture.nativeElement as HTMLElement).querySelector('.task-device .device-name')?.textContent?.trim() ?? '';
   }
 
+  it('uses tabular mono for run IDs, serials and times with a 44 px copy button', () => {
+    systemService.readinessReport.set(null);
+    sessions.set([session('emulator-5554')]);
+    const fixture = TestBed.createComponent(ChatInterfaceComponent);
+    fixture.detectChanges();
+    const root = fixture.nativeElement as HTMLElement;
+    for (const selector of ['.run-id-copy-button', '.device-name', '.task-time', '.task-date']) {
+      const style = getComputedStyle(root.querySelector(selector)!);
+      expect(style.fontFamily).toContain('JetBrains Mono');
+      expect(style.fontVariantNumeric).toBe('tabular-nums');
+    }
+    const box = root.querySelector('.run-id-copy-button')!.getBoundingClientRect();
+    expect(box.width).toBeGreaterThanOrEqual(44);
+    expect(box.height).toBeGreaterThanOrEqual(44);
+  });
+
   it('never titles a disconnected wireless phone by its address (R3)', () => {
     for (const address of ['192.168.1.12:5555', '[::1]:39129', 'pixel:5555', 'android-phone:37099']) {
       const text = chipText(address, []);
@@ -270,6 +286,7 @@ describe('ChatInterfaceComponent device chip', () => {
     const text = chipText('127.0.0.1:55555', []);
     expect(text).toContain('Pixel 6 Pro');
     expect(text).not.toContain('Unknown device');
+    expect(text).not.toContain('A browser');
   });
 
   it('keeps the raw serial in the tooltip detail', () => {
@@ -456,6 +473,7 @@ describe('ChatInterfaceComponent per-QA scope (CHE-1152)', () => {
     expect(root.querySelector('.history-section .run-owner')!.textContent).toContain('No owner');
     expect(root.querySelector('.task-card .owner-label')!.textContent).toContain('qa1@example.test');
     expect(owners()).toEqual(['Owner: qa1@example.test']);
-    expect(root.querySelector('.history-section .run-read-only')!.textContent).toContain('Read-only');
+    expect(root.querySelector('.history-section .run-read-only')).toBeNull();
+    expect(root.querySelector('.history-section .run-row')!.getAttribute('href')).toContain('review=1');
   });
 });

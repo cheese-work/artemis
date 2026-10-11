@@ -15,6 +15,11 @@
   color: var(--evidence-text);
 }
 
+.viewer-scroll pre {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
 .sr-only {
   position: absolute;
   width: 1px;

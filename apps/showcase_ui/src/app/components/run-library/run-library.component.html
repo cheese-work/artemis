@@ -67,7 +67,7 @@
       </label>
       <label class="field">
         <span>Phone</span>
-        <input type="text" aria-label="Phone" placeholder="Serial" [value]="filters().device" (change)="setFilter('device', $any($event.target).value.trim())" />
+        <input type="text" class="mono" aria-label="Phone" placeholder="Serial" [value]="filters().device" (change)="setFilter('device', $any($event.target).value.trim())" />
       </label>
       <label class="field">
         <span>Requested by</span>
