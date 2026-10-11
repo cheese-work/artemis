@@ -91,6 +91,10 @@ SYNTHETIC = frozenset(
 
 DISABLED = frozenset(
     {
+        "GET /api/system/providers",
+        "PUT /api/system/providers/{provider}",
+        "POST /api/system/providers/{provider}/test",
+        "POST /api/system/providers/{provider}/sync",
         # Framework docs and the legacy console UI (root-absolute links).
         "GET /openapi.json",
         "GET /docs",

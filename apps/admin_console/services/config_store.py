@@ -399,7 +399,7 @@ def _fsync_directory(path: Path) -> None:
 def _mask(value: str | None) -> str | None:
     if not value:
         return None
-    return f"****{value[-4:]}" if len(value) >= 4 else "****"
+    return f"****{value[-4:]}" if len(value) > 4 else "****"
 
 
 def _safe_config_value(value: Any, *, fallback: bool = False) -> dict[str, Any]:
@@ -569,6 +569,9 @@ class ConfigStore:
             raise ConfigStoreError("config_invalid", "Configuration files must be UTF-8.") from exc
 
         default = _safe_config_value(config_dict.get("default", {}))
+        from apps.admin_console.services.provider_settings import ProviderSettings
+
+        saved_slots = ProviderSettings(self).saved_slots_locked()
         providers = []
         for provider in PROVIDERS:
             key_names = PROVIDER_KEY_ENV.get(provider, ())
@@ -590,16 +593,23 @@ class ConfigStore:
                 if base_key
                 else None
             )
+            if provider in saved_slots:
+                key_value = saved_slots[provider]["key"]
+                base_url = saved_slots[provider]["base_url"]
             providers.append(
                 {
                     "name": provider,
                     "configured": bool(key_value),
                     "key_preview": _mask(key_value),
-                    "key_source": _source_for(key_names[0], env_values)
+                    "key_source": "LLM providers (read-only here)"
+                    if provider in saved_slots
+                    else _source_for(key_names[0], env_values)
                     if key_names
                     else "not configured",
                     "base_url": _safe_base_url(base_url),
-                    "base_url_source": _source_for(base_key, env_values)
+                    "base_url_source": "LLM providers (read-only here)"
+                    if provider in saved_slots
+                    else _source_for(base_key, env_values)
                     if base_key
                     else "not applicable",
                 }
@@ -672,6 +682,16 @@ class ConfigStore:
                 default,
             )
             _validate_config_text(_replace_default(config_text, merged_default))
+
+            from apps.admin_console.services.provider_settings import ProviderSettings
+
+            managed = ProviderSettings(self).saved_slots_locked()
+            if (credentials.keys() | base_urls.keys()) & managed.keys():
+                raise ConfigStoreError(
+                    "provider_managed",
+                    "Change saved provider slots on the LLM providers page.",
+                    409,
+                )
 
             env_updates: dict[str, str | None] = {}
             for provider, value in credentials.items():
@@ -777,7 +797,7 @@ class ConfigStore:
         with self._file_lock():
             return self._runtime_inputs()
 
-    def _runtime_inputs(self) -> tuple[bytes, dict[str, str]]:
+    def _runtime_inputs(self, *, provider_slots: bool = True) -> tuple[bytes, dict[str, str]]:
         config_bytes, env_bytes = self._read_bytes()
         env_values = dotenv_values(stream=io.StringIO(env_bytes.decode("utf-8")))
         environment = os.environ.copy()
@@ -789,6 +809,10 @@ class ConfigStore:
         for key, value in env_values.items():
             if value is not None and key not in SERVICE_ENVIRONMENT_KEYS:
                 environment[key] = value
+        if provider_slots:
+            from apps.admin_console.services.provider_settings import ProviderSettings
+
+            return ProviderSettings(self).apply_runtime_locked(config_bytes, environment)
         return config_bytes, environment
 
     async def snapshot_for_spawn(

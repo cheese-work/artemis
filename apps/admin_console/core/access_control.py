@@ -468,7 +468,7 @@ _PUBLIC_GET_PATHS = {
     "/{full_path:path}",
 }
 
-_ADMIN_GET_PATHS = {"/api/system/failures"}
+_ADMIN_GET_PATHS = {"/api/system/failures", "/api/system/providers"}
 
 _ADMIN_MUTATING_PATHS = {
     "/api/system/failures/collect",
@@ -485,6 +485,9 @@ _ADMIN_MUTATING_PATHS = {
     "/api/system/credentials",
     "/api/system/config",
     "/api/system/restart",
+    "/api/system/providers/{provider}",
+    "/api/system/providers/{provider}/test",
+    "/api/system/providers/{provider}/sync",
     "/api/cleanup",
     "/api/runs/{session_id}/delete",
     "/api/runs/clear",

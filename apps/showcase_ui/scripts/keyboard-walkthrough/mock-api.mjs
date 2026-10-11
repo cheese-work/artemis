@@ -39,7 +39,7 @@ const STEPS = Array.from({ length: 4 }, (_, n) => ({
 }));
 
 // Mutable so layout audits can drive connected / disconnected / error states. Defaults match the keyboard walkthrough.
-export const mock = { sessions: [], status: null, failSessions: false, failVideo: false, identity: null, readiness: null, config: null };
+export const mock = { sessions: [], status: null, failSessions: false, failVideo: false, identity: null, readiness: null, config: null, providers: null };
 
 const json = (res, code, body) => {
   res.writeHead(code, { 'content-type': 'application/json' });
@@ -52,6 +52,7 @@ export function startMockApi(distDir) {
   const server = http.createServer((req, res) => {
     const url = new URL(req.url, 'http://x');
     const p = url.pathname;
+    if (p === '/api/system/providers' && mock.providers) return json(res, 200, mock.providers);
     if (p === '/api/models') return json(res, 200, {
       default: { provider: 'openai', model: 'fixture-default' },
       models: [

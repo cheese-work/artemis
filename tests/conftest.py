@@ -55,6 +55,9 @@ FAKE_PROVIDER_CREDENTIAL_FIELDS = (
 def isolate_provider_credentials(monkeypatch):
     """Keep the deterministic suite independent of ambient credentials."""
     from artemis.config.settings import settings
+    from artemis.utils import redaction
+
+    monkeypatch.setattr(redaction, "_REGISTERED_SECRETS", set())
 
     for field in PROVIDER_CREDENTIAL_FIELDS:
         monkeypatch.delenv(field, raising=False)

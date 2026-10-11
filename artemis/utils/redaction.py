@@ -182,6 +182,11 @@ def _redact_string(value: str) -> str:
 
 _SESSION_ID = ContextVar("log_session_id", default=None)
 _PRIVATE_TEXT = ContextVar("log_private_text", default=frozenset())
+_REGISTERED_SECRETS: set[str] = set()
+
+
+def register_secrets(values: list[str]) -> None:
+    _REGISTERED_SECRETS.update(value for value in values if value)
 
 
 def bind_session(session_id: str | None, goal: str | None = None) -> None:
@@ -208,6 +213,7 @@ class Redactor(logging.Filter):
         if not isinstance(value, str):
             return value
         secrets = set(_PRIVATE_TEXT.get())
+        secrets.update(tuple(_REGISTERED_SECRETS))
         secrets.update(
             item
             for key, item in tuple(os.environ.items())
