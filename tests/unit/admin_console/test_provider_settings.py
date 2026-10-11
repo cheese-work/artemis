@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import stat
+from urllib.parse import quote
 
 import httpx
 import pytest
@@ -184,6 +185,33 @@ async def test_errors_are_secret_safe_and_last_good_sync_survives(providers, cap
     assert "private-fixture-key" not in json.dumps(result)
     assert "private-fixture-key" not in caplog.text
     assert "bad key private-fixture-key" not in providers.path.read_text()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("encoded", [False, True])
+async def test_cross_slot_keys_in_urls_are_redacted_from_responses_and_traces(
+    providers, encoded, caplog
+):
+    from artemis.utils.redaction import Redactor, redact
+
+    key = "google/fixture+credential"
+    embedded = quote(key, safe="") if encoded else key
+    await save(providers, "google", key=key, enabled=False)
+    base = f"https://fixture.test/{embedded}/v1"
+    await save(providers, base_url=base, enabled=True)
+    providers.transport = httpx.MockTransport(
+        lambda request: httpx.Response(200, json={"data": [{"id": "fixture-model"}]})
+    )
+    await providers.sync("openai")
+    catalog = await ModelDiscovery(providers.store, transport=providers.transport).catalog()
+    for payload in (await providers.read(), await providers.store.read(), catalog):
+        assert embedded not in json.dumps(payload)
+        assert key not in json.dumps(payload)
+    record = logging.makeLogRecord({"msg": f"Provider URL {base}", "args": ()})
+    assert Redactor().filter(record)
+    assert embedded not in record.getMessage()
+    assert embedded not in json.dumps(redact({"trace": base}))
+    assert embedded not in caplog.text
 
 
 @pytest.mark.asyncio

@@ -20,6 +20,7 @@ from artemis.config.llm import LLM, LLMConfig, LLMWithFallback, _expand_default_
 from artemis.config.paths import ROOT_DIR, get_config_path, get_env_file
 from artemis.config.settings import SERVICE_ENVIRONMENT_KEYS, settings
 from artemis.utils.file import load_jsonc
+from artemis.utils.redaction import redact
 
 logger = logging.getLogger(__name__)
 
@@ -466,7 +467,7 @@ def _safe_base_url(value: str | None) -> str | None:
     try:
         parsed = urlsplit(value)
         if not (parsed.username or parsed.password or parsed.query or parsed.fragment):
-            return value
+            return redact(value)
         hostname = parsed.hostname
         port = parsed.port
     except ValueError:
@@ -475,7 +476,7 @@ def _safe_base_url(value: str | None) -> str | None:
         return None
     host = f"[{hostname}]" if ":" in hostname and not hostname.startswith("[") else hostname
     netloc = f"{host}:{port}" if port is not None else host
-    return urlunsplit((parsed.scheme, netloc, parsed.path, "", ""))
+    return redact(urlunsplit((parsed.scheme, netloc, parsed.path, "", "")))
 
 
 def _source_for(key: str, env_values: dict[str, str | None]) -> str:

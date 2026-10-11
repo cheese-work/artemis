@@ -441,9 +441,11 @@ class ProviderSettings:
                 {
                     "provider": provider,
                     "model": model,
-                    "source": slot["base_url"]
-                    + {"google": "/v1beta/models", "anthropic": "/v1/models"}.get(
-                        provider, "/models"
+                    "source": _safe_base_url(
+                        slot["base_url"]
+                        + {"google": "/v1beta/models", "anthropic": "/v1/models"}.get(
+                            provider, "/models"
+                        )
                     ),
                 }
                 for provider, slot in document["slots"].items()

@@ -24,6 +24,7 @@ from __future__ import annotations
 import json
 import atexit
 from contextvars import ContextVar
+from urllib.parse import quote
 import hashlib
 import logging
 import os
@@ -187,6 +188,7 @@ _REGISTERED_SECRETS: set[str] = set()
 
 def register_secrets(values: list[str]) -> None:
     _REGISTERED_SECRETS.update(value for value in values if value)
+    _REGISTERED_SECRETS.update(quote(value, safe="") for value in values if value)
 
 
 def bind_session(session_id: str | None, goal: str | None = None) -> None:
