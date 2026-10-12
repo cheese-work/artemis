@@ -161,3 +161,43 @@ async def test_real_guidance_hook_uses_the_runs_operator_model(store, monkeypatc
     store.send("run", "Use the visible button", "steer")
     assert await read_chat_guidance(context, "Check login") == "Use the visible button"
     assert calls == [(context, "operator")]
+
+
+@pytest.mark.asyncio
+async def test_guidance_boundary_emits_only_changed_plan_snapshots(store, tmp_path, monkeypatch):
+    from artemis.utils.notes import get_note_file_path
+
+    monkeypatch.setenv("ARTEMIS_CHAT_SESSION_ID", "run")
+    control = ChatControl(store, "run", None, poll_seconds=0)
+    context = SimpleNamespace(chat_control=control, data_engine=SimpleNamespace(base_dir=tmp_path))
+    plan = get_note_file_path(tmp_path, "task_plan")
+    plan.parent.mkdir(parents=True, exist_ok=True)
+    plan.write_text("1. Open login", encoding="utf-8")
+    await read_chat_guidance(context, "Check login")
+    await read_chat_guidance(context, "Check login")
+    plan.write_text("1. Open settings", encoding="utf-8")
+    await read_chat_guidance(context, "Check login")
+    events = [
+        event for event in store.get("run")["messages"] if event["kind"] in {"plan", "replan"}
+    ]
+    assert [event["kind"] for event in events] == ["plan", "replan"]
+    assert events[-1]["payload"]["previous"] == "1. Open login"
+
+
+@pytest.mark.asyncio
+async def test_unreadable_plan_does_not_fail_the_step_boundary(store, tmp_path, monkeypatch):
+    from pathlib import Path
+    from artemis.utils.notes import get_note_file_path
+
+    monkeypatch.setenv("ARTEMIS_CHAT_SESSION_ID", "run")
+    plan = get_note_file_path(tmp_path, "task_plan")
+    plan.parent.mkdir(parents=True, exist_ok=True)
+    plan.write_text("Plan", encoding="utf-8")
+    context = SimpleNamespace(
+        chat_control=ChatControl(store, "run", None), data_engine=SimpleNamespace(base_dir=tmp_path)
+    )
+    monkeypatch.setattr(
+        Path, "read_text", lambda *args, **kwargs: (_ for _ in ()).throw(OSError("Unavailable"))
+    )
+    assert await read_chat_guidance(context, "Check login") == "Check login"
+    assert not any(event["kind"] == "plan" for event in store.get("run")["messages"])

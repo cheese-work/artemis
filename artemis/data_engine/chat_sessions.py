@@ -8,6 +8,7 @@ import uuid
 
 ACTIVE = frozenset({"queued", "running", "paused"})
 TERMINAL = frozenset({"completed", "failed", "cancelled", "interrupted"})
+EVENT_KINDS = frozenset({"thinking", "plan", "replan", "step", "input_request", "verdict"})
 TRANSITIONS = {
     "queued": frozenset({"running", *TERMINAL}),
     "running": frozenset({"paused", *TERMINAL}),
@@ -17,6 +18,33 @@ TRANSITIONS = {
 
 
 class ChatStore:
+    def record_event(self, turn_id, kind, content, *, payload=None, event_key=None):
+        if kind not in EVENT_KINDS:
+            raise ValueError("invalid_event_kind")
+        with self.transaction() as connection:
+            root = self._root(connection, turn_id)
+            if event_key:
+                previous = connection.execute(
+                    "SELECT sequence FROM chat_messages WHERE session_id=? AND event_key=?",
+                    (root, event_key),
+                ).fetchone()
+                if previous:
+                    return previous["sequence"]
+            cursor = connection.execute(
+                "INSERT INTO chat_messages(session_id, turn_id, role, kind, content, payload, event_key, created_at) VALUES (?,?,?,?,?,?,?,?)",
+                (
+                    root,
+                    turn_id,
+                    "agent",
+                    kind,
+                    content,
+                    json.dumps(payload or {}, default=str),
+                    event_key,
+                    time.time(),
+                ),
+            )
+            return cursor.lastrowid
+
     def save_launch_config(self, identity, config):
         with self.transaction() as connection:
             root = self._root(connection, identity)
@@ -286,6 +314,16 @@ class ChatStore:
                 client_id TEXT, reply_to INTEGER UNIQUE,
                 acknowledged_at REAL, created_at REAL NOT NULL,
                 UNIQUE(session_id, client_id))""")
+            message_columns = {
+                row[1] for row in connection.execute("PRAGMA table_info(chat_messages)")
+            }
+            if "payload" not in message_columns:
+                connection.execute("ALTER TABLE chat_messages ADD COLUMN payload TEXT")
+            if "event_key" not in message_columns:
+                connection.execute("ALTER TABLE chat_messages ADD COLUMN event_key TEXT")
+            connection.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS chat_message_event ON chat_messages(session_id, event_key)"
+            )
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS chat_turn_session ON chat_turns(session_id, number)"
             )
@@ -363,6 +401,8 @@ class ChatStore:
                     "SELECT * FROM chat_messages WHERE session_id=? ORDER BY sequence", (root,)
                 )
             ]
+            for message in session["messages"]:
+                message["payload"] = json.loads(message["payload"] or "{}")
             return session
 
     def new_turn(self, identity, content, client_id):

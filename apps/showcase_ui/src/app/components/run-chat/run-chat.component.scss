@@ -5,7 +5,6 @@ h1 { font-size: var(--text-title); margin: var(--space-sm) 0; overflow-wrap: any
 .chat-header p, .speaker, .receipt, .composer-actions span, h2 span { color: var(--color-text-muted); font-size: var(--text-label); }
 .chat-header p { margin: 0; overflow-wrap: anywhere; }
 .chat-history { overflow-y: auto; flex: 1; min-height: 0; padding: var(--space-lg); }
-.chat-turn { margin-bottom: var(--space-xl); }
 h2 { display: flex; align-items: center; gap: var(--space-sm); font-size: var(--text-ui); }
 .chat-messages { display: flex; flex-direction: column; gap: var(--space-sm); list-style: none; padding: 0; }
 .chat-bubble { align-self: flex-start; max-width: 90%; padding: var(--space-md); border: 1px solid var(--color-rule-strong); border-radius: var(--radius-lg); background: var(--color-surface); overflow-wrap: anywhere; }
@@ -13,9 +12,7 @@ h2 { display: flex; align-items: center; gap: var(--space-sm); font-size: var(--
 .chat-bubble.system { background: var(--color-surface-subtle); }
 .chat-bubble p { margin: var(--space-xs) 0; white-space: pre-wrap; }
 .speaker { font-weight: 600; }
-.turn-evidence { border: 1px solid var(--color-rule-strong); border-radius: var(--radius-md); background: var(--color-surface); }
 summary { min-height: 44px; padding: var(--space-md); cursor: pointer; }
-.turn-evidence app-run-view { display: block; height: min(70vh, 800px); }
 .chat-composer { flex: none; border-top: 1px solid var(--color-rule); background: var(--color-surface); padding: var(--space-md) var(--space-lg); }
 label { display: block; font-weight: 600; margin-bottom: var(--space-sm); }
 textarea { display: block; width: 100%; min-height: 44px; max-height: 40vh; padding: var(--space-sm); resize: none; overflow-y: auto; border: 1px solid var(--color-border); border-radius: var(--radius-md); background: var(--color-surface); color: var(--color-text); font: inherit; }
@@ -40,6 +37,24 @@ button:focus-visible, textarea:focus-visible, summary:focus-visible { outline: 2
 .session-main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .empty-chat { display: grid; align-content: center; height: 100%; padding: var(--space-xl); }
 .empty-chat p { color: var(--color-text-muted); }
+.technical-toggle { display: flex; align-items: center; gap: var(--space-xs); min-height: 44px; margin: 0; font-size: var(--text-label); }
+.technical-toggle input { width: 44px; height: 44px; margin: 0; }
+.flat-timeline { display: flex; flex-direction: column; gap: var(--space-md); padding: 0; list-style: none; }
+.turn-divider { display: flex; align-items: center; gap: var(--space-sm); color: var(--color-text-muted); font-size: var(--text-label); }
+.turn-divider::after { content: ''; flex: 1; border-top: 1px solid var(--color-rule); }
+.plan-card, .verdict-card { padding: var(--space-md); border: 1px solid var(--color-rule-strong); border-radius: var(--radius-md); background: var(--color-surface); }
+.plan-card p { white-space: pre-wrap; }
+.step-row summary { display: flex; align-items: center; gap: var(--space-sm); min-height: 44px; padding: 0; }
+.step-row summary::before { content: '▸'; flex: none; }
+.step-row details[open] summary::before { content: '▾'; }
+.step-row summary span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.step-thumbnail { width: 32px; height: 44px; object-fit: contain; flex: none; }
+.step-screenshot { display: block; max-width: 100%; max-height: 70vh; object-fit: contain; margin-block: var(--space-sm); }
+.flat-timeline pre { white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--font-mono); }
+.flat-timeline time { display: block; margin-top: var(--space-xs); color: var(--color-text-muted); font-size: var(--text-label); }
+.thinking summary { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.verdict-card h2 { margin: 0; font-size: var(--text-ui); }
+@media (max-width: 600px) { .chat-header { flex-wrap: wrap; } .session-title { flex-basis: calc(100% - 52px); } .technical-toggle { order: 2; } }
 @media (max-width: 1199px) {
   .session-layout.sidebar-open { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) minmax(0, 0.9fr); }
   app-session-sidebar { min-height: 0; border-top: 1px solid var(--color-rule); }

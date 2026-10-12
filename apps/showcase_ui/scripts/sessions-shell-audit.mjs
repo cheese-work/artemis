@@ -69,16 +69,23 @@ try {
   run.status = 'running'; run.end_time = null;
   mock.chat = { session_id: run.session_id, title: 'Login checks', lease_pid: null, idle_until: null,
     turns: [{ turn_id: run.session_id, number: 1, status: 'running', created_at: run.start_time }],
-    messages: [{ sequence: 1, turn_id: run.session_id, role: 'human', content: 'Check that login works.', acknowledged_at: run.start_time },
-      { sequence: 2, turn_id: run.session_id, role: 'agent', content: 'Checking the login screen.' }] };
+    messages: [{ sequence: 1, turn_id: run.session_id, role: 'human', kind: 'message', content: 'Check that login works.', acknowledged_at: run.start_time },
+      { sequence: 2, turn_id: run.session_id, role: 'agent', kind: 'message', content: 'Checking the login screen.' }] };
+  mock.chat.timeline = [...mock.chat.messages,
+    { sequence: 3, turn_id: run.session_id, role: 'agent', kind: 'plan', content: '1. Open login\n2. Check the result' },
+    { sequence: 4, turn_id: run.session_id, role: 'agent', kind: 'thinking', content: 'Find the visible login control.' },
+    { sequence: 5, turn_id: run.session_id, role: 'agent', kind: 'step', content: 'Open login', payload: { step_id: 'fixture-step', pre_image_name: 'pre1.svg', action_taken: { action: 'tap', x: 120, y: 320 } } }
+  ];
+  mock.chat.timeline.forEach((event, index) => { event.created_at = run.start_time + index; });
   const receipts = [];
   for (const width of [1440, 390]) {
+    run.status = 'running'; run.end_time = null; mock.chat.turns[0].status = 'running'; delete mock.chat.verdict;
     await send('Emulation.setDeviceMetricsOverride', { width, height: 900, deviceScaleFactor: 1, mobile: false });
     const capture = async name => {
       await evaluate('document.fonts.ready');
       const issues = await evaluate(`(() => {
         const issues = document.documentElement.scrollWidth > innerWidth ? ['Horizontal overflow'] : [];
-        for (const element of document.querySelectorAll('app-run-chat button, app-session-sidebar button, app-nav-switcher a, .new-run, .composer button')) {
+        for (const element of document.querySelectorAll('app-run-chat button, app-run-chat input, app-run-chat summary, app-session-sidebar button, app-nav-switcher a, .new-run, .composer button')) {
           if (!element.checkVisibility()) continue;
           const box = element.getBoundingClientRect(); if (box.width < 44 || box.height < 44) issues.push(element.getAttribute('aria-label') || element.textContent.trim());
         } return issues;
@@ -104,6 +111,16 @@ try {
     }
     await evaluate("document.querySelector('[aria-controls=\"session-sidebar\"]').click()"); await wait(100);
     await capture('sidebar-collapsed');
+    run.status = 'completed'; run.end_time = run.start_time + 120; mock.chat.turns[0].status = 'completed';
+    mock.chat.verdict = { status: 'completed', outcome: { phase: 'outcome', tests: { passed: 1, failed: 0 }, last_findings: ['Login works.'] }, report: 'Synthetic full report', details: { session_id: run.session_id } };
+    await send('Page.navigate', { url: url + '/sessions/' + run.session_id }); await wait(1400);
+    if (!await evaluate("document.querySelector('.flat-timeline').lastElementChild.matches('.verdict-card')")) throw new Error('Verdict is not last.');
+    if (await evaluate("!!document.querySelector('[data-event-kind=thinking]')")) throw new Error('Thinking must be hidden by default.');
+    await capture('finished');
+    await evaluate("document.querySelector('[aria-label=\"Technical details\"]').click()"); await wait(100);
+    await evaluate("document.querySelector('.step-row summary').click()"); await wait(100);
+    await capture('technical-details');
+    await evaluate("document.querySelector('[aria-label=\"Technical details\"]').click()");
   }
   writeFileSync(path.join(output, 'receipt.json'), JSON.stringify({ synthetic: true, device_accessed: false, captures: receipts }, null, 2));
   const failures = receipts.filter(receipt => receipt.issues.length);

@@ -30,6 +30,7 @@ describe('Session sidebar', () => {
     const fixture = TestBed.createComponent(SessionSidebarComponent);
     fixture.componentRef.setInput('runId', 'run');
     fixture.componentRef.setInput('firstPrompt', 'Full first prompt');
+    fixture.componentRef.setInput('technicalDetails', true);
     fixture.detectChanges();
     tick(0);
     fixture.detectChanges();

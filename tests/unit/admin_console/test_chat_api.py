@@ -148,3 +148,67 @@ async def test_rename_rejects_anonymous_and_missing_session(anonymous, qa, chat)
         await anonymous.patch(f"/api/chats/{chat}/title", json={"title": "No"})
     ).status_code in (401, 403)
     assert (await qa.patch("/api/chats/missing/title", json={"title": "No"})).status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_rename_retains_completed_timeline_and_verdict(qa, chat, library, monkeypatch):
+    ChatStore(library.db).transition(chat, "completed")
+    monkeypatch.setattr(chats.step_repo, "get_session_steps", lambda identity: [])
+    before = (await qa.get(f"/api/chats/{chat}")).json()
+    renamed = (await qa.patch(f"/api/chats/{chat}/title", json={"title": "Renamed"})).json()
+    assert renamed["timeline"] == before["timeline"]
+    assert renamed["verdict"] == before["verdict"]
+
+
+@pytest.mark.asyncio
+async def test_timeline_hydrates_legacy_and_new_steps_and_redacts_shared_data(
+    qa, qa2, chat, library, monkeypatch
+):
+    store = ChatStore(library.db)
+    store.record_event(chat, "step", "Tap sign in", payload={"step_id": "new-step"})
+    steps = [
+        {
+            "step_id": identity,
+            "step_number": number,
+            "timestamp": number,
+            "summary": "Tap sign in",
+            "action_taken": {"password": "timeline-secret"},
+        }
+        for number, identity in enumerate(["legacy-step", "new-step"], start=1)
+    ]
+    monkeypatch.setattr(chats.step_repo, "get_session_steps", lambda identity: steps)
+    owner = (await qa.get(f"/api/chats/{chat}")).json()
+    hydrated = [event for event in owner["timeline"] if event["kind"] == "step"]
+    assert len(hydrated) == 2
+    assert [event["payload"]["step_id"] for event in hydrated] == ["legacy-step", "new-step"]
+    assert all(
+        event["payload"]["action_taken"]["password"] == "timeline-secret" for event in hydrated
+    )
+    shared = await qa2.get(f"/api/chats/{chat}")
+    assert shared.status_code == 200
+    assert "timeline-secret" not in shared.text
+    assert "[REDACTED]" in shared.text
+    assert store.get(chat)["messages"][-1]["payload"] == {"step_id": "new-step"}
+
+
+@pytest.mark.asyncio
+async def test_unreadable_report_does_not_break_completed_chat(qa, chat, library, monkeypatch):
+    from pathlib import Path
+
+    store = ChatStore(library.db)
+    store.transition(chat, "completed")
+    report = library.traces / chat / "notes" / "output.md"
+    report.parent.mkdir(parents=True)
+    report.write_text("Report", encoding="utf-8")
+    monkeypatch.setattr(chats, "TRACES_PATH", library.traces)
+    original_read = Path.read_text
+
+    def read(path, *args, **kwargs):
+        if path == report:
+            raise OSError("Report not available")
+        return original_read(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", read)
+    response = await qa.get(f"/api/chats/{chat}")
+    assert response.status_code == 200
+    assert response.json()["verdict"]["report"] is None

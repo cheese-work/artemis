@@ -1,3 +1,5 @@
+import { CheckerBlockData } from './stream.model';
+
 /** One recording's server-side state (`recordings[]` on a catalog run). */
 export interface RunRecording {
   recording_id: string;
@@ -41,7 +43,8 @@ export interface ChatMessage {
   session_id: string;
   turn_id: string;
   role: 'human' | 'agent' | 'system';
-  kind: 'message' | 'pause' | 'continue';
+  kind: 'message' | 'pause' | 'continue' | 'thinking' | 'plan' | 'replan' | 'step' | 'input_request' | 'verdict';
+  payload?: Record<string, any>;
   content: string;
   client_id: string | null;
   reply_to: number | null;
@@ -62,6 +65,8 @@ export interface ChatSession {
   title?: string | null;
   turns: ChatTurn[];
   messages: ChatMessage[];
+  timeline?: ChatMessage[];
+  verdict?: { status: string; outcome: CheckerBlockData | null; report?: string | null; details: Record<string, any> };
   idle_until: number | null;
   lease_pid: number | null;
 }

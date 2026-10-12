@@ -5,6 +5,17 @@ import os
 from artemis.data_engine.chat_sessions import ChatStore, TERMINAL
 
 
+def _task_plan(ctx):
+    if not ctx.data_engine or not ctx.data_engine.base_dir:
+        return ""
+    from artemis.utils.notes import get_note_file_path
+
+    try:
+        return get_note_file_path(ctx.data_engine.base_dir, "task_plan").read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        return ""
+
+
 class ChatControl:
     def __init__(self, store, turn_id, judge, *, poll_seconds=0.25):
         self.store = store
@@ -78,13 +89,7 @@ async def read_chat_guidance(ctx, goal):
 
         async def judge(message):
             history = store.get(turn_id)["messages"]
-            plan = ""
-            if ctx.data_engine and ctx.data_engine.base_dir:
-                from artemis.utils.notes import get_note_file_path
-
-                path = get_note_file_path(ctx.data_engine.base_dir, "task_plan")
-                if path.exists():
-                    plan = path.read_text(encoding="utf-8")
+            plan = _task_plan(ctx)
             response = await asyncio.wait_for(
                 get_llm(ctx, name="operator").ainvoke(
                     [
@@ -117,6 +122,25 @@ async def read_chat_guidance(ctx, goal):
             else None
         )
     guidance = await control.checkpoint()
+    plan = _task_plan(ctx)
+    if plan.strip():
+        previous = [
+            message
+            for message in control.store.get(control.turn_id)["messages"]
+            if message["turn_id"] == control.turn_id
+            and message["kind"] in {"plan", "replan"}
+            and message["payload"].get("source") == "task_plan"
+        ]
+        if not previous or previous[-1]["content"] != plan:
+            control.store.record_event(
+                control.turn_id,
+                "replan" if previous else "plan",
+                plan,
+                payload={
+                    "source": "task_plan",
+                    "previous": previous[-1]["content"] if previous else None,
+                },
+            )
     history = getattr(ctx, "chat_history_pending", None)
     ctx.chat_history_pending = None
     return (

@@ -36,15 +36,17 @@ import { appUrl, mediaUrl } from '../../utils/app-url.util';
             <dt>App</dt><dd>{{ run()?.app_package || 'Not recorded' }}</dd>
             <dt>Phone</dt><dd>{{ run()?.device_ref?.serial || 'Not recorded' }}</dd>
             <dt>Model</dt><dd>{{ run()?.agent_model || 'Not recorded' }}</dd>
+            @if (technicalDetails()) {
             <dt>Started</dt><dd>{{ run()?.start_time ? (run()!.start_time! * 1000 | date: 'MMM d, y, HH:mm' : '+0700') + ' ICT' : 'Not recorded' }}</dd>
             <dt>Elapsed</dt><dd>{{ elapsed() }} seconds</dd>
             <dt>Run ID</dt><dd class="mono">{{ runId() }}</dd>
+            }
             <dt>First prompt</dt><dd class="prompt">{{ firstPrompt() || 'Not recorded' }}</dd>
           </dl>
         } @else {
           <dl>
             <dt>Steps</dt><dd>{{ steps() ?? 'Unavailable' }}</dd>
-            <dt>Duration</dt><dd>{{ elapsed() }} seconds</dd>
+            @if (technicalDetails()) { <dt>Duration</dt><dd>{{ elapsed() }} seconds</dd> }
             <dt>Total tokens</dt><dd>{{ usage()?.total_tokens ?? 'Unavailable' }}</dd>
             <dt>Input tokens</dt><dd>{{ usage()?.prompt_tokens ?? 'Unavailable' }}</dd>
             <dt>Output tokens</dt><dd>{{ usage()?.completion_tokens ?? 'Unavailable' }}</dd>
@@ -76,6 +78,7 @@ export class SessionSidebarComponent {
   private readonly http = inject(HttpClient);
   private readonly zone = inject(NgZone);
   public readonly runId = input('');
+  public readonly technicalDetails = input(false);
   public readonly firstPrompt = input<string | null>(null);
   public readonly tabs = ['Live', 'Details', 'Stats'] as const;
   public readonly tab = signal<(typeof this.tabs)[number]>('Live');

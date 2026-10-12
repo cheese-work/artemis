@@ -4,7 +4,7 @@ import uuid
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field, field_validator
 
-from artemis.config import DB_PATH
+from artemis.config import DB_PATH, TRACES_PATH
 from artemis.data_engine.chat_sessions import ChatStore
 from artemis.runtime import current_adb_endpoint, pid_is_alive
 from apps.admin_console.core.access_control import AdminAPIError, require_qa
@@ -17,8 +17,57 @@ from apps.admin_console.core.ownership import (
     require_visible_run,
 )
 from apps.admin_console.services.task_queue_service import task_queue_service
+from apps.admin_console.database.repositories.session_repository import session_repo
+from apps.admin_console.database.repositories.step_repository import step_repo
+from apps.admin_console.services.media_service import media_service
 
 router = APIRouter(tags=["chat sessions"])
+
+
+def _timeline(session):
+    events = [dict(message) for message in session["messages"]]
+    recorded = {
+        message["payload"].get("step_id"): message
+        for message in events
+        if message["kind"] == "step"
+    }
+    for turn in session["turns"]:
+        for step in step_repo.get_session_steps(turn["turn_id"]):
+            if step["step_id"] in recorded:
+                recorded[step["step_id"]]["payload"] = step
+                continue
+            events.append(
+                {
+                    "sequence": -step["step_number"],
+                    "turn_id": turn["turn_id"],
+                    "role": "agent",
+                    "kind": "step",
+                    "content": step.get("summary") or f"Step {step['step_number']}",
+                    "payload": step,
+                    "created_at": step.get("timestamp") or turn["created_at"],
+                }
+            )
+    numbers = {turn["turn_id"]: turn["number"] for turn in session["turns"]}
+    session["timeline"] = sorted(
+        events,
+        key=lambda event: (numbers[event["turn_id"]], event["created_at"], event["sequence"]),
+    )
+    latest = session["turns"][-1]
+    if latest["status"] in {"completed", "failed", "interrupted", "cancelled"}:
+        details = session_repo.get_session_by_id(latest["turn_id"]) or {}
+        outcome = media_service.get_session_checks(latest["turn_id"])["run_outcome"]
+        report_path = TRACES_PATH / latest["turn_id"] / "notes" / "output.md"
+        try:
+            report = report_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError):
+            report = None
+        session["verdict"] = {
+            "status": latest["status"],
+            "outcome": outcome,
+            "report": report,
+            "details": details,
+        }
+    return session
 
 
 class MessageRequest(BaseModel):
@@ -59,6 +108,7 @@ def _session(identity, scope, *, write=False):
 @router.get("/api/chats/{session_id}")
 async def get_chat(session_id: str, scope: OwnerScope = Depends(actor_scope)):
     store, session = await asyncio.to_thread(_session, session_id, scope)
+    session = await asyncio.to_thread(_timeline, session)
     return await asyncio.to_thread(present_session_data, scope, session["session_id"], session)
 
 
@@ -69,6 +119,7 @@ async def rename_chat(
     store, session = await asyncio.to_thread(_session, session_id, scope)
     await asyncio.to_thread(store.rename, session["session_id"], request.title)
     updated = await asyncio.to_thread(store.get, session["session_id"])
+    updated = await asyncio.to_thread(_timeline, updated)
     return await asyncio.to_thread(present_session_data, scope, session["session_id"], updated)
 
 
