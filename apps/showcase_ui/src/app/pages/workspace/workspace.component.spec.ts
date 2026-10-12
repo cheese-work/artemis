@@ -6,7 +6,7 @@ import { RunTarget } from '../../core/models/run-target.model';
 import { AgentService } from '../../services/agent.service';
 import { BrowserStorageService } from '../../services/browser-storage.service';
 import { ModelCatalogService } from '../../services/model-catalog.service';
-import { RunViewComponent } from '../../components/run-view/run-view.component';
+import { RunChatComponent } from '../../components/run-chat/run-chat.component';
 import { WorkspacePhoneService } from '../../services/workspace-phone.service';
 import { InterruptedBannerComponent } from '../../components/interrupted-banner/interrupted-banner.component';
 import { RunLibraryComponent } from '../../components/run-library/run-library.component';
@@ -64,7 +64,7 @@ describe('WorkspaceComponent error lifetime', () => {
       ],
       schemas: [CUSTOM_ELEMENTS_SCHEMA]
     }).overrideComponent(WorkspaceComponent, {
-      remove: { imports: [RunViewComponent, RunLibraryComponent, InterruptedBannerComponent] },
+      remove: { imports: [RunChatComponent, RunLibraryComponent, InterruptedBannerComponent] },
       add: { schemas: [CUSTOM_ELEMENTS_SCHEMA] }
     }).compileComponents();
   });
@@ -212,7 +212,7 @@ describe('WorkspaceComponent phone binding', () => {
       ],
       schemas: [CUSTOM_ELEMENTS_SCHEMA]
     }).overrideComponent(WorkspaceComponent, {
-      remove: { imports: [RunViewComponent, RunLibraryComponent, InterruptedBannerComponent] },
+      remove: { imports: [RunChatComponent, RunLibraryComponent, InterruptedBannerComponent] },
       add: { schemas: [CUSTOM_ELEMENTS_SCHEMA] }
     }).compileComponents();
     fixture = TestBed.createComponent(WorkspaceComponent);
@@ -325,12 +325,13 @@ describe('WorkspaceComponent pinned composer (CHE-1508)', () => {
       ],
       schemas: [CUSTOM_ELEMENTS_SCHEMA]
     }).overrideComponent(WorkspaceComponent, {
-      remove: { imports: [RunViewComponent, RunLibraryComponent, InterruptedBannerComponent] },
+      remove: { imports: [RunChatComponent, RunLibraryComponent, InterruptedBannerComponent] },
       add: { schemas: [CUSTOM_ELEMENTS_SCHEMA] }
     }).compileComponents();
     fixture = TestBed.createComponent(WorkspaceComponent);
     component = fixture.componentInstance;
     el = fixture.nativeElement;
+    component.newSessionDraft.set(true);
     fixture.detectChanges();
   });
 
@@ -342,6 +343,18 @@ describe('WorkspaceComponent pinned composer (CHE-1508)', () => {
 
   const hint = () => el.querySelector<HTMLElement>('.composer-hint')!.textContent!.replace(/\s+/g, ' ').trim();
   const textarea = () => el.querySelector<HTMLTextAreaElement>('.composer textarea')!;
+
+  it('uses the chat composer by default and opens a separate new-session draft explicitly', async () => {
+    component.newSessionDraft.set(false);
+    fixture.detectChanges();
+    expect(el.querySelector('.composer')).toBeNull();
+    expect(el.querySelector('app-run-chat')).not.toBeNull();
+    component.startNewRunFrom('Check a different app');
+    fixture.detectChanges();
+    await fixture.whenStable();
+    expect(component.newSessionDraft()).toBeTrue();
+    expect(textarea().value).toBe('Check a different app');
+  });
 
   it('pins one composer at the bottom of the detail pane, after the run surface', () => {
     const detail = el.querySelector('.detail-pane')!;
@@ -464,7 +477,7 @@ describe('WorkspaceComponent pinned composer (CHE-1508)', () => {
     expect(el.querySelector('.composer .btn-stop, .composer [aria-label="Stop run"], .composer .btn-stop-run')).toBeNull();
 
     expect(el.querySelector('.detail-pane > .detail-header')).toBeNull();
-    expect(el.querySelector('app-run-view')).not.toBeNull();
+    expect(el.querySelector('app-run-chat')).not.toBeNull();
   });
 
   for (const width of [1440, 390]) {

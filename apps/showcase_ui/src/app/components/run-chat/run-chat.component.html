@@ -24,9 +24,9 @@
           <details class="turn-evidence" #evidence (toggle)="evidence.open">
             <summary>Turn {{ turn.number }} · steps, video and verdict</summary>
             @if (evidence.open) {
-              <app-run-view [runId]="turn.turn_id" [mode]="mode()" [readOnly]="!canWrite()"
+              <app-run-view [runId]="turn.turn_id" [mode]="liveSession()?.session_id === turn.turn_id ? mode() : 'review'" [readOnly]="!canWrite()"
                 [liveSession]="liveSession()?.session_id === turn.turn_id ? liveSession() : null"
-                [liveSteps]="liveSteps()" [startupProgress]="startupProgress()"
+                [liveSteps]="liveSession()?.session_id === turn.turn_id ? liveSteps() : []" [startupProgress]="liveSession()?.session_id === turn.turn_id ? startupProgress() : []"
                 (newRunPrompt)="newRunPrompt.emit($event)"></app-run-view>
             }
           </details>

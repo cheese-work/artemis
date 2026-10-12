@@ -5,6 +5,8 @@ import { of, throwError } from 'rxjs';
 import { RunChatComponent } from './run-chat.component';
 import { RunsService } from '../../services/runs.service';
 import { ChatSession, RunSummary } from '../../core/models/run.model';
+import { CUSTOM_ELEMENTS_SCHEMA } from '@angular/core';
+import { RunViewComponent } from '../run-view/run-view.component';
 
 describe('RunChatComponent', () => {
   const thread: ChatSession = {
@@ -26,7 +28,11 @@ describe('RunChatComponent', () => {
     api.chat.and.returnValue(of(thread));
     api.sendChat.and.returnValue(of(thread.messages[0]));
     api.controlChat.and.returnValue(of(thread.messages[0]));
-    TestBed.configureTestingModule({ imports: [RunChatComponent], providers: [provideRouter([]), { provide: RunsService, useValue: api }] });
+    TestBed.configureTestingModule({ imports: [RunChatComponent], providers: [provideRouter([]), { provide: RunsService, useValue: api }] })
+      .overrideComponent(RunChatComponent, {
+        remove: { imports: [RunViewComponent] },
+        add: { schemas: [CUSTOM_ELEMENTS_SCHEMA] }
+      });
   });
 
   function render() {
@@ -55,6 +61,25 @@ describe('RunChatComponent', () => {
     expect(api.sendChat).toHaveBeenCalledWith('root', 'Check logout', jasmine.any(String));
     fixture.componentInstance.control('continue');
     expect(api.controlChat).toHaveBeenCalledWith('root', 'continue', jasmine.any(String));
+    fixture.destroy();
+  }));
+
+  it('keeps live steps out of earlier turns when evidence is expanded', fakeAsync(() => {
+    const fixture = render();
+    const steps = [{ step_id: 'step-2', step_number: 1, session_id: 'follow-up', timestamp: 2 }];
+    fixture.componentRef.setInput('mode', 'live');
+    fixture.componentRef.setInput('liveSession', { session_id: 'follow-up', initial_goal: 'Check logout', start_time: 2 });
+    fixture.componentRef.setInput('liveSteps', steps);
+    const disclosures = fixture.nativeElement.querySelectorAll('details') as NodeListOf<HTMLDetailsElement>;
+    disclosures.forEach(disclosure => { disclosure.open = true; disclosure.dispatchEvent(new Event('toggle')); });
+    fixture.detectChanges();
+    const viewers = fixture.nativeElement.querySelectorAll('app-run-view');
+    expect(viewers[0].mode).toBe('review');
+    expect(viewers[0].runId).toBe('root');
+    expect(viewers[0].liveSteps).toEqual([]);
+    expect(viewers[1].mode).toBe('live');
+    expect(viewers[1].runId).toBe('follow-up');
+    expect(viewers[1].liveSteps).toEqual(steps);
     fixture.destroy();
   }));
 
