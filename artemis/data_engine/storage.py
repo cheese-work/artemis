@@ -1152,6 +1152,9 @@ class StorageManager:
         with self._get_connection() as conn:
             conn.execute("PRAGMA foreign_keys = OFF")
             tables = [
+                "chat_messages",
+                "chat_turns",
+                "chat_sessions",
                 "prompt_critiques",
                 "video_analysis_observations",
                 "video_analysis_segments",
@@ -1251,6 +1254,7 @@ class StorageManager:
                 except sqlite3.OperationalError as e:
                     logger.warning(f"Failed to delete video memory from {table}: {e}")
             tables = [
+                "chat_sessions",
                 "prompt_critiques",
                 "failed_outputs",
                 "traces",
@@ -1269,6 +1273,14 @@ class StorageManager:
                     )
                 except sqlite3.OperationalError as e:
                     logger.warning(f"Failed to delete from table {table}: {e}")
+            for table in ("chat_messages", "chat_turns"):
+                try:
+                    conn.execute(
+                        f"DELETE FROM {table} WHERE session_id=? OR turn_id=?",
+                        (session_id_str, session_id_str),
+                    )
+                except sqlite3.OperationalError as error:
+                    logger.warning(f"Failed to delete from table {table}: {error}")
             conn.commit()
             if vacuum:
                 conn.execute("VACUUM")
