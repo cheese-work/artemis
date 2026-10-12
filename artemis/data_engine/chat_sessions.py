@@ -38,7 +38,7 @@ class ChatStore:
                 number INTEGER NOT NULL, status TEXT NOT NULL,
                 created_at REAL NOT NULL, UNIQUE(session_id, number))""")
             connection.execute("""CREATE TABLE IF NOT EXISTS chat_messages (
-                sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+                sequence INTEGER PRIMARY KEY,
                 session_id TEXT NOT NULL, turn_id TEXT NOT NULL,
                 role TEXT NOT NULL CHECK(role IN ('human', 'agent', 'system')),
                 kind TEXT NOT NULL DEFAULT 'message', content TEXT NOT NULL,
