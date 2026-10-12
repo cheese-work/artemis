@@ -5,7 +5,7 @@
 - Case ID: `CHE-984-D1-ENDPOINT-ABSENT-v1`.
 - Status: `AUTHORED / NOT-RUN`; this document is not a testcase review, execution result, qualification, or readiness receipt.
 - Contract: retain the 5 ms absolute median paired-init delta budget, all 50 raw pairs (100 records), the endpoint-absent no-beacon control, and a real visible offline mock-ad render in both arms.
-- Source pair: SDK `tevo-studio/mMonetize` PR 305 at `c0a0305fbe1cefac353021e437b020c5690ae7e5`, based on `922ee1d538f758b7f570d18fbd9155fc971e898f`; sample PR 126 at `4fdc1852b88dd44c2be3889858de93b29e61a1cb`, based on `c2fc577c76f4537d4c5b6a2e15203c16d1205674`.
+- Source pair: SDK `tevo-studio/mMonetize` PR 305 at `0da74be215f185b6e228e795f6e2b6510da453d0`, based on `004d6165fb5363b43eb838d075c933cc0f539543`; sample PR 126 at `4fdc1852b88dd44c2be3889858de93b29e61a1cb`, based on `c2fc577c76f4537d4c5b6a2e15203c16d1205674`.
 - The previously recorded APK hash `c65473858bbaf3a837b76e98b532d7b4dfcd8c4d5e0289082de236d4973bdd6b` covers the earlier source pair only. It is not a valid artifact for these successor heads. No successor APK identity is available in this case.
 
 This case covers only the endpoint-absent D1 slice and its required paired timing and ad-render observations. It does not exercise endpoint faults or other CHE-770 rows.
