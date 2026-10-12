@@ -1,0 +1,55 @@
+@if (!runId()) {
+  <app-run-view [mode]="mode()" [runId]="''" (newRunPrompt)="newRunPrompt.emit($event)"></app-run-view>
+} @else {
+  <div class="chat-session">
+    <header class="chat-header">
+      <div><a routerLink="/runs">← Runs</a><h1>{{ title() }}</h1>
+        <p>Chat session · {{ chat()?.turns?.length ?? 0 }} turns · {{ rootRun()?.device_ref?.serial ?? 'Phone binding unavailable' }}</p>
+      </div>
+      <button type="button" (click)="newRunPrompt.emit('')">New session</button>
+    </header>
+    <section class="chat-history" aria-label="Chat history">
+      @for (turn of chat()?.turns ?? []; track turn.turn_id) {
+        <article class="chat-turn" [attr.aria-label]="'Turn ' + turn.number">
+          <h2>Turn {{ turn.number }} <span>{{ turn.status }}</span></h2>
+          <ol class="chat-messages" aria-live="polite" aria-relevant="additions">
+            @for (message of messages(turn.turn_id); track message.sequence) {
+              <li class="chat-bubble" [class.human]="message.role === 'human'" [class.system]="message.role === 'system'">
+                <span class="speaker">{{ message.role === 'human' ? 'You' : message.role === 'agent' ? 'Agent' : 'System' }}</span>
+                <p>{{ message.content }}</p>
+                @if (message.role === 'human' && !message.acknowledged_at) { <span class="receipt">Queued for the next step</span> }
+              </li>
+            }
+          </ol>
+          <details class="turn-evidence" #evidence (toggle)="evidence.open">
+            <summary>Turn {{ turn.number }} · steps, video and verdict</summary>
+            @if (evidence.open) {
+              <app-run-view [runId]="turn.turn_id" [mode]="liveSession()?.session_id === turn.turn_id ? mode() : 'review'" [readOnly]="!canWrite()"
+                [liveSession]="liveSession()?.session_id === turn.turn_id ? liveSession() : null"
+                [liveSteps]="liveSession()?.session_id === turn.turn_id ? liveSteps() : []" [startupProgress]="liveSession()?.session_id === turn.turn_id ? startupProgress() : []"
+                (newRunPrompt)="newRunPrompt.emit($event)"></app-run-view>
+            }
+          </details>
+        </article>
+      }
+      @if (!chat() && !error()) { <p role="status">Loading chat session…</p> }
+    </section>
+    @if (error()) { <p class="chat-error" role="alert">{{ error() }}</p> }
+    @if (!canWrite()) { <p class="chat-notice">Shared session · read-only</p> }
+    @else if (compose()) {
+      <form class="chat-composer" (ngSubmit)="send()">
+        <label for="session-message">{{ active() ? 'Message the agent' : 'Continue this session with a new turn' }}</label>
+        <textarea id="session-message" name="message" [(ngModel)]="draft" cdkTextareaAutosize cdkAutosizeMinRows="1" cdkAutosizeMaxRows="8"
+          maxlength="32768" [placeholder]="active() ? 'Correct or steer the next step…' : 'What should the agent do next on this phone?'"
+          [disabled]="sending()"></textarea>
+        <div class="composer-actions">
+          <span>{{ paused() ? 'Paused · Continue or send another message' : active() ? 'Steer by default · a plan change pauses for confirmation' : 'Same phone · current screen · full chat history' }}</span>
+          @if (active()) {
+            <button type="button" [disabled]="sending()" (click)="control(paused() ? 'continue' : 'pause')">{{ paused() ? 'Continue' : 'Pause' }}</button>
+          }
+          <button type="submit" class="send" [disabled]="!draft.trim() || sending() || !chat()">Send</button>
+        </div>
+      </form>
+    }
+  </div>
+}

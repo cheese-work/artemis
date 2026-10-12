@@ -5,7 +5,7 @@ import { Router, provideRouter } from '@angular/router';
 import { RouterTestingHarness } from '@angular/router/testing';
 import { NEVER, of } from 'rxjs';
 import { routes } from '../../app.routes';
-import { RunViewComponent } from '../../components/run-view/run-view.component';
+import { RunChatComponent } from '../../components/run-chat/run-chat.component';
 import { RunLibraryComponent } from '../../components/run-library/run-library.component';
 import { By } from '@angular/platform-browser';
 import { RunSummary } from '../../core/models/run.model';
@@ -246,9 +246,9 @@ describe('Workspace review mode', () => {
     expect(library.recordedImages().get(ID)).toEqual(session.goal_images);
   });
 
-  it('passes team review restrictions to the unified RunView', async () => {
+  it('passes team review restrictions to the chat session', async () => {
     await go(`/runs/${ID}?scope=everyone&review=1`);
-    const view = harness.fixture.debugElement.query(By.directive(RunViewComponent)).componentInstance as RunViewComponent;
+    const view = harness.fixture.debugElement.query(By.directive(RunChatComponent)).componentInstance as RunChatComponent;
     expect(view.readOnly()).toBeTrue();
     expect(view.mode()).toBe('review');
     expect(view.runId()).toBe(ID);
@@ -257,7 +257,7 @@ describe('Workspace review mode', () => {
 
   it('shows the run viewer for the id in the URL on /runs/:id', async () => {
     await go(`/runs/${ID}`);
-    expect(q('app-run-view')).not.toBeNull();
+    expect(q('app-run-chat')).not.toBeNull();
     expect(q('.detail-pane app-run-library, .detail-empty')).toBeNull();
     expect(q('.run-list-pane app-run-library.compact')).not.toBeNull();
     expect(runs.get).toHaveBeenCalledWith(ID);
@@ -268,12 +268,12 @@ describe('Workspace review mode', () => {
     const workspace = harness.fixture.debugElement.query(By.directive(WorkspaceComponent)).componentInstance;
     await go('/runs/other-run');
     expect(harness.fixture.debugElement.query(By.directive(WorkspaceComponent)).componentInstance).toBe(workspace);
-    const view = harness.fixture.debugElement.query(By.directive(RunViewComponent)).componentInstance as RunViewComponent;
+    const view = harness.fixture.debugElement.query(By.directive(RunChatComponent)).componentInstance as RunChatComponent;
     expect(view.runId()).toBe('other-run');
     expect(view.readOnly()).toBeFalse();
     expect(q('.workspace-container.has-run')).not.toBeNull();
     await go('/runs');
-    expect(q('app-run-view, .workspace-container.has-run')).toBeNull();
+    expect(q('app-run-chat, .workspace-container.has-run')).toBeNull();
     expect(q('.detail-empty')?.textContent?.trim()).toBe('Select a run to see its steps.');
   });
 
@@ -337,7 +337,7 @@ describe('Workspace review mode', () => {
   });
 
   for (const connected of [false, true]) {
-    it(`shows one interrupted banner with a ${connected ? 'connected' : 'disconnected'} phone`, async () => {
+    it(`shows one interrupted banner in a new-session draft with a ${connected ? 'connected' : 'disconnected'} phone`, async () => {
       const prompt = 'Open Settings';
       liveSession.set({ session_id: ID, initial_goal: prompt, start_time: 1, status: 'interrupted' });
       if (connected) target.set({ serial: 'phone-1' });
@@ -347,7 +347,7 @@ describe('Workspace review mode', () => {
         pinned: false, recordings: []
       }));
       runs.steps.and.returnValue(of([]));
-      await go('/workspace');
+      await go('/workspace', { newSessionDraft: true });
 
       expect(TestBed.inject(WorkspacePhoneService).runInterrupted()).toBeTrue();
       const banners = Array.from(root.querySelectorAll<HTMLElement>('.composer app-interrupted-banner .banner'))
@@ -372,13 +372,14 @@ describe('Workspace review mode', () => {
 
       const composer = q('textarea.composer-input') as HTMLTextAreaElement;
       expect(composer.value).toBe('');
-      const runAgain = q('app-run-view .run-header [aria-label="Run again"]') as HTMLButtonElement;
-      expect(runAgain).not.toBeNull();
-      runAgain.click();
+      const newSession = q('app-run-chat .chat-header button') as HTMLButtonElement;
+      expect(newSession).not.toBeNull();
+      newSession.click();
       harness.fixture.detectChanges();
       await harness.fixture.whenStable();
       harness.fixture.detectChanges();
-      expect(composer.value).toBe(prompt);
+      expect(composer.value).toBe('');
+      expect(harness.fixture.debugElement.query(By.directive(WorkspaceComponent)).componentInstance.newSessionDraft()).toBeTrue();
     });
   }
 });

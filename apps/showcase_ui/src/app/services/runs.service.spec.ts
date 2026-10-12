@@ -63,6 +63,19 @@ describe('RunsService', () => {
     http.expectOne({ method: 'GET', url: '/api/runs/3f2b%2F9c1a' }).flush({});
   });
 
+  it('reads chat and sends idempotent messages through the session API', () => {
+    service.chat('root/id').subscribe();
+    http.expectOne('/api/chats/root%2Fid').flush({});
+    service.sendChat('root/id', 'Steer the next step', 'retry-key').subscribe();
+    const request = http.expectOne('/api/chats/root%2Fid/messages');
+    expect(request.request.body).toEqual({ content: 'Steer the next step', client_id: 'retry-key' });
+    request.flush({});
+    service.controlChat('root/id', 'pause', 'pause-key').subscribe();
+    const pause = http.expectOne('/api/chats/root%2Fid/pause');
+    expect(pause.request.method).toBe('POST');
+    pause.flush({});
+  });
+
   it('keeps explicit My runs separate from an admin queue set to All users', () => {
     const scope = TestBed.inject(OwnerScopeService);
     scope.identity.set({ email: 'admin@example.test', admin: true, auth_mode: 'cloudflare', reason: null });
