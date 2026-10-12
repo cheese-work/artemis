@@ -285,6 +285,9 @@ class StorageManager:
         try:
             migrate_run_catalog(self.db_path)
             run_snapshot.migrate(self.db_path)
+            from artemis.data_engine import chat_sessions
+
+            chat_sessions.migrate(self.db_path)
         except sqlite3.Error:
             # Additive index over runs; the listing API reports "not ready" instead.
             logger.exception("Run catalog migration failed for %s", self.db_path)
