@@ -118,6 +118,31 @@ async def test_rename_follows_turn_identity_and_survives_migration(qa, chat, lib
 
 
 @pytest.mark.asyncio
+async def test_catalog_redacts_shared_title_and_first_prompt(qa, qa2, chat, library):
+    secret = "catalog-test-secret"
+    with sqlite3.connect(library.db) as connection:
+        connection.execute(
+            "UPDATE sessions SET initial_goal=? WHERE session_id=?",
+            (f"Login with password={secret}", chat),
+        )
+    response = await qa.patch(
+        f"/api/chats/{chat}/title", json={"title": f"Login password={secret}"}
+    )
+    assert response.status_code == 200
+    owner = (await qa.get(f"/api/runs/{chat}")).json()
+    assert secret in owner["chat_title"]
+    assert secret in owner["chat_prompt"]
+    shared = await qa2.get(f"/api/runs/{chat}")
+    team = await qa.get("/api/runs", params={"scope": "everyone"})
+    assert shared.status_code == team.status_code == 200
+    for row in [shared.json(), *team.json()["runs"]]:
+        assert row["read_only"]
+        assert secret not in row["chat_title"]
+        assert secret not in row["chat_prompt"]
+        assert "[REDACTED]" in row["chat_title"]
+
+
+@pytest.mark.asyncio
 async def test_rename_rejects_anonymous_and_missing_session(anonymous, qa, chat):
     assert (
         await anonymous.patch(f"/api/chats/{chat}/title", json={"title": "No"})

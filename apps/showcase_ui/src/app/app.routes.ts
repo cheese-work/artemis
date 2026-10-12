@@ -24,7 +24,7 @@ import { adminGuard } from './guards/admin.guard';
 import { ProvidersComponent } from './pages/providers/providers.component';
 
 export const routes: Routes = [
-  { path: '', pathMatch: 'full', redirectTo: 'sessions' },
+  { path: '', pathMatch: 'full', redirectTo: 'sessions/new' },
   { path: 'setup', component: HomeComponent },
   { path: 'providers', component: ProvidersComponent, canActivate: [adminGuard] },
   { path: 'sessions', component: WorkspaceComponent, data: { review: true } },

@@ -255,7 +255,7 @@ export class RunLibraryComponent implements OnChanges {
         next: (run) => void this.router.navigate(['/sessions', run.chat_session_id ?? run.session_id], { queryParams: this.runQuery() }),
         error: (error: HttpErrorResponse) => {
           // 409 and 410 are answers the viewer can explain; anything else may be a word that looks like an id.
-          if (error.status === 409 || error.status === 410) void this.router.navigate(['/runs', intent.id], { queryParams: this.runQuery() });
+          if (error.status === 409 || error.status === 410) void this.router.navigate(['/sessions', intent.id], { queryParams: this.runQuery() });
           else this.apply({ q: intent.id });
         }
       });

@@ -6,11 +6,18 @@ import { SessionSidebarComponent } from './session-sidebar.component';
 
 describe('Session sidebar', () => {
   let streamSerial = 'phone-a';
+  let runStatus = 'running';
+  let requests = 0;
   beforeEach(() => {
     streamSerial = 'phone-a';
+    runStatus = 'running';
+    requests = 0;
     TestBed.configureTestingModule({ imports: [SessionSidebarComponent], providers: [
       { provide: RunsService, useValue: {
-        get: () => of({ session_id: 'run', status: 'running', start_time: 1, device_ref: { serial: 'phone-a' }, agent_model: 'fixture-model' }),
+        get: () => {
+          requests++;
+          return of({ session_id: 'run', status: runStatus, start_time: 1, device_ref: { serial: 'phone-a' }, agent_model: 'fixture-model' });
+        },
         steps: () => of([{}, {}]),
         video: () => of({ status: 'unavailable', video_segments: [] })
       } },
@@ -56,6 +63,16 @@ describe('Session sidebar', () => {
     fixture.nativeElement.querySelector('[role="tab"]').dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight' }));
     fixture.detectChanges();
     expect(fixture.componentInstance.tab()).toBe('Details');
+    fixture.destroy();
+  }));
+  it('stops polling after the terminal response', fakeAsync(() => {
+    const fixture = render();
+    runStatus = 'completed';
+    tick(2000);
+    expect(requests).toBe(2);
+    expect(fixture.componentInstance.run()?.status).toBe('completed');
+    tick(10000);
+    expect(requests).toBe(2);
     fixture.destroy();
   }));
 });

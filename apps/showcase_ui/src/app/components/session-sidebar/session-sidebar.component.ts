@@ -1,7 +1,7 @@
 import { DatePipe } from '@angular/common';
 import { HttpClient } from '@angular/common/http';
-import { ChangeDetectionStrategy, Component, computed, effect, inject, input, signal } from '@angular/core';
-import { catchError, forkJoin, of, switchMap, timer } from 'rxjs';
+import { ChangeDetectionStrategy, Component, computed, effect, inject, input, NgZone, signal } from '@angular/core';
+import { catchError, forkJoin, of, switchMap, takeWhile, timer } from 'rxjs';
 import { RunSummary, SessionVideo } from '../../core/models/run.model';
 import { SessionUsage } from '../../core/models/session.model';
 import { RunsService } from '../../services/runs.service';
@@ -74,6 +74,7 @@ import { appUrl, mediaUrl } from '../../utils/app-url.util';
 export class SessionSidebarComponent {
   private readonly api = inject(RunsService);
   private readonly http = inject(HttpClient);
+  private readonly zone = inject(NgZone);
   public readonly runId = input('');
   public readonly firstPrompt = input<string | null>(null);
   public readonly tabs = ['Live', 'Details', 'Stats'] as const;
@@ -109,7 +110,7 @@ export class SessionSidebarComponent {
       this.videoFailed.set(false);
       this.error.set(null);
       if (!id) return;
-      const subscription = timer(0, 2000).pipe(switchMap(() => forkJoin({
+      const subscription = this.zone.runOutsideAngular(() => timer(0, 2000).pipe(switchMap(() => forkJoin({
         run: this.api.get(id).pipe(catchError(() => { this.error.set('Session details could not load.'); return of(null); })),
         video: this.api.video(id).pipe(catchError(() => of(null))),
         steps: this.api.steps(id).pipe(catchError(() => of(null))),
@@ -119,7 +120,7 @@ export class SessionSidebarComponent {
         stream: this.http.get<{ serial: string | null; live_stream_url: string | null }>(
           '/api/stream/device-state'
         ).pipe(catchError(() => of(null)))
-      }))).subscribe(result => {
+      })), takeWhile(result => !result.run || ['queued', 'pending', 'starting', 'running', 'paused'].includes(result.run.status), true)).subscribe(result => this.zone.run(() => {
         this.now.set(Date.now() / 1000);
         this.run.set(result.run);
         this.video.set(result.video);
@@ -127,7 +128,7 @@ export class SessionSidebarComponent {
         this.usage.set(result.usage);
         this.stream.set(result.stream);
         if (result.run) this.error.set(null);
-      });
+      })));
       onCleanup(() => subscription.unsubscribe());
     });
   }

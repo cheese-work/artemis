@@ -15,7 +15,7 @@ describe('app routes', () => {
     expect(routes.find(route => route.path === 'lessons')?.component).toBe(LessonsComponent);
   });
   it('redirects the root path to the workspace', () => {
-    expect(routes.find(route => route.path === '')?.redirectTo).toBe('sessions');
+    expect(routes.find(route => route.path === '')?.redirectTo).toBe('sessions/new');
   });
 
   it('serves system setup at /setup and workspace at /workspace', () => {
@@ -59,7 +59,7 @@ describe('first-run navigation', () => {
   }
 
   it('opens Setup for the first run when configuration and credentials are missing', async () => {
-    expect(await open(false, false, false, '/')).toBe('/sessions');
+    expect(await open(false, false, false, '/')).toBe('/setup');
   });
 
   it('opens Setup when the default config exists but no credential is set', async () => {

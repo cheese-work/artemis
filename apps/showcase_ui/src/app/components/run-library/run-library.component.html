@@ -173,7 +173,7 @@
     } @else {
       <div class="state state-empty">
         @if (scope() === 'everyone') { <p>No shared runs yet.</p> }
-        @else { <p>{{ strings.emptyTitle }} <a routerLink="/workspace">{{ strings.emptyAction }}</a>.</p> }
+        @else { <p>{{ strings.emptyTitle }} <a routerLink="/sessions/new">{{ strings.emptyAction }}</a>.</p> }
       </div>
     }
   }

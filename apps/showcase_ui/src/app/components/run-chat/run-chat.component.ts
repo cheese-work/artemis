@@ -1,4 +1,4 @@
-import { ChangeDetectionStrategy, Component, computed, effect, inject, input, output, signal } from '@angular/core';
+import { ChangeDetectionStrategy, Component, computed, effect, inject, input, NgZone, output, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { CdkTextareaAutosize } from '@angular/cdk/text-field';
 import { HttpErrorResponse } from '@angular/common/http';
@@ -22,6 +22,7 @@ import { SessionSidebarComponent } from '../session-sidebar/session-sidebar.comp
 })
 export class RunChatComponent {
   private readonly api = inject(RunsService);
+  private readonly zone = inject(NgZone);
   public readonly runId = input('');
   public readonly readOnly = input(false);
   public readonly compose = input(true);
@@ -58,7 +59,7 @@ export class RunChatComponent {
       this.editingTitle.set(false);
       this.savingTitle.set(false);
       if (!id) return;
-      const subscription = this.api.get(id).pipe(
+      const subscription = this.zone.runOutsideAngular(() => this.api.get(id).pipe(
         switchMap((run) => {
           this.rootRun.set(run);
           return timer(0, 1000).pipe(switchMap(() => this.api.chat(run.session_id).pipe(
@@ -66,7 +67,7 @@ export class RunChatComponent {
           )));
         }),
         catchError((error) => { this.reportError(error); return of(null); })
-      ).subscribe((chat) => { if (chat) this.chat.set(chat); });
+      ).subscribe((chat) => this.zone.run(() => { if (chat) this.chat.set(chat); })));
       onCleanup(() => subscription.unsubscribe());
     });
   }
