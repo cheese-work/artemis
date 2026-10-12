@@ -12,8 +12,8 @@ This revision specifies the deterministic local-interstitial comparison that the
 
 | Input | Pin | Status and use |
 | --- | --- | --- |
-| SDK | `tevo-studio/mMonetize` PR 312, head `6ac9777bcb4d0c31e8f10af4d437c5c6b857b37c`; predecessor PR 305, head `0da74be215f185b6e228e795f6e2b6510da453d0` | Draft, unsigned source candidate; use only the D6 local offline fixture seams. Re-pin if the head changes. |
-| Sample | `tevo-studio/mMonetize-sample` PR 131, head `b50e6d8a65e005b3555934ac3c36b16c7062fb7e`; predecessor PR 126, head `4fdc1852b88dd44c2be3889858de93b29e61a1cb` | Draft, unsigned source candidate; use only the D6 offline variants and retained records. Re-pin if the head changes. |
+| SDK | `tevo-studio/mMonetize` PR 314, head `4e8e95967cecb672abd1e949402914a68bd57c4e`; predecessor PR 312, head `6ac9777bcb4d0c31e8f10af4d437c5c6b857b37c` | Signed source candidate; use only the D6 local offline fixture seams. Re-pin if the head changes. |
+| Sample | `tevo-studio/mMonetize-sample` PR 133, head `0b2e36f319f667ffa04ace7e8095c1befe810898`; predecessor PR 131, head `b50e6d8a65e005b3555934ac3c36b16c7062fb7e` | Signed source candidate; use only the D6 offline variants and retained records. Re-pin if the head changes. |
 | Artemis | `cheese-work/artemis` base revision `dd94732489f6ef76f1494043d566062d07506bac` | Case authoring base only. Primary CLI entrypoint is `uv run artemis run`; Python requirement is `>=3.12`; `uv.lock` SHA-256 is `fecfe4364bc321e2a77febf0616b878e38f8daacabee6aea345058e9fc523351`. |
 | Android fixture dependencies | Sample `gradle/libs.versions.toml` SHA-256 `1eff7be3deb50dde6d6afb60c341307ebee75a66a50c8b423fe7edbe61f822dd`; sample Gradle wrapper `9.2.1`, properties SHA-256 `bcdba2d914e721ca13e3e6bdf73ed9a8eb2f1bc5cc12e0a6cca6d977fb6ab52d`; SDK Gradle wrapper `9.2.1`, properties SHA-256 `5529e8117ebea02ad061ab6b568c36ba58bc066e81d81b9080a09a95514f6449` | Reference identities only. No Gradle task or APK was run for this case. The sample does not pin all resolved dependencies with a dependency lock or verification metadata. |
 
@@ -41,7 +41,7 @@ Use only `d6ControlOfflineDebug` and `d6BeaconOfflineDebug` built from the exact
 
 1. Sol records the later exclusive claim, exact permitted actions, restricted artifact destination, and cleanup owner. Generate one fresh `run_id` of 1–40 ASCII letters, digits, `_`, or `-`. Use `p01` through `p50` once for each arm. These 50 D6 pairs use the fixture's available ID range; they do not assert or replace D1's separate 5 ms / 50-raw-pair timing contract.
 2. Clear only this synthetic app's data once before the new `run_id`, while the granted target and command allow it. Do not clear app data between arms or pairs: `filesDir/d6_records/<run_id>/` must retain both arms for `d6_compare`. Do not use a prior run directory. If a clean run cannot be established without deleting another app's data, stop.
-3. Run `control` pairs `p01`–`p50` in the control APK, then replace it with the beacon APK using a Sol-approved data-preserving install route. Confirm the control records remain present before continuing. The package and signer must match across the replacement. If app data does not survive replacement, stop; this source exposes no import operation that can safely reconstruct the comparison set.
+3. Run `control` pairs `p01`–`p50` in `d6ControlOfflineDebug`. Then replace the installed APK with `d6BeaconOfflineDebug` through an in-place reinstall (`adb install -r` or Sol's pinned adapter equivalent). Both flavors use `com.example.synthetic.d1offline` and the same debug signer. Do not uninstall, clear app data, or change the run directory between arms. Confirm all control records remain present after the reinstall. If app data does not survive the in-place reinstall, stop; this source exposes no import operation that can safely reconstruct the comparison set.
 4. Start a fresh app process for every pair/arm. Pass only the expected `run_id`, `pair_id`, and `arm` extras to `io.mmonetize.sample.d1.D1FixtureActivity`. The activity must reject a duplicate or non-fresh per-arm fixture store. Keep other app, device, runner, target image, and ad configuration values fixed.
 5. Treat `d1_status == D1_READY` only as fixture setup. Select `d1_show`; wait for the actual `d1_mock_ad` view and for the real show/impression callback to update `d6_record`. Capture both load and show records before dismissing the mock dialog. Dismiss only `d1_mock_ad`, and preserve the record even if a later step fails. `D1_VALID` is not a D6 result.
 6. On the final `beacon` / `p50` activity, after its show record is present and the dialog is dismissed, select `d6_compare` without relaunching. Capture `d6_comparison` and `filesDir/d6_records/<run_id>/comparison.json`. A missing, malformed, duplicate, mixed-run, mixed-build, or incomplete record set is a failure or NOT-RUN; it is never a pass.
@@ -78,21 +78,31 @@ The expected actual value is `0`. Require the selected Artemis runner to report 
 | --- | --- |
 | N1 | `NOT-AUTHORED / NOT-RUN` |
 | N2 | `BLOCKED / NOT-AUTHORED / NOT-RUN` — Sol's separate source-recovery slice is pending; no licensed/control local journey is evidenced here. |
+| N3 | `NOT-AUTHORED / NOT-RUN` |
 | D1 — endpoint absent, paired init timing, actual offline ad show | `AUTHORED / NOT-RUN` in separate Artemis PR 191; this D6 revision does not alter its 5 ms / 50-raw-pair contract. |
 | D1 — DNS/TLS error | `NOT-AUTHORED / NOT-RUN` |
 | D1 — 429/503 | `NOT-AUTHORED / NOT-RUN` |
 | D1 — 30-second server hang | `NOT-AUTHORED / NOT-RUN` |
-| D2 | `BLOCKED / NOT-AUTHORED / NOT-RUN` — Sol's separate source-recovery slice is pending; attributable wait proof and a deterministic sealed-upload/failure schedule are not established here. |
+| D2 | `AUTHORED / PARTIAL / BLOCKED / NOT-RUN` in separate Artemis D2 case; sampling is not exhaustive and state/stack reads are not atomic. |
+| D3 | `NOT-AUTHORED / NOT-RUN` |
 | D3b | `NOT-AUTHORED / NOT-RUN` |
 | D3c | `NOT-AUTHORED / NOT-RUN` |
+| D3d | `NOT-AUTHORED / NOT-RUN` |
+| D4 | `NOT-AUTHORED / NOT-RUN` |
 | D5 | `NOT-AUTHORED / NOT-RUN` |
 | D5b | `NOT-AUTHORED / NOT-RUN` |
 | D6 — paired beacon/no-beacon ad behavior | `AUTHORED / PARTIAL / BLOCKED / NOT-RUN` — deterministic local-interstitial assertions only; full D6 remains blocked by the exact testability gap above. |
 | D7 | `NOT-AUTHORED / NOT-RUN` |
+| D8 | `NOT-AUTHORED / NOT-RUN` |
+| D9 | `NOT-AUTHORED / NOT-RUN` |
 | D10 | `NOT-AUTHORED / NOT-RUN` |
+| D11 | `NOT-AUTHORED / NOT-RUN` |
+| D12 | `NOT-AUTHORED / NOT-RUN` |
 | D13 | `NOT-AUTHORED / NOT-RUN` |
+| D14 | `NOT-AUTHORED / NOT-RUN` |
+| D15 | `NOT-AUTHORED / NOT-RUN` |
 
-All other CHE-770 §3 rows remain outside this device-case revision and `NOT-AUTHORED / NOT-RUN`.
+All non-device CHE-770 annex rows remain outside this device-case revision and `NOT-AUTHORED / NOT-RUN`.
 
 ## Run record
 
