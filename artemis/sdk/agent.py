@@ -1248,6 +1248,11 @@ class Agent:
                 session_status = "cancelled"
             context.data_engine.end_session(status=session_status)
 
+            if task.status == "completed" and os.getenv("ARTEMIS_TASK_WORKER") == "1":
+                from apps.admin_console.services.automatic_prompt_tips import ensure_tip
+
+                await ensure_tip(str(context.data_engine.session_id))
+
         exec_setup_ctx = context.execution_setup
         if not exec_setup_ctx:
             return

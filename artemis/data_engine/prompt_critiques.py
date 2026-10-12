@@ -22,6 +22,7 @@ REVISIONS = (
     )""",
         "CREATE INDEX idx_prompt_critiques_session ON prompt_critiques (session_id, created_at DESC)",
     ),
+    ("ALTER TABLE prompt_critiques ADD COLUMN automatic_state TEXT",),
 )
 
 

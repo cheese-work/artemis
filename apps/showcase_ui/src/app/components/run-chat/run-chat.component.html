@@ -1,5 +1,12 @@
 @if (!runId()) {
-  <section class="empty-chat"><h1>New session</h1><p>Describe what the agent should check on your phone.</p></section>
+  <section class="empty-chat"><h1>New session</h1><p>Describe what the agent should check on your phone.</p>
+    <div class="sample-prompts" aria-label="Sample prompts">
+      @for (sample of samples; track sample.title) {
+        <button type="button" data-sample [title]="sample.source" (click)="newRunPrompt.emit(sample.prompt)">{{ sample.title }}</button>
+      }
+    </div>
+    <p class="sample-attribution">Original Artemis SDK examples · Selecting a sample only fills the composer.</p>
+  </section>
 } @else {
   <div class="chat-session">
     <header class="chat-header">
@@ -64,6 +71,17 @@
             @if (shell.technicalDetails()) {
               @if (verdict.report) { <details><summary>Agent report</summary><pre>{{ verdict.report }}</pre></details> }
               <details><summary>Execution details and error stack</summary><pre>{{ verdict.details | json }}</pre><pre>{{ verdict.outcome | json }}</pre></details>
+            }
+            @if (verdict.status === 'completed') {
+              @if (verdict.tip; as tip) {
+                @if (tip.state === 'generating') { <footer class="verdict-tip" role="status">Preparing a tip for next time…</footer> }
+                @else if (tip.state === 'complete' && tip.text) {
+                  <footer class="verdict-tip"><span>Next time</span><p>{{ tip.text }}</p>
+                    <button type="button" class="copy-tip" (click)="copyTip()">Copy</button>
+                    @if (copyNotice()) { <span role="status">{{ copyNotice() }}</span> }
+                  </footer>
+                }
+              }
             }
           </li>
         }

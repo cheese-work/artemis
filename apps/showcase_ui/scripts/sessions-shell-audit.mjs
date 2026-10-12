@@ -80,14 +80,19 @@ try {
   const receipts = [];
   for (const width of [1440, 390]) {
     run.status = 'running'; run.end_time = null; mock.chat.turns[0].status = 'running'; delete mock.chat.verdict;
+    mock.chat.messages = mock.chat.messages.filter(message => message.kind !== 'input_request');
+    mock.chat.timeline = mock.chat.timeline.filter(message => message.kind !== 'input_request');
     await send('Emulation.setDeviceMetricsOverride', { width, height: 900, deviceScaleFactor: 1, mobile: false });
     const capture = async name => {
       await evaluate('document.fonts.ready');
       const issues = await evaluate(`(() => {
         const issues = document.documentElement.scrollWidth > innerWidth ? ['Horizontal overflow'] : [];
-        for (const element of document.querySelectorAll('app-run-chat button, app-run-chat input, app-run-chat summary, app-session-sidebar button, app-nav-switcher a, .new-run, .composer button')) {
-          if (!element.checkVisibility()) continue;
-          const box = element.getBoundingClientRect(); if (box.width < 44 || box.height < 44) issues.push(element.getAttribute('aria-label') || element.textContent.trim());
+        for (const element of document.querySelectorAll('button, a[href], input, select, textarea, summary, [role="button"], [role="tab"], [tabindex="0"]')) {
+          if (!element.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true })) continue;
+          const style = getComputedStyle(element);
+          if (style.clip !== 'auto' || style.clipPath !== 'none') continue;
+          const box = element.getBoundingClientRect();
+          if (box.width < 44 || box.height < 44) issues.push({ control: element.getAttribute('aria-label') || element.textContent.trim(), tag: element.tagName, class: element.className, width: box.width, height: box.height });
         } return issues;
       })()`);
       const screenshot = await send('Page.captureScreenshot', { format: 'png' });
@@ -96,6 +101,11 @@ try {
     };
     await send('Page.navigate', { url: url + '/sessions/new' }); await wait(1200);
     await capture('empty');
+    await evaluate("document.querySelector('[data-sample]').click()");
+    if (!await evaluate("document.querySelector('[aria-label=\"Task for the phone\"]')?.value.startsWith('Open the notification panel')")) throw new Error('Sample did not fill the composer.');
+    if (!await evaluate("!!document.querySelector('.empty-chat')")) throw new Error('Sample unexpectedly submitted a run.');
+    await capture('sample-filled');
+    if (await evaluate("!!document.querySelector('a[href$=\"/lessons\"]')")) throw new Error('Lessons navigation remains visible.');
     await send('Page.navigate', { url: url + '/sessions/' + run.session_id }); await wait(1400);
     if (!await evaluate("!!document.querySelector('app-session-sidebar .device-feed')")) throw new Error('Bound-phone Live fixture is missing.');
     await capture('running');
@@ -122,10 +132,16 @@ try {
     await evaluate("document.querySelector('[aria-controls=\"session-sidebar\"]').click()"); await wait(100);
     await capture('sidebar-collapsed');
     run.status = 'completed'; run.end_time = run.start_time + 120; mock.chat.turns[0].status = 'completed';
-    mock.chat.verdict = { status: 'completed', outcome: { phase: 'outcome', tests: { passed: 1, failed: 0 }, last_findings: ['Login works.'] }, report: 'Synthetic full report', details: { session_id: run.session_id } };
+    mock.chat.verdict = { status: 'completed', outcome: { phase: 'outcome', tests: { passed: 1, failed: 0 }, last_findings: ['Login works.'] }, report: 'Synthetic full report', details: { session_id: run.session_id }, tip: { state: 'complete', text: 'Specify the login preconditions and the expected success message.' } };
     await send('Page.navigate', { url: url + '/sessions/' + run.session_id }); await wait(1400);
     if (!await evaluate("document.querySelector('.flat-timeline').lastElementChild.matches('.verdict-card')")) throw new Error('Verdict is not last.');
+    if (!await evaluate("!!document.querySelector('.verdict-card .verdict-tip button')")) throw new Error('Completed verdict tip footer or Copy control is missing.');
     if (await evaluate("!!document.querySelector('[data-event-kind=thinking]')")) throw new Error('Thinking must be hidden by default.');
+    if (width === 390) {
+      await capture('finished-sidebar-open');
+      await evaluate("document.querySelector('[aria-controls=\"session-sidebar\"]').click()"); await wait(100);
+    }
+    await evaluate("document.querySelector('.verdict-card').scrollIntoView({ block: 'end' })");
     await capture('finished');
     await evaluate("document.querySelector('[aria-label=\"Technical details\"]').click()"); await wait(100);
     await evaluate("document.querySelector('.step-row summary').click()"); await wait(100);
@@ -144,5 +160,5 @@ try {
   }
   await new Promise(resolve => server.close(resolve));
   writeFileSync(path.join(output, 'chrome.log'), browserLog);
-  rmSync(profile, { recursive: true, force: true });
+  rmSync(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 }

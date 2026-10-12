@@ -24,6 +24,51 @@ describe('RunChatComponent', () => {
   };
   let api: jasmine.SpyObj<RunsService>;
 
+  it('fills the empty-session composer with an upstream sample without sending', () => {
+    const fixture = TestBed.createComponent(RunChatComponent);
+    const emitted = spyOn(fixture.componentInstance.newRunPrompt, 'emit');
+    fixture.detectChanges();
+    const button = fixture.nativeElement.querySelector('[data-sample]');
+    expect(button).not.toBeNull();
+    button.click();
+    expect(emitted).toHaveBeenCalledWith(jasmine.stringMatching('Open the notification panel'));
+    expect(api.sendChat).not.toHaveBeenCalled();
+    expect(api.sendInput).not.toHaveBeenCalled();
+    fixture.destroy();
+  });
+
+  it('keeps the completed-run tip inside the final verdict and copies it', fakeAsync(() => {
+    api.chat.and.returnValue(of({ ...thread, turns: [{ ...thread.turns[0], status: 'completed' }], timeline: thread.messages, verdict: { status: 'completed', outcome: null, details: {}, tip: { state: 'complete', text: 'Specify the expected screen next time.' } } }));
+    const clipboard = spyOn(navigator.clipboard, 'writeText').and.returnValue(Promise.resolve());
+    const fixture = TestBed.createComponent(RunChatComponent);
+    fixture.componentRef.setInput('runId', 'root');
+    fixture.detectChanges(); tick(0); fixture.detectChanges();
+    const verdict = fixture.nativeElement.querySelector('.verdict-card');
+    expect(verdict).toBe(fixture.nativeElement.querySelector('.flat-timeline').lastElementChild);
+    expect(verdict.querySelector('.verdict-tip').textContent).toContain('Specify the expected screen');
+    verdict.querySelector('.copy-tip').click(); tick(0);
+    expect(clipboard).toHaveBeenCalledOnceWith('Specify the expected screen next time.');
+    fixture.destroy();
+  }));
+
+  it('polls until the completed-run tip settles and never displays one for incomplete execution', fakeAsync(() => {
+    let current: ChatSession = { ...thread, turns: [{ ...thread.turns[0], status: 'completed' }], verdict: { status: 'completed', outcome: null, details: {}, tip: { state: 'generating', text: null } } };
+    api.chat.and.callFake(() => of(current));
+    const fixture = TestBed.createComponent(RunChatComponent);
+    fixture.componentRef.setInput('runId', 'root');
+    fixture.detectChanges(); tick(0); fixture.detectChanges();
+    current = { ...current, verdict: { ...current.verdict!, tip: { state: 'complete', text: 'Tip' } } };
+    tick(1000); fixture.detectChanges();
+    const calls = api.chat.calls.count();
+    tick(3000); expect(api.chat.calls.count()).toBe(calls);
+    for (const status of ['failed', 'interrupted', 'cancelled']) {
+      fixture.componentInstance.chat.set({ ...current, verdict: { ...current.verdict!, status } });
+      fixture.detectChanges();
+      expect(fixture.nativeElement.querySelector('.verdict-tip')).toBeNull();
+    }
+    fixture.destroy();
+  }));
+
   it('keeps the timeline and composer visible while restarting polling', fakeAsync(() => {
     const fixture = TestBed.createComponent(RunChatComponent);
     fixture.componentRef.setInput('runId', 'root');

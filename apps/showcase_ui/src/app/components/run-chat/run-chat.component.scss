@@ -55,6 +55,10 @@ button:focus-visible, textarea:focus-visible, summary:focus-visible { outline: 2
 .flat-timeline time { display: block; margin-top: var(--space-xs); color: var(--color-text-muted); font-size: var(--text-label); }
 .thinking summary { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .verdict-card h2 { margin: 0; font-size: var(--text-ui); }
+.verdict-tip, .sample-attribution { color: var(--color-text-muted); font-size: var(--text-label); }
+.verdict-tip { border-top: 1px solid var(--color-rule); margin-top: var(--space-md); padding-top: var(--space-sm); }
+.verdict-tip p { white-space: pre-wrap; }
+.sample-prompts { display: flex; flex-wrap: wrap; gap: var(--space-sm); margin-block: var(--space-lg); }
 @media (max-width: 600px) { .chat-header { flex-wrap: wrap; } .session-title { flex-basis: calc(100% - 52px); } .technical-toggle { order: 2; } }
 @media (max-width: 1199px) {
   .session-layout.sidebar-open { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) minmax(0, 0.9fr); }

@@ -66,7 +66,7 @@ export interface ChatSession {
   turns: ChatTurn[];
   messages: ChatMessage[];
   timeline?: ChatMessage[];
-  verdict?: { status: string; outcome: CheckerBlockData | null; report?: string | null; details: Record<string, any> };
+  verdict?: { status: string; outcome: CheckerBlockData | null; report?: string | null; details: Record<string, any>; tip?: { state: 'generating' | 'complete' | 'failed'; text: string | null } | null };
   idle_until: number | null;
   lease_pid: number | null;
 }

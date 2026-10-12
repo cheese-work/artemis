@@ -13,6 +13,7 @@ from artemis.data_engine.prompt_critiques import MODULE, REVISIONS, migrate  # n
 
 def _present(row):
     result = dict(row)
+    result.pop("automatic_state", None)
     result["changes"] = json.loads(result.pop("changes_json"))
     result["lessons"] = json.loads(result.pop("lessons_json"))
     return result
@@ -46,7 +47,7 @@ def add(conn, session_id, *, requested_by, model, original_prompt, improvement):
         conn.execute("BEGIN IMMEDIATE")
         session(conn, session_id)
         conn.execute(
-            "INSERT INTO prompt_critiques VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO prompt_critiques(id, session_id, created_at, requested_by, model, original_prompt, improved_prompt, changes_json, lessons_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 data["id"],
                 session_id,
