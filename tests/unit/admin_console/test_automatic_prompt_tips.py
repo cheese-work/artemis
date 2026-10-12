@@ -106,17 +106,55 @@ async def test_sdk_finalization_triggers_tip_only_for_managed_completed_executio
         data_engine=SimpleNamespace(session_id="run", end_session=Mock()), execution_setup=None
     )
     monkeypatch.setenv("ARTEMIS_TASK_WORKER", "1")
-    await agent._finalize_tracing_safely(
+    await agent._generate_prompt_tip_safely(
         SimpleNamespace(status="completed", get_name=lambda: "test"), context
     )
     generate.assert_awaited_once_with("run")
     for status in ("failed", "interrupted", "cancelled"):
-        await agent._finalize_tracing_safely(
+        await agent._generate_prompt_tip_safely(
             SimpleNamespace(status=status, get_name=lambda: "test"), context
         )
     assert generate.await_count == 1
-    monkeypatch.delenv("ARTEMIS_TASK_WORKER")
-    await agent._finalize_tracing_safely(
+    monkeypatch.setenv("ARTEMIS_CHAT_SESSION_ID", "chat")
+    await agent._generate_prompt_tip_safely(
         SimpleNamespace(status="completed", get_name=lambda: "test"), context
     )
     assert generate.await_count == 1
+    monkeypatch.delenv("ARTEMIS_CHAT_SESSION_ID")
+    monkeypatch.delenv("ARTEMIS_TASK_WORKER")
+    await agent._generate_prompt_tip_safely(
+        SimpleNamespace(status="completed", get_name=lambda: "test"), context
+    )
+    assert generate.await_count == 1
+
+
+@pytest.mark.parametrize("state", ["generating", "failed"])
+def test_legacy_critique_apis_hide_incomplete_automatic_rows(library, state):
+    from apps.admin_console.core.ownership import OwnerScope
+    from apps.admin_console.database.repositories import prompt_critique_repository as critiques
+
+    identity = library.seed()
+    with db_session(library.db) as connection, connection:
+        connection.execute(
+            "INSERT INTO prompt_critiques(id,session_id,created_at,model,original_prompt,improved_prompt,changes_json,lessons_json,automatic_state) VALUES (?,?,1,'pending','goal','','[]','[]',?)",
+            (f"automatic:{identity}", identity, state),
+        )
+        assert critiques.newest(connection, identity) is None
+        assert (
+            critiques.list_critiques(
+                connection, OwnerScope(enforced=False), q="", limit=10, offset=0
+            )
+            == []
+        )
+        connection.execute(
+            "UPDATE prompt_critiques SET automatic_state='complete', improved_prompt='Specific goal'"
+        )
+        assert critiques.newest(connection, identity)["improved_prompt"] == "Specific goal"
+        assert (
+            len(
+                critiques.list_critiques(
+                    connection, OwnerScope(enforced=False), q="", limit=10, offset=0
+                )
+            )
+            == 1
+        )

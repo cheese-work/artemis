@@ -67,6 +67,64 @@ async def test_fake_loop_follow_up_keeps_one_lease_and_full_history(store):
 
 
 @pytest.mark.asyncio
+async def test_managed_tip_does_not_delay_turn_completion_or_lease_release(
+    store, monkeypatch, caplog
+):
+    from apps.admin_console.services import automatic_prompt_tips
+    from unittest.mock import AsyncMock
+
+    lease = FakeLease()
+    released = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    original_release = lease.release
+
+    def release():
+        original_release()
+        loop.call_soon_threadsafe(released.set)
+
+    lease.release = release
+
+    async def execute(turn):
+        with store.transaction() as connection:
+            connection.execute(
+                "UPDATE sessions SET status='completed' WHERE session_id=?", (turn["turn_id"],)
+            )
+
+    async def tip(identity):
+        assert store.turn(identity)["status"] == "completed"
+        await asyncio.wait_for(released.wait(), timeout=1)
+        assert not lease.held
+        raise TypeError("PRIVATE-TIP-ERROR-SENTINEL")
+
+    generate = AsyncMock(side_effect=tip)
+    monkeypatch.setattr(automatic_prompt_tips, "ensure_tip", generate)
+    monkeypatch.setenv("ARTEMIS_TASK_WORKER", "1")
+    await run_chat_session(store, "run", lease, execute, idle_seconds=0, poll_seconds=0)
+    generate.assert_awaited_once_with("run")
+    assert store.turn("run")["status"] == "completed"
+    assert "PRIVATE-TIP-ERROR-SENTINEL" not in caplog.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["failed", "cancelled", "interrupted"])
+async def test_managed_chat_incomplete_turn_has_no_tip_model_call(store, monkeypatch, status):
+    from apps.admin_console.services import automatic_prompt_tips
+    from unittest.mock import AsyncMock
+
+    async def execute(turn):
+        with store.transaction() as connection:
+            connection.execute(
+                "UPDATE sessions SET status=? WHERE session_id=?", (status, turn["turn_id"])
+            )
+
+    generate = AsyncMock()
+    monkeypatch.setattr(automatic_prompt_tips, "ensure_tip", generate)
+    monkeypatch.setenv("ARTEMIS_TASK_WORKER", "1")
+    await run_chat_session(store, "run", FakeLease(), execute, idle_seconds=0, poll_seconds=0)
+    generate.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_follow_up_after_idle_expiry_reacquires(store):
     lease = FakeLease()
 
