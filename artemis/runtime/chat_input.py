@@ -90,11 +90,11 @@ async def request_input(
                 raise ValueError("input_session_ended")
             claimed = True
             try:
-                accepted = await device_input(value) is True
-            except Exception:
-                accepted = False
+                result = (await asyncio.gather(device_input(value), return_exceptions=True))[0]
+                accepted = result is True
             finally:
                 value = None
+                result = None
             finished = "sent" if accepted else "failed"
             _finish(store, sequence, finished)
             response = {"accepted": True} if accepted else {"error": "input_device_failed"}
@@ -114,7 +114,7 @@ async def request_input(
             }
         except (OSError, TimeoutError):
             response = {"error": "input_request_invalid"}
-        except Exception:
+        except (sqlite3.Error, TypeError, KeyError, RuntimeError):
             finished = "failed" if claimed else None
             response = {"error": "input_device_failed"}
         except asyncio.CancelledError:

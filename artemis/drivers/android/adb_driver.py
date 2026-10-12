@@ -322,45 +322,48 @@ class AndroidAdbDriver(BaseDeviceDriver):
         return False
 
     async def input_private(self, text: str, *, target: dict, secret: bool = True) -> bool:
-        try:
-            snapshot = await self.get_screen_data()
-            focused = next(
-                (
-                    element
-                    for element in snapshot.ui_elements
-                    if element.get("focused") in (True, "true")
-                ),
-                None,
-            )
-            if not focused or any(focused.get(key) != value for key, value in target.items()):
-                return False
-            if secret and focused.get("password") not in (True, "true"):
-                return False
-            if any(ord(character) < 32 or ord(character) == 127 for character in text):
-                return False
-            ime = await asyncio.to_thread(
-                self.device.shell, "settings get secure default_input_method", timeout=10
-            )
-            if (not text.isascii() or "%s" in text) and "adbkeyboard" not in str(ime).lower():
-                return False
-            if secret:
-                self._private_input_used = True
-            await asyncio.to_thread(
-                self.device.shell,
-                "input keyevent 123 && input keyevent --meta 1 122 && input keyevent 67",
-                timeout=10,
-            )
-            command = (
-                "am broadcast -a ADB_INPUT_B64 --es msg "
-                + shlex.quote(base64.b64encode(text.encode()).decode())
-                if "adbkeyboard" in str(ime).lower()
-                else "input text " + shlex.quote(text.replace(" ", "%s"))
-            )
-            await asyncio.to_thread(self.device.shell, command, timeout=10)
-            await asyncio.to_thread(self.device.shell, "input keyevent 61", timeout=10)
-            return True
-        except Exception:
+        result = (
+            await asyncio.gather(self._input_private(text, target, secret), return_exceptions=True)
+        )[0]
+        return result is True
+
+    async def _input_private(self, text: str, target: dict, secret: bool) -> bool:
+        snapshot = await self.get_screen_data()
+        focused = next(
+            (
+                element
+                for element in snapshot.ui_elements
+                if element.get("focused") in (True, "true")
+            ),
+            None,
+        )
+        if not focused or any(focused.get(key) != value for key, value in target.items()):
             return False
+        if secret and focused.get("password") not in (True, "true"):
+            return False
+        if any(ord(character) < 32 or ord(character) == 127 for character in text):
+            return False
+        ime = await asyncio.to_thread(
+            self.device.shell, "settings get secure default_input_method", timeout=10
+        )
+        if (not text.isascii() or "%s" in text) and "adbkeyboard" not in str(ime).lower():
+            return False
+        if secret:
+            self._private_input_used = True
+        await asyncio.to_thread(
+            self.device.shell,
+            "input keyevent 123 && input keyevent --meta 1 122 && input keyevent 67",
+            timeout=10,
+        )
+        command = (
+            "am broadcast -a ADB_INPUT_B64 --es msg "
+            + shlex.quote(base64.b64encode(text.encode()).decode())
+            if "adbkeyboard" in str(ime).lower()
+            else "input text " + shlex.quote(text.replace(" ", "%s"))
+        )
+        await asyncio.to_thread(self.device.shell, command, timeout=10)
+        await asyncio.to_thread(self.device.shell, "input keyevent 61", timeout=10)
+        return True
 
     async def input_text(self, text: str, clear_existing: bool = True) -> bool:
         try:
