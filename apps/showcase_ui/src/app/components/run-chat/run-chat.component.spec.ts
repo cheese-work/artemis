@@ -7,6 +7,7 @@ import { RunsService } from '../../services/runs.service';
 import { ChatSession, RunSummary } from '../../core/models/run.model';
 import { CUSTOM_ELEMENTS_SCHEMA } from '@angular/core';
 import { RunViewComponent } from '../run-view/run-view.component';
+import { SessionSidebarComponent } from '../session-sidebar/session-sidebar.component';
 
 describe('RunChatComponent', () => {
   const thread: ChatSession = {
@@ -23,14 +24,15 @@ describe('RunChatComponent', () => {
   let api: jasmine.SpyObj<RunsService>;
 
   beforeEach(() => {
-    api = jasmine.createSpyObj<RunsService>('RunsService', ['get', 'chat', 'sendChat', 'controlChat']);
+    api = jasmine.createSpyObj<RunsService>('RunsService', ['get', 'chat', 'sendChat', 'controlChat', 'renameChat']);
     api.get.and.returnValue(of({ session_id: 'root', prompt: 'Check login', read_only: false } as RunSummary));
     api.chat.and.returnValue(of(thread));
     api.sendChat.and.returnValue(of(thread.messages[0]));
     api.controlChat.and.returnValue(of(thread.messages[0]));
+    api.renameChat.and.returnValue(of({ ...thread, title: 'Login checks' }));
     TestBed.configureTestingModule({ imports: [RunChatComponent], providers: [provideRouter([]), { provide: RunsService, useValue: api }] })
       .overrideComponent(RunChatComponent, {
-        remove: { imports: [RunViewComponent] },
+        remove: { imports: [RunViewComponent, SessionSidebarComponent] },
         add: { schemas: [CUSTOM_ELEMENTS_SCHEMA] }
       });
   });
@@ -92,6 +94,47 @@ describe('RunChatComponent', () => {
     fixture.componentInstance.send();
     expect(api.sendChat.calls.mostRecent().args[2]).toBe(retryId);
     expect(fixture.componentInstance.draft).toBe('Correction');
+    fixture.destroy();
+  }));
+
+  it('renames a visible shared session without enabling message or device writes', fakeAsync(() => {
+    const fixture = render();
+    fixture.componentRef.setInput('readOnly', true);
+    fixture.detectChanges();
+    fixture.nativeElement.querySelector('.title-button').click();
+    fixture.detectChanges();
+    const input = fixture.nativeElement.querySelector('input[aria-label="Session title"]');
+    expect(input.maxLength).toBe(120);
+    fixture.componentInstance.titleDraft = 'Login checks';
+    fixture.nativeElement.querySelector('.rename-form').dispatchEvent(new Event('submit'));
+    fixture.detectChanges();
+    expect(api.renameChat).toHaveBeenCalledWith('root', 'Login checks');
+    expect(fixture.componentInstance.title()).toBe('Login checks');
+    expect(fixture.nativeElement.querySelector('textarea')).toBeNull();
+    expect(api.sendChat).not.toHaveBeenCalled();
+    expect(api.controlChat).not.toHaveBeenCalled();
+    fixture.destroy();
+  }));
+
+  it('cancels rename with Escape and keeps the current title', fakeAsync(() => {
+    const fixture = render();
+    fixture.componentInstance.beginRename();
+    fixture.detectChanges();
+    fixture.nativeElement.querySelector('input').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+    fixture.detectChanges();
+    expect(fixture.componentInstance.editingTitle()).toBeFalse();
+    expect(api.renameChat).not.toHaveBeenCalled();
+    fixture.destroy();
+  }));
+
+  it('collapses the right sidebar without adding a second title or New session button', fakeAsync(() => {
+    const fixture = render();
+    expect(fixture.nativeElement.querySelectorAll('h1').length).toBe(1);
+    expect(fixture.nativeElement.querySelector('app-session-sidebar')).not.toBeNull();
+    fixture.nativeElement.querySelector('[aria-controls="session-sidebar"]').click();
+    fixture.detectChanges();
+    expect(fixture.nativeElement.querySelector('app-session-sidebar')).toBeNull();
+    expect(fixture.nativeElement.textContent).not.toContain('New session');
     fixture.destroy();
   }));
 

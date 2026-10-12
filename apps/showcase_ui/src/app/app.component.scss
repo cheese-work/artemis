@@ -29,6 +29,12 @@
   margin-left: var(--sidebar-w);
 }
 
+@media (min-width: 800px) {
+  :host:has(app-nav-switcher.nav-collapsed) .app-page { margin-left: 72px; }
+  :host:has(app-nav-switcher.nav-hover) .app-page { margin-left: 72px; }
+  :host:has(app-nav-switcher:not(.nav-collapsed):not(.nav-hover)) .app-page { margin-left: var(--sidebar-w); }
+}
+
 .preview-banner {
   flex: none;
   box-sizing: border-box;

@@ -47,13 +47,13 @@ describe('NavSwitcherComponent', () => {
     const hrefs = Array.from<HTMLAnchorElement>(fixture.nativeElement.querySelectorAll('nav a[href]')).map(a =>
       a.getAttribute('href')
     );
-    expect(hrefs).toEqual(['/workspace', '/runs', '/lessons']);
-    expect(fixture.nativeElement.querySelector('a[href="/runs"]').textContent).toContain('Runs');
+    expect(hrefs).toEqual(['/sessions', '/lessons']);
+    expect(fixture.nativeElement.querySelector('a[href="/runs"]')).toBeNull();
     // Labels collapse to icons on phones, so each tab needs its own accessible name.
     const names = Array.from<HTMLAnchorElement>(fixture.nativeElement.querySelectorAll('nav a[href]')).map(a =>
       a.getAttribute('aria-label')
     );
-    expect(names).toEqual(['Workspace', 'Runs', 'Prompt lessons']);
+    expect(names).toEqual(['Sessions', 'Prompt lessons']);
   });
 
   it('uses a compact provider label and a full accessible name for admins', async () => {

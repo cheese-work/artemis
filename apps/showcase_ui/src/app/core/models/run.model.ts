@@ -8,6 +8,9 @@ export interface RunRecording {
 /** A run as `GET /api/runs` and `GET /api/runs/{id}` return it. */
 export interface RunSummary {
   session_id: string;
+  chat_session_id?: string;
+  chat_title?: string | null;
+  chat_prompt?: string | null;
   prompt: string | null;
   status: string;
   interrupt_reason: string | null;
@@ -56,6 +59,7 @@ export interface ChatTurn {
 
 export interface ChatSession {
   session_id: string;
+  title?: string | null;
   turns: ChatTurn[];
   messages: ChatMessage[];
   idle_until: number | null;

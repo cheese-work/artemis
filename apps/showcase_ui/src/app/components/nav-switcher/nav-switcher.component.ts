@@ -27,35 +27,25 @@ import { ShellLayoutService } from '../../services/shell-layout.service';
   standalone: true,
   imports: [RouterLink, RouterLinkActive, AdminIdentityIndicatorComponent, WorkspaceDeviceChipComponent],
   template: `
-    <nav class="floating-nav-switcher" aria-label="Primary navigation">
+    <nav class="floating-nav-switcher" aria-label="Primary navigation"
+      [class.nav-collapsed]="!shell.navExpanded()" [class.nav-hover]="shell.navMode() === 'hover'"
+      (mouseenter)="shell.navHovered.set(true)" (mouseleave)="shell.navHovered.set(false)"
+      (focusin)="shell.navHovered.set(true)" (focusout)="onNavFocusOut($event)">
       <div class="navigation-header">
         <span class="brand-wordmark">SmartQA</span>
         <span class="brand-monogram" aria-label="SmartQA">S</span>
       </div>
       <a
-        routerLink="/workspace"
+        routerLink="/sessions"
         routerLinkActive="active"
         ariaCurrentWhenActive="page"
         class="nav-tab-btn"
-        title="Open Workspace"
-        aria-label="Workspace"
+        title="Open Sessions"
+        aria-label="Sessions"
         (click)="shell.activePane.set('list')"
       >
         <span class="material-symbols-outlined tab-icon" aria-hidden="true">space_dashboard</span>
-        <span class="tab-label">Workspace</span>
-      </a>
-      <a
-        routerLink="/runs"
-        routerLinkActive="active"
-        ariaCurrentWhenActive="page"
-        class="nav-tab-btn"
-        title="Open the run library"
-        aria-label="Runs"
-        (click)="shell.activePane.set('list')"
-      >
-        <span class="material-symbols-outlined tab-icon" aria-hidden="true">history</span>
-        <span class="tab-label">Runs</span>
-        <span class="run-count">{{ runCount() }}</span>
+        <span class="tab-label">Sessions</span>
       </a>
       <a routerLink="/lessons" routerLinkActive="active" ariaCurrentWhenActive="page" class="nav-tab-btn" aria-label="Prompt lessons" title="Open Prompt lessons">
         <span class="material-symbols-outlined tab-icon" aria-hidden="true">list_alt</span>
@@ -81,6 +71,14 @@ import { ShellLayoutService } from '../../services/shell-layout.service';
           }
         </button>
       }
+      <label class="nav-mode" title="Navigation mode">
+        <span aria-hidden="true">☰</span>
+        <select aria-label="Navigation mode" [value]="shell.navMode()" (change)="shell.setNavMode($any($event.target).value)">
+          <option value="expanded">Pinned expanded</option>
+          <option value="collapsed">Pinned icons</option>
+          <option value="hover">Expand on hover</option>
+        </select>
+      </label>
       <div class="nav-status">
         <app-workspace-device-chip></app-workspace-device-chip>
         <app-admin-identity-indicator #account></app-admin-identity-indicator>
@@ -88,6 +86,7 @@ import { ShellLayoutService } from '../../services/shell-layout.service';
     </nav>
   `,
   changeDetection: ChangeDetectionStrategy.Eager,
+  host: { '[class.nav-collapsed]': '!shell.navExpanded()', '[class.nav-hover]': "shell.navMode() === 'hover'" },
   styleUrls: ['./nav-switcher.component.scss']
 })
 export class NavSwitcherComponent {
@@ -97,6 +96,10 @@ export class NavSwitcherComponent {
   @Input() public hasWhatsNew = false;
   @Input() public hasUnreadWhatsNew = false;
   @Output() public showWhatsNew = new EventEmitter<void>();
+
+  public onNavFocusOut(event: FocusEvent): void {
+    if (!(event.currentTarget as HTMLElement).contains(event.relatedTarget as Node | null)) this.shell.navHovered.set(false);
+  }
 
   public get whatsNewLabel(): string {
     return this.hasUnreadWhatsNew ? "Open What's New, unread updates" : "Open What's New";

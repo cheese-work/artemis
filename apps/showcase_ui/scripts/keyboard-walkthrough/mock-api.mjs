@@ -50,7 +50,7 @@ export const PROMPT_CRITIQUE = {
   ],
   lessons: ['Give the task a clear stopping point.', 'Name the visible result that proves the check passed.']
 };
-export const mock = { chat: null, critiques: [], lessonsError: false, improveCalls: 0, improveError: false, improveDelay: 0, sessions: [], status: null, failSessions: false, failVideo: false, identity: null, readiness: null, config: null, providers: null };
+export const mock = { chat: null, streamState: null, streamImage: null, critiques: [], lessonsError: false, improveCalls: 0, improveError: false, improveDelay: 0, sessions: [], status: null, failSessions: false, failVideo: false, identity: null, readiness: null, config: null, providers: null };
 
 const json = (res, code, body) => {
   res.writeHead(code, { 'content-type': 'application/json' });
@@ -63,6 +63,11 @@ export function startMockApi(distDir) {
   const server = http.createServer((req, res) => {
     const url = new URL(req.url, 'http://x');
     const p = url.pathname;
+    if (p === '/api/stream/device-state') return json(res, 200, mock.streamState ?? { connected: false, serial: null, live_stream_url: null });
+    if (p === '/api/stream/device-live' && mock.streamImage) {
+      res.writeHead(200, { 'content-type': 'image/png' });
+      return res.end(Buffer.from(mock.streamImage, 'base64'));
+    }
     if (p === '/api/prompt-lessons') {
       if (mock.lessonsError) return json(res, 500, { detail: 'Could not load lessons' });
       const q = (url.searchParams.get('q') ?? '').toLowerCase();

@@ -22,7 +22,7 @@ import { Component, ChangeDetectionStrategy, NgZone, DestroyRef, effect, inject,
 import { toSignal } from '@angular/core/rxjs-interop';
 import { FormsModule } from '@angular/forms';
 import { CdkTextareaAutosize } from '@angular/cdk/text-field';
-import { ActivatedRoute, Router, RouterLink } from '@angular/router';
+import { ActivatedRoute, Router } from '@angular/router';
 import { RunLibraryComponent } from '../../components/run-library/run-library.component';
 import { InterruptedBannerComponent } from '../../components/interrupted-banner/interrupted-banner.component';
 import { RunChatComponent } from '../../components/run-chat/run-chat.component';
@@ -50,7 +50,6 @@ export interface AttachedImage {
   imports: [
     FormsModule,
     CdkTextareaAutosize,
-    RouterLink,
     RunLibraryComponent,
     InterruptedBannerComponent,
     RunChatComponent
@@ -83,11 +82,14 @@ export class WorkspaceComponent implements OnInit {
   public readonly reviewRunId = computed(() => this.routeParams().get('id'));
   private readonly queryParams = toSignal(this.route.queryParamMap, { initialValue: this.route.snapshot.queryParamMap });
   public readonly reviewReadOnly = computed(() => this.queryParams().get('review') === '1' || this.queryParams().get('scope') === 'everyone');
+  public readonly titleRevision = signal(0);
   public readonly historyRevision = computed(() => JSON.stringify(
-    this.agentService.sessions()
+    [this.titleRevision(), this.agentService.sessions()
       .filter(session => !sessionStatusView(session.status, null).active)
-      .map(session => [session.session_id, session.status, session.end_time])
+      .map(session => [session.session_id, session.status, session.end_time])]
   ));
+
+  public sessionRenamed(): void { this.titleRevision.update(revision => revision + 1); }
   public readonly recordedDevices = computed(() => {
     const devices = new Map<string, NonNullable<ReturnType<typeof recordedDevice>>>();
     for (const session of this.agentService.sessions()) {
@@ -185,7 +187,7 @@ export class WorkspaceComponent implements OnInit {
     // "Start new run with this prompt" hands the prompt over as router state.
     const navigation = this.router.currentNavigation() ?? this.router.lastSuccessfulNavigation();
     const handed = (navigation?.extras.state ?? history.state) as { draftPrompt?: unknown; autoStart?: boolean; newSessionDraft?: boolean } | null;
-    if (handed?.newSessionDraft) this.newSessionDraft.set(true);
+    if (handed?.newSessionDraft || this.route.snapshot.data['newSession']) this.newSessionDraft.set(true);
     if (typeof handed?.draftPrompt === 'string' && handed.draftPrompt) this.taskInput = handed.draftPrompt;
     if (handed?.autoStart) {
       const { autoStart: _consumed, ...remaining } = handed;
@@ -438,7 +440,7 @@ export class WorkspaceComponent implements OnInit {
   public startNewRunFrom(prompt: string): void {
     this.newSessionDraft.set(true);
     if (this.reviewMode) {
-      void this.router.navigate(['/workspace'], { state: { draftPrompt: prompt, newSessionDraft: true } });
+      void this.router.navigate(['/sessions/new'], { state: { draftPrompt: prompt, newSessionDraft: true } });
       return;
     }
     this.taskInput = prompt;

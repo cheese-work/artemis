@@ -272,6 +272,8 @@ class ChatStore:
             columns = {row[1] for row in connection.execute("PRAGMA table_info(chat_sessions)")}
             if "lease_birth" not in columns:
                 connection.execute("ALTER TABLE chat_sessions ADD COLUMN lease_birth REAL")
+            if "title" not in columns:
+                connection.execute("ALTER TABLE chat_sessions ADD COLUMN title TEXT")
             connection.execute("""CREATE TABLE IF NOT EXISTS chat_turns (
                 turn_id TEXT PRIMARY KEY, session_id TEXT NOT NULL,
                 number INTEGER NOT NULL, status TEXT NOT NULL,
@@ -329,6 +331,15 @@ class ChatStore:
         if row is None:
             raise KeyError(identity)
         return row["session_id"]
+
+    def rename(self, identity, title):
+        title = title.strip()
+        if not title or len(title) > 120:
+            raise ValueError("invalid_title")
+        with self.transaction() as connection:
+            root = self._root(connection, identity)
+            connection.execute("UPDATE chat_sessions SET title=? WHERE session_id=?", (title, root))
+        return root
 
     def get(self, identity):
         with self.transaction() as connection:
