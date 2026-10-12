@@ -45,6 +45,9 @@ class ChatStore:
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS chat_message_session ON chat_messages(session_id, sequence)"
             )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS chat_message_turn ON chat_messages(turn_id)"
+            )
             if not connection.execute(
                 "SELECT 1 FROM sqlite_master WHERE type='table' AND name='sessions'"
             ).fetchone():
@@ -79,11 +82,12 @@ class ChatStore:
     def get(self, identity):
         with self.transaction() as connection:
             root = self._root(connection, identity)
-            session = dict(
-                connection.execute(
-                    "SELECT * FROM chat_sessions WHERE session_id=?", (root,)
-                ).fetchone()
-            )
+            row = connection.execute(
+                "SELECT * FROM chat_sessions WHERE session_id=?", (root,)
+            ).fetchone()
+            if row is None:
+                raise KeyError(identity)
+            session = dict(row)
             session.pop("launch_config")
             session["turns"] = [
                 dict(row)
