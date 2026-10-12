@@ -105,16 +105,22 @@ async def _ensure_worker(store, identity, message):
         )
         and value is not None
     }
-    try:
-        await task_queue_service.enqueue_tasks(
-            [goal], session_id=turn_id, ingress="frontend", **options
+    result = (
+        await asyncio.gather(
+            task_queue_service.enqueue_tasks(
+                [goal], session_id=turn_id, ingress="frontend", **options
+            ),
+            return_exceptions=True,
         )
-    except Exception:
+    )[0]
+    if isinstance(result, asyncio.CancelledError):
+        raise result
+    if isinstance(result, Exception):
         store.fail_admission(
             turn_id,
             "The session phone could not be re-acquired. Reconnect the original phone, then send another message.",
         )
-        raise
+        raise result
 
 
 @router.post("/api/chats/{session_id}/messages", dependencies=[Depends(require_qa)])

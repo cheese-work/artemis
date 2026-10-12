@@ -34,15 +34,19 @@ class ChatControl:
                     if opening:
                         verdict = {"plan_change": False, "reply": "Opening instruction received."}
                     else:
-                        try:
-                            verdict = await self.judge(message["content"])
-                            if (
-                                not isinstance(verdict.get("plan_change"), bool)
-                                or not isinstance(verdict.get("reply"), str)
-                                or not verdict["reply"].strip()
-                            ):
-                                raise ValueError("Invalid plan-change judgement")
-                        except Exception:
+                        verdict = (
+                            await asyncio.gather(
+                                self.judge(message["content"]), return_exceptions=True
+                            )
+                        )[0]
+                        if isinstance(verdict, asyncio.CancelledError):
+                            raise verdict
+                        if (
+                            not isinstance(verdict, dict)
+                            or not isinstance(verdict.get("plan_change"), bool)
+                            or not isinstance(verdict.get("reply"), str)
+                            or not verdict["reply"].strip()
+                        ):
                             verdict = {
                                 "plan_change": True,
                                 "reply": "I could not confirm whether this changes the plan. Paused for your confirmation. Press Continue or send another message.",

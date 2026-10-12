@@ -48,12 +48,18 @@ async def run_chat_session(store, identity, lease, execute, *, idle_seconds=300,
                         store.acknowledge(message["sequence"], "Opening instruction received.")
                 outcome = "completed"
                 try:
-                    await execute(turn)
+                    result = (await asyncio.gather(execute(turn), return_exceptions=True))[0]
+                    if isinstance(result, asyncio.CancelledError):
+                        raise result
                 except asyncio.CancelledError:
                     store.finish(turn_id, "cancelled")
                     raise
-                except Exception:
-                    logger.exception("Chat turn %s failed", turn_id)
+                if isinstance(result, Exception):
+                    logger.error(
+                        "Chat turn %s failed",
+                        turn_id,
+                        exc_info=(type(result), result, result.__traceback__),
+                    )
                     outcome = "failed"
                 with sqlite3.connect(store.path) as connection:
                     row = connection.execute(
