@@ -199,7 +199,7 @@ describe('NavSwitcherComponent', () => {
     fixture.detectChanges();
     const controls = Array.from<HTMLElement>(fixture.nativeElement.querySelectorAll('nav > a, nav > button, .nav-status > *'));
     expect(controls.map(control => control.getAttribute('aria-label') || control.tagName.toLowerCase()))
-      .toEqual(['Workspace', 'Runs', 'Prompt lessons', "Open What's New", 'app-workspace-device-chip', 'app-admin-identity-indicator']);
+      .toEqual(['Sessions', 'Prompt lessons', "Open What's New", 'app-workspace-device-chip', 'app-admin-identity-indicator']);
   });
 
   for (const path of ['/workspace', '/runs']) {
@@ -265,9 +265,9 @@ describe('NavSwitcherComponent', () => {
     fixture.componentRef.setInput('hasUnreadWhatsNew', true);
     fixture.detectChanges();
     const root = fixture.nativeElement as HTMLElement;
-    expect(root.querySelector('.run-count')?.textContent?.trim()).toBe('2');
+    expect(root.querySelector('.run-count')).toBeNull();
     expect(root.querySelector('.nav-new-label')?.textContent?.trim()).toBe('New');
-    const controls = Array.from(root.querySelectorAll<HTMLElement>('nav > a, nav > button, button.chip, summary'));
+    const controls = Array.from(root.querySelectorAll<HTMLElement>('nav > a, nav > button, nav select, button.chip, summary'));
     expect(controls.length).toBe(6);
     for (const control of controls) expectHitBox(control);
     const navItems = controls.filter(control => control.matches('.nav-tab-btn'));
@@ -286,7 +286,7 @@ describe('NavSwitcherComponent', () => {
     const fixture = TestBed.createComponent(NavSwitcherComponent);
     fixture.detectChanges();
     const shell = TestBed.inject(ShellLayoutService);
-    for (const label of ['Workspace', 'Runs']) {
+    for (const label of ['Sessions']) {
       shell.activePane.set('detail');
       fixture.nativeElement.querySelector(`a[aria-label="${label}"]`).click();
       expect(shell.activePane()).toBe('list');
