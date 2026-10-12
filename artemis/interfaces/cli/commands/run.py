@@ -66,6 +66,7 @@ async def execute_task(
     explorer_pro_mode: str | None = None,
     verification_level: str | None = None,
     run_id: str | None = None,
+    _chat_turn: bool = False,
 ) -> None:
     """Executes a single mobile automation task end-to-end.
 
@@ -90,6 +91,76 @@ async def execute_task(
             ``artemis.config.attempt_lifecycle_hooks``); defaults to the
             effective session id when omitted.
     """
+    chat_identity = os.getenv("ARTEMIS_CHAT_SESSION_ID")
+    if chat_identity and not _chat_turn:
+        from artemis.config import DB_PATH
+        from artemis.data_engine.chat_sessions import ChatStore
+        from artemis.runtime import DeviceExecutionLock
+        from artemis.runtime.chat_session_worker import run_chat_session
+
+        options = locals().copy()
+        options = {
+            key: value
+            for key, value in options.items()
+            if key in execute_task.__annotations__ and key != "return"
+        }
+        serial = device_serial or os.getenv("ADB_DEVICE_SERIAL")
+        if not serial:
+            raise RuntimeError("session_device_unavailable: the session has no pinned phone")
+        store = ChatStore(DB_PATH)
+        root = store.get(chat_identity)["session_id"]
+        lease = DeviceExecutionLock(serial, session_id=root, ingress="frontend")
+        config_snapshot = store.launch_config(root) or {}
+
+        async def execute_turn(turn):
+            from apps.admin_console.database.repositories.session_repository import session_repo
+
+            if session_repo.get_session_by_id(turn["turn_id"]) is None:
+                if not session_repo.create_queued_session(
+                    turn["turn_id"],
+                    turn["goal"],
+                    profile or "flash",
+                    serial,
+                    requested_by=config_snapshot.get("requested_by"),
+                    device_binding=config_snapshot.get("device_binding"),
+                    model=config_snapshot.get("model"),
+                ):
+                    raise RuntimeError("Could not create follow-up evidence record")
+            DeviceExecutionLock.annotate_active_owner(session_id=root)
+            os.environ["ARTEMIS_CHAT_FOLLOW_UP"] = "1" if turn["number"] > 1 else "0"
+            os.environ["ARTEMIS_CHAT_TURN_STARTED"] = "1"
+            try:
+                await execute_task(
+                    **{
+                        **options,
+                        "goal": turn["goal"],
+                        "session_id": turn["turn_id"],
+                        "_chat_turn": True,
+                        "app_path": app_path if turn["number"] == 1 else None,
+                        "test_name": test_name
+                        if turn["number"] == 1
+                        else f"{test_name or 'chat'}_turn_{turn['number']}",
+                    }
+                )
+                session_repo.lifecycle.settle_worker_exit(turn["turn_id"], 0, False)
+            except asyncio.CancelledError:
+                session_repo.lifecycle.finish(turn["turn_id"], "cancelled")
+                raise
+            except Exception as error:
+                session_repo.lifecycle.finish(turn["turn_id"], "failed", error=str(error))
+                raise
+            finally:
+                DeviceExecutionLock.annotate_active_owner(session_id=root)
+
+        await run_chat_session(
+            store,
+            root,
+            lease,
+            execute_turn,
+            idle_seconds=float(os.getenv("ARTEMIS_CHAT_IDLE_SECONDS", "300")),
+        )
+        return
+
     effective_sid = (
         session_id
         or os.getenv("ARTEMIS_SESSION_ID")

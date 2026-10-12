@@ -425,6 +425,9 @@ if PREVIEW_PROFILE:
 app.include_router(stream.router)
 app.include_router(media.router)
 app.include_router(sessions.router)
+from apps.admin_console.routers import chats
+
+app.include_router(chats.router)
 app.include_router(runs.router)
 app.include_router(run_bundle.router)
 app.include_router(run_admin.router)
