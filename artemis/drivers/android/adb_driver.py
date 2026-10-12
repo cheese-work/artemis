@@ -350,20 +350,26 @@ class AndroidAdbDriver(BaseDeviceDriver):
             return False
         if secret:
             self._private_input_used = True
-        await asyncio.to_thread(
-            self.device.shell,
+        cleared = await asyncio.to_thread(
+            self.device.shell2,
             "input keyevent 123 && input keyevent --meta 1 122 && input keyevent 67",
             timeout=10,
         )
+        if cleared.returncode != 0:
+            return False
         command = (
             "am broadcast -a ADB_INPUT_B64 --es msg "
             + shlex.quote(base64.b64encode(text.encode()).decode())
             if "adbkeyboard" in str(ime).lower()
             else "input text " + shlex.quote(text.replace(" ", "%s"))
         )
-        await asyncio.to_thread(self.device.shell, command, timeout=10)
-        await asyncio.to_thread(self.device.shell, "input keyevent 61", timeout=10)
-        return True
+        delivered = await asyncio.to_thread(self.device.shell2, command, timeout=10)
+        if delivered.returncode != 0:
+            return False
+        if "adbkeyboard" in str(ime).lower() and "Broadcast completed:" not in delivered.output:
+            return False
+        blurred = await asyncio.to_thread(self.device.shell2, "input keyevent 61", timeout=10)
+        return blurred.returncode == 0
 
     async def input_text(self, text: str, clear_existing: bool = True) -> bool:
         try:

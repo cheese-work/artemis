@@ -117,7 +117,7 @@ async def test_device_failure_does_not_echo_the_secret(store, caplog):
     try:
         with pytest.raises(ValueError, match="input_device_failed"):
             await submit_input(store, "run", request_id, sentinel)
-        assert await task == "Input was not sent to device."
+        assert await task == "Input could not be confirmed on the device."
         assert sentinel not in caplog.text
         assert sentinel not in json.dumps(store.get("run"))
     finally:
@@ -227,6 +227,7 @@ async def test_step_boundary_secret_stays_out_of_database_traces_logs_and_model_
     client = MagicMock()
     client.device.return_value = device
     device.shell.return_value = "native-ime"
+    device.shell2.return_value = SimpleNamespace(returncode=0, output="")
     driver = AndroidAdbDriver("fake-device", client, MagicMock())
     target = {"resource-id": "app:id/password", "bounds": "[0,0][100,100]"}
     image = Image.new("RGB", (100, 100), "white")
@@ -268,7 +269,7 @@ async def test_step_boundary_secret_stays_out_of_database_traces_logs_and_model_
     assert not note.exists()
     assert context.private_input_used
     assert driver._private_input_used
-    assert sum(sentinel in str(call) for call in device.shell.call_args_list) == 1
+    assert sum(sentinel in str(call) for call in device.shell2.call_args_list) == 1
     assert not driver._ui_adb_client.set_clipboard.called
     observed = await snapshot()
     model_context = json.dumps(
@@ -293,4 +294,10 @@ async def test_step_boundary_secret_stays_out_of_database_traces_logs_and_model_
         assert_no_leak(database, trace.read_text() + sentinel, caplog.text, model_context)
     assert Image.open(BytesIO(observed.screenshot_bytes)).getpixel((50, 50)) == (0, 0, 0)
     store.finish("run", "completed")
+    assert private_input_active(driver.device_id)
+    assert private_input_active(None)
+    with store.transaction() as connection:
+        connection.execute(
+            "UPDATE chat_messages SET payload=json_set(payload,'$.privacy_until',0) WHERE kind='input_request'"
+        )
     assert not private_input_active(driver.device_id)

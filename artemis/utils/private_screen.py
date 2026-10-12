@@ -2,9 +2,12 @@ import base64
 from copy import deepcopy
 from io import BytesIO
 import re
+import logging
 from xml.etree import ElementTree
 
 from PIL import Image, ImageDraw
+
+logger = logging.getLogger(__name__)
 
 
 def mask_password_observation(screen):
@@ -18,6 +21,7 @@ def mask_password_observation(screen):
             passwords.extend(node.attrib for node in xml.iter() if node.get("password") == "true")
         except ElementTree.ParseError:
             malformed = True
+            logger.warning("Screen observation masked after malformed UI hierarchy.")
     if malformed:
         passwords.extend(elements)
     if not passwords and not malformed:
@@ -25,13 +29,29 @@ def mask_password_observation(screen):
     sensitive_bounds = {
         element["bounds"] for element in passwords if isinstance(element.get("bounds"), str)
     }
+    if xml is not None:
+        passwords.extend(
+            node.attrib for node in xml.iter() if node.get("bounds") in sensitive_bounds
+        )
     passwords.extend(
         element
         for element in elements
         if element.get("bounds") in sensitive_bounds and element not in passwords
     )
     for element in passwords:
-        for key in ("text", "content-desc", "content_description", "hint", "value"):
+        for key in (
+            "text",
+            "content-desc",
+            "content_description",
+            "hint",
+            "value",
+            "error",
+            "tooltip",
+            "state_description",
+            "state-description",
+            "pane_title",
+            "pane-title",
+        ):
             if key in element:
                 element[key] = "••••"
     screen.ui_elements = elements

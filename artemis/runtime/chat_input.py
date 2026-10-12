@@ -30,7 +30,7 @@ def _socket_path(turn_id, request_id):
     return path
 
 
-def _finish(store, sequence, state):
+def _finish(store, sequence, state, *, delivery_started=False):
     with store.transaction() as connection:
         row = connection.execute(
             "SELECT payload FROM chat_messages WHERE sequence=?", (sequence,)
@@ -39,11 +39,15 @@ def _finish(store, sequence, state):
             return
         payload = json.loads(row["payload"])
         payload["state"] = state
+        if delivery_started:
+            payload["privacy_until"] = time.time() + 60
         content = {
             "sent": "•••• sent to device",
-            "failed": "Input was not sent to device.",
+            "failed": "Input could not be confirmed on the device.",
             "expired": "Input request expired. No input was sent to device.",
-            "cancelled": "Input request cancelled. No input was sent to device.",
+            "cancelled": "Input request cancelled. Delivery could not be confirmed."
+            if delivery_started
+            else "Input request cancelled. No input was sent to device.",
         }[state]
         connection.execute(
             "UPDATE chat_messages SET payload=?, content=? WHERE sequence=?",
@@ -96,7 +100,7 @@ async def request_input(
                 value = None
                 result = None
             finished = "sent" if accepted else "failed"
-            _finish(store, sequence, finished)
+            _finish(store, sequence, finished, delivery_started=True)
             response = {"accepted": True} if accepted else {"error": "input_device_failed"}
         except ValueError as error:
             code = str(error)
@@ -166,11 +170,11 @@ async def request_input(
             if state == "sent"
             else "Input request expired. No input was sent to device."
             if state == "expired"
-            else "Input was not sent to device."
+            else "Input could not be confirmed on the device."
         )
     except asyncio.CancelledError:
         if sequence is not None:
-            _finish(store, sequence, "cancelled")
+            _finish(store, sequence, "cancelled", delivery_started=claimed)
         raise
     finally:
         server.close()
@@ -324,7 +328,7 @@ async def read_input_request(ctx, control):
 def private_input_active(device_id):
     from artemis.config import DB_PATH
 
-    if not device_id or not Path(DB_PATH).exists():
+    if not Path(DB_PATH).exists():
         return False
     try:
         with sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True) as connection:
@@ -336,9 +340,9 @@ def private_input_active(device_id):
                 connection.execute(
                     """SELECT 1 FROM chat_messages m JOIN chat_turns t ON t.turn_id=m.turn_id
                 WHERE m.kind='input_request' AND json_extract(m.payload,'$.secret')=1
-                AND json_extract(m.payload,'$.device_id')=?
-                AND t.status IN ('queued','running','paused') LIMIT 1""",
-                    (device_id,),
+                AND (? IS NULL OR json_extract(m.payload,'$.device_id')=?)
+                AND (t.status IN ('queued','running','paused') OR json_extract(m.payload,'$.privacy_until')>?) LIMIT 1""",
+                    (device_id, device_id, time.time()),
                 ).fetchone()
                 is not None
             )
