@@ -1,10 +1,11 @@
 import asyncio
 import sqlite3
+from types import SimpleNamespace
 
 import pytest
 
 from artemis.data_engine.chat_sessions import ChatStore, TRANSITIONS
-from artemis.runtime.chat_control import ChatControl
+from artemis.runtime.chat_control import ChatControl, read_chat_guidance
 
 
 @pytest.fixture
@@ -134,3 +135,29 @@ async def test_bad_detector_output_pauses_instead_of_executing(store):
 
     result, unused = await asyncio.gather(control.checkpoint(), confirm())
     assert result == "Correction"
+
+
+@pytest.mark.asyncio
+async def test_real_guidance_hook_uses_the_runs_operator_model(store, monkeypatch):
+    monkeypatch.setenv("ARTEMIS_CHAT_SESSION_ID", "run")
+    monkeypatch.setenv("ARTEMIS_SESSION_ID", "run")
+    monkeypatch.delenv("ARTEMIS_CHAT_TURN_STARTED", raising=False)
+    monkeypatch.setattr("artemis.config.DB_PATH", store.path)
+    calls = []
+
+    class FakeModel:
+        async def ainvoke(self, messages):
+            return SimpleNamespace(
+                content='{"plan_change": false, "reply": "I will steer the next step."}'
+            )
+
+    def model(context, name):
+        calls.append((context, name))
+        return FakeModel()
+
+    monkeypatch.setattr("artemis.services.llm.get_llm", model)
+    context = SimpleNamespace(data_engine=None)
+    assert await read_chat_guidance(context, "Check login") == "Check login"
+    store.send("run", "Use the visible button", "steer")
+    assert await read_chat_guidance(context, "Check login") == "Use the visible button"
+    assert calls == [(context, "operator")]
