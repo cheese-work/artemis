@@ -47,13 +47,13 @@ describe('NavSwitcherComponent', () => {
     const hrefs = Array.from<HTMLAnchorElement>(fixture.nativeElement.querySelectorAll('nav a[href]')).map(a =>
       a.getAttribute('href')
     );
-    expect(hrefs).toEqual(['/workspace', '/runs']);
+    expect(hrefs).toEqual(['/workspace', '/runs', '/lessons']);
     expect(fixture.nativeElement.querySelector('a[href="/runs"]').textContent).toContain('Runs');
     // Labels collapse to icons on phones, so each tab needs its own accessible name.
     const names = Array.from<HTMLAnchorElement>(fixture.nativeElement.querySelectorAll('nav a[href]')).map(a =>
       a.getAttribute('aria-label')
     );
-    expect(names).toEqual(['Workspace', 'Runs']);
+    expect(names).toEqual(['Workspace', 'Runs', 'Prompt lessons']);
   });
 
   it('uses a compact provider label and a full accessible name for admins', async () => {
@@ -199,7 +199,7 @@ describe('NavSwitcherComponent', () => {
     fixture.detectChanges();
     const controls = Array.from<HTMLElement>(fixture.nativeElement.querySelectorAll('nav > a, nav > button, .nav-status > *'));
     expect(controls.map(control => control.getAttribute('aria-label') || control.tagName.toLowerCase()))
-      .toEqual(['Workspace', 'Runs', "Open What's New", 'app-workspace-device-chip', 'app-admin-identity-indicator']);
+      .toEqual(['Workspace', 'Runs', 'Prompt lessons', "Open What's New", 'app-workspace-device-chip', 'app-admin-identity-indicator']);
   });
 
   for (const path of ['/workspace', '/runs']) {
@@ -268,7 +268,7 @@ describe('NavSwitcherComponent', () => {
     expect(root.querySelector('.run-count')?.textContent?.trim()).toBe('2');
     expect(root.querySelector('.nav-new-label')?.textContent?.trim()).toBe('New');
     const controls = Array.from(root.querySelectorAll<HTMLElement>('nav > a, nav > button, button.chip, summary'));
-    expect(controls.length).toBe(5);
+    expect(controls.length).toBe(6);
     for (const control of controls) expectHitBox(control);
     const navItems = controls.filter(control => control.matches('.nav-tab-btn'));
     for (let index = 1; index < navItems.length; index++) {

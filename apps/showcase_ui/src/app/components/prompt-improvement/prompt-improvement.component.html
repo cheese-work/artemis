@@ -1,0 +1,29 @@
+<div class="prompt-improvement" aria-label="Improve prompt" [attr.aria-busy]="pending() || loading()">
+  @if (loading()) { <p role="status">Loading saved prompt critique…</p> }
+  @if (loadFailed()) {
+    <p role="alert">Could not load the saved prompt critique.</p>
+    <button type="button" data-retry-load (click)="load()">Retry loading</button>
+  }
+  @if (canImprove()) {
+    <button type="button" data-improve [disabled]="pending() || loading()" (click)="improve()">
+      <span class="material-symbols-outlined" aria-hidden="true">draft</span>
+      {{ pending() ? 'Improving…' : error() ? 'Retry Improve prompt' : critique() ? 'Improve again' : 'Improve prompt' }}
+    </button>
+  }
+  @if (error(); as message) { <p class="error" role="alert">{{ message }}</p> }
+  @if (critique(); as result) {
+    <label [for]="'improved-prompt-' + sessionId()">Improved prompt</label>
+    <textarea [id]="'improved-prompt-' + sessionId()" [value]="draft()" (input)="draft.set($any($event.target).value)" rows="6"></textarea>
+    <h3>What changed and why</h3>
+    <ul>@for (change of result.changes; track $index) { <li><strong>{{ change.what }}</strong> — {{ change.why }}</li> }</ul>
+    <h3>Lessons</h3>
+    <ul>@for (lesson of result.lessons; track $index) { <li>{{ lesson }}</li> }</ul>
+    <p class="model-note">Improved with {{ result.model }}</p>
+    <label [for]="'improved-model-' + sessionId()">Execution model</label>
+    <select [id]="'improved-model-' + sessionId()" [value]="models.selectedKey()" (change)="models.choose($any($event.target).value)">
+      @for (option of models.options(); track option.key) { <option [value]="option.key">{{ option.label }}</option> }
+    </select>
+    @if (models.warning(); as warning) { <p role="status">{{ warning }}</p> }
+    <button type="button" class="primary" data-run-improved [disabled]="!draft().trim() || pending()" (click)="run()">Run as new run</button>
+  }
+</div>

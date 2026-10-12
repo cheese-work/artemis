@@ -69,6 +69,21 @@ describe('WorkspaceComponent error lifetime', () => {
     }).compileComponents();
   });
 
+  it('consumes autoStart once and clears browser history before submitting', () => {
+    history.replaceState({ draftPrompt: 'Improved prompt', autoStart: true }, '');
+    const fixture = TestBed.createComponent(WorkspaceComponent);
+    const submit = spyOn(fixture.componentInstance, 'submitTask').and.resolveTo();
+    fixture.detectChanges();
+    expect(submit).toHaveBeenCalledTimes(1);
+    expect(fixture.componentInstance.taskInput).toBe('Improved prompt');
+    expect(history.state.autoStart).toBeUndefined();
+    const reload = TestBed.createComponent(WorkspaceComponent);
+    const again = spyOn(reload.componentInstance, 'submitTask').and.resolveTo();
+    reload.detectChanges();
+    expect(again).not.toHaveBeenCalled();
+    history.replaceState({}, '');
+  });
+
   it('uses the first prompt line without markdown in the Stop button title', () => {
     spyOn(TestBed.inject(AgentService), 'currentSession').and.returnValue({
       session_id: 'run-title', initial_goal: '## **Open** _Settings_\nCheck every toggle.', start_time: 1

@@ -57,6 +57,10 @@ import { ShellLayoutService } from '../../services/shell-layout.service';
         <span class="tab-label">Runs</span>
         <span class="run-count">{{ runCount() }}</span>
       </a>
+      <a routerLink="/lessons" routerLinkActive="active" ariaCurrentWhenActive="page" class="nav-tab-btn" aria-label="Prompt lessons" title="Open Prompt lessons">
+        <span class="material-symbols-outlined tab-icon" aria-hidden="true">list_alt</span>
+        <span class="tab-label">Lessons</span>
+      </a>
       @if (account.identity()?.admin) {
         <a routerLink="/providers" routerLinkActive="active" ariaCurrentWhenActive="page" class="nav-tab-btn desktop-setup" aria-label="LLM providers">
           <span class="material-symbols-outlined tab-icon" aria-hidden="true">lock</span>

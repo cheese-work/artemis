@@ -39,7 +39,18 @@ const STEPS = Array.from({ length: 4 }, (_, n) => ({
 }));
 
 // Mutable so layout audits can drive connected / disconnected / error states. Defaults match the keyboard walkthrough.
-export const mock = { sessions: [], status: null, failSessions: false, failVideo: false, identity: null, readiness: null, config: null, providers: null };
+export const PROMPT_CRITIQUE = {
+  id: 'critique-checkout', session_id: RUNS[1].session_id, created_at: T0 + 400,
+  requested_by: 'qa@example.test', model: 'openai/fixture-default',
+  original_prompt: RUNS[1].prompt,
+  improved_prompt: 'Add one available item to the cart. Continue as a guest, enter the provided delivery details, and stop before placing the order. Verify that the order summary shows the item, delivery cost, and total.',
+  changes: [
+    { what: 'Define where checkout ends', why: 'The original prompt did not say whether to place a real order.' },
+    { what: 'Name the evidence to verify', why: 'The run stopped at the delivery screen without checking the order summary.' }
+  ],
+  lessons: ['Give the task a clear stopping point.', 'Name the visible result that proves the check passed.']
+};
+export const mock = { critiques: [], lessonsError: false, improveCalls: 0, improveError: false, improveDelay: 0, sessions: [], status: null, failSessions: false, failVideo: false, identity: null, readiness: null, config: null, providers: null };
 
 const json = (res, code, body) => {
   res.writeHead(code, { 'content-type': 'application/json' });
@@ -52,6 +63,31 @@ export function startMockApi(distDir) {
   const server = http.createServer((req, res) => {
     const url = new URL(req.url, 'http://x');
     const p = url.pathname;
+    if (p === '/api/prompt-lessons') {
+      if (mock.lessonsError) return json(res, 500, { detail: 'Could not load lessons' });
+      const q = (url.searchParams.get('q') ?? '').toLowerCase();
+      const rows = mock.critiques.filter(row => JSON.stringify(row).toLowerCase().includes(q));
+      return json(res, 200, { critiques: [...rows].sort((a, b) => b.created_at - a.created_at), next_offset: null });
+    }
+    const evidence = p.match(/^\/api\/sessions\/([^/]+)\/(checks|notes|prompt-critique|improve-prompt)$/);
+    if (evidence) {
+      const [, sessionId, kind] = evidence;
+      if (kind === 'checks') return json(res, 200, { records: [], streams: [], run_outcome: { task_status: 'failed', tests: { passed: 0, failed: 1, inconclusive: 0, unchecked: 0 }, last_findings: ['The order summary was not reached.'] } });
+      if (kind === 'notes') return json(res, 200, {});
+      if (kind === 'prompt-critique') {
+        const critique = mock.critiques.find(row => row.session_id === sessionId);
+        return json(res, critique ? 200 : 404, critique ?? { code: 'prompt_critique_not_found' });
+      }
+      if (kind === 'improve-prompt' && req.method === 'POST') {
+        mock.improveCalls++;
+        return setTimeout(() => {
+          if (mock.improveError) return json(res, 502, { code: 'improve_model_failed', detail: 'openai/fixture-default: model unavailable. Try again.' });
+          const critique = { ...PROMPT_CRITIQUE, session_id: sessionId, id: `critique-${mock.improveCalls}`, created_at: Date.now() / 1000 };
+          mock.critiques.unshift(critique);
+          json(res, 200, critique);
+        }, mock.improveDelay);
+      }
+    }
     if (p === '/api/system/providers' && mock.providers) return json(res, 200, mock.providers);
     if (p === '/api/models') return json(res, 200, {
       default: { provider: 'openai', model: 'fixture-default' },

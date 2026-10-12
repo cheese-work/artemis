@@ -146,6 +146,7 @@
             <p>{{ current.status === 'running' || current.status === 'pending' ? 'The run is in progress. The result will appear here.' : 'No task report was recorded.' }}</p>
           }
           @if (checksFailed()) { <p>Could not load checker results.</p> }
+          <app-prompt-improvement [sessionId]="current.session_id" [canImprove]="canChange()" />
         </section>
         }
 

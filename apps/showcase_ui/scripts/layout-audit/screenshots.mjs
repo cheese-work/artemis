@@ -8,12 +8,13 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { startMockApi, mock, RUNS } from '../keyboard-walkthrough/mock-api.mjs';
+import { startMockApi, mock, RUNS, PROMPT_CRITIQUE } from '../keyboard-walkthrough/mock-api.mjs';
 
 const [outDir = 'screenshots', label = 'shot', audit] = process.argv.slice(2);
 const checkControls = audit === '--controls';
 const checkModels = audit === '--models';
 const checkComposer = audit === '--composer';
+const checkPrompts = audit === '--prompts';
 const checkProviders = audit === '--providers';
 const failures = [];
 const iconNames = readFileSync(new URL('../../public/fonts/material-symbols-outlined.txt', import.meta.url), 'utf8').trim().split(',');
@@ -78,6 +79,11 @@ if (checkControls) {
   };
 }
 const pages = { workspace: '/workspace', runs: '/runs', 'run-detail': `/runs/${RUNS[1].session_id}`, setup: '/setup', check: '/check' };
+if (checkPrompts) {
+  for (const name of Object.keys(pages)) if (name !== 'run-detail') delete pages[name];
+  pages.lessons = '/lessons';
+  mock.critiques = [PROMPT_CRITIQUE];
+}
 if (checkProviders) {
   for (const name of Object.keys(pages)) delete pages[name];
   pages.providers = '/providers';
@@ -87,9 +93,10 @@ if (checkModels) for (const name of Object.keys(pages)) if (name !== 'workspace'
 if (checkComposer) for (const name of Object.keys(pages)) if (!['workspace', 'run-detail'].includes(name)) delete pages[name];
 if (checkModels) for (const run of RUNS) run.agent_model = 'fixture-default';
 if (checkModels) for (const session of mock.sessions) session.model_info = { name: 'Flash', id: 'fixture-default', provider: 'openai' };
-for (const width of checkControls || checkModels || checkComposer || checkProviders ? [1440, 390] : [1280, 1024]) {
+for (const width of checkControls || checkModels || checkComposer || checkPrompts || checkProviders ? [1440, 390] : [1280, 1024]) {
   for (const [name, route] of Object.entries(pages)) {
-    await send('Emulation.setDeviceMetricsOverride', { width, height: checkProviders ? (width === 390 ? 3450 : 2200) : 800, deviceScaleFactor: 1, mobile: false });
+    await send('Emulation.setDeviceMetricsOverride', { width, height: checkPrompts ? 1400 : checkProviders ? (width === 390 ? 3450 : 2200) : 800, deviceScaleFactor: 1, mobile: false });
+    const previousImproveCalls = mock.improveCalls;
     await send('Page.navigate', { url: base + route });
     await sleep(2500);
     if (name === 'check') {
@@ -119,6 +126,25 @@ for (const width of checkControls || checkModels || checkComposer || checkProvid
       failures.push(...disclosureErrors.map(error => `${name}-${width}: ${error}`));
     }
     await evaluate('document.fonts.ready.then(() => true)');
+    if (checkPrompts) {
+      if (mock.improveCalls !== previousImproveCalls) failures.push('Generation ran on page load');
+      const errors = await evaluate(`(() => {
+        const errors = [];
+        const root = document.querySelector(${JSON.stringify(name === 'run-detail' ? 'app-prompt-improvement' : 'app-lessons')});
+        if (!root) return ['Missing prompt feature'];
+        if (${JSON.stringify(name === 'run-detail')} && !root.querySelector('textarea')?.value.includes('Continue as a guest')) errors.push('Saved critique not restored');
+        for (const element of root.querySelectorAll('button, input, textarea, select, a')) {
+          const box = element.getBoundingClientRect();
+          if (box.width < 44 || box.height < 44) errors.push(element.tagName + ': target smaller than 44 px');
+          if (box.left < 0 || box.right > innerWidth) errors.push(element.tagName + ': horizontal overflow');
+        }
+        if (document.documentElement.scrollWidth > innerWidth) errors.push('Page overflow');
+        return errors;
+      })()`);
+      failures.push(...errors.map(error => `${name}-${width}: ${error}`));
+      if (name === 'run-detail') await evaluate(`document.querySelector('.run-result-summary').scrollIntoView({ block: 'start' })`);
+    }
+
     if (checkProviders) {
       const providerErrors = await evaluate(`(() => {
         const errors = [];
@@ -295,6 +321,57 @@ for (const width of checkControls || checkModels || checkComposer || checkProvid
     const { data } = await send('Page.captureScreenshot', { format: 'png' });
     writeFileSync(path.join(outDir, `${label}-${name}-${width}.png`), Buffer.from(data, 'base64'));
     console.log(`${label}-${name}-${width}.png`);
+    if (checkPrompts && name === 'run-detail') {
+      mock.improveDelay = 300;
+      mock.improveError = true;
+      await evaluate(`document.querySelector('[data-improve]').click()`);
+      await sleep(80);
+      if (!await evaluate(`document.querySelector('[data-improve]').disabled && document.querySelector('[data-improve]').textContent.includes('Improving')`)) failures.push('Missing pending state');
+      await sleep(400);
+      if (!await evaluate(`document.querySelector('app-prompt-improvement [role="alert"]')?.textContent.includes('model unavailable')`)) failures.push('Missing generation error');
+      mock.improveError = false;
+      await evaluate(`document.querySelector('[data-improve]').click()`);
+      await sleep(400);
+      await evaluate(`(() => {
+        const textarea = document.querySelector('app-prompt-improvement textarea');
+        textarea.value = 'Edited checkout prompt';
+        textarea.dispatchEvent(new Event('input', { bubbles: true }));
+        const select = document.querySelector('app-prompt-improvement select');
+        select.value = select.options[2].value;
+        select.dispatchEvent(new Event('change', { bubbles: true }));
+      })()`);
+      await sleep(50);
+      await evaluate(`document.querySelector('[data-run-improved]').click()`);
+      await sleep(500);
+      const handoff = await evaluate(`(() => {
+        const workspace = ng.getComponent(document.querySelector('app-workspace'));
+        return { path: location.pathname, draft: workspace.taskInput, consumed: !history.state.autoStart,
+          model: workspace.models.selection()?.model, picker: !!document.querySelector('.connection-panel, .phone-picker, .panel') };
+      })()`);
+      if (handoff.path !== '/workspace' || handoff.draft !== 'Edited checkout prompt' || !handoff.consumed || handoff.model !== 'gemini-via-proxy') failures.push('Invalid new-run handoff: ' + JSON.stringify(handoff));
+      if (mock.improveCalls !== previousImproveCalls + 2) failures.push('Unexpected generation count');
+      console.log(`PASS ${width}px: click-only generation, pending, error, retry, editable prompt, selected model and consumed auto-start`);
+    }
+    if (checkPrompts && name === 'lessons') {
+      await evaluate(`(() => {
+        const input = document.querySelector('#lesson-search');
+        input.value = 'no matching lesson'; input.dispatchEvent(new Event('input', { bubbles: true }));
+        document.querySelector('app-lessons form').requestSubmit();
+      })()`);
+      await sleep(100);
+      if (!await evaluate(`document.querySelector('app-lessons').textContent.includes('No matching lessons')`)) failures.push('Search did not show empty state');
+      mock.lessonsError = true;
+      await evaluate(`document.querySelector('app-lessons form').requestSubmit()`);
+      await sleep(100);
+      if (!await evaluate(`!!document.querySelector('app-lessons [role="alert"]')`)) failures.push('Missing lessons error');
+      mock.lessonsError = false;
+      await evaluate(`document.querySelector('[data-retry]').click()`);
+      await sleep(100);
+      if (await evaluate(`!!document.querySelector('app-lessons [role="alert"]')`)) failures.push('Lessons retry failed');
+      mock.critiques = [PROMPT_CRITIQUE];
+      console.log(`PASS ${width}px: lessons search, empty, error and retry`);
+    }
+
     if (checkControls && name === 'setup') {
       await evaluate(`document.querySelector('.model-panel').scrollIntoView({ block: 'center' })`);
       const { data: panelData } = await send('Page.captureScreenshot', { format: 'png' });
@@ -312,6 +389,8 @@ if (failures.length) {
   console.log('PASS: control borders, shadows, 44 px hit boxes, keyboard focus, 3:1 focus contrast and mobile active underlines at 1440 px and 390 px.');
 } else if (checkModels) {
   console.log('PASS: discovered model choice, default-first list, 44 px target and composer layout at 1440 px and 390 px. Fonts ready before capture.');
+} else if (checkPrompts) {
+  console.log('PASS: saved prompt result and lessons, 44 px targets and no overflow at 1440 and 390 px. Fonts ready before capture.');
 } else if (checkComposer && label !== 'before') {
   console.log('PASS: composer growth, viewport cap, internal scrolling, shrink, pinned flow and 44 px targets at 1440 px and 390 px. Fonts ready before capture.');
 }

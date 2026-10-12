@@ -1,3 +1,4 @@
+import { LessonsComponent } from './pages/lessons/lessons.component';
 import { routes } from './app.routes';
 import { HomeComponent } from './pages/home/home.component';
 import { WorkspaceComponent } from './pages/workspace/workspace.component';
@@ -10,6 +11,9 @@ import { SystemService } from './services/system.service';
 import { ModelCatalogService } from './services/model-catalog.service';
 
 describe('app routes', () => {
+  it('opens Prompt lessons', () => {
+    expect(routes.find(route => route.path === 'lessons')?.component).toBe(LessonsComponent);
+  });
   it('redirects the root path to the workspace', () => {
     expect(routes.find(route => route.path === '')?.redirectTo).toBe('workspace');
   });

@@ -1,0 +1,27 @@
+<main class="lessons-page">
+  <header><h1>Prompt lessons</h1><app-scope-switch /></header>
+  <p>What changed in your prompts, and why. Newest first.</p>
+  <form (submit)="$event.preventDefault(); search()">
+    <div class="search-field"><label for="lesson-search">Search prompt lessons</label><input id="lesson-search" type="search" [value]="query()" (input)="query.set($any($event.target).value)" /></div>
+    <button type="submit">Search</button>
+  </form>
+  @if (loading()) { <p role="status">Loading prompt lessons…</p> }
+  @if (failed()) { <div role="alert"><p>Could not load prompt lessons.</p><button type="button" data-retry (click)="retry()">Retry</button></div> }
+  @if (!loading() && !failed() && !critiques().length) {
+    <p>{{ query().trim() ? 'No matching lessons. Try another search.' : 'No prompt lessons yet. Open a finished run and click Improve prompt.' }}</p>
+    <a routerLink="/runs">Open Runs</a>
+  }
+  <div class="lesson-list" [attr.aria-busy]="loading()">
+    @for (critique of critiques(); track critique.id) {
+      <article>
+        <div class="receipt"><time [attr.datetime]="critique.created_at * 1000 | date:'yyyy-MM-ddTHH:mm:ssZZZZZ'">{{ critique.created_at * 1000 | date:'medium' }}</time><span>{{ critique.model }}</span></div>
+        <h2><a [routerLink]="['/runs', critique.session_id]">{{ critique.original_prompt }}</a></h2>
+        <h3>What changed and why</h3>
+        <ul>@for (change of critique.changes; track $index) { <li><strong>{{ change.what }}</strong> — {{ change.why }}</li> }</ul>
+        <h3>Lessons</h3>
+        <ul>@for (lesson of critique.lessons; track $index) { <li>{{ lesson }}</li> }</ul>
+      </article>
+    }
+  </div>
+  @if (nextOffset() !== null && !failed()) { <button type="button" [disabled]="loading()" (click)="more()">Load more</button> }
+</main>

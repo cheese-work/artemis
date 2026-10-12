@@ -1,0 +1,19 @@
+:host { display: block; font-size: var(--text-body); color: var(--color-ink); }
+.lessons-page { max-width: 960px; margin: 0 auto; padding: var(--space-xl); overflow-wrap: anywhere; }
+header { display: flex; align-items: center; justify-content: space-between; gap: var(--space-md); flex-wrap: wrap; }
+h1 { font: 600 1.5rem var(--font-display); }
+h2 { font: 600 var(--text-title) var(--font-display); margin: var(--space-smd) 0; white-space: pre-wrap; }
+h3 { font: 600 var(--text-body) var(--font-ui); margin: var(--space-lg) 0 var(--space-smd); }
+form { display: flex; gap: var(--space-smd); align-items: end; margin: var(--space-xl) 0; }
+.search-field { display: grid; gap: var(--space-sm); flex: 1; min-width: 0; }
+label { font-weight: 600; }
+input, button { min-height: 44px; min-width: 44px; box-sizing: border-box; padding: var(--space-smd) var(--space-md); background: var(--color-surface); color: var(--color-ink); border: 1px solid var(--color-border); border-radius: var(--radius-md); font: inherit; }
+input { width: 100%; }
+button { cursor: pointer; }
+a { color: var(--color-primary); display: inline-flex; align-items: center; min-height: 44px; }
+:is(input, button, a):focus-visible { outline: 3px solid var(--color-focus); outline-offset: 2px; }
+article { border-top: 1px solid var(--color-rule); padding: var(--space-xl) 0; }
+.receipt { display: flex; flex-wrap: wrap; gap: var(--space-smd) var(--space-xl); color: var(--color-text-muted); font: var(--text-label) var(--font-mono); font-variant-numeric: tabular-nums; }
+ul { padding-left: var(--space-xl); margin: 0; }
+li + li { margin-top: var(--space-sm); }
+[role='alert'] { color: var(--color-error); }
