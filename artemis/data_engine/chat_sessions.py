@@ -10,6 +10,85 @@ TERMINAL = frozenset({"completed", "failed", "cancelled", "interrupted"})
 
 
 class ChatStore:
+    @staticmethod
+    def _validate_message(content, client_id):
+        if not content.strip() or len(content) > 32768 or not client_id or len(client_id) > 128:
+            raise ValueError("invalid_message")
+
+    def send(self, identity, content, client_id, *, kind="message"):
+        self._validate_message(content, client_id)
+        with self.transaction() as connection:
+            root = self._root(connection, identity)
+            previous = connection.execute(
+                "SELECT * FROM chat_messages WHERE session_id=? AND client_id=?", (root, client_id)
+            ).fetchone()
+            if previous:
+                if previous["content"] != content or previous["kind"] != kind:
+                    raise ValueError("client_id_conflict")
+                return dict(previous)
+            turn = connection.execute(
+                "SELECT * FROM chat_turns WHERE session_id=? AND status IN (?,?,?) ORDER BY number DESC LIMIT 1",
+                (root, *sorted(ACTIVE)),
+            ).fetchone()
+            if turn is None:
+                if kind != "message":
+                    raise ValueError("no_active_turn")
+                number = connection.execute(
+                    "SELECT coalesce(max(number),0)+1 FROM chat_turns WHERE session_id=?", (root,)
+                ).fetchone()[0]
+                turn_id = str(uuid.uuid4())
+                connection.execute(
+                    "INSERT INTO chat_turns VALUES (?,?,?,?,?)",
+                    (turn_id, root, number, "queued", time.time()),
+                )
+            else:
+                turn_id = turn["turn_id"]
+            cursor = connection.execute(
+                "INSERT INTO chat_messages(session_id, turn_id, role, kind, content, client_id, created_at) VALUES (?,?,?,?,?,?,?)",
+                (
+                    root,
+                    turn_id,
+                    "human" if kind == "message" else "system",
+                    kind,
+                    content,
+                    client_id,
+                    time.time(),
+                ),
+            )
+            return dict(
+                connection.execute(
+                    "SELECT * FROM chat_messages WHERE sequence=?", (cursor.lastrowid,)
+                ).fetchone()
+            )
+
+    def pending(self, turn_id):
+        with self.transaction() as connection:
+            return [
+                dict(row)
+                for row in connection.execute(
+                    "SELECT * FROM chat_messages WHERE turn_id=? AND role IN ('human','system') AND acknowledged_at IS NULL ORDER BY sequence",
+                    (turn_id,),
+                )
+            ]
+
+    def acknowledge(self, sequence, reply):
+        with self.transaction() as connection:
+            message = connection.execute(
+                "SELECT * FROM chat_messages WHERE sequence=?", (sequence,)
+            ).fetchone()
+            if message is None:
+                raise KeyError(sequence)
+            if message["acknowledged_at"] is not None:
+                return
+            now = time.time()
+            connection.execute(
+                "INSERT INTO chat_messages(session_id, turn_id, role, content, reply_to, created_at) VALUES (?,?,?,?,?,?)",
+                (message["session_id"], message["turn_id"], "agent", reply, sequence, now),
+            )
+            connection.execute(
+                "UPDATE chat_messages SET acknowledged_at=? WHERE sequence=?", (now, sequence)
+            )
+
     def __init__(self, path: str | Path):
         self.path = Path(path)
         self.migrate()
