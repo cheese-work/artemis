@@ -99,7 +99,9 @@ for (const prefix of ['/', '/preview/pr/70/']) {
       assert.fail(navigation.errorText);
     }
     try {
-      await waitFor(() => evaluate(`!!window.ng && document.querySelector('app-run-view')?.innerText.includes('Log in and open settings')`).catch(() => false));
+      await waitFor(() => evaluate(`!!window.ng && document.querySelector('app-run-chat')?.innerText.includes('Log in and open settings')`).catch(() => false));
+      await evaluate(`document.querySelector('.turn-evidence > summary').click()`);
+      await waitFor(() => evaluate(`document.querySelector('app-run-view')?.innerText.includes('Log in and open settings')`).catch(() => false));
     } catch (error) {
       console.error(JSON.stringify({ requests, runtimeErrors, page: await evaluate('document.body.innerText') }, null, 2));
       throw error;
