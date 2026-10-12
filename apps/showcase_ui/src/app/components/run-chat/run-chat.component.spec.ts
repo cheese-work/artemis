@@ -1,7 +1,7 @@
 import { TestBed, fakeAsync, tick } from '@angular/core/testing';
 import { provideRouter } from '@angular/router';
 import { HttpErrorResponse } from '@angular/common/http';
-import { of, throwError } from 'rxjs';
+import { of, Subject, throwError } from 'rxjs';
 import { RunChatComponent } from './run-chat.component';
 import { RunsService } from '../../services/runs.service';
 import { ChatSession, RunSummary } from '../../core/models/run.model';
@@ -23,6 +23,22 @@ describe('RunChatComponent', () => {
     ]
   };
   let api: jasmine.SpyObj<RunsService>;
+
+  it('keeps the timeline and composer visible while restarting polling', fakeAsync(() => {
+    const fixture = TestBed.createComponent(RunChatComponent);
+    fixture.componentRef.setInput('runId', 'root');
+    fixture.detectChanges();
+    tick(0);
+    const previous = fixture.componentInstance.chat();
+    const pending = new Subject<RunSummary>();
+    api.get.and.returnValue(pending);
+    fixture.componentInstance.control('continue');
+    fixture.detectChanges();
+    expect(fixture.componentInstance.chat()).toBe(previous);
+    expect(fixture.componentInstance.rootRun()).not.toBeNull();
+    expect(fixture.nativeElement.textContent).not.toContain('Loading chat session');
+    fixture.destroy();
+  }));
 
   beforeEach(() => {
     api = jasmine.createSpyObj<RunsService>('RunsService', ['get', 'chat', 'sendChat', 'controlChat', 'renameChat']);

@@ -46,3 +46,11 @@ def test_invalid_event_does_not_write(store):
     with pytest.raises(ValueError, match="invalid_event_kind"):
         store.record_event("legacy", "unknown", "Invalid")
     assert store.get("legacy") == before
+
+
+def test_event_rejects_root_that_is_not_a_turn(store):
+    with store.transaction() as connection:
+        connection.execute("INSERT INTO chat_sessions(session_id, created_at) VALUES ('empty', 1)")
+    with pytest.raises(KeyError, match="empty"):
+        store.record_event("empty", "thinking", "Not attached to a turn")
+    assert store.get("empty")["messages"] == []

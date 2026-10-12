@@ -22,7 +22,12 @@ class ChatStore:
         if kind not in EVENT_KINDS:
             raise ValueError("invalid_event_kind")
         with self.transaction() as connection:
-            root = self._root(connection, turn_id)
+            turn = connection.execute(
+                "SELECT session_id FROM chat_turns WHERE turn_id=?", (turn_id,)
+            ).fetchone()
+            if turn is None:
+                raise KeyError(turn_id)
+            root = turn["session_id"]
             if event_key:
                 previous = connection.execute(
                     "SELECT sequence FROM chat_messages WHERE session_id=? AND event_key=?",
@@ -404,6 +409,13 @@ class ChatStore:
             for message in session["messages"]:
                 message["payload"] = json.loads(message["payload"] or "{}")
             return session
+
+    def model_history(self, identity):
+        return [
+            message
+            for message in self.get(identity)["messages"]
+            if message["kind"] in {"message", "pause", "continue"}
+        ]
 
     def new_turn(self, identity, content, client_id):
         with self.transaction() as connection:

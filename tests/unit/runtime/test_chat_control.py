@@ -164,6 +164,35 @@ async def test_real_guidance_hook_uses_the_runs_operator_model(store, monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_typed_events_never_enter_follow_up_or_judge_history(store, monkeypatch):
+    store.acknowledge(store.pending("run")[0]["sequence"], "Opening instruction received.")
+    for kind in ("thinking", "step", "plan", "replan", "input_request"):
+        store.record_event("run", kind, "internal-event-sentinel")
+    store.finish("run", "completed")
+    turn = store.send("run", "Check logout", "follow-up")
+    monkeypatch.setenv("ARTEMIS_CHAT_SESSION_ID", "run")
+    monkeypatch.setenv("ARTEMIS_SESSION_ID", turn["turn_id"])
+    monkeypatch.delenv("ARTEMIS_CHAT_TURN_STARTED", raising=False)
+    monkeypatch.setattr("artemis.config.DB_PATH", store.path)
+    prompts = []
+
+    class FakeModel:
+        async def ainvoke(self, messages):
+            prompts.extend(message.content for message in messages)
+            return SimpleNamespace(content='{"plan_change": false, "reply": "I will steer."}')
+
+    monkeypatch.setattr("artemis.services.llm.get_llm", lambda *args, **kwargs: FakeModel())
+    context = SimpleNamespace(data_engine=None)
+    guidance = await read_chat_guidance(context, "Check logout")
+    assert "Check login" in guidance
+    assert "internal-event-sentinel" not in guidance
+    store.send("run", "Use the visible button", "steer")
+    await read_chat_guidance(context, "Check logout")
+    assert prompts
+    assert "internal-event-sentinel" not in "\n".join(prompts)
+
+
+@pytest.mark.asyncio
 async def test_guidance_boundary_emits_only_changed_plan_snapshots(store, tmp_path, monkeypatch):
     from artemis.utils.notes import get_note_file_path
 

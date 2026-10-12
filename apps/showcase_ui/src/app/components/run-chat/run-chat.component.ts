@@ -69,14 +69,17 @@ export class RunChatComponent {
   constructor() {
     effect((onCleanup) => {
       const id = this.runId();
-      if (id !== this.previousRunId) { this.followLatest = true; this.previousRunId = id; }
       this.revision();
-      this.chat.set(null);
-      this.rootRun.set(null);
-      this.error.set(null);
-      this.sending.set(false);
-      this.editingTitle.set(false);
-      this.savingTitle.set(false);
+      if (id !== this.previousRunId) {
+        this.followLatest = true;
+        this.previousRunId = id;
+        this.chat.set(null);
+        this.rootRun.set(null);
+        this.error.set(null);
+        this.sending.set(false);
+        this.editingTitle.set(false);
+        this.savingTitle.set(false);
+      }
       if (!id) return;
       const subscription = this.zone.runOutsideAngular(() => this.api.get(id).pipe(
         switchMap((run) => {

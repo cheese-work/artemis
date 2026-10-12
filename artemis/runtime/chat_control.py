@@ -88,7 +88,7 @@ async def read_chat_guidance(ctx, goal):
         turn_id = os.environ["ARTEMIS_SESSION_ID"]
 
         async def judge(message):
-            history = store.get(turn_id)["messages"]
+            history = store.model_history(turn_id)
             plan = _task_plan(ctx)
             response = await asyncio.wait_for(
                 get_llm(ctx, name="operator").ainvoke(
@@ -117,7 +117,7 @@ async def read_chat_guidance(ctx, goal):
         ctx.chat_control = control
         history = store.get(turn_id)
         ctx.chat_history_pending = (
-            json.dumps(history["messages"], ensure_ascii=False)
+            json.dumps(store.model_history(turn_id), ensure_ascii=False)
             if len(history["turns"]) > 1
             else None
         )
