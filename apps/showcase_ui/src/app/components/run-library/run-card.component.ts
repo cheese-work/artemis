@@ -25,8 +25,8 @@ import { OwnerLabelComponent } from '../owner-label/owner-label.component';
         @if (run().app_package) { <span class="run-package mono"> · {{ run().app_package }}</span> }
       </span>
     </span>
-    <span class="run-date mono" [title]="run().start_time === null ? 'Date unknown' : (run().start_time! * 1000 | date: 'MMM d, y, h:mm a')!">
-      @if (run().start_time !== null) { {{ run().start_time! * 1000 | date: 'HH:mm' }} }
+    <span class="run-date mono" [title]="run().start_time === null ? 'Date unknown' : (run().start_time! * 1000 | date: 'MMM d, y, HH:mm' : '+0700') + ' ICT'">
+      @if (run().start_time !== null) { {{ run().start_time! * 1000 | date: 'HH:mm' : '+0700' }} ICT }
       @else { — }
     </span>
     <span class="run-facts sr-only">
