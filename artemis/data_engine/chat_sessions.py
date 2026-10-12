@@ -7,9 +7,40 @@ import uuid
 
 ACTIVE = frozenset({"queued", "running", "paused"})
 TERMINAL = frozenset({"completed", "failed", "cancelled", "interrupted"})
+TRANSITIONS = {
+    "queued": frozenset({"running", *TERMINAL}),
+    "running": frozenset({"paused", *TERMINAL}),
+    "paused": frozenset({"running", *TERMINAL}),
+    **{status: frozenset() for status in TERMINAL},
+}
 
 
 class ChatStore:
+    def turn(self, turn_id):
+        with self.transaction() as connection:
+            row = connection.execute(
+                "SELECT * FROM chat_turns WHERE turn_id=?", (turn_id,)
+            ).fetchone()
+            if row is None:
+                raise KeyError(turn_id)
+            return dict(row)
+
+    @staticmethod
+    def _transition(connection, turn_id, status):
+        row = connection.execute(
+            "SELECT status FROM chat_turns WHERE turn_id=?", (turn_id,)
+        ).fetchone()
+        if row is None:
+            raise KeyError(turn_id)
+        before = row["status"]
+        if before != status and status not in TRANSITIONS.get(before, ()):
+            raise ValueError(f"invalid_transition:{before}:{status}")
+        connection.execute("UPDATE chat_turns SET status=? WHERE turn_id=?", (status, turn_id))
+
+    def transition(self, turn_id, status):
+        with self.transaction() as connection:
+            self._transition(connection, turn_id, status)
+
     @staticmethod
     def _validate_message(content, client_id):
         if not content.strip() or len(content) > 32768 or not client_id or len(client_id) > 128:
@@ -71,7 +102,7 @@ class ChatStore:
                 )
             ]
 
-    def acknowledge(self, sequence, reply):
+    def acknowledge(self, sequence, reply, *, status=None):
         with self.transaction() as connection:
             message = connection.execute(
                 "SELECT * FROM chat_messages WHERE sequence=?", (sequence,)
@@ -80,6 +111,8 @@ class ChatStore:
                 raise KeyError(sequence)
             if message["acknowledged_at"] is not None:
                 return
+            if status is not None:
+                self._transition(connection, message["turn_id"], status)
             now = time.time()
             connection.execute(
                 "INSERT INTO chat_messages(session_id, turn_id, role, content, reply_to, created_at) VALUES (?,?,?,?,?,?)",

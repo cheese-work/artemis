@@ -318,6 +318,13 @@ class FlashRunner:
         """
         if not (self.ctx.data_engine and self.ctx.data_engine.base_dir):
             return None, None
+        from artemis.runtime.chat_control import read_chat_guidance
+
+        chat_instruction = await read_chat_guidance(self.ctx, self.goal)
+        if chat_instruction:
+            return chat_instruction, render_user_guidance(
+                chat_instruction, has_plan=False, offset_label=offset_label
+            )
         try:
             injected_payload = await asyncio.to_thread(
                 _check_injected_instruction_file,
