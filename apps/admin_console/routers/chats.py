@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 from artemis.config import DB_PATH
 from artemis.data_engine.chat_sessions import ChatStore
 from artemis.runtime import current_adb_endpoint, pid_is_alive
-from apps.admin_console.core.access_control import AdminAPIError
+from apps.admin_console.core.access_control import AdminAPIError, require_qa
 from apps.admin_console.core.ownership import (
     OwnerScope,
     actor_scope,
@@ -117,7 +117,7 @@ async def _ensure_worker(store, identity, message):
         raise
 
 
-@router.post("/api/chats/{session_id}/messages")
+@router.post("/api/chats/{session_id}/messages", dependencies=[Depends(require_qa)])
 async def send_message(
     session_id: str, request: MessageRequest, scope: OwnerScope = Depends(actor_scope)
 ):
@@ -142,14 +142,14 @@ async def _control(identity, request, scope, kind):
         raise AdminAPIError(409, str(error), str(error)) from error
 
 
-@router.post("/api/chats/{session_id}/pause")
+@router.post("/api/chats/{session_id}/pause", dependencies=[Depends(require_qa)])
 async def pause_chat(
     session_id: str, request: ControlRequest, scope: OwnerScope = Depends(actor_scope)
 ):
     return await _control(session_id, request, scope, "pause")
 
 
-@router.post("/api/chats/{session_id}/continue")
+@router.post("/api/chats/{session_id}/continue", dependencies=[Depends(require_qa)])
 async def continue_chat(
     session_id: str, request: ControlRequest, scope: OwnerScope = Depends(actor_scope)
 ):

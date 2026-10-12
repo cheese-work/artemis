@@ -270,7 +270,7 @@ class ChatStore:
                 number INTEGER NOT NULL, status TEXT NOT NULL,
                 created_at REAL NOT NULL, UNIQUE(session_id, number))""")
             connection.execute("""CREATE TABLE IF NOT EXISTS chat_messages (
-                sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+                sequence INTEGER PRIMARY KEY,
                 session_id TEXT NOT NULL, turn_id TEXT NOT NULL,
                 role TEXT NOT NULL CHECK(role IN ('human', 'agent', 'system')),
                 kind TEXT NOT NULL DEFAULT 'message', content TEXT NOT NULL,
@@ -301,6 +301,11 @@ class ChatStore:
                 FROM sessions s JOIN chat_turns t ON t.turn_id=s.session_id
                 WHERE s.initial_goal IS NOT NULL AND NOT EXISTS
                     (SELECT 1 FROM chat_messages m WHERE m.turn_id=s.session_id)""")
+            settled = connection.execute("""SELECT t.turn_id, s.status FROM chat_turns t
+                JOIN sessions s ON s.session_id=t.turn_id
+                WHERE t.status IN ('queued','running','paused') AND s.status IN ('completed','failed','cancelled','interrupted')""").fetchall()
+        for turn in settled:
+            self.finish(turn["turn_id"], turn["status"])
 
     @staticmethod
     def _root(connection, identity):

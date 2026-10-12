@@ -16,6 +16,7 @@ import asyncio
 import base64
 import hashlib
 import json
+import os
 from pathlib import Path
 
 from artemis.context import ArtemisContext
@@ -124,7 +125,11 @@ async def perception_node(state: State, ctx: ArtemisContext) -> dict:
     state = strict_state(state, "perception")
     from artemis.runtime.chat_control import read_chat_guidance
 
-    chat_instruction = await read_chat_guidance(ctx, state.initial_goal)
+    chat_instruction = (
+        await read_chat_guidance(ctx, state.initial_goal)
+        if os.getenv("ARTEMIS_CHAT_SESSION_ID")
+        else None
+    )
     if chat_instruction:
         _unprotect_current_check_lines(ctx)
     logger.info("Entering Perception Node...")

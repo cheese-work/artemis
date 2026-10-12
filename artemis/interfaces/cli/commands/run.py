@@ -136,6 +136,7 @@ async def execute_task(
                         "goal": turn["goal"],
                         "session_id": turn["turn_id"],
                         "_chat_turn": True,
+                        "run_id": run_id if turn["number"] == 1 else turn["turn_id"],
                         "app_path": app_path if turn["number"] == 1 else None,
                         "test_name": test_name
                         if turn["number"] == 1
