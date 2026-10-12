@@ -25,7 +25,7 @@ import { CdkTextareaAutosize } from '@angular/cdk/text-field';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 import { RunLibraryComponent } from '../../components/run-library/run-library.component';
 import { InterruptedBannerComponent } from '../../components/interrupted-banner/interrupted-banner.component';
-import { RunViewComponent } from '../../components/run-view/run-view.component';
+import { RunChatComponent } from '../../components/run-chat/run-chat.component';
 import { consolidateLogsToBlocks } from '../../utils/stream-aggregator.util';
 import { StepItemData } from '../../core/models/stream.model';
 import { AgentService } from '../../services/agent.service';
@@ -53,7 +53,7 @@ export interface AttachedImage {
     RouterLink,
     RunLibraryComponent,
     InterruptedBannerComponent,
-    RunViewComponent
+    RunChatComponent
 ],
   templateUrl: './workspace.component.html',
   styleUrl: './workspace.component.scss',
@@ -184,7 +184,8 @@ export class WorkspaceComponent implements OnInit {
     this.models.load();
     // "Start new run with this prompt" hands the prompt over as router state.
     const navigation = this.router.currentNavigation() ?? this.router.lastSuccessfulNavigation();
-    const handed = (navigation?.extras.state ?? history.state) as { draftPrompt?: unknown; autoStart?: boolean } | null;
+    const handed = (navigation?.extras.state ?? history.state) as { draftPrompt?: unknown; autoStart?: boolean; newSessionDraft?: boolean } | null;
+    if (handed?.newSessionDraft) this.newSessionDraft.set(true);
     if (typeof handed?.draftPrompt === 'string' && handed.draftPrompt) this.taskInput = handed.draftPrompt;
     if (handed?.autoStart) {
       const { autoStart: _consumed, ...remaining } = handed;
@@ -406,6 +407,7 @@ export class WorkspaceComponent implements OnInit {
     );
     submission.subscribe({
       next: () => {
+        this.newSessionDraft.set(false);
         this.taskInput = '';
         this.clearImages();
         this.isSubmitting.set(false);
@@ -431,9 +433,16 @@ export class WorkspaceComponent implements OnInit {
   }
 
   /** "Start new run with this prompt" on the interrupted banner. */
+  public readonly newSessionDraft = signal(false);
+
   public startNewRunFrom(prompt: string): void {
+    this.newSessionDraft.set(true);
+    if (this.reviewMode) {
+      void this.router.navigate(['/workspace'], { state: { draftPrompt: prompt, newSessionDraft: true } });
+      return;
+    }
     this.taskInput = prompt;
-    this.focusInput();
+    requestAnimationFrame(() => this.focusInput());
   }
 
   /**

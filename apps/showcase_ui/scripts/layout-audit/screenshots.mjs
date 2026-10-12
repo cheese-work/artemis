@@ -16,6 +16,7 @@ const checkModels = audit === '--models';
 const checkComposer = audit === '--composer';
 const checkPrompts = audit === '--prompts';
 const checkProviders = audit === '--providers';
+const checkChats = audit === '--chats';
 const failures = [];
 const iconNames = readFileSync(new URL('../../public/fonts/material-symbols-outlined.txt', import.meta.url), 'utf8').trim().split(',');
 mkdirSync(outDir, { recursive: true });
@@ -79,6 +80,24 @@ if (checkControls) {
   };
 }
 const pages = { workspace: '/workspace', runs: '/runs', 'run-detail': `/runs/${RUNS[1].session_id}`, setup: '/setup', check: '/check' };
+if (checkChats) {
+  for (const name of Object.keys(pages)) if (name !== 'run-detail') delete pages[name];
+  const root = RUNS[1].session_id;
+  const next = RUNS[0].session_id;
+  RUNS[1].prompt = 'Check login, then continue on the same phone';
+  mock.chat = { session_id: root, lease_pid: 123, idle_until: null,
+    turns: [
+      { turn_id: root, session_id: root, number: 1, status: 'completed', created_at: T0 },
+      { turn_id: next, session_id: root, number: 2, status: 'paused', created_at: T0 + 90 }
+    ],
+    messages: [
+      { sequence: 1, turn_id: root, role: 'human', content: 'Check that guest login works.', acknowledged_at: T0 },
+      { sequence: 2, turn_id: root, role: 'agent', content: 'Guest login passed. The phone stays on the account screen.' },
+      { sequence: 3, turn_id: next, role: 'human', content: 'Now check logout on this phone.', acknowledged_at: T0 + 90 },
+      { sequence: 4, turn_id: next, role: 'agent', content: 'Proposed plan: check logout instead of login. Paused for confirmation.' }
+    ]
+  };
+}
 if (checkPrompts) {
   for (const name of Object.keys(pages)) if (name !== 'run-detail') delete pages[name];
   pages.lessons = '/lessons';
@@ -93,9 +112,9 @@ if (checkModels) for (const name of Object.keys(pages)) if (name !== 'workspace'
 if (checkComposer) for (const name of Object.keys(pages)) if (!['workspace', 'run-detail'].includes(name)) delete pages[name];
 if (checkModels) for (const run of RUNS) run.agent_model = 'fixture-default';
 if (checkModels) for (const session of mock.sessions) session.model_info = { name: 'Flash', id: 'fixture-default', provider: 'openai' };
-for (const width of checkControls || checkModels || checkComposer || checkPrompts || checkProviders ? [1440, 390] : [1280, 1024]) {
+for (const width of checkControls || checkModels || checkComposer || checkPrompts || checkProviders || checkChats ? [1440, 390] : [1280, 1024]) {
   for (const [name, route] of Object.entries(pages)) {
-    await send('Emulation.setDeviceMetricsOverride', { width, height: checkPrompts ? 1400 : checkProviders ? (width === 390 ? 3450 : 2200) : 800, deviceScaleFactor: 1, mobile: false });
+    await send('Emulation.setDeviceMetricsOverride', { width, height: checkChats ? (width === 390 ? 1100 : 900) : checkPrompts ? 1400 : checkProviders ? (width === 390 ? 3450 : 2200) : 800, deviceScaleFactor: 1, mobile: false });
     const previousImproveCalls = mock.improveCalls;
     await send('Page.navigate', { url: base + route });
     await sleep(2500);
@@ -126,6 +145,21 @@ for (const width of checkControls || checkModels || checkComposer || checkPrompt
       failures.push(...disclosureErrors.map(error => `${name}-${width}: ${error}`));
     }
     await evaluate('document.fonts.ready.then(() => true)');
+    if (checkChats) {
+      const chatErrors = await evaluate(`(() => {
+        const errors = [];
+        if (document.querySelectorAll('.chat-turn').length !== 2) errors.push('Missing two-turn session');
+        if (document.querySelectorAll('.turn-evidence[open]').length) errors.push('Evidence is not collapsed');
+        if (![...document.querySelectorAll('.composer-actions button')].some(button => button.textContent.trim() === 'Continue')) errors.push('Missing Continue');
+        if (document.documentElement.scrollWidth > innerWidth) errors.push('Horizontal overflow');
+        for (const button of document.querySelectorAll('app-run-chat button')) {
+          const box = button.getBoundingClientRect();
+          if (box.width < 44 || box.height < 44) errors.push('Small action target');
+        }
+        return errors;
+      })()`);
+      failures.push(...chatErrors.map(error => `${name}-${width}: ${error}`));
+    }
     if (checkPrompts) {
       if (mock.improveCalls !== previousImproveCalls) failures.push('Generation ran on page load');
       const errors = await evaluate(`(() => {

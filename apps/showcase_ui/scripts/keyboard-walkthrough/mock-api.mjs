@@ -50,7 +50,7 @@ export const PROMPT_CRITIQUE = {
   ],
   lessons: ['Give the task a clear stopping point.', 'Name the visible result that proves the check passed.']
 };
-export const mock = { critiques: [], lessonsError: false, improveCalls: 0, improveError: false, improveDelay: 0, sessions: [], status: null, failSessions: false, failVideo: false, identity: null, readiness: null, config: null, providers: null };
+export const mock = { chat: null, critiques: [], lessonsError: false, improveCalls: 0, improveError: false, improveDelay: 0, sessions: [], status: null, failSessions: false, failVideo: false, identity: null, readiness: null, config: null, providers: null };
 
 const json = (res, code, body) => {
   res.writeHead(code, { 'content-type': 'application/json' });
@@ -103,7 +103,16 @@ export function startMockApi(distDir) {
       const runs = (all ? [...RUNS, ...OTHERS] : RUNS).filter((r) => (!q || r.prompt.toLowerCase().includes(q)) && (!status || r.status === status));
       return json(res, 200, { runs, next_cursor: null, warnings: [] });
     }
-    let m = p.match(/^\/api\/runs\/([^/]+)$/);
+    let m = p.match(/^\/api\/chats\/([^/]+)$/);
+    if (m) {
+      if (mock.chat?.turns.some(turn => turn.turn_id === m[1])) return json(res, 200, mock.chat);
+      const run = [...RUNS, ...OTHERS].find(row => row.session_id === m[1]);
+      return run ? json(res, 200, { session_id: run.session_id, lease_pid: null, idle_until: null,
+        turns: [{ turn_id: run.session_id, session_id: run.session_id, number: 1, status: run.status, created_at: run.start_time }],
+        messages: [{ sequence: 1, turn_id: run.session_id, session_id: run.session_id, role: 'human', kind: 'message', content: run.prompt, client_id: 'opening', reply_to: null, acknowledged_at: run.start_time, created_at: run.start_time }]
+      }) : json(res, 404, { detail: 'Chat not found.' });
+    }
+    m = p.match(/^\/api\/runs\/([^/]+)$/);
     if (m) {
       const run = [...RUNS, ...OTHERS].find((r) => r.session_id.startsWith(m[1]));
       return run ? json(res, 200, run) : json(res, 404, { error: 'not_found' });

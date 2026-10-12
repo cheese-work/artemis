@@ -38,18 +38,18 @@ limitations under the License.
       @if (reviewMode && !reviewRunId()) {
         <div class="detail-empty" role="status">Select a run to see its steps.</div>
       } @else {
-        <app-run-view [mode]="reviewMode ? 'review' : 'live'"
+        <app-run-chat [mode]="reviewMode ? 'review' : 'live'" [compose]="!newSessionDraft()"
           [readOnly]="reviewMode && reviewReadOnly()"
           [runId]="reviewMode ? reviewRunId()! : agentService.currentSessionId() ?? ''"
           [liveSession]="reviewMode ? null : agentService.currentSession()"
           [liveSteps]="reviewMode ? [] : liveSteps()"
           [startupProgress]="reviewMode ? [] : agentService.currentStartupProgress()"
-          (newRunPrompt)="taskInput = $event"></app-run-view>
+          (newRunPrompt)="startNewRunFrom($event)"></app-run-chat>
       }
     </div>
 
     <!-- Pinned composer: the bottom of the detail pane, in normal flow so it never covers evidence -->
-    @if (!reviewMode) {
+    @if (!reviewMode && (!agentService.currentSessionId() || newSessionDraft())) {
     <section class="composer" aria-label="New task"
       [class.is-focused]="isInputFocused()" [class.is-running]="isTaskRunning()">
       <!-- A run lost its phone: Reconnect, then start a new run (the old one is over) -->

@@ -33,6 +33,35 @@ export interface RunPage {
   warnings: string[];
 }
 
+export interface ChatMessage {
+  sequence: number;
+  session_id: string;
+  turn_id: string;
+  role: 'human' | 'agent' | 'system';
+  kind: 'message' | 'pause' | 'continue';
+  content: string;
+  client_id: string | null;
+  reply_to: number | null;
+  acknowledged_at: number | null;
+  created_at: number;
+}
+
+export interface ChatTurn {
+  turn_id: string;
+  session_id: string;
+  number: number;
+  status: string;
+  created_at: number;
+}
+
+export interface ChatSession {
+  session_id: string;
+  turns: ChatTurn[];
+  messages: ChatMessage[];
+  idle_until: number | null;
+  lease_pid: number | null;
+}
+
 export interface VideoSegment {
   url: string;
   duration: number;
