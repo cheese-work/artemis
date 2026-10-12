@@ -130,25 +130,32 @@ async def execute_task(
             os.environ["ARTEMIS_CHAT_FOLLOW_UP"] = "1" if turn["number"] > 1 else "0"
             os.environ["ARTEMIS_CHAT_TURN_STARTED"] = "1"
             try:
-                await execute_task(
-                    **{
-                        **options,
-                        "goal": turn["goal"],
-                        "session_id": turn["turn_id"],
-                        "_chat_turn": True,
-                        "run_id": run_id if turn["number"] == 1 else turn["turn_id"],
-                        "app_path": app_path if turn["number"] == 1 else None,
-                        "test_name": test_name
-                        if turn["number"] == 1
-                        else f"{test_name or 'chat'}_turn_{turn['number']}",
-                    }
-                )
+                result = (
+                    await asyncio.gather(
+                        execute_task(
+                            **{
+                                **options,
+                                "goal": turn["goal"],
+                                "session_id": turn["turn_id"],
+                                "_chat_turn": True,
+                                "run_id": run_id if turn["number"] == 1 else turn["turn_id"],
+                                "app_path": app_path if turn["number"] == 1 else None,
+                                "test_name": test_name
+                                if turn["number"] == 1
+                                else f"{test_name or 'chat'}_turn_{turn['number']}",
+                            }
+                        ),
+                        return_exceptions=True,
+                    )
+                )[0]
+                if isinstance(result, asyncio.CancelledError):
+                    raise result
+                if isinstance(result, Exception):
+                    session_repo.lifecycle.finish(turn["turn_id"], "failed", error=str(result))
+                    raise result
                 session_repo.lifecycle.settle_worker_exit(turn["turn_id"], 0, False)
             except asyncio.CancelledError:
                 session_repo.lifecycle.finish(turn["turn_id"], "cancelled")
-                raise
-            except Exception as error:
-                session_repo.lifecycle.finish(turn["turn_id"], "failed", error=str(error))
                 raise
             finally:
                 DeviceExecutionLock.annotate_active_owner(session_id=root)
