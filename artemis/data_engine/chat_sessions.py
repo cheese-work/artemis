@@ -1,4 +1,4 @@
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from pathlib import Path
 import json
 import sqlite3
@@ -245,17 +245,11 @@ class ChatStore:
 
     @contextmanager
     def transaction(self):
-        connection = sqlite3.connect(self.path, timeout=30)
-        connection.row_factory = sqlite3.Row
-        try:
-            connection.execute("BEGIN IMMEDIATE")
-            yield connection
-            connection.commit()
-        except BaseException:
-            connection.rollback()
-            raise
-        finally:
-            connection.close()
+        with closing(sqlite3.connect(self.path, timeout=30)) as connection:
+            connection.row_factory = sqlite3.Row
+            with connection:
+                connection.execute("BEGIN IMMEDIATE")
+                yield connection
 
     def migrate(self):
         with self.transaction() as connection:
