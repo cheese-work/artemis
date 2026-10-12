@@ -1,11 +1,13 @@
 import asyncio
+import json
 import uuid
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, Field, field_validator
 
 from artemis.config import DB_PATH, TRACES_PATH
 from artemis.data_engine.chat_sessions import ChatStore
+from artemis.runtime.chat_input import submit_input
 from artemis.runtime import current_adb_endpoint, pid_is_alive
 from apps.admin_console.core.access_control import AdminAPIError, require_qa
 from apps.admin_console.core.ownership import (
@@ -232,3 +234,50 @@ async def continue_chat(
     session_id: str, request: ControlRequest, scope: OwnerScope = Depends(actor_scope)
 ):
     return await _control(session_id, request, scope, "continue")
+
+
+@router.post("/api/chats/{session_id}/input/{request_id}", dependencies=[Depends(require_qa)])
+async def send_input(
+    session_id: str, request_id: str, request: Request, scope: OwnerScope = Depends(actor_scope)
+):
+    store, session = await asyncio.to_thread(_session, session_id, scope, write=True)
+    body = bytearray()
+    async for chunk in request.stream():
+        body.extend(chunk)
+        if len(body) > 32768:
+            body.clear()
+            raise AdminAPIError(
+                400, "Input is too long.", "input_value_invalid", "Enter at most 4096 characters."
+            )
+    try:
+        payload = json.loads(body)
+    except (ValueError, UnicodeError):
+        payload = None
+    finally:
+        body.clear()
+    value = payload.pop("value", None) if isinstance(payload, dict) else None
+    if not isinstance(value, str) or not 1 <= len(value) <= 4096:
+        raise AdminAPIError(
+            400,
+            "Enter a value of at most 4096 characters.",
+            "input_value_invalid",
+            "Enter the requested value again.",
+        )
+    try:
+        return await submit_input(store, session["session_id"], request_id, value)
+    except ValueError as error:
+        details = {
+            "input_request_expired": "This input request expired. Ask the agent for a new request.",
+            "input_request_replayed": "This input request was already used.",
+            "input_request_wrong_session": "This input request belongs to another session.",
+            "input_request_not_found": "This input request does not belong to this session.",
+            "input_session_ended": "This session ended. No input was sent to device.",
+            "input_broker_unavailable": "The input request is unavailable. Ask the agent for a new request.",
+            "input_device_failed": "Device input failed. No secret was added to chat. Ask for a new request.",
+        }
+        code = str(error) if str(error) in details else "input_device_failed"
+        raise AdminAPIError(
+            409, details[code], code, "Ask the agent for a new input request."
+        ) from None
+    finally:
+        value = None

@@ -99,6 +99,16 @@ try {
     await send('Page.navigate', { url: url + '/sessions/' + run.session_id }); await wait(1400);
     if (!await evaluate("!!document.querySelector('app-session-sidebar .device-feed')")) throw new Error('Bound-phone Live fixture is missing.');
     await capture('running');
+    const request = { sequence: 8, turn_id: run.session_id, role: 'agent', kind: 'input_request', content: 'Enter the password for the device', payload: { request_id: 'synthetic-request', state: 'pending', secret: true, expires_at: Date.now() / 1000 + 180 } };
+    mock.chat.messages.push(request); mock.chat.timeline.push(request);
+    await wait(1200);
+    if (!await evaluate("document.querySelector('#session-input')?.type === 'password'")) throw new Error('Private input is not masked.');
+    await evaluate("(() => { const input = document.querySelector('#session-input'); input.value = 'SYNTHETIC-PRIVATE-VALUE'; input.dispatchEvent(new Event('input', { bubbles: true })); })()");
+    if (await evaluate("document.body.textContent.includes('SYNTHETIC-PRIVATE-VALUE')")) throw new Error('Private value leaked into the timeline.');
+    await capture('private-input');
+    request.payload.state = 'sent'; request.content = '•••• sent to device'; await wait(1200);
+    if (await evaluate("!!document.querySelector('#session-input')")) throw new Error('Used input request still accepts a value.');
+    await capture('private-receipt');
     for (const mode of ['expanded', 'collapsed', 'hover']) {
       await evaluate(`(() => { const select = document.querySelector('[aria-label="Navigation mode"]'); select.value = '${mode}'; select.dispatchEvent(new Event('change', { bubbles: true })); })()`);
       await wait(100);

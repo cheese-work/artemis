@@ -17,6 +17,14 @@ describe('RunsService', () => {
 
   afterEach(() => http.verify());
 
+  it('sends private input only to the session-bound input endpoint', () => {
+    service.sendInput('root/id', 'request/id', '  PRIVATE-SENTINEL  ').subscribe();
+    const request = http.expectOne('/api/chats/root%2Fid/input/request%2Fid');
+    expect(request.request.method).toBe('POST');
+    expect(request.request.body).toEqual({ value: '  PRIVATE-SENTINEL  ' });
+    request.flush({ accepted: true });
+  });
+
   it('opts into the read-only team catalog without widening other endpoints', () => {
     service.list(EMPTY_FILTERS, { scope: 'everyone' }).subscribe();
     const request = http.expectOne((candidate) => candidate.url === '/api/runs');

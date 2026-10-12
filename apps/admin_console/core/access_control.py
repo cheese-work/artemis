@@ -517,6 +517,7 @@ _AGENT_PATHS = {
 # Owner-or-admin actions: the route guard needs a signed-in user; the handler
 # then checks the caller owns the run (see core/ownership.py).
 _QA_MUTATING_PATHS = {
+    "/api/chats/{session_id}/input/{request_id}",
     "/api/chats/{session_id}/messages",
     "/api/chats/{session_id}/pause",
     "/api/chats/{session_id}/continue",
