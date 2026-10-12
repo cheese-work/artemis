@@ -100,6 +100,35 @@ async def test_finish_race_moves_unread_bubble_to_next_turn(store):
     assert seen == ["Check login", "Arrived at final step"]
 
 
+@pytest.mark.parametrize("status", ["cancelled", "failed", "interrupted"])
+@pytest.mark.asyncio
+async def test_unsuccessful_queued_follow_up_is_not_executed_after_a_fresh_message(store, status):
+    store.acknowledge(store.pending("run")[0]["sequence"], "Opening instruction handled")
+    store.finish("run", "completed")
+    abandoned = store.send("run", "Do not run this goal", "abandoned")
+    with store.transaction() as connection:
+        connection.execute(
+            "INSERT INTO sessions VALUES (?,?,?,1,2)",
+            (abandoned["turn_id"], abandoned["content"], status),
+        )
+    recovered = ChatStore(store.path)
+    fresh = recovered.send("run", "Run only the new goal", "fresh")
+    lease = FakeLease()
+    seen = []
+
+    async def execute(turn):
+        seen.append((turn["turn_id"], turn["goal"]))
+        with recovered.transaction() as connection:
+            connection.execute(
+                "INSERT OR REPLACE INTO sessions VALUES (?,?,?,1,2)",
+                (turn["turn_id"], turn["goal"], "completed"),
+            )
+
+    await run_chat_session(recovered, "run", lease, execute, idle_seconds=0, poll_seconds=0)
+    assert seen == [(fresh["turn_id"], "Run only the new goal")]
+    assert not lease.held
+
+
 @pytest.mark.asyncio
 async def test_failed_turn_can_continue_without_leaking_lease(store):
     lease = FakeLease()

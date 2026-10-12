@@ -17,7 +17,9 @@ the run's Operator model to judge a plan change. A correction steers by default.
 A judged change, or an invalid/unavailable judgement, pauses and adds an agent
 reply. Continue or another human message resumes the loop. A crash before the
 acknowledgement leaves the message pending. Acknowledgement and reply commit
-together. Unread messages at the final-step boundary become the next turn.
+together. Unread messages at the final-step boundary become the next turn only
+after completion. Cancelled, failed and interrupted turns acknowledge pending
+messages with an agent reply and do not replay the messages.
 
 The frontend worker holds its existing exclusive device lease between turns.
 `ARTEMIS_CHAT_IDLE_SECONDS` defaults to 300. After idle expiry, a follow-up

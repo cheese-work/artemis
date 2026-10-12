@@ -28,20 +28,24 @@ class ChatStore:
     def fail_admission(self, turn_id, reason):
         with self.transaction() as connection:
             self._transition(connection, turn_id, "failed")
-            now = time.time()
-            pending = connection.execute(
-                "SELECT * FROM chat_messages WHERE turn_id=? AND acknowledged_at IS NULL AND role IN ('human','system')",
-                (turn_id,),
-            ).fetchall()
-            for message in pending:
-                connection.execute(
-                    "INSERT INTO chat_messages(session_id, turn_id, role, content, reply_to, created_at) VALUES (?,?,?,?,?,?)",
-                    (message["session_id"], turn_id, "agent", reason, message["sequence"], now),
-                )
+            self._acknowledge_pending(connection, turn_id, reason)
+
+    @staticmethod
+    def _acknowledge_pending(connection, turn_id, reason):
+        now = time.time()
+        pending = connection.execute(
+            "SELECT * FROM chat_messages WHERE turn_id=? AND acknowledged_at IS NULL AND role IN ('human','system') ORDER BY sequence",
+            (turn_id,),
+        ).fetchall()
+        for message in pending:
             connection.execute(
-                "UPDATE chat_messages SET acknowledged_at=? WHERE turn_id=? AND acknowledged_at IS NULL AND role IN ('human','system')",
-                (now, turn_id),
+                "INSERT INTO chat_messages(session_id, turn_id, role, content, reply_to, created_at) VALUES (?,?,?,?,?,?)",
+                (message["session_id"], turn_id, "agent", reason, message["sequence"], now),
             )
+        connection.execute(
+            "UPDATE chat_messages SET acknowledged_at=? WHERE turn_id=? AND acknowledged_at IS NULL AND role IN ('human','system')",
+            (now, turn_id),
+        )
 
     def launch_config(self, identity):
         with self.transaction() as connection:
@@ -61,8 +65,17 @@ class ChatStore:
             return dict(row) if row else None
 
     def finish(self, turn_id, status):
+        if status not in TERMINAL:
+            raise ValueError("invalid_terminal_status")
         with self.transaction() as connection:
             self._transition(connection, turn_id, status)
+            if status != "completed":
+                self._acknowledge_pending(
+                    connection,
+                    turn_id,
+                    f"Turn {status}. This message will not be replayed. Send a new message to continue.",
+                )
+                return
             pending = connection.execute(
                 "SELECT * FROM chat_messages WHERE turn_id=? AND role='human' AND acknowledged_at IS NULL ORDER BY sequence",
                 (turn_id,),
@@ -277,6 +290,9 @@ class ChatStore:
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS chat_message_session ON chat_messages(session_id, sequence)"
             )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS chat_message_turn ON chat_messages(turn_id)"
+            )
             if not connection.execute(
                 "SELECT 1 FROM sqlite_master WHERE type='table' AND name='sessions'"
             ).fetchone():
@@ -317,11 +333,12 @@ class ChatStore:
     def get(self, identity):
         with self.transaction() as connection:
             root = self._root(connection, identity)
-            session = dict(
-                connection.execute(
-                    "SELECT * FROM chat_sessions WHERE session_id=?", (root,)
-                ).fetchone()
-            )
+            row = connection.execute(
+                "SELECT * FROM chat_sessions WHERE session_id=?", (root,)
+            ).fetchone()
+            if row is None:
+                raise KeyError(identity)
+            session = dict(row)
             session.pop("launch_config")
             session["turns"] = [
                 dict(row)
