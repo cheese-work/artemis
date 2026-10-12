@@ -607,6 +607,10 @@ class Agent:
                 and active_owner.pid == os.getpid()
                 and (
                     (sess_id and str(active_owner.session_id) == str(sess_id))
+                    or (
+                        os.getenv("ARTEMIS_CHAT_SESSION_ID")
+                        and active_owner.session_id == os.getenv("ARTEMIS_CHAT_SESSION_ID")
+                    )
                     or active_owner.token == self._device_context.device_id
                 )
             )
@@ -659,9 +663,10 @@ class Agent:
                 publish_startup_progress(
                     "environment", "Preparing the device environment", session_id=str(sess_id)
                 )
-                await self._prepare_app_installation(task=task)
-                await self._prepare_device_environment(context=context)
-                await self._prepare_app_lock(task=task, context=context)
+                if os.getenv("ARTEMIS_CHAT_FOLLOW_UP") != "1":
+                    await self._prepare_app_installation(task=task)
+                    await self._prepare_device_environment(context=context)
+                    await self._prepare_app_lock(task=task, context=context)
                 async with context:
                     recording_started = False
                     if self._config.video_recording_tools_enabled:

@@ -35,6 +35,7 @@ WEBSOCKET = "WS"
 
 REAL = frozenset(
     {
+        "GET /api/chats/{session_id}",
         "GET /",
         "GET /{full_path:path}",
         "GET /api/images/{image_name}",
@@ -93,6 +94,9 @@ SYNTHETIC = frozenset(
 
 DISABLED = frozenset(
     {
+        "POST /api/chats/{session_id}/messages",
+        "POST /api/chats/{session_id}/pause",
+        "POST /api/chats/{session_id}/continue",
         "POST /api/sessions/{session_id}/improve-prompt",
         "GET /api/system/providers",
         "PUT /api/system/providers/{provider}",

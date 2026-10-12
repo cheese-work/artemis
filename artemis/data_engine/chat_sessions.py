@@ -1,5 +1,6 @@
 from contextlib import closing, contextmanager
 from pathlib import Path
+import json
 import sqlite3
 import time
 import uuid
@@ -16,6 +17,135 @@ TRANSITIONS = {
 
 
 class ChatStore:
+    def save_launch_config(self, identity, config):
+        with self.transaction() as connection:
+            root = self._root(connection, identity)
+            connection.execute(
+                "UPDATE chat_sessions SET launch_config=coalesce(launch_config, ?) WHERE session_id=?",
+                (json.dumps(config), root),
+            )
+
+    def fail_admission(self, turn_id, reason):
+        with self.transaction() as connection:
+            self._transition(connection, turn_id, "failed")
+            self._acknowledge_pending(connection, turn_id, reason)
+
+    @staticmethod
+    def _acknowledge_pending(connection, turn_id, reason):
+        now = time.time()
+        pending = connection.execute(
+            "SELECT * FROM chat_messages WHERE turn_id=? AND acknowledged_at IS NULL AND role IN ('human','system') ORDER BY sequence",
+            (turn_id,),
+        ).fetchall()
+        for message in pending:
+            connection.execute(
+                "INSERT INTO chat_messages(session_id, turn_id, role, content, reply_to, created_at) VALUES (?,?,?,?,?,?)",
+                (message["session_id"], turn_id, "agent", reason, message["sequence"], now),
+            )
+        connection.execute(
+            "UPDATE chat_messages SET acknowledged_at=? WHERE turn_id=? AND acknowledged_at IS NULL AND role IN ('human','system')",
+            (now, turn_id),
+        )
+
+    def launch_config(self, identity):
+        with self.transaction() as connection:
+            root = self._root(connection, identity)
+            value = connection.execute(
+                "SELECT launch_config FROM chat_sessions WHERE session_id=?", (root,)
+            ).fetchone()[0]
+            return json.loads(value) if value else None
+
+    def next_turn(self, identity):
+        with self.transaction() as connection:
+            root = self._root(connection, identity)
+            row = connection.execute(
+                "SELECT * FROM chat_turns WHERE session_id=? AND status='queued' ORDER BY number LIMIT 1",
+                (root,),
+            ).fetchone()
+            return dict(row) if row else None
+
+    def finish(self, turn_id, status):
+        if status not in TERMINAL:
+            raise ValueError("invalid_terminal_status")
+        with self.transaction() as connection:
+            self._transition(connection, turn_id, status)
+            if status != "completed":
+                self._acknowledge_pending(
+                    connection,
+                    turn_id,
+                    f"Turn {status}. This message will not be replayed. Send a new message to continue.",
+                )
+                return
+            pending = connection.execute(
+                "SELECT * FROM chat_messages WHERE turn_id=? AND role='human' AND acknowledged_at IS NULL ORDER BY sequence",
+                (turn_id,),
+            ).fetchall()
+            if pending:
+                root = self._root(connection, turn_id)
+                next_turn = connection.execute(
+                    "SELECT turn_id FROM chat_turns WHERE session_id=? AND status='queued' ORDER BY number LIMIT 1",
+                    (root,),
+                ).fetchone()
+                if next_turn:
+                    next_id = next_turn["turn_id"]
+                else:
+                    number = connection.execute(
+                        "SELECT max(number)+1 FROM chat_turns WHERE session_id=?", (root,)
+                    ).fetchone()[0]
+                    next_id = str(uuid.uuid4())
+                    connection.execute(
+                        "INSERT INTO chat_turns VALUES (?,?,?,?,?)",
+                        (next_id, root, number, "queued", time.time()),
+                    )
+                connection.execute(
+                    "UPDATE chat_messages SET turn_id=? WHERE turn_id=? AND role='human' AND acknowledged_at IS NULL",
+                    (next_id, turn_id),
+                )
+            connection.execute(
+                "UPDATE chat_messages SET acknowledged_at=? WHERE turn_id=? AND role='system' AND acknowledged_at IS NULL",
+                (time.time(), turn_id),
+            )
+
+    def claim_worker(self, identity, pid, birth):
+        from artemis.runtime.process_probe import pid_is_alive
+
+        with self.transaction() as connection:
+            root = self._root(connection, identity)
+            row = connection.execute(
+                "SELECT lease_pid, lease_birth FROM chat_sessions WHERE session_id=?", (root,)
+            ).fetchone()
+            if row["lease_pid"] and pid_is_alive(row["lease_pid"], row["lease_birth"]):
+                raise ValueError("session_worker_active")
+            connection.execute(
+                "UPDATE chat_sessions SET lease_pid=?, lease_birth=?, idle_until=NULL WHERE session_id=?",
+                (pid, birth, root),
+            )
+
+    def idle(self, identity, pid, deadline):
+        with self.transaction() as connection:
+            root = self._root(connection, identity)
+            connection.execute(
+                "UPDATE chat_sessions SET idle_until=? WHERE session_id=? AND lease_pid=?",
+                (deadline, root, pid),
+            )
+
+    def release_worker(self, identity, pid, *, only_if_idle=False):
+        with self.transaction() as connection:
+            root = self._root(connection, identity)
+            if (
+                only_if_idle
+                and connection.execute(
+                    "SELECT 1 FROM chat_turns WHERE session_id=? AND status IN (?,?,?)",
+                    (root, *sorted(ACTIVE)),
+                ).fetchone()
+            ):
+                return False
+            connection.execute(
+                "UPDATE chat_sessions SET lease_pid=NULL, lease_birth=NULL, idle_until=NULL WHERE session_id=? AND lease_pid=?",
+                (root, pid),
+            )
+            return True
+
     def turn(self, turn_id):
         with self.transaction() as connection:
             row = connection.execute(
@@ -139,6 +269,9 @@ class ChatStore:
             connection.execute("""CREATE TABLE IF NOT EXISTS chat_sessions (
                 session_id TEXT PRIMARY KEY, created_at REAL NOT NULL,
                 launch_config TEXT, lease_pid INTEGER, idle_until REAL)""")
+            columns = {row[1] for row in connection.execute("PRAGMA table_info(chat_sessions)")}
+            if "lease_birth" not in columns:
+                connection.execute("ALTER TABLE chat_sessions ADD COLUMN lease_birth REAL")
             connection.execute("""CREATE TABLE IF NOT EXISTS chat_turns (
                 turn_id TEXT PRIMARY KEY, session_id TEXT NOT NULL,
                 number INTEGER NOT NULL, status TEXT NOT NULL,
@@ -165,10 +298,11 @@ class ChatStore:
             ).fetchone():
                 return
             connection.execute("""INSERT OR IGNORE INTO chat_sessions(session_id, created_at)
-                SELECT session_id, coalesce(start_time, 0) FROM sessions""")
+                SELECT session_id, coalesce(start_time, 0) FROM sessions
+                WHERE NOT EXISTS (SELECT 1 FROM chat_turns t WHERE t.turn_id=sessions.session_id)""")
             connection.execute("""INSERT OR IGNORE INTO chat_turns(turn_id, session_id, number, status, created_at)
                 SELECT session_id, session_id, 1,
-                    CASE WHEN status IN ('pending', 'starting') THEN 'queued' ELSE coalesce(status, 'queued') END,
+                    CASE WHEN status IN ('pending', 'starting') THEN 'queued' WHEN status='success' THEN 'completed' ELSE coalesce(status, 'queued') END,
                     coalesce(start_time, 0) FROM sessions
                 WHERE NOT EXISTS (SELECT 1 FROM chat_turns t WHERE t.turn_id=sessions.session_id)""")
             connection.execute("""INSERT INTO chat_messages(session_id, turn_id, role, content, client_id, acknowledged_at, created_at)
@@ -177,6 +311,11 @@ class ChatStore:
                 FROM sessions s JOIN chat_turns t ON t.turn_id=s.session_id
                 WHERE s.initial_goal IS NOT NULL AND NOT EXISTS
                     (SELECT 1 FROM chat_messages m WHERE m.turn_id=s.session_id)""")
+            settled = connection.execute("""SELECT t.turn_id, s.status FROM chat_turns t
+                JOIN sessions s ON s.session_id=t.turn_id
+                WHERE t.status IN ('queued','running','paused') AND s.status IN ('completed','failed','cancelled','interrupted')""").fetchall()
+        for turn in settled:
+            self.finish(turn["turn_id"], turn["status"])
 
     @staticmethod
     def _root(connection, identity):

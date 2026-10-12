@@ -795,6 +795,10 @@ class TaskQueueService:
             env["ARTEMIS_IPC_PORT"] = str(state.ipc_port)
         if sess_id:
             env["ARTEMIS_SESSION_ID"] = str(sess_id)
+            if task_item.get("ingress", "frontend") == "frontend":
+                from artemis.data_engine.chat_sessions import ChatStore
+
+                env["ARTEMIS_CHAT_SESSION_ID"] = task_item.get("chat_session_id") or str(sess_id)
         env["ARTEMIS_TASK_INGRESS"] = str(task_item.get("ingress", "frontend"))
         env["ARTEMIS_TASK_WORKER"] = "1"
         target.endpoint.apply_to_environment(env)
@@ -1799,6 +1803,32 @@ class TaskQueueService:
                     **({"model": model} if model else {}),
                 ):
                     raise RuntimeError(f"Could not persist queued session {session_id}")
+                if ingress == "frontend":
+                    chat_identity = session_repo.register_chat_launch(
+                        session_id,
+                        {
+                            key: task_item.get(key)
+                            for key in (
+                                "profile",
+                                "expected_output",
+                                "enable_outputter",
+                                "verification_level",
+                                "explorer_mode",
+                                "locked_app_package",
+                                "device_serial",
+                                "adb_endpoint",
+                                "device_binding",
+                                "host_id",
+                                "requested_by",
+                                "bridge_session_id",
+                                "model",
+                                "model_explicit",
+                            )
+                        },
+                    )
+                    task_item["chat_session_id"] = (
+                        chat_identity if isinstance(chat_identity, str) else session_id
+                    )
                 if goal_images:
                     # Synchronous on purpose: nothing may yield before the queue append.
                     task_item["goal_images"] = run_images.store(session_id, goal_images)

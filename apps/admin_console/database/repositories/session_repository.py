@@ -47,6 +47,14 @@ class SessionRepository:
     def __init__(self, db_path=None):
         self.db_path = db_path
 
+    def register_chat_launch(self, session_id, config):
+        from artemis.config import DB_PATH
+        from artemis.data_engine.chat_sessions import ChatStore
+
+        store = ChatStore(self.db_path or DB_PATH)
+        store.save_launch_config(session_id, config)
+        return store.get(session_id)["session_id"]
+
     @staticmethod
     def process_is_alive(pid: Any) -> bool:
         """Return whether a session's worker PID is still alive.

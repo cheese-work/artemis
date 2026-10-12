@@ -108,5 +108,22 @@ async def read_chat_guidance(ctx, goal):
             )
 
         control = ChatControl(store, turn_id, judge)
+        control.started = os.getenv("ARTEMIS_CHAT_TURN_STARTED") == "1"
         ctx.chat_control = control
-    return await control.checkpoint()
+        history = store.get(turn_id)
+        ctx.chat_history_pending = (
+            json.dumps(history["messages"], ensure_ascii=False)
+            if len(history["turns"]) > 1
+            else None
+        )
+    guidance = await control.checkpoint()
+    history = getattr(ctx, "chat_history_pending", None)
+    ctx.chat_history_pending = None
+    return (
+        "\n\n".join(
+            value
+            for value in (f"Session chat history:\n{history}" if history else None, guidance)
+            if value
+        )
+        or None
+    )
