@@ -337,6 +337,22 @@ describe('RunChatComponent', () => {
     fixture.destroy();
   }));
 
+  it('resumes following at a fractional bottom on a scaled display', fakeAsync(() => {
+    const fixture = render();
+    const history = fixture.nativeElement.querySelector('.chat-history');
+    Object.defineProperty(history, 'scrollHeight', { configurable: true, value: 1000 });
+    Object.defineProperty(history, 'clientHeight', { configurable: true, value: 200 });
+    Object.defineProperty(history, 'scrollTop', { configurable: true, writable: true, value: 799 });
+    fixture.componentInstance.trackScroll();
+    fixture.componentInstance.scrollToLatest();
+    expect(history.scrollTop).toBe(799);
+    history.scrollTop = 799.5;
+    fixture.componentInstance.trackScroll();
+    fixture.componentInstance.scrollToLatest();
+    expect(history.scrollTop).toBe(1000);
+    fixture.destroy();
+  }));
+
   it('does not replace chat or scroll when a poll returns unchanged content', fakeAsync(() => {
     const fixture = render();
     const chat = fixture.componentInstance.chat();
