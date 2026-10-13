@@ -924,6 +924,7 @@ class Agent:
                         finally:
                             if device_lock is not None:
                                 await asyncio.to_thread(device_lock.release)
+                await self._generate_prompt_tip_safely(task=task, context=context)
 
         async with self._task_lock:
             if self._current_task and not self._current_task.done():
@@ -1238,6 +1239,21 @@ class Agent:
                 f"was resolved as '{task.status}': {exc}",
                 exc_info=True,
             )
+
+    async def _generate_prompt_tip_safely(self, task: Task, context: ArtemisContext):
+        if (
+            context.data_engine
+            and task.status == "completed"
+            and os.getenv("ARTEMIS_TASK_WORKER") == "1"
+            and not os.getenv("ARTEMIS_CHAT_SESSION_ID")
+        ):
+            from apps.admin_console.services.automatic_prompt_tips import ensure_tip
+
+            results = await asyncio.gather(
+                ensure_tip(str(context.data_engine.session_id)), return_exceptions=True
+            )
+            if isinstance(results[0], BaseException):
+                logger.warning("Automatic prompt tip unavailable for a completed task.")
 
     async def _finalize_tracing(self, task: Task, context: ArtemisContext):
         if context.data_engine:

@@ -14,7 +14,6 @@
  * limitations under the License.
  */
 
-import { LessonsComponent } from './pages/lessons/lessons.component';
 import { Routes } from '@angular/router';
 import { HomeComponent } from './pages/home/home.component';
 import { WorkspaceComponent } from './pages/workspace/workspace.component';
@@ -33,7 +32,6 @@ export const routes: Routes = [
   { path: 'workspace', pathMatch: 'full', redirectTo: 'sessions/new' },
   { path: 'runs', pathMatch: 'full', redirectTo: 'sessions' },
   { path: 'runs/:id', redirectTo: 'sessions/:id' },
-  { path: 'lessons', component: LessonsComponent },
   { path: 'check', component: LegacyWorkspaceComponent },
   { path: '**', redirectTo: 'sessions' }
 ];

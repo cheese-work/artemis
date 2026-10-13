@@ -130,6 +130,69 @@ async def test_trace_finalization_failure_does_not_escape():
 
 
 @pytest.mark.asyncio
+async def test_tip_runs_after_trace_and_sdk_device_release(
+    monkeypatch, fake_provider_credentials, caplog
+):
+    from artemis.context import ArtemisContext
+    from artemis.sdk import agent as agent_module
+    from apps.admin_console.services import automatic_prompt_tips
+
+    monkeypatch.delenv("ARTEMIS_CLOUD_MODE", raising=False)
+    monkeypatch.delenv("ARTEMIS_CHAT_SESSION_ID", raising=False)
+    monkeypatch.setenv("ARTEMIS_TASK_WORKER", "1")
+    events = []
+    context = MagicMock(spec=ArtemisContext)
+    context.data_engine = MagicMock(session_id="run")
+    context.execution_setup = None
+    context.__aenter__ = AsyncMock(return_value=context)
+    context.__aexit__ = AsyncMock(return_value=False)
+    monkeypatch.setattr(agent_module, "ArtemisContext", lambda **kwargs: context)
+    monkeypatch.setattr(
+        agent_module,
+        "FlashRunner",
+        lambda *args, **kwargs: SimpleNamespace(
+            run=AsyncMock(return_value={"status": "completed"})
+        ),
+    )
+    lock = MagicMock()
+    lock.release.side_effect = lambda: events.append("release")
+    lock_type = MagicMock(return_value=lock)
+    lock_type.get_active_owner.return_value = None
+    monkeypatch.setattr(agent_module, "DeviceExecutionLock", lock_type)
+    monkeypatch.setattr(agent_module, "publish_startup_progress", MagicMock())
+    monkeypatch.setattr("artemis.tools.command_tool.shutdown_adb_background_tasks", AsyncMock())
+    agent = Agent()
+    agent._initialized = True
+    agent._device_context = DeviceContext(device_id="test-device")
+    agent._adb_client = MagicMock()
+    agent._ui_adb_client = MagicMock()
+    agent._ui_adb_client.disconnect.side_effect = lambda: events.append("disconnect")
+    agent._config.video_recording_tools_enabled = False
+    agent._get_graph_state = MagicMock(return_value=SimpleNamespace(model_dump=lambda: {}))
+    agent._prepare_tracing = MagicMock()
+    agent._prepare_output_files = MagicMock()
+    for name in (
+        "_prepare_app_installation",
+        "_prepare_device_environment",
+        "_prepare_app_lock",
+        "_connect_screen_client",
+        "_ensure_device_unlocked",
+    ):
+        setattr(agent, name, AsyncMock())
+    agent._finalize_tracing = AsyncMock(side_effect=lambda **kwargs: events.append("trace"))
+
+    async def tip(identity):
+        events.append("tip")
+        raise TypeError("PRIVATE-TIP-ERROR-SENTINEL")
+
+    monkeypatch.setattr(automatic_prompt_tips, "ensure_tip", AsyncMock(side_effect=tip))
+    await agent.run_task(goal="test", profile="flash")
+    assert events == ["trace", "disconnect", "release", "tip"]
+    assert agent._tasks[-1].status == "completed"
+    assert "PRIVATE-TIP-ERROR-SENTINEL" not in caplog.text
+
+
+@pytest.mark.asyncio
 async def test_agent_clean_disconnects_the_shared_ui_client():
     agent = object.__new__(Agent)
     agent._initialized = True

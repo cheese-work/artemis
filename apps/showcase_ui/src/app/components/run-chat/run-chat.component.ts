@@ -45,6 +45,11 @@ export class RunChatComponent {
   public readonly sidebarOpen = signal(true);
   public readonly editingTitle = signal(false);
   public readonly savingTitle = signal(false);
+  public readonly copyNotice = signal('');
+  public readonly samples = [
+    { title: 'Scan notifications', source: 'artemis/sdk/examples/smart_notification_assistant.py', prompt: 'Open the notification panel (swipe down from top). Scroll through the first 3 unread notifications. For each notification, identify the app name, title, and content. Tag messages from messaging apps or email as high priority.' },
+    { title: 'Summarize a video', source: 'artemis/sdk/examples/video_transcription_example.py', prompt: '1. Open YouTube app\n2. Search for "Python tutorial"\n3. Start recording the screen\n4. Play the first video\n5. Wait for the first 30 seconds of the video to play\n6. Stop recording and tell me what was said in the video' }
+  ];
   public titleDraft = '';
   public readonly chat = signal<ChatSession | null>(null);
   public readonly rootRun = signal<RunSummary | null>(null);
@@ -101,7 +106,7 @@ export class RunChatComponent {
           this.rootRun.set(run);
           return timer(0, 1000).pipe(switchMap(() => this.api.chat(run.session_id).pipe(
             catchError((error) => { this.reportError(error); return of(null); })
-          )), takeWhile(chat => !chat || ['queued', 'running', 'paused'].includes(chat.turns.at(-1)?.status ?? ''), true));
+          )), takeWhile(chat => !chat || ['queued', 'running', 'paused'].includes(chat.turns.at(-1)?.status ?? '') || chat.verdict?.tip?.state === 'generating', true));
         }),
         catchError((error) => { this.reportError(error); return of(null); })
       ).subscribe((chat) => this.zone.run(() => { if (chat) this.chat.set(chat); })));
@@ -112,6 +117,17 @@ export class RunChatComponent {
 
   public messages(turnId: string) {
     return this.chat()?.messages.filter((message) => message.turn_id === turnId) ?? [];
+  }
+
+  public async copyTip(): Promise<void> {
+    const text = this.chat()?.verdict?.tip?.text;
+    if (!text || this.chat()?.verdict?.status !== 'completed') return;
+    try {
+      await navigator.clipboard.writeText(text);
+      this.copyNotice.set('Tip copied.');
+    } catch {
+      this.copyNotice.set('Could not copy the tip. Select the text and copy it.');
+    }
   }
 
   public trackScroll(): void {

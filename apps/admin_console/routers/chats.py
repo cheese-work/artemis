@@ -1,5 +1,6 @@
 import asyncio
 import json
+import time
 import uuid
 
 from fastapi import APIRouter, Depends, Request
@@ -22,11 +23,12 @@ from apps.admin_console.services.task_queue_service import task_queue_service
 from apps.admin_console.database.repositories.session_repository import session_repo
 from apps.admin_console.database.repositories.step_repository import step_repo
 from apps.admin_console.services.media_service import media_service
+from apps.admin_console.services.automatic_prompt_tips import read_tip
 
 router = APIRouter(tags=["chat sessions"])
 
 
-def _timeline(session):
+def _timeline(session, store=None):
     events = [dict(message) for message in session["messages"]]
     recorded = {
         message["payload"].get("step_id"): message
@@ -63,11 +65,21 @@ def _timeline(session):
             report = report_path.read_text(encoding="utf-8")
         except (OSError, UnicodeError):
             report = None
+        tip = read_tip(latest["turn_id"]) if latest["status"] == "completed" else None
+        if (
+            tip is None
+            and latest["status"] == "completed"
+            and store is not None
+            and store.launch_config(session["session_id"])
+            and 0 <= time.time() - (details.get("end_time") or 0) < 95
+        ):
+            tip = {"state": "generating", "text": None}
         session["verdict"] = {
             "status": latest["status"],
             "outcome": outcome,
             "report": report,
             "details": details,
+            "tip": tip,
         }
     return session
 
@@ -110,7 +122,7 @@ def _session(identity, scope, *, write=False):
 @router.get("/api/chats/{session_id}")
 async def get_chat(session_id: str, scope: OwnerScope = Depends(actor_scope)):
     store, session = await asyncio.to_thread(_session, session_id, scope)
-    session = await asyncio.to_thread(_timeline, session)
+    session = await asyncio.to_thread(_timeline, session, store)
     return await asyncio.to_thread(present_session_data, scope, session["session_id"], session)
 
 
@@ -121,7 +133,7 @@ async def rename_chat(
     store, session = await asyncio.to_thread(_session, session_id, scope)
     await asyncio.to_thread(store.rename, session["session_id"], request.title)
     updated = await asyncio.to_thread(store.get, session["session_id"])
-    updated = await asyncio.to_thread(_timeline, updated)
+    updated = await asyncio.to_thread(_timeline, updated, store)
     return await asyncio.to_thread(present_session_data, scope, session["session_id"], updated)
 
 
