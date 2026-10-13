@@ -2,7 +2,6 @@ import { ChangeDetectionStrategy, Component, DestroyRef, ElementRef, Injector, a
 import { RouterLink } from '@angular/router';
 import { WorkspacePhoneService } from '../../services/workspace-phone.service';
 import { AgentService } from '../../services/agent.service';
-import { SystemService } from '../../services/system.service';
 import { deviceKindLabel, deviceTitle } from '../../utils/device-label.util';
 
 let nextId = 0;
@@ -197,11 +196,10 @@ let nextId = 0;
 export class WorkspaceDeviceChipComponent {
   protected readonly phone = inject(WorkspacePhoneService);
   private readonly agent = inject(AgentService);
-  private readonly system = inject(SystemService);
   protected readonly deviceLabel = computed(() => {
     const serial = this.phone.target()?.serial;
     if (!serial) return 'No phone';
-    const device = this.system.connectedDevices().find(device => device.serial === serial) ?? { serial, model: null };
+    const device = this.phone.selectedDevice() ?? { serial, model: null };
     const title = deviceTitle(device);
     const kind = deviceKindLabel(device);
     return title === kind ? title : `${title} · ${kind}`;

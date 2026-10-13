@@ -4,6 +4,7 @@ import { phone, phoneFakes } from '../../testing/phone-fakes';
 import { WorkspacePhoneService } from '../../services/workspace-phone.service';
 import { WorkspaceDeviceChipComponent } from './workspace-device-chip.component';
 import { expectHitBox } from '../../testing/hit-box';
+import { of } from 'rxjs';
 
 describe('WorkspaceDeviceChipComponent', () => {
   let fakes: ReturnType<typeof phoneFakes>;
@@ -23,6 +24,23 @@ describe('WorkspaceDeviceChipComponent', () => {
   }
 
   beforeEach(() => (fakes = phoneFakes()));
+
+  for (const [model, product, expected] of [
+    ['Pixel 6 Pro', 'raven', 'Pixel 6 Pro'], [null, 'raven', 'raven'], [null, null, 'Android phone']
+  ]) {
+    it(`titles a browser phone missing from readiness as ${expected}`, () => {
+      const serial = '127.0.0.1:35773';
+      fakes.relay.state.set({ status: 'connected', serial, sessionId: 'bridge', error: null });
+      fakes.hosts.list.and.returnValue(of({ enabled: true, hosts: [], devices: [{ serial, model, product,
+        device_kind: 'phone', source: 'browser', computer_id: null, computer_name: null,
+        computer_status: 'online', reason: null, since: null }] }));
+      const { el, settle } = create();
+      settle();
+      expect(el.querySelector('.phone-card-label')?.textContent).toBe(`${expected} · Phone`);
+      expect(el.querySelector('.phone-card-serial')?.textContent).toBe(serial);
+      expect(fakes.system.useLocalAdbServer).not.toHaveBeenCalled();
+    });
+  }
 
   /** A run in progress on `serial`, while the person may be looking at some other run. */
   const runningOn = (serial: string | null) => {
@@ -378,7 +396,7 @@ describe('WorkspaceDeviceChipComponent', () => {
       expect(options[0]).toMatch(/^Pixel 6 · Phone · /);
       expect(options[1]).toMatch(/^SM-S911B · Phone · /);
       expect(options[2]).toMatch(/^Emulator · /);
-      expect(options[3]).toMatch(/^Unknown device · /);
+      expect(options[3]).toMatch(/^Android phone · Unknown device · /);
       // The primary label (before the first separator) is never a raw address.
       for (const option of options) {
         expect(option.split(' · ')[0]).not.toMatch(/\d+\.\d+\.\d+\.\d+:\d+|emulator-\d+/);

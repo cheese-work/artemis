@@ -1,9 +1,9 @@
-import { afterEveryRender, ChangeDetectionStrategy, Component, computed, effect, ElementRef, inject, input, NgZone, output, signal, viewChild } from '@angular/core';
+import { afterRenderEffect, ChangeDetectionStrategy, Component, computed, effect, ElementRef, inject, input, NgZone, output, signal, viewChild } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { CdkTextareaAutosize } from '@angular/cdk/text-field';
 import { HttpErrorResponse } from '@angular/common/http';
 import { DatePipe, JsonPipe } from '@angular/common';
-import { catchError, of, switchMap, takeWhile, timer } from 'rxjs';
+import { catchError, distinctUntilChanged, of, switchMap, takeWhile, timer } from 'rxjs';
 import { ChatSession, RunSummary } from '../../core/models/run.model';
 import { Session } from '../../core/models/session.model';
 import { StepItemData } from '../../core/models/stream.model';
@@ -108,11 +108,17 @@ export class RunChatComponent {
             catchError((error) => { this.reportError(error); return of(null); })
           )), takeWhile(chat => !chat || ['queued', 'running', 'paused'].includes(chat.turns.at(-1)?.status ?? '') || chat.verdict?.tip?.state === 'generating', true));
         }),
-        catchError((error) => { this.reportError(error); return of(null); })
+        catchError((error) => { this.reportError(error); return of(null); }),
+        distinctUntilChanged((previous, current) => JSON.stringify(previous) === JSON.stringify(current))
       ).subscribe((chat) => this.zone.run(() => { if (chat) this.chat.set(chat); })));
       onCleanup(() => subscription.unsubscribe());
     });
-    afterEveryRender(() => this.scrollToLatest());
+    afterRenderEffect(() => {
+      this.chat();
+      this.liveSteps();
+      this.startupProgress();
+      this.scrollToLatest();
+    });
   }
 
   public messages(turnId: string) {
@@ -132,7 +138,7 @@ export class RunChatComponent {
 
   public trackScroll(): void {
     const history = this.historyElement()?.nativeElement;
-    if (history) this.followLatest = history.scrollHeight - history.clientHeight - history.scrollTop < 80;
+    if (history) this.followLatest = history.scrollTop >= history.scrollHeight - history.clientHeight;
   }
 
   public scrollToLatest(): void {

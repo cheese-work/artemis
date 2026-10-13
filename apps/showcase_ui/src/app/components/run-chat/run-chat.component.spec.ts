@@ -315,7 +315,7 @@ describe('RunChatComponent', () => {
     fixture.destroy();
   }));
 
-  it('follows new events only while the reader stays near the end', fakeAsync(() => {
+  it('stops following on a one-pixel scroll-up and resumes only at the bottom', fakeAsync(() => {
     const fixture = render();
     const history = fixture.nativeElement.querySelector('.chat-history');
     Object.defineProperty(history, 'scrollHeight', { configurable: true, value: 1000 });
@@ -323,14 +323,53 @@ describe('RunChatComponent', () => {
     Object.defineProperty(history, 'scrollTop', { configurable: true, writable: true, value: 0 });
     fixture.componentInstance.scrollToLatest();
     expect(history.scrollTop).toBe(1000);
-    history.scrollTop = 100;
+    history.scrollTop = 799;
     fixture.componentInstance.trackScroll();
     fixture.componentInstance.scrollToLatest();
-    expect(history.scrollTop).toBe(100);
+    expect(history.scrollTop).toBe(799);
+    fixture.componentInstance.chat.set({ ...thread, timeline: [...thread.messages] });
+    fixture.detectChanges();
+    expect(history.scrollTop).toBe(799);
     history.scrollTop = 800;
     fixture.componentInstance.trackScroll();
     fixture.componentInstance.scrollToLatest();
     expect(history.scrollTop).toBe(1000);
+    fixture.destroy();
+  }));
+
+  it('does not replace chat or scroll when a poll returns unchanged content', fakeAsync(() => {
+    const fixture = render();
+    const chat = fixture.componentInstance.chat();
+    const scroll = spyOn(fixture.componentInstance, 'scrollToLatest');
+    api.chat.and.returnValue(of(JSON.parse(JSON.stringify(thread))));
+    tick(1000); fixture.detectChanges();
+    expect(api.chat).toHaveBeenCalledTimes(2);
+    expect(fixture.componentInstance.chat()).toBe(chat);
+    expect(scroll).not.toHaveBeenCalled();
+    fixture.destroy();
+  }));
+
+  it('does not auto-scroll for composer-only renders', fakeAsync(() => {
+    const fixture = render();
+    const scroll = spyOn(fixture.componentInstance, 'scrollToLatest');
+    fixture.componentInstance.sending.set(true);
+    fixture.detectChanges();
+    expect(scroll).not.toHaveBeenCalled();
+    fixture.destroy();
+  }));
+
+  it('keeps a small scroll-up while an expanded screenshot loads', fakeAsync(() => {
+    const fixture = render();
+    fixture.componentInstance.chat.set({ ...thread, timeline: [{ ...thread.messages[1], kind: 'step',
+      payload: { post_image_name: 'screen.png' } }] });
+    fixture.detectChanges();
+    const history = fixture.nativeElement.querySelector('.chat-history');
+    Object.defineProperty(history, 'scrollHeight', { configurable: true, value: 1000 });
+    Object.defineProperty(history, 'clientHeight', { configurable: true, value: 200 });
+    Object.defineProperty(history, 'scrollTop', { configurable: true, writable: true, value: 795 });
+    history.dispatchEvent(new Event('scroll'));
+    fixture.nativeElement.querySelector('.step-screenshot').dispatchEvent(new Event('load'));
+    expect(history.scrollTop).toBe(795);
     fixture.destroy();
   }));
 });

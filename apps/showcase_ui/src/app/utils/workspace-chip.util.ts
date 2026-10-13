@@ -3,7 +3,7 @@ import { RunTarget } from '../core/models/run-target.model';
 import { DeviceInfo } from '../core/models/system.model';
 import { UsbDeviceRelayState } from '../services/usb-device-relay.service';
 import { deviceSourceOf } from './device-chip.util';
-import { deviceKindLabel, deviceTitle } from './device-label.util';
+import { deviceKindLabel, deviceTitle, LabelableDevice } from './device-label.util';
 
 /** The Workspace chip's states. A phone is only ever "connected" when a run could use it now. */
 export type WorkspaceChipKind = 'none' | 'connecting' | 'connected' | 'other-tab' | 'dropped' | 'interrupted';
@@ -59,17 +59,24 @@ function sourceText(input: WorkspaceChipInput, serial: string): string | null {
 }
 
 /** "Pixel 6 · Phone": the model and what it is. Never the adb address as the main label. */
-function phoneName(device: DeviceInfo | undefined, serial: string): string[] {
-  const subject = device ?? { serial, model: null };
-  const title = deviceTitle(subject);
-  const kind = deviceKindLabel(subject);
+export function phoneIdentity(input: WorkspaceChipInput, serial: string): LabelableDevice {
+  const device = input.devices.find(device => device.serial === serial);
+  const registered = input.registry.find(device => device.serial === serial);
+  return { serial, model: device?.model?.trim() || registered?.model || null,
+    product: device?.product?.trim() || registered?.product || null,
+    device_kind: device?.device_kind && device.device_kind !== 'unknown' ? device.device_kind : registered?.device_kind ?? device?.device_kind };
+}
+
+function phoneName(device: LabelableDevice): string[] {
+  const title = deviceTitle(device);
+  const kind = deviceKindLabel(device);
   return title === kind ? [title] : [title, kind];
 }
 
 export function pickerOptions(input: WorkspaceChipInput): PickerOption[] {
   return input.devices.map((device) => ({
     serial: device.serial,
-    text: [...phoneName(device, device.serial), serialSuffix(device.serial), sourceText(input, device.serial)]
+    text: [...phoneName(phoneIdentity(input, device.serial)), serialSuffix(device.serial), sourceText(input, device.serial)]
       .filter(Boolean)
       .join(' · '),
     usable: device.state === 'device',
@@ -127,8 +134,7 @@ export function workspaceChipView(input: WorkspaceChipInput): WorkspaceChipView 
     return anotherTab(view);
   }
   if (serial) {
-    const device = input.devices.find((d) => d.serial === serial);
-    const text = [...phoneName(device, serial), serialSuffix(serial), sourceText(input, serial)]
+    const text = [...phoneName(phoneIdentity(input, serial)), serialSuffix(serial), sourceText(input, serial)]
       .filter(Boolean)
       .join(' · ');
     return view('connected', text, 'Runs start on this phone.', 'smartphone', {

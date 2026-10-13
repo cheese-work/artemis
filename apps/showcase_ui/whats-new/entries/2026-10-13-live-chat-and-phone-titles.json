@@ -1,0 +1,7 @@
+{
+  "id": "2026-10-13-live-chat-and-phone-titles",
+  "date": "2026-10-13",
+  "title": "Read earlier messages without losing your place during a live run",
+  "body": "Scroll up to stop following new messages. Return to the bottom to follow again. Phone titles use the model or product name instead of a connection address.",
+  "issues": ["CHE-1598"]
+}
