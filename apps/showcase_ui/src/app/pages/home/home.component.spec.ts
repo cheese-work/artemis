@@ -159,9 +159,9 @@ describe('HomeComponent device card', () => {
     expect(text(root, '.device-hero-meta')).toContain('Emulator');
   });
 
-  it('shows an unclassifiable device as Unknown device, not Virtual Device', () => {
+  it('shows an unclassifiable device as Android phone, not Virtual Device', () => {
     const root = render([device({ model: null, device_kind: 'unknown' })]);
-    expect(text(root, '.device-hero-name')).toBe('Unknown device');
+    expect(text(root, '.device-hero-name')).toBe('Android phone');
     expect(text(root, '.device-hero-meta')).not.toContain('Virtual Device');
     expect(text(root, '.device-hero-name')).not.toContain('127.0.0.1');
   });

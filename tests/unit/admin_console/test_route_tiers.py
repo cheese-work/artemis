@@ -133,6 +133,7 @@ def test_approved_task_controls_and_bridge_keep_public_tier():
         assert route_tier(path, {"POST"}) == "public"
 
     assert route_tier("/api/device-bridge/session", set(), is_websocket=True) == "public"
+    assert route_tier("/api/device-bridge/resume", set(), is_websocket=True) == "public"
     assert route_tier("/api/system/adb/restart", {"POST"}) == "admin"
 
 

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
+import secrets
 import json
 import logging
 import os
@@ -27,13 +28,16 @@ import uuid
 from artemis.runtime.adb_endpoint import AdbEndpoint
 from artemis.runtime.device_lock import DeviceExecutionLock
 from artemis.runtime.endpoint_transport import EndpointTransport
+from artemis.runtime.host_protocol import CONTRACT
 from artemis.utils.redaction import redact_text
 
 DEFAULT_SESSION_TTL_SECONDS = 300
 DEFAULT_SESSION_MAX_LIFETIME_SECONDS = 4 * 60 * 60
+DEFAULT_RECONNECT_GRACE_SECONDS = CONTRACT.grace_seconds
 ADB_COMMAND_TIMEOUT_SECONDS = 15
 STREAM_CLOSE_TIMEOUT_SECONDS = 1
 MAX_ADB_PACKET_BYTES = 1024 * 1024 + 24
+_sleep = asyncio.sleep
 
 logger = logging.getLogger(__name__)
 
@@ -116,8 +120,14 @@ class BridgeSession:
     close_code: int | None = None
     bytes_browser_to_device: int = 0
     bytes_device_to_browser: int = 0
+    pending_device_packet: bytes | None = None
     # Verified email of the person who connected the phone; None when no one was signed in.
     owner: str | None = None
+    reconnect_token: str = field(default_factory=lambda: secrets.token_urlsafe(32))
+    connection_generation: int = 1
+    websocket_attached: bool = True
+    reconnect_deadline: float | None = None
+    reconnect_task: asyncio.Task[None] | None = None
 
     @property
     def serial(self) -> str:
@@ -248,6 +258,10 @@ class BridgeSessionService:
 
         session.revoked = True
         session.close_reason = session.close_reason or "revoked"
+        reconnect_task = session.reconnect_task
+        session.reconnect_task = None
+        if reconnect_task is not None and reconnect_task is not asyncio.current_task():
+            reconnect_task.cancel()
         from apps.admin_console.services.task_queue_service import TaskQueueService
 
         TaskQueueService.interrupt_bridge_binding(session.session_id)
@@ -317,6 +331,101 @@ class BridgeSessionService:
     async def get(self, session_id: str) -> BridgeSession | None:
         async with self._lock:
             return self._sessions.get(session_id)
+
+    async def begin_reconnect(
+        self,
+        session_id: str,
+        generation: int,
+        *,
+        grace_seconds: float = DEFAULT_RECONNECT_GRACE_SECONDS,
+    ) -> bool:
+        async with self._lock:
+            session = self._sessions.get(session_id)
+            if (
+                session is None
+                or session.revoked
+                or not session.connected.is_set()
+                or not session.websocket_attached
+                or session.connection_generation != generation
+            ):
+                return False
+
+            session.websocket_attached = False
+            session.reconnect_deadline = min(
+                time.monotonic() + grace_seconds, session.max_expires_at
+            )
+            session.expires_at = min(
+                max(session.expires_at, session.reconnect_deadline), session.max_expires_at
+            )
+            session.reconnect_task = asyncio.create_task(
+                self._expire_reconnect(session_id, generation, grace_seconds)
+            )
+
+        logger.info(
+            "event=bridge_reconnecting session_id=%s serial=%s grace_s=%s",
+            session_id,
+            session.serial,
+            grace_seconds,
+        )
+        return True
+
+    async def resume(
+        self, session_id: str, reconnect_token: str, owner: str | None
+    ) -> BridgeSession:
+        async with self._lock:
+            session = self._sessions.get(session_id)
+            if (
+                session is None
+                or session.revoked
+                or session.websocket_attached
+                or session.reconnect_deadline is None
+                or time.monotonic() >= session.reconnect_deadline
+                or session.is_expired
+                or session.owner != owner
+                or not secrets.compare_digest(session.reconnect_token, reconnect_token)
+            ):
+                raise ValueError("bridge session unavailable")
+
+            reconnect_task = session.reconnect_task
+            session.reconnect_task = None
+            session.reconnect_deadline = None
+            session.websocket_attached = True
+            session.connection_generation += 1
+            session.close_reason = None
+            session.client_close = None
+            session.websocket_close_reason = ""
+            session.close_code = None
+            if reconnect_task is not None:
+                reconnect_task.cancel()
+            return session
+
+    async def _expire_reconnect(
+        self, session_id: str, generation: int, grace_seconds: float
+    ) -> None:
+        try:
+            await _sleep(grace_seconds)
+        except asyncio.CancelledError:
+            return
+
+        async with self._lock:
+            session = self._sessions.get(session_id)
+            if (
+                session is None
+                or session.websocket_attached
+                or session.connection_generation != generation
+                or session.reconnect_deadline is None
+                or time.monotonic() < session.reconnect_deadline
+            ):
+                return
+            session.reconnect_task = None
+            session.close_reason = "reconnect_timeout"
+
+        logger.info(
+            "event=bridge_reconnect_expired session_id=%s serial=%s",
+            session_id,
+            session.serial,
+        )
+        await self.revoke(session_id)
 
     async def active_session_ids(self) -> set[str]:
         async with self._lock:

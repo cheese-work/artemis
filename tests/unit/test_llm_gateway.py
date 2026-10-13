@@ -2,7 +2,9 @@
 
 from types import SimpleNamespace
 
+import httpx
 from langchain_core.messages import AIMessage, AIMessageChunk
+from openai import BadRequestError
 import pytest
 
 from artemis.llm.reliability import LLMExhaustedError, LLMPermanentError
@@ -77,6 +79,243 @@ async def test_auth_error_fails_fast_without_retry_or_pause(tmp_path):
 
     assert base.astream_calls == 1
     assert base.ainvoke_calls == 0
+    assert not llm_service.PAUSE_FILE.exists()
+
+
+def _gateway_model_refusal():
+    return BadRequestError(
+        "The 'gpt-6.1-sol' model is not supported when using Codex with a ChatGPT account.",
+        response=httpx.Response(
+            400, request=httpx.Request("POST", "https://gateway.test/v1/chat/completions")
+        ),
+        body=None,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize(
+    ("status", "message", "cause", "attempts"),
+    [
+        (429, "quota exhausted", "quota exhausted", 2),
+        (429, "rate limited", "rate limited (429)", 2),
+        (404, "model_not_found", "model not found", 1),
+        (503, "service unavailable", "provider unavailable after retries", 2),
+    ],
+)
+async def test_explicit_choice_survives_binding_and_never_uses_another_model(
+    monkeypatch, streaming, status, message, cause, attempts
+):
+    from unittest.mock import AsyncMock
+
+    from artemis.config.llm import LLM, LLMWithFallback
+    from artemis.llm.reliability import LLMSelectedModelError
+
+    error = RuntimeError(message + ": secret-provider-body")
+    error.status_code = status
+
+    class SelectedProvider:
+        calls = 0
+
+        def with_config(self, **kwargs):
+            return self
+
+        def bind_tools(self, tools):
+            return self
+
+        async def ainvoke(self, *args, **kwargs):
+            self.calls += 1
+            raise error
+
+        async def astream(self, *args, **kwargs):
+            self.calls += 1
+            raise error
+            yield
+
+    base = SelectedProvider()
+    configured = LLMWithFallback(
+        provider="openai",
+        model="chosen-model",
+        fallback=LLM(provider="google", model="never-called"),
+        fallback_enabled=False,
+    )
+    context = SimpleNamespace(
+        llm_config=SimpleNamespace(get_agent=lambda name: configured), data_engine=None
+    )
+    endpoints = []
+
+    def create_model(endpoint):
+        endpoints.append((endpoint.provider.value, endpoint.model_name))
+        return base
+
+    monkeypatch.setattr(llm_service.ModelFactory, "get_model", create_model)
+    wrapper = llm_service.get_llm(context, "operator").with_config().bind_tools([])
+    llm_service.get_llm(context, "operator", use_fallback=True)
+    fallback = AsyncMock()
+    pause = AsyncMock()
+    monkeypatch.setattr(llm_service, "_wait_for_resume", pause)
+
+    async def main():
+        return await wrapper.complete([]) if streaming else await wrapper.ainvoke([])
+
+    with pytest.raises(LLMSelectedModelError) as raised:
+        await with_fallback(main, fallback)
+    assert str(raised.value) == f"openai/chosen-model: {cause}. Pick another model and run again."
+    assert not raised.value.failure.should_fallback
+    assert base.calls == attempts
+    assert endpoints == [("openai", "chosen-model"), ("openai", "chosen-model")]
+    fallback.assert_not_awaited()
+    pause.assert_not_awaited()
+    assert not llm_service.PAUSE_FILE.exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("streaming", [True, False])
+async def test_gateway_model_refusal_retries_then_succeeds(streaming):
+    class RejectsOnce:
+        calls = 0
+
+        async def astream(self, *args, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                raise _gateway_model_refusal()
+            yield AIMessageChunk(content="ok")
+
+        async def ainvoke(self, *args, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                raise _gateway_model_refusal()
+            return AIMessage(content="ok")
+
+    base = RejectsOnce()
+    wrapper = RobustChatModelWrapper(base)
+    result = await (wrapper.complete([]) if streaming else wrapper.ainvoke([]))
+    assert result.content == "ok"
+    assert base.calls == 2
+    assert wrapper._endpoint_key() not in llm_service._NON_STREAMING_ENDPOINTS
+    assert not llm_service.PAUSE_FILE.exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("streaming", [True, False])
+async def test_gateway_model_refusal_exhausts_without_pause_or_fallback(monkeypatch, streaming):
+    class AlwaysRejects:
+        calls = 0
+
+        async def astream(self, *args, **kwargs):
+            self.calls += 1
+            raise _gateway_model_refusal()
+            yield
+
+        async def ainvoke(self, *args, **kwargs):
+            self.calls += 1
+            raise _gateway_model_refusal()
+
+    def unexpected_pause(*args):
+        pytest.fail("gateway model rejection must not pause or restart its retry budget")
+
+    monkeypatch.setattr(llm_service, "_handle_llm_pause_and_resume", unexpected_pause)
+    base = AlwaysRejects()
+    wrapper = RobustChatModelWrapper(base)
+    fallback_calls = []
+
+    async def main():
+        return await (wrapper.complete([]) if streaming else wrapper.ainvoke([]))
+
+    async def fallback():
+        fallback_calls.append(True)
+        return AIMessage(content="wrong model")
+
+    with pytest.raises(Exception) as raised:
+        await with_fallback(main, fallback)
+
+    error = raised.value
+    assert type(error).__name__ == "LLMGatewayModelRejectedError"
+    assert not isinstance(error, (LLMPermanentError, LLMExhaustedError))
+    assert str(error) == "AI provider rejected the model; try again"
+    assert error.failure.category.value == "gateway_model_rejected"
+    assert isinstance(error.__cause__, BadRequestError)
+    assert base.calls == 2
+    assert not fallback_calls
+    assert not llm_service.PAUSE_FILE.exists()
+
+
+@pytest.mark.asyncio
+async def test_gateway_model_refusal_uses_three_total_attempts_and_reports_the_cause(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from artemis.llm.reliability import retry_policy_for
+
+    base = SimpleNamespace(ainvoke=AsyncMock(side_effect=_gateway_model_refusal()))
+    events = []
+    monkeypatch.setattr(llm_service, "retry_policy_for", retry_policy_for)
+    monkeypatch.setattr(llm_service.asyncio, "sleep", AsyncMock())
+    monkeypatch.setattr(
+        llm_service,
+        "_record_llm_event",
+        lambda name, payload, **kwargs: events.append((name, payload, kwargs)),
+    )
+
+    with pytest.raises(Exception, match="AI provider rejected the model; try again"):
+        await RobustChatModelWrapper(base).ainvoke([])
+
+    assert base.ainvoke.await_count == 3
+    name, payload, kwargs = events[-1]
+    assert name == "llm_gave_up"
+    assert payload["category"] == "gateway_model_rejected"
+    assert payload["retryable"] is False
+    assert "not supported when using Codex with a ChatGPT account" in payload["error"]
+    assert kwargs == {"status": "failed"}
+
+
+@pytest.mark.asyncio
+async def test_gateway_model_refusal_budget_survives_an_unrelated_provider_pause(monkeypatch):
+    from unittest.mock import AsyncMock, MagicMock
+
+    rate_limit = RuntimeError("rate limit")
+    rate_limit.status_code = 429
+    base = SimpleNamespace(
+        ainvoke=AsyncMock(
+            side_effect=[
+                _gateway_model_refusal(),
+                rate_limit,
+                rate_limit,
+                _gateway_model_refusal(),
+                _gateway_model_refusal(),
+                AIMessage(content="wrong budget"),
+            ]
+        )
+    )
+    monkeypatch.setattr(
+        llm_service,
+        "retry_policy_for",
+        lambda category: SimpleNamespace(
+            max_attempts=3 if category.value == "gateway_model_rejected" else 2,
+            delay_for=lambda attempt: 0.0,
+        ),
+    )
+    pause = MagicMock(return_value=llm_service.PAUSE_FILE)
+    monkeypatch.setattr(llm_service, "_handle_llm_pause_and_resume", pause)
+    monkeypatch.setattr(llm_service, "_wait_for_resume", AsyncMock(return_value=True))
+
+    with pytest.raises(Exception, match="AI provider rejected the model; try again"):
+        await RobustChatModelWrapper(base).ainvoke([])
+
+    assert base.ainvoke.await_count == 5
+    pause.assert_called_once_with(rate_limit)
+
+
+@pytest.mark.asyncio
+async def test_unrelated_bad_request_keeps_the_permanent_error_and_single_attempt():
+    error = _gateway_model_refusal()
+    error.message = "Invalid request payload: context length exceeded"
+    error.args = (error.message,)
+    from unittest.mock import AsyncMock
+
+    base = SimpleNamespace(ainvoke=AsyncMock(side_effect=error))
+    with pytest.raises(LLMPermanentError, match="context length exceeded"):
+        await RobustChatModelWrapper(base).ainvoke([])
+    assert base.ainvoke.await_count == 1
     assert not llm_service.PAUSE_FILE.exists()
 
 

@@ -1,6 +1,8 @@
-import { ChangeDetectionStrategy, Component, DestroyRef, ElementRef, Injector, afterNextRender, effect, inject, signal, untracked, viewChild } from '@angular/core';
+import { ChangeDetectionStrategy, Component, DestroyRef, ElementRef, Injector, afterNextRender, computed, effect, inject, signal, untracked, viewChild } from '@angular/core';
 import { RouterLink } from '@angular/router';
 import { WorkspacePhoneService } from '../../services/workspace-phone.service';
+import { AgentService } from '../../services/agent.service';
+import { deviceKindLabel, deviceTitle } from '../../utils/device-label.util';
 
 let nextId = 0;
 
@@ -15,6 +17,17 @@ let nextId = 0;
   imports: [RouterLink],
   template: `
     <div class="chip-host" (keydown.escape)="close(true)" (focusout)="onFocusOut($event)">
+      <div class="phone-card-header">
+        <span class="material-symbols-outlined" aria-hidden="true">smartphone</span>
+        <div>
+          <span class="phone-card-label">{{ deviceLabel() }}</span>
+          @if (phone.target(); as target) { <span class="phone-card-serial">{{ target.serial }}</span> }
+        </div>
+      </div>
+      <p class="phone-card-state">
+        <span class="material-symbols-outlined" aria-hidden="true">{{ phone.view().icon }}</span>
+        {{ stateLabel() }}@if (queuedCount()) { · {{ queuedCount() }} queued }
+      </p>
       <button
         #chipButton
         type="button"
@@ -27,8 +40,11 @@ let nextId = 0;
         [title]="phone.view().text"
         (click)="toggle()"
       >
-        <span class="material-symbols-outlined icon" [class.spinning]="phone.view().kind === 'connecting'" aria-hidden="true">{{ phone.view().icon }}</span>
-        <span class="text">{{ phone.view().text }}</span>
+        <span class="chip-visual">
+          <span class="material-symbols-outlined icon" [class.spinning]="phone.view().kind === 'connecting'" aria-hidden="true">{{ phone.view().icon }}</span>
+          <span class="text">{{ phone.view().text }}</span>
+          <span class="phone-card-action">{{ phone.target() ? 'Phones' : 'Connect a phone' }}</span>
+        </span>
       </button>
       <span [id]="statusId" class="visually-hidden" role="status" aria-live="polite">{{ phone.view().text }}. {{ phone.view().hint }}</span>
 
@@ -118,6 +134,7 @@ let nextId = 0;
       font-size: .85rem; font-weight: 600;
     }
     .chip .text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .chip-visual { display: contents; }
     .chip.connected .icon { color: var(--color-success); }
     .chip.dropped, .chip.interrupted, .chip.other-tab { background: var(--color-warning-bg); }
     .chip.dropped .icon, .chip.interrupted .icon, .chip.other-tab .icon { color: var(--color-warning); }
@@ -145,11 +162,67 @@ let nextId = 0;
     .action.danger { background: var(--color-error-bg); color: var(--color-error); }
     .confirm { display: flex; gap: .5rem; }
     button:focus-visible { outline: 3px solid var(--color-focus); outline-offset: 2px; }
+    .phone-card-header, .phone-card-state, .phone-card-action { display: none; }
+    @media (min-width: 1200px) {
+      :host { display: block; width: 100%; }
+      .chip-host { background: var(--color-surface); border-radius: var(--radius-lg); }
+      .phone-card-header { display: flex; align-items: center; gap: 8px; padding: 12px; border-radius: var(--radius-lg) var(--radius-lg) 0 0; background: var(--color-device); color: var(--color-device-text); }
+      .phone-card-header > div { min-width: 0; }
+      .phone-card-label { display: block; font-size: var(--text-ui); overflow-wrap: anywhere; }
+      .phone-card-serial { display: block; margin-top: 4px; font: var(--text-label) var(--font-mono); overflow-wrap: anywhere; }
+      .phone-card-state { display: flex; align-items: center; gap: 4px; margin: 0; padding: 8px 12px; font-size: var(--text-label); color: var(--color-text-muted); }
+      .phone-card-state .material-symbols-outlined { font-size: 16px; }
+      .chip { width: calc(100% - 16px); min-width: 44px; min-height: 44px; margin: 0 8px 8px; justify-content: center; border: 0; border-radius: var(--radius-md); background: var(--color-primary); color: var(--color-on-primary); font: 500 var(--text-ui) var(--font-ui); }
+      .chip .icon, .chip .text { display: none; }
+      .phone-card-action { display: inline; }
+      .panel { top: auto; bottom: calc(100% + 8px); max-height: calc(100dvh - 96px); overflow: auto; border-radius: var(--radius-lg); box-shadow: var(--shadow-2); }
+      .option, .action { min-width: 44px; min-height: 44px; }
+    }
+    @media (min-width: 800px) and (max-width: 1199px) {
+      .chip { width: 44px; padding: 0; justify-content: center; border-radius: var(--radius-md); }
+      .chip .text { display: none; }
+      .panel { top: auto; bottom: 0; left: calc(100% + 8px); max-height: calc(100dvh - 96px); overflow: auto; }
+    }
+    @media (max-width: 799px) {
+      :host { min-width: 0; }
+      .chip { max-width: calc(100vw - 168px); padding: 6px 0; border: 0; background: transparent; }
+      .chip-visual { display: flex; align-items: center; gap: .45rem; min-width: 0; height: 32px; padding: 0 8px; border: 0; border-radius: var(--radius-full); background: var(--color-surface-subtle); }
+      .chip.dropped .chip-visual, .chip.interrupted .chip-visual, .chip.other-tab .chip-visual { background: var(--color-warning-bg); }
+      .panel { position: fixed; top: calc(var(--preview-banner-h, 0px) + var(--appbar-h) + 8px); left: 8px; right: 8px; width: auto; max-width: none; max-height: calc(100dvh - var(--appbar-h) - var(--tabbar-h) - var(--preview-banner-h, 0px) - 16px); overflow: auto; box-sizing: border-box; }
+    }
   `],
   changeDetection: ChangeDetectionStrategy.OnPush
 })
 export class WorkspaceDeviceChipComponent {
   protected readonly phone = inject(WorkspacePhoneService);
+  private readonly agent = inject(AgentService);
+  protected readonly deviceLabel = computed(() => {
+    const serial = this.phone.target()?.serial;
+    if (!serial) return 'No phone';
+    const device = this.phone.selectedDevice() ?? { serial, model: null };
+    const title = deviceTitle(device);
+    const kind = deviceKindLabel(device);
+    return title === kind ? title : `${title} · ${kind}`;
+  });
+  protected readonly queuedCount = computed(() => this.agent.sessions().filter(session => {
+    const serial = session.device_serial ?? session.device_id;
+    return session.status === 'pending' && (!serial || serial === this.phone.target()?.serial);
+  }).length);
+  protected readonly stateLabel = computed(() => {
+    if (this.phone.runActive()) {
+      const paused = this.agent.sessions().some(session => session.status === 'paused' &&
+        (!(session.device_serial ?? session.device_id) || (session.device_serial ?? session.device_id) === this.phone.target()?.serial));
+      return paused ? 'Paused' : 'Running';
+    }
+    switch (this.phone.view().kind) {
+      case 'connected': return 'Connected';
+      case 'connecting': return 'Connecting';
+      case 'dropped': return 'Disconnected';
+      case 'interrupted': return 'Interrupted';
+      case 'other-tab': return 'In another tab';
+      default: return 'Not connected';
+    }
+  });
   private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
   private readonly injector = inject(Injector);
   private readonly chipButton = viewChild.required<ElementRef<HTMLButtonElement>>('chipButton');

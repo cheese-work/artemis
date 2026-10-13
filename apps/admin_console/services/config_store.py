@@ -20,6 +20,7 @@ from artemis.config.llm import LLM, LLMConfig, LLMWithFallback, _expand_default_
 from artemis.config.paths import ROOT_DIR, get_config_path, get_env_file
 from artemis.config.settings import SERVICE_ENVIRONMENT_KEYS, settings
 from artemis.utils.file import load_jsonc
+from artemis.utils.redaction import redact
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +35,9 @@ PROVIDER_KEY_ENV = {
 PROVIDER_BASE_URL_ENV = {
     "openai": "OPENAI_BASE_URL",
     "anthropic": "ANTHROPIC_BASE_URL",
+    "google": "GOOGLE_BASE_URL",
+    "openrouter": "OPEN_ROUTER_BASE_URL",
+    "xai": "XAI_BASE_URL",
 }
 PROVIDERS = ("openai", "google", "anthropic", "openrouter", "xai", "vertexai", "ocr")
 
@@ -396,7 +400,7 @@ def _fsync_directory(path: Path) -> None:
 def _mask(value: str | None) -> str | None:
     if not value:
         return None
-    return f"****{value[-4:]}" if len(value) >= 4 else "****"
+    return f"****{value[-4:]}" if len(value) > 4 else "****"
 
 
 def _safe_config_value(value: Any, *, fallback: bool = False) -> dict[str, Any]:
@@ -463,7 +467,7 @@ def _safe_base_url(value: str | None) -> str | None:
     try:
         parsed = urlsplit(value)
         if not (parsed.username or parsed.password or parsed.query or parsed.fragment):
-            return value
+            return redact(value)
         hostname = parsed.hostname
         port = parsed.port
     except ValueError:
@@ -472,7 +476,7 @@ def _safe_base_url(value: str | None) -> str | None:
         return None
     host = f"[{hostname}]" if ":" in hostname and not hostname.startswith("[") else hostname
     netloc = f"{host}:{port}" if port is not None else host
-    return urlunsplit((parsed.scheme, netloc, parsed.path, "", ""))
+    return redact(urlunsplit((parsed.scheme, netloc, parsed.path, "", "")))
 
 
 def _source_for(key: str, env_values: dict[str, str | None]) -> str:
@@ -566,6 +570,9 @@ class ConfigStore:
             raise ConfigStoreError("config_invalid", "Configuration files must be UTF-8.") from exc
 
         default = _safe_config_value(config_dict.get("default", {}))
+        from apps.admin_console.services.provider_settings import ProviderSettings
+
+        saved_slots = ProviderSettings(self).saved_slots_locked()
         providers = []
         for provider in PROVIDERS:
             key_names = PROVIDER_KEY_ENV.get(provider, ())
@@ -587,16 +594,23 @@ class ConfigStore:
                 if base_key
                 else None
             )
+            if provider in saved_slots:
+                key_value = saved_slots[provider]["key"]
+                base_url = saved_slots[provider]["base_url"]
             providers.append(
                 {
                     "name": provider,
                     "configured": bool(key_value),
                     "key_preview": _mask(key_value),
-                    "key_source": _source_for(key_names[0], env_values)
+                    "key_source": "LLM providers (read-only here)"
+                    if provider in saved_slots
+                    else _source_for(key_names[0], env_values)
                     if key_names
                     else "not configured",
                     "base_url": _safe_base_url(base_url),
-                    "base_url_source": _source_for(base_key, env_values)
+                    "base_url_source": "LLM providers (read-only here)"
+                    if provider in saved_slots
+                    else _source_for(base_key, env_values)
                     if base_key
                     else "not applicable",
                 }
@@ -669,6 +683,16 @@ class ConfigStore:
                 default,
             )
             _validate_config_text(_replace_default(config_text, merged_default))
+
+            from apps.admin_console.services.provider_settings import ProviderSettings
+
+            managed = ProviderSettings(self).saved_slots_locked()
+            if (credentials.keys() | base_urls.keys()) & managed.keys():
+                raise ConfigStoreError(
+                    "provider_managed",
+                    "Change saved provider slots on the LLM providers page.",
+                    409,
+                )
 
             env_updates: dict[str, str | None] = {}
             for provider, value in credentials.items():
@@ -766,23 +790,70 @@ class ConfigStore:
                     os.environ.pop(env_key, None)
             return self._read_snapshot_locked()
 
-    async def snapshot_for_spawn(self) -> SpawnConfigSnapshot:
+    async def model_discovery_inputs(self) -> tuple[bytes, dict[str, str]]:
         async with self._async_lock:
-            return await asyncio.to_thread(self._snapshot_for_spawn_locked)
+            return await asyncio.to_thread(self._model_discovery_inputs_locked)
 
-    def _snapshot_for_spawn_locked(self) -> SpawnConfigSnapshot:
+    def _model_discovery_inputs_locked(self) -> tuple[bytes, dict[str, str]]:
         with self._file_lock():
-            config_bytes, env_bytes = self._read_bytes()
-            env_values = dotenv_values(stream=io.StringIO(env_bytes.decode("utf-8")))
-            environment = os.environ.copy()
-            managed_keys = {key for keys in PROVIDER_KEY_ENV.values() for key in keys} | set(
-                PROVIDER_BASE_URL_ENV.values()
-            )
-            for key in managed_keys - SERVICE_ENVIRONMENT_KEYS:
-                environment.pop(key, None)
-            for key, value in env_values.items():
-                if value is not None and key not in SERVICE_ENVIRONMENT_KEYS:
-                    environment[key] = value
+            return self._runtime_inputs()
+
+    def _runtime_inputs(self, *, provider_slots: bool = True) -> tuple[bytes, dict[str, str]]:
+        config_bytes, env_bytes = self._read_bytes()
+        env_values = dotenv_values(stream=io.StringIO(env_bytes.decode("utf-8")))
+        environment = os.environ.copy()
+        managed_keys = {key for keys in PROVIDER_KEY_ENV.values() for key in keys} | set(
+            PROVIDER_BASE_URL_ENV.values()
+        )
+        for key in managed_keys - SERVICE_ENVIRONMENT_KEYS:
+            environment.pop(key, None)
+        for key, value in env_values.items():
+            if value is not None and key not in SERVICE_ENVIRONMENT_KEYS:
+                environment[key] = value
+        if provider_slots:
+            from apps.admin_console.services.provider_settings import ProviderSettings
+
+            return ProviderSettings(self).apply_runtime_locked(config_bytes, environment)
+        return config_bytes, environment
+
+    async def snapshot_for_spawn(
+        self, operator_model: dict[str, str] | None = None
+    ) -> SpawnConfigSnapshot:
+        async with self._async_lock:
+            return await asyncio.to_thread(self._snapshot_for_spawn_locked, operator_model)
+
+    def _snapshot_for_spawn_locked(
+        self, operator_model: dict[str, str] | None = None
+    ) -> SpawnConfigSnapshot:
+        with self._file_lock():
+            config_bytes, environment = self._runtime_inputs()
+            if operator_model:
+                config = load_jsonc(io.StringIO(config_bytes.decode("utf-8")))
+                previous = _expand_default_into_nodes(config)["operator"]
+                selected = (
+                    dict(previous)
+                    if previous["provider"] == operator_model["provider"]
+                    else {
+                        key: None
+                        for key in LLMWithFallback.model_fields
+                        if key not in {"provider", "model", "fallback"}
+                    }
+                )
+                selected.update(
+                    {
+                        **operator_model,
+                        "fallback": dict(operator_model),
+                        "fallback_enabled": False,
+                        "fix_model": None,
+                    }
+                )
+                if previous["provider"] != operator_model["provider"]:
+                    selected["api_base"] = None
+                if "planner" in config and "utils" in config:
+                    config["operator"] = selected
+                else:
+                    config.setdefault("nodes", {})["operator"] = selected
+                config_bytes = json.dumps(config).encode("utf-8")
             fd, name = tempfile.mkstemp(prefix="artemis-run-config-", suffix=".jsonc")
             try:
                 with os.fdopen(fd, "wb") as stream:

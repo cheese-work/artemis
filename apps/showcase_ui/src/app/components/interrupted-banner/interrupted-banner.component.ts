@@ -11,17 +11,13 @@ import { interruptedSentence, interruptReason, RUN_STRINGS } from '../../utils/r
   selector: 'app-interrupted-banner',
   standalone: true,
   template: `
-    @if (phone.runInterrupted() && reconnectOnly()) {
-      @if (!phone.target()) {
-        <button type="button" class="action" [disabled]="!phone.canConnectFromBrowser()" (click)="reconnect()">Reconnect phone</button>
-      }
-    } @else if (phone.runInterrupted()) {
-      <div class="banner" role="status" aria-live="polite">
+    @if (phone.runInterrupted()) {
+      <div class="banner" [attr.role]="reconnectOnly() ? null : 'status'" [attr.aria-live]="reconnectOnly() ? null : 'polite'">
         <p class="headline">{{ sentence() }}</p>
         <p class="reason">{{ reason() }}</p>
-        @if (phone.target()) {
+        @if (phone.target() && !reconnectOnly()) {
           <button type="button" class="action" (click)="startNewRun.emit(prompt())">{{ strings.startNewRun }}</button>
-        } @else {
+        } @else if (!phone.target()) {
           <button type="button" class="action" [disabled]="!phone.canConnectFromBrowser()" (click)="reconnect()">Reconnect phone</button>
         }
       </div>

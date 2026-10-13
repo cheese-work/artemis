@@ -17,6 +17,14 @@ describe('RunsService', () => {
 
   afterEach(() => http.verify());
 
+  it('sends private input only to the session-bound input endpoint', () => {
+    service.sendInput('root/id', 'request/id', '  PRIVATE-SENTINEL  ').subscribe();
+    const request = http.expectOne('/api/chats/root%2Fid/input/request%2Fid');
+    expect(request.request.method).toBe('POST');
+    expect(request.request.body).toEqual({ value: '  PRIVATE-SENTINEL  ' });
+    request.flush({ accepted: true });
+  });
+
   it('opts into the read-only team catalog without widening other endpoints', () => {
     service.list(EMPTY_FILTERS, { scope: 'everyone' }).subscribe();
     const request = http.expectOne((candidate) => candidate.url === '/api/runs');
@@ -61,6 +69,19 @@ describe('RunsService', () => {
   it('resolves one run by full id or prefix, encoded', () => {
     service.get('3f2b/9c1a').subscribe();
     http.expectOne({ method: 'GET', url: '/api/runs/3f2b%2F9c1a' }).flush({});
+  });
+
+  it('reads chat and sends idempotent messages through the session API', () => {
+    service.chat('root/id').subscribe();
+    http.expectOne('/api/chats/root%2Fid').flush({});
+    service.sendChat('root/id', 'Steer the next step', 'retry-key').subscribe();
+    const request = http.expectOne('/api/chats/root%2Fid/messages');
+    expect(request.request.body).toEqual({ content: 'Steer the next step', client_id: 'retry-key' });
+    request.flush({});
+    service.controlChat('root/id', 'pause', 'pause-key').subscribe();
+    const pause = http.expectOne('/api/chats/root%2Fid/pause');
+    expect(pause.request.method).toBe('POST');
+    pause.flush({});
   });
 
   it('keeps explicit My runs separate from an admin queue set to All users', () => {

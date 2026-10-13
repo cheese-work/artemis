@@ -1,10 +1,13 @@
 import { TestBed } from '@angular/core/testing';
+import { HttpClient } from '@angular/common/http';
 import { provideRouter, Router } from '@angular/router';
 import { Component } from '@angular/core';
 import { phone, phoneFakes } from '../../testing/phone-fakes';
 import { of } from 'rxjs';
 import { AdminConfigService } from '../../services/admin-config.service';
 import { NavSwitcherComponent } from './nav-switcher.component';
+import { expectHitBox } from '../../testing/hit-box';
+import { ShellLayoutService } from '../../services/shell-layout.service';
 
 @Component({ template: '' })
 class PageStub {}
@@ -12,7 +15,7 @@ class PageStub {}
 describe('NavSwitcherComponent', () => {
   beforeEach(() => {
     TestBed.configureTestingModule({
-      providers: [{
+      providers: [{ provide: HttpClient, useValue: { get: () => of(null) } }, {
         provide: AdminConfigService,
         useValue: { getIdentity: () => of({ email: 'qa@example.test', admin: false, auth_mode: 'cloudflare', reason: null }) }
       }]
@@ -44,13 +47,28 @@ describe('NavSwitcherComponent', () => {
     const hrefs = Array.from<HTMLAnchorElement>(fixture.nativeElement.querySelectorAll('nav a[href]')).map(a =>
       a.getAttribute('href')
     );
-    expect(hrefs).toEqual(['/workspace', '/runs']);
-    expect(fixture.nativeElement.querySelector('a[href="/runs"]').textContent).toContain('Runs');
+    expect(hrefs).toEqual(['/sessions']);
+    expect(fixture.nativeElement.querySelector('a[href="/runs"]')).toBeNull();
     // Labels collapse to icons on phones, so each tab needs its own accessible name.
     const names = Array.from<HTMLAnchorElement>(fixture.nativeElement.querySelectorAll('nav a[href]')).map(a =>
       a.getAttribute('aria-label')
     );
-    expect(names).toEqual(['Workspace', 'Runs']);
+    expect(names).toEqual(['Sessions']);
+  });
+
+  it('uses a compact provider label and a full accessible name for admins', async () => {
+    TestBed.overrideProvider(AdminConfigService, {
+      useValue: { getIdentity: () => of({ email: 'admin@example.test', admin: true, auth_mode: 'cloudflare', reason: null }) }
+    });
+    await TestBed.configureTestingModule({
+      imports: [NavSwitcherComponent],
+      providers: [provideRouter([]), ...phoneFakes().providers]
+    }).compileComponents();
+    const fixture = TestBed.createComponent(NavSwitcherComponent);
+    fixture.detectChanges();
+    const provider = fixture.nativeElement.querySelector('a[href="/providers"]') as HTMLAnchorElement;
+    expect(provider.getAttribute('aria-label')).toBe('LLM providers');
+    expect(provider.querySelector('.tab-label')?.textContent).toBe('Providers');
   });
 
   it('stays inside the viewport (CHE-1189)', async () => {
@@ -64,7 +82,11 @@ describe('NavSwitcherComponent', () => {
     // The identity wraps onto a second row instead of running off-screen.
     const nav = fixture.nativeElement.querySelector('.floating-nav-switcher') as HTMLElement;
     expect(nav.getBoundingClientRect().right).toBeLessThanOrEqual(window.innerWidth);
-    expect(getComputedStyle(nav).flexWrap).toBe('wrap');
+    expect(getComputedStyle(nav).flexWrap).toBe('nowrap');
+    if (window.innerWidth >= 800) {
+      expect(getComputedStyle(nav).flexDirection).toBe('column');
+      expect(nav.getBoundingClientRect().width).toBe(window.innerWidth >= 1200 ? 224 : 72);
+    }
   });
 
   it("hides What's New navigation when there are no entries", async () => {
@@ -103,7 +125,7 @@ describe('NavSwitcherComponent', () => {
     expect(showWhatsNew).toHaveBeenCalled();
   });
 
-  it("puts Setup only in the admin user menu and retains unread What's New", async () => {
+  it("keeps Setup in the admin menu and adds desktop navigation with unread What's New", async () => {
     const adminConfig = {
       getIdentity: () => of({
         email: 'admin@example.test',
@@ -130,7 +152,7 @@ describe('NavSwitcherComponent', () => {
     fixture.detectChanges();
 
     expect(fixture.nativeElement.querySelector('.brand-wordmark')?.textContent).toContain('SmartQA');
-    expect(fixture.nativeElement.querySelector('nav > a[href="/setup"]')).toBeNull();
+    expect(fixture.nativeElement.querySelector('nav > a[href="/setup"]')?.textContent).toContain('Setup');
     const userMenu = fixture.nativeElement.querySelector('app-admin-identity-indicator details') as HTMLDetailsElement;
     expect(userMenu).not.toBeNull();
     if (!userMenu) return;
@@ -163,7 +185,8 @@ describe('NavSwitcherComponent', () => {
     // It sits in the top bar's status area, next to who is signed in.
     expect(chip.closest('.nav-status')).not.toBeNull();
     expect(nav.querySelectorAll('app-workspace-device-chip').length).toBe(1);
-    expect(nav.getBoundingClientRect().top).toBeLessThan(window.innerHeight / 4);
+    const header = fixture.nativeElement.querySelector('.navigation-header') as HTMLElement;
+    expect((window.innerWidth < 800 ? header : nav).getBoundingClientRect().top).toBeLessThan(window.innerHeight / 4);
   });
 
   it("orders Workspace, Runs, What's New, the device chip and the user", async () => {
@@ -176,7 +199,7 @@ describe('NavSwitcherComponent', () => {
     fixture.detectChanges();
     const controls = Array.from<HTMLElement>(fixture.nativeElement.querySelectorAll('nav > a, nav > button, .nav-status > *'));
     expect(controls.map(control => control.getAttribute('aria-label') || control.tagName.toLowerCase()))
-      .toEqual(['Workspace', 'Runs', "Open What's New", 'app-workspace-device-chip', 'app-admin-identity-indicator']);
+      .toEqual(['Sessions', "Open What's New", 'app-workspace-device-chip', 'app-admin-identity-indicator']);
   });
 
   for (const path of ['/workspace', '/runs']) {
@@ -210,7 +233,7 @@ describe('NavSwitcherComponent', () => {
     });
   }
 
-  it('keeps raw phone addresses out of the chip and shows them only in a picker detail line', async () => {
+  it('keeps raw phone addresses out of the chip and shows them in sidebar and picker details', async () => {
     const fakes = phoneFakes();
     const serial = '127.0.0.1:41003';
     fakes.relay.state.set({ status: 'connected', serial, sessionId: 'bridge', error: null });
@@ -224,10 +247,49 @@ describe('NavSwitcherComponent', () => {
     const root = fixture.nativeElement as HTMLElement;
     const chip = root.querySelector<HTMLButtonElement>('button.chip')!;
     expect(chip.textContent).toContain('Pixel 6 · Phone');
-    expect(root.textContent).not.toContain(serial);
+    expect(root.querySelector('.phone-card-serial')?.textContent).toContain(serial);
     chip.click();
     fixture.detectChanges();
     expect(root.querySelector('.device-detail')?.textContent).toContain(serial);
     expect(root.querySelector('.option-text')?.textContent).not.toContain(serial);
+  });
+
+  it('shows the scoped run count and the word New with non-overlapping 44 px controls', async () => {
+    const fakes = phoneFakes();
+    fakes.agent.sessions.set([{ session_id: 'one', status: 'completed' }, { session_id: 'two', status: 'pending' }]);
+    await TestBed.configureTestingModule({
+      imports: [NavSwitcherComponent], providers: [provideRouter([]), ...fakes.providers]
+    }).compileComponents();
+    const fixture = TestBed.createComponent(NavSwitcherComponent);
+    fixture.componentRef.setInput('hasWhatsNew', true);
+    fixture.componentRef.setInput('hasUnreadWhatsNew', true);
+    fixture.detectChanges();
+    const root = fixture.nativeElement as HTMLElement;
+    expect(root.querySelector('.run-count')).toBeNull();
+    expect(root.querySelector('.nav-new-label')?.textContent?.trim()).toBe('New');
+    const controls = Array.from(root.querySelectorAll<HTMLElement>('nav > a, nav > button, nav select, button.chip, summary'));
+    expect(controls.length).toBe(5);
+    for (const control of controls) expectHitBox(control);
+    const navItems = controls.filter(control => control.matches('.nav-tab-btn'));
+    for (let index = 1; index < navItems.length; index++) {
+      const previous = navItems[index - 1].getBoundingClientRect();
+      const current = navItems[index].getBoundingClientRect();
+      expect(previous.bottom <= current.top || previous.right <= current.left).toBeTrue();
+    }
+  });
+
+  it('returns to the list pane when a primary route is selected', async () => {
+    await TestBed.configureTestingModule({
+      imports: [NavSwitcherComponent],
+      providers: [provideRouter([]), ...phoneFakes().providers]
+    }).compileComponents();
+    const fixture = TestBed.createComponent(NavSwitcherComponent);
+    fixture.detectChanges();
+    const shell = TestBed.inject(ShellLayoutService);
+    for (const label of ['Sessions']) {
+      shell.activePane.set('detail');
+      fixture.nativeElement.querySelector(`a[aria-label="${label}"]`).click();
+      expect(shell.activePane()).toBe('list');
+    }
   });
 });

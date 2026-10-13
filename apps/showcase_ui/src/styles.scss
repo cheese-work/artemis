@@ -16,8 +16,23 @@
 
 @import '@angular/cdk/overlay-prebuilt.css';
 
+@media (max-width: 1023px) {
+  app-root .app-page[data-active-pane='list'] [data-shell-pane='detail'],
+  app-root .app-page[data-active-pane='detail'] [data-shell-pane='list'] {
+    display: none;
+  }
+}
+
 .cdk-overlay-container {
   z-index: 1200 !important;
+}
+
+@font-face {
+  font-family: 'Material Symbols Outlined';
+  font-style: normal;
+  font-weight: 300 400;
+  font-display: block;
+  src: url('../public/fonts/material-symbols-outlined.woff2') format('woff2');
 }
 
 .material-symbols-outlined {
@@ -102,12 +117,12 @@ body {
   --text-title: 1.125rem;
   --leading-ui: 1.25rem;
 
-  --space-xs: 4px;
-  --space-sm: 8px;
-  --space-smd: 12px;
-  --space-md: 16px;
-  --space-lg: 24px;
-  --space-xl: 32px;
+  --space-xs: 3px;
+  --space-sm: 5px;
+  --space-smd: 8px;
+  --space-md: 11px;
+  --space-lg: 16px;
+  --space-xl: 21px;
   --target: 44px;
 
   --sidebar-w: 224px;
@@ -144,6 +159,11 @@ body {
   --status-neutral-fg: var(--color-neutral);
   --status-neutral-bg: var(--color-neutral-bg);
   --focus-ring: var(--color-focus);
+}
+
+.mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
 }
 
 /* Every control shows the same focus ring: 3px, 2px off the edge (DESIGN.md Components). */

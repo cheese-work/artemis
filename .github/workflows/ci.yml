@@ -119,8 +119,8 @@ jobs:
       - name: Install locked frontend dependencies
         run: npm ci
 
-      - name: Run frontend tests
-        run: npm test -- --watch=false --browsers=ChromeHeadless
+      - name: Run frontend tests at 800 px and 1440 px
+        run: npm test -- --watch=false --browsers=ChromeHeadlessNarrow,ChromeHeadlessWide
 
       - name: Build frontend for production
         run: npm run build
@@ -132,6 +132,9 @@ jobs:
       # development build (production builds strip the `ng` debug API).
       - name: Build development UI for the preview-path check
         run: npm run build -- --configuration development
+
+      - name: Check responsive shell and 44 px controls
+        run: npm run test:shell
 
       - name: Check root and /preview/pr/70/ browser requests
         run: |

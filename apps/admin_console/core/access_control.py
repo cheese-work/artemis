@@ -618,6 +618,7 @@ async def require_effective_loopback(request: Request) -> None:
 
 
 _PUBLIC_GET_PATHS = {
+    "/api/chats/{session_id}",
     "/openapi.json",
     "/docs",
     "/docs/oauth2-redirect",
@@ -655,6 +656,7 @@ _PUBLIC_GET_PATHS = {
     "/api/tasks/presets",
     "/api/tasks/catalog",
     "/api/run/defaults",
+    "/api/models",
     "/api/devices",
     "/api/status",
     "/api/stream",
@@ -668,6 +670,8 @@ _PUBLIC_GET_PATHS = {
     "/local_file",
     "/api/sessions/{session_id}/plan",
     "/api/sessions/{session_id}/notes",
+    "/api/sessions/{session_id}/prompt-critique",
+    "/api/prompt-lessons",
     "/api/sessions/{session_id}/checks",
     "/api/replay/tools",
     "/api/replay/config",
@@ -677,7 +681,7 @@ _PUBLIC_GET_PATHS = {
     "/{full_path:path}",
 }
 
-_ADMIN_GET_PATHS: set[str] = set()
+_ADMIN_GET_PATHS = {"/api/system/providers"}
 
 # Admin reads that a mapped service principal may also call (see require_admin_or_service_read).
 _SERVICE_READ_GET_PATHS = {"/api/system/failures"}
@@ -697,6 +701,9 @@ _ADMIN_MUTATING_PATHS = {
     "/api/system/credentials",
     "/api/system/config",
     "/api/system/restart",
+    "/api/system/providers/{provider}",
+    "/api/system/providers/{provider}/test",
+    "/api/system/providers/{provider}/sync",
     "/api/cleanup",
     "/api/runs/{session_id}/delete",
     "/api/runs/clear",
@@ -723,6 +730,11 @@ _AGENT_PATHS = {
 # Owner-or-admin actions: the route guard needs a signed-in user; the handler
 # then checks the caller owns the run (see core/ownership.py).
 _QA_MUTATING_PATHS = {
+    "/api/chats/{session_id}/input/{request_id}",
+    "/api/chats/{session_id}/messages",
+    "/api/chats/{session_id}/pause",
+    "/api/chats/{session_id}/continue",
+    "/api/sessions/{session_id}/improve-prompt",
     "/api/sessions/{session_id}/delete",
     "/api/system/adb/heal-keys",
     "/api/system/emulator/dismiss",
@@ -742,7 +754,15 @@ def route_tier(path: str, methods: set[str], is_websocket: bool = False) -> str 
     if is_websocket:
         if path == "/api/agent/connect":
             return "agent"
-        return "public" if path == "/api/device-bridge/session" else None
+        return (
+            "public"
+            if path
+            in {
+                "/api/device-bridge/session",
+                "/api/device-bridge/resume",
+            }
+            else None
+        )
     if methods == _AGENT_PATHS.get(path):
         return "agent"
     if path == "/api/system/shutdown" and methods == {"POST"}:
@@ -761,6 +781,8 @@ def route_tier(path: str, methods: set[str], is_websocket: bool = False) -> str 
         return "admin_or_service"
     if methods == {"POST"} and path in _PUBLIC_MUTATING_PATHS:
         return "public"
+    if methods == {"PATCH"} and path == "/api/chats/{session_id}/title":
+        return "qa"
     if methods == {"POST"} and path in _QA_MUTATING_PATHS:
         return "qa"
     if methods in ({"POST"}, {"PUT"}) and path in _ADMIN_MUTATING_PATHS:

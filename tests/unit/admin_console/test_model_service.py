@@ -49,6 +49,16 @@ def test_get_active_model_info_flash_architecture():
     assert info["provider"] == "google"
 
 
+def test_recorded_model_is_not_relabelled_by_the_current_server_default():
+    recorded = ModelService.get_recorded_model(
+        {"device_info": json.dumps({"agent_model": "chosen-model", "agent_provider": "openai"})}
+    )
+    info = ModelService.get_active_model_info("flash", recorded)
+    assert info["id"] == "chosen-model"
+    assert info["provider"] == "openai"
+    assert info["name"] == "Flash"
+
+
 def test_resolve_session_profile_from_device_info():
     """Verify profile resolution from device_info JSON."""
     row = {"device_info": json.dumps({"profile": "pro"})}
