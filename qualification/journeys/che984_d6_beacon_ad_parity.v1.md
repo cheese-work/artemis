@@ -12,8 +12,8 @@ This revision specifies the deterministic local-interstitial comparison that the
 
 | Input | Pin | Status and use |
 | --- | --- | --- |
-| SDK | `tevo-studio/mMonetize` PR 314, head `4e8e95967cecb672abd1e949402914a68bd57c4e`; predecessor PR 312, head `6ac9777bcb4d0c31e8f10af4d437c5c6b857b37c` | Signed source candidate; use only the D6 local offline fixture seams. Re-pin if the head changes. |
-| Sample | `tevo-studio/mMonetize-sample` PR 133, head `0b2e36f319f667ffa04ace7e8095c1befe810898`; predecessor PR 131, head `b50e6d8a65e005b3555934ac3c36b16c7062fb7e` | Signed source candidate; use only the D6 offline variants and retained records. Re-pin if the head changes. |
+| SDK | `tevo-studio/mMonetize` PR 314, head `88a5559901ef75d0cc4b5a37465035c7a9853e9a`; predecessor PR 312, head `fa01fed96637e072769014ee7a584b2b053edb14` | Signed source candidate; use only the D6 local offline fixture seams. Re-pin if the head changes. |
+| Sample | `tevo-studio/mMonetize-sample` PR 133, head `633b51b84428ccd2b71325aab61d7b3b09ffb300`; predecessor PR 131, head `07934a455ae50990b5148b60d9d339c800f9e9d5` | Signed source candidate; use only the D6 offline variants and retained records. Re-pin if the head changes. |
 | Artemis | `cheese-work/artemis` base revision `dd94732489f6ef76f1494043d566062d07506bac` | Case authoring base only. Primary CLI entrypoint is `uv run artemis run`; Python requirement is `>=3.12`; `uv.lock` SHA-256 is `fecfe4364bc321e2a77febf0616b878e38f8daacabee6aea345058e9fc523351`. |
 | Android fixture dependencies | Sample `gradle/libs.versions.toml` SHA-256 `1eff7be3deb50dde6d6afb60c341307ebee75a66a50c8b423fe7edbe61f822dd`; sample Gradle wrapper `9.2.1`, properties SHA-256 `bcdba2d914e721ca13e3e6bdf73ed9a8eb2f1bc5cc12e0a6cca6d977fb6ab52d`; SDK Gradle wrapper `9.2.1`, properties SHA-256 `5529e8117ebea02ad061ab6b568c36ba58bc066e81d81b9080a09a95514f6449` | Reference identities only. No Gradle task or APK was run for this case. The sample does not pin all resolved dependencies with a dependency lock or verification metadata. |
 
@@ -111,6 +111,7 @@ The expected actual value is `0`. Require the selected Artemis runner to report 
 
 All non-device CHE-770 annex rows remain outside this device-case revision and `NOT-AUTHORED / NOT-RUN`.
 
-## Run record
+## Evidence and run record
 
+- Re-pin identity: SDK PR 314 `4e8e95967cecb672abd1e949402914a68bd57c4e` → `88a5559901ef75d0cc4b5a37465035c7a9853e9a` and PR 312 `6ac9777bcb4d0c31e8f10af4d437c5c6b857b37c` → `fa01fed96637e072769014ee7a584b2b053edb14` have identical respective Git trees; sample PR 133 `0b2e36f319f667ffa04ace7e8095c1befe810898` → `633b51b84428ccd2b71325aab61d7b3b09ffb300` and PR 131 `b50e6d8a65e005b3555934ac3c36b16c7062fb7e` → `07934a455ae50990b5148b60d9d339c800f9e9d5` have identical patches, and PR 133's full trees differ only by CHE-975 base files `app/proguard-rules.pro` and `docs/che-975-source-consumer.md`.
 No Artemis runner, test, build, APK, provider, service, device, ADB, emulator, reset, helper, install, launch, qualification, merge, or release action was run while authoring this case. No review or readiness is claimed. Two independent reviews of the published immutable case revision and every listed execution gate remain required.
