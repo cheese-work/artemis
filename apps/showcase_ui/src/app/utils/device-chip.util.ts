@@ -30,7 +30,7 @@ export function deviceChipView(
 ): DeviceChipView {
   const kind = device.device_kind ?? null;
   const label = deviceTitle(device);
-  const kindLabel = kind ? deviceKindLabel(device) : null;
+  const kindLabel = kind && kind !== 'unknown' ? deviceKindLabel(device) : null;
   const kindText = kindLabel === label ? null : kindLabel;
   if (device.source === 'browser') {
     const own = ownBrowserSerial !== null && device.serial === ownBrowserSerial;

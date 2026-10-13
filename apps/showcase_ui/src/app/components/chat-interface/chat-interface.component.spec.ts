@@ -218,7 +218,9 @@ describe('ChatInterfaceComponent device chip', () => {
     const fixture = TestBed.createComponent(ChatInterfaceComponent);
     fixture.detectChanges();
     const root = fixture.nativeElement as HTMLElement;
-    for (const selector of ['.device-name', '.run-date']) {
+    expect(root.querySelector('.device-name')!.textContent).toBe('Android phone');
+    expect(root.querySelector('.run-meta .run-serial')!.textContent).toContain('emulator-5554');
+    for (const selector of ['.run-serial', '.run-date']) {
       const style = getComputedStyle(root.querySelector(selector)!);
       expect(style.fontFamily).toContain('JetBrains Mono');
       expect(style.fontVariantNumeric).toBe('tabular-nums');

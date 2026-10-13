@@ -70,7 +70,7 @@ export function unlistedDeviceTitle(serial: string): string {
 /**
  * Title for a past run whose phone is no longer listed. A loopback address is how a browser
  * relays a phone and any other host:port is a wireless phone, so say that rather than showing
- * the address or "Unknown device"; the address stays in a detail line. A plain serial is kept.
+ * the address or "Unknown device"; the serial stays in a detail line.
  */
 export function unlistedRunDeviceTitle(serial: string, ownBrowser: boolean): string {
   switch (serialShape(serial)) {
