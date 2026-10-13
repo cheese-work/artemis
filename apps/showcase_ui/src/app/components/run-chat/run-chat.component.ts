@@ -138,7 +138,7 @@ export class RunChatComponent {
 
   public trackScroll(): void {
     const history = this.historyElement()?.nativeElement;
-    if (history) this.followLatest = history.scrollTop >= history.scrollHeight - history.clientHeight;
+    if (history) this.followLatest = history.scrollHeight - history.clientHeight - history.scrollTop < 1;
   }
 
   public scrollToLatest(): void {
