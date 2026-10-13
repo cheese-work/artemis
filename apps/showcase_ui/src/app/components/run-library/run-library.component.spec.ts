@@ -115,9 +115,9 @@ describe('RunLibraryComponent', () => {
       imports: [RunLibraryComponent],
       providers: [
         provideRouter([
-          { path: 'runs', component: RunLibraryComponent },
-          { path: 'runs/:id', component: ViewerStubComponent },
-          { path: 'workspace', component: ViewerStubComponent }
+          { path: 'sessions', component: RunLibraryComponent },
+          { path: 'sessions/:id', component: ViewerStubComponent },
+          { path: 'sessions/new', component: ViewerStubComponent }
         ]),
         provideLocationMocks(),
         { provide: RunsService, useValue: runs },
@@ -131,7 +131,7 @@ describe('RunLibraryComponent', () => {
 
   describe('rows', () => {
     it('renders 56px rows with an execution word, package and mono time, never a Passed chip', async () => {
-      await open('/runs', of(page([run({ app_package: 'com.example.shop' })])));
+      await open('/sessions', of(page([run({ app_package: 'com.example.shop' })])));
       expect(q('.run-meta')!.textContent!.trim()).toBe('Completed · com.example.shop');
       expect(q('.run-row')!.textContent).not.toContain('Passed');
       expect(q('.run-icon')!.classList).toContain('tone-neutral');
@@ -148,7 +148,7 @@ describe('RunLibraryComponent', () => {
       { verdict: 'inconclusive', label: 'Inconclusive', icon: 'help', tone: 'warn' }
     ] as const) {
       it(`uses the ${verdictView.verdict} verdict only when the catalog supplies one`, async () => {
-        await open('/runs', of(page([run({ verdict: verdictView.verdict })])));
+        await open('/sessions', of(page([run({ verdict: verdictView.verdict })])));
         expect(q('.run-outcome')!.textContent).toBe(verdictView.label);
         expect(q('.run-icon')!.classList).toContain(`tone-${verdictView.tone}`);
         expect(q('.run-icon .material-symbols-outlined')!.textContent!.trim()).toBe(verdictView.icon);
@@ -162,7 +162,7 @@ describe('RunLibraryComponent', () => {
       yesterday.setDate(yesterday.getDate() - 1);
       const older = new Date(today);
       older.setDate(older.getDate() - 8);
-      await open('/runs', of(page([
+      await open('/sessions', of(page([
         run({ session_id: 'a', start_time: today.getTime() / 1000 }),
         run({ session_id: 'b', start_time: today.getTime() / 1000 - 3600 }),
         run({ session_id: 'c', start_time: yesterday.getTime() / 1000 }),
@@ -176,7 +176,7 @@ describe('RunLibraryComponent', () => {
       expect(qa('.date-group')[0].querySelectorAll('.run-row').length).toBe(2);
     });
 
-    it('puts running and queued runs in Queue without duplicating history and emits targeted actions', async () => {
+    it('puts running and queued runs in Queue without duplicating history or composer controls', async () => {
       runs.list.and.returnValue(of(page([run({ session_id: 'running', status: 'running' }), run()])));
       const fixture = TestBed.createComponent(RunLibraryComponent);
       const sessions: Session[] = [
@@ -189,9 +189,9 @@ describe('RunLibraryComponent', () => {
       fixture.detectChanges();
       const queue = fixture.nativeElement.querySelector('.queue-section') as HTMLElement;
       expect(Array.from(queue.querySelectorAll('.run-prompt')).map((title) => title.textContent)).toEqual(['Current task', 'Next task']);
-      (queue.querySelector('.queue-stop') as HTMLButtonElement).click();
+      expect(queue.querySelector('.queue-stop')).toBeNull();
       (queue.querySelector('.queue-cancel') as HTMLButtonElement).click();
-      expect(stop.calls.allArgs()).toEqual([['running'], ['queued']]);
+      expect(stop.calls.allArgs()).toEqual([['queued']]);
       expect(fixture.nativeElement.querySelectorAll('.date-group .run-row').length).toBe(1);
       for (const button of Array.from(queue.querySelectorAll('button'))) {
         const box = button.getBoundingClientRect();
@@ -202,13 +202,13 @@ describe('RunLibraryComponent', () => {
     });
 
     it('hides queue mutations on read-only catalog runs', async () => {
-      await open('/runs?scope=everyone', of(page([run({ status: 'running', read_only: true })])));
+      await open('/sessions?scope=everyone', of(page([run({ status: 'running', read_only: true })])));
       expect(q('.queue-section .run-row')).not.toBeNull();
       expect(q('.queue-section button')).toBeNull();
     });
 
     it('selects a queued run in Workspace without navigating or starting another run', async () => {
-      await harness.navigateByUrl('/workspace', ViewerStubComponent);
+      await harness.navigateByUrl('/sessions/new', ViewerStubComponent);
       runs.list.and.returnValue(of(page([run({ status: 'pending' })])));
       const fixture = TestBed.createComponent(RunLibraryComponent);
       fixture.componentRef.setInput('workspace', true);
@@ -220,37 +220,37 @@ describe('RunLibraryComponent', () => {
       button.click();
       await fixture.whenStable();
       fixture.detectChanges();
-      expect(router.url).toBe('/workspace');
+      expect(router.url).toBe('/sessions/new');
       expect(select).toHaveBeenCalledOnceWith(ID);
       expect(button.getAttribute('aria-current')).toBe('page');
       fixture.destroy();
     });
 
     it('navigates to the queued run when the row is outside Workspace', async () => {
-      await open('/runs', of(page([run({ status: 'pending' })])));
+      await open('/sessions', of(page([run({ status: 'pending' })])));
       const link = q<HTMLAnchorElement>('.queue-row a.run-row')!;
-      expect(link.getAttribute('href')).toBe(`/runs/${ID}`);
+      expect(link.getAttribute('href')).toBe(`/sessions/${ID}`);
       link.click();
       await settle();
-      expect(router.url).toBe(`/runs/${ID}`);
+      expect(router.url).toBe(`/sessions/${ID}`);
       expect(root.textContent).toContain('viewer stub');
     });
 
     it('renders removable filters with 44px hit boxes and keeps search when a chip is cleared', async () => {
-      await open('/runs?q=login&status=failed');
+      await open('/sessions?q=login&status=failed');
       const chip = q<HTMLButtonElement>('[aria-label="Clear Status filter"]')!;
       const box = chip.getBoundingClientRect();
       expect(box.width).toBeGreaterThanOrEqual(44);
       expect(box.height).toBeGreaterThanOrEqual(44);
       chip.click();
       await settle();
-      expect(router.url).toBe('/runs?q=login');
+      expect(router.url).toBe('/sessions?q=login');
       expect(q('[data-filter="status"]')!.textContent).toContain('Status');
       expect(q('[aria-label="Clear Status filter"]')).toBeNull();
     });
 
     it('focuses search with / but leaves editable controls and modified shortcuts alone', async () => {
-      await open('/runs');
+      await open('/sessions');
       const search = q<HTMLInputElement>('input[type="search"]')!;
       const shortcut = new KeyboardEvent('keydown', { key: '/', bubbles: true, cancelable: true });
       document.dispatchEvent(shortcut);
@@ -265,7 +265,7 @@ describe('RunLibraryComponent', () => {
     });
 
     it('gives tabs, search and New run their own 44px hit boxes at column and mobile widths', async () => {
-      await open('/runs');
+      await open('/sessions');
       for (const width of [360, 390]) {
         root.style.width = `${width}px`;
         for (const control of qa<HTMLElement>('[role="tab"], input[type="search"], .new-run')) {
@@ -285,7 +285,8 @@ describe('RunLibraryComponent', () => {
       const title = fixture.nativeElement.querySelector('.run-prompt') as HTMLElement;
       expect(title.textContent).toBe('Open Settings');
       expect(title.title).toBe('Open Settings');
-      expect(getComputedStyle(title).webkitLineClamp).toBe('2');
+      expect(getComputedStyle(title).textOverflow).toBe('ellipsis');
+      expect(getComputedStyle(title).whiteSpace).toBe('nowrap');
     });
 
     it('compact history scrolls inside the region whose position is saved and restored', async () => {
@@ -302,7 +303,7 @@ describe('RunLibraryComponent', () => {
       expect(runs.lastLibraryQuery()).toEqual({ scroll: '150' });
       fixture.destroy();
 
-      await router.navigateByUrl('/runs?scroll=150');
+      await router.navigateByUrl('/sessions?scroll=150');
       const restored = TestBed.createComponent(RunLibraryComponent);
       restored.componentRef.setInput('compact', true);
       restored.detectChanges();
@@ -312,7 +313,7 @@ describe('RunLibraryComponent', () => {
     });
 
     it('refreshes the current scope and filters without navigating or reusing a page cursor', async () => {
-      await open('/runs?scope=everyone&status=completed&q=login', of(page([run()], 'old-cursor')));
+      await open('/sessions?scope=everyone&status=completed&q=login', of(page([run()], 'old-cursor')));
       const fixture = TestBed.createComponent(RunLibraryComponent);
       fixture.componentRef.setInput('refreshKey', 'initial');
       fixture.detectChanges();
@@ -330,7 +331,7 @@ describe('RunLibraryComponent', () => {
     });
 
     it('restores Everyone in the URL with filters and read-only owner-labelled links', async () => {
-      await open('/runs?scope=everyone&q=login&status=failed&from=2026-10-01');
+      await open('/sessions?scope=everyone&q=login&status=failed&from=2026-10-01');
       expect(runs.list.calls.mostRecent().args[1]).toEqual({ scope: 'everyone' });
       expect(q('.run-owner')?.textContent).toContain('qa@example.test');
       expect(q('.run-read-only')).toBeNull();
@@ -342,7 +343,7 @@ describe('RunLibraryComponent', () => {
     });
 
     it('switches tabs by keyboard without losing search, status or date filters', async () => {
-      await open('/runs?q=login&status=failed&from=2026-10-01&to=2026-10-07&scroll=100');
+      await open('/sessions?q=login&status=failed&from=2026-10-01&to=2026-10-07&scroll=100');
       const mine = q<HTMLButtonElement>('[role="tab"]')!;
       mine.focus();
       mine.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true, cancelable: true }));
@@ -356,20 +357,20 @@ describe('RunLibraryComponent', () => {
       expect(document.activeElement).toBe(qa<HTMLButtonElement>('[role="tab"]')[1]);
       component.clearFilters();
       await settle();
-      expect(router.url).toBe('/runs?scope=everyone');
+      expect(router.url).toBe('/sessions?scope=everyone');
       qa<HTMLButtonElement>('[role="tab"]')[1].dispatchEvent(new KeyboardEvent('keydown', { key: 'Home', bubbles: true }));
       await settle();
-      expect(router.url).toBe('/runs');
+      expect(router.url).toBe('/sessions');
     });
 
     it('explains an empty team tab separately from an empty My runs tab', async () => {
-      await open('/runs?scope=everyone', of(page([])));
+      await open('/sessions?scope=everyone', of(page([])));
       expect(root.textContent).toContain('No shared runs yet.');
       expect(root.textContent).not.toContain('Start one in Workspace');
     });
 
     it('drops stale prompts and cursors before loading a different owner tab', async () => {
-      await open('/runs', of(page([run({ prompt: 'Private prompt' })], 'mine-cursor')));
+      await open('/sessions', of(page([run({ prompt: 'Private prompt' })], 'mine-cursor')));
       const team = new Subject<RunPage>();
       runs.list.and.returnValue(team);
       qa<HTMLButtonElement>('[role="tab"]')[1].click();
@@ -387,17 +388,17 @@ describe('RunLibraryComponent', () => {
 
     it('characterizes status and date URL filters without changing the selected device', async () => {
       localStorage.setItem(SELECTED_DEVICE_SERIAL_KEY, 'my-phone');
-      await open('/runs?status=failed&from=2026-10-01&to=2026-10-07');
+      await open('/sessions?status=failed&from=2026-10-01&to=2026-10-07');
       expect(component.filters().status).toBe('failed');
       expect(component.filters().from).toBe('2026-10-01');
       expect(component.filters().to).toBe('2026-10-07');
-      expect(q<HTMLAnchorElement>('.run-row')?.getAttribute('href')).toBe(`/runs/${ID}`);
+      expect(q<HTMLAnchorElement>('.run-row')?.getAttribute('href')).toBe(`/sessions/${ID}`);
       expect(localStorage.getItem(SELECTED_DEVICE_SERIAL_KEY)).toBe('my-phone');
     });
 
     it('lists runs newest first as links with prompt, outcome, recording, device and computer, and date', async () => {
       await open(
-        '/runs',
+        '/sessions',
         of(
           page([
             run({
@@ -412,7 +413,7 @@ describe('RunLibraryComponent', () => {
       );
       const rows = qa<HTMLAnchorElement>('ol.run-list > li > a.run-row');
       expect(rows.length).toBe(2);
-      expect(rows[0].getAttribute('href')).toBe(`/runs/${ID}`);
+      expect(rows[0].getAttribute('href')).toBe(`/sessions/${ID}`);
       expect(rows[0].querySelector('.run-prompt')!.textContent).toContain('Log in and open settings');
       expect(rows[0].querySelector('.run-outcome')!.textContent).toContain('Failed');
       expect(rows[0].querySelector('.run-recording')!.textContent).toContain('Video uploaded');
@@ -425,7 +426,7 @@ describe('RunLibraryComponent', () => {
     });
 
     it('hides unknown video badges but preserves pending, failed and missing video states', async () => {
-      await open('/runs', of(page([
+      await open('/sessions', of(page([
         run({ session_id: 'unknown', recordings: [{ recording_id: 'r0', capture: null, transfer: null }] }),
         run({ session_id: 'pending', recordings: [{ recording_id: 'r1', capture: 'pending', transfer: null }] }),
         run({ session_id: 'failed', recordings: [{ recording_id: 'r2', capture: 'stopped', transfer: 'failed' }] }),
@@ -438,7 +439,7 @@ describe('RunLibraryComponent', () => {
     });
 
     it('uses tabular mono for serials and dates without changing the row hit area', async () => {
-      await open('/runs');
+      await open('/sessions');
       for (const selector of ['.run-serial', '.run-date']) {
         const style = getComputedStyle(q(selector)!);
         expect(style.fontFamily).toContain('JetBrains Mono');
@@ -452,7 +453,7 @@ describe('RunLibraryComponent', () => {
     it('keeps a browser or network address out of the device text, and in the tooltip (R3)', async () => {
       const serials = ['127.0.0.1:39129', 'pixel:5555', '192.168.1.12:5555'];
       await open(
-        '/runs',
+        '/sessions',
         of(page(serials.map((serial, i) => run({ session_id: `${i}1111111-5d7e-4a10-9c33-0e1f2a3b4c5d`, device_ref: { host_id: null, serial } }))))
       );
       const devices = qa<HTMLElement>('.run-device');
@@ -467,14 +468,14 @@ describe('RunLibraryComponent', () => {
     });
 
     it('shows status as an icon plus text, never colour alone', async () => {
-      await open('/runs');
+      await open('/sessions');
       expect(q('.run-icon .material-symbols-outlined')).not.toBeNull();
       expect(q('.run-outcome')!.textContent).toContain('Completed');
     });
 
     it('shows "Expires on" only when 7 days or fewer remain', async () => {
       await open(
-        '/runs',
+        '/sessions',
         of(
           page([
             run({ expires_at: NOW + 3 * 86400 }),
@@ -490,7 +491,7 @@ describe('RunLibraryComponent', () => {
 
     it('requests the first page with no filters and never touches the selected device', async () => {
       localStorage.setItem(SELECTED_DEVICE_SERIAL_KEY, 'R58M123');
-      await open('/runs');
+      await open('/sessions');
       expect(runs.list).toHaveBeenCalledTimes(1);
       expect(runs.list.calls.mostRecent().args[0]).toEqual({
         q: '', status: '', from: '', to: '', device: '', host: '', requester: ''
@@ -501,71 +502,71 @@ describe('RunLibraryComponent', () => {
 
   describe('search modes', () => {
     it('searches text through the URL and sends it verbatim for the server to quote', async () => {
-      await open('/runs');
+      await open('/sessions');
       runs.list.calls.reset();
       type('input[type="search"]', 'a OR "b');
       submitSearch();
       await settle();
-      expect(router.url).toBe('/runs?q=a%20OR%20%22b');
+      expect(router.url).toBe('/sessions?q=a%20OR%20%22b');
       expect(runs.list.calls.mostRecent().args[0].q).toBe('a OR "b');
       expect(runs.get).not.toHaveBeenCalled();
     });
 
     it('jumps to the run when the text is an 8-character id', async () => {
       runs.get.and.returnValue(of(run()));
-      await open('/runs');
+      await open('/sessions');
       type('input[type="search"]', '3F2B9C1A');
       submitSearch();
       await settle();
       expect(runs.get).toHaveBeenCalledWith('3f2b9c1a');
-      expect(router.url).toBe(`/runs/${ID}`);
+      expect(router.url).toBe(`/sessions/${ID}`);
     });
 
     it('jumps on a full uuid', async () => {
       runs.get.and.returnValue(of(run()));
-      await open('/runs');
+      await open('/sessions');
       type('input[type="search"]', ID);
       submitSearch();
       await settle();
       expect(runs.get).toHaveBeenCalledWith(ID);
-      expect(router.url).toBe(`/runs/${ID}`);
+      expect(router.url).toBe(`/sessions/${ID}`);
     });
 
     it('falls back to text search when an 8-character word is not a run id', async () => {
       runs.get.and.returnValue(httpError(404, { error: 'not_found' }));
-      await open('/runs');
+      await open('/sessions');
       runs.list.calls.reset();
       type('input[type="search"]', 'deadbeef');
       submitSearch();
       await settle();
-      expect(router.url).toBe('/runs?q=deadbeef');
+      expect(router.url).toBe('/sessions?q=deadbeef');
       expect(runs.list.calls.mostRecent().args[0].q).toBe('deadbeef');
     });
 
     for (const status of [410, 409]) {
       it(`opens the viewer for an id the server answers with ${status}, so it can explain`, async () => {
         runs.get.and.returnValue(httpError(status, { error: 'x' }));
-        await open('/runs');
+        await open('/sessions');
         type('input[type="search"]', '3f2b9c1a');
         submitSearch();
         await settle();
-        expect(router.url).toBe('/runs/3f2b9c1a');
+        expect(router.url).toBe('/sessions/3f2b9c1a');
       });
     }
 
     it('clearing the box and searching again lists everything', async () => {
-      await open('/runs?q=login');
+      await open('/sessions?q=login');
       expect(q<HTMLInputElement>('input[type="search"]')!.value).toBe('login');
       type('input[type="search"]', '');
       submitSearch();
       await settle();
-      expect(router.url).toBe('/runs');
+      expect(router.url).toBe('/sessions');
     });
   });
 
   describe('filter popovers', () => {
     it('preserves list scroll when a popover captures and restores focus', async () => {
-      await open('/runs', of(page(Array.from({ length: 12 }, (_, index) => run({ session_id: `scroll-${index}` })))));
+      await open('/sessions', of(page(Array.from({ length: 12 }, (_, index) => run({ session_id: `scroll-${index}` })))));
       const region = q<HTMLElement>('.library-scroll')!;
       region.style.height = '200px';
       region.scrollTop = 100;
@@ -579,20 +580,20 @@ describe('RunLibraryComponent', () => {
     });
 
     it('keeps App visibly unavailable without changing the URL or requesting a list', async () => {
-      await open('/runs?q=login');
+      await open('/sessions?q=login');
       runs.list.calls.reset();
       const chip = q<HTMLButtonElement>('[data-filter="app"]')!;
       expect(chip.getAttribute('aria-disabled')).toBe('true');
       expect(chip.title).toBe('Needs backend support');
       chip.click();
       await settle();
-      expect(router.url).toBe('/runs?q=login');
+      expect(router.url).toBe('/sessions?q=login');
       expect(runs.list).not.toHaveBeenCalled();
       expect(q('[role="dialog"]')).toBeNull();
     });
 
     it('opens with focus, supports arrow keys, and restores the trigger on Escape', async () => {
-      await open('/runs?status=failed');
+      await open('/sessions?status=failed');
       const trigger = q<HTMLButtonElement>('[data-filter="status"]')!;
       trigger.focus();
       trigger.click();
@@ -613,7 +614,7 @@ describe('RunLibraryComponent', () => {
     });
 
     it('closes on outside click or selection and preserves search and owner scope', async () => {
-      await open('/runs?q=login&scope=everyone');
+      await open('/sessions?q=login&scope=everyone');
       const trigger = q<HTMLButtonElement>('[data-filter="status"]')!;
       trigger.click();
       await settle();
@@ -622,13 +623,13 @@ describe('RunLibraryComponent', () => {
       expect(q('[role="dialog"]')).toBeNull();
       chooseStatus('interrupted');
       await settle();
-      expect(router.url).toBe('/runs?q=login&status=interrupted&scope=everyone');
+      expect(router.url).toBe('/sessions?q=login&status=interrupted&scope=everyone');
       expect(q('[role="dialog"]')).toBeNull();
       expect(q('[data-filter="status"]')!.textContent).toContain('Interrupted');
     });
 
     it('applies and clears both date bounds with a single URL update', async () => {
-      await open('/runs?q=login');
+      await open('/sessions?q=login');
       runs.list.calls.reset();
       q<HTMLButtonElement>('[data-filter="date"]')!.click();
       await settle();
@@ -639,11 +640,11 @@ describe('RunLibraryComponent', () => {
       expect(runs.list).toHaveBeenCalledTimes(1);
       q<HTMLButtonElement>('[aria-label="Clear Date filter"]')!.click();
       await settle();
-      expect(router.url).toBe('/runs?q=login');
+      expect(router.url).toBe('/sessions?q=login');
     });
 
     it('adds optional filters, applies text values, and restores them from the URL', async () => {
-      await open('/runs?q=login');
+      await open('/sessions?q=login');
       q<HTMLButtonElement>('[data-filter="add"]')!.click();
       await settle();
       q<HTMLButtonElement>('[data-add-filter="device"]')!.click();
@@ -653,33 +654,33 @@ describe('RunLibraryComponent', () => {
       input.dispatchEvent(new Event('input'));
       q<HTMLFormElement>('.filter-popover form')!.dispatchEvent(new Event('submit', { cancelable: true }));
       await settle();
-      expect(router.url).toBe('/runs?q=login&device=emulator-5554');
+      expect(router.url).toBe('/sessions?q=login&device=emulator-5554');
       expect(q('[data-filter="device"]')!.textContent).toContain('emulator-5554');
       expect(q('[role="dialog"]')).toBeNull();
     });
 
     it('rejects malformed and reversed custom date ranges without changing the URL', async () => {
-      await open('/runs');
+      await open('/sessions');
       q<HTMLButtonElement>('[data-filter="date"]')!.click();
       await settle();
       type('input[aria-label="From date"]', '2026-02-30');
       type('input[aria-label="To date"]', '2026-03-01');
       q<HTMLFormElement>('.filter-popover form')!.dispatchEvent(new Event('submit', { cancelable: true }));
       await settle();
-      expect(router.url).toBe('/runs');
+      expect(router.url).toBe('/sessions');
       expect(q('.filter-error')).not.toBeNull();
       type('input[aria-label="From date"]', '2026-03-02');
       q<HTMLFormElement>('.filter-popover form')!.dispatchEvent(new Event('submit', { cancelable: true }));
       await settle();
-      expect(router.url).toBe('/runs');
+      expect(router.url).toBe('/sessions');
       type('input[aria-label="From date"]', '2026-02-28');
       q<HTMLFormElement>('.filter-popover form')!.dispatchEvent(new Event('submit', { cancelable: true }));
       await settle();
-      expect(router.url).toBe('/runs?from=2026-02-28&to=2026-03-01');
+      expect(router.url).toBe('/sessions?from=2026-02-28&to=2026-03-01');
     });
 
     it('gives chips 32px visuals inside separate 44px hit boxes with a compact 5px gap', async () => {
-      await open('/runs?status=failed');
+      await open('/sessions?status=failed');
       const chips = qa<HTMLElement>('.filter-chip, .filter-clear');
       for (const chip of chips) {
         expect(chip.getBoundingClientRect().width).toBeGreaterThanOrEqual(44);
@@ -693,7 +694,7 @@ describe('RunLibraryComponent', () => {
   describe('filter persistence', () => {
     it('restores every control and the request from the URL', async () => {
       await open(
-        '/runs?q=login&status=failed&from=2026-10-01&to=2026-10-03&device=emulator-5554&host=local&requester=qa%40example.test'
+        '/sessions?q=login&status=failed&from=2026-10-01&to=2026-10-03&device=emulator-5554&host=local&requester=qa%40example.test'
       );
       expect(q<HTMLInputElement>('input[type="search"]')!.value).toBe('login');
       expect(q('[data-filter="status"]')!.textContent).toContain('Failed');
@@ -714,20 +715,20 @@ describe('RunLibraryComponent', () => {
     });
 
     it('keeps optional chips hidden until one of their filters is set or added', async () => {
-      await open('/runs?status=failed');
+      await open('/sessions?status=failed');
       expect(q('[data-filter="host"]')).toBeNull();
       expect(q('[data-filter="device"]')).toBeNull();
       expect(q('[data-filter="requester"]')).toBeNull();
     });
 
     it('writes a changed filter to the URL without adding a history entry, and reloads', async () => {
-      await open('/runs');
+      await open('/sessions');
       const location = TestBed.inject(Location);
       const before = (location as unknown as { historyLength?: number }).historyLength;
       runs.list.calls.reset();
       chooseStatus('failed');
       await settle();
-      expect(router.url).toBe('/runs?status=failed');
+      expect(router.url).toBe('/sessions?status=failed');
       expect(runs.list.calls.mostRecent().args[0].status).toBe('failed');
       expect(runs.list).toHaveBeenCalledTimes(1);
       if (before !== undefined) {
@@ -736,30 +737,30 @@ describe('RunLibraryComponent', () => {
     });
 
     it('survives opening a run and coming back through the remembered query', async () => {
-      await open('/runs?status=failed&q=login');
-      await harness.navigateByUrl(`/runs/${ID}`);
+      await open('/sessions?status=failed&q=login');
+      await harness.navigateByUrl(`/sessions/${ID}`);
       runs.list.calls.reset();
-      await router.navigate(['/runs'], { queryParams: runs.lastLibraryQuery() });
+      await router.navigate(['/sessions'], { queryParams: runs.lastLibraryQuery() });
       await settle();
-      expect(router.url).toBe('/runs?q=login&status=failed');
+      expect(router.url).toBe('/sessions?q=login&status=failed');
       expect(runs.list.calls.mostRecent().args[0].status).toBe('failed');
       expect(runs.list.calls.mostRecent().args[0].q).toBe('login');
     });
 
     it('remembers the library query for the viewer\'s "Back to runs" link', async () => {
-      await open('/runs?status=failed&scroll=300');
+      await open('/sessions?status=failed&scroll=300');
       expect(runs.lastLibraryQuery()).toEqual({ status: 'failed', scroll: '300' });
     });
 
-    it('"Clear filters" resets the URL to /runs', async () => {
-      await open('/runs?status=failed', of(page([])));
+    it('"Clear filters" resets the URL to /sessions', async () => {
+      await open('/sessions?status=failed', of(page([])));
       q<HTMLButtonElement>('.state-no-match button')!.click();
       await settle();
-      expect(router.url).toBe('/runs');
+      expect(router.url).toBe('/sessions');
     });
 
     it('P2: the busy list keeps full text contrast: nothing on the rows is dimmed, and it says so in words', async () => {
-      await open('/runs', of(page([run(), run({ status: 'failed', session_id: '66666666-5d7e-4a10-9c33-0e1f2a3b4c5d' })])));
+      await open('/sessions', of(page([run(), run({ status: 'failed', session_id: '66666666-5d7e-4a10-9c33-0e1f2a3b4c5d' })])));
       runs.list.and.returnValue(new Subject<RunPage>());
       chooseStatus('failed');
       await settle();
@@ -776,7 +777,7 @@ describe('RunLibraryComponent', () => {
     });
 
     it('keeps the previous rows on screen, marked busy, while a new filter loads', async () => {
-      await open('/runs');
+      await open('/sessions');
       const next = new Subject<RunPage>();
       runs.list.and.returnValue(next);
       chooseStatus('failed');
@@ -811,7 +812,7 @@ describe('RunLibraryComponent', () => {
     }
 
     it('P2: opening a row inside the scroll debounce still saves the position for the way back', async () => {
-      await open('/runs', of(many(12)));
+      await open('/sessions', of(many(12)));
       const replace = spyOn(TestBed.inject(Location), 'replaceState').and.callThrough();
       const region = q<HTMLElement>('.library-scroll')!;
       region.style.height = '200px';
@@ -822,23 +823,23 @@ describe('RunLibraryComponent', () => {
       expect(replace).toHaveBeenCalled();
       expect(replace.calls.mostRecent().args.join('')).toContain('scroll=120');
       expect(runs.lastLibraryQuery()).toEqual({ scroll: '120' });
-      expect(router.url).toContain('/runs/');
+      expect(router.url).toContain('/sessions/');
     });
 
     it('writes the scroll position to the URL, and a scroll alone does not reload the list', async () => {
-      await open('/runs', of(many(12)));
+      await open('/sessions', of(many(12)));
       const region = q<HTMLElement>('.library-scroll')!;
       region.style.height = '200px';
       region.scrollTop = 120;
       region.dispatchEvent(new Event('scroll'));
       await wait(350);
       await settle();
-      expect(router.url).toBe('/runs?scroll=120');
+      expect(router.url).toBe('/sessions?scroll=120');
       expect(runs.list).toHaveBeenCalledTimes(1);
     });
 
     it('restores the saved position once the first page is on screen', async () => {
-      const first = await openPending('/runs?scroll=150');
+      const first = await openPending('/sessions?scroll=150');
       first.next(many(12));
       first.complete();
       await settle();
@@ -847,7 +848,7 @@ describe('RunLibraryComponent', () => {
     });
 
     it('loads more pages until the saved position exists, then scrolls to it', async () => {
-      const first = await openPending('/runs?scroll=700');
+      const first = await openPending('/sessions?scroll=700');
       runs.list.and.returnValue(of(many(12)));
       first.next(many(3, 'next-page'));
       first.complete();
@@ -866,7 +867,7 @@ describe('RunLibraryComponent', () => {
       run({ session_id: `${String(n).padStart(8, '0')}-5d7e-4a10-9c33-0e1f2a3b4c5d`, status: 'failed', prompt: `Failed ${n}` });
 
     it('P1: Load more is gone and inert while a new filter is loading, and no old cursor is ever sent', async () => {
-      await open('/runs', of(page([run({ status: 'completed' })], 'old-cursor')));
+      await open('/sessions', of(page([run({ status: 'completed' })], 'old-cursor')));
       expect(q('button.load-more')).not.toBeNull();
       const reload = new Subject<RunPage>();
       runs.list.calls.reset();
@@ -889,7 +890,7 @@ describe('RunLibraryComponent', () => {
     });
 
     it('P1: a Load more page that is still in flight when the filter changes never lands in the new list', async () => {
-      await open('/runs', of(page([run({ status: 'completed' })], 'old-cursor')));
+      await open('/sessions', of(page([run({ status: 'completed' })], 'old-cursor')));
       const older = new Subject<RunPage>();
       runs.list.and.returnValue(older);
       q<HTMLButtonElement>('button.load-more')!.click();
@@ -910,7 +911,7 @@ describe('RunLibraryComponent', () => {
     it('P2: changing a filter drops the initial scroll restore target', async () => {
       const first = new Subject<RunPage>();
       runs.list.and.returnValue(first);
-      component = await harness.navigateByUrl('/runs?scroll=400', RunLibraryComponent);
+      component = await harness.navigateByUrl('/sessions?scroll=400', RunLibraryComponent);
       harness.fixture.autoDetectChanges();
       root = harness.fixture.nativeElement;
       q<HTMLElement>('.library-scroll')!.style.height = '200px';
@@ -924,14 +925,14 @@ describe('RunLibraryComponent', () => {
 
   describe('empty versus no match', () => {
     it('says "No runs yet" and points at Workspace when nothing was ever recorded', async () => {
-      await open('/runs', of(page([])));
+      await open('/sessions', of(page([])));
       expect(q('.state-empty')!.textContent).toContain('No runs yet');
-      expect(q<HTMLAnchorElement>('.state-empty a')!.getAttribute('href')).toBe('/workspace');
+      expect(q<HTMLAnchorElement>('.state-empty a')!.getAttribute('href')).toBe('/sessions/new');
       expect(q('.state-no-match')).toBeNull();
     });
 
     it('says "No matching runs" with Clear filters when a search or filter hides everything', async () => {
-      await open('/runs?q=nothing', of(page([])));
+      await open('/sessions?q=nothing', of(page([])));
       expect(q('.state-no-match')!.textContent).toContain('No matching runs');
       expect(q('.state-no-match button')!.textContent).toContain('Clear filters');
       expect(q('.state-empty')).toBeNull();
@@ -940,7 +941,7 @@ describe('RunLibraryComponent', () => {
 
   describe('errors and paging', () => {
     it('shows "Couldn\'t load runs" with Retry, and Retry keeps the filters', async () => {
-      await open('/runs?status=failed', httpError(500));
+      await open('/sessions?status=failed', httpError(500));
       expect(q('.state-error')!.textContent).toContain("Couldn't load runs");
       runs.list.calls.reset();
       runs.list.and.returnValue(of(page([run({ status: 'failed' })])));
@@ -952,12 +953,12 @@ describe('RunLibraryComponent', () => {
     });
 
     it('explains a catalog that is still getting ready', async () => {
-      await open('/runs', httpError(503, { error: 'catalog_not_ready' }));
+      await open('/sessions', httpError(503, { error: 'catalog_not_ready' }));
       expect(q('.state-error')!.textContent).toContain('getting ready');
     });
 
     it('loads the next page with the cursor and hides Load more on the last page', async () => {
-      await open('/runs', of(page([run()], 'cursor-1')));
+      await open('/sessions', of(page([run()], 'cursor-1')));
       expect(q('button.load-more')).not.toBeNull();
       runs.list.and.returnValue(of(page([run({ session_id: '44444444-5d7e-4a10-9c33-0e1f2a3b4c5d' })])));
       q<HTMLButtonElement>('button.load-more')!.click();
@@ -974,7 +975,7 @@ describe('RunLibraryComponent', () => {
     const owners = () => qa('.run-owner').map((el) => el.textContent!.trim());
 
     it('shows a QA their own runs with no switch and no owner labels', async () => {
-      await open('/runs', of(page([run()])));
+      await open('/sessions', of(page([run()])));
       expect(q('[role="switch"]')).toBeNull();
       expect(myTab().getAttribute('aria-selected')).toBe('true');
       expect(owners()).toEqual([]);
@@ -982,7 +983,7 @@ describe('RunLibraryComponent', () => {
 
     it('gives an admin owner tabs with My runs selected and only their own runs asked for', async () => {
       adminApi.getIdentity.and.returnValue(of(ADMIN_IDENTITY));
-      await open('/runs', of(page([run({ requested_by: 'admin@example.test' })])));
+      await open('/sessions', of(page([run({ requested_by: 'admin@example.test' })])));
       expect(teamTab().getAttribute('aria-selected')).toBe('false');
       expect(q('[role="switch"]')).toBeNull();
       expect(runs.list.calls.mostRecent().args[1]).toEqual({ scope: 'mine' });
@@ -991,7 +992,7 @@ describe('RunLibraryComponent', () => {
 
     it('reloads the list for everyone and labels each row with its owner when an admin selects the team tab', async () => {
       adminApi.getIdentity.and.returnValue(of(ADMIN_IDENTITY));
-      await open('/runs', of(page([run({ requested_by: 'admin@example.test' })])));
+      await open('/sessions', of(page([run({ requested_by: 'admin@example.test' })])));
       runs.list.calls.reset();
       runs.list.and.returnValue(
         of(
@@ -1011,7 +1012,7 @@ describe('RunLibraryComponent', () => {
 
     it('drops the owner labels and reloads again when My runs is selected', async () => {
       adminApi.getIdentity.and.returnValue(of(ADMIN_IDENTITY));
-      await open('/runs', of(page([run({ requested_by: 'qa1@example.test' })])));
+      await open('/sessions', of(page([run({ requested_by: 'qa1@example.test' })])));
       teamTab().click();
       await settle();
       runs.list.calls.reset();
@@ -1023,23 +1024,23 @@ describe('RunLibraryComponent', () => {
 
     it('keeps the search text and filters when the scope changes', async () => {
       adminApi.getIdentity.and.returnValue(of(ADMIN_IDENTITY));
-      await open('/runs?q=login&status=failed', of(page([])));
+      await open('/sessions?q=login&status=failed', of(page([])));
       teamTab().click();
       await settle();
       expect(runs.list.calls.mostRecent().args[0]).toEqual(jasmine.objectContaining({ q: 'login', status: 'failed' }));
     });
 
     it('says "No runs yet" for a QA with nothing, and "No runs match" only when a filter hides everything', async () => {
-      await open('/runs', of(page([])));
+      await open('/sessions', of(page([])));
       expect(q('.state-empty')!.textContent).toContain('No runs yet');
-      await router.navigateByUrl('/runs?status=failed');
+      await router.navigateByUrl('/sessions?status=failed');
       await settle();
       expect(q('.state-no-match')!.textContent).toContain('No matching runs');
     });
 
     it('names the scope in the empty state while an admin looks at all users', async () => {
       adminApi.getIdentity.and.returnValue(of(ADMIN_IDENTITY));
-      await open('/runs', of(page([])));
+      await open('/sessions', of(page([])));
       expect(q('.state-empty')!.textContent).toContain('No runs yet');
       runs.list.and.returnValue(of(page([])));
       teamTab().click();
@@ -1052,7 +1053,7 @@ describe('RunLibraryComponent', () => {
       const scope = TestBed.inject(OwnerScopeService);
       scope.identity.set(ADMIN_IDENTITY);
       scope.setAllUsers(true);
-      await open('/runs', of(page([run({ requested_by: 'qa1@example.test' })])));
+      await open('/sessions', of(page([run({ requested_by: 'qa1@example.test' })])));
       expect(runs.list).toHaveBeenCalledTimes(1);
       expect(owners()).toEqual([]);
       expect(runs.list.calls.mostRecent().args[1]).toEqual({ scope: 'mine' });
@@ -1060,7 +1061,7 @@ describe('RunLibraryComponent', () => {
 
     it('puts the selected owner tab first in the tab order for an admin, natively focusable', async () => {
       adminApi.getIdentity.and.returnValue(of(ADMIN_IDENTITY));
-      await open('/runs', of(page([run()])));
+      await open('/sessions', of(page([run()])));
       const focusable = qa<HTMLElement>('a[href], button, input, select, summary').filter(
         (el) => el.tabIndex >= 0 && !(el as HTMLButtonElement).disabled && el.checkVisibility()
       );
@@ -1081,7 +1082,7 @@ describe('RunLibraryComponent', () => {
 
     it('tabs through search, filters, then the rows, in reading order, all natively focusable', async () => {
       await open(
-        '/runs',
+        '/sessions',
         of(page([run(), run({ session_id: '55555555-5d7e-4a10-9c33-0e1f2a3b4c5d', prompt: 'Second' })], 'c'))
       );
       const names = visibleControls().map(nameOf);
@@ -1096,7 +1097,7 @@ describe('RunLibraryComponent', () => {
     });
 
     it('reveals the additional filter entries without native selects or date pickers', async () => {
-      await open('/runs');
+      await open('/sessions');
       q<HTMLButtonElement>('[data-filter="add"]')!.click();
       await settle();
       expect(qa('[data-add-filter]').map(nameOf)).toEqual(['Computer', 'Phone', 'Requested by']);
@@ -1104,7 +1105,7 @@ describe('RunLibraryComponent', () => {
     });
 
     it('keeps every target at least 24 px and primary targets at least 44 px', async () => {
-      await open('/runs', of(page([run()], 'c')));
+      await open('/sessions', of(page([run()], 'c')));
       for (const el of visibleControls()) {
         const box = el.getBoundingClientRect();
         expect(box.width).toBeGreaterThanOrEqual(24, nameOf(el));
@@ -1116,7 +1117,7 @@ describe('RunLibraryComponent', () => {
     });
 
     it('submits the search with Enter inside the search box (a real form)', async () => {
-      await open('/runs');
+      await open('/sessions');
       const form = q<HTMLFormElement>('form[role="search"]')!;
       expect(form.querySelector('input[type="search"]')).not.toBeNull();
       expect(form.querySelector('button[type="submit"]')).not.toBeNull();

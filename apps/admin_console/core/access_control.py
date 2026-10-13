@@ -565,6 +565,8 @@ def route_tier(path: str, methods: set[str], is_websocket: bool = False) -> str 
         return "admin"
     if methods == {"POST"} and path in _PUBLIC_MUTATING_PATHS:
         return "public"
+    if methods == {"PATCH"} and path == "/api/chats/{session_id}/title":
+        return "qa"
     if methods == {"POST"} and path in _QA_MUTATING_PATHS:
         return "qa"
     if methods in ({"POST"}, {"PUT"}) and path in _ADMIN_MUTATING_PATHS:

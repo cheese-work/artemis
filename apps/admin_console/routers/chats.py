@@ -2,7 +2,7 @@ import asyncio
 import uuid
 
 from fastapi import APIRouter, Depends
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from artemis.config import DB_PATH
 from artemis.data_engine.chat_sessions import ChatStore
@@ -30,13 +30,24 @@ class ControlRequest(BaseModel):
     client_id: str = Field(default_factory=lambda: str(uuid.uuid4()), min_length=1, max_length=128)
 
 
+class TitleRequest(BaseModel):
+    title: str = Field(min_length=1, max_length=120)
+
+    @field_validator("title", mode="before")
+    @classmethod
+    def trim_title(cls, value):
+        return value.strip() if isinstance(value, str) else value
+
+
 def _session(identity, scope, *, write=False):
     require_actor(scope)
     store = ChatStore(DB_PATH)
     try:
         session = store.get(identity)
     except KeyError:
-        raise AdminAPIError(404, "Chat session not found.", "chat_not_found") from None
+        raise AdminAPIError(
+            404, "Chat session not found.", "chat_not_found", "Open an existing session."
+        ) from None
     root = session["session_id"]
     if write:
         require_access(scope, root)
@@ -49,6 +60,16 @@ def _session(identity, scope, *, write=False):
 async def get_chat(session_id: str, scope: OwnerScope = Depends(actor_scope)):
     store, session = await asyncio.to_thread(_session, session_id, scope)
     return await asyncio.to_thread(present_session_data, scope, session["session_id"], session)
+
+
+@router.patch("/api/chats/{session_id}/title", dependencies=[Depends(require_qa)])
+async def rename_chat(
+    session_id: str, request: TitleRequest, scope: OwnerScope = Depends(actor_scope)
+):
+    store, session = await asyncio.to_thread(_session, session_id, scope)
+    await asyncio.to_thread(store.rename, session["session_id"], request.title)
+    updated = await asyncio.to_thread(store.get, session["session_id"])
+    return await asyncio.to_thread(present_session_data, scope, session["session_id"], updated)
 
 
 async def _ensure_worker(store, identity, message):

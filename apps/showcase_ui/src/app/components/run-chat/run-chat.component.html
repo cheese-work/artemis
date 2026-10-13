@@ -1,13 +1,29 @@
 @if (!runId()) {
-  <app-run-view [mode]="mode()" [runId]="''" (newRunPrompt)="newRunPrompt.emit($event)"></app-run-view>
+  <section class="empty-chat"><h1>New session</h1><p>Describe what the agent should check on your phone.</p></section>
 } @else {
   <div class="chat-session">
     <header class="chat-header">
-      <div><a routerLink="/runs">← Runs</a><h1>{{ title() }}</h1>
-        <p>Chat session · {{ chat()?.turns?.length ?? 0 }} turns · {{ rootRun()?.device_ref?.serial ?? 'Phone binding unavailable' }}</p>
+      <div class="session-title">
+        @if (editingTitle()) {
+          <form (ngSubmit)="saveTitle()" class="rename-form">
+            <input name="title" aria-label="Session title" [(ngModel)]="titleDraft" maxlength="120" [disabled]="savingTitle()"
+              (keydown.escape)="editingTitle.set(false)" autofocus>
+            <button type="submit" [disabled]="!titleDraft.trim() || savingTitle()">Save</button>
+            <button type="button" (click)="editingTitle.set(false)">Cancel</button>
+          </form>
+        } @else {
+          <button class="title-button" type="button" [title]="title()" aria-label="Rename session" [disabled]="!chat()" (click)="beginRename()">
+            <h1>{{ title() }}</h1><span aria-hidden="true">✎</span>
+          </button>
+        }
       </div>
-      <button type="button" (click)="newRunPrompt.emit('')">New session</button>
+      <button type="button" [attr.aria-expanded]="sidebarOpen()" aria-controls="session-sidebar"
+        (click)="sidebarOpen.set(!sidebarOpen())" [attr.aria-label]="sidebarOpen() ? 'Collapse session sidebar' : 'Open session sidebar'">
+        <span aria-hidden="true">{{ sidebarOpen() ? '×' : '+' }}</span>
+      </button>
     </header>
+    <div class="session-layout" [class.sidebar-open]="sidebarOpen()">
+    <div class="session-main">
     <section class="chat-history" aria-label="Chat history">
       @for (turn of chat()?.turns ?? []; track turn.turn_id) {
         <article class="chat-turn" [attr.aria-label]="'Turn ' + turn.number">
@@ -24,7 +40,7 @@
           <details class="turn-evidence" #evidence (toggle)="evidence.open">
             <summary>Turn {{ turn.number }} · steps, video and verdict</summary>
             @if (evidence.open) {
-              <app-run-view [runId]="turn.turn_id" [mode]="liveSession()?.session_id === turn.turn_id ? mode() : 'review'" [readOnly]="!canWrite()"
+              <app-run-view [runId]="turn.turn_id" [mode]="liveSession()?.session_id === turn.turn_id ? mode() : 'review'" [readOnly]="true"
                 [liveSession]="liveSession()?.session_id === turn.turn_id ? liveSession() : null"
                 [liveSteps]="liveSession()?.session_id === turn.turn_id ? liveSteps() : []" [startupProgress]="liveSession()?.session_id === turn.turn_id ? startupProgress() : []"
                 (newRunPrompt)="newRunPrompt.emit($event)"></app-run-view>
@@ -46,10 +62,16 @@
           <span>{{ paused() ? 'Paused · Continue or send another message' : active() ? 'Steer by default · a plan change pauses for confirmation' : 'Same phone · current screen · full chat history' }}</span>
           @if (active()) {
             <button type="button" [disabled]="sending()" (click)="control(paused() ? 'continue' : 'pause')">{{ paused() ? 'Continue' : 'Pause' }}</button>
+            <button type="button" [disabled]="sending()" (click)="stopRun.emit(latest()!.turn_id)">Stop</button>
           }
           <button type="submit" class="send" [disabled]="!draft.trim() || sending() || !chat()">Send</button>
         </div>
       </form>
     }
+    </div>
+    @if (sidebarOpen()) {
+      <app-session-sidebar id="session-sidebar" [runId]="latest()?.turn_id ?? runId()" [firstPrompt]="rootRun()?.chat_prompt ?? rootRun()?.prompt ?? null"></app-session-sidebar>
+    }
+    </div>
   </div>
 }

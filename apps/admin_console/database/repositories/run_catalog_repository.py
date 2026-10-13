@@ -248,6 +248,7 @@ class RunCatalogRepository:
                 rows += conn.execute(sql, params).fetchall()
             page, more = rows[:limit], len(rows) > limit
             runs = [_run_from_row(row) for row in page]
+            self._attach_chat(conn, runs)
             self._attach_recordings(conn, runs)
         next_cursor = (
             encode_cursor(page[-1]["start_time"], page[-1]["session_id"]) if more else None
@@ -276,8 +277,37 @@ class RunCatalogRepository:
             runs = [_run_from_row(row) for row in live]
             if len(runs) > 1:
                 return RunLookup(candidates=runs[:_MAX_CANDIDATES])
+            self._attach_chat(conn, runs)
             self._attach_recordings(conn, runs)
             return RunLookup(run=runs[0])
+
+    @staticmethod
+    def _attach_chat(conn: sqlite3.Connection, runs: list[dict[str, Any]]) -> None:
+        if (
+            not runs
+            or not conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='chat_sessions'"
+            ).fetchone()
+        ):
+            return
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(chat_sessions)")}
+        title = "c.title" if "title" in columns else "NULL"
+        marks = ",".join("?" for run in runs)
+        rows = conn.execute(
+            f"SELECT t.turn_id, t.session_id, {title} AS title, s.initial_goal "
+            "FROM chat_turns t JOIN chat_sessions c ON c.session_id=t.session_id "
+            "LEFT JOIN sessions s ON s.session_id=t.session_id "
+            f"WHERE t.turn_id IN ({marks})",
+            [run["session_id"] for run in runs],
+        )
+        metadata = {row["turn_id"]: row for row in rows}
+        for run in runs:
+            if row := metadata.get(run["session_id"]):
+                run.update(
+                    chat_session_id=row["session_id"],
+                    chat_title=row["title"],
+                    chat_prompt=row["initial_goal"],
+                )
 
     def require_ready(self) -> None:
         """Raise ``CatalogNotReady`` unless the catalog tables exist."""

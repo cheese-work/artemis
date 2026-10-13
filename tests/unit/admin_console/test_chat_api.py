@@ -83,3 +83,68 @@ async def test_follow_up_shares_session_not_evidence(qa, chat, library):
     thread = (await qa.get(f"/api/chats/{turn_id}")).json()
     assert thread["session_id"] == chat
     assert len(thread["turns"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_visible_qa_can_rename_without_gaining_device_control(qa2, qa, chat, library):
+    response = await qa2.patch(f"/api/chats/{chat}/title", json={"title": "  Login checks  "})
+    assert response.status_code == 200
+    assert (await qa.get(f"/api/chats/{chat}")).json()["title"] == "Login checks"
+    assert ChatStore(library.db).get(chat)["title"] == "Login checks"
+    denied = await qa2.post(f"/api/chats/{chat}/pause", json={"client_id": "forbidden"})
+    assert denied.status_code == 403
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("title", ["", "   ", "a" * 121])
+async def test_invalid_rename_does_not_write(qa, chat, library, title):
+    before = ChatStore(library.db).get(chat)
+    assert (await qa.patch(f"/api/chats/{chat}/title", json={"title": title})).status_code == 422
+    assert ChatStore(library.db).get(chat) == before
+
+
+@pytest.mark.asyncio
+async def test_rename_follows_turn_identity_and_survives_migration(qa, chat, library):
+    store = ChatStore(library.db)
+    store.transition(chat, "completed")
+    turn = store.send(chat, "Next task", "next")
+    response = await qa.patch(f"/api/chats/{turn['turn_id']}/title", json={"title": "a" * 120})
+    assert response.status_code == 200
+    store.migrate()
+    assert store.get(chat)["title"] == "a" * 120
+    catalog = (await qa.get(f"/api/runs/{chat}")).json()
+    assert catalog["chat_title"] == "a" * 120
+    assert catalog["chat_session_id"] == chat
+
+
+@pytest.mark.asyncio
+async def test_catalog_redacts_shared_title_and_first_prompt(qa, qa2, chat, library):
+    secret = "catalog-test-secret"
+    with sqlite3.connect(library.db) as connection:
+        connection.execute(
+            "UPDATE sessions SET initial_goal=? WHERE session_id=?",
+            (f"Login with password={secret}", chat),
+        )
+    response = await qa.patch(
+        f"/api/chats/{chat}/title", json={"title": f"Login password={secret}"}
+    )
+    assert response.status_code == 200
+    owner = (await qa.get(f"/api/runs/{chat}")).json()
+    assert secret in owner["chat_title"]
+    assert secret in owner["chat_prompt"]
+    shared = await qa2.get(f"/api/runs/{chat}")
+    team = await qa.get("/api/runs", params={"scope": "everyone"})
+    assert shared.status_code == team.status_code == 200
+    for row in [shared.json(), *team.json()["runs"]]:
+        assert row["read_only"]
+        assert secret not in row["chat_title"]
+        assert secret not in row["chat_prompt"]
+        assert "[REDACTED]" in row["chat_title"]
+
+
+@pytest.mark.asyncio
+async def test_rename_rejects_anonymous_and_missing_session(anonymous, qa, chat):
+    assert (
+        await anonymous.patch(f"/api/chats/{chat}/title", json={"title": "No"})
+    ).status_code in (401, 403)
+    assert (await qa.patch("/api/chats/missing/title", json={"title": "No"})).status_code == 404

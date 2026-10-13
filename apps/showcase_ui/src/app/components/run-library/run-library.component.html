@@ -2,7 +2,7 @@
   <header class="library-heading">
     @if (compact()) { <h2 class="library-title">{{ strings.title }}</h2> }
     @else { <h1 class="library-title">{{ strings.title }}</h1> }
-    <a class="new-run" routerLink="/workspace" (click)="newRun.emit()"><span>New run</span></a>
+    <a class="new-run" routerLink="/sessions/new" (click)="newRun.emit()"><span>New run</span></a>
   </header>
 
   <div class="owner-tabs" role="tablist" aria-label="Run owner">
@@ -133,9 +133,9 @@
               <a class="run-row" appRunCard [run]="run" [computer]="computer(run)" [device]="device(run)"
                 [showOwner]="true" [queue]="true" [goalImages]="recordedImages().get(run.session_id) ?? []"
                 [current]="isOpen(run)" [attr.aria-current]="isOpen(run) ? 'page' : null"
-                [routerLink]="['/runs', run.session_id]" [queryParams]="runQuery()"></a>
+                [routerLink]="['/sessions', run.chat_session_id ?? run.session_id]" [queryParams]="runQuery()"></a>
             }
-            @if (!run.read_only) {
+            @if (!run.read_only && run.status === 'pending') {
               <button type="button" [class.queue-stop]="run.status !== 'pending'" [class.queue-cancel]="run.status === 'pending'"
                 [attr.aria-label]="(run.status === 'pending' ? 'Cancel queued run: ' : 'Stop run: ') + runTitle(run.prompt)"
                 [title]="(run.status === 'pending' ? 'Cancel queued run: ' : 'Stop run: ') + runTitle(run.prompt)"
@@ -173,7 +173,7 @@
     } @else {
       <div class="state state-empty">
         @if (scope() === 'everyone') { <p>No shared runs yet.</p> }
-        @else { <p>{{ strings.emptyTitle }} <a routerLink="/workspace">{{ strings.emptyAction }}</a>.</p> }
+        @else { <p>{{ strings.emptyTitle }} <a routerLink="/sessions/new">{{ strings.emptyAction }}</a>.</p> }
       </div>
     }
   }
@@ -192,7 +192,7 @@
           <a class="run-row" appRunCard [run]="run" [computer]="computer(run)" [device]="device(run)"
             [current]="isOpen(run)" [attr.aria-current]="isOpen(run) ? 'page' : null" [class.is-open]="isOpen(run)"
             [goalImages]="recordedImages().get(run.session_id) ?? []"
-            [showOwner]="scope() === 'everyone'" [routerLink]="['/runs', run.session_id]"
+            [showOwner]="scope() === 'everyone'" [routerLink]="['/sessions', run.chat_session_id ?? run.session_id]"
             [queryParams]="runQuery()" (click)="rememberPosition()"></a>
         </li>
       }

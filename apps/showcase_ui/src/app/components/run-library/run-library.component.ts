@@ -51,6 +51,7 @@ import {
 import { runStatusView, sessionStatusView } from '../../utils/run-status.util';
 import { classifySearch } from '../../utils/run-search.util';
 import { runTitle } from '../../utils/run-title.util';
+import { sessionRows } from '../../utils/session-rows.util';
 
 @Component({
   selector: 'app-run-library',
@@ -71,7 +72,7 @@ export class RunLibraryComponent implements OnChanges {
   private readonly injector = inject(Injector);
   private readonly hostElement = inject<ElementRef<HTMLElement>>(ElementRef);
 
-  public readonly strings = RUN_STRINGS;
+  public readonly strings = { ...RUN_STRINGS, title: 'Sessions' };
   public readonly statusOptions = STATUS_FILTERS.map((value) => ({ value, label: value === 'completed' ? 'Completed' : runStatusView(value).label }));
   public readonly datePresets = DATE_PRESETS;
   public readonly filterDefinitions = RUN_FILTER_DEFINITIONS;
@@ -131,7 +132,7 @@ export class RunLibraryComponent implements OnChanges {
   public readonly devices = signal<RegistryDevice[]>([]);
 
   public readonly queueRuns = computed(() => {
-    const queue = new Map(this.rows().filter((run) => runStatusView(run.status).active).map((run) => [run.session_id, run]));
+    const queue = new Map(sessionRows(this.rows()).filter((run) => runStatusView(run.status).active).map((run) => [run.session_id, run]));
     if (this.scope() === 'mine' || this.workspace()) {
       for (const session of this.sessions()) {
         const status = sessionStatusView(session.status, session.session_id === this.liveSessionId() ? this.liveStatus() : null);
@@ -158,7 +159,7 @@ export class RunLibraryComponent implements OnChanges {
     const today = new Date();
     const yesterday = new Date(today);
     yesterday.setDate(yesterday.getDate() - 1);
-    for (const run of this.rows()) {
+    for (const run of sessionRows(this.rows())) {
       if (runStatusView(run.status).active) continue;
       const date = run.start_time === null ? null : new Date(run.start_time * 1000);
       const key = date?.toDateString() ?? 'unknown';
@@ -251,10 +252,10 @@ export class RunLibraryComponent implements OnChanges {
       .get(intent.id)
       .pipe(takeUntilDestroyed(this.destroyRef))
       .subscribe({
-        next: (run) => void this.router.navigate(['/runs', run.session_id], { queryParams: this.runQuery() }),
+        next: (run) => void this.router.navigate(['/sessions', run.chat_session_id ?? run.session_id], { queryParams: this.runQuery() }),
         error: (error: HttpErrorResponse) => {
           // 409 and 410 are answers the viewer can explain; anything else may be a word that looks like an id.
-          if (error.status === 409 || error.status === 410) void this.router.navigate(['/runs', intent.id], { queryParams: this.runQuery() });
+          if (error.status === 409 || error.status === 410) void this.router.navigate(['/sessions', intent.id], { queryParams: this.runQuery() });
           else this.apply({ q: intent.id });
         }
       });
@@ -507,7 +508,7 @@ export class RunLibraryComponent implements OnChanges {
   /** The open run's id may be a short prefix of the row's id. */
   public isOpen(run: RunSummary): boolean {
     const open = this.openRunId() ?? (this.workspace() ? this.selectedRunId() : null);
-    return !!open && run.session_id.startsWith(open);
+    return !!open && (run.chat_session_id ?? run.session_id).startsWith(open);
   }
 
   public trackRun(_: number, run: RunSummary): string {

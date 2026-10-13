@@ -127,20 +127,20 @@ describe('Workspace review mode', () => {
 
   for (const width of [1440, 1200, 1024, 1023, 800, 390]) {
     it(`shows list and detail on desktop, only the route's pane below 1024 px at ${width}px`, async () => {
-      for (const route of ['/runs', `/runs/${ID}`]) {
+      for (const route of ['/sessions', `/sessions/${ID}`]) {
         await go(route);
         atWidth(width, frame => {
           const frameDocument = frame.contentDocument!;
           const list = frameDocument.querySelector<HTMLElement>('.run-list-pane')!;
           const detail = frameDocument.querySelector<HTMLElement>('.detail-pane')!;
-          const showsList = width >= 1024 || route === '/runs';
-          const showsDetail = width >= 1024 || route !== '/runs';
+          const showsList = width >= 1024 || route === '/sessions';
+          const showsDetail = width >= 1024 || route !== '/sessions';
           expect(frame.contentWindow!.getComputedStyle(list).display === 'none').toBe(!showsList);
           expect(frame.contentWindow!.getComputedStyle(detail).display === 'none').toBe(!showsDetail);
           if (width >= 1024) {
             expect(list.getBoundingClientRect().width).toBe(360);
             expect(list.getBoundingClientRect().right).toBeCloseTo(detail.getBoundingClientRect().left, 0);
-          } else if (route === '/runs') {
+          } else if (route === '/sessions') {
             const navClearance = parseFloat(frame.contentWindow!.getComputedStyle(frameDocument.documentElement).getPropertyValue('--nav-clearance')) || 88;
             const firstControl = list.querySelector<HTMLButtonElement>('.owner-tabs button')!;
             expect(firstControl.getBoundingClientRect().top).toBeGreaterThanOrEqual(navClearance);
@@ -153,14 +153,14 @@ describe('Workspace review mode', () => {
     });
   }
 
-  it('shows the run list beside the shared RunView and new-task box on /workspace', async () => {
-    await go('/workspace');
-    expect(q('app-run-view')).not.toBeNull();
+  it('shows the run list beside the shared RunView and new-task box on /sessions/new', async () => {
+    await go('/sessions/new');
+    expect(q('app-run-chat')).not.toBeNull();
     expect(q('textarea.composer-input')).not.toBeNull();
     expect(q('.workspace-container.review-mode')).toBeNull();
     expect(q('.resizer, .right-panel, app-chat-interface')).toBeNull();
     expect(q('.run-list-pane app-run-library')).not.toBeNull();
-    expect(q('.detail-pane app-run-view')).not.toBeNull();
+    expect(q('.detail-pane app-run-chat')).not.toBeNull();
   });
 
   for (const status of ['pending', 'running'] as const) {
@@ -175,7 +175,7 @@ describe('Workspace review mode', () => {
       (agent.selectSession as jasmine.Spy).and.callFake((sessionId: string) => {
         liveSession.set(sessions().find(session => session.session_id === sessionId) ?? null);
       });
-      await go('/workspace');
+      await go('/sessions/new');
       const workspace = q('app-workspace');
       const row = Array.from(root.querySelectorAll<HTMLElement>('.queue-row .run-row'))
         .find(item => item.textContent?.includes('Switch to selected Queue run'))!;
@@ -183,27 +183,27 @@ describe('Workspace review mode', () => {
       await harness.fixture.whenStable();
       harness.detectChanges();
 
-      expect(TestBed.inject(Router).url).toBe('/workspace');
-      expect(q('app-workspace')).toBe(workspace);
-      expect(q('.workspace-container.review-mode')).toBeNull();
-      expect(agent.selectSession).toHaveBeenCalledOnceWith(selectedId, true);
-      expect(agent.currentSessionId()).toBe(selectedId);
-      expect(liveSession()?.session_id).toBe(selectedId);
+      expect(TestBed.inject(Router).url).toBe(`/sessions/${selectedId}`);
+      expect(q('app-workspace')).not.toBe(workspace);
+      expect(q('.workspace-container.review-mode')).not.toBeNull();
+      expect(agent.selectSession).not.toHaveBeenCalled();
+      expect(agent.currentSessionId()).toBe(ID);
+      expect(liveSession()?.session_id).toBe(ID);
       expect(agent.runTask).not.toHaveBeenCalled();
-      expect(row.tagName).toBe('BUTTON');
-      expect(row.getAttribute('aria-current')).toBe('page');
+      expect(row.tagName).toBe('A');
+      const current = q('.queue-row .run-row[aria-current="page"]')!;
       atWidth(1440, () => {
-        expect(row.getBoundingClientRect().width).toBeGreaterThanOrEqual(44);
-        expect(row.getBoundingClientRect().height).toBe(56);
+        expect(current.getBoundingClientRect().width).toBeGreaterThanOrEqual(44);
+        expect(current.getBoundingClientRect().height).toBe(56);
       });
     });
   }
 
-  it('shows a single run list and the empty detail state without the live new-task box on /runs', async () => {
-    await go('/runs');
+  it('shows a single run list and the empty detail state without the live new-task box on /sessions', async () => {
+    await go('/sessions');
     expect(q('.workspace-container.review-mode')).not.toBeNull();
     expect(root.querySelectorAll('app-run-library').length).toBe(1);
-    expect(q('.detail-empty')?.textContent?.trim()).toBe('Select a run to see its steps.');
+    expect(q('.detail-empty')?.textContent?.trim()).toBe('Select a session or start a new run.');
     expect(q('.detail-empty')?.getAttribute('role')).toBe('status');
     expect(q('.right-panel')).toBeNull();
     expect(q('app-agent-stream')).toBeNull();
@@ -226,7 +226,7 @@ describe('Workspace review mode', () => {
         device_ref: item.device_serial ? { host_id: null, serial: item.device_serial } : null, requested_by: null, pinned: false, recordings: []
       })), next_cursor: null, warnings: []
     }));
-    await go('/workspace');
+    await go('/sessions/new');
     const workspace = q('app-workspace');
     const requests = runs.list.calls.count();
     expect(q('app-run-library .date-group a.run-row')).toBeNull();
@@ -247,7 +247,7 @@ describe('Workspace review mode', () => {
   });
 
   it('passes team review restrictions to the chat session', async () => {
-    await go(`/runs/${ID}?scope=everyone&review=1`);
+    await go(`/sessions/${ID}?scope=everyone&review=1`);
     const view = harness.fixture.debugElement.query(By.directive(RunChatComponent)).componentInstance as RunChatComponent;
     expect(view.readOnly()).toBeTrue();
     expect(view.mode()).toBe('review');
@@ -255,33 +255,33 @@ describe('Workspace review mode', () => {
     expect(q('.run-list-pane app-run-library.compact')).not.toBeNull();
   });
 
-  it('shows the run viewer for the id in the URL on /runs/:id', async () => {
-    await go(`/runs/${ID}`);
+  it('shows the run viewer for the id in the URL on /sessions/:id', async () => {
+    await go(`/sessions/${ID}`);
     expect(q('app-run-chat')).not.toBeNull();
     expect(q('.detail-pane app-run-library, .detail-empty')).toBeNull();
     expect(q('.run-list-pane app-run-library.compact')).not.toBeNull();
     expect(runs.get).toHaveBeenCalledWith(ID);
   });
 
-  it('updates the viewer when a reused /runs/:id route changes, then restores empty detail on /runs', async () => {
-    await go(`/runs/${ID}?scope=everyone`);
+  it('updates the viewer when a reused /sessions/:id route changes, then restores empty detail on /sessions', async () => {
+    await go(`/sessions/${ID}?scope=everyone`);
     const workspace = harness.fixture.debugElement.query(By.directive(WorkspaceComponent)).componentInstance;
-    await go('/runs/other-run');
+    await go('/sessions/other-run');
     expect(harness.fixture.debugElement.query(By.directive(WorkspaceComponent)).componentInstance).toBe(workspace);
     const view = harness.fixture.debugElement.query(By.directive(RunChatComponent)).componentInstance as RunChatComponent;
     expect(view.runId()).toBe('other-run');
     expect(view.readOnly()).toBeFalse();
     expect(q('.workspace-container.has-run')).not.toBeNull();
-    await go('/runs');
+    await go('/sessions');
     expect(q('app-run-chat, .workspace-container.has-run')).toBeNull();
-    expect(q('.detail-empty')?.textContent?.trim()).toBe('Select a run to see its steps.');
+    expect(q('.detail-empty')?.textContent?.trim()).toBe('Select a session or start a new run.');
   });
 
   it('has no decorative waves or glass in the live dock or in review mode', async () => {
-    await go('/workspace');
+    await go('/sessions/new');
     expect(q('.liquid-wave, .wave-glow-ambient, .dock-wave-container')).toBeNull();
     expect(getComputedStyle(q('.composer-card')!).backdropFilter).toBe('none');
-    await go('/runs');
+    await go('/sessions');
     expect(q('.liquid-wave, .wave-glow-ambient, .dock-wave-container')).toBeNull();
   });
 
@@ -298,41 +298,41 @@ describe('Workspace review mode', () => {
     });
 
     it('keeps the filters and scroll that Back to runs returns to, and lists the same filtered runs', async () => {
-      await go('/runs?q=login&status=failed&scroll=300');
+      await go('/sessions?q=login&status=failed&scroll=300');
       expect(runs.lastLibraryQuery()).toEqual(RETURN);
-      await go(`/runs/${ID}`); // a row link from /runs carries no list state
+      await go(`/sessions/${ID}`); // a row link from /sessions carries no list state
       expect(runs.lastLibraryQuery()).toEqual(RETURN);
       expect(runs.list.calls.mostRecent().args[0]).toEqual(jasmine.objectContaining({ q: 'login', status: 'failed' }));
       const back = (q('app-run-view a.back-to-runs') ?? q('a.back-to-runs')) as HTMLAnchorElement | null;
-      if (back) expect(back.getAttribute('href')).toBe('/runs?q=login&status=failed&scroll=300');
+      if (back) expect(back.getAttribute('href')).toBe('/sessions?q=login&status=failed&scroll=300');
     });
 
     it('keeps them after choosing another run in the list beside the open one', async () => {
-      await go('/runs?q=login&status=failed&scroll=300');
-      await go(`/runs/${ID}`);
+      await go('/sessions?q=login&status=failed&scroll=300');
+      await go(`/sessions/${ID}`);
       const next = Array.from(root.querySelectorAll<HTMLAnchorElement>('.run-list-pane a.run-row')).find((a) => a.getAttribute('href')!.includes(OTHER))!;
       expect(next.getAttribute('href')).toContain('q=login');
       next.click();
-      await go(`/runs/${OTHER}?q=login&status=failed`);
+      await go(`/sessions/${OTHER}?q=login&status=failed`);
       expect(runs.lastLibraryQuery()).toEqual(RETURN);
     });
   });
 
   it('omits the mouse-only splitter in review mode', async () => {
-    await go('/runs');
+    await go('/sessions');
     expect(q('.resizer')).toBeNull();
   });
 
   it('opening history never selects a session or changes the device for the next run', async () => {
     localStorage.setItem('artemis.selected_device_serial', 'R58M123');
-    await go('/runs');
-    await go(`/runs/${ID}`);
+    await go('/sessions');
+    await go(`/sessions/${ID}`);
     expect(TestBed.inject(AgentService).selectSession).not.toHaveBeenCalled();
     expect(localStorage.getItem('artemis.selected_device_serial')).toBe('R58M123');
   });
 
   it('prefills the dock with a prompt handed over from the viewer', async () => {
-    await go('/workspace', { draftPrompt: 'Log in and open settings' });
+    await go('/sessions/new', { draftPrompt: 'Log in and open settings' });
     expect((q('textarea.composer-input') as HTMLTextAreaElement).value).toBe('Log in and open settings');
   });
 
@@ -347,7 +347,7 @@ describe('Workspace review mode', () => {
         pinned: false, recordings: []
       }));
       runs.steps.and.returnValue(of([]));
-      await go('/workspace', { newSessionDraft: true });
+      await go('/sessions/new', { newSessionDraft: true });
 
       expect(TestBed.inject(WorkspacePhoneService).runInterrupted()).toBeTrue();
       const banners = Array.from(root.querySelectorAll<HTMLElement>('.composer app-interrupted-banner .banner'))
@@ -372,13 +372,7 @@ describe('Workspace review mode', () => {
 
       const composer = q('textarea.composer-input') as HTMLTextAreaElement;
       expect(composer.value).toBe('');
-      const newSession = q('app-run-chat .chat-header button') as HTMLButtonElement;
-      expect(newSession).not.toBeNull();
-      newSession.click();
-      harness.fixture.detectChanges();
-      await harness.fixture.whenStable();
-      harness.fixture.detectChanges();
-      expect(composer.value).toBe('');
+      expect(q('app-run-chat .chat-header')).toBeNull();
       expect(harness.fixture.debugElement.query(By.directive(WorkspaceComponent)).componentInstance.newSessionDraft()).toBeTrue();
     });
   }

@@ -134,7 +134,7 @@ try {
     assert.equal(layout.labels, true, `${width}: labels stay visible`);
     assert.match(layout.activeBackgroundImage, /linear-gradient/, `${width}: active nav selection bar`);
     if (width >= 800) {
-      assert.equal(layout.nav.width, width < 1200 ? 72 : 224, `${width}: sidebar/rail width`);
+      assert.equal(layout.nav.width, 224, `${width}: pinned expanded sidebar width`);
       assert.equal(layout.page.left, layout.nav.width, `${width}: content clears sidebar/rail`);
       assert.equal(layout.clearance, 0, `${width}: no stale floating-nav clearance`);
     } else {
@@ -194,16 +194,16 @@ try {
     assert.deepEqual(await evaluate(`Array.from(document.querySelectorAll('[data-shell-pane]'))
       .filter(element => getComputedStyle(element).display !== 'none').map(element => element.dataset.shellPane)`),
       width < 1024 ? ['detail'] : ['list', 'detail'], `${width}: single-pane hook`);
-    await click('a[aria-label="Workspace"]');
-    assert.equal(await waitForPath('/workspace'), '/workspace', `${width}: native Workspace navigation`);
+    await click('a[aria-label="Sessions"]');
+    assert.equal(await waitForPath('/sessions'), '/sessions', `${width}: native Sessions navigation`);
     assert.equal(await evaluate(`document.querySelector('.app-page').dataset.activePane`), 'list', `${width}: nav resets pane`);
     await evaluate(`document.querySelectorAll('[data-shell-pane]').forEach(element => element.remove())`);
     await evaluate(`ng.getComponent(document.querySelector('app-root')).shell.activePane.set('detail')`);
-    await click('a[aria-label="Runs"]');
-    assert.equal(await waitForPath('/runs'), '/runs', `${width}: native Runs navigation`);
-    assert.equal(await evaluate(`document.querySelector('.app-page').dataset.activePane`), 'list', `${width}: Runs resets pane`);
-    await click('a[aria-label="Workspace"]');
-    assert.equal(await waitForPath('/workspace'), '/workspace', `${width}: native Workspace navigation`);
+    await click('a[aria-label="Sessions"]');
+    assert.equal(await waitForPath('/sessions'), '/sessions', `${width}: native Sessions navigation`);
+    assert.equal(await evaluate(`document.querySelector('.app-page').dataset.activePane`), 'list', `${width}: Sessions resets pane`);
+    await click('.new-run');
+    assert.equal(await waitForPath('/sessions/new'), '/sessions/new', `${width}: new-session navigation`);
     if (process.env.SHOTS && [1440, 1199, 1024, 800, 799, 390].includes(width)) {
       const { data } = await send('Page.captureScreenshot', { format: 'png' });
       writeFileSync(path.join(process.env.SHOTS, `shell-${width}.png`), Buffer.from(data, 'base64'));

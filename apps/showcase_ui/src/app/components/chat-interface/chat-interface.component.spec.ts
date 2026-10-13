@@ -143,14 +143,13 @@ describe('ChatInterfaceComponent device chip', () => {
     expect(queue?.textContent).not.toContain('Past prompt');
   });
 
-  it('uses the short title in queue rows and their Stop controls', () => {
+  it('uses the short title in queue rows without duplicating Stop controls', () => {
     sessions.set([{ ...session('emulator-5554'), initial_goal: '\n## **Open** _Settings_\nCheck every toggle.' }]);
     const fixture = TestBed.createComponent(ChatInterfaceComponent);
     fixture.detectChanges();
     const root = fixture.nativeElement as HTMLElement;
     expect(root.querySelector('.task-goal')?.textContent?.trim()).toBe('Open Settings');
-    expect(root.querySelector('.queue-stop')?.getAttribute('title')).toBe('Stop run: Open Settings');
-    expect(root.querySelector('.queue-stop')?.getAttribute('aria-label')).toBe('Stop run: Open Settings');
+    expect(root.querySelector('.queue-stop')).toBeNull();
   });
 
   it('renders the list-owned empty state without an outline', () => {
@@ -224,7 +223,7 @@ describe('ChatInterfaceComponent device chip', () => {
       expect(style.fontFamily).toContain('JetBrains Mono');
       expect(style.fontVariantNumeric).toBe('tabular-nums');
     }
-    const box = root.querySelector('.queue-stop')!.getBoundingClientRect();
+    const box = root.querySelector('.queue-row .run-row')!.getBoundingClientRect();
     expect(box.width).toBeGreaterThanOrEqual(44);
     expect(box.height).toBeGreaterThanOrEqual(44);
   });

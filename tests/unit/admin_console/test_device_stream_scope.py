@@ -129,3 +129,24 @@ async def test_an_unscoped_listener_still_gets_every_frame(monkeypatch):
     monkeypatch.setattr(service, "_capture_loop", AsyncMock())
 
     assert await _frames(service, None, None)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("email", [QA1, ADMIN])
+async def test_requested_phone_never_receives_another_phone(cloudflare, monkeypatch, email):
+    async def frames(may_use):
+        for serial in (SHARED, QA1_PHONE):
+            if may_use(serial):
+                yield serial.encode()
+
+    monkeypatch.setattr(device_stream_service, "mjpeg_frame_generator", frames)
+    async with AsyncClient(
+        transport=ASGITransport(app=app, client=("203.0.113.9", 51000)), base_url="http://localhost"
+    ) as client:
+        response = await client.get(
+            "/api/stream/device-live",
+            params={"serial": SHARED},
+            headers={"Cf-Access-Jwt-Assertion": email},
+        )
+    assert response.status_code == 200
+    assert response.content == SHARED.encode()
