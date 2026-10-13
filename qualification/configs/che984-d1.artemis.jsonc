@@ -1,0 +1,13 @@
+{
+  "default": {
+    "provider": "openai",
+    "model": "gpt-6.1-sol",
+    "temperature": 0,
+    "fallback_enabled": false,
+    "fallback": {
+      "provider": "openai",
+      "model": "gpt-6.1-sol",
+      "temperature": 0
+    }
+  }
+}
