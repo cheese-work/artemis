@@ -132,7 +132,7 @@ describe('RunLibraryComponent', () => {
   describe('rows', () => {
     it('renders 56px rows with an execution word, package and mono time, never a Passed chip', async () => {
       await open('/sessions', of(page([run({ app_package: 'com.example.shop' })])));
-      expect(q('.run-meta')!.textContent!.trim()).toBe('Completed · com.example.shop');
+      expect(q('.run-meta')!.textContent!.trim()).toBe('Completed · com.example.shop · emulator-5554');
       expect(q('.run-row')!.textContent).not.toContain('Passed');
       expect(q('.run-icon')!.classList).toContain('tone-neutral');
       expect(q('.run-icon')!.classList).not.toContain('tone-ok');
