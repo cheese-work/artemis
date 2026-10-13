@@ -31,6 +31,7 @@ export class RunChatComponent {
   private readonly historyElement = viewChild<ElementRef<HTMLElement>>('history');
   private followLatest = true;
   private previousRunId = '';
+  private previousInputRequest = '';
   public readonly runId = input('');
   public readonly readOnly = input(false);
   public readonly compose = input(true);
@@ -52,6 +53,12 @@ export class RunChatComponent {
   public readonly latest = computed(() => this.chat()?.turns.at(-1));
   public readonly active = computed(() => ['queued', 'running', 'paused'].includes(this.latest()?.status ?? ''));
   public readonly paused = computed(() => this.latest()?.status === 'paused');
+  public readonly inputRequest = computed(() => {
+    if (!this.active()) return null;
+    const requests = (this.chat()?.messages ?? []).filter(message => message.turn_id === this.latest()?.turn_id && message.kind === 'input_request');
+    const request = requests.at(-1);
+    return request?.payload?.['state'] === 'pending' && request.payload['expires_at'] * 1000 > Date.now() ? request : null;
+  });
   public readonly canWrite = computed(() => !this.readOnly() && !this.rootRun()?.read_only);
   public readonly title = computed(() => this.chat()?.title || this.rootRun()?.chat_title || runTitle(this.rootRun()?.chat_prompt ?? this.rootRun()?.prompt));
   public readonly timeline = computed(() => (this.chat()?.timeline ?? this.chat()?.messages ?? [])
@@ -64,9 +71,17 @@ export class RunChatComponent {
     return tests?.failed ? 'Fail' : tests?.inconclusive || tests?.unchecked || !tests?.passed ? 'Inconclusive' : 'Pass';
   });
   public draft = '';
+  public secretDraft = '';
   private retry: { content: string; id: string } | null = null;
 
   constructor() {
+    effect(() => {
+      const identity = `${this.runId()}:${this.canWrite()}:${this.inputRequest()?.payload?.['request_id'] ?? ''}`;
+      if (identity !== this.previousInputRequest) {
+        this.previousInputRequest = identity;
+        this.secretDraft = '';
+      }
+    });
     effect((onCleanup) => {
       const id = this.runId();
       this.revision();
@@ -135,13 +150,36 @@ export class RunChatComponent {
   public send(): void {
     const chat = this.chat();
     const content = this.draft.trim();
-    if (!chat || !content || !this.canWrite() || this.sending()) return;
+    if (!chat || !content || !this.canWrite() || this.sending() || this.inputRequest()) return;
     this.retry = this.retry?.content === content ? this.retry : { content, id: crypto.randomUUID() };
     this.sending.set(true);
     this.error.set(null);
     this.api.sendChat(chat.session_id, content, this.retry.id).subscribe({
       next: () => { if (this.chat()?.session_id !== chat.session_id) return; this.draft = ''; this.retry = null; this.sending.set(false); this.refresh(chat.session_id); },
       error: (error) => { if (this.chat()?.session_id !== chat.session_id) return; if (error.status >= 400 && error.status < 500) this.retry = null; this.sending.set(false); this.reportError(error); }
+    });
+  }
+
+  public sendInput(): void {
+    const chat = this.chat();
+    const request = this.inputRequest();
+    const value = this.secretDraft;
+    if (!chat || !request || !value || value.length > 4096 || !this.canWrite() || this.sending()) return;
+    this.secretDraft = '';
+    this.sending.set(true);
+    this.error.set(null);
+    this.api.sendInput(chat.session_id, request.payload!['request_id'], value).subscribe({
+      next: () => {
+        if (this.chat()?.session_id !== chat.session_id) return;
+        this.sending.set(false);
+        this.refresh(chat.session_id);
+      },
+      error: () => {
+        if (this.chat()?.session_id !== chat.session_id) return;
+        this.secretDraft = '';
+        this.sending.set(false);
+        this.error.set('Input was not accepted. The request may have expired. Ask the agent for a new request.');
+      }
     });
   }
 

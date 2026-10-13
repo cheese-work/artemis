@@ -15,6 +15,7 @@ h2 { display: flex; align-items: center; gap: var(--space-sm); font-size: var(--
 summary { min-height: 44px; padding: var(--space-md); cursor: pointer; }
 .chat-composer { flex: none; border-top: 1px solid var(--color-rule); background: var(--color-surface); padding: var(--space-md) var(--space-lg); }
 label { display: block; font-weight: 600; margin-bottom: var(--space-sm); }
+.chat-composer input { width: 100%; min-height: 44px; padding: var(--space-sm); font: inherit; color: var(--color-text); background: var(--color-bg); border: 1px solid var(--color-border); border-radius: var(--radius-md); }
 textarea { display: block; width: 100%; min-height: 44px; max-height: 40vh; padding: var(--space-sm); resize: none; overflow-y: auto; border: 1px solid var(--color-border); border-radius: var(--radius-md); background: var(--color-surface); color: var(--color-text); font: inherit; }
 .composer-actions { display: flex; align-items: center; gap: var(--space-sm); margin-top: var(--space-sm); }
 .composer-actions span { flex: 1; }

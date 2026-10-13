@@ -639,6 +639,13 @@ class UnifiedMobileController:
         max_duration_seconds: int = DEFAULT_MAX_DURATION_SECONDS,
     ) -> VideoRecordingResult:
         """Start screen recording on Android device using scrcpy."""
+        if (
+            getattr(getattr(self, "ctx", None), "private_input_used", False) is True
+            or getattr(getattr(self, "_driver", None), "_private_input_used", False) is True
+        ):
+            return VideoRecordingResult(
+                success=False, message="Recording stays off after private input in this turn."
+            )
         self._segment_cache.clear()
         device_id = self._get_device_id()
 

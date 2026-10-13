@@ -41,10 +41,11 @@ describe('RunChatComponent', () => {
   }));
 
   beforeEach(() => {
-    api = jasmine.createSpyObj<RunsService>('RunsService', ['get', 'chat', 'sendChat', 'controlChat', 'renameChat']);
+    api = jasmine.createSpyObj<RunsService>('RunsService', ['get', 'chat', 'sendChat', 'controlChat', 'renameChat', 'sendInput']);
     api.get.and.returnValue(of({ session_id: 'root', prompt: 'Check login', read_only: false } as RunSummary));
     api.chat.and.returnValue(of(thread));
     api.sendChat.and.returnValue(of(thread.messages[0]));
+    api.sendInput.and.returnValue(of({ accepted: true }));
     api.controlChat.and.returnValue(of(thread.messages[0]));
     api.renameChat.and.returnValue(of({ ...thread, title: 'Login checks' }));
     const technicalDetails = signal(false);
@@ -56,6 +57,70 @@ describe('RunChatComponent', () => {
         add: { schemas: [CUSTOM_ELEMENTS_SCHEMA] }
       });
   });
+
+  function pendingInput(): ChatSession {
+    return { ...thread, messages: [...thread.messages, {
+      ...thread.messages[1], sequence: 3, kind: 'input_request', content: 'Enter password',
+      payload: { request_id: 'request-1', state: 'pending', secret: true, expires_at: Date.now() / 1000 + 180 }
+    }] };
+  }
+
+  it('uses a masked field and sends untrimmed input only to the private endpoint', fakeAsync(() => {
+    api.chat.and.returnValue(of(pendingInput()));
+    const fixture = TestBed.createComponent(RunChatComponent);
+    fixture.componentRef.setInput('runId', 'root');
+    fixture.detectChanges(); tick(0); fixture.detectChanges();
+    const input = fixture.nativeElement.querySelector('#session-input');
+    expect(input.type).toBe('password');
+    expect(input.autocomplete).toBe('off');
+    expect(fixture.nativeElement.querySelector('#session-message')).toBeNull();
+    fixture.componentInstance.secretDraft = '  PRIVATE-SENTINEL  ';
+    fixture.componentInstance.draft = 'Do not send';
+    fixture.componentInstance.send();
+    fixture.componentInstance.sendInput();
+    expect(api.sendInput).toHaveBeenCalledWith('root', 'request-1', '  PRIVATE-SENTINEL  ');
+    expect(api.sendChat).not.toHaveBeenCalled();
+    expect(fixture.componentInstance.secretDraft).toBe('');
+    expect(JSON.stringify(fixture.componentInstance.chat())).not.toContain('PRIVATE-SENTINEL');
+    fixture.destroy();
+  }));
+
+  it('preserves input across polls and clears it on a new request or session', fakeAsync(() => {
+    const pending = pendingInput();
+    api.chat.and.returnValue(of(pending));
+    const fixture = TestBed.createComponent(RunChatComponent);
+    fixture.componentRef.setInput('runId', 'root');
+    fixture.detectChanges(); tick(0); fixture.detectChanges();
+    fixture.componentInstance.secretDraft = 'PRIVATE-SENTINEL';
+    tick(1000); fixture.detectChanges();
+    expect(fixture.componentInstance.secretDraft).toBe('PRIVATE-SENTINEL');
+    fixture.componentInstance.chat.set({ ...pending, messages: pending.messages.map(message => message.kind === 'input_request' ? { ...message, payload: { ...message.payload, request_id: 'request-2' } } : message) });
+    fixture.detectChanges();
+    expect(fixture.componentInstance.secretDraft).toBe('');
+    fixture.componentInstance.secretDraft = 'PRIVATE-SENTINEL';
+    fixture.componentRef.setInput('runId', 'other'); fixture.detectChanges();
+    expect(fixture.componentInstance.secretDraft).toBe('');
+    fixture.destroy();
+  }));
+
+  it('does not retain or echo a rejected input and prevents shared-view submission', fakeAsync(() => {
+    api.chat.and.returnValue(of(pendingInput()));
+    api.sendInput.and.returnValue(throwError(() => new Error('PRIVATE-SENTINEL')));
+    const fixture = TestBed.createComponent(RunChatComponent);
+    fixture.componentRef.setInput('runId', 'root');
+    fixture.detectChanges(); tick(0); fixture.detectChanges();
+    fixture.componentInstance.secretDraft = 'PRIVATE-SENTINEL';
+    fixture.componentInstance.sendInput();
+    expect(fixture.componentInstance.secretDraft).toBe('');
+    expect(fixture.componentInstance.error()).not.toContain('PRIVATE-SENTINEL');
+    api.sendInput.calls.reset();
+    fixture.componentRef.setInput('readOnly', true); fixture.detectChanges();
+    fixture.componentInstance.secretDraft = 'PRIVATE-SENTINEL';
+    fixture.componentInstance.sendInput();
+    expect(api.sendInput).not.toHaveBeenCalled();
+    expect(fixture.nativeElement.querySelector('#session-input')).toBeNull();
+    fixture.destroy();
+  }));
 
   function render() {
     const fixture = TestBed.createComponent(RunChatComponent);

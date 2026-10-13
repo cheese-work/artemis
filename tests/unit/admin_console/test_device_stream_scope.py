@@ -132,6 +132,29 @@ async def test_an_unscoped_listener_still_gets_every_frame(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_live_stream_never_replays_a_cached_frame_during_private_input(monkeypatch):
+    service = DeviceStreamService()
+    monkeypatch.setattr(service, "_capture_loop", AsyncMock())
+    monkeypatch.setattr(
+        "apps.admin_console.services.device_stream_service.private_input_active",
+        lambda serial: True,
+    )
+    assert await _frames(service, lambda serial: True, QA1_PHONE, count_seconds=0.02) == []
+    assert service._latest_frame is None
+
+
+@pytest.mark.asyncio
+async def test_an_unknown_serial_is_also_suppressed_for_private_input(monkeypatch):
+    service = DeviceStreamService()
+    monkeypatch.setattr(service, "_capture_loop", AsyncMock())
+    monkeypatch.setattr(
+        "apps.admin_console.services.device_stream_service.private_input_active",
+        lambda serial: serial is None,
+    )
+    assert await _frames(service, None, None, count_seconds=0.02) == []
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("email", [QA1, ADMIN])
 async def test_requested_phone_never_receives_another_phone(cloudflare, monkeypatch, email):
     async def frames(may_use):

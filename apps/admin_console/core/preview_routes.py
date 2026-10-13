@@ -94,6 +94,7 @@ SYNTHETIC = frozenset(
 
 DISABLED = frozenset(
     {
+        "POST /api/chats/{session_id}/input/{request_id}",
         "PATCH /api/chats/{session_id}/title",
         "POST /api/chats/{session_id}/messages",
         "POST /api/chats/{session_id}/pause",

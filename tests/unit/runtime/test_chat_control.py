@@ -139,6 +139,8 @@ async def test_bad_detector_output_pauses_instead_of_executing(store):
 
 @pytest.mark.asyncio
 async def test_real_guidance_hook_uses_the_runs_operator_model(store, monkeypatch):
+    from artemis.runtime.chat_input import INPUT_GUIDE
+
     monkeypatch.setenv("ARTEMIS_CHAT_SESSION_ID", "run")
     monkeypatch.setenv("ARTEMIS_SESSION_ID", "run")
     monkeypatch.delenv("ARTEMIS_CHAT_TURN_STARTED", raising=False)
@@ -157,7 +159,7 @@ async def test_real_guidance_hook_uses_the_runs_operator_model(store, monkeypatc
 
     monkeypatch.setattr("artemis.services.llm.get_llm", model)
     context = SimpleNamespace(data_engine=None)
-    assert await read_chat_guidance(context, "Check login") == "Check login"
+    assert await read_chat_guidance(context, "Check login") == "Check login\n\n" + INPUT_GUIDE
     store.send("run", "Use the visible button", "steer")
     assert await read_chat_guidance(context, "Check login") == "Use the visible button"
     assert calls == [(context, "operator")]

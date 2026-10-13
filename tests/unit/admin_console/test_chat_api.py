@@ -212,3 +212,61 @@ async def test_unreadable_report_does_not_break_completed_chat(qa, chat, library
     response = await qa.get(f"/api/chats/{chat}")
     assert response.status_code == 200
     assert response.json()["verdict"]["report"] is None
+
+
+@pytest.mark.asyncio
+async def test_secret_submission_bypasses_chat_storage_and_is_single_use(
+    qa, qa2, chat, library, monkeypatch, tmp_path, caplog
+):
+    import asyncio
+    import tempfile
+    from artemis.runtime.chat_input import request_input
+    from tests.unit.runtime.test_chat_input import pending_request
+
+    store = ChatStore(library.db)
+    sent = []
+
+    async def device_input(value):
+        sent.append(value)
+        return True
+
+    with tempfile.TemporaryDirectory(prefix="chat-http-input-", dir="/tmp") as directory:
+        monkeypatch.setenv("ARTEMIS_INPUT_SOCKET_DIR", directory)
+        task = asyncio.create_task(request_input(store, chat, "Password", device_input))
+        request_id = await pending_request(store, chat)
+        sentinel = "API-SECRET-SENTINEL-8652"
+        try:
+            url = f"/api/chats/{chat}/input/{request_id}"
+            forbidden = await qa2.post(url, json={"value": sentinel})
+            assert forbidden.status_code == 403
+            assert sent == []
+            response = await qa.post(url, json={"value": sentinel})
+            assert response.status_code == 200
+            assert response.json() == {"accepted": True}
+            assert await task == "•••• sent to device"
+            assert sent == [sentinel]
+            replay = await qa.post(url, json={"value": sentinel})
+            assert replay.status_code == 409
+            assert replay.json()["code"] == "input_request_replayed"
+            assert sentinel not in response.text + replay.text + forbidden.text + caplog.text
+            with store.transaction() as connection:
+                assert sentinel not in "\n".join(connection.iterdump())
+            assert all(
+                sentinel.encode() not in path.read_bytes()
+                for path in library.traces.rglob("*")
+                if path.is_file()
+            )
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "body", [[], {"value": 123}, {"value": "x" * 4097}, {"extra": "VALIDATION-SECRET-1902"}]
+)
+async def test_invalid_input_never_echoes_values_in_validation_errors(qa, chat, body):
+    response = await qa.post(f"/api/chats/{chat}/input/invalid", json=body)
+    assert response.status_code == 400
+    assert response.json()["code"] == "input_value_invalid"
+    assert "VALIDATION-SECRET-1902" not in response.text

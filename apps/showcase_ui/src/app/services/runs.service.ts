@@ -20,6 +20,10 @@ export class RunsService {
     return this.http.post<ChatMessage>(`/api/chats/${encodeURIComponent(sessionId)}/messages`, { content, client_id: clientId });
   }
 
+  public sendInput(sessionId: string, requestId: string, value: string): Observable<{ accepted: boolean }> {
+    return this.http.post<{ accepted: boolean }>(`/api/chats/${encodeURIComponent(sessionId)}/input/${encodeURIComponent(requestId)}`, { value });
+  }
+
   public controlChat(sessionId: string, action: 'pause' | 'continue', clientId: string): Observable<ChatMessage> {
     return this.http.post<ChatMessage>(`/api/chats/${encodeURIComponent(sessionId)}/${action}`, { client_id: clientId });
   }

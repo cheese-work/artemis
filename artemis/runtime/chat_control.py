@@ -80,6 +80,7 @@ async def read_chat_guidance(ctx, goal):
         return None
     control = getattr(ctx, "chat_control", None)
     if control is None:
+        from artemis.runtime.chat_input import INPUT_GUIDE
         from langchain_core.messages import HumanMessage, SystemMessage
         from artemis.config import DB_PATH
         from artemis.services.llm import get_llm
@@ -114,6 +115,7 @@ async def read_chat_guidance(ctx, goal):
 
         control = ChatControl(store, turn_id, judge)
         control.started = os.getenv("ARTEMIS_CHAT_TURN_STARTED") == "1"
+        control.input_guide_pending = INPUT_GUIDE
         ctx.chat_control = control
         history = store.get(turn_id)
         ctx.chat_history_pending = (
@@ -122,6 +124,11 @@ async def read_chat_guidance(ctx, goal):
             else None
         )
     guidance = await control.checkpoint()
+    from artemis.runtime.chat_input import read_input_request
+
+    input_guidance = await read_input_request(ctx, control)
+    input_guide = getattr(control, "input_guide_pending", None)
+    control.input_guide_pending = None
     plan = _task_plan(ctx)
     if plan.strip():
         previous = [
@@ -146,7 +153,12 @@ async def read_chat_guidance(ctx, goal):
     return (
         "\n\n".join(
             value
-            for value in (f"Session chat history:\n{history}" if history else None, guidance)
+            for value in (
+                f"Session chat history:\n{history}" if history else None,
+                guidance,
+                input_guidance,
+                input_guide,
+            )
             if value
         )
         or None

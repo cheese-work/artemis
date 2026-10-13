@@ -73,6 +73,18 @@
     @if (error()) { <p class="chat-error" role="alert">{{ error() }}</p> }
     @if (!canWrite()) { <p class="chat-notice">Shared session · read-only</p> }
     @else if (compose()) {
+      @if (inputRequest(); as request) {
+      <form class="chat-composer" (ngSubmit)="sendInput()" autocomplete="off">
+        <label for="session-input">{{ request.content }}</label>
+        <input id="session-input" name="private-input" type="password" [(ngModel)]="secretDraft" maxlength="4096"
+          autocomplete="off" autocapitalize="off" spellcheck="false" [disabled]="sending()" aria-describedby="private-input-notice">
+        <div class="composer-actions">
+          <span id="private-input-notice">Sent only to the device · not added to chat or model context</span>
+          <button type="button" [disabled]="sending()" (click)="stopRun.emit(latest()!.turn_id)">Stop</button>
+          <button type="submit" class="send" [disabled]="!secretDraft || sending()">Send to device</button>
+        </div>
+      </form>
+      } @else {
       <form class="chat-composer" (ngSubmit)="send()">
         <label for="session-message">{{ active() ? 'Message the agent' : 'Continue this session with a new turn' }}</label>
         <textarea id="session-message" name="message" [(ngModel)]="draft" cdkTextareaAutosize cdkAutosizeMinRows="1" cdkAutosizeMaxRows="8"
@@ -87,6 +99,7 @@
           <button type="submit" class="send" [disabled]="!draft.trim() || sending() || !chat()">Send</button>
         </div>
       </form>
+      }
     }
     </div>
     @if (sidebarOpen()) {
