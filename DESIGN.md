@@ -257,6 +257,13 @@ Translucency and `backdrop-filter` are not used. The 28 existing blur surfaces (
 - **The one authored moment:** the verdict word settles when a run finishes (opacity plus a 4px rise, 180ms).
 - `prefers-reduced-motion: reduce` turns all of it off.
 
+## Design Record
+
+Design topics live in `design/<topic>/rev-<n>/` on a draft PR per topic (standard: `standards/general/design-record.md` in `cheese-work/multica-dotfiles`). Merging the design PR is Cheese's approval. The merge SHA is read from GitHub, never written here.
+
+| Topic | Revision | Direction | Design PR | Revision commit |
+|-------|----------|-----------|-----------|-----------------|
+
 ## Decisions Log
 | Date | Decision | Rationale |
 |------|----------|-----------|
