@@ -234,6 +234,8 @@ Translucency and `backdrop-filter` are not used. The 28 existing blur surfaces (
 - **Device lane header:** `device` background, device label, live state on the right (Running, Idle, Needs attention) as icon + word.
 - **Model picker:** labelled "Execution model", default option shows the resolved name ("Default — Sol"); incompatible models stay listed but disabled with a reason; marker + tag next to each name.
 - **Tables:** see Layout. Rows below the data threshold read "Limited data · n runs" at normal contrast. Missing values show "—", never 0 or $0. Intervals are shown as text plus a thin whisker.
+- **Session composer:** a two-line text field on top; below it a toolbar with the session's phone chip (status dot, device label, lock once the session has run) on the left and Pause / Stop / Send on the right. When the phone disconnects, the field is disabled, the chip turns `error` and blinks, and opening it offers Reconnect or the same first prompt on another phone (new session).
+- **Step evidence:** each step row leads with the action, then a post-action thumbnail; thinking is folded and dimmed. The inspector shows Before | After; the Before screenshot carries a marker for the agent's action (tap ring, typed-field box, swipe arrow, hardware-key mark) and a caption naming it. After stays unmarked.
 - **States:** every list, table and panel defines loading (skeleton rows, previous data kept on refresh), empty (what to do next, in one sentence), error (what failed and how to retry), partial (what is missing and why).
 
 ## Do's and Don'ts
@@ -263,6 +265,7 @@ Design topics live in `design/<topic>/rev-<n>/` on a draft PR per topic (standar
 
 | Topic | Revision | Direction | Design PR | Revision commit |
 |-------|----------|-----------|-----------|-----------------|
+| sessions-v2.1 | rev-4 | C — Inspector | #200 | `e8b93218c694f91a983c0933adfc72010b6c0009` |
 
 ## Decisions Log
 | Date | Decision | Rationale |
@@ -278,3 +281,4 @@ Design topics live in `design/<topic>/rev-<n>/` on a draft PR per topic (standar
 | 2026-10-09 | Instrument Sans + General Sans → Inter | Audit #8: dots and package names disappear in Instrument Sans |
 | 2026-10-09 | Top app bar → left sidebar (≥ 1024 px); 48 px top bar + bottom tab bar below 800 px | Audit #7 and #10; Direction B layout |
 | 2026-10-09 | Radius 8/12 → 6/8; UI text 14 → 13 px | Direction B density |
+| 2026-10-13 | Sessions v2.1: direction C (Inspector) rev-4 — action-first step rows, Evidence inspector with marked Before screenshot, two-line composer with the locked phone chip | Cheese picked C on CHE-1601 and approved rev-4 ("approve", 13 Oct 2026, 23:19 ICT) |

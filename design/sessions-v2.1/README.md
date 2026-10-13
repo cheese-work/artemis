@@ -18,4 +18,4 @@ Out of scope (plain bugs, ship separately): the scroll-up bug and the device-lab
 - Issue: [CHE-1601](mention://issue/01a1339d-47b0-70e1-8700-7f6cb4cdcd29) (parent CHE-1594)
 - Pages in scope: `sessions` (timeline, composer), `phones` (new), app shell nav
 - Live baseline: `live/` — Cheese's screenshots of a real session (`cheese-*.png`) and X99 captures of SmartQA `f74f300` at `127.0.0.1:8000` (`*-x99-*.png`, signed-out view)
-- Status: rev-1 posted; Cheese picked C (13 Oct 2026, DM). rev-2 = C with keyboard-focusable step rows, awaiting UX score. Open Design gallery: project `artemis-sessions-v2.1` on C00.
+- Status: selected — approved when PR #200 merges. Cheese picked C (13 Oct 2026, DM) and approved rev-4 on CHE-1601 ("approve", 13 Oct 2026, 23:19 ICT). Selected revision: `rev-4/` at `e8b93218c694f91a983c0933adfc72010b6c0009`. Open Design gallery: project `artemis-sessions-v2.1` on C00.
