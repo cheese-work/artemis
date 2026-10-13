@@ -309,6 +309,7 @@ async def execute_task(
             await agent.init(
                 retry_count=int(os.getenv("ARTEMIS_HEALTH_RETRIES", 5)),
                 retry_wait_seconds=int(os.getenv("ARTEMIS_HEALTH_DELAY", 2)),
+                **({"prewarm_llm": False} if qualification else {}),
             )
 
             task = agent.new_task(goal)

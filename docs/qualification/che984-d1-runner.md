@@ -23,6 +23,11 @@ Checker model instead of the generic Google default. Explicit unapproved
 model overrides fail before Agent initialization. Loaded configuration is
 not mutated.
 
+The D1 profile also disables the SDK's historical Google connection pre-warm
+at `Agent.init`. An ambient Google credential cannot launch a Google ping or
+token-count request through that initializer. Ordinary initialization keeps
+its existing default; only this profile passes `prewarm_llm=False`.
+
 Select `qualification/configs/che984-d1.artemis.jsonc` explicitly through
 `ARTEMIS_ARTEMIS_JSONC`; the config contains no credentials. Supply existing
 approved credentials through the runtime's normal private environment.
@@ -70,6 +75,9 @@ uv run --locked artemis run "$REVIEWED_D1_GOAL" \
 Pin the runner head, Python/uv identity, lockfile hash, installed dependency
 inventory and distribution hashes, model/configuration hash, effective
 options, Android driver/hierarchy backend, AVD image/API/ABI and serial.
+Pin the effective OpenAI `api_base`/`OPENAI_BASE_URL` destination and its
+precedence before admission. Model-name approval does not authorize a new
+endpoint destination.
 Record immutable case/source/APK/package/signer identities and restricted
 artifact destination. Inspect configured tools and endpoints before admission;
 model-route approval does not authorize arbitrary MCP services or traffic.

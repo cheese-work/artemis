@@ -10,6 +10,8 @@ from artemis.interfaces.cli.commands import run as run_module
 from artemis.interfaces.cli.main import app
 from artemis.interfaces.cli.qualification import d1_exit_code, prepare_d1_config
 from artemis.sdk.agent import attach_test_summary
+from artemis.sdk.agent import Agent as NativeAgent
+from artemis.sdk.types.task import AgentProfile
 
 
 @pytest.fixture(autouse=True)
@@ -312,3 +314,46 @@ async def test_d1_cannot_replace_real_local_native_route(monkeypatch, mode):
                 qualification="che984-d1",
             )
     agent.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_d1_real_agent_init_never_prewarms_google_clients(monkeypatch):
+    from pydantic import SecretStr
+
+    monkeypatch.setattr(run_module.settings, "GOOGLE_API_KEY", SecretStr("host-test-not-a-key"))
+    config = (
+        run_module.Builders.AgentConfig.with_default_profile(
+            AgentProfile(name="d1-host-test", llm_config=prepare_d1_config(model_config()))
+        )
+        .for_device("android", "emulator-5554")
+        .build()
+    )
+    agent = NativeAgent(config=config, session_id="d1-host-init")
+    with (
+        patch.object(run_module, "initialize_llm_config", return_value=model_config()),
+        patch.object(run_module, "Agent", return_value=agent),
+        patch.object(run_module, "record_attempt_manifest"),
+        patch.object(run_module, "reconcile_and_store_verdict"),
+        patch.object(agent, "_init_clients"),
+        patch.object(
+            agent, "_get_device_context", new_callable=AsyncMock, return_value=MagicMock()
+        ),
+        patch.object(agent, "run_task", new_callable=AsyncMock, return_value=summary()),
+        patch.object(agent, "clean", new_callable=AsyncMock),
+        patch("artemis.sdk.agent.EndpointTransport.adb_binary", return_value="host-test-adb"),
+        patch("artemis.sdk.agent.publish_startup_progress"),
+        patch("artemis.sdk.agent.genai.Client") as native_google,
+        patch("artemis.sdk.agent.ChatGoogleGenerativeAI") as langchain_google,
+        patch.object(agent, "_prewarm_llm_connections", new_callable=AsyncMock) as prewarm,
+    ):
+        await run_module.execute_task(
+            goal="host-only initialization plumbing",
+            device_serial="emulator-5554",
+            profile="pro",
+            locked_app_package="com.example.synthetic.d1offline",
+            qualification="che984-d1",
+        )
+    assert agent._initialized is True
+    prewarm.assert_not_called()
+    native_google.assert_not_called()
+    langchain_google.assert_not_called()
