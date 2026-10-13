@@ -132,7 +132,7 @@ describe('RunLibraryComponent', () => {
   describe('rows', () => {
     it('renders 56px rows with an execution word, package and mono time, never a Passed chip', async () => {
       await open('/sessions', of(page([run({ app_package: 'com.example.shop' })])));
-      expect(q('.run-meta')!.textContent!.trim()).toBe('Completed · com.example.shop');
+      expect(q('.run-meta')!.textContent!.trim()).toBe('Completed · com.example.shop · emulator-5554');
       expect(q('.run-row')!.textContent).not.toContain('Passed');
       expect(q('.run-icon')!.classList).toContain('tone-neutral');
       expect(q('.run-icon')!.classList).not.toContain('tone-ok');
@@ -417,11 +417,12 @@ describe('RunLibraryComponent', () => {
       expect(rows[0].querySelector('.run-prompt')!.textContent).toContain('Log in and open settings');
       expect(rows[0].querySelector('.run-outcome')!.textContent).toContain('Failed');
       expect(rows[0].querySelector('.run-recording')!.textContent).toContain('Video uploaded');
-      expect(rows[0].querySelector('.run-device')!.textContent).toContain('emulator-5554');
+      expect(rows[0].querySelector('.device-name')!.textContent).toBe('Android phone');
+      expect(rows[0].querySelector('.run-meta .run-serial')!.textContent).toContain('emulator-5554');
       expect(rows[0].querySelector('.run-device')!.textContent).toContain('Desk Mac');
       expect(rows[0].querySelector('.run-date')!.getAttribute('title')).toMatch(/Oct 4, 2026/);
       expect(rows[1].querySelector('.run-outcome')!.textContent).toContain('Interrupted');
-      expect(rows[1].querySelector('.run-device')!.textContent!.trim()).toBe('emulator-5554');
+      expect(rows[1].querySelector('.device-name')!.textContent).toBe('Android phone');
       expect(rows[1].querySelector('.run-recording')).toBeNull();
     });
 
@@ -440,6 +441,7 @@ describe('RunLibraryComponent', () => {
 
     it('uses tabular mono for serials and dates without changing the row hit area', async () => {
       await open('/sessions');
+      expect(q('.run-meta .run-serial')!.textContent).toContain('emulator-5554');
       for (const selector of ['.run-serial', '.run-date']) {
         const style = getComputedStyle(q(selector)!);
         expect(style.fontFamily).toContain('JetBrains Mono');

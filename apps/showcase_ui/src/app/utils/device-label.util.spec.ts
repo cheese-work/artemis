@@ -33,8 +33,21 @@ describe('device-label.util', () => {
   it('never calls an unclassified device a virtual device or titles it by its address', () => {
     const unknown = { serial: '127.0.0.1:40001', model: null, device_kind: 'unknown' as const };
     expect(deviceKindLabel(unknown)).toBe('Unknown device');
-    expect(deviceTitle(unknown)).toBe('Unknown device');
+    expect(deviceTitle(unknown)).toBe('Android phone');
     expect(deviceKindLabel({ serial: 'x', model: null })).toBe('Unknown device');
+  });
+
+  it('titles phones by model, then product, then Android phone, never by serial', () => {
+    for (const [model, product, expected] of [
+      [' Pixel 6 Pro ', 'raven', 'Pixel 6 Pro'],
+      [null, ' raven ', 'raven'],
+      ['  ', 'raven', 'raven'],
+      [null, null, 'Android phone'],
+      ['', '  ', 'Android phone']
+    ]) {
+      const phone = { serial: '127.0.0.1:35773', model, product, device_kind: 'phone' as const };
+      expect(deviceTitle(phone)).toBe(expected!);
+    }
   });
 
   it('titles a run whose phone is gone by where it was attached, never as Unknown device', () => {
@@ -42,8 +55,8 @@ describe('device-label.util', () => {
     expect(unlistedRunDeviceTitle('127.0.0.1:55555', false)).toBe('Phone via a browser');
     expect(unlistedRunDeviceTitle('localhost:5555', false)).toBe('Phone via a browser');
     expect(unlistedRunDeviceTitle('[::1]:39129', false)).toBe('Phone via a browser');
-    expect(unlistedRunDeviceTitle('emulator-5554', false)).toBe('emulator-5554');
-    expect(unlistedRunDeviceTitle('R58M123', false)).toBe('R58M123');
+    expect(unlistedRunDeviceTitle('emulator-5554', false)).toBe('Android phone');
+    expect(unlistedRunDeviceTitle('R58M123', false)).toBe('Android phone');
   });
 
   it('never titles a disconnected network phone by its address (R3)', () => {
@@ -73,6 +86,6 @@ describe('device-label.util', () => {
     expect(unlistedDeviceTitle('127.0.0.1:55555')).toBe('Unknown device');
     expect(unlistedDeviceTitle('pixel:5555')).toBe('Wireless phone');
     expect(unlistedDeviceTitle('192.168.1.12:5555')).toBe('Wireless phone');
-    expect(unlistedDeviceTitle('R58M123')).toBe('R58M123');
+    expect(unlistedDeviceTitle('R58M123')).toBe('Android phone');
   });
 });

@@ -35,8 +35,11 @@ describe('DeviceChipComponent', () => {
     fixture.componentRef.setInput('device', device);
     fixture.detectChanges();
     const root = fixture.nativeElement as HTMLElement;
-    expect(root.querySelector('.label')?.textContent?.trim()).toBe('Unknown device');
+    expect(root.querySelector('.label')?.textContent?.trim()).toBe('Android phone');
     expect(root.querySelector('.label')?.textContent).not.toContain('127.0.0.1');
     expect(root.querySelector('.detail')?.textContent).toContain('127.0.0.1:40001');
+    const serial = root.querySelector('.detail .mono')!;
+    expect(serial.textContent).toBe('127.0.0.1:40001');
+    expect(getComputedStyle(serial).fontFamily).toContain('JetBrains Mono');
   });
 });
