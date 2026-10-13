@@ -14,6 +14,19 @@ describe('navigation preferences', () => {
   afterEach(() => {
     const base = new URL('.', TestBed.inject(DOCUMENT).baseURI).pathname;
     for (const email of ['qa@example.test', 'other@example.test']) localStorage.removeItem(`smartqa.nav:${base}:${email}`);
+    for (const email of ['qa@example.test', 'other@example.test']) localStorage.removeItem(`smartqa.technical:${base}:${email}`);
+  });
+  it('defaults technical details off and remembers the setting per user', () => {
+    const shell = TestBed.inject(ShellLayoutService);
+    TestBed.flushEffects();
+    expect(shell.technicalDetails()).toBeFalse();
+    shell.setTechnicalDetails(true);
+    identity.set({ ...identity()!, email: 'other@example.test' });
+    TestBed.flushEffects();
+    expect(shell.technicalDetails()).toBeFalse();
+    identity.set({ ...identity()!, email: 'qa@example.test' });
+    TestBed.flushEffects();
+    expect(shell.technicalDetails()).toBeTrue();
   });
   it('remembers all three modes separately for each user even at the root path', () => {
     const shell = TestBed.inject(ShellLayoutService);

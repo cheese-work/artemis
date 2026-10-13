@@ -10,6 +10,7 @@ export class ShellLayoutService {
   private readonly owner = inject(OwnerScopeService);
   private readonly document = inject(DOCUMENT);
   public readonly navMode = signal<NavMode>('expanded');
+  public readonly technicalDetails = signal(false);
   public readonly navHovered = signal(false);
   public readonly navExpanded = computed(() => this.navMode() === 'expanded' || this.navMode() === 'hover' && this.navHovered());
   private readonly preferenceKey = computed(() => {
@@ -26,6 +27,9 @@ export class ShellLayoutService {
       try { mode = key ? localStorage.getItem(key) : null; } catch {}
       this.navMode.set(mode === 'collapsed' || mode === 'hover' ? mode : 'expanded');
       this.navHovered.set(false);
+      let technical: string | null = null;
+      try { technical = key ? localStorage.getItem(key.replace('smartqa.nav:', 'smartqa.technical:')) : null; } catch {}
+      this.technicalDetails.set(technical === 'true');
     });
   }
 
@@ -33,5 +37,10 @@ export class ShellLayoutService {
     this.navMode.set(mode);
     const key = this.preferenceKey();
     try { if (key) localStorage.setItem(key, mode); } catch {}
+  }
+  public setTechnicalDetails(enabled: boolean): void {
+    this.technicalDetails.set(enabled);
+    const key = this.preferenceKey();
+    try { if (key) localStorage.setItem(key.replace('smartqa.nav:', 'smartqa.technical:'), String(enabled)); } catch {}
   }
 }

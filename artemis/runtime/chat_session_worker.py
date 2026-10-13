@@ -42,7 +42,7 @@ async def run_chat_session(store, identity, lease, execute, *, idle_seconds=300,
                 opening = store.pending(turn_id)
                 humans = [message["content"] for message in opening if message["role"] == "human"]
                 turn["goal"] = "\n\n".join(humans)
-                turn["history"] = json.dumps(store.get(identity)["messages"], ensure_ascii=False)
+                turn["history"] = json.dumps(store.model_history(identity), ensure_ascii=False)
                 for message in opening:
                     if message["role"] == "human":
                         store.acknowledge(message["sequence"], "Opening instruction received.")

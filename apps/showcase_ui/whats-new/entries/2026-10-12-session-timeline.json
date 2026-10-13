@@ -1,0 +1,7 @@
+{
+  "id": "2026-10-12-session-timeline",
+  "date": "2026-10-12",
+  "title": "Follow each session in one timeline",
+  "body": "Messages, plans, revised plans and screenshot steps now share one flat conversation. Expand a step to see its screenshot. Technical details starts off and remembers your choice: turn it on for thinking, action details, identifiers and the full report. The final verdict stays at the end.",
+  "issues": ["CHE-1556"]
+}

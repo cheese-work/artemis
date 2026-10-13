@@ -39,6 +39,8 @@ async def test_fake_loop_follow_up_keeps_one_lease_and_full_history(store):
     async def execute(turn):
         assert lease.held
         seen.append(turn)
+        for kind in ("thinking", "step", "plan", "replan", "input_request"):
+            store.record_event(turn["turn_id"], kind, "internal-event-sentinel")
         with store.transaction() as connection:
             connection.execute(
                 "INSERT OR REPLACE INTO sessions VALUES (?,?,?,1,2)",
@@ -58,6 +60,7 @@ async def test_fake_loop_follow_up_keeps_one_lease_and_full_history(store):
     assert [turn["goal"] for turn in seen] == ["Check login", "Check logout"]
     assert seen[0]["turn_id"] != seen[1]["turn_id"]
     assert "Check login" in seen[1]["history"]
+    assert "internal-event-sentinel" not in seen[1]["history"]
     assert lease.acquisitions == 1
     assert not lease.held
     assert store.get("run")["lease_pid"] is None

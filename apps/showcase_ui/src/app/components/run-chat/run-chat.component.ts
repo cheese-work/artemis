@@ -1,21 +1,23 @@
-import { ChangeDetectionStrategy, Component, computed, effect, inject, input, NgZone, output, signal } from '@angular/core';
+import { afterEveryRender, ChangeDetectionStrategy, Component, computed, effect, ElementRef, inject, input, NgZone, output, signal, viewChild } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { CdkTextareaAutosize } from '@angular/cdk/text-field';
 import { HttpErrorResponse } from '@angular/common/http';
-import { catchError, of, switchMap, timer } from 'rxjs';
+import { DatePipe, JsonPipe } from '@angular/common';
+import { catchError, of, switchMap, takeWhile, timer } from 'rxjs';
 import { ChatSession, RunSummary } from '../../core/models/run.model';
 import { Session } from '../../core/models/session.model';
 import { StepItemData } from '../../core/models/stream.model';
 import { StartupProgressEvent } from '../../services/agent.service';
 import { RunsService } from '../../services/runs.service';
-import { RunViewComponent } from '../run-view/run-view.component';
+import { ShellLayoutService } from '../../services/shell-layout.service';
+import { mediaUrl } from '../../utils/app-url.util';
 import { runTitle } from '../../utils/run-title.util';
 import { SessionSidebarComponent } from '../session-sidebar/session-sidebar.component';
 
 @Component({
   selector: 'app-run-chat',
   standalone: true,
-  imports: [FormsModule, CdkTextareaAutosize, RunViewComponent, SessionSidebarComponent],
+  imports: [FormsModule, CdkTextareaAutosize, DatePipe, JsonPipe, SessionSidebarComponent],
   templateUrl: './run-chat.component.html',
   styleUrl: './run-chat.component.scss',
   changeDetection: ChangeDetectionStrategy.OnPush
@@ -23,6 +25,12 @@ import { SessionSidebarComponent } from '../session-sidebar/session-sidebar.comp
 export class RunChatComponent {
   private readonly api = inject(RunsService);
   private readonly zone = inject(NgZone);
+  public readonly shell = inject(ShellLayoutService);
+  private readonly failedImages = signal(new Set<string>());
+  private readonly revision = signal(0);
+  private readonly historyElement = viewChild<ElementRef<HTMLElement>>('history');
+  private followLatest = true;
+  private previousRunId = '';
   public readonly runId = input('');
   public readonly readOnly = input(false);
   public readonly compose = input(true);
@@ -46,34 +54,59 @@ export class RunChatComponent {
   public readonly paused = computed(() => this.latest()?.status === 'paused');
   public readonly canWrite = computed(() => !this.readOnly() && !this.rootRun()?.read_only);
   public readonly title = computed(() => this.chat()?.title || this.rootRun()?.chat_title || runTitle(this.rootRun()?.chat_prompt ?? this.rootRun()?.prompt));
+  public readonly timeline = computed(() => (this.chat()?.timeline ?? this.chat()?.messages ?? [])
+    .filter(message => message.kind !== 'verdict' && (this.shell.technicalDetails() || message.kind !== 'thinking')));
+  public readonly verdictTitle = computed(() => {
+    const verdict = this.chat()?.verdict;
+    if (!verdict) return '';
+    if (verdict.status !== 'completed') return `Execution ${verdict.status}`;
+    const tests = verdict.outcome?.tests;
+    return tests?.failed ? 'Fail' : tests?.inconclusive || tests?.unchecked || !tests?.passed ? 'Inconclusive' : 'Pass';
+  });
   public draft = '';
   private retry: { content: string; id: string } | null = null;
 
   constructor() {
     effect((onCleanup) => {
       const id = this.runId();
-      this.chat.set(null);
-      this.rootRun.set(null);
-      this.error.set(null);
-      this.sending.set(false);
-      this.editingTitle.set(false);
-      this.savingTitle.set(false);
+      this.revision();
+      if (id !== this.previousRunId) {
+        this.followLatest = true;
+        this.previousRunId = id;
+        this.chat.set(null);
+        this.rootRun.set(null);
+        this.error.set(null);
+        this.sending.set(false);
+        this.editingTitle.set(false);
+        this.savingTitle.set(false);
+      }
       if (!id) return;
       const subscription = this.zone.runOutsideAngular(() => this.api.get(id).pipe(
         switchMap((run) => {
           this.rootRun.set(run);
           return timer(0, 1000).pipe(switchMap(() => this.api.chat(run.session_id).pipe(
             catchError((error) => { this.reportError(error); return of(null); })
-          )));
+          )), takeWhile(chat => !chat || ['queued', 'running', 'paused'].includes(chat.turns.at(-1)?.status ?? ''), true));
         }),
         catchError((error) => { this.reportError(error); return of(null); })
       ).subscribe((chat) => this.zone.run(() => { if (chat) this.chat.set(chat); })));
       onCleanup(() => subscription.unsubscribe());
     });
+    afterEveryRender(() => this.scrollToLatest());
   }
 
   public messages(turnId: string) {
     return this.chat()?.messages.filter((message) => message.turn_id === turnId) ?? [];
+  }
+
+  public trackScroll(): void {
+    const history = this.historyElement()?.nativeElement;
+    if (history) this.followLatest = history.scrollHeight - history.clientHeight - history.scrollTop < 80;
+  }
+
+  public scrollToLatest(): void {
+    const history = this.historyElement()?.nativeElement;
+    if (history && this.followLatest) history.scrollTop = history.scrollHeight;
   }
 
   public beginRename(): void {
@@ -124,7 +157,21 @@ export class RunChatComponent {
   }
 
   private refresh(identity: string): void {
-    this.api.chat(identity).subscribe({ next: (chat) => { if (this.chat()?.session_id === identity) this.chat.set(chat); }, error: (error) => this.reportError(error) });
+    if (this.chat()?.session_id === identity) this.revision.update(value => value + 1);
+  }
+
+  public screenshot(payload: Record<string, any> | undefined): string | null {
+    const image = payload?.['post_image_name'] || payload?.['pre_image_name'];
+    return typeof image === 'string' && !this.failedImages().has(image) ? mediaUrl('/images/' + encodeURIComponent(image)) : null;
+  }
+
+  public failScreenshot(payload: Record<string, any> | undefined): void {
+    const image = payload?.['post_image_name'] || payload?.['pre_image_name'];
+    if (typeof image === 'string') this.failedImages.update(images => new Set([...images, image]));
+  }
+
+  public turnNumber(identity: string): number {
+    return this.chat()?.turns.find(turn => turn.turn_id === identity)?.number ?? 1;
   }
 
   private reportError(error: HttpErrorResponse): void {

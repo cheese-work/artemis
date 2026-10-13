@@ -161,3 +161,72 @@ async def test_real_guidance_hook_uses_the_runs_operator_model(store, monkeypatc
     store.send("run", "Use the visible button", "steer")
     assert await read_chat_guidance(context, "Check login") == "Use the visible button"
     assert calls == [(context, "operator")]
+
+
+@pytest.mark.asyncio
+async def test_typed_events_never_enter_follow_up_or_judge_history(store, monkeypatch):
+    store.acknowledge(store.pending("run")[0]["sequence"], "Opening instruction received.")
+    for kind in ("thinking", "step", "plan", "replan", "input_request"):
+        store.record_event("run", kind, "internal-event-sentinel")
+    store.finish("run", "completed")
+    turn = store.send("run", "Check logout", "follow-up")
+    monkeypatch.setenv("ARTEMIS_CHAT_SESSION_ID", "run")
+    monkeypatch.setenv("ARTEMIS_SESSION_ID", turn["turn_id"])
+    monkeypatch.delenv("ARTEMIS_CHAT_TURN_STARTED", raising=False)
+    monkeypatch.setattr("artemis.config.DB_PATH", store.path)
+    prompts = []
+
+    class FakeModel:
+        async def ainvoke(self, messages):
+            prompts.extend(message.content for message in messages)
+            return SimpleNamespace(content='{"plan_change": false, "reply": "I will steer."}')
+
+    monkeypatch.setattr("artemis.services.llm.get_llm", lambda *args, **kwargs: FakeModel())
+    context = SimpleNamespace(data_engine=None)
+    guidance = await read_chat_guidance(context, "Check logout")
+    assert "Check login" in guidance
+    assert "internal-event-sentinel" not in guidance
+    store.send("run", "Use the visible button", "steer")
+    await read_chat_guidance(context, "Check logout")
+    assert prompts
+    assert "internal-event-sentinel" not in "\n".join(prompts)
+
+
+@pytest.mark.asyncio
+async def test_guidance_boundary_emits_only_changed_plan_snapshots(store, tmp_path, monkeypatch):
+    from artemis.utils.notes import get_note_file_path
+
+    monkeypatch.setenv("ARTEMIS_CHAT_SESSION_ID", "run")
+    control = ChatControl(store, "run", None, poll_seconds=0)
+    context = SimpleNamespace(chat_control=control, data_engine=SimpleNamespace(base_dir=tmp_path))
+    plan = get_note_file_path(tmp_path, "task_plan")
+    plan.parent.mkdir(parents=True, exist_ok=True)
+    plan.write_text("1. Open login", encoding="utf-8")
+    await read_chat_guidance(context, "Check login")
+    await read_chat_guidance(context, "Check login")
+    plan.write_text("1. Open settings", encoding="utf-8")
+    await read_chat_guidance(context, "Check login")
+    events = [
+        event for event in store.get("run")["messages"] if event["kind"] in {"plan", "replan"}
+    ]
+    assert [event["kind"] for event in events] == ["plan", "replan"]
+    assert events[-1]["payload"]["previous"] == "1. Open login"
+
+
+@pytest.mark.asyncio
+async def test_unreadable_plan_does_not_fail_the_step_boundary(store, tmp_path, monkeypatch):
+    from pathlib import Path
+    from artemis.utils.notes import get_note_file_path
+
+    monkeypatch.setenv("ARTEMIS_CHAT_SESSION_ID", "run")
+    plan = get_note_file_path(tmp_path, "task_plan")
+    plan.parent.mkdir(parents=True, exist_ok=True)
+    plan.write_text("Plan", encoding="utf-8")
+    context = SimpleNamespace(
+        chat_control=ChatControl(store, "run", None), data_engine=SimpleNamespace(base_dir=tmp_path)
+    )
+    monkeypatch.setattr(
+        Path, "read_text", lambda *args, **kwargs: (_ for _ in ()).throw(OSError("Unavailable"))
+    )
+    assert await read_chat_guidance(context, "Check login") == "Check login"
+    assert not any(event["kind"] == "plan" for event in store.get("run")["messages"])

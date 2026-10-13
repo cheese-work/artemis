@@ -112,9 +112,12 @@ export function startMockApi(distDir) {
     if (m) {
       if (mock.chat?.turns.some(turn => turn.turn_id === m[1])) return json(res, 200, mock.chat);
       const run = [...RUNS, ...OTHERS].find(row => row.session_id === m[1]);
+      const messages = run ? [{ sequence: 1, turn_id: run.session_id, session_id: run.session_id, role: 'human', kind: 'message', content: run.prompt, client_id: 'opening', reply_to: null, acknowledged_at: run.start_time, created_at: run.start_time }] : [];
       return run ? json(res, 200, { session_id: run.session_id, lease_pid: null, idle_until: null,
         turns: [{ turn_id: run.session_id, session_id: run.session_id, number: 1, status: run.status, created_at: run.start_time }],
-        messages: [{ sequence: 1, turn_id: run.session_id, session_id: run.session_id, role: 'human', kind: 'message', content: run.prompt, client_id: 'opening', reply_to: null, acknowledged_at: run.start_time, created_at: run.start_time }]
+        messages,
+        timeline: [...messages, ...STEPS.map((step, index) => ({ sequence: index + 2, turn_id: run.session_id, role: 'agent', kind: 'step', content: `Step ${index + 1}`, created_at: step.timestamp, payload: { ...step, session_id: run.session_id } }))],
+        verdict: { status: run.status, outcome: { phase: 'outcome', tests: { passed: run.status === 'completed' ? 1 : 0, failed: run.status === 'failed' ? 1 : 0, inconclusive: 0, unchecked: 0 }, last_findings: ['Synthetic fixture result'] }, report: 'Synthetic agent report', details: run }
       }) : json(res, 404, { detail: 'Chat not found.' });
     }
     m = p.match(/^\/api\/runs\/([^/]+)$/);
