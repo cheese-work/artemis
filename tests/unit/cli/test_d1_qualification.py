@@ -1,12 +1,15 @@
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from click import unstyle
 from typer.testing import CliRunner
 
+from artemis.config.agent import AgentGlobalConfig, load_agent_config
 from artemis.config.llm import LLMConfig, _expand_default_into_nodes
+from artemis.interfaces.cli import qualification as qualification_module
 from artemis.interfaces.cli.commands import run as run_module
 from artemis.interfaces.cli.main import app
 from artemis.interfaces.cli.qualification import d1_exit_code, prepare_d1_config
@@ -19,6 +22,16 @@ from artemis.sdk.types.task import AgentProfile
 def isolate_host_run(monkeypatch):
     monkeypatch.setattr(run_module, "publish_startup_progress", MagicMock())
     monkeypatch.setattr(run_module.settings, "OPENAI_API_KEY", "host-test-not-a-key")
+    monkeypatch.setattr(qualification_module, "load_agent_config", approved_agent_config)
+
+
+def approved_agent_config():
+    return AgentGlobalConfig.model_validate(
+        {
+            "flash": {"step_summarizer": {"model": "gpt-6.1-sol"}},
+            "memory": {"chunking": {"model": "gpt-6.1-sol"}},
+        }
+    )
 
 
 def model_config():
@@ -70,6 +83,65 @@ def test_published_d1_config_selects_approved_route_without_fallback_retries():
     selected = prepare_d1_config(configured)
     assert selected.checker.model == "gpt-6.1-sol"
     assert selected.checker.fallback_enabled is False
+
+
+@pytest.mark.parametrize("path", ["flash.step_summarizer", "memory.chunking"])
+def test_d1_rejects_unapproved_memory_model_overrides(monkeypatch, path):
+    agent_config = approved_agent_config()
+    section, name = path.split(".")
+    getattr(getattr(agent_config, section), name).model = "gemini-3.8-flash"
+    monkeypatch.setattr(qualification_module, "load_agent_config", lambda: agent_config)
+    with pytest.raises(ValueError, match="gpt-6.1-sol"):
+        prepare_d1_config(model_config())
+
+
+@pytest.mark.asyncio
+async def test_d1_rejects_default_memory_models_before_agent_initialization(monkeypatch):
+    monkeypatch.setattr(qualification_module, "load_agent_config", AgentGlobalConfig)
+    native_agent = MagicMock()
+    native_agent.init = AsyncMock()
+    native_agent.run_task = AsyncMock(return_value=summary())
+    native_agent.clean = AsyncMock()
+    with (
+        patch.object(run_module, "initialize_llm_config", return_value=model_config()),
+        patch.object(run_module, "Agent", return_value=native_agent) as agent,
+        patch.object(run_module, "record_attempt_manifest"),
+        patch.object(run_module, "reconcile_and_store_verdict"),
+    ):
+        with pytest.raises(ValueError, match="gpt-6.1-sol"):
+            await run_module.execute_task(
+                goal="host-only configuration validation",
+                device_serial="emulator-5554",
+                profile="pro",
+                locked_app_package="com.example.synthetic.d1offline",
+                qualification="che984-d1",
+            )
+    agent.assert_not_called()
+
+
+def test_published_d1_config_pins_native_memory_model_selection(monkeypatch):
+    from artemis.memory import ensure_step_memory
+    from artemis.memory.chunking import StepCapsuleLens
+
+    config_path = (
+        Path(__file__).resolve().parents[3] / "qualification/configs/che984-d1.artemis.jsonc"
+    )
+    agent_config = load_agent_config(config_path)
+    monkeypatch.setattr(qualification_module, "load_agent_config", lambda: agent_config)
+    configured = LLMConfig.model_validate(
+        _expand_default_into_nodes(json.loads(config_path.read_text()))
+    )
+    context = SimpleNamespace(llm_config=prepare_d1_config(configured), data_engine=None)
+    with (
+        patch("artemis.config.load_agent_config", return_value=agent_config),
+        patch("artemis.llm.router.ModelFactory.get_model", return_value=MagicMock()) as factory,
+    ):
+        ensure_step_memory(context)
+        StepCapsuleLens(agent_config.memory.chunking.model, ctx=context)._get_llm()
+    assert factory.call_count == 2
+    for call in factory.call_args_list:
+        assert call.args[0].provider == "openai"
+        assert call.args[0].model_name == "gpt-6.1-sol"
 
 
 @pytest.mark.parametrize("field", ["model", "provider", "fix_model", "fallback"])

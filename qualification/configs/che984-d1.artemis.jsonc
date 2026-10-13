@@ -9,5 +9,17 @@
       "model": "gpt-6.1-sol",
       "temperature": 0
     }
+  },
+  "agent": {
+    "flash": {
+      "step_summarizer": {
+        "model": "gpt-6.1-sol"
+      }
+    },
+    "memory": {
+      "chunking": {
+        "model": "gpt-6.1-sol"
+      }
+    }
   }
 }

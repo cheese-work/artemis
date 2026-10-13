@@ -23,6 +23,12 @@ Checker model instead of the generic Google default. Explicit unapproved
 model overrides fail before Agent initialization. Loaded configuration is
 not mutated.
 
+The profile validates the native agent configuration as well as the LLM nodes.
+Both `agent.flash.step_summarizer.model` and `agent.memory.chunking.model`
+must select `gpt-6.1-sol`. These memory paths can override a summarizer node's
+model. The published D1 configuration pins both values. Missing native agent
+configuration or unapproved defaults fail before Agent initialization.
+
 The D1 profile also disables the SDK's historical Google connection pre-warm
 at `Agent.init`. An ambient Google credential cannot launch a Google ping or
 token-count request through that initializer. Ordinary initialization keeps

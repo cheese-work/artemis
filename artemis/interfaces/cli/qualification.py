@@ -1,5 +1,6 @@
 """Opt-in CHE-984 D1 route and native assertion-exit contract."""
 
+from artemis.config import load_agent_config
 from artemis.config.llm import LLMConfig
 
 
@@ -31,6 +32,15 @@ def prepare_d1_config(config: LLMConfig) -> LLMConfig:
             validate_route(value)
 
     validate_route(selected.model_dump())
+    agent_config = load_agent_config()
+    if any(
+        model != "gpt-6.1-sol"
+        for model in (
+            agent_config.flash.step_summarizer.model,
+            agent_config.memory.chunking.model,
+        )
+    ):
+        raise ValueError("CHE-984 D1 requires only gpt-6.1-sol for native memory models")
     return selected
 
 
