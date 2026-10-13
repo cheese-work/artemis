@@ -3,6 +3,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from click import unstyle
 from typer.testing import CliRunner
 
 from artemis.config.llm import LLMConfig, _expand_default_into_nodes
@@ -141,7 +142,7 @@ def test_d1_cannot_silently_route_through_daemon():
     with patch.object(run_module, "execute_task", new_callable=AsyncMock) as execute:
         result = CliRunner().invoke(app, ["run", "goal", "--qualification", "che984-d1"])
     assert result.exit_code != 0
-    assert "--standalone" in result.output
+    assert "--standalone" in unstyle(result.output)
     execute.assert_not_called()
 
 
