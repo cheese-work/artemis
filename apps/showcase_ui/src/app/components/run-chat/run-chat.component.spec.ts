@@ -541,6 +541,16 @@ describe('RunChatComponent', () => {
       }));
     }
 
+    it('keeps the chip and the actions on one toolbar row on a phone-width screen', fakeAsync(() => {
+      const { fixture } = composer();
+      const narrow = Array.from(document.styleSheets).flatMap(sheet => Array.from(sheet.cssRules))
+        .filter((rule): rule is CSSMediaRule => rule instanceof CSSMediaRule && /max-width:\s*600px/.test(rule.conditionText))
+        .flatMap(media => Array.from(media.cssRules) as CSSStyleRule[])
+        .filter(rule => /phone-chip|composer-tools/.test(rule.selectorText ?? ''));
+      expect(narrow.filter(rule => rule.style.flexBasis === '100%' || rule.style.flexWrap === 'wrap').map(rule => rule.selectorText)).toEqual([]);
+      fixture.destroy();
+    }));
+
     it('labels an unlisted phone "Android phone" and marks its dot as an error', fakeAsync(() => {
       onPhone();
       const { fixture, tools } = composer();
