@@ -1329,7 +1329,8 @@ async def test_manual_stop_of_one_run_does_not_pollute_concurrent_run(tmp_path, 
 
 
 @pytest.mark.asyncio
-async def test_enqueue_tasks_debounces_rapid_identical_submissions():
+async def test_enqueue_tasks_debounces_rapid_identical_submissions(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
     state.queue_items = []
     state.active_session_id = None
 
@@ -1350,6 +1351,7 @@ async def test_enqueue_tasks_debounces_rapid_identical_submissions():
         )
         assert len(state.queue_items) == 1
         assert res1["enqueued_count"] == 1
+        assert not (tmp_path / "MagicMock").exists()
 
         # Immediate second submission (within 1s) must debounce
         res2 = await task_queue_service.enqueue_tasks(

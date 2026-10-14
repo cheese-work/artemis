@@ -16,6 +16,7 @@ from apps.admin_console.database.repositories.device_repository import DeviceRep
 from apps.admin_console.database.repositories.session_repository import SessionRepository
 from apps.admin_console.services import task_queue_service as queue_module
 from apps.admin_console.services.device_identity import device_identity
+from apps.admin_console.services.device_reservation import device_reservations
 from apps.admin_console.services.host_registry import host_registry
 from apps.admin_console.services.task_queue_service import TaskQueueService
 from artemis.data_engine.storage import StorageManager
@@ -209,6 +210,39 @@ async def test_setup_failure_releases_claim_without_a_run(context, monkeypatch):
         with pytest.raises(RuntimeError, match="persist"):
             await TaskQueueService.enqueue_tasks(["first"], device_serial=USB)
     assert (await TaskQueueService.enqueue_tasks(["second"], device_serial=WIFI))["tasks"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure_index", [1, 2])
+async def test_chat_launch_database_error_releases_all_batch_claims(
+    context, monkeypatch, failure_index
+):
+    observe(USB, WIFI)
+    session_ids = []
+    original_register = context.register_chat_launch
+    store_error = sqlite3.OperationalError("database is locked")
+
+    def register_chat_launch(session_id, launch_config):
+        session_ids.append(session_id)
+        if len(session_ids) == failure_index:
+            raise store_error
+        return original_register(session_id, launch_config)
+
+    with monkeypatch.context() as patcher:
+        patcher.setattr(context, "register_chat_launch", register_chat_launch)
+        with pytest.raises(sqlite3.OperationalError) as error:
+            await TaskQueueService.enqueue_tasks(
+                [f"goal-{index}" for index in range(failure_index)],
+                device_serial=USB,
+                ingress="frontend",
+            )
+
+    assert error.value is store_error
+    assert state.queue_items == []
+    assert device_reservations._claims == {}
+    assert DeviceExecutionLock.cancel_reservation.call_count == failure_index
+    assert all(context.get_session_status(session_id) == "failed" for session_id in session_ids)
+    assert (await TaskQueueService.enqueue_tasks(["after failure"], device_serial=WIFI))["tasks"]
 
 
 @pytest.mark.asyncio
