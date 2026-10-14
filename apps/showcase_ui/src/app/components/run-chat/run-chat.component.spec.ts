@@ -463,4 +463,110 @@ describe('RunChatComponent', () => {
     expect(history.scrollTop).toBe(795);
     fixture.destroy();
   }));
+  describe('step evidence', () => {
+    const evidence = (action: Record<string, unknown>, extra: Record<string, unknown> = {}) => {
+      const fixture = render();
+      fixture.componentInstance.chat.set(withTimeline(thread.messages[0], stepMessage({ payload: { step_id: 'step-1', pre_image_name: 'pre.png', post_image_name: 'post.png', action_taken: action, ...extra } })));
+      fixture.detectChanges();
+      fixture.nativeElement.querySelector('.step-row summary').click();
+      fixture.detectChanges();
+      const before = fixture.nativeElement.querySelector('.evidence-before') as HTMLElement;
+      expect(before).withContext('Before figure in the expanded step').not.toBeNull();
+      return { fixture, before, after: fixture.nativeElement.querySelector('.evidence-after') as HTMLElement };
+    };
+
+    it('keeps Before and After in one collapsed item that a click opens side by side', fakeAsync(() => {
+      const fixture = render();
+      fixture.componentInstance.chat.set(withTimeline(thread.messages[0], stepMessage()));
+      fixture.detectChanges();
+      const details = fixture.nativeElement.querySelector('.step-row details') as HTMLDetailsElement;
+      expect(details.open).toBeFalse();
+      expect(fixture.nativeElement.querySelectorAll('.step-row details').length).toBe(1);
+      fixture.nativeElement.querySelector('.step-row summary').click();
+      fixture.detectChanges();
+      const before = details.querySelector('.evidence-before') as HTMLElement;
+      const after = details.querySelector('.evidence-after') as HTMLElement;
+      expect(before.querySelector('figcaption')!.textContent).toContain('Before');
+      expect((before.querySelector('img') as HTMLImageElement).src).toContain('/images/pre.png');
+      expect(after.querySelector('figcaption')!.textContent).toContain('After');
+      expect((after.querySelector('img.step-screenshot') as HTMLImageElement).src).toContain('/images/post.png');
+      expect(before.getBoundingClientRect().right).toBeLessThanOrEqual(after.getBoundingClientRect().left + 1);
+      fixture.destroy();
+    }));
+
+    it('marks a tap with a ring at the tap point and names the element', fakeAsync(() => {
+      const { fixture, before, after } = evidence({ action: 'tap', normalized_coordinates: [500, 300], target_text: 'first result' });
+      const marker = before.querySelector('.action-marker.tap') as HTMLElement;
+      expect(marker.style.left).toBe('50%');
+      expect(marker.style.top).toBe('30%');
+      expect(before.querySelector('.action-caption')!.textContent!.trim()).toBe('Tap · first result');
+      expect(before.querySelector('img')!.alt).toContain('Tap · first result');
+      expect(after.querySelector('.action-marker, .action-caption')).toBeNull();
+      fixture.destroy();
+    }));
+
+    it('names the model target when the step has no observed element text', fakeAsync(() => {
+      const { fixture, before } = evidence({ action: 'click', normalized_coordinates: [100, 900], target_description: 'Skip ad button' });
+      expect(before.querySelector('.action-caption')!.textContent!.trim()).toBe('Tap · Skip ad button');
+      fixture.destroy();
+    }));
+
+    it('says only the action when the step carries no element name, never bare coordinates', fakeAsync(() => {
+      const { fixture, before } = evidence({ action: 'tap', normalized_coordinates: [500, 300] });
+      expect(before.querySelector('.action-caption')!.textContent!.trim()).toBe('Tap');
+      expect(before.querySelector('.action-marker.tap')).not.toBeNull();
+      fixture.destroy();
+    }));
+
+    it('boxes the typed field and shows the typed text', fakeAsync(() => {
+      const { fixture, before } = evidence(
+        { action: 'input_text', text: 'gangnam style', target_text: 'search field', normalized_coordinates: [500, 100], target_bounds: [108, 120, 972, 360] },
+        { extra_metadata: { width: 1080, height: 2400 } });
+      const box = before.querySelector('.action-marker.type') as HTMLElement;
+      expect(box.style.left).toBe('10%');
+      expect(box.style.top).toBe('5%');
+      expect(box.style.width).toBe('80%');
+      expect(box.style.height).toBe('10%');
+      expect(before.querySelector('.action-caption')!.textContent!.trim()).toBe('Type "gangnam style" · search field');
+      fixture.destroy();
+    }));
+
+    it('draws a swipe as an arrow from the start to the end point', fakeAsync(() => {
+      const { fixture, before } = evidence({ action: 'swipe', normalized_start_coordinates: [500, 750], normalized_end_coordinates: [500, 250] });
+      const line = before.querySelector('.action-marker.swipe line') as SVGLineElement;
+      expect([line.getAttribute('x1'), line.getAttribute('y1'), line.getAttribute('x2'), line.getAttribute('y2')]).toEqual(['50', '75', '50', '25']);
+      expect(before.querySelector('.action-caption')!.textContent!.trim()).toBe('Swipe up');
+      fixture.destroy();
+    }));
+
+    it('marks a hardware key press on the phone edge and names the key', fakeAsync(() => {
+      const { fixture, before } = evidence({ action: 'press_key', key: 'VOLUME_UP' });
+      expect(before.querySelector('.action-marker.key')).not.toBeNull();
+      expect(before.querySelector('.action-caption')!.textContent!.trim()).toBe('Key · VOLUME_UP');
+      fixture.destroy();
+    }));
+
+    it('draws no marker and no caption for an action without a screen position', fakeAsync(() => {
+      const { fixture, before } = evidence({ action: 'wait_for_delay', time_in_ms: 500 });
+      expect(before.querySelector('.action-marker, .action-caption')).toBeNull();
+      fixture.destroy();
+    }));
+
+    it('says so when the Before screenshot is missing or fails to load, and keeps After', fakeAsync(() => {
+      const fixture = render();
+      fixture.componentInstance.chat.set(withTimeline(thread.messages[0], stepMessage({ payload: { step_id: 'step-1', post_image_name: 'post.png', action_taken: { action: 'tap', normalized_coordinates: [500, 300] } } })));
+      fixture.detectChanges();
+      fixture.nativeElement.querySelector('.step-row summary').click();
+      fixture.detectChanges();
+      expect(fixture.nativeElement.querySelector('.evidence-before').textContent).toContain('Before screenshot unavailable');
+      expect(fixture.nativeElement.querySelector('.evidence-before .action-marker')).toBeNull();
+      expect(fixture.nativeElement.querySelector('.evidence-after img.step-screenshot')).not.toBeNull();
+      fixture.componentInstance.chat.set(withTimeline(thread.messages[0], stepMessage({ payload: { step_id: 'step-2', pre_image_name: 'broken.png', post_image_name: 'post.png', action_taken: { action: 'tap' } } })));
+      fixture.detectChanges();
+      fixture.nativeElement.querySelector('.evidence-before img').dispatchEvent(new Event('error'));
+      fixture.detectChanges();
+      expect(fixture.nativeElement.querySelector('.evidence-before').textContent).toContain('Before screenshot unavailable');
+      fixture.destroy();
+    }));
+  });
 });
