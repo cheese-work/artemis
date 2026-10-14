@@ -39,6 +39,7 @@ REVISIONS: tuple[tuple[str, ...], ...] = (
         "INSERT OR IGNORE INTO backfill_progress (module, cursor, done, total) "
         f"SELECT '{MODULE}', '0', 0, COUNT(*) FROM run_meta",
     ),
+    ("ALTER TABLE run_meta ADD COLUMN review TEXT",),
 )
 
 

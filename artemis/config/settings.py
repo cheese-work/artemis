@@ -45,7 +45,7 @@ from artemis.config.paths import (
     get_env_file,
     get_temp_dir,
 )
-from artemis.utils.logger import get_logger
+from third_party.mobile_use.utils.logger import get_logger
 
 SERVICE_ENVIRONMENT_KEYS = frozenset(os.environ)
 

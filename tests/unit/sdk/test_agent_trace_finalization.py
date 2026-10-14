@@ -20,7 +20,7 @@ import pytest
 from artemis.sdk.agent import Agent
 from artemis.context import DeviceContext, DevicePlatform
 from artemis.runtime.device_lock import DeviceBusyError
-from artemis.sdk.types.exceptions import AgentError
+from third_party.mobile_use.sdk.types.exceptions import AgentError
 
 
 @pytest.mark.asyncio
@@ -30,7 +30,7 @@ async def test_gateway_refusal_records_the_readable_failed_step_for_the_run_view
     monkeypatch, fake_provider_credentials, record_failure, explicit_quota
 ):
     from artemis.context import ArtemisContext
-    from artemis.sdk import agent as agent_module
+    from third_party.mobile_use.sdk import agent as agent_module
     from artemis.services import llm as llm_service
 
     monkeypatch.setenv("ARTEMIS_CLOUD_MODE", "1")
@@ -134,7 +134,7 @@ async def test_tip_runs_after_trace_and_sdk_device_release(
     monkeypatch, fake_provider_credentials, caplog
 ):
     from artemis.context import ArtemisContext
-    from artemis.sdk import agent as agent_module
+    from third_party.mobile_use.sdk import agent as agent_module
     from apps.admin_console.services import automatic_prompt_tips
 
     monkeypatch.delenv("ARTEMIS_CLOUD_MODE", raising=False)
@@ -238,7 +238,7 @@ async def test_task_that_never_acquires_queue_does_not_create_trace_session(
     agent._prepare_tracing = MagicMock()
 
     with patch(
-        "artemis.sdk.agent.DeviceExecutionLock.acquire",
+        "artemis.runtime.DeviceExecutionLock.acquire",
         side_effect=DeviceBusyError("queue cancelled"),
     ):
         with pytest.raises(DeviceBusyError, match="queue cancelled"):
