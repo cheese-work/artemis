@@ -186,7 +186,7 @@ def test_execution_snapshot_records_the_operator_not_the_planner():
 
 def test_snapshot_and_device_modules_keep_separate_revisions_in_one_database(tmp_path):
     from apps.admin_console.database.repositories import prompt_critique_repository
-    from artemis.data_engine import devices
+    from artemis.data_engine import devices, run_connections
     from artemis.data_engine.storage import StorageManager
 
     db = tmp_path / "data_engine.db"
@@ -199,4 +199,5 @@ def test_snapshot_and_device_modules_keep_separate_revisions_in_one_database(tmp
         devices.MODULE: len(devices.REVISIONS),
         run_snapshot.MODULE: len(run_snapshot.REVISIONS),
         prompt_critique_repository.MODULE: len(prompt_critique_repository.REVISIONS),
+        "run_connections": len(run_connections.REVISIONS),
     }
