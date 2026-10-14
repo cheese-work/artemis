@@ -15,6 +15,7 @@
  */
 
 import { LoggerService } from '../../services/logger.service';
+import { deployDrainMessage } from '../../utils/deploy-drain.util';
 import { Component, ChangeDetectionStrategy, inject, computed, effect, signal, untracked } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
@@ -131,7 +132,7 @@ export class ChatInterfaceComponent {
       error: (err) => {
         this.logger.error('Failed to submit task:', err);
         this.isSubmitting.set(false);
-        this.errorMessage.set(err.error?.detail || 'The runner is busy. Please wait for the current task to finish.');
+        this.errorMessage.set(deployDrainMessage(err) ?? (typeof err.error?.detail === 'string' ? err.error.detail : 'The runner is busy. Please wait for the current task to finish.'));
         // Auto-dismiss error banner after 5 seconds
         setTimeout(() => {
           this.errorMessage.set(null);

@@ -11,6 +11,22 @@ import { signal } from '@angular/core';
 import { SessionSidebarComponent } from '../session-sidebar/session-sidebar.component';
 
 describe('RunChatComponent', () => {
+  it('reports deploy drain remaining time and keeps the follow-up draft', fakeAsync(() => {
+    api.sendChat.and.returnValue(throwError(() => new HttpErrorResponse({
+      status: 503,
+      error: { detail: { code: 'server_draining', deadline: Date.now() / 1000 + 75 } }
+    })));
+    const fixture = TestBed.createComponent(RunChatComponent);
+    fixture.componentRef.setInput('runId', 'root');
+    fixture.detectChanges(); tick(0);
+    fixture.componentInstance.draft = 'Keep this prompt';
+    fixture.componentInstance.send();
+    expect(fixture.componentInstance.draft).toBe('Keep this prompt');
+    expect(fixture.componentInstance.error()).toContain('SmartQA đang cập nhật');
+    expect(fixture.componentInstance.error()).toContain('75');
+    fixture.destroy();
+  }));
+
   const thread: ChatSession = {
     session_id: 'root', lease_pid: null, idle_until: null,
     turns: [

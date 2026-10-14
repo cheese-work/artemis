@@ -20,6 +20,7 @@ from apps.admin_console.core.ownership import (
     require_visible_run,
 )
 from apps.admin_console.services.task_queue_service import task_queue_service
+from apps.admin_console.services.deploy_drain import ServerDraining, admission_lock
 from apps.admin_console.database.repositories.session_repository import session_repo
 from apps.admin_console.database.repositories.step_repository import step_repo
 from apps.admin_console.services.media_service import media_service
@@ -202,6 +203,9 @@ async def _ensure_worker(store, identity, message):
     if isinstance(result, asyncio.CancelledError):
         raise result
     if isinstance(result, Exception):
+        if isinstance(result, ServerDraining):
+            store.fail_admission(turn_id, str(result))
+            raise result.http_error() from result
         store.fail_admission(
             turn_id,
             "The session phone could not be re-acquired. Reconnect the original phone, then send another message.",
@@ -214,10 +218,16 @@ async def send_message(
     session_id: str, request: MessageRequest, scope: OwnerScope = Depends(actor_scope)
 ):
     store, session = await asyncio.to_thread(_session, session_id, scope, write=True)
+
+    def persist():
+        with admission_lock:
+            task_queue_service.require_admission_open()
+            return store.send(session["session_id"], request.content, request.client_id)
+
     try:
-        message = await asyncio.to_thread(
-            store.send, session["session_id"], request.content, request.client_id
-        )
+        message = await asyncio.to_thread(persist)
+    except ServerDraining as error:
+        raise error.http_error() from error
     except ValueError as error:
         raise AdminAPIError(409, str(error), str(error)) from error
     await _ensure_worker(store, session["session_id"], message)
@@ -226,10 +236,19 @@ async def send_message(
 
 async def _control(identity, request, scope, kind):
     store, session = await asyncio.to_thread(_session, identity, scope, write=True)
+
+    def persist():
+        with admission_lock:
+            if kind == "continue":
+                task_queue_service.require_admission_open()
+            return store.send(
+                session["session_id"], kind.capitalize(), request.client_id, kind=kind
+            )
+
     try:
-        return await asyncio.to_thread(
-            store.send, session["session_id"], kind.capitalize(), request.client_id, kind=kind
-        )
+        return await asyncio.to_thread(persist)
+    except ServerDraining as error:
+        raise error.http_error() from error
     except ValueError as error:
         raise AdminAPIError(409, str(error), str(error)) from error
 
