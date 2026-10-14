@@ -2,6 +2,9 @@
 
 ## Deploy version
 
+The QA deployment source and durable admission contract are documented in
+[Deploy drain](deploy-drain.md).
+
 Release deployments supply one timestamp through `DEPLOYED_SHA` or
 `ARTEMIS_DEPLOYED_AT`. `GET /api/system/version` keeps `status`, `sha`,
 `short_sha`, and the UTC `deployed_at`, and adds the display-only `build`

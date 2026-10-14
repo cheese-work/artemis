@@ -43,6 +43,14 @@ except ImportError:
 
 from apps.admin_console.core.access_control import AdminAPIError
 from apps.admin_console.services import run_images
+from apps.admin_console.services.deploy_drain import (
+    ServerDraining,
+    admission_lock,
+    drain_file,
+    read_drain,
+    sync_directory,
+    write_drain,
+)
 from apps.admin_console.services.device_reservation import device_reservations
 from artemis.config import (
     PAUSE_FILE,
@@ -64,6 +72,7 @@ from artemis.runtime import (
 from artemis.runtime.adb_endpoint import InvalidAdbEndpoint
 from artemis.runtime.host_endpoints import host_endpoints
 from artemis.runtime.lifecycle import TERMINAL_STATUSES
+from artemis.runtime.lifecycle import InterruptReason
 from artemis.runtime.run_device_binding import RunDeviceBinding
 from artemis.utils.redaction import bind_session, goal_metadata, write_goal_file
 
@@ -77,16 +86,6 @@ _VANISHED_WORKER_SWEEP_SECONDS = 15.0
 
 class TaskEndpointUnavailable(RuntimeError):
     """A queued task's adb endpoint snapshot cannot be turned into an endpoint."""
-
-
-class ServerDraining(RuntimeError):
-    """Admission is closed: the server is draining for a deploy."""
-
-    code = "server_draining"
-    retry_after_seconds = 5
-
-    def __init__(self) -> None:
-        super().__init__("Server is draining for a deploy; retry shortly.")
 
 
 class TaskQueueService:
@@ -582,6 +581,8 @@ class TaskQueueService:
     @classmethod
     def _dispatch_pending_tasks(cls) -> None:
         """Launch every pending task admissible under the current concurrency limit."""
+        if cls.drain_status()["draining"]:
+            return
         limit = cls._concurrency_limit()
         state.prune_finished_runs()
         cls._promote_started_runs()
@@ -1440,18 +1441,134 @@ class TaskQueueService:
         return len(keys)
 
     @classmethod
-    def set_draining(cls, draining: bool) -> None:
-        """Close or reopen admission; running and pending work is untouched."""
-        state.draining = draining
+    def set_draining(
+        cls, draining: bool, owner: str | None = None, deadline: float | None = None
+    ) -> None:
+        with admission_lock:
+            existing = read_drain()
+            if existing and owner is not None and existing["owner"] != owner:
+                raise AdminAPIError(
+                    409,
+                    "Drain belongs to another deployment.",
+                    "drain_owner_conflict",
+                    "Use the recorded deployment owner.",
+                )
+            if draining:
+                if existing is None:
+                    write_drain(
+                        {
+                            "owner": owner or "loopback",
+                            "deadline": deadline
+                            if deadline is not None
+                            else time.time()
+                            + float(os.getenv("ARTEMIS_DRAIN_TIMEOUT_SECONDS", "600")),
+                            "queued_items": [
+                                dict(item)
+                                for item in state.queue_items
+                                if isinstance(item, dict) and item.get("status") == "pending"
+                            ],
+                        }
+                    )
+            else:
+                cls.restore_drained_queue()
+                path = drain_file()
+                path.unlink(missing_ok=True)
+                if path.parent.exists():
+                    sync_directory(path.parent)
+                state.wake_event.set()
+            state.draining = draining
 
     @classmethod
     def drain_status(cls) -> dict[str, Any]:
-        return {"draining": state.draining, "active_run_count": cls.active_run_count()}
+        record = read_drain()
+        draining = record is not None or state.draining
+        pending = (
+            {
+                str(item.get("session_id") or f"item:{id(item)}")
+                for item in state.queue_items
+                if isinstance(item, dict) and item.get("status") == "pending"
+            }
+            - set(state.active_runs)
+            - state.executing_run_keys
+        )
+        result = {
+            "draining": draining,
+            "active_run_count": cls.active_run_count() - len(pending)
+            if draining
+            else cls.active_run_count(),
+        }
+        if record:
+            result.update(
+                owner=record["owner"], deadline=record["deadline"], queued_run_count=len(pending)
+            )
+        return result
+
+    @classmethod
+    def restore_drained_queue(cls) -> int:
+        record = read_drain()
+        restored = 0
+        existing = {item.get("session_id") for item in state.queue_items if isinstance(item, dict)}
+        for saved in (record or {}).get("queued_items", []):
+            if not isinstance(saved, dict):
+                continue
+            session_id = saved.get("session_id")
+            if (
+                not session_id
+                or session_id in existing
+                or session_repo.get_session_status(session_id) != "queued"
+            ):
+                continue
+            item = dict(saved)
+            target = cls._task_target(item)
+            DeviceExecutionLock.cancel_reservation(item.get("queue_ticket"))
+            item["queue_ticket"] = DeviceExecutionLock.reserve(
+                device_id=item.get("device_serial") or "pending",
+                session_id=session_id,
+                ingress=item.get("ingress"),
+                lock_scope=target.lock_scope,
+            )
+            state.queue_items.append(item)
+            existing.add(session_id)
+            restored += 1
+        return restored
 
     @staticmethod
     def require_admission_open() -> None:
-        if state.draining:
-            raise ServerDraining
+        record = read_drain()
+        if record is not None or state.draining:
+            raise ServerDraining(record)
+
+    @classmethod
+    def cut_for_deploy(cls, owner: str) -> list[str]:
+        with admission_lock:
+            record = read_drain()
+            if record is None or record["owner"] != owner:
+                raise AdminAPIError(
+                    409,
+                    "Drain belongs to another deployment.",
+                    "drain_owner_conflict",
+                    "Use the recorded deployment owner.",
+                )
+            sessions = (
+                set(state.active_runs)
+                | state.executing_run_keys
+                | {
+                    str(item["session_id"])
+                    for item in state.queue_items
+                    if isinstance(item, dict)
+                    and item.get("session_id")
+                    and item.get("status") in IN_FLIGHT_STATUSES
+                }
+            )
+            for session_id in sorted(sessions):
+                session_repo.lifecycle.interrupt(
+                    session_id,
+                    InterruptReason.DEPLOY_CUT,
+                    error="Run interrupted by an explicit deployment cut.",
+                )
+                cls._deliver_outcome(session_id)
+            logger.warning("event=deploy_drain owner=%s cut=%s", owner, sorted(sessions))
+            return sorted(sessions)
 
     @classmethod
     def _find_duplicate_submission(

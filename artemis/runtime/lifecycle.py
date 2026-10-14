@@ -51,6 +51,7 @@ class InterruptReason(StrEnum):
     BRIDGE_CLOSED = "bridge_closed"
     DEVICE_OFFLINE = "device_offline"
     SERVER_RESTARTED = "server_restarted"
+    DEPLOY_CUT = "deploy_cut"
     AUTH_EXPIRED = "auth_expired"
 
 

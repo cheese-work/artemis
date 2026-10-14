@@ -2,6 +2,7 @@ import { afterRenderEffect, ChangeDetectionStrategy, Component, computed, effect
 import { FormsModule } from '@angular/forms';
 import { CdkTextareaAutosize } from '@angular/cdk/text-field';
 import { HttpErrorResponse } from '@angular/common/http';
+import { deployDrainMessage } from '../../utils/deploy-drain.util';
 import { DatePipe, JsonPipe } from '@angular/common';
 import { catchError, distinctUntilChanged, of, switchMap, takeWhile, timer } from 'rxjs';
 import { ChatSession, RunSummary } from '../../core/models/run.model';
@@ -237,6 +238,6 @@ export class RunChatComponent {
   }
 
   private reportError(error: HttpErrorResponse): void {
-    this.error.set(typeof error.error?.detail === 'string' ? error.error.detail : 'Chat could not connect. Your draft is kept. Try again.');
+    this.error.set(deployDrainMessage(error) ?? (typeof error.error?.detail === 'string' ? error.error.detail : 'Chat could not connect. Your draft is kept. Try again.'));
   }
 }

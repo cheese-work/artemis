@@ -173,6 +173,10 @@ class Settings(BaseSettings):
     )
 
     # Paths & Storage
+    ARTEMIS_DRAIN_TIMEOUT_SECONDS: int = Field(default=600, ge=0)
+    ARTEMIS_PAUSE_WINDOW_SECONDS: int = Field(default=300, gt=0)
+    ARTEMIS_VERDICT_PENDING_SECONDS: int = Field(default=30, gt=0)
+
     TRACES_PATH: Path = Field(default_factory=get_default_traces_path)
     DATA_ENGINE_DB_PATH: Path = Field(default_factory=get_data_engine_db_path)
     TEMP_PATH: Path = Field(default_factory=get_temp_dir)
