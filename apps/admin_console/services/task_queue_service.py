@@ -1866,7 +1866,7 @@ class TaskQueueService:
                 if goal_images:
                     # Synchronous on purpose: nothing may yield before the queue append.
                     task_item["goal_images"] = run_images.store(session_id, goal_images)
-            except (OSError, RuntimeError) as exc:
+            except (OSError, RuntimeError, sqlite3.Error) as exc:
                 DeviceExecutionLock.cancel_reservation(task_item.get("queue_ticket"))
                 device_reservations.release(session_id)
                 if trace_created or (
