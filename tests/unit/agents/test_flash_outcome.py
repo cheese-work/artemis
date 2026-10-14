@@ -157,3 +157,28 @@ async def test_runner_stops_without_inventing_a_cause(runner, response):
         result = await runner.run(State(initial_goal="Test the app"))
     assert result["status"] == "failed"
     assert "cause" not in result
+
+
+@pytest.mark.asyncio
+async def test_completed_report_references_its_final_screenshot(runner, tmp_path):
+    step_id = uuid4()
+    image = tmp_path / "final.jpg"
+    image.write_bytes(b"screenshot")
+    runner.ctx.data_engine.record_step.return_value = step_id
+    runner.ctx.data_engine.get_step_number.return_value = 4
+    runner.ctx.data_engine.get_step_record.return_value = SimpleNamespace(
+        step_id=step_id,
+        step_number=4,
+        pre_image_name="final",
+        post_image_name=None,
+    )
+    runner.ctx.data_engine.get_step_image_path.side_effect = lambda step_number, which: (
+        image if which == "pre" else None
+    )
+    result = await run_report(runner, {"status": "completed"})
+    assert result["evidence_ref"] == {
+        "step_id": str(step_id),
+        "step_number": 4,
+        "image_name": "final",
+        "which": "pre",
+    }

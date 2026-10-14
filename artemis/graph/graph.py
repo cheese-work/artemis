@@ -450,34 +450,30 @@ async def exit_settlement_node(state: State, ctx: ArtemisContext):
         verify_blocked=verify_blocked,
         retired=retired if isinstance(retired, set) else None,
     )
-    if snapshot.all_check_items or records or verify_blocked:
-        update["run_outcome"] = outcome.model_dump()
-        # BLOCKED/partial wrap-ups carry the last findings in the metadata file.
-        extra: dict = {"last_findings": blocked_findings} if blocked_findings else {}
-        # Which UI-hierarchy source served the run, so a report reader can tell a
-        # helper run from a UIAutomator2 fallback without reading logs.
-        from artemis.clients.screen_client_factory import hierarchy_backend_summary
+    update["run_outcome"] = outcome.model_dump()
+    extra: dict = {"last_findings": blocked_findings} if blocked_findings else {}
+    from artemis.clients.screen_client_factory import hierarchy_backend_summary
 
-        environment = hierarchy_backend_summary(getattr(ctx, "ui_adb_client", None))
-        if environment:
-            extra["environment"] = environment
-        write_run_outcome(base_dir, outcome, extra or None)
-        publish_checker_event(
-            ctx,
-            {
-                "event": "run_outcome",
-                "phase": "outcome",
-                **outcome.model_dump(),
-                "last_findings": list(blocked_findings),
-            },
-        )
-        logger.info(
-            f"Run outcome: task_status={outcome.task_status},"
-            f" tests(passed={outcome.tests.passed}, failed={outcome.tests.failed},"
-            f" inconclusive={outcome.tests.inconclusive},"
-            f" unchecked={outcome.tests.unchecked},"
-            f" retired={outcome.tests.retired})"
-        )
+    environment = hierarchy_backend_summary(getattr(ctx, "ui_adb_client", None))
+    if environment:
+        extra["environment"] = environment
+    write_run_outcome(base_dir, outcome, extra or None)
+    publish_checker_event(
+        ctx,
+        {
+            "event": "run_outcome",
+            "phase": "outcome",
+            **outcome.model_dump(),
+            "last_findings": list(blocked_findings),
+        },
+    )
+    logger.info(
+        f"Run outcome: task_status={outcome.task_status},"
+        f" tests(passed={outcome.tests.passed}, failed={outcome.tests.failed},"
+        f" inconclusive={outcome.tests.inconclusive},"
+        f" unchecked={outcome.tests.unchecked},"
+        f" retired={outcome.tests.retired})"
+    )
     return update
 
 

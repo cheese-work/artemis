@@ -465,6 +465,35 @@ class AgentBase:
             last_state: State | None = None
             last_state_snapshot: dict | None = None
             output = None
+
+            async def finalize_task(**kwargs):
+                from artemis.graph.checkpoints import (
+                    read_ledger,
+                    read_run_outcome,
+                    write_run_outcome,
+                )
+
+                base_dir = getattr(context.data_engine, "base_dir", None)
+                if isinstance(base_dir, (str, Path)):
+                    if request.profile and request.profile.lower() == "flash":
+                        report = kwargs.get("content")
+                        report = report if isinstance(report, dict) else {}
+                        outcome = {
+                            "task_status": report.get("status"),
+                            "cause": report.get("cause"),
+                            "evidence_step": report.get("evidence_step"),
+                        }
+                        for field_name in ("expected", "actual", "evidence_ref"):
+                            if field_name in report:
+                                outcome[field_name] = report[field_name]
+                    else:
+                        outcome = read_run_outcome(base_dir) or {
+                            "task_status": None,
+                            "checker_items": read_ledger(base_dir),
+                        }
+                    write_run_outcome(base_dir, outcome)
+                await task.finalize(**kwargs)
+
             effective_mode = getattr(self._config, "concurrency_mode", "per_device")
             effective_max = getattr(self._config, "max_concurrency", None)
             sess_id = (
@@ -594,7 +623,7 @@ class AgentBase:
                             status = flash_result.get("status")
                             if status == "completed":
                                 logger.info(f"✅ Automation '{task_name}' is success ✅")
-                                await task.finalize(content=output, state=last_state_snapshot)
+                                await finalize_task(content=output, state=last_state_snapshot)
                                 if context.data_engine:
                                     context.data_engine.end_session("completed")
                             else:
@@ -603,7 +632,7 @@ class AgentBase:
                                     f" {flash_result.get('explanation')}"
                                 )
                                 logger.warning(err)
-                                await task.finalize(
+                                await finalize_task(
                                     content=output,
                                     state=last_state_snapshot,
                                     error=err,
@@ -644,7 +673,7 @@ class AgentBase:
                             if not last_state:
                                 err = f"[{task_name}] No result received from graph"
                                 logger.warning(err)
-                                await task.finalize(
+                                await finalize_task(
                                     content=output,
                                     state=last_state_snapshot,
                                     error=err,
@@ -680,7 +709,7 @@ class AgentBase:
                                     " check budget."
                                 )
                                 logger.warning(err)
-                                await task.finalize(
+                                await finalize_task(
                                     content=output,
                                     state=last_state_snapshot,
                                     error=err,
@@ -697,7 +726,7 @@ class AgentBase:
                                 )
                             else:
                                 logger.info(f"✅ Automation '{task_name}' is success ✅")
-                            await task.finalize(content=output, state=last_state_snapshot)
+                            await finalize_task(content=output, state=last_state_snapshot)
                             if context.data_engine:
                                 context.data_engine.end_session("completed")
 
@@ -740,7 +769,7 @@ class AgentBase:
             except asyncio.CancelledError:
                 err = f"[{task_name}] Task cancelled"
                 logger.warning(err)
-                await task.finalize(
+                await finalize_task(
                     content=output,
                     state=last_state_snapshot,
                     error=err,
@@ -753,7 +782,7 @@ class AgentBase:
             except Exception as e:
                 err = f"[{task_name}] Error running automation: {e}"
                 logger.error(err)
-                await task.finalize(
+                await finalize_task(
                     content=output,
                     state=last_state_snapshot,
                     error=err,

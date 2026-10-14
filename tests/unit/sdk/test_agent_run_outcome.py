@@ -1,4 +1,5 @@
 import json
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -29,12 +30,13 @@ from artemis.sdk.types.task import Task
         {"status": "interrupted", "interrupt_reason": "device_offline"},
         {},
         RuntimeError("model failed"),
+        asyncio.CancelledError(),
     ],
 )
 async def test_flash_outcome_exists_before_task_finalize(
     tmp_path, monkeypatch, fake_provider_credentials, report
 ):
-    from artemis.sdk import agent as agent_module
+    from third_party.mobile_use.sdk import agent as agent_module
 
     context = MagicMock(spec=ArtemisContext)
     context.data_engine = MagicMock()
@@ -45,7 +47,7 @@ async def test_flash_outcome_exists_before_task_finalize(
     monkeypatch.setattr(agent_module, "ArtemisContext", lambda **kwargs: context)
     run = (
         AsyncMock(side_effect=report)
-        if isinstance(report, Exception)
+        if isinstance(report, BaseException)
         else AsyncMock(return_value=report)
     )
     monkeypatch.setattr(
@@ -89,7 +91,10 @@ async def test_flash_outcome_exists_before_task_finalize(
         return await original_finalize(task, *args, **kwargs)
 
     monkeypatch.setattr(Task, "finalize", inspect_finalize)
-    if isinstance(report, Exception):
+    if isinstance(report, asyncio.CancelledError):
+        with pytest.raises(asyncio.CancelledError):
+            await agent.run_task(goal="test", profile="flash")
+    elif isinstance(report, Exception):
         with pytest.raises(Exception, match="model failed"):
             await agent.run_task(goal="test", profile="flash")
     else:
