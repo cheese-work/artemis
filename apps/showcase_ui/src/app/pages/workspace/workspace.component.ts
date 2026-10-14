@@ -15,6 +15,7 @@
  */
 
 import { LoggerService } from '../../services/logger.service';
+import { deployDrainMessage } from '../../utils/deploy-drain.util';
 import { BrowserStorageService } from '../../services/browser-storage.service';
 import { ModelCatalogService } from '../../services/model-catalog.service';
 import { Component, ChangeDetectionStrategy, NgZone, DestroyRef, effect, inject, computed, signal, ViewChild, ElementRef, OnInit } from '@angular/core';
@@ -429,7 +430,7 @@ export class WorkspaceComponent implements OnInit {
         const fallback = imageChat
           ? 'The message could not be sent. Your text and images are kept; try again.'
           : 'The runner is busy. Please wait for current task to finish.';
-        this.setErrorMessage(err.error?.detail || fallback);
+        this.setErrorMessage(deployDrainMessage(err) ?? (typeof err.error?.detail === 'string' ? err.error.detail : fallback));
       }
     });
   }

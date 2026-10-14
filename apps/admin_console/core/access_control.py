@@ -769,6 +769,8 @@ def route_tier(path: str, methods: set[str], is_websocket: bool = False) -> str 
         return "lifecycle"
     if path == "/api/system/drain" and methods in ({"GET"}, {"POST"}, {"DELETE"}):
         return "loopback"
+    if path == "/api/system/drain/cut" and methods == {"POST"}:
+        return "loopback"
     if path == "/api/system/service-readiness" and methods == {"GET"}:
         return "loopback"
     if path == "/api/v1" or path.startswith("/api/v1/"):

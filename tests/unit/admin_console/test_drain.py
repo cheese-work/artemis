@@ -18,7 +18,9 @@ Everything runs against the in-memory queue: no ADB, browser, USB or device.
 """
 
 import asyncio
+import json
 import sqlite3
+import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from httpx import ASGITransport, AsyncClient
@@ -36,6 +38,7 @@ DRAIN = "/api/system/drain"
 
 @pytest.fixture
 def env(tmp_path, monkeypatch):
+    monkeypatch.setenv("ARTEMIS_DRAIN_FILE", str(tmp_path / "deploy-drain.json"))
     monkeypatch.setattr(session_repo, "db_path", tmp_path / "sessions.db")
     monkeypatch.setattr(trace_store, "TRACES_DIR", str(tmp_path / "traces"))
     state.queue_items.clear()
@@ -100,8 +103,11 @@ async def test_post_enables_idempotently_and_delete_clears(env):
         after = await client.get(DRAIN)
 
     assert first.status_code == second.status_code == 200
-    assert first.json() == second.json() == {"draining": True, "active_run_count": 0}
-    assert reported.json() == {"draining": True, "active_run_count": 0}
+    assert first.json() == second.json() == reported.json()
+    assert reported.json()["draining"] is True
+    assert reported.json()["active_run_count"] == 0
+    assert reported.json()["owner"]
+    assert reported.json()["deadline"] > time.time()
     assert cleared.json() == cleared_again.json() == after.json()
     assert after.json() == {"draining": False, "active_run_count": 0}
 
@@ -208,19 +214,18 @@ async def test_run_cancelled_before_it_starts_counts_until_the_task_is_done(env)
 
 
 @pytest.mark.asyncio
-async def test_drain_report_counts_waiting_and_running_rows_together(env):
-    """Deploy drain waits for queued work too; host maintenance must not reuse this count."""
+async def test_drain_report_excludes_held_queue_items(env):
     state.queue_items.extend([_item("w1"), _item("w2"), _item("r1", "running")])
 
     async with _client() as client:
         response = await client.post(DRAIN)
 
-    assert response.json() == {"draining": True, "active_run_count": 3}
+    assert response.json()["active_run_count"] == 1
+    assert response.json()["queued_run_count"] == 2
 
 
 @pytest.mark.asyncio
-async def test_drain_flag_does_not_fence_a_limit_n_dispatch(env, monkeypatch):
-    """Drain closes submission only; the dispatcher keeps starting accepted rows."""
+async def test_drain_holds_a_limit_n_dispatch(env, monkeypatch):
     monkeypatch.setattr(TaskQueueService, "_concurrency_limit", classmethod(lambda cls: 2))
     state.draining = True
     state.queue_items.extend([_item("a") | {"device_serial": "d1"}, _item("b")])
@@ -233,14 +238,15 @@ async def test_drain_flag_does_not_fence_a_limit_n_dispatch(env, monkeypatch):
         TaskQueueService._dispatch_pending_tasks()
         await asyncio.sleep(0)
 
-    assert started == ["a", "b"]
+    assert started == []
+    assert all(item["status"] == "pending" for item in state.queue_items)
 
 
 # -- admission closes, execution does not ---------------------------------
 
 
 @pytest.mark.asyncio
-async def test_pending_work_still_dispatches_while_draining(env):
+async def test_pending_work_is_held_while_draining(env):
     state.draining = True
     item = _item("a")
     state.queue_items.append(item)
@@ -253,8 +259,129 @@ async def test_pending_work_still_dispatches_while_draining(env):
         TaskQueueService._dispatch_pending_tasks()
         await asyncio.sleep(0)
 
-    assert item["status"] == "running"
-    assert started == ["a"]
+    assert item["status"] == "pending"
+    assert started == []
+
+
+@pytest.mark.asyncio
+async def test_durable_drain_survives_restart_until_explicit_health_clear(env, tmp_path):
+    deadline = time.time() + 75
+    async with _client() as client:
+        response = await client.post(DRAIN, json={"owner": "deploy-test", "deadline": deadline})
+        assert response.status_code == 200
+        marker = tmp_path / "deploy-drain.json"
+        assert marker.is_file()
+        assert json.loads(marker.read_text())["owner"] == "deploy-test"
+        state.draining = False
+        refused = await client.post("/api/run", json={"goal": "kept prompt"})
+        assert refused.status_code == 503
+        assert 73 <= int(refused.headers["retry-after"]) <= 75
+        assert refused.json()["detail"]["deadline"] == deadline
+        assert _session_rows() == 0
+        await client.delete(DRAIN, params={"owner": "deploy-test"})
+        assert not marker.exists()
+
+
+@pytest.mark.asyncio
+async def test_expired_deadline_never_reopens_admission_before_health(env, tmp_path):
+    (tmp_path / "deploy-drain.json").write_text(
+        json.dumps({"owner": "deploy-test", "deadline": time.time() - 1})
+    )
+    async with _client() as client:
+        refused = await client.post("/api/run", json={"goal": "must stay closed"})
+    assert refused.status_code == 503
+    assert refused.headers["retry-after"] == "1"
+    assert _session_rows() == 0
+
+
+@pytest.mark.asyncio
+async def test_drain_owner_cannot_be_stolen_or_cleared(env):
+    async with _client() as client:
+        await client.post(DRAIN, json={"owner": "first", "deadline": time.time() + 60})
+        stolen = await client.post(DRAIN, json={"owner": "other", "deadline": time.time() + 60})
+        cleared = await client.delete(DRAIN, params={"owner": "other"})
+        status = await client.get(DRAIN)
+    assert stolen.status_code == cleared.status_code == 409
+    assert status.json()["draining"] is True
+    assert status.json()["owner"] == "first"
+
+
+@pytest.mark.asyncio
+async def test_explicit_deploy_cut_is_recorded_before_restart(env):
+    assert session_repo.create_queued_session("active-cut", "goal", "flash", None, None, None)
+    state.queue_items.extend([_item("active-cut", "running"), _item("held")])
+    async with _client() as client:
+        await client.post(DRAIN, json={"owner": "deploy-test", "deadline": time.time() + 60})
+        denied = await client.post(DRAIN + "/cut", json={"owner": "other"})
+        assert denied.status_code == 409
+        response = await client.post(DRAIN + "/cut", json={"owner": "deploy-test"})
+    assert response.status_code == 200
+    assert response.json()["session_ids"] == ["active-cut"]
+    with sqlite3.connect(session_repo.db_path) as connection:
+        assert connection.execute(
+            "SELECT status, interrupt_reason FROM sessions WHERE session_id='active-cut'"
+        ).fetchone() == ("interrupted", "deploy_cut")
+    assert state.queue_items[-1]["status"] == "pending"
+
+
+@pytest.mark.asyncio
+async def test_held_queue_survives_restart_without_reviving_cancelled_work(env):
+    await _enqueue(session_id="kept")
+    await _enqueue(session_id="cancelled")
+    TaskQueueService.set_draining(True)
+    session_repo.lifecycle.finish("cancelled", "cancelled")
+    state.queue_items.clear()
+    state.draining = False
+    assert TaskQueueService.restore_drained_queue() == 1
+    assert TaskQueueService.restore_drained_queue() == 0
+    assert [item["session_id"] for item in state.queue_items] == ["kept"]
+    assert state.queue_items[0]["status"] == "pending"
+    async with _client() as client:
+        await client.delete(DRAIN)
+    assert [item["session_id"] for item in state.queue_items] == ["kept"]
+
+
+@pytest.mark.asyncio
+async def test_cut_route_rejects_remote_peers(env):
+    async with _client(("203.0.113.9", 4242)) as client:
+        response = await client.post(DRAIN + "/cut", json={"owner": "remote"})
+    assert response.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_corrupt_drain_record_fails_closed(env, tmp_path):
+    (tmp_path / "deploy-drain.json").write_text('{"owner":')
+    async with _client() as client:
+        response = await client.post("/api/run", json={"goal": "must stay closed"})
+    assert response.status_code == 503
+    assert _session_rows() == 0
+
+
+@pytest.mark.asyncio
+async def test_follow_up_during_drain_is_refused_before_persistence(env, qa, library, monkeypatch):
+    from apps.admin_console.routers import chats
+    from artemis.data_engine.chat_sessions import ChatStore
+
+    identity = library.seed("Check login", status="running")
+    with sqlite3.connect(library.db) as connection:
+        connection.execute(
+            "UPDATE run_meta SET requested_by='qa@example.com' WHERE session_id=?", (identity,)
+        )
+    monkeypatch.setattr(chats, "DB_PATH", library.db)
+    ensure_worker = AsyncMock()
+    monkeypatch.setattr(chats, "_ensure_worker", ensure_worker)
+    store = ChatStore(library.db)
+    before = store.get(identity)
+    state.draining = True
+    response = await qa.post(
+        f"/api/chats/{identity}/messages",
+        json={"content": "Keep this follow-up", "client_id": "drained"},
+    )
+    assert response.status_code == 503
+    assert response.json()["detail"]["code"] == "server_draining"
+    assert "phone" not in response.json()["detail"]["message"]
+    assert store.get(identity) == before
+    ensure_worker.assert_not_awaited()
 
 
 @pytest.mark.asyncio

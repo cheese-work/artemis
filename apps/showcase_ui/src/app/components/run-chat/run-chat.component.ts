@@ -2,6 +2,7 @@ import { afterRenderEffect, ChangeDetectionStrategy, Component, computed, effect
 import { FormsModule } from '@angular/forms';
 import { CdkTextareaAutosize } from '@angular/cdk/text-field';
 import { HttpErrorResponse } from '@angular/common/http';
+import { deployDrainMessage } from '../../utils/deploy-drain.util';
 import { DatePipe, JsonPipe } from '@angular/common';
 import { catchError, distinctUntilChanged, of, switchMap, takeWhile, timer } from 'rxjs';
 import { ChatSession, RunSummary } from '../../core/models/run.model';
@@ -15,6 +16,7 @@ import { mediaUrl } from '../../utils/app-url.util';
 import { deviceTitle, isIdentifiedDevice } from '../../utils/device-label.util';
 import { recordedDevice } from '../../utils/session-device.util';
 import { runTitle } from '../../utils/run-title.util';
+import { actionMarker } from '../../utils/step-evidence.util';
 import { SessionSidebarComponent } from '../session-sidebar/session-sidebar.component';
 
 @Component({
@@ -235,13 +237,15 @@ export class RunChatComponent {
     if (this.chat()?.session_id === identity) this.revision.update(value => value + 1);
   }
 
-  public screenshot(payload: Record<string, any> | undefined): string | null {
-    const image = payload?.['post_image_name'];
+  public readonly actionMarker = actionMarker;
+
+  public screenshot(payload: Record<string, any> | undefined, key: 'pre_image_name' | 'post_image_name' = 'post_image_name'): string | null {
+    const image = payload?.[key];
     return typeof image === 'string' && !this.failedImages().has(image) ? mediaUrl('/images/' + encodeURIComponent(image)) : null;
   }
 
-  public failScreenshot(payload: Record<string, any> | undefined): void {
-    const image = payload?.['post_image_name'];
+  public failScreenshot(payload: Record<string, any> | undefined, key: 'pre_image_name' | 'post_image_name' = 'post_image_name'): void {
+    const image = payload?.[key];
     if (typeof image === 'string') this.failedImages.update(images => new Set([...images, image]));
   }
 
@@ -250,6 +254,6 @@ export class RunChatComponent {
   }
 
   private reportError(error: HttpErrorResponse): void {
-    this.error.set(typeof error.error?.detail === 'string' ? error.error.detail : 'Chat could not connect. Your draft is kept. Try again.');
+    this.error.set(deployDrainMessage(error) ?? (typeof error.error?.detail === 'string' ? error.error.detail : 'Chat could not connect. Your draft is kept. Try again.'));
   }
 }

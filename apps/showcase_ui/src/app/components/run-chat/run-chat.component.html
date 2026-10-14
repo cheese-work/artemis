@@ -50,8 +50,36 @@
                 <summary><span>{{ message.content }}</span>
                   @if (screenshot(message.payload); as image) { <img class="step-thumbnail" [src]="image" alt="Step thumbnail" loading="lazy" (error)="failScreenshot(message.payload)"> }
                 </summary>
-                @if (screenshot(message.payload); as image) { <img class="step-screenshot" [src]="image" alt="Expanded step screenshot" loading="lazy" (load)="scrollToLatest()" (error)="failScreenshot(message.payload)"> }
-                @else { <p class="receipt">Screenshot unavailable.</p> }
+                @let marker = actionMarker(message.payload);
+                <div class="evidence">
+                  <figure class="evidence-before">
+                    <figcaption>Before</figcaption>
+                    @if (screenshot(message.payload, 'pre_image_name'); as image) {
+                      <span class="shot">
+                        <img class="step-before" [src]="image" [alt]="marker ? 'Before screenshot. Agent action: ' + marker.caption : 'Before screenshot'" loading="lazy"
+                          (load)="scrollToLatest()" (error)="failScreenshot(message.payload, 'pre_image_name')">
+                        @if (marker?.line; as line) {
+                          <svg class="action-marker swipe" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true" focusable="false">
+                            <defs><marker [id]="'arrow-' + message.sequence" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto"><path d="M0 0L10 5L0 10z"/></marker></defs>
+                            <line [attr.x1]="line.x1" [attr.y1]="line.y1" [attr.x2]="line.x2" [attr.y2]="line.y2" [attr.marker-end]="'url(#arrow-' + message.sequence + ')'"/>
+                          </svg>
+                        } @else if (marker?.box; as box) {
+                          <span class="action-marker type box" aria-hidden="true" [style.left.%]="box.x" [style.top.%]="box.y" [style.width.%]="box.w" [style.height.%]="box.h"></span>
+                        } @else if (marker?.point; as point) {
+                          <span class="action-marker ring" [class.tap]="marker!.kind === 'tap'" [class.type]="marker!.kind === 'type'" aria-hidden="true" [style.left.%]="point.x" [style.top.%]="point.y"></span>
+                        } @else if (marker?.kind === 'key') {
+                          <span class="action-marker key" aria-hidden="true"></span>
+                        }
+                      </span>
+                      @if (marker) { <span class="action-caption">{{ marker.caption }}</span> }
+                    } @else { <p class="receipt">Before screenshot unavailable.</p> }
+                  </figure>
+                  <figure class="evidence-after">
+                    <figcaption>After</figcaption>
+                    @if (screenshot(message.payload); as image) { <img class="step-screenshot" [src]="image" alt="Expanded step screenshot" loading="lazy" (load)="scrollToLatest()" (error)="failScreenshot(message.payload)"> }
+                    @else { <p class="receipt">Screenshot unavailable.</p> }
+                  </figure>
+                </div>
                 @if (shell.technicalDetails()) { <pre class="action-detail">{{ message.payload | json }}</pre> }
               </details>
             } @else if (message.kind === 'thinking') {

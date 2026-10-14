@@ -150,6 +150,13 @@ def test_drain_controls_are_loopback_tier_for_every_method():
     assert route_tier("/api/system/drain", {"PUT"}) is None
 
 
+def test_deploy_cut_is_loopback_tier_only_for_post():
+    assert route_tier("/api/system/drain/cut", {"POST"}) == "loopback"
+    for method in ("GET", "DELETE", "PUT", "PATCH", "HEAD", "OPTIONS"):
+        assert route_tier("/api/system/drain/cut", {method}) is None
+    assert route_tier("/api/system/drain/cut", set(), is_websocket=True) is None
+
+
 HOST_ROUTES = [
     ("/api/hosts", {"GET"}, "public"),
     ("/api/hosts/enrollment-codes", {"POST"}, "admin"),

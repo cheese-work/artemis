@@ -162,6 +162,7 @@ DISABLED = frozenset(
         "POST /api/system/failures/collect",
         "POST /api/system/failures/digest",
         "POST /api/system/drain",
+        "POST /api/system/drain/cut",
         "DELETE /api/system/drain",
         # Host agents, enrollment and the device bridge.
         f"{WEBSOCKET} /api/device-bridge/session",
