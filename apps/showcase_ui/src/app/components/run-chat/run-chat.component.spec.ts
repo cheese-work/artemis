@@ -286,13 +286,13 @@ describe('RunChatComponent', () => {
       thread.messages[0],
       { ...thread.messages[0], role: 'agent', sequence: 3, kind: 'plan', content: 'Open settings' },
       { ...thread.messages[0], role: 'agent', sequence: 4, kind: 'thinking', content: 'Find the control\nMore detail' },
-      { ...thread.messages[0], role: 'agent', sequence: 5, kind: 'step', content: 'Tap settings', payload: { step_id: 'step-1', pre_image_name: 'shot.png', action_taken: { x: 42 } } },
+      { ...thread.messages[0], role: 'agent', sequence: 5, kind: 'step', content: 'Tap settings', payload: { step_id: 'step-1', post_image_name: 'shot.png', action_taken: { x: 42 } } },
       { ...thread.messages[0], role: 'agent', sequence: 6, kind: 'input_request', content: 'Enter username' }
     ], verdict: { status: 'completed', outcome: { phase: 'outcome', tests: { passed: 1, failed: 0, inconclusive: 0, unchecked: 0 }, last_findings: ['Login works'] }, report: 'Raw report', details: { error: 'stack' } } };
     fixture.componentInstance.chat.set(completed);
     const stored = JSON.stringify(completed);
     fixture.detectChanges();
-    expect(fixture.nativeElement.querySelector('[data-event-kind="thinking"]')).toBeNull();
+    expect(fixture.nativeElement.querySelector('details.thinking')).not.toBeNull(); // thinking is in the default view
     expect(fixture.nativeElement.querySelector('.action-detail')).toBeNull();
     expect(fixture.nativeElement.textContent).not.toContain('Raw report');
     const step = fixture.nativeElement.querySelector('.step-row details');
@@ -312,6 +312,81 @@ describe('RunChatComponent', () => {
     fixture.nativeElement.querySelector('.step-screenshot').dispatchEvent(new Event('error'));
     fixture.detectChanges();
     expect(fixture.nativeElement.querySelector('.step-row').textContent).toContain('Screenshot unavailable');
+    fixture.destroy();
+  }));
+
+  const stepMessage = (over: Record<string, unknown> = {}) => ({
+    ...thread.messages[0], role: 'agent', sequence: 5, kind: 'step', content: 'Tap settings',
+    payload: { step_id: 'step-1', pre_image_name: 'pre.png', post_image_name: 'post.png', action_taken: { x: 42 } }, ...over
+  });
+  const withTimeline = (...messages: object[]): ChatSession => ({ ...thread, turns: [{ ...thread.turns[0], status: 'completed' }], timeline: messages as ChatSession['messages'] });
+
+  it('leads a step row with the action, then the post-action screenshot', fakeAsync(() => {
+    const fixture = render();
+    fixture.componentInstance.chat.set(withTimeline(thread.messages[0], stepMessage()));
+    fixture.detectChanges();
+    const summary = fixture.nativeElement.querySelector('.step-row summary') as HTMLElement;
+    const label = summary.querySelector('span')!;
+    const thumbnail = summary.querySelector('img.step-thumbnail') as HTMLImageElement;
+    expect(label.compareDocumentPosition(thumbnail) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(thumbnail.src).toContain('/images/post.png');
+    fixture.destroy();
+  }));
+
+  it('never shows a Before image as the post-action screenshot', fakeAsync(() => {
+    const fixture = render();
+    fixture.componentInstance.chat.set(withTimeline(thread.messages[0], stepMessage({ payload: { step_id: 'step-1', pre_image_name: 'before.png', action_taken: { x: 42 } } })));
+    fixture.detectChanges();
+    expect(fixture.nativeElement.querySelector('img.step-thumbnail')).toBeNull();
+    fixture.nativeElement.querySelector('.step-row summary').click();
+    fixture.detectChanges();
+    expect(fixture.nativeElement.querySelector('.step-screenshot')).toBeNull();
+    expect(fixture.nativeElement.querySelector('.step-row').textContent).toContain('Screenshot unavailable');
+    fixture.destroy();
+  }));
+
+  it('wraps a long step label to two lines at 390 px instead of truncating it', fakeAsync(() => {
+    const fixture = render();
+    fixture.nativeElement.style.width = '390px';
+    fixture.componentInstance.sidebarOpen.set(false); // at a real 390 px the sidebar stacks below; keep this window-size independent
+    fixture.componentInstance.chat.set(withTimeline(thread.messages[0], stepMessage({ content: 'Tap first result PSY - GANGNAM STYLE official music video' })));
+    fixture.detectChanges();
+    const label = fixture.nativeElement.querySelector('.step-row summary span') as HTMLElement;
+    const lineHeight = parseFloat(getComputedStyle(label).lineHeight) || 16;
+    expect(label.getBoundingClientRect().height).toBeGreaterThan(lineHeight * 1.5);
+    expect(label.scrollHeight).toBeLessThanOrEqual(label.clientHeight);
+    fixture.destroy();
+  }));
+
+  it('shows the thinking item in the default view, dimmed and collapsed', fakeAsync(() => {
+    const fixture = render();
+    fixture.componentInstance.chat.set(withTimeline(thread.messages[0], { ...thread.messages[0], role: 'agent', sequence: 4, kind: 'thinking', content: 'Find the control\nMore detail' }));
+    fixture.detectChanges();
+    const thinking = fixture.nativeElement.querySelector('details.thinking') as HTMLDetailsElement;
+    expect(thinking.open).toBeFalse();
+    expect(getComputedStyle(thinking).color).toBe('rgb(107, 107, 115)'); // --color-text-faint
+    fixture.destroy();
+  }));
+
+  it('shows skeleton rows while the session loads', fakeAsync(() => {
+    api.chat.and.returnValue(new Subject<ChatSession>());
+    const fixture = render();
+    expect(fixture.nativeElement.querySelectorAll('.step-skeleton').length).toBeGreaterThan(0);
+    expect(fixture.nativeElement.querySelector('[role="status"]').textContent).toContain('Loading chat session');
+    fixture.destroy();
+  }));
+
+  it('says what is missing when a session has no steps, and drops the note once one exists', fakeAsync(() => {
+    const fixture = render();
+    fixture.componentInstance.chat.set(withTimeline(thread.messages[0]));
+    fixture.detectChanges();
+    expect(fixture.nativeElement.querySelector('.timeline-empty').textContent).toContain('No steps were recorded.');
+    fixture.componentInstance.chat.set({ ...withTimeline(thread.messages[0]), turns: [{ ...thread.turns[0], status: 'running' }] });
+    fixture.detectChanges();
+    expect(fixture.nativeElement.querySelector('.timeline-empty').textContent).toContain('Waiting for the first step.');
+    fixture.componentInstance.chat.set(withTimeline(thread.messages[0], stepMessage()));
+    fixture.detectChanges();
+    expect(fixture.nativeElement.querySelector('.timeline-empty')).toBeNull();
     fixture.destroy();
   }));
 
