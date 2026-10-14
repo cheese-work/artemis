@@ -48,10 +48,7 @@ function build(payload: any): ActionMarker | null {
   }
   if (kind === 'type') {
     const text = String(getActionInputText(act)).slice(0, 40);
-    const bounds = extractNumbersFromCoordinateValue(act.target_bounds);
-    const width = payload.extra_metadata?.width || 1080;
-    const height = payload.extra_metadata?.height || 2400;
-    const box = bounds?.length === 4 ? { x: bounds[0] * 100 / width, y: bounds[1] * 100 / height, w: (bounds[2] - bounds[0]) * 100 / width, h: (bounds[3] - bounds[1]) * 100 / height } : undefined;
+    const box = typedFieldBox(act, payload, at);
     return { kind, caption: named(text ? `Type "${text}"` : 'Type'), box, point: at ? { x: pct(at[0]), y: pct(at[1]) } : undefined };
   }
   if (kind === 'swipe') {
@@ -62,4 +59,19 @@ function build(payload: any): ActionMarker | null {
     return { kind, caption: named(`Swipe${direction}`), line: from && to ? { x1: pct(from[0]), y1: pct(from[1]), x2: pct(to[0]), y2: pct(to[1]) } : undefined };
   }
   return { kind, caption: `Key · ${getActionInputText(act) || name.replace('press_', '').toUpperCase()}` };
+}
+
+// Indexed targets record `target_bounds` on the 0 to 1000 scale (the executor); older operator
+// records hold pixels. A value above 1000 can only be pixels. Otherwise the tap point, which is
+// always normalized, picks whichever reading puts the box centre closer to it.
+function typedFieldBox(act: any, payload: any, at: number[] | null): ActionMarker['box'] {
+  const b = extractNumbersFromCoordinateValue(act.target_bounds);
+  if (b?.length !== 4) return undefined;
+  const width = payload.extra_metadata?.width || 1080;
+  const height = payload.extra_metadata?.height || 2400;
+  const normalized = b.map(pct);
+  const pixels = [b[0] * 100 / width, b[1] * 100 / height, b[2] * 100 / width, b[3] * 100 / height];
+  const gap = (box: number[]) => at ? Math.hypot((box[0] + box[2]) / 2 - pct(at[0]), (box[1] + box[3]) / 2 - pct(at[1])) : 0;
+  const box = b.some(v => v > 1000) || gap(pixels) < gap(normalized) ? pixels : normalized;
+  return { x: box[0], y: box[1], w: box[2] - box[0], h: box[3] - box[1] };
 }
