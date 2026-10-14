@@ -30,7 +30,7 @@ async def test_gateway_refusal_records_the_readable_failed_step_for_the_run_view
     monkeypatch, fake_provider_credentials, record_failure, explicit_quota
 ):
     from artemis.context import ArtemisContext
-    from artemis.sdk import agent as agent_module
+    from third_party.mobile_use.sdk import agent as agent_module
     from artemis.services import llm as llm_service
 
     monkeypatch.setenv("ARTEMIS_CLOUD_MODE", "1")
@@ -134,7 +134,7 @@ async def test_tip_runs_after_trace_and_sdk_device_release(
     monkeypatch, fake_provider_credentials, caplog
 ):
     from artemis.context import ArtemisContext
-    from artemis.sdk import agent as agent_module
+    from third_party.mobile_use.sdk import agent as agent_module
     from apps.admin_console.services import automatic_prompt_tips
 
     monkeypatch.delenv("ARTEMIS_CLOUD_MODE", raising=False)

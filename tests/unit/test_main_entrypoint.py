@@ -18,6 +18,8 @@ Only a free-text goal is rewritten into ``run <goal>``; registered commands
 and root options are passed through unchanged.
 """
 
+from unittest.mock import Mock
+
 import pytest
 import typer
 
@@ -81,6 +83,7 @@ def test_cli_status_dispatches_status_not_run(monkeypatch):
         calls.append(list(legacy_main.sys.argv))
 
     monkeypatch.setattr(legacy_main, "app", fake_app)
+    monkeypatch.setattr(legacy_main, "configure_logging", Mock())
     monkeypatch.setattr(legacy_main.sys, "argv", ["artemis", "status"])
     legacy_main.cli()
     assert calls == [["artemis", "status"]]
