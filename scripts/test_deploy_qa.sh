@@ -29,7 +29,8 @@ make_case() {
   mkdir -p "$REPO/apps/showcase_ui" "$REPO/apps/admin_console/routers"
   printf '@router.get("/server-status")\n' > "$REPO/apps/admin_console/routers/system.py"
   printf 'base\n' > "$REPO/app.txt"
-  git -C "$REPO" add app.txt
+  printf '{}\n' > "$REPO/apps/showcase_ui/package.json"
+  git -C "$REPO" add app.txt apps
   git -C "$REPO" commit -qm base
   git -C "$REPO" branch -M main
   git -C "$REPO" remote add origin "$CASE_ROOT/remote.git"
@@ -57,8 +58,11 @@ make_case() {
 
   cat > "$STUBS/uv" <<'SH'
 #!/usr/bin/env bash
-sha=$(git -C "$REPO" rev-parse HEAD)
+sha=$(git rev-parse HEAD)
 printf '%s\n' "$sha" >> "$BUILD_LOG"
+if [[ ${VERIFY_SEPARATE_BUILD:-} == 1 ]]; then
+  [[ $PWD != "$REPO" && $(git -C "$REPO" rev-parse HEAD) == "$OLD_SHA" ]] || exit 1
+fi
 [[ ${FAIL_BUILD_SHA:-} != "$sha" ]]
 SH
   cat > "$STUBS/npm" <<'SH'
@@ -74,6 +78,15 @@ SH
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$CURL_LOG"
 [[ $* == *"http://127.0.0.1:8000/"* && $* == *"Host: smart-qa.tevo.vn"* ]] || exit 22
+if [[ $* == *"/api/system/drain"* ]]; then
+  case "$*" in
+    *DELETE*) printf 'open\n' > "$STATE/drain-test"; printf '{"draining":false,"active_run_count":0}\n' ;;
+    *POST*cut*) printf 'cut\n' >> "$STATE/cuts"; printf '{"session_ids":["active-1"]}\n' ;;
+    *POST*) printf 'closed\n' > "$STATE/drain-test"; printf '{"draining":true,"active_run_count":0}\n' ;;
+    *) printf '{"draining":true,"active_run_count":%s}\n' "${DRAIN_ACTIVE:-0}" ;;
+  esac
+  exit 0
+fi
 count=$(cat "$CURL_COUNT" 2>/dev/null || printf '0')
 count=$((count + 1))
 printf '%s\n' "$count" > "$CURL_COUNT"
@@ -99,6 +112,7 @@ esac
 SH
   cat > "$STUBS/sleep" <<'SH'
 #!/usr/bin/env bash
+if [[ ${KILL_DURING_DRAIN:-} == 1 ]]; then kill -TERM "$PPID"; fi
 exit 0
 SH
   chmod +x "$STUBS"/*
@@ -109,8 +123,64 @@ run_deployer() {
     REPO="$REPO" STATE="$STATE" BUILD_LOG="$BUILD_LOG" \
     CURL_COUNT="$CURL_COUNT" CURL_LOG="$CURL_LOG" \
     SYSTEMCTL_LOG="$SYSTEMCTL_LOG" HEALTH_MODE="$HEALTH_MODE" \
-    HEALTH_ATTEMPTS=1 HEALTH_INTERVAL=0 \
-    bash "$DEPLOY_SCRIPT"
+    HEALTH_ATTEMPTS=1 HEALTH_INTERVAL=0 DRAIN_TIMEOUT_SECONDS="${DRAIN_TIMEOUT_SECONDS:-600}" \
+    DRAIN_INTERVAL=0 DRAIN_ACTIVE="${DRAIN_ACTIVE:-0}" \
+    VERIFY_SEPARATE_BUILD="${VERIFY_SEPARATE_BUILD:-0}" \
+    KILL_DURING_DRAIN="${KILL_DURING_DRAIN:-0}" \
+    bash "$DEPLOY_SCRIPT" "$@"
+}
+
+test_drain_and_separate_build() {
+  make_case drain old
+  HEALTH_MODE=ready
+  VERIFY_SEPARATE_BUILD=1
+  run_deployer || fail "candidate was not built separately before draining"
+  unset VERIFY_SEPARATE_BUILD
+  assert_eq "$(cat "$STATE/drain-test")" open "successful deploy did not reopen admission"
+  assert_eq "$(head -1 "$REPO/DEPLOYED_SHA")" "$NEW_SHA" "version badge missing"
+  [[ $(cat "$CURL_LOG") == *"POST"*"/api/system/drain"*"/api/system/service-readiness"*"DELETE"* ]] || fail "drain/restart/health/reopen order wrong"
+}
+
+test_timeout_aborts_without_restart() {
+  make_case timeout old
+  HEALTH_MODE=ready
+  DRAIN_ACTIVE=1 DRAIN_TIMEOUT_SECONDS=0
+  if run_deployer; then fail "active run was cut on default timeout"; fi
+  unset DRAIN_ACTIVE DRAIN_TIMEOUT_SECONDS
+  [[ ! -s "$SYSTEMCTL_LOG" ]] || fail "timeout restarted the service"
+  [[ ! -e "$STATE/bad_sha" ]] || fail "deferred candidate was marked bad"
+  assert_eq "$(git -C "$REPO" rev-parse HEAD)" "$OLD_SHA" "timeout changed live checkout"
+  assert_eq "$(cat "$STATE/drain-test")" open "timeout left admission closed"
+}
+
+test_build_failure_never_drains() {
+  make_case build_failure old
+  HEALTH_MODE=ready
+  export FAIL_BUILD_SHA="$NEW_SHA"
+  if run_deployer; then fail "failed build was deployed"; fi
+  unset FAIL_BUILD_SHA
+  [[ ! -s "$SYSTEMCTL_LOG" && ! -s "$CURL_LOG" ]] || fail "build failure touched running service"
+  assert_eq "$(git -C "$REPO" rev-parse HEAD)" "$OLD_SHA" "build failure changed live checkout"
+}
+
+test_killed_drain_reopens_admission() {
+  make_case killed old
+  HEALTH_MODE=ready
+  DRAIN_ACTIVE=1 KILL_DURING_DRAIN=1
+  if run_deployer; then fail "terminated deploy returned success"; fi
+  unset DRAIN_ACTIVE KILL_DURING_DRAIN
+  assert_eq "$(cat "$STATE/drain-test")" open "SIGTERM left admission closed"
+  [[ ! -s "$SYSTEMCTL_LOG" ]] || fail "terminated drain restarted service"
+}
+
+test_skip_drain_records_cut_before_restart() {
+  make_case skip old
+  HEALTH_MODE=ready
+  DRAIN_ACTIVE=1
+  run_deployer --skip-drain || fail "explicit deploy cut failed"
+  unset DRAIN_ACTIVE
+  [[ -s "$STATE/cuts" ]] || fail "skip-drain did not record cut runs"
+  assert_eq "$(cat "$STATE/drain-test")" open "skip-drain left admission closed"
 }
 
 test_interrupted_checkout_recovers_and_retries() {
@@ -209,6 +279,11 @@ test_decorated_service_readiness_rejects_invalid_reports() {
   [[ $failures == 0 ]] || fail "$failures decorated service-readiness regressions reproduced"
 }
 
+test_drain_and_separate_build
+test_timeout_aborts_without_restart
+test_build_failure_never_drains
+test_killed_drain_reopens_admission
+test_skip_drain_records_cut_before_restart
 test_interrupted_checkout_recovers_and_retries
 test_in_progress_marker_recovers_before_checkout
 test_failed_service_readiness_rolls_back
