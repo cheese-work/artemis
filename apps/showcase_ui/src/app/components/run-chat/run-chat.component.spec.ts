@@ -315,6 +315,71 @@ describe('RunChatComponent', () => {
     fixture.destroy();
   }));
 
+  const stepMessage = (over: Record<string, unknown> = {}) => ({
+    ...thread.messages[0], role: 'agent', sequence: 5, kind: 'step', content: 'Tap settings',
+    payload: { step_id: 'step-1', pre_image_name: 'pre.png', post_image_name: 'post.png', action_taken: { x: 42 } }, ...over
+  });
+  const withTimeline = (...messages: object[]): ChatSession => ({ ...thread, turns: [{ ...thread.turns[0], status: 'completed' }], timeline: messages as ChatSession['messages'] });
+
+  it('leads a step row with the action, then the post-action screenshot', fakeAsync(() => {
+    const fixture = render();
+    fixture.componentInstance.chat.set(withTimeline(thread.messages[0], stepMessage()));
+    fixture.detectChanges();
+    const summary = fixture.nativeElement.querySelector('.step-row summary') as HTMLElement;
+    const label = summary.querySelector('span')!;
+    const thumbnail = summary.querySelector('img.step-thumbnail') as HTMLImageElement;
+    expect(label.compareDocumentPosition(thumbnail) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(thumbnail.src).toContain('/images/post.png');
+    fixture.destroy();
+  }));
+
+  it('wraps a long step label to two lines at 390 px instead of truncating it', fakeAsync(() => {
+    const fixture = render();
+    fixture.nativeElement.style.width = '390px';
+    fixture.componentInstance.chat.set(withTimeline(thread.messages[0], stepMessage({ content: 'Tap first result PSY - GANGNAM STYLE official music video' })));
+    fixture.detectChanges();
+    const label = fixture.nativeElement.querySelector('.step-row summary span') as HTMLElement;
+    const lineHeight = parseFloat(getComputedStyle(label).lineHeight) || 16;
+    expect(label.getBoundingClientRect().height).toBeGreaterThan(lineHeight * 1.5);
+    expect(label.scrollHeight).toBeLessThanOrEqual(label.clientHeight);
+    fixture.destroy();
+  }));
+
+  it('dims the thinking item and keeps it collapsed', fakeAsync(() => {
+    const fixture = render();
+    fixture.componentInstance.chat.set(withTimeline(thread.messages[0], { ...thread.messages[0], role: 'agent', sequence: 4, kind: 'thinking', content: 'Find the control\nMore detail' }));
+    const toggle = fixture.nativeElement.querySelector('[aria-label="Technical details"]');
+    toggle.checked = true;
+    toggle.dispatchEvent(new Event('change'));
+    fixture.detectChanges();
+    const thinking = fixture.nativeElement.querySelector('details.thinking') as HTMLDetailsElement;
+    expect(thinking.open).toBeFalse();
+    expect(getComputedStyle(thinking).color).toBe('rgb(107, 107, 115)'); // --color-text-faint
+    fixture.destroy();
+  }));
+
+  it('shows skeleton rows while the session loads', fakeAsync(() => {
+    api.chat.and.returnValue(new Subject<ChatSession>());
+    const fixture = render();
+    expect(fixture.nativeElement.querySelectorAll('.step-skeleton').length).toBeGreaterThan(0);
+    expect(fixture.nativeElement.querySelector('[role="status"]').textContent).toContain('Loading chat session');
+    fixture.destroy();
+  }));
+
+  it('says what is missing when a session has no steps, and drops the note once one exists', fakeAsync(() => {
+    const fixture = render();
+    fixture.componentInstance.chat.set(withTimeline(thread.messages[0]));
+    fixture.detectChanges();
+    expect(fixture.nativeElement.querySelector('.timeline-empty').textContent).toContain('No steps were recorded.');
+    fixture.componentInstance.chat.set({ ...withTimeline(thread.messages[0]), turns: [{ ...thread.turns[0], status: 'running' }] });
+    fixture.detectChanges();
+    expect(fixture.nativeElement.querySelector('.timeline-empty').textContent).toContain('Waiting for the first step.');
+    fixture.componentInstance.chat.set(withTimeline(thread.messages[0], stepMessage()));
+    fixture.detectChanges();
+    expect(fixture.nativeElement.querySelector('.timeline-empty')).toBeNull();
+    fixture.destroy();
+  }));
+
   it('stops following on a one-pixel scroll-up and resumes only at the bottom', fakeAsync(() => {
     const fixture = render();
     const history = fixture.nativeElement.querySelector('.chat-history');
