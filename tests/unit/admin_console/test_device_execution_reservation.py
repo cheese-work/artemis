@@ -381,10 +381,14 @@ def test_connection_lookup_resolves_aliases(context):
 async def test_run_route_returns_device_claimed_for_the_loser(context, admin, monkeypatch, ingress):
     from apps.admin_console.routers import tasks as tasks_router
     from apps.admin_console.database.repositories.run_catalog_repository import run_catalog_repo
+    from apps.admin_console.services.model_discovery import ModelDiscovery
 
     observe(USB, WIFI)
     monkeypatch.setattr(run_catalog_repo, "db_path", context.db_path)
     monkeypatch.setattr(tasks_router, "session_repo", context)
+    monkeypatch.setattr(
+        tasks_router, "model_discovery", ModelDiscovery(tasks_router.model_discovery.store)
+    )
     monkeypatch.setattr(
         tasks_router.device_pool, "validate_explicit_serial_async", AsyncMock(return_value=None)
     )
