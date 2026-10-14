@@ -51,7 +51,19 @@ button:focus-visible, textarea:focus-visible, summary:focus-visible { outline: 2
 .step-row summary { padding-block: var(--space-xs); }
 .step-row summary span { flex: 1; min-width: 0; overflow: hidden; overflow-wrap: anywhere; line-height: 20px; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
 .step-thumbnail { width: 32px; height: 44px; object-fit: contain; flex: none; }
-.step-screenshot { display: block; max-width: 100%; max-height: 70vh; object-fit: contain; margin-block: var(--space-sm); }
+.evidence { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-md); margin-block: var(--space-sm); }
+.evidence figure { margin: 0; display: grid; gap: var(--space-xs); justify-items: center; align-content: start; min-width: 0; padding: var(--space-sm); border: 1px solid var(--color-rule); border-radius: var(--radius-md); }
+.evidence figcaption { justify-self: start; font-size: var(--text-label); font-weight: 600; color: var(--color-text-muted); }
+.step-screenshot, .step-before { display: block; max-width: 100%; max-height: 55vh; object-fit: contain; }
+.shot { position: relative; display: inline-block; max-width: 100%; line-height: 0; }
+.action-marker { position: absolute; pointer-events: none; color: var(--color-primary); }
+.action-marker.ring { width: 28px; height: 28px; transform: translate(-50%, -50%); border: 2px solid var(--color-primary); border-radius: 50%; background: var(--color-primary-tint); box-shadow: 0 0 0 2px var(--color-surface); }
+.action-marker.box { border: 2px solid var(--color-primary); border-radius: var(--radius-sm); box-shadow: 0 0 0 2px var(--color-surface); }
+.action-marker.swipe { inset: 0; width: 100%; height: 100%; overflow: visible; }
+.action-marker.swipe line { stroke: var(--color-primary); stroke-width: 3; vector-effect: non-scaling-stroke; }
+.action-marker.swipe marker path { fill: var(--color-primary); }
+.action-marker.key { top: 20%; right: 0; width: 6px; height: 24%; border-radius: 3px; background: var(--color-primary); box-shadow: 0 0 0 2px var(--color-surface); }
+.action-caption { justify-self: start; font-size: var(--text-label); font-weight: 600; color: var(--color-primary); overflow-wrap: anywhere; }
 .flat-timeline pre { white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--font-mono); }
 .flat-timeline time { display: block; margin-top: var(--space-xs); color: var(--color-text-muted); font-size: var(--text-label); }
 .thinking summary { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
