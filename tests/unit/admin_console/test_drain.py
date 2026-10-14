@@ -309,7 +309,6 @@ async def test_drain_owner_cannot_be_stolen_or_cleared(env):
 @pytest.mark.asyncio
 async def test_explicit_deploy_cut_is_recorded_before_restart(env):
     assert session_repo.create_queued_session("active-cut", "goal", "flash", None, None, None)
-    session_repo.update_session_status("active-cut", "running", time.time())
     state.queue_items.extend([_item("active-cut", "running"), _item("held")])
     async with _client() as client:
         await client.post(DRAIN, json={"owner": "deploy-test", "deadline": time.time() + 60})
@@ -323,6 +322,39 @@ async def test_explicit_deploy_cut_is_recorded_before_restart(env):
             "SELECT status, interrupt_reason FROM sessions WHERE session_id='active-cut'"
         ).fetchone() == ("interrupted", "deploy_cut")
     assert state.queue_items[-1]["status"] == "pending"
+
+
+@pytest.mark.asyncio
+async def test_held_queue_survives_restart_without_reviving_cancelled_work(env):
+    await _enqueue(session_id="kept")
+    await _enqueue(session_id="cancelled")
+    TaskQueueService.set_draining(True)
+    session_repo.lifecycle.finish("cancelled", "cancelled")
+    state.queue_items.clear()
+    state.draining = False
+    assert TaskQueueService.restore_drained_queue() == 1
+    assert TaskQueueService.restore_drained_queue() == 0
+    assert [item["session_id"] for item in state.queue_items] == ["kept"]
+    assert state.queue_items[0]["status"] == "pending"
+    async with _client() as client:
+        await client.delete(DRAIN)
+    assert [item["session_id"] for item in state.queue_items] == ["kept"]
+
+
+@pytest.mark.asyncio
+async def test_cut_route_rejects_remote_peers(env):
+    async with _client(("203.0.113.9", 4242)) as client:
+        response = await client.post(DRAIN + "/cut", json={"owner": "remote"})
+    assert response.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_corrupt_drain_record_fails_closed(env, tmp_path):
+    (tmp_path / "deploy-drain.json").write_text('{"owner":')
+    async with _client() as client:
+        response = await client.post("/api/run", json={"goal": "must stay closed"})
+    assert response.status_code == 503
+    assert _session_rows() == 0
 
 
 @pytest.mark.asyncio

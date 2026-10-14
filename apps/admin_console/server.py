@@ -322,6 +322,7 @@ async def on_startup():
     # Announce (and acknowledge) the interruptions committed above or left
     # pending by a previous server that stopped before delivering them.
     task_queue_service._drain_outcome_events()
+    task_queue_service.restore_drained_queue()
     # Workers killed together with a previous daemon never remuxed their
     # recordings; publish whatever raw files they left behind.
     asyncio.create_task(asyncio.to_thread(task_queue_service.recover_orphaned_recordings_on_launch))

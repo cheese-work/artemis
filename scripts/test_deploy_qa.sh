@@ -82,7 +82,14 @@ if [[ $* == *"/api/system/drain"* ]]; then
   case "$*" in
     *DELETE*) printf 'open\n' > "$STATE/drain-test"; printf '{"draining":false,"active_run_count":0}\n' ;;
     *POST*cut*) printf 'cut\n' >> "$STATE/cuts"; printf '{"session_ids":["active-1"]}\n' ;;
-    *POST*) printf 'closed\n' > "$STATE/drain-test"; printf '{"draining":true,"active_run_count":0}\n' ;;
+    *POST*)
+      printf 'closed\n' > "$STATE/drain-test"
+      while (( $# > 0 )); do
+        if [[ $1 == --data ]]; then body=$2; break; fi
+        shift
+      done
+      printf '%s' "$body" | python3 -c 'import json,sys; value=json.load(sys.stdin); value.update(draining=True,active_run_count=0); print(json.dumps(value))'
+      ;;
     *) printf '{"draining":true,"active_run_count":%s}\n' "${DRAIN_ACTIVE:-0}" ;;
   esac
   exit 0
@@ -181,6 +188,19 @@ test_skip_drain_records_cut_before_restart() {
   unset DRAIN_ACTIVE
   [[ -s "$STATE/cuts" ]] || fail "skip-drain did not record cut runs"
   assert_eq "$(cat "$STATE/drain-test")" open "skip-drain left admission closed"
+}
+
+test_max_defer_cuts_only_on_configured_attempt() {
+  make_case max_defer old
+  HEALTH_MODE=ready
+  DRAIN_ACTIVE=1 DRAIN_TIMEOUT_SECONDS=0
+  export MAX_DEFER_COUNT=2
+  if run_deployer; then fail "first deferred deploy cut a run"; fi
+  [[ ! -s "$STATE/cuts" && ! -s "$SYSTEMCTL_LOG" ]] || fail "first deferral restarted"
+  run_deployer || fail "configured max-defer did not cut and deploy"
+  unset DRAIN_ACTIVE DRAIN_TIMEOUT_SECONDS MAX_DEFER_COUNT
+  [[ -s "$STATE/cuts" ]] || fail "max-defer did not record cut runs"
+  assert_eq "$(cat "$STATE/drain-test")" open "max-defer left admission closed"
 }
 
 test_interrupted_checkout_recovers_and_retries() {
@@ -284,6 +304,7 @@ test_timeout_aborts_without_restart
 test_build_failure_never_drains
 test_killed_drain_reopens_admission
 test_skip_drain_records_cut_before_restart
+test_max_defer_cuts_only_on_configured_attempt
 test_interrupted_checkout_recovers_and_retries
 test_in_progress_marker_recovers_before_checkout
 test_failed_service_readiness_rolls_back
