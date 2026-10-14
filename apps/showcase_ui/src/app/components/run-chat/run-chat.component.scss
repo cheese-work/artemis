@@ -54,7 +54,7 @@ button:focus-visible, textarea:focus-visible, summary:focus-visible { outline: 2
 .evidence { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-md); margin-block: var(--space-sm); }
 .evidence figure { margin: 0; display: grid; gap: var(--space-xs); justify-items: center; align-content: start; min-width: 0; padding: var(--space-sm); border: 1px solid var(--color-rule); border-radius: var(--radius-md); }
 .evidence figcaption { justify-self: start; font-size: var(--text-label); font-weight: 600; color: var(--color-text-muted); }
-.step-screenshot, .step-before { display: block; max-width: 100%; max-height: 70vh; object-fit: contain; }
+.step-screenshot, .step-before { display: block; max-width: 100%; max-height: 55vh; object-fit: contain; }
 .shot { position: relative; display: inline-block; max-width: 100%; line-height: 0; }
 .action-marker { position: absolute; pointer-events: none; color: var(--color-primary); }
 .action-marker.ring { width: 28px; height: 28px; transform: translate(-50%, -50%); border: 2px solid var(--color-primary); border-radius: 50%; background: var(--color-primary-tint); box-shadow: 0 0 0 2px var(--color-surface); }
