@@ -43,7 +43,7 @@ from artemis.memory.scrub_shape import (
 )
 from artemis.memory.step_memory import StepMemoryService
 from artemis.memory.transcript import EPHEMERAL_BLOCKS_KEY
-from artemis.utils.logger import get_logger
+from third_party.mobile_use.utils.logger import get_logger
 
 logger = get_logger(__name__)
 

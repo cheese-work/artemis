@@ -31,7 +31,8 @@ from artemis.runtime.adb_endpoint import AdbEndpoint, current_adb_endpoint
 from artemis.runtime.device_lock import DeviceExecutionLock
 from artemis.runtime.endpoint_transport import EndpointTransport
 from artemis.utils.device_kind import DeviceKind, classify_properties, parse_getprop
-from artemis.utils.logger import get_logger
+from artemis.toolchain import toolchain
+from third_party.mobile_use.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
