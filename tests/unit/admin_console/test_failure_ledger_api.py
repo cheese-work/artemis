@@ -40,6 +40,10 @@ OFFLINE = (
 )
 SERIAL = "127.0.0.1:39129"
 ACTION = {"smartqa": "fix", "provider": "monitor", "user": "no action", "unknown": "review"}
+KEYGUARD = (
+    "[web_turn_1] Error running automation: Android secure keyguard is locked. "
+    "Unlock the device manually before starting automation."
+)
 
 
 def _ok(text):
@@ -140,6 +144,150 @@ def by_session(view, sid):
         (row for row in view["failures"] if row["session_id"] == sid),
         key=lambda row: row["step_number"],
     )
+
+
+def test_unwrapped_keyguard_error_is_qa_environment():
+    assert failure_ledger.classify(KEYGUARD) == ("qa_environment", "device_locked")
+
+
+@pytest.mark.parametrize(
+    ("evidence", "expected"),
+    [
+        ({"error": KEYGUARD}, ("qa_environment", "device_locked")),
+        (
+            {
+                "reason": "bridge_closed",
+                "client_close": {"reason": "usb_disconnected"},
+                "visibility_state": "hidden",
+            },
+            ("qa_environment", "usb_disconnected_hidden"),
+        ),
+        (
+            {
+                "reason": "bridge_closed",
+                "client_close": {"reason": "usb_disconnected"},
+                "visibility_state": "visible",
+            },
+            ("smartqa_infra", "run_interrupted"),
+        ),
+        (
+            {
+                "reason": "bridge_closed",
+                "client_close": {"reason": "socket_closed"},
+                "visibility_state": "hidden",
+            },
+            ("smartqa_infra", "run_interrupted"),
+        ),
+        ({"reason": "auth_expired"}, ("smartqa_infra", "auth_expired")),
+        ({"reason": "deploy_cut", "close_code": 1012}, ("smartqa_infra", "run_interrupted")),
+        ({"error": "usb_disconnected hidden auth_expired"}, ("unknown", "no_match")),
+        (
+            {"reason": "bridge_closed", "error": "usb_disconnected hidden"},
+            ("smartqa_infra", "run_interrupted"),
+        ),
+    ],
+)
+def test_interrupt_rules_match_fields_not_combined_text(evidence, expected):
+    assert failure_ledger.classify(evidence) == expected
+
+
+@pytest.mark.asyncio
+async def test_each_turn_uses_its_structured_error_before_the_stdout_tail(library, admin):
+    first = seed_run(library, stdout="ons.AgentError: Android\n" + "x" * 70000)
+    second = seed_run(library, stdout=KEYGUARD)
+    library.write(
+        first, "status.json", json.dumps({"trace_id": first, "status": "failed", "error": KEYGUARD})
+    )
+    library.write(
+        second,
+        "status.json",
+        json.dumps({"trace_id": second, "status": "failed", "error": "LLM call timed out"}),
+    )
+    await collect(admin)
+    view = await failures(admin)
+    assert {(row["category"], row["rule"]) for row in by_session(view, first)} == {
+        ("qa_environment", "device_locked")
+    }
+    assert {(row["category"], row["rule"]) for row in by_session(view, second)} == {
+        ("provider", "llm_timeout")
+    }
+
+
+@pytest.mark.asyncio
+async def test_nonempty_unmatched_structured_error_never_borrows_a_log_error(library, admin):
+    sid = seed_run(library, stdout="LLMExhaustedError: Connection error.\n")
+    library.write(
+        sid, "status.json", json.dumps({"trace_id": sid, "error": "Unrecognized runner failure"})
+    )
+    await collect(admin)
+    row = by_session(await failures(admin), sid)[0]
+    assert (row["category"], row["rule"]) == ("unknown", "no_match")
+    assert row["evidence"] == "Unrecognized runner failure"
+
+
+@pytest.mark.asyncio
+async def test_missing_turn_evidence_does_not_use_another_turn_status(library, admin):
+    previous = seed_run(library)
+    current = seed_run(library)
+    library.write(previous, "status.json", json.dumps({"trace_id": previous, "error": KEYGUARD}))
+    library.write(current, "status.json", json.dumps({"trace_id": previous, "error": KEYGUARD}))
+    await collect(admin)
+    row = by_session(await failures(admin), current)[0]
+    assert (row["category"], row["rule"]) == ("unknown", "no_match")
+
+
+@pytest.mark.asyncio
+async def test_targeted_collect_keeps_other_turns_unclassified_and_is_idempotent(library, admin):
+    first = seed_run(library, stdout=KEYGUARD)
+    second = seed_run(library, stdout="LLMExhaustedError: Connection error.\n")
+    assert failure_ledger.collect(session_id=first)["scanned"] == 1
+    view = await failures(admin)
+    assert by_session(view, first)
+    assert not by_session(view, second)
+    assert failure_ledger.collect(session_id=first) == {"scanned": 0, "inserted": 0}
+
+
+@pytest.mark.asyncio
+async def test_qa_and_app_causes_are_not_counted_as_smartqa_defects(library, admin):
+    sid = seed_run(library, stdout=KEYGUARD)
+    await collect(admin)
+    with sqlite3.connect(library.db) as conn:
+        conn.execute("UPDATE failure_ledger SET category='app_defect' WHERE session_id=?", (sid,))
+    assert all(not cause["smartqa_side"] for cause in (await failures(admin))["causes"])
+
+
+@pytest.mark.asyncio
+async def test_bridge_close_persists_the_exact_turn_report_before_revocation(
+    library, admin, monkeypatch
+):
+    from apps.admin_console.services.bridge_session_service import (
+        BridgeSession,
+        BridgeSessionService,
+    )
+    from apps.admin_console.core import state
+    from apps.admin_console.database.repositories.session_repository import session_repo
+
+    sid = seed_run(library, status="running")
+    monkeypatch.setattr(session_repo, "db_path", library.db)
+    monkeypatch.setattr(state, "queue_items", [{"session_id": sid, "bridge_session_id": "bridge"}])
+    monkeypatch.setattr(state, "active_runs", {})
+    bridge = BridgeSessionService()
+    session = BridgeSession("bridge", port=41001)
+    session.client_close = {"reason": "usb_disconnected", "visibility_state": "hidden"}
+    bridge._sessions["bridge"] = session
+    await bridge.revoke("bridge")
+    await collect(admin)
+    row = by_session(await failures(admin), sid)[0]
+    assert (row["category"], row["rule"]) == ("qa_environment", "usb_disconnected_hidden")
+    with sqlite3.connect(library.db) as conn:
+        stored = conn.execute(
+            "SELECT interrupt_evidence FROM sessions WHERE session_id=?", (sid,)
+        ).fetchone()[0]
+    assert json.loads(stored) == {
+        "reason": "bridge_closed",
+        "client_close": {"reason": "usb_disconnected"},
+        "visibility_state": "hidden",
+    }
 
 
 # -- acceptance: the runs of 2026-10-07 ------------------------------------------------
