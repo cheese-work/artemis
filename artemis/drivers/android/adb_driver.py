@@ -22,10 +22,6 @@ from pathlib import Path
 from typing import Any, Literal
 
 from adbutils import AdbClient, AdbDevice, AdbError
-from artemis.clients.ui_automator_client import (
-    UIAutomatorClient,
-    _parse_hierarchy_xml_to_elements,
-)
 from artemis.config.paths import get_temp_dir
 from artemis.drivers.base import BaseDeviceDriver, KeyCode, ScreenData, SwipeDirection
 from artemis.drivers.types import DeviceDisconnectedError, device_disconnect_reason
@@ -36,7 +32,11 @@ from artemis.utils.video import (
     recording_unavailable_reason,
 )
 from artemis.utils.ui_filter import filter_ui_hierarchy
-from artemis.utils.logger import get_logger
+from third_party.mobile_use.clients.ui_automator_client import (
+    UIAutomatorClient,
+    parse_hierarchy_xml_to_elements,
+)
+from third_party.mobile_use.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
@@ -188,7 +188,7 @@ class AndroidAdbDriver(BaseDeviceDriver):
                     hierarchy = await res if asyncio.iscoroutine(res) else res
                     if isinstance(hierarchy, str):
                         ui_hierarchy_xml = hierarchy
-                        ui_elements = _parse_hierarchy_xml_to_elements(hierarchy)
+                        ui_elements = parse_hierarchy_xml_to_elements(hierarchy)
                     else:
                         ui_elements = hierarchy
                 elif hasattr(self._ui_adb_client, "get_ui_elements"):
