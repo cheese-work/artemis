@@ -736,7 +736,9 @@ class Agent:
                                     error=err,
                                 )
                                 if context.data_engine:
-                                    self._end_session_for_report(context.data_engine, flash_result)
+                                    self._end_session_for_report(
+                                        context.data_engine, flash_result, error=err
+                                    )
                             return output
                         else:
                             logger.info(f"event=task_graph_invoked input_fields={len(graph_input)}")
@@ -777,7 +779,7 @@ class Agent:
                                     error=err,
                                 )
                                 if context.data_engine:
-                                    context.data_engine.end_session("failed")
+                                    context.data_engine.end_session("failed", error=err)
                                 return None
 
                             output = await self._extract_output(
@@ -813,7 +815,7 @@ class Agent:
                                     error=err,
                                 )
                                 if context.data_engine:
-                                    context.data_engine.end_session("failed")
+                                    context.data_engine.end_session("failed", error=err)
                                 return output
 
                             if tests_failed > 0:
@@ -874,7 +876,7 @@ class Agent:
                     cancelled=True,
                 )
                 if context.data_engine:
-                    context.data_engine.end_session("cancelled")
+                    context.data_engine.end_session("cancelled", error=err)
 
                 raise
             except Exception as e:
@@ -899,10 +901,12 @@ class Agent:
                             logger.warning(f"Could not record gateway failure step: {record_error}")
                     if isinstance(e, DeviceDisconnectedError):
                         context.data_engine.end_session(
-                            "interrupted", interrupt_reason=InterruptReason.DEVICE_OFFLINE
+                            "interrupted",
+                            interrupt_reason=InterruptReason.DEVICE_OFFLINE,
+                            error=err,
                         )
                     else:
-                        context.data_engine.end_session("failed")
+                        context.data_engine.end_session("failed", error=err)
 
                 raise
             finally:
@@ -1219,15 +1223,16 @@ class Agent:
         )
 
     @staticmethod
-    def _end_session_for_report(data_engine, report: dict) -> None:
+    def _end_session_for_report(data_engine, report: dict, *, error: str | None = None) -> None:
         """End the session for a runner report that did not complete the task."""
         if report.get("status") == "interrupted":
             data_engine.end_session(
                 "interrupted",
                 interrupt_reason=report.get("interrupt_reason") or InterruptReason.DEVICE_OFFLINE,
+                **({"error": error} if error is not None else {}),
             )
         else:
-            data_engine.end_session("failed")
+            data_engine.end_session("failed", **({"error": error} if error is not None else {}))
 
     async def _finalize_tracing_safely(self, task: Task, context: ArtemisContext):
         """Finalize optional trace artifacts without changing task semantics."""
@@ -1262,7 +1267,9 @@ class Agent:
                 session_status = "failed"
             elif task.status == "cancelled":
                 session_status = "cancelled"
-            context.data_engine.end_session(status=session_status)
+            context.data_engine.end_session(
+                status=session_status, error=task.result.error if task.result else None
+            )
 
         exec_setup_ctx = context.execution_setup
         if not exec_setup_ctx:

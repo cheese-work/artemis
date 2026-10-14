@@ -16,9 +16,9 @@
 
 Categories tell the dev team what to fix: ``smartqa_infra`` and ``smartqa_agent``
 are SmartQA's own faults, ``provider`` is the model gateway, ``user_prompt`` is
-the requester's goal (shown, never fixed) and ``unknown`` needs a human.
-Classification is rule-based: the first rule whose pattern matches the evidence
-text wins. The ledger lives in the run catalog database and is keyed by
+the requester's goal (shown, never fixed), ``qa_environment`` and ``app_defect``
+are outside SmartQA, and ``unknown`` needs a human. Classification uses the
+exact turn's structured fields before legacy text rules. The ledger is keyed by
 (session, step), so collecting again never duplicates a row; step 0 is the run.
 """
 
@@ -34,6 +34,8 @@ import sqlite3
 import threading
 import time
 from typing import Any
+
+from artemis.runtime.lifecycle import ensure_lifecycle_schema
 
 from apps.admin_console.core.redaction import redact_text
 from apps.admin_console.database.repositories.run_catalog_repository import run_catalog_repo
@@ -59,6 +61,7 @@ _GOAL_STOP_WORDS = {"a", "an", "and", "for", "in", "of", "or", "the", "to", "wit
 
 # (rule, category, pattern), first match wins. Patterns are matched case-insensitively.
 _RULES: tuple[tuple[str, str, str], ...] = (
+    ("device_locked", "qa_environment", r"(?:secure )?keyguard is locked"),
     (
         "device_unavailable",
         "smartqa_infra",
@@ -67,7 +70,7 @@ _RULES: tuple[tuple[str, str, str], ...] = (
     (
         "run_interrupted",
         "smartqa_infra",
-        r"^interrupted: (host_disconnected|bridge_closed|device_offline|server_restarted)$",
+        r"^interrupted: (host_disconnected|bridge_closed|device_offline|server_restarted|deploy_cut)$",
     ),
     ("scrcpy_failure", "smartqa_infra", r"scrcpy"),
     ("accessibility_helper", "smartqa_infra", r"accessibility (helper|service)"),
@@ -103,10 +106,18 @@ _RULES: tuple[tuple[str, str, str], ...] = (
     ),
 )
 _COMPILED = tuple((rule, category, re.compile(p, re.IGNORECASE)) for rule, category, p in _RULES)
-_ACTION = {"user_prompt": "no action", "provider": "monitor", "unknown": "review"}
+_ACTION = {
+    "user_prompt": "no action",
+    "qa_environment": "no action",
+    "app_defect": "no action",
+    "provider": "monitor",
+    "unknown": "review",
+}
 # A traceback's exception line, or the runner's own verdict, is a run's cause.
 _PREFIX = re.compile(r"^\[[^\]]+\]\s*")  # the runner's "[web_<ts>_<id>]" tag
-_RUN_EVIDENCE = re.compile(r"\b\w+(?:Error|Exception)\b: |FlashRunner failed:")
+_RUN_EVIDENCE = re.compile(
+    r"\b\w+(?:Error|Exception)\b: |FlashRunner failed:|Error running automation:"
+)
 _RUN_STACK_FRAME = re.compile(r"^[ \t]+at\s+[\w.$]+\(")
 _RAW_ERROR_TEXT = re.compile(r"^[ \t]*(?:[\w.$]+(?:Error|Exception):|at\s+[\w.$]+\()", re.MULTILINE)
 _UUID = re.compile(r"\b[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}\b", re.IGNORECASE)
@@ -139,8 +150,36 @@ _DIGEST_LOCK = threading.Lock()  # ponytail: one server process; a claim table i
 _SETTINGS = {"failure_digest_last_at": 0.0}
 
 
-def classify(evidence: str) -> tuple[str, str]:
-    """(category, rule) for one piece of evidence text."""
+def classify(evidence: str | dict[str, Any]) -> tuple[str, str]:
+    """First matching rule, using fields rather than joined interrupt diagnostics."""
+    if isinstance(evidence, dict):
+        error = evidence.get("error")
+        error = error if isinstance(error, str) else ""
+        if _COMPILED[0][2].search(error):
+            return "qa_environment", "device_locked"
+        report = evidence.get("client_close")
+        report = report if isinstance(report, dict) else {}
+        reason = evidence.get("reason")
+        reason = reason if isinstance(reason, str) else None
+        if reason == "auth_expired":
+            return "smartqa_infra", "auth_expired"
+        if (
+            reason == "bridge_closed"
+            and report.get("reason") == "usb_disconnected"
+            and evidence.get("visibility_state") == "hidden"
+        ):
+            return "qa_environment", "usb_disconnected_hidden"
+        if reason in {
+            "host_disconnected",
+            "bridge_closed",
+            "device_offline",
+            "server_restarted",
+            "deploy_cut",
+        }:
+            return "smartqa_infra", "run_interrupted"
+        evidence = error
+    if evidence == "interrupted: auth_expired":
+        return "smartqa_infra", "auth_expired"
     for rule, category, pattern in _COMPILED:
         if pattern.search(evidence):
             return category, rule
@@ -179,6 +218,7 @@ def _defect_key(category: str, rule: str, cause: str) -> str:
 
 
 def _ensure(conn: sqlite3.Connection) -> None:
+    ensure_lifecycle_schema(conn)
     conn.execute(_CREATE_LEDGER)
     columns = {row[1] for row in conn.execute("PRAGMA table_info(failure_ledger)")}
     unique_keys = []
@@ -266,9 +306,38 @@ _LIVE = (
 )
 
 
-def _run_evidence(row: sqlite3.Row, traces_dir: Path) -> str:
+def _run_evidence(
+    row: sqlite3.Row, traces_dir: Path, *, allow_stdout: bool = True
+) -> str | dict[str, Any]:
+    fields = {}
+    try:
+        status = json.loads((traces_dir / row["session_id"] / "status.json").read_text())
+    except (OSError, ValueError):
+        status = {}
+    if (
+        not isinstance(status, dict)
+        or status.get("trace_id", row["session_id"]) != row["session_id"]
+    ):
+        status = {}
+    try:
+        fields = json.loads(row["interrupt_evidence"] or "{}")
+    except ValueError:
+        fields = {}
+    if not isinstance(fields, dict):
+        fields = {}
     if row["interrupt_reason"]:
-        return f"interrupted: {row['interrupt_reason']}"
+        if not fields:
+            fields = status.get("interrupt_evidence") or {}
+        if not isinstance(fields, dict):
+            fields = {}
+        fields["reason"] = row["interrupt_reason"]
+    error = row["terminal_error"] or status.get("error")
+    if isinstance(error, str) and error:
+        fields["error"] = error
+    if fields:
+        return fields
+    if not allow_stdout:
+        return ""
     try:
         with (traces_dir / row["session_id"] / "stdout.log").open("rb") as handle:
             handle.seek(0, 2)
@@ -301,6 +370,7 @@ def _device(device_info: str | None) -> str | None:
 
 _RUNS_SQL = """
 SELECT s.session_id, s.interrupt_reason, s.device_info, s.initial_goal AS goal, m.requested_by, m.host_id,
+       s.terminal_error, s.interrupt_evidence,
        coalesce(s.end_time, s.start_time, ?) AS at, 0 AS step_number, NULL AS result,
        0 AS stuck, CASE WHEN s.status = 'interrupted' THEN 'stuck_run' ELSE 'run_step' END AS signal
 FROM sessions s JOIN run_meta m ON m.session_id = s.session_id
@@ -343,18 +413,31 @@ WHERE v.status = 'failed' AND m.deleted_at IS NULL
 """
 
 
-def collect() -> dict[str, int]:
+def collect(session_id: str | None = None) -> dict[str, int]:
     """Classify failures not yet in the ledger. Backfills history on the first call."""
     now = time.time()
     traces_dir = run_catalog_repo.traces_dir
     with db_session(run_catalog_repo.db_path) as conn:
         _ensure(conn)
-        candidates = [
-            *conn.execute(_RUNS_SQL, (now,)),
-            *conn.execute(_STUCK_SQL, (now, now, now - _STUCK_AFTER)),
-            *conn.execute(_STEPS_SQL, (now,)),
-            *conn.execute(_RECORDINGS_SQL, (now,)),
-        ]
+        candidates = []
+        for query, params in (
+            (_RUNS_SQL, (now,)),
+            (_STUCK_SQL, (now, now, now - _STUCK_AFTER)),
+            (_STEPS_SQL, (now,)),
+            (_RECORDINGS_SQL, (now,)),
+        ):
+            if session_id is not None:
+                query += " AND s.session_id = ?"
+                params += (session_id,)
+            candidates.extend(conn.execute(query, params))
+        shared_stdout = set()
+        if conn.execute("SELECT 1 FROM sqlite_master WHERE name='chat_turns'").fetchone():
+            shared_stdout = {
+                row[0]
+                for row in conn.execute(
+                    "SELECT session_id FROM chat_turns GROUP BY session_id HAVING COUNT(*) > 1"
+                )
+            }
         rows = []
         for row in candidates:
             signal = row["signal"]
@@ -364,10 +447,17 @@ def collect() -> dict[str, int]:
             elif signal == "recording":
                 raw = str(row["result"] or "")
             elif is_run:
-                raw = _run_evidence(row, traces_dir)
+                raw = _run_evidence(
+                    row, traces_dir, allow_stdout=row["session_id"] not in shared_stdout
+                )
             else:
                 raw = _step_evidence(row["result"])
-            evidence = _safe_evidence(raw, row["goal"])
+            raw_text = (
+                str(raw.get("error") or json.dumps(raw, sort_keys=True))
+                if isinstance(raw, dict)
+                else raw
+            )
+            evidence = _safe_evidence(raw_text, row["goal"])
             source = "host" if row["host_id"] else "browser"
             recording_device = row["recording_device"] if "recording_device" in row.keys() else None
             device = recording_device or _device(row["device_info"])
@@ -380,13 +470,13 @@ def collect() -> dict[str, int]:
                 category = "smartqa_infra"
             else:
                 category, rule = ("smartqa_infra", "run_stuck") if row["stuck"] else classify(raw)
-                evidence = _safe_evidence(raw, row["goal"], category)
+                evidence = _safe_evidence(raw_text, row["goal"], category)
             rows.append(
                 (
                     *base,
                     category,
                     rule,
-                    _cause(rule, redact_text(raw)),
+                    _cause(rule, redact_text(raw_text)),
                     evidence,
                     device,
                     source,
@@ -395,11 +485,11 @@ def collect() -> dict[str, int]:
                     now,
                 )
             )
-            if _RAW_ERROR_TEXT.search(raw or ""):
+            if _RAW_ERROR_TEXT.search(raw_text or ""):
                 raw_category, raw_rule = classify(raw)
                 if raw_rule == "no_match":
                     raw_rule = "raw_error_text"
-                raw_error = _safe_evidence(raw, row["goal"], raw_category)
+                raw_error = _safe_evidence(raw_text, row["goal"], raw_category)
                 rows.append(
                     (
                         row["session_id"],
@@ -408,7 +498,7 @@ def collect() -> dict[str, int]:
                         "run" if is_run else "step",
                         raw_category,
                         raw_rule,
-                        _cause(raw_rule, redact_text(raw)),
+                        _cause(raw_rule, redact_text(raw_text)),
                         raw_error,
                         device,
                         source,
@@ -450,7 +540,7 @@ def view(days: int = DEFAULT_DAYS) -> dict[str, Any]:
             "MIN(occurred_at) AS first_seen, MAX(occurred_at) AS last_seen, "
             "MIN(evidence) AS sample, MIN(evidence) AS evidence_excerpt, MIN(device) AS device, "
             "json_group_array(DISTINCT session_id) AS session_ids, "
-            "category NOT IN ('user_prompt', 'provider') AS smartqa_side "
+            "category NOT IN ('user_prompt', 'provider', 'qa_environment', 'app_defect') AS smartqa_side "
             f"FROM failure_ledger l WHERE occurred_at >= ? AND {_LIVE} "
             "GROUP BY cause, signal, scope, category, rule"
             "), ranked_causes AS ("

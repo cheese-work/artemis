@@ -87,7 +87,13 @@ Computers share their phones with SmartQA. Set `ARTEMIS_HOST_AGENT=enabled` on t
 
 ## Failures (admins)
 
-Setup → Failures lists failed steps and failed or interrupted runs of the last 14 days, grouped by cause: `smartqa_infra` and `smartqa_agent` (SmartQA's to fix), `provider` (model gateway), `user_prompt` (shown, "No action") and `unknown`. Classification is rule-based (`services/failure_ledger.py`); the ledger is in the run catalog database, collected hourly and on demand (`POST /api/system/failures/collect`, which also backfills existing runs).
+Setup → Failures lists failed steps and failed or interrupted runs of the last 14 days, grouped by cause: `smartqa_infra` and `smartqa_agent` (SmartQA's to fix), `provider` (model gateway), `user_prompt` (shown, "No action"), `qa_environment` (QA setup), `app_defect` (app under test) and `unknown`. QA setup and app defects are not counted as SmartQA defects. Classification is rule-based (`services/failure_ledger.py`); the ledger is in the run catalog database, collected hourly and on demand (`POST /api/system/failures/collect`, which also backfills existing runs).
+
+Each chat turn has its own session/trace ID. Classification reads the full unwrapped terminal error saved by `task.finalize(error=...)` through the lifecycle authority, or that turn's `status.json`. A nonempty structured error takes precedence even when it matches no rule. The stdout tail is a legacy fallback for that exact turn only; a multi-turn chat's shared worker log is not safe fallback evidence. Never substitute another turn's error.
+
+Interrupts persist `{reason, client_close.reason, visibility_state}` in the lifecycle transaction and project the same fields into `status.json`. Rules inspect fields, not concatenated diagnostic text: keyguard locked errors produce `qa_environment/device_locked`; `bridge_closed` with client reason `usb_disconnected` and visibility `hidden` produces `qa_environment/usb_disconnected_hidden` before the generic interruption rule. A visible tab, missing visibility, or a deploy close 1012 remains `smartqa_infra/run_interrupted`; `auth_expired` is `smartqa_infra/auth_expired`, not QA setup.
+
+`collect(session_id=None)` scans history by default; passing the exact turn ID limits collection to that turn and remains idempotent. Classifier-version and latest-classification precedence belongs to the A2b consumer/migration layer, not this evidence layer.
 
 - **Daily digest.** Once a day, one message lists `smartqa_*` causes not reported before, sent through the notifier channels (`ARTEMIS_WEBHOOK_URL` and the others in `mcp_server/notifiers`). A cause counts as reported only after a channel accepted the message; with no channel configured, the digest repeats daily and `POST /api/system/failures/digest` returns `"sent": false`.
 - **Evidence** is redacted and cut to 300 characters. Run causes come from the interrupt reason, else the last error line of the run's `stdout.log`.

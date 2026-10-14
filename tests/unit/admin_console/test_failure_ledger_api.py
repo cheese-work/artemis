@@ -251,6 +251,7 @@ async def test_targeted_collect_keeps_other_turns_unclassified_and_is_idempotent
 async def test_qa_and_app_causes_are_not_counted_as_smartqa_defects(library, admin):
     sid = seed_run(library, stdout=KEYGUARD)
     await collect(admin)
+    assert all(not cause["smartqa_side"] for cause in (await failures(admin))["causes"])
     with sqlite3.connect(library.db) as conn:
         conn.execute("UPDATE failure_ledger SET category='app_defect' WHERE session_id=?", (sid,))
     assert all(not cause["smartqa_side"] for cause in (await failures(admin))["causes"])
@@ -264,7 +265,7 @@ async def test_bridge_close_persists_the_exact_turn_report_before_revocation(
         BridgeSession,
         BridgeSessionService,
     )
-    from apps.admin_console.core import state
+    from apps.admin_console.core.state import state
     from apps.admin_console.database.repositories.session_repository import session_repo
 
     sid = seed_run(library, status="running")
@@ -288,6 +289,52 @@ async def test_bridge_close_persists_the_exact_turn_report_before_revocation(
         "client_close": {"reason": "usb_disconnected"},
         "visibility_state": "hidden",
     }
+
+
+@pytest.mark.asyncio
+async def test_shared_chat_worker_stdout_is_not_borrowed_by_an_earlier_turn(library, admin):
+    first = seed_run(library, stdout="LLMExhaustedError: Connection error.\n")
+    second = seed_run(library)
+    with sqlite3.connect(library.db) as conn:
+        for number, turn in enumerate((first, second), start=1):
+            conn.execute(
+                "INSERT INTO chat_turns VALUES (?, ?, ?, 'failed', ?)",
+                (turn, first, number, time.time()),
+            )
+    await collect(admin)
+    view = await failures(admin)
+    assert {(row["category"], row["rule"]) for row in by_session(view, first)} == {
+        ("unknown", "no_match")
+    }
+    assert {(row["category"], row["rule"]) for row in by_session(view, second)} == {
+        ("unknown", "no_match")
+    }
+
+
+@pytest.mark.asyncio
+async def test_durable_error_classifies_even_when_the_projection_is_missing(library, admin):
+    from artemis.runtime.lifecycle import LifecycleAuthority
+
+    sid = seed_run(library, status="running", stdout="ons.AgentError: Android\n")
+    LifecycleAuthority(library.db).finish(sid, "failed", error=KEYGUARD)
+    await collect(admin)
+    row = by_session(await failures(admin), sid)[0]
+    assert (row["category"], row["rule"]) == ("qa_environment", "device_locked")
+
+
+@pytest.mark.asyncio
+async def test_stdout_fallback_accepts_an_unwrapped_automation_error(library, admin):
+    sid = seed_run(library, stdout=KEYGUARD)
+    await collect(admin)
+    row = by_session(await failures(admin), sid)[0]
+    assert (row["category"], row["rule"]) == ("qa_environment", "device_locked")
+
+
+def test_malformed_structured_reason_is_not_a_rule_or_a_classifier_crash():
+    assert failure_ledger.classify({"reason": [], "error": "unrecognized"}) == (
+        "unknown",
+        "no_match",
+    )
 
 
 # -- acceptance: the runs of 2026-10-07 ------------------------------------------------

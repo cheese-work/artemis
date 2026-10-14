@@ -113,7 +113,9 @@ async def test_gateway_refusal_records_the_readable_failed_step_for_the_run_view
     assert base_model.ainvoke.await_count == 2
     fallback.assert_not_awaited()
     pause.assert_not_called()
-    context.data_engine.end_session.assert_called_with(status="failed")
+    context.data_engine.end_session.assert_called_with(
+        status="failed", error=agent._tasks[-1].result.error
+    )
 
 
 @pytest.mark.asyncio

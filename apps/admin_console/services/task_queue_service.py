@@ -340,8 +340,10 @@ class TaskQueueService:
         return target
 
     @classmethod
-    def interrupt_device_binding(cls, session_id: str, reason: str) -> None:
-        outcome = session_repo.lifecycle.interrupt(session_id, reason)
+    def interrupt_device_binding(
+        cls, session_id: str, reason: str, *, client_close: dict[str, Any] | None = None
+    ) -> None:
+        outcome = session_repo.lifecycle.interrupt(session_id, reason, client_close=client_close)
         if not outcome.committed:
             return
         for run_key, run in list(state.active_runs.items()):
@@ -355,10 +357,14 @@ class TaskQueueService:
                     pass
 
     @classmethod
-    def interrupt_bridge_binding(cls, bridge_session_id: str) -> None:
+    def interrupt_bridge_binding(
+        cls, bridge_session_id: str, *, client_close: dict[str, Any] | None = None
+    ) -> None:
         for item in list(state.queue_items):
             if item.get("bridge_session_id") == bridge_session_id:
-                cls.interrupt_device_binding(str(item["session_id"]), "bridge_closed")
+                cls.interrupt_device_binding(
+                    str(item["session_id"]), "bridge_closed", client_close=client_close
+                )
 
     @classmethod
     def validate_host_device_inventory(

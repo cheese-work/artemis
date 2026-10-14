@@ -40,3 +40,10 @@ async def test_final_tracing_keeps_the_unwrapped_task_error():
     context = SimpleNamespace(data_engine=engine, execution_setup=None)
     await Agent._finalize_tracing(None, task, context)
     engine.end_session.assert_called_once_with(status="failed", error=error)
+
+
+def test_flash_failure_persists_the_error_before_tracing_finalization():
+    engine = MagicMock()
+    error = "FlashRunner failed: The model returned no response"
+    Agent._end_session_for_report(engine, {"status": "failed"}, error=error)
+    engine.end_session.assert_called_once_with("failed", error=error)
