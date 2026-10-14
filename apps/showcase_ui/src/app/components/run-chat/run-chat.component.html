@@ -110,7 +110,7 @@
       <form class="chat-composer" (ngSubmit)="send()">
         <label class="sr-only" for="session-message">{{ active() ? 'Message the agent' : 'Continue this session with a new turn' }}</label>
         <div class="composer-bar">
-          <textarea id="session-message" name="message" [(ngModel)]="draft" rows="2" cdkTextareaAutosize cdkAutosizeMinRows="2" cdkAutosizeMaxRows="8"
+          <textarea id="session-message" name="message" [(ngModel)]="draft" rows="2" cdkTextareaAutosize cdkAutosizeMaxRows="8"
             maxlength="32768" [placeholder]="active() ? 'Correct or steer the next step…' : 'What should the agent do next on this phone?'"
             [disabled]="sending()"></textarea>
           <div class="composer-tools">
