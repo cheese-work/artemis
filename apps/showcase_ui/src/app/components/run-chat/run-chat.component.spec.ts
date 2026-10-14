@@ -531,6 +531,31 @@ describe('RunChatComponent', () => {
       fixture.destroy();
     }));
 
+    it('boxes a typed field from normalized target_bounds (indexed targets record them on the 0 to 1000 scale)', fakeAsync(() => {
+      const { fixture, before } = evidence(
+        { action: 'input_text', text: 'gangnam style', target_text: 'search field', normalized_coordinates: [500, 75], target_bounds: [100, 50, 900, 100] },
+        { extra_metadata: { width: 1080, height: 2400 } });
+      const box = before.querySelector('.action-marker.type.box') as HTMLElement;
+      expect([box.style.left, box.style.top, box.style.width, box.style.height]).toEqual(['10%', '5%', '80%', '5%']);
+      fixture.destroy();
+    }));
+
+    it('reads normalized target_bounds as normalized when the step has no tap point', fakeAsync(() => {
+      const { fixture, before } = evidence({ action: 'input_text', text: 'a', target_bounds: [100, 50, 900, 100] });
+      const box = before.querySelector('.action-marker.type.box') as HTMLElement;
+      expect([box.style.left, box.style.top, box.style.width, box.style.height]).toEqual(['10%', '5%', '80%', '5%']);
+      fixture.destroy();
+    }));
+
+    it('reads target_bounds with a value above 1000 as pixels', fakeAsync(() => {
+      const { fixture, before } = evidence(
+        { action: 'input_text', text: 'a', target_bounds: [108, 1200, 972, 1440] },
+        { extra_metadata: { width: 1080, height: 2400 } });
+      const box = before.querySelector('.action-marker.type.box') as HTMLElement;
+      expect([box.style.left, box.style.top, box.style.width, box.style.height]).toEqual(['10%', '50%', '80%', '10%']);
+      fixture.destroy();
+    }));
+
     it('draws a swipe as an arrow from the start to the end point', fakeAsync(() => {
       const { fixture, before } = evidence({ action: 'swipe', normalized_start_coordinates: [500, 750], normalized_end_coordinates: [500, 250] });
       const line = before.querySelector('.action-marker.swipe line') as SVGLineElement;
