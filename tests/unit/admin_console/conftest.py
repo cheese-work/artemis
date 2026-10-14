@@ -15,6 +15,7 @@
 """Fixtures for the run library tests: one isolated database plus traces directory."""
 
 from dataclasses import dataclass
+import asyncio
 import json
 from pathlib import Path
 import sqlite3
@@ -25,7 +26,9 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi import Request
 from httpx import ASGITransport, AsyncClient
 import jwt
+import httpx
 import pytest
+
 from apps.admin_console.core.access_control import AccessIdentity, public_tier
 from apps.admin_console.server import app
 
@@ -37,6 +40,49 @@ def isolate_execution_reservations(monkeypatch):
     from apps.admin_console.services.device_reservation import device_reservations
 
     monkeypatch.setattr(device_reservations, "_claims", {})
+
+
+@pytest.fixture(autouse=True)
+def synced_run_model(request, monkeypatch):
+    if request.node.path.stem.startswith("test_preview_"):
+        return
+    tmp_path = request.getfixturevalue("tmp_path")
+    from apps.admin_console.routers import tasks
+    from apps.admin_console.services.config_store import ConfigStore
+    from apps.admin_console.services.provider_settings import ProviderSettings
+
+    root = tmp_path / "run-model-catalog"
+    root.mkdir()
+    config = root / "run-model.jsonc"
+    config.write_text(
+        json.dumps(
+            {
+                "default": {
+                    "provider": "openai",
+                    "model": "fixture-default",
+                    "fallback": {"provider": "openai", "model": "fixture-default"},
+                },
+                "nodes": {},
+            }
+        )
+    )
+    environment = root / "run-model.env"
+    environment.write_text("OPENAI_API_KEY=run-model-fixture\n")
+    store = ConfigStore(config, environment)
+    providers = ProviderSettings(
+        store,
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, json={"data": [{"id": "fixture-default"}]})
+        ),
+    )
+
+    async def prepare():
+        snapshot = await providers.read()
+        await providers.save("openai", snapshot["version"], actor="fixture", enabled=True)
+        await providers.sync("openai")
+
+    asyncio.run(prepare())
+    monkeypatch.setattr(tasks.model_discovery, "store", store)
 
 
 @pytest.fixture(scope="module")

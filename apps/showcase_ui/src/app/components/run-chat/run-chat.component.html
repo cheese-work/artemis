@@ -1,0 +1,132 @@
+@if (!runId()) {
+  <section class="empty-chat"><h1>New session</h1><p>Describe what the agent should check on your phone.</p>
+    <div class="sample-prompts" aria-label="Sample prompts">
+      @for (sample of samples; track sample.title) {
+        <button type="button" data-sample [title]="sample.source" (click)="newRunPrompt.emit(sample.prompt)">{{ sample.title }}</button>
+      }
+    </div>
+    <p class="sample-attribution">Original Artemis SDK examples · Selecting a sample only fills the composer.</p>
+  </section>
+} @else {
+  <div class="chat-session">
+    <header class="chat-header">
+      <div class="session-title">
+        @if (editingTitle()) {
+          <form (ngSubmit)="saveTitle()" class="rename-form">
+            <input name="title" aria-label="Session title" [(ngModel)]="titleDraft" maxlength="120" [disabled]="savingTitle()"
+              (keydown.escape)="editingTitle.set(false)" autofocus>
+            <button type="submit" [disabled]="!titleDraft.trim() || savingTitle()">Save</button>
+            <button type="button" (click)="editingTitle.set(false)">Cancel</button>
+          </form>
+        } @else {
+          <button class="title-button" type="button" [title]="title()" aria-label="Rename session" [disabled]="!chat()" (click)="beginRename()">
+            <h1>{{ title() }}</h1><span aria-hidden="true">✎</span>
+          </button>
+        }
+      </div>
+      <label class="technical-toggle"><input type="checkbox" role="switch" aria-label="Technical details"
+        [checked]="shell.technicalDetails()" (change)="shell.setTechnicalDetails($any($event.target).checked)">Technical details</label>
+      <button type="button" [attr.aria-expanded]="sidebarOpen()" aria-controls="session-sidebar"
+        (click)="sidebarOpen.set(!sidebarOpen())" [attr.aria-label]="sidebarOpen() ? 'Collapse session sidebar' : 'Open session sidebar'">
+        <span aria-hidden="true">{{ sidebarOpen() ? '×' : '+' }}</span>
+      </button>
+    </header>
+    <div class="session-layout" [class.sidebar-open]="sidebarOpen()">
+    <div class="session-main">
+    <section #history class="chat-history" aria-label="Chat history" (scroll)="trackScroll()">
+      <ol class="chat-messages flat-timeline" aria-live="polite" aria-relevant="additions">
+        @for (message of timeline(); track message.turn_id + ':' + message.kind + ':' + message.sequence; let index = $index) {
+          @if (index === 0 || timeline()[index - 1].turn_id !== message.turn_id) {
+            <li class="turn-divider" aria-label="Turn boundary"><span>Turn {{ turnNumber(message.turn_id) }}</span>
+              @if (shell.technicalDetails()) { <span>{{ message.turn_id }}</span> }
+            </li>
+          }
+          <li [class.chat-bubble]="['message', 'thinking', 'input_request'].includes(message.kind)"
+            [class.human]="message.role === 'human'" [class.system]="message.role === 'system'"
+            [class.plan-card]="message.kind === 'plan' || message.kind === 'replan'" [class.step-row]="message.kind === 'step'"
+            [attr.data-event-kind]="message.kind">
+            @if (message.kind === 'step') {
+              <details>
+                <summary><span>{{ message.content }}</span>
+                  @if (screenshot(message.payload); as image) { <img class="step-thumbnail" [src]="image" alt="Step thumbnail" loading="lazy" (error)="failScreenshot(message.payload)"> }
+                </summary>
+                @if (screenshot(message.payload); as image) { <img class="step-screenshot" [src]="image" alt="Expanded step screenshot" loading="lazy" (load)="scrollToLatest()" (error)="failScreenshot(message.payload)"> }
+                @else { <p class="receipt">Screenshot unavailable.</p> }
+                @if (shell.technicalDetails()) { <pre class="action-detail">{{ message.payload | json }}</pre> }
+              </details>
+            } @else if (message.kind === 'thinking') {
+              <details class="thinking"><summary>Agent thinking · {{ message.content.split('\n')[0] }}</summary><p>{{ message.content }}</p></details>
+            } @else {
+              <span class="speaker">{{ message.kind === 'replan' ? 'Revised plan' : message.kind === 'plan' ? 'Plan' : message.kind === 'input_request' ? 'Input requested' : message.role === 'human' ? 'You' : message.role === 'agent' ? 'Agent' : 'System' }}</span>
+              <p>{{ message.content }}</p>
+              @if (message.role === 'human' && !message.acknowledged_at) { <span class="receipt">Queued for the next step</span> }
+            }
+            @if (shell.technicalDetails()) { <time>{{ message.created_at * 1000 | date: 'HH:mm:ss' : '+0700' }} ICT</time> }
+          </li>
+        }
+        @if (chat()?.verdict; as verdict) {
+          <li class="verdict-card" data-event-kind="verdict"><h2>Verdict · {{ verdictTitle() }}</h2>
+            @for (finding of verdict.outcome?.last_findings ?? []; track $index) { <p>{{ finding }}</p> }
+            @if (verdict.status !== 'completed') { <p>This execution did not complete.</p> }
+            @if (shell.technicalDetails()) {
+              @if (verdict.report) { <details><summary>Agent report</summary><pre>{{ verdict.report }}</pre></details> }
+              <details><summary>Execution details and error stack</summary><pre>{{ verdict.details | json }}</pre><pre>{{ verdict.outcome | json }}</pre></details>
+            }
+            @if (verdict.status === 'completed') {
+              @if (verdict.tip; as tip) {
+                @if (tip.state === 'generating') { <footer class="verdict-tip" role="status">Preparing a tip for next time…</footer> }
+                @else if (tip.state === 'complete' && tip.text) {
+                  <footer class="verdict-tip"><span>Next time</span><p>{{ tip.text }}</p>
+                    <button type="button" class="copy-tip" (click)="copyTip()">Copy</button>
+                    @if (copyNotice()) { <span role="status">{{ copyNotice() }}</span> }
+                  </footer>
+                }
+              }
+            }
+          </li>
+        }
+      </ol>
+      @if (!chat() && !error()) {
+        <div role="status"><span class="sr-only">Loading chat session…</span>
+          @for (row of [1, 2, 3]; track row) { <div class="step-skeleton" aria-hidden="true"></div> }
+        </div>
+      } @else if (chat() && !stepCount()) { <p class="timeline-empty">{{ emptyMessage() }}</p> }
+    </section>
+    @if (error()) { <p class="chat-error" role="alert">{{ error() }}</p> }
+    @if (!canWrite()) { <p class="chat-notice">Shared session · read-only</p> }
+    @else if (compose()) {
+      @if (inputRequest(); as request) {
+      <form class="chat-composer" (ngSubmit)="sendInput()" autocomplete="off">
+        <label for="session-input">{{ request.content }}</label>
+        <input id="session-input" name="private-input" type="password" [(ngModel)]="secretDraft" maxlength="4096"
+          autocomplete="off" autocapitalize="off" spellcheck="false" [disabled]="sending()" aria-describedby="private-input-notice">
+        <div class="composer-actions">
+          <span id="private-input-notice">Sent only to the device · not added to chat or model context</span>
+          <button type="button" [disabled]="sending()" (click)="stopRun.emit(latest()!.turn_id)">Stop</button>
+          <button type="submit" class="send" [disabled]="!secretDraft || sending()">Send to device</button>
+        </div>
+      </form>
+      } @else {
+      <form class="chat-composer" (ngSubmit)="send()">
+        <label for="session-message">{{ active() ? 'Message the agent' : 'Continue this session with a new turn' }}</label>
+        <textarea id="session-message" name="message" [(ngModel)]="draft" cdkTextareaAutosize cdkAutosizeMinRows="1" cdkAutosizeMaxRows="8"
+          maxlength="32768" [placeholder]="active() ? 'Correct or steer the next step…' : 'What should the agent do next on this phone?'"
+          [disabled]="sending()"></textarea>
+        <div class="composer-actions">
+          <span>{{ paused() ? 'Paused · Continue or send another message' : active() ? 'Steer by default · a plan change pauses for confirmation' : 'Same phone · current screen · full chat history' }}</span>
+          @if (active()) {
+            <button type="button" [disabled]="sending()" (click)="control(paused() ? 'continue' : 'pause')">{{ paused() ? 'Continue' : 'Pause' }}</button>
+            <button type="button" [disabled]="sending()" (click)="stopRun.emit(latest()!.turn_id)">Stop</button>
+          }
+          <button type="submit" class="send" [disabled]="!draft.trim() || sending() || !chat()">Send</button>
+        </div>
+      </form>
+      }
+    }
+    </div>
+    @if (sidebarOpen()) {
+      <app-session-sidebar id="session-sidebar" [runId]="latest()?.turn_id ?? runId()" [technicalDetails]="shell.technicalDetails()" [firstPrompt]="rootRun()?.chat_prompt ?? rootRun()?.prompt ?? null"></app-session-sidebar>
+    }
+    </div>
+  </div>
+}

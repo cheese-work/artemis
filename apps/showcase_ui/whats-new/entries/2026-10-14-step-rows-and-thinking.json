@@ -1,0 +1,7 @@
+{
+  "id": "2026-10-14-step-rows-and-thinking",
+  "date": "2026-10-14",
+  "title": "Step rows show the action first, then the screenshot taken after it",
+  "body": "Each step row now leads with what the agent did, followed by the screenshot taken after the action. Thinking shows in the default view, dimmed and folded. Long step names wrap to two lines on a phone. The timeline shows loading rows and says what is missing when a session has no steps.",
+  "issues": ["CHE-1653"]
+}

@@ -524,6 +524,94 @@ def test_a_reused_route_without_a_fresh_identity_is_never_confirmed(
     assert _route_state(db, identity) == phone_a  # phone A's record and history stay as they are
 
 
+OTHER_PROPS = {"ro.serialno": "OTHERPHONE1", "ro.product.model": "Pixel 3a"}
+# Every serial shape a server adb lists, each replaced by another device between two fresh
+# enumerations with no offline or absent listing in between: (serial, A, B, B is provable).
+REPLACED_WITHOUT_DISCONNECT = {
+    "usb": (SERIALNO, PHONE_PROPS, OTHER_PROPS, True),
+    "wifi": (WIFI, PHONE_PROPS, OTHER_PROPS, True),
+    "mdns": ("adb-R5CT1234ABC-x1y2._adb-tls-connect._tcp", PHONE_PROPS, OTHER_PROPS, True),
+    "bridge": ("127.0.0.1:40123", PHONE_PROPS, OTHER_PROPS, True),
+    "emulator, other avd": ("emulator-5554", _avd_props("Pixel_A"), _avd_props("Pixel_B"), True),
+    "emulator, no avd name": (
+        "emulator-5554",
+        _avd_props("Pixel_A"),
+        {"ro.serialno": "EMULATOR35X1X1X0", "ro.boot.qemu": "1"},
+        False,
+    ),
+    "other serial shape": ("0a1b2c3d", PHONE_PROPS, OTHER_PROPS, True),
+}
+
+
+@pytest.mark.parametrize("path", [_pool, _async_pool], ids=["sync", "async"])
+@pytest.mark.parametrize("kind", list(REPLACED_WITHOUT_DISCONNECT))
+def test_a_replacement_without_an_observed_disconnect_is_read_again(
+    db, identity, monkeypatch, path, kind
+):
+    serial, first, second, provable = REPLACED_WITHOUT_DISCONNECT[kind]
+    monkeypatch.setattr(identity_module, "_bridge_serials", lambda: {"127.0.0.1:40123"})
+    listing = [(serial, "device", "M", None)]
+    reads = {serial: [dict(first), dict(second)]}
+    run = path(monkeypatch, identity, [listing, list(listing)], reads)
+    seen = []
+    monkeypatch.setattr(
+        device_pool_module,
+        "identity_observer",
+        lambda endpoint, devices: seen.extend(identity.observe_adb(endpoint, devices)),
+    )
+
+    run()
+
+    a, b = seen
+    assert reads == {serial: []}  # the replacement's identity was read, not served from cache
+    assert a.outcome == "confirmed"
+    assert repo_state(db, a.device_id) == "confirmed"  # A's record stays as it is
+    if provable:
+        assert (b.outcome, b.device_id != a.device_id) == ("confirmed", True)
+    else:
+        assert b.outcome == "uncertain" and len(_devices(db)) == 1
+
+
+def test_identity_reads_leave_the_kind_and_model_cache_alone(db, identity, monkeypatch):
+    pool = DevicePool()
+    monkeypatch.setattr(pool, "_resolve_adb", lambda: "adb")
+    monkeypatch.setattr(pool, "_query_adb_devices_sync", lambda: [(SERIALNO, "device", "M", None)])
+    reads = [dict(PHONE_PROPS), dict(OTHER_PROPS)]
+    monkeypatch.setattr(pool, "_read_properties_sync", lambda serial: reads.pop(0))
+    monkeypatch.setattr(device_pool_module, "identity_observer", identity.observe_adb)
+    pool.list_devices()
+    metadata = pool._identity_cache[SERIALNO]
+
+    pool._snapshot().raw = None
+    pool.list_devices()
+
+    assert reads == []
+    assert pool._identity_cache[SERIALNO] == metadata  # kind/model still from the first read
+    assert pool._snapshot().props[SERIALNO] == OTHER_PROPS
+
+
+def test_without_an_observer_identity_is_not_read_again(monkeypatch):
+    pool = DevicePool()
+    monkeypatch.setattr(pool, "_resolve_adb", lambda: "adb")
+    monkeypatch.setattr(pool, "_query_adb_devices_sync", lambda: [(SERIALNO, "device", "M", None)])
+    reads = [dict(PHONE_PROPS)]
+    monkeypatch.setattr(pool, "_read_properties_sync", lambda serial: reads.pop(0))
+    monkeypatch.setattr(device_pool_module, "identity_observer", None)
+
+    for _ in range(2):
+        pool._snapshot().raw = None
+        pool.list_devices()
+
+    assert reads == []  # one read: the CLI and tunnels keep the old cost
+
+
+def repo_state(db, device_id: str) -> str:
+    with sqlite3.connect(db) as conn:
+        return conn.execute(
+            "SELECT match_state FROM devices WHERE device_id = ?", (device_id,)
+        ).fetchone()[0]
+
+
 def test_a_failing_identity_read_never_confirms_a_reused_route(db, identity, monkeypatch):
     _pool(monkeypatch, identity, [[(WIFI, "device", "P", None)]], {WIFI: [dict(PHONE_PROPS)]})()
     phone_a = _route_state(db, identity)
@@ -597,10 +685,10 @@ def test_another_phone_at_the_same_wifi_address_is_read_again(db, identity, monk
     other = {"ro.serialno": "OTHERPHONE1", "ro.product.model": "Pixel 3a"}
     usb_props = {"ro.serialno": "ZY22USB1", "ro.product.model": "Moto"}
     listing = [(wifi, "device", "P", None), (usb, "device", "Moto", None)]
-    reads = {wifi: [dict(PHONE_PROPS), other], usb: [usb_props]}
+    reads = {wifi: [dict(PHONE_PROPS), other], usb: [usb_props, dict(usb_props)]}
     _pool(monkeypatch, identity, [listing, list(listing)], reads)()
 
-    assert reads == {wifi: [], usb: []}  # Wi-Fi identity re-read; the USB phone read once
+    assert reads == {wifi: [], usb: []}  # every listed phone's identity is read again
     assert [state for _, state in _devices(db)] == ["confirmed", "confirmed", "confirmed"]
     with sqlite3.connect(db) as conn:
         hashes = {row[0] for row in conn.execute("SELECT hardware_hash FROM devices")}

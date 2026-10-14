@@ -46,8 +46,8 @@ from artemis.utils.coordinates import (
     normalize_any_structure,
     normalize_step_actions,
 )
-from artemis.utils.logger import get_logger
 from artemis.utils.text import safe_extract_text
+from third_party.mobile_use.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
@@ -1028,6 +1028,29 @@ class DataEngine:
             step_dict["total_tokens"] = step_t
 
         step_dict = normalize_step_actions(step_dict)
+
+        if os.getenv("ARTEMIS_CHAT_SESSION_ID") and self.storage:
+            from artemis.data_engine.chat_sessions import ChatStore
+
+            try:
+                store = ChatStore(self.storage.db_path)
+                thinking = operator_native_thinking or operator_raw_thinking
+                if thinking:
+                    store.record_event(
+                        str(self.current_session_id),
+                        "thinking",
+                        thinking[:1000],
+                        event_key=f"thinking:{step_id}",
+                    )
+                store.record_event(
+                    str(self.current_session_id),
+                    "step",
+                    summary or f"Step {step_number}",
+                    payload={"step_id": str(step_id)},
+                    event_key=f"step:{step_id}",
+                )
+            except (KeyError, ValueError, sqlite3.Error):
+                logger.warning("Could not append the session timeline step.")
 
         self._publish("step_recorded", step_dict)
 

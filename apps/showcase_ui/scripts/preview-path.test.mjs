@@ -99,7 +99,9 @@ for (const prefix of ['/', '/preview/pr/70/']) {
       assert.fail(navigation.errorText);
     }
     try {
-      await waitFor(() => evaluate(`!!window.ng && document.querySelector('app-run-view')?.innerText.includes('Log in and open settings')`).catch(() => false));
+      await waitFor(() => evaluate(`!!window.ng && document.querySelector('app-run-chat')?.innerText.includes('Log in and open settings')`).catch(() => false));
+      await evaluate(`document.querySelector('.step-row summary').click()`);
+      await waitFor(() => evaluate(`!!document.querySelector('.step-row details[open] .step-screenshot')`).catch(() => false));
     } catch (error) {
       console.error(JSON.stringify({ requests, runtimeErrors, page: await evaluate('document.body.innerText') }, null, 2));
       throw error;
@@ -116,20 +118,18 @@ for (const prefix of ['/', '/preview/pr/70/']) {
       return target;
     })()`);
     assert.equal(bridge, url.replace('http:', 'ws:') + prefix + 'api/device-bridge/session');
-    await evaluate(`(async () => {
-      Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async text => { window.copiedRunLink = text; } } });
-      const viewer = ng.getComponent(document.querySelector('app-run-view'));
-      await viewer.copyLink();
-    })()`);
-    assert.equal(await evaluate('window.copiedRunLink'), url + prefix + 'runs/00000001-5d7e-4a10-9c33-0e1f2a3b4c5d');
+    await evaluate(`document.querySelector('[aria-label="Technical details"]').click()`);
+    await waitFor(() => evaluate(`document.querySelector('.verdict-card').textContent.includes('Synthetic agent report')`));
+    assert.equal(await evaluate(`document.querySelector('app-run-view') === null`), true);
+    assert.equal(await evaluate(`document.querySelector('.flat-timeline').lastElementChild.className`), 'verdict-card');
     await waitFor(() => requests.some(request => request === `${prefix}api/stream?scope=all`));
-    const images = await evaluate(`Array.from(document.querySelectorAll('app-run-view img')).map(image => image.getAttribute('src'))`);
+    const images = await evaluate(`Array.from(document.querySelectorAll('.flat-timeline img')).map(image => image.getAttribute('src'))`);
     assert.ok(images.length > 0, 'Run screenshots were rendered');
     assert.ok(images.every(image => image.startsWith(prefix + 'images/')), JSON.stringify(images));
     if (prefix !== '/' && process.argv.includes('--root-api-negative-control')) await evaluate(`fetch('/api/preview-root-leak-control').catch(() => {})`);
     if (prefix !== '/') assert.equal(requests.filter(request => request.startsWith('/api/') || request.startsWith('/images/') || request.startsWith('/videos/') || request.startsWith('/local_file')).length, 0);
     assert.ok(requests.some(request => request.startsWith(`${prefix}api/runs/`)));
-    console.log(`PASS ${prefix}: UI, banner, HTTP, scoped SSE, WebSocket, copied run link, images; root API escapes=0; requests=${requests.length}`);
+    console.log(`PASS ${prefix}: flat timeline, verdict last, technical details, banner, HTTP, scoped SSE, WebSocket, images; root API escapes=0; requests=${requests.length}`);
   } finally {
     socket?.close();
     if (chrome.exitCode === null) {

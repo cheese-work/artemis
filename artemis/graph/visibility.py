@@ -57,7 +57,7 @@ def _vis(reads: set[str], writes: set[str]) -> NodeVisibility:
 #: Start generous, tighten over time — an entry here is a documented decision.
 NODE_VISIBILITY: dict[str, NodeVisibility] = {
     "perception": _vis(
-        reads={"structured_decisions"},
+        reads={"structured_decisions", "initial_goal"},
         writes={
             "latest_screenshot",
             "latest_ui_hierarchy",

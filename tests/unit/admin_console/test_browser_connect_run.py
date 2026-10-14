@@ -27,9 +27,11 @@ def test_fresh_server_connect_then_run_uses_the_same_bridge_lease(tmp_path):
 
 
 def connect_then_run(root):
+    import httpx
     from fastapi.testclient import TestClient
 
     from apps.admin_console import server
+    from apps.admin_console.services.config_store import ConfigStore
     from artemis.data_engine.storage import StorageManager
     from artemis.runtime import AdbEndpoint, DeviceExecutionLock, trace_store
 
@@ -38,6 +40,25 @@ def connect_then_run(root):
     queue = server.task_queue_service
     queue_module = importlib.import_module(queue.__module__)
     calls = []
+    config = root / "run-model.jsonc"
+    config.write_text(
+        json.dumps(
+            {
+                "default": {
+                    "provider": "openai",
+                    "model": "fixture-default",
+                    "fallback": {"provider": "openai", "model": "fixture-default"},
+                },
+                "nodes": {},
+            }
+        )
+    )
+    environment = root / "run-model.env"
+    environment.write_text("OPENAI_API_KEY=run-model-fixture\n")
+    server.tasks.model_discovery.store = ConfigStore(config, environment)
+    server.tasks.model_discovery.transport = httpx.MockTransport(
+        lambda request: httpx.Response(200, json={"data": [{"id": "fixture-default"}]})
+    )
 
     async def fake_adb(*arguments):
         calls.append(arguments)

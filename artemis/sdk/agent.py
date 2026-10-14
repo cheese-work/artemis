@@ -11,57 +11,46 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-#
-# Portions of this file are derived from mobile-use (https://github.com/minitap-ai/mobile-use)
-# Copyright 2025-2026 Minitap, Inc. Licensed under the Apache License 2.0.
 
+from artemis.agents.flash.runner import FlashRunner
+from artemis.agents.outputter.outputter import outputter
+from artemis.clients.screen_client_factory import create_screen_client
+from artemis.config import OutputConfig, record_events
+from artemis.constants import RECURSION_LIMIT
+from artemis.context import DeviceContext
+from artemis.sdk.builders.task_request_builder import TaskRequestBuilder
 import asyncio
 import inspect
 import os
 import re
 
-try:
-    from datetime import UTC, datetime
-except ImportError:
-    from datetime import datetime
-
-    UTC = UTC
-from pathlib import Path
+from datetime import UTC, datetime
 from platform import system
 import shutil
+import sqlite3
 import sys
 import threading
 from types import NoneType
 from typing import Any, TypeVar, overload
 import uuid
+from pathlib import Path
 
-from adbutils import AdbClient
 from dotenv import load_dotenv
 from google import genai
 from langchain_google_genai import ChatGoogleGenerativeAI
-from PIL import Image
-from pydantic import BaseModel
 
-from artemis.agents.flash.runner import FlashRunner
-from artemis.agents.outputter.outputter import outputter
 from artemis.clients.screen_client_factory import (
-    ScreenClient,
-    create_screen_client,
     describe_backend,
     helper_version,
     hierarchy_backend_sentence,
 )
 from artemis.config import (
     CheckerConfig,
-    OutputConfig,
-    record_events,
     run_tuning_for_profile,
     settings,
 )
-from artemis.constants import RECURSION_LIMIT
 from artemis.context import (
     ArtemisContext,
-    DeviceContext,
     DevicePlatform,
     ExecutionSetup,
 )
@@ -74,13 +63,13 @@ from artemis.runtime.adb_endpoint import AdbEndpoint
 from artemis.runtime.endpoint_transport import EndpointTransport
 from artemis.runtime.cancel_requests import watch_for_cancel_request
 from artemis.runtime.lifecycle import InterruptReason
+from artemis.llm.reliability import LLMGatewayModelRejectedError, LLMSelectedModelError
+from artemis.data_engine import run_snapshot
 from artemis.data_engine.engine import DataEngine
 from artemis.drivers.types import DeviceDisconnectedError
 from artemis.data_engine.trace import DataEngineCallbackHandler
 from artemis.graph.graph import get_graph
 from artemis.graph.state import State
-from artemis.sdk.builders.agent_config_builder import get_default_agent_config
-from artemis.sdk.builders.task_request_builder import TaskRequestBuilder
 from artemis.sdk.types.agent import AgentConfig
 from artemis.sdk.types.exceptions import (
     AgentError,
@@ -95,8 +84,6 @@ from artemis.sdk.types.task import (
     Task,
     TaskRequest,
 )
-from artemis.utils.app_launch_utils import _handle_initial_app_launch
-from artemis.utils.logger import get_logger
 from artemis.utils.redaction import bind_session, goal_metadata
 from artemis.utils.media import (
     create_gif_from_trace_folder,
@@ -106,12 +93,15 @@ from artemis.utils.media import (
 )
 from artemis.utils.startup_progress import publish_startup_progress
 from artemis.utils.video import SCRCPY_TOO_OLD_REASON, classify_recording_failure
+from third_party.mobile_use.sdk.agent import AgentBase, TOutput
+from third_party.mobile_use.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-TOutput = TypeVar("TOutput", bound=BaseModel | None)
-
 load_dotenv()
+
+
+__all__ = ["Agent", "TOutput", "attach_test_summary", "resolve_trace_suffix", "run_tuning_summary"]
 
 
 def run_tuning_summary(config: AgentConfig, profile: str | None) -> dict[str, str] | None:
@@ -134,18 +124,8 @@ def run_tuning_summary(config: AgentConfig, profile: str | None) -> dict[str, st
     )
 
 
-class Agent:
-    _config: AgentConfig
-    _tasks: list[Task] = []
-    _tmp_traces_dir: Path
-    _initialized: bool = False
-    _device_context: DeviceContext
-    _adb_client: AdbClient | None
-    _ui_adb_client: ScreenClient | Any | None
-
-    _current_task: asyncio.Task | None = None
-    _task_lock: asyncio.Lock
-    _cloud_mobile_id: str | None = None
+class Agent(AgentBase):
+    """Artemis SDK agent."""
 
     def __init__(
         self,
@@ -519,419 +499,6 @@ class Agent:
             task_request.with_app_path(app_path=app_path)
         return await self._run_task(task_request.build())
 
-    async def _run_task(
-        self,
-        request: TaskRequest[TOutput],
-    ) -> str | dict | TOutput | None:
-        bind_session(self._session_id or os.getenv("ARTEMIS_SESSION_ID"), request.goal)
-        if not self._initialized:
-            raise AgentNotInitializedError()
-
-        if request.profile:
-            agent_profile = self._config.agent_profiles.get(request.profile)
-            if agent_profile is None:
-                if request.profile.lower() in (
-                    "flash",
-                    "pro",
-                    "ultra",
-                    "default",
-                ):
-                    agent_profile = self._config.default_profile
-                else:
-                    raise AgentProfileNotFoundError(request.profile)
-        else:
-            agent_profile = self._config.default_profile
-
-        logger.info(str(agent_profile))
-
-        on_status_changed = None
-        task_id = str(
-            self._session_id
-            or os.getenv("ARTEMIS_SESSION_ID")
-            or os.getenv("ARTEMIS_CLOUD_SESSION_ID")
-            or uuid.uuid4()
-        )
-        bind_session(task_id, request.goal)
-
-        task = Task(
-            id=task_id,
-            device=self._device_context,
-            status="pending",
-            request=request,
-            created_at=datetime.now(),
-            on_status_changed=on_status_changed,
-        )
-        self._tasks.append(task)
-        task_name = task.get_name()
-
-        context = ArtemisContext(
-            device=self._device_context,
-            adb_client=self._adb_client,
-            ui_adb_client=self._ui_adb_client,
-            llm_config=agent_profile.llm_config,
-            agent_config=self._config,
-        )
-
-        output_config = None
-        if request.output_description or request.output_format:
-            output_config = OutputConfig(
-                output_description=request.output_description,
-                structured_output=request.output_format,  # type: ignore
-            )
-            logger.info(str(output_config))
-
-        logger.info(f"event=task_graph_started {goal_metadata(request.goal)}")
-        state = self._get_graph_state(task=task)
-        graph_input = state.model_dump()
-        datetime.now(UTC)
-
-        async def _execute_task_logic():
-            last_state: State | None = None
-            last_state_snapshot: dict | None = None
-            output = None
-            effective_mode = getattr(self._config, "concurrency_mode", "per_device")
-            effective_max = getattr(self._config, "max_concurrency", None)
-            sess_id = (
-                self._session_id
-                or os.getenv("ARTEMIS_SESSION_ID")
-                or os.getenv("ARTEMIS_CLOUD_SESSION_ID")
-                or getattr(task, "id", None)
-                or getattr(getattr(task, "request", None), "task_name", None)
-            )
-            active_owner = DeviceExecutionLock.get_active_owner(self._device_context.device_id)
-            already_held = (
-                active_owner is not None
-                and active_owner.pid == os.getpid()
-                and (
-                    (sess_id and str(active_owner.session_id) == str(sess_id))
-                    or active_owner.token == self._device_context.device_id
-                )
-            )
-            device_lock = (
-                None
-                if already_held
-                else DeviceExecutionLock(
-                    self._device_context.device_id,
-                    description=goal_metadata(request.goal),
-                    concurrency_mode=effective_mode,
-                    max_concurrency=effective_max,
-                    session_id=str(sess_id) if sess_id else None,
-                    ingress=os.getenv("ARTEMIS_TASK_INGRESS") or "agent",
-                )
-            )
-            try:
-                if device_lock is not None and os.environ.get("ARTEMIS_CLOUD_MODE") != "1":
-                    queue_cancel_event = threading.Event()
-                    acquire_task = asyncio.create_task(
-                        asyncio.to_thread(
-                            device_lock.acquire,
-                            cancel_event=queue_cancel_event,
-                        )
-                    )
-                    try:
-                        await asyncio.shield(acquire_task)
-                    except asyncio.CancelledError:
-                        queue_cancel_event.set()
-                        try:
-                            await asyncio.shield(acquire_task)
-                        except Exception as exc:  # pylint: disable=broad-exception-caught
-                            # Draining the lock acquisition after cancellation is best effort.
-                            logger.debug(
-                                f"Device lock acquisition drain after cancel failed: {exc}",
-                                exc_info=True,
-                            )
-                        raise
-                # All device mutation and UI initialization happens only after
-                # this task reaches the head of the one global FIFO queue.
-                # Session creation must be inside the same boundary as well:
-                # DataEngine uses a shared database, so a queued task must not
-                # publish a new active session while the current task is still
-                # finishing.
-                self._prepare_tracing(task=task, context=context)
-                self._prepare_output_files(task=task)
-                if os.environ.get("ARTEMIS_CLOUD_MODE") != "1":
-                    if self._ui_adb_client is not None:
-                        await self._connect_screen_client(context, str(sess_id))
-                    await self._ensure_device_unlocked()
-                publish_startup_progress(
-                    "environment", "Preparing the device environment", session_id=str(sess_id)
-                )
-                await self._prepare_app_installation(task=task)
-                await self._prepare_device_environment(context=context)
-                await self._prepare_app_lock(task=task, context=context)
-                async with context:
-                    recording_started = False
-                    if self._config.video_recording_tools_enabled:
-                        try:
-                            controller = get_controller(context)
-
-                            output_dir = None
-                            if context.execution_setup and context.execution_setup.traces_path:
-                                output_dir = (
-                                    self._tmp_traces_dir / context.execution_setup.trace_name
-                                ).resolve()
-
-                            logger.info("event=recorder_starting")
-                            start_res = await controller.start_video_recording(
-                                output_dir=output_dir
-                            )
-                            if start_res and start_res.success:
-                                recording_started = True
-                            else:
-                                failure = start_res.message if start_res else "unknown"
-                                self._report_recording_unavailable(failure, str(sess_id))
-                                logger.warning(
-                                    f"[{task_name}] Failed to start screen recording: {failure}"
-                                )
-                        except Exception as e:
-                            self._report_recording_unavailable(str(e), str(sess_id))
-                            logger.error(f"[{task_name}] Failed to start screen recording: {e}")
-
-                    publish_startup_progress(
-                        "environment_ready", "Device environment is ready", session_id=str(sess_id)
-                    )
-                    try:
-                        if request.profile and request.profile.lower() == "flash":
-                            logger.info(f"[{task_name}] Invoking FlashRunner reactive loop...")
-                            await task.set_status(
-                                status="running",
-                                message="Invoking FlashRunner...",
-                            )
-
-                            # An explicit max_steps caps the reactive loop; the
-                            # default leaves the cap to agent.flash.max_turns
-                            # (0 = unlimited).
-                            max_turns = (
-                                request.max_steps if request.max_steps != RECURSION_LIMIT else None
-                            )
-                            runner = FlashRunner(context, goal=request.goal, max_turns=max_turns)
-                            flash_result = await runner.run(state)
-
-                            output = flash_result
-                            last_state_snapshot = state.model_dump()
-
-                            status = flash_result.get("status")
-                            if status == "completed":
-                                logger.info(f"✅ Automation '{task_name}' is success ✅")
-                                await task.finalize(content=output, state=last_state_snapshot)
-                                if context.data_engine:
-                                    context.data_engine.end_session("completed")
-                            else:
-                                err = (
-                                    f"[{task_name}] FlashRunner failed:"
-                                    f" {flash_result.get('explanation')}"
-                                )
-                                logger.warning(err)
-                                await task.finalize(
-                                    content=output,
-                                    state=last_state_snapshot,
-                                    error=err,
-                                )
-                                if context.data_engine:
-                                    self._end_session_for_report(context.data_engine, flash_result)
-                            return output
-                        else:
-                            logger.info(f"event=task_graph_invoked input_fields={len(graph_input)}")
-                            await task.set_status(status="running", message="Invoking graph...")
-                            async for chunk in (await get_graph(context)).astream(
-                                input=graph_input,
-                                config={
-                                    "recursion_limit": task.request.max_steps,
-                                    "callbacks": (
-                                        (
-                                            list(self._config.graph_config_callbacks)
-                                            if self._config.graph_config_callbacks is not None
-                                            else []
-                                        )
-                                        + [DataEngineCallbackHandler(context)]
-                                        if context.data_engine
-                                        else self._config.graph_config_callbacks
-                                    ),
-                                },
-                                stream_mode=[
-                                    "messages",
-                                    "custom",
-                                    "updates",
-                                    "values",
-                                ],
-                            ):
-                                stream_mode, payload = chunk
-                                if stream_mode == "values":
-                                    last_state_snapshot = payload  # type: ignore
-                                    last_state = State(**last_state_snapshot)  # type: ignore
-
-                            if not last_state:
-                                err = f"[{task_name}] No result received from graph"
-                                logger.warning(err)
-                                await task.finalize(
-                                    content=output,
-                                    state=last_state_snapshot,
-                                    error=err,
-                                )
-                                if context.data_engine:
-                                    context.data_engine.end_session("failed")
-                                return None
-
-                            output = await self._extract_output(
-                                task_name=task_name,
-                                ctx=context,
-                                request=request,
-                                output_config=output_config,
-                                state=last_state,
-                            )
-                            # Run outcome (goal axis x test axis) drives the
-                            # wrap-up instead of an unconditional success path.
-                            run_outcome = getattr(last_state, "run_outcome", None)
-                            context.run_outcome = run_outcome
-                            output = attach_test_summary(output, run_outcome)
-                            task_status_axis = (
-                                run_outcome.get("task_status") if run_outcome else None
-                            )
-                            tests_failed = (
-                                int((run_outcome.get("tests") or {}).get("failed", 0))
-                                if run_outcome
-                                else 0
-                            )
-                            if task_status_axis == "blocked":
-                                err = (
-                                    f"[{task_name}] Task ended blocked: verify"
-                                    " criteria unmet after exhausting the final"
-                                    " check budget."
-                                )
-                                logger.warning(err)
-                                await task.finalize(
-                                    content=output,
-                                    state=last_state_snapshot,
-                                    error=err,
-                                )
-                                if context.data_engine:
-                                    context.data_engine.end_session("failed")
-                                return output
-
-                            if tests_failed > 0:
-                                logger.warning(
-                                    f"[{task_name}] Task completed, but"
-                                    f" {tests_failed} assertion(s) failed —"
-                                    " see the test summary."
-                                )
-                            else:
-                                logger.info(f"✅ Automation '{task_name}' is success ✅")
-                            await task.finalize(content=output, state=last_state_snapshot)
-                            if context.data_engine:
-                                context.data_engine.end_session("completed")
-
-                            return output
-                    finally:
-                        if recording_started:
-
-                            async def _safe_stop_recording():
-                                try:
-                                    logger.info(
-                                        f"[{task_name}] Stopping automated screen recording..."
-                                    )
-                                    controller = get_controller(context)
-                                    return await controller.stop_video_recording()
-                                except Exception as e:
-                                    logger.error(
-                                        f"[{task_name}] Error stopping screen recording: {e}"
-                                    )
-                                    return None
-
-                            stop_task = asyncio.create_task(_safe_stop_recording())
-                            try:
-                                stop_result = await asyncio.shield(stop_task)
-                            except (asyncio.CancelledError, BaseException):
-                                try:
-                                    stop_result = await asyncio.wait_for(stop_task, timeout=15.0)
-                                except Exception:
-                                    stop_result = None
-
-                            if stop_result and stop_result.success and stop_result.video_path:
-                                logger.info(
-                                    f"[{task_name}] Screen recording saved"
-                                    f" to: {stop_result.video_path}"
-                                )
-                            elif stop_result:
-                                logger.warning(
-                                    f"[{task_name}] Failed to save screen"
-                                    f" recording: {stop_result.message}"
-                                )
-            except asyncio.CancelledError:
-                err = f"[{task_name}] Task cancelled"
-                logger.warning(err)
-                await task.finalize(
-                    content=output,
-                    state=last_state_snapshot,
-                    error=err,
-                    cancelled=True,
-                )
-                if context.data_engine:
-                    context.data_engine.end_session("cancelled")
-
-                raise
-            except Exception as e:
-                err = f"[{task_name}] Error running automation: {e}"
-                logger.error(err)
-                await task.finalize(
-                    content=output,
-                    state=last_state_snapshot,
-                    error=err,
-                )
-                if context.data_engine:
-                    if isinstance(e, DeviceDisconnectedError):
-                        context.data_engine.end_session(
-                            "interrupted", interrupt_reason=InterruptReason.DEVICE_OFFLINE
-                        )
-                    else:
-                        context.data_engine.end_session("failed")
-
-                raise
-            finally:
-                try:
-                    # Background ADB processes (logcat, screenrecord, ...) started
-                    # by the Operator must not outlive the automation task.
-                    from artemis.tools.command_tool import shutdown_adb_background_tasks
-
-                    await asyncio.wait_for(shutdown_adb_background_tasks(context), timeout=15.0)
-                except Exception as e:
-                    logger.warning(f"[{task_name}] Failed to stop background ADB tasks: {e}")
-                try:
-                    await self._finalize_tracing_safely(task=task, context=context)
-                finally:
-                    if os.environ.get("ARTEMIS_CLOUD_MODE") != "1":
-                        try:
-                            if self._ui_adb_client is not None:
-                                await asyncio.to_thread(self._ui_adb_client.disconnect)
-                        finally:
-                            if device_lock is not None:
-                                await asyncio.to_thread(device_lock.release)
-
-        async with self._task_lock:
-            if self._current_task and not self._current_task.done():
-                logger.warning(
-                    "Another automation task is already running. "
-                    "Stopping it before starting the new one."
-                )
-                self.stop_current_task()
-                try:
-                    await self._current_task
-                except asyncio.CancelledError:
-                    pass
-
-            cancel_watcher: asyncio.Task | None = None
-            try:
-                self._current_task = asyncio.create_task(_execute_task_logic())
-                cancel_watcher = asyncio.create_task(self._watch_external_cancel(task_name))
-                return await self._current_task
-            finally:
-                self._current_task = None
-                if cancel_watcher is not None and not cancel_watcher.done():
-                    cancel_watcher.cancel()
-                    try:
-                        await cancel_watcher
-                    except asyncio.CancelledError:
-                        pass
-
     @staticmethod
     def _report_recording_unavailable(error: str, session_id: str) -> None:
         reason = classify_recording_failure(error)
@@ -970,44 +537,6 @@ class Agent:
         except Exception as exc:
             logger.debug(f"[{task_name}] Cancel watcher stopped: {exc}")
 
-    def stop_current_task(self):
-        """Requests cancellation of the currently running automation task."""
-        if self._current_task and not self._current_task.done():
-            logger.info("Requesting to stop the current automation task...")
-            was_cancelled = self._current_task.cancel()
-            if was_cancelled:
-                logger.success("Cancellation request for the current task was sent.")
-            else:
-                logger.warning(
-                    "Could not send cancellation request for the current task "
-                    "(it may already be completing)."
-                )
-        else:
-            logger.info("No active automation task to stop.")
-
-    async def get_screenshot(self) -> Image.Image:
-        """Capture a screenshot from the mobile device.
-
-        Returns:
-            Screenshot as PIL Image
-
-        Raises:
-            AgentNotInitializedError: If the agent is not initialized
-            Exception: If screenshot capture fails
-        """
-        if not self._initialized:
-            raise AgentNotInitializedError()
-
-        # Use ADB to capture screenshot
-        logger.info("Capturing screenshot from local Android device")
-        if not self._adb_client:
-            raise Exception("ADB client not initialized")
-
-        device = self._adb_client.device(serial=self._device_context.device_id)
-        screenshot = await asyncio.to_thread(device.screenshot)
-        logger.info("Screenshot captured from local Android device")
-        return screenshot
-
     async def clean(self, force: bool = False):
         if not self._initialized and not force:
             return
@@ -1040,22 +569,6 @@ class Agent:
                 "Android secure keyguard is locked. Unlock the device manually before "
                 "running Artemis; automation will not guess a PIN, password, or pattern."
             )
-
-    async def _prepare_app_installation(self, task: Task) -> str | None:
-        """Install app if app_path is specified in the task request.
-
-        Returns:
-            None.
-        """
-        if not task.request.app_path:
-            return None
-
-        task_name = task.get_name()
-        logger.info(f"[{task_name}] Installing app from: {task.request.app_path}")
-
-        await self.install_app(task.request.app_path)
-
-        return None
 
     async def _prepare_device_environment(self, context: ArtemisContext):
         """Prepare device environment flags (like forcing Web Accessibility) before the task runs."""
@@ -1105,38 +618,9 @@ class Agent:
                 f" root/userdebug device): {e}"
             )
 
-    async def _prepare_app_lock(self, task: Task, context: ArtemisContext):
-        """Prepare app lock by launching the locked app if specified."""
-        if not task.request.locked_app_package:
-            return
-
-        task_name = task.get_name()
-        logger.info(f"[{task_name}] Preparing app lock for: {task.request.locked_app_package}")
-
-        app_lock_status = await _handle_initial_app_launch(
-            ctx=context, locked_app_package=task.request.locked_app_package
-        )
-
-        if context.execution_setup is None:
-            context.execution_setup = ExecutionSetup(app_lock_status=app_lock_status)
-        else:
-            context.execution_setup.app_lock_status = app_lock_status
-
-        if app_lock_status.locked_app_initial_launch_success is False:
-            error = app_lock_status.locked_app_initial_launch_error
-            logger.warning(f"[{task_name}] Failed to launch locked app: {error}")
-
     def _prepare_tracing(self, task: Task, context: ArtemisContext):
         """Prepare tracing and data engine setup."""
-        task_name = task.get_name()
-        temp_trace_path = Path(self._tmp_traces_dir / task_name).resolve()
-        temp_trace_path.mkdir(parents=True, exist_ok=True)
-
-        if task.request.record_trace:
-            traces_output_path = Path(task.request.trace_path).resolve()
-            logger.info(f"[{task_name}] 📂 Traces output path: {traces_output_path}")
-            logger.info(f"[{task_name}] 📄📂 Traces temp path: {temp_trace_path}")
-            traces_output_path.mkdir(parents=True, exist_ok=True)
+        task_name = self._prepare_trace_paths(task)
 
         context.execution_setup = ExecutionSetup(
             traces_path=self._tmp_traces_dir,
@@ -1167,6 +651,11 @@ class Agent:
 
         context.data_engine = DataEngine(ctx=context)
         device_data = context.device.model_dump() if context.device else {}
+        device_data.update(
+            run_snapshot.execution_fields(
+                context.adb_client, device_data.get("device_id"), context.llm_config
+            )
+        )
         if task.request.profile:
             device_data["profile"] = task.request.profile
         run_tuning = run_tuning_summary(self._config, task.request.profile)
@@ -1215,117 +704,27 @@ class Agent:
                 exc_info=True,
             )
 
-    async def _finalize_tracing(self, task: Task, context: ArtemisContext):
-        if context.data_engine:
-            session_status = "completed"
-            if task.status == "failed":
-                session_status = "failed"
-            elif task.status == "cancelled":
-                session_status = "cancelled"
-            context.data_engine.end_session(status=session_status)
+    async def _generate_prompt_tip_safely(self, task: Task, context: ArtemisContext):
+        if (
+            context.data_engine
+            and task.status == "completed"
+            and os.getenv("ARTEMIS_TASK_WORKER") == "1"
+            and not os.getenv("ARTEMIS_CHAT_SESSION_ID")
+        ):
+            from apps.admin_console.services.automatic_prompt_tips import ensure_tip
 
-        exec_setup_ctx = context.execution_setup
-        if not exec_setup_ctx:
-            return
-
-        if exec_setup_ctx.traces_path is None or exec_setup_ctx.trace_name is None:
-            return
-
-        task_name = task.get_name()
-        temp_trace_path = (self._tmp_traces_dir / exec_setup_ctx.trace_name).resolve()
-
-        if not task.request.record_trace:
-            try:
-                if temp_trace_path.exists():
-                    shutil.rmtree(temp_trace_path)
-                    logger.info(f"[{task_name}] Cleaned up temporary trace folder.")
-            except Exception as e:
-                logger.error(f"[{task_name}] Failed to clean up temp trace folder: {e}")
-            return
-
-        status = resolve_trace_suffix(task.status, getattr(context, "run_outcome", None))
-        ts = task.created_at.strftime("%Y-%m-%dT%H-%M-%S")
-        new_name = f"{exec_setup_ctx.trace_name}{status}_{ts}"
-
-        traces_output_path = Path(task.request.trace_path).resolve()
-
-        logger.info(f"[{task_name}] Compiling trace FROM FOLDER: " + str(temp_trace_path))
-        create_gif_from_trace_folder(temp_trace_path)
-        create_steps_json_from_trace_folder(temp_trace_path)
-
-        logger.info(f"[{task_name}] Video created, removing dust...")
-        remove_images_from_trace_folder(temp_trace_path)
-        remove_steps_json_from_trace_folder(temp_trace_path)
-        logger.info(f"[{task_name}] 📽️ Trace compiled, moving to output path 📽️")
-
-        output_folder_path = temp_trace_path.rename(traces_output_path / new_name).resolve()
-        logger.info(f"[{task_name}] 📂✅ Traces located in: {output_folder_path}")
-
-        new_video_path = output_folder_path / "recording.mp4"
-        if new_video_path.exists() and context.data_engine:
-            context.data_engine.update_video_path(new_video_path)
+            results = await asyncio.gather(
+                ensure_tip(str(context.data_engine.session_id)), return_exceptions=True
+            )
+            if isinstance(results[0], BaseException):
+                logger.warning("Automatic prompt tip unavailable for a completed task.")
 
     def _prepare_output_files(self, task: Task):
         if task.request.llm_output_path:
             _validate_and_prepare_file(file_path=task.request.llm_output_path)
 
-    async def _extract_output(
-        self,
-        task_name: str,
-        ctx: ArtemisContext,
-        request: TaskRequest[TOutput],
-        output_config: OutputConfig | None,
-        state: State,
-    ) -> str | dict | TOutput | None:
-        exec_setup = getattr(ctx, "execution_setup", None)
-        outputter_cfg = getattr(exec_setup, "outputter", None) or (
-            getattr(ctx.agent_config, "outputter", None) if ctx and ctx.agent_config else None
-        )
-        outputter_enabled = getattr(outputter_cfg, "enabled", True) if outputter_cfg else True
-        force_synthesis = (
-            getattr(outputter_cfg, "force_synthesis", False) if outputter_cfg else False
-        )
-        if exec_setup and getattr(exec_setup, "disable_outputter", False):
-            outputter_enabled = False
-
-        should_run = outputter_enabled and (
-            (
-                output_config
-                and output_config.needs_structured_format(default_enabled=outputter_enabled)
-            )
-            or force_synthesis
-            or (output_config and output_config.enable_outputter is True)
-        )
-        if output_config and output_config.enable_outputter is False:
-            should_run = False
-
-        if should_run:
-            logger.info(f"[{task_name}] Generating structured output via Outputter...")
-            try:
-                structured_output = await outputter(
-                    ctx=ctx,
-                    output_config=output_config or OutputConfig(),
-                    graph_output=state,
-                )
-                logger.info(f"[{task_name}] Structured output: {structured_output}")
-                record_events(
-                    output_path=request.llm_output_path,
-                    events=structured_output,
-                )
-                if request.output_format is not None and request.output_format is not NoneType:
-                    return request.output_format.model_validate(structured_output)
-                return structured_output
-            except Exception as e:
-                logger.error(f"[{task_name}] Failed to generate structured output: {e}")
-                return None
-        return None
-
     def _get_graph_state(self, task: Task):
         return State.initial(task.request.goal)
-
-    # ------------------------------------------------------------------ #
-    # UI hierarchy backend: connect, and keep the user told which one serves
-    # ------------------------------------------------------------------ #
 
     async def _connect_screen_client(self, context: ArtemisContext, session_id: str) -> None:
         """Connect the screen client with visible progress for slow first-time steps."""

@@ -2,6 +2,14 @@ import { StartupProgressEvent } from '../services/agent.service';
 import { buildStartupWorkItems } from './run-startup.util';
 
 describe('startup Work block', () => {
+  it('preserves a zero timestamp when calculating elapsed time', () => {
+    const [item] = buildStartupWorkItems([
+      { stage: 'device_check', message: 'Checking phone', timestamp: 0 },
+      { stage: 'device_ready', message: 'Android device connected', timestamp: 2 }
+    ], 3, false, true);
+    expect(item.elapsed).toBe('2.0s');
+  });
+
   it('shows only the three device preparation operations', () => {
     const events: StartupProgressEvent[] = [
       { stage: 'submitting', message: 'Submitting the task', timestamp: 100 },

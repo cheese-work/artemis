@@ -24,7 +24,7 @@ import type {
 } from '@yume-chan/stream-extra';
 
 /** `dropped` is a connection that was up and then lost; `error` is one that never came up. */
-export type UsbDeviceRelayStatus = 'idle' | 'connecting' | 'connected' | 'dropped' | 'error';
+export type UsbDeviceRelayStatus = 'idle' | 'connecting' | 'connected' | 'reconnecting' | 'dropped' | 'error';
 
 export interface UsbDeviceRelayState {
   status: UsbDeviceRelayStatus;
@@ -54,6 +54,10 @@ const SOCKET_OPEN = 1;
 const MAX_ADB_PAYLOAD_LENGTH = 1024 * 1024;
 const SOCKET_OPEN_TIMEOUT_MS = 15_000;
 const DEVICE_ATTACH_TIMEOUT_MS = 30_000;
+const SOCKET_RECONNECT_GRACE_MS = 30_000;
+const SOCKET_RECONNECT_INITIAL_DELAY_MS = 500;
+const SOCKET_RECONNECT_MAX_DELAY_MS = 5_000;
+const SOCKET_RECONNECT_OPEN_TIMEOUT_MS = 5_000;
 type ClientCloseReason = 'manual_disconnect' | 'service_destroyed' | 'page_unload' |
   'connect_error' | 'socket_open_timeout' | 'attachment_timeout' | 'socket_error' |
   'socket_closed' | 'protocol_error' | 'bridge_rejected' | 'usb_read_error' |
@@ -91,11 +95,16 @@ export class UsbDeviceRelayService implements OnDestroy {
   private socketOpenTimer: ReturnType<typeof setTimeout> | null = null;
   private attachmentTimer: ReturnType<typeof setTimeout> | null = null;
   private incomingPackets = Promise.resolve();
+  private reconnectToken: string | null = null;
+  private reconnectPromise: Promise<void> | null = null;
+  private packetPumpGeneration: number | null = null;
+  private socketWaiters: Array<() => void> = [];
+  private reconnectWaiters: Array<(connected: boolean) => void> = [];
   private unloadWarningRegistered = false;
 
   private readonly warnBeforeUnload = (event: BeforeUnloadEvent): void => {
     const status = this.state().status;
-    if (status === 'connecting' || status === 'connected') {
+    if (status === 'connecting' || status === 'connected' || status === 'reconnecting') {
       event.preventDefault();
       event.returnValue = '';
     }
@@ -117,7 +126,7 @@ export class UsbDeviceRelayService implements OnDestroy {
   }
 
   public async connect(): Promise<void> {
-    if (this.state().status === 'connecting' || this.state().status === 'connected') {
+    if (['connecting', 'connected', 'reconnecting'].includes(this.state().status)) {
       return;
     }
 
@@ -171,9 +180,14 @@ export class UsbDeviceRelayService implements OnDestroy {
     await this.finishConnection(this.generation, null, 'manual_disconnect');
   }
 
-  private async openSocket(socket: WebSocket, generation: number): Promise<void> {
+  private async openSocket(
+    socket: WebSocket,
+    generation: number,
+    resume?: { sessionId: string; reconnectToken: string }
+  ): Promise<void> {
     let failureReason: ClientCloseReason = 'connect_error';
-    await new Promise<void>((resolve, reject) => {
+    try {
+      await new Promise<void>((resolve, reject) => {
       let opened = false;
       let settled = false;
 
@@ -186,13 +200,13 @@ export class UsbDeviceRelayService implements OnDestroy {
           settled = true;
           reject(error);
         } else {
-          void this.finishConnection(generation, this.toUserMessage(error), reason);
+          this.handleSocketFailure(socket, generation, reason, error);
         }
       };
 
       this.socketOpenTimer = setTimeout(() => {
         fail(namedError('DeviceBridgeConnectionError'), 'socket_open_timeout');
-      }, SOCKET_OPEN_TIMEOUT_MS);
+      }, resume ? SOCKET_RECONNECT_OPEN_TIMEOUT_MS : SOCKET_OPEN_TIMEOUT_MS);
 
       socket.onopen = () => {
         if (settled || generation !== this.generation) {
@@ -204,6 +218,7 @@ export class UsbDeviceRelayService implements OnDestroy {
           clearTimeout(this.socketOpenTimer);
           this.socketOpenTimer = null;
         }
+        this.notifySocketWaiters();
         this.attachmentTimer = setTimeout(() => {
           void this.finishConnection(
             generation,
@@ -212,8 +227,18 @@ export class UsbDeviceRelayService implements OnDestroy {
           );
         }, DEVICE_ATTACH_TIMEOUT_MS);
         resolve();
-        if (this.reader) {
-          void this.pumpDevicePackets(this.reader, socket, generation);
+        if (resume) {
+          try {
+            socket.send(JSON.stringify({
+              type: 'resume', session_id: resume.sessionId,
+              reconnect_token: resume.reconnectToken
+            }));
+          } catch (error) {
+            this.handleSocketFailure(socket, generation, 'socket_error', error);
+          }
+        } else if (this.reader && this.packetPumpGeneration !== generation) {
+          this.packetPumpGeneration = generation;
+          void this.pumpDevicePackets(this.reader, generation);
         }
       };
 
@@ -227,14 +252,17 @@ export class UsbDeviceRelayService implements OnDestroy {
         socket.onclose = null;
         fail(namedError(opened ? 'DeviceBridgeDroppedError' : 'DeviceBridgeConnectionError'), 'socket_closed');
       };
-    }).catch(async error => {
+      });
+    } catch (error) {
+      if (resume) {
+        throw error;
+      }
       await this.finishConnection(generation, this.toUserMessage(error), failureReason);
-    });
+    }
   }
 
   private async pumpDevicePackets(
     reader: TangoReadableStreamDefaultReader<AdbPacketData>,
-    socket: WebSocket,
     generation: number
   ): Promise<void> {
     let reason: ClientCloseReason = 'usb_read_error';
@@ -246,16 +274,23 @@ export class UsbDeviceRelayService implements OnDestroy {
           reason = 'usb_disconnected';
           throw namedError('UsbDeviceDisconnectedError');
         }
-        if (socket.readyState !== SOCKET_OPEN) {
-          reason = 'socket_closed';
-          throw namedError('DeviceBridgeDroppedError');
-        }
         reason = 'protocol_error';
         const serialized = serializeDevicePacket(value);
         const frame = new Uint8Array(serialized.byteLength);
         frame.set(serialized);
-        reason = 'socket_error';
-        socket.send(frame.buffer);
+        while (generation === this.generation) {
+          const socket = await this.waitForOpenSocket(generation);
+          if (!socket) {
+            return;
+          }
+          try {
+            socket.send(frame.buffer);
+            break;
+          } catch (error) {
+            reason = 'socket_error';
+            this.handleSocketFailure(socket, generation, reason, error);
+          }
+        }
       }
     } catch (error) {
       if (generation === this.generation) {
@@ -263,6 +298,187 @@ export class UsbDeviceRelayService implements OnDestroy {
           generation, this.toUserMessage(error), reason, reason === 'usb_read_error' ? error : null
         );
       }
+    }
+  }
+
+  private handleSocketFailure(
+    socket: WebSocket,
+    generation: number,
+    reason: ClientCloseReason,
+    error: unknown
+  ): void {
+    if (generation !== this.generation || this.socket !== socket) {
+      return;
+    }
+
+    const current = this.state();
+    if (
+      (current.status === 'connected' || current.status === 'reconnecting') &&
+      current.sessionId && this.reconnectToken && this.device && this.reader && this.writer &&
+      (reason === 'socket_closed' || reason === 'socket_error')
+    ) {
+      this.logger.warn('Device bridge reconnecting:', {
+        reason,
+        error: errorDetails(error),
+        session_id: current.sessionId,
+        visibility_state: this.document.visibilityState
+      });
+      if (reason === 'socket_error' && socket.readyState === SOCKET_OPEN) {
+        try {
+          socket.send(JSON.stringify({
+            type: 'client_close', reason, usb_error: null,
+            visibility_state: this.document.visibilityState
+          }));
+        } catch {
+          // The server detects the abnormal socket close if this report cannot be sent.
+        }
+      }
+      socket.onopen = null;
+      socket.onmessage = null;
+      socket.onerror = null;
+      socket.onclose = null;
+      this.socket = null;
+      if (socket.readyState < 2) {
+        try {
+          socket.close();
+        } catch (closeError) {
+          this.logger.warn('Device bridge socket close failed:', closeError);
+        }
+      }
+      this.state.set({
+        ...current,
+        status: 'reconnecting',
+        error: null
+      });
+      this.notifySocketWaiters();
+      if (!this.reconnectPromise) {
+        this.reconnectPromise = this.reconnectBridge(generation).finally(() => {
+          this.reconnectPromise = null;
+        });
+      }
+      return;
+    }
+
+    void this.finishConnection(generation, this.toUserMessage(error), reason);
+  }
+
+  private async reconnectBridge(generation: number): Promise<void> {
+    const deadline = Date.now() + SOCKET_RECONNECT_GRACE_MS;
+    let attempt = 0;
+
+    while (generation === this.generation && Date.now() < deadline) {
+      const delay = Math.min(
+        SOCKET_RECONNECT_INITIAL_DELAY_MS * 2 ** Math.min(attempt, 4),
+        SOCKET_RECONNECT_MAX_DELAY_MS,
+        deadline - Date.now()
+      );
+      await new Promise<void>(resolve => setTimeout(resolve, delay));
+      if (generation !== this.generation) {
+        return;
+      }
+
+      const { sessionId } = this.state();
+      const reconnectToken = this.reconnectToken;
+      if (!sessionId || !reconnectToken) {
+        break;
+      }
+
+      const socket = this.socketFactory(this.createBridgeUrl('/api/device-bridge/resume'));
+      this.socket = socket;
+      socket.binaryType = 'arraybuffer';
+      try {
+        await this.openSocket(socket, generation, { sessionId, reconnectToken });
+        const timeout = Math.max(0, Math.min(
+          SOCKET_RECONNECT_OPEN_TIMEOUT_MS,
+          deadline - Date.now()
+        ));
+        if (await this.waitForReconnected(generation, timeout)) {
+          return;
+        }
+      } catch {
+        if (this.socket !== socket) {
+          attempt += 1;
+          continue;
+        }
+      }
+
+      if (this.socket === socket) {
+        this.clearSocketTimers();
+        socket.onopen = null;
+        socket.onmessage = null;
+        socket.onerror = null;
+        socket.onclose = null;
+        this.socket = null;
+        if (socket.readyState < 2) {
+          try {
+            socket.close();
+          } catch (error) {
+            this.logger.warn('Device bridge socket close failed:', error);
+          }
+        }
+        this.notifySocketWaiters();
+      }
+      attempt += 1;
+    }
+
+    if (generation === this.generation && this.state().status === 'reconnecting') {
+      await this.finishConnection(
+        generation,
+        'The device bridge connection dropped. Connect the phone again.',
+        'socket_closed'
+      );
+    }
+  }
+
+  private async waitForOpenSocket(generation: number): Promise<WebSocket | null> {
+    while (generation === this.generation) {
+      const socket = this.socket;
+      if (socket?.readyState === SOCKET_OPEN) {
+        return socket;
+      }
+      await new Promise<void>(resolve => this.socketWaiters.push(resolve));
+    }
+    return null;
+  }
+
+  private waitForReconnected(generation: number, timeoutMs: number): Promise<boolean> {
+    if (generation !== this.generation) {
+      return Promise.resolve(false);
+    }
+    if (this.state().status === 'connected') {
+      return Promise.resolve(true);
+    }
+    return new Promise(resolve => {
+      const settle = (connected: boolean): void => {
+        clearTimeout(timer);
+        this.reconnectWaiters = this.reconnectWaiters.filter(waiter => waiter !== settle);
+        resolve(connected);
+      };
+      const timer = setTimeout(() => settle(false), timeoutMs);
+      this.reconnectWaiters.push(settle);
+    });
+  }
+
+  private notifySocketWaiters(): void {
+    const waiters = this.socketWaiters;
+    this.socketWaiters = [];
+    waiters.forEach(resolve => resolve());
+  }
+
+  private resolveReconnectWaiters(connected: boolean): void {
+    const waiters = this.reconnectWaiters;
+    this.reconnectWaiters = [];
+    waiters.forEach(resolve => resolve(connected));
+  }
+
+  private clearSocketTimers(): void {
+    if (this.socketOpenTimer) {
+      clearTimeout(this.socketOpenTimer);
+      this.socketOpenTimer = null;
+    }
+    if (this.attachmentTimer) {
+      clearTimeout(this.attachmentTimer);
+      this.attachmentTimer = null;
     }
   }
 
@@ -323,12 +539,24 @@ export class UsbDeviceRelayService implements OnDestroy {
           value.session_id.length === 0 ||
           typeof value.expires_in_seconds !== 'number' ||
           !Number.isFinite(value.expires_in_seconds) ||
-          value.expires_in_seconds <= 0
+          value.expires_in_seconds <= 0 ||
+          (value.reconnect_token !== undefined &&
+            (typeof value.reconnect_token !== 'string' || value.reconnect_token.length > 128))
+        ) {
+          throw namedError('DeviceBridgeProtocolError');
+        }
+        const current = this.state();
+        if (
+          current.status === 'reconnecting' &&
+          (value.session_id !== current.sessionId || value.reconnect_token !== this.reconnectToken)
         ) {
           throw namedError('DeviceBridgeProtocolError');
         }
         this.sessionLeased = true;
         this.leasedSessionId = value.session_id;
+        if (typeof value.reconnect_token === 'string') {
+          this.reconnectToken = value.reconnect_token;
+        }
         return;
       }
 
@@ -348,6 +576,7 @@ export class UsbDeviceRelayService implements OnDestroy {
           error: null
         });
         this.tabs.announceHeld(value.serial.trim());
+        this.resolveReconnectWaiters(true);
         return;
       }
 
@@ -382,23 +611,20 @@ export class UsbDeviceRelayService implements OnDestroy {
     };
     this.logger.warn('Device bridge closing:', report);
     this.generation += 1;
-    const wasConnected = this.state().status === 'connected';
+    const wasConnected = ['connected', 'reconnecting'].includes(this.state().status);
     this.state.set(error
       ? { status: wasConnected ? 'dropped' : 'error', serial: null, sessionId: null, error }
       : { status: 'idle', serial: null, sessionId: null, error: null });
     this.sessionLeased = false;
     this.leasedSessionId = null;
+    this.reconnectToken = null;
+    this.packetPumpGeneration = null;
     this.attaching.set(false);
     this.tabs.announceReleased();
 
-    if (this.socketOpenTimer) {
-      clearTimeout(this.socketOpenTimer);
-      this.socketOpenTimer = null;
-    }
-    if (this.attachmentTimer) {
-      clearTimeout(this.attachmentTimer);
-      this.attachmentTimer = null;
-    }
+    this.clearSocketTimers();
+    this.notifySocketWaiters();
+    this.resolveReconnectWaiters(false);
 
     const socket = this.socket;
     this.socket = null;
@@ -406,6 +632,7 @@ export class UsbDeviceRelayService implements OnDestroy {
       socket.onopen = null;
       socket.onmessage = null;
       socket.onerror = null;
+      socket.onclose = null;
       try {
         if (socket.readyState === SOCKET_OPEN) {
           socket.send(JSON.stringify(report));
@@ -460,13 +687,13 @@ export class UsbDeviceRelayService implements OnDestroy {
     }
   }
 
-  private createBridgeUrl(): string {
+  private createBridgeUrl(path = '/api/device-bridge/session'): string {
     const location = this.document.location;
     if (!location) {
       throw namedError('DeviceBridgeConnectionError');
     }
 
-    const url = new URL(appUrl('/api/device-bridge/session', this.document.baseURI), location.href);
+    const url = new URL(appUrl(path, this.document.baseURI), location.href);
     if (url.protocol === 'https:') {
       url.protocol = 'wss:';
     } else if (
@@ -554,6 +781,7 @@ interface BridgeControlMessage {
   type?: unknown;
   session_id?: unknown;
   expires_in_seconds?: unknown;
+  reconnect_token?: unknown;
   serial?: unknown;
 }
 

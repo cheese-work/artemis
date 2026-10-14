@@ -80,8 +80,10 @@ describe('deviceChipView', () => {
     expect(view.label).toBe('Pixel 8');
   });
 
-  it('falls back to the serial when the model of a computer phone is unknown', () => {
-    expect(deviceChipView(phone({ model: null }), [computer()]).label).toBe('R5CT1');
+  it('keeps an unknown computer phone serial in secondary detail only', () => {
+    const view = deviceChipView(phone({ model: null }), [computer()]);
+    expect(view.label).toBe('Android phone');
+    expect(view.serial).toBe('R5CT1');
   });
 
   it('labels a browser phone by model and kind, never by its loopback address', () => {
@@ -98,7 +100,7 @@ describe('deviceChipView', () => {
     expect(view.kind).toBe('Phone');
   });
 
-  it('calls an unclassified loopback phone Unknown device, not its address or Virtual Device', () => {
+  it('calls an unclassified loopback phone Android phone, not its address or Virtual Device', () => {
     const browser = phone({
       source: 'browser',
       computer_id: null,
@@ -108,7 +110,7 @@ describe('deviceChipView', () => {
       device_kind: 'unknown'
     });
     const view = deviceChipView(browser, [], null);
-    expect(view.label).toBe('Unknown device');
+    expect(view.label).toBe('Android phone');
     expect(view.kind).toBeNull();
   });
 
@@ -167,7 +169,7 @@ describe('deviceChipView serial detail', () => {
       device_kind: 'unknown'
     });
     const view = deviceChipView(browser, [], null);
-    expect(view.label).toBe('Unknown device');
+    expect(view.label).toBe('Android phone');
     expect(view.serial).toBe('127.0.0.1:40001');
   });
 });
@@ -191,4 +193,3 @@ describe('deviceSourceOf', () => {
     expect(deviceSourceOf('emulator-5554', registry, [computer()], null)).toBeNull();
   });
 });
-

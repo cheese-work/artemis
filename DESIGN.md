@@ -3,22 +3,22 @@
 name: SmartQA
 description: A calm evidence console. Light, opaque, exact surfaces where a run's verdict and its proof are read in seconds.
 colors:
-  background: "#f8f9fa"
+  background: "#fafafa"
   surface: "#ffffff"
-  surface-subtle: "#f1f5f9"
-  ink: "#0f172a"
-  text: "#1e293b"
-  text-muted: "#475569"
-  text-faint: "#64748b"
-  rule: "#e2e8f0"
-  rule-strong: "#cbd5e1"
-  border: "#64748b"
-  primary: "#2563eb"
-  primary-hover: "#1d4ed8"
-  primary-tint: "#eff6ff"
-  primary-edge: "#bfdbfe"
+  surface-subtle: "#f4f4f5"
+  ink: "#18181b"
+  text: "#27272a"
+  text-muted: "#52525b"
+  text-faint: "#6b6b73"
+  rule: "#e4e4e7"
+  rule-strong: "#d4d4d8"
+  border: "#8b8b94"
+  primary: "#4f46e5"
+  primary-hover: "#4338ca"
+  primary-tint: "#eef2ff"
+  primary-edge: "#c7d2fe"
   on-primary: "#ffffff"
-  focus: "#1d4ed8"
+  focus: "#4338ca"
   success: "#166534"
   success-bg: "#dcfce7"
   warning: "#92400e"
@@ -26,8 +26,8 @@ colors:
   error: "#991b1b"
   error-bg: "#fee2e2"
   error-solid: "#dc2626"
-  neutral: "#334155"
-  neutral-bg: "#e2e8f0"
+  neutral: "#3f3f46"
+  neutral-bg: "#e4e4e7"
   device: "#0f172a"
   device-edge: "#1e293b"
   device-text: "#e2e8f0"
@@ -40,33 +40,33 @@ colors:
   model-6: "#4b5563"
 typography:
   display:
-    fontFamily: General Sans
-    fontWeight: 600
-    fontSize: 2rem
-    lineHeight: 2.5rem
-    letterSpacing: -0.01em
-  title:
-    fontFamily: General Sans
+    fontFamily: Inter
     fontWeight: 600
     fontSize: 1.5rem
+    lineHeight: 1.875rem
+    letterSpacing: -0.01em
+  title:
+    fontFamily: Inter
+    fontWeight: 600
+    fontSize: 1.125rem
     lineHeight: 2rem
   section:
-    fontFamily: General Sans
+    fontFamily: Inter
     fontWeight: 600
-    fontSize: 1.25rem
+    fontSize: 1rem
     lineHeight: 1.75rem
   body:
-    fontFamily: Instrument Sans
-    fontWeight: 400
-    fontSize: 1rem
-    lineHeight: 1.5
-  ui:
-    fontFamily: Instrument Sans
+    fontFamily: Inter
     fontWeight: 400
     fontSize: 0.875rem
+    lineHeight: 1.5
+  ui:
+    fontFamily: Inter
+    fontWeight: 400
+    fontSize: 0.8125rem
     lineHeight: 1.25rem
   label:
-    fontFamily: Instrument Sans
+    fontFamily: Inter
     fontWeight: 600
     fontSize: 0.75rem
     lineHeight: 1rem
@@ -78,17 +78,23 @@ typography:
     fontFeature: tnum
 rounded:
   sm: 4px
-  md: 8px
-  lg: 12px
+  md: 6px
+  lg: 8px
   full: 9999px
 spacing:
-  xs: 4px
-  sm: 8px
-  smd: 12px
-  md: 16px
-  lg: 24px
-  xl: 32px
+  xs: 3px
+  sm: 5px
+  smd: 8px
+  md: 11px
+  lg: 16px
+  xl: 21px
   2xl: 48px
+layout:
+  sidebar-w: 224px
+  list-w: 360px
+  row-h: 56px
+  appbar-h: 48px
+  tabbar-h: 56px
 components:
   button-primary:
     backgroundColor: "{colors.primary}"
@@ -119,7 +125,7 @@ components:
   app-bar:
     backgroundColor: "{colors.surface}"
     borderColor: "{colors.rule}"
-    height: 56px
+    height: 48px
   nav-link:
     textColor: "{colors.text-muted}"
     activeTextColor: "{colors.ink}"
@@ -128,7 +134,7 @@ components:
     backgroundColor: "{colors.device}"
     textColor: "{colors.device-text}"
   table-row:
-    height: 48px
+    height: 56px
     borderColor: "{colors.rule}"
   table-header:
     backgroundColor: "{colors.surface-subtle}"
@@ -228,6 +234,8 @@ Translucency and `backdrop-filter` are not used. The 28 existing blur surfaces (
 - **Device lane header:** `device` background, device label, live state on the right (Running, Idle, Needs attention) as icon + word.
 - **Model picker:** labelled "Execution model", default option shows the resolved name ("Default — Sol"); incompatible models stay listed but disabled with a reason; marker + tag next to each name.
 - **Tables:** see Layout. Rows below the data threshold read "Limited data · n runs" at normal contrast. Missing values show "—", never 0 or $0. Intervals are shown as text plus a thin whisker.
+- **Session composer:** a two-line text field on top; below it a toolbar with the session's phone chip (status dot, device label, lock once the session has run) on the left and Pause / Stop / Send on the right. When the phone disconnects, the field is disabled, the chip turns `error` and blinks, and opening it offers Reconnect or the same first prompt on another phone (new session).
+- **Step evidence:** each step row leads with the action, then a post-action thumbnail; thinking is folded and dimmed. The inspector shows Before | After; the Before screenshot carries a marker for the agent's action (tap ring, typed-field box, swipe arrow, hardware-key mark) and a caption naming it. After stays unmarked.
 - **States:** every list, table and panel defines loading (skeleton rows, previous data kept on refresh), empty (what to do next, in one sentence), error (what failed and how to retry), partial (what is missing and why).
 
 ## Do's and Don'ts
@@ -251,6 +259,14 @@ Translucency and `backdrop-filter` are not used. The 28 existing blur surfaces (
 - **The one authored moment:** the verdict word settles when a run finishes (opacity plus a 4px rise, 180ms).
 - `prefers-reduced-motion: reduce` turns all of it off.
 
+## Design Record
+
+Design topics live in `design/<topic>/rev-<n>/` on a draft PR per topic (standard: `standards/general/design-record.md` in `cheese-work/multica-dotfiles`). Merging the design PR is Cheese's approval. The merge SHA is read from GitHub, never written here.
+
+| Topic | Revision | Direction | Design PR | Revision commit |
+|-------|----------|-----------|-----------|-----------------|
+| sessions-v2.1 | rev-4 | C — Inspector | #200 | `e8b93218c694f91a983c0933adfc72010b6c0009` |
+
 ## Decisions Log
 | Date | Decision | Rationale |
 |------|----------|-----------|
@@ -261,3 +277,8 @@ Translucency and `backdrop-filter` are not used. The 28 existing blur surfaces (
 | 2026-10-08 | Device label `<name>, <connection>, <location> (<team> team)` | Cheese review of the preview |
 | 2026-10-08 | Every stats column sortable; QA table default alphabetical | Cheese T2 override at the CHE-1331 autoplan gate |
 | 2026-10-08 | One token layer in `styles.scss`; layout splits at 1200px, stacks to 800px, one column below (800, not 768) | CHE-1278 (U5): Workspace and Runs read as one product; the issue sets 800px for the one-column break |
+| 2026-10-09 | Neutrals slate → zinc, accent `#2563eb` → `#4f46e5` | Cheese picked Direction B on CHE-1456 |
+| 2026-10-09 | Instrument Sans + General Sans → Inter | Audit #8: dots and package names disappear in Instrument Sans |
+| 2026-10-09 | Top app bar → left sidebar (≥ 1024 px); 48 px top bar + bottom tab bar below 800 px | Audit #7 and #10; Direction B layout |
+| 2026-10-09 | Radius 8/12 → 6/8; UI text 14 → 13 px | Direction B density |
+| 2026-10-13 | Sessions v2.1: direction C (Inspector) rev-4 — action-first step rows, Evidence inspector with marked Before screenshot, two-line composer with the locked phone chip | Cheese picked C on CHE-1601 and approved rev-4 ("approve", 13 Oct 2026, 23:19 ICT) |

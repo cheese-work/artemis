@@ -47,6 +47,14 @@ class SessionRepository:
     def __init__(self, db_path=None):
         self.db_path = db_path
 
+    def register_chat_launch(self, session_id, config):
+        from artemis.config import DB_PATH
+        from artemis.data_engine.chat_sessions import ChatStore
+
+        store = ChatStore(self.db_path or DB_PATH)
+        store.save_launch_config(session_id, config)
+        return store.get(session_id)["session_id"]
+
     @staticmethod
     def process_is_alive(pid: Any) -> bool:
         """Return whether a session's worker PID is still alive.
@@ -480,6 +488,7 @@ class SessionRepository:
         notify_context: dict[str, Any] | None = None,
         requested_by: str | None = None,
         device_binding: dict[str, Any] | None = None,
+        model: dict[str, str] | None = None,
         connection_id: str | None = None,
     ) -> bool:
         """Persist a queue item before its worker starts a session.
@@ -505,6 +514,14 @@ class SessionRepository:
                             {
                                 "profile": profile,
                                 "device_id": device_serial,
+                                **(
+                                    {
+                                        "agent_model": model["model"],
+                                        "agent_provider": model["provider"],
+                                    }
+                                    if model
+                                    else {}
+                                ),
                                 **({"device_binding": device_binding} if device_binding else {}),
                             }
                         ),

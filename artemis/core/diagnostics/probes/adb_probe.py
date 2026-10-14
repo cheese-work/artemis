@@ -35,8 +35,9 @@ from artemis.core.diagnostics.schema import (
 from artemis.platform import OSType, platform
 from artemis.runtime.adb_endpoint import AdbEndpoint, current_adb_endpoint
 from artemis.runtime.endpoint_transport import EndpointTransport
-from artemis.utils.device_kind import DeviceKind, classify_properties, parse_getprop
-from artemis.utils.logger import get_logger
+from artemis.utils.device_kind import DeviceKind, classify_properties, device_title, parse_getprop
+from artemis.toolchain import toolchain
+from third_party.mobile_use.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
@@ -300,10 +301,19 @@ class AdbDeviceProbe(BaseProbe):
         except TimeoutError:
             proc.kill()
             await proc.communicate()
+            if args == ("getprop",):
+                logger.warning(f"Device enrichment getprop timed out for {serial}")
             return ""
         if proc.returncode != 0:
+            if args == ("getprop",):
+                logger.warning(
+                    f"Device enrichment getprop failed for {serial}: exit {proc.returncode}"
+                )
             return ""
-        return stdout.decode(errors="replace").strip()
+        output = stdout.decode(errors="replace").strip()
+        if args == ("getprop",) and not output:
+            logger.warning(f"Device enrichment getprop returned no properties for {serial}")
+        return output
 
     async def _get_device_states(
         self,
@@ -551,10 +561,15 @@ class AdbDeviceProbe(BaseProbe):
                             prop_task, size_task, packages_task
                         )
                         props = parse_getprop(getprop_output)
+                        if getprop_output and not props:
+                            logger.warning(
+                                f"Device enrichment returned unreadable properties for {dev.serial}"
+                            )
                         enrichment = {
                             "android_version": props.get("ro.build.version.release") or None,
                             "device_kind": classify_properties(props),
                             "model": props.get("ro.product.model") or None,
+                            "product": props.get("ro.product.name") or None,
                             "screen_resolution": (
                                 size_str.split("Physical size:")[-1].strip()
                                 if "Physical size:" in size_str
@@ -575,6 +590,7 @@ class AdbDeviceProbe(BaseProbe):
                     dev.device_kind = kind.value
                     dev.is_emulator = kind is DeviceKind.EMULATOR
                     dev.model = enrichment["model"] or dev.model
+                    dev.product = enrichment["product"] or dev.product
                     if dev.is_emulator and not dev.model:
                         dev.model = "Android Emulator"
                     dev.android_version = enrichment["android_version"]
@@ -582,7 +598,7 @@ class AdbDeviceProbe(BaseProbe):
                     dev.installed_packages = list(enrichment["installed_packages"])
                     dev.is_locked = await lock_state_task
                 except Exception as exc:
-                    logger.debug(f"Failed to enrich device {dev.serial}: {exc}")
+                    logger.warning(f"Failed to enrich device {dev.serial}: {exc}")
 
         return devices
 
@@ -832,7 +848,7 @@ class AdbDeviceProbe(BaseProbe):
                 unknown_dev = next((d for d in ready_devices if d.is_locked is None), None)
                 active_dev = preferred_dev or unknown_dev or ready_devices[0]
 
-        display_name = active_dev.model or active_dev.serial
+        display_name = device_title(active_dev.model, active_dev.product)
         if active_dev.screen_resolution:
             display_name = f"{display_name} ({active_dev.screen_resolution})"
 

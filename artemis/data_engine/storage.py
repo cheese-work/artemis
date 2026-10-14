@@ -34,8 +34,9 @@ from artemis.data_engine.models import (
     TraceRecord,
     VideoRecordingRecord,
 )
-from artemis.data_engine import principals
+from artemis.data_engine import principals, run_snapshot
 from artemis.data_engine.devices import migrate as migrate_devices
+from artemis.data_engine.prompt_critiques import migrate as migrate_prompt_critiques
 from artemis.data_engine.run_catalog import migrate as migrate_run_catalog
 from artemis.data_engine.run_connections import migrate as migrate_run_connections
 from artemis.runtime.lifecycle import ensure_lifecycle_schema
@@ -284,6 +285,10 @@ class StorageManager:
             conn.commit()
         try:
             migrate_run_catalog(self.db_path)
+            run_snapshot.migrate(self.db_path)
+            from artemis.data_engine import chat_sessions
+
+            chat_sessions.migrate(self.db_path)
         except sqlite3.Error:
             # Additive index over runs; the listing API reports "not ready" instead.
             logger.exception("Run catalog migration failed for %s", self.db_path)
@@ -296,6 +301,11 @@ class StorageManager:
             migrate_run_connections(self.db_path)
         except sqlite3.Error:
             logger.exception("Run connection migration failed for %s", self.db_path)
+        try:
+            migrate_prompt_critiques(self.db_path)
+        except sqlite3.Error:
+            # Additive table; only the Improve prompt routes read it.
+            logger.exception("Prompt critique migration failed for %s", self.db_path)
         logger.info(f"Database initialized at {self.db_path}")
 
     def create_session(self, session: SessionMetadata):
@@ -335,6 +345,10 @@ class StorageManager:
                     session.video_filepath,
                 ),
             )
+            try:
+                run_snapshot.record(conn, str(session.session_id))
+            except sqlite3.OperationalError as exc:  # catalog or snapshot columns not installed
+                logger.debug(f"Run snapshot not recorded for {session.session_id}: {exc}")
             conn.commit()
 
         # Create session directory
@@ -1143,6 +1157,10 @@ class StorageManager:
         with self._get_connection() as conn:
             conn.execute("PRAGMA foreign_keys = OFF")
             tables = [
+                "chat_messages",
+                "chat_turns",
+                "chat_sessions",
+                "prompt_critiques",
                 "video_analysis_observations",
                 "video_analysis_segments",
                 "failed_outputs",
@@ -1241,6 +1259,8 @@ class StorageManager:
                 except sqlite3.OperationalError as e:
                     logger.warning(f"Failed to delete video memory from {table}: {e}")
             tables = [
+                "chat_sessions",
+                "prompt_critiques",
                 "failed_outputs",
                 "traces",
                 "background_tasks",
@@ -1258,6 +1278,14 @@ class StorageManager:
                     )
                 except sqlite3.OperationalError as e:
                     logger.warning(f"Failed to delete from table {table}: {e}")
+            for table in ("chat_messages", "chat_turns"):
+                try:
+                    conn.execute(
+                        f"DELETE FROM {table} WHERE session_id=? OR turn_id=?",
+                        (session_id_str, session_id_str),
+                    )
+                except sqlite3.OperationalError as error:
+                    logger.warning(f"Failed to delete from table {table}: {error}")
             conn.commit()
             if vacuum:
                 conn.execute("VACUUM")

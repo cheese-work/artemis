@@ -5,7 +5,7 @@ import { HostsService } from './hosts.service';
 import { PhoneTabService } from './phone-tab.service';
 import { SystemService } from './system.service';
 import { UsbDeviceRelayService } from './usb-device-relay.service';
-import { pickerOptions, WorkspaceChipInput, workspaceChipView } from '../utils/workspace-chip.util';
+import { phoneIdentity, pickerOptions, WorkspaceChipInput, workspaceChipView } from '../utils/workspace-chip.util';
 
 /**
  * The one phone the Workspace runs on: what the chip shows, what the next run binds to, and
@@ -29,7 +29,7 @@ export class WorkspacePhoneService {
   );
   private readonly browserSerial = computed(() => {
     const { status, serial } = this.relay.state();
-    return status === 'connected' ? serial : null;
+    return status === 'connected' || status === 'reconnecting' ? serial : null;
   });
   /** A live run counts as on a phone when it names it; a run whose phone is not known yet counts as on ours. */
   private runIsOn(serial: string | null): boolean {
@@ -66,10 +66,16 @@ export class WorkspacePhoneService {
   public readonly options = computed(() => pickerOptions(this.input()));
   /** Where the next run goes; null means Run stays blocked. */
   public readonly target = computed(() => this.view().target);
+  public readonly selectedDevice = computed(() => {
+    const serial = this.target()?.serial;
+    return serial ? phoneIdentity(this.input(), serial) : null;
+  });
   /** A live run is on the phone this tab holds, so disconnecting it stops that run. */
   public readonly runUsesBrowserPhone = computed(() => this.runIsOn(this.browserSerial()));
   public readonly canConnectFromBrowser = computed(
-    () => this.relay.isSupported() && this.relay.state().status !== 'connecting' && !this.runActive()
+    () => this.relay.isSupported() &&
+      !['connecting', 'connected', 'reconnecting'].includes(this.relay.state().status) &&
+      !this.runActive()
   );
   public readonly browserPhoneConnected = computed(() => this.relay.state().status === 'connected');
   public readonly connectionError = computed(() => this.relay.state().error);
@@ -80,6 +86,7 @@ export class WorkspacePhoneService {
     // Source names come from the computers registry; refresh it when the phone list changes.
     effect(() => {
       this.system.connectedDevices();
+      this.browserSerial();
       untracked(() =>
         this.hosts.list().subscribe({
           next: (response) => this.registry.set(response),
@@ -93,7 +100,7 @@ export class WorkspacePhoneService {
     let announced: string | null = null;
     effect(() => {
       const { status, serial } = this.relay.state();
-      const live = status === 'connected' ? serial : null;
+      const live = status === 'connected' || status === 'reconnecting' ? serial : null;
       untracked(() => {
         if (live && live !== announced) {
           this.system.chooseRunTarget(live);

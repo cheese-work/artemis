@@ -15,6 +15,7 @@
  */
 
 import { LoggerService } from './logger.service';
+import { ModelSelection } from './model-catalog.service';
 import { Injectable, signal, inject, computed, DestroyRef, NgZone, effect, untracked } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { Observable, catchError, map, of, switchMap } from 'rxjs';
@@ -384,7 +385,8 @@ export class AgentService {
     enableOutputter?: boolean,
     proTuning?: ProTuningOptions,
     imageChat?: ImageChat,
-    target?: RunTarget
+    target?: RunTarget,
+    model?: ModelSelection
   ): Observable<any> {
     return new Observable((obs) => {
       const submittedEvent: StartupProgressEvent = {
@@ -394,6 +396,7 @@ export class AgentService {
       };
       this.pendingStartupProgress.set([submittedEvent]);
       const payload: any = { goal, profile };
+      if (model) payload.model = { provider: model.provider, model: model.model };
       if (expectedOutput && expectedOutput.trim()) {
         payload.expected_output = expectedOutput.trim();
       }

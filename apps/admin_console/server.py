@@ -24,6 +24,7 @@ import importlib
 import logging
 import os
 from pathlib import Path
+import re
 import secrets
 import signal
 import sqlite3
@@ -63,7 +64,8 @@ preview_demo_selected(PREVIEW_PROFILE)
 PREVIEW_ROOT = prepare_preview_environment() if PREVIEW_PROFILE else None
 
 from fastapi import Depends, FastAPI
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 import uvicorn
 from copy import deepcopy
 from artemis.utils.redaction import Redactor, configure_logging
@@ -107,6 +109,7 @@ from apps.admin_console.services.host_tunnel import host_tunnels
 from apps.admin_console.core.access_control import (
     AdminAPIError,
     CloudflareAccessVerifier,
+    ServicePrincipalMiddleware,
     admin_api_error_handler,
     config_from_environment,
     public_tier,
@@ -133,6 +136,7 @@ try:
         hosts,
         media,
         preview_synthetic,
+        prompt_critiques,
         replay,
         run_admin,
         run_bundle,
@@ -160,6 +164,7 @@ except ImportError:
         hosts,
         media,
         preview_synthetic,
+        prompt_critiques,
         replay,
         run_admin,
         run_bundle,
@@ -198,6 +203,19 @@ app = FastAPI(
     dependencies=[Depends(public_tier), *([Depends(require_qa)] if PREVIEW_PROFILE else [])],
 )
 app.add_exception_handler(AdminAPIError, admin_api_error_handler)
+
+
+async def safe_validation_error(_request, error: RequestValidationError):
+    from artemis.utils.redaction import redact
+
+    details = [
+        {key: value for key, value in entry.items() if key in {"loc", "msg", "type"}}
+        for entry in error.errors()
+    ]
+    return JSONResponse(status_code=422, content={"detail": redact(details)})
+
+
+app.add_exception_handler(RequestValidationError, safe_validation_error)
 app.state.access_config = config_from_environment()
 app.state.preview_profile = PREVIEW_PROFILE
 app.state.preview_identities = configure_preview_identities(
@@ -237,6 +255,7 @@ if PREVIEW_PROFILE:
     app.add_middleware(PreviewRouteGuard, route_source=app)
 app.add_middleware(RequestSizeLimitMiddleware)
 app.add_middleware(SameOriginBoundaryMiddleware)
+app.add_middleware(ServicePrincipalMiddleware)
 
 
 class TransportPeerProxyHeadersMiddleware:
@@ -262,6 +281,17 @@ async def on_startup():
     if PREVIEW_PROFILE:
         initialize_preview_fixtures(PREVIEW_ROOT, app.state.access_config)
         return
+    from apps.admin_console.services.config_store import ConfigStoreError
+    from apps.admin_console.services.provider_settings import get_provider_settings
+
+    try:
+        provider_settings = get_provider_settings()
+        await provider_settings.read()
+        await provider_settings.activate_runtime()
+    except ConfigStoreError:
+        logging.getLogger(__name__).warning(
+            "Provider settings are unavailable; complete server setup."
+        )
     write_server_info(
         port=getattr(state, "port", 8000),
         host=getattr(state, "host", "127.0.0.1"),
@@ -404,14 +434,21 @@ if PREVIEW_PROFILE:
 app.include_router(stream.router)
 app.include_router(media.router)
 app.include_router(sessions.router)
+from apps.admin_console.routers import chats
+
+app.include_router(chats.router)
 app.include_router(runs.router)
 app.include_router(run_bundle.router)
 app.include_router(run_admin.router)
+app.include_router(prompt_critiques.router)
 app.include_router(failures.router)
 app.include_router(steps.router)
 app.include_router(tasks.router)
 app.include_router(replay.router)
 app.include_router(system.router)
+from apps.admin_console.routers import providers
+
+app.include_router(providers.router)
 app.include_router(drain.router)
 app.include_router(device_bridge.router)
 app.include_router(hosts.router)
@@ -487,6 +524,21 @@ async def serve_showcase_spa(full_path: str):
         raise HTTPException(status_code=404, detail="Endpoint not found")
 
     clean_path = full_path.strip("/")
+
+    if not PREVIEW_PROFILE and (
+        preview_path := re.match(r"preview/pr/([0-9]+)(?:/|$)", clean_path)
+    ):
+        return HTMLResponse(
+            f"""<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Preview not available</title></head>
+<body><main><h1>Preview for PR #{preview_path[1]} is not available</h1>
+<p>No live preview is available at this URL.</p></main></body>
+</html>""",
+            status_code=404,
+            headers={"Cache-Control": "no-store"},
+        )
 
     # Admin / Debug Console routes
     if (
