@@ -47,8 +47,8 @@
             [attr.data-event-kind]="message.kind">
             @if (message.kind === 'step') {
               <details>
-                <summary>@if (screenshot(message.payload); as image) { <img class="step-thumbnail" [src]="image" alt="Step thumbnail" loading="lazy" (error)="failScreenshot(message.payload)"> }
-                  <span>{{ message.content }}</span>
+                <summary><span>{{ message.content }}</span>
+                  @if (screenshot(message.payload); as image) { <img class="step-thumbnail" [src]="image" alt="Step thumbnail" loading="lazy" (error)="failScreenshot(message.payload)"> }
                 </summary>
                 @if (screenshot(message.payload); as image) { <img class="step-screenshot" [src]="image" alt="Expanded step screenshot" loading="lazy" (load)="scrollToLatest()" (error)="failScreenshot(message.payload)"> }
                 @else { <p class="receipt">Screenshot unavailable.</p> }
@@ -86,7 +86,11 @@
           </li>
         }
       </ol>
-      @if (!chat() && !error()) { <p role="status">Loading chat session…</p> }
+      @if (!chat() && !error()) {
+        <div role="status"><span class="sr-only">Loading chat session…</span>
+          @for (row of [1, 2, 3]; track row) { <div class="step-skeleton" aria-hidden="true"></div> }
+        </div>
+      } @else if (chat() && !stepCount()) { <p class="timeline-empty">{{ emptyMessage() }}</p> }
     </section>
     @if (error()) { <p class="chat-error" role="alert">{{ error() }}</p> }
     @if (!canWrite()) { <p class="chat-notice">Shared session · read-only</p> }

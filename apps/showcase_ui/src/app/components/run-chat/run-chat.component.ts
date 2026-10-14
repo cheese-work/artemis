@@ -68,6 +68,9 @@ export class RunChatComponent {
   public readonly title = computed(() => this.chat()?.title || this.rootRun()?.chat_title || runTitle(this.rootRun()?.chat_prompt ?? this.rootRun()?.prompt));
   public readonly timeline = computed(() => (this.chat()?.timeline ?? this.chat()?.messages ?? [])
     .filter(message => message.kind !== 'verdict' && (this.shell.technicalDetails() || message.kind !== 'thinking')));
+  public readonly stepCount = computed(() => this.timeline().filter(message => message.kind === 'step').length);
+  public readonly emptyMessage = computed(() => this.active() ? 'Waiting for the first step. Steps appear here as the agent acts.'
+    : this.canWrite() ? 'No steps were recorded. Send a new message to try again.' : 'No steps were recorded.');
   public readonly verdictTitle = computed(() => {
     const verdict = this.chat()?.verdict;
     if (!verdict) return '';

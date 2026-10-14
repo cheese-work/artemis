@@ -336,6 +336,7 @@ describe('RunChatComponent', () => {
   it('wraps a long step label to two lines at 390 px instead of truncating it', fakeAsync(() => {
     const fixture = render();
     fixture.nativeElement.style.width = '390px';
+    fixture.componentInstance.sidebarOpen.set(false); // at a real 390 px the sidebar stacks below; keep this window-size independent
     fixture.componentInstance.chat.set(withTimeline(thread.messages[0], stepMessage({ content: 'Tap first result PSY - GANGNAM STYLE official music video' })));
     fixture.detectChanges();
     const label = fixture.nativeElement.querySelector('.step-row summary span') as HTMLElement;
