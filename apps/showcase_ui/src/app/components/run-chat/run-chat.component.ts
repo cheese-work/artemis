@@ -13,6 +13,7 @@ import { RunsService } from '../../services/runs.service';
 import { ShellLayoutService } from '../../services/shell-layout.service';
 import { mediaUrl } from '../../utils/app-url.util';
 import { runTitle } from '../../utils/run-title.util';
+import { actionMarker } from '../../utils/step-evidence.util';
 import { SessionSidebarComponent } from '../session-sidebar/session-sidebar.component';
 
 @Component({
@@ -67,8 +68,10 @@ export class RunChatComponent {
   });
   public readonly canWrite = computed(() => !this.readOnly() && !this.rootRun()?.read_only);
   public readonly title = computed(() => this.chat()?.title || this.rootRun()?.chat_title || runTitle(this.rootRun()?.chat_prompt ?? this.rootRun()?.prompt));
-  public readonly timeline = computed(() => (this.chat()?.timeline ?? this.chat()?.messages ?? [])
-    .filter(message => message.kind !== 'verdict' && (this.shell.technicalDetails() || message.kind !== 'thinking')));
+  public readonly timeline = computed(() => (this.chat()?.timeline ?? this.chat()?.messages ?? []).filter(message => message.kind !== 'verdict'));
+  public readonly stepCount = computed(() => this.timeline().filter(message => message.kind === 'step').length);
+  public readonly emptyMessage = computed(() => this.active() ? 'Waiting for the first step. Steps appear here as the agent acts.'
+    : this.canWrite() ? 'No steps were recorded. Send a new message to try again.' : 'No steps were recorded.');
   public readonly verdictTitle = computed(() => {
     const verdict = this.chat()?.verdict;
     if (!verdict) return '';
@@ -221,13 +224,15 @@ export class RunChatComponent {
     if (this.chat()?.session_id === identity) this.revision.update(value => value + 1);
   }
 
-  public screenshot(payload: Record<string, any> | undefined): string | null {
-    const image = payload?.['post_image_name'] || payload?.['pre_image_name'];
+  public readonly actionMarker = actionMarker;
+
+  public screenshot(payload: Record<string, any> | undefined, key: 'pre_image_name' | 'post_image_name' = 'post_image_name'): string | null {
+    const image = payload?.[key];
     return typeof image === 'string' && !this.failedImages().has(image) ? mediaUrl('/images/' + encodeURIComponent(image)) : null;
   }
 
-  public failScreenshot(payload: Record<string, any> | undefined): void {
-    const image = payload?.['post_image_name'] || payload?.['pre_image_name'];
+  public failScreenshot(payload: Record<string, any> | undefined, key: 'pre_image_name' | 'post_image_name' = 'post_image_name'): void {
+    const image = payload?.[key];
     if (typeof image === 'string') this.failedImages.update(images => new Set([...images, image]));
   }
 

@@ -30,18 +30,20 @@ from artemis.drivers.mock.mock_driver import MockDeviceDriver
 from artemis.utils import video as video_utils
 from artemis.utils.video import (
     classify_recording_failure,
-    RecordingSession,
     _parse_scrcpy_version,
     build_scrcpy_record_command,
-    extract_audio_from_video,
     extract_frames_at_timestamps,
     get_ffmpeg_path,
-    get_active_session,
     normalize_recording_to_mp4,
     plan_timeline_pieces,
     render_timeline_clip,
-    remove_active_session,
     scrcpy_recording_flags,
+)
+from third_party.mobile_use.utils.video import (
+    RecordingSession,
+    extract_audio_from_video,
+    get_active_session,
+    remove_active_session,
     set_active_session,
 )
 

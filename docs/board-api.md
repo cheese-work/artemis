@@ -320,6 +320,31 @@ Snippets are built after the visibility join. Unknown historical values stay
 `null` and match no value filter. When FTS5 is unavailable the response carries
 the existing `search_fallback_substring` warning.
 
+#### Query-layer slice (CHE-1470)
+
+The implemented filters are `status`, `review`, `device` (the existing serial
+filter), `host`, `requester`, `app_build`, repeatable `model`, `suite`, `since`
+and `until`. Different filters intersect; repeated `model` values are alternatives.
+`model` matches `run_meta.agent_model`; `suite` matches `run_meta.suite_version`.
+Unknown snapshot values match no value filter. Date bounds are finite epoch
+seconds or ISO-8601: `since` is inclusive and `until` is exclusive. Undated runs
+remain in an unbounded listing but match no date bound.
+
+Each page adds `total`: the count after scope, search and value filters, before
+the cursor and limit. Counts and pages use the same SQL visibility predicates
+and read transaction, including `mine` and `available` link shares. Hidden and
+deleted runs contribute to neither. Existing open-mode and spaces rules stay
+unchanged; `all` remains admin-only in Cloudflare mode with spaces off and
+forbidden with spaces on. Open mode continues to list without an owner filter.
+
+`review` is returned separately from execution `status`. It remains `null`
+until a QA review writer supplies a value; the query layer does not derive a
+review from execution. CHE-1331 owns the review vocabulary and verdict reducer.
+The verdict-filter hook belongs beside `review` in the router and
+`RunCatalogRepository.list_query`, using that reducer's stored verdict, never
+`sessions.status`. No verdict filter or FTS change ships in this slice.
+`include_notes` and canonical `device_id` alias filtering remain later slices.
+
 ```bash
 curl -sS -G "$ARTEMIS/api/runs" -H "$AUTH" --data-urlencode 'q=dark theme' \
   --data-urlencode 'scope=available' --data-urlencode 'verdict=fail' \

@@ -14,6 +14,9 @@
 
 """Task execution command (artemis run)."""
 
+from artemis import Agent, Builders
+from artemis.sdk.types.task import AgentProfile
+from artemis.utils.cli_helpers import display_device_status
 import asyncio
 import os
 import sqlite3
@@ -30,11 +33,18 @@ from artemis.config.attempt_lifecycle_hooks import (
 )
 from artemis.runtime.lifecycle import finish_trace
 from artemis.utils.startup_progress import publish_startup_progress
-from artemis import Agent, Builders
-from artemis.sdk.types.task import AgentProfile
-from artemis.utils.cli_helpers import display_device_status
-from artemis.utils.logger import get_logger
-from artemis.utils.video import check_ffmpeg_available
+from third_party.mobile_use.main import (
+    GoalArgument,
+    OutputDescriptionOption,
+    TestNameOption,
+    TracesPathOption,
+    VideoRecordingToolsOption,
+    ensure_video_recording_available,
+    new_default_config_builder,
+    run_automation,
+)
+from third_party.mobile_use.utils.cli_helpers import display_local_device_status
+from third_party.mobile_use.utils.logger import get_logger
 import signal
 from rich.console import Console
 from rich.panel import Panel
@@ -321,7 +331,7 @@ async def execute_task(
 
 
 def run_command(
-    goal: Annotated[str, typer.Argument(help="The main goal for the agent to achieve.")],
+    goal: GoalArgument,
     profile: Annotated[
         str | None,
         typer.Option(
@@ -338,40 +348,10 @@ def run_command(
             help="Optional Android package name to restrict the agent to.",
         ),
     ] = None,
-    test_name: Annotated[
-        str | None,
-        typer.Option(
-            "--test-name",
-            "-n",
-            help="Name of the test run for trace recording.",
-        ),
-    ] = None,
-    traces_path: Annotated[
-        str | None,
-        typer.Option(
-            "--traces-path",
-            "-t",
-            help="Directory where execution traces are persisted.",
-        ),
-    ] = None,
-    output_description: Annotated[
-        str | None,
-        typer.Option(
-            "--output-description",
-            "-o",
-            help="Natural language or schema description of the expected output.",
-        ),
-    ] = None,
-    with_video_recording_tools: Annotated[
-        bool | None,
-        typer.Option(
-            "--with-video-recording-tools/--without-video-recording-tools",
-            help=(
-                "Enable or disable dynamic video recording and screen analysis "
-                "tools (auto-detected if omitted)."
-            ),
-        ),
-    ] = None,
+    test_name: TestNameOption = None,
+    traces_path: TracesPathOption = None,
+    output_description: OutputDescriptionOption = None,
+    with_video_recording_tools: VideoRecordingToolsOption = None,
     app_path: Annotated[
         str | None,
         typer.Option(
@@ -491,8 +471,7 @@ def run_command(
     ] = False,
 ) -> None:
     """Run an autonomous UI automation task on the connected Android device."""
-    if with_video_recording_tools:
-        check_ffmpeg_available()
+    ensure_video_recording_available(with_video_recording_tools)
 
     console = Console()
 

@@ -39,6 +39,34 @@ func opaqueDeviceID(pepper []byte, hwID string) string {
 	return "sd-" + hex.EncodeToString(mac.Sum(nil))[:16]
 }
 
+// hardwareID is HMAC-SHA256(org pepper, ro.serialno) in hex, the identity the
+// server also computes for its own adb and the browser bridge. Only a trusted
+// phone has one: ambiguous, unprobed and placeholder serials send nothing.
+func hardwareID(pepper []byte, entry device) string {
+	if entry.Identity != "trusted" || entry.Kind != "physical" {
+		return ""
+	}
+	mac := hmac.New(sha256.New, pepper)
+	mac.Write([]byte(entry.Props.SerialNo))
+	return hex.EncodeToString(mac.Sum(nil))
+}
+
+// previousIDs are the weak ids (weakIdentity) a trusted phone's transports had
+// before its identity was read, so the server re-keys that connection instead
+// of creating a second device after authorization.
+func previousIDs(pepper []byte, entry device) []string {
+	if hardwareID(pepper, entry) == "" {
+		return nil
+	}
+	ids := []string{}
+	for _, serial := range entry.serials {
+		if serial != "" && len(ids) < 8 {
+			ids = append(ids, opaqueDeviceID(pepper, "adb:"+serial))
+		}
+	}
+	return ids
+}
+
 func wirelessSerial(serial string) bool {
 	return strings.Contains(serial, ":") || strings.Contains(serial, "._adb")
 }

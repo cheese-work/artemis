@@ -7,6 +7,7 @@ from fastapi.routing import APIRoute, _IncludedRouter
 from apps.admin_console.core.access_control import (
     public_tier,
     require_admin,
+    require_admin_or_service_read,
     require_effective_loopback,
     require_lifecycle_token,
     require_qa,
@@ -54,6 +55,8 @@ def _assert_routes_have_declared_tiers(routes):
         if tier == "admin":
             guard = require_websocket_admin if is_websocket else require_admin
             assert guard in dependency_calls, f"Missing admin guard: {path}"
+        if tier == "admin_or_service":
+            assert require_admin_or_service_read in dependency_calls, f"Missing guard: {path}"
         if tier == "qa":
             assert require_qa in dependency_calls, f"Missing QA guard: {path}"
         if tier == "lifecycle":

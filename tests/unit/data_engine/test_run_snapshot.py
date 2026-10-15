@@ -82,7 +82,7 @@ def test_upgrade_adds_nullable_columns_after_a_backup_and_records_the_revision(t
     with sqlite3.connect(db) as conn:
         assert conn.execute(
             "SELECT revision FROM schema_revisions WHERE module = 'run_meta_ext'"
-        ).fetchone() == (1,)
+        ).fetchone() == (len(run_snapshot.REVISIONS),)
     snaps = _snapshots(db)
     assert snaps[ids[0]] == ("4.2.0 (420)", None, "Pixel 6 Pro", None)
     assert snaps[ids[1]] == (None, None, "Pixel 3a", None)  # from the device record
