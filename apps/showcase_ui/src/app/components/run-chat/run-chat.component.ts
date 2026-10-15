@@ -12,6 +12,7 @@ import { StartupProgressEvent } from '../../services/agent.service';
 import { RunsService } from '../../services/runs.service';
 import { ShellLayoutService } from '../../services/shell-layout.service';
 import { SystemService } from '../../services/system.service';
+import { WorkspacePhoneService } from '../../services/workspace-phone.service';
 import { mediaUrl } from '../../utils/app-url.util';
 import { deviceTitle, isIdentifiedDevice } from '../../utils/device-label.util';
 import { recordedDevice } from '../../utils/session-device.util';
@@ -31,6 +32,7 @@ export class RunChatComponent {
   private readonly api = inject(RunsService);
   private readonly zone = inject(NgZone);
   private readonly system = inject(SystemService);
+  private readonly phones = inject(WorkspacePhoneService);
   public readonly shell = inject(ShellLayoutService);
   private readonly failedImages = signal(new Set<string>());
   private readonly revision = signal(0);
@@ -78,8 +80,14 @@ export class RunChatComponent {
     if (!serial || ['pending', 'null', 'undefined'].includes(serial)) return null;
     const listed = this.system.connectedDevices().find(device => device.serial === serial);
     const device = [listed, live && recordedDevice(live, serial)].find(known => known && isIdentifiedDevice(known));
-    return { label: device ? deviceTitle(device) : 'Android phone', online: listed?.state === 'device' };
+    return { serial, label: device ? deviceTitle(device) : 'Android phone', online: listed?.state === 'device', known: this.system.readinessReport() !== null };
   });
+  /** The session's phone is gone: the composer is off and the chip opens the way out. Unknown until the first phone list arrives. */
+  public readonly disconnected = computed(() => { const phone = this.phone(); return !!phone && phone.known && !phone.online; });
+  public readonly pickerOpen = signal(false);
+  /** Other phones that could run this session's first prompt as a new session. */
+  public readonly otherPhones = computed(() => this.phones.options().filter(option => option.usable && option.serial !== this.phone()?.serial));
+  public readonly canReconnect = this.phones.canConnectFromBrowser;
   public readonly title = computed(() => this.chat()?.title || this.rootRun()?.chat_title || runTitle(this.rootRun()?.chat_prompt ?? this.rootRun()?.prompt));
   public readonly timeline = computed(() => (this.chat()?.timeline ?? this.chat()?.messages ?? []).filter(message => message.kind !== 'verdict'));
   public readonly stepCount = computed(() => this.timeline().filter(message => message.kind === 'step').length);
@@ -142,6 +150,18 @@ export class RunChatComponent {
     return this.chat()?.messages.filter((message) => message.turn_id === turnId) ?? [];
   }
 
+  public reconnect(): void {
+    this.pickerOpen.set(false);
+    void this.phones.connectFromBrowser();
+  }
+
+  /** Same first prompt, another phone: fills a new session draft, like a sample prompt. */
+  public runOn(serial: string): void {
+    this.pickerOpen.set(false);
+    this.phones.choose(serial);
+    this.newRunPrompt.emit(this.rootRun()?.chat_prompt ?? this.rootRun()?.prompt ?? '');
+  }
+
   public async copyTip(): Promise<void> {
     const text = this.chat()?.verdict?.tip?.text;
     if (!text || this.chat()?.verdict?.status !== 'completed') return;
@@ -189,7 +209,7 @@ export class RunChatComponent {
   public send(): void {
     const chat = this.chat();
     const content = this.draft.trim();
-    if (!chat || !content || !this.canWrite() || this.sending() || this.inputRequest()) return;
+    if (!chat || !content || !this.canWrite() || this.sending() || this.inputRequest() || this.disconnected()) return;
     this.retry = this.retry?.content === content ? this.retry : { content, id: crypto.randomUUID() };
     this.sending.set(true);
     this.error.set(null);
