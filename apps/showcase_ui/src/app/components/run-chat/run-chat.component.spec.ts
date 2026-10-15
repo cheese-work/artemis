@@ -645,7 +645,7 @@ describe('RunChatComponent', () => {
         const { fixture, field, tools } = composer();
         expect(field.disabled).toBeFalse();
         expect(tools.querySelector('.phone-chip')!.classList).not.toContain('blink');
-        readiness.set({}); fixture.detectChanges();
+        readiness.set({}); fixture.detectChanges(); tick(0);
         expect(field.disabled).toBeTrue();
         fixture.destroy();
       }));
