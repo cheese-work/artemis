@@ -136,18 +136,35 @@
       </form>
       } @else {
       <form class="chat-composer" (ngSubmit)="send()">
-        <label for="session-message">{{ active() ? 'Message the agent' : 'Continue this session with a new turn' }}</label>
-        <textarea id="session-message" name="message" [(ngModel)]="draft" cdkTextareaAutosize cdkAutosizeMinRows="1" cdkAutosizeMaxRows="8"
-          maxlength="32768" [placeholder]="active() ? 'Correct or steer the next step…' : 'What should the agent do next on this phone?'"
-          [disabled]="sending()"></textarea>
-        <div class="composer-actions">
-          <span>{{ paused() ? 'Paused · Continue or send another message' : active() ? 'Steer by default · a plan change pauses for confirmation' : 'Same phone · current screen · full chat history' }}</span>
-          @if (active()) {
-            <button type="button" [disabled]="sending()" (click)="control(paused() ? 'continue' : 'pause')">{{ paused() ? 'Continue' : 'Pause' }}</button>
-            <button type="button" [disabled]="sending()" (click)="stopRun.emit(latest()!.turn_id)">Stop</button>
-          }
-          <button type="submit" class="send" [disabled]="!draft.trim() || sending() || !chat()">Send</button>
+        <label class="sr-only" for="session-message">{{ active() ? 'Message the agent' : 'Continue this session with a new turn' }}</label>
+        <div class="composer-bar">
+          <textarea id="session-message" name="message" [(ngModel)]="draft" rows="2" cdkTextareaAutosize cdkAutosizeMaxRows="8"
+            maxlength="32768" [placeholder]="active() ? 'Correct or steer the next step…' : 'What should the agent do next on this phone?'"
+            [disabled]="sending()"></textarea>
+          <div class="composer-tools">
+            @if (phone(); as phone) {
+              <button type="button" class="phone-chip" aria-disabled="true"
+                [attr.aria-label]="'Phone for this session: ' + phone.label + '. ' + (phone.online ? 'Connected.' : 'Disconnected.') + ' Locked after the first run.'">
+                <span class="dot" [class.ok]="phone.online" [class.error]="!phone.online"></span><span class="lbl">{{ phone.label }}</span>
+                @if (chat()?.turns?.length) { <svg class="ms" data-lock aria-hidden="true" viewBox="0 96 960 960" focusable="false"><path d="M276.3 940Q249.4 940 230.7 921.3Q212 902.6 212 875.7V516.3Q212 489.4 230.7 470.7Q249.4 452 276.3 452H308V356Q308 284.1 358 234Q408.1 184 480 184Q551.9 184 602 234Q652 284.1 652 356V452H683.7Q710.6 452 729.3 470.7Q748 489.4 748 516.3V875.7Q748 902.6 729.3 921.3Q710.6 940 683.7 940ZM276.3 888H683.7Q689.1 888 692.5 884.5Q696 881.1 696 875.7V516.3Q696 510.9 692.5 507.5Q689.1 504 683.7 504H276.3Q270.9 504 267.5 507.5Q264 510.9 264 516.3V875.7Q264 881.1 267.5 884.5Q270.9 888 276.3 888ZM542 696Q542 669.8 524.1 651.9Q506.2 634 480 634Q453.8 634 435.9 651.9Q418 669.8 418 696Q418 722.2 435.9 740.1Q453.8 758 480 758Q506.2 758 524.1 740.1Q542 722.2 542 696ZM360 452H600V356Q600 306 565 271Q530 236 480 236Q430 236 395 271Q360 306 360 356Z"/></svg> }
+              </button>
+            }
+            <div class="composer-act">
+              @if (active()) {
+                <button type="button" class="icon-btn" [attr.aria-label]="paused() ? 'Continue' : 'Pause'" [disabled]="sending()" (click)="control(paused() ? 'continue' : 'pause')">
+                  <svg class="ms" aria-hidden="true" viewBox="0 96 960 960" focusable="false">
+                    <path [attr.d]="paused() ? 'M400 700V452L600 576Z' : 'M376.2 710H428.2V442H376.2ZM531.8 710H583.8V442H531.8Z'"/><path d="M480 940Q405.2 940 338.9 911.5Q272.5 883.1 222.7 833.3Q172.9 783.5 144.5 717.1Q116 650.8 116 576Q116 500.2 144.5 434.4Q172.9 368.5 222.7 318.7Q272.5 268.9 338.9 240.5Q405.2 212 480 212Q555.8 212 621.6 240.5Q687.5 268.9 737.3 318.7Q787.1 368.5 815.5 434.4Q844 500.2 844 576Q844 650.8 815.5 717.1Q787.1 783.5 737.3 833.3Q687.5 883.1 621.6 911.5Q555.8 940 480 940ZM480 888Q610 888 701 797Q792 706 792 576Q792 446 701 355Q610 264 480 264Q350 264 259 355Q168 446 168 576Q168 706 259 797Q350 888 480 888Z"/>
+                  </svg>
+                </button>
+                <button type="button" class="icon-btn" aria-label="Stop" [disabled]="sending()" (click)="stopRun.emit(latest()!.turn_id)">
+                  <svg class="ms" aria-hidden="true" viewBox="0 96 960 960" focusable="false"><path d="M346 710H614V442H346Z"/><path d="M480 940Q405.2 940 338.9 911.5Q272.5 883.1 222.7 833.3Q172.9 783.5 144.5 717.1Q116 650.8 116 576Q116 500.2 144.5 434.4Q172.9 368.5 222.7 318.7Q272.5 268.9 338.9 240.5Q405.2 212 480 212Q555.8 212 621.6 240.5Q687.5 268.9 737.3 318.7Q787.1 368.5 815.5 434.4Q844 500.2 844 576Q844 650.8 815.5 717.1Q787.1 783.5 737.3 833.3Q687.5 883.1 621.6 911.5Q555.8 940 480 940ZM480 888Q610 888 701 797Q792 706 792 576Q792 446 701 355Q610 264 480 264Q350 264 259 355Q168 446 168 576Q168 706 259 797Q350 888 480 888Z"/></svg>
+                </button>
+              }
+              <button type="submit" class="icon-btn send" aria-label="Send" [disabled]="!draft.trim() || sending() || !chat()"><svg class="ms" aria-hidden="true" viewBox="0 96 960 960" focusable="false"><path d="M454 844V407.9L249.2 612.8L212 576L480 308L748 576L710.8 612.8L506 407.9V844Z"/></svg></button>
+            </div>
+          </div>
         </div>
+        <p class="composer-hint">{{ paused() ? 'Paused · Continue or send another message' : active() ? 'Steer by default · a plan change pauses for confirmation' : 'Same phone · current screen · full chat history' }}</p>
       </form>
       }
     }

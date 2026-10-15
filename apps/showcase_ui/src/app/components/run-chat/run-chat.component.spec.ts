@@ -9,6 +9,8 @@ import { CUSTOM_ELEMENTS_SCHEMA } from '@angular/core';
 import { ShellLayoutService } from '../../services/shell-layout.service';
 import { signal } from '@angular/core';
 import { SessionSidebarComponent } from '../session-sidebar/session-sidebar.component';
+import { SystemService } from '../../services/system.service';
+import { DeviceInfo } from '../../core/models/system.model';
 
 describe('RunChatComponent', () => {
   it('reports deploy drain remaining time and keeps the follow-up draft', fakeAsync(() => {
@@ -39,6 +41,7 @@ describe('RunChatComponent', () => {
     ]
   };
   let api: jasmine.SpyObj<RunsService>;
+  const devices = signal<DeviceInfo[]>([]);
 
   it('fills the empty-session composer with an upstream sample without sending', () => {
     const fixture = TestBed.createComponent(RunChatComponent);
@@ -110,7 +113,9 @@ describe('RunChatComponent', () => {
     api.controlChat.and.returnValue(of(thread.messages[0]));
     api.renameChat.and.returnValue(of({ ...thread, title: 'Login checks' }));
     const technicalDetails = signal(false);
+    devices.set([]);
     TestBed.configureTestingModule({ imports: [RunChatComponent], providers: [provideRouter([]), { provide: RunsService, useValue: api },
+      { provide: SystemService, useValue: { connectedDevices: devices } },
       { provide: ShellLayoutService, useValue: { technicalDetails, setTechnicalDetails: (enabled: boolean) => technicalDetails.set(enabled) } }
     ] })
       .overrideComponent(RunChatComponent, {
@@ -479,6 +484,97 @@ describe('RunChatComponent', () => {
     expect(history.scrollTop).toBe(795);
     fixture.destroy();
   }));
+  describe('composer (Sessions v2.1 rev-4)', () => {
+    const phone = (over: Partial<DeviceInfo> = {}): DeviceInfo => ({ serial: 'R58M1234a1b2', state: 'device', model: 'Pixel 6 Pro', product: 'raven',
+      android_version: '15', screen_resolution: null, is_locked: false, is_emulator: false, device_kind: 'phone', ...over });
+    const onPhone = () => api.get.and.returnValue(of({ session_id: 'root', prompt: 'Check login', read_only: false,
+      device_ref: { host_id: null, serial: 'R58M1234a1b2' } } as RunSummary));
+    const q = (fixture: { nativeElement: HTMLElement }, selector: string) => fixture.nativeElement.querySelector<HTMLElement>(selector)!;
+    const running = () => api.chat.and.returnValue(of({ ...thread, turns: [{ ...thread.turns[0], status: 'running' }] }));
+
+    function composer() {
+      const fixture = render();
+      const tools = q(fixture, '.composer-tools');
+      expect(tools).withContext('toolbar under the field').not.toBeNull();
+      return { fixture, field: q(fixture, '#session-message') as HTMLTextAreaElement, tools };
+    }
+
+    it('is a two-line field with the toolbar below it', fakeAsync(() => {
+      const { fixture, field, tools } = composer();
+      expect(field.rows).toBe(2);
+      expect(field.compareDocumentPosition(tools) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect(tools.contains(field)).toBeFalse();
+      fixture.destroy();
+    }));
+
+    it('keeps the field label for assistive tech but not on screen', fakeAsync(() => {
+      const { fixture, field } = composer();
+      expect(field.labels?.[0]?.classList).toContain('sr-only');
+      fixture.destroy();
+    }));
+
+    it('puts Pause, Stop and Send in the toolbar as labelled icon buttons', fakeAsync(() => {
+      running();
+      const { fixture, tools } = composer();
+      const buttons = Array.from(tools.querySelectorAll('button')).filter(button => !button.classList.contains('phone-chip'));
+      expect(buttons.map(button => button.getAttribute('aria-label'))).toEqual(['Pause', 'Stop', 'Send']);
+      expect(buttons.every(button => button.querySelector('svg') && !button.textContent!.trim())).toBeTrue();
+      expect(buttons[2].type).toBe('submit');
+      fixture.destroy();
+    }));
+
+    it('swaps Pause for Continue while paused and keeps the hint under the toolbar', fakeAsync(() => {
+      const { fixture, tools } = composer();
+      expect(tools.querySelector('[aria-label="Continue"]')).not.toBeNull();
+      expect(tools.querySelector('[aria-label="Pause"]')).toBeNull();
+      const hint = q(fixture, '.composer-hint');
+      expect(tools.compareDocumentPosition(hint) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect(hint.textContent).toContain('Paused');
+      fixture.destroy();
+    }));
+
+    it('shows the phone chip with model, status dot and lock, never the serial', fakeAsync(() => {
+      onPhone();
+      devices.set([phone()]);
+      const { fixture, tools } = composer();
+      const chip = tools.querySelector<HTMLElement>('.phone-chip')!;
+      expect(chip.textContent!.trim()).toBe('Pixel 6 Pro');
+      expect(chip.textContent).not.toContain('a1b2');
+      expect(chip.querySelector('.dot')!.classList).toContain('ok');
+      expect(chip.querySelector('[data-lock]')).not.toBeNull();
+      expect(chip.getAttribute('aria-disabled')).toBe('true');
+      expect(chip.getAttribute('aria-label')).toContain('Pixel 6 Pro');
+      fixture.destroy();
+    }));
+
+    for (const [model, product, expected] of [['Pixel 6 Pro', 'raven', 'Pixel 6 Pro'], [null, 'raven', 'raven'], [null, null, 'Android phone']] as const) {
+      it(`labels the chip ${expected} when model is ${model} and product is ${product}`, fakeAsync(() => {
+        onPhone();
+        devices.set([phone({ model, product })]);
+        const { fixture, tools } = composer();
+        expect(tools.querySelector('.phone-chip .lbl')!.textContent).toBe(expected);
+        fixture.destroy();
+      }));
+    }
+
+    it('keeps the chip and the actions on one toolbar row on a phone-width screen', fakeAsync(() => {
+      const { fixture } = composer();
+      const narrow = Array.from(document.styleSheets).flatMap(sheet => Array.from(sheet.cssRules))
+        .filter((rule): rule is CSSMediaRule => rule instanceof CSSMediaRule && /max-width:\s*600px/.test(rule.conditionText))
+        .flatMap(media => Array.from(media.cssRules) as CSSStyleRule[])
+        .filter(rule => /phone-chip|composer-tools/.test(rule.selectorText ?? ''));
+      expect(narrow.filter(rule => rule.style.flexBasis === '100%' || rule.style.flexWrap === 'wrap').map(rule => rule.selectorText)).toEqual([]);
+      fixture.destroy();
+    }));
+
+    it('labels an unlisted phone "Android phone" and marks its dot as an error', fakeAsync(() => {
+      onPhone();
+      const { fixture, tools } = composer();
+      expect(tools.querySelector('.phone-chip .lbl')!.textContent).toBe('Android phone');
+      expect(tools.querySelector('.phone-chip .dot')!.classList).toContain('error');
+      fixture.destroy();
+    }));
+  });
   describe('step evidence', () => {
     const evidence = (action: Record<string, unknown>, extra: Record<string, unknown> = {}) => {
       const fixture = render();

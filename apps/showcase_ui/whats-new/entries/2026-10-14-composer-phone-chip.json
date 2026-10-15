@@ -1,0 +1,7 @@
+{
+  "id": "2026-10-14-composer-phone-chip",
+  "date": "2026-10-14",
+  "title": "The message box is two lines, with the phone and the controls below it",
+  "body": "The session message box now shows two lines. Under it, a toolbar shows the session's phone by model name with a status dot and a lock, and Pause, Stop and Send as icon buttons.",
+  "issues": ["CHE-1655"]
+}
