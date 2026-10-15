@@ -11,6 +11,7 @@ import { signal } from '@angular/core';
 import { SessionSidebarComponent } from '../session-sidebar/session-sidebar.component';
 import { SystemService } from '../../services/system.service';
 import { DeviceInfo } from '../../core/models/system.model';
+import { WorkspacePhoneService } from '../../services/workspace-phone.service';
 
 describe('RunChatComponent', () => {
   it('reports deploy drain remaining time and keeps the follow-up draft', fakeAsync(() => {
@@ -42,6 +43,8 @@ describe('RunChatComponent', () => {
   };
   let api: jasmine.SpyObj<RunsService>;
   const devices = signal<DeviceInfo[]>([]);
+  const pickerOptions = signal<{ serial: string; text: string; usable: boolean; note: string | null }[]>([]);
+  let phoneService: { options: typeof pickerOptions; canConnectFromBrowser: ReturnType<typeof signal<boolean>>; connectFromBrowser: jasmine.Spy; choose: jasmine.Spy };
 
   it('fills the empty-session composer with an upstream sample without sending', () => {
     const fixture = TestBed.createComponent(RunChatComponent);
@@ -114,8 +117,11 @@ describe('RunChatComponent', () => {
     api.renameChat.and.returnValue(of({ ...thread, title: 'Login checks' }));
     const technicalDetails = signal(false);
     devices.set([]);
+    pickerOptions.set([]);
+    phoneService = { options: pickerOptions, canConnectFromBrowser: signal(true), connectFromBrowser: jasmine.createSpy('connectFromBrowser').and.resolveTo(), choose: jasmine.createSpy('choose') };
     TestBed.configureTestingModule({ imports: [RunChatComponent], providers: [provideRouter([]), { provide: RunsService, useValue: api },
       { provide: SystemService, useValue: { connectedDevices: devices } },
+      { provide: WorkspacePhoneService, useValue: phoneService },
       { provide: ShellLayoutService, useValue: { technicalDetails, setTechnicalDetails: (enabled: boolean) => technicalDetails.set(enabled) } }
     ] })
       .overrideComponent(RunChatComponent, {
@@ -574,6 +580,131 @@ describe('RunChatComponent', () => {
       expect(tools.querySelector('.phone-chip .dot')!.classList).toContain('error');
       fixture.destroy();
     }));
+
+    describe('when the session phone disconnects', () => {
+      const lost = () => { onPhone(); devices.set([]); };
+      const other = { serial: 'EMU5554', text: 'Pixel 3a · …5554 · AVD', usable: true, note: null };
+
+      it('disables the field and Send, keeps the draft, and says why', fakeAsync(() => {
+        lost();
+        const { fixture, field, tools } = composer();
+        fixture.componentInstance.draft = 'Keep me';
+        fixture.detectChanges(); tick(0); fixture.detectChanges();
+        expect(field.disabled).toBeTrue();
+        expect(field.placeholder).toBe('Reconnect the phone first');
+        expect(fixture.componentInstance.draft).toBe('Keep me');
+        expect(tools.querySelector<HTMLButtonElement>('[aria-label="Send"]')!.disabled).toBeTrue();
+        fixture.destroy();
+      }));
+
+      it('does not send while the phone is gone', fakeAsync(() => {
+        lost();
+        const { fixture } = composer();
+        fixture.componentInstance.draft = 'Try anyway';
+        fixture.componentInstance.send();
+        expect(api.sendChat).not.toHaveBeenCalled();
+        fixture.destroy();
+      }));
+
+      it('keeps Stop reachable while a run is live', fakeAsync(() => {
+        lost(); running();
+        const { fixture, tools } = composer();
+        expect(tools.querySelector<HTMLButtonElement>('[aria-label="Stop"]')!.disabled).toBeFalse();
+        fixture.destroy();
+      }));
+
+      it('turns the chip into an error-dotted, blinking picker button that says Disconnected', fakeAsync(() => {
+        lost();
+        const { fixture, tools } = composer();
+        const chip = tools.querySelector<HTMLElement>('.phone-chip')!;
+        expect(chip.classList).toContain('blink');
+        expect(chip.getAttribute('aria-disabled')).toBeNull();
+        expect(chip.getAttribute('aria-expanded')).toBe('false');
+        expect(chip.getAttribute('aria-label')).toContain('Phone disconnected');
+        expect(chip.textContent).toContain('Disconnected');
+        expect(chip.querySelector('.dot')!.classList).toContain('error');
+        expect(chip.querySelector('[data-lock]')).toBeNull();
+        fixture.destroy();
+      }));
+
+      it('stops blinking for reduced motion', fakeAsync(() => {
+        lost();
+        const { fixture } = composer();
+        const reduced = Array.from(document.styleSheets).flatMap(sheet => Array.from(sheet.cssRules))
+          .filter((rule): rule is CSSMediaRule => rule instanceof CSSMediaRule && /prefers-reduced-motion:\s*reduce/.test(rule.conditionText))
+          .flatMap(media => Array.from(media.cssRules) as CSSStyleRule[])
+          .filter(rule => /blink/.test(rule.selectorText ?? ''));
+        expect(reduced.some(rule => rule.style.animationName === 'none' || rule.style.animation === 'none')).toBeTrue();
+        fixture.destroy();
+      }));
+
+      it('does not blink, disable or open anything while the phone is connected', fakeAsync(() => {
+        onPhone(); devices.set([phone()]);
+        const { fixture, field, tools } = composer();
+        expect(tools.querySelector('.phone-chip')!.classList).not.toContain('blink');
+        expect(field.disabled).toBeFalse();
+        tools.querySelector<HTMLElement>('.phone-chip')!.click(); fixture.detectChanges();
+        expect(q(fixture, '.phone-pop')).toBeNull();
+        fixture.destroy();
+      }));
+
+      it('opens a popover offering Reconnect and other phones, and closes on Escape', fakeAsync(() => {
+        lost(); pickerOptions.set([{ serial: 'R58M1234a1b2', text: 'Pixel 6 Pro · …a1b2', usable: false, note: 'The phone is offline.' }, other]);
+        const { fixture, tools } = composer();
+        const chip = tools.querySelector<HTMLElement>('.phone-chip')!;
+        chip.click(); fixture.detectChanges();
+        const pop = q(fixture, '.phone-pop');
+        expect(chip.getAttribute('aria-expanded')).toBe('true');
+        expect(pop.textContent).toContain('lost connection');
+        expect(pop.querySelector('[data-reconnect]')!.textContent).toContain('Reconnect Android phone');
+        const choices = Array.from(pop.querySelectorAll('[data-another]'));
+        expect(choices.map(choice => choice.textContent!.trim())).toEqual(['Pixel 3a · …5554 · AVD']);
+        expect(pop.textContent).toContain('A new session opens with the same first prompt');
+        pop.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); fixture.detectChanges();
+        expect(q(fixture, '.phone-pop')).toBeNull();
+        fixture.destroy();
+      }));
+
+      it('Reconnect asks the browser to reconnect the phone and closes the popover', fakeAsync(() => {
+        lost();
+        const { fixture, tools } = composer();
+        tools.querySelector<HTMLElement>('.phone-chip')!.click(); fixture.detectChanges();
+        q(fixture, '[data-reconnect]').click(); tick(0); fixture.detectChanges();
+        expect(phoneService.connectFromBrowser).toHaveBeenCalledTimes(1);
+        expect(q(fixture, '.phone-pop')).toBeNull();
+        fixture.destroy();
+      }));
+
+      it('disables Reconnect when this browser cannot connect a phone', fakeAsync(() => {
+        lost(); phoneService.canConnectFromBrowser.set(false);
+        const { fixture, tools } = composer();
+        tools.querySelector<HTMLElement>('.phone-chip')!.click(); fixture.detectChanges();
+        expect((q(fixture, '[data-reconnect]') as HTMLButtonElement).disabled).toBeTrue();
+        fixture.destroy();
+      }));
+
+      it('runs the same first prompt on another phone as a new session', fakeAsync(() => {
+        lost(); pickerOptions.set([other]);
+        api.get.and.returnValue(of({ session_id: 'root', prompt: 'Check login', chat_prompt: 'First prompt of the session', read_only: false,
+          device_ref: { host_id: null, serial: 'R58M1234a1b2' } } as RunSummary));
+        const { fixture, tools } = composer();
+        const emitted = spyOn(fixture.componentInstance.newRunPrompt, 'emit');
+        tools.querySelector<HTMLElement>('.phone-chip')!.click(); fixture.detectChanges();
+        q(fixture, '[data-another]').click(); fixture.detectChanges();
+        expect(phoneService.choose).toHaveBeenCalledOnceWith('EMU5554');
+        expect(emitted).toHaveBeenCalledOnceWith('First prompt of the session');
+        expect(q(fixture, '.phone-pop')).toBeNull();
+        fixture.destroy();
+      }));
+
+      it('does not offer other phones that are unusable', fakeAsync(() => {
+        lost(); pickerOptions.set([{ ...other, usable: false, note: 'The phone is offline.' }]);
+        const { fixture, tools } = composer();
+        tools.querySelector<HTMLElement>('.phone-chip')!.click(); fixture.detectChanges();
+        expect(fixture.nativeElement.querySelectorAll('[data-another]').length).toBe(0);
+        fixture.destroy();
+      }));
+    });
   });
   describe('step evidence', () => {
     const evidence = (action: Record<string, unknown>, extra: Record<string, unknown> = {}) => {
