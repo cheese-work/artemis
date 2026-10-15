@@ -43,6 +43,7 @@ describe('RunChatComponent', () => {
   };
   let api: jasmine.SpyObj<RunsService>;
   const devices = signal<DeviceInfo[]>([]);
+  const readiness = signal<object | null>({});
   const pickerOptions = signal<{ serial: string; text: string; usable: boolean; note: string | null }[]>([]);
   let phoneService: { options: typeof pickerOptions; canConnectFromBrowser: ReturnType<typeof signal<boolean>>; connectFromBrowser: jasmine.Spy; choose: jasmine.Spy };
 
@@ -117,10 +118,11 @@ describe('RunChatComponent', () => {
     api.renameChat.and.returnValue(of({ ...thread, title: 'Login checks' }));
     const technicalDetails = signal(false);
     devices.set([]);
+    readiness.set({});
     pickerOptions.set([]);
     phoneService = { options: pickerOptions, canConnectFromBrowser: signal(true), connectFromBrowser: jasmine.createSpy('connectFromBrowser').and.resolveTo(), choose: jasmine.createSpy('choose') };
     TestBed.configureTestingModule({ imports: [RunChatComponent], providers: [provideRouter([]), { provide: RunsService, useValue: api },
-      { provide: SystemService, useValue: { connectedDevices: devices } },
+      { provide: SystemService, useValue: { connectedDevices: devices, readinessReport: readiness } },
       { provide: WorkspacePhoneService, useValue: phoneService },
       { provide: ShellLayoutService, useValue: { technicalDetails, setTechnicalDetails: (enabled: boolean) => technicalDetails.set(enabled) } }
     ] })
@@ -635,6 +637,16 @@ describe('RunChatComponent', () => {
           .flatMap(media => Array.from(media.cssRules) as CSSStyleRule[])
           .filter(rule => /blink/.test(rule.selectorText ?? ''));
         expect(reduced.some(rule => rule.style.animationName === 'none' || rule.style.animation === 'none')).toBeTrue();
+        fixture.destroy();
+      }));
+
+      it('waits for the first phone list before treating the phone as disconnected', fakeAsync(() => {
+        lost(); readiness.set(null);
+        const { fixture, field, tools } = composer();
+        expect(field.disabled).toBeFalse();
+        expect(tools.querySelector('.phone-chip')!.classList).not.toContain('blink');
+        readiness.set({}); fixture.detectChanges();
+        expect(field.disabled).toBeTrue();
         fixture.destroy();
       }));
 
