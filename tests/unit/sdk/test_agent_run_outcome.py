@@ -10,32 +10,7 @@ from artemis.sdk.agent import Agent
 from artemis.sdk.types.task import Task
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "report",
-    [
-        {"status": "completed"},
-        {"status": "failed", "cause": "goal_unreachable"},
-        {"status": "failed", "cause": "blocked_by_environment"},
-        {
-            "status": "failed",
-            "cause": "app_defect",
-            "evidence_step": 2,
-            "evidence_ref": {"step_id": "step-2", "image_name": "image"},
-            "expected": "Title",
-            "actual": "Error",
-        },
-        {"status": "failed", "explanation": "Max turns reached without final status report."},
-        {"status": "failed", "explanation": "The model returned no response"},
-        {"status": "interrupted", "interrupt_reason": "device_offline"},
-        {},
-        RuntimeError("model failed"),
-        asyncio.CancelledError(),
-    ],
-)
-async def test_flash_outcome_exists_before_task_finalize(
-    tmp_path, monkeypatch, fake_provider_credentials, report
-):
+def _fake_flash_agent(monkeypatch, tmp_path, report):
     from third_party.mobile_use.sdk import agent as agent_module
 
     context = MagicMock(spec=ArtemisContext)
@@ -74,6 +49,36 @@ async def test_flash_outcome_exists_before_task_finalize(
     agent._prepare_app_installation = AsyncMock()
     agent._prepare_device_environment = AsyncMock()
     agent._prepare_app_lock = AsyncMock()
+    return agent, context
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "report",
+    [
+        {"status": "completed"},
+        {"status": "failed", "cause": "goal_unreachable"},
+        {"status": "failed", "cause": "blocked_by_environment"},
+        {
+            "status": "failed",
+            "cause": "app_defect",
+            "evidence_step": 2,
+            "evidence_ref": {"step_id": "step-2", "image_name": "image"},
+            "expected": "Title",
+            "actual": "Error",
+        },
+        {"status": "failed", "explanation": "Max turns reached without final status report."},
+        {"status": "failed", "explanation": "The model returned no response"},
+        {"status": "interrupted", "interrupt_reason": "device_offline"},
+        {},
+        RuntimeError("model failed"),
+        asyncio.CancelledError(),
+    ],
+)
+async def test_flash_outcome_exists_before_task_finalize(
+    tmp_path, monkeypatch, fake_provider_credentials, report
+):
+    agent, _ = _fake_flash_agent(monkeypatch, tmp_path, report)
     observed = []
     original_finalize = Task.finalize
 
@@ -100,3 +105,34 @@ async def test_flash_outcome_exists_before_task_finalize(
     else:
         await agent.run_task(goal="test", profile="flash")
     assert len(observed) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("run_error", "session_status"),
+    [
+        (RuntimeError("model failed"), "failed"),
+        (asyncio.CancelledError(), "cancelled"),
+    ],
+)
+async def test_outcome_write_failure_does_not_skip_finalize_or_session_end(
+    tmp_path, monkeypatch, fake_provider_credentials, run_error, session_status
+):
+    agent, context = _fake_flash_agent(monkeypatch, tmp_path, run_error)
+    events = []
+
+    def fail_write(*args, **kwargs):
+        events.append("write")
+        raise OSError("outcome directory is unavailable")
+
+    async def finalize(task, *args, **kwargs):
+        events.append("finalize")
+
+    context.data_engine.end_session.side_effect = lambda status: events.append(f"end:{status}")
+    monkeypatch.setattr(Task, "finalize", finalize)
+    monkeypatch.setattr("artemis.graph.checkpoints.write_run_outcome", fail_write)
+
+    with pytest.raises(type(run_error)):
+        await agent.run_task(goal="test", profile="flash")
+
+    assert events == ["write", "finalize", f"end:{session_status}"]

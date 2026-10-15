@@ -71,7 +71,7 @@ def test_pro_outcome_preserves_raw_checker_items_and_failure_anchor():
 
 
 @pytest.mark.asyncio
-async def test_pro_without_check_items_still_writes_outcome(tmp_path):
+async def test_pro_without_check_items_does_not_write_outcome(tmp_path):
     from types import SimpleNamespace
     from unittest.mock import AsyncMock
 
@@ -88,5 +88,5 @@ async def test_pro_without_check_items_still_writes_outcome(tmp_path):
     )
     with patch("artemis.graph.graph.settle_all_checkpoints", AsyncMock()):
         update = await exit_settlement_node(State(initial_goal="Open settings"), context)
-    assert read_run_outcome(tmp_path) == update["run_outcome"]
-    assert update["run_outcome"]["checker_items"] == []
+    assert "run_outcome" not in update
+    assert read_run_outcome(tmp_path) is None

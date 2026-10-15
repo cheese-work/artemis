@@ -1,3 +1,6 @@
+import asyncio
+import hashlib
+from threading import Event
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 from uuid import uuid4
@@ -8,6 +11,7 @@ import pytest
 from artemis.agents.flash.runner import FlashRunner
 from artemis.agents.validator.tool_declarations import REPORT_TASK_STATUS_TOOL
 from artemis.context import ArtemisContext
+from artemis.data_engine.engine import DataEngine
 from artemis.graph.state import State
 
 
@@ -180,5 +184,41 @@ async def test_completed_report_references_its_final_screenshot(runner, tmp_path
         "step_id": str(step_id),
         "step_number": 4,
         "image_name": "final",
+        "which": "pre",
+    }
+
+
+@pytest.mark.asyncio
+async def test_completed_report_waits_for_real_data_engine_step_write(runner, tmp_path):
+    context = Mock(spec=ArtemisContext)
+    context.execution_setup = SimpleNamespace(traces_path=str(tmp_path / "traces"))
+    context.device = None
+    engine = DataEngine(context)
+    engine.start_session("Test the app")
+    runner.ctx.data_engine = engine
+
+    entered = Event()
+    release = Event()
+    create_step = engine.storage.create_step
+
+    def blocked_create_step(step):
+        entered.set()
+        assert release.wait(timeout=10)
+        create_step(step)
+
+    engine.storage.create_step = blocked_create_step
+    report_task = asyncio.create_task(run_report(runner, {"status": "completed"}))
+    try:
+        assert await asyncio.to_thread(entered.wait, 10)
+        release.set()
+        result = await report_task
+    finally:
+        release.set()
+        await engine.shutdown()
+
+    assert result["evidence_ref"] == {
+        "step_id": str(engine.last_recorded_step_id),
+        "step_number": 1,
+        "image_name": hashlib.sha256(b"image").hexdigest(),
         "which": "pre",
     }
