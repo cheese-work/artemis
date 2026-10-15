@@ -596,6 +596,7 @@ class FlashRunner:
             and self.ctx.data_engine
         ):
             try:
+                await self.ctx.data_engine.wait_for_pending_operations()
                 step = self.ctx.data_engine.get_step_record(evidence_step)
                 if step is not None:
                     for which in ("post", "pre"):

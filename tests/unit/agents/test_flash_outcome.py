@@ -28,6 +28,7 @@ def runner(tmp_path, fake_provider_credentials):
     context.data_engine = Mock()
     context.data_engine.base_dir = tmp_path
     context.data_engine.current_step_id = None
+    context.data_engine.wait_for_pending_operations = AsyncMock()
     context.data_engine.get_step_record.return_value = None
     context.data_engine.get_step_image_path.return_value = None
     with patch("artemis.controllers.unified_controller.get_driver"):

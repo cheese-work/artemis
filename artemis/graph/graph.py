@@ -443,6 +443,8 @@ async def exit_settlement_node(state: State, ctx: ArtemisContext):
 
     # END path: assemble the machine-readable run outcome.
     records = read_ledger(base_dir)
+    if not snapshot.all_check_items and not records:
+        return update
     retired = getattr(ctx, "guidance_retired_checks", None)
     outcome = compute_run_outcome(
         snapshot,

@@ -491,7 +491,12 @@ class AgentBase:
                             "task_status": None,
                             "checker_items": read_ledger(base_dir),
                         }
-                    write_run_outcome(base_dir, outcome)
+                    try:
+                        write_run_outcome(base_dir, outcome)
+                    except OSError as write_error:
+                        logger.warning(
+                            f"Could not persist run outcome before task finalization: {write_error}"
+                        )
                 await task.finalize(**kwargs)
 
             effective_mode = getattr(self._config, "concurrency_mode", "per_device")
