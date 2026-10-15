@@ -189,7 +189,7 @@
     }
     </div>
     @if (sidebarOpen()) {
-      <app-session-sidebar id="session-sidebar" [runId]="latest()?.turn_id ?? runId()" [technicalDetails]="shell.technicalDetails()" [firstPrompt]="rootRun()?.chat_prompt ?? rootRun()?.prompt ?? null"></app-session-sidebar>
+      <app-session-sidebar id="session-sidebar" [runId]="latest()?.turn_id ?? runId()" [turns]="usageTurns()" [technicalDetails]="shell.technicalDetails()" [firstPrompt]="rootRun()?.chat_prompt ?? rootRun()?.prompt ?? null"></app-session-sidebar>
     }
     </div>
   </div>
