@@ -88,6 +88,28 @@ describe('Phones page (Sessions v2.1 C rev-4)', () => {
     expect(fakes.relay.connect).toHaveBeenCalledTimes(1);
   });
 
+  it('lists a phone that connects after the page opened (CHE-1657 review P2)', async () => {
+    const { fixture, root, fakes, button } = await create([]);
+    expect(rows(root).length).toBe(0);
+    fakes.hosts.list.and.returnValue(of(listing([idle])));
+    button('Connect')!.click();
+    fakes.relay.state.set({ status: 'connected', serial: idle.serial, sessionId: 'bridge', error: null });
+    fixture.detectChanges();
+    await fixture.whenStable();
+    fixture.detectChanges();
+    expect(rows(root).map(row => row.querySelector('.phone-serial')?.textContent?.trim())).toEqual([idle.serial]);
+    expect(root.textContent).not.toContain('No phones yet');
+  });
+
+  it('shows why a connection failed beside Connect and keeps Connect available (CHE-1657 review P2)', async () => {
+    const { fixture, root, fakes, button } = await create([]);
+    fakes.relay.state.set({ status: 'idle', serial: null, sessionId: null, error: 'No phone was chosen.' });
+    fixture.detectChanges();
+    const alert = root.querySelector('[role=alert]');
+    expect(alert?.textContent).toContain('No phone was chosen.');
+    expect(button('Connect')!.disabled).toBeFalse();
+  });
+
   it('shows the empty state', async () => {
     const { root } = await create([]);
     expect(rows(root).length).toBe(0);
