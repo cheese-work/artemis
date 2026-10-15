@@ -17,7 +17,7 @@ import { HomeComponent } from './home.component';
 describe('HomeComponent phone surface', () => {
   afterEach(() => TestBed.inject(SystemService).stopAutoPolling());
 
-  it('lists phones from computers and this browser with their source, next to the phone connection', async () => {
+  it('no longer lists registry phones: they moved to the Phones page', async () => {
     const device = {
       serial: 'R5CT1',
       model: 'Pixel 8',
@@ -55,10 +55,10 @@ describe('HomeComponent phone surface', () => {
     await fixture.whenStable();
     fixture.detectChanges();
 
-    const chip = (fixture.nativeElement as HTMLElement).querySelector('app-registry-phones app-device-chip');
-    expect(chip).not.toBeNull();
-    expect(chip!.textContent).toContain('Pixel 8');
-    expect(chip!.textContent).toContain('Lab Mac');
+    const root = fixture.nativeElement as HTMLElement;
+    expect(root.querySelector('app-registry-phones')).toBeNull();
+    expect(root.querySelector('app-device-chip')).toBeNull();
+    expect(root.textContent).not.toContain('Phones shared with SmartQA');
   });
 });
 
