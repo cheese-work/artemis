@@ -138,7 +138,8 @@ export class PhonesComponent {
   protected statusOf(device: RegistryDevice): PhoneStatus {
     const { state } = this.view(device);
     if (state === 'Offline') return 'Disconnected';
-    return state === 'Needs attention' ? state : this.liveSession(device) ? 'In use' : 'Idle';
+    if (state === 'Needs attention') return state;
+    return this.liveSession(device) ? 'In use' : 'Idle';
   }
 
   protected newSession(device: RegistryDevice): void {
