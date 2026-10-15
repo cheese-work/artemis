@@ -13,7 +13,7 @@
 # limitations under the License.
 
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 
@@ -110,6 +110,9 @@ async def test_gateway_refusal_records_the_readable_failed_step_for_the_run_view
     )
     assert agent._tasks[-1].status == "failed"
     assert reason in agent._tasks[-1].result.error
+    assert context.data_engine.end_session.call_args_list[0] == call(
+        "failed", error=agent._tasks[-1].result.error
+    )
     assert base_model.ainvoke.await_count == 2
     fallback.assert_not_awaited()
     pause.assert_not_called()
