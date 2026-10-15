@@ -13,6 +13,10 @@ import { ShellLayoutService } from '../../services/shell-layout.service';
 class PageStub {}
 
 describe('NavSwitcherComponent', () => {
+  // The nav mode is saved per person; a toggle in one spec must not decide the next spec's width.
+  beforeEach(() => localStorage.clear());
+  afterEach(() => localStorage.clear());
+
   beforeEach(() => {
     TestBed.configureTestingModule({
       providers: [{ provide: HttpClient, useValue: { get: () => of(null) } }, {

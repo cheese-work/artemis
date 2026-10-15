@@ -3,7 +3,6 @@ import { provideHttpClientTesting } from '@angular/common/http/testing';
 import { CUSTOM_ELEMENTS_SCHEMA } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { EMPTY, of } from 'rxjs';
-import { RegistryPhonesComponent } from '../../components/registry-phones/registry-phones.component';
 import { UsbPhoneConnectionComponent } from '../../components/usb-phone-connection/usb-phone-connection.component';
 import { RegistryDevice } from '../../core/models/host.model';
 import { DeviceInfo, SystemReadinessReport } from '../../core/models/system.model';
@@ -56,7 +55,6 @@ describe('HomeComponent phone surface', () => {
     fixture.detectChanges();
 
     const root = fixture.nativeElement as HTMLElement;
-    expect(root.querySelector('app-registry-phones')).toBeNull();
     expect(root.querySelector('app-device-chip')).toBeNull();
     expect(root.textContent).not.toContain('Phones shared with SmartQA');
   });
@@ -121,7 +119,7 @@ describe('HomeComponent device card', () => {
       ]
     })
       .overrideComponent(HomeComponent, {
-        remove: { imports: [UsbPhoneConnectionComponent, RegistryPhonesComponent, SetupComponent] },
+        remove: { imports: [UsbPhoneConnectionComponent, SetupComponent] },
         add: { schemas: [CUSTOM_ELEMENTS_SCHEMA] }
       })
       .compileComponents();
