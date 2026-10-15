@@ -6,10 +6,12 @@ clock, never the sender's. State is ``unknown`` once no connection has reported 
 ``ARTEMIS_DEVICE_TTL_S``, never ``idle``.
 """
 
+import asyncio
 from dataclasses import dataclass, field
 import logging
 import math
 import os
+import sqlite3
 import threading
 import time
 from typing import Callable
@@ -24,6 +26,8 @@ logger = logging.getLogger(__name__)
 DEFAULT_TTL_S = 60.0
 TTL_RANGE_S = (10.0, 3600.0)
 HYSTERESIS_S = 5.0
+# How often the lifecycle tick expires silent connections and settles held states.
+TICK_S = 1.0
 # What a source can report; running beats busy beats idle when connections disagree.
 REPORTED = ("running", "busy", "idle", "disconnected")
 
@@ -43,6 +47,11 @@ def device_ttl_s() -> float:
         )
         return DEFAULT_TTL_S
     return ttl
+
+
+def server_time() -> float:
+    """The server's clock: every heartbeat is stamped with it, never with a sender's time."""
+    return time.time()
 
 
 @dataclass(slots=True)
@@ -132,3 +141,33 @@ class DeviceReconciler:
     ) -> None:
         self._events.record_state(device_id, state, ts, reason=reason)
         device.committed = state
+
+
+_reconcilers: dict[str, DeviceReconciler] = {}
+_reconcilers_lock = threading.Lock()
+
+
+def reconciler_for(db_path=None) -> DeviceReconciler:
+    """The one reconciler of a database; created, and started, on first use."""
+    key = str(db_path)
+    with _reconcilers_lock:
+        reconciler = _reconcilers.get(key)
+        if reconciler is None:
+            reconciler = DeviceReconciler(
+                DeviceEventRepository(db_path), clock=lambda: server_time()
+            )
+            reconciler.start()
+            _reconcilers[key] = reconciler
+        return reconciler
+
+
+async def tick_forever(db_path=None) -> None:
+    """Server background loop: expire silent connections. Only cancellation ends it."""
+    while True:
+        try:
+            await asyncio.to_thread(lambda: reconciler_for(db_path).tick())
+        except asyncio.CancelledError:
+            raise
+        except (sqlite3.Error, OSError):
+            logger.exception("Device state tick failed; will retry")
+        await asyncio.sleep(TICK_S)

@@ -6,7 +6,7 @@ phone is HMAC-SHA256(org device pepper, ro.serialno): the host agent sends it as
 ``ro.serialno`` and hashes it with the same pepper. An AVD is ``(host_id, AVD
 name)``. Hooks: host registration (``host_registry.set_devices``) and server adb
 discovery, which also lists bridge phones (``device_pool.identity_observer``).
-Nothing schedules from the outcome yet (CHE-1475).
+Every observation also heartbeats the device state reconciler (CHE-1477).
 """
 
 from __future__ import annotations
@@ -26,6 +26,7 @@ from apps.admin_console.database.repositories.device_repository import (
     DeviceStoreNotReady,
     Match,
 )
+from apps.admin_console.services.device_reconciler import reconciler_for
 from apps.admin_console.services.host_registry import DEVICE_ID
 from artemis.runtime.adb_endpoint import AdbEndpoint
 from artemis.utils.device_kind import DeviceKind, classify_properties
@@ -55,7 +56,7 @@ def _bridge_serials() -> set[str]:
 class DeviceIdentity:
     def __init__(self) -> None:
         # Last observation per connection key: discovery repeats every few seconds, and
-        # only a change needs a write. Heartbeats belong to the reconciler (CHE-1477).
+        # only a change needs a write. Every observation is still a heartbeat (CHE-1477).
         self._seen: dict[tuple, tuple[tuple, Match]] = {}
         self._peppers: dict[str, bytes] = {}
         self._lock = threading.Lock()
@@ -149,6 +150,7 @@ class DeviceIdentity:
                     readable=readable,
                     label=model,
                     previous_serials=(),
+                    state="idle" if state == "device" else "disconnected",
                 )
             )
         return observed
@@ -185,6 +187,7 @@ class DeviceIdentity:
                     readable=readable,
                     label=item.get("model"),
                     previous_serials=previous,
+                    state="idle" if readable else "disconnected",
                 )
             )
         return observed
@@ -192,7 +195,10 @@ class DeviceIdentity:
     def _match_all(self, observed: list[dict[str, Any]], matches: list[Match]) -> None:
         db_path = _registry().db_path
         repo = DeviceRepository(db_path)
+        reconciler = reconciler_for(db_path)
         for item in observed:
+            item = dict(item)
+            state = item.pop("state")
             key = (str(db_path), item["source"], item["host_id"], item["serial"])
             fingerprint = (
                 item["kind"],
@@ -207,6 +213,8 @@ class DeviceIdentity:
                 with self._lock:
                     self._seen[key] = seen
             matches.append(seen[1])
+            # Server receive time, every observation: discovery repeating is the heartbeat.
+            reconciler.heartbeat(seen[1].device_id, seen[1].connection_id, state)
 
 
 device_identity = DeviceIdentity()

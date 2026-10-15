@@ -68,6 +68,7 @@ class ServerState:
         self.worker_task: asyncio.Task | None = None
         self.retention_task: asyncio.Task | None = None
         self.failure_task: asyncio.Task | None = None
+        self.reconciler_task: asyncio.Task | None = None
 
     @property
     def wake_event(self) -> asyncio.Event:
