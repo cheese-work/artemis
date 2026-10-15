@@ -431,13 +431,13 @@ describe('WorkspaceDeviceChipComponent', () => {
       expect(fakes.relay.connect).toHaveBeenCalledTimes(1);
     });
 
-    it('links Setup from the menu as "More options"', () => {
+    it('links the Phones page from the menu as "More options"', () => {
       const { el, chip, settle } = create();
       chip().click();
       settle();
       const more = named(el, 'More options') as HTMLAnchorElement;
       expect(more.tagName).toBe('A');
-      expect(more.getAttribute('href')).toBe('/setup');
+      expect(more.getAttribute('href')).toBe('/phones');
     });
 
     it('closes the menu when "More options" is followed', () => {

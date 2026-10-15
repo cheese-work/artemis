@@ -13,6 +13,10 @@ import { ShellLayoutService } from '../../services/shell-layout.service';
 class PageStub {}
 
 describe('NavSwitcherComponent', () => {
+  // The nav mode is saved per person; a toggle in one spec must not decide the next spec's width.
+  beforeEach(() => localStorage.clear());
+  afterEach(() => localStorage.clear());
+
   beforeEach(() => {
     TestBed.configureTestingModule({
       providers: [{ provide: HttpClient, useValue: { get: () => of(null) } }, {
@@ -36,7 +40,7 @@ describe('NavSwitcherComponent', () => {
     expect(fixture.nativeElement.textContent).not.toContain('Disconnect');
   });
 
-  it('shows Workspace and Runs, with no Setup tab for a non-admin', async () => {
+  it('shows Sessions and Phones, with no Setup tab for a non-admin', async () => {
     await TestBed.configureTestingModule({
       imports: [NavSwitcherComponent],
       providers: [provideRouter([]), ...phoneFakes().providers]
@@ -47,13 +51,13 @@ describe('NavSwitcherComponent', () => {
     const hrefs = Array.from<HTMLAnchorElement>(fixture.nativeElement.querySelectorAll('nav a[href]')).map(a =>
       a.getAttribute('href')
     );
-    expect(hrefs).toEqual(['/sessions']);
+    expect(hrefs).toEqual(['/sessions', '/phones']);
     expect(fixture.nativeElement.querySelector('a[href="/runs"]')).toBeNull();
     // Labels collapse to icons on phones, so each tab needs its own accessible name.
     const names = Array.from<HTMLAnchorElement>(fixture.nativeElement.querySelectorAll('nav a[href]')).map(a =>
       a.getAttribute('aria-label')
     );
-    expect(names).toEqual(['Sessions']);
+    expect(names).toEqual(['Sessions', 'Phones']);
   });
 
   it('uses a compact provider label and a full accessible name for admins', async () => {
@@ -189,7 +193,7 @@ describe('NavSwitcherComponent', () => {
     expect((window.innerWidth < 800 ? header : nav).getBoundingClientRect().top).toBeLessThan(window.innerHeight / 4);
   });
 
-  it("orders Workspace, Runs, What's New, the device chip and the user", async () => {
+  it("orders Sessions, Phones, What's New, the mode toggle, the device chip and the user", async () => {
     await TestBed.configureTestingModule({
       imports: [NavSwitcherComponent],
       providers: [provideRouter([]), ...phoneFakes().providers]
@@ -199,7 +203,11 @@ describe('NavSwitcherComponent', () => {
     fixture.detectChanges();
     const controls = Array.from<HTMLElement>(fixture.nativeElement.querySelectorAll('nav > a, nav > button, .nav-status > *'));
     expect(controls.map(control => control.getAttribute('aria-label') || control.tagName.toLowerCase()))
-      .toEqual(['Sessions', "Open What's New", 'app-workspace-device-chip', 'app-admin-identity-indicator']);
+      .toEqual([
+        'Sessions', 'Phones', "Open What's New",
+        'Navigation mode: pinned expanded. Activate to switch to pinned icons.',
+        'app-workspace-device-chip', 'app-admin-identity-indicator'
+      ]);
   });
 
   for (const path of ['/workspace', '/runs']) {
@@ -267,8 +275,8 @@ describe('NavSwitcherComponent', () => {
     const root = fixture.nativeElement as HTMLElement;
     expect(root.querySelector('.run-count')).toBeNull();
     expect(root.querySelector('.nav-new-label')?.textContent?.trim()).toBe('New');
-    const controls = Array.from(root.querySelectorAll<HTMLElement>('nav > a, nav > button, nav select, button.chip, summary'));
-    expect(controls.length).toBe(5);
+    const controls = Array.from(root.querySelectorAll<HTMLElement>('nav > a, nav > button, button.chip, summary'));
+    expect(controls.length).toBe(6);
     for (const control of controls) expectHitBox(control);
     const navItems = controls.filter(control => control.matches('.nav-tab-btn'));
     for (let index = 1; index < navItems.length; index++) {
@@ -286,10 +294,71 @@ describe('NavSwitcherComponent', () => {
     const fixture = TestBed.createComponent(NavSwitcherComponent);
     fixture.detectChanges();
     const shell = TestBed.inject(ShellLayoutService);
-    for (const label of ['Sessions']) {
+    for (const label of ['Sessions', 'Phones']) {
       shell.activePane.set('detail');
       fixture.nativeElement.querySelector(`a[aria-label="${label}"]`).click();
       expect(shell.activePane()).toBe('list');
     }
+  });
+
+  describe('navigation mode toggle (Sessions v2.1 C rev-4)', () => {
+    const toggle = (root: HTMLElement) => root.querySelector<HTMLButtonElement>('nav > button.nav-mode-toggle')!;
+
+    async function create() {
+      await TestBed.configureTestingModule({
+        imports: [NavSwitcherComponent],
+        providers: [provideRouter([]), ...phoneFakes().providers]
+      }).compileComponents();
+      const fixture = TestBed.createComponent(NavSwitcherComponent);
+      fixture.detectChanges();
+      return { fixture, root: fixture.nativeElement as HTMLElement, shell: TestBed.inject(ShellLayoutService) };
+    }
+
+    it('replaces the select with one icon button', async () => {
+      const { root } = await create();
+      expect(root.querySelector('nav select')).toBeNull();
+      expect(toggle(root)).not.toBeNull();
+      expect(toggle(root).querySelector('svg, .material-symbols-outlined')).not.toBeNull();
+      expect(toggle(root).textContent?.trim()).toBe('');
+      expectHitBox(toggle(root));
+    });
+
+    it('names the current mode and the next one, and cycles expanded, icons, hover', async () => {
+      const { fixture, root, shell } = await create();
+      const labels: string[] = [];
+      const modes: string[] = [];
+      for (let click = 0; click < 4; click++) {
+        labels.push(toggle(root).getAttribute('aria-label')!);
+        modes.push(shell.navMode());
+        toggle(root).click();
+        fixture.detectChanges();
+      }
+      expect(modes).toEqual(['expanded', 'collapsed', 'hover', 'expanded']);
+      expect(labels).toEqual([
+        'Navigation mode: pinned expanded. Activate to switch to pinned icons.',
+        'Navigation mode: pinned icons. Activate to switch to expand on hover.',
+        'Navigation mode: expand on hover. Activate to switch to pinned expanded.',
+        'Navigation mode: pinned expanded. Activate to switch to pinned icons.'
+      ]);
+    });
+
+    it('marks the current mode with one lit pip', async () => {
+      const { fixture, root } = await create();
+      const lit = () => Array.from(toggle(root).querySelectorAll('.pip i')).map(pip => pip.classList.contains('on'));
+      expect(lit()).toEqual([true, false, false]);
+      toggle(root).click();
+      fixture.detectChanges();
+      expect(lit()).toEqual([false, true, false]);
+    });
+
+    it('gives every icon button in the nav an accessible name', async () => {
+      const { fixture, root } = await create();
+      fixture.componentRef.setInput('hasWhatsNew', true);
+      fixture.detectChanges();
+      for (const control of Array.from(root.querySelectorAll<HTMLElement>('nav button, nav a'))) {
+        const name = control.getAttribute('aria-label') || control.textContent?.trim();
+        expect(name).withContext(control.outerHTML.slice(0, 80)).toBeTruthy();
+      }
+    });
   });
 });

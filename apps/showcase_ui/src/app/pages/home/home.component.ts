@@ -24,7 +24,6 @@ import {
   DeviceInfo,
   ProbeResult
 } from '../../core/models/system.model';
-import { RegistryPhonesComponent } from '../../components/registry-phones/registry-phones.component';
 import { UsbPhoneConnectionComponent } from '../../components/usb-phone-connection/usb-phone-connection.component';
 import { SetupComponent } from '../setup/setup.component';
 import { UsbDeviceRelayService } from '../../services/usb-device-relay.service';
@@ -39,7 +38,7 @@ type AdbGuideTab = 'emulator' | 'usb' | 'wifi' | 'remote';
 @Component({
   selector: 'app-home',
   standalone: true,
-  imports: [FormsModule, UsbPhoneConnectionComponent, RegistryPhonesComponent, SetupComponent],
+  imports: [FormsModule, UsbPhoneConnectionComponent, SetupComponent],
   templateUrl: './home.component.html',
   changeDetection: ChangeDetectionStrategy.Eager,
   styleUrl: './home.component.scss'
