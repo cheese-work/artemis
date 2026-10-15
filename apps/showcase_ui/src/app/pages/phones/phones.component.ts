@@ -1,6 +1,6 @@
-import { ChangeDetectionStrategy, Component, DestroyRef, computed, inject, signal } from '@angular/core';
-import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
+import { ChangeDetectionStrategy, Component, DestroyRef, computed, effect, inject, signal, untracked } from '@angular/core';
 import { Router, RouterLink } from '@angular/router';
+import { Subscription } from 'rxjs';
 import { HostsResponse, RegistryDevice } from '../../core/models/host.model';
 import { AgentService } from '../../services/agent.service';
 import { HostsService } from '../../services/hosts.service';
@@ -25,6 +25,9 @@ const key = (device: RegistryDevice) => `${device.computer_id}:${device.serial}`
           <h2 id="phones-title">Phones</h2>
           <button type="button" class="primary" [disabled]="!phone.canConnectFromBrowser()" (click)="phone.connectFromBrowser()">Connect</button>
         </header>
+        @if (phone.connectionError(); as error) {
+          <p class="note error" role="alert">{{ error }}</p>
+        }
         @if (failed()) {
           <p class="note" role="alert">Phones could not be loaded. <button type="button" (click)="load()">Retry</button>.</p>
         } @else if (registry(); as current) {
@@ -83,6 +86,7 @@ const key = (device: RegistryDevice) => `${device.computer_id}:${device.serial}`
     .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--color-text-faint); }
     .dot.in-use { background: var(--color-success); }
     .dot.disconnected, .dot.needs-attention { background: var(--color-error-solid); }
+    .note.error { color: var(--color-error); white-space: pre-line; }
     .note { margin: 0; padding: var(--space-md) var(--space-lg); color: var(--color-text-muted); }
     .phone-detail { padding: var(--space-lg); }
     h3 { margin: 0 0 var(--space-xs); font-size: var(--text-section); color: var(--color-ink); }
@@ -101,7 +105,6 @@ const key = (device: RegistryDevice) => `${device.computer_id}:${device.serial}`
 })
 export class PhonesComponent {
   private readonly hosts = inject(HostsService);
-  private readonly destroyRef = inject(DestroyRef);
   private readonly agent = inject(AgentService);
   private readonly system = inject(SystemService);
   private readonly router = inject(Router);
@@ -116,11 +119,22 @@ export class PhonesComponent {
   });
   protected readonly key = key;
 
-  constructor() { this.load(); }
+  private request?: Subscription;
+
+  constructor() {
+    // Load on open, and again when a phone connects or adb lists another one (same triggers as the Workspace phone service).
+    effect(() => {
+      this.relay.state().serial;
+      this.system.connectedDevices();
+      untracked(() => this.load());
+    });
+    inject(DestroyRef).onDestroy(() => this.request?.unsubscribe());
+  }
 
   protected load(): void {
     this.failed.set(false);
-    this.hosts.list().pipe(takeUntilDestroyed(this.destroyRef)).subscribe({
+    this.request?.unsubscribe();
+    this.request = this.hosts.list().subscribe({
       next: response => this.registry.set(response),
       error: () => this.failed.set(true)
     });
