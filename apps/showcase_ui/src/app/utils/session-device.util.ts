@@ -23,10 +23,11 @@ export function recordedDevice(session: Session, serial: string): LabelableDevic
   }
   const record = info && typeof info === 'object' ? (info as Record<string, unknown>) : {};
   const model = typeof record['model'] === 'string' ? record['model'] : null;
+  const product = typeof record['product'] === 'string' ? record['product'] : null;
   const kind = typeof record['device_kind'] === 'string' && KINDS.includes(record['device_kind'])
     ? (record['device_kind'] as DeviceKind)
     : undefined;
-  const device = model || kind ? { serial, model, device_kind: kind } : null;
+  const device = model || product || kind ? { serial, model, ...(product && { product }), device_kind: kind } : null;
   cache.set(session, device);
   return device;
 }
