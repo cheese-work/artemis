@@ -16,9 +16,11 @@
 
 import asyncio
 import json
+import re
 import sqlite3
 import time
 import uuid
+from pathlib import Path
 
 import pytest
 
@@ -150,6 +152,29 @@ def test_unwrapped_keyguard_error_is_qa_environment():
     assert failure_ledger.classify(KEYGUARD) == ("qa_environment", "device_locked")
 
 
+def test_keyguard_classifier_finds_its_rule_by_name(monkeypatch):
+    overlapping_rule = ("earlier_rule", "smartqa_infra", re.compile("keyguard is locked"))
+    device_locked_rule = ("device_locked", "qa_environment", re.compile("different error"))
+    other_rules = tuple(rule for rule in failure_ledger._COMPILED if rule[0] != "device_locked")
+    monkeypatch.setattr(
+        failure_ledger,
+        "_COMPILED",
+        (overlapping_rule, device_locked_rule, *other_rules),
+    )
+
+    assert failure_ledger.classify({"error": KEYGUARD}) == ("smartqa_infra", "earlier_rule")
+
+
+def test_failure_docs_describe_structured_run_cause_sources():
+    docs = Path("docs/smartqa-ops.md").read_text(encoding="utf-8")
+
+    assert (
+        "Run causes use structured per-turn terminal errors and interrupt evidence; the "
+        "`stdout.log` tail is a legacy fallback only when structured evidence is absent."
+    ) in docs
+    assert "else the last error line of the run's `stdout.log`" not in docs
+
+
 @pytest.mark.parametrize(
     ("evidence", "expected"),
     [
@@ -278,8 +303,17 @@ async def test_bridge_close_persists_the_exact_turn_report_before_revocation(
     bridge._sessions["bridge"] = session
     await bridge.revoke("bridge")
     await collect(admin)
-    row = by_session(await failures(admin), sid)[0]
+    view = await failures(admin)
+    row = by_session(view, sid)[0]
     assert (row["category"], row["rule"]) == ("qa_environment", "usb_disconnected_hidden")
+    expected_evidence = "interrupted: bridge_closed (usb_disconnected, hidden)"
+    assert row["evidence"] == expected_evidence
+    cause = next(
+        cause
+        for cause in view["causes"]
+        if cause["rule"] == "usb_disconnected_hidden" and sid in cause["run_ids"]
+    )
+    assert cause["sample"] == expected_evidence
     with sqlite3.connect(library.db) as conn:
         stored = conn.execute(
             "SELECT interrupt_evidence FROM sessions WHERE session_id=?", (sid,)
