@@ -34,7 +34,7 @@ textarea { display: block; width: 100%; min-height: 44px; max-height: 40vh; padd
 .phone-pop h3 { margin: 0; font-size: var(--text-label); color: var(--color-text-muted); }
 .phone-pop .opt { text-align: left; overflow-wrap: anywhere; }
 .phone-pop .note { margin: 0; color: var(--color-text-muted); font-size: var(--text-label); }
-.dot { display: inline-block; width: 8px; height: 8px; flex: none; border-radius: 50%; }
+.dot { display: inline-block; width: 8px; height: 8px; flex: none; border-radius: 50%; background: var(--color-text-muted); }
 .dot.ok { background: var(--color-success); box-shadow: 0 0 0 2px var(--color-success-bg); }
 .dot.error { background: var(--color-error-solid); box-shadow: 0 0 0 2px var(--color-error-bg); }
 .icon-btn { display: grid; place-items: center; width: 44px; padding: 0; border-color: transparent; background: transparent; color: var(--color-text-muted); }

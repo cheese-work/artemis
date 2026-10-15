@@ -146,9 +146,9 @@
               <button type="button" class="phone-chip" [class.blink]="disconnected()" [attr.aria-disabled]="disconnected() ? null : 'true'"
                 [attr.aria-expanded]="disconnected() ? pickerOpen() : null" [attr.aria-controls]="disconnected() ? 'phone-pop' : null"
                 [attr.aria-label]="disconnected() ? 'Phone disconnected: ' + phone.label + '. Open to reconnect or choose another phone.'
-                  : 'Phone for this session: ' + phone.label + '. ' + (phone.online ? 'Connected.' : 'Disconnected.') + ' Locked after the first run.'"
+                  : 'Phone for this session: ' + phone.label + '. ' + (!phone.known ? '' : phone.online ? 'Connected. ' : 'Disconnected. ') + 'Locked after the first run.'"
                 (click)="disconnected() && pickerOpen.set(!pickerOpen())">
-                <span class="dot" [class.ok]="phone.online" [class.error]="!phone.online"></span><span class="lbl">{{ phone.label }}</span>
+                <span class="dot" [class.ok]="phone.known && phone.online" [class.error]="phone.known && !phone.online"></span><span class="lbl">{{ phone.label }}</span>
                 @if (disconnected()) {
                   <span class="state">· Disconnected</span>
                   <svg class="ms" aria-hidden="true" viewBox="0 96 960 960" focusable="false"><path d="M480 709.5 253.8 483.4 291 446.2 480 635.2 669 446.2 706.2 483.4Z"/></svg>

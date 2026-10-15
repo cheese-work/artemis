@@ -80,10 +80,10 @@ export class RunChatComponent {
     if (!serial || ['pending', 'null', 'undefined'].includes(serial)) return null;
     const listed = this.system.connectedDevices().find(device => device.serial === serial);
     const device = [listed, live && recordedDevice(live, serial)].find(known => known && isIdentifiedDevice(known));
-    return { serial, label: device ? deviceTitle(device) : 'Android phone', online: listed?.state === 'device' };
+    return { serial, label: device ? deviceTitle(device) : 'Android phone', online: listed?.state === 'device', known: this.system.readinessReport() !== null };
   });
   /** The session's phone is gone: the composer is off and the chip opens the way out. Unknown until the first phone list arrives. */
-  public readonly disconnected = computed(() => { const phone = this.phone(); return !!phone && !phone.online && this.system.readinessReport() !== null; });
+  public readonly disconnected = computed(() => { const phone = this.phone(); return !!phone && phone.known && !phone.online; });
   public readonly pickerOpen = signal(false);
   /** Other phones that could run this session's first prompt as a new session. */
   public readonly otherPhones = computed(() => this.phones.options().filter(option => option.usable && option.serial !== this.phone()?.serial));
