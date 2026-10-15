@@ -644,7 +644,10 @@ describe('RunChatComponent', () => {
         lost(); readiness.set(null);
         const { fixture, field, tools } = composer();
         expect(field.disabled).toBeFalse();
-        expect(tools.querySelector('.phone-chip')!.classList).not.toContain('blink');
+        const chip = tools.querySelector('.phone-chip')!;
+        expect(chip.classList).not.toContain('blink');
+        expect(chip.querySelector('.dot')!.classList).not.toContain('error');
+        expect(chip.getAttribute('aria-label')).not.toContain('Disconnected');
         readiness.set({}); fixture.detectChanges(); tick(0);
         expect(field.disabled).toBeTrue();
         fixture.destroy();
