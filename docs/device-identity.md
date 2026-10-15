@@ -118,3 +118,28 @@ One reconciler owns device state for every source:
 | Merge or Split refused with `device_claimed` | Work is running or queued on the device | Let the run finish or cancel the queued items, then retry. |
 | Lane shows Unknown | No heartbeat for `ARTEMIS_DEVICE_TTL_S`, or the host is unreachable | Check the host agent and its network; the lane recovers on the next heartbeat. |
 | Old link with a merged-away id | Normal after Merge | The link still works; the page shows the surviving device. |
+
+## Execution admission (CHE-1475)
+
+`POST /api/run`, the remote SDK and daemon-dispatched MCP all use the same
+in-memory reservation. A second submission to the same confirmed device gets
+`device_claimed` 409, even over a different connection. A single request's
+existing multi-goal batch holds that reservation until its last run leaves.
+An unobserved connection reserves its routing key; a known `uncertain` or
+`provisional` connection gets `device_identity_unresolved` before a run exists.
+Admission checks the route's latest observation, not only the device's persisted
+match state. A known route without a fresh identity is refused even when its
+last device remains `confirmed`; another confirmed route to that device can
+still run. A fresh confirmed observation restores admission on the route.
+Uncertain records use one conservative reservation key until identity is
+confirmed. Store or pepper failures refuse admission rather than bypassing it.
+
+The reservation is independent of `RunDeviceBinding` and the worker's transport
+lock. Cancellation of pending work releases it immediately; stopping in-flight
+work holds it until worker cleanup finishes. Requeued work keeps its reservation.
+Claims re-resolve their accepted connection IDs, so aliases and newly resolved
+connections cannot bypass exclusivity. `sessions.connection_id` captures the
+accepted connection, remains unchanged by worker upserts, and is null for old
+runs or a connection that had not yet been observed at admission.
+
+Durable reservations and `POST /api/queue` belong to CHE-1366.

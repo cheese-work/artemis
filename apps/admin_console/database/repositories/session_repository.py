@@ -489,6 +489,7 @@ class SessionRepository:
         requested_by: str | None = None,
         device_binding: dict[str, Any] | None = None,
         model: dict[str, str] | None = None,
+        connection_id: str | None = None,
     ) -> bool:
         """Persist a queue item before its worker starts a session.
 
@@ -503,8 +504,8 @@ class SessionRepository:
                 cursor.execute(
                     "INSERT INTO sessions "
                     "(session_id, initial_goal, start_time, end_time, status, device_info, pid, "
-                    "notify_context) "
-                    "VALUES (?, ?, ?, NULL, 'queued', ?, NULL, ?)",
+                    "notify_context, connection_id) "
+                    "VALUES (?, ?, ?, NULL, 'queued', ?, NULL, ?, ?)",
                     (
                         str(session_id),
                         goal,
@@ -525,6 +526,7 @@ class SessionRepository:
                             }
                         ),
                         json.dumps(notify_context) if notify_context else None,
+                        connection_id,
                     ),
                 )
                 inserted = cursor.rowcount > 0

@@ -15,6 +15,7 @@ import base64
 import hashlib
 import hmac
 import logging
+from pathlib import Path
 import re
 import sqlite3
 import threading
@@ -75,6 +76,13 @@ class DeviceIdentity:
         ro.serialno, so only this keyed hash is stored; the adb server keeps two
         servers' equal serials apart."""
         return "ad-" + self._mac(f"adb\0{endpoint.identity}\0{serial}")
+
+    def latest_outcome(
+        self, db_path: Path, *, source: str, host_id: str | None, serial: str
+    ) -> str | None:
+        with self._lock:
+            seen = self._seen.get((str(db_path), source, host_id, serial))
+            return seen[1].outcome if seen else None
 
     def _mac(self, message: str) -> str:
         registry = _registry()
