@@ -96,4 +96,4 @@ Interrupts persist `{reason, client_close.reason, visibility_state}` in the life
 `collect(session_id=None)` scans history by default; passing the exact turn ID limits collection to that turn and remains idempotent. Classifier-version and latest-classification precedence belongs to the A2b consumer/migration layer, not this evidence layer.
 
 - **Daily digest.** Once a day, one message lists `smartqa_*` causes not reported before, sent through the notifier channels (`ARTEMIS_WEBHOOK_URL` and the others in `mcp_server/notifiers`). A cause counts as reported only after a channel accepted the message; with no channel configured, the digest repeats daily and `POST /api/system/failures/digest` returns `"sent": false`.
-- **Evidence** is redacted and cut to 300 characters. Run causes come from the interrupt reason, else the last error line of the run's `stdout.log`.
+- **Evidence** is redacted and cut to 300 characters. Run causes use structured per-turn terminal errors and interrupt evidence; the `stdout.log` tail is a legacy fallback only when structured evidence is absent.

@@ -155,8 +155,11 @@ def classify(evidence: str | dict[str, Any]) -> tuple[str, str]:
     if isinstance(evidence, dict):
         error = evidence.get("error")
         error = error if isinstance(error, str) else ""
-        if _COMPILED[0][2].search(error):
-            return "qa_environment", "device_locked"
+        device_locked_rule = next(
+            (compiled for compiled in _COMPILED if compiled[0] == "device_locked"), None
+        )
+        if device_locked_rule and device_locked_rule[2].search(error):
+            return device_locked_rule[1], device_locked_rule[0]
         report = evidence.get("client_close")
         report = report if isinstance(report, dict) else {}
         reason = evidence.get("reason")
@@ -452,11 +455,25 @@ def collect(session_id: str | None = None) -> dict[str, int]:
                 )
             else:
                 raw = _step_evidence(row["result"])
-            raw_text = (
-                str(raw.get("error") or json.dumps(raw, sort_keys=True))
-                if isinstance(raw, dict)
-                else raw
-            )
+            if isinstance(raw, dict):
+                raw_text = raw.get("error")
+                if not isinstance(raw_text, str) or not raw_text:
+                    reason = raw.get("reason")
+                    if isinstance(reason, str):
+                        report = raw.get("client_close")
+                        report = report if isinstance(report, dict) else {}
+                        details = [
+                            value
+                            for value in (report.get("reason"), raw.get("visibility_state"))
+                            if isinstance(value, str) and value
+                        ]
+                        raw_text = f"interrupted: {reason}"
+                        if details:
+                            raw_text += f" ({', '.join(details)})"
+                    else:
+                        raw_text = json.dumps(raw, sort_keys=True)
+            else:
+                raw_text = raw
             evidence = _safe_evidence(raw_text, row["goal"])
             source = "host" if row["host_id"] else "browser"
             recording_device = row["recording_device"] if "recording_device" in row.keys() else None
