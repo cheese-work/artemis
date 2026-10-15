@@ -1,0 +1,7 @@
+{
+  "id": "2026-10-12-private-input",
+  "date": "2026-10-12",
+  "title": "Send requested input privately to the phone",
+  "body": "When the agent requests a value, the composer switches to a masked field. The value goes directly to the focused device field, not to chat history or model context. Requests expire and accept a value only once. Password fields are masked in observations, and recording and live capture stay off for the private-input turn.",
+  "issues": ["CHE-1556"]
+}

@@ -1,0 +1,7 @@
+{
+  "id": "2026-10-11-llm-providers",
+  "date": "2026-10-11",
+  "title": "Manage LLM providers",
+  "body": "Admins can save write-only provider keys, test protocol-native connections, and sync models from LLM providers. The run picker labels each model by its provider slot.",
+  "issues": ["CHE-1542"]
+}

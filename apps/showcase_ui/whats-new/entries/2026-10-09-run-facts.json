@@ -1,0 +1,7 @@
+{
+  "id": "2026-10-09-run-facts",
+  "date": "2026-10-09",
+  "title": "Run facts are easier to scan",
+  "body": "Run rows hide unknown video and default browser labels. Read-only appears once in the detail header.\nIDs, serials, times and counts use tabular monospace text.",
+  "issues": ["CHE-1493"]
+}

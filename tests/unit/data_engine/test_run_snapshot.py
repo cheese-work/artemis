@@ -171,7 +171,21 @@ def test_execution_fields_read_the_planner_model_and_the_device_model():
     assert run_snapshot.execution_fields(Broken(), "emu-1", None) == {}  # unknown, not guessed
 
 
+def test_execution_snapshot_records_the_operator_not_the_planner():
+    from types import SimpleNamespace
+
+    config = SimpleNamespace(
+        planner=SimpleNamespace(model="server-default"),
+        operator=SimpleNamespace(model="per-run-model", provider="openai"),
+    )
+    assert run_snapshot.execution_fields(None, None, config) == {
+        "agent_model": "per-run-model",
+        "agent_provider": "openai",
+    }
+
+
 def test_snapshot_and_device_modules_keep_separate_revisions_in_one_database(tmp_path):
+    from apps.admin_console.database.repositories import prompt_critique_repository
     from artemis.data_engine import devices
     from artemis.data_engine.storage import StorageManager
 
@@ -184,4 +198,5 @@ def test_snapshot_and_device_modules_keep_separate_revisions_in_one_database(tmp
     assert revisions == {
         devices.MODULE: len(devices.REVISIONS),
         run_snapshot.MODULE: len(run_snapshot.REVISIONS),
+        prompt_critique_repository.MODULE: len(prompt_critique_repository.REVISIONS),
     }

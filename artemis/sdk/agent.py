@@ -29,6 +29,7 @@ except ImportError:
 from pathlib import Path
 from platform import system
 import shutil
+import sqlite3
 import sys
 import threading
 from types import NoneType
@@ -74,6 +75,7 @@ from artemis.runtime.adb_endpoint import AdbEndpoint
 from artemis.runtime.endpoint_transport import EndpointTransport
 from artemis.runtime.cancel_requests import watch_for_cancel_request
 from artemis.runtime.lifecycle import InterruptReason
+from artemis.llm.reliability import LLMGatewayModelRejectedError, LLMSelectedModelError
 from artemis.data_engine import run_snapshot
 from artemis.data_engine.engine import DataEngine
 from artemis.drivers.types import DeviceDisconnectedError
@@ -605,6 +607,10 @@ class Agent:
                 and active_owner.pid == os.getpid()
                 and (
                     (sess_id and str(active_owner.session_id) == str(sess_id))
+                    or (
+                        os.getenv("ARTEMIS_CHAT_SESSION_ID")
+                        and active_owner.session_id == os.getenv("ARTEMIS_CHAT_SESSION_ID")
+                    )
                     or active_owner.token == self._device_context.device_id
                 )
             )
@@ -657,9 +663,10 @@ class Agent:
                 publish_startup_progress(
                     "environment", "Preparing the device environment", session_id=str(sess_id)
                 )
-                await self._prepare_app_installation(task=task)
-                await self._prepare_device_environment(context=context)
-                await self._prepare_app_lock(task=task, context=context)
+                if os.getenv("ARTEMIS_CHAT_FOLLOW_UP") != "1":
+                    await self._prepare_app_installation(task=task)
+                    await self._prepare_device_environment(context=context)
+                    await self._prepare_app_lock(task=task, context=context)
                 async with context:
                     recording_started = False
                     if self._config.video_recording_tools_enabled:
@@ -879,6 +886,17 @@ class Agent:
                     error=err,
                 )
                 if context.data_engine:
+                    if isinstance(e, (LLMGatewayModelRejectedError, LLMSelectedModelError)):
+                        try:
+                            context.data_engine.record_step(
+                                action_taken={
+                                    "action": "report_task_status",
+                                    "args": {"status": "failed", "explanation": str(e)},
+                                },
+                                last_execution_result={"status": "failed", "error": str(e)},
+                            )
+                        except (OSError, ValueError, sqlite3.Error) as record_error:
+                            logger.warning(f"Could not record gateway failure step: {record_error}")
                     if isinstance(e, DeviceDisconnectedError):
                         context.data_engine.end_session(
                             "interrupted", interrupt_reason=InterruptReason.DEVICE_OFFLINE
@@ -906,6 +924,7 @@ class Agent:
                         finally:
                             if device_lock is not None:
                                 await asyncio.to_thread(device_lock.release)
+                await self._generate_prompt_tip_safely(task=task, context=context)
 
         async with self._task_lock:
             if self._current_task and not self._current_task.done():
@@ -1220,6 +1239,21 @@ class Agent:
                 f"was resolved as '{task.status}': {exc}",
                 exc_info=True,
             )
+
+    async def _generate_prompt_tip_safely(self, task: Task, context: ArtemisContext):
+        if (
+            context.data_engine
+            and task.status == "completed"
+            and os.getenv("ARTEMIS_TASK_WORKER") == "1"
+            and not os.getenv("ARTEMIS_CHAT_SESSION_ID")
+        ):
+            from apps.admin_console.services.automatic_prompt_tips import ensure_tip
+
+            results = await asyncio.gather(
+                ensure_tip(str(context.data_engine.session_id)), return_exceptions=True
+            )
+            if isinstance(results[0], BaseException):
+                logger.warning("Automatic prompt tip unavailable for a completed task.")
 
     async def _finalize_tracing(self, task: Task, context: ArtemisContext):
         if context.data_engine:

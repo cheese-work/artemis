@@ -1,0 +1,54 @@
+<main class="providers-page">
+  <header>
+    <div>
+      <p class="eyebrow">SERVER ADMIN</p>
+      <h1>LLM providers</h1>
+      <p class="intro">Connect a provider, test its protocol, and sync the models available for runs.</p>
+    </div>
+    <a routerLink="/workspace" class="back-link">Back to Workspace</a>
+  </header>
+  <aside class="privacy-note">
+    <span class="material-symbols-outlined" aria-hidden="true">lock</span>
+    <div><strong>Keys stay on the server.</strong> A blank key keeps the existing key. Save changes before Test or Sync. Unsaved slots use the server environment.</div>
+  </aside>
+  @if (loading()) { <p role="status">Loading provider settings…</p> }
+  @if (error(); as message) {
+    <div class="error" role="alert">{{ message }} <button type="button" (click)="reload()" [disabled]="busy() !== null">Reload</button></div>
+  }
+  @if (notice(); as message) { <p class="notice" role="status">{{ message }}</p> }
+  <div class="provider-grid">
+    @for (slot of slots(); track slot.provider) {
+      <article [attr.aria-labelledby]="slot.provider + '-title'">
+        <div class="card-heading">
+          <div><h2 [id]="slot.provider + '-title'">{{ slot.label }}</h2><p class="protocol">{{ slot.provider === 'google' ? 'Gemini API' : slot.provider === 'anthropic' ? 'Messages API' : 'Chat Completions API' }}</p></div>
+          <label class="toggle"><input type="checkbox" [(ngModel)]="slot.enabled" [disabled]="busy() !== null" [attr.aria-label]="'Enable ' + slot.label"><span>{{ slot.enabled ? 'Enabled' : 'Disabled' }}</span></label>
+        </div>
+        <label [for]="slot.provider + '-preset'">URL preset</label>
+        <select [id]="slot.provider + '-preset'" [ngModel]="slot.preset" (ngModelChange)="preset(slot, $event)" [disabled]="busy() !== null">
+          @for (preset of slot.presets; track preset.name) { <option [value]="preset.name">{{ preset.name }}</option> }
+          <option value="Custom">Custom</option>
+        </select>
+        <label [for]="slot.provider + '-url'">Base URL</label>
+        <input type="url" [id]="slot.provider + '-url'" [(ngModel)]="slot.base_url" (ngModelChange)="slot.preset = 'Custom'" [disabled]="busy() !== null" spellcheck="false" autocomplete="off">
+        <label [for]="slot.provider + '-key'">API key <span class="field-hint">write-only</span></label>
+        <input type="password" [id]="slot.provider + '-key'" [(ngModel)]="slot.key" [placeholder]="slot.key_preview || 'Enter a key'" [disabled]="busy() !== null || slot.clear_key" spellcheck="false" autocomplete="new-password">
+        @if (slot.configured) { <label class="clear-key"><input type="checkbox" [(ngModel)]="slot.clear_key" [disabled]="busy() !== null">Clear saved key (disable the slot first)</label> }
+        <div class="model-summary"><strong>{{ slot.model_count }} models</strong><span>Last sync: {{ time(slot.last_sync) }}</span></div>
+        <div class="test-result" aria-live="polite">
+          @if (slot.last_test; as result) {
+            <span [class.error-text]="!result.ok">{{ result.ok ? 'Test passed · ' + result.latency_ms + ' ms' : result.error }}</span>
+            <span class="field-hint">{{ time(result.at) }}</span>
+          } @else { <span class="field-hint">Not tested yet</span> }
+          @if (slot.sync_error) { <span class="error-text">{{ slot.sync_error }}</span> }
+        </div>
+        <div class="card-actions">
+          <button type="button" class="primary" (click)="save(slot)" [disabled]="busy() !== null">Save</button>
+          <button type="button" (click)="action(slot, 'test')" [disabled]="busy() !== null || dirty(slot) || !slot.configured">Test</button>
+          <button type="button" (click)="action(slot, 'sync')" [disabled]="busy() !== null || dirty(slot) || !slot.configured">Sync models</button>
+          @if (busy() === slot.provider) { <span role="status">Working…</span> }
+        </div>
+      </article>
+    }
+  </div>
+  <p class="dependency-note">Google requires a Gemini-native endpoint. Gemini served through Chat Completions stays in the OpenAI slot.</p>
+</main>

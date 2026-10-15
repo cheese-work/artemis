@@ -16,6 +16,7 @@ import asyncio
 import base64
 import hashlib
 import json
+import os
 from pathlib import Path
 
 from artemis.context import ArtemisContext
@@ -122,6 +123,15 @@ async def perception_node(state: State, ctx: ArtemisContext) -> dict:
     Always executes at the start of an operator cycle.
     """
     state = strict_state(state, "perception")
+    from artemis.runtime.chat_control import read_chat_guidance
+
+    chat_instruction = (
+        await read_chat_guidance(ctx, state.initial_goal)
+        if os.getenv("ARTEMIS_CHAT_SESSION_ID")
+        else None
+    )
+    if chat_instruction:
+        _unprotect_current_check_lines(ctx)
     logger.info("Entering Perception Node...")
 
     if not ctx.data_engine.current_step_id:
@@ -130,7 +140,7 @@ async def perception_node(state: State, ctx: ArtemisContext) -> dict:
 
     with PhaseSpan(ReactionPhase.PERCEPTION, ctx=ctx):
         # Check for injected instruction without blocking event loop
-        injected_instruction = None
+        injected_instruction = chat_instruction
         user_stop_requested = False
         if ctx.data_engine and ctx.data_engine.base_dir:
             injected_payload = await asyncio.to_thread(

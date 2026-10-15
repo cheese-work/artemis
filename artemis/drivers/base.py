@@ -26,7 +26,7 @@ from pathlib import Path
 import re
 import time
 from typing import Any, Literal
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class SwipeDirection(str, Enum):
@@ -62,6 +62,12 @@ class ScreenData(BaseModel):
     platform: str = Field(default="android", description="Platform identifier")
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    @model_validator(mode="after")
+    def mask_passwords(self):
+        from artemis.utils.private_screen import mask_password_observation
+
+        return mask_password_observation(self)
 
 
 class BaseDeviceDriver(ABC):

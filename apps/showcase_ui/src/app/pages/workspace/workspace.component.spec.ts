@@ -4,20 +4,30 @@ import { provideRouter } from '@angular/router';
 import { of, throwError } from 'rxjs';
 import { RunTarget } from '../../core/models/run-target.model';
 import { AgentService } from '../../services/agent.service';
-import { RunViewComponent } from '../../components/run-view/run-view.component';
+import { BrowserStorageService } from '../../services/browser-storage.service';
+import { ModelCatalogService } from '../../services/model-catalog.service';
+import { RunChatComponent } from '../../components/run-chat/run-chat.component';
 import { WorkspacePhoneService } from '../../services/workspace-phone.service';
 import { InterruptedBannerComponent } from '../../components/interrupted-banner/interrupted-banner.component';
-import { ChatInterfaceComponent } from '../../components/chat-interface/chat-interface.component';
+import { RunLibraryComponent } from '../../components/run-library/run-library.component';
 import { WorkspaceComponent } from './workspace.component';
+
+const modelCatalog = {
+  load: () => undefined, selection: () => undefined, selectedKey: () => '', catalog: () => null,
+  options: () => [{ key: '', label: 'Server default' }], warning: () => null, choose: () => undefined
+};
 
 describe('WorkspaceComponent error lifetime', () => {
   let agentService: {
     whatsNewPromptDraft: ReturnType<typeof signal<boolean>>;
     updateWhatsNewErrorVisibility: (owner: symbol, visible: boolean) => void;
     isCurrentSessionRunning: () => boolean;
+    sessions: () => [];
     currentSession: () => null;
     currentSessionId: () => null;
     currentStartupProgress: () => [];
+    runningSessionId: () => null;
+    agentStatus: () => string;
     runTask: jasmine.Spy;
     fetchStatus: jasmine.Spy;
     stopTask: jasmine.Spy;
@@ -33,9 +43,12 @@ describe('WorkspaceComponent error lifetime', () => {
         else errorOwners.delete(owner);
       },
       isCurrentSessionRunning: () => false,
+      sessions: () => [],
       currentSession: () => null,
       currentSessionId: () => null,
       currentStartupProgress: () => [],
+      runningSessionId: () => null,
+      agentStatus: () => 'idle',
       runTask: jasmine.createSpy('runTask').and.returnValue(of({})),
       fetchStatus: jasmine.createSpy('fetchStatus'),
       stopTask: jasmine.createSpy('stopTask')
@@ -45,14 +58,38 @@ describe('WorkspaceComponent error lifetime', () => {
       imports: [WorkspaceComponent],
       providers: [
         provideRouter([]),
+        { provide: ModelCatalogService, useValue: modelCatalog },
         { provide: AgentService, useValue: agentService },
-        { provide: WorkspacePhoneService, useValue: { target: () => null, requestPicker: () => undefined } }
+        { provide: WorkspacePhoneService, useValue: { target: () => null, view: () => ({ text: 'No phone' }), requestPicker: () => undefined } }
       ],
       schemas: [CUSTOM_ELEMENTS_SCHEMA]
     }).overrideComponent(WorkspaceComponent, {
-      remove: { imports: [RunViewComponent, ChatInterfaceComponent, InterruptedBannerComponent] },
+      remove: { imports: [RunChatComponent, RunLibraryComponent, InterruptedBannerComponent] },
       add: { schemas: [CUSTOM_ELEMENTS_SCHEMA] }
     }).compileComponents();
+  });
+
+  it('consumes autoStart once and clears browser history before submitting', () => {
+    history.replaceState({ draftPrompt: 'Improved prompt', autoStart: true }, '');
+    const fixture = TestBed.createComponent(WorkspaceComponent);
+    const submit = spyOn(fixture.componentInstance, 'submitTask').and.resolveTo();
+    fixture.detectChanges();
+    expect(submit).toHaveBeenCalledTimes(1);
+    expect(fixture.componentInstance.taskInput).toBe('Improved prompt');
+    expect(history.state.autoStart).toBeUndefined();
+    const reload = TestBed.createComponent(WorkspaceComponent);
+    const again = spyOn(reload.componentInstance, 'submitTask').and.resolveTo();
+    reload.detectChanges();
+    expect(again).not.toHaveBeenCalled();
+    history.replaceState({}, '');
+  });
+
+  it('uses the first prompt line without markdown in the Stop button title', () => {
+    spyOn(TestBed.inject(AgentService), 'currentSession').and.returnValue({
+      session_id: 'run-title', initial_goal: '## **Open** _Settings_\nCheck every toggle.', start_time: 1
+    });
+    const fixture = TestBed.createComponent(WorkspaceComponent);
+    expect(fixture.componentInstance.stopButtonTitle()).toBe('Stop current task: "Open Settings"');
   });
 
   it('cancels a destroyed route error timer without releasing a newer error', fakeAsync(() => {
@@ -77,36 +114,41 @@ describe('WorkspaceComponent error lifetime', () => {
     expect(errorOwners.size).toBe(0);
   }));
 
-  for (const width of [1280, 1199, 1024, 799, 390]) {
-    it(`keeps the task-switcher and notes panel visible at ${width}px`, () => {
+  for (const width of [1440, 1200, 1024, 1023, 800, 390]) {
+    it(`uses a fixed run list or one detail pane at ${width}px`, () => {
       const frame = document.createElement('iframe');
       frame.style.width = `${width}px`;
       frame.style.height = '768px';
+      frame.style.border = '0';
       document.body.appendChild(frame);
       const fixture = TestBed.createComponent(WorkspaceComponent);
       try {
         fixture.detectChanges();
         const frameDocument = frame.contentDocument!;
+        expect(frame.contentWindow!.innerWidth).toBe(width);
+        frameDocument.body.style.cssText = 'margin: 0; height: 100vh';
+        const tokens = getComputedStyle(document.documentElement);
+        for (const property of Array.from(tokens)) {
+          if (property.startsWith('--')) frameDocument.documentElement.style.setProperty(property, tokens.getPropertyValue(property));
+        }
         for (const style of Array.from(document.head.querySelectorAll('style'))) {
           frameDocument.head.appendChild(style.cloneNode(true));
         }
         frameDocument.body.appendChild(fixture.nativeElement);
-        const panel = frameDocument.querySelector<HTMLElement>('.right-panel')!;
-        const left = frameDocument.querySelector<HTMLElement>('.left-panel')!;
-        expect(frame.contentWindow!.getComputedStyle(panel).display).not.toBe('none');
-        expect(panel.querySelector('app-chat-interface')).not.toBeNull();
-        if (width >= 1200) {
-          // Side by side: the list starts at the run's right edge, at the same height.
-          expect(panel.getBoundingClientRect().left).toBeGreaterThanOrEqual(left.getBoundingClientRect().right - 1);
-          expect(panel.getBoundingClientRect().top).toBe(left.getBoundingClientRect().top);
+        const list = frameDocument.querySelector<HTMLElement>('.run-list-pane')!;
+        const detail = frameDocument.querySelector<HTMLElement>('.detail-pane')!;
+        expect(frameDocument.querySelector('.pane-navigation')).toBeNull();
+        expect(list.querySelector('app-run-library')).not.toBeNull();
+        expect(frameDocument.querySelector('.right-panel, .resizer, app-chat-interface')).toBeNull();
+        expect(detail.getBoundingClientRect().height).toBeGreaterThan(0);
+        if (width >= 1024) {
+          expect(list.getBoundingClientRect().width).toBe(360);
+          expect(list.getBoundingClientRect().right).toBeCloseTo(detail.getBoundingClientRect().left, 0);
+          expect(list.getBoundingClientRect().top).toBe(detail.getBoundingClientRect().top);
         } else {
-          // Stacked (below 1200px) or one column (below 800px): the list sits under the run.
-          expect(panel.getBoundingClientRect().top).toBeGreaterThanOrEqual(left.getBoundingClientRect().bottom - 1);
-          expect(panel.getBoundingClientRect().left).toBe(left.getBoundingClientRect().left);
-          expect(panel.getBoundingClientRect().width).toBe(left.getBoundingClientRect().width);
+          expect(frame.contentWindow!.getComputedStyle(list).display).toBe('none');
         }
-        expect(panel.getBoundingClientRect().height).toBeGreaterThan(0);
-        expect(panel.getBoundingClientRect().width).toBeLessThanOrEqual(width);
+        expect(detail.getBoundingClientRect().right).toBeLessThanOrEqual(width);
       } finally {
         fixture.destroy();
         frame.remove();
@@ -124,7 +166,11 @@ describe('WorkspaceComponent error lifetime', () => {
 
 describe('WorkspaceComponent phone binding', () => {
   let runTask: jasmine.Spy;
-  let phone: { target: ReturnType<typeof signal<RunTarget | null>>; requestPicker: jasmine.Spy };
+  let phone: {
+    target: ReturnType<typeof signal<RunTarget | null>>;
+    view: () => { text: string };
+    requestPicker: jasmine.Spy;
+  };
   let fixture: ComponentFixture<WorkspaceComponent>;
   let component: WorkspaceComponent;
 
@@ -132,14 +178,21 @@ describe('WorkspaceComponent phone binding', () => {
 
   beforeEach(async () => {
     runTask = jasmine.createSpy('runTask').and.returnValue(of({}));
-    phone = { target: signal<RunTarget | null>(null), requestPicker: jasmine.createSpy('requestPicker') };
+    phone = {
+      target: signal<RunTarget | null>(null),
+      view: () => ({ text: 'No phone' }),
+      requestPicker: jasmine.createSpy('requestPicker')
+    };
     const agentService = {
       whatsNewPromptDraft: signal(false),
       updateWhatsNewErrorVisibility: () => undefined,
       isCurrentSessionRunning: () => false,
+      sessions: () => [],
       currentSession: () => null,
       currentSessionId: () => null,
       currentStartupProgress: () => [],
+      runningSessionId: () => null,
+      agentStatus: () => 'idle',
       runTask,
       fetchStatus: jasmine.createSpy('fetchStatus'),
       stopTask: jasmine.createSpy('stopTask')
@@ -148,12 +201,13 @@ describe('WorkspaceComponent phone binding', () => {
       imports: [WorkspaceComponent],
       providers: [
         provideRouter([]),
+        { provide: ModelCatalogService, useValue: modelCatalog },
         { provide: AgentService, useValue: agentService },
         { provide: WorkspacePhoneService, useValue: phone }
       ],
       schemas: [CUSTOM_ELEMENTS_SCHEMA]
     }).overrideComponent(WorkspaceComponent, {
-      remove: { imports: [RunViewComponent, ChatInterfaceComponent, InterruptedBannerComponent] },
+      remove: { imports: [RunChatComponent, RunLibraryComponent, InterruptedBannerComponent] },
       add: { schemas: [CUSTOM_ELEMENTS_SCHEMA] }
     }).compileComponents();
     fixture = TestBed.createComponent(WorkspaceComponent);
@@ -211,11 +265,265 @@ describe('WorkspaceComponent phone binding', () => {
   it('has no phone chip in the Prompt Dock: the chip lives in the top bar (CHE-1143, OCR F6)', () => {
     const el = fixture.nativeElement as HTMLElement;
     expect(el.querySelector('app-workspace-device-chip')).toBeNull();
-    expect(el.querySelector('.workspace-floating-bar-wrapper .dock-chip')).toBeNull();
+    expect(el.querySelector('.composer .dock-chip')).toBeNull();
   });
 
   it('starts a new run from the interrupted run’s prompt', () => {
     component.startNewRunFrom('Open Settings');
     expect(component.taskInput).toBe('Open Settings');
   });
+});
+
+describe('WorkspaceComponent pinned composer (CHE-1508)', () => {
+  let runTask: jasmine.Spy;
+  let running: ReturnType<typeof signal<boolean>>;
+  let sessions: ReturnType<typeof signal<{ session_id: string; status: string }[]>>;
+  let target: ReturnType<typeof signal<RunTarget | null>>;
+  let fixture: ComponentFixture<WorkspaceComponent>;
+  let component: WorkspaceComponent;
+  let el: HTMLElement;
+  let stopTask: jasmine.Spy;
+
+  const png = (name: string) => new File([new Uint8Array([137, 80, 78, 71])], name, { type: 'image/png' });
+
+  beforeEach(async () => {
+    runTask = jasmine.createSpy('runTask').and.returnValue(of({}));
+    running = signal(false);
+    sessions = signal<{ session_id: string; status: string }[]>([]);
+    target = signal<RunTarget | null>({ serial: '1A2B3C4D5E', bridgeSessionId: 'bridge-1' });
+    stopTask = jasmine.createSpy('stopTask');
+    const agentService = {
+      whatsNewPromptDraft: signal(false),
+      updateWhatsNewErrorVisibility: () => undefined,
+      isCurrentSessionRunning: running,
+      sessions,
+      currentSession: () => null,
+      currentSessionId: () => 'run-live-1',
+      runningSessionId: () => running() ? 'run-live-1' : null,
+      agentStatus: () => running() ? 'running' : 'idle',
+      sessionLogs: () => [],
+      currentStartupProgress: () => [],
+      runTask,
+      fetchStatus: jasmine.createSpy('fetchStatus'),
+      stopTask
+    };
+    await TestBed.configureTestingModule({
+      imports: [WorkspaceComponent],
+      providers: [
+        provideRouter([]),
+        { provide: ModelCatalogService, useValue: modelCatalog },
+        { provide: AgentService, useValue: agentService },
+        {
+          provide: WorkspacePhoneService,
+          useValue: { target, view: () => ({ text: 'Pixel 6 Pro · …4D5E' }), requestPicker: jasmine.createSpy('requestPicker') }
+        }
+      ],
+      schemas: [CUSTOM_ELEMENTS_SCHEMA]
+    }).overrideComponent(WorkspaceComponent, {
+      remove: { imports: [RunChatComponent, RunLibraryComponent, InterruptedBannerComponent] },
+      add: { schemas: [CUSTOM_ELEMENTS_SCHEMA] }
+    }).compileComponents();
+    fixture = TestBed.createComponent(WorkspaceComponent);
+    component = fixture.componentInstance;
+    el = fixture.nativeElement;
+    component.newSessionDraft.set(true);
+    fixture.detectChanges();
+  });
+
+  // Flash/Pro choices persist in browser storage; forget them so other suites start on Flash.
+  afterEach(() => {
+    fixture.destroy();
+    TestBed.inject(BrowserStorageService).removeItem('artemis_selected_profile');
+  });
+
+  const hint = () => el.querySelector<HTMLElement>('.composer-hint')!.textContent!.replace(/\s+/g, ' ').trim();
+  const textarea = () => el.querySelector<HTMLTextAreaElement>('.composer textarea')!;
+
+  it('uses the chat composer by default and opens a separate new-session draft explicitly', async () => {
+    component.newSessionDraft.set(false);
+    fixture.detectChanges();
+    expect(el.querySelector('.composer')).toBeNull();
+    expect(el.querySelector('app-run-chat')).not.toBeNull();
+    component.startNewRunFrom('Check a different app');
+    fixture.detectChanges();
+    await fixture.whenStable();
+    expect(component.newSessionDraft()).toBeTrue();
+    expect(textarea().value).toBe('Check a different app');
+  });
+
+  it('pins one composer at the bottom of the detail pane, after the run surface', () => {
+    const detail = el.querySelector('.detail-pane')!;
+    const composer = detail.querySelector('.composer')!;
+    expect(composer).not.toBeNull();
+    expect(detail.lastElementChild).toBe(composer);
+    expect(el.querySelectorAll('.composer').length).toBe(1);
+  });
+
+  it('names the target phone in the hint line and sends to it', async () => {
+    expect(hint()).toBe('Runs on Pixel 6 Pro · …4D5E');
+    component.taskInput = 'open settings';
+    fixture.detectChanges();
+    el.querySelector<HTMLButtonElement>('button.btn-send')!.click();
+    await fixture.whenStable();
+    expect(runTask).toHaveBeenCalledTimes(1);
+    expect(runTask.calls.mostRecent().args[0]).toBe('open settings');
+    expect(component.taskInput).toBe('');
+  });
+
+  it('queues during a run: the placeholder says so and the hint counts the queue', () => {
+    running.set(true);
+    sessions.set([
+      { session_id: 'a', status: 'running' },
+      { session_id: 'b', status: 'pending' }
+    ]);
+    fixture.detectChanges();
+    expect(textarea().placeholder).toBe('Describe the next task. It queues after this run.');
+    expect(hint()).toBe('Runs on Pixel 6 Pro · …4D5E · 1 run already queued');
+
+    sessions.update((list) => [...list, { session_id: 'c', status: 'pending' }]);
+    fixture.detectChanges();
+    expect(hint()).toBe('Runs on Pixel 6 Pro · …4D5E · 2 runs already queued');
+  });
+
+  it('says how to get a phone when none is chosen', () => {
+    target.set(null);
+    fixture.detectChanges();
+    expect(hint()).toBe('No phone yet. Send opens the phone picker.');
+  });
+
+  it('attaches an image as a preview and removes it again', () => {
+    const revoke = spyOn(URL, 'revokeObjectURL').and.callThrough();
+    component.addImages([png('home.png')]);
+    fixture.detectChanges();
+    const previews = el.querySelectorAll('.composer .attached-image');
+    expect(previews.length).toBe(1);
+    expect(previews[0].querySelector('img')!.alt).toBe('Preview of home.png');
+
+    el.querySelector<HTMLButtonElement>('button.btn-remove-image')!.click();
+    fixture.detectChanges();
+    expect(el.querySelectorAll('.composer .attached-image').length).toBe(0);
+    expect(component.attachedImages().length).toBe(0);
+    expect(revoke).toHaveBeenCalledTimes(1);
+  });
+
+  it('toggles Flash and Pro, marks the pressed segment and remembers it', () => {
+    const [flash, pro] = Array.from(el.querySelectorAll<HTMLButtonElement>('.composer .segment'));
+    expect(flash.getAttribute('aria-pressed')).toBe('true');
+    expect(pro.getAttribute('aria-pressed')).toBe('false');
+
+    pro.click();
+    fixture.detectChanges();
+    expect(component.selectedProfile()).toBe('pro');
+    expect(pro.getAttribute('aria-pressed')).toBe('true');
+    expect(flash.getAttribute('aria-pressed')).toBe('false');
+
+    flash.click();
+    fixture.detectChanges();
+    expect(component.selectedProfile()).toBe('flash');
+  });
+
+  it('places the interrupted banner and the error toast above the input', () => {
+    component.setErrorMessage('The runner is busy.');
+    fixture.detectChanges();
+    const composer = el.querySelector('.composer')!;
+    const banner = composer.querySelector('app-interrupted-banner')!;
+    const toast = composer.querySelector('.composer-toast')!;
+    const input = textarea();
+    expect(banner).not.toBeNull();
+    expect(toast.textContent).toContain('The runner is busy.');
+    expect(banner.compareDocumentPosition(input) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(toast.compareDocumentPosition(input) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('queues a task during a run: one submission with the prompt, profile and chosen phone', async () => {
+    running.set(true);
+    const chosen: RunTarget = { serial: 'R58M123ABC', bridgeSessionId: 'bridge-7' };
+    target.set(chosen);
+    fixture.detectChanges();
+
+    const input = textarea();
+    input.value = 'Check dark mode on Home';
+    input.dispatchEvent(new Event('input'));
+    fixture.detectChanges();
+    el.querySelectorAll<HTMLButtonElement>('.composer .segment')[1].click();
+    fixture.detectChanges();
+
+    const send = el.querySelector<HTMLButtonElement>('.composer button.btn-send')!;
+    expect(send.getAttribute('aria-label')).toBe('Queue task');
+    send.click();
+    await fixture.whenStable();
+
+    expect(runTask).toHaveBeenCalledTimes(1);
+    const args = runTask.calls.mostRecent().args;
+    expect(args[0]).toBe('Check dark mode on Home');
+    expect(args[1]).toBe('pro');
+    expect(args[5]).toBeUndefined();
+    expect(args[6]).toEqual(chosen);
+  });
+
+  it('has no Stop run while idle', () => {
+    expect(el.querySelector('.detail-header')).toBeNull();
+    expect(el.querySelector('[aria-label="Stop run"]')).toBeNull();
+  });
+
+  it('leaves Stop run to the run-view header instead of duplicating it beside the composer', () => {
+    running.set(true);
+    fixture.detectChanges();
+    expect(el.querySelector('.composer .btn-stop, .composer [aria-label="Stop run"], .composer .btn-stop-run')).toBeNull();
+
+    expect(el.querySelector('.detail-pane > .detail-header')).toBeNull();
+    expect(el.querySelector('app-run-chat')).not.toBeNull();
+  });
+
+  for (const width of [1440, 390]) {
+    it(`gives every composer control a 44 px hit box at ${width}px`, () => {
+      running.set(true);
+      component.taskInput = 'open settings';
+      component.addImages([png('a.png'), png('b.png')]);
+      component.setErrorMessage('The runner is busy.');
+      fixture.detectChanges();
+
+      const frame = document.createElement('iframe');
+      frame.style.cssText = `width: ${width}px; height: 844px; border: 0`;
+      document.body.appendChild(frame);
+      try {
+        const doc = frame.contentDocument!;
+        doc.body.style.cssText = 'margin: 0; height: 100vh';
+        const tokens = getComputedStyle(document.documentElement);
+        for (const property of Array.from(tokens)) {
+          if (property.startsWith('--')) doc.documentElement.style.setProperty(property, tokens.getPropertyValue(property));
+        }
+        for (const style of Array.from(document.head.querySelectorAll('style'))) doc.head.appendChild(style.cloneNode(true));
+        doc.body.appendChild(el);
+
+        expect(doc.querySelector('.composer .btn-stop, .composer .btn-stop-run')).toBeNull();
+        const controls = Array.from(doc.querySelectorAll<HTMLElement>('.composer button, .detail-header button'));
+        const names = controls.map((control) => control.className);
+        for (const cls of ['btn-send', 'btn-attach', 'btn-remove-image', 'btn-toast-close', 'segment']) {
+          expect(names.some((name) => name.includes(cls))).withContext(cls).toBeTrue();
+        }
+        const boxes = controls.map((control) => ({ name: control.className, box: control.getBoundingClientRect() }));
+        for (const { name, box } of boxes) {
+          expect(box.width).withContext(`${name} width`).toBeGreaterThanOrEqual(44);
+          expect(box.height).withContext(`${name} height`).toBeGreaterThanOrEqual(44);
+          expect(box.right).withContext(`${name} inside the viewport`).toBeLessThanOrEqual(width);
+        }
+        // Hit boxes of neighbours do not overlap (spec section 3).
+        for (let i = 0; i < boxes.length; i++) {
+          for (let j = i + 1; j < boxes.length; j++) {
+            const a = boxes[i].box;
+            const b = boxes[j].box;
+            const overlap = a.left < b.right - 0.5 && b.left < a.right - 0.5 && a.top < b.bottom - 0.5 && b.top < a.bottom - 0.5;
+            expect(overlap).withContext(`${boxes[i].name} / ${boxes[j].name}`).toBeFalse();
+          }
+        }
+        // The visual stays smaller than the box: segments draw a 36 px face inside 44 px.
+        const face = doc.querySelector<HTMLElement>('.composer .segment .segment-face')!;
+        expect(face.getBoundingClientRect().height).toBe(36);
+        expect(doc.querySelector('.detail-header .btn-stop-run')).toBeNull();
+      } finally {
+        frame.remove();
+      }
+    });
+  }
 });

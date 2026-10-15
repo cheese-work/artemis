@@ -14,83 +14,87 @@
  * limitations under the License.
  */
 
-import { DOCUMENT } from '@angular/common';
-import { Component, ChangeDetectionStrategy, DestroyRef, computed, ElementRef, EventEmitter, afterNextRender, inject, Input, Output } from '@angular/core';
+import { Component, ChangeDetectionStrategy, computed, EventEmitter, inject, Input, Output } from '@angular/core';
 
 import { RouterLink, RouterLinkActive } from '@angular/router';
 import { WorkspaceDeviceChipComponent } from '../workspace-device-chip/workspace-device-chip.component';
 import { AdminIdentityIndicatorComponent } from '../admin-identity-indicator/admin-identity-indicator.component';
+import { AgentService } from '../../services/agent.service';
+import { ShellLayoutService } from '../../services/shell-layout.service';
 
 @Component({
   selector: 'app-nav-switcher',
   standalone: true,
   imports: [RouterLink, RouterLinkActive, AdminIdentityIndicatorComponent, WorkspaceDeviceChipComponent],
   template: `
-    <nav class="floating-nav-switcher" aria-label="Primary navigation">
-      <span class="brand-wordmark">SmartQA</span>
+    <nav class="floating-nav-switcher" aria-label="Primary navigation"
+      [class.nav-collapsed]="!shell.navExpanded()" [class.nav-hover]="shell.navMode() === 'hover'"
+      (mouseenter)="shell.navHovered.set(true)" (mouseleave)="shell.navHovered.set(false)"
+      (focusin)="shell.navHovered.set(true)" (focusout)="onNavFocusOut($event)">
+      <div class="navigation-header">
+        <span class="brand-wordmark">SmartQA</span>
+        <span class="brand-monogram" aria-label="SmartQA">S</span>
+      </div>
       <a
-        routerLink="/workspace"
+        routerLink="/sessions"
         routerLinkActive="active"
         ariaCurrentWhenActive="page"
         class="nav-tab-btn"
-        title="Open Workspace"
-        aria-label="Workspace"
+        title="Open Sessions"
+        aria-label="Sessions"
+        (click)="shell.activePane.set('list')"
       >
         <span class="material-symbols-outlined tab-icon" aria-hidden="true">space_dashboard</span>
-        <span class="tab-label">Workspace</span>
+        <span class="tab-label">Sessions</span>
       </a>
-      <a
-        routerLink="/runs"
-        routerLinkActive="active"
-        ariaCurrentWhenActive="page"
-        class="nav-tab-btn"
-        title="Open the run library"
-        aria-label="Runs"
-      >
-        <span class="material-symbols-outlined tab-icon" aria-hidden="true">history</span>
-        <span class="tab-label">Runs</span>
-      </a>
+      @if (account.identity()?.admin) {
+        <a routerLink="/providers" routerLinkActive="active" ariaCurrentWhenActive="page" class="nav-tab-btn desktop-setup" aria-label="LLM providers">
+          <span class="material-symbols-outlined tab-icon" aria-hidden="true">lock</span>
+          <span class="tab-label">Providers</span>
+        </a>
+        <a routerLink="/setup" routerLinkActive="active" ariaCurrentWhenActive="page" class="nav-tab-btn desktop-setup" aria-label="Setup">
+          <span class="material-symbols-outlined tab-icon" aria-hidden="true">settings</span>
+          <span class="tab-label">Setup</span>
+        </a>
+      }
       @if (hasWhatsNew) {
         <button type="button" class="nav-tab-btn" [attr.aria-label]="whatsNewLabel" (click)="showWhatsNew.emit()">
           <span class="material-symbols-outlined tab-icon" aria-hidden="true">campaign</span>
           <span class="tab-label">What's New</span>
           @if (hasUnreadWhatsNew) {
             <span class="nav-unread-indicator" aria-hidden="true"></span>
+            <span class="nav-new-label" aria-hidden="true">New</span>
           }
         </button>
       }
+      <label class="nav-mode" title="Navigation mode">
+        <span aria-hidden="true">☰</span>
+        <select aria-label="Navigation mode" [value]="shell.navMode()" (change)="shell.setNavMode($any($event.target).value)">
+          <option value="expanded">Pinned expanded</option>
+          <option value="collapsed">Pinned icons</option>
+          <option value="hover">Expand on hover</option>
+        </select>
+      </label>
       <div class="nav-status">
-        <!-- The phone the next run uses: the app's only phone control -->
         <app-workspace-device-chip></app-workspace-device-chip>
-        <app-admin-identity-indicator></app-admin-identity-indicator>
+        <app-admin-identity-indicator #account></app-admin-identity-indicator>
       </div>
     </nav>
   `,
   changeDetection: ChangeDetectionStrategy.Eager,
+  host: { '[class.nav-collapsed]': '!shell.navExpanded()', '[class.nav-hover]': "shell.navMode() === 'hover'" },
   styleUrls: ['./nav-switcher.component.scss']
 })
 export class NavSwitcherComponent {
+  private readonly agent = inject(AgentService);
+  public readonly shell = inject(ShellLayoutService);
+  public readonly runCount = computed(() => this.agent.sessions().length);
   @Input() public hasWhatsNew = false;
   @Input() public hasUnreadWhatsNew = false;
   @Output() public showWhatsNew = new EventEmitter<void>();
 
-  private readonly bar = inject(ElementRef<HTMLElement>);
-
-  constructor() {
-    // Page content starts below the nav however many rows it wraps to: publish its bottom edge.
-    const rootStyle = inject(DOCUMENT).documentElement.style;
-    const destroyRef = inject(DestroyRef);
-    afterNextRender(() => {
-      const nav = (this.bar.nativeElement as HTMLElement).querySelector('nav') as HTMLElement;
-      const publish = () => rootStyle.setProperty('--nav-clearance', `${Math.ceil(nav.getBoundingClientRect().bottom) + 12}px`);
-      const observer = new ResizeObserver(publish);
-      observer.observe(nav);
-      publish();
-      destroyRef.onDestroy(() => {
-        observer.disconnect();
-        rootStyle.removeProperty('--nav-clearance');
-      });
-    });
+  public onNavFocusOut(event: FocusEvent): void {
+    if (!(event.currentTarget as HTMLElement).contains(event.relatedTarget as Node | null)) this.shell.navHovered.set(false);
   }
 
   public get whatsNewLabel(): string {

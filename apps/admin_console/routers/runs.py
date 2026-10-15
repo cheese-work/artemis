@@ -76,8 +76,10 @@ async def catalog_scope(
 def _present(run: dict[str, Any], scope: OwnerScope, *, team: bool = False) -> dict[str, Any]:
     read_only = team or not scope.may_act_on(run.get("requested_by"))
     result = {**run, "read_only": read_only}
-    if read_only and isinstance(result.get("prompt"), str):
-        result["prompt"] = redact_text(redact_image_data(result["prompt"]))
+    if read_only:
+        for field in ("prompt", "chat_title", "chat_prompt"):
+            if isinstance(result.get(field), str):
+                result[field] = redact_text(redact_image_data(result[field]))
     return result
 
 

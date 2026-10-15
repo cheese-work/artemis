@@ -585,6 +585,16 @@ describe('AgentService live LLM retry timeline', () => {
   });
 
   describe('with an explicit run target (the Workspace chip)', () => {
+    it('sends a discovered model separately from the agent profile', () => {
+      const { service, post } = createRunService([]);
+      service.runTask('go', 'pro', undefined, undefined, undefined, undefined,
+        { serial: 'shared-1' }, { provider: 'openai', model: 'proxy-gemini' }).subscribe();
+      expect(post).toHaveBeenCalledWith('/api/run', {
+        goal: 'go', profile: 'pro', device_serial: 'shared-1',
+        model: { provider: 'openai', model: 'proxy-gemini' }
+      });
+    });
+
     it('binds the run to the serial and bridge session in one request, with no device pre-check', () => {
       const { service, get, post } = createRunService([]);
 

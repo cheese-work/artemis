@@ -29,6 +29,16 @@ const input = (over: Partial<WorkspaceChipInput> = {}): WorkspaceChipInput => ({
 });
 
 describe('workspaceChipView', () => {
+  it('uses registry identity when a browser phone is missing from the readiness pool', () => {
+    const serial = '127.0.0.1:35773';
+    const view = workspaceChipView(input({
+      relay: { status: 'connected', serial, sessionId: 'bridge-9', error: null },
+      registry: [{ serial, model: 'Pixel 6 Pro', product: 'raven', device_kind: 'phone', source: 'browser',
+        computer_id: null, computer_name: null, computer_status: 'online', reason: null, since: null }]
+    }));
+    expect(view.text).toContain('Pixel 6 Pro · Phone');
+    expect(view.text).not.toContain('127.0.0.1:35773');
+  });
   it('has no phone to start with and offers no run target', () => {
     const view = workspaceChipView(input());
     expect(view.kind).toBe('none');
@@ -127,6 +137,16 @@ describe('workspaceChipView', () => {
   it('counts the tab’s phone as connected before the adb list shows it', () => {
     const relay: UsbDeviceRelayState = { status: 'connected', serial: '127.0.0.1:41003', sessionId: 'bridge-9', error: null };
     expect(workspaceChipView(input({ relay })).kind).toBe('connected');
+  });
+
+  it('shows a reconnecting bridge without exposing it as a new run target', () => {
+    const relay: UsbDeviceRelayState = {
+      status: 'reconnecting', serial: '127.0.0.1:41003', sessionId: 'bridge-9', error: null
+    };
+    const view = workspaceChipView(input({ relay }));
+    expect(view.kind).toBe('connecting');
+    expect(view.text).toBe('Reconnecting…');
+    expect(view.target).toBeNull();
   });
 
   it('names the computer for a shared phone, with no bridge session', () => {

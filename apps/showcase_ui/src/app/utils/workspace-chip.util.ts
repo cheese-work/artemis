@@ -3,7 +3,7 @@ import { RunTarget } from '../core/models/run-target.model';
 import { DeviceInfo } from '../core/models/system.model';
 import { UsbDeviceRelayState } from '../services/usb-device-relay.service';
 import { deviceSourceOf } from './device-chip.util';
-import { deviceKindLabel, deviceTitle } from './device-label.util';
+import { deviceKindLabel, deviceTitle, LabelableDevice } from './device-label.util';
 
 /** The Workspace chip's states. A phone is only ever "connected" when a run could use it now. */
 export type WorkspaceChipKind = 'none' | 'connecting' | 'connected' | 'other-tab' | 'dropped' | 'interrupted';
@@ -50,24 +50,33 @@ export function serialSuffix(serial: string): string {
 }
 
 function sourceText(input: WorkspaceChipInput, serial: string): string | null {
-  const ownBrowser = input.relay.status === 'connected' ? input.relay.serial : null;
+  const ownBrowser = ['connected', 'reconnecting'].includes(input.relay.status)
+    ? input.relay.serial
+    : null;
   const source = deviceSourceOf(serial, input.registry, input.computers, ownBrowser);
   if (source === 'This browser') return 'via this browser';
   return source ? `via ${source}` : null;
 }
 
 /** "Pixel 6 · Phone": the model and what it is. Never the adb address as the main label. */
-function phoneName(device: DeviceInfo | undefined, serial: string): string[] {
-  const subject = device ?? { serial, model: null };
-  const title = deviceTitle(subject);
-  const kind = deviceKindLabel(subject);
+export function phoneIdentity(input: WorkspaceChipInput, serial: string): LabelableDevice {
+  const device = input.devices.find(device => device.serial === serial);
+  const registered = input.registry.find(device => device.serial === serial);
+  return { serial, model: device?.model?.trim() || registered?.model || null,
+    product: device?.product?.trim() || registered?.product || null,
+    device_kind: device?.device_kind && device.device_kind !== 'unknown' ? device.device_kind : registered?.device_kind ?? device?.device_kind };
+}
+
+function phoneName(device: LabelableDevice): string[] {
+  const title = deviceTitle(device);
+  const kind = deviceKindLabel(device);
   return title === kind ? [title] : [title, kind];
 }
 
 export function pickerOptions(input: WorkspaceChipInput): PickerOption[] {
   return input.devices.map((device) => ({
     serial: device.serial,
-    text: [...phoneName(device, device.serial), serialSuffix(device.serial), sourceText(input, device.serial)]
+    text: [...phoneName(phoneIdentity(input, device.serial)), serialSuffix(device.serial), sourceText(input, device.serial)]
       .filter(Boolean)
       .join(' · '),
     usable: device.state === 'device',
@@ -99,11 +108,22 @@ export function workspaceChipView(input: WorkspaceChipInput): WorkspaceChipView 
       : view('connecting', 'Connecting…', 'Choose the phone, then unlock it and tap Allow.', 'progress_activity');
   }
 
+  if (relay.status === 'reconnecting') {
+    return view(
+      'connecting',
+      'Reconnecting…',
+      'Restoring the same phone bridge. Keep this tab open.',
+      'progress_activity'
+    );
+  }
+
   // The phone this tab holds counts as soon as the bridge says it is attached; the adb list may
   // lag a few seconds. A phone the person picked counts only while it is listed and ready. A
   // picked phone that is gone, offline or unauthorized is never swapped for another phone: the
   // person reconnects it or picks again.
-  const own = relay.status === 'connected' && relay.serial ? relay.serial : null;
+  const own = ['connected', 'reconnecting'].includes(relay.status) && relay.serial
+    ? relay.serial
+    : null;
   const listed = input.selected ? input.devices.find((device) => device.serial === input.selected) : undefined;
   const serial = input.selected
     ? input.selected === own || listed?.state === 'device'
@@ -114,8 +134,7 @@ export function workspaceChipView(input: WorkspaceChipInput): WorkspaceChipView 
     return anotherTab(view);
   }
   if (serial) {
-    const device = input.devices.find((d) => d.serial === serial);
-    const text = [...phoneName(device, serial), serialSuffix(serial), sourceText(input, serial)]
+    const text = [...phoneName(phoneIdentity(input, serial)), serialSuffix(serial), sourceText(input, serial)]
       .filter(Boolean)
       .join(' · ');
     return view('connected', text, 'Runs start on this phone.', 'smartphone', {

@@ -54,7 +54,7 @@ export class HomeComponent implements OnInit, OnDestroy {
   public readonly deviceKindLabel = deviceKindLabel;
   private readonly relaySerial = computed(() => {
     const relay = this.usbRelay.state();
-    return relay.status === 'connected' ? relay.serial : null;
+    return relay.status === 'connected' || relay.status === 'reconnecting' ? relay.serial : null;
   });
   private readonly hostsService = inject(HostsService);
   private readonly registry = signal<HostsResponse | null>(null);

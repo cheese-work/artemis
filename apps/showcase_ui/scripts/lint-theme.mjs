@@ -4,6 +4,7 @@
 import { readFile } from 'node:fs/promises';
 
 const files = [
+  'src/app/components/run-chat/run-chat.component.scss',
   'src/app/app.component.scss',
   'src/app/components/chat-interface/chat-interface.component.scss',
   'src/app/components/computers/computers.component.scss',

@@ -15,10 +15,6 @@
  */
 
 
-// Layout (CHE-1278): side by side from $split, stacked panes below it, one page-scrolling column below $narrow.
-$split: 1200px;
-$narrow: 800px;
-
 :host {
   display: block;
   height: 100%;
@@ -28,16 +24,12 @@ $narrow: 800px;
 }
 
 .workspace-container {
-  display: flex;
+  display: grid;
+  grid-template-columns: 360px minmax(0, 1fr);
   height: 100%;
   width: 100%;
   background-color: var(--color-bg);
   overflow: hidden;
-
-  &.is-resizing {
-    cursor: col-resize;
-    user-select: none;
-  }
 
   /* Out of sight until a keyboard user lands on them, then pinned above the page. */
   .skip-links {
@@ -74,380 +66,365 @@ $narrow: 800px;
     }
   }
 
-  .left-panel {
+  .detail-pane {
     position: relative;
     z-index: 1;
-    flex: 1 1 0;
     min-width: 0;
+    min-height: 0;
     height: 100%;
     display: flex;
     flex-direction: column;
     overflow: hidden;
     background: var(--color-bg);
+  }
+
+  .run-list-pane {
+    position: relative;
+    min-width: 0;
+    min-height: 0;
+    height: 100%;
+    overflow: hidden;
+    background: var(--color-surface);
     border-right: 1px solid var(--color-rule);
   }
 
-  .right-panel {
-    position: relative; /* contains the list's absolutely positioned screen-reader text */
-    flex: 0 1 auto;
-    min-width: 250px;
-    max-width: 100%;
-    height: 100%;
-    display: flex;
-    flex-direction: column;
-    background: var(--color-surface);
+  .pane-navigation {
+    display: none;
   }
 
-  .resizer {
-    width: 12px;
-    margin: 0 -6px;
+  /* Detail header: holds Stop run during a live run; a 44 px box around a 36 px face. */
+  .detail-header {
+    flex: none;
+    display: flex;
+    justify-content: flex-end;
+    padding: var(--space-xs) var(--space-md);
+    background: var(--color-surface);
+    border-bottom: 1px solid var(--color-rule);
+  }
+
+  .btn-stop-run {
     display: flex;
     align-items: center;
-    justify-content: center;
-    cursor: col-resize;
-    z-index: 10;
+    min-width: var(--target);
+    height: var(--target);
+    padding: 4px 0;
+    background: transparent;
+    border: none;
+    font-family: inherit;
+    cursor: pointer;
 
-    .resizer-handle {
-      width: 4px;
-      height: 40px;
-      background: var(--color-rule-strong);
-      border-radius: var(--radius-sm);
-      transition: background var(--motion-fast) var(--ease-move), height var(--motion-fast) var(--ease-move);
+    .stop-face {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      height: 36px;
+      padding: 0 var(--space-smd);
+      border-radius: var(--radius-md);
+      background: var(--color-error-bg);
+      color: var(--color-error);
+      font-size: var(--text-ui);
+      font-weight: 600;
+      transition: background var(--motion-fast) var(--ease-move), color var(--motion-fast) var(--ease-move);
+
+      .material-symbols-outlined {
+        font-size: 18px;
+      }
     }
 
-    &:hover .resizer-handle,
-    .workspace-container.is-resizing & .resizer-handle {
-      height: 60px;
-      background: var(--color-primary);
+    &:hover:not(:disabled) .stop-face {
+      background: var(--color-error-solid);
+      color: var(--color-on-primary);
+    }
+
+    &:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
     }
   }
 
-  /* The new-task box: always expanded, in normal flow under the run so it never covers evidence. */
-  .workspace-floating-bar-wrapper {
+  /* Pinned composer: the last row of the detail pane, in normal flow so it never covers evidence. */
+  .composer {
     position: relative;
     flex: none;
     z-index: 50;
     display: flex;
     flex-direction: column;
     gap: var(--space-sm);
-    padding: var(--space-smd) var(--space-md);
+    padding: var(--space-smd) var(--space-md) var(--space-sm);
     background: var(--color-surface);
     border-top: 1px solid var(--color-rule);
+  }
 
-    .floating-dock-toast {
+  .composer-toast {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    padding: 0 0 0 var(--space-smd);
+    background: var(--color-error-bg);
+    border: 1px solid var(--color-error);
+    border-radius: var(--radius-md);
+    color: var(--color-error);
+    font-size: var(--text-ui);
+    font-weight: 500;
+
+    .toast-icon {
+      flex-shrink: 0;
+    }
+
+    .toast-text {
+      flex: 1;
+      line-height: 1.4;
+    }
+
+    .btn-toast-close {
       display: flex;
       align-items: center;
-      gap: var(--space-sm);
-      padding: var(--space-sm) var(--space-smd);
+      justify-content: center;
+      flex: none;
+      width: var(--target);
+      height: var(--target);
+      padding: 0;
+      background: transparent;
+      border: none;
       border-radius: var(--radius-md);
-      font-size: var(--text-ui);
-      font-weight: 500;
+      color: var(--color-error);
+      cursor: pointer;
 
-      &.error {
-        background: var(--color-error-bg);
-        border: 1px solid var(--color-error);
-        color: var(--color-error);
-
-        .toast-icon {
-          flex-shrink: 0;
-        }
-
-        .toast-text {
-          flex: 1;
-          line-height: 1.4;
-        }
-
-        .btn-toast-close {
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          width: var(--target);
-          height: var(--target);
-          margin: -10px -8px -10px 0;
-          padding: 0;
-          background: transparent;
-          border: none;
-          border-radius: var(--radius-md);
-          color: var(--color-error);
-          cursor: pointer;
-
-          &:hover {
-            background: var(--color-surface);
-          }
-        }
+      &:hover {
+        background: var(--color-surface);
       }
     }
+  }
 
-    .floating-dock-row {
-      display: flex;
-      width: 100%;
-      max-width: 880px;
-      margin: 0 auto;
+  /* Outline only on the input card (spec section 1, --color-border). */
+  .composer-card {
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    transition: border-color var(--motion-fast) var(--ease-move);
+  }
+
+  .composer.is-focused .composer-card {
+    border-color: var(--color-primary);
+    outline: 3px solid var(--color-focus);
+    outline-offset: 2px;
+  }
+
+  /* Input and controls on one row; below about 480 px the controls wrap under the input. */
+  .composer-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-xs) var(--space-sm);
+    padding: var(--space-xs) var(--space-xs) var(--space-xs) var(--space-md);
+  }
+
+  .composer-input {
+    flex: 1 1 200px;
+    min-width: 0;
+    box-sizing: content-box;
+    min-height: calc(var(--target) - 2 * var(--space-sm));
+    max-height: calc(40dvh - 2 * var(--space-sm));
+    overflow-y: auto;
+    padding: var(--space-sm) 0;
+    border: none;
+    outline: none;
+    background: transparent;
+    resize: none;
+    font-family: inherit;
+    font-size: var(--text-body);
+    line-height: 20px;
+    color: var(--color-ink);
+
+    &::placeholder {
+      color: var(--color-text-faint);
     }
 
-    .floating-dock-card {
-      width: 100%;
-      background: var(--color-surface);
-      border: 1px solid var(--color-border);
-      border-radius: var(--radius-md);
-      transition: border-color var(--motion-fast) var(--ease-move), box-shadow var(--motion-fast) var(--ease-move);
+    &:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
     }
+  }
 
-    &.is-focused .floating-dock-card {
-      border-color: var(--color-primary);
+  .composer-controls {
+    display: flex;
+    align-items: center;
+    gap: var(--space-xs);
+    flex: none;
+    margin-left: auto;
+    max-width: 100%;
+    flex-wrap: wrap;
+  }
+
+  .model-select {
+    min-width: var(--target);
+    min-height: var(--target);
+    width: 180px;
+    max-width: 100%;
+    padding: 0 var(--space-sm);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    background: var(--color-surface);
+    color: var(--color-ink);
+    font-family: inherit;
+    font-size: var(--text-ui);
+    text-overflow: ellipsis;
+
+    &:focus-visible {
       outline: 3px solid var(--color-focus);
       outline-offset: 2px;
     }
 
-    .expanded-card-content {
+    @media (max-width: 480px) {
+      width: 112px;
+    }
+  }
+
+  /* Flash / Pro: each 44 px box draws a 36 px face (spec section 3). */
+  .segments {
+    display: inline-flex;
+  }
+
+  .segment {
+    display: flex;
+    align-items: center;
+    min-width: var(--target);
+    height: var(--target);
+    padding: 4px 0;
+    background: transparent;
+    border: none;
+    font-family: inherit;
+    cursor: pointer;
+    user-select: none;
+
+    .segment-face {
       display: flex;
-      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      box-sizing: border-box;
       width: 100%;
+      height: 36px;
+      padding: 0 var(--space-smd);
+      background: var(--color-surface-subtle);
+      border: 0;
+      color: var(--color-text-muted);
+      font-size: var(--text-ui);
+      font-weight: 500;
+      transition: background var(--motion-fast) var(--ease-move), color var(--motion-fast) var(--ease-move);
+    }
 
-      .card-main-input-row {
-        display: flex;
-        align-items: center;
-        gap: var(--space-sm);
-        padding: var(--space-sm) var(--space-sm) 0 var(--space-md);
-        min-height: 56px;
+    &:first-child .segment-face { border-radius: var(--radius-md) 0 0 var(--radius-md); }
+    &:last-child .segment-face { border-radius: 0 var(--radius-md) var(--radius-md) 0; }
 
-        .input-content-area {
-          flex: 1;
-          min-width: 0;
-          display: flex;
-          align-items: center;
+    &:hover:not(.active) .segment-face {
+      color: var(--color-ink);
+    }
 
-          .dock-textarea {
-            display: block;
-            min-height: var(--target);
-            width: 100%;
-            max-height: 120px;
-            padding: var(--space-sm) 0;
-            border: none;
-            outline: none;
-            background: transparent;
-            resize: none;
-            font-family: inherit;
-            font-size: var(--text-body);
-            line-height: 1.5;
-            color: var(--color-ink);
+    /* Selected: a tint and a heavier word, never colour alone. */
+    &.active .segment-face {
+      background: var(--color-primary-tint);
+      color: var(--color-ink);
+      font-weight: 600;
+    }
+  }
 
-            &::placeholder {
-              color: var(--color-text-muted);
-              font-size: var(--text-ui);
-            }
+  .composer-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex: none;
+    width: var(--target);
+    height: var(--target);
+    padding: 0;
+    border: none;
+    border-radius: var(--radius-md);
+    cursor: pointer;
+    transition: background var(--motion-fast) var(--ease-move);
 
-            /* The hint wraps to two lines on a phone: keep both visible. */
-            @media (max-width: 599px) {
-              min-height: 3.25rem;
-            }
+    .spinning-icon {
+      animation: spin 1s linear infinite;
+    }
 
-            &:disabled {
-              opacity: 0.6;
-              cursor: not-allowed;
-            }
-          }
-        }
+    &:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
 
-        .dock-circle-btn {
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          flex-shrink: 0;
-          width: var(--target);
-          height: var(--target);
-          padding: 0;
-          border: 0;
-          border-radius: var(--radius-full);
-          cursor: pointer;
-          transition: background var(--motion-fast) var(--ease-move), border-color var(--motion-fast) var(--ease-move);
+    &.btn-attach {
+      background: var(--color-surface-subtle);
+      color: var(--color-text-muted);
 
-          .spinning-icon {
-            animation: spin 1s linear infinite;
-          }
+      &:hover:not(:disabled) {
+        background: var(--color-surface-subtle);
+        color: var(--color-ink);
+      }
+    }
 
-          &:disabled {
-            opacity: 0.6;
-            cursor: not-allowed;
-          }
+    &.btn-send {
+      background: var(--color-primary);
+      color: var(--color-on-primary);
 
-          &.btn-clear,
-          &.btn-attach {
-            background: var(--color-surface-subtle);
-            color: var(--color-text-muted);
-
-            &:hover:not(:disabled) {
-              background: var(--color-surface-subtle);
-              color: var(--color-ink);
-            }
-          }
-
-          &.btn-stop {
-            background: var(--color-error-solid);
-            color: var(--color-on-primary);
-
-            &:hover:not(:disabled) {
-              background: var(--color-error);
-            }
-          }
-
-          &.btn-send {
-            background: var(--color-primary);
-            color: var(--color-on-primary);
-
-            &:hover:not(:disabled) {
-              background: var(--color-primary-hover);
-            }
-
-            &:disabled {
-              background: var(--color-surface-subtle);
-              color: var(--color-text-muted);
-              opacity: 1;
-            }
-
-            /* No phone: looks off, but stays clickable so Run can open the phone picker. */
-            &.is-blocked {
-              opacity: 0.55;
-              cursor: not-allowed;
-            }
-          }
-        }
+      &:hover:not(:disabled) {
+        background: var(--color-primary-hover);
       }
 
-      .card-footer-row {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        padding: var(--space-xs) var(--space-sm) var(--space-sm) var(--space-md);
+      &:disabled {
+        background: var(--color-surface-subtle);
+        color: var(--color-text-muted);
+        opacity: 1;
+      }
 
-        .footer-left-group {
-          display: flex;
-          align-items: center;
-          gap: var(--space-sm);
-
-          .model-profile-toggle {
-            display: inline-flex;
-            align-items: center;
-            gap: 2px;
-            padding: 2px;
-            background: var(--color-surface-subtle);
-            border: 0;
-            border-radius: var(--radius-md);
-
-            .profile-toggle-pill {
-              display: inline-flex;
-              align-items: center;
-              justify-content: center;
-              gap: var(--space-xs);
-              min-width: 72px;
-              height: var(--target);
-              padding: 0 var(--space-smd);
-              border: 0;
-              border-radius: var(--radius-sm);
-              background: transparent;
-              color: var(--color-text-muted);
-              font-family: inherit;
-              font-size: var(--text-ui);
-              font-weight: 500;
-              cursor: pointer;
-              user-select: none;
-              transition: background var(--motion-fast) var(--ease-move), color var(--motion-fast) var(--ease-move);
-
-              .pill-icon {
-                font-size: 18px;
-                flex-shrink: 0;
-              }
-
-              &:hover:not(.active) {
-                color: var(--color-ink);
-                background: var(--color-surface);
-              }
-
-              &.active {
-                background: var(--color-primary-tint);
-                color: var(--color-ink);
-                font-weight: 600;
-              }
-            }
-          }
-        }
+      /* No phone: looks off, but stays clickable so Send can open the phone picker. */
+      &.is-blocked {
+        opacity: 0.55;
+        cursor: not-allowed;
       }
     }
   }
 
-  /* Stacked panes: run above, list below, both visible. */
-  @media (max-width: #{$split - 1px}) {
-    flex-direction: column;
+  .composer-hint {
+    margin: 0;
+    font-size: var(--text-label);
+    color: var(--color-text-faint);
+  }
 
-    .resizer {
+  @media (max-width: 1023px) {
+    grid-template-columns: minmax(0, 1fr);
+
+    .run-list-pane {
       display: none;
-    }
-
-    .left-panel {
-      flex: 1 1 66%;
-      width: 100%;
-      height: auto;
       border-right: none;
     }
 
-    .right-panel {
-      flex: 0 0 34%;
-      width: 100% !important;
-      min-width: 0;
-      min-height: 220px;
-      height: auto;
-      border-top: 1px solid var(--color-rule);
-    }
-  }
-
-  /* Review mode: the list sits beside the run like the Workspace history. */
-  &.review-mode .right-panel {
-    border-left: none;
-  }
-
-  @media (min-width: $split) {
-    .right-panel {
-      border-left: none;
-    }
-  }
-
-  /* One column: the page scrolls as a whole, the run first and the list under it. */
-  @media (max-width: #{$narrow - 1px}) {
-    display: block;
-    height: auto;
-    min-height: 100%;
-    overflow: visible;
-
-    .left-panel {
-      display: block;
-      height: auto;
-      overflow: visible;
+    .pane-navigation {
+      display: inline-flex;
+      flex: none;
+      align-items: center;
+      align-self: flex-start;
+      min-width: var(--target);
+      min-height: var(--target);
+      margin: var(--nav-clearance, 88px) var(--space-md) 0;
+      color: var(--color-primary);
     }
 
-    .workspace-floating-bar-wrapper {
-      position: sticky;
-      bottom: 0;
+    &:not(.review-mode) .run-surface {
+      --nav-clearance: 0px;
     }
 
-    .right-panel {
-      display: block;
-      height: 70vh;
-      min-height: 320px;
-    }
-
-    &.review-mode .right-panel,
-    &.review-mode .skip-list {
-      display: none; /* the list is hidden here, so a skip link to it would go nowhere */
+    &.review-mode:not(.has-run) {
+      .run-list-pane { display: block; }
+      .detail-pane { display: none; }
     }
   }
 }
 
-@media (max-width: #{$narrow - 1px}) {
-  :host {
-    height: auto;
-    min-height: 100%;
-    overflow: visible;
-  }
+.detail-empty {
+  display: grid;
+  place-items: center;
+  height: 100%;
+  padding: var(--space-lg);
+  color: var(--color-text-muted);
+  text-align: center;
 }
 
 @keyframes spin {
@@ -460,9 +437,6 @@ $narrow: 800px;
   min-height: 0;
   overflow: hidden;
 
-  @media (max-width: #{$narrow - 1px}) {
-    overflow: visible;
-  }
 }
 
 /* Image chat: the native file input stays focusable-by-script only; the labelled button opens it. */
@@ -483,7 +457,7 @@ $narrow: 800px;
   flex-wrap: wrap;
   gap: var(--space-sm);
   list-style: none;
-  margin: var(--space-sm) var(--space-md) 0;
+  margin: var(--space-md) var(--space-md) 0;
   padding: 0;
 
   .attached-image {
@@ -500,6 +474,7 @@ $narrow: 800px;
       border: 1px solid var(--color-rule-strong);
     }
 
+    /* A 44 px hit box over the corner; the visible mark is the 20 px face inside it. */
     .btn-remove-image {
       position: absolute;
       top: -14px;
@@ -515,10 +490,10 @@ $narrow: 800px;
       border-radius: var(--radius-full);
       cursor: pointer;
 
-      /* The 44px target is invisible; the visible mark stays 20px. */
-      &::before {
-        content: '';
-        position: absolute;
+      .remove-face {
+        display: flex;
+        align-items: center;
+        justify-content: center;
         width: 20px;
         height: 20px;
         border-radius: var(--radius-full);
@@ -526,7 +501,6 @@ $narrow: 800px;
       }
 
       .material-symbols-outlined {
-        position: relative;
         font-size: 14px;
         color: var(--color-on-primary);
       }

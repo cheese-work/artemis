@@ -34,6 +34,7 @@ from apps.admin_console.core.device_ownership import (
     visible_devices,
 )
 from apps.admin_console.services import run_images
+from apps.admin_console.services.model_discovery import model_discovery
 from apps.admin_console.services.bridge_session_service import bridge_session_service
 from apps.admin_console.core.ownership import (
     OwnerScope,
@@ -46,6 +47,7 @@ from apps.admin_console.core.ownership import (
     require_access_all,
     require_actor,
     require_catalog_ready,
+    require_signed_in,
     require_visible_run,
 )
 from apps.admin_console.core.redaction import redact_image_data, redact_json
@@ -137,6 +139,12 @@ async def get_task_catalog():
     }
 
 
+@router.get("/api/models")
+async def get_models(actor: OwnerScope = Depends(actor_scope)):
+    require_signed_in(require_actor(actor))
+    return await model_discovery.catalog()
+
+
 @router.post("/api/run")
 async def run_task(request: RunRequest, actor: OwnerScope = Depends(actor_scope)):
     scope = require_actor(actor)
@@ -178,6 +186,10 @@ async def run_task(request: RunRequest, actor: OwnerScope = Depends(actor_scope)
                 "Send one message with its images, or send the goals without images.",
             )
         goal_images = await asyncio.to_thread(run_images.validate, request.images)
+
+    selected_model = await model_discovery.resolve(
+        request.model.model_dump() if request.model else None
+    )
 
     if request.bridge_session_id:
         await _bind_bridge_session(request)
@@ -357,6 +369,8 @@ async def run_task(request: RunRequest, actor: OwnerScope = Depends(actor_scope)
             requested_by=scope.email,
             goal_images=goal_images,
             bridge_session_id=request.bridge_session_id,
+            model=selected_model,
+            model_explicit=request.model is not None,
             **({"host_id": host_id} if host_id else {}),
         )
     except ServerDraining as exc:
@@ -676,7 +690,14 @@ async def _status_payload() -> dict[str, Any]:
                 sess_row, llm_traces, agent_names=agent_names
             )
 
-    model_info = model_service.get_active_model_info(active_profile)
+    model_row = (
+        session_repo.get_session_by_id(running_sid or latest_session_id)
+        if (running_sid or latest_session_id)
+        else None
+    )
+    model_info = model_service.get_active_model_info(
+        active_profile, model_service.get_recorded_model(model_row or running_task)
+    )
 
     # Unified Global Queue: merge web tasks and external SDK/CLI device queue tickets
     global_queued = DeviceExecutionLock.get_queued_tasks()
@@ -719,7 +740,9 @@ async def _status_payload() -> dict[str, Any]:
         conn_info = state.active_connections[str(latest_session_id)]
         is_paused = state.is_paused
         conn_profile = conn_info.get("profile") or active_profile
-        conn_model_info = model_service.get_active_model_info(conn_profile)
+        conn_model_info = model_service.get_active_model_info(
+            conn_profile, model_service.get_recorded_model(model_row or conn_info)
+        )
         return {
             "status": "paused" if is_paused else "running",
             "paused_error": state.paused_error if is_paused else None,

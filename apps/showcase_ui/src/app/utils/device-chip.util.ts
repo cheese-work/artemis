@@ -1,6 +1,6 @@
 import { Computer, RegistryDevice } from '../core/models/host.model';
 import { COMPUTER_STRINGS, offlineText } from './computer-strings';
-import { deviceKindLabel, deviceTitle, unlistedDeviceTitle } from './device-label.util';
+import { deviceKindLabel, deviceTitle } from './device-label.util';
 
 export type ChipState = 'Ready' | 'Offline' | 'Needs attention';
 
@@ -29,12 +29,8 @@ export function deviceChipView(
   ownBrowserSerial: string | null = null
 ): DeviceChipView {
   const kind = device.device_kind ?? null;
-  const label = device.model
-    ? deviceTitle(device)
-    : kind && kind !== 'unknown'
-      ? deviceKindLabel(device)
-      : unlistedDeviceTitle(device.serial);
-  const kindLabel = kind ? deviceKindLabel(device) : null;
+  const label = deviceTitle(device);
+  const kindLabel = kind && kind !== 'unknown' ? deviceKindLabel(device) : null;
   const kindText = kindLabel === label ? null : kindLabel;
   if (device.source === 'browser') {
     const own = ownBrowserSerial !== null && device.serial === ownBrowserSerial;
