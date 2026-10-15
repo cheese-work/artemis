@@ -64,6 +64,7 @@ export class RunChatComponent {
   public readonly error = signal<string | null>(null);
   public readonly sending = signal(false);
   public readonly latest = computed(() => this.chat()?.turns.at(-1));
+  public readonly usageTurns = computed(() => (this.chat()?.turns ?? []).map(turn => ({ id: turn.turn_id, number: turn.number })));
   public readonly active = computed(() => ['queued', 'running', 'paused'].includes(this.latest()?.status ?? ''));
   public readonly paused = computed(() => this.latest()?.status === 'paused');
   public readonly inputRequest = computed(() => {

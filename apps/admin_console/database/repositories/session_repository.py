@@ -317,8 +317,10 @@ class SessionRepository:
         Flash and Pro alike) and reports the prompt size of the latest
         Operator/FlashRunner call as the live executor context. Also echoes
         the profile and Pro tuning the run was started with, read from the
-        session's stored ``device_info``.
+        session's stored ``device_info``. ``estimated_cost_usd`` prices the
+        totals at the run model's list price (None when it has none).
         """
+        from artemis.services.model_pricing import estimate_cost_usd, normalize_model
         from artemis.services.token_meter import (
             OPERATOR_CONTEXT_WINDOW_TOKENS,
             OPERATOR_NODE_NAMES,
@@ -368,6 +370,7 @@ class SessionRepository:
 
         profile: str | None = None
         run_tuning: dict[str, Any] | None = None
+        d_info: Any = None
         if session_row and session_row["device_info"]:
             try:
                 d_info = json.loads(session_row["device_info"])
@@ -379,6 +382,16 @@ class SessionRepository:
                 if isinstance(tuning, dict) and tuning:
                     run_tuning = dict(tuning)
 
+        model: str | None = None
+        cost: float | None = None
+        if session_row:
+            from apps.admin_console.services.model_service import ModelService
+
+            recorded = d_info if isinstance(d_info, dict) else None
+            model = normalize_model(ModelService.get_active_model_info(profile, recorded)["id"])
+            if llm_calls:
+                cost = estimate_cost_usd(model, prompt, cached, completion)
+
         return {
             "session_id": session_id,
             "llm_calls": llm_calls,
@@ -389,6 +402,8 @@ class SessionRepository:
             "operator_context_tokens": operator_context,
             "operator_context_window_tokens": OPERATOR_CONTEXT_WINDOW_TOKENS,
             "operator_context_updated_at": operator_context_at,
+            "model": model,
+            "estimated_cost_usd": cost,
             "profile": profile,
             "run_tuning": run_tuning,
         }
