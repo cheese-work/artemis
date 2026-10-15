@@ -193,7 +193,14 @@ async def test_completed_report_waits_for_real_data_engine_step_write(runner, tm
     context = Mock(spec=ArtemisContext)
     context.execution_setup = SimpleNamespace(traces_path=str(tmp_path / "traces"))
     context.device = None
-    engine = DataEngine(context)
+    with (
+        patch("artemis.data_engine.engine.read_ipc_port", return_value=None),
+        patch(
+            "artemis.data_engine.engine.get_ipc_port_file",
+            return_value=tmp_path / ".no-ipc-port",
+        ),
+    ):
+        engine = DataEngine(context)
     engine.start_session("Test the app")
     runner.ctx.data_engine = engine
 
