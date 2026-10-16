@@ -101,7 +101,18 @@ One reconciler owns device state for every source:
 - Hysteresis: a new state must hold for 5 seconds before an event is written,
   so Wi-Fi flapping writes a bounded number of events.
 - Transitions are idempotent `device_events` rows, indexed by
-  `(device_id, ts)`, with retention and compaction.
+  `(device_id, ts)`, with retention and compaction. A row has `kind`
+  `state_changed` and payload `{"state": ...}`; writing the state a device
+  already has adds nothing.
+- Sources: server adb discovery (which also lists bridge phones) and host
+  registration heartbeat on every observation. An adb state of `device` (host
+  rows: `device` or none) reports `idle`; any other state reports
+  `disconnected`. `running` and `busy` come with the board read model.
+- A lifecycle tick (`TICK_S`, 1 s) starts with the server and expires silent
+  connections; it stops on shutdown.
+- Connections report `running`, `busy`, `idle` or `disconnected`. A device takes
+  the best state among connections that reported within the TTL (`running`, then
+  `busy`, then `idle`); if all say `disconnected` it is `disconnected`.
 - On startup the reconciler writes an `unknown` interval from the last known
   state to now. The availability timeline never claims a device was idle while
   nobody knew.
