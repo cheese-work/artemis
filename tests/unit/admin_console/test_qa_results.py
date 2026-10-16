@@ -346,49 +346,43 @@ def test_pro_assert_failure_without_anchor_remains_a_failure():
 
 
 def test_recent_run_without_outcome_or_ledger_stays_pending_until_legacy_cutoff(
-    tmp_path, monkeypatch
+    library, monkeypatch
 ):
     service = _service()
-    database = tmp_path / "sessions.db"
-    traces = tmp_path / "traces"
-    traces.mkdir()
+    from tests.support.smartqa_verdict_fixtures import build_smartqa_verdict_case
+
+    case = build_smartqa_verdict_case(library, monkeypatch, status="failed")
+    turn_id = case.turn_ids[-1]
     monkeypatch.setenv("ARTEMIS_VERDICT_PENDING_CAP_SECONDS", "30")
-    with sqlite3.connect(database) as connection:
-        connection.executescript(
-            "CREATE TABLE sessions (session_id TEXT PRIMARY KEY, end_time REAL);"
-            "CREATE TABLE lifecycle_outbox (session_id TEXT, created_at REAL);"
-        )
-        connection.execute("INSERT INTO sessions VALUES (?, ?)", ("turn-recent", 95))
+    with sqlite3.connect(library.db) as connection:
+        connection.execute("UPDATE sessions SET end_time=? WHERE session_id=?", (95, turn_id))
 
     pending = service.result_for_turn(
-        database, traces, "turn-recent", "failed", 1, 1, now=100
+        library.db, library.traces, turn_id, "failed", 1, 1, now=100
     )
-    legacy = service.result_for_turn(database, traces, "turn-recent", "failed", 1, 1, now=126)
+    legacy = service.result_for_turn(
+        library.db, library.traces, turn_id, "failed", 1, 1, now=126
+    )
 
     assert pending["label_state"] == "pending"
     assert legacy["label_state"] == "legacy"
 
 
 def test_pending_without_session_or_outbox_expires_from_pending_created_at(
-    tmp_path, monkeypatch
+    library, monkeypatch
 ):
     service = _service()
-    database = tmp_path / "sessions.db"
-    traces = tmp_path / "traces"
-    outcome_dir = traces / "turn-no-session"
-    outcome_dir.mkdir(parents=True)
-    (outcome_dir / "run_outcome.json").write_text(
-        json.dumps({"task_status": "failed"}), encoding="utf-8"
-    )
+    turn_id = "turn-no-session"
+    library.write(turn_id, "run_outcome.json", json.dumps({"task_status": "failed"}))
     monkeypatch.setenv("ARTEMIS_VERDICT_PENDING_CAP_SECONDS", "30")
 
     pending = service.result_for_turn(
-        database, traces, "turn-no-session", "failed", 1, 1, now=100
+        library.db, library.traces, turn_id, "failed", 1, 1, now=100
     )
     final = service.result_for_turn(
-        database, traces, "turn-no-session", "failed", 1, 1, now=131
+        library.db, library.traces, turn_id, "failed", 1, 1, now=131
     )
 
     assert pending["label_state"] == "pending"
     assert final["label_state"] == "final"
-    assert final["result"]["category"] == "unknown"
+    assert final["category"] == "unknown"
