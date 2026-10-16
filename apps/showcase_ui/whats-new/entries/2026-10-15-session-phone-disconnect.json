@@ -1,0 +1,7 @@
+{
+  "id": "2026-10-15-session-phone-disconnect",
+  "date": "2026-10-15",
+  "title": "When a session's phone disconnects, the message box turns off and the phone button blinks",
+  "body": "If the phone a session runs on disconnects, the message box is disabled and keeps your draft. The phone button blinks. Open it to reconnect the phone, or to run the session's first prompt on another phone as a new session.",
+  "issues": ["CHE-1656"]
+}

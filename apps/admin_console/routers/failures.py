@@ -18,24 +18,24 @@ import asyncio
 
 from fastapi import APIRouter, Depends, Query
 
-from apps.admin_console.core.access_control import require_admin
+from apps.admin_console.core.access_control import require_admin, require_admin_or_service_read
 from apps.admin_console.services import failure_ledger
 
-router = APIRouter(tags=["failures"], dependencies=[Depends(require_admin)])
+router = APIRouter(tags=["failures"])
 
 
-@router.get("/api/system/failures")
+@router.get("/api/system/failures", dependencies=[Depends(require_admin_or_service_read)])
 async def get_failures(days: int = Query(failure_ledger.DEFAULT_DAYS, ge=1, le=365)):
     return await asyncio.to_thread(failure_ledger.view, days)
 
 
-@router.post("/api/system/failures/collect")
+@router.post("/api/system/failures/collect", dependencies=[Depends(require_admin)])
 async def collect_failures():
     """Classify failures not in the ledger yet; the first call backfills existing runs."""
     return await asyncio.to_thread(failure_ledger.collect)
 
 
-@router.post("/api/system/failures/digest")
+@router.post("/api/system/failures/digest", dependencies=[Depends(require_admin)])
 async def send_failure_digest():
     """Send the summary of SmartQA-side causes not reported before."""
     return await asyncio.to_thread(failure_ledger.digest)

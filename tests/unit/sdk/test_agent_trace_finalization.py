@@ -12,14 +12,113 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 
 from artemis.sdk.agent import Agent
 from artemis.context import DeviceContext, DevicePlatform
 from artemis.runtime.device_lock import DeviceBusyError
-from artemis.sdk.types.exceptions import AgentError
+from third_party.mobile_use.sdk.types.exceptions import AgentError
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("record_failure", [False, True])
+@pytest.mark.parametrize("explicit_quota", [False, True])
+async def test_gateway_refusal_records_the_readable_failed_step_for_the_run_view(
+    monkeypatch, fake_provider_credentials, record_failure, explicit_quota
+):
+    from artemis.context import ArtemisContext
+    from third_party.mobile_use.sdk import agent as agent_module
+    from artemis.services import llm as llm_service
+
+    monkeypatch.setenv("ARTEMIS_CLOUD_MODE", "1")
+    monkeypatch.setattr(llm_service, "_wait_for_breaker", AsyncMock())
+    error = RuntimeError(
+        "The 'gpt-6.1-sol' model is not supported when using Codex with a ChatGPT account."
+    )
+    if explicit_quota:
+        error = RuntimeError("429 quota exhausted: secret-provider-body")
+    error.status_code = 429 if explicit_quota else 400
+    base_model = MagicMock()
+    base_model.ainvoke = AsyncMock(side_effect=error)
+    wrapper = llm_service.RobustChatModelWrapper(
+        base_model, selected_model="google/gemini-chosen" if explicit_quota else None
+    )
+    fallback = AsyncMock()
+    pause = MagicMock(side_effect=AssertionError("Explicit model must not pause"))
+    monkeypatch.setattr(llm_service, "_handle_llm_pause_and_resume", pause)
+    monkeypatch.setattr(
+        llm_service,
+        "retry_policy_for",
+        lambda category: SimpleNamespace(max_attempts=2, delay_for=lambda attempt: 0.0),
+    )
+
+    async def run_model(*args):
+        return await llm_service.with_fallback(lambda: wrapper.ainvoke([]), fallback)
+
+    context = MagicMock(spec=ArtemisContext)
+    context.data_engine = MagicMock()
+    if record_failure:
+        context.data_engine.record_step.side_effect = OSError("storage unavailable")
+    context.execution_setup = None
+    context.__aenter__ = AsyncMock(return_value=context)
+    context.__aexit__ = AsyncMock(return_value=False)
+    monkeypatch.setattr(agent_module, "ArtemisContext", lambda **kwargs: context)
+    monkeypatch.setattr(
+        agent_module, "FlashRunner", lambda *args, **kwargs: SimpleNamespace(run=run_model)
+    )
+    monkeypatch.setattr(agent_module, "DeviceExecutionLock", MagicMock())
+    monkeypatch.setattr(agent_module, "publish_startup_progress", MagicMock())
+    monkeypatch.setattr("artemis.tools.command_tool.shutdown_adb_background_tasks", AsyncMock())
+
+    agent = Agent()
+    agent._initialized = True
+    agent._device_context = DeviceContext(
+        host_platform="LINUX",
+        mobile_platform=DevicePlatform.ANDROID,
+        device_id="test-device",
+        device_width=1080,
+        device_height=2424,
+    )
+    agent._adb_client = MagicMock()
+    agent._ui_adb_client = MagicMock()
+    agent._config.video_recording_tools_enabled = False
+    agent._get_graph_state = MagicMock()
+    agent._prepare_tracing = MagicMock()
+    agent._prepare_output_files = MagicMock()
+    agent._prepare_app_installation = AsyncMock()
+    agent._prepare_device_environment = AsyncMock()
+    agent._prepare_app_lock = AsyncMock()
+
+    with pytest.raises(Exception) as raised:
+        await agent.run_task(goal="test", profile="flash")
+
+    reason = (
+        "google/gemini-chosen: quota exhausted. Pick another model and run again."
+        if explicit_quota
+        else "AI provider rejected the model; try again"
+    )
+    assert str(raised.value) == reason
+    context.data_engine.record_step.assert_called_once_with(
+        action_taken={
+            "action": "report_task_status",
+            "args": {"status": "failed", "explanation": reason},
+        },
+        last_execution_result={"status": "failed", "error": reason},
+    )
+    assert agent._tasks[-1].status == "failed"
+    assert reason in agent._tasks[-1].result.error
+    assert context.data_engine.end_session.call_args_list[0] == call(
+        "failed", error=agent._tasks[-1].result.error
+    )
+    assert base_model.ainvoke.await_count == 2
+    fallback.assert_not_awaited()
+    pause.assert_not_called()
+    context.data_engine.end_session.assert_called_with(
+        status="failed", error=agent._tasks[-1].result.error
+    )
 
 
 @pytest.mark.asyncio
@@ -33,6 +132,69 @@ async def test_trace_finalization_failure_does_not_escape():
     await agent._finalize_tracing_safely(task=task, context=context)
 
     agent._finalize_tracing.assert_awaited_once_with(task=task, context=context)
+
+
+@pytest.mark.asyncio
+async def test_tip_runs_after_trace_and_sdk_device_release(
+    monkeypatch, fake_provider_credentials, caplog
+):
+    from artemis.context import ArtemisContext
+    from third_party.mobile_use.sdk import agent as agent_module
+    from apps.admin_console.services import automatic_prompt_tips
+
+    monkeypatch.delenv("ARTEMIS_CLOUD_MODE", raising=False)
+    monkeypatch.delenv("ARTEMIS_CHAT_SESSION_ID", raising=False)
+    monkeypatch.setenv("ARTEMIS_TASK_WORKER", "1")
+    events = []
+    context = MagicMock(spec=ArtemisContext)
+    context.data_engine = MagicMock(session_id="run")
+    context.execution_setup = None
+    context.__aenter__ = AsyncMock(return_value=context)
+    context.__aexit__ = AsyncMock(return_value=False)
+    monkeypatch.setattr(agent_module, "ArtemisContext", lambda **kwargs: context)
+    monkeypatch.setattr(
+        agent_module,
+        "FlashRunner",
+        lambda *args, **kwargs: SimpleNamespace(
+            run=AsyncMock(return_value={"status": "completed"})
+        ),
+    )
+    lock = MagicMock()
+    lock.release.side_effect = lambda: events.append("release")
+    lock_type = MagicMock(return_value=lock)
+    lock_type.get_active_owner.return_value = None
+    monkeypatch.setattr(agent_module, "DeviceExecutionLock", lock_type)
+    monkeypatch.setattr(agent_module, "publish_startup_progress", MagicMock())
+    monkeypatch.setattr("artemis.tools.command_tool.shutdown_adb_background_tasks", AsyncMock())
+    agent = Agent()
+    agent._initialized = True
+    agent._device_context = DeviceContext(device_id="test-device")
+    agent._adb_client = MagicMock()
+    agent._ui_adb_client = MagicMock()
+    agent._ui_adb_client.disconnect.side_effect = lambda: events.append("disconnect")
+    agent._config.video_recording_tools_enabled = False
+    agent._get_graph_state = MagicMock(return_value=SimpleNamespace(model_dump=lambda: {}))
+    agent._prepare_tracing = MagicMock()
+    agent._prepare_output_files = MagicMock()
+    for name in (
+        "_prepare_app_installation",
+        "_prepare_device_environment",
+        "_prepare_app_lock",
+        "_connect_screen_client",
+        "_ensure_device_unlocked",
+    ):
+        setattr(agent, name, AsyncMock())
+    agent._finalize_tracing = AsyncMock(side_effect=lambda **kwargs: events.append("trace"))
+
+    async def tip(identity):
+        events.append("tip")
+        raise TypeError("PRIVATE-TIP-ERROR-SENTINEL")
+
+    monkeypatch.setattr(automatic_prompt_tips, "ensure_tip", AsyncMock(side_effect=tip))
+    await agent.run_task(goal="test", profile="flash")
+    assert events == ["trace", "disconnect", "release", "tip"]
+    assert agent._tasks[-1].status == "completed"
+    assert "PRIVATE-TIP-ERROR-SENTINEL" not in caplog.text
 
 
 @pytest.mark.asyncio
@@ -81,7 +243,7 @@ async def test_task_that_never_acquires_queue_does_not_create_trace_session(
     agent._prepare_tracing = MagicMock()
 
     with patch(
-        "artemis.sdk.agent.DeviceExecutionLock.acquire",
+        "artemis.runtime.DeviceExecutionLock.acquire",
         side_effect=DeviceBusyError("queue cancelled"),
     ):
         with pytest.raises(DeviceBusyError, match="queue cancelled"):

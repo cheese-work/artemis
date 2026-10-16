@@ -23,7 +23,7 @@ session lazily and hands transport failures back to it once.
 
 The screen-data contract is byte-for-byte the one :class:`UIAutomatorClient`
 exposes (``UIAutomatorScreenData`` with the element dictionaries produced by
-``_parse_hierarchy_xml_to_elements``), so every consumer downstream
+``parse_hierarchy_xml_to_elements``), so every consumer downstream
 (``filter_ui_hierarchy``, the Explorer index, the MCP actuators that compare
 ``clickable == "true"``) sees identical shapes whichever backend is active.
 
@@ -43,11 +43,6 @@ from typing import Any
 
 from PIL import Image
 
-from artemis.clients.ui_automator_client import (
-    UIAutomatorScreenData,
-    _parse_hierarchy_xml_to_elements,
-    _pil_to_base64,
-)
 from artemis.runtime.awake_service import ensure_device_awake
 from artemis.runtime.endpoint_transport import EndpointTransport
 from artemis.runtime.helper_manager import (
@@ -60,7 +55,13 @@ from artemis.runtime.helper_manager import (
     ProvisionEvent,
     helper_manager_for,
 )
-from artemis.utils.logger import get_logger
+from third_party.mobile_use.clients.ui_automator_client import (
+    UIAUTOMATOR_BOOL_ATTRIBUTES,
+    UIAutomatorScreenData,
+    parse_hierarchy_xml_to_elements,
+    pil_to_base64,
+)
+from third_party.mobile_use.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
@@ -79,19 +80,7 @@ __all__ = [
     "normalize_helper_elements",
 ]
 
-_BOOL_ATTRIBUTES = (
-    "checkable",
-    "checked",
-    "clickable",
-    "enabled",
-    "focusable",
-    "focused",
-    "scrollable",
-    "long-clickable",
-    "password",
-    "selected",
-    "visible-to-user",
-)
+_BOOL_ATTRIBUTES = (*UIAUTOMATOR_BOOL_ATTRIBUTES, "visible-to-user")
 _GLOBAL_KEYS = ("back", "home", "recents", "notifications", "quick_settings")
 
 
@@ -352,13 +341,13 @@ class AccessibilityClient:
 
     def get_screenshot_base64(self) -> str | None:
         screenshot = self.get_screenshot()
-        return None if screenshot is None else _pil_to_base64(screenshot, format="JPEG")
+        return None if screenshot is None else pil_to_base64(screenshot, format="JPEG")
 
     @staticmethod
     def _elements_from_dump(dump: dict[str, Any]) -> tuple[str, list[dict[str, Any]]]:
         xml = dump.get("xml") or ""
         if isinstance(xml, str) and xml.strip():
-            return xml, _parse_hierarchy_xml_to_elements(xml)
+            return xml, parse_hierarchy_xml_to_elements(xml)
         return "", normalize_helper_elements(dump.get("elements"))
 
     def get_screen_data(self) -> UIAutomatorScreenData:
@@ -383,7 +372,7 @@ class AccessibilityClient:
         if screenshot is None:
             raise RuntimeError("Failed to capture screenshot")
         return UIAutomatorScreenData(
-            base64=_pil_to_base64(screenshot, format="JPEG"),
+            base64=pil_to_base64(screenshot, format="JPEG"),
             hierarchy_xml=xml,
             elements=elements,
             width=screenshot.width,

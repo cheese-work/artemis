@@ -15,12 +15,8 @@ from typing import Any
 
 from apps.admin_console.core.access_control import AdminAPIError
 from apps.admin_console.core.ownership import OwnerScope
+from apps.admin_console.services.bridge_session_service import bridge_session_service
 from artemis.runtime.device_lock import DeviceExecutionLock
-
-try:
-    from admin_console.services.bridge_session_service import bridge_session_service
-except ImportError:
-    from apps.admin_console.services.bridge_session_service import bridge_session_service
 
 _BRIDGE_ADDRESS = re.compile(r"(?:127\.0\.0\.1|localhost):\d+")
 # The device pool and the device locks treat a serial as its normalized form

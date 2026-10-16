@@ -11,19 +11,19 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
 from apps.admin_console.core.access_control import AccessIdentity, AdminAPIError, require_admin
-from apps.admin_console.core.ownership import OwnerScope, actor_scope, scope_or_open
+from apps.admin_console.core.ownership import OwnerScope, actor_scope, require_actor
 from apps.admin_console.services import host_registry as hr
+from apps.admin_console.services.bridge_session_service import bridge_session_service
 from apps.admin_console.services.host_hub import CLOSE_REVOKED, host_hub
 from apps.admin_console.services.host_registry import host_registry
 from apps.admin_console.services.host_tunnel import host_tunnels
 from artemis.runtime import device_pool
+from artemis.runtime.adb_endpoint import AdbEndpoint
 
 try:
     from admin_console.core.state import state
-    from admin_console.services.bridge_session_service import bridge_session_service
 except ImportError:
     from apps.admin_console.core.state import state
-    from apps.admin_console.services.bridge_session_service import bridge_session_service
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/hosts", tags=["hosts"])
@@ -46,7 +46,7 @@ def _active_run_count(host_id: str) -> int:
 @router.get("")
 async def list_hosts(actor: OwnerScope = Depends(actor_scope)) -> dict:
     """Computers, and every phone the caller can pick: shared by a computer or plugged into their browser."""
-    scope = scope_or_open(actor)
+    scope = require_actor(actor)
     if not hr.host_agent_enabled():
         return {"enabled": False, "hosts": [], "devices": []}
     hosts, devices = host_registry.list_hosts()
@@ -55,11 +55,16 @@ async def list_hosts(actor: OwnerScope = Depends(actor_scope)) -> dict:
     # The pool classifies phones from adb properties; a browser phone's address
     # (127.0.0.1:<port>) says nothing about what it is.
     sessions = [s for s in bridge_session_service.live_sessions() if scope.may_act_on(s.owner)]
-    pool = {d.serial: d for d in await device_pool.list_devices_async()} if sessions else {}
+    pool = (
+        {d.serial: d for d in await device_pool.pool_for(AdbEndpoint.local()).list_devices_async()}
+        if sessions
+        else {}
+    )
     browser = [
         {
             "serial": s.serial,
             "model": pool[s.serial].model if s.serial in pool else None,
+            "product": pool[s.serial].product if s.serial in pool else None,
             "device_kind": pool[s.serial].device_kind if s.serial in pool else "unknown",
             "source": "browser",
             "owner": s.owner,

@@ -1,8 +1,10 @@
 from pathlib import Path
 import os
+import time
 import uuid
 
 from apps.admin_console.core.access_control import AccessConfig
+from apps.admin_console.core.preview_profile import preview_demo_selected
 
 
 def preview_owners(config: AccessConfig) -> tuple[tuple[str, str], str]:
@@ -24,7 +26,10 @@ def preview_owners(config: AccessConfig) -> tuple[tuple[str, str], str]:
     return (owners[0], owners[1]), admin
 
 
-def seed_preview_fixtures(root: Path, qa_emails: tuple[str, str], admin_email: str) -> list[dict]:
+def seed_preview_fixtures(
+    root: Path, qa_emails: tuple[str, str], admin_email: str, demo_now: float | None = None
+) -> list[dict]:
+    """Seed the nine base runs; ``demo_now`` (boot time) adds the demo board, stamped from it."""
     from apps.admin_console.database.repositories.run_catalog_repository import (
         RunCatalogRepository,
     )
@@ -43,7 +48,8 @@ def seed_preview_fixtures(root: Path, qa_emails: tuple[str, str], admin_email: s
             session_id = str(
                 uuid.uuid5(uuid.NAMESPACE_URL, f"artemis-preview/{owner_index}/{status}")
             )
-            timestamp = 1_700_000_000.0 + owner_index * 100 + status_index
+            base = 1_700_000_000.0 if demo_now is None else demo_now - 86_400
+            timestamp = base + owner_index * 100 + status_index
             goal = f"Synthetic preview: identity {owner_index + 1}, {status} run"
             storage.create_session(
                 SessionMetadata(
@@ -67,6 +73,10 @@ def seed_preview_fixtures(root: Path, qa_emails: tuple[str, str], admin_email: s
                         "device_id": None,
                     }
                 )
+    if demo_now is not None:
+        from apps.admin_console.core.preview_demo import seed_demo_board
+
+        queue += seed_demo_board(root, (*qa_emails, admin_email), demo_now, storage, catalog)
     return queue
 
 
@@ -82,5 +92,6 @@ def initialize_preview_fixtures(root: Path | None, config: AccessConfig) -> None
     ):
         raise ValueError("Preview storage was imported before the private paths were selected.")
     qa_emails, admin_email = preview_owners(config)
-    state.queue_items[:] = seed_preview_fixtures(root, qa_emails, admin_email)
+    demo_now = time.time() if preview_demo_selected(True) else None
+    state.queue_items[:] = seed_preview_fixtures(root, qa_emails, admin_email, demo_now)
     control.paused = False

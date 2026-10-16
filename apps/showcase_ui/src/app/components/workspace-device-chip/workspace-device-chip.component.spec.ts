@@ -3,6 +3,8 @@ import { provideRouter } from '@angular/router';
 import { phone, phoneFakes } from '../../testing/phone-fakes';
 import { WorkspacePhoneService } from '../../services/workspace-phone.service';
 import { WorkspaceDeviceChipComponent } from './workspace-device-chip.component';
+import { expectHitBox } from '../../testing/hit-box';
+import { of } from 'rxjs';
 
 describe('WorkspaceDeviceChipComponent', () => {
   let fakes: ReturnType<typeof phoneFakes>;
@@ -23,6 +25,23 @@ describe('WorkspaceDeviceChipComponent', () => {
 
   beforeEach(() => (fakes = phoneFakes()));
 
+  for (const [model, product, expected] of [
+    ['Pixel 6 Pro', 'raven', 'Pixel 6 Pro'], [null, 'raven', 'raven'], [null, null, 'Android phone']
+  ]) {
+    it(`titles a browser phone missing from readiness as ${expected}`, () => {
+      const serial = '127.0.0.1:35773';
+      fakes.relay.state.set({ status: 'connected', serial, sessionId: 'bridge', error: null });
+      fakes.hosts.list.and.returnValue(of({ enabled: true, hosts: [], devices: [{ serial, model, product,
+        device_kind: 'phone', source: 'browser', computer_id: null, computer_name: null,
+        computer_status: 'online', reason: null, since: null }] }));
+      const { el, settle } = create();
+      settle();
+      expect(el.querySelector('.phone-card-label')?.textContent).toBe(`${expected} · Phone`);
+      expect(el.querySelector('.phone-card-serial')?.textContent).toBe(serial);
+      expect(fakes.system.useLocalAdbServer).not.toHaveBeenCalled();
+    });
+  }
+
   /** A run in progress on `serial`, while the person may be looking at some other run. */
   const runningOn = (serial: string | null) => {
     fakes.agent.sessions.update((all) => [...all, { session_id: 'live', status: 'running', device_serial: serial }]);
@@ -35,6 +54,25 @@ describe('WorkspaceDeviceChipComponent', () => {
     expect(chip().textContent).toContain('No phone · Connect');
     expect(chip().getAttribute('aria-expanded')).toBe('false');
     expect(panel()).toBeNull();
+  });
+
+  it('shows the sidebar device label, mono serial, running state and queue count', () => {
+    fakes.system.connectedDevices.set([phone()]);
+    fakes.system.selectedRunTarget.set(phone().serial);
+    runningOn(phone().serial);
+    fakes.agent.sessions.update(all => [...all, { session_id: 'queued', status: 'pending', device_serial: phone().serial }]);
+    const { el, chip, settle } = create();
+    expect(el.querySelector('.phone-card-label')?.textContent).toBe('Pixel 6 · Phone');
+    expect(el.querySelector('.phone-card-serial')?.textContent).toBe(phone().serial);
+    expect(el.querySelector('.phone-card-state')?.textContent).toContain('Running');
+    expect(el.querySelector('.phone-card-state')?.textContent).toContain('1 queued');
+    const header = el.querySelector<HTMLElement>('.phone-card-header')!;
+    expect(getComputedStyle(header).display).toBe(window.innerWidth >= 1200 ? 'flex' : 'none');
+    chip().click();
+    settle();
+    const controls = el.querySelectorAll<HTMLElement>('button, a');
+    expect(controls.length).toBeGreaterThan(0);
+    for (const control of controls) expectHitBox(control);
   });
 
   it('opens the picker with the device list, Connect a phone from this browser, and no Disconnect', () => {
@@ -358,7 +396,7 @@ describe('WorkspaceDeviceChipComponent', () => {
       expect(options[0]).toMatch(/^Pixel 6 · Phone · /);
       expect(options[1]).toMatch(/^SM-S911B · Phone · /);
       expect(options[2]).toMatch(/^Emulator · /);
-      expect(options[3]).toMatch(/^Unknown device · /);
+      expect(options[3]).toMatch(/^Android phone · Unknown device · /);
       // The primary label (before the first separator) is never a raw address.
       for (const option of options) {
         expect(option.split(' · ')[0]).not.toMatch(/\d+\.\d+\.\d+\.\d+:\d+|emulator-\d+/);
@@ -393,13 +431,13 @@ describe('WorkspaceDeviceChipComponent', () => {
       expect(fakes.relay.connect).toHaveBeenCalledTimes(1);
     });
 
-    it('links Setup from the menu as "More options"', () => {
+    it('links the Phones page from the menu as "More options"', () => {
       const { el, chip, settle } = create();
       chip().click();
       settle();
       const more = named(el, 'More options') as HTMLAnchorElement;
       expect(more.tagName).toBe('A');
-      expect(more.getAttribute('href')).toBe('/setup');
+      expect(more.getAttribute('href')).toBe('/phones');
     });
 
     it('closes the menu when "More options" is followed', () => {

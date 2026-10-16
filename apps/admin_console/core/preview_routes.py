@@ -3,7 +3,7 @@
 A per-PR preview serves the real FastAPI app over synthetic fixtures, so every
 registered route is classified, and a route nobody reviewed stays off:
 
-* ``REAL``: real read-only behaviour over the preview's own data.
+* ``REAL``: real reads over the preview's own data, including local link-share bookkeeping.
 * ``SYNTHETIC``: served by ``routers.preview_synthetic``, never the real handler.
 * ``DISABLED``: answered with ``preview_disabled`` before any handler runs.
 
@@ -35,6 +35,7 @@ WEBSOCKET = "WS"
 
 REAL = frozenset(
     {
+        "GET /api/chats/{session_id}",
         "GET /",
         "GET /{full_path:path}",
         "GET /api/images/{image_name}",
@@ -45,6 +46,8 @@ REAL = frozenset(
         "GET /api/sessions/{session_id}/video",
         "GET /api/sessions/{session_id}/plan",
         "GET /api/sessions/{session_id}/notes",
+        "GET /api/sessions/{session_id}/prompt-critique",
+        "GET /api/prompt-lessons",
         "GET /api/sessions/{session_id}/checks",
         "GET /api/sessions/{session_id}/goal-images/{index}",
         "GET /api/sessions/{session_id}/events",
@@ -76,6 +79,7 @@ REAL = frozenset(
 # ``routers.preview_synthetic``; the dispatch tests prove the real one never runs.
 SYNTHETIC = frozenset(
     {
+        "GET /api/models",
         "GET /api/devices",
         "GET /api/status",
         "GET /api/stream/device-state",
@@ -90,6 +94,16 @@ SYNTHETIC = frozenset(
 
 DISABLED = frozenset(
     {
+        "POST /api/chats/{session_id}/input/{request_id}",
+        "PATCH /api/chats/{session_id}/title",
+        "POST /api/chats/{session_id}/messages",
+        "POST /api/chats/{session_id}/pause",
+        "POST /api/chats/{session_id}/continue",
+        "POST /api/sessions/{session_id}/improve-prompt",
+        "GET /api/system/providers",
+        "PUT /api/system/providers/{provider}",
+        "POST /api/system/providers/{provider}/test",
+        "POST /api/system/providers/{provider}/sync",
         # Framework docs and the legacy console UI (root-absolute links).
         "GET /openapi.json",
         "GET /docs",
@@ -143,13 +157,16 @@ DISABLED = frozenset(
         "POST /api/system/restart",
         "POST /api/system/shutdown",
         "GET /api/system/drain",
+        "GET /api/system/service-readiness",
         "GET /api/system/failures",
         "POST /api/system/failures/collect",
         "POST /api/system/failures/digest",
         "POST /api/system/drain",
+        "POST /api/system/drain/cut",
         "DELETE /api/system/drain",
         # Host agents, enrollment and the device bridge.
         f"{WEBSOCKET} /api/device-bridge/session",
+        f"{WEBSOCKET} /api/device-bridge/resume",
         "GET /api/hosts",
         "POST /api/hosts/enrollment-codes",
         "GET /api/hosts/enrollment-codes/{code_id}",

@@ -5,26 +5,32 @@ import { UsbDeviceRelayService } from '../../services/usb-device-relay.service';
   selector: 'app-usb-phone-connection',
   standalone: true,
   template: `
-    <section class="usb-phone-connect" [attr.aria-busy]="relay.state().status === 'connecting'">
+    <section class="usb-phone-connect" [attr.aria-busy]="['connecting', 'reconnecting'].includes(relay.state().status)">
       @if (!relay.isSupported()) {
         <p class="usb-phone-support" role="status">
           WebUSB is unavailable here. Use desktop Chromium over HTTPS or localhost.
         </p>
       }
 
-      @if (relay.state().status === 'connected') {
+      @if (relay.state().status === 'connected' || relay.state().status === 'reconnecting') {
         <p class="usb-phone-status" role="status">
+          @if (relay.state().status === 'reconnecting') {
+            Reconnecting this browser bridge to the same phone:
+          } @else {
           Phone connected from this browser:
+          }
           <code>{{ relay.state().serial }}</code>. Keep this tab open while using the phone.
         </p>
       } @else {
         <button
           type="button"
           class="usb-phone-connect-button"
-          [disabled]="relay.state().status === 'connecting'"
+          [disabled]="['connecting', 'reconnecting'].includes(relay.state().status)"
           (click)="connect()"
         >
-          {{ relay.state().status === 'connecting' ? 'Connecting…' : 'Connect phone from this browser' }}
+          {{ relay.state().status === 'connecting'
+            ? 'Connecting…'
+            : relay.state().status === 'reconnecting' ? 'Reconnecting…' : 'Connect phone from this browser' }}
         </button>
       }
 
@@ -60,8 +66,8 @@ import { UsbDeviceRelayService } from '../../services/usb-device-relay.service';
       padding: 0 16px;
       border: 0;
       border-radius: 8px;
-      background: #1a73e8;
-      color: #fff;
+      background: var(--color-primary);
+      color: var(--color-on-primary);
       font: inherit;
       font-weight: 600;
       cursor: pointer;
@@ -81,11 +87,11 @@ import { UsbDeviceRelayService } from '../../services/usb-device-relay.service';
     }
 
     .usb-phone-support {
-      color: #475569;
+      color: var(--color-text-muted);
     }
 
     .usb-phone-status {
-      color: #166534;
+      color: var(--color-success);
     }
 
     .usb-phone-status code {
@@ -94,7 +100,7 @@ import { UsbDeviceRelayService } from '../../services/usb-device-relay.service';
     }
 
     .usb-phone-error {
-      color: #b42318;
+      color: var(--color-error);
     }
 
     .usb-phone-error small {

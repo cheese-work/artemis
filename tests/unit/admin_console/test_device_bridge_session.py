@@ -41,6 +41,7 @@ from apps.admin_console.services.bridge_session_service import (
 )
 
 PATH = "/api/device-bridge/session"
+RESUME_PATH = "/api/device-bridge/resume"
 
 # starlette's TestClient.websocket_connect always dials "ws://testserver"
 # regardless of base_url, so the Host header must be overridden explicitly on
@@ -216,6 +217,65 @@ def test_lease_connect_packet_relay_and_close(loopback_client, monkeypatch, _moc
     _assert_listener_closed(port)
 
 
+def test_transient_websocket_close_resumes_same_bridge_session(
+    loopback_client, monkeypatch, _mock_adb
+):
+    peer = {}
+
+    async def fake_adb_command(*arguments):
+        _mock_adb.append(arguments)
+        if arguments[0] == "connect":
+            host, port = arguments[1].split(":")
+            peer["reader"], peer["writer"] = await asyncio.open_connection(host, int(port))
+            return f"connected to {arguments[1]}"
+        writer = peer.get("writer")
+        if writer is not None:
+            writer.close()
+            await writer.wait_closed()
+        return "disconnected"
+
+    monkeypatch.setattr(bridge_session_service_module, "_run_adb_command", fake_adb_command)
+
+    with loopback_client.websocket_connect(PATH, headers=_HOST_HEADER) as websocket:
+        leased = websocket.receive_json()
+        assert leased["type"] == "session_leased"
+        session_id = leased["session_id"]
+        token = leased["reconnect_token"]
+        serial = f"127.0.0.1:{leased['listener']['port']}"
+        assert websocket.receive_json() == {"type": "device_attached", "serial": serial}
+        websocket.send_text(
+            json.dumps(
+                {
+                    "type": "client_close",
+                    "reason": "socket_error",
+                    "usb_error": None,
+                    "visibility_state": "visible",
+                }
+            )
+        )
+
+    retained = asyncio.run(bridge_session_service.get(session_id))
+    assert retained is not None
+    assert retained.serial == serial
+    assert not retained.revoked
+
+    with loopback_client.websocket_connect(RESUME_PATH, headers=_HOST_HEADER) as websocket:
+        websocket.send_text(
+            json.dumps({"type": "resume", "session_id": session_id, "reconnect_token": token})
+        )
+        resumed_lease = websocket.receive_json()
+        assert resumed_lease["type"] == "session_leased"
+        assert resumed_lease["session_id"] == session_id
+        assert resumed_lease["serial"] == serial
+        assert resumed_lease["reconnect_token"] == token
+        assert websocket.receive_json() == {"type": "device_attached", "serial": serial}
+        websocket.send_text("close")
+
+    assert _mock_adb == [("connect", serial), ("disconnect", serial)]
+    assert asyncio.run(bridge_session_service.get(session_id)) is None
+    _assert_listener_closed(int(serial.rsplit(":", 1)[1]))
+
+
 def test_loopback_session_binds_listener_and_closes(loopback_client, _mock_adb):
     with loopback_client.websocket_connect(PATH, headers=_HOST_HEADER) as ws:
         payload = ws.receive_json()
@@ -299,10 +359,7 @@ class _ManualClock:
             await asyncio.sleep(0.001)
 
 
-@pytest.mark.parametrize("attachment_delayed", [False, True])
-def test_expired_session_times_out_and_disconnects_adb(
-    loopback_client, monkeypatch, _mock_adb, caplog, attachment_delayed
-):
+def _install_manual_clock(monkeypatch) -> _ManualClock:
     # Pin both limits so ambient settings cannot change which one fires after the advance.
     monkeypatch.setenv(
         "ARTEMIS_BRIDGE_SESSION_TTL_SECONDS",
@@ -319,6 +376,14 @@ def test_expired_session_times_out_and_disconnects_adb(
         type("FakeTime", (), {"monotonic": staticmethod(clock.monotonic)}),
     )
     monkeypatch.setattr(device_bridge, "_sleep", clock.sleep)
+    return clock
+
+
+@pytest.mark.parametrize("attachment_delayed", [False, True])
+def test_expired_session_times_out_and_disconnects_adb(
+    loopback_client, monkeypatch, _mock_adb, caplog, attachment_delayed
+):
+    clock = _install_manual_clock(monkeypatch)
     # The close frame reaches the client before the handler's cleanup revokes the session.
     revoked = threading.Event()
     revoke = bridge_session_service.revoke
@@ -796,6 +861,43 @@ def test_bridge_close_logs_sanitized_reason(reason, caplog):
     assert f"reason={reason}" in caplog.text
 
 
+@pytest.mark.asyncio
+async def test_bridge_session_resumes_with_same_serial_and_rejects_wrong_credentials():
+    service = BridgeSessionService()
+    session = await service.create_session(owner="qa@example.com")
+    session.connected.set()
+    serial = session.serial
+    generation = session.connection_generation
+
+    assert await service.begin_reconnect(session.session_id, generation, grace_seconds=1)
+    with pytest.raises(ValueError, match="unavailable"):
+        await service.resume(session.session_id, "wrong-token", "qa@example.com")
+    with pytest.raises(ValueError, match="unavailable"):
+        await service.resume(session.session_id, session.reconnect_token, "other@example.com")
+
+    resumed = await service.resume(session.session_id, session.reconnect_token, "qa@example.com")
+    assert resumed is session
+    assert resumed.serial == serial
+    assert resumed.connection_generation == generation + 1
+    assert resumed.websocket_attached
+    assert await service.active_session_ids() == {session.session_id}
+    await service.revoke(session.session_id)
+
+
+@pytest.mark.asyncio
+async def test_bridge_session_expires_after_reconnect_grace():
+    service = BridgeSessionService()
+    session = await service.create_session()
+    session.connected.set()
+
+    assert await service.begin_reconnect(
+        session.session_id, session.connection_generation, grace_seconds=0.01
+    )
+    await asyncio.sleep(0.03)
+
+    assert await service.get(session.session_id) is None
+
+
 def test_server_accepts_every_close_reason_the_browser_can_send():
     source = (
         Path(__file__).parents[3] / "apps/showcase_ui/src/app/services/usb-device-relay.service.ts"
@@ -942,6 +1044,49 @@ def test_tcp_relay_forwards_multi_megabyte_transfer_as_whole_packets():
 
     assert frame_sizes == [len(packet) for packet in packets]
     assert session.bytes_device_to_browser == sum(map(len, packets))
+
+
+def test_tcp_relay_resumes_packet_after_disconnect_between_header_and_payload():
+    packet = _adb_packet(b"WRTE", b"DATA")
+    header = packet[:24]
+    session = BridgeSession(session_id="partial-packet", expires_at=float("inf"))
+
+    class CapturingWebSocket:
+        def __init__(self):
+            self.frames = []
+
+        async def send_bytes(self, frame):
+            self.frames.append(frame)
+
+    async def scenario():
+        reader = asyncio.StreamReader()
+        reader.feed_data(header)
+        detached_socket = CapturingWebSocket()
+        relay_task = asyncio.create_task(
+            device_bridge._forward_tcp_packets(reader, detached_socket, asyncio.Lock(), session)
+        )
+        await asyncio.sleep(0)
+        assert session.pending_device_packet == header
+        relay_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await relay_task
+
+        reader.feed_data(packet[len(header) :])
+        reader.feed_eof()
+        resumed_socket = CapturingWebSocket()
+        with pytest.raises(asyncio.IncompleteReadError):
+            await device_bridge._forward_tcp_packets(
+                reader, resumed_socket, asyncio.Lock(), session
+            )
+        return detached_socket.frames, resumed_socket.frames
+
+    detached_frames, resumed_frames = asyncio.run(scenario())
+
+    assert detached_frames == []
+    assert resumed_frames == [packet]
+    assert resumed_frames[0].startswith(b"WRTE")
+    assert session.pending_device_packet is None
+    assert session.bytes_device_to_browser == len(packet)
 
 
 def test_websocket_relay_counts_bytes_after_tcp_drain():
@@ -1185,19 +1330,33 @@ def test_failed_tcp_drain_does_not_count_bytes():
 def test_websocket_revoke_logs_main_reason_and_close_code(
     loopback_client, monkeypatch, _mock_adb, caplog, closing
 ):
-    if closing == "idle":
-        monkeypatch.setenv("ARTEMIS_BRIDGE_SESSION_TTL_SECONDS", "0.05")
+    # A wall-clock TTL can lapse before `device_attached` arrives on a slow host, so the
+    # lease only expires when the test advances the clock after attachment.
+    clock = _install_manual_clock(monkeypatch) if closing == "idle" else None
+    # The close log is written by cleanup, which runs after the client sees the close frame.
+    revoked = threading.Event()
+    revoke = bridge_session_service.revoke
+
+    async def observe_revoke(session_id):
+        await revoke(session_id)
+        revoked.set()
+
+    monkeypatch.setattr(bridge_session_service, "revoke", observe_revoke)
     with loopback_client.websocket_connect(PATH, headers=_HOST_HEADER) as websocket:
         lease = websocket.receive_json()
         assert websocket.receive_json()["type"] == "device_attached"
         if closing == "client":
             websocket.send_text("close")
+        elif closing == "idle":
+            clock.advance(bridge_session_service_module.DEFAULT_SESSION_TTL_SECONDS + 1)
         elif closing == "error":
             websocket.send_bytes(b"private-invalid-adb-packet")
         if closing != "client":
             with pytest.raises(WebSocketDisconnect) as error:
                 websocket.receive_json()
             assert error.value.code == (4008 if closing == "idle" else 1011)
+        # Wait inside the `with`: leaving it tears the app task down mid-cleanup.
+        assert revoked.wait(5.0)
 
     records = [
         record.message for record in caplog.records if "event=bridge_close " in record.message

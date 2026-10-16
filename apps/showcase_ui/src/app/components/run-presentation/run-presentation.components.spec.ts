@@ -71,7 +71,7 @@ describe('shared run presentation', () => {
     ['127.0.0.1:5555', { serial: '127.0.0.1:5555', model: 'Pixel 9', device_kind: 'phone' }, false, 'Pixel 9'],
     ['emulator-5554', { serial: 'emulator-5554', model: null, device_kind: 'emulator' }, false, 'Emulator'],
     ['127.0.0.1:5555', null, false, 'Phone via a browser'],
-    ['usb-serial', null, false, 'usb-serial'],
+    ['usb-serial', null, false, 'Android phone'],
     ['127.0.0.1:5555', null, true, '127.0.0.1:5555'],
     [null, null, true, 'Unknown phone']
   ] as const) {
@@ -104,6 +104,21 @@ describe('shared run presentation', () => {
     expect(fixture.nativeElement.querySelector('.step-failed')).toBeNull();
     expect(fixture.nativeElement.querySelector('.step-duration')).toBeNull();
     expect(fixture.nativeElement.querySelector('.step-failure-detail')).toBeNull();
+  });
+
+  it('keeps missing and broken thumbnails contained and recovers when the image changes', () => {
+    const fixture = render(RunStepRowComponent, { stepNumber: 1, title: 'Tap' });
+    const root = fixture.nativeElement as HTMLElement;
+    expect(root.querySelector('.step-thumbnail img')).toBeNull();
+    fixture.componentRef.setInput('thumbnail', '/images/missing.png');
+    fixture.detectChanges();
+    root.querySelector('img')!.dispatchEvent(new Event('error'));
+    fixture.detectChanges();
+    expect(root.querySelector('img')).toBeNull();
+    expect(root.querySelector('.step-thumbnail')!.textContent).toContain('image_not_supported');
+    fixture.componentRef.setInput('thumbnail', '/images/next.png');
+    fixture.detectChanges();
+    expect(root.querySelector('img')!.getAttribute('src')).toBe('/images/next.png');
   });
 
   for (const title of ['Checked', 'Worked']) {
@@ -169,6 +184,82 @@ describe('shared run presentation', () => {
     expect(fixture.componentInstance.player()!.nativeElement).toBe(player);
   });
 
+  const evidenceSteps = [
+    { id: 'st1', number: 1, title: 'Open Settings', screenshot: '/images/one.png' },
+    { id: 'st2', number: 2, title: 'Tap Network', screenshot: '/images/two.png' },
+    { id: 'st3', number: 3, title: 'Check connection', screenshot: null }
+  ];
+
+  it('switches between the playable video and selected screenshot without changing the step', () => {
+    const fixture = render(RunEvidencePanelComponent, {
+      recording: mapRecording({ capture: 'stopped', transfer: 'uploaded', playback: 'ready' }),
+      videoUrl: tinyVideoUrl(), steps: evidenceSteps, selectedStepId: 'st2', screenshotUrl: '/images/two.png'
+    });
+    const root = fixture.nativeElement as HTMLElement;
+    expect(root.querySelector('video')).not.toBeNull();
+    root.querySelector<HTMLButtonElement>('[data-media="screenshot"]')!.click();
+    fixture.detectChanges();
+    expect(root.querySelector('video')).toBeNull();
+    expect(root.querySelector('.evidence-image')!.getAttribute('src')).toBe('/images/two.png');
+    expect(root.querySelector('[data-media="screenshot"]')!.getAttribute('aria-pressed')).toBe('true');
+    expect(root.querySelector('.step-caption')!.textContent).toContain('Step 2 · Tap Network');
+    const selected = jasmine.createSpy('selected');
+    fixture.componentInstance.stepSelected.subscribe(selected);
+    root.querySelector<HTMLButtonElement>('[data-media="video"]')!.click();
+    fixture.detectChanges();
+    expect(root.querySelector('video')).not.toBeNull();
+    expect(selected).toHaveBeenCalledWith('st2');
+  });
+
+  it('keeps a live run on its screenshot even when a partial video is playable', () => {
+    const fixture = render(RunEvidencePanelComponent, {
+      running: true, recording: mapRecording({ capture: 'partial', transfer: 'uploaded', playback: 'ready' }),
+      videoUrl: tinyVideoUrl(), screenshotUrl: '/images/one.png'
+    });
+    expect(fixture.nativeElement.querySelector('video')).toBeNull();
+    expect(fixture.nativeElement.querySelector('.evidence-image')).not.toBeNull();
+  });
+
+  it('uses a native keyboard scrubber and emits the same selection as the filmstrip', () => {
+    const fixture = render(RunEvidencePanelComponent, { steps: evidenceSteps, selectedStepId: 'st2' });
+    const root = fixture.nativeElement as HTMLElement;
+    const selected = jasmine.createSpy('selected');
+    fixture.componentInstance.stepSelected.subscribe(selected);
+    const scrubber = root.querySelector<HTMLInputElement>('input[type="range"]')!;
+    expect(scrubber.min).toBe('0');
+    expect(scrubber.max).toBe('2');
+    expect(scrubber.step).toBe('1');
+    expect(scrubber.value).toBe('1');
+    expect(scrubber.getAttribute('aria-label')).toBe('Select step');
+    expect(scrubber.getAttribute('aria-valuetext')).toBe('Step 2 of 3: Tap Network');
+    scrubber.value = '2';
+    scrubber.dispatchEvent(new Event('input'));
+    expect(selected).toHaveBeenCalledWith('st3');
+    root.querySelector<HTMLButtonElement>('.filmstrip-step')!.click();
+    expect(selected).toHaveBeenCalledWith('st1');
+    fixture.componentInstance.selectIndex(-1);
+    fixture.componentInstance.selectIndex(3);
+    fixture.componentInstance.selectIndex(NaN);
+    expect(selected.calls.count()).toBe(2);
+  });
+
+  it('places video failure and retry in the caption while preserving step evidence', () => {
+    const fixture = render(RunEvidencePanelComponent, {
+      steps: evidenceSteps, selectedStepId: 'st1', screenshotUrl: '/images/one.png',
+      playerFailed: true, retryable: true, message: 'The video could not be played.'
+    });
+    const root = fixture.nativeElement as HTMLElement;
+    expect(root.querySelector('video')).toBeNull();
+    expect(root.querySelector('.evidence-caption .recording-copy')!.textContent).toContain('could not be played');
+    expect(root.querySelector('.evidence-image')).not.toBeNull();
+    const retry = jasmine.createSpy('retry');
+    fixture.componentInstance.retry.subscribe(retry);
+    const button = root.querySelector<HTMLButtonElement>('.evidence-caption .secondary-button')!;
+    expect(button.textContent!.trim()).toBe('Check again');
+    button.click();
+    expect(retry).toHaveBeenCalled();
+  });
+
   it('preserves playback-error copy, screenshot fallback, retry and the empty evidence message', () => {
     const fixture = render(RunEvidencePanelComponent, { recording: mapRecording({ capture: 'stopped', transfer: 'uploaded', playback: 'ready' }),
       videoUrl: tinyVideoUrl(), playerFailed: true, message: 'The video could not be played. Steps and screenshots are still here.', retryable: true, loaded: true });
@@ -179,6 +270,25 @@ describe('shared run presentation', () => {
     expect(fixture.nativeElement.querySelector('.muted').textContent).toBe('No screenshots for this run.');
     fixture.nativeElement.querySelector('button').click();
     expect(retry).toHaveBeenCalled();
+  });
+
+  it('shows raw recorder output only inside collapsed technical details, as plain text', () => {
+    const raw = '/usr/share/scrcpy/scrcpy-server: 1 file pushed\n<img src=x onerror=alert(1)>';
+    const fixture = render(RunEvidencePanelComponent, { recording: mapRecording({ capture: 'stopped', transfer: 'uploaded', playback: 'failed' }),
+      message: 'The video could not be prepared. The screen recorder could not start on this phone.', detail: raw });
+    const root = fixture.nativeElement as HTMLElement;
+    expect(root.querySelector('.recording-copy')!.textContent).toContain('The screen recorder could not start on this phone.');
+    expect(root.querySelector('.recording-copy')!.textContent).not.toContain('file pushed');
+    const details = root.querySelector<HTMLDetailsElement>('details.technical-details')!;
+    expect(details.open).toBeFalse();
+    expect(details.querySelector('summary')!.textContent).toBe('Technical details');
+    expect(details.querySelector('.technical-body')!.textContent).toBe(raw);
+    expect(details.querySelector('img')).toBeNull();
+  });
+
+  it('renders no technical details without recorder output', () => {
+    const fixture = render(RunEvidencePanelComponent, { recording: mapRecording({ capture: 'stopped', transfer: 'uploaded', playback: 'failed' }) });
+    expect(fixture.nativeElement.querySelector('details')).toBeNull();
   });
 
   const triggers = [

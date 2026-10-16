@@ -6,6 +6,7 @@ import {
   Component,
   DestroyRef,
   ElementRef,
+  NgZone,
   computed,
   effect,
   inject,
@@ -16,29 +17,43 @@ import {
   viewChild
 } from '@angular/core';
 import { HttpErrorResponse, HttpEvent, HttpEventType } from '@angular/common/http';
-import { DatePipe } from '@angular/common';
+import { DatePipe, JsonPipe, NgTemplateOutlet } from '@angular/common';
 import { Router, RouterLink } from '@angular/router';
+import { Title } from '@angular/platform-browser';
 import { Subscription, catchError, of, switchMap, timer } from 'rxjs';
 import { RunSummary, SessionVideo, VideoSegment } from '../../core/models/run.model';
-import { StepItemData } from '../../core/models/stream.model';
+import { ActionParam, CheckerBlockData, SessionChecks, StepEvent, StepItemData } from '../../core/models/stream.model';
 import { Session, SessionUsage } from '../../core/models/session.model';
 import { OwnerScopeService } from '../../services/owner-scope.service';
 import { RunsService } from '../../services/runs.service';
 import {
   getActionObject,
   getActionErrorMessage,
+  getActionIcon,
   getActionTitle,
+  extractActionExtraParams,
+  getActionCoords,
+  getActionTargetText,
+  getActionInputLabel,
+  getActionInputText,
+  getActionBounds,
+  getActionClass,
+  getActionResourceId,
+  getReportStatusExplanation,
   getStepPostImageUrl,
   getStepPreImageUrl,
-  isActionFailed
+  isActionFailed,
+  isReportStatusAction
 } from '../../utils/action-formatter.util';
+import { extractToolExtraParams, getToolCoords, getToolInputLabel, getToolInputText, getToolTargetText, getToolTitle } from '../../utils/tool-formatter.util';
 import { renderMarkdownToHtml } from '../../utils/markdown-parser.util';
 import { REPORT_TITLE_MAX, isLongReport, summarizeReport } from '../../utils/report-summary.util';
-import { Playback, mapRecording } from '../../utils/recording-state.util';
+import { Playback, mapRecording, prepareFailedCopy, technicalDetail } from '../../utils/recording-state.util';
 import { locateSessionTime } from '../../utils/recording-timeline.util';
 import { runStatusView } from '../../utils/run-status.util';
+import { runTitle } from '../../utils/run-title.util';
 import { buildStartupWorkItems } from '../../utils/run-startup.util';
-import { consolidateLogsToBlocks, getSortedStepEvents } from '../../utils/stream-aggregator.util';
+import { buildCheckerSnapshotLogs, consolidateLogsToBlocks, getSortedStepEvents } from '../../utils/stream-aggregator.util';
 import { AgentService, type StartupProgressEvent } from '../../services/agent.service';
 import {
   DELETE_NOTICE,
@@ -72,7 +87,7 @@ const DIALOGS: Record<DialogKind, { title: string; notices: string[]; confirm: s
 @Component({
   selector: 'app-run-view',
   standalone: true,
-  imports: [RouterLink, DatePipe, RunIdCopyComponent, RunStatusBadgeComponent, RunDeviceLabelComponent,
+  imports: [RouterLink, DatePipe, JsonPipe, NgTemplateOutlet, RunIdCopyComponent, RunStatusBadgeComponent, RunDeviceLabelComponent,
     RunStepRowComponent, RunEvidencePanelComponent, RunActionBarComponent],
   templateUrl: './run-view.component.html',
   styleUrl: './run-view.component.scss',
@@ -86,6 +101,10 @@ export class RunViewComponent {
   private readonly ownerScope = inject(OwnerScopeService);
   private readonly router = inject(Router);
   private readonly destroyRef = inject(DestroyRef);
+  private readonly zone = inject(NgZone);
+  private readonly pageTitle = inject(Title);
+  private readonly promptEl = viewChild<ElementRef<HTMLDetailsElement>>('promptEl');
+  public readonly title = computed(() => runTitle(this.run()?.prompt));
 
   /** Full run id or its 8-character prefix, from the URL. */
   public readonly runId = input<string>('');
@@ -96,10 +115,11 @@ export class RunViewComponent {
   public readonly liveSteps = input<StepItemData[]>([]);
   public readonly startupProgress = input<StartupProgressEvent[]>([]);
   public readonly startupItems = computed(() => buildStartupWorkItems(
-    this.startupProgress(), Date.now() / 1000, this.steps().length > 0, runStatusView(this.run()?.status).active));
+    this.startupProgress(), this.clock(), this.steps().length > 0, this.active()));
   public readonly newRunPrompt = output<string>();
 
   public readonly strings = RUN_STRINGS;
+  public readonly statusView = runStatusView;
   public readonly interruptReason = interruptReason;
   public readonly removedReason = removedReason;
 
@@ -140,9 +160,17 @@ export class RunViewComponent {
   /** The media element itself could not load or decode the file. */
   public readonly playerFailed = signal(false);
   public readonly selectedStepId = signal<string | null>(null);
+  public readonly followLatest = signal(true);
+  public readonly liveLogOpen = signal(false);
   public readonly activeSegmentIndex = signal(0);
   public readonly compact = signal(false);
   public readonly techOpen = signal(false);
+  public readonly expandedSteps = signal<ReadonlySet<string>>(new Set());
+  private readonly checks = signal<SessionChecks | null>(null);
+  public readonly checksFailed = signal(false);
+  private readonly notes = signal<Record<string, string> | null>(null);
+  public readonly notesFailed = signal(false);
+  public readonly reportPending = computed(() => this.notes() === null && !this.notesFailed());
 
   public readonly dialogKind = signal<DialogKind | null>(null);
   public readonly feedback = signal('');
@@ -168,16 +196,98 @@ export class RunViewComponent {
   public readonly infoOpen = signal(false);
   public readonly usage = signal<SessionUsage | null>(null);
   public readonly usageFailed = signal(false);
-  public readonly viewedModel = computed(() => this.viewingLiveSession() ? this.agentService.viewedModel() : null);
+  public readonly viewedModel = computed(() => {
+    const live = this.liveSession();
+    const session = live?.session_id === this.run()?.session_id ? live
+      : this.agentService.sessions().find(session => session.session_id === this.run()?.session_id);
+    return session?.session_id === this.run()?.session_id && session?.model_info
+      ? session.model_info : this.viewingLiveSession() ? this.agentService.viewedModel() : null;
+  });
+  public readonly active = computed(() => runStatusView(this.run()?.status).active);
+  private readonly clock = signal(Date.now() / 1000);
+  public readonly duration = computed(() => {
+    const run = this.run();
+    const end = this.active() ? this.clock() : run?.end_time;
+    if (run?.start_time == null || end == null) return 'Not recorded';
+    const seconds = Math.max(0, Math.floor(end - run.start_time));
+    return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+  });
+  public readonly appName = computed(() => {
+    for (const step of this.steps()) {
+      const action = getActionObject(step.action_taken);
+      const app = action?.package_name ?? action?.args?.package_name ?? action?.app_name ?? action?.args?.app_name;
+      if (typeof app === 'string' && app.trim()) return app;
+    }
+    return 'Not recorded';
+  });
+  public readonly statusMessage = computed(() => {
+    const live = this.liveState();
+    if (live) return `${live.title}. ${live.reason}`;
+    if (this.run()?.status === 'pending') return 'Waiting for the phone.';
+    if (this.run()?.status === 'paused') return 'Task paused. Waiting to continue.';
+    if (!this.steps().length) return 'Preparing the phone. Steps will appear here.';
+    return `Step ${this.steps().at(-1)!.step_number} in progress. The verdict appears here when the run finishes.`;
+  });
+  public readonly announcement = computed(() => {
+    const run = this.run();
+    if (!run) return '';
+    if (!this.active()) {
+      const outcome = this.resultOutcome();
+      let verdict: string | null = null;
+      if (outcome?.tests?.failed) verdict = 'Fail';
+      else if (outcome?.tests?.inconclusive || outcome?.tests?.unchecked
+        || outcome?.task_status === 'partial' || outcome?.task_status === 'blocked') verdict = 'Inconclusive';
+      else if (outcome?.task_status === 'completed' && outcome.tests?.passed) verdict = 'Pass';
+      const execution = this.statusView(run.status);
+      return `Run finished: ${verdict ?? (execution.key === 'completed' ? 'Completed' : execution.label)}.`;
+    }
+    const step = this.currentStep();
+    return step ? `Step ${step.step_number} in progress.` : '';
+  });
+  public readonly currentStep = computed(() => this.active() && this.run()?.status !== 'pending' ? this.steps().at(-1) ?? null : null);
+  public readonly currentStepElapsed = computed(() => {
+    const step = this.currentStep();
+    return step ? `${Math.max(0, Math.floor(this.clock() - step.timestamp))}s` : null;
+  });
+  public readonly headerActions = computed<RunAction[]>(() => this.active()
+    ? this.canChange() ? [{ id: 'stop', label: 'Stop run', icon: 'stop', className: 'action-button danger', ariaLabel: 'Stop run', title: `Stop ${this.title()}` }] : []
+    : this.readOnlyRun() ? [] : [{ id: 'again', label: 'Run again', icon: 'replay', ariaLabel: 'Run again' }]);
+  private readonly resultBlocks = computed(() => {
+    const id = this.run()?.session_id;
+    if (!id) return [];
+    const checks = this.checks();
+    const logs = checks ? buildCheckerSnapshotLogs(id, checks.records ?? [], checks.run_outcome, checks.streams) : [];
+    if (this.viewingLiveSession()) logs.push(...this.agentService.sessionLogs().filter(log =>
+      (!log.session_id || log.session_id === id) && (!log.data?.session_id || log.data.session_id === id)));
+    return consolidateLogsToBlocks(logs).filter(block => block.type === 'checker');
+  });
+  public readonly resultOutcome = computed<CheckerBlockData | null>(() =>
+    this.resultBlocks().find(block => block.data.phase === 'outcome')?.data ?? null);
+  public readonly reportHtml = computed(() => {
+    const report = this.notes()?.['output.md'];
+    if (report) return renderMarkdownToHtml(report);
+    const explanation = this.steps().flatMap(step => getSortedStepEvents(step))
+      .filter(event => isReportStatusAction(event.data)).map(event => getReportStatusExplanation(event.data)).filter(Boolean).at(-1);
+    return explanation ? renderMarkdownToHtml(explanation) : null;
+  });
+  public readonly unanchoredChecks = computed(() => this.resultBlocks().filter(block =>
+    block.data.phase !== 'outcome' && !this.steps().some(step => step.step_id === block.data.anchor_step_id)));
   public readonly streamBlocks = computed(() => this.viewingLiveSession()
     ? consolidateLogsToBlocks(this.agentService.sessionLogs()).map((block) => ({
       id: block.id,
+      stepId: block.data.step_id as string | undefined,
       resets: (block.data.stream_resets ?? []) as Array<{ id: string; message: string }>,
       events: getSortedStepEvents(block.data).filter((event) => event.type === 'thinking' || event.type === 'text')
     })).filter((block) => block.events.length || block.resets.length)
     : []);
+  public readonly liveThought = computed(() => {
+    const step = this.currentStep();
+    if (!step) return '';
+    const block = this.streamBlocks().filter(block => block.stepId === step.step_id).at(-1);
+    if (block) return block.events.filter(event => event.type === 'thinking').at(-1)?.data.text ?? '';
+    return step.operator_native_thinking || step.operator_raw_thinking || '';
+  });
   public readonly actions = computed<RunAction[]>(() => [
-    ...(this.canResume() ? [{ id: 'resume', label: 'Continue task' }] : []),
     { id: 'share', label: this.strings.copyLink },
     { id: 'download', label: this.strings.download },
     ...(this.canChange() ? [
@@ -207,6 +317,7 @@ export class RunViewComponent {
 
   public readonly selectedStep = computed(() => {
     const steps = this.steps();
+    if (this.followLatest()) return steps.at(-1) ?? null;
     return steps.find((s) => s.step_id === this.selectedStepId()) ?? steps[steps.length - 1] ?? null;
   });
 
@@ -228,11 +339,15 @@ export class RunViewComponent {
   public readonly copy = computed(() => {
     if (this.videoFailed()) return "Couldn't check the video.";
     if (this.playerFailed()) return 'The video could not be played. Steps and screenshots are still here.';
-    const message = this.video()?.message?.trim();
     return this.recording().state === 'prepare_failed'
-      ? `${this.recording().copy} ${message || 'The video service did not report a reason.'}`
+      ? prepareFailedCopy(this.recording().copy, this.video()?.message)
       : this.recording().copy;
   });
+
+  /** Raw recorder output behind a failed video, shown only inside "Technical details". */
+  public readonly videoDetail = computed(() =>
+    this.recording().state === 'prepare_failed' ? technicalDetail(this.video()?.detail) : null
+  );
 
   public readonly videoUrl = computed(
     () => mediaUrl(this.segments()[this.activeSegmentIndex()]?.url ?? this.video()?.video_url)
@@ -242,6 +357,16 @@ export class RunViewComponent {
     const step = this.selectedStep();
     return step ? (getStepPostImageUrl(step) ?? getStepPreImageUrl(step)) : null;
   });
+
+  public readonly evidenceSteps = computed(() => this.steps().map(step => ({
+    id: step.step_id, number: step.step_number, title: this.stepTitle(step),
+    screenshot: getStepPostImageUrl(step) ?? getStepPreImageUrl(step)
+  })));
+
+  public selectEvidenceStep(stepId: string): void {
+    const step = this.steps().find(item => item.step_id === stepId);
+    if (step) this.selectStep(step);
+  }
 
   public readonly interruptedAtStep = computed(() => this.steps()[this.steps().length - 1]?.step_number ?? null);
   public readonly interruptedText = computed(() => interruptedSentence(this.interruptedAtStep()));
@@ -271,6 +396,9 @@ export class RunViewComponent {
   private readonly evidencePanel = viewChild(RunEvidencePanelComponent);
   private readonly scrollEl = viewChild<ElementRef<HTMLElement>>('scrollEl');
   private readonly timelineEl = viewChild<ElementRef<HTMLElement>>('timelineEl');
+  private readonly liveLogEl = viewChild<ElementRef<HTMLDetailsElement>>('liveLogEl');
+  private followedStepId: string | null = null;
+  private focusLiveLog = false;
   private pendingPosition: { scrollTop: number; timelineScrollTop: number } | null = null;
   private loadedSessionId: string | null = null;
   private renderedStepId: string | null = null;
@@ -285,6 +413,17 @@ export class RunViewComponent {
 
   constructor() {
     this.ownerScope.load();
+    const previousTitle = this.pageTitle.getTitle();
+    effect(() => this.pageTitle.setTitle(this.state() === 'ready'
+      ? `${this.title()} · SmartQA` : previousTitle));
+    this.destroyRef.onDestroy(() => this.pageTitle.setTitle(previousTitle));
+    effect((onCleanup) => {
+      const run = this.run();
+      if (!run || !this.active()) return;
+      this.clock.set(Date.now() / 1000);
+      const clock = this.zone.runOutsideAngular(() => setInterval(() => this.clock.set(Date.now() / 1000), 1000));
+      onCleanup(() => clearInterval(clock));
+    });
 
     const query = typeof window !== 'undefined' ? window.matchMedia('(max-width: 1279px)') : null;
     if (query) {
@@ -330,10 +469,23 @@ export class RunViewComponent {
     });
     afterEveryRender(() => {
       if (this.state() === 'ready') this.renderedStepId = this.selectedStep()?.step_id ?? null;
-      if (this.state() !== 'ready' || !this.stepsLoaded() || !this.pendingPosition || !this.scrollEl()) return;
-      this.scrollEl()!.nativeElement.scrollTop = this.pendingPosition.scrollTop;
-      if (this.timelineEl()) this.timelineEl()!.nativeElement.scrollTop = this.pendingPosition.timelineScrollTop;
-      this.pendingPosition = null;
+      if (this.state() === 'ready' && this.stepsLoaded() && this.pendingPosition && this.scrollEl()) {
+        this.scrollEl()!.nativeElement.scrollTop = this.pendingPosition.scrollTop;
+        if (this.timelineEl()) this.timelineEl()!.nativeElement.scrollTop = this.pendingPosition.timelineScrollTop;
+        this.pendingPosition = null;
+      }
+      const latest = this.currentStep();
+      if (this.followLatest() && latest && latest.step_id !== this.followedStepId) {
+        const row = this.timelineEl()?.nativeElement.querySelector<HTMLElement>('.current-step .step-button');
+        if (row) {
+          row.scrollIntoView({ block: 'nearest', behavior: 'instant' });
+          this.followedStepId = latest.step_id;
+        }
+      }
+      if (this.focusLiveLog && this.liveLogEl()) {
+        this.liveLogEl()!.nativeElement.querySelector<HTMLElement>('summary')?.focus();
+        this.focusLiveLog = false;
+      }
     });
     this.destroyRef.onDestroy(() => {
       this.loadRequest?.unsubscribe();
@@ -349,6 +501,7 @@ export class RunViewComponent {
   }
 
   private load(id: string): void {
+    if (this.promptEl()) this.promptEl()!.nativeElement.open = false;
     this.rememberPosition();
     this.loadedSessionId = id || null;
     this.renderedStepId = null;
@@ -362,14 +515,24 @@ export class RunViewComponent {
     this.state.set('loading');
     this.catalogRun.set(null);
     this.storedSteps.set([]);
+    this.expandedSteps.set(new Set());
+    this.checks.set(null);
+    this.checksFailed.set(false);
+    this.notes.set(null);
+    this.notesFailed.set(false);
     this.stepsLoaded.set(false);
     this.video.set(null);
     this.selectedStepId.set(null);
+    this.followLatest.set(true);
+    this.followedStepId = null;
+    this.liveLogOpen.set(false);
+    this.focusLiveLog = false;
     this.activeSegmentIndex.set(0);
     this.feedback.set('');
     this.actionError.set(null);
     const position = this.runsApi.viewPosition();
     this.selectedStepId.set(position?.sessionId === id ? position.selectedStepId : null);
+    if (position?.sessionId === id && position.selectedStepId) this.followLatest.set(false);
     this.pendingPosition = position?.sessionId === id ? position : { scrollTop: 0, timelineScrollTop: 0 };
     if (!id) {
       this.state.set('empty');
@@ -381,6 +544,7 @@ export class RunViewComponent {
         this.catalogRun.set(run);
         if (position?.sessionId === run.session_id) {
           this.selectedStepId.set(position.selectedStepId);
+          this.followLatest.set(!position.selectedStepId);
           this.pendingPosition = position;
         }
         this.state.set('ready');
@@ -453,6 +617,14 @@ export class RunViewComponent {
         }
       })
     );
+    this.evidenceRequests.add(this.runsApi.checks(sessionId).subscribe({
+      next: checks => { this.checks.set(checks); this.checksFailed.set(false); },
+      error: () => this.checksFailed.set(true)
+    }));
+    this.evidenceRequests.add(this.runsApi.notes(sessionId).subscribe({
+      next: result => { this.notes.set(result.notes ?? {}); this.notesFailed.set(false); },
+      error: () => this.notesFailed.set(true)
+    }));
     this.loadVideo(sessionId);
   }
 
@@ -477,6 +649,65 @@ export class RunViewComponent {
 
   public stepTitle(step: StepItemData): string {
     return getActionTitle(step.action_taken);
+  }
+
+  public readonly stepIcon = getActionIcon;
+
+  public stepKind(step: StepItemData): string {
+    const action = getActionObject(step.action_taken);
+    const kind = action?.name || action?.action;
+    return typeof kind === 'string' && kind ? kind : 'Action';
+  }
+
+  public stepTime(step: StepItemData): string {
+    const start = this.run()?.start_time;
+    if (start == null || !Number.isFinite(start) || !Number.isFinite(step.timestamp)) return '—';
+    const seconds = Math.max(0, Math.floor(step.timestamp - start));
+    return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
+  }
+
+  public goToStep(stepNumber: number): boolean {
+    const index = this.steps().findIndex(step => step.step_number === stepNumber);
+    if (index === -1) return false;
+    this.selectStep(this.steps()[index]);
+    const button = this.timelineEl()?.nativeElement.querySelectorAll<HTMLButtonElement>('.step-button')[index];
+    button?.scrollIntoView({ block: 'nearest' });
+    button?.focus({ preventScroll: true });
+    return true;
+  }
+
+  public toggleStep(step: StepItemData): void {
+    const expanded = new Set(this.expandedSteps());
+    if (expanded.has(step.step_id)) expanded.delete(step.step_id);
+    else expanded.add(step.step_id);
+    this.expandedSteps.set(expanded);
+  }
+
+  public readonly stepEvents = getSortedStepEvents;
+  public readonly markdown = renderMarkdownToHtml;
+
+  public eventTitle(event: StepEvent): string {
+    return event.type === 'action' ? getActionTitle(event.data) : getToolTitle(event.data);
+  }
+
+  public eventParameters(event: StepEvent): ActionParam[] {
+    const action = event.type === 'action';
+    const data = event.data;
+    return [
+      { key: 'Target', value: action ? getActionTargetText(data) : getToolTargetText(data) },
+      { key: action ? getActionInputLabel(data) : getToolInputLabel(data), value: action ? getActionInputText(data) : getToolInputText(data) },
+      { key: 'Coordinates', value: action ? getActionCoords(data) : getToolCoords(data) },
+      ...(action ? [
+        { key: 'Target bounds', value: getActionBounds(data) },
+        { key: 'Target class', value: getActionClass(data) },
+        { key: 'Resource ID', value: getActionResourceId(data) }
+      ] : []),
+      ...(action ? extractActionExtraParams(data) : extractToolExtraParams(data))
+    ].filter(param => !!param.value);
+  }
+
+  public stepChecks(step: StepItemData) {
+    return this.resultBlocks().filter(block => block.data.phase !== 'outcome' && block.data.anchor_step_id === step.step_id);
   }
 
   public stepFailed(step: StepItemData): boolean {
@@ -517,6 +748,7 @@ export class RunViewComponent {
   }
 
   public selectStep(step: StepItemData): void {
+    this.followLatest.set(false);
     this.selectedStepId.set(step.step_id);
     this.rememberPosition();
     const run = this.run();
@@ -532,6 +764,18 @@ export class RunViewComponent {
     this.pendingSeek = located.localTime;
     if (located.index === this.activeSegmentIndex()) this.applySeek();
     else this.activeSegmentIndex.set(located.index);
+  }
+
+  public toggleFollowLatest(): void {
+    const selected = this.selectedStep();
+    this.followLatest.update(value => !value);
+    this.followedStepId = null;
+    if (!this.followLatest()) this.selectedStepId.set(selected?.step_id ?? null);
+  }
+
+  public showLiveLog(): void {
+    this.liveLogOpen.set(true);
+    this.focusLiveLog = true;
   }
 
   public onMetadata(): void {
@@ -561,7 +805,11 @@ export class RunViewComponent {
   // -- actions ----------------------------------------------------------------
 
   public onAction(action: RunActionEvent): void {
-    if (action.id === 'resume') {
+    if (action.id === 'stop') {
+      if (this.canChange() && this.active()) this.agentService.stopTask(this.run()!.session_id);
+    } else if (action.id === 'again') {
+      if (!this.readOnlyRun() && !this.active()) this.startNewRun();
+    } else if (action.id === 'resume') {
       if (this.canResume()) this.agentService.resumeTask();
     } else if (action.id === 'pin') this.togglePin(action.event);
     else if (action.id === 'retry') this.retry();
@@ -570,7 +818,8 @@ export class RunViewComponent {
 
   public ask(kind: DialogKind, event?: Event): void {
     if (!this.canChange() && (kind === 'delete' || kind === 'unpin_expired')) return;
-    this.opener = (event?.currentTarget as HTMLElement | null) ?? null;
+    const control = event?.currentTarget as HTMLElement | null;
+    this.opener = control?.closest('.more-actions')?.querySelector('summary') ?? control ?? null;
     this.dialogKind.set(kind);
     this.dialogEl()?.nativeElement.showModal();
   }

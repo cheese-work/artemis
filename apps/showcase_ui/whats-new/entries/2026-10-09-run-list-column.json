@@ -1,0 +1,7 @@
+{
+  "id": "2026-10-09-run-list-column",
+  "date": "2026-10-09",
+  "title": "Runs in one column",
+  "body": "Browse runs by day, focus search with /, and stop or cancel tasks in the Queue section.",
+  "issues": ["CHE-1499"]
+}

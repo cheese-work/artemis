@@ -3,7 +3,7 @@ import { provideRouter } from '@angular/router';
 import { of, throwError } from 'rxjs';
 import { FailureReport } from '../../core/models/failure.model';
 import { FailuresService } from '../../services/failures.service';
-import { FailuresComponent } from './failures.component';
+import { CATEGORY_LABELS, FailuresComponent } from './failures.component';
 
 const report: FailureReport = {
   days: 14,
@@ -34,6 +34,12 @@ const report: FailureReport = {
 describe('FailuresComponent', () => {
   let service: jasmine.SpyObj<FailuresService>;
   let fixture: ComponentFixture<FailuresComponent>;
+
+  it('names QA environment and app defects separately from SmartQA', () => {
+    const labels: Record<string, string> = CATEGORY_LABELS;
+    expect(labels['qa_environment']).toBe('QA environment');
+    expect(labels['app_defect']).toBe('App under test');
+  });
 
   beforeEach(async () => {
     service = jasmine.createSpyObj<FailuresService>('FailuresService', ['report']);

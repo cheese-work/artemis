@@ -193,13 +193,15 @@ def _build_zip(manifest: Manifest, dest: BinaryIO) -> int:
     return len(written) + 1
 
 
-def _lookup(session_id: str) -> dict:
+def _lookup(session_id: str, *, prefix_owners: list[str] | None = None) -> dict:
     try:
-        found = run_catalog_repo.get_run(session_id)
+        found = run_catalog_repo.get_run(session_id, prefix_owners=prefix_owners)
     except ValueError as exc:
         raise BundleError(400, "invalid_session_id") from exc
     except CatalogNotReady as exc:
-        raise BundleError(503, "catalog_not_ready") from exc
+        raise BundleError(
+            503, "catalog_not_ready", retry_after=RETRY_AFTER_SECONDS, retryable=True
+        ) from exc
     if found.run:
         return found.run
     if found.candidates:
@@ -211,7 +213,7 @@ def _lookup(session_id: str) -> dict:
     raise BundleError(404, "not_found")
 
 
-def prepare(session_id: str) -> BundleFile:
+def prepare(session_id: str, *, prefix_owners: list[str] | None = None) -> BundleFile:
     """Build the bundle for one run into a temp file, holding a lease on the run."""
     if not _slots.acquire(blocking=False):
         raise BundleError(429, "bundle_busy", retry_after=RETRY_AFTER_SECONDS)
@@ -224,7 +226,7 @@ def prepare(session_id: str) -> BundleFile:
         # Resolve first (an id or prefix that names no single run takes no lease),
         # lease the full id, then look again: a delete that wins the race either
         # sees the lease (and waits) or is seen by the second look (and we stop).
-        full_id = _lookup(session_id)["session_id"]
+        full_id = _lookup(session_id, prefix_owners=prefix_owners)["session_id"]
         lease_id = run_leases.acquire(db_path, full_id)
         run = _lookup(full_id)
         manifest = resolve_manifest(full_id, run["prompt"])

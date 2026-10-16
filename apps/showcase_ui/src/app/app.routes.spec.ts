@@ -7,19 +7,30 @@ import { provideRouter, Router } from '@angular/router';
 import { RouterTestingHarness } from '@angular/router/testing';
 import { of, throwError } from 'rxjs';
 import { SystemService } from './services/system.service';
+import { ModelCatalogService } from './services/model-catalog.service';
 
 describe('app routes', () => {
+  it('has no Lessons page', () => {
+    expect(routes.some(route => route.path === 'lessons')).toBeFalse();
+  });
   it('redirects the root path to the workspace', () => {
-    expect(routes.find(route => route.path === '')?.redirectTo).toBe('workspace');
+    expect(routes.find(route => route.path === '')?.redirectTo).toBe('sessions/new');
   });
 
   it('serves system setup at /setup and workspace at /workspace', () => {
     expect(routes.find(route => route.path === 'setup')?.component).toBe(HomeComponent);
-    expect(routes.find(route => route.path === 'workspace')?.component).toBe(WorkspaceComponent);
+    expect(routes.find(route => route.path === 'sessions')?.component).toBe(WorkspaceComponent);
+    expect(routes.find(route => route.path === 'workspace')?.redirectTo).toBe('sessions/new');
+  });
+
+  it('serves Phones at /phones, not behind the admin guard', () => {
+    const route = routes.find(candidate => candidate.path === 'phones');
+    expect(route).toBeDefined();
+    expect(route?.canActivate).toBeUndefined();
   });
 
   it('opens the run library and a run in the workspace shell in review mode', () => {
-    for (const path of ['runs', 'runs/:id']) {
+    for (const path of ['sessions', 'sessions/:id']) {
       const route = routes.find(candidate => candidate.path === path);
       expect(route?.component).toBe(WorkspaceComponent);
       expect(route?.data?.['review']).toBe(true);
@@ -27,7 +38,7 @@ describe('app routes', () => {
   });
 
   it('redirects unknown paths to the workspace', () => {
-    expect(routes.find(route => route.path === '**')?.redirectTo).toBe('workspace');
+    expect(routes.find(route => route.path === '**')?.redirectTo).toBe('sessions');
   });
 });
 
@@ -35,7 +46,7 @@ describe('app routes', () => {
 class PageStub {}
 
 describe('first-run navigation', () => {
-  async function open(configured: boolean, credentials: boolean, failed = false, path = '/workspace') {
+  async function open(configured: boolean, credentials: boolean, failed = false, path = '/sessions/new', models: unknown[] = []) {
     const probes = [
       { id: 'system_config', status: configured ? 'pass' : 'fail' },
       { id: 'llm_api_key', status: credentials ? 'pass' : 'fail', metadata: { is_set: credentials } },
@@ -44,6 +55,7 @@ describe('first-run navigation', () => {
     TestBed.configureTestingModule({
       providers: [
         provideRouter(routes.map(route => route.component ? { ...route, component: PageStub } : route)),
+        { provide: ModelCatalogService, useValue: { fetch: () => of({ models }) } },
         { provide: SystemService, useValue: { fetchReadiness: () => failed ? throwError(() => new Error('Unavailable')) : of({ probes }) } }
       ]
     });
@@ -60,7 +72,11 @@ describe('first-run navigation', () => {
   });
 
   it('stays in Workspace when configured but no phone is connected', async () => {
-    expect(await open(true, true)).toBe('/workspace');
+    expect(await open(true, true)).toBe('/sessions/new');
+  });
+
+  it('admits a QA when another enabled slot has synced models despite missing default credentials', async () => {
+    expect(await open(true, false, false, '/workspace', [{ provider: 'google', model: 'synced-model' }])).toBe('/sessions/new');
   });
 
   it('stays in Workspace with the backend gemini_api_key shape when only one provider is set', async () => {
@@ -80,18 +96,19 @@ describe('first-run navigation', () => {
     TestBed.configureTestingModule({
       providers: [
         provideRouter(routes.map(route => route.component ? { ...route, component: PageStub } : route)),
-        { provide: SystemService, useValue: { fetchReadiness: () => of({ probes }) } }
+        { provide: SystemService, useValue: { fetchReadiness: () => of({ probes }) } },
+        { provide: ModelCatalogService, useValue: { fetch: () => of({ models: [] }) } }
       ]
     });
     await RouterTestingHarness.create('/workspace');
-    expect(TestBed.inject(Router).url).toBe('/workspace');
+    expect(TestBed.inject(Router).url).toBe('/sessions/new');
   });
 
   it('does not hide the run library behind first-run Setup', async () => {
-    expect(await open(false, false, false, '/runs')).toBe('/runs');
+    expect(await open(false, false, false, '/runs')).toBe('/sessions');
   });
 
   it('does not infer missing configuration from a readiness request failure', async () => {
-    expect(await open(false, false, true)).toBe('/workspace');
+    expect(await open(false, false, true)).toBe('/sessions/new');
   });
 });

@@ -14,221 +14,148 @@ See the License for the specific language governing permissions and
 limitations under the License.
 -->
 
-<div class="workspace-container" [class.is-resizing]="isDragging()" [class.review-mode]="reviewMode">
-  <!-- Left Main Panel: Raw Agent Log Stream, or the run library / viewer in review mode -->
-  <main class="left-panel glass-panel">
+<div class="workspace-container" [class.review-mode]="reviewMode" [class.has-run]="!!reviewRunId()">
+  <!-- Skip links: visible only while focused -->
+  <div class="skip-links">
+    @if (!reviewMode) { <button type="button" class="skip-link" (click)="skipToNewTask()">Skip to new task</button> }
+    <button type="button" class="skip-link skip-list" (click)="skipToRunList()">Skip to run list</button>
+  </div>
+
+  <aside class="run-list-pane" aria-label="Sessions">
+    <app-run-library [compact]="true" class="review-run-list" [workspace]="false"
+      [refreshKey]="historyRevision()" [recordedDevices]="recordedDevices()" [recordedImages]="recordedImages()"
+      [sessions]="agentService.sessions()" [liveSessionId]="agentService.runningSessionId()" [liveStatus]="agentService.agentStatus()"
+      [selectedRunId]="agentService.currentSessionId()"
+      (stopRun)="agentService.stopTask($event, false)" (selectRun)="agentService.selectSession($event, true)"
+      (newRun)="startNewRunFrom('')"></app-run-library>
+  </aside>
+
+  <main class="detail-pane">
     <div class="run-surface">
       @if (reviewMode && !reviewRunId()) {
-        <app-run-library></app-run-library>
+        <div class="detail-empty" role="status">Select a session or start a new run.</div>
       } @else {
-        <app-run-view [mode]="reviewMode ? 'review' : 'live'"
+        <app-run-chat [mode]="reviewMode ? 'review' : 'live'" [compose]="!newSessionDraft()"
           [readOnly]="reviewMode && reviewReadOnly()"
-          [runId]="reviewMode ? reviewRunId()! : agentService.currentSessionId() ?? ''"
+          [runId]="reviewMode ? reviewRunId()! : newSessionDraft() ? '' : agentService.currentSessionId() ?? ''"
           [liveSession]="reviewMode ? null : agentService.currentSession()"
           [liveSteps]="reviewMode ? [] : liveSteps()"
           [startupProgress]="reviewMode ? [] : agentService.currentStartupProgress()"
-          (newRunPrompt)="taskInput = $event"></app-run-view>
+          (renamed)="sessionRenamed()"
+          (stopRun)="agentService.stopTask($event, false)"
+          (newRunPrompt)="startNewRunFrom($event)"></app-run-chat>
       }
     </div>
 
-    <!-- Bottom Floating Command Bar Dock -->
-    @if (!reviewMode) {
-    <div class="workspace-floating-bar-wrapper is-expanded"
-      [class.is-focused]="isInputFocused()" [class.has-text]="!!taskInput.trim()" [class.is-running]="isTaskRunning()">
+    <!-- Pinned composer: the bottom of the detail pane, in normal flow so it never covers evidence -->
+    @if (!reviewMode && (!agentService.currentSessionId() || newSessionDraft())) {
+    <section class="composer" aria-label="New task"
+      [class.is-focused]="isInputFocused()" [class.is-running]="isTaskRunning()">
       <!-- A run lost its phone: Reconnect, then start a new run (the old one is over) -->
       <app-interrupted-banner [reconnectOnly]="true" [lastStep]="liveSteps().at(-1)?.step_number ?? null" (startNewRun)="startNewRunFrom($event)"></app-interrupted-banner>
 
-      <!-- Floating Error / Notification Toast -->
       @if (errorMessage()) {
-        <div class="floating-dock-toast error">
-          <span class="material-symbols-outlined toast-icon">error</span>
+        <div class="composer-toast" role="alert">
+          <span class="material-symbols-outlined toast-icon" aria-hidden="true">error</span>
           <span class="toast-text">{{ errorMessage() }}</span>
           <button type="button" class="btn-toast-close" (click)="clearErrorMessage()" aria-label="Close error message">
-            <span class="material-symbols-outlined">close</span>
+            <span class="material-symbols-outlined" aria-hidden="true">close</span>
           </button>
         </div>
       }
 
-      <!-- Dock Row (Contains the Main Card and the Separate Stop Button when running) -->
-      <div class="floating-dock-row">
-        <!-- Floating Dock Main Card -->
-        <div class="floating-dock-card" (click)="onCardClick($event)">
-          <!-- Ambient Liquid Wave / Aurora Background Layer (Active in both Dormant & Expanded) -->
-          <div class="dock-wave-container" [class.is-pro]="selectedProfile() === 'pro'">
-            <div class="wave-glow-ambient"></div>
-            <div class="wave-tracks-wrapper">
-              <!-- Back Fluid Wave -->
-              <svg class="liquid-wave wave-back" viewBox="0 0 2400 80" preserveAspectRatio="none">
-                <defs>
-                  <linearGradient id="waveGradBack" x1="0%" y1="0%" x2="100%" y2="0%">
-                    <stop offset="0%" class="wave-stop-1" />
-                    <stop offset="25%" class="wave-stop-2" />
-                    <stop offset="50%" class="wave-stop-3" />
-                    <stop offset="75%" class="wave-stop-4" />
-                    <stop offset="100%" class="wave-stop-1" />
-                  </linearGradient>
-                </defs>
-                <path d="M 0,25 Q 300,55 600,20 T 1200,25 Q 1500,55 1800,20 T 2400,25 L 2400,80 L 0,80 Z"
-                fill="url(#waveGradBack)"></path>
-              </svg>
-
-              <!-- Mid Fluid Wave -->
-              <svg class="liquid-wave wave-mid" viewBox="0 0 2400 80" preserveAspectRatio="none">
-                <defs>
-                  <linearGradient id="waveGradMid" x1="0%" y1="0%" x2="100%" y2="0%">
-                    <stop offset="0%" class="wave-stop-3" />
-                    <stop offset="35%" class="wave-stop-1" />
-                    <stop offset="70%" class="wave-stop-4" />
-                    <stop offset="100%" class="wave-stop-3" />
-                  </linearGradient>
-                </defs>
-                <path d="M 0,35 Q 300,5 600,45 T 1200,35 Q 1500,5 1800,45 T 2400,35 L 2400,80 L 0,80 Z"
-                fill="url(#waveGradMid)"></path>
-              </svg>
-
-              <!-- Front Fluid Wave -->
-              <svg class="liquid-wave wave-front" viewBox="0 0 2400 80" preserveAspectRatio="none">
-                <defs>
-                  <linearGradient id="waveGradFront" x1="0%" y1="0%" x2="100%" y2="0%">
-                    <stop offset="0%" class="wave-stop-2" />
-                    <stop offset="30%" class="wave-stop-4" />
-                    <stop offset="65%" class="wave-stop-1" />
-                    <stop offset="100%" class="wave-stop-2" />
-                  </linearGradient>
-                </defs>
-                <path d="M 0,18 Q 300,50 600,15 T 1200,18 Q 1500,50 1800,15 T 2400,18 L 2400,80 L 0,80 Z"
-                fill="url(#waveGradFront)"></path>
-              </svg>
-            </div>
-          </div>
-
-          <div class="expanded-card-content">
-            <div class="card-main-input-row">
-              <!-- Textarea Container with Dynamic English Placeholder -->
-              <div class="input-content-area">
-                <textarea #dockInput [(ngModel)]="taskInput"
-                  (input)="onTextareaInput($event)"
-                  (paste)="onPaste($event)"
-                  (keydown)="onKeyDown($event)"
-                  (focus)="onInputFocus()"
-                  (blur)="onInputBlur()"
-                  rows="1"
-                  [disabled]="isSubmitting()"
-                  [placeholder]="selectedProfile() === 'pro' 
-                    ? 'Pro: plans first, checks results and recovers from blocked steps. For long or complex tasks'
-                    : 'Flash: fast single-look loop for everyday app tasks'"
-                  class="dock-textarea"
-                  spellcheck="false"
-                ></textarea>
-              </div>
-
-              <!-- Attach images: a labelled button opens the (visually hidden) native file input -->
-              <input #imageInput type="file" class="visually-hidden-input" multiple
-                [accept]="imageAccept" aria-label="Choose images to attach"
-                (change)="onFilesChosen($event)" tabindex="-1">
-              <button type="button" class="dock-circle-btn btn-attach"
-                [disabled]="isSubmitting() || attachedImages().length >= maxImages"
-                (click)="imageInput.click()"
-                [title]="attachedImages().length >= maxImages ? 'Image limit reached (' + maxImages + ')' : 'Attach images (PNG, JPG, JPEG or WEBP)'"
-                aria-label="Attach images">
-                <span class="material-symbols-outlined">image</span>
-              </button>
-
-              <!-- Clear Button (visible when text is entered) -->
-              @if (taskInput.trim() && !isSubmitting()) {
-                <button type="button" class="dock-circle-btn btn-clear"
-                  (click)="clearInput($event)" title="Clear input text" aria-label="Clear input text">
-                  <span class="material-symbols-outlined">close</span>
+      <div class="composer-card" (click)="onCardClick($event)">
+        <!-- Images attached to this message: preview and remove before sending -->
+        @if (attachedImages().length) {
+          <ul class="attached-images" aria-label="Attached images">
+            @for (image of attachedImages(); track image.id) {
+              <li class="attached-image">
+                <img [src]="image.previewUrl" [alt]="'Preview of ' + image.file.name">
+                <button type="button" class="btn-remove-image" [disabled]="isSubmitting()"
+                  (click)="removeImage(image.id)"
+                  [attr.aria-label]="'Remove ' + image.file.name"
+                  [title]="'Remove ' + image.file.name">
+                  <span class="remove-face"><span class="material-symbols-outlined" aria-hidden="true">close</span></span>
                 </button>
-              }
-
-              <!-- Stop Button (Visible when currently viewed task is active) -->
-              @if (isTaskRunning()) {
-                <button type="button" class="dock-circle-btn btn-stop" [disabled]="isSubmitting()"
-                  (click)="stopTask($event)"
-                  [title]="stopButtonTitle()"
-                  [attr.aria-label]="stopButtonTitle()"
-                  >
-                  <span class="material-symbols-outlined">stop</span>
-                </button>
-              }
-
-              <!-- Send Button -->
-              <button type="button" class="dock-circle-btn btn-send"
-                [class.has-content]="!!taskInput.trim()"
-                [class.is-blocked]="!phone.target()"
-                [disabled]="!taskInput.trim() || isSubmitting()"
-                [attr.aria-disabled]="phone.target() ? null : 'true'"
-                (click)="submitTask()"
-                [title]="isSubmitting() ? 'Starting task...' : (phone.target() ? 'Start task (Enter)' : 'Connect a phone first')"
-                aria-label="Start task"
-                >
-                @if (isSubmitting()) {
-                  <span class="material-symbols-outlined spinning-icon">sync</span>
-                }
-                @if (!isSubmitting()) {
-                  <span class="material-symbols-outlined">arrow_upward</span>
-                }
-              </button>
-            </div>
-
-            <!-- Images attached to this message: preview and remove before sending -->
-            @if (attachedImages().length) {
-              <ul class="attached-images" aria-label="Attached images">
-                @for (image of attachedImages(); track image.id) {
-                  <li class="attached-image">
-                    <img [src]="image.previewUrl" [alt]="'Preview of ' + image.file.name">
-                    <button type="button" class="btn-remove-image" [disabled]="isSubmitting()"
-                      (click)="removeImage(image.id)"
-                      [attr.aria-label]="'Remove ' + image.file.name"
-                      [title]="'Remove ' + image.file.name">
-                      <span class="material-symbols-outlined">close</span>
-                    </button>
-                  </li>
-                }
-              </ul>
-              @if (!taskInput.trim()) {
-                <p class="attached-hint" role="status">Add a message to send with your image.</p>
-              }
+              </li>
             }
+          </ul>
+          @if (!taskInput.trim()) {
+            <p class="attached-hint" role="status">Add a message to send with your image.</p>
+          }
+        }
 
-            <!-- Bottom Segmented Controls Row -->
-            <div class="card-footer-row">
-              <div class="footer-left-group">
-                <!-- Segmented Architecture Toggle (Flash / Pro) -->
-                <div class="model-profile-toggle" role="group" aria-label="Select Agent Architecture">
-                  <button type="button" class="profile-toggle-pill" [class.active]="selectedProfile() === 'flash'"
-                    (mousedown)="$event.preventDefault()" (click)="setProfile('flash', $event)"
-                    title="Flash: fast single-look loop for everyday app tasks (3–5s/step)">
-                    <span class="material-symbols-outlined pill-icon icon-flash">bolt</span>
-                    <span class="pill-label">Flash</span>
-                  </button>
-                  <button type="button" class="profile-toggle-pill" [class.active]="selectedProfile() === 'pro'"
-                    (mousedown)="$event.preventDefault()" (click)="setProfile('pro', $event)"
-                    title="Pro: plans first, checks results and recovers from blocked steps. For long or complex tasks (15–40s/step)">
-                    <span class="material-symbols-outlined pill-icon icon-pro">psychology</span>
-                    <span class="pill-label">Pro</span>
-                  </button>
-                </div>
-              </div>
+        <div class="composer-row">
+          <textarea #dockInput [(ngModel)]="taskInput" cdkTextareaAutosize
+            (paste)="onPaste($event)"
+            (keydown)="onKeyDown($event)"
+            (focus)="onInputFocus()"
+            (blur)="onInputBlur()"
+            rows="1"
+            [disabled]="isSubmitting()"
+            [placeholder]="composerPlaceholder()"
+            aria-label="Task for the phone"
+            class="composer-input"
+            spellcheck="false"
+          ></textarea>
+
+          <div class="composer-controls">
+            <!-- Flash / Pro: each segment is a 44 px box around a 36 px face -->
+            <div class="segments" role="group" aria-label="Agent profile">
+              <button type="button" class="segment" [class.active]="selectedProfile() === 'flash'"
+                [attr.aria-pressed]="selectedProfile() === 'flash'"
+                (mousedown)="$event.preventDefault()" (click)="setProfile('flash', $event)"
+                title="Flash: fast single-look loop for everyday app tasks (3–5s/step)">
+                <span class="segment-face">Flash</span>
+              </button>
+              <button type="button" class="segment" [class.active]="selectedProfile() === 'pro'"
+                [attr.aria-pressed]="selectedProfile() === 'pro'"
+                (mousedown)="$event.preventDefault()" (click)="setProfile('pro', $event)"
+                title="Pro: plans first, checks results and recovers from blocked steps. For long or complex tasks (15–40s/step)">
+                <span class="segment-face">Pro</span>
+              </button>
             </div>
+
+            <select class="model-select" aria-label="Run model"
+              (focus)="models.load()"
+              [ngModel]="models.selectedKey()" (ngModelChange)="models.choose($event)"
+              [disabled]="isSubmitting()" [title]="models.selection()?.model ?? models.catalog()?.default?.model ?? 'Server default'">
+              @for (option of models.options(); track option.key) {
+                <option [value]="option.key">{{ option.label }}</option>
+              }
+            </select>
+
+            <!-- Attach images: a labelled button opens the (visually hidden) native file input -->
+            <input #imageInput type="file" class="visually-hidden-input" multiple
+              [accept]="imageAccept" aria-label="Choose images to attach"
+              (change)="onFilesChosen($event)" tabindex="-1">
+            <button type="button" class="composer-btn btn-attach"
+              [disabled]="isSubmitting() || attachedImages().length >= maxImages"
+              (click)="imageInput.click()"
+              [title]="attachedImages().length >= maxImages ? 'Image limit reached (' + maxImages + ')' : 'Attach images (PNG, JPG, JPEG or WEBP)'"
+              aria-label="Attach images">
+              <span class="material-symbols-outlined" aria-hidden="true">image</span>
+            </button>
+
+            <button type="button" class="composer-btn btn-send"
+              [class.is-blocked]="!phone.target()"
+              [disabled]="!taskInput.trim() || isSubmitting()"
+              [attr.aria-disabled]="phone.target() ? null : 'true'"
+              (click)="submitTask()"
+              [title]="isSubmitting() ? 'Starting task...' : (phone.target() ? (isTaskRunning() ? 'Queue task (Enter)' : 'Start task (Enter)') : 'Connect a phone first')"
+              [attr.aria-label]="isTaskRunning() ? 'Queue task' : 'Start task'">
+              <span class="material-symbols-outlined" [class.spinning-icon]="isSubmitting()" aria-hidden="true">{{ isSubmitting() ? 'sync' : 'arrow_upward' }}</span>
+            </button>
           </div>
         </div>
-
       </div>
-    </div>
+
+      <p class="composer-hint">{{ composerHint() }}</p>
+      @if (models.warning(); as warning) {
+        <p class="composer-hint" role="status">{{ warning }}</p>
+      }
+    </section>
     }
   </main>
-
-  <!-- Split Pane Drag Resizer (mouse only, so review mode leaves it out) -->
-  @if (!reviewMode) {
-    <div class="resizer" (mousedown)="onDragStart($event)">
-      <div class="resizer-handle"></div>
-    </div>
-  <!-- Right Sidebar Panel: Chat Interface Mock -->
-  <aside class="right-panel" [style.width.px]="rightPanelWidth()">
-    <app-chat-interface></app-chat-interface>
-  </aside>
-  }
 
 </div>

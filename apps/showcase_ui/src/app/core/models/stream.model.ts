@@ -177,6 +177,19 @@ export interface PersistedCheckerStream {
   segments: PersistedStreamSegment[];
 }
 
+export interface SessionChecks {
+  records: Array<CheckerVerdict & {
+    attempt_id: string;
+    checkpoint_id?: string;
+    anchor_step_id?: string | null;
+    trace_id?: string | null;
+    subgoal_text?: string;
+    ts?: number;
+  }>;
+  streams?: PersistedCheckerStream[];
+  run_outcome?: CheckerBlockData | null;
+}
+
 /**
  * Data of a `checker` timeline block: one Checker attempt (a midway checkpoint
  * of a completed subgoal or the exit final review), or the run outcome

@@ -17,7 +17,7 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from artemis.config import WORKSPACE_ROOT
 from apps.admin_console.core.access_control import require_admin
-from apps.admin_console.core.ownership import OwnerScope, actor_scope, present_session_data
+from apps.admin_console.core.ownership import OwnerScope, evidence_scope, present_session_data
 
 try:
     from admin_console.schemas.task_schema import ReplayRequest
@@ -54,7 +54,7 @@ async def get_replay_config(tool_name: str = "ask_explorer"):
 
 
 @router.get("/api/sessions/{session_id}/replay_steps")
-async def get_replay_steps(session_id: str, actor: OwnerScope = Depends(actor_scope)):
+async def get_replay_steps(session_id: str, actor: OwnerScope = Depends(evidence_scope)):
     """Loads and formats metadata for all chunked steps in the session."""
     try:
         steps = replay_manager.get_replay_steps(session_id)
@@ -90,7 +90,7 @@ async def get_step_replay_traces_endpoint(
     session_id: str,
     step_number: int,
     tool_name: str = "ask_explorer",
-    actor: OwnerScope = Depends(actor_scope),
+    actor: OwnerScope = Depends(evidence_scope),
 ):
     """Retrieves previously generated step replay traces if they exist."""
     try:

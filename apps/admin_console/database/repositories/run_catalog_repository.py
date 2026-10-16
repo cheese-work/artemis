@@ -25,7 +25,7 @@ import sqlite3
 from typing import Any
 
 from artemis.config import TRACES_PATH
-from artemis.data_engine import run_catalog
+from artemis.data_engine import run_catalog, run_snapshot
 
 try:
     from admin_console.database.connection import db_session
@@ -34,7 +34,8 @@ except ImportError:
 
 _COLUMNS = (
     "m.session_id, s.initial_goal, s.start_time, s.end_time, s.status, s.interrupt_reason, "
-    "m.host_id, m.device_ref, m.requested_by, m.pinned, m.deleted_at, m.deleted_reason"
+    "m.host_id, m.device_ref, m.requested_by, m.pinned, m.deleted_at, m.deleted_reason, m.review, "
+    + ", ".join(f"m.{field}" for field in run_snapshot.FIELDS)
 )
 _PREFIX = re.compile(r"[0-9a-fA-F]{8}")
 _SETTABLE = {"host_id", "requested_by", "pinned", "device_ref"}
@@ -57,6 +58,7 @@ class RunPage:
     runs: list[dict[str, Any]]
     next_cursor: str | None
     warnings: list[str] = field(default_factory=list)
+    total: int = 0
 
 
 @dataclass(slots=True)
@@ -107,6 +109,7 @@ def _run_from_row(row: sqlite3.Row) -> dict[str, Any]:
         "session_id": row["session_id"],
         "prompt": row["initial_goal"],
         "status": "completed" if status == "success" else status,
+        "review": row["review"],
         "interrupt_reason": row["interrupt_reason"],
         "start_time": row["start_time"],
         "end_time": row["end_time"],
@@ -114,6 +117,8 @@ def _run_from_row(row: sqlite3.Row) -> dict[str, Any]:
         "device_ref": device_ref,
         "requested_by": row["requested_by"],
         "pinned": bool(row["pinned"]),
+        # Snapshotted at execution; None = unknown.
+        **{field: row[field] for field in run_snapshot.FIELDS},
         "recordings": [],
     }
 
@@ -129,10 +134,16 @@ class RunCatalogRepository:
         self,
         *,
         status: str | None = None,
+        review: str | None = None,
+        app_build: str | None = None,
+        models: list[str] | None = None,
+        suite: str | None = None,
         device: str | None = None,
         host: str | None = None,
         requester: str | None = None,
         owner: str | None = None,
+        owners: list[str] | None = None,
+        shared_with: str | None = None,
         owned_only: bool = False,
         since: float | None = None,
         until: float | None = None,
@@ -141,6 +152,7 @@ class RunCatalogRepository:
         cursor: tuple[float | None, str] | None = None,
         nulls: bool = False,
         limit: int = 50,
+        count: bool = False,
     ) -> tuple[str, list[Any]]:
         """SQL for one page, newest first, seeking past ``cursor`` on the start_time index.
 
@@ -152,6 +164,17 @@ class RunCatalogRepository:
         if status:
             where.append("s.status IN (?, ?)" if status == "completed" else "s.status = ?")
             params += ["completed", "success"] if status == "completed" else [status]
+        for column, value in (
+            ("review", review),
+            ("app_build", app_build),
+            ("suite_version", suite),
+        ):
+            if value is not None:
+                where.append(f"m.{column} = ?")
+                params.append(value)
+        if models is not None:
+            where.append(f"m.agent_model IN ({', '.join('?' * len(models)) or 'NULL'})")
+            params += models
         if device:
             where.append(
                 "CASE WHEN json_valid(m.device_ref) "
@@ -167,6 +190,16 @@ class RunCatalogRepository:
         if owner:
             where.append("m.requested_by = ?")
             params.append(owner)
+        if owners is not None:
+            mine = f"m.requested_by IN ({', '.join('?' * len(owners)) or 'NULL'})"
+            params += owners
+            if shared_with:
+                mine = (
+                    f"({mine} OR EXISTS (SELECT 1 FROM run_link_shares shared "
+                    "WHERE shared.email = ? AND shared.session_id = m.session_id))"
+                )
+                params.append(shared_with)
+            where.append(mine)
         if owned_only:
             where.append("m.requested_by IS NOT NULL AND m.requested_by != ''")
         if since is not None:
@@ -182,6 +215,12 @@ class RunCatalogRepository:
             clause, term_params = run_catalog.substring_clause(terms)
             where.append(clause)
             params += term_params
+        if count:
+            return (
+                "SELECT COUNT(*) FROM sessions s JOIN run_meta m ON m.session_id = s.session_id "
+                f"WHERE {' AND '.join(where)}",
+                params,
+            )
         if nulls:
             where.append("s.start_time IS NULL")
             if cursor and cursor[0] is None:
@@ -208,6 +247,7 @@ class RunCatalogRepository:
     ) -> RunPage:
         decoded = decode_cursor(cursor) if cursor else None
         with db_session(self.db_path) as conn:
+            conn.execute("BEGIN")
             mode = self._require_ready(conn)
             warnings = ["search_fallback_substring"] if mode == "substring" else []
             match = terms = None
@@ -218,6 +258,10 @@ class RunCatalogRepository:
                         return RunPage([], None, warnings)
                 else:
                     terms = run_catalog.substring_terms(q)
+            count_sql, count_params = self.list_query(
+                match=match, terms=terms, count=True, **filters
+            )
+            total = conn.execute(count_sql, count_params).fetchone()[0]
             rows: list[sqlite3.Row] = []
             for nulls in (False, True):
                 if len(rows) > limit or (nulls is False and decoded and decoded[0] is None):
@@ -233,14 +277,15 @@ class RunCatalogRepository:
                 rows += conn.execute(sql, params).fetchall()
             page, more = rows[:limit], len(rows) > limit
             runs = [_run_from_row(row) for row in page]
+            self._attach_chat(conn, runs)
             self._attach_recordings(conn, runs)
         next_cursor = (
             encode_cursor(page[-1]["start_time"], page[-1]["session_id"]) if more else None
         )
-        return RunPage(runs, next_cursor, warnings)
+        return RunPage(runs, next_cursor, warnings, total)
 
-    def get_run(self, session_id: str) -> RunLookup:
-        """Resolve a full id, else an 8-character prefix. Tombstones outrank session rows."""
+    def get_run(self, session_id: str, *, prefix_owners: list[str] | None = None) -> RunLookup:
+        """Resolve a full id or owner-filtered prefix, including the tombstone decision."""
         session_id = run_catalog.validate_session_id(session_id, base_dir=self.traces_dir)
         with db_session(self.db_path) as conn:
             self._require_ready(conn)
@@ -249,6 +294,11 @@ class RunCatalogRepository:
                 prefix = session_id.lower()
                 upper = prefix[:-1] + chr(ord(prefix[-1]) + 1)
                 where, params = "m.session_id >= ? AND m.session_id < ?", [prefix, upper]
+                if prefix_owners is not None:
+                    where += (
+                        f" AND m.requested_by IN ({', '.join('?' * len(prefix_owners)) or 'NULL'})"
+                    )
+                    params += prefix_owners
             live = self._fetch(conn, where, params, removed=False)
             if not live:
                 gone = self._fetch(conn, where, params, removed=True)
@@ -256,8 +306,42 @@ class RunCatalogRepository:
             runs = [_run_from_row(row) for row in live]
             if len(runs) > 1:
                 return RunLookup(candidates=runs[:_MAX_CANDIDATES])
+            self._attach_chat(conn, runs)
             self._attach_recordings(conn, runs)
             return RunLookup(run=runs[0])
+
+    @staticmethod
+    def _attach_chat(conn: sqlite3.Connection, runs: list[dict[str, Any]]) -> None:
+        if (
+            not runs
+            or not conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='chat_sessions'"
+            ).fetchone()
+        ):
+            return
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(chat_sessions)")}
+        title = "c.title" if "title" in columns else "NULL"
+        marks = ",".join("?" for run in runs)
+        rows = conn.execute(
+            f"SELECT t.turn_id, t.session_id, {title} AS title, s.initial_goal "
+            "FROM chat_turns t JOIN chat_sessions c ON c.session_id=t.session_id "
+            "LEFT JOIN sessions s ON s.session_id=t.session_id "
+            f"WHERE t.turn_id IN ({marks})",
+            [run["session_id"] for run in runs],
+        )
+        metadata = {row["turn_id"]: row for row in rows}
+        for run in runs:
+            if row := metadata.get(run["session_id"]):
+                run.update(
+                    chat_session_id=row["session_id"],
+                    chat_title=row["title"],
+                    chat_prompt=row["initial_goal"],
+                )
+
+    def require_ready(self) -> None:
+        """Raise ``CatalogNotReady`` unless the catalog tables exist."""
+        with db_session(self.db_path) as conn:
+            self._require_ready(conn)
 
     def owners(self, session_ids: list[str]) -> dict[str, str | None]:
         """``requested_by`` per run id; ids without a run record are left out."""
@@ -273,6 +357,46 @@ class RunCatalogRepository:
                 ):
                     found[row["session_id"]] = row["requested_by"]
         return found
+
+    def live_run_ids(self, session_ids: list[str]) -> frozenset[str]:
+        """Ids among ``session_ids`` that name a run which is not removed."""
+        if not session_ids:
+            return frozenset()
+        with db_session(self.db_path) as conn:
+            self._require_ready(conn)
+            marks = ", ".join("?" * len(session_ids))
+            return frozenset(
+                row[0]
+                for row in conn.execute(
+                    "SELECT session_id FROM run_meta "
+                    f"WHERE deleted_at IS NULL AND session_id IN ({marks})",
+                    session_ids,
+                )
+            )
+
+    def shared_run_ids(self, email: str) -> frozenset[str]:
+        with db_session(self.db_path) as conn:
+            self._require_ready(conn)
+            return frozenset(
+                row[0]
+                for row in conn.execute(
+                    "SELECT shared.session_id FROM run_link_shares shared "
+                    "JOIN run_meta m ON m.session_id = shared.session_id "
+                    "WHERE shared.email = ? AND m.deleted_at IS NULL",
+                    (email,),
+                )
+            )
+
+    def record_link_share(self, email: str, session_id: str) -> None:
+        with db_session(self.db_path) as conn:
+            self._require_ready(conn)
+            conn.execute(
+                "INSERT OR IGNORE INTO run_link_shares (email, session_id) "
+                "SELECT ?, m.session_id FROM run_meta m JOIN sessions s "
+                "ON s.session_id = m.session_id WHERE m.session_id = ? AND m.deleted_at IS NULL",
+                (email, session_id),
+            )
+            conn.commit()
 
     # -- writes (new writes need canonical uuids) -------------------------------
 
@@ -343,7 +467,9 @@ class RunCatalogRepository:
 
     @staticmethod
     def _require_ready(conn: sqlite3.Connection) -> str:
-        if not run_catalog.catalog_ready(conn):
+        if not run_catalog.catalog_ready(conn) or not any(
+            row[1] == "review" for row in conn.execute("PRAGMA table_info(run_meta)")
+        ):
             raise CatalogNotReady
         return run_catalog.search_mode(conn)
 

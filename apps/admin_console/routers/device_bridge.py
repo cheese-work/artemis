@@ -30,23 +30,18 @@ from apps.admin_console.core.access_control import AccessIdentity, public_tier
 from artemis.utils.redaction import redact_text
 
 
-try:
-    from admin_console.services.bridge_session_service import (
-        MAX_ADB_PACKET_BYTES,
-        BridgeSession,
-        bridge_session_service,
-    )
-except ImportError:
-    from apps.admin_console.services.bridge_session_service import (
-        MAX_ADB_PACKET_BYTES,
-        BridgeSession,
-        bridge_session_service,
-    )
+from apps.admin_console.services.bridge_session_service import (
+    DEFAULT_RECONNECT_GRACE_SECONDS,
+    MAX_ADB_PACKET_BYTES,
+    BridgeSession,
+    bridge_session_service,
+)
 
 router = APIRouter(prefix="/api/device-bridge", tags=["device-bridge"])
 
 _CLOSE_FORBIDDEN_REMOTE = 4003
 _CLOSE_SESSION_EXPIRED = 4008
+_CLOSE_RESUME_REJECTED = 4009
 _CLOSE_BRIDGE_ERROR = 1011
 _ADB_HEADER_BYTES = 24
 _MAX_PENDING_BYTES = MAX_ADB_PACKET_BYTES * 4
@@ -113,13 +108,21 @@ async def _forward_tcp_packets(
     session: BridgeSession,
 ) -> None:
     while True:
-        header = await reader.readexactly(_ADB_HEADER_BYTES)
+        packet = session.pending_device_packet
+        if packet is None:
+            packet = await reader.readexactly(_ADB_HEADER_BYTES)
+            session.pending_device_packet = packet
+        header = packet[:_ADB_HEADER_BYTES]
         payload_size = struct.unpack_from("<I", header, 12)[0]
         if payload_size + _ADB_HEADER_BYTES > MAX_ADB_PACKET_BYTES:
             raise ValueError("ADB packet exceeds relay limit")
-        payload = await reader.readexactly(payload_size)
-        await _send_bytes(websocket, header + payload, send_lock)
-        session.bytes_device_to_browser += _ADB_HEADER_BYTES + payload_size
+        if len(packet) == _ADB_HEADER_BYTES:
+            payload = await reader.readexactly(payload_size)
+            packet += payload
+            session.pending_device_packet = packet
+        await _send_bytes(websocket, packet, send_lock)
+        session.bytes_device_to_browser += len(packet)
+        session.pending_device_packet = None
         if not await _renew_lease(session, websocket, send_lock):
             return
 
@@ -344,6 +347,24 @@ async def _close_websocket(
         pass
 
 
+def _should_resume(session: BridgeSession) -> bool:
+    report = session.client_close or {}
+    return session.connected.is_set() and (
+        report.get("reason") in {"socket_closed", "socket_error"}
+        or (session.close_code == 1006 and not report)
+    )
+
+
+async def _finish_bridge_connection(session: BridgeSession, generation: int) -> None:
+    if _should_resume(session) and await bridge_session_service.begin_reconnect(
+        session.session_id,
+        generation,
+        grace_seconds=DEFAULT_RECONNECT_GRACE_SECONDS,
+    ):
+        return
+    await bridge_session_service.revoke(session.session_id)
+
+
 @router.websocket("/session", dependencies=[Depends(require_bridge_access)])
 async def open_bridge_session(websocket: WebSocket) -> None:
     if not _client_is_loopback(websocket):
@@ -352,6 +373,7 @@ async def open_bridge_session(websocket: WebSocket) -> None:
 
     await websocket.accept()
     session: BridgeSession | None = None
+    generation: int | None = None
     tasks: list[asyncio.Task[object]] = []
     send_lock = asyncio.Lock()
     try:
@@ -359,6 +381,7 @@ async def open_bridge_session(websocket: WebSocket) -> None:
         session = await bridge_session_service.create_session(
             owner=identity.email if identity else None
         )
+        generation = session.connection_generation
         await _send_json(
             websocket,
             {
@@ -366,6 +389,7 @@ async def open_bridge_session(websocket: WebSocket) -> None:
                 "session_id": session.session_id,
                 "listener": {"host": "127.0.0.1", "port": session.port},
                 "expires_in_seconds": session.remaining_seconds(),
+                "reconnect_token": session.reconnect_token,
             },
             send_lock,
         )
@@ -420,8 +444,8 @@ async def open_bridge_session(websocket: WebSocket) -> None:
 
         async def finish_session() -> None:
             await asyncio.gather(*tasks, return_exceptions=True)
-            if session is not None:
-                await bridge_session_service.revoke(session.session_id)
+            if session is not None and generation is not None:
+                await _finish_bridge_connection(session, generation)
 
         cleanup_task = asyncio.create_task(finish_session())
         try:
@@ -429,3 +453,86 @@ async def open_bridge_session(websocket: WebSocket) -> None:
         except asyncio.CancelledError:
             await cleanup_task
             raise
+
+
+@router.websocket("/resume", dependencies=[Depends(require_bridge_access)])
+async def resume_bridge_session(websocket: WebSocket) -> None:
+    if not _client_is_loopback(websocket):
+        await websocket.close(code=_CLOSE_FORBIDDEN_REMOTE)
+        return
+
+    await websocket.accept()
+    session: BridgeSession | None = None
+    generation: int | None = None
+    tasks: list[asyncio.Task[object]] = []
+    send_lock = asyncio.Lock()
+    try:
+        message = await asyncio.wait_for(websocket.receive(), timeout=5)
+        text = message.get("text")
+        if not isinstance(text, str) or len(text) > 2048:
+            raise ValueError("invalid bridge resume request")
+        request = json.loads(text)
+        if (
+            not isinstance(request, dict)
+            or request.get("type") != "resume"
+            or not isinstance(request.get("session_id"), str)
+            or not request["session_id"]
+            or not isinstance(request.get("reconnect_token"), str)
+        ):
+            raise ValueError("invalid bridge resume request")
+
+        identity = getattr(getattr(websocket, "state", None), "identity", None)
+        session = await bridge_session_service.resume(
+            request["session_id"],
+            request["reconnect_token"],
+            identity.email if identity else None,
+        )
+        generation = session.connection_generation
+        await _send_json(
+            websocket,
+            {
+                "type": "session_leased",
+                "session_id": session.session_id,
+                "serial": session.serial,
+                "expires_in_seconds": session.remaining_seconds(),
+                "reconnect_token": session.reconnect_token,
+            },
+            send_lock,
+        )
+        await _send_json(
+            websocket,
+            {"type": "device_attached", "serial": session.serial},
+            send_lock,
+        )
+
+        relay_task = asyncio.create_task(_relay_packets(websocket, session, send_lock))
+        expiry_task = asyncio.create_task(_expire_session(websocket, session, send_lock))
+        tasks.extend((relay_task, expiry_task))
+        done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        for task in done:
+            task.result()
+    except WebSocketDisconnect as error:
+        if session is not None:
+            _client_has_closed(
+                {"type": "websocket.disconnect", "code": error.code, "reason": error.reason},
+                session,
+            )
+    except (ValueError, TimeoutError):
+        await _close_websocket(websocket, _CLOSE_RESUME_REJECTED, send_lock)
+    except (OSError, RuntimeError) as error:
+        if session is not None:
+            session.close_reason = "error"
+            session.close_code = _CLOSE_BRIDGE_ERROR
+        logger.warning(
+            "Device bridge resume failed session_id=%s error_type=%s",
+            session.session_id if session is not None else None,
+            type(error).__name__,
+        )
+        await _close_websocket(websocket, _CLOSE_BRIDGE_ERROR, send_lock)
+    finally:
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        if session is not None and generation is not None:
+            await _finish_bridge_connection(session, generation)

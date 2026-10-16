@@ -6,7 +6,8 @@ the output of `scripts/preview_sandbox.py`.
 
 ## Image
 
-`docker build --target preview -t <name> .` builds the per-PR image. It has no ADB,
+`docker build --target preview --build-arg ARTEMIS_BUILD_SHA=$(git rev-parse HEAD) -t <name> .` builds the per-PR image
+(the build arg names the build in the UI footer; without it the footer reads `Build unknown`). It has no ADB,
 git or curl, runs as UID 10001 and sets `ARTEMIS_PREVIEW_PROFILE=1`. The only extra
 packages are the shared libraries the OpenCV wheel needs at import time. The default
 target (last stage) is still the live console with ADB.

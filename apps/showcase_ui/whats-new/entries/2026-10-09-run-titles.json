@@ -1,0 +1,7 @@
+{
+  "id": "2026-10-09-run-titles",
+  "date": "2026-10-09",
+  "title": "Runs now have short, readable titles.",
+  "body": "Open Show prompt in a run to read the full task.",
+  "issues": ["CHE-1492"]
+}

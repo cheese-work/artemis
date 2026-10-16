@@ -25,5 +25,6 @@
   (showWhatsNew)="openWhatsNew()"
 ></app-nav-switcher>
 <app-whats-new></app-whats-new>
-<router-outlet></router-outlet>
-<app-version-footer></app-version-footer>
+<div class="app-page" [attr.data-active-pane]="shell.activePane()">
+  <router-outlet></router-outlet>
+</div>

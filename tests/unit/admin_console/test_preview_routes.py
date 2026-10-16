@@ -68,6 +68,11 @@ def test_failure_ledger_routes_are_disabled_in_preview(key):
     assert key not in pr.ALLOWED
 
 
+def test_deploy_cut_is_disabled_in_preview():
+    assert "POST /api/system/drain/cut" in pr.DISABLED
+    assert "POST /api/system/drain/cut" not in pr.ALLOWED
+
+
 def test_classifications_are_exclusive_and_name_only_registered_routes():
     assert not pr.REAL & pr.SYNTHETIC
     assert not pr.ALLOWED & pr.DISABLED
@@ -333,7 +338,7 @@ def synthetic(tmp_path, monkeypatch):
         admin_emails=frozenset({ADMIN}),
     )
     verifier = MagicMock(spec=CloudflareAccessVerifier)
-    verifier.verify = AsyncMock(side_effect=lambda token, _config: {"email": token})
+    verifier.verify = AsyncMock(side_effect=lambda token, _config: {"email": token, "sub": token})
     app.state.access_verifier = verifier
     app.include_router(preview_synthetic.router)
     yield SimpleNamespace(client=TestClient(app), db=db, traps=traps)

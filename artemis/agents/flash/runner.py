@@ -43,6 +43,7 @@ from dataclasses import dataclass, field
 import json
 from pathlib import Path
 import re
+import sqlite3
 import uuid
 
 from jinja2 import Template
@@ -318,6 +319,13 @@ class FlashRunner:
         """
         if not (self.ctx.data_engine and self.ctx.data_engine.base_dir):
             return None, None
+        from artemis.runtime.chat_control import read_chat_guidance
+
+        chat_instruction = await read_chat_guidance(self.ctx, self.goal)
+        if chat_instruction:
+            return chat_instruction, render_user_guidance(
+                chat_instruction, has_plan=False, offset_label=offset_label
+            )
         try:
             injected_payload = await asyncio.to_thread(
                 _check_injected_instruction_file,
@@ -553,12 +561,21 @@ class FlashRunner:
         native_text: str | None = None,
     ) -> dict:
         """Records the final step, acknowledges the tool call, and flushes."""
-        final_report = args
+        final_report = dict(args)
+        final_report.pop("evidence_ref", None)
+        final_step_id = None
+        for field_name, valid_values in (
+            ("status", ("completed", "failed")),
+            ("cause", ("app_defect", "goal_unreachable", "blocked_by_environment")),
+        ):
+            if field_name in final_report and final_report[field_name] not in valid_values:
+                logger.warning(f"event=report_cause_invalid field={field_name}")
+                final_report.pop(field_name)
         if self.ctx.data_engine:
             try:
                 if self.ctx.data_engine.current_step_id is None:
                     self.ctx.data_engine.allocate_step_id()
-                self.ctx.data_engine.record_step(
+                final_step_id = self.ctx.data_engine.record_step(
                     pre_screenshot_bytes=pre_screenshot_bytes,
                     ui_tree=xml_list,
                     action_taken={"action": "report_task_status", "args": args},
@@ -569,6 +586,31 @@ class FlashRunner:
                 )
             except Exception as step_err:
                 logger.warning(f"Error recording final step in FlashRunner: {step_err}")
+        evidence_step = final_report.get("evidence_step")
+        if final_report.get("status") == "completed" and final_step_id is not None:
+            evidence_step = self.ctx.data_engine.get_step_number(final_step_id)
+        if (
+            (final_report.get("cause") == "app_defect" or final_report.get("status") == "completed")
+            and type(evidence_step) is int
+            and evidence_step > 0
+            and self.ctx.data_engine
+        ):
+            try:
+                await self.ctx.data_engine.wait_for_pending_operations()
+                step = self.ctx.data_engine.get_step_record(evidence_step)
+                if step is not None:
+                    for which in ("post", "pre"):
+                        image = self.ctx.data_engine.get_step_image_path(evidence_step, which)
+                        if image is not None and image.is_file():
+                            final_report["evidence_ref"] = {
+                                "step_id": str(step.step_id),
+                                "step_number": evidence_step,
+                                "image_name": getattr(step, f"{which}_image_name"),
+                                "which": which,
+                            }
+                            break
+            except (OSError, ValueError, sqlite3.Error) as evidence_error:
+                logger.warning(f"Could not resolve report evidence: {evidence_error}")
         messages.append(
             ToolMessage(
                 tool_call_id=tc_id,

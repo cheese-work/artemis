@@ -47,6 +47,14 @@ class SessionRepository:
     def __init__(self, db_path=None):
         self.db_path = db_path
 
+    def register_chat_launch(self, session_id, config):
+        from artemis.config import DB_PATH
+        from artemis.data_engine.chat_sessions import ChatStore
+
+        store = ChatStore(self.db_path or DB_PATH)
+        store.save_launch_config(session_id, config)
+        return store.get(session_id)["session_id"]
+
     @staticmethod
     def process_is_alive(pid: Any) -> bool:
         """Return whether a session's worker PID is still alive.
@@ -309,8 +317,10 @@ class SessionRepository:
         Flash and Pro alike) and reports the prompt size of the latest
         Operator/FlashRunner call as the live executor context. Also echoes
         the profile and Pro tuning the run was started with, read from the
-        session's stored ``device_info``.
+        session's stored ``device_info``. ``estimated_cost_usd`` prices the
+        totals at the run model's list price (None when it has none).
         """
+        from artemis.services.model_pricing import estimate_cost_usd, normalize_model
         from artemis.services.token_meter import (
             OPERATOR_CONTEXT_WINDOW_TOKENS,
             OPERATOR_NODE_NAMES,
@@ -360,6 +370,7 @@ class SessionRepository:
 
         profile: str | None = None
         run_tuning: dict[str, Any] | None = None
+        d_info: Any = None
         if session_row and session_row["device_info"]:
             try:
                 d_info = json.loads(session_row["device_info"])
@@ -371,6 +382,16 @@ class SessionRepository:
                 if isinstance(tuning, dict) and tuning:
                     run_tuning = dict(tuning)
 
+        model: str | None = None
+        cost: float | None = None
+        if session_row:
+            from apps.admin_console.services.model_service import ModelService
+
+            recorded = d_info if isinstance(d_info, dict) else None
+            model = normalize_model(ModelService.get_active_model_info(profile, recorded)["id"])
+            if llm_calls:
+                cost = estimate_cost_usd(model, prompt, cached, completion)
+
         return {
             "session_id": session_id,
             "llm_calls": llm_calls,
@@ -381,6 +402,8 @@ class SessionRepository:
             "operator_context_tokens": operator_context,
             "operator_context_window_tokens": OPERATOR_CONTEXT_WINDOW_TOKENS,
             "operator_context_updated_at": operator_context_at,
+            "model": model,
+            "estimated_cost_usd": cost,
             "profile": profile,
             "run_tuning": run_tuning,
         }
@@ -480,6 +503,8 @@ class SessionRepository:
         notify_context: dict[str, Any] | None = None,
         requested_by: str | None = None,
         device_binding: dict[str, Any] | None = None,
+        model: dict[str, str] | None = None,
+        connection_id: str | None = None,
     ) -> bool:
         """Persist a queue item before its worker starts a session.
 
@@ -494,8 +519,8 @@ class SessionRepository:
                 cursor.execute(
                     "INSERT INTO sessions "
                     "(session_id, initial_goal, start_time, end_time, status, device_info, pid, "
-                    "notify_context) "
-                    "VALUES (?, ?, ?, NULL, 'queued', ?, NULL, ?)",
+                    "notify_context, connection_id) "
+                    "VALUES (?, ?, ?, NULL, 'queued', ?, NULL, ?, ?)",
                     (
                         str(session_id),
                         goal,
@@ -504,10 +529,19 @@ class SessionRepository:
                             {
                                 "profile": profile,
                                 "device_id": device_serial,
+                                **(
+                                    {
+                                        "agent_model": model["model"],
+                                        "agent_provider": model["provider"],
+                                    }
+                                    if model
+                                    else {}
+                                ),
                                 **({"device_binding": device_binding} if device_binding else {}),
                             }
                         ),
                         json.dumps(notify_context) if notify_context else None,
+                        connection_id,
                     ),
                 )
                 inserted = cursor.rowcount > 0

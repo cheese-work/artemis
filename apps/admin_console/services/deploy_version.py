@@ -23,7 +23,7 @@ reads as unknown: a version badge must never break the app.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone, UTC
+from datetime import datetime, timedelta, timezone, UTC
 import os
 from pathlib import Path
 import re
@@ -36,11 +36,12 @@ _UNKNOWN: dict[str, Any] = {
     "sha": None,
     "short_sha": None,
     "deployed_at": None,
+    "build": None,
 }
 
 
 def _utc_text(moment: datetime) -> str:
-    return moment.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return moment.astimezone(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
 def _normalize_time(value: str | None) -> str | None:
@@ -51,6 +52,18 @@ def _normalize_time(value: str | None) -> str | None:
         if parsed.tzinfo is None:
             parsed = parsed.replace(tzinfo=UTC)
         return _utc_text(parsed)
+    except (ValueError, OverflowError):
+        return None
+
+
+def _build_stamp(value: str | None) -> str | None:
+    if not value:
+        return None
+    try:
+        moment = datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(
+            timezone(timedelta(hours=7))
+        )
+        return f"{moment.year:04d}{moment:%m%d-%H%M}"
     except (ValueError, OverflowError):
         return None
 
@@ -72,9 +85,11 @@ def read_deploy_version() -> dict[str, Any]:
     sha = sha.strip().lower()
     if not _SHA.fullmatch(sha):
         return dict(_UNKNOWN)
+    deployed_at = _normalize_time(when) or mtime
     return {
         "status": "known",
         "sha": sha,
         "short_sha": sha[:7],
-        "deployed_at": _normalize_time(when) or mtime,
+        "deployed_at": deployed_at,
+        "build": _build_stamp(deployed_at),
     }

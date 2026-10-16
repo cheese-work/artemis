@@ -21,7 +21,7 @@ from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from apps.admin_console.core.device_ownership import may_use_device
-from apps.admin_console.core.ownership import OwnerScope, actor_scope, scope_or_open
+from apps.admin_console.core.ownership import OwnerScope, actor_scope, require_actor
 
 try:
     from admin_console.services.device_stream_service import device_stream_service
@@ -32,16 +32,23 @@ router = APIRouter(tags=["stream"])
 
 
 @router.get("/api/stream/device-live")
-async def stream_device_live(actor: OwnerScope = Depends(actor_scope)):
+async def stream_device_live(serial: str | None = None, actor: OwnerScope = Depends(actor_scope)):
     """Streams live device screen frames as multipart MJPEG.
 
     A signed-in QA only ever receives frames from their own or a shared phone.
     """
-    scope = scope_or_open(actor)
+    scope = require_actor(actor)
     scoped = scope.enforced and not scope.admin
     return StreamingResponse(
         device_stream_service.mjpeg_frame_generator(
-            (lambda serial: may_use_device(scope, serial)) if scoped else None
+            (
+                lambda frame_serial: (
+                    (serial is None or frame_serial == serial)
+                    and may_use_device(scope, frame_serial)
+                )
+            )
+            if scoped or serial is not None
+            else None
         ),
         media_type="multipart/x-mixed-replace; boundary=frame",
         headers={
@@ -56,7 +63,7 @@ async def stream_device_live(actor: OwnerScope = Depends(actor_scope)):
 @router.get("/api/stream/device-state")
 async def get_device_stream_state(actor: OwnerScope = Depends(actor_scope)):
     """Returns whether an ADB device is connected and live streaming is available."""
-    scope = scope_or_open(actor)
+    scope = require_actor(actor)
     serial = await device_stream_service.get_device_serial()
     if serial and not may_use_device(scope, serial):
         serial = None  # someone else's private phone is not reported at all

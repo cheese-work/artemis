@@ -158,6 +158,19 @@ describe('WhatsNewComponent', () => {
     expect(agentService.whatsNewHasUnread()).toBeFalse();
   });
 
+  it('shows issue numbers as plain text, never as links', async () => {
+    response = [{ ...entries[0], issues: ['CHE-1351', 'CHE-1276'] }, entries[1]];
+    const fixture = TestBed.createComponent(WhatsNewComponent);
+    fixture.detectChanges();
+    await fixture.whenStable();
+
+    const cards = fixture.nativeElement.querySelectorAll('.update-card') as NodeListOf<HTMLElement>;
+    expect(cards[0].querySelector('.update-issues')?.textContent?.trim()).toBe('CHE-1351 · CHE-1276');
+    expect(fixture.nativeElement.querySelector('.sheet-content a')).toBeNull();
+    expect(cards[1].querySelector('.update-issues')).toBeNull();
+    expect(cards[1].textContent).toContain('First body');
+  });
+
   it('keeps Tab and Shift+Tab inside the open side sheet', async () => {
     const fixture = TestBed.createComponent(WhatsNewComponent);
     fixture.detectChanges();

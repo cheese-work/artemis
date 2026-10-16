@@ -1,0 +1,7 @@
+{
+  "id": "2026-10-12-chat-sessions",
+  "date": "2026-10-12",
+  "title": "Keep a run going as a chat",
+  "body": "Send corrections to the agent before its next step. Pause at any time, or confirm a proposed plan change with Continue. Messages sent to a queued run become its opening instructions. After a turn ends, keep the same phone and chat history for the next turn. Each turn keeps its own collapsed steps, video and verdict.",
+  "issues": ["CHE-1543"]
+}

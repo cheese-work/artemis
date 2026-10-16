@@ -39,12 +39,12 @@ from artemis.core.tool_declaration import ToolDeclaration
 from artemis.mcp.action_specs import tool_declaration
 from artemis.mcp.observation import observe
 from artemis.graph.state import State
-from artemis.utils.logger import get_logger
 from artemis.utils.notes import (
     LIST_NOTES_DOCSTRING,
     READ_NOTE_ARG_KEY_DESC,
     READ_NOTE_DOCSTRING,
 )
+from third_party.mobile_use.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
@@ -284,11 +284,34 @@ REPORT_TASK_STATUS_TOOL = ToolDeclaration(
         "properties": {
             "status": {
                 "type": "string",
+                "enum": ["completed", "failed"],
                 "description": (
                     "Whether the task was completed successfully ('completed') or"
                     " failed/unreachable ('failed')."
                 ),
             },
+            "cause": {
+                "type": "string",
+                "enum": ["app_defect", "goal_unreachable", "blocked_by_environment"],
+                "description": (
+                    "For failed tasks only: app_defect means an observed defect in the app"
+                    " under test; cite evidence_step with a screenshot and describe expected"
+                    " versus actual behavior. goal_unreachable means the requested goal"
+                    " cannot be reached or the prompt needs clarification, not an app bug."
+                    " blocked_by_environment means the device, permissions, connection or"
+                    " test setup prevented execution. Omit cause when completed or uncertain."
+                ),
+            },
+            "evidence_step": {
+                "type": "integer",
+                "minimum": 1,
+                "description": (
+                    "The exact recorded step number whose screenshot shows the app_defect."
+                    " Required for an app defect claim; do not cite an unrelated nearby step."
+                ),
+            },
+            "expected": {"type": "string", "description": "The expected app behavior."},
+            "actual": {"type": "string", "description": "The observed app behavior."},
             "explanation": {
                 "type": "string",
                 "description": "Provide the final explanation or summary of the task execution.",

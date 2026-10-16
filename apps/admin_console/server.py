@@ -20,9 +20,11 @@ Modular entrypoint for full trace inspection, step replay, and task execution ma
 import argparse
 import asyncio
 from contextlib import asynccontextmanager
+import importlib
 import logging
 import os
 from pathlib import Path
+import re
 import secrets
 import signal
 import sqlite3
@@ -50,6 +52,7 @@ for _p in (str(_workspace_root), str(_apps_dir), str(_admin_console_dir), str(_c
 # Select the profile before any import below can run an import-time side effect.
 from apps.admin_console.core.preview_profile import (
     prepare_preview_environment,
+    preview_demo_selected,
     preview_identity_switch_selected,
     preview_profile_selected,
 )
@@ -57,10 +60,12 @@ from apps.admin_console.core.preview_routes import PreviewRouteGuard, require_cl
 
 PREVIEW_PROFILE = preview_profile_selected()
 preview_identity_switch_selected(PREVIEW_PROFILE)
+preview_demo_selected(PREVIEW_PROFILE)
 PREVIEW_ROOT = prepare_preview_environment() if PREVIEW_PROFILE else None
 
 from fastapi import Depends, FastAPI
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 import uvicorn
 from copy import deepcopy
 from artemis.utils.redaction import Redactor, configure_logging
@@ -98,14 +103,18 @@ from artemis.config import (
 from artemis.resources import get_bundled_showcase_dist
 from artemis.runtime.lifecycle import InterruptReason
 from apps.admin_console.services import failure_ledger, run_retention
+from apps.admin_console.services import device_reconciler
+from apps.admin_console.services.device_identity import device_identity
 from apps.admin_console.services.host_registry import host_agent_enabled, host_registry
 from apps.admin_console.services.host_tunnel import host_tunnels
 from apps.admin_console.core.access_control import (
     AdminAPIError,
     CloudflareAccessVerifier,
+    ServicePrincipalMiddleware,
     admin_api_error_handler,
     config_from_environment,
     public_tier,
+    require_loopback_bind,
     require_qa,
 )
 from apps.admin_console.core.preview_access import preview_access_verifier
@@ -128,6 +137,7 @@ try:
         hosts,
         media,
         preview_synthetic,
+        prompt_critiques,
         replay,
         run_admin,
         run_bundle,
@@ -155,6 +165,7 @@ except ImportError:
         hosts,
         media,
         preview_synthetic,
+        prompt_critiques,
         replay,
         run_admin,
         run_bundle,
@@ -193,6 +204,19 @@ app = FastAPI(
     dependencies=[Depends(public_tier), *([Depends(require_qa)] if PREVIEW_PROFILE else [])],
 )
 app.add_exception_handler(AdminAPIError, admin_api_error_handler)
+
+
+async def safe_validation_error(_request, error: RequestValidationError):
+    from artemis.utils.redaction import redact
+
+    details = [
+        {key: value for key, value in entry.items() if key in {"loc", "msg", "type"}}
+        for entry in error.errors()
+    ]
+    return JSONResponse(status_code=422, content={"detail": redact(details)})
+
+
+app.add_exception_handler(RequestValidationError, safe_validation_error)
 app.state.access_config = config_from_environment()
 app.state.preview_profile = PREVIEW_PROFILE
 app.state.preview_identities = configure_preview_identities(
@@ -207,11 +231,13 @@ else:
         else CloudflareAccessVerifier()
     )
 logging.getLogger(__name__).info(
-    "Admin access configured: mode=%s issuer=%s audience=%s admin_count=%d",
+    "Admin access configured: mode=%s issuer=%s audience=%s admin_count=%d spaces=%s",
     app.state.access_config.auth_mode,
     app.state.access_config.issuer or "none",
     app.state.access_config.audience or "none",
-    len(app.state.access_config.admin_emails),
+    len(app.state.access_config.admin_subjects)
+    + (0 if app.state.access_config.spaces_enabled else len(app.state.access_config.admin_emails)),
+    app.state.access_config.spaces_enabled,
 )
 logger = logging.getLogger(__name__)
 # A preview never adopts the live service's token: its own is fresh and container-local.
@@ -230,6 +256,7 @@ if PREVIEW_PROFILE:
     app.add_middleware(PreviewRouteGuard, route_source=app)
 app.add_middleware(RequestSizeLimitMiddleware)
 app.add_middleware(SameOriginBoundaryMiddleware)
+app.add_middleware(ServicePrincipalMiddleware)
 
 
 class TransportPeerProxyHeadersMiddleware:
@@ -255,6 +282,17 @@ async def on_startup():
     if PREVIEW_PROFILE:
         initialize_preview_fixtures(PREVIEW_ROOT, app.state.access_config)
         return
+    from apps.admin_console.services.config_store import ConfigStoreError
+    from apps.admin_console.services.provider_settings import get_provider_settings
+
+    try:
+        provider_settings = get_provider_settings()
+        await provider_settings.read()
+        await provider_settings.activate_runtime()
+    except ConfigStoreError:
+        logging.getLogger(__name__).warning(
+            "Provider settings are unavailable; complete server setup."
+        )
     write_server_info(
         port=getattr(state, "port", 8000),
         host=getattr(state, "host", "127.0.0.1"),
@@ -264,6 +302,11 @@ async def on_startup():
     cleaned_device_locks = DeviceExecutionLock.cleanup_stale_locks()
     if cleaned_device_locks:
         print(f"[ServerStartup] Removed {cleaned_device_locks} stale device lock(s).")
+
+    # Server adb and bridge phones resolve to durable devices (CHE-1473).
+    importlib.import_module(
+        "artemis.runtime.device_pool"
+    ).identity_observer = device_identity.observe_adb
 
     # Warm the adb server and complete one enumeration before requests are
     # served, so submissions in the first seconds never race an adb cold start
@@ -289,6 +332,7 @@ async def on_startup():
     # Announce (and acknowledge) the interruptions committed above or left
     # pending by a previous server that stopped before delivering them.
     task_queue_service._drain_outcome_events()
+    task_queue_service.restore_drained_queue()
     # Workers killed together with a previous daemon never remuxed their
     # recordings; publish whatever raw files they left behind.
     asyncio.create_task(asyncio.to_thread(task_queue_service.recover_orphaned_recordings_on_launch))
@@ -303,6 +347,11 @@ async def on_startup():
     state.retention_task.add_done_callback(run_retention.log_task_failure)
     state.failure_task = asyncio.create_task(failure_ledger.sweep_forever())
     state.failure_task.add_done_callback(run_retention.log_task_failure)
+    # Expires silent hosts and connections to Unknown (CHE-1477).
+    state.reconciler_task = asyncio.create_task(
+        device_reconciler.tick_forever(host_registry.db_path)
+    )
+    state.reconciler_task.add_done_callback(run_retention.log_task_failure)
 
 
 async def on_shutdown():
@@ -340,6 +389,11 @@ async def on_shutdown():
         failure_sweep.cancel()
         await asyncio.gather(failure_sweep, return_exceptions=True)
     state.failure_task = None
+    reconciler_tick = state.reconciler_task
+    if reconciler_tick is not None and not reconciler_tick.done():
+        reconciler_tick.cancel()
+        await asyncio.gather(reconciler_tick, return_exceptions=True)
+    state.reconciler_task = None
 
     # Cancel in-flight run coroutines and wait for their finalizers (DB status,
     # session_ended broadcast, trace sync, recording recovery) to run.
@@ -392,14 +446,21 @@ if PREVIEW_PROFILE:
 app.include_router(stream.router)
 app.include_router(media.router)
 app.include_router(sessions.router)
+from apps.admin_console.routers import chats
+
+app.include_router(chats.router)
 app.include_router(runs.router)
 app.include_router(run_bundle.router)
 app.include_router(run_admin.router)
+app.include_router(prompt_critiques.router)
 app.include_router(failures.router)
 app.include_router(steps.router)
 app.include_router(tasks.router)
 app.include_router(replay.router)
 app.include_router(system.router)
+from apps.admin_console.routers import providers
+
+app.include_router(providers.router)
 app.include_router(drain.router)
 app.include_router(device_bridge.router)
 app.include_router(hosts.router)
@@ -475,6 +536,21 @@ async def serve_showcase_spa(full_path: str):
         raise HTTPException(status_code=404, detail="Endpoint not found")
 
     clean_path = full_path.strip("/")
+
+    if not PREVIEW_PROFILE and (
+        preview_path := re.match(r"preview/pr/([0-9]+)(?:/|$)", clean_path)
+    ):
+        return HTMLResponse(
+            f"""<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Preview not available</title></head>
+<body><main><h1>Preview for PR #{preview_path[1]} is not available</h1>
+<p>No live preview is available at this URL.</p></main></body>
+</html>""",
+            status_code=404,
+            headers={"Cache-Control": "no-store"},
+        )
 
     # Admin / Debug Console routes
     if (
@@ -643,6 +719,7 @@ def run_ui_server(host: str, port: int, reload: bool = False) -> None:
     from artemis.config.host_agent import host_agent_enabled
     from apps.admin_console.services.bridge_session_service import MAX_ADB_PACKET_BYTES
 
+    require_loopback_bind(app.state.access_config, host)
     websocket_options = {"ws_max_size": MAX_ADB_PACKET_BYTES} if host_agent_enabled() else {}
     configure_logging(streams=True)
     state.host = host

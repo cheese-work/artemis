@@ -60,6 +60,35 @@ snapshot, app build, agent model, suite version, device model).
    context, so the note stays readable after its media expires. Deleting a
    whole run deletes its notes and their search entries.
 
+### Run snapshot (`run_meta_ext`)
+
+Revision 1 adds `run_meta.app_build`, `suite_version`, `device_model` and
+`agent_model` (nullable `TEXT`; `artemis/data_engine/run_snapshot.py`).
+The revision runs through `artemis/data_engine/schema_revisions.py`, which
+takes the backup. Revision 1 also creates `backfill_progress`.
+
+Revision 2 adds nullable `run_meta.review` for the query-layer review filter
+(CHE-1470). Review is mutable QA metadata, not an execution snapshot, so it is
+not part of `run_snapshot.FIELDS` or its backfill. Existing runs stay `NULL`.
+The QA review writer and vocabulary belong to CHE-1331; no writer or verdict
+reducer is added here. Session rewrites preserve the review like other
+`run_meta` state. A catalog missing this revision returns retryable 503 rather
+than running an unfiltered query.
+
+- **At execution.** The run writes its snapshot when its session is created.
+  Today that is the device model (`ro.product.model`) and the planner model.
+  A recorded value is never rewritten; a worker restart only fills unknowns.
+- **Backfill.** Runs that exist at the upgrade are filled from data that
+  already exists: the run's `device_info` and the host device record
+  (`host_devices.model`). Anything else stays `NULL`. `artemis catalog migrate`
+  and `artemis catalog backfill` report the count and resume an interrupted
+  backfill.
+- **Hook for later layers.** App build, suite version (CHE-1339) and the picked
+  model (CHE-1331) go into the run's `device_info` under the column name before
+  the session is created. The snapshot and the backfill read them from there.
+- **API.** `GET /api/runs` and `GET /api/runs/{session_id}` return the four
+  fields; `null` is unknown. Search filters on them are a later layer.
+
 ### Rollback
 
 - Default rollback: set `ARTEMIS_BOARD_ENABLED=0`. New features stop; tables,

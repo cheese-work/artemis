@@ -51,6 +51,7 @@ class InterruptReason(StrEnum):
     BRIDGE_CLOSED = "bridge_closed"
     DEVICE_OFFLINE = "device_offline"
     SERVER_RESTARTED = "server_restarted"
+    DEPLOY_CUT = "deploy_cut"
     AUTH_EXPIRED = "auth_expired"
 
 
@@ -61,6 +62,8 @@ _PRECEDENCE = {"failed": 1, "interrupted": 2, "completed": 3, "cancelled": 4}
 
 _SCHEMA_COLUMNS = (
     ("interrupt_reason", "TEXT"),
+    ("interrupt_evidence", "TEXT"),
+    ("terminal_error", "TEXT"),
     ("exit_cause", "TEXT"),
     ("pending_loss_reason", "TEXT"),
     ("pending_loss_deadline", "REAL"),
@@ -242,6 +245,7 @@ class LifecycleAuthority:
         end_time: float | None = None,
         result: Any = None,
         device_serial: str | None = None,
+        client_close: dict[str, Any] | None = None,
     ) -> Outcome:
         """Commit ``status`` unless the run already has a final outcome.
 
@@ -257,9 +261,24 @@ class LifecycleAuthority:
         reason = _reason(reason)
         if (status == "interrupted") != (reason is not None):
             raise ValueError("interrupt reason is required for, and only for, interrupted")
-        metadata = {"error": error, "result": result, "device_serial": device_serial}
+        interrupt_evidence = None
+        if reason is not None:
+            report = client_close or {}
+            interrupt_evidence = {
+                "reason": reason.value,
+                "client_close": {"reason": report.get("reason")},
+                "visibility_state": report.get("visibility_state"),
+            }
+        metadata = {
+            "error": error,
+            "result": result,
+            "device_serial": device_serial,
+            "interrupt_evidence": interrupt_evidence,
+        }
 
-        outcome = self._commit_row(session_id, status, reason, exit_cause, end_time)
+        outcome = self._commit_row(
+            session_id, status, reason, exit_cause, end_time, error, interrupt_evidence
+        )
         if outcome is None:
             return self._finish_trace_only(session_id, status, reason, end_time, metadata)
         # Project after commit. A crash or write failure here leaves status.json
@@ -275,6 +294,8 @@ class LifecycleAuthority:
         reason: InterruptReason | None,
         exit_cause: str | None,
         end_time: float | None,
+        error: str | None,
+        interrupt_evidence: dict[str, Any] | None,
     ) -> Outcome | None:
         """Arbitrate and commit on the sessions row; ``None`` when there is no row."""
         if not self.db_path.exists():
@@ -308,6 +329,16 @@ class LifecycleAuthority:
                     status, reason, _reason(row["pending_loss_reason"])
                 )
                 self._commit(conn, session_id, final, final_reason, end_time or self._clock())
+                if final == status:
+                    conn.execute(
+                        "UPDATE sessions SET terminal_error = ?, interrupt_evidence = ? "
+                        "WHERE session_id = ?",
+                        (
+                            error,
+                            json.dumps(interrupt_evidence) if interrupt_evidence else None,
+                            session_id,
+                        ),
+                    )
                 self._pause("before_commit")
                 return Outcome(session_id, final, final_reason, committed=True)
         except sqlite3.OperationalError as exc:
@@ -351,8 +382,23 @@ class LifecycleAuthority:
         reason_value = reason.value if reason else None
         conn.execute(
             "UPDATE sessions SET status = ?, end_time = ?, interrupt_reason = ?, "
-            "pending_loss_reason = NULL, pending_loss_deadline = NULL WHERE session_id = ?",
-            (status, now, reason_value, session_id),
+            "interrupt_evidence = ?, pending_loss_reason = NULL, pending_loss_deadline = NULL "
+            "WHERE session_id = ?",
+            (
+                status,
+                now,
+                reason_value,
+                json.dumps(
+                    {
+                        "reason": reason_value,
+                        "client_close": {"reason": None},
+                        "visibility_state": None,
+                    }
+                )
+                if reason_value
+                else None,
+                session_id,
+            ),
         )
         conn.execute(
             "INSERT OR IGNORE INTO lifecycle_outbox "
@@ -361,9 +407,16 @@ class LifecycleAuthority:
         )
 
     def interrupt(
-        self, session_id: str, reason: InterruptReason | str, *, error: str | None = None
+        self,
+        session_id: str,
+        reason: InterruptReason | str,
+        *,
+        error: str | None = None,
+        client_close: dict[str, Any] | None = None,
     ) -> Outcome:
-        return self.finish(session_id, "interrupted", reason=reason, error=error)
+        return self.finish(
+            session_id, "interrupted", reason=reason, error=error, client_close=client_close
+        )
 
     def note_loss(
         self,
@@ -447,15 +500,17 @@ class LifecycleAuthority:
         error: str | None = None,
         result: Any = None,
         device_serial: str | None = None,
+        interrupt_evidence: dict[str, Any] | None = None,
     ) -> None:
         """Mirror the committed outcome into status.json (when the trace has one).
 
-        The caller's ``error``/``result``/``device_serial`` are applied only
-        when ``requested`` is the status that won; they describe that outcome.
+        Error and interrupt evidence come from the committed row. The caller's
+        result and device serial are applied only when its requested status won.
         """
         with self._connect() as conn:
             row = conn.execute(
-                "SELECT status, end_time, interrupt_reason FROM sessions WHERE session_id = ?",
+                "SELECT status, end_time, interrupt_reason, terminal_error, interrupt_evidence "
+                "FROM sessions WHERE session_id = ?",
                 (str(session_id),),
             ).fetchone()
         status = canonical_status(row["status"]) if row else None
@@ -469,7 +524,10 @@ class LifecycleAuthority:
                     status,
                     end_time=row["end_time"],
                     interrupt_reason=row["interrupt_reason"],
-                    error=error if own else None,
+                    error=row["terminal_error"],
+                    interrupt_evidence=(
+                        json.loads(row["interrupt_evidence"]) if row["interrupt_evidence"] else None
+                    ),
                     result=result if own else None,
                     device_serial=device_serial if own else None,
                 )

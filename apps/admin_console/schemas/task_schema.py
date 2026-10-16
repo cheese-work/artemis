@@ -29,10 +29,17 @@ class RunImageUpload(BaseModel):
     data: str  # base64
 
 
+class ModelSelection(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    provider: str = Field(min_length=1, max_length=32)
+    model: str = Field(min_length=1, max_length=256)
+
+
 class RunRequest(BaseModel):
     goal: str | None = None
     goals: list[str] | None = None
     profile: str | None = "flash"
+    model: ModelSelection | None = None
     expected_output: str | None = None
     enable_outputter: bool | None = None
     # Pro-profile tuning (ignored by the Flash profile): a coarse Checker preset

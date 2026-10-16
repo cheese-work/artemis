@@ -1,0 +1,7 @@
+{
+  "id": "2026-10-16-session-cost-estimate",
+  "date": "2026-10-16",
+  "title": "Session Stats shows the whole session's tokens and an estimated cost",
+  "body": "Open the session sidebar and choose Stats. Tokens now add up every turn of the session, not just the latest one. Next to them is an estimated API cost, priced at the model's public list price, with the cost of each turn below. Your provider bill may differ. If the model has no list price, the cost shows a dash.",
+  "issues": ["CHE-1658"]
+}

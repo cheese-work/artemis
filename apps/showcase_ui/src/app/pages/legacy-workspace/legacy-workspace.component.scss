@@ -21,8 +21,8 @@ $glass-border: rgba(255, 255, 255, 0.6);
 .workspace-container {
   position: relative;
   display: flex;
-  height: 100vh;
-  width: 100vw;
+  height: 100%;
+  width: 100%;
   box-sizing: border-box;
   padding-top: var(--nav-clearance, 0px); /* panels start below the floating nav */
   background-color: $bg-base;
@@ -92,7 +92,8 @@ $glass-border: rgba(255, 255, 255, 0.6);
   }
 
   .left-panel {
-    flex: 1; 
+    flex: 1;
+    min-width: 0;
     display: flex;
     flex-direction: column;
     overflow: hidden;
@@ -143,6 +144,28 @@ $glass-border: rgba(255, 255, 255, 0.6);
       border-radius: 4px;
       transition: all 0.2s ease;
     }
+  }
+}
+
+@media (max-width: 799px) {
+  .workspace-container {
+    flex-direction: column;
+    overflow-y: auto;
+
+    .left-panel {
+      flex: none;
+      height: 100%;
+      min-height: 600px;
+    }
+
+    .right-panel {
+      width: 100% !important;
+      min-width: 0;
+      min-height: 420px;
+      flex: none;
+    }
+
+    .resizer { display: none; }
   }
 }
 

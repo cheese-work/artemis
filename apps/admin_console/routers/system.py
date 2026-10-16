@@ -35,11 +35,12 @@ from apps.admin_console.core.access_control import (
     AdminAPIError,
     public_tier,
     require_admin,
+    require_effective_loopback,
     require_lifecycle_token,
     require_qa,
 )
 from apps.admin_console.core.device_ownership import hide_foreign_devices
-from apps.admin_console.core.ownership import OwnerScope, actor_scope, scope_or_open
+from apps.admin_console.core.ownership import OwnerScope, actor_scope, require_actor
 from apps.admin_console.services.deploy_version import read_deploy_version
 from apps.admin_console.services.config_store import (
     ConfigStoreError,
@@ -60,6 +61,7 @@ class ConfigWriteRequest(BaseModel):
 async def whoami(identity: AccessIdentity = Depends(public_tier)):
     return {
         "email": identity.email,
+        "subject": identity.subject,
         "admin": identity.admin,
         "auth_mode": identity.auth_mode,
         "reason": identity.reason,
@@ -178,7 +180,12 @@ async def get_system_readiness(
 ) -> dict[str, Any]:
     """Execute all diagnostic probes and return the readiness report the caller may see."""
     report = await readiness_engine.run_all(force_refresh=force)
-    return hide_foreign_devices(scope_or_open(actor), report.model_dump(mode="json"))
+    return hide_foreign_devices(require_actor(actor), report.model_dump(mode="json"))
+
+
+@router.get("/service-readiness", dependencies=[Depends(require_effective_loopback)])
+async def get_service_readiness() -> dict[str, bool]:
+    return {"service_ready": True}
 
 
 @router.post("/devices/select", dependencies=[Depends(require_admin)])
@@ -466,7 +473,7 @@ async def get_model_config_and_env(identity: AccessIdentity = Depends(public_tie
     import os
     from artemis.config.paths import get_config_path, get_env_file
     from artemis.config import settings
-    from artemis.utils.file import load_jsonc
+    from third_party.mobile_use.utils.file import load_jsonc
 
     from artemis.config.settings import is_placeholder_key
 
@@ -646,9 +653,17 @@ async def get_model_config_and_env(identity: AccessIdentity = Depends(public_tie
 
 @router.get("/server-status")
 async def get_server_runtime_status():
-    """Retrieve runtime status, PID, port, and uptime of the Artemis server."""
+    """Retrieve runtime status, PID, port, and uptime of the Artemis server.
+
+    Answers from in-process state. ``server_lifecycle.get_server_status`` is
+    not used here: it runs ``lsof``/``fuser``, which can take over a second and
+    is too slow for the ``is_artemis_daemon`` probe.
+    """
     import os
-    from artemis.runtime.server_lifecycle import get_server_status
+    import time
+
+    from artemis.runtime.process_probe import pid_is_alive
+    from artemis.runtime.server_lifecycle import read_server_info
 
     try:
         from apps.admin_console.core.state import state
@@ -656,18 +671,38 @@ async def get_server_runtime_status():
         from admin_console.core.state import state
 
     port = getattr(state, "port", 8000)
-    status = get_server_status(port=port)
+    current_pid = os.getpid()
+    pids = {current_pid}
+    started_at = None
+
+    info = read_server_info()
+    if info and info.get("port") == port:
+        saved_pid = info.get("pid")
+        if isinstance(saved_pid, int) and saved_pid != current_pid and pid_is_alive(saved_pid):
+            pids.add(saved_pid)
+        if isinstance(info.get("started_at"), (int, float)):
+            started_at = float(info["started_at"])
+    if started_at is None:
+        try:
+            import psutil
+
+            started_at = psutil.Process(current_pid).create_time()
+        except Exception:  # pylint: disable=broad-exception-caught
+            # psutil is optional; uptime is best-effort.
+            started_at = None
+
+    uptime_seconds = max(0.0, time.time() - started_at) if started_at is not None else None
     # Explicit DTO: the raw metadata file additionally holds the lifecycle
     # token, cmdline, and filesystem paths, none of which belong on the wire.
     return {
-        "running": status["running"],
-        "port": status["port"],
-        "pids": status["pids"],
-        "active_pid": status["active_pid"],
-        "uptime_seconds": status["uptime_seconds"],
-        "url": status["url"],
-        "admin_url": status["admin_url"],
-        "current_pid": os.getpid(),
+        "running": True,
+        "port": port,
+        "pids": sorted(pids),
+        "active_pid": current_pid,
+        "uptime_seconds": uptime_seconds,
+        "url": f"http://localhost:{port}",
+        "admin_url": f"http://localhost:{port}/admin",
+        "current_pid": current_pid,
     }
 
 

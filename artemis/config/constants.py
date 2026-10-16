@@ -137,7 +137,6 @@ LLMUtilsNode = Literal[
     "video_analyzer",
     "object_detector",
 ]
-LLMUtilsNodeWithFallback = LLMUtilsNode
 
 AgentNode = Literal[
     "planner",
@@ -158,4 +157,3 @@ AgentNode = Literal[
     "validator",
     "output_analyzer",
 ]
-AgentNodeWithFallback = AgentNode

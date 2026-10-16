@@ -1,0 +1,30 @@
+[
+  {
+    "state": "finished",
+    "width": 1440,
+    "title": "Open Settings and verify dark mode",
+    "overflow": false,
+    "toggles": []
+  },
+  {
+    "state": "finished",
+    "width": 390,
+    "title": "Open Settings and verify dark mode",
+    "overflow": false,
+    "toggles": []
+  },
+  {
+    "state": "live",
+    "width": 1440,
+    "title": "Open Settings and verify dark mode",
+    "overflow": false,
+    "toggles": []
+  },
+  {
+    "state": "live",
+    "width": 390,
+    "title": "Open Settings and verify dark mode",
+    "overflow": false,
+    "toggles": []
+  }
+]

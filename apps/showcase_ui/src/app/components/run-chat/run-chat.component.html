@@ -1,0 +1,196 @@
+@if (!runId()) {
+  <section class="empty-chat"><h1>New session</h1><p>Describe what the agent should check on your phone.</p>
+    <div class="sample-prompts" aria-label="Sample prompts">
+      @for (sample of samples; track sample.title) {
+        <button type="button" data-sample [title]="sample.source" (click)="newRunPrompt.emit(sample.prompt)">{{ sample.title }}</button>
+      }
+    </div>
+    <p class="sample-attribution">Original Artemis SDK examples · Selecting a sample only fills the composer.</p>
+  </section>
+} @else {
+  <div class="chat-session">
+    <header class="chat-header">
+      <div class="session-title">
+        @if (editingTitle()) {
+          <form (ngSubmit)="saveTitle()" class="rename-form">
+            <input name="title" aria-label="Session title" [(ngModel)]="titleDraft" maxlength="120" [disabled]="savingTitle()"
+              (keydown.escape)="editingTitle.set(false)" autofocus>
+            <button type="submit" [disabled]="!titleDraft.trim() || savingTitle()">Save</button>
+            <button type="button" (click)="editingTitle.set(false)">Cancel</button>
+          </form>
+        } @else {
+          <button class="title-button" type="button" [title]="title()" aria-label="Rename session" [disabled]="!chat()" (click)="beginRename()">
+            <h1>{{ title() }}</h1><span aria-hidden="true">✎</span>
+          </button>
+        }
+      </div>
+      <label class="technical-toggle"><input type="checkbox" role="switch" aria-label="Technical details"
+        [checked]="shell.technicalDetails()" (change)="shell.setTechnicalDetails($any($event.target).checked)">Technical details</label>
+      <button type="button" [attr.aria-expanded]="sidebarOpen()" aria-controls="session-sidebar"
+        (click)="sidebarOpen.set(!sidebarOpen())" [attr.aria-label]="sidebarOpen() ? 'Collapse session sidebar' : 'Open session sidebar'">
+        <span aria-hidden="true">{{ sidebarOpen() ? '×' : '+' }}</span>
+      </button>
+    </header>
+    <div class="session-layout" [class.sidebar-open]="sidebarOpen()">
+    <div class="session-main">
+    <section #history class="chat-history" aria-label="Chat history" (scroll)="trackScroll()">
+      <ol class="chat-messages flat-timeline" aria-live="polite" aria-relevant="additions">
+        @for (message of timeline(); track message.turn_id + ':' + message.kind + ':' + message.sequence; let index = $index) {
+          @if (index === 0 || timeline()[index - 1].turn_id !== message.turn_id) {
+            <li class="turn-divider" aria-label="Turn boundary"><span>Turn {{ turnNumber(message.turn_id) }}</span>
+              @if (shell.technicalDetails()) { <span>{{ message.turn_id }}</span> }
+            </li>
+          }
+          <li [class.chat-bubble]="['message', 'thinking', 'input_request'].includes(message.kind)"
+            [class.human]="message.role === 'human'" [class.system]="message.role === 'system'"
+            [class.plan-card]="message.kind === 'plan' || message.kind === 'replan'" [class.step-row]="message.kind === 'step'"
+            [attr.data-event-kind]="message.kind">
+            @if (message.kind === 'step') {
+              <details>
+                <summary><span>{{ message.content }}</span>
+                  @if (screenshot(message.payload); as image) { <img class="step-thumbnail" [src]="image" alt="Step thumbnail" loading="lazy" (error)="failScreenshot(message.payload)"> }
+                </summary>
+                @let marker = actionMarker(message.payload);
+                <div class="evidence">
+                  <figure class="evidence-before">
+                    <figcaption>Before</figcaption>
+                    @if (screenshot(message.payload, 'pre_image_name'); as image) {
+                      <span class="shot">
+                        <img class="step-before" [src]="image" [alt]="marker ? 'Before screenshot. Agent action: ' + marker.caption : 'Before screenshot'" loading="lazy"
+                          (load)="scrollToLatest()" (error)="failScreenshot(message.payload, 'pre_image_name')">
+                        @if (marker?.line; as line) {
+                          <svg class="action-marker swipe" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true" focusable="false">
+                            <defs><marker [id]="'arrow-' + message.sequence" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto"><path d="M0 0L10 5L0 10z"/></marker></defs>
+                            <line [attr.x1]="line.x1" [attr.y1]="line.y1" [attr.x2]="line.x2" [attr.y2]="line.y2" [attr.marker-end]="'url(#arrow-' + message.sequence + ')'"/>
+                          </svg>
+                        } @else if (marker?.box; as box) {
+                          <span class="action-marker type box" aria-hidden="true" [style.left.%]="box.x" [style.top.%]="box.y" [style.width.%]="box.w" [style.height.%]="box.h"></span>
+                        } @else if (marker?.point; as point) {
+                          <span class="action-marker ring" [class.tap]="marker!.kind === 'tap'" [class.type]="marker!.kind === 'type'" aria-hidden="true" [style.left.%]="point.x" [style.top.%]="point.y"></span>
+                        } @else if (marker?.kind === 'key') {
+                          <span class="action-marker key" aria-hidden="true"></span>
+                        }
+                      </span>
+                      @if (marker) { <span class="action-caption">{{ marker.caption }}</span> }
+                    } @else { <p class="receipt">Before screenshot unavailable.</p> }
+                  </figure>
+                  <figure class="evidence-after">
+                    <figcaption>After</figcaption>
+                    @if (screenshot(message.payload); as image) { <img class="step-screenshot" [src]="image" alt="Expanded step screenshot" loading="lazy" (load)="scrollToLatest()" (error)="failScreenshot(message.payload)"> }
+                    @else { <p class="receipt">Screenshot unavailable.</p> }
+                  </figure>
+                </div>
+                @if (shell.technicalDetails()) { <pre class="action-detail">{{ message.payload | json }}</pre> }
+              </details>
+            } @else if (message.kind === 'thinking') {
+              <details class="thinking"><summary>Agent thinking · {{ message.content.split('\n')[0] }}</summary><p>{{ message.content }}</p></details>
+            } @else {
+              <span class="speaker">{{ message.kind === 'replan' ? 'Revised plan' : message.kind === 'plan' ? 'Plan' : message.kind === 'input_request' ? 'Input requested' : message.role === 'human' ? 'You' : message.role === 'agent' ? 'Agent' : 'System' }}</span>
+              <p>{{ message.content }}</p>
+              @if (message.role === 'human' && !message.acknowledged_at) { <span class="receipt">Queued for the next step</span> }
+            }
+            @if (shell.technicalDetails()) { <time>{{ message.created_at * 1000 | date: 'HH:mm:ss' : '+0700' }} ICT</time> }
+          </li>
+        }
+        @if (chat()?.verdict; as verdict) {
+          <li class="verdict-card" data-event-kind="verdict"><h2>Verdict · {{ verdictTitle() }}</h2>
+            @for (finding of verdict.outcome?.last_findings ?? []; track $index) { <p>{{ finding }}</p> }
+            @if (verdict.status !== 'completed') { <p>This execution did not complete.</p> }
+            @if (shell.technicalDetails()) {
+              @if (verdict.report) { <details><summary>Agent report</summary><pre>{{ verdict.report }}</pre></details> }
+              <details><summary>Execution details and error stack</summary><pre>{{ verdict.details | json }}</pre><pre>{{ verdict.outcome | json }}</pre></details>
+            }
+            @if (verdict.status === 'completed') {
+              @if (verdict.tip; as tip) {
+                @if (tip.state === 'generating') { <footer class="verdict-tip" role="status">Preparing a tip for next time…</footer> }
+                @else if (tip.state === 'complete' && tip.text) {
+                  <footer class="verdict-tip"><span>Next time</span><p>{{ tip.text }}</p>
+                    <button type="button" class="copy-tip" (click)="copyTip()">Copy</button>
+                    @if (copyNotice()) { <span role="status">{{ copyNotice() }}</span> }
+                  </footer>
+                }
+              }
+            }
+          </li>
+        }
+      </ol>
+      @if (!chat() && !error()) {
+        <div role="status"><span class="sr-only">Loading chat session…</span>
+          @for (row of [1, 2, 3]; track row) { <div class="step-skeleton" aria-hidden="true"></div> }
+        </div>
+      } @else if (chat() && !stepCount()) { <p class="timeline-empty">{{ emptyMessage() }}</p> }
+    </section>
+    @if (error()) { <p class="chat-error" role="alert">{{ error() }}</p> }
+    @if (!canWrite()) { <p class="chat-notice">Shared session · read-only</p> }
+    @else if (compose()) {
+      @if (inputRequest(); as request) {
+      <form class="chat-composer" (ngSubmit)="sendInput()" autocomplete="off">
+        <label for="session-input">{{ request.content }}</label>
+        <input id="session-input" name="private-input" type="password" [(ngModel)]="secretDraft" maxlength="4096"
+          autocomplete="off" autocapitalize="off" spellcheck="false" [disabled]="sending()" aria-describedby="private-input-notice">
+        <div class="composer-actions">
+          <span id="private-input-notice">Sent only to the device · not added to chat or model context</span>
+          <button type="button" [disabled]="sending()" (click)="stopRun.emit(latest()!.turn_id)">Stop</button>
+          <button type="submit" class="send" [disabled]="!secretDraft || sending()">Send to device</button>
+        </div>
+      </form>
+      } @else {
+      <form class="chat-composer" (ngSubmit)="send()">
+        <label class="sr-only" for="session-message">{{ active() ? 'Message the agent' : 'Continue this session with a new turn' }}</label>
+        <div class="composer-bar" [class.off]="disconnected()" (keydown.escape)="pickerOpen.set(false)">
+          <textarea id="session-message" name="message" [(ngModel)]="draft" rows="2" cdkTextareaAutosize cdkAutosizeMaxRows="8"
+            maxlength="32768" [placeholder]="disconnected() ? 'Reconnect the phone first' : active() ? 'Correct or steer the next step…' : 'What should the agent do next on this phone?'"
+            [disabled]="sending() || disconnected()"></textarea>
+          <div class="composer-tools">
+            @if (phone(); as phone) {
+              <button type="button" class="phone-chip" [class.blink]="disconnected()" [attr.aria-disabled]="disconnected() ? null : 'true'"
+                [attr.aria-expanded]="disconnected() ? pickerOpen() : null" [attr.aria-controls]="disconnected() ? 'phone-pop' : null"
+                [attr.aria-label]="disconnected() ? 'Phone disconnected: ' + phone.label + '. Open to reconnect or choose another phone.'
+                  : 'Phone for this session: ' + phone.label + '. ' + (!phone.known ? '' : phone.online ? 'Connected. ' : 'Disconnected. ') + 'Locked after the first run.'"
+                (click)="disconnected() && pickerOpen.set(!pickerOpen())">
+                <span class="dot" [class.ok]="phone.known && phone.online" [class.error]="phone.known && !phone.online"></span><span class="lbl">{{ phone.label }}</span>
+                @if (disconnected()) {
+                  <span class="state">· Disconnected</span>
+                  <svg class="ms" aria-hidden="true" viewBox="0 96 960 960" focusable="false"><path d="M480 709.5 253.8 483.4 291 446.2 480 635.2 669 446.2 706.2 483.4Z"/></svg>
+                } @else if (chat()?.turns?.length) { <svg class="ms" data-lock aria-hidden="true" viewBox="0 96 960 960" focusable="false"><path d="M276.3 940Q249.4 940 230.7 921.3Q212 902.6 212 875.7V516.3Q212 489.4 230.7 470.7Q249.4 452 276.3 452H308V356Q308 284.1 358 234Q408.1 184 480 184Q551.9 184 602 234Q652 284.1 652 356V452H683.7Q710.6 452 729.3 470.7Q748 489.4 748 516.3V875.7Q748 902.6 729.3 921.3Q710.6 940 683.7 940ZM276.3 888H683.7Q689.1 888 692.5 884.5Q696 881.1 696 875.7V516.3Q696 510.9 692.5 507.5Q689.1 504 683.7 504H276.3Q270.9 504 267.5 507.5Q264 510.9 264 516.3V875.7Q264 881.1 267.5 884.5Q270.9 888 276.3 888ZM542 696Q542 669.8 524.1 651.9Q506.2 634 480 634Q453.8 634 435.9 651.9Q418 669.8 418 696Q418 722.2 435.9 740.1Q453.8 758 480 758Q506.2 758 524.1 740.1Q542 722.2 542 696ZM360 452H600V356Q600 306 565 271Q530 236 480 236Q430 236 395 271Q360 306 360 356Z"/></svg> }
+              </button>
+            }
+            <div class="composer-act">
+              @if (active()) {
+                <button type="button" class="icon-btn" [attr.aria-label]="paused() ? 'Continue' : 'Pause'" [disabled]="sending()" (click)="control(paused() ? 'continue' : 'pause')">
+                  <svg class="ms" aria-hidden="true" viewBox="0 96 960 960" focusable="false">
+                    <path [attr.d]="paused() ? 'M400 700V452L600 576Z' : 'M376.2 710H428.2V442H376.2ZM531.8 710H583.8V442H531.8Z'"/><path d="M480 940Q405.2 940 338.9 911.5Q272.5 883.1 222.7 833.3Q172.9 783.5 144.5 717.1Q116 650.8 116 576Q116 500.2 144.5 434.4Q172.9 368.5 222.7 318.7Q272.5 268.9 338.9 240.5Q405.2 212 480 212Q555.8 212 621.6 240.5Q687.5 268.9 737.3 318.7Q787.1 368.5 815.5 434.4Q844 500.2 844 576Q844 650.8 815.5 717.1Q787.1 783.5 737.3 833.3Q687.5 883.1 621.6 911.5Q555.8 940 480 940ZM480 888Q610 888 701 797Q792 706 792 576Q792 446 701 355Q610 264 480 264Q350 264 259 355Q168 446 168 576Q168 706 259 797Q350 888 480 888Z"/>
+                  </svg>
+                </button>
+                <button type="button" class="icon-btn" aria-label="Stop" [disabled]="sending()" (click)="stopRun.emit(latest()!.turn_id)">
+                  <svg class="ms" aria-hidden="true" viewBox="0 96 960 960" focusable="false"><path d="M346 710H614V442H346Z"/><path d="M480 940Q405.2 940 338.9 911.5Q272.5 883.1 222.7 833.3Q172.9 783.5 144.5 717.1Q116 650.8 116 576Q116 500.2 144.5 434.4Q172.9 368.5 222.7 318.7Q272.5 268.9 338.9 240.5Q405.2 212 480 212Q555.8 212 621.6 240.5Q687.5 268.9 737.3 318.7Q787.1 368.5 815.5 434.4Q844 500.2 844 576Q844 650.8 815.5 717.1Q787.1 783.5 737.3 833.3Q687.5 883.1 621.6 911.5Q555.8 940 480 940ZM480 888Q610 888 701 797Q792 706 792 576Q792 446 701 355Q610 264 480 264Q350 264 259 355Q168 446 168 576Q168 706 259 797Q350 888 480 888Z"/></svg>
+                </button>
+              }
+              <button type="submit" class="icon-btn send" aria-label="Send" [disabled]="!draft.trim() || sending() || !chat() || disconnected()"><svg class="ms" aria-hidden="true" viewBox="0 96 960 960" focusable="false"><path d="M454 844V407.9L249.2 612.8L212 576L480 308L748 576L710.8 612.8L506 407.9V844Z"/></svg></button>
+            </div>
+          </div>
+          @if (disconnected() && pickerOpen()) {
+            <div class="phone-pop" id="phone-pop" role="group" aria-label="Phone disconnected">
+              <h3>{{ phone()!.label }} lost connection</h3>
+              <button type="button" class="opt" data-reconnect [disabled]="!canReconnect()" (click)="reconnect()">Reconnect {{ phone()!.label }}</button>
+              @if (otherPhones().length) {
+                <h3>Or run the first prompt on</h3>
+                @for (option of otherPhones(); track option.serial) {
+                  <button type="button" class="opt" data-another (click)="runOn(option.serial)">{{ option.text }}</button>
+                }
+                <p class="note">A new session opens with the same first prompt.</p>
+              }
+            </div>
+          }
+        </div>
+        <p class="composer-hint">{{ paused() ? 'Paused · Continue or send another message' : active() ? 'Steer by default · a plan change pauses for confirmation' : 'Same phone · current screen · full chat history' }}</p>
+      </form>
+      }
+    }
+    </div>
+    @if (sidebarOpen()) {
+      <app-session-sidebar id="session-sidebar" [runId]="latest()?.turn_id ?? runId()" [turns]="usageTurns()" [technicalDetails]="shell.technicalDetails()" [firstPrompt]="rootRun()?.chat_prompt ?? rootRun()?.prompt ?? null"></app-session-sidebar>
+    }
+    </div>
+  </div>
+}

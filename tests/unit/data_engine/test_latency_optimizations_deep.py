@@ -24,7 +24,7 @@ from langchain_core.messages import HumanMessage
 from artemis.context import ArtemisContext
 from artemis.data_engine.engine import DataEngine
 from artemis.graph.state import State
-from artemis.utils.logger import DataEngineHandler
+from third_party.mobile_use.utils.logger import DataEngineHandler
 import pytest
 
 
@@ -66,10 +66,9 @@ async def test_data_engine_handler_queue_buffering_and_background_worker(
             )
             handler.emit(record)
 
-    # Wait for the background worker thread of DataEngineHandler and DataEngine tasks to drain
-    await asyncio.sleep(0.4)
-    if engine._pending_tasks:
-        await asyncio.gather(*engine._pending_tasks)
+    # Wait for the handler's worker thread, then for the engine's own tasks and threads, to drain
+    await asyncio.to_thread(handler._log_queue.join)
+    await engine.shutdown()
 
     # Verify that traces were recorded and persisted accurately via direct SQLite query
     with engine.storage._get_connection() as conn:
@@ -240,10 +239,10 @@ async def test_perception_node_async_offloading(mock_artemis_ctx, tmp_path):
     # Verify injected_instruction.json was unlinked
     assert not instruction_file.exists()
 
-    # Await background tasks triggered by perception_node
-    await asyncio.sleep(0.1)
-    if engine._pending_tasks:
-        await asyncio.gather(*engine._pending_tasks)
+    # perception_node offloads the image save with a bare ``asyncio.create_task`` that the engine
+    # does not track, so await every other task on this loop, then the engine's own work.
+    await asyncio.gather(*(asyncio.all_tasks() - {asyncio.current_task()}))
+    await engine.shutdown()
 
     # Verify image record and file were created in background by perception_node
     img_record = engine.storage.get_image(expected_hash)
@@ -302,12 +301,12 @@ async def test_ocr_api_persistent_http_client_singleton_and_tls_reuse():
 async def test_ui_filter_and_ui_automator_client_pre_parsed_bounds_o1_lookup():
     """Verify XML parsing pre-populates parsed_bounds and _parse_bounds hits this cache in O(1) without regex matches."""
     import re
-    from artemis.clients.ui_automator_client import _parse_hierarchy_xml_to_elements
+    from third_party.mobile_use.clients.ui_automator_client import parse_hierarchy_xml_to_elements
     from artemis.utils.ui_filter import _parse_bounds
 
-    # 1. Test ingestion pre-parsing in _parse_hierarchy_xml_to_elements
+    # 1. Test ingestion pre-parsing in parse_hierarchy_xml_to_elements
     xml_data = '<hierarchy><node text="Login Btn" bounds="[15,25][350,120]"/></hierarchy>'
-    elements = _parse_hierarchy_xml_to_elements(xml_data)
+    elements = parse_hierarchy_xml_to_elements(xml_data)
     assert len(elements) == 1
     assert elements[0]["parsed_bounds"] == {
         "left": 15,

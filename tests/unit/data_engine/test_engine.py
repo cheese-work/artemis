@@ -13,11 +13,37 @@
 # limitations under the License.
 
 import asyncio
+from contextlib import contextmanager
 import json
+import socket
+import threading
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from artemis.context import ArtemisContext
 from artemis.data_engine.engine import DataEngine
+
+
+@contextmanager
+def _engine_socket(**create_connection_kwargs):
+    """Stub ``socket`` in the engine module, counting only connects made by the test thread.
+
+    The engine module is shared: another thread's ``DataEngine`` (an unrelated engine, a leaked
+    daemon) reaches the same ``socket`` name while the test runs. Those connects get a refused
+    connection, as with no listener, and are not counted as the engine under test connecting.
+    """
+    recorded = MagicMock(**create_connection_kwargs)
+    test_thread = threading.get_ident()
+
+    def create_connection(*args, **kwargs):
+        if threading.get_ident() != test_thread:
+            raise ConnectionRefusedError("connect from a thread other than the test")
+        return recorded(*args, **kwargs)
+
+    stub = MagicMock(wraps=socket)
+    stub.create_connection = create_connection
+    with patch("artemis.data_engine.engine.socket", stub):
+        yield SimpleNamespace(create_connection=recorded)
 
 
 def test_ipc_send_reconnects_and_retries_current_event(tmp_path):
@@ -34,15 +60,12 @@ def test_ipc_send_reconnects_and_retries_current_event(tmp_path):
 
     with (
         patch("artemis.data_engine.engine.read_ipc_port", return_value=49152),
-        patch(
-            "artemis.data_engine.engine.socket.create_connection",
-            side_effect=[stale_socket, replacement_socket],
-        ) as create_connection,
+        _engine_socket(side_effect=[stale_socket, replacement_socket]) as engine_socket,
     ):
         engine = DataEngine(mock_ctx)
         engine._publish("llm_stream", {"session_id": "s1", "chunk": "hello"})
 
-    assert create_connection.call_count == 2
+    assert engine_socket.create_connection.call_count == 2
     stale_socket.close.assert_called_once()
     replacement_socket.sendall.assert_called_once()
     frame = replacement_socket.sendall.call_args.args[0]
@@ -65,16 +88,13 @@ def test_ipc_connect_falls_back_to_refreshed_port_file(tmp_path):
     with (
         patch("artemis.data_engine.engine.read_ipc_port", return_value=49555),
         patch("artemis.data_engine.engine.get_ipc_port_file", return_value=port_file),
-        patch(
-            "artemis.data_engine.engine.socket.create_connection",
-            side_effect=[OSError("stale port"), live_socket],
-        ) as create_connection,
+        _engine_socket(side_effect=[OSError("stale port"), live_socket]) as engine_socket,
     ):
         engine = DataEngine(mock_ctx)
 
     assert engine.ipc_socket is live_socket
-    assert create_connection.call_args_list[0].args[0] == ("127.0.0.1", 49555)
-    assert create_connection.call_args_list[1].args[0] == ("127.0.0.1", 51629)
+    assert engine_socket.create_connection.call_args_list[0].args[0] == ("127.0.0.1", 49555)
+    assert engine_socket.create_connection.call_args_list[1].args[0] == ("127.0.0.1", 51629)
 
 
 def test_ipc_does_not_reconnect_after_engine_shutdown(tmp_path):
@@ -88,16 +108,13 @@ def test_ipc_does_not_reconnect_after_engine_shutdown(tmp_path):
     with (
         patch("artemis.data_engine.engine.read_ipc_port", return_value=49152),
         patch("artemis.data_engine.engine.get_ipc_port_file", return_value=tmp_path / "none"),
-        patch(
-            "artemis.data_engine.engine.socket.create_connection",
-            return_value=connected_socket,
-        ) as create_connection,
+        _engine_socket(return_value=connected_socket) as engine_socket,
     ):
         engine = DataEngine(mock_ctx)
         asyncio.run(engine.shutdown())
         engine._publish("llm_stream", {"chunk": "after shutdown"})
 
-    assert create_connection.call_count == 1
+    assert engine_socket.create_connection.call_count == 1
     connected_socket.close.assert_called_once()
 
 
@@ -112,16 +129,13 @@ def test_ipc_connection_failure_is_backed_off(tmp_path):
     with (
         patch("artemis.data_engine.engine.read_ipc_port", return_value=49152),
         patch("artemis.data_engine.engine.get_ipc_port_file", return_value=tmp_path / "none"),
-        patch(
-            "artemis.data_engine.engine.socket.create_connection",
-            side_effect=TimeoutError("stale port"),
-        ) as create_connection,
+        _engine_socket(side_effect=TimeoutError("stale port")) as engine_socket,
     ):
         engine = DataEngine(mock_ctx)
         for index in range(20):
             engine._publish("llm_stream", {"chunk": str(index)})
 
-    assert create_connection.call_count == 1
+    assert engine_socket.create_connection.call_count == 1
 
 
 def test_get_or_create_image_updates_missing_data(tmp_path):
@@ -389,6 +403,25 @@ def _foreground_engine(tmp_path):
     engine = DataEngine(mock_ctx)
     engine.start_session("foreground_app persistence")
     return engine
+
+
+def test_record_step_emits_chat_events_without_duplicating_the_snapshot(tmp_path, monkeypatch):
+    from artemis.data_engine.chat_sessions import ChatStore
+
+    engine = _foreground_engine(tmp_path)
+    monkeypatch.setenv("ARTEMIS_CHAT_SESSION_ID", str(engine.current_session_id))
+    step_id = engine.record_step(
+        summary="Open settings",
+        operator_native_thinking="Check screen",
+        action_taken={"action": "click", "x": 42, "y": 88},
+    )
+    for thread in list(engine._pending_threads):
+        thread.join()
+    events = ChatStore(engine.storage.db_path).get(str(engine.current_session_id))["messages"]
+    assert [event["kind"] for event in events] == ["message", "thinking", "step"]
+    assert events[-1]["payload"] == {"step_id": str(step_id)}
+    assert events[-2]["content"] == "Check screen"
+    assert engine.storage.get_steps(engine.current_session_id)[0].action_taken["x"] == 42
 
 
 def test_record_step_persists_explicit_foreground_app(tmp_path):

@@ -177,7 +177,7 @@ class TestRealWorkerMultiAttemptRunIdGrouping:
         sol_trace_id = "real-attempt-sol"
         terra_trace_id = "real-attempt-terra"
 
-        sol_llm_config = _uniform_llm_config("openai", "gpt-5.6-sol")
+        sol_llm_config = _uniform_llm_config("openai", "gpt-6-sol")
         terra_llm_config = _uniform_llm_config("google", "gemini-3.8-flash")
 
         # The exact call run_task makes at its "launch" checkpoint, invoked
@@ -197,7 +197,7 @@ class TestRealWorkerMultiAttemptRunIdGrouping:
         usage_traces_dir = tmp_path / "usage_traces"
         storage = StorageManager(db_path, usage_traces_dir)
         for trace_id, source in (
-            (sol_trace_id, "openai:gpt-5.6-sol"),
+            (sol_trace_id, "openai:gpt-6-sol"),
             (terra_trace_id, "google:gemini-3.8-flash"),
         ):
             storage.create_session(SessionMetadata(session_id=trace_id, initial_goal="test goal"))
@@ -299,7 +299,7 @@ class TestTerminationTimeBatchReconciliation:
         sol_trace_id = "termination-attempt-sol"
         terra_trace_id = "termination-attempt-terra"
 
-        sol_llm_config = _uniform_llm_config("openai", "gpt-5.6-sol")
+        sol_llm_config = _uniform_llm_config("openai", "gpt-6-sol")
         terra_llm_config = _uniform_llm_config("google", "gemini-3.8-flash")
 
         # First attempt: same real _record_attempt_manifest call run_task
@@ -319,7 +319,7 @@ class TestTerminationTimeBatchReconciliation:
         db_path = get_data_engine_db_path()
         storage = StorageManager(db_path, traces_dir)
         for trace_id, source in (
-            (sol_trace_id, "openai:gpt-5.6-sol"),
+            (sol_trace_id, "openai:gpt-6-sol"),
             (terra_trace_id, "google:gemini-3.8-flash"),
         ):
             storage.create_session(SessionMetadata(session_id=trace_id, initial_goal="test goal"))
@@ -370,7 +370,7 @@ class TestTerminationTimeBatchReconciliation:
         monkeypatch.setenv("ARTEMIS_FAKE_LLM", "0")
 
         trace_id = "solo-attempt"
-        llm_config = _uniform_llm_config("openai", "gpt-5.6-sol")
+        llm_config = _uniform_llm_config("openai", "gpt-6-sol")
         _record_attempt_manifest(trace_id=trace_id, checkpoint="launch", llm_config=llm_config)
 
         # No manifest for this trace_id sharing a run_id exists other than

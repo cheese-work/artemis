@@ -15,11 +15,13 @@
 import asyncio
 from contextlib import suppress
 import json
+import logging
 from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from artemis.core.diagnostics import readiness_engine
 from artemis.runtime import DeviceExecutionLock, device_pool
+from artemis.runtime.adb_endpoint import AdbEndpoint
 from artemis.config.host_agent import host_agent_enabled
 from artemis.runtime.host_endpoints import HostOffline, host_endpoints
 from apps.admin_console.services.host_registry import host_registry
@@ -32,22 +34,28 @@ from apps.admin_console.core.device_ownership import (
     visible_devices,
 )
 from apps.admin_console.services import run_images
+from apps.admin_console.services.model_discovery import model_discovery
+from apps.admin_console.services.bridge_session_service import bridge_session_service
 from apps.admin_console.core.ownership import (
     OwnerScope,
     actor_scope,
     list_scope,
     owners_of,
     present_session_data,
+    record_run_read,
     require_access,
     require_access_all,
-    scope_or_open,
+    require_actor,
+    require_catalog_ready,
+    require_signed_in,
+    require_visible_run,
 )
+from apps.admin_console.core.redaction import redact_image_data, redact_json
 
 try:
     from admin_console.core.state import IN_FLIGHT_STATUSES, state
     from admin_console.database.repositories.session_repository import session_repo
     from admin_console.schemas.task_schema import RunRequest
-    from admin_console.services.bridge_session_service import bridge_session_service
     from admin_console.services.ipc_service import ipc_service
     from admin_console.services.model_service import model_service
     from admin_console.services.task_preset_catalog import task_recommendation_engine
@@ -56,7 +64,6 @@ except ImportError:
     from apps.admin_console.core.state import IN_FLIGHT_STATUSES, state
     from apps.admin_console.database.repositories.session_repository import session_repo
     from apps.admin_console.schemas.task_schema import RunRequest
-    from apps.admin_console.services.bridge_session_service import bridge_session_service
     from apps.admin_console.services.ipc_service import ipc_service
     from apps.admin_console.services.model_service import model_service
     from apps.admin_console.services.task_preset_catalog import task_recommendation_engine
@@ -64,6 +71,7 @@ except ImportError:
 
 
 router = APIRouter(tags=["tasks"])
+logger = logging.getLogger(__name__)
 
 # Lifecycle events every stream historically received; each names a run.
 _RUN_BOUND_EVENTS = ("session_started", "session_ended", "background_tasks_updated")
@@ -71,21 +79,23 @@ _DROP = object()
 
 
 def _draining_error(exc: ServerDraining) -> HTTPException:
-    return HTTPException(
-        status_code=503,
-        detail={"code": exc.code, "message": str(exc)},
-        headers={"Retry-After": str(exc.retry_after_seconds)},
-    )
+    return exc.http_error()
 
 
 async def _bind_bridge_session(request: RunRequest) -> None:
     """Point a run at the phone its bridge holds; a bridge that is gone refuses the run."""
     session = await bridge_session_service.get(request.bridge_session_id)
     if session is None or session.revoked or session.is_expired:
+        reason = "missing" if session is None else "revoked" if session.revoked else "expired"
+        logger.warning(
+            "event=bridge_run_bind_rejected bridge_session_id=%s reason=%s",
+            request.bridge_session_id,
+            reason,
+        )
         raise AdminAPIError(
             409,
             "Your phone is not connected.",
-            "device_offline",
+            "bridge_session_unavailable",
             "Connect the phone again, then start the run.",
         )
     named = request.device_serial
@@ -125,9 +135,15 @@ async def get_task_catalog():
     }
 
 
+@router.get("/api/models")
+async def get_models(actor: OwnerScope = Depends(actor_scope)):
+    require_signed_in(require_actor(actor))
+    return await model_discovery.catalog()
+
+
 @router.post("/api/run")
 async def run_task(request: RunRequest, actor: OwnerScope = Depends(actor_scope)):
-    scope = scope_or_open(actor)
+    scope = require_actor(actor)
     host_id = request.device_ref.host_id if request.device_ref else None
     requested_serial = request.device_ref.serial if request.device_ref else request.device_serial
     if host_id and not host_agent_enabled():
@@ -167,9 +183,14 @@ async def run_task(request: RunRequest, actor: OwnerScope = Depends(actor_scope)
             )
         goal_images = await asyncio.to_thread(run_images.validate, request.images)
 
+    selected_model = await model_discovery.resolve(
+        request.model.model_dump() if request.model else None
+    )
+
     if request.bridge_session_id:
         await _bind_bridge_session(request)
         requested_serial = request.device_serial
+    bridge_endpoint = AdbEndpoint.local() if request.bridge_session_id else None
     # A phone the caller does not own is refused before any probe or enqueue.
     if requested_serial and not host_id:
         require_device(scope, requested_serial)
@@ -266,7 +287,8 @@ async def run_task(request: RunRequest, actor: OwnerScope = Depends(actor_scope)
     # fail downstream with a clear error instead.
     if requested_serial and not host_id:
         try:
-            rejection = await device_pool.validate_explicit_serial_async(requested_serial)
+            pool = device_pool.pool_for(bridge_endpoint) if bridge_endpoint else device_pool
+            rejection = await pool.validate_explicit_serial_async(requested_serial)
         except Exception:
             rejection = None
         if rejection:
@@ -294,6 +316,7 @@ async def run_task(request: RunRequest, actor: OwnerScope = Depends(actor_scope)
         else await readiness_engine.run_device_submission_probe(
             target_serial=target_serial,
             may_use=(lambda serial: may_use_device(scope, serial)) if scoped else None,
+            **({"endpoint": bridge_endpoint} if bridge_endpoint else {}),
         )
     )
     if device_probe and device_probe.summary in {"Device Locked", "Lock State Unknown"}:
@@ -342,6 +365,8 @@ async def run_task(request: RunRequest, actor: OwnerScope = Depends(actor_scope)
             requested_by=scope.email,
             goal_images=goal_images,
             bridge_session_id=request.bridge_session_id,
+            model=selected_model,
+            model_explicit=request.model is not None,
             **({"host_id": host_id} if host_id else {}),
         )
     except ServerDraining as exc:
@@ -368,7 +393,7 @@ async def get_run_defaults():
 async def list_devices(actor: OwnerScope = Depends(actor_scope)):
     """List all connected Android devices with their busy / idle status."""
     devices = await device_pool.list_devices_async()
-    return {"devices": visible_devices(scope_or_open(actor), [d.to_dict() for d in devices])}
+    return {"devices": visible_devices(require_actor(actor), [d.to_dict() for d in devices])}
 
 
 def _owned_ids(scope: OwnerScope, ids: set[str | None]) -> list[str]:
@@ -462,7 +487,7 @@ async def stop_task(
     device_id: str | None = None,
     actor: OwnerScope = Depends(actor_scope),
 ):
-    scope = scope_or_open(actor)
+    scope = require_actor(actor)
     target_all = all
     target_sid = session_id
     target_dev = device_id
@@ -501,7 +526,7 @@ async def cancel_queued_task(session_id: str, actor: OwnerScope = Depends(actor_
     Running runs are stopped with ``/api/stop``, never through this route. Like
     stop, it needs the run's owner or an admin; a denied call has no side effect.
     """
-    scope = scope_or_open(actor)
+    scope = require_actor(actor)
     if scope.enforced and not scope.admin:
         require_access(scope, session_id)
     result = task_queue_service.cancel_queued(session_id)
@@ -524,7 +549,7 @@ async def resume_task(actor: OwnerScope = Depends(actor_scope)):
     affects (the running ones) is theirs; mixed-owner or unattributable pauses
     are admin-only. With nothing running and nothing paused the call is a no-op.
     """
-    _require_pause_authority(scope_or_open(actor))
+    _require_pause_authority(require_actor(actor))
     resumed = task_queue_service.resume_task()
     if resumed:
         return {"status": "resumed"}
@@ -533,12 +558,13 @@ async def resume_task(actor: OwnerScope = Depends(actor_scope)):
 
 @router.get("/api/status")
 async def get_status(scope: OwnerScope = Depends(list_scope)):
-    return _scope_status(await _status_payload(), scope_or_open(scope))
+    return _scope_status(await _status_payload(), require_actor(scope))
 
 
 def _scope_status(payload: dict[str, Any], scope: OwnerScope) -> dict[str, Any]:
-    """Drop queue entries, device owners and the headline run the scope may not see."""
+    """Filter visible runs and redact shared payloads while keeping owner data raw."""
     if not scope.enforced or scope.include_all:
+        require_catalog_ready()  # readiness before any unscoped return
         return payload
     queue = list(payload.get("queue") or [])
     active = list(payload.get("active_tasks") or [])
@@ -550,20 +576,39 @@ def _scope_status(payload: dict[str, Any], scope: OwnerScope) -> dict[str, Any]:
 
     def visible(session_id: Any) -> bool:
         return (
-            bool(session_id) and str(session_id) in owners and scope.sees(owners[str(session_id)])
+            bool(session_id)
+            and str(session_id) in owners
+            and scope.sees(owners[str(session_id)], str(session_id))
+        )
+
+    def present(session_id: Any, data: Any) -> Any:
+        return (
+            data
+            if scope.may_act_on(owners.get(str(session_id)))
+            else redact_json(redact_image_data(data))
         )
 
     scoped = {
-        **payload,
-        "queue": [i for i in queue if visible(i.get("session_id"))],
-        "active_tasks": [i for i in active if visible(i.get("session_id"))],
+        **(present(headline, payload) if visible(headline) else payload),
+        "queue": [
+            present(item.get("session_id"), item)
+            for item in queue
+            if visible(item.get("session_id"))
+        ],
+        "active_tasks": [
+            present(item.get("session_id"), item)
+            for item in active
+            if visible(item.get("session_id"))
+        ],
         "background_tasks": [],
     }
     if not headline:
         return scoped
     if visible(headline):
         # Bind to the run the caller can see, not the globally latest session.
-        scoped["background_tasks"] = session_repo.get_background_tasks(str(headline))
+        scoped["background_tasks"] = present(
+            headline, session_repo.get_background_tasks(str(headline))
+        )
     else:
         scoped.update(session_id=None, goal=None, pid=None)
     return scoped
@@ -641,7 +686,14 @@ async def _status_payload() -> dict[str, Any]:
                 sess_row, llm_traces, agent_names=agent_names
             )
 
-    model_info = model_service.get_active_model_info(active_profile)
+    model_row = (
+        session_repo.get_session_by_id(running_sid or latest_session_id)
+        if (running_sid or latest_session_id)
+        else None
+    )
+    model_info = model_service.get_active_model_info(
+        active_profile, model_service.get_recorded_model(model_row or running_task)
+    )
 
     # Unified Global Queue: merge web tasks and external SDK/CLI device queue tickets
     global_queued = DeviceExecutionLock.get_queued_tasks()
@@ -684,7 +736,9 @@ async def _status_payload() -> dict[str, Any]:
         conn_info = state.active_connections[str(latest_session_id)]
         is_paused = state.is_paused
         conn_profile = conn_info.get("profile") or active_profile
-        conn_model_info = model_service.get_active_model_info(conn_profile)
+        conn_model_info = model_service.get_active_model_info(
+            conn_profile, model_service.get_recorded_model(model_row or conn_info)
+        )
         return {
             "status": "paused" if is_paused else "running",
             "paused_error": state.paused_error if is_paused else None,
@@ -719,8 +773,14 @@ async def stream_events(
     # The "all"/"active" firehose is scoped to the caller's runs. A stream of one
     # named run is a get-by-id (share link): in cloudflare mode it carries that
     # run's events only, never another run's lifecycle events.
-    scope = scope_or_open(scope)
+    scope = require_actor(scope)
+    # Every scope: a scoped stream with no active run never looks up an owner, so an
+    # unready catalog would otherwise open it and later events would fail mid-stream.
+    require_catalog_ready()
     firehose = session_id in ("all", "active")
+    if not firehose:
+        await asyncio.to_thread(require_visible_run, scope, [session_id])
+        await asyncio.to_thread(record_run_read, scope, session_id)
     decided: dict[str, bool] = {}
 
     def may_see(event_session_id: Any) -> bool:
@@ -730,7 +790,7 @@ async def stream_events(
         if key in decided:
             return decided[key]
         owners = owners_of([key])
-        allowed = scope.sees(owners.get(key))
+        allowed = scope.sees(owners.get(key), key)
         if key in owners:  # a run not yet recorded may still gain its owner
             decided[key] = allowed
         return allowed

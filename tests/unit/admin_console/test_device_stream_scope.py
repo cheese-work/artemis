@@ -52,7 +52,7 @@ def cloudflare(monkeypatch):
         ),
     )
     verifier = MagicMock()
-    verifier.verify = AsyncMock(side_effect=lambda token, _config: {"email": token})
+    verifier.verify = AsyncMock(side_effect=lambda token, _config: {"email": token, "sub": token})
     monkeypatch.setattr(app.state, "access_verifier", verifier)
     session = BridgeSession(
         session_id="s41001", port=41001, created_at=0.0, expires_at=float("inf"), owner=QA1
@@ -129,3 +129,47 @@ async def test_an_unscoped_listener_still_gets_every_frame(monkeypatch):
     monkeypatch.setattr(service, "_capture_loop", AsyncMock())
 
     assert await _frames(service, None, None)
+
+
+@pytest.mark.asyncio
+async def test_live_stream_never_replays_a_cached_frame_during_private_input(monkeypatch):
+    service = DeviceStreamService()
+    monkeypatch.setattr(service, "_capture_loop", AsyncMock())
+    monkeypatch.setattr(
+        "apps.admin_console.services.device_stream_service.private_input_active",
+        lambda serial: True,
+    )
+    assert await _frames(service, lambda serial: True, QA1_PHONE, count_seconds=0.02) == []
+    assert service._latest_frame is None
+
+
+@pytest.mark.asyncio
+async def test_an_unknown_serial_is_also_suppressed_for_private_input(monkeypatch):
+    service = DeviceStreamService()
+    monkeypatch.setattr(service, "_capture_loop", AsyncMock())
+    monkeypatch.setattr(
+        "apps.admin_console.services.device_stream_service.private_input_active",
+        lambda serial: serial is None,
+    )
+    assert await _frames(service, None, None, count_seconds=0.02) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("email", [QA1, ADMIN])
+async def test_requested_phone_never_receives_another_phone(cloudflare, monkeypatch, email):
+    async def frames(may_use):
+        for serial in (SHARED, QA1_PHONE):
+            if may_use(serial):
+                yield serial.encode()
+
+    monkeypatch.setattr(device_stream_service, "mjpeg_frame_generator", frames)
+    async with AsyncClient(
+        transport=ASGITransport(app=app, client=("203.0.113.9", 51000)), base_url="http://localhost"
+    ) as client:
+        response = await client.get(
+            "/api/stream/device-live",
+            params={"serial": SHARED},
+            headers={"Cf-Access-Jwt-Assertion": email},
+        )
+    assert response.status_code == 200
+    assert response.content == SHARED.encode()

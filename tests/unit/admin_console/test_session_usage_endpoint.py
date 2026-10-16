@@ -16,6 +16,8 @@
 
 import json
 
+import pytest
+
 from apps.admin_console.database.connection import db_session
 from apps.admin_console.database.repositories.session_repository import SessionRepository
 
@@ -117,3 +119,53 @@ def test_usage_route_is_registered():
 
     paths = {getattr(r, "path", None) for r in sessions.router.routes}
     assert "/api/sessions/{session_id}/usage" in paths
+
+
+def _priced_session(tmp_path, session_id, model, usage):
+    db_path = tmp_path / "sessions.db"
+    repo = SessionRepository(db_path)
+    _insert_session(db_path, session_id, {"profile": "flash", "agent_model": model})
+    _insert_usage(db_path, session_id, "t1", 1.0, usage)
+    return repo
+
+
+def test_usage_estimates_cost_at_list_price_with_cache_discount(tmp_path):
+    # gpt-6-sol list price: $2 input, $0.20 cached input, $10 output per 1M tokens.
+    repo = _priced_session(tmp_path, "s3", "gpt-6-sol", _usage(305_000, 2_100, cached=90_000))
+
+    usage = repo.get_session_usage("s3")
+
+    assert usage.get("model") == "gpt-6-sol"
+    # (215,000 uncached * 2 + 90,000 cached * 0.20 + 2,100 output * 10) / 1M
+    assert usage.get("estimated_cost_usd") == pytest.approx(0.469)
+
+
+def test_usage_cost_ignores_provider_prefix_on_the_model(tmp_path):
+    # gemini-3.8-flash list price: $0.75 input, $0.075 cached input, $3.75 output per 1M.
+    repo = _priced_session(
+        tmp_path, "s4", "google/gemini-3.8-flash", _usage(1_000_000, 100_000, cached=0)
+    )
+
+    usage = repo.get_session_usage("s4")
+
+    assert usage.get("model") == "gemini-3.8-flash"
+    assert usage.get("estimated_cost_usd") == pytest.approx(1.125)
+
+
+def test_usage_cost_is_none_when_the_model_has_no_list_price(tmp_path):
+    repo = _priced_session(tmp_path, "s5", "llama3.2-vision", _usage(10_000, 100))
+
+    usage = repo.get_session_usage("s5")
+
+    assert usage.get("model") == "llama3.2-vision"
+    assert "estimated_cost_usd" in usage
+    assert usage["estimated_cost_usd"] is None
+
+
+def test_usage_cost_is_none_for_an_unknown_session(tmp_path):
+    repo = SessionRepository(tmp_path / "sessions.db")
+
+    usage = repo.get_session_usage("missing")
+
+    assert "estimated_cost_usd" in usage
+    assert usage["estimated_cost_usd"] is None

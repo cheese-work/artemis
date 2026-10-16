@@ -84,6 +84,7 @@ jobs:
           --cov=artemis
           --cov=mcp_server
           --cov=apps/admin_console
+          --cov=third_party
           --cov-fail-under=60
 
       - name: Run unit tests in reverse file order
@@ -119,14 +120,28 @@ jobs:
       - name: Install locked frontend dependencies
         run: npm ci
 
-      - name: Run frontend tests
-        run: npm test -- --watch=false --browsers=ChromeHeadless
+      - name: Run frontend tests at 800 px and 1440 px
+        run: npm test -- --watch=false --browsers=ChromeHeadlessNarrow,ChromeHeadlessWide
 
       - name: Build frontend for production
         run: npm run build
 
       - name: Build frontend from Docker stage inputs
         run: npm run test:docker-build-inputs
+
+      # The check drives the real Angular UI in headless Chrome and needs the
+      # development build (production builds strip the `ng` debug API).
+      - name: Build development UI for the preview-path check
+        run: npm run build -- --configuration development
+
+      - name: Check responsive shell and 44 px controls
+        run: npm run test:shell
+
+      - name: Check root and /preview/pr/70/ browser requests
+        run: |
+          export CHROME_BIN="$(command -v google-chrome || command -v chromium-browser || command -v chromium)"
+          "$CHROME_BIN" --version
+          npm run test:preview-path
 
   package:
     name: Build and smoke-test Python packages

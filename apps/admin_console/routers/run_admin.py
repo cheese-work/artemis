@@ -20,6 +20,7 @@ from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, Field
 
 from apps.admin_console.core.access_control import require_admin, require_qa
+from apps.admin_console.core.ownership import OwnerScope, actor_scope, require_access, require_actor
 from apps.admin_console.routers.run_bundle import library_error
 from apps.admin_console.services import run_retention, run_storage
 from apps.admin_console.services.run_artifacts import RunLibraryError
@@ -54,7 +55,13 @@ async def unpin_run(session_id: str):
 
 
 @router.post("/api/runs/{session_id}/delete", dependencies=[Depends(require_admin)])
-async def delete_run(session_id: str):
+async def delete_run(session_id: str, actor: OwnerScope = Depends(actor_scope)):
+    """Delete one run. The admin tier admits the caller; ownership decides which run.
+
+    With spaces on an admin has no data access, so this checks the run's owner like the legacy
+    single delete. System-wide operations (clear, retention) stay admin-only and unchanged.
+    """
+    await asyncio.to_thread(require_access, require_actor(actor), session_id)
     return await _call(run_retention.delete_run, session_id)
 
 

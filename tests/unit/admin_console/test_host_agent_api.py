@@ -1108,3 +1108,49 @@ def test_browser_phone_on_loopback_serial_lists_model_and_kind(admin, monkeypatc
     # Not (yet) visible to adb: unknown, never guessed from the address.
     assert devices["127.0.0.1:40001"]["model"] is None
     assert devices["127.0.0.1:40001"]["device_kind"] == "unknown"
+
+
+def test_browser_phone_preserves_product_when_model_is_missing(admin, monkeypatch):
+    serial = "127.0.0.1:35773"
+    _browser_phones(
+        monkeypatch, [serial], [{"serial": serial, "state": "device", "product": "raven"}]
+    )
+    phone = admin.get("/api/hosts").json()["devices"][0]
+    assert phone["model"] is None
+    assert phone["product"] == "raven"
+
+
+def test_browser_phone_identity_uses_local_pool_without_changing_shared_endpoint(
+    admin, monkeypatch
+):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, MagicMock
+
+    from apps.admin_console.routers import hosts as hosts_router
+    from artemis.runtime.adb_endpoint import AdbEndpoint, current_adb_endpoint
+    from artemis.runtime.device_pool import DeviceStatus
+
+    serial = "127.0.0.1:35773"
+    _browser_phones(monkeypatch, [serial], [])
+    monkeypatch.setenv("ADB_SERVER_SOCKET", "tcp:remote-computer:5037")
+    shared = current_adb_endpoint()
+    local_pool = SimpleNamespace(
+        list_devices_async=AsyncMock(
+            return_value=[
+                DeviceStatus(
+                    serial=serial,
+                    state="device",
+                    model="Pixel 6 Pro",
+                    product="raven",
+                    device_kind="phone",
+                )
+            ]
+        )
+    )
+    choose_pool = MagicMock(return_value=local_pool)
+    monkeypatch.setattr(hosts_router.device_pool, "pool_for", choose_pool)
+    phone = admin.get("/api/hosts").json()["devices"][0]
+    assert phone["model"] == "Pixel 6 Pro"
+    assert phone["product"] == "raven"
+    choose_pool.assert_called_once_with(AdbEndpoint.local())
+    assert current_adb_endpoint() == shared

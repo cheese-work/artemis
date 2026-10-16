@@ -271,14 +271,19 @@ class JevClient:
         return parse_answers(payload)
 
 
-def build_client(settings: Any) -> JevClient | None:
+def build_client(settings: Any, *, fast_lane: bool = False) -> JevClient | None:
     """Builds a client from settings, or ``None`` when Jev is not usable.
 
     Returns ``None`` -- never raises -- when the feature flag is off or no key
     is configured, which is the expected state for every run that has not
     opted in.
     """
-    if not getattr(settings, "ARTEMIS_JEV_ENABLED", False):
+    enabled = (
+        getattr(settings, "ARTEMIS_JEV_FAST_LANE", "off") in ("shadow", "on")
+        if fast_lane
+        else getattr(settings, "ARTEMIS_JEV_ENABLED", False)
+    )
+    if not enabled:
         return None
 
     raw_key = getattr(settings, "TYPESAFE_API_KEY", None)
@@ -292,7 +297,11 @@ def build_client(settings: Any) -> JevClient | None:
         return None
 
     base_url = getattr(settings, "TYPESAFE_BASE_URL", None) or DEFAULT_BASE_URL
-    model = getattr(settings, "ARTEMIS_JEV_MODEL", None) or DEFAULT_MODEL
+    model = (
+        getattr(settings, "ARTEMIS_JEV_FAST_LANE_MODEL", "jev-1.13")
+        if fast_lane
+        else getattr(settings, "ARTEMIS_JEV_MODEL", None) or DEFAULT_MODEL
+    )
     timeout = getattr(settings, "ARTEMIS_JEV_TIMEOUT_SECONDS", None) or DEFAULT_TIMEOUT_SECONDS
     return JevClient(api_key, base_url=base_url, model=model, timeout=float(timeout))
 

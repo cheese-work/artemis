@@ -5,8 +5,8 @@ import { Router, provideRouter } from '@angular/router';
 import { RouterTestingHarness } from '@angular/router/testing';
 import { NEVER, of } from 'rxjs';
 import { routes } from '../../app.routes';
-import { ChatInterfaceComponent } from '../../components/chat-interface/chat-interface.component';
-import { RunViewComponent } from '../../components/run-view/run-view.component';
+import { RunChatComponent } from '../../components/run-chat/run-chat.component';
+import { RunLibraryComponent } from '../../components/run-library/run-library.component';
 import { By } from '@angular/platform-browser';
 import { RunSummary } from '../../core/models/run.model';
 import { RunTarget } from '../../core/models/run-target.model';
@@ -25,21 +25,25 @@ describe('Workspace review mode', () => {
   let harness: RouterTestingHarness;
   let root: HTMLElement;
   let liveSession: ReturnType<typeof signal<Session | null>>;
+  let sessions: ReturnType<typeof signal<Session[]>>;
   let target: ReturnType<typeof signal<RunTarget | null>>;
   let reconnect: jasmine.Spy;
   const q = (selector: string) => root.querySelector(selector);
 
   beforeEach(async () => {
     liveSession = signal<Session | null>(null);
+    sessions = signal<Session[]>([]);
     target = signal<RunTarget | null>(null);
     reconnect = jasmine.createSpy('connectFromBrowser').and.resolveTo(undefined);
-    runs = jasmine.createSpyObj<RunsService>('RunsService', ['list', 'get', 'steps', 'video'], {
+    runs = jasmine.createSpyObj<RunsService>('RunsService', ['list', 'get', 'steps', 'video', 'checks', 'notes'], {
       lastLibraryQuery: signal<Record<string, string>>({}), viewPosition: signal(null)
     });
     runs.list.and.returnValue(NEVER);
     runs.get.and.returnValue(NEVER);
     runs.steps.and.returnValue(NEVER);
     runs.video.and.returnValue(NEVER);
+    runs.checks.and.returnValue(of({ records: [], streams: [], run_outcome: null }));
+    runs.notes.and.returnValue(of({ notes: {} }));
     const hosts = jasmine.createSpyObj<HostsService>('HostsService', ['list']);
     hosts.list.and.returnValue(NEVER);
     const admin = jasmine.createSpyObj<AdminConfigService>('AdminConfigService', ['getIdentity']);
@@ -49,9 +53,11 @@ describe('Workspace review mode', () => {
       updateWhatsNewErrorVisibility: () => undefined,
       isCurrentSessionRunning: () => false,
       currentSession: liveSession,
+      sessions,
       currentSessionId: () => liveSession()?.session_id ?? null,
       currentStartupProgress: () => [],
       runningSessionId: () => null,
+      agentStatus: () => 'idle',
       isPaused: () => false,
       viewedModel: () => null,
       sessionLogs: () => [],
@@ -69,6 +75,7 @@ describe('Workspace review mode', () => {
         { provide: RunsService, useValue: runs },
         { provide: WorkspacePhoneService, useValue: {
           target,
+          view: () => ({ text: 'Fixture phone' }),
           runInterrupted: () => liveSession()?.status === 'interrupted',
           canConnectFromBrowser: () => true,
           connectFromBrowser: reconnect,
@@ -78,9 +85,6 @@ describe('Workspace review mode', () => {
         { provide: AdminConfigService, useValue: admin }
       ],
       schemas: [CUSTOM_ELEMENTS_SCHEMA]
-    }).overrideComponent(WorkspaceComponent, {
-      remove: { imports: [ChatInterfaceComponent] },
-      add: { schemas: [CUSTOM_ELEMENTS_SCHEMA] }
     });
     harness = await RouterTestingHarness.create();
     root = harness.fixture.nativeElement;
@@ -93,69 +97,247 @@ describe('Workspace review mode', () => {
     harness.fixture.detectChanges();
   }
 
-  it('shows the shared RunView, new-task box and splitter on /workspace', async () => {
-    await go('/workspace');
-    expect(q('app-run-view')).not.toBeNull();
-    expect(q('textarea.dock-textarea')).not.toBeNull();
+  function atWidth(width: number, check: (frame: HTMLIFrameElement) => void): void {
+    const frame = document.createElement('iframe');
+    frame.style.width = `${width}px`;
+    frame.style.height = '800px';
+    frame.style.border = '0';
+    document.body.appendChild(frame);
+    const workspace = q('app-workspace')!;
+    const parent = workspace.parentNode!;
+    const next = workspace.nextSibling;
+    try {
+      const frameDocument = frame.contentDocument!;
+      expect(frame.contentWindow!.innerWidth).toBe(width);
+      frameDocument.body.style.cssText = 'margin: 0; height: 100vh';
+      const tokens = getComputedStyle(document.documentElement);
+      for (const property of Array.from(tokens)) {
+        if (property.startsWith('--')) frameDocument.documentElement.style.setProperty(property, tokens.getPropertyValue(property));
+      }
+      for (const style of Array.from(document.head.querySelectorAll('style'))) {
+        frameDocument.head.appendChild(style.cloneNode(true));
+      }
+      frameDocument.body.appendChild(workspace);
+      check(frame);
+    } finally {
+      parent.insertBefore(workspace, next);
+      frame.remove();
+    }
+  }
+
+  for (const width of [1440, 1200, 1024, 1023, 800, 390]) {
+    it(`shows list and detail on desktop, only the route's pane below 1024 px at ${width}px`, async () => {
+      for (const route of ['/sessions', `/sessions/${ID}`]) {
+        await go(route);
+        atWidth(width, frame => {
+          const frameDocument = frame.contentDocument!;
+          const list = frameDocument.querySelector<HTMLElement>('.run-list-pane')!;
+          const detail = frameDocument.querySelector<HTMLElement>('.detail-pane')!;
+          const showsList = width >= 1024 || route === '/sessions';
+          const showsDetail = width >= 1024 || route !== '/sessions';
+          expect(frame.contentWindow!.getComputedStyle(list).display === 'none').toBe(!showsList);
+          expect(frame.contentWindow!.getComputedStyle(detail).display === 'none').toBe(!showsDetail);
+          if (width >= 1024) {
+            expect(list.getBoundingClientRect().width).toBe(360);
+            expect(list.getBoundingClientRect().right).toBeCloseTo(detail.getBoundingClientRect().left, 0);
+          } else if (route === '/sessions') {
+            const navClearance = parseFloat(frame.contentWindow!.getComputedStyle(frameDocument.documentElement).getPropertyValue('--nav-clearance')) || 88;
+            const firstControl = list.querySelector<HTMLButtonElement>('.owner-tabs button')!;
+            expect(firstControl.getBoundingClientRect().top).toBeGreaterThanOrEqual(navClearance);
+          }
+          const visible = showsList ? list : detail;
+          expect(visible.getBoundingClientRect().height).toBeGreaterThan(0);
+          expect(visible.getBoundingClientRect().right).toBeLessThanOrEqual(width);
+        });
+      }
+    });
+  }
+
+  it('shows the run list beside the shared RunView and new-task box on /sessions/new', async () => {
+    await go('/sessions/new');
+    expect(q('app-run-chat')).not.toBeNull();
+    expect(q('textarea.composer-input')).not.toBeNull();
     expect(q('.workspace-container.review-mode')).toBeNull();
-    expect(q('.resizer')).not.toBeNull();
-    expect(q('app-run-library')).toBeNull();
+    expect(q('.resizer, .right-panel, app-chat-interface')).toBeNull();
+    expect(q('.run-list-pane app-run-library')).not.toBeNull();
+    expect(q('.detail-pane app-run-chat')).not.toBeNull();
   });
 
-  it('shows the run library without the live new-task box on /runs', async () => {
-    await go('/runs');
+  for (const status of ['pending', 'running'] as const) {
+    it(`selects a ${status} Queue session in place after the real router settles`, async () => {
+      const selectedId = '7e2b9c1a-5d7e-4a10-9c33-0e1f2a3b4c5d';
+      sessions.set([
+        { session_id: ID, initial_goal: 'Original live session', status: 'running', start_time: 1 },
+        { session_id: selectedId, initial_goal: 'Switch to selected Queue run', status, start_time: 2 }
+      ]);
+      liveSession.set(sessions()[0]);
+      const agent = TestBed.inject(AgentService);
+      (agent.selectSession as jasmine.Spy).and.callFake((sessionId: string) => {
+        liveSession.set(sessions().find(session => session.session_id === sessionId) ?? null);
+      });
+      await go('/sessions/new');
+      const workspace = q('app-workspace');
+      const row = Array.from(root.querySelectorAll<HTMLElement>('.queue-row .run-row'))
+        .find(item => item.textContent?.includes('Switch to selected Queue run'))!;
+      row.click();
+      await harness.fixture.whenStable();
+      harness.detectChanges();
+
+      expect(TestBed.inject(Router).url).toBe(`/sessions/${selectedId}`);
+      expect(q('app-workspace')).not.toBe(workspace);
+      expect(q('.workspace-container.review-mode')).not.toBeNull();
+      expect(agent.selectSession).not.toHaveBeenCalled();
+      expect(agent.currentSessionId()).toBe(ID);
+      expect(liveSession()?.session_id).toBe(ID);
+      expect(agent.runTask).not.toHaveBeenCalled();
+      expect(row.tagName).toBe('A');
+      const current = q('.queue-row .run-row[aria-current="page"]')!;
+      atWidth(1440, () => {
+        expect(current.getBoundingClientRect().width).toBeGreaterThanOrEqual(44);
+        expect(current.getBoundingClientRect().height).toBe(56);
+      });
+    });
+  }
+
+  it('shows a single run list and the empty detail state without the live new-task box on /sessions', async () => {
+    await go('/sessions');
     expect(q('.workspace-container.review-mode')).not.toBeNull();
-    expect(q('app-run-library')).not.toBeNull();
+    expect(root.querySelectorAll('app-run-library').length).toBe(1);
+    expect(q('.detail-empty')?.textContent?.trim()).toBe('Select a session or start a new run.');
+    expect(q('.detail-empty')?.getAttribute('role')).toBe('status');
     expect(q('.right-panel')).toBeNull();
     expect(q('app-agent-stream')).toBeNull();
-    expect(q('.workspace-floating-bar-wrapper')).toBeNull();
+    expect(q('app-run-view')).toBeNull();
+    expect(runs.get).not.toHaveBeenCalled();
+    expect(q('.composer')).toBeNull();
   });
 
-  it('passes team review restrictions to the unified RunView', async () => {
-    await go(`/runs/${ID}?scope=everyone&review=1`);
-    const view = harness.fixture.debugElement.query(By.directive(RunViewComponent)).componentInstance as RunViewComponent;
+  it('refreshes the list and recorded metadata when a run completes without leaving Workspace', async () => {
+    const session: Session = {
+      session_id: ID, initial_goal: 'Complete while Workspace stays open', status: 'running', start_time: 1,
+      device_serial: 'recorded-phone', device_info: { model: 'Recorded Pixel', device_kind: 'phone' },
+      goal_images: [{ index: 0, media_type: 'image/png', url: '/api/goal-image.png' }]
+    };
+    sessions.set([session]);
+    runs.list.and.callFake(() => of({
+      runs: sessions().filter(item => item.status === 'completed').map(item => ({
+        session_id: item.session_id, prompt: item.initial_goal, status: 'completed', interrupt_reason: null,
+        start_time: item.start_time, end_time: item.end_time ?? null, host_id: null,
+        device_ref: item.device_serial ? { host_id: null, serial: item.device_serial } : null, requested_by: null, pinned: false, recordings: []
+      })), next_cursor: null, warnings: []
+    }));
+    await go('/sessions/new');
+    const workspace = q('app-workspace');
+    const requests = runs.list.calls.count();
+    expect(q('app-run-library .date-group a.run-row')).toBeNull();
+    expect(q('app-run-library .queue-section .run-row')).not.toBeNull();
+
+    sessions.set([{ ...session, status: 'completed', end_time: 2 }]);
+    harness.detectChanges();
+    await harness.fixture.whenStable();
+    harness.detectChanges();
+
+    expect(q('app-workspace')).toBe(workspace);
+    expect(runs.list.calls.count()).toBe(requests + 1);
+    expect(q('app-run-library .queue-section')).toBeNull();
+    expect(q('app-run-library .date-group a.run-row')?.textContent).toContain(session.initial_goal);
+    const library = harness.fixture.debugElement.query(By.directive(RunLibraryComponent)).componentInstance as RunLibraryComponent;
+    expect(library.recordedDevices().get(ID)).toEqual({ serial: 'recorded-phone', model: 'Recorded Pixel', device_kind: 'phone' });
+    expect(library.recordedImages().get(ID)).toEqual(session.goal_images);
+  });
+
+  it('passes team review restrictions to the chat session', async () => {
+    await go(`/sessions/${ID}?scope=everyone&review=1`);
+    const view = harness.fixture.debugElement.query(By.directive(RunChatComponent)).componentInstance as RunChatComponent;
     expect(view.readOnly()).toBeTrue();
     expect(view.mode()).toBe('review');
     expect(view.runId()).toBe(ID);
-    expect(q('.right-panel')).toBeNull();
+    expect(q('.run-list-pane app-run-library.compact')).not.toBeNull();
   });
 
-  it('shows the run viewer for the id in the URL on /runs/:id', async () => {
-    await go(`/runs/${ID}`);
-    expect(q('app-run-view')).not.toBeNull();
-    expect(q('app-run-library')).toBeNull();
+  it('shows the run viewer for the id in the URL on /sessions/:id', async () => {
+    await go(`/sessions/${ID}`);
+    expect(q('app-run-chat')).not.toBeNull();
+    expect(q('.detail-pane app-run-library, .detail-empty')).toBeNull();
+    expect(q('.run-list-pane app-run-library.compact')).not.toBeNull();
     expect(runs.get).toHaveBeenCalledWith(ID);
   });
 
-  it('has no looping decorative motion in review mode, unlike the live workspace', async () => {
-    await go('/workspace');
-    expect(getComputedStyle(q('.liquid-wave')!).animationName).not.toBe('none');
-    await go('/runs');
-    for (const el of Array.from(root.querySelectorAll('.liquid-wave, .wave-glow-ambient'))) {
-      expect(getComputedStyle(el).animationName).toBe('none');
-    }
+  it('updates the viewer when a reused /sessions/:id route changes, then restores empty detail on /sessions', async () => {
+    await go(`/sessions/${ID}?scope=everyone`);
+    const workspace = harness.fixture.debugElement.query(By.directive(WorkspaceComponent)).componentInstance;
+    await go('/sessions/other-run');
+    expect(harness.fixture.debugElement.query(By.directive(WorkspaceComponent)).componentInstance).toBe(workspace);
+    const view = harness.fixture.debugElement.query(By.directive(RunChatComponent)).componentInstance as RunChatComponent;
+    expect(view.runId()).toBe('other-run');
+    expect(view.readOnly()).toBeFalse();
+    expect(q('.workspace-container.has-run')).not.toBeNull();
+    await go('/sessions');
+    expect(q('app-run-chat, .workspace-container.has-run')).toBeNull();
+    expect(q('.detail-empty')?.textContent?.trim()).toBe('Select a session or start a new run.');
+  });
+
+  it('has no decorative waves or glass in the live dock or in review mode', async () => {
+    await go('/sessions/new');
+    expect(q('.liquid-wave, .wave-glow-ambient, .dock-wave-container')).toBeNull();
+    expect(getComputedStyle(q('.composer-card')!).backdropFilter).toBe('none');
+    await go('/sessions');
+    expect(q('.liquid-wave, .wave-glow-ambient, .dock-wave-container')).toBeNull();
+  });
+
+  describe('the list beside an open run (CHE-1278 F1)', () => {
+    const listed = (id: string): RunSummary => ({
+      session_id: id, prompt: `Run ${id.slice(0, 4)}`, status: 'completed', interrupt_reason: null, start_time: 1, end_time: 2,
+      host_id: null, device_ref: { host_id: null, serial: 's' }, requested_by: null, pinned: false, recordings: []
+    });
+    const OTHER = '9a8b7c6d-5d7e-4a10-9c33-0e1f2a3b4c5d';
+    const RETURN = { q: 'login', status: 'failed', scroll: '300' };
+
+    beforeEach(() => {
+      runs.list.and.returnValue(of({ runs: [listed(ID), listed(OTHER)], next_cursor: null, warnings: [] }));
+    });
+
+    it('keeps the filters and scroll that Back to runs returns to, and lists the same filtered runs', async () => {
+      await go('/sessions?q=login&status=failed&scroll=300');
+      expect(runs.lastLibraryQuery()).toEqual(RETURN);
+      await go(`/sessions/${ID}`); // a row link from /sessions carries no list state
+      expect(runs.lastLibraryQuery()).toEqual(RETURN);
+      expect(runs.list.calls.mostRecent().args[0]).toEqual(jasmine.objectContaining({ q: 'login', status: 'failed' }));
+      const back = (q('app-run-view a.back-to-runs') ?? q('a.back-to-runs')) as HTMLAnchorElement | null;
+      if (back) expect(back.getAttribute('href')).toBe('/sessions?q=login&status=failed&scroll=300');
+    });
+
+    it('keeps them after choosing another run in the list beside the open one', async () => {
+      await go('/sessions?q=login&status=failed&scroll=300');
+      await go(`/sessions/${ID}`);
+      const next = Array.from(root.querySelectorAll<HTMLAnchorElement>('.run-list-pane a.run-row')).find((a) => a.getAttribute('href')!.includes(OTHER))!;
+      expect(next.getAttribute('href')).toContain('q=login');
+      next.click();
+      await go(`/sessions/${OTHER}?q=login&status=failed`);
+      expect(runs.lastLibraryQuery()).toEqual(RETURN);
+    });
   });
 
   it('omits the mouse-only splitter in review mode', async () => {
-    await go('/runs');
+    await go('/sessions');
     expect(q('.resizer')).toBeNull();
   });
 
   it('opening history never selects a session or changes the device for the next run', async () => {
     localStorage.setItem('artemis.selected_device_serial', 'R58M123');
-    await go('/runs');
-    await go(`/runs/${ID}`);
+    await go('/sessions');
+    await go(`/sessions/${ID}`);
     expect(TestBed.inject(AgentService).selectSession).not.toHaveBeenCalled();
     expect(localStorage.getItem('artemis.selected_device_serial')).toBe('R58M123');
   });
 
   it('prefills the dock with a prompt handed over from the viewer', async () => {
-    await go('/workspace', { draftPrompt: 'Log in and open settings' });
-    expect((q('textarea.dock-textarea') as HTMLTextAreaElement).value).toBe('Log in and open settings');
+    await go('/sessions/new', { draftPrompt: 'Log in and open settings' });
+    expect((q('textarea.composer-input') as HTMLTextAreaElement).value).toBe('Log in and open settings');
   });
 
   for (const connected of [false, true]) {
-    it(`shows one interrupted banner with a ${connected ? 'connected' : 'disconnected'} phone`, async () => {
+    it(`shows one interrupted banner in a new-session draft with a ${connected ? 'connected' : 'disconnected'} phone`, async () => {
       const prompt = 'Open Settings';
       liveSession.set({ session_id: ID, initial_goal: prompt, start_time: 1, status: 'interrupted' });
       if (connected) target.set({ serial: 'phone-1' });
@@ -165,21 +347,19 @@ describe('Workspace review mode', () => {
         pinned: false, recordings: []
       }));
       runs.steps.and.returnValue(of([]));
-      await go('/workspace');
+      await go('/sessions/new', { newSessionDraft: true });
 
       expect(TestBed.inject(WorkspacePhoneService).runInterrupted()).toBeTrue();
-      const banners = Array.from(root.querySelectorAll<HTMLElement>('[role="status"]'))
+      const banners = Array.from(root.querySelectorAll<HTMLElement>('.composer app-interrupted-banner .banner'))
         .filter((element) => element.textContent?.includes('Run interrupted before the first step.'));
       expect(banners.length).toBe(1);
-      expect(banners[0].closest('app-run-view')).not.toBeNull();
+      expect(banners[0].closest('.composer')).not.toBeNull();
+      expect(banners[0].getAttribute('aria-live')).toBeNull();
+      expect(q('app-run-view .interrupted-banner')).toBeNull();
       const buttons = Array.from(root.querySelectorAll<HTMLButtonElement>('button'));
       const starts = buttons.filter((element) => element.textContent?.includes('Start new run with this prompt'));
-      expect(starts.length).toBe(1);
-      starts[0].click();
-      harness.fixture.detectChanges();
-      await harness.fixture.whenStable();
-      harness.fixture.detectChanges();
-      expect((q('textarea.dock-textarea') as HTMLTextAreaElement).value).toBe(prompt);
+      expect(starts.length).toBe(0);
+      expect(q('textarea.composer-input')).not.toBeNull();
 
       const reconnects = buttons.filter((element) => element.textContent?.includes('Reconnect phone'));
       expect(reconnects.length).toBe(connected ? 0 : 1);
@@ -189,6 +369,11 @@ describe('Workspace review mode', () => {
         reconnects[0].click();
         expect(reconnect).toHaveBeenCalledTimes(1);
       }
+
+      const composer = q('textarea.composer-input') as HTMLTextAreaElement;
+      expect(composer.value).toBe('');
+      expect(q('app-run-chat .chat-header')).toBeNull();
+      expect(harness.fixture.debugElement.query(By.directive(WorkspaceComponent)).componentInstance.newSessionDraft()).toBeTrue();
     });
   }
 });

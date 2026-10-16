@@ -34,7 +34,11 @@ from artemis.data_engine.models import (
     TraceRecord,
     VideoRecordingRecord,
 )
+from artemis.data_engine import principals, run_snapshot
+from artemis.data_engine.devices import migrate as migrate_devices
+from artemis.data_engine.prompt_critiques import migrate as migrate_prompt_critiques
 from artemis.data_engine.run_catalog import migrate as migrate_run_catalog
+from artemis.data_engine.run_connections import migrate as migrate_run_connections
 from artemis.runtime.lifecycle import ensure_lifecycle_schema
 from artemis.utils.logger import get_logger
 
@@ -254,6 +258,7 @@ class StorageManager:
                     local_video_path TEXT,
                     status TEXT NOT NULL DEFAULT 'recording',
                     error TEXT,
+                    reason TEXT,
                     FOREIGN KEY(session_id) REFERENCES sessions(session_id)
                 )
             """)
@@ -270,16 +275,37 @@ class StorageManager:
                 )
             if "error" not in video_recording_columns:
                 conn.execute("ALTER TABLE video_recordings ADD COLUMN error TEXT")
+            if "reason" not in video_recording_columns:
+                conn.execute("ALTER TABLE video_recordings ADD COLUMN reason TEXT")
             try:
                 conn.execute("ALTER TABLE background_tasks ADD COLUMN logs TEXT")
             except sqlite3.OperationalError:
                 pass
+            principals.ensure_schema(conn)
             conn.commit()
         try:
             migrate_run_catalog(self.db_path)
+            run_snapshot.migrate(self.db_path)
+            from artemis.data_engine import chat_sessions
+
+            chat_sessions.migrate(self.db_path)
         except sqlite3.Error:
             # Additive index over runs; the listing API reports "not ready" instead.
             logger.exception("Run catalog migration failed for %s", self.db_path)
+        try:
+            migrate_devices(self.db_path)
+        except sqlite3.Error:
+            # Additive device tables; nothing reads them until the reconciler lands.
+            logger.exception("Device migration failed for %s", self.db_path)
+        try:
+            migrate_run_connections(self.db_path)
+        except sqlite3.Error:
+            logger.exception("Run connection migration failed for %s", self.db_path)
+        try:
+            migrate_prompt_critiques(self.db_path)
+        except sqlite3.Error:
+            # Additive table; only the Improve prompt routes read it.
+            logger.exception("Prompt critique migration failed for %s", self.db_path)
         logger.info(f"Database initialized at {self.db_path}")
 
     def create_session(self, session: SessionMetadata):
@@ -319,6 +345,10 @@ class StorageManager:
                     session.video_filepath,
                 ),
             )
+            try:
+                run_snapshot.record(conn, str(session.session_id))
+            except sqlite3.OperationalError as exc:  # catalog or snapshot columns not installed
+                logger.debug(f"Run snapshot not recorded for {session.session_id}: {exc}")
             conn.commit()
 
         # Create session directory
@@ -359,9 +389,9 @@ class StorageManager:
                 """
                 INSERT INTO video_recordings (
                     video_id, session_id, device_id, start_time, end_time,
-                    local_video_path, status, error
+                    local_video_path, status, error, reason
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     str(record.video_id),
@@ -372,6 +402,7 @@ class StorageManager:
                     record.local_video_path,
                     record.status,
                     record.error,
+                    record.reason,
                 ),
             )
             conn.commit()
@@ -382,7 +413,7 @@ class StorageManager:
             conn.execute(
                 """
                 UPDATE video_recordings
-                SET end_time = ?, local_video_path = ?, status = ?, error = ?
+                SET end_time = ?, local_video_path = ?, status = ?, error = ?, reason = ?
                 WHERE video_id = ?
                 """,
                 (
@@ -390,6 +421,7 @@ class StorageManager:
                     record.local_video_path,
                     record.status,
                     record.error,
+                    record.reason,
                     str(record.video_id),
                 ),
             )
@@ -440,6 +472,7 @@ class StorageManager:
                     if "status" in row.keys()
                     else ("ready" if row["end_time"] is not None else "recording"),
                     error=row["error"] if "error" in row.keys() else None,
+                    reason=row["reason"] if "reason" in row.keys() else None,
                 )
         return None
 
@@ -1124,6 +1157,10 @@ class StorageManager:
         with self._get_connection() as conn:
             conn.execute("PRAGMA foreign_keys = OFF")
             tables = [
+                "chat_messages",
+                "chat_turns",
+                "chat_sessions",
+                "prompt_critiques",
                 "video_analysis_observations",
                 "video_analysis_segments",
                 "failed_outputs",
@@ -1222,6 +1259,8 @@ class StorageManager:
                 except sqlite3.OperationalError as e:
                     logger.warning(f"Failed to delete video memory from {table}: {e}")
             tables = [
+                "chat_sessions",
+                "prompt_critiques",
                 "failed_outputs",
                 "traces",
                 "background_tasks",
@@ -1239,6 +1278,14 @@ class StorageManager:
                     )
                 except sqlite3.OperationalError as e:
                     logger.warning(f"Failed to delete from table {table}: {e}")
+            for table in ("chat_messages", "chat_turns"):
+                try:
+                    conn.execute(
+                        f"DELETE FROM {table} WHERE session_id=? OR turn_id=?",
+                        (session_id_str, session_id_str),
+                    )
+                except sqlite3.OperationalError as error:
+                    logger.warning(f"Failed to delete from table {table}: {error}")
             conn.commit()
             if vacuum:
                 conn.execute("VACUUM")

@@ -1,7 +1,7 @@
 import { CUSTOM_ELEMENTS_SCHEMA, signal } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { ActivatedRoute, convertToParamMap, provideRouter } from '@angular/router';
-import { of } from 'rxjs';
+import { of, throwError } from 'rxjs';
 import { ChatInterfaceComponent } from '../../components/chat-interface/chat-interface.component';
 import { RunLibraryComponent } from '../../components/run-library/run-library.component';
 import { InterruptedBannerComponent } from '../../components/interrupted-banner/interrupted-banner.component';
@@ -42,17 +42,21 @@ describe('WorkspaceComponent always-open task dock', () => {
       imports: [WorkspaceComponent],
       providers: [provideRouter([]), { provide: ActivatedRoute, useValue: route }, {
         provide: WorkspacePhoneService,
-        useValue: { target: () => ({ serial: 'fixture-phone' }), requestPicker: () => undefined }
+        useValue: { target: () => ({ serial: 'fixture-phone' }), view: () => ({ text: 'Fixture phone' }), requestPicker: () => undefined }
       }, {
         provide: AgentService,
         useValue: {
           whatsNewPromptDraft: signal(false),
           updateWhatsNewErrorVisibility: () => {},
           isCurrentSessionRunning: () => false,
+          sessions: () => [],
           currentSession: () => null,
           currentSessionId: () => null,
           currentStartupProgress: () => [],
-          runTask: jasmine.createSpy('runTask').and.returnValue(of({}))
+          runningSessionId: () => null,
+          agentStatus: () => 'idle',
+          runTask: jasmine.createSpy('runTask').and.returnValue(of({})),
+          fetchStatus: jasmine.createSpy('fetchStatus')
         }
       }]
     }).overrideComponent(WorkspaceComponent, {
@@ -61,13 +65,67 @@ describe('WorkspaceComponent always-open task dock', () => {
     }).compileComponents();
   });
 
+  async function enterPrompt(prompt: string): Promise<HTMLTextAreaElement> {
+    const textarea = fixture.nativeElement.querySelector('textarea') as HTMLTextAreaElement;
+    textarea.value = prompt;
+    textarea.dispatchEvent(new Event('input', { bubbles: true }));
+    fixture.detectChanges();
+    await fixture.whenStable();
+    return textarea;
+  }
+
+  it('grows past 120px, caps at 40% of the viewport and scrolls internally', async () => {
+    await create();
+    const textarea = await enterPrompt('Open Settings');
+    const restingHeight = textarea.getBoundingClientRect().height;
+    expect(restingHeight).toBeGreaterThanOrEqual(44);
+    await enterPrompt('Open Settings\n'.repeat(9));
+    expect(textarea.getBoundingClientRect().height).toBeGreaterThan(120);
+    await enterPrompt('Open Settings\n'.repeat(100));
+    expect(textarea.getBoundingClientRect().height).toBeCloseTo(window.innerHeight * 0.4, 0);
+    expect(textarea.scrollHeight).toBeGreaterThan(textarea.clientHeight);
+    expect(getComputedStyle(textarea).overflowY).toBe('auto');
+    await enterPrompt('Open Settings');
+    expect(textarea.getBoundingClientRect().height).toBe(restingHeight);
+  });
+
+  it('resizes a restored prompt and shrinks after a successful send', async () => {
+    await create();
+    const textarea = await enterPrompt('Open Settings');
+    const restingHeight = textarea.getBoundingClientRect().height;
+    component.startNewRunFrom('Open Settings\n'.repeat(9));
+    fixture.detectChanges();
+    await fixture.whenStable();
+    fixture.detectChanges();
+    expect(textarea.getBoundingClientRect().height).toBeGreaterThan(120);
+    await component.submitTask();
+    fixture.detectChanges();
+    await fixture.whenStable();
+    fixture.detectChanges();
+    expect(textarea.value).toBe('');
+    expect(textarea.getBoundingClientRect().height).toBe(restingHeight);
+  });
+
+  it('keeps a tall draft after a failed send', async () => {
+    await create();
+    const prompt = 'Open Settings\n'.repeat(9);
+    const textarea = await enterPrompt(prompt);
+    const height = textarea.getBoundingClientRect().height;
+    (component.agentService.runTask as jasmine.Spy).and.returnValue(throwError(() => ({ status: 503 })));
+    await component.submitTask();
+    fixture.detectChanges();
+    await fixture.whenStable();
+    expect(textarea.value).toBe(prompt);
+    expect(textarea.getBoundingClientRect().height).toBe(height);
+  });
+
   for (const review of [false]) {
     it(`stays at its expanded size after mouse leave and focus loss in ${review ? 'review' : 'live'} mode`, async () => {
       await create(review);
       const root: HTMLElement = fixture.nativeElement;
-      const card = root.querySelector<HTMLElement>('.floating-dock-card')!;
+      const card = root.querySelector<HTMLElement>('.composer-card')!;
       const textarea = root.querySelector<HTMLTextAreaElement>('textarea')!;
-      const content = root.querySelector<HTMLElement>('.expanded-card-content')!;
+      const content = root.querySelector<HTMLElement>('.composer-row')!;
       const width = card.getBoundingClientRect().width;
       expect(getComputedStyle(content).display).not.toBe('none');
       expect(root.querySelector('.capsule-peek-view')).toBeNull();
@@ -98,9 +156,40 @@ describe('WorkspaceComponent always-open task dock', () => {
     });
   }
 
+  it('keeps the dock in normal flow below the run, on an opaque surface, with 44px controls (CHE-1278)', async () => {
+    await create();
+    const root: HTMLElement = fixture.nativeElement;
+    document.body.appendChild(root);
+    try {
+      const dock = root.querySelector<HTMLElement>('.composer')!;
+      expect(['static', 'relative', 'sticky']).toContain(getComputedStyle(dock).position);
+      expect(getComputedStyle(dock).backgroundColor).toBe('rgb(255, 255, 255)');
+      expect(getComputedStyle(root.querySelector('.composer-card')!).backdropFilter).toBe('none');
+      for (const control of Array.from(root.querySelectorAll<HTMLElement>('.composer-btn, .composer .segment'))) {
+        const { width, height } = control.getBoundingClientRect();
+        expect(Math.min(width, height)).withContext(control.className).toBeGreaterThanOrEqual(44);
+      }
+    } finally {
+      root.remove();
+    }
+  });
+
+  it('offers skip links that land in the new-task box', async () => {
+    await create();
+    const root: HTMLElement = fixture.nativeElement;
+    document.body.appendChild(root);
+    try {
+      const skip = Array.from(root.querySelectorAll<HTMLButtonElement>('button.skip-link')).find((b) => b.textContent!.includes('new task'))!;
+      skip.click();
+      expect(document.activeElement).toBe(root.querySelector('textarea.composer-input'));
+    } finally {
+      root.remove();
+    }
+  });
+
   it('has no task dock on review pages: the run view offers Start new run instead', async () => {
     await create(true);
-    expect(fixture.nativeElement.querySelector('.workspace-floating-bar-wrapper')).toBeNull();
+    expect(fixture.nativeElement.querySelector('.composer')).toBeNull();
   });
 
   for (const modifier of ['ctrlKey', 'metaKey']) {

@@ -21,15 +21,17 @@ from fastapi.responses import FileResponse
 from artemis.config import DB_PATH, TRACES_PATH
 from apps.admin_console.core.access_control import AdminAPIError, require_admin, require_qa
 from apps.admin_console.core.ownership import (
-    OPEN_SCOPE,
     OwnerScope,
     actor_scope,
+    evidence_scope,
     list_scope,
     owners_of,
     present_session_data,
     require_access,
-    scope_or_open,
+    require_actor,
+    require_catalog_ready,
 )
+from apps.admin_console.core.redaction import redact_image_data, redact_json
 from apps.admin_console.routers.run_admin import ClearRequest
 from apps.admin_console.routers.run_bundle import library_error
 from apps.admin_console.services import run_images, run_retention
@@ -59,26 +61,28 @@ async def list_sessions(scope: OwnerScope = Depends(list_scope)):
     # loop — the frontend polls this endpoint and it must not stall other
     # requests.
     try:
-        return await asyncio.to_thread(_list_sessions_sync, scope_or_open(scope))
+        return await asyncio.to_thread(_list_sessions_sync, require_actor(scope))
     except AdminAPIError:
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
-def _list_sessions_sync(scope: OwnerScope = OPEN_SCOPE):
+def _list_sessions_sync(scope: OwnerScope):
     # Pure read: run outcomes are owned by the lifecycle authority, which a
     # listing never calls (a vanished worker is swept by the queue worker).
     rows = session_repo.get_all_sessions()
     owners: dict[str, str | None] = {}
-    if scope.enforced:
+    if not scope.enforced:
+        require_catalog_ready()  # readiness before any unscoped return
+    else:
         owners = owners_of([str(row.get("session_id")) for row in rows])
         if not scope.include_all:
             rows = [
                 row
                 for row in rows
                 if str(row.get("session_id")) in owners
-                and scope.sees(owners[str(row["session_id"])])
+                and scope.sees(owners[str(row["session_id"])], str(row["session_id"]))
             ]
     video_rec_map = session_repo.get_video_recordings_map()
     latest_recordings = session_repo.get_latest_video_recordings_map()
@@ -127,9 +131,10 @@ def _list_sessions_sync(scope: OwnerScope = OPEN_SCOPE):
         sess_profile = model_service.resolve_session_profile(
             row_dict, None, state.current_profile, agent_names=agent_names
         )
+        recorded = model_service.get_recorded_model(row_dict)
         row_dict["model_info"] = (
-            model_service.get_active_model_info(sess_profile)
-            if sess_profile
+            model_service.get_active_model_info(sess_profile, recorded)
+            if sess_profile or recorded
             else default_model_info
         )
         if not sess_profile:
@@ -151,13 +156,20 @@ def _list_sessions_sync(scope: OwnerScope = OPEN_SCOPE):
                 row_dict, llm_traces, state.current_profile
             )
             if sess_profile:
-                row_dict["model_info"] = model_service.get_active_model_info(sess_profile)
+                row_dict["model_info"] = model_service.get_active_model_info(
+                    sess_profile, model_service.get_recorded_model(row_dict)
+                )
 
-    return result
+    return [
+        row
+        if scope.may_act_on(owners.get(str(row.get("session_id"))))
+        else redact_json(redact_image_data(row))
+        for row in result
+    ]
 
 
 @router.get("/api/sessions/{session_id}")
-async def get_session_details(session_id: str, actor: OwnerScope = Depends(actor_scope)):
+async def get_session_details(session_id: str, actor: OwnerScope = Depends(evidence_scope)):
     """Retrieve details for a single automation session."""
     row = session_repo.get_session_by_id(session_id)
     if not row:
@@ -166,9 +178,8 @@ async def get_session_details(session_id: str, actor: OwnerScope = Depends(actor
 
 
 @router.get("/api/sessions/{session_id}/goal-images/{index}")
-async def get_goal_image(session_id: str, index: str, actor: OwnerScope = Depends(actor_scope)):
-    """A picture sent with the run's goal: the run's owner or an administrator only."""
-    require_access(scope_or_open(actor), session_id)
+async def get_goal_image(session_id: str, index: str, actor: OwnerScope = Depends(evidence_scope)):
+    """A picture sent with the run's goal: any signed-in holder of the full run id may read it."""
     found = (
         await asyncio.to_thread(run_images.find, session_id, index)
         if run_images.is_safe_session_id(session_id)
@@ -181,7 +192,7 @@ async def get_goal_image(session_id: str, index: str, actor: OwnerScope = Depend
 
 
 @router.get("/api/sessions/{session_id}/events")
-async def get_session_events(session_id: str, actor: OwnerScope = Depends(actor_scope)):
+async def get_session_events(session_id: str, actor: OwnerScope = Depends(evidence_scope)):
     """Lifecycle events recorded for a session (``session_ended``, ``run_interrupted``).
 
     The durable record behind the live stream: a client that was offline when an
@@ -194,7 +205,7 @@ async def get_session_events(session_id: str, actor: OwnerScope = Depends(actor_
     return present_session_data(actor, session_id, events)
 
 
-@router.get("/api/sessions/{session_id}/usage")
+@router.get("/api/sessions/{session_id}/usage", dependencies=[Depends(evidence_scope)])
 async def get_session_usage(session_id: str):
     """Session-wide LLM token totals, live executor context size and run tuning."""
     try:
@@ -204,7 +215,7 @@ async def get_session_usage(session_id: str):
 
 
 @router.get("/api/sessions/{session_id}/tree")
-async def get_tree(session_id: str, actor: OwnerScope = Depends(actor_scope)):
+async def get_tree(session_id: str, actor: OwnerScope = Depends(evidence_scope)):
     try:
         tree = trace_repo.get_trace_tree(session_id)
     except Exception as e:
@@ -213,7 +224,9 @@ async def get_tree(session_id: str, actor: OwnerScope = Depends(actor_scope)):
 
 
 @router.get("/api/sessions/{session_id}/background_tasks")
-async def get_session_background_tasks(session_id: str, actor: OwnerScope = Depends(actor_scope)):
+async def get_session_background_tasks(
+    session_id: str, actor: OwnerScope = Depends(evidence_scope)
+):
     try:
         tasks = session_repo.get_background_tasks(session_id)
     except Exception:
@@ -222,7 +235,9 @@ async def get_session_background_tasks(session_id: str, actor: OwnerScope = Depe
 
 
 @router.get("/api/sessions/{session_id}/startup_progress")
-async def get_session_startup_progress(session_id: str, actor: OwnerScope = Depends(actor_scope)):
+async def get_session_startup_progress(
+    session_id: str, actor: OwnerScope = Depends(evidence_scope)
+):
     try:
         progress = state.get_startup_progress(session_id)
     except Exception:
@@ -243,7 +258,7 @@ async def cleanup_history_endpoint(body: ClearRequest):
 @router.post("/api/sessions/{session_id}/delete", dependencies=[Depends(require_qa)])
 async def delete_session_endpoint(session_id: str, actor: OwnerScope = Depends(actor_scope)):
     """Legacy single delete: the run's owner or an admin; deletion rules as ``/api/runs/{id}/delete``."""
-    require_access(scope_or_open(actor), session_id)
+    require_access(require_actor(actor), session_id)
     try:
         result = await asyncio.to_thread(run_retention.delete_run, session_id)
     except RunLibraryError as exc:

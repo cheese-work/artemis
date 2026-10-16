@@ -1,0 +1,231 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>sessions-v2.1 rev-1 · B — Filmstrip</title>
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="mock.css">
+<style>
+  /* Direction B — Filmstrip: screenshot-first. Each turn's steps are a horizontal strip of cards:
+     action caption on top, post-action screenshot under it. Click a card: a before/after dialog
+     with step-by-step navigation. Composer carries a status strip: phone (left) and cost (right). */
+  .main { display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--color-bg); }
+  .head { display: flex; align-items: center; gap: var(--space-md); padding: 0 var(--space-lg); min-height: 60px; border-bottom: 1px solid var(--color-rule); background: var(--color-surface); }
+  .head h1 { flex: 1; margin: 0; font-size: var(--text-title); color: var(--color-ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .tl { flex: 1; padding: var(--space-lg) var(--space-xl); display: grid; gap: var(--space-md); align-content: start; }
+  .turn { display: flex; align-items: center; gap: var(--space-smd); color: var(--color-text-muted); font-size: var(--text-label); }
+  .turn::after { content: ''; flex: 1; border-top: 1px solid var(--color-rule); }
+  .bubble { max-width: 70%; padding: var(--space-md); border: 1px solid var(--color-rule-strong); border-radius: var(--radius-lg); background: var(--color-surface); }
+  .bubble.you { margin-left: auto; background: var(--color-primary-tint); border-color: var(--color-primary-edge); }
+  .bubble .who { font-size: var(--text-label); font-weight: 600; color: var(--color-text-muted); }
+  .bubble p { margin: 2px 0 0; }
+  .strip-head { display: flex; align-items: center; gap: var(--space-smd); font-size: var(--text-label); color: var(--color-text-muted); }
+  .strip-head b { color: var(--color-ink); }
+  .strip { display: flex; flex-wrap: wrap; align-items: flex-start; gap: var(--space-md); padding-bottom: var(--space-smd); scroll-snap-type: x proximity; }
+  .card { flex: none; width: 132px; display: grid; grid-template-rows: auto auto auto; gap: var(--space-sm); padding: var(--space-smd); border: 1px solid var(--color-rule); border-radius: var(--radius-lg); background: var(--color-surface); scroll-snap-align: start; cursor: zoom-in; }
+  .card.cur { border-color: var(--color-primary); box-shadow: 0 0 0 2px var(--color-primary-edge); }
+  .card .act { min-height: 40px; display: grid; grid-template-columns: auto minmax(0, 1fr); gap: var(--space-xs) var(--space-sm); align-items: start; color: var(--color-ink); font-weight: 500; line-height: 1.25; }
+  .card .act .n { font-family: var(--font-mono); font-size: var(--text-label); color: var(--color-on-primary); background: var(--color-neutral); border-radius: var(--radius-sm); padding: 0 4px; }
+  .card .act span:last-child { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .card .shot { --w: 112px; justify-self: center; }
+  .card .think summary { list-style: none; display: flex; align-items: center; gap: 2px; min-height: 28px; font-size: var(--text-label); color: var(--color-text-faint); cursor: pointer; }
+  .card .think summary::-webkit-details-marker { display: none; }
+  .card .think summary .ms { font-size: 16px; }
+  .card .think p { margin: 0; font-size: var(--text-label); color: var(--color-text-faint); font-style: italic; }
+  .card.live { border-style: dashed; cursor: default; }
+  .card.live .shot { opacity: .85; }
+  .verdict { padding: var(--space-md); border: 1px solid var(--color-rule-strong); border-radius: var(--radius-md); background: var(--color-surface); display: flex; gap: var(--space-md); align-items: center; }
+  /* Composer card with a status strip on top. */
+  .composer { margin: 0 var(--space-lg) var(--space-lg); border: 1px solid var(--color-rule-strong); border-radius: var(--radius-lg); background: var(--color-surface); overflow: hidden; }
+  .cstrip { display: flex; align-items: center; gap: var(--space-md); padding: var(--space-xs) var(--space-xs) var(--space-xs) var(--space-md); background: var(--color-surface-subtle); border-bottom: 1px solid var(--color-rule); font-size: var(--text-label); color: var(--color-text-muted); }
+  .cstrip .grow { flex: 1; }
+  .cstrip b { color: var(--color-ink); font-weight: 500; }
+  .picker { display: inline-flex; align-items: center; gap: var(--space-smd); min-height: 36px; padding: 0 var(--space-md); border: 1px solid transparent; border-radius: var(--radius-full); background: transparent; color: var(--color-text-muted); font: inherit; font-size: var(--text-label); white-space: nowrap; }
+  .picker .ms { font-size: 16px; color: var(--color-text-faint); }
+  .picker.open { background: var(--color-surface); border-color: var(--color-border); color: var(--color-ink); cursor: pointer; }
+  .crow { display: flex; align-items: flex-end; gap: var(--space-smd); padding: var(--space-smd); }
+  .crow textarea { flex: 1; min-height: 44px; resize: none; border: 0; padding: var(--space-md); font: inherit; color: var(--color-text); background: transparent; }
+  .icon-btn { width: 44px; height: 44px; display: grid; place-items: center; border: 1px solid var(--color-border); border-radius: var(--radius-md); background: var(--color-surface); color: var(--color-ink); }
+  .icon-btn.primary { background: var(--color-primary); border-color: var(--color-primary); color: var(--color-on-primary); border-radius: var(--radius-full); }
+  .icon-btn[disabled] { background: var(--color-surface-subtle); color: var(--color-text-faint); border-color: var(--color-rule-strong); }
+  .composer.off { border-color: var(--color-error-solid); }
+  .composer.off .cstrip { background: var(--color-error-bg); color: var(--color-error); border-bottom-color: var(--color-error-bg); }
+  .offbody { display: flex; align-items: center; gap: var(--space-md); padding: var(--space-md); flex-wrap: wrap; }
+  .offbody p { flex: 1; margin: 0; min-width: 200px; color: var(--color-ink); }
+  /* Before/after dialog */
+  .dialog { border: 1px solid var(--color-rule-strong); border-radius: var(--radius-lg); background: var(--color-surface); box-shadow: var(--shadow-3); overflow: hidden; }
+  .dialog header { display: flex; align-items: center; gap: var(--space-md); padding: var(--space-md) var(--space-lg); border-bottom: 1px solid var(--color-rule); }
+  .dialog header h3 { flex: 1; margin: 0; font-size: var(--text-section); color: var(--color-ink); }
+  .dialog .pair { display: grid; grid-template-columns: 1fr auto 1fr; gap: var(--space-lg); align-items: center; padding: var(--space-lg); justify-items: center; }
+  .dialog figure { margin: 0; display: grid; gap: var(--space-xs); justify-items: center; }
+  .dialog figcaption { font-weight: 600; font-size: var(--text-label); color: var(--color-text-muted); }
+  .dialog .alt { margin: 0; padding: 0 var(--space-lg) var(--space-lg); font-size: var(--text-label); color: var(--color-text-muted); display: grid; grid-template-columns: max-content 1fr; gap: var(--space-xs) var(--space-md); }
+  .dialog .alt dt { font-weight: 600; color: var(--color-text); }
+  .dialog .alt dd { margin: 0; }
+  .pop { width: 340px; border: 1px solid var(--color-rule-strong); border-radius: var(--radius-lg); background: var(--color-surface); box-shadow: var(--shadow-2); padding: var(--space-smd); }
+  .pop h3 { margin: var(--space-xs) var(--space-smd) var(--space-smd); font-size: var(--text-label); color: var(--color-text-muted); text-transform: uppercase; letter-spacing: .04em; }
+  .pop .opt { display: flex; align-items: center; gap: var(--space-smd); min-height: 44px; padding: 0 var(--space-smd); border-radius: var(--radius-md); }
+  .pop .opt.hl { background: var(--color-primary-tint); }
+  .pop .opt .grow { flex: 1; }
+  .pop hr { border: 0; border-top: 1px solid var(--color-rule); margin: var(--space-smd) 0; }
+  .pop .note { font-size: var(--text-label); color: var(--color-text-muted); padding: 0 var(--space-smd) var(--space-xs); }
+  /* Phones: device lanes as cards */
+  .pgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: var(--space-lg); padding: var(--space-lg); }
+  .pcard { border: 1px solid var(--color-rule); border-radius: var(--radius-lg); background: var(--color-surface); overflow: hidden; }
+  .pcard .ph { background: var(--color-device); color: var(--color-device-text); padding: var(--space-md); display: grid; gap: 2px; }
+  .pcard .ph .s { font-family: var(--font-mono); font-size: var(--text-label); color: var(--color-device-muted); }
+  .pcard .pb { display: grid; grid-template-columns: auto 1fr; gap: var(--space-md); padding: var(--space-md); align-items: start; }
+  .pcard .pb .shot { --w: 56px; }
+  .pcard .pb .info { display: grid; gap: var(--space-smd); justify-items: start; font-size: var(--text-label); color: var(--color-text-muted); }
+  .phones-head { display: flex; align-items: center; gap: var(--space-md); padding: var(--space-lg) var(--space-lg) 0; }
+  .phones-head h2 { flex: 1; }
+  .modes { display: flex; gap: var(--space-xl); flex-wrap: wrap; }
+  .mode { display: flex; gap: var(--space-md); align-items: center; }
+  .mode b { display: block; color: var(--color-ink); }
+  @media (max-width: 800px) {
+    .tl { padding: var(--space-md); }
+    .bubble { max-width: 90%; }
+    .strip { flex-wrap: nowrap; overflow-x: auto; }
+    .card { width: 132px; }
+    .composer { margin: 0 var(--space-smd) var(--space-smd); }
+    .cstrip { flex-wrap: wrap; gap: 0 var(--space-md); }
+    .cstrip .grow { display: none; }
+    .dialog .pair { grid-template-columns: 1fr 1fr; }
+    .dialog .pair > .ms { display: none; }
+    .dialog .shot { --w: 140px !important; }
+    .pop { width: 100%; }
+    .hide-sm { display: none; }
+  }
+</style>
+</head>
+<body>
+<header class="doc-head">
+  <h1>B — Filmstrip</h1>
+  <p>Screenshot first. A turn's steps form one wrapping strip: action caption on top, post-action screenshot under it, thinking folded below. Click a card: a before/after dialog you can step through with arrow keys. The composer has a status strip: the session's phone on the left, session tokens and cost on the right.</p>
+</header>
+
+<div class="app tall">
+  <nav class="nav" aria-label="Main">
+    <div class="brand"><span class="label">SmartQA</span>
+      <button class="navtoggle" title="Navigation: pinned expanded. Click for pinned icons." aria-label="Navigation mode: pinned expanded. Activate to switch to pinned icons."><span class="ms flip">keyboard_tab</span><span class="pip"><i class="on"></i><i></i><i></i></span></button>
+    </div>
+    <a class="active" href="#"><span class="ms">space_dashboard</span><span class="label">Sessions</span></a>
+    <a href="#"><span class="ms">smartphone</span><span class="label">Phones</span></a>
+    <a href="#"><span class="ms">lock</span><span class="label">Providers</span></a>
+    <a href="#"><span class="ms">settings</span><span class="label">Setup</span></a>
+    <a href="#"><span class="ms">campaign</span><span class="label">What's New</span><span class="badge">● New</span></a>
+    <div class="spacer"></div>
+    <div class="foot"><span class="who"><b style="color:var(--color-ink)">Cheese</b><br>Admin</span></div>
+  </nav>
+
+  <aside class="list" aria-label="Sessions">
+    <header><h2>Sessions</h2><button class="btn sm primary"><span class="ms">add_circle</span>New</button></header>
+    <div class="search"><span class="ms">search</span>Search or paste a run ID</div>
+    <ul>
+      <li class="sel"><span class="t">open youtube and play gangnam style at maximum…</span><span class="m"><span class="dot ok"></span>Running · step 8 · <span class="mono">13:58 ICT</span></span></li>
+      <li><span class="t">Scan notifications</span><span class="m"><span class="chip ok"><span class="ms">check_circle</span>Pass</span><span class="mono">11:20 ICT</span></span></li>
+      <li><span class="t">Summarize a video</span><span class="m"><span class="chip err"><span class="ms">cancel</span>Fail</span><span class="mono">10:02 ICT</span></span></li>
+      <li><span class="t">Login with test account qa1</span><span class="m"><span class="chip neutral"><span class="ms">stop_circle</span>Cancelled</span><span class="mono">Yesterday</span></span></li>
+    </ul>
+  </aside>
+
+  <div class="topbar"><button class="navtoggle" aria-label="Back to sessions"><span class="ms flip">keyboard_tab</span></button><span class="t">open youtube and play gangnam style…</span><button class="navtoggle" aria-label="Session details"><span class="ms">info</span></button></div>
+
+  <main class="main">
+    <div class="head hide-sm"><h1>open youtube and play gangnam style at maximum speaker volumn</h1><button class="btn sm"><span class="ms">tune</span>Details</button></div>
+    <section class="tl" aria-label="Chat history">
+      <div class="turn">Turn 1</div>
+      <div class="bubble you"><div class="who">You</div><p>open youtube and play gangnam style at maximum speaker volumn</p></div>
+      <div class="strip-head"><b>8 steps</b> · click a step to compare before and after</div>
+      <ol class="strip" aria-label="Turn 1 steps" style="list-style:none;margin:0;padding:0 0 var(--space-smd)">
+        <li class="card" tabindex="0" aria-label="Step 1, Tap YouTube on the home screen. After: YouTube home feed."><div class="act"><span class="n">1</span><span>Tap <q>YouTube</q> on home screen</span></div><span class="shot yt"></span><details class="think"><summary><span class="ms">expand_more</span>Thinking</summary></details></li>
+        <li class="card" tabindex="0"><div class="act"><span class="n">2</span><span>Tap Search, top right</span></div><span class="shot search"></span><details class="think"><summary><span class="ms">expand_more</span>Thinking</summary></details></li>
+        <li class="card" tabindex="0"><div class="act"><span class="n">3</span><span>Type <q>gangnam style</q>, Enter</span></div><span class="shot results"></span><details class="think" open><summary><span class="ms">expand_less</span>Thinking</summary><p>Search suggestions match; Enter is faster than tapping a suggestion.</p></details></li>
+        <li class="card cur" tabindex="0"><div class="act"><span class="n">4</span><span>Tap first result <q>PSY - GANGNAM STYLE</q></span></div><span class="shot ad"></span><details class="think"><summary><span class="ms">expand_more</span>Thinking</summary></details></li>
+        <li class="card" tabindex="0"><div class="act"><span class="n">5</span><span>Tap <q>Skip ad</q> after 5 s</span></div><span class="shot video"></span><details class="think"><summary><span class="ms">expand_more</span>Thinking</summary></details></li>
+        <li class="card" tabindex="0"><div class="act"><span class="n">6</span><span>Press Volume up ×15</span></div><span class="shot vol" style="--lvl:60%"></span><details class="think"><summary><span class="ms">expand_more</span>Thinking</summary></details></li>
+        <li class="card" tabindex="0"><div class="act"><span class="n">7</span><span>Press Volume up ×5</span></div><span class="shot vol"></span><details class="think"><summary><span class="ms">expand_more</span>Thinking</summary></details></li>
+        <li class="card live" aria-live="polite"><div class="act"><span class="n">8</span><span>Checking volume panel…</span></div><span class="shot skel"></span><span class="label faint">Running</span></li>
+      </ol>
+    </section>
+
+    <form class="composer" aria-label="Message the agent">
+      <div class="cstrip">
+        <button type="button" class="picker" aria-disabled="true" aria-label="Phone for this session: Pixel 6 Pro, USB, your PC. Connected. Locked after the first run."><span class="dot ok"></span>Pixel 6 Pro, USB, your PC<span class="ms">lock</span></button>
+        <span class="grow"></span>
+        <span><b class="mono">48,212</b> tokens · <b class="mono">≈ $0.14</b> est.</span>
+        <button type="button" class="btn sm ghost" aria-label="Cost details">Details</button>
+      </div>
+      <div class="crow">
+        <textarea rows="1" aria-label="Message the agent" placeholder="Correct or steer the next step…"></textarea>
+        <button type="button" class="icon-btn" aria-label="Pause"><span class="ms">pause_circle</span></button>
+        <button type="button" class="icon-btn" aria-label="Stop"><span class="ms">stop_circle</span></button>
+        <button type="submit" class="icon-btn primary" aria-label="Send"><span class="ms">arrow_upward</span></button>
+      </div>
+    </form>
+  </main>
+
+  <nav class="tabbar" aria-label="Main"><a class="active" href="#"><span class="ms">space_dashboard</span>Sessions</a><a href="#"><span class="ms">smartphone</span>Phones</a><a href="#"><span class="ms">settings</span>Setup</a><a href="#"><span class="ms">more_horiz</span>More</a></nav>
+</div>
+
+<section class="board" aria-label="States">
+  <h2>Before / after dialog (click a step card)</h2>
+  <div class="dialog" role="dialog" aria-label="Step 4 before and after" style="max-width:760px">
+    <header><h3>Step 4 · Tap first result <q>PSY - GANGNAM STYLE (강남스타일) M/V</q></h3>
+      <button class="icon-btn" aria-label="Previous step"><span class="ms flip">play_arrow</span></button><span class="mono label">4 / 8</span><button class="icon-btn" aria-label="Next step"><span class="ms">play_arrow</span></button><button class="icon-btn" aria-label="Close"><span class="ms">close</span></button></header>
+    <div class="pair">
+      <figure><figcaption>Before</figcaption><span class="shot results" style="--w:170px" role="img" aria-label="Before step 4: search results, first result PSY - GANGNAM STYLE"></span></figure>
+      <span class="ms" aria-hidden="true" style="color:var(--color-text-faint)">play_arrow</span>
+      <figure><figcaption>After</figcaption><span class="shot ad" style="--w:170px" role="img" aria-label="After step 4: player shows an ad, Skip ad in 5"></span></figure>
+    </div>
+    <dl class="alt"><dt>Screen text after</dt><dd>Ad · 0:05 · Skip ad in 5 · Visit advertiser</dd><dt>Tapped element</dt><dd class="mono">video_title "PSY - GANGNAM STYLE (강남스타일) M/V"</dd><dt>Thinking</dt><dd class="faint"><i>First result is the official M/V by officialpsy.</i></dd></dl>
+  </div>
+
+  <h2>Composer phone states</h2>
+  <div class="grid">
+    <div class="state"><div class="tag"><span class="dot off"></span>Disconnected · picker blinks · composer off</div><div class="body">
+      <div class="composer off" style="margin:0">
+        <div class="cstrip"><button type="button" class="picker open blink" aria-expanded="true" aria-label="Phone disconnected: Pixel 6 Pro. Open to reconnect or choose another phone."><span class="dot off"></span>Pixel 6 Pro · Disconnected<span class="ms">expand_more</span></button><span class="grow"></span><span class="mono">14:02 ICT</span></div>
+        <div class="offbody"><p>Reconnect Pixel 6 Pro to keep steering this session.</p><button class="btn primary"><span class="ms">usb</span>Reconnect</button></div>
+      </div>
+      <div class="pop" style="margin-top:var(--space-smd)">
+        <div class="opt hl"><span class="dot off"></span><span class="grow">Pixel 6 Pro, USB, your PC</span><button class="btn sm primary">Reconnect</button></div>
+        <hr><h3>Same first prompt, new session on</h3>
+        <div class="opt"><span class="dot ok"></span><span class="grow">Pixel 3a, USB, your PC</span><span class="ms">open_in_new</span></div>
+        <div class="opt"><span class="dot ok"></span><span class="grow">Pixel 3a emulator, AVD, Cloud</span><span class="ms">open_in_new</span></div>
+        <div class="note">Opens a new chat session. This one keeps its history.</div>
+      </div>
+    </div></div>
+    <div class="state"><div class="tag">New session · choose a phone</div><div class="body">
+      <div class="composer" style="margin:0">
+        <div class="cstrip"><button type="button" class="picker open" aria-expanded="false"><span class="ms">smartphone</span>Choose a phone<span class="ms">expand_more</span></button><span class="grow"></span><span>Cost appears after the first step</span></div>
+        <div class="crow"><textarea rows="1" placeholder="Describe a task for the phone"></textarea><button class="icon-btn primary" aria-label="Start"><span class="ms">arrow_upward</span></button></div>
+      </div>
+    </div></div>
+    <div class="state"><div class="tag">Loading · error · no price</div><div class="body" style="display:grid;gap:var(--space-md)">
+      <div style="display:flex;gap:var(--space-md)"><div class="card" style="width:120px"><div class="skel-line"></div><span class="shot skel" style="--w:100px"></span></div><div class="card" style="width:120px"><div class="act"><span class="n">8</span><span>Tap <q>Like</q></span></div><span class="shot missing" style="--w:100px"><span class="ms">image_not_supported</span></span><span class="label" style="color:var(--color-error)">Screenshot unavailable</span></div></div>
+      <div class="cstrip" style="border:1px solid var(--color-rule);border-radius:var(--radius-md)"><span class="grow"></span><span><b class="mono">48,212</b> tokens · cost — <span class="faint">no list price for this model</span></span></div>
+    </div></div>
+  </div>
+
+  <h2>Phones page (new, out of Setup)</h2>
+  <div class="state"><div class="body" style="padding:0">
+    <div class="phones-head"><h2>Phones</h2><button class="btn"><span class="ms">refresh</span><span class="hide-sm">Refresh</span></button><button class="btn primary"><span class="ms">add_circle</span>Connect a phone</button></div>
+    <div class="pgrid">
+      <div class="pcard"><div class="ph"><span>Pixel 6 Pro, USB, your PC</span><span class="s">2A091FDH200B2X</span></div><div class="pb"><span class="shot vol"></span><div class="info"><span class="chip ok"><span class="ms">check_circle</span>Connected</span><span>In use: open youtube and play… · <span class="mono">13:58 ICT</span></span><button class="btn sm">Open session</button></div></div></div>
+      <div class="pcard"><div class="ph"><span>Pixel 3a, USB, your PC browser</span><span class="s">93AX01X9Q</span></div><div class="pb"><span class="shot home"></span><div class="info"><span class="chip neutral"><span class="ms">schedule</span>Idle</span><span>Last used yesterday</span><button class="btn sm">New session</button></div></div></div>
+      <div class="pcard"><div class="ph"><span>Xiaomi 10, USB, Thean's PC (qa1 team)</span><span class="s">f3a1c09e</span></div><div class="pb"><span class="shot missing"><span class="ms">devices_off</span></span><div class="info"><span class="chip err"><span class="ms">devices_off</span>Disconnected</span><span>Since <span class="mono">09:41 ICT</span></span><button class="btn sm"><span class="ms">usb</span>Reconnect</button></div></div></div>
+    </div>
+    <p class="muted label" style="padding:0 var(--space-lg) var(--space-lg)">Empty: “No phones yet. Connect one by USB or start a Cloud emulator.” · Loading: three skeleton cards · Error: “Phones could not be loaded. Retry.”</p>
+  </div></div>
+
+  <h2>Nav mode toggle (next to the logo)</h2>
+  <div class="modes">
+    <div class="mode"><button class="navtoggle"><span class="ms flip">keyboard_tab</span><span class="pip"><i class="on"></i><i></i><i></i></span></button><span><b>Pinned expanded</b><span class="muted label">→ pinned icons</span></span></div>
+    <div class="mode"><button class="navtoggle"><span class="ms">keyboard_tab</span><span class="pip"><i></i><i class="on"></i><i></i></span></button><span><b>Pinned icons</b><span class="muted label">→ expand on hover</span></span></div>
+    <div class="mode"><button class="navtoggle"><span class="ms">ads_click</span><span class="pip"><i></i><i></i><i class="on"></i></span></button><span><b>Expand on hover</b><span class="muted label">→ pinned expanded</span></span></div>
+  </div>
+</section>
+</body>
+</html>

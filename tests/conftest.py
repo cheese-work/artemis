@@ -54,11 +54,43 @@ FAKE_PROVIDER_CREDENTIAL_FIELDS = (
 def isolate_provider_credentials(monkeypatch):
     """Keep the deterministic suite independent of ambient credentials."""
     from artemis.config.settings import settings
+    from artemis.utils import redaction
+
+    monkeypatch.setattr(redaction, "_REGISTERED_SECRETS", set())
 
     for field in PROVIDER_CREDENTIAL_FIELDS:
         monkeypatch.delenv(field, raising=False)
         if hasattr(settings, field):
             monkeypatch.setattr(settings, field, None)
+
+
+@pytest.fixture(autouse=True)
+def isolate_current_data_engine():
+    """``DataEngine.start_session`` publishes ``self`` to a module global.
+
+    The logger drain thread and tools read it later, so an engine left over from an earlier
+    test would receive this test's log records and open IPC sockets / call ``urlopen`` mid-test.
+    Teardown also waits for a drain callback that already captured the engine.
+    """
+    from tests.support.data_engine_isolation import quiesce_data_engine_logs
+
+    quiesce_data_engine_logs()
+    yield
+    quiesce_data_engine_logs()
+
+
+@pytest.fixture(autouse=True)
+def isolate_awake_service():
+    """Stop heartbeat threads that an earlier test left on the process-wide awake service.
+
+    A leftover heartbeat fires ``subprocess.run`` every few seconds, so it lands in a later
+    test's ``subprocess.run`` patch and corrupts the command that test captures.
+    """
+    from tests.support.awake_service_isolation import stop_awake_service
+
+    stop_awake_service()
+    yield
+    stop_awake_service()
 
 
 ADB_ENVIRONMENT_KEYS = (

@@ -15,6 +15,7 @@
  */
 
 import { LoggerService } from '../../services/logger.service';
+import { deployDrainMessage } from '../../utils/deploy-drain.util';
 import { Component, ChangeDetectionStrategy, inject, computed, effect, signal, untracked } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
@@ -25,29 +26,34 @@ import { HostsService } from '../../services/hosts.service';
 import { UsbDeviceRelayService } from '../../services/usb-device-relay.service';
 import { HostsResponse } from '../../core/models/host.model';
 import { deviceSourceOf } from '../../utils/device-chip.util';
+import { COMPUTER_STRINGS } from '../../utils/computer-strings';
 import { deviceKindLabel, deviceTitle, isIdentifiedDevice, unlistedRunDeviceTitle } from '../../utils/device-label.util';
 import { recordedDevice } from '../../utils/session-device.util';
-import { OwnerLabelComponent } from '../owner-label/owner-label.component';
-import { RunIdCopyComponent } from '../run-id-copy/run-id-copy.component';
 import { ScopeSwitchComponent } from '../scope-switch/scope-switch.component';
 import { GoalImage, Session } from '../../core/models/session.model';
 import { RunStatusKey, RunStatusView, sessionStatusView } from '../../utils/run-status.util';
 import { MarkdownSegment, MarkdownLine, NoteMilestone, ParsedNote } from '../../core/models/markdown.model';
 import { parseNote, parseNoteLines } from '../../utils/markdown-parser.util';
 import { mediaUrl } from '../../utils/app-url.util';
+import { runTitle } from '../../utils/run-title.util';
 
 export type { MarkdownSegment, MarkdownLine, NoteMilestone, ParsedNote };
 
 @Component({
   selector: 'app-chat-interface',
   standalone: true,
-  imports: [CommonModule, FormsModule, RunLibraryComponent, RunIdCopyComponent, OwnerLabelComponent, ScopeSwitchComponent],
+  imports: [CommonModule, FormsModule, RunLibraryComponent, ScopeSwitchComponent],
   templateUrl: './chat-interface.component.html',
   styleUrl: './chat-interface.component.scss',
   changeDetection: ChangeDetectionStrategy.OnPush
 })
 export class ChatInterfaceComponent {
+  public readonly runTitle = runTitle;
   public readonly mediaUrl = mediaUrl;
+  public readonly queueTabs = [
+    { id: 'tasks', label: 'Task Queue', icon: 'list_alt' },
+    { id: 'notes', label: 'Notes & Plans', icon: 'description' }
+  ] as const;
   private readonly logger = inject(LoggerService);
   public agentService = inject(AgentService);
   private readonly systemService = inject(SystemService);
@@ -74,27 +80,12 @@ export class ChatInterfaceComponent {
   // it per session object so template re-evaluation stays cheap.
   private deviceSerialCache = new WeakMap<Session, string | null>();
 
-  /**
-   * Filtered computed list of active tasks (running or pending) sorted by status and submission order
-   */
-  public activeQueue = computed(() => {
-    const list = this.agentService.sessions().filter((s) => this.statusView(s).active);
-    return list.sort((a, b) => {
-      const statusA = this.getTaskStatus(a);
-      const statusB = this.getTaskStatus(b);
-      const isRunA = statusA === 'running' || statusA === 'paused';
-      const isRunB = statusB === 'running' || statusB === 'paused';
-      if (isRunA && !isRunB) return -1;
-      if (!isRunA && isRunB) return 1;
-      return (a.start_time || 0) - (b.start_time || 0); // stable FIFO order
-    });
-  });
-
   public readonly recordedDevices = computed(() => {
     const devices = new Map<string, NonNullable<ReturnType<typeof recordedDevice>>>();
     for (const session of this.agentService.sessions()) {
       const serial = this.getDeviceSerial(session);
-      const device = serial ? recordedDevice(session, serial) : null;
+      const live = this.systemService.connectedDevices().find((device) => device.serial === serial);
+      const device = live && isIdentifiedDevice(live) ? live : serial ? recordedDevice(session, serial) : null;
       if (device) devices.set(session.session_id, device);
     }
     return devices;
@@ -113,6 +104,15 @@ export class ChatInterfaceComponent {
   /**
    * Submit a new task goal to the backend
    */
+  /** Arrow keys, Home and End move between the two tabs, like the run list's owner tabs. */
+  public onTabKey(event: KeyboardEvent, tab: 'tasks' | 'notes'): void {
+    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+    event.preventDefault();
+    const next = event.key === 'Home' ? 'tasks' : event.key === 'End' ? 'notes' : tab === 'tasks' ? 'notes' : 'tasks';
+    this.agentService.activeTab.set(next);
+    (event.currentTarget as HTMLElement).parentElement?.querySelector<HTMLButtonElement>(`[data-tab="${next}"]`)?.focus();
+  }
+
   public submitTask(): void {
     const goal = this.taskInput.trim();
     if (!goal) {
@@ -132,7 +132,7 @@ export class ChatInterfaceComponent {
       error: (err) => {
         this.logger.error('Failed to submit task:', err);
         this.isSubmitting.set(false);
-        this.errorMessage.set(err.error?.detail || 'The runner is busy. Please wait for the current task to finish.');
+        this.errorMessage.set(deployDrainMessage(err) ?? (typeof err.error?.detail === 'string' ? err.error.detail : 'The runner is busy. Please wait for the current task to finish.'));
         // Auto-dismiss error banner after 5 seconds
         setTimeout(() => {
           this.errorMessage.set(null);
@@ -204,28 +204,6 @@ export class ChatInterfaceComponent {
     });
   }
 
-  /**
-   * Delete an individual task / session
-   */
-  public deleteTask(sessionId: string, event: MouseEvent): void {
-    event.stopPropagation();
-    if (!confirm(`Are you sure you want to delete this task? This cannot be undone.`)) {
-      return;
-    }
-    this.isSubmitting.set(true);
-    this.errorMessage.set(null);
-    this.agentService.deleteSession(sessionId).subscribe({
-      next: () => {
-        this.isSubmitting.set(false);
-      },
-      error: (err: any) => {
-        this.logger.error(`Failed to delete task ${sessionId}:`, err);
-        this.isSubmitting.set(false);
-        this.errorMessage.set(err.error?.detail || 'Failed to delete task.');
-      }
-    });
-  }
-
   public statusView(session: Session): RunStatusView {
     const live = session.session_id === this.agentService.runningSessionId() ? this.agentService.agentStatus() : null;
     return sessionStatusView(session.status, live);
@@ -275,12 +253,13 @@ export class ChatInterfaceComponent {
     }
     const registry = this.registry();
     const relay = this.usbRelay.state();
-    const source = deviceSourceOf(
+    const reportedSource = deviceSourceOf(
       serial,
       registry?.devices ?? [],
       registry?.hosts ?? [],
-      relay.status === 'connected' ? relay.serial : null
+      relay.status === 'connected' || relay.status === 'reconnecting' ? relay.serial : null
     );
+    const source = reportedSource === COMPUTER_STRINGS.aBrowser ? null : reportedSource;
     const where = source ? ` · ${source}` : '';
     // Newest knowledge first: the live list, then what the run recorded, then the registry.
     const device = [
@@ -289,7 +268,8 @@ export class ChatInterfaceComponent {
       registry?.devices.find((d) => d.serial === serial)
     ].find((d) => d && isIdentifiedDevice(d));
     if (!device) {
-      const ownBrowser = relay.status === 'connected' && relay.serial === serial;
+      const ownBrowser =
+        (relay.status === 'connected' || relay.status === 'reconnecting') && relay.serial === serial;
       const title = unlistedRunDeviceTitle(serial, ownBrowser);
       return { title, kind: null, source, tooltip: `Device: ${title}${where} · ${serial}` };
     }

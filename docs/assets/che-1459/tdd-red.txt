@@ -1,0 +1,319 @@
+❯ Building...
+✔ Building...
+Initial chunk files                                     | Names                                                |  Raw size
+chunk-MZH5TRE2.js                                       | -                                                    |   2.54 MB |
+polyfills.js                                            | polyfills                                            |   1.05 MB |
+spec-app-components-run-view-run-view.component.spec.js | spec-app-components-run-view-run-view.component.spec | 703.89 kB |
+jasmine-cleanup-1.js                                    | jasmine-cleanup-1                                    |  67.21 kB |
+test_main.js                                            | test_main                                            |  22.21 kB |
+chunk-3OQY4ED3.js                                       | -                                                    |   7.40 kB |
+styles.css                                              | styles                                               |   6.16 kB |
+jasmine-cleanup-0.js                                    | jasmine-cleanup-0                                    | 483 bytes |
+
+                                                        | Initial total                                        |   4.40 MB
+
+Application bundle generation complete. [9.160 seconds] - 2026-10-09T08:08:14.159Z
+
+09 10 2026 15:08:14.364:INFO [karma-server]: Karma v6.4.4 server started at http://127.0.0.1:18959/
+09 10 2026 15:08:14.367:INFO [launcher]: Launching browsers ScopedChrome with concurrency unlimited
+09 10 2026 15:08:14.372:INFO [launcher]: Starting browser ChromeHeadless
+09 10 2026 15:08:15.376:INFO [Chrome Headless 150.0.0.0 (Linux 0.0.0)]: Connected on socket uTUkYJNEjOIQ7OGKAAAB with id 32771238
+.09 10 2026 15:08:16.751:WARN [web-server]: 404: /images/pre3.png
+09 10 2026 15:08:16.752:WARN [web-server]: 404: /images/post3.png
+.09 10 2026 15:08:16.809:WARN [web-server]: 404: /images/pre1.png
+09 10 2026 15:08:16.810:WARN [web-server]: 404: /images/post1.png
+..09 10 2026 15:08:16.857:WARN [web-server]: 404: /images/pre3.png
+09 10 2026 15:08:16.859:WARN [web-server]: 404: /images/post3.png
+09 10 2026 15:08:16.860:WARN [web-server]: 404: /images/pre2.png
+09 10 2026 15:08:16.860:WARN [web-server]: 404: /images/post2.png
+09 10 2026 15:08:16.861:WARN [web-server]: 404: /images/pre1.png
+09 10 2026 15:08:16.862:WARN [web-server]: 404: /images/post1.png
+..09 10 2026 15:08:16.894:WARN [web-server]: 404: /images/pre3.png
+09 10 2026 15:08:16.896:WARN [web-server]: 404: /images/post3.png
+
+Chrome Headless 150.0.0.0 (Linux 0.0.0) RunViewComponent restored result summary and execution details keeps explicit unavailable summary states without hiding steps when checks or notes fail FAILED
+	Expected undefined to contain 'Could not load the task report.'.
+	    at <Jasmine>
+	    at src/app/components/run-view/run-view.component.spec.ts:228:53
+	    at Generator.next (<anonymous>)
+	    at fulfilled (chunk-3OQY4ED3.js:101:24)
+	    at _ZoneDelegate.invoke (http://127.0.0.1:18959/artemis/apps/showcase_ui/node_modules/zone.js/fesm2015/zone.js:398:28)
+	Expected undefined to contain 'Could not load checker results.'.
+	    at <Jasmine>
+	    at src/app/components/run-view/run-view.component.spec.ts:229:53
+	    at Generator.next (<anonymous>)
+	    at fulfilled (chunk-3OQY4ED3.js:101:24)
+	    at _ZoneDelegate.invoke (http://127.0.0.1:18959/artemis/apps/showcase_ui/node_modules/zone.js/fesm2015/zone.js:398:28)
+Chrome Headless 150.0.0.0 (Linux 0.0.0) RunViewComponent restored result summary and execution details expands and collapses step actions, output and stream in review mode FAILED
+	Expected 0 to be 2.
+	    at <Jasmine>
+	    at src/app/components/run-view/run-view.component.spec.ts:178:32
+	    at Generator.next (<anonymous>)
+	    at fulfilled (chunk-3OQY4ED3.js:101:24)
+	    at _ZoneDelegate.invoke (http://127.0.0.1:18959/artemis/apps/showcase_ui/node_modules/zone.js/fesm2015/zone.js:398:28)
+	TypeError: Cannot read properties of undefined (reading 'getAttribute')
+	    at src/app/components/run-view/run-view.component.spec.ts:179:27
+	    at Generator.next (<anonymous>)
+	    at fulfilled (chunk-3OQY4ED3.js:101:24)
+	    at _ZoneDelegate.invoke (http://127.0.0.1:18959/artemis/apps/showcase_ui/node_modules/zone.js/fesm2015/zone.js:398:28)
+	    at _ProxyZoneSpec.onInvoke (http://127.0.0.1:18959/artemis/apps/showcase_ui/node_modules/zone.js/fesm2015/zone-testing.js:2132:39)
+	    at _ZoneDelegate.invoke (http://127.0.0.1:18959/artemis/apps/showcase_ui/node_modules/zone.js/fesm2015/zone.js:397:34)
+	    at ZoneImpl.run (http://127.0.0.1:18959/artemis/apps/showcase_ui/node_modules/zone.js/fesm2015/zone.js:113:43)
+	    at http://127.0.0.1:18959/artemis/apps/showcase_ui/node_modules/zone.js/fesm2015/zone.js:2537:40
+	    at _ZoneDelegate.invokeTask (http://127.0.0.1:18959/artemis/apps/showcase_ui/node_modules/zone.js/fesm2015/zone.js:431:33)
+	    at _ProxyZoneSpec.onInvokeTask (http://127.0.0.1:18959/artemis/apps/showcase_ui/node_modules/zone.js/fesm2015/zone-testing.js:2163:39)
+09 10 2026 15:08:16.933:WARN [web-server]: 404: /images/pre2.png
+09 10 2026 15:08:16.934:WARN [web-server]: 404: /images/post2.png
+Chrome Headless 150.0.0.0 (Linux 0.0.0) RunViewComponent restored result summary and execution details uses report-task-status when output.md is absent and escapes report HTML FAILED
+	Expected undefined to contain 'Goal met'.
+	    at <Jasmine>
+	    at src/app/components/run-view/run-view.component.spec.ts:220:53
+	    at Generator.next (<anonymous>)
+	    at fulfilled (chunk-3OQY4ED3.js:101:24)
+	    at _ZoneDelegate.invoke (http://127.0.0.1:18959/artemis/apps/showcase_ui/node_modules/zone.js/fesm2015/zone.js:398:28)
+09 10 2026 15:08:16.950:WARN [web-server]: 404: /images/pre1.png
+09 10 2026 15:08:16.950:WARN [web-server]: 404: /images/post1.png
+Chrome Headless 150.0.0.0 (Linux 0.0.0) RunViewComponent restored result summary and execution details shows the persisted task report at the top in live mode FAILED
+	Expected undefined to contain 'Settings verified.'.
+	    at <Jasmine>
+	    at src/app/components/run-view/run-view.component.spec.ts:165:55
+	    at Generator.next (<anonymous>)
+	    at fulfilled (chunk-3OQY4ED3.js:101:24)
+	    at _ZoneDelegate.invoke (http://127.0.0.1:18959/artemis/apps/showcase_ui/node_modules/zone.js/fesm2015/zone.js:398:28)
+	TypeError: Cannot read properties of null (reading 'compareDocumentPosition')
+	    at src/app/components/run-view/run-view.component.spec.ts:166:39
+	    at Generator.next (<anonymous>)
+	    at fulfilled (chunk-3OQY4ED3.js:101:24)
+	    at _ZoneDelegate.invoke (http://127.0.0.1:18959/artemis/apps/showcase_ui/node_modules/zone.js/fesm2015/zone.js:398:28)
+	    at _ProxyZoneSpec.onInvoke (http://127.0.0.1:18959/artemis/apps/showcase_ui/node_modules/zone.js/fesm2015/zone-testing.js:2132:39)
+	    at _ZoneDelegate.invoke (http://127.0.0.1:18959/artemis/apps/showcase_ui/node_modules/zone.js/fesm2015/zone.js:397:34)
+	    at ZoneImpl.run (http://127.0.0.1:18959/artemis/apps/showcase_ui/node_modules/zone.js/fesm2015/zone.js:113:43)
+	    at http://127.0.0.1:18959/artemis/apps/showcase_ui/node_modules/zone.js/fesm2015/zone.js:2537:40
+	    at _ZoneDelegate.invokeTask (http://127.0.0.1:18959/artemis/apps/showcase_ui/node_modules/zone.js/fesm2015/zone.js:431:33)
+	    at _ProxyZoneSpec.onInvokeTask (http://127.0.0.1:18959/artemis/apps/showcase_ui/node_modules/zone.js/fesm2015/zone-testing.js:2163:39)
+09 10 2026 15:08:16.969:WARN [web-server]: 404: /images/pre3.png
+09 10 2026 15:08:16.970:WARN [web-server]: 404: /images/post3.png
+Chrome Headless 150.0.0.0 (Linux 0.0.0) RunViewComponent restored result summary and execution details shows the persisted task report at the top in review mode FAILED
+	Expected undefined to contain 'Settings verified.'.
+	    at <Jasmine>
+	    at src/app/components/run-view/run-view.component.spec.ts:165:55
+	    at Generator.next (<anonymous>)
+	    at fulfilled (chunk-3OQY4ED3.js:101:24)
+	    at _ZoneDelegate.invoke (http://127.0.0.1:18959/artemis/apps/showcase_ui/node_modules/zone.js/fesm2015/zone.js:398:28)
+	TypeError: Cannot read properties of null (reading 'compareDocumentPosition')
+	    at src/app/components/run-view/run-view.component.spec.ts:166:39
+	    at Generator.next (<anonymous>)
+	    at fulfilled (chunk-3OQY4ED3.js:101:24)
+	    at _ZoneDelegate.invoke (http://127.0.0.1:18959/artemis/apps/showcase_ui/node_modules/zone.js/fesm2015/zone.js:398:28)
+	    at _ProxyZoneSpec.onInvoke (http://127.0.0.1:18959/artemis/apps/showcase_ui/node_modules/zone.js/fesm2015/zone-testing.js:2132:39)
+	    at _ZoneDelegate.invoke (http://127.0.0.1:18959/artemis/apps/showcase_ui/node_modules/zone.js/fesm2015/zone.js:397:34)
+	    at ZoneImpl.run (http://127.0.0.1:18959/artemis/apps/showcase_ui/node_modules/zone.js/fesm2015/zone.js:113:43)
+	    at http://127.0.0.1:18959/artemis/apps/showcase_ui/node_modules/zone.js/fesm2015/zone.js:2537:40
+	    at _ZoneDelegate.invokeTask (http://127.0.0.1:18959/artemis/apps/showcase_ui/node_modules/zone.js/fesm2015/zone.js:431:33)
+	    at _ProxyZoneSpec.onInvokeTask (http://127.0.0.1:18959/artemis/apps/showcase_ui/node_modules/zone.js/fesm2015/zone-testing.js:2163:39)
+Chrome Headless 150.0.0.0 (Linux 0.0.0) RunViewComponent restored result summary and execution details expands and collapses step actions, output and stream in live mode FAILED
+	Expected 0 to be 2.
+	    at <Jasmine>
+	    at src/app/components/run-view/run-view.component.spec.ts:178:32
+	    at Generator.next (<anonymous>)
+	    at fulfilled (chunk-3OQY4ED3.js:101:24)
+	    at _ZoneDelegate.invoke (http://127.0.0.1:18959/artemis/apps/showcase_ui/node_modules/zone.js/fesm2015/zone.js:398:28)
+	TypeError: Cannot read properties of undefined (reading 'getAttribute')
+	    at src/app/components/run-view/run-view.component.spec.ts:179:27
+	    at Generator.next (<anonymous>)
+	    at fulfilled (chunk-3OQY4ED3.js:101:24)
+	    at _ZoneDelegate.invoke (http://127.0.0.1:18959/artemis/apps/showcase_ui/node_modules/zone.js/fesm2015/zone.js:398:28)
+	    at _ProxyZoneSpec.onInvoke (http://127.0.0.1:18959/artemis/apps/showcase_ui/node_modules/zone.js/fesm2015/zone-testing.js:2132:39)
+	    at _ZoneDelegate.invoke (http://127.0.0.1:18959/artemis/apps/showcase_ui/node_modules/zone.js/fesm2015/zone.js:397:34)
+	    at ZoneImpl.run (http://127.0.0.1:18959/artemis/apps/showcase_ui/node_modules/zone.js/fesm2015/zone.js:113:43)
+	    at http://127.0.0.1:18959/artemis/apps/showcase_ui/node_modules/zone.js/fesm2015/zone.js:2537:40
+	    at _ZoneDelegate.invokeTask (http://127.0.0.1:18959/artemis/apps/showcase_ui/node_modules/zone.js/fesm2015/zone.js:431:33)
+	    at _ProxyZoneSpec.onInvokeTask (http://127.0.0.1:18959/artemis/apps/showcase_ui/node_modules/zone.js/fesm2015/zone-testing.js:2163:39)
+09 10 2026 15:08:17.005:WARN [web-server]: 404: /images/pre2.png
+09 10 2026 15:08:17.006:WARN [web-server]: 404: /images/post2.png
+Chrome Headless 150.0.0.0 (Linux 0.0.0) RunViewComponent restored result summary and execution details updates the summary from current-session live checker events FAILED
+	Expected undefined to contain 'Passed: 2'.
+	    at <Jasmine>
+	    at src/app/components/run-view/run-view.component.spec.ts:238:53
+	    at Generator.next (<anonymous>)
+	    at fulfilled (chunk-3OQY4ED3.js:101:24)
+	    at _ZoneDelegate.invoke (http://127.0.0.1:18959/artemis/apps/showcase_ui/node_modules/zone.js/fesm2015/zone.js:398:28)
+	Expected undefined to contain 'Failed: 1'.
+	    at <Jasmine>
+	    at src/app/components/run-view/run-view.component.spec.ts:239:53
+	    at Generator.next (<anonymous>)
+	    at fulfilled (chunk-3OQY4ED3.js:101:24)
+	    at _ZoneDelegate.invoke (http://127.0.0.1:18959/artemis/apps/showcase_ui/node_modules/zone.js/fesm2015/zone.js:398:28)
+09 10 2026 15:08:17.025:WARN [web-server]: 404: /images/pre3.png
+09 10 2026 15:08:17.025:WARN [web-server]: 404: /images/post3.png
+Chrome Headless 150.0.0.0 (Linux 0.0.0) RunViewComponent restored result summary and execution details loads checker counts, findings, verdicts and persisted reasoning in review mode FAILED
+	Expected undefined to contain 'Passed: 1'.
+	    at <Jasmine>
+	    at src/app/components/run-view/run-view.component.spec.ts:207:53
+	    at Generator.next (<anonymous>)
+	    at fulfilled (chunk-3OQY4ED3.js:101:24)
+	    at _ZoneDelegate.invoke (http://127.0.0.1:18959/artemis/apps/showcase_ui/node_modules/zone.js/fesm2015/zone.js:398:28)
+	Expected undefined to contain 'No issues found'.
+	    at <Jasmine>
+	    at src/app/components/run-view/run-view.component.spec.ts:208:53
+	    at Generator.next (<anonymous>)
+	    at fulfilled (chunk-3OQY4ED3.js:101:24)
+	    at _ZoneDelegate.invoke (http://127.0.0.1:18959/artemis/apps/showcase_ui/node_modules/zone.js/fesm2015/zone.js:398:28)
+	TypeError: Cannot read properties of undefined (reading 'click')
+	    at src/app/components/run-view/run-view.component.spec.ts:209:46
+	    at Generator.next (<anonymous>)
+	    at fulfilled (chunk-3OQY4ED3.js:101:24)
+	    at _ZoneDelegate.invoke (http://127.0.0.1:18959/artemis/apps/showcase_ui/node_modules/zone.js/fesm2015/zone.js:398:28)
+	    at _ProxyZoneSpec.onInvoke (http://127.0.0.1:18959/artemis/apps/showcase_ui/node_modules/zone.js/fesm2015/zone-testing.js:2132:39)
+	    at _ZoneDelegate.invoke (http://127.0.0.1:18959/artemis/apps/showcase_ui/node_modules/zone.js/fesm2015/zone.js:397:34)
+	    at ZoneImpl.run (http://127.0.0.1:18959/artemis/apps/showcase_ui/node_modules/zone.js/fesm2015/zone.js:113:43)
+	    at http://127.0.0.1:18959/artemis/apps/showcase_ui/node_modules/zone.js/fesm2015/zone.js:2537:40
+	    at _ZoneDelegate.invokeTask (http://127.0.0.1:18959/artemis/apps/showcase_ui/node_modules/zone.js/fesm2015/zone.js:431:33)
+	    at _ProxyZoneSpec.onInvokeTask (http://127.0.0.1:18959/artemis/apps/showcase_ui/node_modules/zone.js/fesm2015/zone-testing.js:2163:39)
+.09 10 2026 15:08:17.062:WARN [web-server]: 404: /images/pre3.png
+09 10 2026 15:08:17.062:WARN [web-server]: 404: /images/post3.png
+..09 10 2026 15:08:17.122:WARN [web-server]: 404: /images/pre3.png
+09 10 2026 15:08:17.122:WARN [web-server]: 404: /images/post3.png
+..09 10 2026 15:08:17.158:WARN [web-server]: 404: /images/pre3.png
+09 10 2026 15:08:17.159:WARN [web-server]: 404: /images/post3.png
+..09 10 2026 15:08:17.184:WARN [web-server]: 404: /images/pre3.png
+09 10 2026 15:08:17.185:WARN [web-server]: 404: /images/post3.png
+..09 10 2026 15:08:17.214:WARN [web-server]: 404: /images/pre3.png
+09 10 2026 15:08:17.215:WARN [web-server]: 404: /images/post3.png
+..09 10 2026 15:08:17.248:WARN [web-server]: 404: /images/pre3.png
+09 10 2026 15:08:17.249:WARN [web-server]: 404: /images/post3.png
+..09 10 2026 15:08:17.296:WARN [web-server]: 404: /images/pre3.png
+09 10 2026 15:08:17.297:WARN [web-server]: 404: /images/post3.png
+..09 10 2026 15:08:17.345:WARN [web-server]: 404: /images/pre3.png
+09 10 2026 15:08:17.346:WARN [web-server]: 404: /images/post3.png
+..09 10 2026 15:08:17.391:WARN [web-server]: 404: /images/pre3.png
+09 10 2026 15:08:17.392:WARN [web-server]: 404: /images/post3.png
+..09 10 2026 15:08:17.447:WARN [web-server]: 404: /images/pre3.png
+09 10 2026 15:08:17.448:WARN [web-server]: 404: /images/post3.png
+..09 10 2026 15:08:17.490:WARN [web-server]: 404: /images/pre3.png
+09 10 2026 15:08:17.491:WARN [web-server]: 404: /images/post3.png
+..09 10 2026 15:08:17.528:WARN [web-server]: 404: /images/pre3.png
+09 10 2026 15:08:17.529:WARN [web-server]: 404: /images/post3.png
+..09 10 2026 15:08:17.561:WARN [web-server]: 404: /images/pre3.png
+09 10 2026 15:08:17.562:WARN [web-server]: 404: /images/post3.png
+..09 10 2026 15:08:17.590:WARN [web-server]: 404: /images/pre3.png
+09 10 2026 15:08:17.591:WARN [web-server]: 404: /images/post3.png
+..09 10 2026 15:08:17.629:WARN [web-server]: 404: /images/pre3.png
+09 10 2026 15:08:17.630:WARN [web-server]: 404: /images/post3.png
+..09 10 2026 15:08:17.662:WARN [web-server]: 404: /images/pre1.png
+09 10 2026 15:08:17.663:WARN [web-server]: 404: /images/post1.png
+.09 10 2026 15:08:17.677:WARN [web-server]: 404: /images/pre3.png
+09 10 2026 15:08:17.678:WARN [web-server]: 404: /images/post3.png
+..09 10 2026 15:08:17.726:WARN [web-server]: 404: /images/pre1.png
+09 10 2026 15:08:17.727:WARN [web-server]: 404: /images/post1.png
+..09 10 2026 15:08:17.764:WARN [web-server]: 404: /images/pre1.png
+09 10 2026 15:08:17.765:WARN [web-server]: 404: /images/post1.png
+..09 10 2026 15:08:17.793:WARN [web-server]: 404: /images/pre2.png
+09 10 2026 15:08:17.794:WARN [web-server]: 404: /images/post2.png
+09 10 2026 15:08:17.795:WARN [web-server]: 404: /images/pre1.png
+09 10 2026 15:08:17.796:WARN [web-server]: 404: /images/post1.png
+.09 10 2026 15:08:17.809:WARN [web-server]: 404: /images/pre3.png
+09 10 2026 15:08:17.810:WARN [web-server]: 404: /images/post3.png
+.09 10 2026 15:08:17.844:WARN [web-server]: 404: /images/pre3.png
+09 10 2026 15:08:17.846:WARN [web-server]: 404: /images/post3.png
+..09 10 2026 15:08:17.879:WARN [web-server]: 404: /images/pre3.png
+09 10 2026 15:08:17.879:WARN [web-server]: 404: /images/post3.png
+..09 10 2026 15:08:17.913:WARN [web-server]: 404: /images/pre3.png
+09 10 2026 15:08:17.914:WARN [web-server]: 404: /images/post3.png
+..09 10 2026 15:08:17.944:WARN [web-server]: 404: /images/pre3.png
+09 10 2026 15:08:17.945:WARN [web-server]: 404: /images/post3.png
+..09 10 2026 15:08:17.980:WARN [web-server]: 404: /images/pre3.png
+09 10 2026 15:08:17.980:WARN [web-server]: 404: /images/post3.png
+...........09 10 2026 15:08:18.041:WARN [web-server]: 404: /images/pre3.png
+09 10 2026 15:08:18.041:WARN [web-server]: 404: /images/post3.png
+..09 10 2026 15:08:18.080:WARN [web-server]: 404: /images/pre3.png
+09 10 2026 15:08:18.080:WARN [web-server]: 404: /images/post3.png
+.09 10 2026 15:08:18.104:WARN [web-server]: 404: /images/pre1.png
+09 10 2026 15:08:18.104:WARN [web-server]: 404: /images/post1.png
+.09 10 2026 15:08:18.122:WARN [web-server]: 404: /images/pre3.png
+09 10 2026 15:08:18.122:WARN [web-server]: 404: /images/post3.png
+.09 10 2026 15:08:18.140:WARN [web-server]: 404: /images/pre3.png
+09 10 2026 15:08:18.141:WARN [web-server]: 404: /images/post3.png
+..09 10 2026 15:08:18.169:WARN [web-server]: 404: /images/pre3.png
+09 10 2026 15:08:18.170:WARN [web-server]: 404: /images/post3.png
+..09 10 2026 15:08:18.203:WARN [web-server]: 404: /images/pre3.png
+09 10 2026 15:08:18.204:WARN [web-server]: 404: /images/post3.png
+..09 10 2026 15:08:18.232:WARN [web-server]: 404: /images/pre3.png
+09 10 2026 15:08:18.233:WARN [web-server]: 404: /images/post3.png
+..09 10 2026 15:08:18.262:WARN [web-server]: 404: /images/pre1.png
+09 10 2026 15:08:18.262:WARN [web-server]: 404: /images/post1.png
+.09 10 2026 15:08:18.280:WARN [web-server]: 404: /images/pre3.png
+09 10 2026 15:08:18.281:WARN [web-server]: 404: /images/post3.png
+09 10 2026 15:08:18.281:WARN [web-server]: 404: /images/pre2.png
+09 10 2026 15:08:18.282:WARN [web-server]: 404: /images/post2.png
+..09 10 2026 15:08:18.326:WARN [web-server]: 404: /images/pre3.png
+09 10 2026 15:08:18.327:WARN [web-server]: 404: /images/post3.png
+..09 10 2026 15:08:18.353:WARN [web-server]: 404: /images/pre3.png
+09 10 2026 15:08:18.354:WARN [web-server]: 404: /images/post3.png
+.09 10 2026 15:08:18.364:WARN [web-server]: 404: /images/pre1.png
+09 10 2026 15:08:18.365:WARN [web-server]: 404: /images/post1.png
+.09 10 2026 15:08:18.377:WARN [web-server]: 404: /images/pre3.png
+09 10 2026 15:08:18.377:WARN [web-server]: 404: /images/post3.png
+.
+.09 10 2026 15:08:18.403:WARN [web-server]: 404: /images/pre3.png
+09 10 2026 15:08:18.404:WARN [web-server]: 404: /images/post3.png
+..09 10 2026 15:08:18.429:WARN [web-server]: 404: /images/pre3.png
+09 10 2026 15:08:18.430:WARN [web-server]: 404: /images/post3.png
+.09 10 2026 15:08:18.445:WARN [web-server]: 404: /images/pre1.png
+09 10 2026 15:08:18.446:WARN [web-server]: 404: /images/post1.png
+09 10 2026 15:08:18.447:WARN [web-server]: 404: /images/pre2.png
+09 10 2026 15:08:18.448:WARN [web-server]: 404: /images/post2.png
+..09 10 2026 15:08:18.520:WARN [web-server]: 404: /images/pre70.png
+09 10 2026 15:08:18.521:WARN [web-server]: 404: /images/post70.png
+09 10 2026 15:08:18.522:WARN [web-server]: 404: /images/pre1.png
+09 10 2026 15:08:18.522:WARN [web-server]: 404: /images/post1.png
+.09 10 2026 15:08:18.539:WARN [web-server]: 404: /images/pre3.png
+09 10 2026 15:08:18.539:WARN [web-server]: 404: /images/post3.png
+..09 10 2026 15:08:18.569:WARN [web-server]: 404: /images/pre3.png
+09 10 2026 15:08:18.570:WARN [web-server]: 404: /images/post3.png
+.09 10 2026 15:08:18.581:WARN [web-server]: 404: /images/pre1.png
+09 10 2026 15:08:18.582:WARN [web-server]: 404: /images/post1.png
+.09 10 2026 15:08:18.593:WARN [web-server]: 404: /images/pre3.png
+09 10 2026 15:08:18.594:WARN [web-server]: 404: /images/post3.png
+.09 10 2026 15:08:18.605:WARN [web-server]: 404: /images/pre1.png
+09 10 2026 15:08:18.606:WARN [web-server]: 404: /images/post1.png
+.09 10 2026 15:08:18.619:WARN [web-server]: 404: /images/pre3.png
+09 10 2026 15:08:18.619:WARN [web-server]: 404: /images/post3.png
+..09 10 2026 15:08:18.644:WARN [web-server]: 404: /images/pre3.png
+09 10 2026 15:08:18.645:WARN [web-server]: 404: /images/post3.png
+..09 10 2026 15:08:18.667:WARN [web-server]: 404: /images/pre3.png
+09 10 2026 15:08:18.668:WARN [web-server]: 404: /images/post3.png
+..09 10 2026 15:08:18.689:WARN [web-server]: 404: /images/pre3.png
+09 10 2026 15:08:18.690:WARN [web-server]: 404: /images/post3.png
+..09 10 2026 15:08:18.714:WARN [web-server]: 404: /images/pre3.png
+09 10 2026 15:08:18.714:WARN [web-server]: 404: /images/post3.png
+..09 10 2026 15:08:18.737:WARN [web-server]: 404: /images/pre3.png
+09 10 2026 15:08:18.737:WARN [web-server]: 404: /images/post3.png
+..09 10 2026 15:08:18.762:WARN [web-server]: 404: /images/pre3.png
+09 10 2026 15:08:18.762:WARN [web-server]: 404: /images/post3.png
+..09 10 2026 15:08:18.782:WARN [web-server]: 404: /images/pre3.png
+09 10 2026 15:08:18.783:WARN [web-server]: 404: /images/post3.png
+..09 10 2026 15:08:18.802:WARN [web-server]: 404: /images/pre3.png
+09 10 2026 15:08:18.803:WARN [web-server]: 404: /images/post3.png
+..09 10 2026 15:08:18.821:WARN [web-server]: 404: /images/pre3.png
+09 10 2026 15:08:18.822:WARN [web-server]: 404: /images/post3.png
+..09 10 2026 15:08:18.867:WARN [web-server]: 404: /images/pre30.png
+09 10 2026 15:08:18.868:WARN [web-server]: 404: /images/post30.png
+09 10 2026 15:08:18.868:WARN [web-server]: 404: /images/pre1.png
+09 10 2026 15:08:18.869:WARN [web-server]: 404: /images/post1.png
+.09 10 2026 15:08:18.924:WARN [web-server]: 404: /images/pre2.png
+09 10 2026 15:08:18.924:WARN [web-server]: 404: /images/post2.png
+.09 10 2026 15:08:18.949:WARN [web-server]: 404: /images/pre1.png
+09 10 2026 15:08:18.950:WARN [web-server]: 404: /images/post1.png
+09 10 2026 15:08:18.961:WARN [web-server]: 404: /images/pre2.png
+09 10 2026 15:08:18.961:WARN [web-server]: 404: /images/post2.png
+.09 10 2026 15:08:18.969:WARN [web-server]: 404: /images/pre1.png
+09 10 2026 15:08:18.969:WARN [web-server]: 404: /images/post1.png
+.09 10 2026 15:08:18.983:WARN [web-server]: 404: /images/pre3.png
+09 10 2026 15:08:18.984:WARN [web-server]: 404: /images/post3.png
+..09 10 2026 15:08:19.014:WARN [web-server]: 404: /images/pre3.png
+09 10 2026 15:08:19.014:WARN [web-server]: 404: /images/post3.png
+..
+Chrome Headless 150.0.0.0 (Linux 0.0.0): Executed 135 of 135 (8 FAILED) (2.692 secs / 2.239 secs)
+09 10 2026 15:08:19.035:WARN [web-server]: 404: /images/pre3.png
+09 10 2026 15:08:19.035:WARN [web-server]: 404: /images/post3.png

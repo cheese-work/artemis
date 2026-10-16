@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-.PHONY: help test test-integration test-device test-all host-dev host-flap install install-deps setup start ui restart stop status build-ui doctor clean precommit-install precommit lint format typecheck quality-ratchet
+.PHONY: help test test-integration test-device test-all host-dev host-flap install install-deps setup start ui restart stop status build-ui doctor clean precommit-install precommit lint format typecheck quality-ratchet preview-demo
 
 help: ## Show this help message
 	@echo 'Usage: make [target]'
@@ -34,6 +34,9 @@ stop: ## Stop running Artemis Web UI & server
 
 status: ## Display Artemis Web UI & server status
 	@uv run artemis status
+
+preview-demo: ## Start the device-free demo board (isolated preview, 20 fake devices)
+	@uv run python scripts/preview_demo.py
 
 build-ui: ## Build the Showcase UI Angular frontend
 	@echo "🎨 Building Showcase UI..."

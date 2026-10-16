@@ -1,13 +1,32 @@
 import { Injectable, inject, signal } from '@angular/core';
 import { HttpClient, HttpEvent, HttpParams } from '@angular/common/http';
 import { Observable } from 'rxjs';
-import { RunPage, RunSummary, SessionVideo } from '../core/models/run.model';
-import { StepItemData } from '../core/models/stream.model';
+import { ChatMessage, ChatSession, RunPage, RunSummary, SessionVideo } from '../core/models/run.model';
+import { SessionChecks, StepItemData } from '../core/models/stream.model';
 import { RunFilters, apiParams } from '../utils/run-filters.util';
 import { OwnerScopeService } from './owner-scope.service';
 
 @Injectable({ providedIn: 'root' })
 export class RunsService {
+  public chat(sessionId: string): Observable<ChatSession> {
+    return this.http.get<ChatSession>(`/api/chats/${encodeURIComponent(sessionId)}`);
+  }
+
+  public renameChat(sessionId: string, title: string): Observable<ChatSession> {
+    return this.http.patch<ChatSession>(`/api/chats/${encodeURIComponent(sessionId)}/title`, { title });
+  }
+
+  public sendChat(sessionId: string, content: string, clientId: string): Observable<ChatMessage> {
+    return this.http.post<ChatMessage>(`/api/chats/${encodeURIComponent(sessionId)}/messages`, { content, client_id: clientId });
+  }
+
+  public sendInput(sessionId: string, requestId: string, value: string): Observable<{ accepted: boolean }> {
+    return this.http.post<{ accepted: boolean }>(`/api/chats/${encodeURIComponent(sessionId)}/input/${encodeURIComponent(requestId)}`, { value });
+  }
+
+  public controlChat(sessionId: string, action: 'pause' | 'continue', clientId: string): Observable<ChatMessage> {
+    return this.http.post<ChatMessage>(`/api/chats/${encodeURIComponent(sessionId)}/${action}`, { client_id: clientId });
+  }
   private readonly http = inject(HttpClient);
   private readonly ownerScope = inject(OwnerScopeService);
 
@@ -34,6 +53,14 @@ export class RunsService {
 
   public steps(sessionId: string): Observable<StepItemData[]> {
     return this.http.get<StepItemData[]>(`/api/sessions/${encodeURIComponent(sessionId)}/steps`);
+  }
+
+  public checks(sessionId: string): Observable<SessionChecks> {
+    return this.http.get<SessionChecks>(`/api/sessions/${encodeURIComponent(sessionId)}/checks`);
+  }
+
+  public notes(sessionId: string): Observable<{ notes: Record<string, string> }> {
+    return this.http.get<{ notes: Record<string, string> }>(`/api/sessions/${encodeURIComponent(sessionId)}/notes`);
   }
 
   public video(sessionId: string): Observable<SessionVideo> {
