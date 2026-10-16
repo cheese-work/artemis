@@ -223,11 +223,14 @@ def _known_ledger_row(ledger_rows):
 
 
 def _failed_items(outcome):
-    tests = outcome.get("tests")
-    tests = tests if isinstance(tests, dict) else {}
-    failed = tests.get("failed_items") or outcome.get("failed_items") or []
-    if isinstance(failed, list) and failed:
-        return [item for item in failed if isinstance(item, dict)]
+    if "tests" in outcome:
+        tests = outcome.get("tests")
+        if not isinstance(tests, dict):
+            return []
+        failed = tests.get("failed_items")
+        return (
+            [item for item in failed if isinstance(item, dict)] if isinstance(failed, list) else []
+        )
     check_items = outcome.get("checker_items") or []
     failed_statuses = {"failed", "fail", "assertion_failed"}
     if not isinstance(check_items, list):
@@ -263,16 +266,14 @@ def _derive_pro(outcome):
     )
     if assert_item is not None:
         evidence_ref = _pro_evidence(assert_item)
-        if evidence_ref:
-            return _entry(
-                "fail.app_defect",
-                "fail",
-                "app_defect",
-                "verified",
-                "checker",
-                evidence_ref=evidence_ref,
-            )
-        return _unknown("checker")
+        return _entry(
+            "fail.app_defect",
+            "fail",
+            "app_defect",
+            "verified",
+            "checker",
+            evidence_ref=evidence_ref,
+        )
     if any(
         isinstance(item.get("kind"), str) and item["kind"] in {"verify", "check"} for item in items
     ):
@@ -304,7 +305,6 @@ def derive_result(execution_status, outcome, ledger_rows):
         category = (
             {
                 "goal_unreachable": "user_prompt",
-                "blocked_by_environment": "smartqa_infra",
                 "app_defect": "app_defect",
             }.get(cause)
             if isinstance(cause, str)
@@ -338,8 +338,6 @@ def derive_result(execution_status, outcome, ledger_rows):
             return _unknown("outcome")
         if cause == "goal_unreachable":
             return _blocked_for_category("user_prompt", None, "outcome")
-        if cause == "blocked_by_environment":
-            return _blocked_for_category("smartqa_infra", None, "outcome")
         return _unknown("outcome")
     if task_status == "completed":
         if evidence_ref:
@@ -402,7 +400,7 @@ def record_result(db_path, turn_id, result, *, label_state, source, now=None):
                 connection.commit()
                 return latest
             if category == "unknown" and not (
-                latest["label_state"] == "pending" and label_state == "final"
+                latest["label_state"] == "pending" and label_state != "pending"
             ):
                 connection.commit()
                 return latest
@@ -442,13 +440,26 @@ def _ledger_rows(db_path, turn_id):
 def _end_time(db_path, turn_id):
     try:
         with db_session(db_path) as connection:
-            row = connection.execute(
-                "SELECT coalesce(s.end_time, o.created_at) AS ended_at "
-                "FROM sessions s LEFT JOIN lifecycle_outbox o ON o.session_id=s.session_id "
-                "WHERE s.session_id=? ORDER BY o.created_at DESC LIMIT 1",
-                (turn_id,),
-            ).fetchone()
-        return row["ended_at"] if row else None
+            try:
+                row = connection.execute(
+                    "SELECT coalesce(s.end_time, o.created_at) AS ended_at "
+                    "FROM sessions s LEFT JOIN lifecycle_outbox o ON o.session_id=s.session_id "
+                    "WHERE s.session_id=? ORDER BY o.created_at DESC LIMIT 1",
+                    (turn_id,),
+                ).fetchone()
+            except sqlite3.Error:
+                row = None
+            if row and row["ended_at"] is not None:
+                return row["ended_at"]
+            try:
+                pending = connection.execute(
+                    "SELECT created_at FROM qa_results "
+                    "WHERE turn_id=? AND label_state='pending' ORDER BY version DESC LIMIT 1",
+                    (turn_id,),
+                ).fetchone()
+            except sqlite3.Error:
+                return None
+        return pending["created_at"] if pending else None
     except sqlite3.Error:
         return None
 
@@ -559,9 +570,15 @@ def result_for_turn(
         result["evidence"] = {"turn_id": turn_id, "step": None, "screenshot_url": None}
         state = "pending"
     elif outcome is None and not _unknown_ledger_exists(ledger_rows):
-        result = _unknown("legacy", reason="Run cũ — chưa có verdict")
+        ended_at = _end_time(db_path, turn_id)
+        expired = ended_at is not None and current_time - float(ended_at) >= _pending_cap()
+        result = (
+            _unknown("legacy", reason="Run cũ — chưa có verdict")
+            if expired
+            else _unknown("pending")
+        )
         result["evidence"] = {"turn_id": turn_id, "step": None, "screenshot_url": None}
-        state = "legacy"
+        state = "legacy" if expired else "pending"
     elif result.get("category") == "unknown":
         ended_at = _end_time(db_path, turn_id)
         state = (
