@@ -1,5 +1,6 @@
 import importlib
 import importlib.util
+import json
 import sqlite3
 
 import pytest
@@ -246,3 +247,148 @@ def test_expired_auth_is_a_smartqa_infrastructure_result():
 
     assert result["category"] == "smartqa_infra"
     assert result["reason"] == "Phiên đăng nhập SmartQA đã hết hạn"
+
+
+@pytest.mark.parametrize(
+    "terminal_state,terminal_key",
+    [
+        ("final", "blocked.unknown"),
+        ("cancelled", "blocked.cancelled"),
+        ("legacy", "blocked.unknown"),
+    ],
+)
+def test_pending_unknown_can_transition_to_any_terminal_unknown_state(
+    tmp_path, terminal_state, terminal_key
+):
+    service = _service()
+    database = tmp_path / "qa-results.db"
+    unknown = {"catalog_key": "blocked.unknown", "verdict": "blocked", "category": "unknown"}
+    terminal = {**unknown, "catalog_key": terminal_key}
+
+    pending = service.record_result(
+        database, "turn-terminal", unknown, label_state="pending", source="pending", now=1
+    )
+    result = service.record_result(
+        database,
+        "turn-terminal",
+        terminal,
+        label_state=terminal_state,
+        source=terminal_state,
+        now=2,
+    )
+
+    assert pending["version"] == 1
+    assert result["version"] == 2
+    assert result["label_state"] == terminal_state
+    assert result["result"]["catalog_key"] == terminal_key
+
+
+@pytest.mark.parametrize("execution_status", ["failed", "completed"])
+def test_flash_environment_cause_without_ledger_rule_stays_unknown(execution_status):
+    result = _service().derive_result(
+        execution_status,
+        {"task_status": "failed", "cause": "blocked_by_environment"},
+        [],
+    )
+
+    assert result["verdict"] == "blocked"
+    assert result["category"] == "unknown"
+    assert result["catalog_key"] == "blocked.unknown"
+
+
+@pytest.mark.parametrize(
+    "checker_item",
+    [
+        {"kind": "verify", "status": "failed"},
+        {"kind": "assert", "status": "failed"},
+    ],
+)
+def test_pro_uses_reconciled_failed_items_instead_of_stale_checker_items(checker_item):
+    result = _service().derive_result(
+        "completed",
+        {
+            "task_status": "completed",
+            "tests": {
+                "passed": 1,
+                "failed": 0,
+                "inconclusive": 0,
+                "unchecked": 0,
+                "failed_items": [],
+            },
+            "checker_items": [checker_item],
+        },
+        [],
+    )
+
+    assert result["verdict"] == "pass"
+    assert result["catalog_key"] == "pass.verified"
+
+
+def test_pro_assert_failure_without_anchor_remains_a_failure():
+    result = _service().derive_result(
+        "completed",
+        {
+            "task_status": "completed",
+            "tests": {
+                "passed": 0,
+                "failed": 1,
+                "inconclusive": 0,
+                "unchecked": 0,
+                "failed_items": [{"kind": "assert", "anchor_step_id": None}],
+            },
+        },
+        [],
+    )
+
+    assert result["verdict"] == "fail"
+    assert result["category"] == "app_defect"
+    assert "_evidence_ref" not in result
+
+
+def test_recent_run_without_outcome_or_ledger_stays_pending_until_legacy_cutoff(
+    tmp_path, monkeypatch
+):
+    service = _service()
+    database = tmp_path / "sessions.db"
+    traces = tmp_path / "traces"
+    traces.mkdir()
+    monkeypatch.setenv("ARTEMIS_VERDICT_PENDING_CAP_SECONDS", "30")
+    with sqlite3.connect(database) as connection:
+        connection.executescript(
+            "CREATE TABLE sessions (session_id TEXT PRIMARY KEY, end_time REAL);"
+            "CREATE TABLE lifecycle_outbox (session_id TEXT, created_at REAL);"
+        )
+        connection.execute("INSERT INTO sessions VALUES (?, ?)", ("turn-recent", 95))
+
+    pending = service.result_for_turn(
+        database, traces, "turn-recent", "failed", 1, 1, now=100
+    )
+    legacy = service.result_for_turn(database, traces, "turn-recent", "failed", 1, 1, now=126)
+
+    assert pending["label_state"] == "pending"
+    assert legacy["label_state"] == "legacy"
+
+
+def test_pending_without_session_or_outbox_expires_from_pending_created_at(
+    tmp_path, monkeypatch
+):
+    service = _service()
+    database = tmp_path / "sessions.db"
+    traces = tmp_path / "traces"
+    outcome_dir = traces / "turn-no-session"
+    outcome_dir.mkdir(parents=True)
+    (outcome_dir / "run_outcome.json").write_text(
+        json.dumps({"task_status": "failed"}), encoding="utf-8"
+    )
+    monkeypatch.setenv("ARTEMIS_VERDICT_PENDING_CAP_SECONDS", "30")
+
+    pending = service.result_for_turn(
+        database, traces, "turn-no-session", "failed", 1, 1, now=100
+    )
+    final = service.result_for_turn(
+        database, traces, "turn-no-session", "failed", 1, 1, now=131
+    )
+
+    assert pending["label_state"] == "pending"
+    assert final["label_state"] == "final"
+    assert final["result"]["category"] == "unknown"
