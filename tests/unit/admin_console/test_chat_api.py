@@ -365,3 +365,46 @@ async def test_unknown_result_finalizes_after_pending_cap(qa, library, monkeypat
             "SELECT label_state FROM qa_results WHERE turn_id=? ORDER BY version", (turn_id,)
         ).fetchall()
     assert versions == [("pending",), ("final",)]
+
+
+@pytest.mark.asyncio
+async def test_mismatched_evidence_step_id_does_not_fall_back_to_step_number(
+    qa, library, monkeypatch
+):
+    import json
+
+    from tests.support.smartqa_verdict_fixtures import build_smartqa_verdict_case
+
+    case = build_smartqa_verdict_case(
+        library,
+        monkeypatch,
+        status="failed",
+        screenshot_name="qa-verdict-mismatched-proof",
+    )
+    turn_id = case.turn_ids[-1]
+    library.write(
+        turn_id,
+        "run_outcome.json",
+        json.dumps(
+            {
+                "task_status": "failed",
+                "cause": "app_defect",
+                "evidence_ref": {
+                    "step_id": "not-the-recorded-step",
+                    "step_number": 1,
+                    "image_name": case.evidence_image_name,
+                    "which": "post",
+                },
+            }
+        ),
+    )
+
+    response = await qa.get(f"/api/chats/{case.chat_id}")
+
+    result = response.json()["results"][-1]
+    assert result["catalog_key"] == "blocked.unknown"
+    assert result["evidence"] == {
+        "turn_id": turn_id,
+        "step": None,
+        "screenshot_url": None,
+    }

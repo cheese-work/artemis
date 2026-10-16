@@ -8,7 +8,7 @@ from artemis.data_engine.chat_sessions import ChatStore
 from artemis.runtime.lifecycle import ensure_lifecycle_schema
 from apps.admin_console.routers import chats, media
 from apps.admin_console.services import failure_ledger, media_service, run_media
-from apps.admin_console.database.repositories import session_repository
+from apps.admin_console.database.repositories import session_repository, step_repository
 
 
 @dataclass(frozen=True)
@@ -36,6 +36,7 @@ def build_smartqa_verdict_case(
     monkeypatch.setattr(media_service, "TRACES_PATH", library.traces)
     monkeypatch.setattr(run_media, "library_paths", lambda: (library.db, library.traces))
     monkeypatch.setattr(session_repository.session_repo, "db_path", library.db)
+    monkeypatch.setattr(step_repository.step_repo, "db_path", library.db)
 
     chat_id = library.seed(status="completed" if follow_up else status)
     store = ChatStore(library.db)

@@ -186,3 +186,63 @@ def test_final_unknown_can_be_upgraded_only_once(tmp_path):
 
     assert upgraded["version"] == frozen["version"] == 2
     assert frozen["result"]["category"] == "qa_environment"
+
+
+@pytest.mark.parametrize(
+    "execution_status,outcome,ledger_rows",
+    [
+        ("interrupted", {"cause": []}, []),
+        ("completed", {"task_status": "completed", "evidence_ref": {"which": []}}, []),
+        ("interrupted", None, [{"category": []}]),
+        ("completed", {"task_status": "completed", "checker_items": [{"kind": []}]}, []),
+    ],
+)
+def test_malformed_verdict_values_fall_back_to_blocked_unknown(
+    execution_status, outcome, ledger_rows
+):
+    result = _service().derive_result(execution_status, outcome, ledger_rows)
+
+    assert result["verdict"] == "blocked"
+    assert result["category"] == "unknown"
+
+
+def test_latest_run_step_ledger_row_wins_timestamp_tie_over_stuck_signal():
+    result = _service().derive_result(
+        "interrupted",
+        {"cause": "goal_unreachable"},
+        [
+            {
+                "category": "provider",
+                "rule": "provider_timeout",
+                "signal": "stuck_run",
+                "classified_at": 1,
+            },
+            {
+                "category": "qa_environment",
+                "rule": "device_locked",
+                "signal": "run_step",
+                "classified_at": 1,
+            },
+        ],
+    )
+
+    assert result["category"] == "qa_environment"
+    assert result["reason"] == "Điện thoại đang khoá"
+
+
+def test_expired_auth_is_a_smartqa_infrastructure_result():
+    result = _service().derive_result(
+        "interrupted",
+        None,
+        [
+            {
+                "category": "smartqa_infra",
+                "rule": "auth_expired",
+                "signal": "run_step",
+                "classified_at": 1,
+            }
+        ],
+    )
+
+    assert result["category"] == "smartqa_infra"
+    assert result["reason"] == "Phiên đăng nhập SmartQA đã hết hạn"
