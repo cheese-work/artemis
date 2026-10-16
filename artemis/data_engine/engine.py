@@ -1137,6 +1137,11 @@ class DataEngine:
             has_pending_threads = any(thread.is_alive() for thread in self._pending_threads)
         return len(self._pending_tasks) > 0 or has_pending_threads
 
+    async def wait_for_pending_operations(self):
+        """Wait for background storage operations scheduled on the active event loop."""
+        while self._pending_tasks:
+            await asyncio.gather(*tuple(self._pending_tasks), return_exceptions=True)
+
     async def shutdown(self):
         """Wait for all pending background tasks and threads to complete."""
         if self._pending_tasks:
