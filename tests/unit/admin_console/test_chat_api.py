@@ -333,3 +333,35 @@ async def test_chat_adds_per_turn_results_without_changing_legacy_verdict(
     assert "qa@example.com" not in shared_turn.text
     evidence = await qa2.get(shared_result["evidence"]["screenshot_url"])
     assert evidence.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_unknown_result_finalizes_after_pending_cap(qa, library, monkeypatch):
+    import json
+    import sqlite3
+    import time
+
+    from tests.support.smartqa_verdict_fixtures import build_smartqa_verdict_case
+
+    case = build_smartqa_verdict_case(library, monkeypatch, status="failed")
+    turn_id = case.turn_ids[-1]
+    library.write(turn_id, "run_outcome.json", json.dumps({"task_status": "failed"}))
+
+    pending = await qa.get(f"/api/chats/{case.chat_id}")
+    assert pending.status_code == 200
+    assert pending.json()["results"][-1]["label_state"] == "pending"
+
+    with sqlite3.connect(library.db) as connection:
+        connection.execute(
+            "UPDATE sessions SET end_time=? WHERE session_id=?", (time.time() - 31, turn_id)
+        )
+
+    final = await qa.get(f"/api/chats/{case.chat_id}")
+    result = final.json()["results"][-1]
+    assert result["label_state"] == "final"
+    assert result["catalog_key"] == "blocked.unknown"
+    with sqlite3.connect(library.db) as connection:
+        versions = connection.execute(
+            "SELECT label_state FROM qa_results WHERE turn_id=? ORDER BY version", (turn_id,)
+        ).fetchall()
+    assert versions == [("pending",), ("final",)]
