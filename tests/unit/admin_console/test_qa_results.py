@@ -357,31 +357,21 @@ def test_recent_run_without_outcome_or_ledger_stays_pending_until_legacy_cutoff(
     with sqlite3.connect(library.db) as connection:
         connection.execute("UPDATE sessions SET end_time=? WHERE session_id=?", (95, turn_id))
 
-    pending = service.result_for_turn(
-        library.db, library.traces, turn_id, "failed", 1, 1, now=100
-    )
-    legacy = service.result_for_turn(
-        library.db, library.traces, turn_id, "failed", 1, 1, now=126
-    )
+    pending = service.result_for_turn(library.db, library.traces, turn_id, "failed", 1, 1, now=100)
+    legacy = service.result_for_turn(library.db, library.traces, turn_id, "failed", 1, 1, now=126)
 
     assert pending["label_state"] == "pending"
     assert legacy["label_state"] == "legacy"
 
 
-def test_pending_without_session_or_outbox_expires_from_pending_created_at(
-    library, monkeypatch
-):
+def test_pending_without_session_or_outbox_expires_from_pending_created_at(library, monkeypatch):
     service = _service()
     turn_id = "turn-no-session"
     library.write(turn_id, "run_outcome.json", json.dumps({"task_status": "failed"}))
     monkeypatch.setenv("ARTEMIS_VERDICT_PENDING_CAP_SECONDS", "30")
 
-    pending = service.result_for_turn(
-        library.db, library.traces, turn_id, "failed", 1, 1, now=100
-    )
-    final = service.result_for_turn(
-        library.db, library.traces, turn_id, "failed", 1, 1, now=131
-    )
+    pending = service.result_for_turn(library.db, library.traces, turn_id, "failed", 1, 1, now=100)
+    final = service.result_for_turn(library.db, library.traces, turn_id, "failed", 1, 1, now=131)
 
     assert pending["label_state"] == "pending"
     assert final["label_state"] == "final"
