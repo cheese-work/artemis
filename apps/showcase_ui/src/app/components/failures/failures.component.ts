@@ -9,6 +9,8 @@ export const CATEGORY_LABELS: Record<FailureCategory, string> = {
   smartqa_agent: 'SmartQA · agent',
   provider: 'Model provider',
   user_prompt: 'Prompt',
+  qa_environment: 'QA environment',
+  app_defect: 'App under test',
   unknown: 'Unknown'
 };
 

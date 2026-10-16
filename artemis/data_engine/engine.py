@@ -683,6 +683,7 @@ class DataEngine:
         self,
         status: str = "completed",
         interrupt_reason: InterruptReason | str | None = None,
+        error: str | None = None,
     ):
         """End the current session through the lifecycle authority.
 
@@ -697,7 +698,7 @@ class DataEngine:
         session_id = self.current_session_id
         try:
             outcome = LifecycleAuthority(self.storage.db_path).finish(
-                str(session_id), status, reason=interrupt_reason
+                str(session_id), status, reason=interrupt_reason, error=error
             )
         except (OSError, ValueError, sqlite3.Error) as e:
             logger.error(f"Failed to end session in DataEngine: {e}")

@@ -683,15 +683,16 @@ class Agent(AgentBase):
         )
 
     @staticmethod
-    def _end_session_for_report(data_engine, report: dict) -> None:
+    def _end_session_for_report(data_engine, report: dict, *, error: str | None = None) -> None:
         """End the session for a runner report that did not complete the task."""
         if report.get("status") == "interrupted":
             data_engine.end_session(
                 "interrupted",
                 interrupt_reason=report.get("interrupt_reason") or InterruptReason.DEVICE_OFFLINE,
+                **({"error": error} if error is not None else {}),
             )
         else:
-            data_engine.end_session("failed")
+            data_engine.end_session("failed", **({"error": error} if error is not None else {}))
 
     async def _finalize_tracing_safely(self, task: Task, context: ArtemisContext):
         """Finalize optional trace artifacts without changing task semantics."""

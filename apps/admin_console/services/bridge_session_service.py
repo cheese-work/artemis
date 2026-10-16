@@ -264,7 +264,9 @@ class BridgeSessionService:
             reconnect_task.cancel()
         from apps.admin_console.services.task_queue_service import TaskQueueService
 
-        TaskQueueService.interrupt_bridge_binding(session.session_id)
+        TaskQueueService.interrupt_bridge_binding(
+            session.session_id, client_close=session.client_close
+        )
         logger.info(
             "event=bridge_close session_id=%s serial=%s reason=%s close_code=%s close_reason=%s "
             "client_close=%s bytes_browser_to_device=%d bytes_device_to_browser=%d duration_ms=%d",
