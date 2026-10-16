@@ -270,3 +270,66 @@ async def test_invalid_input_never_echoes_values_in_validation_errors(qa, chat, 
     assert response.status_code == 400
     assert response.json()["code"] == "input_value_invalid"
     assert "VALIDATION-SECRET-1902" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_chat_adds_per_turn_results_without_changing_legacy_verdict(
+    qa, qa2, library, monkeypatch
+):
+    import json
+
+    from tests.support.smartqa_verdict_fixtures import build_smartqa_verdict_case
+
+    case = build_smartqa_verdict_case(
+        library,
+        monkeypatch,
+        follow_up=True,
+        screenshot_name="qa-verdict-proof",
+    )
+    latest_turn = case.turn_ids[-1]
+    library.write(
+        latest_turn,
+        "run_outcome.json",
+        json.dumps(
+            {
+                "task_status": "failed",
+                "cause": "app_defect",
+                "evidence_step": 1,
+                "evidence_ref": {
+                    "step_id": case.evidence_step_id,
+                    "step_number": 1,
+                    "image_name": case.evidence_image_name,
+                    "which": "post",
+                },
+                "action": {"href": "javascript:alert(1)"},
+            }
+        ),
+    )
+
+    owner_response = await qa.get(f"/api/chats/{case.chat_id}")
+    assert owner_response.status_code == 200
+    owner = owner_response.json()
+    legacy_verdict = owner["verdict"]
+    assert {"status", "outcome", "report", "details", "tip"} <= legacy_verdict.keys()
+    result = legacy_verdict["result"]
+    assert result == owner["results"][-1]
+    assert result["catalog_key"] == "fail.app_defect"
+    assert result["evidence"] == {
+        "turn_id": latest_turn,
+        "step": 1,
+        "screenshot_url": f"/api/images/{case.evidence_image_name}.jpg",
+    }
+    assert result["action"].get("href") != "javascript:alert(1)"
+    assert result["responsible"] == "App đang test (agent nhận định)"
+    assert "owner" not in result
+    assert result["turn_index"] == 2
+    assert result["turn_count"] == 2
+
+    shared_root = await qa2.get(f"/api/chats/{case.chat_id}")
+    shared_turn = await qa2.get(f"/api/chats/{latest_turn}")
+    assert shared_root.status_code == shared_turn.status_code == 200
+    assert "qa@example.com" not in shared_root.text
+    shared_result = shared_turn.json()["verdict"]["result"]
+    assert "qa@example.com" not in shared_turn.text
+    evidence = await qa2.get(shared_result["evidence"]["screenshot_url"])
+    assert evidence.status_code == 200
