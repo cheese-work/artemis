@@ -52,9 +52,7 @@ def test_packet_restores_config_and_offline_route_preflight_contract():
     candidate = json.loads(CANDIDATE_PATH.read_text(encoding="utf-8"))
     preflight = candidate["execution_preflight"]
 
-    assert preflight["configuration"]["attachment_id"] == (
-        "01a0f55e-b007-725c-9253-4a07a907c5c3"
-    )
+    assert preflight["configuration"]["attachment_id"] == ("01a0f55e-b007-725c-9253-4a07a907c5c3")
     assert preflight["configuration"]["sha256"] == (
         "2c06c1661b4f6cb65cadfa3b2141fa3f6ee7e0d5c399f43aee8bc481a7781274"
     )
@@ -125,13 +123,11 @@ def test_packet_preserves_pilot_oracles_and_unified_runner_revision():
     assert candidate["page_value_contract"]["source"] == (
         "observed same-attempt Settings > Battery page"
     )
-    assert candidate["qualification_revision_contract"]["runner_commit"] == (
-        candidate["runner_source"]["commit_sha"]
-    )
     assert (
-        candidate["qualification_revision_contract"]["support_revision_requires_full_set"]
-        is True
+        candidate["qualification_revision_contract"]["runner_commit"]
+        == (candidate["runner_source"]["commit_sha"])
     )
+    assert candidate["qualification_revision_contract"]["support_revision_requires_full_set"] is True
     assert candidate["qualification_revision_contract"]["mixed_runner_revisions_qualify"] is False
     arms = {arm["id"]: arm for arm in candidate["qualification_arms"]}
     negative = arms["negative_control"]
