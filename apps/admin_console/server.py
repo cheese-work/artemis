@@ -103,6 +103,7 @@ from artemis.config import (
 from artemis.resources import get_bundled_showcase_dist
 from artemis.runtime.lifecycle import InterruptReason
 from apps.admin_console.services import failure_ledger, run_retention
+from apps.admin_console.services import device_reconciler
 from apps.admin_console.services.device_identity import device_identity
 from apps.admin_console.services.host_registry import host_agent_enabled, host_registry
 from apps.admin_console.services.host_tunnel import host_tunnels
@@ -346,6 +347,11 @@ async def on_startup():
     state.retention_task.add_done_callback(run_retention.log_task_failure)
     state.failure_task = asyncio.create_task(failure_ledger.sweep_forever())
     state.failure_task.add_done_callback(run_retention.log_task_failure)
+    # Expires silent hosts and connections to Unknown (CHE-1477).
+    state.reconciler_task = asyncio.create_task(
+        device_reconciler.tick_forever(host_registry.db_path)
+    )
+    state.reconciler_task.add_done_callback(run_retention.log_task_failure)
 
 
 async def on_shutdown():
@@ -383,6 +389,11 @@ async def on_shutdown():
         failure_sweep.cancel()
         await asyncio.gather(failure_sweep, return_exceptions=True)
     state.failure_task = None
+    reconciler_tick = state.reconciler_task
+    if reconciler_tick is not None and not reconciler_tick.done():
+        reconciler_tick.cancel()
+        await asyncio.gather(reconciler_tick, return_exceptions=True)
+    state.reconciler_task = None
 
     # Cancel in-flight run coroutines and wait for their finalizers (DB status,
     # session_ended broadcast, trace sync, recording recovery) to run.
