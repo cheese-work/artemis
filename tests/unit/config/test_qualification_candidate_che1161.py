@@ -12,9 +12,7 @@ def test_candidate_pins_reviewable_x99_qualification_arms_and_blocked_control():
     candidate = json.loads(CANDIDATE_PATH.read_text(encoding="utf-8"))
 
     assert candidate["issue"] == "CHE-1161"
-    assert candidate["runner_source"]["commit_sha"] == (
-        "cbf2fea84cbd47ea54053239679ab521b01d4d23"
-    )
+    assert candidate["runner_source"]["commit_sha"] == "cbf2fea84cbd47ea54053239679ab521b01d4d23"
     assert candidate["baseline_pilot"]["published_head"] == (
         "e0258131c9e52553169368b8b1e1b284de74df99"
     )
