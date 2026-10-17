@@ -1,0 +1,139 @@
+{
+  "receipt_version": 1,
+  "issue": "CHE-1161",
+  "candidate_id": "che1161-x99-api35-medium-phone-v1",
+  "candidate_kind": "device_class_qualification",
+  "runner_source": {
+    "repository": "https://github.com/cheese-work/artemis",
+    "commit_sha": "cbf2fea84cbd47ea54053239679ab521b01d4d23"
+  },
+  "testcase_source": {
+    "repository": "https://github.com/cheese-work/artemis",
+    "path": "qualification/journeys/che1161_x99_api35.v1.md",
+    "digest_sha256": "fd0a76df9417aa2f6295b782156e9ad2c0038cf59b60a7fa8e4ad4ed4e04ad99"
+  },
+  "baseline_pilot": {
+    "issue": "CHE-948",
+    "published_pr": 36,
+    "published_head": "e0258131c9e52553169368b8b1e1b284de74df99",
+    "merge_commit": "8f6096ffbadd9b121049e095b246bcaf0be8999b",
+    "testcase_path": "qualification/journeys/che656_flash_ac4_pilot.md",
+    "testcase_digest_sha256": "b01d8b8f2f4460dc7b8ed1231bf16ed445104673ad33bd2b39042d1a8c419176",
+    "receipt_path": "qualification/candidates/che656_flash_ac4.v1.json",
+    "receipt_digest_sha256": "1dea299eba7fd37f43937871b09ff02b3323009e4b85ebc38c67a79c2961506f",
+    "config_attachment_id": "01a0f55e-b007-725c-9253-4a07a907c5c3",
+    "config_digest_sha256": "2c06c1661b4f6cb65cadfa3b2141fa3f6ee7e0d5c399f43aee8bc481a7781274",
+    "offline_route_comment_id": "01a0f566-9757-7dc7-8ce3-8dab64e6ff77",
+    "offline_route_helper_attachment_id": "01a0f55e-b0df-72a5-a0be-36f0e3e3bca8",
+    "offline_route_helper_digest_sha256": "3d963ad481f894f9955b10a46f88b5c0d8b265836c2a0758875e1d91f62b922a",
+    "published_head_acceptances": [
+      {
+        "reviewer_agent_id": "5cd75ce5-d323-4004-9779-7e2ccf16bde4",
+        "comment_id": "01a0f79f-aad5-7512-9737-37d7f4b37e80",
+        "verdict": "agent_accepted"
+      },
+      {
+        "reviewer_agent_id": "2e486c8c-88fb-4daf-829e-e96be9c645b3",
+        "comment_id": "01a0f79f-1eb8-7655-b425-900e8dd42e42",
+        "verdict": "agent_accepted"
+      }
+    ],
+    "pilot_attempt_count": 1,
+    "pilot_retry_count": 0,
+    "reuse_limit": "Reviewed source input only; it does not complete the class-qualification run set or satisfy new-revision reviews."
+  },
+  "target_class": {
+    "id": "x99_api35_medium_phone",
+    "image_family": "Google APIs",
+    "api_level": 35,
+    "abi": "x86_64",
+    "serial_source": "A fresh exclusive Sol admission",
+    "historical_serial_is_reservation": false,
+    "application": "system Settings",
+    "app_build_lineage": "not_applicable"
+  },
+  "qualification_arms": [
+    {
+      "id": "clean_pass",
+      "attempt_kind": "positive",
+      "attempt_count": 1,
+      "retry_count": 0,
+      "expected_verdict": "pass",
+      "assertion": "The task result matches the current-charge percentage shown on same-attempt Settings > Battery evidence.",
+      "identity": "Use the pinned runner, this candidate and testcase digest, the exact baseline config, and fresh distinct UUIDv4 session/run IDs."
+    },
+    {
+      "id": "clean_rerun",
+      "attempt_kind": "positive",
+      "attempt_count": 1,
+      "retry_count": 0,
+      "precondition": "The clean_pass completed successfully and its cleanup/release was verified.",
+      "expected_verdict": "pass",
+      "assertion": "Repeat the same goal and inputs in a separate invocation; the task result matches same-attempt Settings > Battery evidence.",
+      "identity": "Generate new distinct UUIDv4 session/run IDs; do not reuse the clean_pass IDs."
+    },
+    {
+      "id": "negative_control",
+      "attempt_kind": "negative_control",
+      "attempt_count": 1,
+      "retry_count": 0,
+      "assertion": "Compare the same-attempt Settings > Battery current-charge percentage with the deliberately false expected value 101%.",
+      "expected_verdict": "fail_assertion",
+      "expected_process_exit": "nonzero",
+      "execution_status": "BLOCKED_SOURCE_GAP",
+      "missing_path": "qualification/tools/checker_verdict_exit.py",
+      "missing_path_at_runner_commit": "cbf2fea84cbd47ea54053239679ab521b01d4d23",
+      "current_repository_helper_compatible": false,
+      "executable_command": null,
+      "source_gap": "The pinned runner tree lacks the checker adapter. The current repository helper is the CHE-844 Pocket save/relaunch adapter and requires incompatible package, saved-step, balance, and DataEngine evidence."
+    }
+  ],
+  "evidence_contract": {
+    "per_attempt": [
+      "Pinned runner SHA and exact candidate/testcase/config identities",
+      "Target class, host, exact fresh-admission serial, image family, API level, and ABI",
+      "Fresh distinct session and run UUIDs, task result, and process exit status",
+      "Attempt manifest and same-attempt native llm_usage records",
+      "Attempt and batch reconciliation outputs for positive attempts",
+      "Privacy-safe same-attempt Settings > Battery screenshot or hierarchy with current-charge percentage",
+      "Available run artifacts, timestamps, and verified cleanup/release evidence"
+    ],
+    "positive_reconciliation": "Both reconciliation outputs accept exactly one attempt; manifest node operator matches FlashRunner usage from the same attempt.",
+    "failure_classification": [
+      "fail_assertion",
+      "fail_infrastructure",
+      "device_unavailable"
+    ],
+    "secret_values_recorded": false
+  },
+  "cleanup_contract": {
+    "preserve_available_evidence_before_cleanup": true,
+    "stop_only_recorded_run_owned_artemis_emulator_and_private_adb_processes": true,
+    "restore_settings_changed_by_run": true,
+    "verify_process_and_endpoint_release": true,
+    "return_evidence_to": "x99-codex-sol",
+    "unverified_cleanup_disposition": "leave_target_unavailable_with_named_recovery_owner"
+  },
+  "review_requirement": {
+    "independent_non_author_decisions": 2,
+    "same_revision": true,
+    "required_verdict": "agent_accepted",
+    "selected_by": "x99-codex-sol",
+    "selection_timing": "after immutable candidate publication",
+    "must_precede_execution": true
+  },
+  "current_gates": {
+    "device_admission": "NOT-ISSUED",
+    "old_grants": "CLOSED",
+    "boot": "NOT-RUN",
+    "qualification": "NOT-RUN/INCOMPLETE",
+    "offline_runner": "OPEN; existing recovery owner unchanged",
+    "gateway_readiness": "OPEN; existing recovery owner unchanged",
+    "fresh_device_readiness": "NOT-VERIFIED",
+    "direct_luna_host_pid_namespace": "NOT-PASS",
+    "host_package_install": "NOT-AUTHORIZED",
+    "source_qualification_execution": "NOT-RUN"
+  },
+  "qualification_ready": false,
+  "execution_status": "NOT-RUN"
+}
