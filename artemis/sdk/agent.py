@@ -178,6 +178,7 @@ class Agent(AgentBase):
         device_serial: str | None = None,
         retry_count: int = 5,
         retry_wait_seconds: int = 5,
+        prewarm_llm: bool = True,
     ):
         target_dev = device_serial or device_id
         if target_dev:
@@ -189,6 +190,7 @@ class Agent(AgentBase):
             api_key=api_key,
             retry_count=retry_count,
             retry_wait_seconds=retry_wait_seconds,
+            prewarm_llm=prewarm_llm,
         )
 
     async def _init_internal(
@@ -196,6 +198,7 @@ class Agent(AgentBase):
         api_key: str | None = None,
         retry_count: int = 5,
         retry_wait_seconds: int = 5,
+        prewarm_llm: bool = True,
     ):
 
         if os.environ.get("ARTEMIS_CLOUD_MODE") != "1" and not EndpointTransport.adb_binary():
@@ -251,7 +254,8 @@ class Agent(AgentBase):
         )
 
         # Asynchronously pre-warm LLM connection pools in the background
-        asyncio.create_task(self._prewarm_llm_connections(api_key))
+        if prewarm_llm:
+            asyncio.create_task(self._prewarm_llm_connections(api_key))
 
         logger.info("✅ Artemis agent initialized.")
         self._initialized = True
@@ -939,6 +943,8 @@ def attach_test_summary(output, run_outcome: dict | None):
     untouched. String outputs are wrapped into a dict so that callers such as
     ``mobile_run_task`` receive the summary without parsing report prose.
     """
+    if isinstance(output, dict):
+        output = {key: value for key, value in output.items() if key != "test_summary"}
     if not run_outcome:
         return output
     tests = run_outcome.get("tests") or {}
@@ -953,7 +959,7 @@ def attach_test_summary(output, run_outcome: dict | None):
     summary = {"task_status": run_outcome.get("task_status"), **tests}
     if isinstance(output, dict):
         merged = dict(output)
-        merged.setdefault("test_summary", summary)
+        merged["test_summary"] = summary
         return merged
     if output is None:
         return {"test_summary": summary}
