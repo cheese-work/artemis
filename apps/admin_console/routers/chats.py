@@ -18,6 +18,7 @@ from apps.admin_console.core.ownership import (
     require_access,
     require_actor,
     require_visible_run,
+    record_run_read,
 )
 from apps.admin_console.services.task_queue_service import task_queue_service
 from apps.admin_console.services.deploy_drain import ServerDraining, admission_lock
@@ -25,6 +26,7 @@ from apps.admin_console.database.repositories.session_repository import session_
 from apps.admin_console.database.repositories.step_repository import step_repo
 from apps.admin_console.services.media_service import media_service
 from apps.admin_console.services.automatic_prompt_tips import read_tip
+from apps.admin_console.services.qa_results import result_for_turn
 
 router = APIRouter(tags=["chat sessions"])
 
@@ -124,7 +126,30 @@ def _session(identity, scope, *, write=False):
 async def get_chat(session_id: str, scope: OwnerScope = Depends(actor_scope)):
     store, session = await asyncio.to_thread(_session, session_id, scope)
     session = await asyncio.to_thread(_timeline, session, store)
+    session = await asyncio.to_thread(_attach_results, scope, session)
     return await asyncio.to_thread(present_session_data, scope, session["session_id"], session)
+
+
+def _attach_results(scope, session):
+    turns = session["turns"]
+    count = len(turns)
+    results = []
+    for index, turn in enumerate(turns, start=1):
+        turn_id = turn["turn_id"]
+        result = result_for_turn(
+            DB_PATH,
+            TRACES_PATH,
+            turn_id,
+            turn["status"],
+            index,
+            count,
+        )
+        results.append(result)
+        record_run_read(scope, turn_id)
+    session["results"] = results
+    if isinstance(session.get("verdict"), dict) and results:
+        session["verdict"]["result"] = results[-1]
+    return session
 
 
 @router.patch("/api/chats/{session_id}/title", dependencies=[Depends(require_qa)])
@@ -135,6 +160,7 @@ async def rename_chat(
     await asyncio.to_thread(store.rename, session["session_id"], request.title)
     updated = await asyncio.to_thread(store.get, session["session_id"])
     updated = await asyncio.to_thread(_timeline, updated, store)
+    updated = await asyncio.to_thread(_attach_results, scope, updated)
     return await asyncio.to_thread(present_session_data, scope, session["session_id"], updated)
 
 
