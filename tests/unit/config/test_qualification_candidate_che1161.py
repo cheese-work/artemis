@@ -128,9 +128,104 @@ def test_packet_preserves_pilot_oracles_and_unified_runner_revision():
     assert candidate["qualification_revision_contract"]["runner_commit"] == (
         candidate["runner_source"]["commit_sha"]
     )
-    assert candidate["qualification_revision_contract"]["support_revision_requires_full_set"] is True
+    assert (
+        candidate["qualification_revision_contract"]["support_revision_requires_full_set"]
+        is True
+    )
     assert candidate["qualification_revision_contract"]["mixed_runner_revisions_qualify"] is False
-    negative = candidate["qualification_arms"][2]
+    arms = {arm["id"]: arm for arm in candidate["qualification_arms"]}
+    negative = arms["negative_control"]
     assert negative["execution_status"] == "BLOCKED_SOURCE_GAP"
     assert negative["run_status"] == "NOT-RUN"
     assert negative["expected_verdict"] == "fail_assertion"
+
+
+def test_packet_binds_private_endpoint_before_standalone_cli_first_contact():
+    candidate = json.loads(CANDIDATE_PATH.read_text(encoding="utf-8"))
+    endpoint = candidate["execution_preflight"]["adb_endpoint"]
+
+    assert endpoint["socket_format"] == "tcp:127.0.0.1:<port>"
+    assert endpoint["environment_variables"] == {
+        "ADB_SERVER_SOCKET": "same admitted socket",
+        "ADB_HOST": "127.0.0.1",
+        "ADB_PORT": "same admitted port",
+    }
+    assert endpoint["loaded_settings_fields"] == ["settings.ADB_HOST", "settings.ADB_PORT"]
+    assert endpoint["reject_conditions"] == [
+        "missing",
+        "malformed",
+        "conflicting",
+        "shared_default_tcp_127.0.0.1_5037",
+    ]
+    assert endpoint["rejection_action"] == "stop_before_boot_and_first_device_contact"
+    assert endpoint["process_local_only"] is True
+    assert endpoint["runner_source_trace"]["commit_sha"] == (
+        "cbf2fea84cbd47ea54053239679ab521b01d4d23"
+    )
+    assert endpoint["runner_source_trace"]["first_device_contact"] == (
+        "run_command constructs AdbClient from settings before display_device_status.device_list"
+    )
+    assert endpoint["same_invocation_evidence"]["record_before_first_device_contact"] is True
+    assert endpoint["same_invocation_evidence"]["fields"] == [
+        "ADB_SERVER_SOCKET",
+        "ADB_HOST",
+        "ADB_PORT",
+        "runner_argv",
+    ]
+
+    testcase = TESTCASE_PATH.read_text(encoding="utf-8")
+    assert "tcp:127.0.0.1:<port>" in testcase
+    assert "same-invocation endpoint evidence" in testcase
+    assert "before the CLI's first device contact" in testcase
+
+
+def test_packet_guards_each_arm_boot_identity_and_command_receipt():
+    candidate = json.loads(CANDIDATE_PATH.read_text(encoding="utf-8"))
+    preflight = candidate["execution_preflight"]
+    assert preflight["runner_checkout"] == {
+        "commit_sha": candidate["runner_source"]["commit_sha"],
+        "clean_required": True,
+        "mismatch_action": "stop_before_boot",
+    }
+    assert preflight["testcase_digest_check"] == {
+        "path": candidate["testcase_source"]["path"],
+        "sha256": candidate["testcase_source"]["digest_sha256"],
+        "recompute_before_execution": True,
+        "receipt_mismatch_action": "stop_before_boot",
+    }
+    assert candidate["session_run_identity_contract"] == {
+        "format": "UUIDv4",
+        "session_and_run_ids_must_differ": True,
+        "fresh_distinct_ids_per_arm": True,
+        "equal_or_reused_id_action": "stop_before_boot",
+        "arm_selection_key": "id",
+    }
+    assert candidate["boot_argv_contract"] == {
+        "exact_argv_and_flags_source": "same fresh Sol admission",
+        "bind_before_boot": True,
+        "exact_executed_command_evidence_required": True,
+        "gpu_flags_selected_by_author": False,
+        "mismatch_action": "stop_before_boot",
+    }
+    assert candidate["per_arm_contract"]["repeat_preflight_before_boot"] is True
+    assert candidate["per_arm_contract"]["privacy_safe_clean_start_evidence_before_artemis"] is True
+
+    arms = {arm["id"]: arm for arm in candidate["qualification_arms"]}
+    assert set(arms) == {"clean_pass", "clean_rerun", "negative_control"}
+    negative = arms["negative_control"]
+    assert negative["execution_status"] == "BLOCKED_SOURCE_GAP"
+    assert negative["run_status"] == "NOT-RUN"
+    assert negative["requires_separate_admitted_attempt"] is True
+    assert negative["cannot_relabel_positive_attempt"] is True
+
+    receipt = candidate["execution_receipt_contract"]
+    assert receipt["route_helper_sha256"] == preflight["offline_route"]["sha256"]
+    assert receipt["boot_timeout_seconds"] == 300
+    assert receipt["whole_attempt_timeout_seconds"] == 900
+    assert receipt["timeout_outcome"] == "failed_or_invalid_no_retry"
+    assert receipt["exact_executed_boot_argv_required"] is True
+
+    testcase = TESTCASE_PATH.read_text(encoding="utf-8")
+    assert "fresh UUIDv4" in testcase
+    assert "exact executed boot argv" in testcase
+    assert "separate admitted attempt" in testcase
