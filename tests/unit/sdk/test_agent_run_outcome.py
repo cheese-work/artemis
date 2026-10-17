@@ -138,3 +138,4 @@ async def test_outcome_write_failure_does_not_skip_finalize_or_session_end(
     assert events[:2] == ["write", "finalize"]
     assert f"end:{session_status}" in events
     assert events.index("finalize") < events.index(f"end:{session_status}")
+    assert "error" in context.data_engine.end_session.call_args.kwargs
