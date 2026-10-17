@@ -130,5 +130,7 @@ def test_packet_preserves_pilot_oracles_and_unified_runner_revision():
     )
     assert candidate["qualification_revision_contract"]["support_revision_requires_full_set"] is True
     assert candidate["qualification_revision_contract"]["mixed_runner_revisions_qualify"] is False
-    assert candidate["qualification_arms"][2]["execution_status"] == "BLOCKED_SOURCE_GAP"
-    assert candidate["qualification_arms"][2]["expected_verdict"] == "NOT-RUN"
+    negative = candidate["qualification_arms"][2]
+    assert negative["execution_status"] == "BLOCKED_SOURCE_GAP"
+    assert negative["run_status"] == "NOT-RUN"
+    assert negative["expected_verdict"] == "fail_assertion"
