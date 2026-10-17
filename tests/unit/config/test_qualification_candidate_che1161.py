@@ -127,7 +127,9 @@ def test_packet_preserves_pilot_oracles_and_unified_runner_revision():
         candidate["qualification_revision_contract"]["runner_commit"]
         == (candidate["runner_source"]["commit_sha"])
     )
-    assert candidate["qualification_revision_contract"]["support_revision_requires_full_set"] is True
+    assert (
+        candidate["qualification_revision_contract"]["support_revision_requires_full_set"] is True
+    )
     assert candidate["qualification_revision_contract"]["mixed_runner_revisions_qualify"] is False
     arms = {arm["id"]: arm for arm in candidate["qualification_arms"]}
     negative = arms["negative_control"]
