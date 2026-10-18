@@ -80,6 +80,65 @@ def test_sweep_classifies_each_turn_and_collect_race_does_not_duplicate(outcome_
             assert count == 1
 
 
+def test_two_turns_in_one_chat_keep_distinct_results_and_evidence(outcome_sweep):
+    store = ChatStore(outcome_sweep.db)
+    chat_id = "two-turn-chat"
+    with store.transaction() as connection:
+        connection.execute(
+            "INSERT INTO chat_sessions (session_id, created_at) VALUES (?, ?)", (chat_id, 1.0)
+        )
+
+    first_message = store.send(chat_id, "Check the app", "turn-one-message")
+    first = first_message["turn_id"]
+    store.transition(first, "running")
+    _failed_turn(
+        outcome_sweep,
+        first,
+        "Android secure keyguard is locked. Unlock the device manually.",
+    )
+    store.finish(first, "failed")
+
+    second_message = store.send(chat_id, "Retry the app check", "turn-two-message")
+    second = second_message["turn_id"]
+    store.transition(second, "running")
+    _failed_turn(outcome_sweep, second, "LLM call timed out")
+    store.finish(second, "failed")
+
+    TaskQueueService._reap_vanished_workers()
+    TaskQueueService._reap_vanished_workers()
+
+    first_result = qa_results.read_result(outcome_sweep.db, first)
+    second_result = qa_results.read_result(outcome_sweep.db, second)
+    assert first_result["result"]["category"] == "qa_environment"
+    assert second_result["result"]["category"] == "provider"
+    assert first_result["version"] == second_result["version"] == 1
+
+    with sqlite3.connect(outcome_sweep.db) as connection:
+        turns = connection.execute(
+            "SELECT turn_id, number FROM chat_turns WHERE session_id=? ORDER BY number",
+            (chat_id,),
+        ).fetchall()
+        evidence = connection.execute(
+            "SELECT session_id, category, rule FROM failure_ledger "
+            "WHERE session_id IN (?, ?) ORDER BY session_id",
+            (first, second),
+        ).fetchall()
+        outbox = connection.execute(
+            "SELECT session_id, classified_at, classify_attempts FROM lifecycle_outbox "
+            "WHERE session_id IN (?, ?) ORDER BY session_id",
+            (first, second),
+        ).fetchall()
+
+    assert [(row[0], row[1]) for row in turns] == [(first, 1), (second, 2)]
+    assert {(row[0], row[1], row[2]) for row in evidence} == {
+        (first, "qa_environment", "device_locked"),
+        (second, "provider", "llm_timeout"),
+    }
+    assert len(evidence) == 2
+    assert len(outbox) == 2
+    assert all(row[1] is not None and row[2] == 0 for row in outbox)
+
+
 def test_sweep_classifies_using_lifecycle_database_when_catalog_is_uninitialized(
     outcome_sweep, monkeypatch
 ):
