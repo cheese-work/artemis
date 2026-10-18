@@ -80,6 +80,29 @@ def test_sweep_classifies_each_turn_and_collect_race_does_not_duplicate(outcome_
             assert count == 1
 
 
+def test_sweep_classifies_using_lifecycle_database_when_catalog_is_uninitialized(
+    outcome_sweep, monkeypatch
+):
+    from apps.admin_console.database import connection
+    from apps.admin_console.database.repositories.run_catalog_repository import run_catalog_repo
+
+    sid = _failed_turn(outcome_sweep, "catalog-db-unset", "LLM call timed out")
+    monkeypatch.setattr(connection, "DB_PATH", outcome_sweep.db)
+    monkeypatch.setattr(run_catalog_repo, "db_path", None)
+
+    TaskQueueService._reap_vanished_workers()
+
+    result = qa_results.read_result(outcome_sweep.db, sid)
+    assert result is not None
+    assert result["result"]["category"] == "provider"
+    with sqlite3.connect(outcome_sweep.db) as connection:
+        classified_at, attempts = connection.execute(
+            "SELECT classified_at, classify_attempts FROM lifecycle_outbox"
+        ).fetchone()
+    assert classified_at is not None
+    assert attempts == 0
+
+
 def test_catalog_not_ready_does_not_block_deliveries_and_counts_classification_attempts(
     outcome_sweep, monkeypatch
 ):
@@ -97,7 +120,7 @@ def test_catalog_not_ready_does_not_block_deliveries_and_counts_classification_a
         calls.append(("notify", str(sid)))
         return True
 
-    def classify(sid=None):
+    def classify(sid=None, *, db_path=None):
         calls.append(("classify", sid))
         raise CatalogNotReady()
 
