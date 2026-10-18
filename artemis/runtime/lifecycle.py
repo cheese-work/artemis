@@ -83,6 +83,8 @@ CREATE TABLE IF NOT EXISTS lifecycle_outbox (
     notified_at REAL,
     broadcast_attempts INTEGER NOT NULL DEFAULT 0,
     notify_attempts INTEGER NOT NULL DEFAULT 0,
+    classified_at REAL,
+    classify_attempts INTEGER NOT NULL DEFAULT 0,
     abandoned TEXT
 )
 """
@@ -102,10 +104,16 @@ _OUTBOX_COLUMNS = (
     ("notified_at", "REAL"),
     ("broadcast_attempts", "INTEGER NOT NULL DEFAULT 0"),
     ("notify_attempts", "INTEGER NOT NULL DEFAULT 0"),
+    ("classified_at", "REAL"),
+    ("classify_attempts", "INTEGER NOT NULL DEFAULT 0"),
     ("abandoned", "TEXT"),
 )
 # Durable per-consumer "delivered" marks on an outbox row (column per consumer).
-_DELIVERY_COLUMNS = {"broadcast": "broadcast_at", "notify": "notified_at"}
+_DELIVERY_COLUMNS = {
+    "broadcast": "broadcast_at",
+    "notify": "notified_at",
+    "classify": "classified_at",
+}
 
 
 def canonical_status(status: str | None) -> str | None:
@@ -556,7 +564,8 @@ class LifecycleAuthority:
         with self._connect() as conn:
             rows = conn.execute(
                 "SELECT dedupe_id, session_id, status, interrupt_reason, created_at, "
-                "broadcast_at, notified_at, broadcast_attempts, notify_attempts, abandoned "
+                "broadcast_at, notified_at, classified_at, broadcast_attempts, notify_attempts, "
+                "classify_attempts, abandoned "
                 f"FROM lifecycle_outbox WHERE delivered_at IS NULL {where} ORDER BY created_at",
                 args,
             ).fetchall()

@@ -537,6 +537,7 @@ class TaskQueueService:
         for sid in swept:
             print(f"[QueueWorker] Failed vanished running session {sid}")
             cls._deliver_outcome(sid)
+        cls._classify_owed_outcomes()
         return swept
 
     @classmethod
@@ -1075,12 +1076,16 @@ class TaskQueueService:
     _delivery_lock = threading.Lock()
     _delivered_to: dict[str, set[tuple[int, str]]] = {}  # event_id -> (subscriber, event type)
     _fanout_pending: set[str] = set()  # event ids whose live fanout still needs a retry
+    _classification_owed: dict[str, dict[str, Any]] = {}
+    _classifying: set[str] = set()
 
     @classmethod
     def _forget_delivery_memory(cls) -> None:
         """Drop in-process delivery memory (what a restart does)."""
         cls._delivered_to.clear()
         cls._fanout_pending.clear()
+        cls._classification_owed.clear()
+        cls._classifying.clear()
 
     @classmethod
     def _deliver_outcome(
@@ -1134,11 +1139,17 @@ class TaskQueueService:
                     lifecycle, task_item, event["session_id"], goal, event["status"], event_id
                 ),
             ),
+            ("classify", "classified_at", None),
         )
         pending = False
         for consumer, column, effect in steps:
             if event.get(column) is not None:
                 continue  # delivered earlier, possibly before a restart
+            if consumer == "classify":
+                if column in event:
+                    cls._classification_owed[event_id] = dict(event)
+                    pending = True
+                continue
             try:
                 ok = effect()
             except (OSError, RuntimeError, ValueError, KeyError, TypeError, sqlite3.Error):
@@ -1160,6 +1171,84 @@ class TaskQueueService:
                 logger.warning("Could not record %s of %s", consumer, event_id, exc_info=True)
                 pending = True
         return not pending
+
+    @classmethod
+    def _classify_owed_outcomes(cls) -> None:
+        with cls._delivery_lock:
+            owed = {
+                event_id: event
+                for event_id, event in cls._classification_owed.items()
+                if event_id not in cls._classifying
+            }
+            for event_id in owed:
+                cls._classification_owed.pop(event_id, None)
+                cls._classifying.add(event_id)
+        if not owed:
+            return
+
+        acknowledged = False
+        for event_id, event in owed.items():
+            try:
+                cls._classify_terminal_outcome(event)
+                session_repo.lifecycle.mark_delivered(event_id, "classify")
+                acknowledged = True
+                with cls._delivery_lock:
+                    cls._classification_owed.pop(event_id, None)
+            except Exception:
+                logger.warning("Could not classify outcome %s", event_id, exc_info=True)
+                try:
+                    session_repo.lifecycle.note_failed_attempt(event_id, "classify")
+                except Exception:
+                    logger.warning(
+                        "Could not record classify attempt for %s", event_id, exc_info=True
+                    )
+                with cls._delivery_lock:
+                    cls._classification_owed[event_id] = event
+            finally:
+                with cls._delivery_lock:
+                    cls._classifying.discard(event_id)
+
+        if acknowledged:
+            cls._deliver_outcome(None)
+
+    @staticmethod
+    def _classify_terminal_outcome(event: dict[str, Any]) -> None:
+        from apps.admin_console.database.repositories.run_catalog_repository import run_catalog_repo
+        from apps.admin_console.services import failure_ledger, qa_results
+
+        session_id = str(event["session_id"])
+        failure_ledger.collect(session_id)
+        db_path = run_catalog_repo.db_path
+        with sqlite3.connect(db_path) as connection:
+            chat_turns = connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='chat_turns'"
+            ).fetchone()
+            turn = (
+                connection.execute(
+                    "SELECT number, session_id FROM chat_turns WHERE turn_id=?", (session_id,)
+                ).fetchone()
+                if chat_turns
+                else None
+            )
+            if turn:
+                turn_index = int(turn[0])
+                turn_count = int(
+                    connection.execute(
+                        "SELECT COUNT(*) FROM chat_turns WHERE session_id=?", (turn[1],)
+                    ).fetchone()[0]
+                )
+            else:
+                turn_index = turn_count = 1
+        result = qa_results.result_for_turn(
+            db_path,
+            run_catalog_repo.traces_dir,
+            session_id,
+            event["status"],
+            turn_index,
+            turn_count,
+        )
+        if result is None:
+            raise RuntimeError(f"No QA result was recorded for terminal turn {session_id}")
 
     @classmethod
     def _drain_outcome_events(cls) -> None:
