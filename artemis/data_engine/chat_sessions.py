@@ -59,6 +59,10 @@ class ChatStore:
             )
 
     def fail_admission(self, turn_id, reason):
+        from artemis.runtime.lifecycle import ensure_lifecycle_schema
+
+        with closing(sqlite3.connect(self.path, timeout=30)) as connection:
+            ensure_lifecycle_schema(connection)
         with self.transaction() as connection:
             self._transition(connection, turn_id, "failed")
             connection.execute(

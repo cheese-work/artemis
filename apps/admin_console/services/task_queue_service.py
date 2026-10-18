@@ -509,7 +509,7 @@ class TaskQueueService:
         server (CLI, MCP) that died without finalizing. It also redelivers any
         outcome event left pending by a crash or an earlier delivery failure.
         """
-        cls._drain_outcome_events()
+        cls._deliver_outcome(None)
         try:
             owner_sids = {
                 str(owner.session_id)
@@ -517,6 +517,7 @@ class TaskQueueService:
                 if owner.session_id
             }
         except Exception:
+            cls._classify_owed_outcomes()
             return []  # lock state unknown: never declare a worker dead on a guess
         in_flight = {
             str(i.get("session_id"))
@@ -1217,8 +1218,8 @@ class TaskQueueService:
         from apps.admin_console.services import failure_ledger, qa_results
 
         session_id = str(event["session_id"])
-        failure_ledger.collect(session_id)
-        db_path = run_catalog_repo.db_path
+        db_path = session_repo.lifecycle.db_path
+        failure_ledger.collect(session_id, db_path=db_path)
         with sqlite3.connect(db_path) as connection:
             chat_turns = connection.execute(
                 "SELECT 1 FROM sqlite_master WHERE type='table' AND name='chat_turns'"
@@ -1254,6 +1255,7 @@ class TaskQueueService:
     def _drain_outcome_events(cls) -> None:
         """Deliver every pending outcome event (startup, shutdown and the periodic sweep)."""
         cls._deliver_outcome(None)
+        cls._classify_owed_outcomes()
 
     @staticmethod
     def _queue_item_for(session_id: Any) -> dict[str, Any]:

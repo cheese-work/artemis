@@ -416,11 +416,11 @@ WHERE v.status = 'failed' AND m.deleted_at IS NULL
 """
 
 
-def collect(session_id: str | None = None) -> dict[str, int]:
+def collect(session_id: str | None = None, *, db_path=None) -> dict[str, int]:
     """Classify failures not yet in the ledger. Backfills history on the first call."""
     now = time.time()
     traces_dir = run_catalog_repo.traces_dir
-    with db_session(run_catalog_repo.db_path) as conn:
+    with db_session(run_catalog_repo.db_path if db_path is None else db_path) as conn:
         _ensure(conn)
         candidates = []
         for query, params in (
