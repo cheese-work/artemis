@@ -635,6 +635,9 @@ _PUBLIC_GET_PATHS = {
     "/api/runs",
     "/api/runs/{session_id}",
     "/api/runs/{session_id}/bundle.zip",
+    "/api/runs/{session_id}/annotations",
+    "/api/runs/{session_id}/annotations/{annotation_id}",
+    "/api/runs/{session_id}/annotations/{annotation_id}/evidence",
     "/api/system/retention",
     "/api/system/storage",
     "/api/hosts",
@@ -747,6 +750,7 @@ _PUBLIC_MUTATING_PATHS = {
     "/api/stop",
     "/api/tasks/{session_id}/cancel-queued",
     "/api/resume",
+    "/api/runs/{session_id}/annotations",
 }
 
 
@@ -782,6 +786,11 @@ def route_tier(path: str, methods: set[str], is_websocket: bool = False) -> str 
     if methods == {"GET"} and path in _SERVICE_READ_GET_PATHS:
         return "admin_or_service"
     if methods == {"POST"} and path in _PUBLIC_MUTATING_PATHS:
+        return "public"
+    if path == "/api/runs/{session_id}/annotations/{annotation_id}" and methods in (
+        {"PATCH"},
+        {"DELETE"},
+    ):
         return "public"
     if methods == {"PATCH"} and path == "/api/chats/{session_id}/title":
         return "qa"
