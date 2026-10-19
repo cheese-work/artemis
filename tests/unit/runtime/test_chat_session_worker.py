@@ -211,3 +211,8 @@ async def test_acquisition_failure_is_clear_and_releases_session_claim(store):
     with pytest.raises(RuntimeError, match="session_device_unavailable"):
         await run_chat_session(store, "run", UnavailableLease(), lambda turn: None, idle_seconds=0)
     assert store.get("run")["lease_pid"] is None
+    with sqlite3.connect(store.path) as connection:
+        outbox_event = connection.execute(
+            "SELECT dedupe_id, session_id, status FROM lifecycle_outbox"
+        ).fetchone()
+    assert outbox_event == ("run:outcome", "run", "failed")

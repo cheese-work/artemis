@@ -507,6 +507,26 @@ def test_an_outbox_created_before_the_delivery_columns_is_migrated(tmp_path):
     assert authority.mark_delivered(f"{sid}:outcome", "broadcast") is True
 
 
+def test_classification_columns_migrate_on_a_production_database_copy(tmp_path):
+    source = tmp_path / "production.db"
+    copy = tmp_path / "production-copy.db"
+    StorageManager(source, tmp_path)
+    sid = _add_session(source)
+    LifecycleAuthority(source).finish(sid, "failed", error="worker failed")
+    with sqlite3.connect(source) as original, sqlite3.connect(copy) as duplicate:
+        original.backup(duplicate)
+
+    events = LifecycleAuthority(copy).pending_events()
+
+    with sqlite3.connect(copy) as connection:
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(lifecycle_outbox)")}
+    assert {"classified_at", "classify_attempts"} <= columns
+    assert len(events) == 1
+    assert events[0]["dedupe_id"] == f"{sid}:outcome"
+    assert events[0]["classified_at"] is None
+    assert events[0]["classify_attempts"] == 0
+
+
 # -- durable event record, persisted attempts, notify context ------------------
 
 

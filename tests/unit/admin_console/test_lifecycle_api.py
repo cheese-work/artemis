@@ -478,9 +478,12 @@ async def test_crash_after_broadcast_before_ack_delivers_exactly_once_across_a_r
 async def test_a_failed_notification_is_retried_and_only_then_acknowledged(env, monkeypatch):
     from unittest.mock import MagicMock
 
+    from apps.admin_console.database import connection
+
     db_path, events = env
     session_id = _add_running_session(db_path)
     _interrupt(db_path, session_id)
+    monkeypatch.setattr(connection, "DB_PATH", db_path)
     notify = MagicMock(side_effect=[False, True])
     monkeypatch.setattr("mcp_server.notifiers.notify", notify)
     task_item = {"session_id": session_id, "conversation_id": "conv-1", "ingress": "mcp"}
@@ -490,7 +493,15 @@ async def test_a_failed_notification_is_retried_and_only_then_acknowledged(env, 
 
     TaskQueueService._deliver_outcome(session_id, task_item, "goal")
 
-    assert notify.call_count == 2 and _outbox_pending(db_path) == 0
+    assert notify.call_count == 2 and _outbox_pending(db_path) == 1
+    TaskQueueService._reap_vanished_workers()
+
+    assert _outbox_pending(db_path) == 0
+    with sqlite3.connect(db_path) as conn:
+        classified_at, attempts = conn.execute(
+            "SELECT classified_at, classify_attempts FROM lifecycle_outbox"
+        ).fetchone()
+    assert classified_at is not None and attempts == 0
     # the UI broadcast already succeeded, so the retry does not repeat it
     assert len(_interrupted(events, session_id)) == 1
     assert len(_ended(events, session_id)) == 1
