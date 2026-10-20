@@ -343,8 +343,15 @@ def open_under(root: Path, candidate: Path) -> BinaryIO:
     return os.fdopen(file_fd, "rb")
 
 
+def _plain_windows_path(path: str) -> str:
+    """Windows extended-length form to the ordinary one, for drive and UNC paths alike."""
+    if path.startswith("\\\\?\\UNC\\"):
+        return "\\\\" + path[8:]
+    return path.removeprefix("\\\\?\\")
+
+
 def _handle_path(fd: int) -> str:
-    """Where the OS says the open file really is, links resolved, as of the open handle."""
+    """Where the OS says the open file really is, links resolved, as of the open handle (raw)."""
     if os.name != "nt":  # stand-in for tests on a host without Windows
         return os.readlink(f"/proc/self/fd/{fd}")
     import ctypes
@@ -357,7 +364,7 @@ def _handle_path(fd: int) -> str:
     buffer = ctypes.create_unicode_buffer(32768)
     if not get_final_path(msvcrt.get_osfhandle(fd), buffer, len(buffer), 0):
         raise ctypes.WinError(ctypes.get_last_error())
-    return buffer.value.removeprefix("\\\\?\\")
+    return buffer.value
 
 
 def _open_where_it_lives(base: Path, parts: tuple[str, ...]) -> BinaryIO:
@@ -376,7 +383,9 @@ def _open_where_it_lives(base: Path, parts: tuple[str, ...]) -> BinaryIO:
             actual = _handle_path(fd)
         except OSError as exc:  # cannot prove where it opened: refuse, as for a link
             raise UnsafePath(exc.errno or errno.EIO, "cannot resolve the open handle") from exc
-        if os.path.normcase(actual) != os.path.normcase(expected.removeprefix("\\\\?\\")):
+        if os.path.normcase(_plain_windows_path(actual)) != os.path.normcase(
+            _plain_windows_path(expected)
+        ):
             raise UnsafePath(errno.ELOOP, "link in path")
         return os.fdopen(fd, "rb")
     except BaseException:
