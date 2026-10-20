@@ -15,11 +15,18 @@
 """Admin failure ledger: why runs and steps failed, and whether SmartQA or the prompt is to blame."""
 
 import asyncio
+from typing import Literal
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel, ConfigDict, Field
 
-from apps.admin_console.core.access_control import require_admin, require_admin_or_service_read
-from apps.admin_console.services import failure_ledger
+from apps.admin_console.core.access_control import (
+    AccessIdentity,
+    require_admin,
+    require_admin_or_service_read,
+)
+from apps.admin_console.database.repositories.run_catalog_repository import run_catalog_repo
+from apps.admin_console.services import failure_ledger, qa_results
 
 router = APIRouter(tags=["failures"])
 
@@ -39,3 +46,45 @@ async def collect_failures():
 async def send_failure_digest():
     """Send the summary of SmartQA-side causes not reported before."""
     return await asyncio.to_thread(failure_ledger.digest)
+
+
+class RelabelRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    category: Literal[
+        "smartqa_infra",
+        "smartqa_agent",
+        "provider",
+        "app_defect",
+        "user_prompt",
+        "qa_environment",
+        "unknown",
+    ]
+    reason: str = Field(min_length=1, max_length=2000)
+
+
+@router.get("/api/system/qa-results/gate-a", dependencies=[Depends(require_admin)])
+async def get_gate_a():
+    try:
+        return await asyncio.to_thread(qa_results.gate_a, run_catalog_repo.db_path)
+    except ValueError as error:
+        raise HTTPException(409, str(error)) from error
+
+
+@router.post("/api/system/qa-results/{turn_id}/relabel")
+async def relabel_qa_result(
+    turn_id: str, payload: RelabelRequest, identity: AccessIdentity = Depends(require_admin)
+):
+    try:
+        return await asyncio.to_thread(
+            qa_results.relabel_result,
+            run_catalog_repo.db_path,
+            turn_id,
+            category=payload.category,
+            reason=payload.reason,
+            actor=identity.subject or identity.email or "loopback",
+        )
+    except KeyError as error:
+        raise HTTPException(404, "qa_result_not_found") from error
+    except ValueError as error:
+        raise HTTPException(409, str(error)) from error

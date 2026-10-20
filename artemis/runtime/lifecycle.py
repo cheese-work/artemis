@@ -85,6 +85,7 @@ CREATE TABLE IF NOT EXISTS lifecycle_outbox (
     notify_attempts INTEGER NOT NULL DEFAULT 0,
     classified_at REAL,
     classify_attempts INTEGER NOT NULL DEFAULT 0,
+    classify_replay_at REAL,
     abandoned TEXT
 )
 """
@@ -106,6 +107,7 @@ _OUTBOX_COLUMNS = (
     ("notify_attempts", "INTEGER NOT NULL DEFAULT 0"),
     ("classified_at", "REAL"),
     ("classify_attempts", "INTEGER NOT NULL DEFAULT 0"),
+    ("classify_replay_at", "REAL"),
     ("abandoned", "TEXT"),
 )
 # Durable per-consumer "delivered" marks on an outbox row (column per consumer).
@@ -565,7 +567,7 @@ class LifecycleAuthority:
             rows = conn.execute(
                 "SELECT dedupe_id, session_id, status, interrupt_reason, created_at, "
                 "broadcast_at, notified_at, classified_at, broadcast_attempts, notify_attempts, "
-                "classify_attempts, abandoned "
+                "classify_attempts, classify_replay_at, abandoned "
                 f"FROM lifecycle_outbox WHERE delivered_at IS NULL {where} ORDER BY created_at",
                 args,
             ).fetchall()

@@ -254,3 +254,82 @@ async def test_gate_endpoint_requires_admin_and_reports_unactivated(library, adm
 @pytest.mark.parametrize("operation", ["activate", "backfill", "replay"])
 async def test_maintenance_has_no_remotely_callable_http_route(admin, operation):
     assert (await admin.post(f"/api/system/qa-results/{operation}")).status_code in {404, 405}
+
+
+def test_explicit_replay_can_classify_abandoned_pre_activation_event(library, monkeypatch):
+    now = time.time()
+    library.seed(sid="old-abandoned", status="running")
+    lifecycle = LifecycleAuthority(library.db, clock=lambda: now - DAY)
+    lifecycle.finish("old-abandoned", "failed")
+    event = lifecycle.pending_events()[0]
+    for consumer in ("broadcast", "notify", "classify"):
+        lifecycle.mark_delivered(event["dedupe_id"], consumer, abandoned=consumer == "classify")
+    lifecycle.acknowledge([event["dedupe_id"]])
+    qa_results.activate(library.db, [], now=now)
+    assert qa_results.replay_abandoned(library.db, since=now - 2 * DAY, until=now) == 1
+    monkeypatch.setattr(session_repo, "db_path", library.db)
+    TaskQueueService._forget_delivery_memory()
+    try:
+        TaskQueueService._drain_outcome_events()
+        assert qa_results.read_result(library.db, "old-abandoned") is not None
+        assert lifecycle.pending_events() == []
+    finally:
+        TaskQueueService._forget_delivery_memory()
+
+
+def test_audit_failure_rolls_back_the_result_version(library):
+    _turn(library, "rollback", time.time())
+    _result(library, "rollback")
+    with sqlite3.connect(library.db) as connection:
+        connection.execute(
+            "CREATE TRIGGER refuse_audit BEFORE INSERT ON qa_result_audit "
+            "BEGIN SELECT RAISE(ABORT, 'disk-like failure'); END"
+        )
+    with pytest.raises(sqlite3.IntegrityError):
+        qa_results.relabel_result(
+            library.db, "rollback", category="qa_environment", actor="admin", reason="Review"
+        )
+    assert qa_results.read_result(library.db, "rollback")["version"] == 1
+
+
+def test_gate_includes_admission_failure_without_session_row(library):
+    now = time.time()
+    qa_results.activate(library.db, [], now=now - 10)
+    root = _turn(library, "admission-chat", now)
+    _result(library, root)
+    store = ChatStore(library.db)
+    turn_id = store.send(root, "Follow-up", "admission-message")["turn_id"]
+    store.fail_admission(turn_id, "Admission failed")
+    gate = qa_results.gate_a(library.db, now=now + 10)
+    assert (gate["numerator"], gate["denominator"]) == (1, 2)
+    assert gate["pending"] == 1
+
+
+def test_local_cli_uses_ict_default_and_rejects_unbounded_batches(library, monkeypatch, capsys):
+    from datetime import datetime
+    from apps.admin_console.services.qa_result_commands import main
+
+    assert (
+        qa_results.DEFAULT_BACKFILL_SINCE
+        == datetime.fromisoformat("2026-10-09T00:00:00+07:00").timestamp()
+    )
+    monkeypatch.setenv("ARTEMIS_ADMIN_EMAILS", "admin@example.com")
+    monkeypatch.setenv("ARTEMIS_AUTH_MODE", "cloudflare")
+    monkeypatch.setenv("ARTEMIS_CF_ACCESS_AUD", "test-audience")
+    monkeypatch.setenv("ARTEMIS_CF_ACCESS_TEAM_DOMAIN", "fixture")
+    common = ["--db", str(library.db), "--traces", str(library.traces)]
+    main([*common, "activate", "--at", "2026-10-20T10:00:00+07:00"])
+    assert json.loads(capsys.readouterr().out)["admin_emails"] == ["admin@example.com"]
+    with pytest.raises(SystemExit) as error:
+        main([*common, "backfill", "--limit", "1001"])
+    assert error.value.code == 2
+
+
+def test_gate_uses_terminal_lifecycle_status_before_chat_reconciliation(library):
+    now = time.time()
+    qa_results.activate(library.db, [], now=now - 10)
+    _turn(library, "vanished-chat", now, status="running")
+    ChatStore(library.db)
+    LifecycleAuthority(library.db).finish("vanished-chat", "failed")
+    gate = qa_results.gate_a(library.db)
+    assert gate["denominator"] == 1
