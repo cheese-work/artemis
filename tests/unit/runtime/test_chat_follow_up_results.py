@@ -136,8 +136,19 @@ async def test_failed_copy_does_not_stop_the_turn(store, traces, monkeypatch):
 
 @pytest.fixture
 def no_nofollow(monkeypatch):
-    """Windows Python has no os.O_NOFOLLOW; there the flag is already absent."""
+    """Linux simulation of Windows: no os.O_NOFOLLOW, and the handle-to-path lookup via /proc.
+
+    Native Windows (GetFinalPathNameByHandleW) is not exercised here.
+    """
+    if not os.path.isdir("/proc/self/fd"):
+        pytest.skip("simulation needs /proc/self/fd")
     monkeypatch.delattr(os, "O_NOFOLLOW", raising=False)
+    monkeypatch.setattr(
+        chat_session_worker,
+        "_handle_path",
+        lambda fd: os.readlink(f"/proc/self/fd/{fd}"),
+        raising=False,
+    )
 
 
 @pytest.mark.asyncio
@@ -188,7 +199,7 @@ SECRET = "SECRET outside the trace tree"
 def mode(request, monkeypatch):
     """Both read strategies: descriptor-pinned walk, and the platform without O_NOFOLLOW."""
     if request.param == "flag_absent":
-        monkeypatch.delattr(os, "O_NOFOLLOW", raising=False)
+        request.getfixturevalue("no_nofollow")
     return request.param
 
 
@@ -287,3 +298,137 @@ async def test_source_swapped_while_copying_does_not_change_the_copy(
 @pytest.mark.skipif(not hasattr(os, "O_DIRECTORY"), reason="POSIX descriptor-relative opens")
 def test_posix_reads_walk_the_tree_by_descriptor():
     assert chat_session_worker._OPEN_PINS_PARENTS
+
+
+def _turn_dir(traces):
+    """The new turn's trace folder: the only one that is not the first turn's."""
+    return next(path for path in traces.iterdir() if path.name != "run")
+
+
+def _swap_before_write_open(monkeypatch, swap):
+    """Run swap() just before the first write-mode os.open: the destination file's open."""
+    real_open = os.open
+    fired = []
+
+    def racing_open(path, flags, *args, **kwargs):
+        if not fired and flags & os.O_WRONLY:
+            fired.append(path)
+            swap()
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", racing_open)
+    return fired
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("swapped", ["notes", "turn"])
+async def test_destination_ancestor_swapped_for_a_link_does_not_redirect_the_write(
+    store, traces, outside, tmp_path, mode, monkeypatch, swapped
+):
+    _write(traces, "run", "results.md", TABLE)
+    (outside / "notes").mkdir()
+    (outside / "notes" / "results.md").write_text(SECRET)
+
+    def swap():
+        victim = _turn_dir(traces) / "notes" if swapped == "notes" else _turn_dir(traces)
+        victim.rename(victim.with_name(victim.name + "-real"))
+        victim.symlink_to(
+            outside / "notes" if swapped == "notes" else outside, target_is_directory=True
+        )
+
+    fired = _swap_before_write_open(monkeypatch, swap)
+
+    turn = await _run_turn_two(store, traces)
+
+    assert fired
+    assert (outside / "results.md").read_text() == SECRET
+    assert (outside / "notes" / "results.md").read_text() == SECRET
+    assert store.turn(turn["turn_id"])["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_destination_leaf_planted_as_a_link_is_not_followed(
+    store, traces, outside, mode, monkeypatch
+):
+    _write(traces, "run", "results.md", TABLE)
+    real_mkdir = os.mkdir
+
+    def mkdir_then_plant(path, *args, **kwargs):
+        real_mkdir(path, *args, **kwargs)
+        if os.path.basename(os.fspath(path)) == "notes":
+            (_turn_dir(traces) / "notes" / "results.md").symlink_to(outside / "results.md")
+
+    monkeypatch.setattr(os, "mkdir", mkdir_then_plant)
+
+    turn = await _run_turn_two(store, traces)
+
+    assert (outside / "results.md").read_text() == SECRET
+    assert store.turn(turn["turn_id"])["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_timestamp_update_does_not_follow_a_swapped_destination_leaf(
+    store, traces, outside, mode, monkeypatch
+):
+    original = _write(traces, "run", "results.md", TABLE)
+    os.utime(original, (1000, 1000))
+    os.utime(outside / "results.md", (5000, 5000))
+    real_utime = os.utime
+    fired = []
+
+    def swap_then_utime(target, *args, **kwargs):
+        if not fired:
+            fired.append(target)
+            leaf = _turn_dir(traces) / "notes" / "results.md"
+            leaf.unlink()
+            leaf.symlink_to(outside / "results.md")
+        return real_utime(target, *args, **kwargs)
+
+    monkeypatch.setattr(os, "utime", swap_then_utime)
+
+    turn = await _run_turn_two(store, traces)
+
+    assert fired
+    assert (outside / "results.md").stat().st_mtime == 5000
+    assert store.turn(turn["turn_id"])["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_source_swapped_to_a_link_and_back_between_checks_is_not_read(
+    store, traces, outside, mode, monkeypatch
+):
+    """The double swap a path-only check on Windows cannot see: link at open, restored before the final check."""
+    _write(traces, "run", "results.md", TABLE)
+    notes = traces / "run" / "notes"
+    swapped = []
+
+    def to_link():
+        notes.rename(traces / "run" / "notes-real")
+        notes.symlink_to(outside, target_is_directory=True)
+        swapped.append(True)
+
+    def back():
+        notes.unlink()
+        (traces / "run" / "notes-real").rename(notes)
+        swapped.clear()
+
+    fired = _swap_once(monkeypatch, {"notes", "results.md"}, to_link)
+    real_stat, real_lstat = os.stat, os.lstat
+
+    def restoring(real):
+        def wrapper(*args, **kwargs):
+            result = real(*args, **kwargs)
+            if swapped:
+                back()
+            return result
+
+        return wrapper
+
+    monkeypatch.setattr(os, "stat", restoring(real_stat))
+    monkeypatch.setattr(os, "lstat", restoring(real_lstat))
+
+    turn = await _run_turn_two(store, traces)
+
+    assert fired
+    _assert_nothing_leaked(turn, traces)
+    assert store.turn(turn["turn_id"])["status"] == "completed"

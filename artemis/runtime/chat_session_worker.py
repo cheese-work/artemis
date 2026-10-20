@@ -5,6 +5,7 @@ import os
 import shutil
 import sqlite3
 import stat
+import sys
 import threading
 import time
 from pathlib import Path
@@ -21,6 +22,7 @@ NOTE_LIMIT = 64 * 1024
 
 # Descriptor-relative opens need O_DIRECTORY and dir_fd support (POSIX); checked once at import.
 _OPEN_PINS_PARENTS = hasattr(os, "O_DIRECTORY") and os.open in os.supports_dir_fd
+_UTIME_BY_FD = os.utime in os.supports_fd
 
 
 def _open_pinned(parts):
@@ -37,24 +39,48 @@ def _open_pinned(parts):
         os.close(dir_fd)
 
 
-def _open_checked(parts):
-    """Without O_NOFOLLOW (Windows): reject links, open, then confirm the path still names that file."""
-    root = Path(os.path.realpath(TRACES_PATH))
-    path = root.joinpath(*parts)
-    if any(root.joinpath(*parts[:depth]).is_symlink() for depth in range(1, len(parts) + 1)):
-        raise OSError("link in note path")
-    fd = os.open(path, os.O_RDONLY | getattr(os, "O_BINARY", 0))
+def _handle_path(fd):
+    """The path an open Windows handle really names, links resolved; read from the handle, not a path."""
+    if sys.platform != "win32":
+        raise OSError("no handle-to-path lookup on this platform")
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+
+    lookup = ctypes.WinDLL("kernel32", use_last_error=True).GetFinalPathNameByHandleW
+    lookup.argtypes = [wintypes.HANDLE, wintypes.LPWSTR, wintypes.DWORD, wintypes.DWORD]
+    lookup.restype = wintypes.DWORD
+    buffer = ctypes.create_unicode_buffer(32768)
+    if not lookup(msvcrt.get_osfhandle(fd), buffer, len(buffer), 0):
+        raise ctypes.WinError(ctypes.get_last_error())
+    path = buffer.value
+    return "\\\\" + path[8:] if path.startswith("\\\\?\\UNC\\") else path.removeprefix("\\\\?\\")
+
+
+def _verify_handle(fd, path):
+    """Without O_NOFOLLOW (Windows): the handle must name exactly this link-free path.
+
+    The handle's own path is resolved by the OS, so a link swapped in at any point of the open
+    shows up here; checking the path again afterwards would leave a window.
+    """
     same = False
     try:
-        same = (
-            os.path.samestat(os.fstat(fd), os.stat(path, follow_symlinks=False))
-            and Path(os.path.realpath(path)) == path
-        )
+        same = os.path.normcase(_handle_path(fd)) == os.path.normcase(str(path))
     finally:
         if not same:
             os.close(fd)
     if not same:
         raise OSError("note path changed while opening")
+
+
+def _pins_parents():
+    return _OPEN_PINS_PARENTS and hasattr(os, "O_NOFOLLOW")
+
+
+def _open_checked(parts):
+    path = Path(os.path.realpath(TRACES_PATH)).joinpath(*parts)
+    fd = os.open(path, os.O_RDONLY | getattr(os, "O_BINARY", 0))
+    _verify_handle(fd, path)
     return fd
 
 
@@ -65,8 +91,7 @@ def _open_note(turn_id, name):
     """
     parts = (turn_id, "notes", name)
     try:
-        pinned = _OPEN_PINS_PARENTS and hasattr(os, "O_NOFOLLOW")
-        file = os.fdopen(_open_pinned(parts) if pinned else _open_checked(parts), "rb")
+        file = os.fdopen(_open_pinned(parts) if _pins_parents() else _open_checked(parts), "rb")
     except OSError:
         return None
     if not stat.S_ISREG(os.fstat(file.fileno()).st_mode):
@@ -84,13 +109,72 @@ def _read_note(turn_id, name):
         return file.read(NOTE_LIMIT).decode("utf-8", errors="ignore")
 
 
-def _copy_note(file, path):
-    """Write the whole open note to a new file, keeping its mtime; the destination is not a link."""
+def _create_pinned(parts):
+    """Create the destination file, and any folders above it, one descriptor at a time; no step follows a link."""
+    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_DIRECTORY
+    dir_fd = os.open(TRACES_PATH, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        for part in parts[:-1]:
+            try:
+                os.mkdir(part, 0o777, dir_fd=dir_fd)
+            except FileExistsError:
+                pass
+            next_fd = os.open(part, flags, dir_fd=dir_fd)
+            os.close(dir_fd)
+            dir_fd = next_fd
+        return os.open(parts[-1], os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW, 0o644, dir_fd=dir_fd)
+    finally:
+        os.close(dir_fd)
+
+
+def _create_checked(parts):
+    """Without O_NOFOLLOW (Windows): open without truncating, then confirm the handle names this path."""
+    path = Path(os.path.realpath(TRACES_PATH)).joinpath(*parts)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | getattr(os, "O_BINARY", 0), 0o644)
+    _verify_handle(fd, path)
+    return fd
+
+
+def _set_times(fd, atime_ns, mtime_ns):
+    """Set times through the open file, so a swapped path cannot redirect them."""
+    if _UTIME_BY_FD:
+        os.utime(fd, ns=(atime_ns, mtime_ns))
+        return
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+
+    def filetime(ns):
+        ticks = ns // 100 + 116444736000000000
+        return wintypes.FILETIME(ticks & 0xFFFFFFFF, ticks >> 32)
+
+    set_file_time = ctypes.WinDLL("kernel32", use_last_error=True).SetFileTime
+    pointer = ctypes.POINTER(wintypes.FILETIME)
+    set_file_time.argtypes = [wintypes.HANDLE, pointer, pointer, pointer]
+    set_file_time.restype = wintypes.BOOL
+    if not set_file_time(
+        msvcrt.get_osfhandle(fd),
+        None,
+        ctypes.byref(filetime(atime_ns)),
+        ctypes.byref(filetime(mtime_ns)),
+    ):
+        raise ctypes.WinError(ctypes.get_last_error())
+
+
+def _copy_note(file, parts):
+    """Write the whole open note to results.md under TRACES_PATH, keeping its mtime.
+
+    The destination is created and written through descriptors; no link in its path is followed.
+    """
     info = os.fstat(file.fileno())
-    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0)
-    with os.fdopen(os.open(path, flags | getattr(os, "O_BINARY", 0), 0o644), "wb") as out:
+    with os.fdopen(
+        _create_pinned(parts) if _pins_parents() else _create_checked(parts), "wb"
+    ) as out:
+        os.ftruncate(out.fileno(), 0)
         shutil.copyfileobj(file, out)
-    os.utime(path, ns=(info.st_atime_ns, info.st_mtime_ns))
+        out.flush()
+        _set_times(out.fileno(), info.st_atime_ns, info.st_mtime_ns)
 
 
 def carry_results(store, identity, turn):
@@ -105,10 +189,9 @@ def carry_results(store, identity, turn):
     with file:
         results = file.read(NOTE_LIMIT).decode("utf-8", errors="ignore")
         file.seek(0)
-        target = TRACES_PATH / turn["turn_id"] / "notes"
         try:
-            target.mkdir(parents=True, exist_ok=True)
-            _copy_note(file, target / "results.md")
+            TRACES_PATH.mkdir(parents=True, exist_ok=True)
+            _copy_note(file, (turn["turn_id"], "notes", "results.md"))
         except OSError:
             logger.warning(
                 "Could not carry results.md into turn %s", turn["turn_id"], exc_info=True
