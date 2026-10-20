@@ -43,6 +43,13 @@ from artemis.utils.notes import (
     LIST_NOTES_DOCSTRING,
     READ_NOTE_ARG_KEY_DESC,
     READ_NOTE_DOCSTRING,
+    SAVE_NOTE_ARG_CONTENT_DESC,
+    SAVE_NOTE_ARG_KEY_DESC,
+    SAVE_NOTE_DOCSTRING,
+    UPDATE_NOTE_ARG_KEY_DESC,
+    UPDATE_NOTE_ARG_REPLACEMENT_DESC,
+    UPDATE_NOTE_ARG_TARGET_DESC,
+    UPDATE_NOTE_DOCSTRING,
 )
 from third_party.mobile_use.utils.logger import get_logger
 
@@ -267,6 +274,35 @@ LIST_NOTES_TOOL = ToolDeclaration(
     name="list_notes",
     description=LIST_NOTES_DOCSTRING,
     parameters={"type": "object", "properties": {}},
+)
+
+# Write tools for agents that keep their own ledger (Flash); the Validator set
+# stays read-only.
+SAVE_NOTE_TOOL = ToolDeclaration(
+    name="save_note",
+    description=SAVE_NOTE_DOCSTRING,
+    parameters={
+        "type": "object",
+        "properties": {
+            "key": {"type": "string", "description": SAVE_NOTE_ARG_KEY_DESC},
+            "content": {"type": "string", "description": SAVE_NOTE_ARG_CONTENT_DESC},
+        },
+        "required": ["key", "content"],
+    },
+)
+
+UPDATE_NOTE_TOOL = ToolDeclaration(
+    name="update_note",
+    description=UPDATE_NOTE_DOCSTRING,
+    parameters={
+        "type": "object",
+        "properties": {
+            "key": {"type": "string", "description": UPDATE_NOTE_ARG_KEY_DESC},
+            "target": {"type": "string", "description": UPDATE_NOTE_ARG_TARGET_DESC},
+            "replacement": {"type": "string", "description": UPDATE_NOTE_ARG_REPLACEMENT_DESC},
+        },
+        "required": ["key", "target", "replacement"],
+    },
 )
 
 MANAGE_APP_TOOL = tool_declaration("manage_app")

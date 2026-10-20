@@ -1,5 +1,7 @@
 import asyncio
 import json
+import os
+import stat
 import time
 import uuid
 
@@ -14,6 +16,7 @@ from apps.admin_console.core.access_control import AdminAPIError, require_qa
 from apps.admin_console.core.ownership import (
     OwnerScope,
     actor_scope,
+    owners_of,
     present_session_data,
     require_access,
     require_actor,
@@ -130,8 +133,34 @@ async def get_chat(session_id: str, scope: OwnerScope = Depends(actor_scope)):
     return await asyncio.to_thread(present_session_data, scope, session["session_id"], session)
 
 
+RESULTS_NOTE_LIMIT = 64 * 1024
+
+
+def _results_note(turn_id):
+    """The agent's results.md for a turn (at most 64 KB), or None; never follows a link out."""
+    path = TRACES_PATH / turn_id / "notes" / "results.md"
+    try:
+        if not path.resolve().is_relative_to(TRACES_PATH.resolve()):
+            return None
+        with os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW), "rb") as file:
+            info = os.fstat(file.fileno())
+            if not stat.S_ISREG(info.st_mode):
+                return None
+            data = file.read(RESULTS_NOTE_LIMIT + 1)
+    except OSError:
+        return None
+    return {
+        "text": data[:RESULTS_NOTE_LIMIT].decode("utf-8", errors="ignore"),
+        "modified_at": info.st_mtime,
+        "truncated": len(data) > RESULTS_NOTE_LIMIT,
+    }
+
+
 def _attach_results(scope, session):
     turns = session["turns"]
+    root = session["session_id"]
+    # The agent's own notes are for the run's owner and admins, like a redacted shared view.
+    own_run = not scope.enforced or scope.admin or scope.may_act_on(owners_of([root]).get(root))
     count = len(turns)
     results = []
     for index, turn in enumerate(turns, start=1):
@@ -144,6 +173,7 @@ def _attach_results(scope, session):
             index,
             count,
         )
+        result["results_note"] = _results_note(turn_id) if own_run else None
         results.append(result)
         record_run_read(scope, turn_id)
     session["results"] = results

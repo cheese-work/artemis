@@ -60,13 +60,19 @@ export interface ChatTurn {
   created_at: number;
 }
 
+export interface ResultsNote {
+  text: string;
+  modified_at: number;
+  truncated: boolean;
+}
+
 export interface ChatSession {
   session_id: string;
   title?: string | null;
   turns: ChatTurn[];
   messages: ChatMessage[];
   timeline?: ChatMessage[];
-  verdict?: { status: string; outcome: CheckerBlockData | null; report?: string | null; details: Record<string, any>; tip?: { state: 'generating' | 'complete' | 'failed'; text: string | null } | null };
+  verdict?: { status: string; outcome: CheckerBlockData | null; report?: string | null; details: Record<string, any>; tip?: { state: 'generating' | 'complete' | 'failed'; text: string | null } | null; result?: { results_note?: ResultsNote | null } | null };
   idle_until: number | null;
   lease_pid: number | null;
 }
