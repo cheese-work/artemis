@@ -372,7 +372,11 @@ def _open_where_it_lives(base: Path, parts: tuple[str, ...]) -> BinaryIO:
     try:
         if not stat.S_ISREG(os.fstat(fd).st_mode):
             raise UnsafePath(errno.EINVAL, "not a regular file")
-        if os.path.normcase(_handle_path(fd)) != os.path.normcase(expected.removeprefix("\\\\?\\")):
+        try:
+            actual = _handle_path(fd)
+        except OSError as exc:  # cannot prove where it opened: refuse, as for a link
+            raise UnsafePath(exc.errno or errno.EIO, "cannot resolve the open handle") from exc
+        if os.path.normcase(actual) != os.path.normcase(expected.removeprefix("\\\\?\\")):
             raise UnsafePath(errno.ELOOP, "link in path")
         return os.fdopen(fd, "rb")
     except BaseException:
