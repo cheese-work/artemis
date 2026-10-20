@@ -96,6 +96,13 @@
           <li class="verdict-card" data-event-kind="verdict"><h2>Verdict · {{ verdictTitle() }}</h2>
             @for (finding of verdict.outcome?.last_findings ?? []; track $index) { <p>{{ finding }}</p> }
             @if (verdict.status !== 'completed') { <p>This execution did not complete.</p> }
+            @if (verdict.result?.results_note; as note) {
+              <section class="results-note" aria-label="Agent results">
+                <h3>{{ verdict.status === 'completed' ? 'Kết quả' : 'Kết quả dở dang' }} — agent ghi lúc {{ note.modified_at * 1000 | date: 'HH:mm' : '+0700' }} ICT</h3>
+                <pre>{{ note.text }}</pre>
+                @if (note.truncated) { <p class="results-note-cut">Hiển thị 64 KB đầu tiên.</p> }
+              </section>
+            } @else { <p class="results-note-empty">Agent chưa ghi kết quả nào</p> }
             @if (shell.technicalDetails()) {
               @if (verdict.report) { <details><summary>Agent report</summary><pre>{{ verdict.report }}</pre></details> }
               <details><summary>Execution details and error stack</summary><pre>{{ verdict.details | json }}</pre><pre>{{ verdict.outcome | json }}</pre></details>

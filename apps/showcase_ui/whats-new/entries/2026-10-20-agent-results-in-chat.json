@@ -1,0 +1,7 @@
+{
+  "id": "2026-10-20-agent-results-in-chat",
+  "date": "2026-10-20",
+  "title": "A run that stops early still shows what the agent finished",
+  "body": "Under the verdict you see a results table with each item marked PASS, FAIL, BLOCKED or NOT TESTED, plus the time the agent wrote it. If the agent wrote nothing, the chat says so.",
+  "issues": ["CHE-1894"]
+}
