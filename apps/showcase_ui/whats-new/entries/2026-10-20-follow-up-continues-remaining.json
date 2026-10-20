@@ -1,0 +1,7 @@
+{
+  "id": "2026-10-20-follow-up-continues-remaining",
+  "date": "2026-10-20",
+  "title": "Typing \"tiếp tục\" after an interrupted run continues the remaining items",
+  "body": "The agent now sees the previous results table. It keeps the items already done and runs only the ones marked NOT TESTED or BLOCKED, unless you say otherwise.",
+  "issues": ["CHE-1895"]
+}
