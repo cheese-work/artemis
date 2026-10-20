@@ -7,6 +7,14 @@ from apps.admin_console.routers import chats
 from artemis.data_engine.chat_sessions import ChatStore
 
 
+@pytest.fixture(params=["native", "no_nofollow"], autouse=True)
+def nofollow(request, monkeypatch):
+    # "no_nofollow" simulates a platform without os.O_NOFOLLOW (Windows) on this host.
+    if request.param == "no_nofollow":
+        monkeypatch.delattr(os, "O_NOFOLLOW")
+    return request.param
+
+
 @pytest.fixture
 def chat(library, monkeypatch):
     identity = library.seed("Check login", status="completed")
@@ -79,3 +87,24 @@ async def test_other_owner_cannot_read_note(qa2, chat, library):
     assert response.status_code == 200
     assert "private" not in response.text
     assert response.json()["results"][-1]["results_note"] is None
+
+
+@pytest.mark.asyncio
+async def test_note_swapped_for_a_link_at_open_is_ignored(qa, chat, library, tmp_path, monkeypatch):
+    library.write(chat, "notes/results.md", "mine")
+    outside = tmp_path / "secret.md"
+    outside.write_text("not yours")
+    real_open = os.open
+    note = library.traces / chat / "notes" / "results.md"
+
+    def swapped_open(path, flags, *args, **kwargs):
+        if path == note:  # the path check passed; now it becomes a link
+            note.unlink()
+            note.symlink_to(outside)
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(chats.os, "open", swapped_open)
+
+    body = (await qa.get(f"/api/chats/{chat}")).json()
+
+    assert body["results"][-1]["results_note"] is None

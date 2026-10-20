@@ -142,9 +142,13 @@ def _results_note(turn_id):
     try:
         if not path.resolve().is_relative_to(TRACES_PATH.resolve()):
             return None
-        with os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW), "rb") as file:
+        # No O_NOFOLLOW (Windows): open, then require the opened file to be the one at the path.
+        nofollow = getattr(os, "O_NOFOLLOW", 0)
+        with os.fdopen(os.open(path, os.O_RDONLY | nofollow), "rb") as file:
             info = os.fstat(file.fileno())
             if not stat.S_ISREG(info.st_mode):
+                return None
+            if not nofollow and not os.path.samestat(info, os.lstat(path)):
                 return None
             data = file.read(RESULTS_NOTE_LIMIT + 1)
     except OSError:
