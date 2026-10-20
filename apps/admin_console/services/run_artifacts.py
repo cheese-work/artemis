@@ -322,6 +322,8 @@ def open_under(root: Path, candidate: Path) -> BinaryIO:
     if found is None:
         raise UnsafePath(errno.EXDEV, "outside storage")
     base, parts = found
+    if not hasattr(os, "O_NOFOLLOW"):  # Windows: no O_NOFOLLOW or dir_fd walk
+        return _open_where_it_lives(base, parts)
     fd = os.open(base, os.O_RDONLY | os.O_DIRECTORY)
     try:
         for part in parts[:-1]:
@@ -339,6 +341,43 @@ def open_under(root: Path, candidate: Path) -> BinaryIO:
         os.close(file_fd)
         raise UnsafePath(errno.EINVAL, "not a regular file")
     return os.fdopen(file_fd, "rb")
+
+
+def _handle_path(fd: int) -> str:
+    """Where the OS says the open file really is, links resolved, as of the open handle."""
+    if os.name != "nt":  # stand-in for tests on a host without Windows
+        return os.readlink(f"/proc/self/fd/{fd}")
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+
+    get_final_path = ctypes.WinDLL("kernel32", use_last_error=True).GetFinalPathNameByHandleW
+    get_final_path.argtypes = [wintypes.HANDLE, wintypes.LPWSTR, wintypes.DWORD, wintypes.DWORD]
+    get_final_path.restype = wintypes.DWORD
+    buffer = ctypes.create_unicode_buffer(32768)
+    if not get_final_path(msvcrt.get_osfhandle(fd), buffer, len(buffer), 0):
+        raise ctypes.WinError(ctypes.get_last_error())
+    return buffer.value.removeprefix("\\\\?\\")
+
+
+def _open_where_it_lives(base: Path, parts: tuple[str, ...]) -> BinaryIO:
+    """Open ``base/parts``, then refuse it unless the open handle is exactly that file.
+
+    A link in any component, even one swapped in during the open, makes the handle
+    resolve elsewhere, so it fails the comparison instead of being followed.
+    """
+    path = base.joinpath(*parts)
+    expected = os.path.join(os.path.realpath(base), *parts)  # only the root may be a link
+    fd = os.open(path, os.O_RDONLY | getattr(os, "O_BINARY", 0))
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise UnsafePath(errno.EINVAL, "not a regular file")
+        if os.path.normcase(_handle_path(fd)) != os.path.normcase(expected.removeprefix("\\\\?\\")):
+            raise UnsafePath(errno.ELOOP, "link in path")
+        return os.fdopen(fd, "rb")
+    except BaseException:
+        os.close(fd)
+        raise
 
 
 def recorded_videos(db_path, session_id: str) -> list[Path]:

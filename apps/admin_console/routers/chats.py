@@ -30,6 +30,7 @@ from apps.admin_console.database.repositories.step_repository import step_repo
 from apps.admin_console.services.media_service import media_service
 from apps.admin_console.services.automatic_prompt_tips import read_tip
 from apps.admin_console.services.qa_results import result_for_turn
+from apps.admin_console.services.run_artifacts import open_under
 
 router = APIRouter(tags=["chat sessions"])
 
@@ -140,16 +141,8 @@ def _results_note(turn_id):
     """The agent's results.md for a turn (at most 64 KB), or None; never follows a link out."""
     path = TRACES_PATH / turn_id / "notes" / "results.md"
     try:
-        if not path.resolve().is_relative_to(TRACES_PATH.resolve()):
-            return None
-        # No O_NOFOLLOW (Windows): open, then require the opened file to be the one at the path.
-        nofollow = getattr(os, "O_NOFOLLOW", 0)
-        with os.fdopen(os.open(path, os.O_RDONLY | nofollow), "rb") as file:
+        with open_under(TRACES_PATH, path) as file:
             info = os.fstat(file.fileno())
-            if not stat.S_ISREG(info.st_mode):
-                return None
-            if not nofollow and not os.path.samestat(info, os.lstat(path)):
-                return None
             data = file.read(RESULTS_NOTE_LIMIT + 1)
     except OSError:
         return None
