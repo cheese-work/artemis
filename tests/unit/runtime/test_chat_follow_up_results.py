@@ -127,7 +127,7 @@ async def test_failed_copy_does_not_stop_the_turn(store, traces, monkeypatch):
     def refuse(*args, **kwargs):
         raise PermissionError("read-only")
 
-    monkeypatch.setattr(chat_session_worker.shutil, "copy2", refuse)
+    monkeypatch.setattr(chat_session_worker.shutil, "copyfileobj", refuse)
 
     turn = await _run_turn_two(store, traces)
 
@@ -136,8 +136,8 @@ async def test_failed_copy_does_not_stop_the_turn(store, traces, monkeypatch):
 
 @pytest.fixture
 def no_nofollow(monkeypatch):
-    """Windows Python has no os.O_NOFOLLOW."""
-    monkeypatch.delattr(os, "O_NOFOLLOW")
+    """Windows Python has no os.O_NOFOLLOW; there the flag is already absent."""
+    monkeypatch.delattr(os, "O_NOFOLLOW", raising=False)
 
 
 @pytest.mark.asyncio
@@ -173,9 +173,117 @@ async def test_unexpected_carry_error_still_runs_the_turn(store, traces, monkeyp
     def broken(*args, **kwargs):
         raise AttributeError("platform surprise")
 
-    monkeypatch.setattr(chat_session_worker, "_read_note", broken)
+    monkeypatch.setattr(chat_session_worker, "_open_note", broken)
 
     turn = await _run_turn_two(store, traces)
 
     assert follow_up_goal(turn) == "tiếp tục"
     assert store.turn(turn["turn_id"])["status"] == "completed"
+
+
+SECRET = "SECRET outside the trace tree"
+
+
+@pytest.fixture(params=["pinned", "flag_absent"])
+def mode(request, monkeypatch):
+    """Both read strategies: descriptor-pinned walk, and the platform without O_NOFOLLOW."""
+    if request.param == "flag_absent":
+        monkeypatch.delattr(os, "O_NOFOLLOW", raising=False)
+    return request.param
+
+
+@pytest.fixture
+def outside(tmp_path):
+    folder = tmp_path / "outside"
+    folder.mkdir()
+    (folder / "results.md").write_text(SECRET)
+    return folder
+
+
+def _swap_once(monkeypatch, names, swap):
+    """Run swap() just before the first os.open of one of names: a deterministic race."""
+    real_open = os.open
+    fired = []
+
+    def racing_open(path, *args, **kwargs):
+        if not fired and os.path.basename(os.fspath(path)) in names:
+            fired.append(path)
+            swap()
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", racing_open)
+    return fired
+
+
+def _assert_nothing_leaked(turn, traces):
+    copy = traces / turn["turn_id"] / "notes" / "results.md"
+    assert not copy.exists() or SECRET not in copy.read_text(encoding="utf-8")
+    assert SECRET not in follow_up_goal(turn)
+
+
+@pytest.mark.asyncio
+async def test_leaf_swapped_for_a_link_before_open_is_not_followed(
+    store, traces, outside, mode, monkeypatch
+):
+    leaf = _write(traces, "run", "results.md", TABLE)
+
+    def swap():
+        leaf.unlink()
+        leaf.symlink_to(outside / "results.md")
+
+    fired = _swap_once(monkeypatch, {"results.md"}, swap)
+
+    turn = await _run_turn_two(store, traces)
+
+    assert fired
+    _assert_nothing_leaked(turn, traces)
+    assert store.turn(turn["turn_id"])["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_ancestor_swapped_for_a_link_is_not_followed(
+    store, traces, outside, mode, monkeypatch
+):
+    _write(traces, "run", "results.md", TABLE)
+    notes = traces / "run" / "notes"
+
+    def swap():
+        notes.rename(traces / "run" / "notes-real")
+        notes.symlink_to(outside, target_is_directory=True)
+
+    fired = _swap_once(monkeypatch, {"notes", "results.md"}, swap)
+
+    turn = await _run_turn_two(store, traces)
+
+    assert fired
+    _assert_nothing_leaked(turn, traces)
+    assert store.turn(turn["turn_id"])["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_source_swapped_while_copying_does_not_change_the_copy(
+    store, traces, outside, mode, monkeypatch
+):
+    leaf = _write(traces, "run", "results.md", TABLE)
+    real_copy = chat_session_worker.shutil.copyfileobj
+    swapped = []
+
+    def swap_then_copy(*args, **kwargs):
+        leaf.unlink()
+        leaf.symlink_to(outside / "results.md")
+        swapped.append(True)
+        return real_copy(*args, **kwargs)
+
+    monkeypatch.setattr(chat_session_worker.shutil, "copyfileobj", swap_then_copy)
+
+    turn = await _run_turn_two(store, traces)
+
+    assert swapped
+    copy = traces / turn["turn_id"] / "notes" / "results.md"
+    assert copy.read_text(encoding="utf-8") == TABLE
+    _assert_nothing_leaked(turn, traces)
+
+
+@pytest.mark.skipif(not hasattr(os, "O_DIRECTORY"), reason="POSIX descriptor-relative opens")
+def test_posix_reads_walk_the_tree_by_descriptor():
+    assert chat_session_worker._OPEN_PINS_PARENTS

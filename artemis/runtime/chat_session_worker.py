@@ -7,6 +7,7 @@ import sqlite3
 import stat
 import threading
 import time
+from pathlib import Path
 
 from artemis.config import TRACES_PATH
 from artemis.data_engine.chat_sessions import TERMINAL
@@ -18,41 +19,102 @@ logger = logging.getLogger(__name__)
 NOTE_LIMIT = 64 * 1024
 
 
-def _read_note(turn_id, name):
-    """A turn's note as (text, path), or None; never follows a link and reads at most 64 KB."""
-    path = TRACES_PATH / turn_id / "notes" / name
-    if path.is_symlink():
-        return None
+# Descriptor-relative opens need O_DIRECTORY and dir_fd support (POSIX); checked once at import.
+_OPEN_PINS_PARENTS = hasattr(os, "O_DIRECTORY") and os.open in os.supports_dir_fd
+
+
+def _open_pinned(parts):
+    """Walk from TRACES_PATH one component at a time; no step may follow a link."""
+    flags = os.O_RDONLY | os.O_NOFOLLOW
+    dir_fd = os.open(TRACES_PATH, os.O_RDONLY | os.O_DIRECTORY)
     try:
-        # Windows has no O_NOFOLLOW; is_symlink above is the check there.
-        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
-        with os.fdopen(os.open(path, flags), "rb") as file:
-            if not stat.S_ISREG(os.fstat(file.fileno()).st_mode):
-                return None
-            return file.read(NOTE_LIMIT).decode("utf-8", errors="ignore"), path
+        for part in parts[:-1]:
+            next_fd = os.open(part, flags | os.O_DIRECTORY, dir_fd=dir_fd)
+            os.close(dir_fd)
+            dir_fd = next_fd
+        return os.open(parts[-1], flags, dir_fd=dir_fd)
+    finally:
+        os.close(dir_fd)
+
+
+def _open_checked(parts):
+    """Without O_NOFOLLOW (Windows): reject links, open, then confirm the path still names that file."""
+    root = Path(os.path.realpath(TRACES_PATH))
+    path = root.joinpath(*parts)
+    if any(root.joinpath(*parts[:depth]).is_symlink() for depth in range(1, len(parts) + 1)):
+        raise OSError("link in note path")
+    fd = os.open(path, os.O_RDONLY | getattr(os, "O_BINARY", 0))
+    same = False
+    try:
+        same = (
+            os.path.samestat(os.fstat(fd), os.stat(path, follow_symlinks=False))
+            and Path(os.path.realpath(path)) == path
+        )
+    finally:
+        if not same:
+            os.close(fd)
+    if not same:
+        raise OSError("note path changed while opening")
+    return fd
+
+
+def _open_note(turn_id, name):
+    """A turn's note opened read-only and binary, or None; links in the path are refused.
+
+    Every later read and copy uses the returned handle, never the path again.
+    """
+    parts = (turn_id, "notes", name)
+    try:
+        pinned = _OPEN_PINS_PARENTS and hasattr(os, "O_NOFOLLOW")
+        file = os.fdopen(_open_pinned(parts) if pinned else _open_checked(parts), "rb")
     except OSError:
         return None
+    if not stat.S_ISREG(os.fstat(file.fileno()).st_mode):
+        file.close()
+        return None
+    return file
+
+
+def _read_note(turn_id, name):
+    """The first 64 KB of a turn's note as text, or None."""
+    file = _open_note(turn_id, name)
+    if file is None:
+        return None
+    with file:
+        return file.read(NOTE_LIMIT).decode("utf-8", errors="ignore")
+
+
+def _copy_note(file, path):
+    """Write the whole open note to a new file, keeping its mtime; the destination is not a link."""
+    info = os.fstat(file.fileno())
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0)
+    with os.fdopen(os.open(path, flags | getattr(os, "O_BINARY", 0), 0o644), "wb") as out:
+        shutil.copyfileobj(file, out)
+    os.utime(path, ns=(info.st_atime_ns, info.st_mtime_ns))
 
 
 def carry_results(store, identity, turn):
     """Copy the latest earlier results.md into the new turn; return the context its goal needs."""
     earlier = [t for t in store.get(identity)["turns"] if t["number"] < turn["number"]]
     for previous in reversed(earlier):
-        found = _read_note(previous["turn_id"], "results.md")
-        if found:
+        file = _open_note(previous["turn_id"], "results.md")
+        if file:
             break
     else:
         return None
-    results, source = found
-    target = TRACES_PATH / turn["turn_id"] / "notes"
-    try:
-        target.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source, target / "results.md")
-    except OSError:
-        logger.warning("Could not carry results.md into turn %s", turn["turn_id"], exc_info=True)
-        return None
-    report = _read_note(earlier[-1]["turn_id"], "output.md")
-    return {"results": results, "report": report[0] if report else None}
+    with file:
+        results = file.read(NOTE_LIMIT).decode("utf-8", errors="ignore")
+        file.seek(0)
+        target = TRACES_PATH / turn["turn_id"] / "notes"
+        try:
+            target.mkdir(parents=True, exist_ok=True)
+            _copy_note(file, target / "results.md")
+        except OSError:
+            logger.warning(
+                "Could not carry results.md into turn %s", turn["turn_id"], exc_info=True
+            )
+            return None
+    return {"results": results, "report": _read_note(earlier[-1]["turn_id"], "output.md")}
 
 
 def follow_up_goal(turn):
