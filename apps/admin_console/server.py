@@ -102,7 +102,7 @@ from artemis.config import (
 )
 from artemis.resources import get_bundled_showcase_dist
 from artemis.runtime.lifecycle import InterruptReason
-from apps.admin_console.services import failure_ledger, run_retention
+from apps.admin_console.services import failure_ledger, qa_results, run_retention
 from apps.admin_console.services import device_reconciler
 from apps.admin_console.services.device_identity import device_identity
 from apps.admin_console.services.host_registry import host_agent_enabled, host_registry
@@ -282,6 +282,7 @@ async def on_startup():
     if PREVIEW_PROFILE:
         initialize_preview_fixtures(PREVIEW_ROOT, app.state.access_config)
         return
+    qa_results.activate(session_repo.db_path, app.state.access_config.admin_emails)
     from apps.admin_console.services.config_store import ConfigStoreError
     from apps.admin_console.services.provider_settings import get_provider_settings
 

@@ -1,4 +1,6 @@
+from datetime import datetime
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -358,6 +360,24 @@ def ensure_schema(connection: sqlite3.Connection) -> None:
     connection.execute(
         "CREATE INDEX IF NOT EXISTS qa_results_latest ON qa_results(turn_id, version DESC)"
     )
+    connection.execute(
+        "CREATE TABLE IF NOT EXISTS qa_result_activation ("
+        "singleton INTEGER PRIMARY KEY CHECK(singleton=1), activated_at REAL NOT NULL, "
+        "admin_emails TEXT NOT NULL)"
+    )
+    connection.execute(
+        "CREATE TABLE IF NOT EXISTS qa_result_audit ("
+        "turn_id TEXT NOT NULL, old_version INTEGER NOT NULL, new_version INTEGER NOT NULL, "
+        "actor TEXT NOT NULL, reason TEXT NOT NULL, created_at REAL NOT NULL, "
+        "old_result_json TEXT NOT NULL, new_result_json TEXT NOT NULL, "
+        "PRIMARY KEY(turn_id, new_version))"
+    )
+    for operation in ("UPDATE", "DELETE"):
+        connection.execute(
+            f"CREATE TRIGGER IF NOT EXISTS qa_result_audit_no_{operation.lower()} "
+            f"BEFORE {operation} ON qa_result_audit BEGIN "
+            "SELECT RAISE(ABORT, 'qa_result_audit is append-only'); END"
+        )
 
 
 def _record(row):
@@ -396,7 +416,11 @@ def record_result(db_path, turn_id, result, *, label_state, source, now=None):
         latest = _latest(connection, turn_id)
         if latest:
             old_category = latest["result"].get("category")
-            if latest["label_state"] in {"cancelled", "error"} or old_category != "unknown":
+            if (
+                latest["source"] == "admin"
+                or latest["label_state"] in {"cancelled", "error"}
+                or old_category != "unknown"
+            ):
                 connection.commit()
                 return latest
             if category == "unknown" and not (
@@ -541,6 +565,7 @@ def _with_turn_metadata(record, turn_id, turn_index, turn_count):
     result["turn_count"] = turn_count
     result["label_state"] = record["label_state"]
     result["source"] = record["source"]
+    result["updated"] = record["version"] > 1
     return result
 
 
@@ -599,3 +624,249 @@ def result_for_turn(
         now=current_time,
     )
     return _with_turn_metadata(record, turn_id, turn_index, turn_count)
+
+
+DEFAULT_BACKFILL_SINCE = datetime.fromisoformat("2026-10-09T00:00:00+07:00").timestamp()
+MAX_MAINTENANCE_ROWS = 1000
+
+
+def activation(db_path):
+    with db_session(db_path) as connection:
+        ensure_schema(connection)
+        row = connection.execute(
+            "SELECT activated_at, admin_emails FROM qa_result_activation"
+        ).fetchone()
+    return {"activated_at": row[0], "admin_emails": json.loads(row[1])} if row else None
+
+
+def activate(db_path, admin_emails, *, now=None):
+    activated_at = time.time() if now is None else float(now)
+    if not math.isfinite(activated_at) or activated_at < 0:
+        raise ValueError("invalid_activation_timestamp")
+    snapshot = sorted({email.strip().casefold() for email in admin_emails if email.strip()})
+    with db_session(db_path) as connection:
+        ensure_schema(connection)
+        connection.execute(
+            "INSERT OR IGNORE INTO qa_result_activation VALUES (1, ?, ?)",
+            (activated_at, json.dumps(snapshot)),
+        )
+        connection.commit()
+    return activation(db_path)
+
+
+def _maintenance_bounds(since, until, limit):
+    since = float(since)
+    until = time.time() if until is None else float(until)
+    if (
+        type(limit) is not int
+        or not 1 <= limit <= MAX_MAINTENANCE_ROWS
+        or not math.isfinite(since)
+        or not math.isfinite(until)
+        or since < 0
+        or since >= until
+    ):
+        raise ValueError("invalid_maintenance_bounds")
+    return since, until
+
+
+def _turns_query(connection):
+    has_chat = connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='chat_turns'"
+    ).fetchone()
+    chat_ids = " UNION SELECT turn_id FROM chat_turns" if has_chat else ""
+    chat_join = (
+        "LEFT JOIN chat_turns t ON t.turn_id=ids.turn_id "
+        "LEFT JOIN run_meta root_meta ON root_meta.session_id=t.session_id "
+        if has_chat
+        else ""
+    )
+    started = "coalesce(s.start_time, t.created_at)" if has_chat else "s.start_time"
+    status = (
+        "CASE WHEN s.status IN ('completed','failed','cancelled','interrupted') "
+        "THEN s.status ELSE coalesce(t.status, s.status) END"
+        if has_chat
+        else "s.status"
+    )
+    owner = "coalesce(m.requested_by, root_meta.requested_by)" if has_chat else "m.requested_by"
+    index = "coalesce(t.number, 1)" if has_chat else "1"
+    count = (
+        "CASE WHEN t.turn_id IS NULL THEN 1 ELSE "
+        "(SELECT count(*) FROM chat_turns siblings WHERE siblings.session_id=t.session_id) END"
+        if has_chat
+        else "1"
+    )
+    return (
+        f"WITH ids AS (SELECT session_id AS turn_id FROM sessions{chat_ids}), turns AS ("
+        f"SELECT ids.turn_id, {started} AS started_at, {status} AS status, "
+        f"{owner} AS requested_by, {index} AS turn_index, {count} AS turn_count, "
+        "coalesce(s.end_time, (SELECT max(created_at) FROM lifecycle_outbox o "
+        "WHERE o.session_id=ids.turn_id)) AS ended_at, "
+        "coalesce(s.interrupt_reason, (SELECT interrupt_reason FROM lifecycle_outbox o "
+        "WHERE o.session_id=ids.turn_id ORDER BY created_at DESC LIMIT 1)) AS interrupt_reason "
+        "FROM ids LEFT JOIN sessions s ON s.session_id=ids.turn_id "
+        "LEFT JOIN run_meta m ON m.session_id=ids.turn_id "
+        f"{chat_join}) "
+    )
+
+
+def backfill(db_path, traces_dir, *, since=DEFAULT_BACKFILL_SINCE, until=None, limit=100):
+    from apps.admin_console.services import failure_ledger
+    from artemis.runtime.lifecycle import ensure_lifecycle_schema
+
+    since, until = _maintenance_bounds(since, until, limit)
+    with db_session(db_path) as connection:
+        ensure_schema(connection)
+        ensure_lifecycle_schema(connection)
+        connection.commit()
+        rows = connection.execute(
+            _turns_query(connection) + "SELECT * FROM turns WHERE ended_at>=? AND ended_at<? "
+            "AND status IN ('completed','failed','interrupted','cancelled') "
+            "AND NOT EXISTS (SELECT 1 FROM qa_results q WHERE q.turn_id=turns.turn_id) "
+            "ORDER BY ended_at, turn_id LIMIT ?",
+            (since, until, limit),
+        ).fetchall()
+    processed = []
+    for row in rows:
+        failure_ledger.collect(row["turn_id"], db_path=db_path, traces_dir=traces_dir)
+        result_for_turn(
+            db_path, traces_dir, row["turn_id"], row["status"], row["turn_index"], row["turn_count"]
+        )
+        processed.append(row["turn_id"])
+    return {"processed": len(processed), "turn_ids": processed, "since": since, "until": until}
+
+
+def replay_abandoned(db_path, *, since=DEFAULT_BACKFILL_SINCE, until=None, limit=100):
+    from artemis.runtime.lifecycle import ensure_lifecycle_schema
+
+    since, until = _maintenance_bounds(since, until, limit)
+    with db_session(db_path) as connection:
+        ensure_lifecycle_schema(connection)
+        connection.commit()
+        connection.execute("BEGIN IMMEDIATE")
+        rows = connection.execute(
+            "SELECT dedupe_id, abandoned FROM lifecycle_outbox "
+            "WHERE created_at>=? AND created_at<? "
+            "AND instr(',' || coalesce(abandoned,'') || ',', ',classify,')>0 "
+            "ORDER BY created_at, dedupe_id LIMIT ?",
+            (since, until, limit),
+        ).fetchall()
+        for row in rows:
+            abandoned = ",".join(
+                token for token in row["abandoned"].split(",") if token != "classify"
+            )
+            connection.execute(
+                "UPDATE lifecycle_outbox SET classified_at=NULL, classify_attempts=0, "
+                "delivered_at=NULL, abandoned=?, classify_replay_at=? WHERE dedupe_id=?",
+                (abandoned or None, time.time(), row["dedupe_id"]),
+            )
+        connection.commit()
+    return len(rows)
+
+
+def relabel_result(db_path, turn_id, *, category, actor, reason, now=None):
+    if category not in _KNOWN_CATEGORIES | {"unknown"} or not actor or not reason.strip():
+        raise ValueError("invalid_relabel")
+    created_at = time.time() if now is None else float(now)
+    with db_session(db_path) as connection:
+        ensure_schema(connection)
+        connection.execute("BEGIN IMMEDIATE")
+        previous = _latest(connection, turn_id)
+        if previous is None:
+            raise KeyError(turn_id)
+        if previous["label_state"] in {"pending", "cancelled"}:
+            raise ValueError("relabel_requires_terminal_result")
+        evidence = previous["result"].get("evidence") or {}
+        if category == "app_defect":
+            if not evidence.get("step") or not evidence.get("screenshot_url"):
+                raise ValueError("app_defect_requires_evidence")
+            result = _entry("fail.app_defect", "fail", category, "self_reported", "admin")
+        else:
+            result = _blocked_for_category(category, None, "admin")
+        result["evidence"] = evidence
+        payload = json.dumps(result, ensure_ascii=False, separators=(",", ":"))
+        version = previous["version"] + 1
+        connection.execute(
+            "INSERT INTO qa_results VALUES (?, ?, 'final', 'admin', ?, ?, ?)",
+            (turn_id, version, category, payload, created_at),
+        )
+        connection.execute(
+            "INSERT INTO qa_result_audit VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                turn_id,
+                previous["version"],
+                version,
+                actor,
+                reason.strip(),
+                created_at,
+                json.dumps(previous["result"], ensure_ascii=False),
+                payload,
+            ),
+        )
+        record = _latest(connection, turn_id)
+        connection.commit()
+    return record
+
+
+def gate_a(db_path, *, now=None):
+    from artemis.runtime.lifecycle import ensure_lifecycle_schema
+
+    snapshot = activation(db_path)
+    if snapshot is None:
+        raise ValueError("qa_results_not_activated")
+    current_time = time.time() if now is None else float(now)
+    started = snapshot["activated_at"]
+    end = started + 7 * 86400
+    admins = frozenset(snapshot["admin_emails"])
+    with db_session(db_path) as connection:
+        ensure_lifecycle_schema(connection)
+        connection.commit()
+        rows = connection.execute(
+            _turns_query(connection)
+            + "SELECT turns.*, q.label_state, q.result_json FROM turns LEFT JOIN qa_results q "
+            "ON q.turn_id=turns.turn_id AND q.version="
+            "(SELECT max(version) FROM qa_results latest WHERE latest.turn_id=turns.turn_id) "
+            "WHERE started_at>=? AND started_at<? AND started_at<=?",
+            (started, end, current_time),
+        ).fetchall()
+    qa_turns = [row for row in rows if (row["requested_by"] or "").casefold() not in admins]
+    denominator = [
+        row for row in qa_turns if row["status"] not in {"cancelled", "running", "queued", "paused"}
+    ]
+    numerator = 0
+    for row in denominator:
+        result = json.loads(row["result_json"]) if row["result_json"] else {}
+        if (
+            row["label_state"] == "final"
+            and result.get("verdict") in {"pass", "fail", "blocked"}
+            and (
+                result.get("category") in _KNOWN_CATEGORIES
+                or result.get("verdict") == "pass"
+                and result.get("category") is None
+            )
+            and result.get("catalog_key") not in {"blocked.evidence", "blocked.check"}
+        ):
+            numerator += 1
+    cancelled = sum(row["status"] == "cancelled" for row in qa_turns)
+    deploy_killed = sum(row["interrupt_reason"] == "deploy_cut" for row in rows)
+    total = len(denominator)
+    return {
+        "activated_at": started,
+        "window_end": end,
+        "window_complete": current_time >= end,
+        "N": total,
+        "denominator": total,
+        "numerator": numerator,
+        "coverage": numerator / total if total else 0.0,
+        "cancelled": cancelled,
+        "qa_turns": len(qa_turns),
+        "cancel_rate": cancelled / len(qa_turns) if qa_turns else 0.0,
+        "legacy": sum(row["label_state"] == "legacy" for row in qa_turns),
+        "pending": sum(
+            row["label_state"] == "pending"
+            or (row["result_json"] is None and row["status"] != "cancelled")
+            or row["status"] in {"running", "queued", "paused"}
+            for row in qa_turns
+        ),
+        "deploy_killed": deploy_killed,
+        "passed": total > 0 and numerator * 5 >= total * 4 and deploy_killed == 0,
+    }

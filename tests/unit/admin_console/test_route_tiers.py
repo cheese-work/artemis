@@ -157,6 +157,17 @@ def test_deploy_cut_is_loopback_tier_only_for_post():
     assert route_tier("/api/system/drain/cut", set(), is_websocket=True) is None
 
 
+@pytest.mark.parametrize(
+    ("path", "method"),
+    [
+        ("/api/system/qa-results/gate-a", "GET"),
+        ("/api/system/qa-results/{turn_id}/relabel", "POST"),
+    ],
+)
+def test_qa_result_admin_routes_require_admin_tier(path, method):
+    assert route_tier(path, {method}) == "admin"
+
+
 HOST_ROUTES = [
     ("/api/hosts", {"GET"}, "public"),
     ("/api/hosts/enrollment-codes", {"POST"}, "admin"),

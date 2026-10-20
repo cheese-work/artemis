@@ -1198,7 +1198,17 @@ class TaskQueueService:
             except Exception:
                 logger.warning("Could not classify outcome %s", event_id, exc_info=True)
                 try:
-                    session_repo.lifecycle.note_failed_attempt(event_id, "classify")
+                    failures = session_repo.lifecycle.note_failed_attempt(event_id, "classify")
+                    if failures >= cls._MAX_DELIVERY_ATTEMPTS:
+                        session_repo.lifecycle.mark_delivered(event_id, "classify", abandoned=True)
+                        acknowledged = True
+                        logger.error(
+                            "Abandoning classify event=%s turn=%s after %d attempts",
+                            event_id,
+                            event.get("session_id"),
+                            failures,
+                        )
+                        continue
                 except Exception:
                     logger.warning(
                         "Could not record classify attempt for %s", event_id, exc_info=True
@@ -1219,6 +1229,13 @@ class TaskQueueService:
 
         session_id = str(event["session_id"])
         db_path = session_repo.lifecycle.db_path
+        snapshot = qa_results.activation(db_path)
+        if (
+            snapshot
+            and event["created_at"] < snapshot["activated_at"]
+            and not event.get("classify_replay_at")
+        ):
+            return
         failure_ledger.collect(session_id, db_path=db_path)
         with sqlite3.connect(db_path) as connection:
             chat_turns = connection.execute(

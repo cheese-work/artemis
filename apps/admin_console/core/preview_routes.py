@@ -134,6 +134,8 @@ DISABLED = frozenset(
         "GET /api/system/failures",
         "POST /api/system/failures/collect",
         "POST /api/system/failures/digest",
+        "GET /api/system/qa-results/gate-a",
+        "POST /api/system/qa-results/{turn_id}/relabel",
         # Live configuration, credentials, ADB, emulator and server control.
         "GET /api/system/config",
         "PUT /api/system/config",
