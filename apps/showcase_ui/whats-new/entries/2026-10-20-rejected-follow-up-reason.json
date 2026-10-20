@@ -1,0 +1,7 @@
+{
+  "id": "2026-10-20-rejected-follow-up-reason",
+  "date": "2026-10-20",
+  "title": "A follow-up that cannot start now says why instead of waiting forever",
+  "body": "If the phone is not connected when you send a follow-up, the message fails with a reason. Reconnect the phone and send it again. A message that never started is closed after 2 minutes.",
+  "issues": ["CHE-1893"]
+}
