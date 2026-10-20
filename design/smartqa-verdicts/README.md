@@ -6,5 +6,5 @@ Source: [CHE-1649](mention://issue/01a1360f-199d-7302-8fef-05168bcb5993), decisi
 
 - Issue: [CHE-1649](mention://issue/01a1360f-199d-7302-8fef-05168bcb5993)
 - Pages in scope: Runs history card; run detail at `/sessions/:id`
-- Selected direction: C — Evidence inspector, `rev-3` at `f0d39f7bde31632e704720ae48107d67e0444727`.
+- Selected direction: C — Evidence inspector, `rev-5` at content commit `5c4f8077d4807733332a4dba173acd9571cbad39`.
 - Status: selection only; PR #220 remains draft and pending merge; design approval and UI admission remain gated.
