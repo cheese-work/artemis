@@ -320,14 +320,24 @@ def _swap_before_write_open(monkeypatch, swap):
     return fired
 
 
+def _listing(folder):
+    """Every entry under folder: a rejected swap must leave this unchanged."""
+    return sorted(str(path.relative_to(folder)) for path in folder.rglob("*"))
+
+
 @pytest.mark.asyncio
+@pytest.mark.parametrize("outside_file", ["present", "absent"])
 @pytest.mark.parametrize("swapped", ["notes", "turn"])
 async def test_destination_ancestor_swapped_for_a_link_does_not_redirect_the_write(
-    store, traces, outside, tmp_path, mode, monkeypatch, swapped
+    store, traces, outside, mode, monkeypatch, swapped, outside_file
 ):
     _write(traces, "run", "results.md", TABLE)
     (outside / "notes").mkdir()
     (outside / "notes" / "results.md").write_text(SECRET)
+    if outside_file == "absent":
+        (outside / "results.md").unlink()
+        (outside / "notes" / "results.md").unlink()
+    before = _listing(outside)
 
     def swap():
         victim = _turn_dir(traces) / "notes" if swapped == "notes" else _turn_dir(traces)
@@ -341,8 +351,36 @@ async def test_destination_ancestor_swapped_for_a_link_does_not_redirect_the_wri
     turn = await _run_turn_two(store, traces)
 
     assert fired
-    assert (outside / "results.md").read_text() == SECRET
-    assert (outside / "notes" / "results.md").read_text() == SECRET
+    assert _listing(outside) == before
+    if outside_file == "present":
+        assert (outside / "results.md").read_text() == SECRET
+        assert (outside / "notes" / "results.md").read_text() == SECRET
+    assert store.turn(turn["turn_id"])["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_destination_folder_swapped_between_creations_creates_nothing_outside(
+    store, traces, outside, mode, monkeypatch
+):
+    _write(traces, "run", "results.md", TABLE)
+    before = _listing(outside)
+    real_mkdir = os.mkdir
+    fired = []
+
+    def mkdir_then_swap(path, *args, **kwargs):
+        real_mkdir(path, *args, **kwargs)
+        if not fired and os.path.basename(os.fspath(path)) not in {"notes", "run"}:
+            fired.append(path)
+            turn_dir = _turn_dir(traces)
+            turn_dir.rename(turn_dir.with_name(turn_dir.name + "-real"))
+            turn_dir.symlink_to(outside, target_is_directory=True)
+
+    monkeypatch.setattr(os, "mkdir", mkdir_then_swap)
+
+    turn = await _run_turn_two(store, traces)
+
+    assert fired
+    assert _listing(outside) == before
     assert store.turn(turn["turn_id"])["status"] == "completed"
 
 
@@ -380,7 +418,7 @@ async def test_timestamp_update_does_not_follow_a_swapped_destination_leaf(
         if not fired:
             fired.append(target)
             leaf = _turn_dir(traces) / "notes" / "results.md"
-            leaf.unlink()
+            leaf.unlink(missing_ok=True)
             leaf.symlink_to(outside / "results.md")
         return real_utime(target, *args, **kwargs)
 
@@ -431,4 +469,53 @@ async def test_source_swapped_to_a_link_and_back_between_checks_is_not_read(
 
     assert fired
     _assert_nothing_leaked(turn, traces)
+    assert store.turn(turn["turn_id"])["status"] == "completed"
+
+
+def _hard_link(target, link):
+    link.unlink(missing_ok=True)
+    os.link(target, link)
+
+
+@pytest.mark.asyncio
+async def test_hard_linked_source_is_not_carried(store, traces, outside, mode):
+    notes = traces / "run" / "notes"
+    notes.mkdir(parents=True)
+    _hard_link(outside / "results.md", notes / "results.md")
+
+    turn = await _run_turn_two(store, traces)
+
+    assert follow_up_goal(turn) == "tiếp tục"
+    assert not (traces / turn["turn_id"] / "notes" / "results.md").exists()
+    assert store.turn(turn["turn_id"])["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_single_link_source_is_still_carried(store, traces, mode):
+    """Control: the hard-link refusal does not stop an ordinary note."""
+    _write(traces, "run", "results.md", TABLE)
+
+    turn = await _run_turn_two(store, traces)
+
+    assert (traces / turn["turn_id"] / "notes" / "results.md").read_text(encoding="utf-8") == TABLE
+    assert TABLE in follow_up_goal(turn)
+
+
+@pytest.mark.asyncio
+async def test_hard_linked_destination_never_writes_through_to_the_shared_file(
+    store, traces, outside, mode, monkeypatch
+):
+    _write(traces, "run", "results.md", TABLE)
+    real_mkdir = os.mkdir
+
+    def mkdir_then_plant(path, *args, **kwargs):
+        real_mkdir(path, *args, **kwargs)
+        if os.path.basename(os.fspath(path)) == "notes":
+            _hard_link(outside / "results.md", _turn_dir(traces) / "notes" / "results.md")
+
+    monkeypatch.setattr(os, "mkdir", mkdir_then_plant)
+
+    turn = await _run_turn_two(store, traces)
+
+    assert (outside / "results.md").read_text() == SECRET
     assert store.turn(turn["turn_id"])["status"] == "completed"
