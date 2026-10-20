@@ -132,3 +132,50 @@ async def test_failed_copy_does_not_stop_the_turn(store, traces, monkeypatch):
     turn = await _run_turn_two(store, traces)
 
     assert follow_up_goal(turn) == "tiếp tục"
+
+
+@pytest.fixture
+def no_nofollow(monkeypatch):
+    """Windows Python has no os.O_NOFOLLOW."""
+    monkeypatch.delattr(os, "O_NOFOLLOW")
+
+
+@pytest.mark.asyncio
+async def test_follow_up_runs_and_ends_when_platform_has_no_nofollow(store, traces, no_nofollow):
+    _write(traces, "run", "results.md", TABLE)
+
+    turn = await _run_turn_two(store, traces)
+
+    assert (traces / turn["turn_id"] / "notes" / "results.md").read_text(encoding="utf-8") == TABLE
+    assert TABLE in follow_up_goal(turn)
+    assert store.turn(turn["turn_id"])["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_symlinked_results_stay_rejected_without_nofollow(
+    store, traces, tmp_path, no_nofollow
+):
+    outside = tmp_path / "secret.md"
+    outside.write_text("not yours")
+    notes = traces / "run" / "notes"
+    notes.mkdir(parents=True)
+    (notes / "results.md").symlink_to(outside)
+
+    turn = await _run_turn_two(store, traces)
+
+    assert follow_up_goal(turn) == "tiếp tục"
+    assert not (traces / turn["turn_id"] / "notes" / "results.md").exists()
+    assert store.turn(turn["turn_id"])["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_unexpected_carry_error_still_runs_the_turn(store, traces, monkeypatch):
+    def broken(*args, **kwargs):
+        raise AttributeError("platform surprise")
+
+    monkeypatch.setattr(chat_session_worker, "_read_note", broken)
+
+    turn = await _run_turn_two(store, traces)
+
+    assert follow_up_goal(turn) == "tiếp tục"
+    assert store.turn(turn["turn_id"])["status"] == "completed"

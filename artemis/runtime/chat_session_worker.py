@@ -21,8 +21,12 @@ NOTE_LIMIT = 64 * 1024
 def _read_note(turn_id, name):
     """A turn's note as (text, path), or None; never follows a link and reads at most 64 KB."""
     path = TRACES_PATH / turn_id / "notes" / name
+    if path.is_symlink():
+        return None
     try:
-        with os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW), "rb") as file:
+        # Windows has no O_NOFOLLOW; is_symlink above is the check there.
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        with os.fdopen(os.open(path, flags), "rb") as file:
             if not stat.S_ISREG(os.fstat(file.fileno()).st_mode):
                 return None
             return file.read(NOTE_LIMIT).decode("utf-8", errors="ignore"), path
@@ -101,7 +105,12 @@ async def run_chat_session(store, identity, lease, execute, *, idle_seconds=300,
                 opening = store.pending(turn_id)
                 humans = [message["content"] for message in opening if message["role"] == "human"]
                 turn["goal"] = "\n\n".join(humans)
-                turn["resume_context"] = carry_results(store, identity, turn)
+                try:
+                    turn["resume_context"] = carry_results(store, identity, turn)
+                except Exception:
+                    # Carrying results is best effort: the turn must still run and end.
+                    logger.exception("Could not carry results into turn %s", turn_id)
+                    turn["resume_context"] = None
                 turn["history"] = json.dumps(store.model_history(identity), ensure_ascii=False)
                 for message in opening:
                     if message["role"] == "human":
