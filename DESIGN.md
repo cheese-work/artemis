@@ -263,9 +263,10 @@ Translucency and `backdrop-filter` are not used. The 28 existing blur surfaces (
 
 Design topics live in `design/<topic>/rev-<n>/` on a draft PR per topic (standard: `standards/general/design-record.md` in `cheese-work/multica-dotfiles`). Merging the design PR is Cheese's approval. The merge SHA is read from GitHub, never written here.
 
-| Topic | Revision | Direction | Design PR | Revision commit |
-|-------|----------|-----------|-----------|-----------------|
-| sessions-v2.1 | rev-4 | C — Inspector | #200 | `e8b93218c694f91a983c0933adfc72010b6c0009` |
+| Topic | Revision | Direction | Design PR | Revision commit | State |
+|-------|----------|-----------|-----------|-----------------|-------|
+| sessions-v2.1 | rev-4 | C — Inspector | #200 | `e8b93218c694f91a983c0933adfc72010b6c0009` | Approved by merge |
+| smartqa-verdicts | rev-3 | C — Evidence inspector | #220 (draft) | `f0d39f7bde31632e704720ae48107d67e0444727` | Selected; pending PR merge; not approved |
 
 ## Decisions Log
 | Date | Decision | Rationale |
@@ -283,3 +284,4 @@ Design topics live in `design/<topic>/rev-<n>/` on a draft PR per topic (standar
 | 2026-10-09 | Top app bar → left sidebar (≥ 1024 px); 48 px top bar + bottom tab bar below 800 px | Audit #7 and #10; Direction B layout |
 | 2026-10-09 | Radius 8/12 → 6/8; UI text 14 → 13 px | Direction B density |
 | 2026-10-13 | Sessions v2.1: direction C (Inspector) rev-4 — action-first step rows, Evidence inspector with marked Before screenshot, two-line composer with the locked phone chip | Cheese picked C on CHE-1601 and approved rev-4 ("approve", 13 Oct 2026, 23:19 ICT) |
+| 2026-10-20 | SmartQA verdicts: Direction C — Evidence inspector, rev-3, revision commit `f0d39f7bde31632e704720ae48107d67e0444727` | Cheese selected C in comment `01a1582e-46d8-7d81-a19f-f8ee0930e00a`; selection is not design approval and PR #220 remains pending merge |
