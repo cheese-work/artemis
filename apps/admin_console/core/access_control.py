@@ -681,7 +681,10 @@ _PUBLIC_GET_PATHS = {
     "/{full_path:path}",
 }
 
-_ADMIN_GET_PATHS = {"/api/system/providers"}
+_ADMIN_GET_PATHS = {
+    "/api/system/providers",
+    "/api/system/qa-results/gate-a",
+}
 
 # Admin reads that a mapped service principal may also call (see require_admin_or_service_read).
 _SERVICE_READ_GET_PATHS = {"/api/system/failures"}
@@ -689,6 +692,7 @@ _SERVICE_READ_GET_PATHS = {"/api/system/failures"}
 _ADMIN_MUTATING_PATHS = {
     "/api/system/failures/collect",
     "/api/system/failures/digest",
+    "/api/system/qa-results/{turn_id}/relabel",
     "/api/system/devices/select",
     "/api/system/adb/restart",
     "/api/system/adb/connect",
