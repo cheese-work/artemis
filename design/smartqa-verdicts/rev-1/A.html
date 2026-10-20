@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SmartQA verdicts rev-1 · A — Report</title>
+  <link rel="stylesheet" href="tokens.css">
+  <link rel="stylesheet" href="mock.css">
+</head>
+<body class="direction-a">
+  <header class="appbar">
+    <a class="brand" href="#run-view" aria-label="SmartQA home">
+      <span class="brand-mark"><svg class="icon-svg" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12.5 4.5 4.5L19 7.5"></path></svg></span>
+      <span>SmartQA</span>
+    </a>
+    <nav aria-label="Main navigation">
+      <ul class="topnav">
+        <li><a href="#workspace">Workspace</a></li>
+        <li><a href="#runs" aria-current="page">Runs</a></li>
+        <li><a href="#stats">Stats</a></li>
+        <li><a href="#setup">Setup</a></li>
+      </ul>
+    </nav>
+    <span class="appbar-spacer"></span>
+    <button class="user-menu" type="button" aria-label="Sample QA account">Q</button>
+  </header>
+
+  <div class="main-shell">
+    <aside class="run-list" id="run-list" aria-label="Runs history">
+      <div class="list-heading"><h1>Runs</h1><button class="icon-button" type="button" aria-label="Run list options"><svg class="icon-svg filled" viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1.5"></circle><circle cx="12" cy="12" r="1.5"></circle><circle cx="19" cy="12" r="1.5"></circle></svg></button></div>
+      <div class="list-tools">
+        <div class="search-field"><svg class="icon-svg" viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"></circle><path d="m15.5 15.5 5 5"></path></svg><span>Search runs</span></div>
+        <button class="icon-button" type="button" aria-label="Filter runs"><svg class="icon-svg" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16l-6.5 7v5.5L10.5 19v-7L4 5Z"></path></svg></button>
+      </div>
+      <article class="run-card selected" aria-current="page">
+        <div class="run-card-label"><span class="chip fail">Fail</span><span class="verification">Agent tự báo</span></div>
+        <p>App đang test (agent nhận định)</p>
+        <a href="#turn-2-step-7">Step 7 · Submit subscription</a>
+        <p class="meta">Xem bằng chứng rồi báo bug cho app</p>
+        <p class="meta">Phụ trách · App đang test (agent nhận định)</p>
+        <p class="turn-result">Kết quả của turn 2/4</p>
+      </article>
+      <article class="run-card">
+        <div class="run-card-label"><span class="chip pass">Pass</span><span class="verification">Agent tự báo</span></div>
+        <p>Agent tự báo hoàn thành</p>
+        <a href="#state-examples">Ảnh chụp cuối run</a>
+        <p class="meta">Xem ảnh chụp cuối run</p>
+        <p class="meta">Phụ trách · SmartQA-agent</p>
+        <p class="turn-result">Kết quả của turn 1/1</p>
+      </article>
+      <article class="run-card">
+        <div class="run-card-label"><span class="chip pass">Pass</span><span class="verification">Đã kiểm</span></div>
+        <p>Đã kiểm</p>
+        <a href="#state-examples">Kết quả kiểm tra</a>
+        <p class="meta">Xem kết quả kiểm tra</p>
+        <p class="meta">Phụ trách · SmartQA</p>
+        <p class="turn-result">Kết quả của turn 1/1</p>
+      </article>
+    </aside>
+
+    <main class="run-main" id="run-view">
+      <a class="back-link" href="#run-list"><svg class="icon-svg" viewBox="0 0 24 24" aria-hidden="true"><path d="M19 12H5m7-7-7 7 7 7"></path></svg> Runs</a>
+      <div class="run-layout">
+        <article class="verdict-card" aria-label="Current turn verdict">
+          <div aria-live="polite" aria-atomic="true">
+            <h2 class="result-label" id="verdict-label">
+              <span class="chip fail"><svg class="icon-svg" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M12 7v6m0 4h.01"></path></svg>Fail</span>
+              <span class="separator" aria-hidden="true">·</span>
+              <span class="verification">Agent tự báo</span>
+            </h2>
+          </div>
+          <p class="reason">App đang test (agent nhận định)</p>
+          <a class="evidence-jump" href="#turn-2-step-7" aria-controls="turn-2-step-7">
+            <svg class="icon-svg" viewBox="0 0 24 24" aria-hidden="true"><path d="M10 14 20 4m-7 0h7v7"></path><path d="M18 13v6H5V6h6"></path></svg>
+            Decisive evidence · Turn 2 · Step 7
+          </a>
+          <p class="action-line"><svg class="icon-svg" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14m-6-6 6 6-6 6"></path></svg><span>Xem bằng chứng rồi báo bug cho app</span></p>
+          <p class="responsible"><span>Phụ trách</span><strong>App đang test (agent nhận định)</strong></p>
+          <p class="turn-result">Kết quả của turn 2/4</p>
+        </article>
+
+        <section class="evidence-panel" id="evidence" aria-labelledby="evidence-heading">
+          <header class="panel-head"><h2 id="evidence-heading">Bằng chứng quyết định</h2><span>Turn 2 · Step 7</span></header>
+          <div class="evidence-body">
+            <a class="screenshot-link" href="#evidence-lightbox" aria-label="Open screenshot for step 7 in a lightbox">
+              <div class="phone-frame"><div class="phone-screen" role="img" aria-label="Synthetic subscription screen: payment button remains visible">
+                <div class="screen-bar"></div><strong>Monthly plan</strong><p>Subscription renewal</p><span class="screen-control">Continue</span>
+              </div></div>
+            </a>
+            <section class="step-card selected" id="turn-2-step-7" tabindex="-1" aria-label="Turn 2, step 7, selected evidence">
+              <header class="step-heading"><h2>Turn 2 · Step 7 — Submit subscription</h2><span>Selected</span></header>
+              <dl class="step-details">
+                <div><dt>Mong đợi</dt><dd>Confirmation appears and the plan is active.</dd></div>
+                <div><dt>Thực tế</dt><dd>The payment button remains visible; no confirmation appears.</dd></div>
+              </dl>
+            </section>
+          </div>
+        </section>
+      </div>
+
+      <section class="run-title" aria-label="Run details">
+        <h1>Monthly subscription checkout</h1>
+        <p class="mono">demo-run-1649-7f2c · 7 steps · 1m 42s</p>
+      </section>
+
+      <section class="state-section" id="state-examples" aria-labelledby="state-title">
+        <div class="state-heading"><h2 id="state-title">Other run states</h2><p>Each state has one visible, plain-language label.</p></div>
+        <div class="state-grid">
+          <article class="state-card"><h3>Loading</h3><div class="phone-screen" aria-hidden="true"><div class="screen-bar"></div><div class="screen-bar"></div></div></article>
+          <article class="state-card"><h3>Empty</h3><p>Select a run to review its result.</p></article>
+          <article class="state-card"><h3>Pending</h3><p><span class="chip pending">Đã kết thúc · Đang xác định kết quả</span></p></article>
+          <article class="state-card"><h3>Load error</h3><p>Không tải được kết quả · Thử lại</p><a class="retry" href="#state-examples">Thử lại</a></article>
+          <article class="state-card"><h3>Cancelled</h3><p><span class="chip neutral">Đã huỷ</span></p></article>
+          <article class="state-card"><h3>Legacy</h3><p>Run cũ — chưa có verdict</p></article>
+          <article class="state-card blocked-card">
+            <h3>Blocked · Môi trường QA</h3>
+            <div class="run-card-label"><span class="chip blocked">Blocked</span><span class="verification">verification: none</span></div>
+            <p>Điện thoại đang khoá</p>
+            <p class="meta">Mở khoá rồi chạy lại · Phụ trách: Môi trường QA</p>
+            <div class="blocked-actions">
+              <button class="copy-id" type="button" aria-label="Copy run ID demo-run-1649-blocked"><svg class="icon-svg" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 8h11v12H8z"></path><path d="M5 16H4V4h12v1"></path></svg><span class="mono">demo-run-1649-blocked</span></button>
+              <a class="help-link" href="../../../docs/smartqa-verdicts.md#qa_environment" aria-label="Why is this run blocked?">?</a>
+            </div>
+          </article>
+          <article class="state-card"><h3>Run active</h3><div class="active-hint"><svg class="icon-svg" viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.6-6 10-6 10 6 10 6-3.6 6-10 6-10-6-10-6Z"></path><circle cx="12" cy="12" r="2.5"></circle></svg><span>Giữ tab mở, không khoá máy</span></div></article>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div class="lightbox" id="evidence-lightbox" role="dialog" aria-modal="true" aria-labelledby="lightbox-title" tabindex="-1">
+    <div class="lightbox-content">
+      <h2 id="lightbox-title">Screenshot · Turn 2 · Step 7</h2>
+      <div class="phone-frame"><div class="phone-screen" role="img" aria-label="Synthetic subscription screen: payment button remains visible">
+        <div class="screen-bar"></div><strong>Monthly plan</strong><p>Subscription renewal</p><span class="screen-control">Continue</span>
+      </div></div>
+      <a class="lightbox-close" href="#evidence">Close screenshot</a>
+    </div>
+  </div>
+</body>
+</html>

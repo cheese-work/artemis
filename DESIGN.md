@@ -189,7 +189,7 @@ Loading: one `<link>` per provider in `index.html` with `display=swap`; remove t
 
 ## Layout
 
-- **Breakpoints:** 768px and 1200px, plus 1600px for a wider device board. Below 768px: one column, the nav collapses to icons, model and profile selectors stack under the goal, the re-run sheet is full screen. From 1200px: run detail splits into verdict + evidence; the Workspace shows device lanes side by side.
+- **Breakpoints:** 800px and 1200px, plus 1600px for a wider device board. Below 800px: one column, the nav collapses to icons, model and profile selectors stack under the goal, the re-run sheet is full screen. From 1200px: run detail splits into verdict + evidence; the Workspace shows device lanes side by side.
 - **App bar:** 56px, opaque, one bottom rule. Not floating.
 - **Page padding:** 24px. Section padding 16px. Control gaps 8px.
 - **Workspace:** the composer sits in normal flow above the device board (goal, Run profile, Execution model, Start run). Device lanes are about 360px wide and keep their order; the board never reorders phones by itself. Exceptions surface as "Needs attention" on the lane header instead of moving anything.
@@ -218,7 +218,7 @@ Translucency and `backdrop-filter` are not used. The 28 existing blur surfaces (
 - **Buttons:** 44px high. Primary is solid `primary` with `on-primary` text; one primary per view. Secondary is white with a `border` outline. Ghost is text in `primary`. Hover darkens to `primary-hover`; focus-visible shows a 3px `focus` ring with 2px offset; disabled drops to `text-faint` with no pointer and keeps its label.
 - **Inputs and selects:** 44px, `border` outline, visible label above (never placeholder-as-label), error text below in `error` with an icon.
 - **Status chips:** 24px pill, icon + word, colour from the status pair. Outcome vocabulary is fixed:
-  - Application verdict: Pass (success), Fail (error), Inconclusive (warning), Not evaluated (neutral).
+  - Application verdict: Pass (success), Fail (error), Blocked (warning), Not evaluated (neutral).
   - Execution: Completed (neutral; completing is not passing), Failed (error), Interrupted (warning), Cancelled (neutral).
   - QA review: Not reviewed, Accepted, Rejected (always spelled out).
   - The bare word "Success" and the label "Passed" for a completed execution are not used.
@@ -278,6 +278,7 @@ Design topics live in `design/<topic>/rev-<n>/` on a draft PR per topic (standar
 | 2026-10-08 | Every stats column sortable; QA table default alphabetical | Cheese T2 override at the CHE-1331 autoplan gate |
 | 2026-10-08 | One token layer in `styles.scss`; layout splits at 1200px, stacks to 800px, one column below (800, not 768) | CHE-1278 (U5): Workspace and Runs read as one product; the issue sets 800px for the one-column break |
 | 2026-10-09 | Neutrals slate → zinc, accent `#2563eb` → `#4f46e5` | Cheese picked Direction B on CHE-1456 |
+| 2026-10-20 | Blocked replaces Inconclusive for application verdicts | CHE-1649 A2d uses Pass / Fail / Blocked; cancelled and legacy runs remain non-verdict states |
 | 2026-10-09 | Instrument Sans + General Sans → Inter | Audit #8: dots and package names disappear in Instrument Sans |
 | 2026-10-09 | Top app bar → left sidebar (≥ 1024 px); 48 px top bar + bottom tab bar below 800 px | Audit #7 and #10; Direction B layout |
 | 2026-10-09 | Radius 8/12 → 6/8; UI text 14 → 13 px | Direction B density |
