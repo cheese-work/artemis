@@ -6,4 +6,4 @@ Source: [CHE-1649](mention://issue/01a1360f-199d-7302-8fef-05168bcb5993), decisi
 
 - Issue: [CHE-1649](mention://issue/01a1360f-199d-7302-8fef-05168bcb5993)
 - Pages in scope: Runs history card; run detail at `/sessions/:id`
-- Status: rev-1 published on the draft PR; awaiting cross-lab UX-review dispatch; direction unselected
+- Status: rev-2 published on the draft PR; awaiting fresh cross-lab UX scores; direction unselected
