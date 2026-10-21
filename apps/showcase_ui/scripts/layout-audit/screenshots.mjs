@@ -143,7 +143,7 @@ if (checkModels) for (const run of RUNS) run.agent_model = 'fixture-default';
 if (checkModels) for (const session of mock.sessions) session.model_info = { name: 'Flash', id: 'fixture-default', provider: 'openai' };
 for (const width of checkChats ? [1440, 800, 390] : checkControls || checkModels || checkComposer || checkPrompts || checkProviders ? [1440, 390] : [1280, 1024]) {
   for (const [name, route] of Object.entries(pages)) {
-    await send('Emulation.setDeviceMetricsOverride', { width, height: checkChats ? (width === 390 ? 1100 : 900) : checkPrompts ? 1400 : checkProviders ? (width === 390 ? 3450 : 2200) : 800, deviceScaleFactor: 1, mobile: checkChats && width === 390 });
+    await send('Emulation.setDeviceMetricsOverride', { width, height: checkChats ? (width === 390 ? 844 : 900) : checkPrompts ? 1400 : checkProviders ? (width === 390 ? 3450 : 2200) : 800, deviceScaleFactor: 1, mobile: checkChats && width === 390 });
     const previousImproveCalls = mock.improveCalls;
     await send('Page.navigate', { url: base + route });
     await sleep(2500);
@@ -185,19 +185,37 @@ for (const width of checkChats ? [1440, 800, 390] : checkControls || checkModels
           const verdicts = document.querySelectorAll('[data-testid="run-verdict"]');
           const selectedTurn = document.querySelector('.run-turn-selector button[aria-pressed="true"]');
           const selectedEvidence = document.querySelector('[data-testid="selected-step-evidence"]');
+          const timeline = document.querySelector('[data-testid="run-step-timeline"]');
           const image = document.querySelector('[data-testid="run-evidence-screenshot"] img');
           const stepLinks = [...document.querySelectorAll('[data-testid="evidence-index"] a')];
           const stepRows = [...document.querySelectorAll('.step-row details')];
           if (verdicts.length !== 1 || verdicts[0].closest('.flat-timeline')) errors.push('Verdict is not a single page-level card');
+          if (verdicts[0] && timeline && !(verdicts[0].compareDocumentPosition(timeline) & Node.DOCUMENT_POSITION_FOLLOWING)) errors.push('Verdict card follows timeline scrollback');
           if (!selectedTurn || selectedTurn.getAttribute('data-turn-id') !== 'follow-up') errors.push('Latest historical turn is not selected');
           if (!selectedEvidence?.textContent.includes('Payment button is missing')) errors.push('Selected-turn evidence is missing');
           if (image) { image.loading = 'eager'; await image.decode().catch(() => {}); }
           if (!image || image.naturalWidth < 200) errors.push('Usable synthetic evidence screenshot is missing');
           if (!stepLinks.length || stepLinks.some(link => !link.getAttribute('href')?.startsWith('#step-') || !document.querySelector(link.getAttribute('href')))) errors.push('Step index links are not real anchors');
+          if (stepLinks.length && !['Enter the payment details', 'Find the payment control', 'Confirm the order summary'].every(title => stepLinks.some(link => link.textContent.includes(title)))) errors.push('Step index omits actual step titles');
           if (stepRows.length < 3 || stepRows.filter(details => details.open).length !== 1) errors.push('Earlier steps are not individually collapsed');
           if (selectedEvidence && stepLinks[0] && !(selectedEvidence.compareDocumentPosition(stepLinks[0]) & 4)) errors.push('F5 evidence order is incorrect');
           if (!document.querySelector('[data-testid="run-chat-composer"]')) errors.push('Chat composer is missing');
           if (document.body.textContent.includes('Session details could not load.')) errors.push('Session sidebar fixture is unavailable');
+          if (${width} === 390) {
+            const history = document.querySelector('.chat-history');
+            const sidebar = document.querySelector('app-session-sidebar');
+            const sidebarTabs = [...(sidebar?.querySelectorAll('[role="tab"]') ?? [])].map(tab => tab.textContent.trim());
+            const labels = [...(selectedEvidence?.querySelectorAll('strong') ?? [])].filter(label => ['Mong đợi', 'Thực tế'].includes(label.textContent.trim()));
+            const withinViewport = element => {
+              const box = element.getBoundingClientRect();
+              const clip = history.getBoundingClientRect();
+              return box.width > 0 && box.height > 0 && box.top >= Math.max(0, clip.top) && box.bottom <= Math.min(innerHeight, clip.bottom);
+            };
+            if (history?.scrollTop !== 0) errors.push('Initial 390px view auto-scrolled away from the selected-turn card');
+            if (labels.length !== 2 || labels.some(label => !withinViewport(label))) errors.push('Initial 390x844 view does not show Mong đợi and Thực tế');
+            if (!sidebar || sidebarTabs.join('|') !== 'Live|Details|Stats') errors.push('Compact evidence tabs are missing');
+            if (sidebar && sidebar.getBoundingClientRect().height > 55 && sidebar.querySelector('.muted')) errors.push('Empty media panel consumes the compact evidence viewport');
+          }
         }
         if (document.documentElement.scrollWidth > innerWidth) errors.push('Horizontal overflow');
         for (const button of document.querySelectorAll('app-run-chat button')) {
@@ -400,18 +418,46 @@ for (const width of checkChats ? [1440, 800, 390] : checkControls || checkModels
       })()`);
       failures.push(...focusErrors.map(error => `${name}-${width}: ${error}`));
     }
-    if (checkChats && name === 'run-detail') {
-      await evaluate(`document.querySelector('[data-testid="run-verdict"]').scrollIntoView({ block: 'center' })`);
-      await sleep(150);
-    }
     const { data } = await send('Page.captureScreenshot', { format: 'png' });
-    writeFileSync(path.join(outDir, `${label}-${name}-${width}.png`), Buffer.from(data, 'base64'));
-    console.log(`${label}-${name}-${width}.png`);
-    if (checkChats && name === 'run-detail' && width === 390) {
-      await evaluate(`document.querySelector('[data-testid="run-evidence-screenshot"]').scrollIntoView({ block: 'center' })`);
-      await sleep(200);
+    const initialName = `${label}-${name}-initial-${width}.png`;
+    writeFileSync(path.join(outDir, initialName), Buffer.from(data, 'base64'));
+    console.log(initialName);
+    if (checkChats && name === 'run-detail') {
+      const initial = await evaluate(`(() => {
+        const history = document.querySelector('.chat-history');
+        const card = document.querySelector('[data-testid="run-verdict"]');
+        const timeline = document.querySelector('[data-testid="run-step-timeline"]');
+        const evidence = document.querySelector('[data-testid="selected-step-evidence"]');
+        const sidebar = document.querySelector('app-session-sidebar');
+        const composer = document.querySelector('[data-testid="run-chat-composer"]');
+        const labels = [...(evidence?.querySelectorAll('strong') ?? [])].filter(label => ['Mong đợi', 'Thực tế'].includes(label.textContent.trim()));
+        const rect = element => { const box = element.getBoundingClientRect(); return { top: box.top, bottom: box.bottom, left: box.left, right: box.right, width: box.width, height: box.height }; };
+        return { width: innerWidth, height: innerHeight, scrollTop: history?.scrollTop ?? null, card: card && rect(card), timeline: timeline && rect(timeline), sidebar: sidebar && rect(sidebar), composer: composer && rect(composer), labels: labels.map(label => ({ text: label.textContent.trim(), bounds: rect(label) })) };
+      })()`);
+      writeFileSync(path.join(outDir, `${label}-run-detail-initial-${width}.json`), JSON.stringify(initial, null, 2) + '\n');
+      const focused = await evaluate(`(async () => {
+        const errors = [];
+        const link = document.querySelector('[data-testid="evidence-index"] a[aria-current="step"]');
+        const target = link && document.getElementById(decodeURIComponent(link.hash.slice(1)));
+        if (!link || !target) return { errors: ['Selected evidence anchor is missing'], width: innerWidth, height: innerHeight };
+        link.click();
+        await new Promise(resolve => setTimeout(resolve, 200));
+        const evidence = target.querySelector('.evidence');
+        const before = target.querySelector('.evidence-before');
+        const after = target.querySelector('.evidence-after');
+        const image = after?.querySelector('img.step-screenshot');
+        if (image) { image.loading = 'eager'; await image.decode().catch(() => {}); }
+        if (!target.querySelector('details')?.open) errors.push('Focused evidence step did not open');
+        if (before) errors.push('Empty Before panel consumes the evidence viewport');
+        if (!image || image.naturalWidth < 200) errors.push('Focused evidence screenshot is unavailable');
+        if (evidence && after && after.getBoundingClientRect().width < evidence.getBoundingClientRect().width * .75) errors.push('Selected After screenshot does not use the available evidence width');
+        const rect = element => { const box = element.getBoundingClientRect(); return { top: box.top, bottom: box.bottom, left: box.left, right: box.right, width: box.width, height: box.height }; };
+        return { errors, width: innerWidth, height: innerHeight, scrollTop: document.querySelector('.chat-history')?.scrollTop ?? null, evidence: evidence && rect(evidence), after: after && rect(after), image: image && { naturalWidth: image.naturalWidth, naturalHeight: image.naturalHeight }, sidebar: document.querySelector('app-session-sidebar') && rect(document.querySelector('app-session-sidebar')) };
+      })()`);
+      failures.push(...focused.errors.map(error => `run-detail-${width}: ${error}`));
+      writeFileSync(path.join(outDir, `${label}-run-detail-selected-evidence-focused-${width}.json`), JSON.stringify(focused, null, 2) + '\n');
       const { data: evidenceData } = await send('Page.captureScreenshot', { format: 'png' });
-      writeFileSync(path.join(outDir, `${label}-run-detail-selected-evidence-${width}.png`), Buffer.from(evidenceData, 'base64'));
+      writeFileSync(path.join(outDir, `${label}-run-detail-selected-evidence-focused-${width}.png`), Buffer.from(evidenceData, 'base64'));
     }
     if (checkPrompts && name === 'run-detail') {
       mock.improveDelay = 300;

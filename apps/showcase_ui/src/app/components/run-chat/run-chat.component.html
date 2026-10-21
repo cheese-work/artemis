@@ -34,67 +34,6 @@
     <div class="session-layout" data-testid="run-detail-content" [class.sidebar-open]="sidebarOpen()">
     <div class="session-main">
     <section #history class="chat-history" data-testid="run-turn-history" aria-label="Lịch sử trò chuyện" (scroll)="trackScroll()">
-      <ol class="chat-messages flat-timeline" data-testid="run-step-timeline" aria-live="polite">
-        @for (message of timeline(); track message.turn_id + ':' + message.kind + ':' + message.sequence; let index = $index) {
-          @if (index === 0 || timeline()[index - 1].turn_id !== message.turn_id) {
-            <li class="turn-divider" aria-label="Phân cách lượt"><span>Lượt {{ turnNumber(message.turn_id) }}</span>
-              @if (shell.technicalDetails()) { <span>{{ message.turn_id }}</span> }
-            </li>
-          }
-          <li [class.chat-bubble]="['message', 'thinking', 'input_request'].includes(message.kind)"
-            [class.human]="message.role === 'human'" [class.system]="message.role === 'system'"
-            [class.plan-card]="message.kind === 'plan' || message.kind === 'replan'" [class.step-row]="message.kind === 'step'"
-            [id]="stepElementId(message)"
-            [attr.data-event-kind]="message.kind" [attr.data-turn-id]="message.kind === 'step' ? message.turn_id : null"
-            [attr.data-step-number]="message.kind === 'step' ? stepNumber(message) : null">
-            @if (message.kind === 'step') {
-              <details [open]="isSelectedStep(message)">
-                <summary><span>{{ message.content }}</span>
-                  @if (screenshot(message.payload); as image) { <img class="step-thumbnail" [src]="image" alt="Step thumbnail" loading="lazy" (error)="failScreenshot(message.payload)"> }
-                </summary>
-                @let marker = actionMarker(message.payload);
-                <div class="evidence">
-                  <figure class="evidence-before">
-                    <figcaption>Before</figcaption>
-                    @if (screenshot(message.payload, 'pre_image_name'); as image) {
-                      <span class="shot">
-                        <img class="step-before" [src]="image" [alt]="marker ? 'Before screenshot. Agent action: ' + marker.caption : 'Before screenshot'" loading="lazy"
-                          (load)="scrollToLatest()" (error)="failScreenshot(message.payload, 'pre_image_name')">
-                        @if (marker?.line; as line) {
-                          <svg class="action-marker swipe" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true" focusable="false">
-                            <defs><marker [id]="'arrow-' + message.sequence" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto"><path d="M0 0L10 5L0 10z"/></marker></defs>
-                            <line [attr.x1]="line.x1" [attr.y1]="line.y1" [attr.x2]="line.x2" [attr.y2]="line.y2" [attr.marker-end]="'url(#arrow-' + message.sequence + ')'"/>
-                          </svg>
-                        } @else if (marker?.box; as box) {
-                          <span class="action-marker type box" aria-hidden="true" [style.left.%]="box.x" [style.top.%]="box.y" [style.width.%]="box.w" [style.height.%]="box.h"></span>
-                        } @else if (marker?.point; as point) {
-                          <span class="action-marker ring" [class.tap]="marker!.kind === 'tap'" [class.type]="marker!.kind === 'type'" aria-hidden="true" [style.left.%]="point.x" [style.top.%]="point.y"></span>
-                        } @else if (marker?.kind === 'key') {
-                          <span class="action-marker key" aria-hidden="true"></span>
-                        }
-                      </span>
-                      @if (marker) { <span class="action-caption">{{ marker.caption }}</span> }
-                    } @else { <p class="receipt">Before screenshot unavailable.</p> }
-                  </figure>
-                  <figure class="evidence-after">
-                    <figcaption>After</figcaption>
-                    @if (screenshot(message.payload); as image) { <img class="step-screenshot" [src]="image" alt="Expanded step screenshot" loading="lazy" (load)="scrollToLatest()" (error)="failScreenshot(message.payload)"> }
-                    @else { <p class="receipt">Screenshot unavailable.</p> }
-                  </figure>
-                </div>
-                @if (shell.technicalDetails()) { <pre class="action-detail">{{ message.payload | json }}</pre> }
-              </details>
-            } @else if (message.kind === 'thinking') {
-              <details class="thinking"><summary>Agent thinking · {{ message.content.split('\n')[0] }}</summary><p>{{ message.content }}</p></details>
-            } @else {
-              <span class="speaker">{{ message.kind === 'replan' ? 'Revised plan' : message.kind === 'plan' ? 'Plan' : message.kind === 'input_request' ? 'Input requested' : message.role === 'human' ? 'You' : message.role === 'agent' ? 'Agent' : 'System' }}</span>
-              <p>{{ message.content }}</p>
-              @if (message.role === 'human' && !message.acknowledged_at) { <span class="receipt">Queued for the next step</span> }
-            }
-            @if (shell.technicalDetails()) { <time>{{ message.created_at * 1000 | date: 'HH:mm:ss' : '+0700' }} ICT</time> }
-          </li>
-        }
-      </ol>
       @if (chat(); as loadedChat) {
         @if (loadedChat.turns.length > 1) {
           <nav class="run-turn-selector" data-testid="run-turn-selector" aria-label="Chọn lượt chạy">
@@ -171,7 +110,7 @@
                           @if (stepIndex !== null) {
                             <a [href]="'#' + stepElementId(step)" [class.selected]="stepIndex === result!.evidence.step"
                               [attr.aria-current]="stepIndex === result!.evidence.step ? 'step' : null"
-                              (click)="openEvidenceStep($event, turn.turn_id, stepIndex)">Bước {{ stepIndex }}</a>
+                            (click)="openEvidenceStep($event, turn.turn_id, stepIndex)">Bước {{ stepIndex }} · {{ step.content }}</a>
                           }
                         }
                       </nav>
@@ -231,6 +170,73 @@
           </section>
         }
       }
+      <ol class="chat-messages flat-timeline" data-testid="run-step-timeline" aria-live="polite">
+        @for (message of timeline(); track message.turn_id + ':' + message.kind + ':' + message.sequence; let index = $index) {
+          @if (index === 0 || timeline()[index - 1].turn_id !== message.turn_id) {
+            <li class="turn-divider" aria-label="Phân cách lượt"><span>Lượt {{ turnNumber(message.turn_id) }}</span>
+              @if (shell.technicalDetails()) { <span>{{ message.turn_id }}</span> }
+            </li>
+          }
+          <li [class.chat-bubble]="['message', 'thinking', 'input_request'].includes(message.kind)"
+            [class.human]="message.role === 'human'" [class.system]="message.role === 'system'"
+            [class.plan-card]="message.kind === 'plan' || message.kind === 'replan'" [class.step-row]="message.kind === 'step'"
+            [id]="stepElementId(message)"
+            [attr.data-event-kind]="message.kind" [attr.data-turn-id]="message.kind === 'step' ? message.turn_id : null"
+            [attr.data-step-number]="message.kind === 'step' ? stepNumber(message) : null">
+            @if (message.kind === 'step') {
+              <details [open]="isSelectedStep(message)">
+                <summary><span>{{ message.content }}</span>
+                  @if (screenshot(message.payload); as image) { <img class="step-thumbnail" [src]="image" alt="Step thumbnail" loading="lazy" (error)="failScreenshot(message.payload)"> }
+                </summary>
+                @let marker = actionMarker(message.payload);
+                @let beforeImage = screenshot(message.payload, 'pre_image_name');
+                @let afterImage = screenshot(message.payload);
+                <div class="evidence" [class.single-image]="!beforeImage || !afterImage">
+                  @if (beforeImage) {
+                    <figure class="evidence-before">
+                      <figcaption>Before</figcaption>
+                      <span class="shot">
+                        <img class="step-before" [src]="beforeImage" [alt]="marker ? 'Before screenshot. Agent action: ' + marker.caption : 'Before screenshot'" loading="lazy"
+                          (load)="scrollToLatest()" (error)="failScreenshot(message.payload, 'pre_image_name')">
+                        @if (marker?.line; as line) {
+                          <svg class="action-marker swipe" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true" focusable="false">
+                            <defs><marker [id]="'arrow-' + message.sequence" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto"><path d="M0 0L10 5L0 10z"/></marker></defs>
+                            <line [attr.x1]="line.x1" [attr.y1]="line.y1" [attr.x2]="line.x2" [attr.y2]="line.y2" [attr.marker-end]="'url(#arrow-' + message.sequence + ')'"/>
+                          </svg>
+                        } @else if (marker?.box; as box) {
+                          <span class="action-marker type box" aria-hidden="true" [style.left.%]="box.x" [style.top.%]="box.y" [style.width.%]="box.w" [style.height.%]="box.h"></span>
+                        } @else if (marker?.point; as point) {
+                          <span class="action-marker ring" [class.tap]="marker!.kind === 'tap'" [class.type]="marker!.kind === 'type'" aria-hidden="true" [style.left.%]="point.x" [style.top.%]="point.y"></span>
+                        } @else if (marker?.kind === 'key') {
+                          <span class="action-marker key" aria-hidden="true"></span>
+                        }
+                      </span>
+                      @if (marker) { <span class="action-caption">{{ marker.caption }}</span> }
+                      @if (!afterImage) { <p class="receipt after-unavailable" role="status">Screenshot unavailable. After image is missing.</p> }
+                    </figure>
+                  }
+                  @if (afterImage) {
+                    <figure class="evidence-after">
+                      <figcaption>After</figcaption>
+                      @if (!beforeImage) { <p class="receipt before-unavailable" role="status">Before screenshot unavailable.</p> }
+                      <img class="step-screenshot" [src]="afterImage" alt="Expanded step screenshot" loading="lazy" (load)="scrollToLatest()" (error)="failScreenshot(message.payload)">
+                    </figure>
+                  }
+                  @if (!beforeImage && !afterImage) { <p class="receipt evidence-unavailable" role="status">Screenshot unavailable.</p> }
+                </div>
+                @if (shell.technicalDetails()) { <pre class="action-detail">{{ message.payload | json }}</pre> }
+              </details>
+            } @else if (message.kind === 'thinking') {
+              <details class="thinking"><summary>Agent thinking · {{ message.content.split('\n')[0] }}</summary><p>{{ message.content }}</p></details>
+            } @else {
+              <span class="speaker">{{ message.kind === 'replan' ? 'Revised plan' : message.kind === 'plan' ? 'Plan' : message.kind === 'input_request' ? 'Input requested' : message.role === 'human' ? 'You' : message.role === 'agent' ? 'Agent' : 'System' }}</span>
+              <p>{{ message.content }}</p>
+              @if (message.role === 'human' && !message.acknowledged_at) { <span class="receipt">Queued for the next step</span> }
+            }
+            @if (shell.technicalDetails()) { <time>{{ message.created_at * 1000 | date: 'HH:mm:ss' : '+0700' }} ICT</time> }
+          </li>
+        }
+      </ol>
       <span class="sr-only" data-testid="run-verdict-announcement" aria-live="polite" aria-atomic="true">{{ latestResultLabel() }}</span>
       @if (!chat() && !error()) {
         <div role="status"><span class="sr-only">Loading chat session…</span>

@@ -69,6 +69,8 @@ describe('RunChatComponent', () => {
     const verdict = fixture.nativeElement.querySelector('.verdict-card');
     expect(verdict.closest('.flat-timeline')).toBeNull();
     expect(verdict.parentElement).toBe(fixture.nativeElement.querySelector('.chat-history'));
+    const timeline = fixture.nativeElement.querySelector('[data-testid="run-step-timeline"]');
+    expect(verdict.compareDocumentPosition(timeline) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(verdict.querySelector('.verdict-tip').textContent).toContain('Specify the expected screen');
     verdict.querySelector('.copy-tip').click(); tick(0);
     expect(clipboard).toHaveBeenCalledOnceWith('Specify the expected screen next time.');
@@ -149,7 +151,11 @@ describe('RunChatComponent', () => {
     const evidencePanel = cards[0].querySelector('[data-testid="run-decisive-evidence"]');
     expect(evidencePanel.getAttribute('aria-label')).toBe('Bằng chứng quyết định');
     const stepLinks = [...evidencePanel.querySelectorAll('.evidence-index a')];
-    expect(stepLinks.map(link => link.textContent.trim())).toEqual(['Bước 1', 'Bước 2', 'Bước 3']);
+    expect(stepLinks.map(link => link.textContent.trim())).toEqual([
+      'Bước 1 · Enter the email address',
+      'Bước 2 · Submit sign-in',
+      'Bước 3 · Open help'
+    ]);
     expect(stepLinks.every(link => document.getElementById(decodeURIComponent(link.hash.slice(1))) !== null)).toBeTrue();
     const stepRows = [...fixture.nativeElement.querySelectorAll('[data-event-kind="step"][data-turn-id="follow-up"]')];
     expect(stepRows.map(row => row.id)).toEqual(['step-follow-up-1', 'step-follow-up-2', 'step-follow-up-3']);
@@ -1255,20 +1261,28 @@ describe('RunChatComponent', () => {
       fixture.destroy();
     }));
 
-    it('says so when the Before screenshot is missing or fails to load, and keeps After', fakeAsync(() => {
+    it('keeps an unavailable Before screenshot from taking half the evidence viewport', fakeAsync(() => {
       const fixture = render();
       fixture.componentInstance.chat.set(withTimeline(thread.messages[0], stepMessage({ payload: { step_id: 'step-1', post_image_name: 'post.png', action_taken: { action: 'tap', normalized_coordinates: [500, 300] } } })));
       fixture.detectChanges();
       fixture.nativeElement.querySelector('.step-row summary').click();
       fixture.detectChanges();
-      expect(fixture.nativeElement.querySelector('.evidence-before').textContent).toContain('Before screenshot unavailable');
-      expect(fixture.nativeElement.querySelector('.evidence-before .action-marker')).toBeNull();
-      expect(fixture.nativeElement.querySelector('.evidence-after img.step-screenshot')).not.toBeNull();
+      const evidence = fixture.nativeElement.querySelector('.evidence') as HTMLElement;
+      const after = fixture.nativeElement.querySelector('.evidence-after') as HTMLElement;
+      expect(evidence.classList.contains('single-image')).toBeTrue();
+      expect(fixture.nativeElement.querySelector('.evidence-before')).toBeNull();
+      expect(evidence.querySelector('.before-unavailable')?.textContent).toContain('Before screenshot unavailable');
+      expect(evidence.querySelector('.before-unavailable')?.getAttribute('role')).toBe('status');
+      expect(after.querySelector('img.step-screenshot')).not.toBeNull();
+      expect(after.getBoundingClientRect().width).toBeGreaterThan(evidence.getBoundingClientRect().width * 0.75);
       fixture.componentInstance.chat.set(withTimeline(thread.messages[0], stepMessage({ payload: { step_id: 'step-2', pre_image_name: 'broken.png', post_image_name: 'post.png', action_taken: { action: 'tap' } } })));
       fixture.detectChanges();
       fixture.nativeElement.querySelector('.evidence-before img').dispatchEvent(new Event('error'));
       fixture.detectChanges();
-      expect(fixture.nativeElement.querySelector('.evidence-before').textContent).toContain('Before screenshot unavailable');
+      const updatedEvidence = fixture.nativeElement.querySelector('.evidence') as HTMLElement;
+      expect(updatedEvidence.classList.contains('single-image')).toBeTrue();
+      expect(updatedEvidence.querySelector('.evidence-before')).toBeNull();
+      expect(updatedEvidence.querySelector('.before-unavailable')?.textContent).toContain('Before screenshot unavailable');
       fixture.destroy();
     }));
   });

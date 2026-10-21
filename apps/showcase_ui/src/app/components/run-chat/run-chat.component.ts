@@ -418,7 +418,7 @@ export class RunChatComponent {
 
   public scrollToLatest(): void {
     const history = this.historyElement()?.nativeElement;
-    if (!history || !this.followLatest) return;
+    if (!history || !this.followLatest || !this.active() || this.selectedTurn()?.turn_id !== this.latest()?.turn_id) return;
     const verdicts = history.querySelectorAll<HTMLElement>('[data-testid="run-verdict"]');
     const latestVerdict = verdicts.item(verdicts.length - 1);
     if (window.matchMedia('(max-width: 799px)').matches && latestVerdict?.dataset['labelState'] === 'final') {
