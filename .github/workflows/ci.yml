@@ -22,7 +22,7 @@ jobs:
   python-quality:
     name: Python 3.12
     runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["ubuntu-latest"]') }}
-    timeout-minutes: 30
+    timeout-minutes: 45
 
     steps:
       - name: Check out repository
@@ -40,6 +40,13 @@ jobs:
 
       - name: Check public dependency sources before installation
         run: python scripts/check_dependency_sources.py
+
+      - name: Install OpenCV runtime libraries
+        run: |
+          dpkg -s libxcb1 libgl1 >/dev/null 2>&1 || (
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends libxcb1 libgl1
+          )
 
       - name: Set up uv
         uses: astral-sh/setup-uv@v6
@@ -125,10 +132,16 @@ jobs:
           chrome-version: stable
           install-dependencies: true
 
-      - name: Export Chrome path
+      - name: Configure Chrome sandbox and export path
         env:
           CHROME_BIN: ${{ steps.chrome.outputs.chrome-path }}
-        run: printf 'CHROME_BIN=%s\n' "$CHROME_BIN" >> "$GITHUB_ENV"
+        run: |
+          sandbox_bin="$(dirname "$CHROME_BIN")/chrome-sandbox"
+          if [ -f "$sandbox_bin" ]; then
+            sudo chown root:root "$sandbox_bin"
+            sudo chmod 4755 "$sandbox_bin"
+          fi
+          printf 'CHROME_BIN=%s\n' "$CHROME_BIN" >> "$GITHUB_ENV"
 
       - name: Run frontend tests at 800 px and 1440 px
         run: npm test -- --watch=false --browsers=ChromeHeadlessNarrow,ChromeHeadlessWide
@@ -165,6 +178,13 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+
+      - name: Install OpenCV runtime libraries
+        run: |
+          dpkg -s libxcb1 libgl1 >/dev/null 2>&1 || (
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends libxcb1 libgl1
+          )
 
       - name: Set up uv
         uses: astral-sh/setup-uv@v6

@@ -13,6 +13,10 @@ class RunnerRoutingTest(unittest.TestCase):
         self.assertIn("browser-actions/setup-chrome@", ci)
         self.assertIn("CHROME_BIN: ${{ steps.chrome.outputs.chrome-path }}", ci)
         self.assertNotIn('export CHROME_BIN="$(command -v', ci)
+        self.assertEqual(ci.count("apt-get install -y --no-install-recommends libxcb1 libgl1"), 2)
+        self.assertIn("chrome-sandbox", ci)
+        self.assertIn("chown root:root", ci)
+        self.assertIn("chmod 4755", ci)
 
     def test_no_paid_runner_selectors(self):
         workflows = list(Path(".github/workflows").glob("*.y*ml"))
