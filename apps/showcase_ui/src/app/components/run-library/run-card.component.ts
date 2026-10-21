@@ -32,7 +32,9 @@ import { OwnerLabelComponent } from '../owner-label/owner-label.component';
       } @else if (result(); as verdict) {
         <span class="run-card-verdict" data-testid="run-card-verdict" [attr.data-catalog-key]="verdict.catalog_key" data-label-state="final">
           <span class="run-verdict-heading"><strong>{{ verdictLabel(verdict) }}</strong><span>Xác minh · {{ verdict.display_labels?.verification ?? 'Chưa xác minh' }}</span></span>
-          <span class="run-verdict-category">{{ verdict.display_labels?.category ?? 'Chưa xác định' }}</span>
+          @if (verdict.category !== null && verdict.display_labels?.category; as categoryLabel) {
+            <span class="run-verdict-category">{{ categoryLabel }}</span>
+          }
           @if (verdict.reason) { <span class="run-verdict-reason">{{ verdict.reason }}</span> }
           <span class="run-verdict-evidence" data-testid="run-card-evidence">{{ evidenceLabel(verdict) }}</span>
           @if (verdict.action.text) { <span class="run-verdict-action">Hành động · {{ verdict.action.text }}</span> }

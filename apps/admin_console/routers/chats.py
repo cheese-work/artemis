@@ -190,9 +190,15 @@ def _attach_results(scope, session, *, include_notes=True):
 async def get_chat_results(request: ChatResultsRequest, scope: OwnerScope = Depends(actor_scope)):
     sessions = []
     for identity in dict.fromkeys(request.session_ids):
-        store, session = await asyncio.to_thread(_session, identity, scope)
-        session = await asyncio.to_thread(_attach_results, scope, session, include_notes=False)
-        sessions.append({"session_id": session["session_id"], "results": session["results"]})
+        try:
+            store, session = await asyncio.to_thread(_session, identity, scope)
+            session = await asyncio.to_thread(_attach_results, scope, session, include_notes=False)
+        except AdminAPIError as error:
+            if error.status_code != 404:
+                raise
+            sessions.append({"session_id": identity, "status": "unavailable", "results": []})
+        else:
+            sessions.append({"session_id": session["session_id"], "results": session["results"]})
     return {"sessions": sessions}
 
 

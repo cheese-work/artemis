@@ -20,7 +20,7 @@ import { CdkOverlayOrigin, ConnectedPosition, OverlayModule } from '@angular/cdk
 import { takeUntilDestroyed, toSignal } from '@angular/core/rxjs-interop';
 import { Location } from '@angular/common';
 import { ActivatedRoute, Router, RouterLink, convertToParamMap } from '@angular/router';
-import { Subscription, catchError, concat, map, of, switchMap, takeWhile, timer } from 'rxjs';
+import { EMPTY, Subscription, catchError, concat, exhaustMap, map, of, takeWhile, tap, timer } from 'rxjs';
 import { Computer, RegistryDevice } from '../../core/models/host.model';
 import { ChatSession, ChatTurnResult, RunSummary } from '../../core/models/run.model';
 import { GoalImage, Session } from '../../core/models/session.model';
@@ -454,9 +454,7 @@ export class RunLibraryComponent implements OnChanges {
     const results = new Map(this.cardResults());
     results.delete(run.session_id);
     this.cardResults.set(results);
-    this.cardResultRequests.unsubscribe();
-    this.cardResultRequests = new Subscription();
-    this.loadCardResults([...this.rows().filter((item) => this.cardResults().get(item.session_id)?.state === 'pending'), run]);
+    this.loadCardResults([run]);
   }
 
   public cardResult(run: RunSummary): ChatTurnResult | null {
@@ -520,29 +518,79 @@ export class RunLibraryComponent implements OnChanges {
     if (!eligible.length) return;
 
     const sessionIds = [...new Set(eligible.map((run) => run.chat_session_id ?? run.session_id))];
-    this.cardResultRequests.add(concat(of(null), timer(1000, 1000)).pipe(
-      switchMap(() => this.runsApi.chatResults(sessionIds).pipe(catchError(() => of(null)))),
-      takeWhile((response) => !response
-        || response.sessions.some((session) => session.results.some((result) => result.label_state === 'pending')), true)
-    ).subscribe((response) => {
-      const next = new Map(this.cardResults());
-      for (const run of eligible) {
-        const sessionId = run.chat_session_id ?? run.session_id;
-        const session = response?.sessions.find((item) => item.session_id === sessionId);
-        const result = session ? this.resultForRun(run, session.results) : null;
-        const previous = next.get(run.session_id);
-        const state = response
-          ? result?.label_state ?? (session ? 'legacy' : 'error')
-          : 'error';
-        next.set(run.session_id, { state, result: result ?? (state === 'pending' ? previous?.result ?? null : null) });
-      }
-      this.cardResults.set(next);
-    }));
+    const unresolved = new Map(eligible.map((run) => [run.chat_session_id ?? run.session_id, run]));
+    const pendingPolls = new Map(sessionIds.map((sessionId) => [sessionId, 0]));
+    const requestFailures = new Map(sessionIds.map((sessionId) => [sessionId, 0]));
+    this.cardResultRequests.add(concat(of(0), timer(1000, 1000)).pipe(
+      exhaustMap(() => {
+        const requested = [...unresolved.keys()];
+        if (!requested.length) return EMPTY;
+        return this.runsApi.chatResults(requested).pipe(
+          map((response) => ({ response, requested })),
+          catchError(() => of({ response: null, requested }))
+        );
+      }),
+      tap(({ response, requested }) => {
+        const next = new Map(this.cardResults());
+        if (!response) {
+          for (const sessionId of requested) {
+            const run = unresolved.get(sessionId);
+            if (!run) continue;
+            const failures = (requestFailures.get(sessionId) ?? 0) + 1;
+            requestFailures.set(sessionId, failures);
+            if (failures >= 3) {
+              next.set(run.session_id, { state: 'error', result: null });
+              unresolved.delete(sessionId);
+            }
+          }
+          this.cardResults.set(next);
+          return;
+        }
+        for (const sessionId of requested) {
+          const run = unresolved.get(sessionId);
+          if (!run) continue;
+          const session = response.sessions.find((item) => item.session_id === sessionId);
+          if (!session) {
+            const failures = (requestFailures.get(sessionId) ?? 0) + 1;
+            requestFailures.set(sessionId, failures);
+            if (failures >= 3) {
+              next.set(run.session_id, { state: 'error', result: null });
+              unresolved.delete(sessionId);
+            }
+            continue;
+          }
+          requestFailures.set(sessionId, 0);
+          if (session.status === 'unavailable') {
+            next.set(run.session_id, { state: 'error', result: null });
+            unresolved.delete(sessionId);
+            continue;
+          }
+          const result = this.resultForRun(run, session.results);
+          if (!result) {
+            next.set(run.session_id, { state: 'legacy', result: null });
+            unresolved.delete(sessionId);
+          } else if (result.label_state === 'pending') {
+            const polls = (pendingPolls.get(sessionId) ?? 0) + 1;
+            pendingPolls.set(sessionId, polls);
+            if (polls >= 30) {
+              next.set(run.session_id, { state: 'error', result: null });
+              unresolved.delete(sessionId);
+            } else {
+              next.set(run.session_id, { state: 'pending', result });
+            }
+          } else {
+            next.set(run.session_id, { state: result.label_state, result });
+            unresolved.delete(sessionId);
+          }
+        }
+        this.cardResults.set(next);
+      }),
+      takeWhile(() => unresolved.size > 0, true)
+    ).subscribe());
   }
 
   private resultForRun(run: RunSummary, results: ChatTurnResult[]): ChatTurnResult | null {
     return results.find((result) => result.evidence.turn_id === run.session_id)
-      ?? results.at(-1)
       ?? null;
   }
 

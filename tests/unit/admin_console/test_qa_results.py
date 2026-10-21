@@ -118,6 +118,34 @@ def test_derive_result_maps_flash_and_pro_evidence(
     assert result["catalog_key"] == expected_key
 
 
+def test_display_labels_distinguish_null_category_from_explicit_unknown():
+    service = _service()
+    verified_pass = service.derive_result(
+        "completed",
+        {"task_status": "completed", "tests": {"passed": 2, "failed": 0, "inconclusive": 0, "unchecked": 0}},
+        [],
+    )
+    explicit_unknown = {
+        "catalog_key": "blocked.unknown",
+        "verdict": "blocked",
+        "verification": "none",
+        "category": "unknown",
+        "evidence": {},
+    }
+
+    def present(result):
+        return service._with_turn_metadata(
+            {"result": result, "version": 1, "label_state": "final", "source": "outcome"},
+            "turn-1",
+            1,
+            1,
+        )
+
+    assert verified_pass["category"] is None
+    assert "category" not in present(verified_pass)["display_labels"]
+    assert present(explicit_unknown)["display_labels"]["category"] == "Chưa xác định"
+
+
 def test_qa_results_append_unknown_upgrade_once_and_freeze_known_category(tmp_path):
     service = _service()
     database = tmp_path / "qa-results.db"

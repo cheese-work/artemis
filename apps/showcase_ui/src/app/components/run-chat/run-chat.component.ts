@@ -2,7 +2,7 @@ import { afterRenderEffect, ChangeDetectionStrategy, Component, computed, Destro
 import { FormsModule } from '@angular/forms';
 import { CdkTextareaAutosize } from '@angular/cdk/text-field';
 import { HttpErrorResponse } from '@angular/common/http';
-import { ActivatedRoute } from '@angular/router';
+import { ActivatedRoute, Router } from '@angular/router';
 import { deployDrainMessage } from '../../utils/deploy-drain.util';
 import { DatePipe, JsonPipe } from '@angular/common';
 import { catchError, distinctUntilChanged, of, switchMap, takeWhile, tap, timer } from 'rxjs';
@@ -35,6 +35,7 @@ export class RunChatComponent {
   private readonly api = inject(RunsService);
   private readonly zone = inject(NgZone);
   private readonly route = inject(ActivatedRoute);
+  private readonly router = inject(Router);
   private readonly destroyRef = inject(DestroyRef);
   private readonly system = inject(SystemService);
   private readonly phones = inject(WorkspacePhoneService);
@@ -74,13 +75,22 @@ export class RunChatComponent {
   public readonly error = signal<string | null>(null);
   public readonly resultsUnavailable = signal(false);
   public readonly selectedEvidence = signal<{ turnId: string; step: number } | null>(null);
+  public readonly selectedTurnId = signal<string | null>(null);
   public readonly evidenceImage = signal<{ url: string; alt: string } | null>(null);
   public readonly sending = signal(false);
   public readonly latest = computed(() => this.chat()?.turns.at(-1));
+  public readonly selectedTurn = computed(() => {
+    const turns = this.chat()?.turns ?? [];
+    return turns.find(turn => turn.turn_id === this.selectedTurnId()) ?? turns.at(-1) ?? null;
+  });
+  public readonly selectedResult = computed(() => {
+    const turn = this.selectedTurn();
+    return turn ? this.resultForTurn(turn.turn_id) : null;
+  });
   public readonly latestResultLabel = computed(() => {
     if (this.resultsUnavailable()) return this.resultLabel(null);
-    const turn = this.latest();
-    return turn ? this.resultLabel(this.resultForTurn(turn.turn_id), turn) : '';
+    const turn = this.selectedTurn();
+    return turn ? this.resultLabel(this.selectedResult(), turn) : '';
   });
   public readonly usageTurns = computed(() => (this.chat()?.turns ?? []).map(turn => ({ id: turn.turn_id, number: turn.number })));
   public readonly active = computed(() => ['queued', 'running', 'paused'].includes(this.latest()?.status ?? ''));
@@ -130,6 +140,7 @@ export class RunChatComponent {
     this.route.queryParamMap.pipe(takeUntilDestroyed(this.destroyRef)).subscribe(params => {
       const turnId = params.get('turn');
       const step = Number(params.get('step'));
+      this.selectedTurnId.set(turnId);
       this.selectedEvidence.set(turnId && Number.isInteger(step) && step > 0 ? { turnId, step } : null);
       this.focusedEvidenceKey = '';
     });
@@ -154,7 +165,6 @@ export class RunChatComponent {
         this.rootRun.set(null);
         this.error.set(null);
         this.resultsUnavailable.set(false);
-        this.selectedEvidence.set(null);
         this.focusedEvidenceKey = '';
         this.sending.set(false);
         this.editingTitle.set(false);
@@ -172,7 +182,10 @@ export class RunChatComponent {
             )),
             tap((chat) => {
               if (!chat) return;
-              const pending = chat.results?.find(result => result.label_state === 'pending');
+              const latestTurn = chat.turns.at(-1);
+              const pending = latestTurn && !['queued', 'running', 'paused'].includes(latestTurn.status)
+                ? chat.results?.find(result => result.evidence.turn_id === latestTurn.turn_id && result.label_state === 'pending')
+                : null;
               if (!pending) {
                 pendingTurnId = null;
                 pendingPolls = 0;
@@ -187,9 +200,12 @@ export class RunChatComponent {
             takeWhile((chat) => {
               if (!chat) return true;
               const latestTurn = chat.turns.at(-1);
-              return ['queued', 'running', 'paused'].includes(latestTurn?.status ?? '')
+              const activeTurn = ['queued', 'running', 'paused'].includes(latestTurn?.status ?? '');
+              const terminalPending = latestTurn && chat.results?.some(result =>
+                result.evidence.turn_id === latestTurn.turn_id && result.label_state === 'pending');
+              return activeTurn
                 || chat.verdict?.tip?.state === 'generating'
-                || pendingTurnId !== null && pendingPolls <= 30;
+                || !!terminalPending && pendingTurnId === latestTurn?.turn_id && pendingPolls < 30;
             }, true)
           );
         }),
@@ -285,8 +301,9 @@ export class RunChatComponent {
     return this.evidenceSteps(result).find(message => this.stepNumber(message) === result.evidence.step) ?? null;
   }
 
-  public otherEvidenceSteps(result: ChatTurnResult) {
-    return this.evidenceSteps(result).filter(message => this.stepNumber(message) !== result.evidence.step);
+  public stepElementId(message: ChatMessage): string | null {
+    const step = this.stepNumber(message);
+    return message.kind === 'step' && step !== null ? `step-${message.turn_id}-${step}` : null;
   }
 
   public evidenceText(value: unknown): string {
@@ -295,15 +312,38 @@ export class RunChatComponent {
     return typeof value === 'object' ? JSON.stringify(value) : String(value);
   }
 
+  public selectTurn(turnId: string): void {
+    const result = this.resultForTurn(turnId);
+    this.selectTurnAndStep(turnId, result?.label_state === 'final' ? result.evidence.step : null);
+  }
+
   public selectEvidence(turnId: string, step: number): void {
-    this.selectedEvidence.set({ turnId, step });
-    this.focusedEvidenceKey = '';
+    this.selectTurnAndStep(turnId, step);
     this.focusSelectedEvidence();
+  }
+
+  public openEvidenceStep(event: MouseEvent, turnId: string, step: number): void {
+    event.preventDefault();
+    this.selectEvidence(turnId, step);
+  }
+
+  private selectTurnAndStep(turnId: string, step: number | null): void {
+    this.selectedTurnId.set(turnId);
+    this.selectedEvidence.set(step === null ? null : { turnId, step });
+    this.focusedEvidenceKey = '';
+    void this.router.navigate([], {
+      relativeTo: this.route,
+      queryParams: { turn: turnId, step },
+      queryParamsHandling: 'merge'
+    });
   }
 
   public isSelectedStep(message: { turn_id: string; payload?: Record<string, any> }): boolean {
     const selected = this.selectedEvidence();
-    return !!selected && selected.turnId === message.turn_id && selected.step === this.stepNumber(message);
+    if (selected) return selected.turnId === message.turn_id && selected.step === this.stepNumber(message);
+    const result = this.selectedResult();
+    return !!result && result.evidence.turn_id === message.turn_id
+      && result.evidence.step === this.stepNumber(message);
   }
 
   public resultScreenshot(result: ChatTurnResult): string | null {

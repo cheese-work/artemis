@@ -50,7 +50,7 @@ export const PROMPT_CRITIQUE = {
   ],
   lessons: ['Give the task a clear stopping point.', 'Name the visible result that proves the check passed.']
 };
-export const mock = { chat: null, streamState: null, streamImage: null, critiques: [], lessonsError: false, improveCalls: 0, improveError: false, improveDelay: 0, sessions: [], status: null, failSessions: false, failVideo: false, identity: null, readiness: null, config: null, providers: null };
+export const mock = { chat: null, results: null, streamState: null, streamImage: null, critiques: [], lessonsError: false, improveCalls: 0, improveError: false, improveDelay: 0, sessions: [], status: null, failSessions: false, failVideo: false, identity: null, readiness: null, config: null, providers: null };
 
 const json = (res, code, body) => {
   res.writeHead(code, { 'content-type': 'application/json' });
@@ -58,6 +58,44 @@ const json = (res, code, body) => {
 };
 
 const TYPES = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json', '.svg': 'image/svg+xml' };
+const SYNTHETIC_SCREENSHOT = `<svg xmlns="http://www.w3.org/2000/svg" width="360" height="640" viewBox="0 0 360 640">
+  <rect width="360" height="640" fill="#f8fafc"/>
+  <rect width="360" height="28" fill="#fff"/>
+  <text x="20" y="19" font-family="Arial, sans-serif" font-size="13" font-weight="700" fill="#172033">9:41</text>
+  <path d="M288 17h15m-12-4h9m-6-4h3" stroke="#172033" stroke-width="2" stroke-linecap="round"/>
+  <rect x="320" y="8" width="23" height="12" rx="3" fill="none" stroke="#172033" stroke-width="1.5"/>
+  <rect x="343" y="12" width="2" height="4" rx="1" fill="#172033"/>
+  <rect y="28" width="360" height="54" fill="#fff"/>
+  <path d="m28 55-8 0 9-9m-9 9 9 9" fill="none" stroke="#24324a" stroke-width="2"/>
+  <text x="52" y="61" font-family="Arial, sans-serif" font-size="18" font-weight="700" fill="#172033">Checkout</text>
+  <line x1="0" y1="82" x2="360" y2="82" stroke="#d7dee8"/>
+  <text x="20" y="111" font-family="Arial, sans-serif" font-size="12" fill="#64748b">CART</text>
+  <text x="128" y="111" font-family="Arial, sans-serif" font-size="12" fill="#64748b">DELIVERY</text>
+  <text x="267" y="111" font-family="Arial, sans-serif" font-size="12" font-weight="700" fill="#2563eb">PAYMENT</text>
+  <line x1="0" y1="126" x2="360" y2="126" stroke="#d7dee8"/>
+  <text x="20" y="164" font-family="Arial, sans-serif" font-size="24" font-weight="700" fill="#172033">Payment</text>
+  <text x="20" y="190" font-family="Arial, sans-serif" font-size="14" fill="#64748b">Choose a payment method</text>
+  <rect x="20" y="210" width="320" height="76" rx="12" fill="#fff" stroke="#cbd5e1"/>
+  <rect x="36" y="230" width="42" height="30" rx="5" fill="#e8efff"/>
+  <path d="M42 239h30m-30 8h15" stroke="#3764c8" stroke-width="3" stroke-linecap="round"/>
+  <text x="92" y="243" font-family="Arial, sans-serif" font-size="15" font-weight="700" fill="#172033">Visa ···· 4242</text>
+  <text x="92" y="265" font-family="Arial, sans-serif" font-size="12" fill="#64748b">Expires 08/28</text>
+  <circle cx="318" cy="248" r="8" fill="#fff" stroke="#2563eb" stroke-width="2"/>
+  <circle cx="318" cy="248" r="4" fill="#2563eb"/>
+  <text x="20" y="326" font-family="Arial, sans-serif" font-size="17" font-weight="700" fill="#172033">Order summary</text>
+  <text x="20" y="360" font-family="Arial, sans-serif" font-size="14" fill="#334155">Wireless headphones</text>
+  <text x="340" y="360" text-anchor="end" font-family="Arial, sans-serif" font-size="14" fill="#334155">$89.00</text>
+  <text x="20" y="389" font-family="Arial, sans-serif" font-size="14" fill="#64748b">Delivery</text>
+  <text x="340" y="389" text-anchor="end" font-family="Arial, sans-serif" font-size="14" fill="#334155">$7.50</text>
+  <line x1="20" y1="410" x2="340" y2="410" stroke="#cbd5e1"/>
+  <text x="20" y="441" font-family="Arial, sans-serif" font-size="15" font-weight="700" fill="#172033">Total</text>
+  <text x="340" y="441" text-anchor="end" font-family="Arial, sans-serif" font-size="17" font-weight="700" fill="#172033">$96.50</text>
+  <rect x="20" y="480" width="320" height="1" fill="#e2e8f0"/>
+  <text x="20" y="512" font-family="Arial, sans-serif" font-size="12" fill="#64748b">Review your order before continuing.</text>
+  <rect x="0" y="600" width="360" height="40" fill="#fff"/>
+  <line x1="0" y1="600" x2="360" y2="600" stroke="#d7dee8"/>
+  <text x="180" y="625" text-anchor="middle" font-family="Arial, sans-serif" font-size="11" fill="#64748b">Secure checkout · Synthetic test fixture</text>
+</svg>`;
 
 export function startMockApi(distDir) {
   const server = http.createServer((req, res) => {
@@ -68,6 +106,7 @@ export function startMockApi(distDir) {
       res.writeHead(200, { 'content-type': 'image/png' });
       return res.end(Buffer.from(mock.streamImage, 'base64'));
     }
+    if (p === '/api/chats/results' && mock.results) return json(res, 200, { sessions: mock.results });
     if (p === '/api/prompt-lessons') {
       if (mock.lessonsError) return json(res, 500, { detail: 'Could not load lessons' });
       const q = (url.searchParams.get('q') ?? '').toLowerCase();
@@ -122,7 +161,10 @@ export function startMockApi(distDir) {
     }
     m = p.match(/^\/api\/runs\/([^/]+)$/);
     if (m) {
-      const run = [...RUNS, ...OTHERS].find((r) => r.session_id.startsWith(m[1]));
+      const run = [...RUNS, ...OTHERS].find((r) => r.session_id.startsWith(m[1]))
+        ?? (mock.chat?.turns.some((turn) => turn.turn_id === m[1])
+          ? RUNS.find((row) => row.session_id === mock.chat?.session_id)
+          : null);
       return run ? json(res, 200, run) : json(res, 404, { error: 'not_found' });
     }
     m = p.match(/^\/api\/sessions\/([^/]+)\/steps$/);
@@ -140,7 +182,7 @@ export function startMockApi(distDir) {
     if (p === '/api/hosts') return json(res, 200, { enabled: true, hosts: [], devices: [] });
     if (p.startsWith('/images/')) {
       res.writeHead(200, { 'content-type': 'image/svg+xml' });
-      return res.end('<svg xmlns="http://www.w3.org/2000/svg" width="90" height="160"><rect width="90" height="160" fill="#dbeafe"/></svg>');
+      return res.end(SYNTHETIC_SCREENSHOT);
     }
     if (p.startsWith('/api/')) return json(res, p === '/api/sessions' ? 200 : 404, p === '/api/sessions' ? [] : {});
     const file = path.join(distDir, p === '/' || !path.extname(p) ? 'index.html' : p);

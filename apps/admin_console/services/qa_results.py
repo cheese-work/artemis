@@ -583,8 +583,11 @@ def _with_turn_metadata(record, turn_id, turn_index, turn_count):
     result["updated"] = record["version"] > 1
     result["display_labels"] = {
         "verification": _VERIFICATION_DISPLAY_LABELS.get(result.get("verification"), "Chưa xác minh"),
-        "category": _CATEGORY_DISPLAY_LABELS.get(result.get("category"), "Chưa xác định"),
     }
+    if result.get("category") is not None:
+        result["display_labels"]["category"] = _CATEGORY_DISPLAY_LABELS.get(
+            result["category"], "Chưa xác định"
+        )
     return result
 
 

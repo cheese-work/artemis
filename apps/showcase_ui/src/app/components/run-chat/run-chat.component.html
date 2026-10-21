@@ -44,6 +44,7 @@
           <li [class.chat-bubble]="['message', 'thinking', 'input_request'].includes(message.kind)"
             [class.human]="message.role === 'human'" [class.system]="message.role === 'system'"
             [class.plan-card]="message.kind === 'plan' || message.kind === 'replan'" [class.step-row]="message.kind === 'step'"
+            [id]="stepElementId(message)"
             [attr.data-event-kind]="message.kind" [attr.data-turn-id]="message.kind === 'step' ? message.turn_id : null"
             [attr.data-step-number]="message.kind === 'step' ? stepNumber(message) : null">
             @if (message.kind === 'step') {
@@ -93,23 +94,43 @@
             @if (shell.technicalDetails()) { <time>{{ message.created_at * 1000 | date: 'HH:mm:ss' : '+0700' }} ICT</time> }
           </li>
         }
-        @if (resultsUnavailable()) {
-          <li class="verdict-card" data-testid="run-verdict" data-label-state="error" data-event-kind="verdict" aria-live="off">
-            <p class="verdict-state">{{ resultLabel(null) }}</p>
-            <button type="button" class="verdict-retry" (click)="retryResults()">Thử lại</button>
-          </li>
-        } @else if (chat(); as loadedChat) {
-          @for (turn of loadedChat.turns; track turn.turn_id; let lastTurn = $last) {
-              @let result = resultForTurn(turn.turn_id);
-              <li class="verdict-card" data-testid="run-verdict" data-event-kind="verdict"
-                [attr.data-catalog-key]="result?.catalog_key ?? null" [attr.data-label-state]="result?.label_state ?? 'legacy'" aria-live="off">
+      </ol>
+      @if (chat(); as loadedChat) {
+        @if (loadedChat.turns.length > 1) {
+          <nav class="run-turn-selector" data-testid="run-turn-selector" aria-label="Chọn lượt chạy">
+            @for (turn of loadedChat.turns; track turn.turn_id) {
+              <button type="button" data-testid="run-turn-selector" [attr.data-turn-id]="turn.turn_id"
+                [attr.aria-pressed]="selectedTurn()?.turn_id === turn.turn_id"
+                (click)="selectTurn(turn.turn_id)">
+                <span>Lượt {{ turn.number }}</span>
+                <span>{{ resultLabel(resultForTurn(turn.turn_id), turn) }}</span>
+              </button>
+            }
+          </nav>
+        }
+      }
+      @if (resultsUnavailable()) {
+        <section class="verdict-card" data-testid="run-verdict" data-label-state="error" data-event-kind="verdict"
+          [attr.data-turn-id]="selectedTurn()?.turn_id ?? null" aria-live="off">
+          <p class="verdict-state">{{ resultLabel(null) }}</p>
+          <button type="button" class="verdict-retry" (click)="retryResults()">Thử lại</button>
+        </section>
+      } @else if (chat(); as loadedChat) {
+        @if (selectedTurn(); as turn) {
+          @let result = selectedResult();
+          @let lastTurn = turn.turn_id === loadedChat.turns.at(-1)?.turn_id;
+          <section class="verdict-card" data-testid="run-verdict" data-event-kind="verdict"
+            [attr.data-turn-id]="turn.turn_id" [attr.data-catalog-key]="result?.catalog_key ?? null"
+            [attr.data-label-state]="result?.label_state ?? 'legacy'" aria-live="off">
                 @if (result?.label_state === 'final') {
                   <div class="verdict-layout">
                     <aside class="verdict-rail" aria-label="Kết quả lượt chạy">
                       <header class="verdict-heading">
                         <span class="verdict-chip">{{ resultLabel(result, turn) }}</span>
                         <span class="verification">Xác minh · {{ verification(result!) }}</span>
-                        <span class="category-label">{{ result!.display_labels?.category ?? 'Chưa xác định' }}</span>
+                        @if (result!.category !== null && result!.display_labels?.category; as categoryLabel) {
+                          <span class="category-label">{{ categoryLabel }}</span>
+                        }
                       </header>
                       @if (result?.reason) { <p class="verdict-reason">{{ result!.reason }}</p> }
                       @if (result!.action.text) {
@@ -144,7 +165,16 @@
                       <div class="selected-step-evidence" data-testid="selected-step-evidence">Chưa có chi tiết bước quyết định.</div>
                     }
                     @if (result!.evidence.step !== null) {
-                      <p class="evidence-index" data-testid="evidence-index">Bước {{ result!.evidence.step }}</p>
+                      <nav class="evidence-index step-index" data-testid="evidence-index" [attr.aria-label]="'Các bước của lượt ' + turn.number">
+                        @for (step of evidenceSteps(result!); track step.sequence) {
+                          @let stepIndex = stepNumber(step);
+                          @if (stepIndex !== null) {
+                            <a [href]="'#' + stepElementId(step)" [class.selected]="stepIndex === result!.evidence.step"
+                              [attr.aria-current]="stepIndex === result!.evidence.step ? 'step' : null"
+                              (click)="openEvidenceStep($event, turn.turn_id, stepIndex)">Bước {{ stepIndex }}</a>
+                          }
+                        }
+                      </nav>
                     }
                     @if (resultScreenshot(result!); as image) {
                       <button type="button" class="evidence-image" data-testid="run-evidence-screenshot"
@@ -152,16 +182,6 @@
                         <img [src]="image" alt="Ảnh chụp bằng chứng quyết định" loading="lazy">
                       </button>
                     } @else { <p class="evidence-unavailable">Không có ảnh chụp bằng chứng.</p> }
-                    @if (otherEvidenceSteps(result!).length) {
-                      <details class="other-evidence-steps">
-                        <summary>Các bước khác</summary>
-                        @for (otherStep of otherEvidenceSteps(result!); track otherStep.sequence) {
-                          <button type="button" (click)="selectEvidence(otherStep.turn_id, stepNumber(otherStep)!)">
-                            Bước {{ stepNumber(otherStep) }} · {{ otherStep.content }}
-                          </button>
-                        }
-                      </details>
-                    }
                     </section>
                   </div>
                   @if (result!.results_note; as note) {
@@ -208,10 +228,9 @@
                   }
                 }
                 <p class="turn-result" data-testid="run-turn-result">Kết quả của lượt {{ result?.turn_index ?? turn.number }}/{{ result?.turn_count ?? loadedChat.turns.length }}</p>
-              </li>
-          }
+          </section>
         }
-      </ol>
+      }
       <span class="sr-only" data-testid="run-verdict-announcement" aria-live="polite" aria-atomic="true">{{ latestResultLabel() }}</span>
       @if (!chat() && !error()) {
         <div role="status"><span class="sr-only">Loading chat session…</span>

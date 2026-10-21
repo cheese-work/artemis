@@ -71,7 +71,7 @@ export interface ChatTurnResult {
   verdict: string;
   verification: string;
   category: string | null;
-  display_labels?: { verification: string; category: string };
+  display_labels?: { verification: string; category?: string };
   reason: string;
   action: { text: string; href?: string | null };
   responsible: string;
@@ -86,6 +86,7 @@ export interface ChatTurnResult {
 
 export interface ChatResultsSession {
   session_id: string;
+  status?: 'unavailable';
   results: ChatTurnResult[];
 }
 

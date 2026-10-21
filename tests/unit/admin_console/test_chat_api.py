@@ -361,6 +361,46 @@ async def test_chat_results_returns_compact_batch_without_timeline(qa, library, 
 
 
 @pytest.mark.asyncio
+async def test_chat_results_keeps_sibling_when_one_session_is_unavailable(qa, library, monkeypatch):
+    from tests.support.smartqa_verdict_fixtures import build_smartqa_verdict_case
+
+    case = build_smartqa_verdict_case(library, monkeypatch)
+    unavailable_id = "not-visible-session"
+    response = await qa.post(
+        "/api/chats/results", json={"session_ids": [case.chat_id, unavailable_id]}
+    )
+
+    assert response.status_code == 200
+    sessions = {session["session_id"]: session for session in response.json()["sessions"]}
+    assert sessions[case.chat_id]["results"]
+    assert sessions[unavailable_id] == {
+        "session_id": unavailable_id,
+        "status": "unavailable",
+        "results": [],
+    }
+
+
+@pytest.mark.asyncio
+async def test_chat_results_does_not_disclose_a_hidden_session(qa, chat, monkeypatch):
+    from apps.admin_console.core.access_control import AdminAPIError
+
+    require_visible_run = chats.require_visible_run
+
+    def hide_session(scope, session_ids, **kwargs):
+        if session_ids == [chat]:
+            raise AdminAPIError(404, "Run not visible.", "run_not_visible", "Open a visible run.")
+        return require_visible_run(scope, session_ids, **kwargs)
+
+    monkeypatch.setattr(chats, "require_visible_run", hide_session)
+    response = await qa.post("/api/chats/results", json={"session_ids": [chat]})
+
+    assert response.status_code == 200
+    assert response.json()["sessions"] == [
+        {"session_id": chat, "status": "unavailable", "results": []}
+    ]
+
+
+@pytest.mark.asyncio
 async def test_unknown_result_finalizes_after_pending_cap(qa, library, monkeypatch):
     import json
     import sqlite3

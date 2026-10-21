@@ -67,7 +67,8 @@ describe('RunChatComponent', () => {
     fixture.componentRef.setInput('runId', 'root');
     fixture.detectChanges(); tick(0); fixture.detectChanges();
     const verdict = fixture.nativeElement.querySelector('.verdict-card');
-    expect(verdict).toBe(fixture.nativeElement.querySelector('.flat-timeline').lastElementChild);
+    expect(verdict.closest('.flat-timeline')).toBeNull();
+    expect(verdict.parentElement).toBe(fixture.nativeElement.querySelector('.chat-history'));
     expect(verdict.querySelector('.verdict-tip').textContent).toContain('Specify the expected screen');
     verdict.querySelector('.copy-tip').click(); tick(0);
     expect(clipboard).toHaveBeenCalledOnceWith('Specify the expected screen next time.');
@@ -75,6 +76,10 @@ describe('RunChatComponent', () => {
   }));
 
   it('renders backend verdicts per turn and places cited failing evidence first', fakeAsync(() => {
+    const earlierStep = {
+      ...thread.messages[1], sequence: 2, kind: 'step', content: 'Enter the email address',
+      payload: { step_id: 'email-step', step_number: 1 }
+    };
     const failingStep: ChatSession['messages'][number] = {
       ...thread.messages[1], sequence: 3, kind: 'step', content: 'Submit sign-in',
       payload: {
@@ -97,49 +102,59 @@ describe('RunChatComponent', () => {
     const chat = {
       ...thread,
       turns: [thread.turns[0], { ...thread.turns[1], status: 'completed' }],
-      timeline: [...thread.messages, failingStep, unrelatedStep],
-      results: [{ ...result, evidence: { ...result.evidence, turn_id: 'root' }, verdict: 'pass', catalog_key: 'pass.verified', reason: 'Đã kiểm' }, result]
+      timeline: [...thread.messages, earlierStep, failingStep, unrelatedStep],
+      results: [
+        { ...result, evidence: { ...result.evidence, turn_id: 'root' }, verdict: 'pass', catalog_key: 'pass.verified', category: null,
+          display_labels: { verification: 'Đã kiểm' }, reason: 'Đã kiểm' },
+        result
+      ]
     } as any;
     api.chat.and.returnValue(of(chat));
     const fixture = TestBed.createComponent(RunChatComponent);
     fixture.componentRef.setInput('runId', 'root');
     fixture.detectChanges(); tick(0); fixture.detectChanges();
 
-    const cards = fixture.nativeElement.querySelectorAll('[data-testid="run-verdict"]');
-    expect(cards.length).toBe(2);
-    expect(cards[0].textContent).toContain('Đã kiểm');
-    expect(cards[1].getAttribute('data-catalog-key')).toBe('fail.app_defect');
-    expect(cards[1].textContent).toContain('App đang test (agent nhận định)');
-    expect(cards[1].textContent).toContain('Xem bằng chứng rồi báo bug cho app');
-    expect(cards[1].textContent).toContain('Kết quả của lượt 2/2');
-    expect(cards[1].getAttribute('data-catalog-key')).toBe('fail.app_defect');
-    expect(cards[1].textContent).not.toContain('fail.app_defect');
-    expect(cards[1].querySelector('.verification').textContent).toContain('Xác minh · Agent tự báo');
-    expect(cards[1].querySelector('.category-label').textContent).toBe('Lỗi ứng dụng');
-    expect(cards[1].textContent).not.toContain('Verification · self_reported');
-    expect(cards[1].querySelector('.verdict-action').textContent).toContain('Hành động ·');
-    expect(cards[1].querySelector('.verdict-responsible').textContent).toContain('Phụ trách ·');
+    let cards = fixture.nativeElement.querySelectorAll('[data-testid="run-verdict"]');
+    expect(cards.length).toBe(1);
+    expect(cards[0].closest('.chat-messages')).toBeNull();
+    expect(cards[0].getAttribute('data-turn-id')).toBe('follow-up');
+    expect(cards[0].getAttribute('data-catalog-key')).toBe('fail.app_defect');
+    expect(cards[0].textContent).toContain('App đang test (agent nhận định)');
+    expect(cards[0].textContent).toContain('Xem bằng chứng rồi báo bug cho app');
+    expect(cards[0].textContent).toContain('Kết quả của lượt 2/2');
+    expect(cards[0].textContent).not.toContain('fail.app_defect');
+    expect(cards[0].querySelector('.verification').textContent).toContain('Xác minh · Agent tự báo');
+    expect(cards[0].querySelector('.category-label').textContent).toBe('Lỗi ứng dụng');
+    expect(cards[0].textContent).not.toContain('Verification · self_reported');
+    expect(cards[0].querySelector('.verdict-action').textContent).toContain('Hành động ·');
+    expect(cards[0].querySelector('.verdict-responsible').textContent).toContain('Phụ trách ·');
     const turnDividers = fixture.nativeElement.querySelectorAll('.turn-divider');
     expect(turnDividers[1].textContent).toContain('Lượt 2');
     expect(turnDividers[1].textContent).not.toContain('Turn');
-    const layout = cards[1].querySelector('.verdict-layout');
+    const layout = cards[0].querySelector('.verdict-layout');
     expect(layout).not.toBeNull();
     if (layout) {
       expect(layout.children[0].classList).toContain('verdict-rail');
-      expect(layout.children[1]).toBe(cards[1].querySelector('[data-testid="run-decisive-evidence"]'));
+      expect(layout.children[1]).toBe(cards[0].querySelector('[data-testid="run-decisive-evidence"]'));
     }
-    expect(getComputedStyle(cards[1].querySelector('.verdict-chip')).fontSize).toBe('32px');
-    expect(getComputedStyle(cards[1].querySelector('.verdict-chip')).lineHeight).toBe('40px');
+    expect(getComputedStyle(cards[0].querySelector('.verdict-chip')).fontSize).toBe('32px');
+    expect(getComputedStyle(cards[0].querySelector('.verdict-chip')).lineHeight).toBe('40px');
 
-    const selectedEvidence = cards[1].querySelector('[data-testid="selected-step-evidence"]');
+    const selectedEvidence = cards[0].querySelector('[data-testid="selected-step-evidence"]');
     expect(selectedEvidence.querySelector('.evidence-kicker').textContent).toContain('Bước lỗi · 2');
     expect(selectedEvidence.textContent).toContain('Mong đợi');
     expect(selectedEvidence.textContent).toContain('Account home is visible');
     expect(selectedEvidence.textContent).toContain('Thực tế');
     expect(selectedEvidence.textContent).toContain('Invalid credentials banner is visible');
-    const evidencePanel = cards[1].querySelector('[data-testid="run-decisive-evidence"]');
+    const evidencePanel = cards[0].querySelector('[data-testid="run-decisive-evidence"]');
     expect(evidencePanel.getAttribute('aria-label')).toBe('Bằng chứng quyết định');
-    expect(evidencePanel.querySelector('.other-evidence-steps summary').textContent.trim()).toBe('Các bước khác');
+    const stepLinks = [...evidencePanel.querySelectorAll('.evidence-index a')];
+    expect(stepLinks.map(link => link.textContent.trim())).toEqual(['Bước 1', 'Bước 2', 'Bước 3']);
+    expect(stepLinks.every(link => document.getElementById(decodeURIComponent(link.hash.slice(1))) !== null)).toBeTrue();
+    const stepRows = [...fixture.nativeElement.querySelectorAll('[data-event-kind="step"][data-turn-id="follow-up"]')];
+    expect(stepRows.map(row => row.id)).toEqual(['step-follow-up-1', 'step-follow-up-2', 'step-follow-up-3']);
+    const collapsedSteps = stepRows.map(row => row.querySelector('details') as HTMLDetailsElement);
+    expect(collapsedSteps.map(step => step.open)).toEqual([false, true, false]);
     expect(evidencePanel.querySelector('.evidence-link').textContent.trim()).toBe('Mở bước trong dòng thời gian');
     expect(evidencePanel.querySelector('.evidence-image').getAttribute('aria-label')).toBe('Mở ảnh chụp bằng chứng quyết định');
     expect(evidencePanel.querySelector('.evidence-image img').getAttribute('alt')).toBe('Ảnh chụp bằng chứng quyết định');
@@ -148,17 +163,29 @@ describe('RunChatComponent', () => {
       & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(evidencePanel.querySelector('[data-testid="evidence-index"]').compareDocumentPosition(evidencePanel.querySelector('[data-testid="run-evidence-screenshot"]'))
       & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(evidencePanel.querySelector('[data-testid="run-evidence-screenshot"]').compareDocumentPosition(evidencePanel.querySelector('.other-evidence-steps'))
-      & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(fixture.nativeElement.querySelectorAll('.chat-messages[aria-live="polite"]').length).toBe(1);
     expect(fixture.nativeElement.querySelectorAll('[data-testid="run-verdict-announcement"][aria-live="polite"]').length).toBe(1);
-    expect(cards[1].getAttribute('aria-live')).toBe('off');
+    expect(cards[0].getAttribute('aria-live')).toBe('off');
+    stepLinks[0].click();
+    fixture.detectChanges();
+    expect(fixture.componentInstance.selectedEvidence()).toEqual({ turnId: 'follow-up', step: 1 });
+    expect(collapsedSteps.map(step => step.open)).toEqual([true, false, false]);
     const citedStep = fixture.nativeElement.querySelector('[data-turn-id="follow-up"][data-step-number="2"] details') as HTMLDetailsElement;
     expect(citedStep.open).toBeFalse();
     evidencePanel.querySelector('[data-testid="run-decisive-evidence-link"]').click();
     fixture.detectChanges();
     expect(citedStep.open).toBeTrue();
+    expect(collapsedSteps[0].open).toBeFalse();
+    expect(collapsedSteps[2].open).toBeFalse();
     expect(document.activeElement).toBe(citedStep.querySelector('summary'));
+
+    fixture.nativeElement.querySelector('[data-testid="run-turn-selector"][data-turn-id="root"]').click();
+    fixture.detectChanges();
+    cards = fixture.nativeElement.querySelectorAll('[data-testid="run-verdict"]');
+    expect(cards.length).toBe(1);
+    expect(cards[0].getAttribute('data-turn-id')).toBe('root');
+    expect(cards[0].querySelector('.verdict-chip').textContent.trim()).toBe('Pass');
+    expect(cards[0].querySelector('.category-label')).toBeNull();
     fixture.destroy();
   }));
 
@@ -252,7 +279,7 @@ describe('RunChatComponent', () => {
     fixture.destroy();
   }));
 
-  it('starts the pending poll cap only after a long-running turn becomes pending', fakeAsync(() => {
+  it('starts the pending poll cap only after the relevant turn is terminal', fakeAsync(() => {
     const pendingResult = {
       catalog_key: 'blocked.unknown', verdict: 'blocked', verification: 'none', category: 'unknown',
       display_labels: { verification: 'Chưa xác minh', category: 'Chưa xác định' },
@@ -261,20 +288,73 @@ describe('RunChatComponent', () => {
       turn_index: 2, turn_count: 2, label_state: 'pending', source: 'outcome'
     } as ChatTurnResult;
     const finalResult = { ...pendingResult, catalog_key: 'fail.app_defect', verdict: 'fail', category: 'app_defect', label_state: 'final' as const };
-    const activeChat: ChatSession = { ...thread, turns: [thread.turns[0], { ...thread.turns[1], status: 'running' }], results: [] };
+    const activeChat: ChatSession = { ...thread, turns: [thread.turns[0], { ...thread.turns[1], status: 'running' }], results: [pendingResult] };
     const pendingChat: ChatSession = { ...thread, turns: [thread.turns[0], { ...thread.turns[1], status: 'completed' }], results: [pendingResult] };
     const finalChat: ChatSession = { ...pendingChat, results: [finalResult] };
     let call = 0;
     api.chat.and.callFake(() => {
       call++;
-      return of(call <= 40 ? activeChat : call === 41 ? pendingChat : finalChat);
+      return of(call <= 40 ? activeChat : call <= 44 ? pendingChat : finalChat);
     });
     const fixture = TestBed.createComponent(RunChatComponent);
     fixture.componentRef.setInput('runId', 'root');
-    fixture.detectChanges(); tick(0); tick(41000); fixture.detectChanges();
+    fixture.detectChanges(); tick(0); tick(44000); fixture.detectChanges();
 
-    expect(api.chat.calls.count()).toBe(42);
+    expect(api.chat.calls.count()).toBe(45);
     expect(fixture.componentInstance.latestResultLabel()).toBe('Fail');
+    fixture.destroy();
+  }));
+
+  it('keeps terminal pending-result polling capped', fakeAsync(() => {
+    const pendingResult: ChatTurnResult = {
+      catalog_key: 'blocked.unknown', verdict: 'blocked', verification: 'none', category: 'unknown',
+      display_labels: { verification: 'Chưa xác minh', category: 'Chưa xác định' }, reason: 'Đang xác định kết quả',
+      action: { text: '' }, responsible: '', evidence: { turn_id: 'follow-up', step: null, screenshot_url: null },
+      turn_index: 2, turn_count: 2, label_state: 'pending', source: 'outcome'
+    };
+    const pendingChat: ChatSession = {
+      ...thread,
+      turns: [thread.turns[0], { ...thread.turns[1], status: 'completed' }],
+      results: [pendingResult]
+    };
+    api.chat.and.returnValue(of(pendingChat));
+    const fixture = TestBed.createComponent(RunChatComponent);
+    fixture.componentRef.setInput('runId', 'root');
+    fixture.detectChanges(); tick(0); tick(50000); fixture.detectChanges();
+
+    expect(api.chat.calls.count()).toBe(30);
+    expect(fixture.componentInstance.latestResultLabel()).toBe('Đã kết thúc · Đang xác định kết quả');
+    fixture.destroy();
+  }));
+
+  it('keeps explicit unknown categories while omitting null categories on the selected turn', fakeAsync(() => {
+    const passResult: ChatTurnResult = {
+      catalog_key: 'pass.verified', verdict: 'pass', verification: 'verified', category: null,
+      display_labels: { verification: 'Đã kiểm', category: undefined as unknown as string }, reason: 'Đã kiểm', action: { text: '' }, responsible: '',
+      evidence: { turn_id: 'root', step: null, screenshot_url: null }, turn_index: 1, turn_count: 2,
+      label_state: 'final', source: 'outcome'
+    };
+    const unknownResult: ChatTurnResult = {
+      catalog_key: 'blocked.unknown', verdict: 'blocked', verification: 'none', category: 'unknown',
+      display_labels: { verification: 'Chưa xác minh', category: 'Chưa xác định' }, reason: 'Chưa rõ — đã ghi nhận',
+      action: { text: 'Chạy lại; admin sẽ xem' }, responsible: 'SmartQA',
+      evidence: { turn_id: 'follow-up', step: null, screenshot_url: null }, turn_index: 2, turn_count: 2,
+      label_state: 'final', source: 'outcome'
+    };
+    api.chat.and.returnValue(of({
+      ...thread,
+      turns: thread.turns.map(turn => ({ ...turn, status: 'completed' })),
+      results: [passResult, unknownResult]
+    }));
+    const fixture = TestBed.createComponent(RunChatComponent);
+    fixture.componentRef.setInput('runId', 'root');
+    fixture.detectChanges(); tick(0); fixture.detectChanges();
+
+    expect(fixture.nativeElement.querySelector('.category-label').textContent.trim()).toBe('Chưa xác định');
+    fixture.nativeElement.querySelector('[data-testid="run-turn-selector"][data-turn-id="root"]').click();
+    fixture.detectChanges();
+    expect(fixture.nativeElement.querySelector('.verdict-chip').textContent.trim()).toBe('Pass');
+    expect(fixture.nativeElement.querySelector('.category-label')).toBeNull();
     fixture.destroy();
   }));
 
@@ -658,7 +738,7 @@ describe('RunChatComponent', () => {
     expect(fixture.nativeElement.querySelector('details.thinking').open).toBeFalse();
     expect(fixture.nativeElement.querySelector('.action-detail').textContent).toContain('42');
     expect(fixture.nativeElement.textContent).toContain('Raw report');
-    expect(fixture.nativeElement.querySelector('.flat-timeline').lastElementChild.classList).toContain('verdict-card');
+    expect(fixture.nativeElement.querySelector('.flat-timeline .verdict-card')).toBeNull();
     expect(JSON.stringify(fixture.componentInstance.chat())).toBe(stored);
     fixture.nativeElement.querySelector('.step-screenshot').dispatchEvent(new Event('error'));
     fixture.detectChanges();
