@@ -27,7 +27,7 @@ jobs:
       fail-fast: false
       matrix:
         os:
-          - blacksmith-2vcpu-ubuntu-2404
+          - ubuntu-latest
 
     steps:
       - name: Check out repository
@@ -39,6 +39,9 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+
+      - name: Check runner routing
+        run: python .github/tests/test_runner_routing.py
 
       - name: Check public dependency sources before installation
         run: python scripts/check_dependency_sources.py
@@ -100,7 +103,7 @@ jobs:
 
   frontend:
     name: Frontend tests and production build
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     defaults:
       run:
@@ -145,7 +148,7 @@ jobs:
 
   package:
     name: Build and smoke-test Python packages
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
     timeout-minutes: 30
 
     steps:
