@@ -16,18 +16,23 @@ env:
   PYTHONUTF8: "1"
   UV_NO_PROGRESS: "1"
 
+# Jobs run on the cheese-work X99 runner pool (ephemeral org runners labelled
+# cheese-x99), per Cheese's 2026-10-21 directive. The pool refuses fork pull
+# requests in its job-started hook; the job-level `if` skips them first.
+
 jobs:
   # Windows leg removed org-wide per CHE-522 (Cheese: Linux CI only, no
   # Windows jobs or artifacts).
   python-quality:
     name: Python 3.12 / ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: [self-hosted, "${{ matrix.os }}"]
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
         os:
-          - blacksmith-2vcpu-ubuntu-2404
+          - cheese-x99
 
     steps:
       - name: Check out repository
@@ -100,7 +105,8 @@ jobs:
 
   frontend:
     name: Frontend tests and production build
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: [self-hosted, cheese-x99]
     timeout-minutes: 20
     defaults:
       run:
@@ -119,6 +125,21 @@ jobs:
 
       - name: Install locked frontend dependencies
         run: npm ci
+
+      # The X99 runner image has no browser. Install a pinned Chrome for Testing
+      # with its system libraries, and wrap it for a root, 64 MB /dev/shm container.
+      - name: Install headless Chrome
+        working-directory: ${{ github.workspace }}
+        run: |
+          sudo apt-get update -qq
+          npx --yes @puppeteer/browsers@3.2.5 install chrome@156.0.8078.47 \
+            --install-deps --path "$RUNNER_TEMP/chrome"
+          chrome="$(find "$RUNNER_TEMP/chrome" -name chrome -type f | head -n 1)"
+          printf '#!/bin/sh\nexec "%s" --no-sandbox --disable-dev-shm-usage "$@"\n' "$chrome" \
+            > "$RUNNER_TEMP/chrome-wrapper.sh"
+          chmod +x "$RUNNER_TEMP/chrome-wrapper.sh"
+          "$RUNNER_TEMP/chrome-wrapper.sh" --version
+          echo "CHROME_BIN=$RUNNER_TEMP/chrome-wrapper.sh" >> "$GITHUB_ENV"
 
       - name: Run frontend tests at 800 px and 1440 px
         run: npm test -- --watch=false --browsers=ChromeHeadlessNarrow,ChromeHeadlessWide
@@ -139,13 +160,14 @@ jobs:
 
       - name: Check root and /preview/pr/70/ browser requests
         run: |
-          export CHROME_BIN="$(command -v google-chrome || command -v chromium-browser || command -v chromium)"
+          export CHROME_BIN="${CHROME_BIN:-$(command -v google-chrome || command -v chromium-browser || command -v chromium)}"
           "$CHROME_BIN" --version
           npm run test:preview-path
 
   package:
     name: Build and smoke-test Python packages
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: [self-hosted, cheese-x99]
     timeout-minutes: 30
 
     steps:
