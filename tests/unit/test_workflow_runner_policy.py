@@ -63,3 +63,14 @@ def test_python_jobs_install_the_opencv_system_libraries():
     for name in ("python-quality", "package"):
         runs = [step.get("run", "") for step in workflow["jobs"][name]["steps"]]
         assert any("libxcb1" in run and "libgl1" in run for run in runs), name
+
+
+def test_python_job_timeout_allows_the_slower_x99_container():
+    workflow = yaml.safe_load((WORKFLOWS / "ci.yml").read_text(encoding="utf-8"))
+    assert workflow["jobs"]["python-quality"]["timeout-minutes"] == 60
+
+
+def test_karma_tolerates_a_browser_stall_on_a_shared_x99_host():
+    karma = (WORKFLOWS.parents[1] / "apps" / "showcase_ui" / "karma.conf.js").read_text()
+    for setting in ("browserDisconnectTimeout", "browserDisconnectTolerance", "captureTimeout"):
+        assert setting in karma

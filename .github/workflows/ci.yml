@@ -27,7 +27,7 @@ jobs:
     name: Python 3.12 / ${{ matrix.os }}
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: [self-hosted, "${{ matrix.os }}"]
-    timeout-minutes: 30
+    timeout-minutes: 60  # X99 containers have 3 CPUs on a shared host: deterministic tests took 19 min against 9-13 on the previous hosted runner
     strategy:
       fail-fast: false
       matrix:

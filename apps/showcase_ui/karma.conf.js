@@ -14,6 +14,11 @@ module.exports = function (config) {
       subdir: '.',
       reporters: [{ type: 'html' }, { type: 'text-summary' }]
     },
+    // The X99 runners share a busy host: a headless browser can stall for a moment.
+    browserDisconnectTimeout: 10000,
+    browserDisconnectTolerance: 2,
+    browserNoActivityTimeout: 120000,
+    captureTimeout: 120000,
     reporters: ['progress', 'kjhtml'],
     browsers: ['ChromeHeadlessNarrow', 'ChromeHeadlessWide'],
     customLaunchers: {
