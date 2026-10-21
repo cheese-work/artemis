@@ -8,7 +8,7 @@ import { Router, provideRouter } from '@angular/router';
 import { RouterTestingHarness } from '@angular/router/testing';
 import { Observable, Subject, of, throwError } from 'rxjs';
 import { HostsResponse } from '../../core/models/host.model';
-import { RunPage, RunSummary } from '../../core/models/run.model';
+import { ChatSession, RunPage, RunSummary } from '../../core/models/run.model';
 import { Session } from '../../core/models/session.model';
 import { AdminConfigService, AdminIdentity } from '../../services/admin-config.service';
 import { HostsService } from '../../services/hosts.service';
@@ -104,9 +104,10 @@ describe('RunLibraryComponent', () => {
 
   beforeEach(async () => {
     localStorage.removeItem(SELECTED_DEVICE_SERIAL_KEY);
-    runs = jasmine.createSpyObj<RunsService>('RunsService', ['list', 'get'], {
+    runs = jasmine.createSpyObj<RunsService>('RunsService', ['list', 'get', 'chat'], {
       lastLibraryQuery: signal<Record<string, string>>({})
     });
+    runs.chat.and.returnValue(of({ results: [] } as unknown as ChatSession));
     hosts = jasmine.createSpyObj<HostsService>('HostsService', ['list']);
     hosts.list.and.returnValue(of(hostsResponse));
     adminApi = jasmine.createSpyObj<AdminConfigService>('AdminConfigService', ['getIdentity']);
@@ -130,7 +131,7 @@ describe('RunLibraryComponent', () => {
   });
 
   describe('rows', () => {
-    it('renders 56px rows with an execution word, package and mono time, never a Passed chip', async () => {
+    it('preserves run metadata and minimum row height with a visible result state', async () => {
       await open('/sessions', of(page([run({ app_package: 'com.example.shop' })])));
       expect(q('.run-meta')!.textContent!.trim()).toBe('Completed · com.example.shop · emulator-5554');
       expect(q('.run-row')!.textContent).not.toContain('Passed');
@@ -139,7 +140,35 @@ describe('RunLibraryComponent', () => {
       expect(q('.run-icon .material-symbols-outlined')!.textContent!.trim()).toBe('description');
       expect(q('.run-package')!.getBoundingClientRect().left - q('.run-outcome')!.getBoundingClientRect().right).toBeGreaterThanOrEqual(3);
       expect(getComputedStyle(q('.run-package')!).fontFamily).toContain('JetBrains Mono');
-      expect(q('.run-row')!.getBoundingClientRect().height).toBe(56);
+      expect(q('.run-row')!.getBoundingClientRect().height).toBeGreaterThanOrEqual(56);
+    });
+
+    it('renders the backend result and opens the exact cited turn and step', async () => {
+      const result = {
+        catalog_key: 'fail.app_defect', verdict: 'fail', verification: 'self_reported', category: 'app_defect',
+        reason: 'The sign-in screen rejected valid credentials.', action: { text: 'Review evidence and report a bug.' },
+        responsible: 'App under test', evidence: { turn_id: 'turn-2', step: 7, screenshot_url: '/images/failed.png' },
+        turn_index: 2, turn_count: 4, label_state: 'final', source: 'outcome'
+      };
+      runs.chat.and.returnValue(of({ results: [result] } as unknown as ChatSession));
+      const selectedRun = run({ chat_session_id: 'chat-root', verdict: 'fail' });
+      await open('/sessions', of(page([selectedRun])));
+      await new Promise(resolve => setTimeout(resolve, 50));
+      await settle();
+
+      expect(runs.chat).toHaveBeenCalledWith('chat-root');
+      const card = q<HTMLElement>('[data-testid="run-card-verdict"]')!;
+      expect(card.textContent).toContain('fail.app_defect');
+      expect(card.textContent).toContain('The sign-in screen rejected valid credentials.');
+      expect(card.textContent).toContain('Review evidence and report a bug.');
+      expect(card.textContent).toContain('App under test');
+      expect(card.textContent).toContain('2/4');
+      const evidence = q<HTMLElement>('[data-testid="run-card-evidence"]')!;
+      expect(evidence.textContent).toContain('Turn 2');
+      expect(evidence.textContent).toContain('Step 7');
+      const row = q<HTMLAnchorElement>('.run-row')!;
+      expect(row.href).toContain('turn=turn-2');
+      expect(row.href).toContain('step=7');
     });
 
     for (const verdictView of [

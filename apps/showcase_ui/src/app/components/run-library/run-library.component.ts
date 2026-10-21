@@ -20,9 +20,9 @@ import { CdkOverlayOrigin, ConnectedPosition, OverlayModule } from '@angular/cdk
 import { takeUntilDestroyed, toSignal } from '@angular/core/rxjs-interop';
 import { Location } from '@angular/common';
 import { ActivatedRoute, Router, RouterLink, convertToParamMap } from '@angular/router';
-import { Subscription, map } from 'rxjs';
+import { Subscription, catchError, from, map, mergeMap, of } from 'rxjs';
 import { Computer, RegistryDevice } from '../../core/models/host.model';
-import { RunSummary } from '../../core/models/run.model';
+import { ChatSession, ChatTurnResult, RunSummary } from '../../core/models/run.model';
 import { GoalImage, Session } from '../../core/models/session.model';
 import { HostsService } from '../../services/hosts.service';
 import { RunsService } from '../../services/runs.service';
@@ -124,6 +124,7 @@ export class RunLibraryComponent implements OnChanges {
   /** The text in the search box, which may not be applied yet. */
   public readonly searchText = signal('');
   public readonly rows = signal<RunSummary[]>([]);
+  public readonly cardResults = signal(new Map<string, { state: 'loading' | ChatTurnResult['label_state']; result: ChatTurnResult | null }>());
   public readonly nextCursor = signal<string | null>(null);
   public readonly loading = signal(true);
   public readonly loadingMore = signal(false);
@@ -178,6 +179,7 @@ export class RunLibraryComponent implements OnChanges {
   private readonly searchInput = viewChild<ElementRef<HTMLInputElement>>('searchInput');
   private readonly filterPopover = viewChild<ElementRef<HTMLElement>>('filterPopover');
   private request: Subscription | null = null;
+  private cardResultRequests = new Subscription();
   private pendingScroll = 0;
   private scrollTimer: ReturnType<typeof setTimeout> | null = null;
   private lastFiltersKey: string | null = null;
@@ -217,6 +219,7 @@ export class RunLibraryComponent implements OnChanges {
 
     this.destroyRef.onDestroy(() => {
       this.request?.unsubscribe();
+      this.cardResultRequests.unsubscribe();
       if (this.scrollTimer) clearTimeout(this.scrollTimer);
     });
   }
@@ -447,6 +450,27 @@ export class RunLibraryComponent implements OnChanges {
     this.load(false);
   }
 
+  public retryCardResult(run: RunSummary): void {
+    const results = new Map(this.cardResults());
+    results.delete(run.session_id);
+    this.cardResults.set(results);
+    this.loadCardResults([run]);
+  }
+
+  public cardResult(run: RunSummary): ChatTurnResult | null {
+    return this.cardResults().get(run.session_id)?.result ?? null;
+  }
+
+  public cardResultState(run: RunSummary): 'loading' | ChatTurnResult['label_state'] {
+    return this.cardResults().get(run.session_id)?.state ?? 'loading';
+  }
+
+  public evidenceQuery(run: RunSummary): Record<string, string | undefined> {
+    const result = this.cardResult(run);
+    if (result?.label_state !== 'final' || result.evidence.step === null) return this.runQuery();
+    return { ...this.runQuery(), turn: result.evidence.turn_id, step: String(result.evidence.step) };
+  }
+
   public loadMore(): void {
     // A cursor is only valid for the query that produced it; a reload drops it.
     if (this.loading() || this.loadingMore() || !this.nextCursor()) return;
@@ -463,6 +487,7 @@ export class RunLibraryComponent implements OnChanges {
       .subscribe({
         next: (page) => {
           this.rows.set(more ? [...this.rows(), ...page.runs] : page.runs);
+          this.loadCardResults(page.runs, !more);
           this.nextCursor.set(page.next_cursor);
           this.loading.set(false);
           this.loadingMore.set(false);
@@ -475,6 +500,39 @@ export class RunLibraryComponent implements OnChanges {
           this.loadingMore.set(false);
         }
       });
+  }
+
+  private loadCardResults(runs: RunSummary[], reset = false): void {
+    if (reset) {
+      this.cardResultRequests.unsubscribe();
+      this.cardResultRequests = new Subscription();
+      this.cardResults.set(new Map());
+    }
+    const results = new Map(this.cardResults());
+    const eligible = runs.filter((run) => !runStatusView(run.status).active && !results.has(run.session_id));
+    for (const run of eligible) results.set(run.session_id, { state: 'loading', result: null });
+    this.cardResults.set(results);
+    if (!eligible.length) return;
+
+    this.cardResultRequests.add(from(eligible).pipe(
+      mergeMap((run) => this.runsApi.chat(run.chat_session_id ?? run.session_id).pipe(
+        map((chat) => ({ run, chat })),
+        catchError(() => of({ run, chat: null }))
+      ), 4)
+    ).subscribe(({ run, chat }) => {
+      const result = chat ? this.resultForRun(run, chat) : null;
+      const next = new Map(this.cardResults());
+      next.set(run.session_id, { state: result?.label_state ?? (chat ? 'legacy' : 'error'), result });
+      this.cardResults.set(next);
+    }));
+  }
+
+  private resultForRun(run: RunSummary, chat: ChatSession): ChatTurnResult | null {
+    const results = chat.results ?? [];
+    return results.find((result) => result.evidence.turn_id === run.session_id)
+      ?? chat.verdict?.result
+      ?? results.at(-1)
+      ?? null;
   }
 
   /** Back from a run: load pages until the saved position exists, then scroll to it. */

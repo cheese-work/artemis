@@ -57,7 +57,11 @@
           </div>
           <div class="run-heading">
             <div class="run-heading-title">
-              <span class="outcome-badge" appRunStatusBadge [status]="current.status"></span>
+              @if (verdict() || verdictLoadFailed()) {
+                <span class="verdict-chip" data-testid="run-verdict-label">{{ verdictLabel() }}</span>
+              } @else {
+                <span class="outcome-badge" appRunStatusBadge [status]="current.status"></span>
+              }
               <h1 class="run-prompt" [title]="title()">{{ title() }}</h1>
             </div>
             <div class="header-controls">
@@ -118,9 +122,83 @@
         @if (active()) {
             <section class="status-strip" [class.live-state]="!!liveState()" [class.warning]="current.status === 'paused' || !!liveState()" aria-label="Run status">
               <span class="material-symbols-outlined" aria-hidden="true">{{ current.status === 'paused' ? 'pause_circle' : 'progress_activity' }}</span>
-              <p>{{ statusMessage() }}</p>
+              <p>{{ statusMessage() }} <span class="run-active-hint">· Giữ tab mở, không khoá máy</span></p>
               @if (canResume()) { <button type="button" class="action-button" (click)="onAction({ id: 'resume', event: $event })">Continue task</button> }
             </section>
+        }
+        @if (verdictLoadFailed() || verdict()) {
+        <section class="smartqa-verdict-card" data-testid="run-verdict" aria-label="SmartQA verdict">
+          <header class="verdict-heading">
+            <span class="verdict-chip">{{ verdictLabel() }}</span>
+            @if (verdict(); as result) {
+              @if (result.label_state === 'final') {
+                <span class="verification">Verification · {{ result.verification }}</span>
+                @if (result.catalog_key) { <code class="catalog-key">{{ result.catalog_key }}</code> }
+              }
+            }
+          </header>
+          @if (verdictLoadFailed()) {
+            <button type="button" class="verdict-retry" (click)="retryVerdict()">Thử lại</button>
+          } @else if (verdict(); as result) {
+            @if (result.label_state === 'final') {
+              @if (result.reason) { <p class="verdict-reason">{{ result.reason }}</p> }
+              <section class="verdict-evidence" data-testid="run-decisive-evidence" aria-label="Decisive evidence">
+                @if (citedStep(result); as step) {
+                  <div class="selected-step-evidence" data-testid="selected-step-evidence">
+                    <p class="evidence-kicker">Bằng chứng quyết định · Bước {{ step.step_number }}</p>
+                    <h3>{{ stepTitle(step) }}</h3>
+                    @if (step.last_execution_result?.['expected'] !== undefined) {
+                      <p><strong>Mong đợi</strong><span>{{ evidenceText(step.last_execution_result['expected']) }}</span></p>
+                    }
+                    @if (step.last_execution_result?.['actual'] !== undefined) {
+                      <p><strong>Thực tế</strong><span>{{ evidenceText(step.last_execution_result['actual']) }}</span></p>
+                    }
+                    <button type="button" class="evidence-link" (click)="openVerdictStep()">Mở bước trong timeline</button>
+                  </div>
+                } @else {
+                  <p class="selected-step-evidence" data-testid="selected-step-evidence">Bằng chứng quyết định · Chưa có bước hợp lệ</p>
+                }
+                @if (result.evidence.step !== null) { <p class="evidence-index">Step {{ result.evidence.step }}</p> }
+                @if (verdictScreenshot(result); as image) {
+                  <button type="button" class="evidence-image" aria-label="Open decisive screenshot"
+                    (click)="openEvidenceImage(result, $any($event.currentTarget))">
+                    <img [src]="image" [alt]="'Decisive screenshot for step ' + result.evidence.step">
+                  </button>
+                } @else { <p class="evidence-unavailable">Screenshot unavailable.</p> }
+                @if (steps().length > 1) {
+                  <details class="other-evidence-steps">
+                    <summary>Other steps</summary>
+                    @for (step of steps(); track step.step_id) {
+                      @if (step.step_number !== result.evidence.step) {
+                        <button type="button" (click)="selectEvidenceStep(step.step_id)">Step {{ step.step_number }} · {{ stepTitle(step) }}</button>
+                      }
+                    }
+                  </details>
+                }
+              </section>
+              @if (result.action.text) {
+                <p class="verdict-action">Action · @if (result.action.href) { <a [href]="result.action.href">{{ result.action.text }}</a> } @else { <span>{{ result.action.text }}</span> }</p>
+              }
+              @if (result.responsible) { <p class="verdict-responsible">Responsible · {{ result.responsible }}</p> }
+              @if (result.verdict === 'blocked') {
+                <div class="blocked-actions">
+                  <app-run-id-copy [runId]="current.session_id" [showIcon]="true"></app-run-id-copy>
+                  <a class="verdict-help" [href]="helpHref(result)" aria-label="Help for this verdict">?</a>
+                </div>
+              }
+              @if (result.results_note; as note) {
+                <section class="results-note" aria-label="Agent results">
+                  <h3>{{ current.status === 'completed' ? 'Kết quả' : 'Kết quả dở dang' }} — agent ghi lúc {{ note.modified_at * 1000 | date: 'HH:mm' : '+0700' }} ICT</h3>
+                  <pre>{{ note.text }}</pre>
+                  @if (note.truncated) { <p class="results-note-cut">Hiển thị 64 KB đầu tiên.</p> }
+                </section>
+              }
+            } @else if (result.reason) { <p class="verdict-reason">{{ result.reason }}</p> }
+          }
+          @if (verdict(); as result) {
+            <p class="turn-result">Kết quả của turn {{ result.turn_index }}/{{ result.turn_count }}</p>
+          }
+        </section>
         }
         @if (!active()) {
         <section class="run-result-summary verdict-slot" aria-label="Run result summary">
@@ -226,7 +304,7 @@
             }
             <ol #timelineEl class="step-list" aria-label="Step timeline" (scroll)="rememberPosition()">
               @for (step of steps(); track trackStep($index, step)) {
-                <li [class.current-step]="currentStep()?.step_id === step.step_id">
+                <li [attr.data-step-id]="step.step_id" [class.current-step]="currentStep()?.step_id === step.step_id">
                   <div class="step-row" [class.failed]="stepFailed(step)">
                   <button
                     type="button"
@@ -331,6 +409,13 @@
       <button type="button" class="secondary-button dialog-cancel" (click)="closeDialog()">{{ strings.cancel }}</button>
       <button type="button" class="action-button dialog-confirm" (click)="confirm()">{{ dialog()?.confirm }}</button>
     </div>
+  </dialog>
+  <dialog #evidenceDialog class="evidence-dialog" aria-labelledby="evidence-dialog-title" (close)="onEvidenceDialogClose()">
+    @if (evidenceImage(); as image) {
+      <h2 id="evidence-dialog-title">Decisive screenshot</h2>
+      <img [src]="image.url" [alt]="image.alt">
+      <button type="button" class="evidence-dialog-close" (click)="evidenceDialog.close()">Đóng ảnh</button>
+    }
   </dialog>
 </div>
 

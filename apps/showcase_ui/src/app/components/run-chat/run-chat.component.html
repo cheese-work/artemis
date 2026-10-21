@@ -9,8 +9,8 @@
   </section>
 } @else {
   <div class="chat-session">
-    <header class="chat-header">
-      <div class="session-title">
+    <header class="chat-header" data-testid="run-header-controls">
+      <div class="session-title" data-testid="run-header-facts">
         @if (editingTitle()) {
           <form (ngSubmit)="saveTitle()" class="rename-form">
             <input name="title" aria-label="Session title" [(ngModel)]="titleDraft" maxlength="120" [disabled]="savingTitle()"
@@ -31,10 +31,10 @@
         <span aria-hidden="true">{{ sidebarOpen() ? '×' : '+' }}</span>
       </button>
     </header>
-    <div class="session-layout" [class.sidebar-open]="sidebarOpen()">
+    <div class="session-layout" data-testid="run-detail-content" [class.sidebar-open]="sidebarOpen()">
     <div class="session-main">
-    <section #history class="chat-history" aria-label="Chat history" (scroll)="trackScroll()">
-      <ol class="chat-messages flat-timeline" aria-live="polite" aria-relevant="additions">
+    <section #history class="chat-history" data-testid="run-turn-history" aria-label="Chat history" (scroll)="trackScroll()">
+      <ol class="chat-messages flat-timeline" data-testid="run-step-timeline">
         @for (message of timeline(); track message.turn_id + ':' + message.kind + ':' + message.sequence; let index = $index) {
           @if (index === 0 || timeline()[index - 1].turn_id !== message.turn_id) {
             <li class="turn-divider" aria-label="Turn boundary"><span>Turn {{ turnNumber(message.turn_id) }}</span>
@@ -44,9 +44,10 @@
           <li [class.chat-bubble]="['message', 'thinking', 'input_request'].includes(message.kind)"
             [class.human]="message.role === 'human'" [class.system]="message.role === 'system'"
             [class.plan-card]="message.kind === 'plan' || message.kind === 'replan'" [class.step-row]="message.kind === 'step'"
-            [attr.data-event-kind]="message.kind">
+            [attr.data-event-kind]="message.kind" [attr.data-turn-id]="message.kind === 'step' ? message.turn_id : null"
+            [attr.data-step-number]="message.kind === 'step' ? stepNumber(message) : null">
             @if (message.kind === 'step') {
-              <details>
+              <details [open]="isSelectedStep(message)">
                 <summary><span>{{ message.content }}</span>
                   @if (screenshot(message.payload); as image) { <img class="step-thumbnail" [src]="image" alt="Step thumbnail" loading="lazy" (error)="failScreenshot(message.payload)"> }
                 </summary>
@@ -92,46 +93,131 @@
             @if (shell.technicalDetails()) { <time>{{ message.created_at * 1000 | date: 'HH:mm:ss' : '+0700' }} ICT</time> }
           </li>
         }
-        @if (chat()?.verdict; as verdict) {
-          <li class="verdict-card" data-event-kind="verdict"><h2>Verdict · {{ verdictTitle() }}</h2>
-            @for (finding of verdict.outcome?.last_findings ?? []; track $index) { <p>{{ finding }}</p> }
-            @if (verdict.status !== 'completed') { <p>This execution did not complete.</p> }
-            @if (verdict.result?.results_note; as note) {
-              <section class="results-note" aria-label="Agent results">
-                <h3>{{ verdict.status === 'completed' ? 'Kết quả' : 'Kết quả dở dang' }} — agent ghi lúc {{ note.modified_at * 1000 | date: 'HH:mm' : '+0700' }} ICT</h3>
-                <pre>{{ note.text }}</pre>
-                @if (note.truncated) { <p class="results-note-cut">Hiển thị 64 KB đầu tiên.</p> }
-              </section>
-            } @else { <p class="results-note-empty">Agent chưa ghi kết quả nào</p> }
-            @if (shell.technicalDetails()) {
-              @if (verdict.report) { <details><summary>Agent report</summary><pre>{{ verdict.report }}</pre></details> }
-              <details><summary>Execution details and error stack</summary><pre>{{ verdict.details | json }}</pre><pre>{{ verdict.outcome | json }}</pre></details>
-            }
-            @if (verdict.status === 'completed') {
-              @if (verdict.tip; as tip) {
-                @if (tip.state === 'generating') { <footer class="verdict-tip" role="status">Preparing a tip for next time…</footer> }
-                @else if (tip.state === 'complete' && tip.text) {
-                  <footer class="verdict-tip"><span>Next time</span><p>{{ tip.text }}</p>
-                    <button type="button" class="copy-tip" (click)="copyTip()">Copy</button>
-                    @if (copyNotice()) { <span role="status">{{ copyNotice() }}</span> }
-                  </footer>
-                }
-              }
-            }
+        @if (resultsUnavailable()) {
+          <li class="verdict-card" data-testid="run-verdict" data-label-state="error" data-event-kind="verdict">
+            <p class="verdict-state">{{ resultLabel(null) }}</p>
+            <button type="button" class="verdict-retry" (click)="retryResults()">Thử lại</button>
           </li>
+        } @else if (chat(); as loadedChat) {
+          @for (turn of loadedChat.turns; track turn.turn_id; let lastTurn = $last) {
+              @let result = resultForTurn(turn.turn_id);
+              <li class="verdict-card" data-testid="run-verdict" data-event-kind="verdict"
+                [attr.data-catalog-key]="result?.catalog_key ?? null" [attr.data-label-state]="result?.label_state ?? 'legacy'">
+                <header class="verdict-heading">
+                  <span class="verdict-chip">{{ resultLabel(result, turn) }}</span>
+                  @if (result?.label_state === 'final') {
+                    <span class="verification">Verification · {{ verification(result!) }}</span>
+                  }
+                  @if (result?.catalog_key; as catalogKey) { <code class="catalog-key">{{ catalogKey }}</code> }
+                </header>
+                @if (result?.label_state === 'final') {
+                  @if (result?.reason) { <p class="verdict-reason">{{ result!.reason }}</p> }
+                  <section class="verdict-evidence" data-testid="run-decisive-evidence" aria-label="Decisive evidence">
+                    @if (evidenceStep(result!); as step) {
+                      <div class="selected-step-evidence" data-testid="selected-step-evidence">
+                        <p class="evidence-kicker">Failing step · {{ stepNumber(step) }}</p>
+                        <h3>{{ step.content }}</h3>
+                        @let execution = step.payload?.['last_execution_result'];
+                        @if (execution?.['expected'] !== undefined) {
+                          <p><strong>Mong đợi</strong><span>{{ evidenceText(execution['expected']) }}</span></p>
+                        }
+                        @if (execution?.['actual'] !== undefined) {
+                          <p><strong>Thực tế</strong><span>{{ evidenceText(execution['actual']) }}</span></p>
+                        }
+                        <button type="button" class="evidence-link" data-testid="run-decisive-evidence-link"
+                          (click)="selectEvidence(result!.evidence.turn_id, result!.evidence.step!)">Mở bước trong timeline</button>
+                      </div>
+                    } @else {
+                      <div class="selected-step-evidence" data-testid="selected-step-evidence">Decisive step details unavailable.</div>
+                    }
+                    @if (result!.evidence.step !== null) {
+                      <p class="evidence-index" data-testid="evidence-index">Step {{ result!.evidence.step }}</p>
+                    }
+                    @if (resultScreenshot(result!); as image) {
+                      <button type="button" class="evidence-image" data-testid="run-evidence-screenshot"
+                        aria-label="Open decisive screenshot" (click)="openEvidenceImage(result!, $any($event.currentTarget))">
+                        <img [src]="image" alt="Decisive screenshot" loading="lazy">
+                      </button>
+                    } @else { <p class="evidence-unavailable">Screenshot unavailable.</p> }
+                    @if (otherEvidenceSteps(result!).length) {
+                      <details class="other-evidence-steps">
+                        <summary>Other steps</summary>
+                        @for (otherStep of otherEvidenceSteps(result!); track otherStep.sequence) {
+                          <button type="button" (click)="selectEvidence(otherStep.turn_id, stepNumber(otherStep)!)">
+                            Step {{ stepNumber(otherStep) }} · {{ otherStep.content }}
+                          </button>
+                        }
+                      </details>
+                    }
+                  </section>
+                  @if (result!.action.text) {
+                    <p class="verdict-action">Action · @if (result!.action.href) { <a [href]="result!.action.href">{{ result!.action.text }}</a> } @else { <span>{{ result!.action.text }}</span> }</p>
+                  }
+                  @if (result!.responsible) { <p class="verdict-responsible">Responsible · {{ result!.responsible }}</p> }
+                  @if (result!.verdict === 'blocked') {
+                    <div class="blocked-actions" data-testid="run-blocked-actions">
+                      <code>{{ runId() }}</code>
+                      <button type="button" class="copy-run-id" (click)="copyRunId()">Copy run ID</button>
+                      <a class="verdict-help" [href]="helpHref(result!)" aria-label="Help for this verdict">?</a>
+                      @if (copyNotice()) { <span class="copy-notice">{{ copyNotice() }}</span> }
+                    </div>
+                  }
+                  @if (result!.results_note; as note) {
+                    <section class="results-note" aria-label="Agent results">
+                      <h3>{{ turn.status === 'completed' ? 'Kết quả' : 'Kết quả dở dang' }} — agent ghi lúc {{ note.modified_at * 1000 | date: 'HH:mm' : '+0700' }} ICT</h3>
+                      <pre>{{ note.text }}</pre>
+                      @if (note.truncated) { <p class="results-note-cut">Hiển thị 64 KB đầu tiên.</p> }
+                    </section>
+                  } @else { <p class="results-note-empty">Agent chưa ghi kết quả nào</p> }
+                } @else if (result?.label_state === 'error') {
+                  <button type="button" class="verdict-retry" (click)="retryResults()">Thử lại</button>
+                } @else if (result?.label_state === 'pending' || turn.status === 'queued' || turn.status === 'running' || turn.status === 'paused') {
+                  @if (result?.reason) { <p>{{ result!.reason }}</p> }
+                } @else if (result?.label_state === 'cancelled' || result?.label_state === 'legacy' || !result) {
+                  @if (result?.reason && result?.label_state === 'legacy') { <p>{{ result!.reason }}</p> }
+                  @if (!result && lastTurn && loadedChat.verdict; as legacyVerdict) {
+                    @for (finding of legacyVerdict.outcome?.last_findings ?? []; track $index) { <p>{{ finding }}</p> }
+                    @if (legacyVerdict.status !== 'completed') { <p>This execution did not complete.</p> }
+                    @if (legacyVerdict.result?.results_note; as note) {
+                      <section class="results-note" aria-label="Agent results">
+                        <h3>{{ legacyVerdict.status === 'completed' ? 'Kết quả' : 'Kết quả dở dang' }} — agent ghi lúc {{ note.modified_at * 1000 | date: 'HH:mm' : '+0700' }} ICT</h3>
+                        <pre>{{ note.text }}</pre>
+                        @if (note.truncated) { <p class="results-note-cut">Hiển thị 64 KB đầu tiên.</p> }
+                      </section>
+                    } @else { <p class="results-note-empty">Agent chưa ghi kết quả nào</p> }
+                    @if (shell.technicalDetails()) {
+                      @if (legacyVerdict.report) { <details><summary>Agent report</summary><pre>{{ legacyVerdict.report }}</pre></details> }
+                      <details><summary>Execution details and error stack</summary><pre>{{ legacyVerdict.details | json }}</pre><pre>{{ legacyVerdict.outcome | json }}</pre></details>
+                    }
+                  }
+                }
+                @if (lastTurn && loadedChat.verdict?.status === 'completed' && loadedChat.verdict?.tip; as tip) {
+                  @if (tip.state === 'generating') { <footer class="verdict-tip">Preparing a tip for next time…</footer> }
+                  @else if (tip.state === 'complete' && tip.text) {
+                    <footer class="verdict-tip"><span>Next time</span><p>{{ tip.text }}</p>
+                      <button type="button" class="copy-tip" (click)="copyTip()">Copy</button>
+                      @if (copyNotice() && result?.verdict !== 'blocked') { <span class="copy-notice">{{ copyNotice() }}</span> }
+                    </footer>
+                  }
+                }
+                <p class="turn-result" data-testid="run-turn-result">Kết quả của turn {{ result?.turn_index ?? turn.number }}/{{ result?.turn_count ?? loadedChat.turns.length }}</p>
+              </li>
+          }
         }
       </ol>
+      <span class="sr-only" aria-live="polite" aria-atomic="true">{{ latestResultLabel() }}</span>
       @if (!chat() && !error()) {
         <div role="status"><span class="sr-only">Loading chat session…</span>
           @for (row of [1, 2, 3]; track row) { <div class="step-skeleton" aria-hidden="true"></div> }
         </div>
       } @else if (chat() && !stepCount()) { <p class="timeline-empty">{{ emptyMessage() }}</p> }
     </section>
+    @if (active()) { <p class="run-active-hint" data-testid="run-active-hint">Giữ tab mở, không khoá máy</p> }
     @if (error()) { <p class="chat-error" role="alert">{{ error() }}</p> }
     @if (!canWrite()) { <p class="chat-notice">Shared session · read-only</p> }
     @else if (compose()) {
       @if (inputRequest(); as request) {
-      <form class="chat-composer" (ngSubmit)="sendInput()" autocomplete="off">
+      <form class="chat-composer" data-testid="run-chat-composer" (ngSubmit)="sendInput()" autocomplete="off">
         <label for="session-input">{{ request.content }}</label>
         <input id="session-input" name="private-input" type="password" [(ngModel)]="secretDraft" maxlength="4096"
           autocomplete="off" autocapitalize="off" spellcheck="false" [disabled]="sending()" aria-describedby="private-input-notice">
@@ -142,7 +228,7 @@
         </div>
       </form>
       } @else {
-      <form class="chat-composer" (ngSubmit)="send()">
+      <form class="chat-composer" data-testid="run-chat-composer" (ngSubmit)="send()">
         <label class="sr-only" for="session-message">{{ active() ? 'Message the agent' : 'Continue this session with a new turn' }}</label>
         <div class="composer-bar" [class.off]="disconnected()" (keydown.escape)="pickerOpen.set(false)">
           <textarea id="session-message" name="message" [(ngModel)]="draft" rows="2" cdkTextareaAutosize cdkAutosizeMaxRows="8"
@@ -199,5 +285,11 @@
       <app-session-sidebar id="session-sidebar" [runId]="latest()?.turn_id ?? runId()" [turns]="usageTurns()" [technicalDetails]="shell.technicalDetails()" [firstPrompt]="rootRun()?.chat_prompt ?? rootRun()?.prompt ?? null"></app-session-sidebar>
     }
     </div>
+    <dialog #evidenceDialog class="evidence-dialog" aria-label="Decisive screenshot" (close)="onEvidenceDialogClose()">
+      @if (evidenceImage(); as image) {
+        <button type="button" class="evidence-dialog-close" autofocus (click)="evidenceDialog.close()">Close screenshot</button>
+        <img [src]="image.url" [alt]="image.alt">
+      }
+    </dialog>
   </div>
 }

@@ -1,11 +1,13 @@
-import { afterRenderEffect, ChangeDetectionStrategy, Component, computed, effect, ElementRef, inject, input, NgZone, output, signal, viewChild } from '@angular/core';
+import { afterRenderEffect, ChangeDetectionStrategy, Component, computed, DestroyRef, effect, ElementRef, inject, input, NgZone, output, signal, viewChild } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { CdkTextareaAutosize } from '@angular/cdk/text-field';
 import { HttpErrorResponse } from '@angular/common/http';
+import { ActivatedRoute } from '@angular/router';
 import { deployDrainMessage } from '../../utils/deploy-drain.util';
 import { DatePipe, JsonPipe } from '@angular/common';
 import { catchError, distinctUntilChanged, of, switchMap, takeWhile, timer } from 'rxjs';
-import { ChatSession, RunSummary } from '../../core/models/run.model';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
+import { ChatMessage, ChatSession, ChatTurnResult, RunSummary } from '../../core/models/run.model';
 import { Session } from '../../core/models/session.model';
 import { StepItemData } from '../../core/models/stream.model';
 import { StartupProgressEvent } from '../../services/agent.service';
@@ -31,15 +33,20 @@ import { SessionSidebarComponent } from '../session-sidebar/session-sidebar.comp
 export class RunChatComponent {
   private readonly api = inject(RunsService);
   private readonly zone = inject(NgZone);
+  private readonly route = inject(ActivatedRoute);
+  private readonly destroyRef = inject(DestroyRef);
   private readonly system = inject(SystemService);
   private readonly phones = inject(WorkspacePhoneService);
   public readonly shell = inject(ShellLayoutService);
   private readonly failedImages = signal(new Set<string>());
   private readonly revision = signal(0);
   private readonly historyElement = viewChild<ElementRef<HTMLElement>>('history');
+  private readonly evidenceDialog = viewChild<ElementRef<HTMLDialogElement>>('evidenceDialog');
   private followLatest = true;
   private previousRunId = '';
   private previousInputRequest = '';
+  private focusedEvidenceKey = '';
+  private imageTrigger: HTMLElement | null = null;
   public readonly runId = input('');
   public readonly readOnly = input(false);
   public readonly compose = input(true);
@@ -62,8 +69,16 @@ export class RunChatComponent {
   public readonly chat = signal<ChatSession | null>(null);
   public readonly rootRun = signal<RunSummary | null>(null);
   public readonly error = signal<string | null>(null);
+  public readonly resultsUnavailable = signal(false);
+  public readonly selectedEvidence = signal<{ turnId: string; step: number } | null>(null);
+  public readonly evidenceImage = signal<{ url: string; alt: string } | null>(null);
   public readonly sending = signal(false);
   public readonly latest = computed(() => this.chat()?.turns.at(-1));
+  public readonly latestResultLabel = computed(() => {
+    if (this.resultsUnavailable()) return this.resultLabel(null);
+    const turn = this.latest();
+    return turn ? this.resultLabel(this.resultForTurn(turn.turn_id), turn) : '';
+  });
   public readonly usageTurns = computed(() => (this.chat()?.turns ?? []).map(turn => ({ id: turn.turn_id, number: turn.number })));
   public readonly active = computed(() => ['queued', 'running', 'paused'].includes(this.latest()?.status ?? ''));
   public readonly paused = computed(() => this.latest()?.status === 'paused');
@@ -106,6 +121,12 @@ export class RunChatComponent {
   private retry: { content: string; id: string } | null = null;
 
   constructor() {
+    this.route.queryParamMap.pipe(takeUntilDestroyed(this.destroyRef)).subscribe(params => {
+      const turnId = params.get('turn');
+      const step = Number(params.get('step'));
+      this.selectedEvidence.set(turnId && Number.isInteger(step) && step > 0 ? { turnId, step } : null);
+      this.focusedEvidenceKey = '';
+    });
     effect(() => {
       const identity = `${this.runId()}:${this.canWrite()}:${this.inputRequest()?.payload?.['request_id'] ?? ''}`;
       if (identity !== this.previousInputRequest) {
@@ -122,6 +143,9 @@ export class RunChatComponent {
         this.chat.set(null);
         this.rootRun.set(null);
         this.error.set(null);
+        this.resultsUnavailable.set(false);
+        this.selectedEvidence.set(null);
+        this.focusedEvidenceKey = '';
         this.sending.set(false);
         this.editingTitle.set(false);
         this.savingTitle.set(false);
@@ -131,12 +155,21 @@ export class RunChatComponent {
         switchMap((run) => {
           this.rootRun.set(run);
           return timer(0, 1000).pipe(switchMap(() => this.api.chat(run.session_id).pipe(
-            catchError((error) => { this.reportError(error); return of(null); })
-          )), takeWhile(chat => !chat || ['queued', 'running', 'paused'].includes(chat.turns.at(-1)?.status ?? '') || chat.verdict?.tip?.state === 'generating', true));
+            catchError((error) => { this.resultsUnavailable.set(true); this.reportError(error); return of(null); })
+          )), takeWhile((chat, index) => !!chat && (
+            ['queued', 'running', 'paused'].includes(chat.turns.at(-1)?.status ?? '')
+            || chat.verdict?.tip?.state === 'generating'
+            || (chat.results?.some(result => result.label_state === 'pending') ?? false) && index < 30
+          ), true));
         }),
         catchError((error) => { this.reportError(error); return of(null); }),
         distinctUntilChanged((previous, current) => JSON.stringify(previous) === JSON.stringify(current))
-      ).subscribe((chat) => this.zone.run(() => { if (chat) this.chat.set(chat); })));
+      ).subscribe((chat) => this.zone.run(() => {
+        if (chat) {
+          this.resultsUnavailable.set(false);
+          this.chat.set(chat);
+        }
+      })));
       onCleanup(() => subscription.unsubscribe());
     });
     afterRenderEffect(() => {
@@ -144,6 +177,7 @@ export class RunChatComponent {
       this.liveSteps();
       this.startupProgress();
       this.scrollToLatest();
+      this.focusSelectedEvidence();
     });
   }
 
@@ -174,6 +208,121 @@ export class RunChatComponent {
     }
   }
 
+  public resultForTurn(turnId: string): ChatTurnResult | null {
+    return this.chat()?.results?.find(result => result.evidence?.turn_id === turnId) ?? null;
+  }
+
+  public resultLabel(result: ChatTurnResult | null, turn?: ChatSession['turns'][number]): string {
+    if (this.resultsUnavailable()) return 'Không tải được kết quả · Thử lại';
+    if (turn && ['queued', 'running', 'paused'].includes(turn.status)) return 'Đang chạy — chưa có kết quả';
+    if (!result) {
+      if (turn?.turn_id === this.latest()?.turn_id && this.chat()?.verdict) return `Verdict · ${this.verdictTitle()}`;
+      return 'Run cũ — chưa có verdict';
+    }
+    if (result.label_state === 'pending') return 'Đã kết thúc · Đang xác định kết quả';
+    if (result.label_state === 'cancelled') return 'Đã huỷ';
+    if (result.label_state === 'legacy') return 'Run cũ — chưa có verdict';
+    if (result.label_state === 'error') return 'Không tải được kết quả · Thử lại';
+    return result.verdict === 'pass' ? 'Pass' : result.verdict === 'fail' ? 'Fail' : result.verdict === 'blocked' ? 'Blocked' : result.verdict;
+  }
+
+  public verification(result: ChatTurnResult): string {
+    return result.verification;
+  }
+
+  public evidenceStep(result: ChatTurnResult): ChatMessage | null {
+    return this.selectedStep(result);
+  }
+
+  public evidenceSteps(result: ChatTurnResult) {
+    return this.timeline().filter(message => message.kind === 'step' && message.turn_id === result.evidence.turn_id);
+  }
+
+  public stepNumber(message: { payload?: Record<string, any> }): number | null {
+    const step = Number(message.payload?.['step_number']);
+    return Number.isInteger(step) && step > 0 ? step : null;
+  }
+
+  public selectedStep(result: ChatTurnResult) {
+    if (result.evidence.step === null) return null;
+    return this.evidenceSteps(result).find(message => this.stepNumber(message) === result.evidence.step) ?? null;
+  }
+
+  public otherEvidenceSteps(result: ChatTurnResult) {
+    return this.evidenceSteps(result).filter(message => this.stepNumber(message) !== result.evidence.step);
+  }
+
+  public evidenceText(value: unknown): string {
+    if (typeof value === 'string') return value;
+    if (value === null || value === undefined) return '';
+    return typeof value === 'object' ? JSON.stringify(value) : String(value);
+  }
+
+  public selectEvidence(turnId: string, step: number): void {
+    this.selectedEvidence.set({ turnId, step });
+    this.focusedEvidenceKey = '';
+    this.focusSelectedEvidence();
+  }
+
+  public isSelectedStep(message: { turn_id: string; payload?: Record<string, any> }): boolean {
+    const selected = this.selectedEvidence();
+    return !!selected && selected.turnId === message.turn_id && selected.step === this.stepNumber(message);
+  }
+
+  public resultScreenshot(result: ChatTurnResult): string | null {
+    return result.evidence.screenshot_url ? mediaUrl(result.evidence.screenshot_url) : null;
+  }
+
+  public openEvidenceImage(result: ChatTurnResult, trigger: HTMLElement): void {
+    const url = this.resultScreenshot(result);
+    if (!url) return;
+    this.imageTrigger = trigger;
+    this.evidenceImage.set({ url, alt: `Decisive screenshot for step ${result.evidence.step ?? ''}`.trim() });
+    const dialog = this.evidenceDialog()?.nativeElement;
+    if (dialog && !dialog.open) dialog.showModal();
+  }
+
+  public onEvidenceDialogClose(): void {
+    this.evidenceImage.set(null);
+    this.imageTrigger?.focus({ preventScroll: true });
+    this.imageTrigger = null;
+  }
+
+  public helpHref(result: ChatTurnResult): string {
+    return `/docs/smartqa-verdicts.md#${encodeURIComponent(result.category ?? 'unknown')}`;
+  }
+
+  public retryResults(): void {
+    this.resultsUnavailable.set(false);
+    this.error.set(null);
+    this.revision.update(value => value + 1);
+  }
+
+  public async copyRunId(): Promise<void> {
+    try {
+      await navigator.clipboard.writeText(this.runId());
+      this.copyNotice.set('Run ID copied.');
+    } catch {
+      this.copyNotice.set('Could not copy the run ID. Select it and copy.');
+    }
+  }
+
+  private focusSelectedEvidence(): void {
+    const selected = this.selectedEvidence();
+    const history = this.historyElement()?.nativeElement;
+    if (!selected || !history) return;
+    const key = `${selected.turnId}:${selected.step}`;
+    if (key === this.focusedEvidenceKey) return;
+    const row = Array.from(history.querySelectorAll<HTMLElement>('[data-event-kind="step"]'))
+      .find(element => element.dataset['turnId'] === selected.turnId && Number(element.dataset['stepNumber']) === selected.step);
+    const details = row?.querySelector<HTMLDetailsElement>('details');
+    if (!row || !details) return;
+    details.open = true;
+    row.scrollIntoView({ block: 'center' });
+    details.querySelector<HTMLElement>('summary')?.focus({ preventScroll: true });
+    this.focusedEvidenceKey = key;
+  }
+
   public trackScroll(): void {
     const history = this.historyElement()?.nativeElement;
     if (history) this.followLatest = history.scrollHeight - history.clientHeight - history.scrollTop < 1;
@@ -181,7 +330,14 @@ export class RunChatComponent {
 
   public scrollToLatest(): void {
     const history = this.historyElement()?.nativeElement;
-    if (history && this.followLatest) history.scrollTop = history.scrollHeight;
+    if (!history || !this.followLatest) return;
+    const verdicts = history.querySelectorAll<HTMLElement>('[data-testid="run-verdict"]');
+    const latestVerdict = verdicts.item(verdicts.length - 1);
+    if (window.matchMedia('(max-width: 799px)').matches && latestVerdict?.dataset['labelState'] === 'final') {
+      history.scrollTop += latestVerdict.getBoundingClientRect().top - history.getBoundingClientRect().top;
+      return;
+    }
+    history.scrollTop = history.scrollHeight;
   }
 
   public beginRename(): void {
