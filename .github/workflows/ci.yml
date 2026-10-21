@@ -20,14 +20,9 @@ jobs:
   # Windows leg removed org-wide per CHE-522 (Cheese: Linux CI only, no
   # Windows jobs or artifacts).
   python-quality:
-    name: Python 3.12 / ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
+    name: Python 3.12
+    runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["ubuntu-latest"]') }}
     timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        os:
-          - ubuntu-latest
 
     steps:
       - name: Check out repository
@@ -103,7 +98,7 @@ jobs:
 
   frontend:
     name: Frontend tests and production build
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["ubuntu-latest"]') }}
     timeout-minutes: 20
     defaults:
       run:
@@ -122,6 +117,18 @@ jobs:
 
       - name: Install locked frontend dependencies
         run: npm ci
+
+      - name: Set up headless Chrome
+        id: chrome
+        uses: browser-actions/setup-chrome@c785b87e244131f27c9f19c1a33e2ead956ab7ce # v1
+        with:
+          chrome-version: stable
+          install-dependencies: true
+
+      - name: Export Chrome path
+        env:
+          CHROME_BIN: ${{ steps.chrome.outputs.chrome-path }}
+        run: printf 'CHROME_BIN=%s\n' "$CHROME_BIN" >> "$GITHUB_ENV"
 
       - name: Run frontend tests at 800 px and 1440 px
         run: npm test -- --watch=false --browsers=ChromeHeadlessNarrow,ChromeHeadlessWide
@@ -142,13 +149,12 @@ jobs:
 
       - name: Check root and /preview/pr/70/ browser requests
         run: |
-          export CHROME_BIN="$(command -v google-chrome || command -v chromium-browser || command -v chromium)"
           "$CHROME_BIN" --version
           npm run test:preview-path
 
   package:
     name: Build and smoke-test Python packages
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["ubuntu-latest"]') }}
     timeout-minutes: 30
 
     steps:

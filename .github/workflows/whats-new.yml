@@ -12,7 +12,7 @@ permissions:
 jobs:
   entry:
     name: What's New entry
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["ubuntu-latest"]') }}
     timeout-minutes: 5
 
     steps:
