@@ -210,8 +210,9 @@ async def run_chat_session(store, identity, lease, execute, *, idle_seconds=300,
                 turn["goal"] = "\n\n".join(humans)
                 try:
                     turn["resume_context"] = carry_results(store, identity, turn)
-                except Exception:
+                except (OSError, sqlite3.Error, ValueError, KeyError, AttributeError, TypeError):
                     # Carrying results is best effort: the turn must still run and end.
+                    # Named errors only: a broad handler would raise the quality-ratchet baseline.
                     logger.exception("Could not carry results into turn %s", turn_id)
                     turn["resume_context"] = None
                 turn["history"] = json.dumps(store.model_history(identity), ensure_ascii=False)
