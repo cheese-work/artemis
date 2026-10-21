@@ -155,7 +155,7 @@ def carry_results(store, identity, turn):
                 "Could not carry results.md into turn %s", turn["turn_id"], exc_info=True
             )
             return None
-    return {"results": results, "report": _read_note(earlier[-1]["turn_id"], "output.md")}
+    return {"results": results, "report": _read_note(previous["turn_id"], "output.md")}
 
 
 def follow_up_goal(turn):

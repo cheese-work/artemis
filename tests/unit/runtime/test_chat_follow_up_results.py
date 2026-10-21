@@ -100,6 +100,22 @@ async def test_copy_comes_from_latest_turn_that_has_results(store, traces):
 
 
 @pytest.mark.asyncio
+async def test_report_comes_from_the_turn_that_supplied_the_results(store, traces):
+    _write(traces, "run", "results.md", TABLE)
+    _write(traces, "run", "output.md", "Báo cáo của lượt có kết quả.")
+    failed = store.new_turn("run", "thử lại", "rejected")["turn_id"]
+    store.fail_admission(failed, "Điện thoại chưa kết nối")
+    _write(traces, failed, "output.md", "Báo cáo của lượt bị từ chối.")
+
+    turn = await _run_turn_two(store, traces)
+
+    goal = follow_up_goal(turn)
+    assert TABLE in goal
+    assert "Báo cáo của lượt có kết quả." in goal
+    assert "Báo cáo của lượt bị từ chối." not in goal
+
+
+@pytest.mark.asyncio
 async def test_no_earlier_results_leaves_the_goal_alone(store, traces):
     turn = await _run_turn_two(store, traces)
     assert follow_up_goal(turn) == "tiếp tục"
