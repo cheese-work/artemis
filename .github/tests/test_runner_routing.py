@@ -14,9 +14,19 @@ class RunnerRoutingTest(unittest.TestCase):
         self.assertIn("CHROME_BIN: ${{ steps.chrome.outputs.chrome-path }}", ci)
         self.assertNotIn('export CHROME_BIN="$(command -v', ci)
         self.assertEqual(ci.count("apt-get install -y --no-install-recommends libxcb1 libgl1"), 2)
-        self.assertIn("chrome-sandbox", ci)
-        self.assertIn("chown root:root", ci)
-        self.assertIn("chmod 4755", ci)
+        self.assertNotIn("chrome-sandbox", ci)
+        self.assertNotIn("chown root:root", ci)
+        self.assertNotIn("chmod 4755", ci)
+
+    def test_only_frontend_requires_browser_runner(self):
+        ci = Path(".github/workflows/ci.yml").read_text()
+        frontend = ci.split("  frontend:\n", 1)[1].split("  package:\n", 1)[0]
+        self.assertEqual(ci.count('"cheese-x99-browser"'), 1)
+        self.assertIn(
+            'fromJSON(\'["self-hosted","Linux","X64","cheese-x99","cheese-x99-browser"]\')',
+            frontend,
+        )
+        self.assertIn("fromJSON('[\"ubuntu-latest\"]')", frontend)
 
     def test_no_paid_runner_selectors(self):
         workflows = list(Path(".github/workflows").glob("*.y*ml"))

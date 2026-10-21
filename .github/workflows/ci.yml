@@ -105,7 +105,7 @@ jobs:
 
   frontend:
     name: Frontend tests and production build
-    runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["ubuntu-latest"]') }}
+    runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99","cheese-x99-browser"]') || fromJSON('["ubuntu-latest"]') }}
     timeout-minutes: 20
     defaults:
       run:
@@ -132,15 +132,10 @@ jobs:
           chrome-version: stable
           install-dependencies: true
 
-      - name: Configure Chrome sandbox and export path
+      - name: Export Chrome path
         env:
           CHROME_BIN: ${{ steps.chrome.outputs.chrome-path }}
         run: |
-          sandbox_bin="$(dirname "$CHROME_BIN")/chrome-sandbox"
-          if [ -f "$sandbox_bin" ]; then
-            sudo chown root:root "$sandbox_bin"
-            sudo chmod 4755 "$sandbox_bin"
-          fi
           printf 'CHROME_BIN=%s\n' "$CHROME_BIN" >> "$GITHUB_ENV"
 
       - name: Run frontend tests at 800 px and 1440 px
