@@ -134,51 +134,6 @@ async def test_failed_copy_does_not_stop_the_turn(store, traces, monkeypatch):
     assert follow_up_goal(turn) == "tiếp tục"
 
 
-@pytest.fixture
-def no_nofollow(monkeypatch):
-    """Linux simulation of Windows: no os.O_NOFOLLOW, and the handle-to-path lookup via /proc.
-
-    Native Windows (GetFinalPathNameByHandleW) is not exercised here.
-    """
-    if not os.path.isdir("/proc/self/fd"):
-        pytest.skip("simulation needs /proc/self/fd")
-    monkeypatch.delattr(os, "O_NOFOLLOW", raising=False)
-    monkeypatch.setattr(
-        chat_session_worker,
-        "_handle_path",
-        lambda fd: os.readlink(f"/proc/self/fd/{fd}"),
-        raising=False,
-    )
-
-
-@pytest.mark.asyncio
-async def test_follow_up_runs_and_ends_when_platform_has_no_nofollow(store, traces, no_nofollow):
-    _write(traces, "run", "results.md", TABLE)
-
-    turn = await _run_turn_two(store, traces)
-
-    assert (traces / turn["turn_id"] / "notes" / "results.md").read_text(encoding="utf-8") == TABLE
-    assert TABLE in follow_up_goal(turn)
-    assert store.turn(turn["turn_id"])["status"] == "completed"
-
-
-@pytest.mark.asyncio
-async def test_symlinked_results_stay_rejected_without_nofollow(
-    store, traces, tmp_path, no_nofollow
-):
-    outside = tmp_path / "secret.md"
-    outside.write_text("not yours")
-    notes = traces / "run" / "notes"
-    notes.mkdir(parents=True)
-    (notes / "results.md").symlink_to(outside)
-
-    turn = await _run_turn_two(store, traces)
-
-    assert follow_up_goal(turn) == "tiếp tục"
-    assert not (traces / turn["turn_id"] / "notes" / "results.md").exists()
-    assert store.turn(turn["turn_id"])["status"] == "completed"
-
-
 @pytest.mark.asyncio
 async def test_unexpected_carry_error_still_runs_the_turn(store, traces, monkeypatch):
     def broken(*args, **kwargs):
@@ -193,14 +148,6 @@ async def test_unexpected_carry_error_still_runs_the_turn(store, traces, monkeyp
 
 
 SECRET = "SECRET outside the trace tree"
-
-
-@pytest.fixture(params=["pinned", "flag_absent"])
-def mode(request, monkeypatch):
-    """Both read strategies: descriptor-pinned walk, and the platform without O_NOFOLLOW."""
-    if request.param == "flag_absent":
-        request.getfixturevalue("no_nofollow")
-    return request.param
 
 
 @pytest.fixture
@@ -234,7 +181,7 @@ def _assert_nothing_leaked(turn, traces):
 
 @pytest.mark.asyncio
 async def test_leaf_swapped_for_a_link_before_open_is_not_followed(
-    store, traces, outside, mode, monkeypatch
+    store, traces, outside, monkeypatch
 ):
     leaf = _write(traces, "run", "results.md", TABLE)
 
@@ -252,9 +199,7 @@ async def test_leaf_swapped_for_a_link_before_open_is_not_followed(
 
 
 @pytest.mark.asyncio
-async def test_ancestor_swapped_for_a_link_is_not_followed(
-    store, traces, outside, mode, monkeypatch
-):
+async def test_ancestor_swapped_for_a_link_is_not_followed(store, traces, outside, monkeypatch):
     _write(traces, "run", "results.md", TABLE)
     notes = traces / "run" / "notes"
 
@@ -273,7 +218,7 @@ async def test_ancestor_swapped_for_a_link_is_not_followed(
 
 @pytest.mark.asyncio
 async def test_source_swapped_while_copying_does_not_change_the_copy(
-    store, traces, outside, mode, monkeypatch
+    store, traces, outside, monkeypatch
 ):
     leaf = _write(traces, "run", "results.md", TABLE)
     real_copy = chat_session_worker.shutil.copyfileobj
@@ -297,7 +242,7 @@ async def test_source_swapped_while_copying_does_not_change_the_copy(
 
 @pytest.mark.skipif(not hasattr(os, "O_DIRECTORY"), reason="POSIX descriptor-relative opens")
 def test_posix_reads_walk_the_tree_by_descriptor():
-    assert chat_session_worker._OPEN_PINS_PARENTS
+    assert chat_session_worker._carry_supported()
 
 
 def _turn_dir(traces):
@@ -329,7 +274,7 @@ def _listing(folder):
 @pytest.mark.parametrize("outside_file", ["present", "absent"])
 @pytest.mark.parametrize("swapped", ["notes", "turn"])
 async def test_destination_ancestor_swapped_for_a_link_does_not_redirect_the_write(
-    store, traces, outside, mode, monkeypatch, swapped, outside_file
+    store, traces, outside, monkeypatch, swapped, outside_file
 ):
     _write(traces, "run", "results.md", TABLE)
     (outside / "notes").mkdir()
@@ -360,7 +305,7 @@ async def test_destination_ancestor_swapped_for_a_link_does_not_redirect_the_wri
 
 @pytest.mark.asyncio
 async def test_destination_folder_swapped_between_creations_creates_nothing_outside(
-    store, traces, outside, mode, monkeypatch
+    store, traces, outside, monkeypatch
 ):
     _write(traces, "run", "results.md", TABLE)
     before = _listing(outside)
@@ -386,7 +331,7 @@ async def test_destination_folder_swapped_between_creations_creates_nothing_outs
 
 @pytest.mark.asyncio
 async def test_destination_leaf_planted_as_a_link_is_not_followed(
-    store, traces, outside, mode, monkeypatch
+    store, traces, outside, monkeypatch
 ):
     _write(traces, "run", "results.md", TABLE)
     real_mkdir = os.mkdir
@@ -406,7 +351,7 @@ async def test_destination_leaf_planted_as_a_link_is_not_followed(
 
 @pytest.mark.asyncio
 async def test_timestamp_update_does_not_follow_a_swapped_destination_leaf(
-    store, traces, outside, mode, monkeypatch
+    store, traces, outside, monkeypatch
 ):
     original = _write(traces, "run", "results.md", TABLE)
     os.utime(original, (1000, 1000))
@@ -433,7 +378,7 @@ async def test_timestamp_update_does_not_follow_a_swapped_destination_leaf(
 
 @pytest.mark.asyncio
 async def test_source_swapped_to_a_link_and_back_between_checks_is_not_read(
-    store, traces, outside, mode, monkeypatch
+    store, traces, outside, monkeypatch
 ):
     """The double swap a path-only check on Windows cannot see: link at open, restored before the final check."""
     _write(traces, "run", "results.md", TABLE)
@@ -478,7 +423,7 @@ def _hard_link(target, link):
 
 
 @pytest.mark.asyncio
-async def test_hard_linked_source_is_not_carried(store, traces, outside, mode):
+async def test_hard_linked_source_is_not_carried(store, traces, outside):
     notes = traces / "run" / "notes"
     notes.mkdir(parents=True)
     _hard_link(outside / "results.md", notes / "results.md")
@@ -491,7 +436,7 @@ async def test_hard_linked_source_is_not_carried(store, traces, outside, mode):
 
 
 @pytest.mark.asyncio
-async def test_single_link_source_is_still_carried(store, traces, mode):
+async def test_single_link_source_is_still_carried(store, traces):
     """Control: the hard-link refusal does not stop an ordinary note."""
     _write(traces, "run", "results.md", TABLE)
 
@@ -503,7 +448,7 @@ async def test_single_link_source_is_still_carried(store, traces, mode):
 
 @pytest.mark.asyncio
 async def test_hard_linked_destination_never_writes_through_to_the_shared_file(
-    store, traces, outside, mode, monkeypatch
+    store, traces, outside, monkeypatch
 ):
     _write(traces, "run", "results.md", TABLE)
     real_mkdir = os.mkdir
@@ -518,4 +463,43 @@ async def test_hard_linked_destination_never_writes_through_to_the_shared_file(
     turn = await _run_turn_two(store, traces)
 
     assert (outside / "results.md").read_text() == SECRET
+    assert store.turn(turn["turn_id"])["status"] == "completed"
+
+
+@pytest.fixture(params=["O_NOFOLLOW", "O_DIRECTORY"])
+def unsupported_platform(request, monkeypatch):
+    """A platform without no-follow or descriptor-relative opens, such as Windows."""
+    monkeypatch.delattr(os, request.param, raising=False)
+
+
+@pytest.mark.asyncio
+async def test_unsupported_platform_runs_the_turn_without_touching_any_trace_path(
+    store, traces, unsupported_platform, monkeypatch
+):
+    _write(traces, "run", "results.md", TABLE)
+    before = _listing(traces)
+    touched = []
+    for name in ("open", "mkdir"):
+        real = getattr(os, name)
+
+        def spy(path, *args, _real=real, **kwargs):
+            if str(path).startswith(str(traces)):
+                touched.append(path)
+            return _real(path, *args, **kwargs)
+
+        monkeypatch.setattr(os, name, spy)
+    real_path_mkdir = type(traces).mkdir
+
+    def path_mkdir(self, *args, **kwargs):
+        if str(self).startswith(str(traces)):
+            touched.append(self)
+        return real_path_mkdir(self, *args, **kwargs)
+
+    monkeypatch.setattr(type(traces), "mkdir", path_mkdir)
+
+    turn = await _run_turn_two(store, traces)
+
+    assert follow_up_goal(turn) == "tiếp tục"
+    assert touched == []
+    assert _listing(traces) == before
     assert store.turn(turn["turn_id"])["status"] == "completed"

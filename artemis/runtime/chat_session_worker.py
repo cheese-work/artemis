@@ -5,7 +5,6 @@ import os
 import shutil
 import sqlite3
 import stat
-import sys
 import threading
 import time
 import uuid
@@ -21,11 +20,16 @@ logger = logging.getLogger(__name__)
 NOTE_LIMIT = 64 * 1024
 
 
-# Descriptor-relative opens need O_DIRECTORY and dir_fd support (POSIX); checked once at import.
-_OPEN_PINS_PARENTS = hasattr(os, "O_DIRECTORY") and all(
-    call in os.supports_dir_fd for call in (os.open, os.mkdir, os.rename, os.unlink)
-)
-_UTIME_BY_FD = os.utime in os.supports_fd
+# Checked once at import: tests and wrappers may replace these functions later.
+_DIR_FD_OPS = all(call in os.supports_dir_fd for call in (os.open, os.mkdir, os.rename, os.unlink))
+
+
+def _carry_supported():
+    """Carrying results needs no-follow, descriptor-relative opens: POSIX only (not Windows).
+
+    Elsewhere a turn runs without the copied results; nothing under TRACES_PATH is touched.
+    """
+    return hasattr(os, "O_NOFOLLOW") and hasattr(os, "O_DIRECTORY") and _DIR_FD_OPS
 
 
 def _open_pinned(parts):
@@ -42,54 +46,6 @@ def _open_pinned(parts):
         os.close(dir_fd)
 
 
-def _handle_path(fd):
-    """The path an open Windows handle really names, links resolved; read from the handle, not a path."""
-    if sys.platform != "win32":
-        raise OSError("no handle-to-path lookup on this platform")
-    import ctypes
-    import msvcrt
-    from ctypes import wintypes
-
-    lookup = ctypes.WinDLL("kernel32", use_last_error=True).GetFinalPathNameByHandleW
-    lookup.argtypes = [wintypes.HANDLE, wintypes.LPWSTR, wintypes.DWORD, wintypes.DWORD]
-    lookup.restype = wintypes.DWORD
-    buffer = ctypes.create_unicode_buffer(32768)
-    if not lookup(msvcrt.get_osfhandle(fd), buffer, len(buffer), 0):
-        raise ctypes.WinError(ctypes.get_last_error())
-    path = buffer.value
-    return "\\\\" + path[8:] if path.startswith("\\\\?\\UNC\\") else path.removeprefix("\\\\?\\")
-
-
-def _verify_handle(fd, path, created=False):
-    """Without O_NOFOLLOW (Windows): the handle must name exactly this link-free path.
-
-    The handle's own path is resolved by the OS, so a link swapped in at any point of the open
-    shows up here; checking the path again afterwards would leave a window. A file this call
-    created in the wrong place is empty and ours (O_EXCL), so it is removed where the handle says it is.
-    """
-    actual = None
-    try:
-        actual = _handle_path(fd)
-    finally:
-        if actual is None or os.path.normcase(actual) != os.path.normcase(str(path)):
-            os.close(fd)
-    if os.path.normcase(actual) != os.path.normcase(str(path)):
-        if created:
-            os.unlink(actual)
-        raise OSError("note path changed while opening")
-
-
-def _pins_parents():
-    return _OPEN_PINS_PARENTS and hasattr(os, "O_NOFOLLOW")
-
-
-def _open_checked(parts):
-    path = Path(os.path.realpath(TRACES_PATH)).joinpath(*parts)
-    fd = os.open(path, os.O_RDONLY | getattr(os, "O_BINARY", 0))
-    _verify_handle(fd, path)
-    return fd
-
-
 def _open_note(turn_id, name):
     """A turn's note opened read-only and binary, or None; links in the path are refused.
 
@@ -97,7 +53,7 @@ def _open_note(turn_id, name):
     """
     parts = (turn_id, "notes", name)
     try:
-        file = os.fdopen(_open_pinned(parts) if _pins_parents() else _open_checked(parts), "rb")
+        file = os.fdopen(_open_pinned(parts), "rb")
     except OSError:
         return None
     info = os.fstat(file.fileno())
@@ -137,60 +93,19 @@ def _open_dirs_creating(parts):
             os.close(dir_fd)
 
 
-def _make_dirs_checked(folder):
-    """mkdir -p on a path that may be raced: a folder that landed elsewhere is removed and refused."""
-    current = Path(os.path.realpath(TRACES_PATH))
-    for part in folder.relative_to(current).parts:
-        current /= part
-        try:
-            current.mkdir()
-        except FileExistsError:
-            continue
-        landed = Path(os.path.realpath(current))
-        if os.path.normcase(landed) != os.path.normcase(current):
-            landed.rmdir()  # ours: mkdir only succeeds on a name that did not exist
-            raise OSError("folder created outside the trace tree")
-
-
-def _set_times(fd, atime_ns, mtime_ns):
-    """Set times through the open file, so a swapped path cannot redirect them."""
-    if _UTIME_BY_FD:
-        os.utime(fd, ns=(atime_ns, mtime_ns))
-        return
-    import ctypes
-    import msvcrt
-    from ctypes import wintypes
-
-    def filetime(ns):
-        ticks = ns // 100 + 116444736000000000
-        return wintypes.FILETIME(ticks & 0xFFFFFFFF, ticks >> 32)
-
-    set_file_time = ctypes.WinDLL("kernel32", use_last_error=True).SetFileTime
-    pointer = ctypes.POINTER(wintypes.FILETIME)
-    set_file_time.argtypes = [wintypes.HANDLE, pointer, pointer, pointer]
-    set_file_time.restype = wintypes.BOOL
-    if not set_file_time(
-        msvcrt.get_osfhandle(fd),
-        None,
-        ctypes.byref(filetime(atime_ns)),
-        ctypes.byref(filetime(mtime_ns)),
-    ):
-        raise ctypes.WinError(ctypes.get_last_error())
-
-
 def _write_note(fd, file, info):
     with os.fdopen(fd, "wb") as out:
-        os.ftruncate(out.fileno(), 0)
         shutil.copyfileobj(file, out)
         out.flush()
-        _set_times(out.fileno(), info.st_atime_ns, info.st_mtime_ns)
+        os.utime(out.fileno(), ns=(info.st_atime_ns, info.st_mtime_ns))
 
 
-def _copy_pinned(file, parts, info):
+def _copy_note(file, parts):
     """Write a new file beside the target, then rename it over the target.
 
     Rename replaces the directory entry, so a link or hard link planted there is never written through.
     """
+    info = os.fstat(file.fileno())
     name = parts[-1]
     temporary = f".{name}.{uuid.uuid4().hex}"
     dir_fd = _open_dirs_creating(parts[:-1])
@@ -210,35 +125,18 @@ def _copy_pinned(file, parts, info):
         os.close(dir_fd)
 
 
-def _copy_checked(file, parts, info):
-    """Without O_NOFOLLOW (Windows): create exclusively, or take over an existing single-link file."""
-    path = Path(os.path.realpath(TRACES_PATH)).joinpath(*parts)
-    _make_dirs_checked(path.parent)
-    flags = os.O_WRONLY | getattr(os, "O_BINARY", 0)
-    created = True
-    try:
-        fd = os.open(path, flags | os.O_CREAT | os.O_EXCL, 0o644)
-    except FileExistsError:
-        created = False
-        fd = os.open(path, flags)
-    _verify_handle(fd, path, created)
-    if not created and os.fstat(fd).st_nlink != 1:
-        os.close(fd)
-        raise OSError("destination is a hard link")
-    _write_note(fd, file, info)
-
-
-def _copy_note(file, parts):
-    """Write the whole open note to results.md under TRACES_PATH, keeping its mtime.
-
-    The destination is created and written through descriptors; no link in its path is followed.
-    """
-    info = os.fstat(file.fileno())
-    (_copy_pinned if _pins_parents() else _copy_checked)(file, parts, info)
-
-
 def carry_results(store, identity, turn):
-    """Copy the latest earlier results.md into the new turn; return the context its goal needs."""
+    """Copy the latest earlier results.md into the new turn; return the context its goal needs.
+
+    POSIX only: where no-follow descriptor opens are missing (Windows) this returns None before
+    touching any file, and the turn runs without the previous results.
+    """
+    if not _carry_supported():
+        logger.info(
+            "Follow-up results are carried on POSIX only; turn %s runs without them",
+            turn["turn_id"],
+        )
+        return None
     earlier = [t for t in store.get(identity)["turns"] if t["number"] < turn["number"]]
     for previous in reversed(earlier):
         file = _open_note(previous["turn_id"], "results.md")
