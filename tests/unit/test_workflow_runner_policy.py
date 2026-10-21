@@ -50,8 +50,16 @@ def test_frontend_job_installs_its_own_chrome_and_keeps_an_existing_one():
     workflow = yaml.safe_load((WORKFLOWS / "ci.yml").read_text(encoding="utf-8"))
     steps = {step["name"]: step for step in workflow["jobs"]["frontend"]["steps"]}
     install = steps["Install headless Chrome"]["run"]
-    assert "--install-deps" in install and "CHROME_BIN" in install
+    assert "apt-get install" in install and "libnss3" in install and "CHROME_BIN" in install
+    assert "--install-deps" not in install  # the runner user is not root
     assert (
         ":-$(command -v google-chrome"
         in steps["Check root and /preview/pr/70/ browser requests"]["run"]
     )
+
+
+def test_python_jobs_install_the_opencv_system_libraries():
+    workflow = yaml.safe_load((WORKFLOWS / "ci.yml").read_text(encoding="utf-8"))
+    for name in ("python-quality", "package"):
+        runs = [step.get("run", "") for step in workflow["jobs"][name]["steps"]]
+        assert any("libxcb1" in run and "libgl1" in run for run in runs), name

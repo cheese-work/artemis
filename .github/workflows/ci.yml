@@ -40,6 +40,11 @@ jobs:
         with:
           fetch-depth: 1
 
+      - name: Install system libraries for OpenCV
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install --no-install-recommends -y libgl1 libglib2.0-0 libxcb1
+
       - name: Set up Python 3.12
         uses: actions/setup-python@v5
         with:
@@ -126,14 +131,36 @@ jobs:
       - name: Install locked frontend dependencies
         run: npm ci
 
-      # The X99 runner image has no browser. Install a pinned Chrome for Testing
-      # with its system libraries, and wrap it for a root, 64 MB /dev/shm container.
+      # The X99 runner image has no browser. Install the system libraries, then a
+      # pinned Chrome for Testing as the runner user, and wrap it for a root-owned
+      # container with a 64 MB /dev/shm.
       - name: Install headless Chrome
         working-directory: ${{ github.workspace }}
         run: |
           sudo apt-get update -qq
+          sudo apt-get install --no-install-recommends -y \
+            libnss3 \
+            libnspr4 \
+            libatk1.0-0t64 \
+            libatk-bridge2.0-0t64 \
+            libdbus-1-3 \
+            libcups2t64 \
+            libxcb1 \
+            libxkbcommon0 \
+            libasound2t64 \
+            libgbm1 \
+            libx11-6 \
+            libxext6 \
+            libcairo2 \
+            libpango-1.0-0 \
+            libxcomposite1 \
+            libxdamage1 \
+            libxfixes3 \
+            libxrandr2 \
+            libdrm2 \
+            fonts-liberation
           npx --yes @puppeteer/browsers@3.2.5 install chrome@156.0.8078.47 \
-            --install-deps --path "$RUNNER_TEMP/chrome"
+            --path "$RUNNER_TEMP/chrome"
           chrome="$(find "$RUNNER_TEMP/chrome" -name chrome -type f | head -n 1)"
           printf '#!/bin/sh\nexec "%s" --no-sandbox --disable-dev-shm-usage "$@"\n' "$chrome" \
             > "$RUNNER_TEMP/chrome-wrapper.sh"
@@ -173,6 +200,11 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+
+      - name: Install system libraries for OpenCV
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install --no-install-recommends -y libgl1 libglib2.0-0 libxcb1
 
       - name: Set up Python 3.12
         uses: actions/setup-python@v5
