@@ -119,10 +119,9 @@ describe('RunViewComponent', () => {
     localStorage.removeItem(SELECTED_DEVICE_SERIAL_KEY);
     runs = jasmine.createSpyObj<RunsService>(
       'RunsService',
-      ['get', 'chat', 'steps', 'video', 'pin', 'unpin', 'remove', 'downloadBundle'],
+      ['get', 'steps', 'video', 'pin', 'unpin', 'remove', 'downloadBundle'],
       { lastLibraryQuery: signal<Record<string, string>>({ status: 'failed' }), viewPosition: signal(null) }
     );
-    runs.chat.and.returnValue(of({ results: [] } as any));
     Object.assign(runs, {
       checks: jasmine.createSpy('checks').and.returnValue(of({ records: [], streams: [], run_outcome: null })),
       notes: jasmine.createSpy('notes').and.returnValue(of({ notes: {} }))
@@ -1023,45 +1022,6 @@ describe('RunViewComponent', () => {
         expect(q('.run-status-slot')?.textContent?.trim()).toBe(`Run finished: ${label}.`);
       });
     }
-
-    it('renders backend verdict fields and selected failing-step evidence first', async () => {
-      runs.chat.and.returnValue(of({ results: [{
-        catalog_key: 'fail.app_defect', verdict: 'fail', verification: 'self_reported', category: 'app_defect',
-        reason: 'The sign-in screen rejected valid credentials.',
-        action: { text: 'Review evidence and report a bug.' }, responsible: 'App under test',
-        evidence: { turn_id: ID, step: 2, screenshot_url: '/images/failed-step.png' },
-        turn_index: 1, turn_count: 1, label_state: 'final', source: 'outcome'
-      }] } as any));
-      await open({ steps: of([
-        step(1),
-        step(2, { action_taken: { action: 'tap', status: 'failed' },
-          last_execution_result: { expected: 'Account home is visible', actual: 'Invalid credentials banner is visible' } }),
-        step(3)
-      ]) });
-
-      const card = q<HTMLElement>('[data-testid="run-verdict"]');
-      expect(card).not.toBeNull();
-      expect(card!.textContent).toContain('The sign-in screen rejected valid credentials.');
-      expect(card!.textContent).toContain('Review evidence and report a bug.');
-      expect(card!.textContent).toContain('App under test');
-      expect(card!.textContent).toContain('Fail');
-      expect(fixture.componentInstance.selectedStep()?.step_id).toBe('st2');
-
-      const selectedEvidence = q<HTMLElement>('[data-testid="selected-step-evidence"]')!;
-      expect(selectedEvidence.textContent).toContain('Mong đợi');
-      expect(selectedEvidence.textContent).toContain('Account home is visible');
-      expect(selectedEvidence.textContent).toContain('Thực tế');
-      expect(selectedEvidence.textContent).toContain('Invalid credentials banner is visible');
-      expect(selectedEvidence.compareDocumentPosition(q('.phone-frame')!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-      expect(selectedEvidence.compareDocumentPosition(q('.step-list')!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    });
-
-    it('does not fetch a terminal verdict while the run is active', async () => {
-      await open({ runResult: of(run({ status: 'running' })) });
-
-      expect(runs.chat).not.toHaveBeenCalled();
-      expect(q('[data-testid="run-verdict"]')).toBeNull();
-    });
 
     it('updates startup and step elapsed time once per second and stops the clock after completion', fakeAsync(() => {
       admin.getIdentity.and.returnValue(of({ email: 'qa@example.test', admin: false, auth_mode: 'cloudflare', reason: null }));

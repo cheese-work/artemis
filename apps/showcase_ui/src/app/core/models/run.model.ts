@@ -71,6 +71,7 @@ export interface ChatTurnResult {
   verdict: string;
   verification: string;
   category: string | null;
+  display_labels?: { verification: string; category: string };
   reason: string;
   action: { text: string; href?: string | null };
   responsible: string;
@@ -81,6 +82,15 @@ export interface ChatTurnResult {
   source: string;
   updated?: boolean;
   results_note?: ResultsNote | null;
+}
+
+export interface ChatResultsSession {
+  session_id: string;
+  results: ChatTurnResult[];
+}
+
+export interface ChatResultsResponse {
+  sessions: ChatResultsSession[];
 }
 
 export interface ChatSession {

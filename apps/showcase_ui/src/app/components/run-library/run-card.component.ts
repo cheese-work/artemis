@@ -26,17 +26,17 @@ import { OwnerLabelComponent } from '../owner-label/owner-label.component';
       } @else if (resultState() === 'cancelled') {
         <span class="run-result-state" data-testid="run-card-result-state" data-label-state="cancelled">Đã huỷ</span>
       } @else if (resultState() === 'legacy') {
-        <span class="run-result-state" data-testid="run-card-result-state" data-label-state="legacy">Run cũ — chưa có verdict</span>
+        <span class="run-result-state" data-testid="run-card-result-state" data-label-state="legacy">Lượt cũ — chưa có kết quả</span>
       } @else if (resultState() === 'error') {
         <span class="run-result-state" data-testid="run-card-result-state" data-label-state="error">Không tải được kết quả · Thử lại</span>
       } @else if (result(); as verdict) {
         <span class="run-card-verdict" data-testid="run-card-verdict" [attr.data-catalog-key]="verdict.catalog_key" data-label-state="final">
-          <span class="run-verdict-heading"><strong>{{ verdictLabel(verdict) }}</strong><span>Verification · {{ verdict.verification }}</span></span>
-          <code>{{ verdict.catalog_key }}</code>
+          <span class="run-verdict-heading"><strong>{{ verdictLabel(verdict) }}</strong><span>Xác minh · {{ verdict.display_labels?.verification ?? 'Chưa xác minh' }}</span></span>
+          <span class="run-verdict-category">{{ verdict.display_labels?.category ?? 'Chưa xác định' }}</span>
           @if (verdict.reason) { <span class="run-verdict-reason">{{ verdict.reason }}</span> }
           <span class="run-verdict-evidence" data-testid="run-card-evidence">{{ evidenceLabel(verdict) }}</span>
-          @if (verdict.action.text) { <span class="run-verdict-action">→ {{ verdict.action.text }}</span> }
-          @if (verdict.responsible) { <span class="run-verdict-responsible">Responsible · {{ verdict.responsible }}</span> }
+          @if (verdict.action.text) { <span class="run-verdict-action">Hành động · {{ verdict.action.text }}</span> }
+          @if (verdict.responsible) { <span class="run-verdict-responsible">Phụ trách · {{ verdict.responsible }}</span> }
           <span class="run-verdict-turn">Kết quả của lượt {{ verdict.turn_index }}/{{ verdict.turn_count }}</span>
         </span>
       }
@@ -86,7 +86,7 @@ import { OwnerLabelComponent } from '../owner-label/owner-label.component';
     .run-card-verdict { display: grid; gap: var(--space-xs); min-width: 0; white-space: normal; }
     .run-verdict-heading { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--space-sm); }
     .run-verdict-heading strong { color: var(--color-ink); }
-    .run-verdict-heading span, .run-verdict-action, .run-verdict-responsible, .run-verdict-turn { color: var(--color-text-muted); font-size: 12px; line-height: 16px; }
+    .run-verdict-heading span, .run-verdict-category, .run-verdict-action, .run-verdict-responsible, .run-verdict-turn { color: var(--color-text-muted); font-size: 12px; line-height: 16px; }
     .run-card-verdict code { color: var(--color-text-muted); font-size: 11px; overflow-wrap: anywhere; }
     .run-verdict-reason, .run-verdict-evidence { color: var(--color-ink); font-size: 12px; line-height: 16px; overflow-wrap: anywhere; }
     .run-result-state { color: var(--color-text-muted); font-size: 12px; line-height: 16px; }
@@ -121,10 +121,16 @@ export class RunCardComponent {
       default: return status.key === 'completed' ? { label: 'Completed', icon: 'description', tone: 'neutral' } : status;
     }
   });
-  readonly verdictLabel = (result: ChatTurnResult): string => result.verdict === 'pass' ? 'Pass'
-    : result.verdict === 'fail' ? 'Fail' : result.verdict === 'blocked' ? 'Blocked' : result.verdict;
-  readonly evidenceLabel = (result: ChatTurnResult): string => `Decisive evidence · Turn ${result.turn_index}`
-    + (result.evidence.step !== null ? ` · Step ${result.evidence.step}` : result.evidence.screenshot_url ? ' · Screenshot' : '');
+  readonly verdictLabel = (result: ChatTurnResult): string => {
+    switch (result.verdict) {
+      case 'pass': return 'Pass';
+      case 'fail': return 'Fail';
+      case 'blocked': return 'Blocked';
+      default: return result.verdict;
+    }
+  };
+  readonly evidenceLabel = (result: ChatTurnResult): string => `Bằng chứng quyết định · Lượt ${result.turn_index}`
+    + (result.evidence.step !== null ? ` · Bước ${result.evidence.step}` : result.evidence.screenshot_url ? ' · Ảnh chụp' : '');
   readonly deviceLabel = computed(() => runDeviceLabel(this.run().device_ref?.serial ?? 'Unknown phone', this.device()));
   readonly expires = computed(() => expiresText(this.run().expires_at, Math.floor(Date.now() / 1000)));
   readonly recording = computed(() => {

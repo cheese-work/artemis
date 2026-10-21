@@ -5,7 +5,7 @@ import { HttpErrorResponse } from '@angular/common/http';
 import { ActivatedRoute } from '@angular/router';
 import { deployDrainMessage } from '../../utils/deploy-drain.util';
 import { DatePipe, JsonPipe } from '@angular/common';
-import { catchError, distinctUntilChanged, of, switchMap, takeWhile, timer } from 'rxjs';
+import { catchError, distinctUntilChanged, of, switchMap, takeWhile, tap, timer } from 'rxjs';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { ChatMessage, ChatSession, ChatTurnResult, RunSummary } from '../../core/models/run.model';
 import { Session } from '../../core/models/session.model';
@@ -21,6 +21,7 @@ import { recordedDevice } from '../../utils/session-device.util';
 import { runTitle } from '../../utils/run-title.util';
 import { actionMarker } from '../../utils/step-evidence.util';
 import { SessionSidebarComponent } from '../session-sidebar/session-sidebar.component';
+import smartqaHelpRoute from '../../core/smartqa-help-route.json';
 
 @Component({
   selector: 'app-run-chat',
@@ -47,6 +48,7 @@ export class RunChatComponent {
   private previousInputRequest = '';
   private focusedEvidenceKey = '';
   private imageTrigger: HTMLElement | null = null;
+  private copyFeedbackTimer: ReturnType<typeof setTimeout> | null = null;
   public readonly runId = input('');
   public readonly readOnly = input(false);
   public readonly compose = input(true);
@@ -61,6 +63,7 @@ export class RunChatComponent {
   public readonly editingTitle = signal(false);
   public readonly savingTitle = signal(false);
   public readonly copyNotice = signal('');
+  public readonly copyNoticeFor = signal<string | null>(null);
   public readonly samples = [
     { title: 'Scan notifications', source: 'artemis/sdk/examples/smart_notification_assistant.py', prompt: 'Open the notification panel (swipe down from top). Scroll through the first 3 unread notifications. For each notification, identify the app name, title, and content. Tag messages from messaging apps or email as high priority.' },
     { title: 'Summarize a video', source: 'artemis/sdk/examples/video_transcription_example.py', prompt: '1. Open YouTube app\n2. Search for "Python tutorial"\n3. Start recording the screen\n4. Play the first video\n5. Wait for the first 30 seconds of the video to play\n6. Stop recording and tell me what was said in the video' }
@@ -121,6 +124,9 @@ export class RunChatComponent {
   private retry: { content: string; id: string } | null = null;
 
   constructor() {
+    this.destroyRef.onDestroy(() => {
+      if (this.copyFeedbackTimer) clearTimeout(this.copyFeedbackTimer);
+    });
     this.route.queryParamMap.pipe(takeUntilDestroyed(this.destroyRef)).subscribe(params => {
       const turnId = params.get('turn');
       const step = Number(params.get('step'));
@@ -138,6 +144,10 @@ export class RunChatComponent {
       const id = this.runId();
       this.revision();
       if (id !== this.previousRunId) {
+        if (this.copyFeedbackTimer) clearTimeout(this.copyFeedbackTimer);
+        this.copyFeedbackTimer = null;
+        this.copyNoticeFor.set(null);
+        this.copyNotice.set('');
         this.followLatest = true;
         this.previousRunId = id;
         this.chat.set(null);
@@ -154,19 +164,41 @@ export class RunChatComponent {
       const subscription = this.zone.runOutsideAngular(() => this.api.get(id).pipe(
         switchMap((run) => {
           this.rootRun.set(run);
-          return timer(0, 1000).pipe(switchMap(() => this.api.chat(run.session_id).pipe(
-            catchError((error) => { this.resultsUnavailable.set(true); this.reportError(error); return of(null); })
-          )), takeWhile((chat, index) => !!chat && (
-            ['queued', 'running', 'paused'].includes(chat.turns.at(-1)?.status ?? '')
-            || chat.verdict?.tip?.state === 'generating'
-            || (chat.results?.some(result => result.label_state === 'pending') ?? false) && index < 30
-          ), true));
+          let pendingTurnId: string | null = null;
+          let pendingPolls = 0;
+          return timer(0, 1000).pipe(
+            switchMap(() => this.api.chat(run.session_id).pipe(
+              catchError((error) => { this.resultsUnavailable.set(true); this.reportError(error); return of(null); })
+            )),
+            tap((chat) => {
+              if (!chat) return;
+              const pending = chat.results?.find(result => result.label_state === 'pending');
+              if (!pending) {
+                pendingTurnId = null;
+                pendingPolls = 0;
+                return;
+              }
+              if (pending.evidence.turn_id !== pendingTurnId) {
+                pendingTurnId = pending.evidence.turn_id;
+                pendingPolls = 0;
+              }
+              pendingPolls += 1;
+            }),
+            takeWhile((chat) => {
+              if (!chat) return true;
+              const latestTurn = chat.turns.at(-1);
+              return ['queued', 'running', 'paused'].includes(latestTurn?.status ?? '')
+                || chat.verdict?.tip?.state === 'generating'
+                || pendingTurnId !== null && pendingPolls <= 30;
+            }, true)
+          );
         }),
         catchError((error) => { this.reportError(error); return of(null); }),
         distinctUntilChanged((previous, current) => JSON.stringify(previous) === JSON.stringify(current))
       ).subscribe((chat) => this.zone.run(() => {
         if (chat) {
           this.resultsUnavailable.set(false);
+          this.error.set(null);
           this.chat.set(chat);
         }
       })));
@@ -202,9 +234,9 @@ export class RunChatComponent {
     if (!text || this.chat()?.verdict?.status !== 'completed') return;
     try {
       await navigator.clipboard.writeText(text);
-      this.copyNotice.set('Tip copied.');
+      this.showCopyNotice('tip', 'Tip copied.');
     } catch {
-      this.copyNotice.set('Could not copy the tip. Select the text and copy it.');
+      this.showCopyNotice('tip', 'Could not copy the tip. Select the text and copy it.');
     }
   }
 
@@ -216,18 +248,23 @@ export class RunChatComponent {
     if (this.resultsUnavailable()) return 'Không tải được kết quả · Thử lại';
     if (turn && ['queued', 'running', 'paused'].includes(turn.status)) return 'Đang chạy — chưa có kết quả';
     if (!result) {
-      if (turn?.turn_id === this.latest()?.turn_id && this.chat()?.verdict) return `Verdict · ${this.verdictTitle()}`;
+      if (turn?.turn_id === this.latest()?.turn_id && this.chat()?.verdict) return `Kết quả · ${this.verdictTitle()}`;
       return 'Run cũ — chưa có verdict';
     }
     if (result.label_state === 'pending') return 'Đã kết thúc · Đang xác định kết quả';
     if (result.label_state === 'cancelled') return 'Đã huỷ';
     if (result.label_state === 'legacy') return 'Run cũ — chưa có verdict';
     if (result.label_state === 'error') return 'Không tải được kết quả · Thử lại';
-    return result.verdict === 'pass' ? 'Pass' : result.verdict === 'fail' ? 'Fail' : result.verdict === 'blocked' ? 'Blocked' : result.verdict;
+    switch (result.verdict) {
+      case 'pass': return 'Pass';
+      case 'fail': return 'Fail';
+      case 'blocked': return 'Blocked';
+      default: return result.verdict;
+    }
   }
 
   public verification(result: ChatTurnResult): string {
-    return result.verification;
+    return result.display_labels?.verification ?? 'Chưa xác minh';
   }
 
   public evidenceStep(result: ChatTurnResult): ChatMessage | null {
@@ -289,7 +326,7 @@ export class RunChatComponent {
   }
 
   public helpHref(result: ChatTurnResult): string {
-    return `/docs/smartqa-verdicts.md#${encodeURIComponent(result.category ?? 'unknown')}`;
+    return `${smartqaHelpRoute.path}#${encodeURIComponent(result.category ?? 'unknown')}`;
   }
 
   public retryResults(): void {
@@ -298,13 +335,24 @@ export class RunChatComponent {
     this.revision.update(value => value + 1);
   }
 
-  public async copyRunId(): Promise<void> {
+  public async copyRunId(turnId: string): Promise<void> {
     try {
-      await navigator.clipboard.writeText(this.runId());
-      this.copyNotice.set('Run ID copied.');
+      await navigator.clipboard.writeText(turnId);
+      this.showCopyNotice(turnId, 'Đã sao chép mã lượt chạy.');
     } catch {
-      this.copyNotice.set('Could not copy the run ID. Select it and copy.');
+      this.showCopyNotice(turnId, 'Không thể sao chép mã lượt chạy. Hãy chọn và sao chép mã.');
     }
+  }
+
+  private showCopyNotice(owner: string, message: string): void {
+    if (this.copyFeedbackTimer) clearTimeout(this.copyFeedbackTimer);
+    this.copyNoticeFor.set(owner);
+    this.copyNotice.set(message);
+    this.copyFeedbackTimer = setTimeout(() => {
+      this.copyNoticeFor.set(null);
+      this.copyNotice.set('');
+      this.copyFeedbackTimer = null;
+    }, 2000);
   }
 
   private focusSelectedEvidence(): void {

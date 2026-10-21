@@ -279,6 +279,7 @@ async def test_chat_adds_per_turn_results_without_changing_legacy_verdict(
     import json
 
     from tests.support.smartqa_verdict_fixtures import build_smartqa_verdict_case
+    from apps.admin_console.services.qa_results import read_result
 
     case = build_smartqa_verdict_case(
         library,
@@ -314,6 +315,12 @@ async def test_chat_adds_per_turn_results_without_changing_legacy_verdict(
     result = legacy_verdict["result"]
     assert result == owner["results"][-1]
     assert result["catalog_key"] == "fail.app_defect"
+    assert result["verification"] == "self_reported"
+    assert result["display_labels"] == {
+        "verification": "Agent tự báo",
+        "category": "Lỗi ứng dụng",
+    }
+    assert "display_labels" not in read_result(library.db, latest_turn)["result"]
     assert result["evidence"] == {
         "turn_id": latest_turn,
         "step": 1,
@@ -333,6 +340,24 @@ async def test_chat_adds_per_turn_results_without_changing_legacy_verdict(
     assert "qa@example.com" not in shared_turn.text
     evidence = await qa2.get(shared_result["evidence"]["screenshot_url"])
     assert evidence.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_chat_results_returns_compact_batch_without_timeline(qa, library, monkeypatch):
+    from tests.support.smartqa_verdict_fixtures import build_smartqa_verdict_case
+
+    case = build_smartqa_verdict_case(library, monkeypatch)
+    response = await qa.post("/api/chats/results", json={"session_ids": [case.chat_id]})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body["sessions"]) == 1
+    session = body["sessions"][0]
+    assert session["session_id"] == case.chat_id
+    assert len(session["results"]) == 1
+    assert "messages" not in session
+    assert "timeline" not in session
+    assert "verdict" not in session
 
 
 @pytest.mark.asyncio

@@ -20,7 +20,7 @@ import { CdkOverlayOrigin, ConnectedPosition, OverlayModule } from '@angular/cdk
 import { takeUntilDestroyed, toSignal } from '@angular/core/rxjs-interop';
 import { Location } from '@angular/common';
 import { ActivatedRoute, Router, RouterLink, convertToParamMap } from '@angular/router';
-import { Subscription, catchError, from, map, mergeMap, of } from 'rxjs';
+import { Subscription, catchError, concat, map, of, switchMap, takeWhile, timer } from 'rxjs';
 import { Computer, RegistryDevice } from '../../core/models/host.model';
 import { ChatSession, ChatTurnResult, RunSummary } from '../../core/models/run.model';
 import { GoalImage, Session } from '../../core/models/session.model';
@@ -454,7 +454,9 @@ export class RunLibraryComponent implements OnChanges {
     const results = new Map(this.cardResults());
     results.delete(run.session_id);
     this.cardResults.set(results);
-    this.loadCardResults([run]);
+    this.cardResultRequests.unsubscribe();
+    this.cardResultRequests = new Subscription();
+    this.loadCardResults([...this.rows().filter((item) => this.cardResults().get(item.session_id)?.state === 'pending'), run]);
   }
 
   public cardResult(run: RunSummary): ChatTurnResult | null {
@@ -509,28 +511,37 @@ export class RunLibraryComponent implements OnChanges {
       this.cardResults.set(new Map());
     }
     const results = new Map(this.cardResults());
-    const eligible = runs.filter((run) => !runStatusView(run.status).active && !results.has(run.session_id));
-    for (const run of eligible) results.set(run.session_id, { state: 'loading', result: null });
+    const eligible = runs.filter((run) => !runStatusView(run.status).active
+      && (!results.has(run.session_id) || results.get(run.session_id)?.state === 'pending'));
+    for (const run of eligible) {
+      if (!results.has(run.session_id)) results.set(run.session_id, { state: 'loading', result: null });
+    }
     this.cardResults.set(results);
     if (!eligible.length) return;
 
-    this.cardResultRequests.add(from(eligible).pipe(
-      mergeMap((run) => this.runsApi.chat(run.chat_session_id ?? run.session_id).pipe(
-        map((chat) => ({ run, chat })),
-        catchError(() => of({ run, chat: null }))
-      ), 4)
-    ).subscribe(({ run, chat }) => {
-      const result = chat ? this.resultForRun(run, chat) : null;
+    const sessionIds = [...new Set(eligible.map((run) => run.chat_session_id ?? run.session_id))];
+    this.cardResultRequests.add(concat(of(null), timer(1000, 1000)).pipe(
+      switchMap(() => this.runsApi.chatResults(sessionIds).pipe(catchError(() => of(null)))),
+      takeWhile((response) => !response
+        || response.sessions.some((session) => session.results.some((result) => result.label_state === 'pending')), true)
+    ).subscribe((response) => {
       const next = new Map(this.cardResults());
-      next.set(run.session_id, { state: result?.label_state ?? (chat ? 'legacy' : 'error'), result });
+      for (const run of eligible) {
+        const sessionId = run.chat_session_id ?? run.session_id;
+        const session = response?.sessions.find((item) => item.session_id === sessionId);
+        const result = session ? this.resultForRun(run, session.results) : null;
+        const previous = next.get(run.session_id);
+        const state = response
+          ? result?.label_state ?? (session ? 'legacy' : 'error')
+          : 'error';
+        next.set(run.session_id, { state, result: result ?? (state === 'pending' ? previous?.result ?? null : null) });
+      }
       this.cardResults.set(next);
     }));
   }
 
-  private resultForRun(run: RunSummary, chat: ChatSession): ChatTurnResult | null {
-    const results = chat.results ?? [];
+  private resultForRun(run: RunSummary, results: ChatTurnResult[]): ChatTurnResult | null {
     return results.find((result) => result.evidence.turn_id === run.session_id)
-      ?? chat.verdict?.result
       ?? results.at(-1)
       ?? null;
   }

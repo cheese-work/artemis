@@ -3,12 +3,12 @@ import { OverlayContainer } from '@angular/cdk/overlay';
 import { Location } from '@angular/common';
 import { provideLocationMocks } from '@angular/common/testing';
 import { HttpErrorResponse } from '@angular/common/http';
-import { TestBed } from '@angular/core/testing';
+import { fakeAsync, flushMicrotasks, TestBed, tick } from '@angular/core/testing';
 import { Router, provideRouter } from '@angular/router';
 import { RouterTestingHarness } from '@angular/router/testing';
 import { Observable, Subject, of, throwError } from 'rxjs';
 import { HostsResponse } from '../../core/models/host.model';
-import { ChatSession, RunPage, RunSummary } from '../../core/models/run.model';
+import { ChatResultsResponse, ChatSession, ChatTurnResult, RunPage, RunSummary } from '../../core/models/run.model';
 import { Session } from '../../core/models/session.model';
 import { AdminConfigService, AdminIdentity } from '../../services/admin-config.service';
 import { HostsService } from '../../services/hosts.service';
@@ -104,10 +104,13 @@ describe('RunLibraryComponent', () => {
 
   beforeEach(async () => {
     localStorage.removeItem(SELECTED_DEVICE_SERIAL_KEY);
-    runs = jasmine.createSpyObj<RunsService>('RunsService', ['list', 'get', 'chat'], {
+    runs = jasmine.createSpyObj<RunsService>('RunsService', ['list', 'get', 'chat', 'chatResults'], {
       lastLibraryQuery: signal<Record<string, string>>({})
     });
     runs.chat.and.returnValue(of({ results: [] } as unknown as ChatSession));
+    runs.chatResults.and.callFake((sessionIds) => of({
+      sessions: sessionIds.map((session_id) => ({ session_id, results: [] }))
+    } satisfies ChatResultsResponse));
     hosts = jasmine.createSpyObj<HostsService>('HostsService', ['list']);
     hosts.list.and.returnValue(of(hostsResponse));
     adminApi = jasmine.createSpyObj<AdminConfigService>('AdminConfigService', ['getIdentity']);
@@ -144,32 +147,69 @@ describe('RunLibraryComponent', () => {
     });
 
     it('renders the backend result and opens the exact cited turn and step', async () => {
-      const result = {
+      const result: ChatTurnResult = {
         catalog_key: 'fail.app_defect', verdict: 'fail', verification: 'self_reported', category: 'app_defect',
+        display_labels: { verification: 'Agent tự báo', category: 'Lỗi ứng dụng' },
         reason: 'The sign-in screen rejected valid credentials.', action: { text: 'Review evidence and report a bug.' },
         responsible: 'App under test', evidence: { turn_id: 'turn-2', step: 7, screenshot_url: '/images/failed.png' },
         turn_index: 2, turn_count: 4, label_state: 'final', source: 'outcome'
       };
-      runs.chat.and.returnValue(of({ results: [result] } as unknown as ChatSession));
+      runs.chatResults.and.returnValue(of({
+        sessions: [{ session_id: 'chat-root', results: [result] }]
+      }));
       const selectedRun = run({ chat_session_id: 'chat-root', verdict: 'fail' });
       await open('/sessions', of(page([selectedRun])));
-      await new Promise(resolve => setTimeout(resolve, 50));
       await settle();
 
-      expect(runs.chat).toHaveBeenCalledWith('chat-root');
+      expect(runs.chatResults).toHaveBeenCalledWith(['chat-root']);
+      expect(runs.chat).not.toHaveBeenCalled();
       const card = q<HTMLElement>('[data-testid="run-card-verdict"]')!;
-      expect(card.textContent).toContain('fail.app_defect');
+      expect(card.getAttribute('data-catalog-key')).toBe('fail.app_defect');
+      expect(card.textContent).not.toContain('fail.app_defect');
+      expect(card.textContent).toContain('Lỗi ứng dụng');
       expect(card.textContent).toContain('The sign-in screen rejected valid credentials.');
       expect(card.textContent).toContain('Review evidence and report a bug.');
       expect(card.textContent).toContain('App under test');
       expect(card.textContent).toContain('2/4');
       const evidence = q<HTMLElement>('[data-testid="run-card-evidence"]')!;
-      expect(evidence.textContent).toContain('Turn 2');
-      expect(evidence.textContent).toContain('Step 7');
+      expect(evidence.textContent).toContain('Lượt 2');
+      expect(evidence.textContent).toContain('Bước 7');
       const row = q<HTMLAnchorElement>('.run-row')!;
       expect(row.href).toContain('turn=turn-2');
       expect(row.href).toContain('step=7');
     });
+
+    it('polls compact history results until a pending verdict resolves', fakeAsync(() => {
+      const pendingResult: ChatTurnResult = {
+        catalog_key: 'blocked.unknown', verdict: 'blocked', verification: 'none', category: 'unknown',
+        display_labels: { verification: 'Chưa xác minh', category: 'Chưa xác định' },
+        reason: 'Đang xác định kết quả', action: { text: '' }, responsible: '',
+        evidence: { turn_id: ID, step: null, screenshot_url: null }, turn_index: 1, turn_count: 1,
+        label_state: 'pending', source: 'outcome'
+      };
+      const finalResult: ChatTurnResult = { ...pendingResult, catalog_key: 'fail.app_defect', verdict: 'fail', category: 'app_defect',
+        display_labels: { verification: 'Agent tự báo', category: 'Lỗi ứng dụng' }, label_state: 'final' };
+      runs.chatResults.and.returnValues(
+        of({ sessions: [{ session_id: 'chat-root', results: [pendingResult] }] }),
+        of({ sessions: [{ session_id: 'chat-root', results: [finalResult] }] })
+      );
+      const selectedRun = run({ chat_session_id: 'chat-root' });
+      runs.list.and.returnValue(of(page([selectedRun])));
+      harness.navigateByUrl('/sessions', RunLibraryComponent).then(value => { component = value; });
+      flushMicrotasks();
+      harness.fixture.detectChanges();
+      root = harness.fixture.nativeElement;
+      tick(0);
+      expect(component.cardResultState(selectedRun)).toBe('pending');
+      tick(1000);
+      harness.fixture.detectChanges();
+
+      expect(runs.chatResults.calls.count()).toBe(2);
+      expect(component.cardResultState(selectedRun)).toBe('final');
+      expect((component.cardResult(selectedRun) as unknown as { display_labels?: { category?: string } })?.display_labels?.category)
+        .toBe('Lỗi ứng dụng');
+      expect(runs.chat).not.toHaveBeenCalled();
+    }));
 
     for (const verdictView of [
       { verdict: 'pass', label: 'Pass', icon: 'check_circle', tone: 'ok' },

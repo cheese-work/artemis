@@ -4,7 +4,7 @@ import { HttpErrorResponse } from '@angular/common/http';
 import { of, Subject, throwError } from 'rxjs';
 import { RunChatComponent } from './run-chat.component';
 import { RunsService } from '../../services/runs.service';
-import { ChatSession, RunSummary } from '../../core/models/run.model';
+import { ChatSession, ChatTurnResult, RunSummary } from '../../core/models/run.model';
 import { CUSTOM_ELEMENTS_SCHEMA } from '@angular/core';
 import { ShellLayoutService } from '../../services/shell-layout.service';
 import { signal } from '@angular/core';
@@ -75,7 +75,7 @@ describe('RunChatComponent', () => {
   }));
 
   it('renders backend verdicts per turn and places cited failing evidence first', fakeAsync(() => {
-    const failingStep = {
+    const failingStep: ChatSession['messages'][number] = {
       ...thread.messages[1], sequence: 3, kind: 'step', content: 'Submit sign-in',
       payload: {
         step_id: 'failed-step', step_number: 2, post_image_name: 'failed.png',
@@ -88,6 +88,7 @@ describe('RunChatComponent', () => {
     };
     const result = {
       catalog_key: 'fail.app_defect', verdict: 'fail', verification: 'self_reported', category: 'app_defect',
+      display_labels: { verification: 'Agent tự báo', category: 'Lỗi ứng dụng' },
       reason: 'App đang test (agent nhận định)',
       action: { text: 'Xem bằng chứng rồi báo bug cho app' }, responsible: 'App đang test (agent nhận định)',
       evidence: { turn_id: 'follow-up', step: 2, screenshot_url: '/api/images/failed.png' },
@@ -110,15 +111,38 @@ describe('RunChatComponent', () => {
     expect(cards[1].getAttribute('data-catalog-key')).toBe('fail.app_defect');
     expect(cards[1].textContent).toContain('App đang test (agent nhận định)');
     expect(cards[1].textContent).toContain('Xem bằng chứng rồi báo bug cho app');
-    expect(cards[1].textContent).toContain('Kết quả của turn 2/2');
-    expect(cards[1].textContent).toContain('fail.app_defect');
+    expect(cards[1].textContent).toContain('Kết quả của lượt 2/2');
+    expect(cards[1].getAttribute('data-catalog-key')).toBe('fail.app_defect');
+    expect(cards[1].textContent).not.toContain('fail.app_defect');
+    expect(cards[1].querySelector('.verification').textContent).toContain('Xác minh · Agent tự báo');
+    expect(cards[1].querySelector('.category-label').textContent).toBe('Lỗi ứng dụng');
+    expect(cards[1].textContent).not.toContain('Verification · self_reported');
+    expect(cards[1].querySelector('.verdict-action').textContent).toContain('Hành động ·');
+    expect(cards[1].querySelector('.verdict-responsible').textContent).toContain('Phụ trách ·');
+    const turnDividers = fixture.nativeElement.querySelectorAll('.turn-divider');
+    expect(turnDividers[1].textContent).toContain('Lượt 2');
+    expect(turnDividers[1].textContent).not.toContain('Turn');
+    const layout = cards[1].querySelector('.verdict-layout');
+    expect(layout).not.toBeNull();
+    if (layout) {
+      expect(layout.children[0].classList).toContain('verdict-rail');
+      expect(layout.children[1]).toBe(cards[1].querySelector('[data-testid="run-decisive-evidence"]'));
+    }
+    expect(getComputedStyle(cards[1].querySelector('.verdict-chip')).fontSize).toBe('32px');
+    expect(getComputedStyle(cards[1].querySelector('.verdict-chip')).lineHeight).toBe('40px');
 
     const selectedEvidence = cards[1].querySelector('[data-testid="selected-step-evidence"]');
+    expect(selectedEvidence.querySelector('.evidence-kicker').textContent).toContain('Bước lỗi · 2');
     expect(selectedEvidence.textContent).toContain('Mong đợi');
     expect(selectedEvidence.textContent).toContain('Account home is visible');
     expect(selectedEvidence.textContent).toContain('Thực tế');
     expect(selectedEvidence.textContent).toContain('Invalid credentials banner is visible');
     const evidencePanel = cards[1].querySelector('[data-testid="run-decisive-evidence"]');
+    expect(evidencePanel.getAttribute('aria-label')).toBe('Bằng chứng quyết định');
+    expect(evidencePanel.querySelector('.other-evidence-steps summary').textContent.trim()).toBe('Các bước khác');
+    expect(evidencePanel.querySelector('.evidence-link').textContent.trim()).toBe('Mở bước trong dòng thời gian');
+    expect(evidencePanel.querySelector('.evidence-image').getAttribute('aria-label')).toBe('Mở ảnh chụp bằng chứng quyết định');
+    expect(evidencePanel.querySelector('.evidence-image img').getAttribute('alt')).toBe('Ảnh chụp bằng chứng quyết định');
     expect(evidencePanel.firstElementChild).toBe(selectedEvidence);
     expect(selectedEvidence.compareDocumentPosition(evidencePanel.querySelector('[data-testid="evidence-index"]'))
       & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
@@ -126,13 +150,47 @@ describe('RunChatComponent', () => {
       & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(evidencePanel.querySelector('[data-testid="run-evidence-screenshot"]').compareDocumentPosition(evidencePanel.querySelector('.other-evidence-steps'))
       & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(fixture.nativeElement.querySelectorAll('[aria-live="polite"]').length).toBe(1);
+    expect(fixture.nativeElement.querySelectorAll('.chat-messages[aria-live="polite"]').length).toBe(1);
+    expect(fixture.nativeElement.querySelectorAll('[data-testid="run-verdict-announcement"][aria-live="polite"]').length).toBe(1);
+    expect(cards[1].getAttribute('aria-live')).toBe('off');
     const citedStep = fixture.nativeElement.querySelector('[data-turn-id="follow-up"][data-step-number="2"] details') as HTMLDetailsElement;
     expect(citedStep.open).toBeFalse();
     evidencePanel.querySelector('[data-testid="run-decisive-evidence-link"]').click();
     fixture.detectChanges();
     expect(citedStep.open).toBeTrue();
     expect(document.activeElement).toBe(citedStep.querySelector('summary'));
+    fixture.destroy();
+  }));
+
+  it('contains a long results note inside the phone-width chat viewport', fakeAsync(() => {
+    const failingStep: ChatSession['messages'][number] = {
+      ...thread.messages[1], sequence: 3, kind: 'step', content: 'Submit sign-in',
+      payload: { step_number: 2, last_execution_result: { expected: 'Account home is visible', actual: 'Invalid credentials banner is visible' } }
+    };
+    const result: ChatTurnResult = {
+      catalog_key: 'fail.app_defect', verdict: 'fail', verification: 'self_reported', category: 'app_defect',
+      display_labels: { verification: 'Agent tự báo', category: 'Lỗi ứng dụng' },
+      reason: 'The result note contains a long unbroken identifier.',
+      action: { text: 'Review the evidence' }, responsible: 'App under test',
+      evidence: { turn_id: 'follow-up', step: 2, screenshot_url: null },
+      turn_index: 2, turn_count: 2, label_state: 'final', source: 'outcome',
+      results_note: { text: `evidence-${'x'.repeat(180)}`, modified_at: 2, truncated: false }
+    };
+    api.chat.and.returnValue(of({
+      ...thread,
+      turns: [thread.turns[0], { ...thread.turns[1], status: 'completed' }],
+      timeline: [...thread.messages, failingStep],
+      results: [result]
+    }));
+    const fixture = TestBed.createComponent(RunChatComponent);
+    fixture.componentRef.setInput('runId', 'root');
+    fixture.nativeElement.style.width = '390px';
+    fixture.nativeElement.style.height = '700px';
+    fixture.detectChanges(); tick(0); fixture.detectChanges();
+
+    const host = fixture.nativeElement.getBoundingClientRect();
+    const evidence = fixture.nativeElement.querySelector('[data-testid="selected-step-evidence"]').getBoundingClientRect();
+    expect(evidence.right).toBeLessThanOrEqual(host.right);
     fixture.destroy();
   }));
 
@@ -158,7 +216,7 @@ describe('RunChatComponent', () => {
       });
       fixture.detectChanges();
       const visibleLabel = fixture.nativeElement.querySelector('.verdict-chip').textContent.trim();
-      const announcement = fixture.nativeElement.querySelector('[aria-live="polite"]').textContent.trim();
+      const announcement = fixture.nativeElement.querySelector('[data-testid="run-verdict-announcement"]').textContent.trim();
       expect(visibleLabel).toBe(state.expected);
       expect(announcement).toBe(visibleLabel);
       fixture.destroy();
@@ -183,7 +241,97 @@ describe('RunChatComponent', () => {
     tick(1000); fixture.detectChanges();
     const visibleLabel = fixture.nativeElement.querySelector('.verdict-chip').textContent.trim();
     expect(visibleLabel).toBe('Pass');
-    expect(fixture.nativeElement.querySelector('[aria-live="polite"]').textContent.trim()).toBe(visibleLabel);
+    expect(fixture.nativeElement.querySelector('[data-testid="run-verdict-announcement"]').textContent.trim()).toBe(visibleLabel);
+    fixture.destroy();
+  }));
+
+  it('keeps chat messages polite and exposes one verdict announcement', fakeAsync(() => {
+    const fixture = render();
+    expect(fixture.nativeElement.querySelector('.chat-messages').getAttribute('aria-live')).toBe('polite');
+    expect(fixture.nativeElement.querySelectorAll('[data-testid="run-verdict-announcement"][aria-live="polite"]').length).toBe(1);
+    fixture.destroy();
+  }));
+
+  it('starts the pending poll cap only after a long-running turn becomes pending', fakeAsync(() => {
+    const pendingResult = {
+      catalog_key: 'blocked.unknown', verdict: 'blocked', verification: 'none', category: 'unknown',
+      display_labels: { verification: 'Chưa xác minh', category: 'Chưa xác định' },
+      reason: 'Đang xác định kết quả', action: { text: '' }, responsible: '',
+      evidence: { turn_id: 'follow-up', step: null, screenshot_url: null },
+      turn_index: 2, turn_count: 2, label_state: 'pending', source: 'outcome'
+    } as ChatTurnResult;
+    const finalResult = { ...pendingResult, catalog_key: 'fail.app_defect', verdict: 'fail', category: 'app_defect', label_state: 'final' as const };
+    const activeChat: ChatSession = { ...thread, turns: [thread.turns[0], { ...thread.turns[1], status: 'running' }], results: [] };
+    const pendingChat: ChatSession = { ...thread, turns: [thread.turns[0], { ...thread.turns[1], status: 'completed' }], results: [pendingResult] };
+    const finalChat: ChatSession = { ...pendingChat, results: [finalResult] };
+    let call = 0;
+    api.chat.and.callFake(() => {
+      call++;
+      return of(call <= 40 ? activeChat : call === 41 ? pendingChat : finalChat);
+    });
+    const fixture = TestBed.createComponent(RunChatComponent);
+    fixture.componentRef.setInput('runId', 'root');
+    fixture.detectChanges(); tick(0); tick(41000); fixture.detectChanges();
+
+    expect(api.chat.calls.count()).toBe(42);
+    expect(fixture.componentInstance.latestResultLabel()).toBe('Fail');
+    fixture.destroy();
+  }));
+
+  it('keeps live polling through a transient failed request', fakeAsync(() => {
+    const finalResult = {
+      catalog_key: 'fail.app_defect', verdict: 'fail', verification: 'self_reported', category: 'app_defect',
+      display_labels: { verification: 'Agent tự báo', category: 'Lỗi ứng dụng' },
+      reason: 'Không đăng nhập được', action: { text: 'Kiểm tra bằng chứng' }, responsible: 'Ứng dụng',
+      evidence: { turn_id: 'follow-up', step: null, screenshot_url: null },
+      turn_index: 2, turn_count: 2, label_state: 'final', source: 'outcome'
+    } as ChatTurnResult;
+    const activeChat: ChatSession = { ...thread, turns: [thread.turns[0], { ...thread.turns[1], status: 'running' }], results: [] };
+    const finalChat: ChatSession = { ...thread, turns: [thread.turns[0], { ...thread.turns[1], status: 'failed' }], results: [finalResult] };
+    let call = 0;
+    api.chat.and.callFake(() => {
+      call++;
+      if (call === 3) return throwError(() => new HttpErrorResponse({ status: 502 }));
+      return of(call < 5 ? activeChat : finalChat);
+    });
+    const fixture = TestBed.createComponent(RunChatComponent);
+    fixture.componentRef.setInput('runId', 'root');
+    fixture.detectChanges(); tick(0); tick(6000); fixture.detectChanges();
+
+    expect(api.chat.calls.count()).toBeGreaterThan(4);
+    expect(fixture.componentInstance.latestResultLabel()).toBe('Fail');
+    fixture.destroy();
+  }));
+
+  it('copies the blocked turn ID and clears feedback after success', fakeAsync(() => {
+    const blockedResult = {
+      catalog_key: 'blocked.qa_environment', verdict: 'blocked', verification: 'none', category: 'qa_environment',
+      display_labels: { verification: 'Chưa xác minh', category: 'Môi trường QA' },
+      reason: 'Điện thoại đang khoá', action: { text: 'Mở khoá điện thoại' }, responsible: 'Môi trường QA',
+      evidence: { turn_id: 'follow-up', step: null, screenshot_url: null },
+      turn_index: 2, turn_count: 2, label_state: 'final', source: 'ledger'
+    } as ChatTurnResult;
+    api.chat.and.returnValue(of({ ...thread, turns: thread.turns.map(turn => ({ ...turn, status: 'completed' })), results: [blockedResult] }));
+    const clipboard = spyOn(navigator.clipboard, 'writeText').and.returnValue(Promise.resolve());
+    const fixture = TestBed.createComponent(RunChatComponent);
+    fixture.componentRef.setInput('runId', 'root');
+    fixture.detectChanges(); tick(0); fixture.detectChanges();
+    expect(fixture.nativeElement.querySelector('.copy-run-id').textContent.trim()).toBe('Sao chép mã lượt chạy');
+    expect(fixture.nativeElement.querySelector('.verdict-help').getAttribute('aria-label')).toBe('Trợ giúp về kết quả');
+    fixture.nativeElement.querySelector('.copy-run-id').click();
+    tick(0); fixture.detectChanges();
+
+    expect(clipboard).toHaveBeenCalledOnceWith('follow-up');
+    expect(fixture.nativeElement.querySelectorAll('.copy-notice').length).toBe(1);
+    tick(2000); fixture.detectChanges();
+    expect(fixture.nativeElement.querySelectorAll('.copy-notice').length).toBe(0);
+    fixture.destroy();
+  }));
+
+  it('preserves the category-specific help route for the backend result', fakeAsync(() => {
+    const fixture = render();
+    expect(fixture.componentInstance.helpHref({ category: 'qa_environment' } as ChatTurnResult))
+      .toBe('/docs/smartqa-verdicts.html#qa_environment');
     fixture.destroy();
   }));
 
@@ -202,7 +350,7 @@ describe('RunChatComponent', () => {
     fixture.detectChanges(); tick(0); fixture.detectChanges();
     expect(fixture.nativeElement.querySelector('[data-label-state="error"] .verdict-state').textContent.trim())
       .toBe('Không tải được kết quả · Thử lại');
-    expect(fixture.nativeElement.querySelector('[aria-live="polite"]').textContent.trim())
+    expect(fixture.nativeElement.querySelector('[data-testid="run-verdict-announcement"]').textContent.trim())
       .toBe('Không tải được kết quả · Thử lại');
     fixture.nativeElement.querySelector('.verdict-retry').click();
     fixture.detectChanges(); tick(0); fixture.detectChanges();

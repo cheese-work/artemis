@@ -1,7 +1,7 @@
 import { Injectable, inject, signal } from '@angular/core';
 import { HttpClient, HttpEvent, HttpParams } from '@angular/common/http';
 import { Observable } from 'rxjs';
-import { ChatMessage, ChatSession, RunPage, RunSummary, SessionVideo } from '../core/models/run.model';
+import { ChatMessage, ChatResultsResponse, ChatSession, RunPage, RunSummary, SessionVideo } from '../core/models/run.model';
 import { SessionChecks, StepItemData } from '../core/models/stream.model';
 import { RunFilters, apiParams } from '../utils/run-filters.util';
 import { OwnerScopeService } from './owner-scope.service';
@@ -10,6 +10,10 @@ import { OwnerScopeService } from './owner-scope.service';
 export class RunsService {
   public chat(sessionId: string): Observable<ChatSession> {
     return this.http.get<ChatSession>(`/api/chats/${encodeURIComponent(sessionId)}`);
+  }
+
+  public chatResults(sessionIds: string[]): Observable<ChatResultsResponse> {
+    return this.http.post<ChatResultsResponse>('/api/chats/results', { session_ids: sessionIds });
   }
 
   public renameChat(sessionId: string, title: string): Observable<ChatSession> {

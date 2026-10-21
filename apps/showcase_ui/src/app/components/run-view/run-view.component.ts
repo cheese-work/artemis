@@ -20,8 +20,8 @@ import { HttpErrorResponse, HttpEvent, HttpEventType } from '@angular/common/htt
 import { DatePipe, JsonPipe, NgTemplateOutlet } from '@angular/common';
 import { Router, RouterLink } from '@angular/router';
 import { Title } from '@angular/platform-browser';
-import { Subscription, catchError, of, switchMap, takeWhile, timer } from 'rxjs';
-import { ChatSession, ChatTurnResult, RunSummary, SessionVideo, VideoSegment } from '../../core/models/run.model';
+import { Subscription, catchError, of, switchMap, timer } from 'rxjs';
+import { RunSummary, SessionVideo, VideoSegment } from '../../core/models/run.model';
 import { ActionParam, CheckerBlockData, SessionChecks, StepEvent, StepItemData } from '../../core/models/stream.model';
 import { Session, SessionUsage } from '../../core/models/session.model';
 import { OwnerScopeService } from '../../services/owner-scope.service';
@@ -157,15 +157,6 @@ export class RunViewComponent {
   public readonly stepsFailed = signal(false);
   public readonly video = signal<SessionVideo | null>(null);
   public readonly videoFailed = signal(false);
-  public readonly runChat = signal<ChatSession | null>(null);
-  public readonly verdictLoading = signal(false);
-  public readonly verdictLoadFailed = signal(false);
-  public readonly verdict = computed(() => {
-    const runId = this.run()?.session_id;
-    return runId ? this.runChat()?.results?.find(result => result.evidence?.turn_id === runId) ?? null : null;
-  });
-  public readonly verdictLabel = computed(() => this.verdictText());
-  public readonly evidenceImage = signal<{ url: string; alt: string } | null>(null);
   /** The media element itself could not load or decode the file. */
   public readonly playerFailed = signal(false);
   public readonly selectedStepId = signal<string | null>(null);
@@ -240,7 +231,6 @@ export class RunViewComponent {
   public readonly announcement = computed(() => {
     const run = this.run();
     if (!run) return '';
-    if (this.verdictLoadFailed() || this.verdict()) return this.verdictText();
     if (!this.active()) {
       const outcome = this.resultOutcome();
       let verdict: string | null = null;
@@ -327,9 +317,8 @@ export class RunViewComponent {
 
   public readonly selectedStep = computed(() => {
     const steps = this.steps();
-    const selected = steps.find(step => step.step_id === this.selectedStepId());
-    if (!this.followLatest() && selected) return selected;
-    return this.citedStep() ?? (this.followLatest() ? steps.at(-1) : selected) ?? steps.at(-1) ?? null;
+    if (this.followLatest()) return steps.at(-1) ?? null;
+    return steps.find((s) => s.step_id === this.selectedStepId()) ?? steps[steps.length - 1] ?? null;
   });
 
   public readonly recording = computed(() => {
@@ -374,68 +363,6 @@ export class RunViewComponent {
     screenshot: getStepPostImageUrl(step) ?? getStepPreImageUrl(step)
   })));
 
-  public citedStep(result: ChatTurnResult | null = this.verdict()): StepItemData | null {
-    if (!result || result.evidence.step === null) return null;
-    return this.steps().find(step => step.step_number === result.evidence.step) ?? null;
-  }
-
-  public openVerdictStep(): void {
-    const step = this.citedStep();
-    if (!step) return;
-    this.selectStep(step);
-    this.expandedSteps.update(expanded => expanded.has(step.step_id) ? expanded : new Set([...expanded, step.step_id]));
-    this.pendingFocusStepId = step.step_id;
-  }
-
-  public evidenceText(value: unknown): string {
-    if (typeof value === 'string') return value;
-    if (value === null || value === undefined) return '';
-    return typeof value === 'object' ? JSON.stringify(value) : String(value);
-  }
-
-  public verdictScreenshot(result: ChatTurnResult): string | null {
-    return result.evidence.screenshot_url ? mediaUrl(result.evidence.screenshot_url) : null;
-  }
-
-  public openEvidenceImage(result: ChatTurnResult, trigger: HTMLElement): void {
-    const url = this.verdictScreenshot(result);
-    if (!url) return;
-    this.evidenceImageTrigger = trigger;
-    this.evidenceImage.set({ url, alt: `Decisive screenshot for step ${result.evidence.step ?? ''}`.trim() });
-    const dialog = this.evidenceDialog()?.nativeElement;
-    if (dialog && !dialog.open) dialog.showModal();
-  }
-
-  public onEvidenceDialogClose(): void {
-    this.evidenceImage.set(null);
-    this.evidenceImageTrigger?.focus({ preventScroll: true });
-    this.evidenceImageTrigger = null;
-  }
-
-  public helpHref(result: ChatTurnResult): string {
-    return `/docs/smartqa-verdicts.md#${encodeURIComponent(result.category ?? 'unknown')}`;
-  }
-
-  public retryVerdict(): void {
-    const run = this.run();
-    if (run) this.loadVerdict(run.chat_session_id ?? run.session_id);
-  }
-
-  private verdictText(): string {
-    if (this.verdictLoadFailed()) return 'Không tải được kết quả · Thử lại';
-    if (this.verdictLoading()) return 'Đang tải kết quả…';
-    const result = this.verdict();
-    if (result?.label_state === 'pending') return 'Đã kết thúc · Đang xác định kết quả';
-    if (result?.label_state === 'cancelled') return 'Đã huỷ';
-    if (!result) return this.active() ? 'Đang chạy — chưa có kết quả' : 'Run cũ — chưa có verdict';
-    if (result.label_state === 'legacy') return 'Run cũ — chưa có verdict';
-    if (result?.label_state === 'error') return 'Không tải được kết quả · Thử lại';
-    if (result.verdict === 'pass') return 'Pass';
-    if (result.verdict === 'fail') return 'Fail';
-    if (result.verdict === 'blocked') return 'Blocked';
-    return result.verdict;
-  }
-
   public selectEvidenceStep(stepId: string): void {
     const step = this.steps().find(item => item.step_id === stepId);
     if (step) this.selectStep(step);
@@ -466,7 +393,6 @@ export class RunViewComponent {
   public readonly rawLogs = computed(() => JSON.stringify({ run: this.run(), steps: this.steps() }, null, 2));
 
   private readonly dialogEl = viewChild<ElementRef<HTMLDialogElement>>('dialogEl');
-  private readonly evidenceDialog = viewChild<ElementRef<HTMLDialogElement>>('evidenceDialog');
   private readonly evidencePanel = viewChild(RunEvidencePanelComponent);
   private readonly scrollEl = viewChild<ElementRef<HTMLElement>>('scrollEl');
   private readonly timelineEl = viewChild<ElementRef<HTMLElement>>('timelineEl');
@@ -478,11 +404,8 @@ export class RunViewComponent {
   private renderedStepId: string | null = null;
   private liveStateKey = '';
   private opener: HTMLElement | null = null;
-  private evidenceImageTrigger: HTMLElement | null = null;
-  private pendingFocusStepId: string | null = null;
   private loadRequest: Subscription | null = null;
   private evidenceRequests = new Subscription();
-  private verdictRequests = new Subscription();
   /** Pin, download and delete: cancelled on navigation so run A's answer never lands on run B. */
   private actionRequests = new Subscription();
   private pendingSeek: number | null = null;
@@ -563,21 +486,10 @@ export class RunViewComponent {
         this.liveLogEl()!.nativeElement.querySelector<HTMLElement>('summary')?.focus();
         this.focusLiveLog = false;
       }
-      if (this.pendingFocusStepId && this.timelineEl()) {
-        const row = Array.from(this.timelineEl()!.nativeElement.querySelectorAll<HTMLElement>('[data-step-id]'))
-          .find(element => element.dataset['stepId'] === this.pendingFocusStepId);
-        const button = row?.querySelector<HTMLButtonElement>('.step-button');
-        if (row && button) {
-          row.scrollIntoView({ block: 'center' });
-          button.focus({ preventScroll: true });
-          this.pendingFocusStepId = null;
-        }
-      }
     });
     this.destroyRef.onDestroy(() => {
       this.loadRequest?.unsubscribe();
       this.evidenceRequests.unsubscribe();
-      this.verdictRequests.unsubscribe();
       this.actionRequests.unsubscribe();
     });
   }
@@ -597,8 +509,6 @@ export class RunViewComponent {
     this.loadRequest?.unsubscribe();
     this.evidenceRequests.unsubscribe(); // a slow answer for the previous run must not land on this one
     this.evidenceRequests = new Subscription();
-    this.verdictRequests.unsubscribe();
-    this.verdictRequests = new Subscription();
     this.actionRequests.unsubscribe();
     this.actionRequests = new Subscription();
     this.playerFailed.set(false);
@@ -612,10 +522,6 @@ export class RunViewComponent {
     this.notesFailed.set(false);
     this.stepsLoaded.set(false);
     this.video.set(null);
-    this.runChat.set(null);
-    this.verdictLoading.set(false);
-    this.verdictLoadFailed.set(false);
-    this.evidenceImage.set(null);
     this.selectedStepId.set(null);
     this.followLatest.set(true);
     this.followedStepId = null;
@@ -698,7 +604,6 @@ export class RunViewComponent {
   }
 
   private loadEvidence(sessionId: string): void {
-    this.loadVerdict(sessionId);
     this.stepsFailed.set(false);
     this.evidenceRequests.add(
       this.runsApi.steps(sessionId).subscribe({
@@ -721,32 +626,6 @@ export class RunViewComponent {
       error: () => this.notesFailed.set(true)
     }));
     this.loadVideo(sessionId);
-  }
-
-  private loadVerdict(sessionId: string): void {
-    this.verdictRequests.unsubscribe();
-    this.verdictRequests = new Subscription();
-    this.verdictLoading.set(false);
-    this.verdictLoadFailed.set(false);
-    if (this.active()) return;
-    this.verdictLoading.set(true);
-    const requests = timer(0, 1000).pipe(
-      switchMap(() => this.runsApi.chat(this.run()?.chat_session_id ?? sessionId).pipe(
-        catchError(() => {
-          this.verdictLoading.set(false);
-          this.verdictLoadFailed.set(true);
-          return of(null);
-        })
-      )),
-      takeWhile((chat, index) => !!chat && index < 30
-        && (chat.results?.some(result => result.label_state === 'pending') ?? false), true)
-    ).subscribe(chat => {
-      if (!chat) return;
-      if (chat.results?.length) this.runChat.set(chat);
-      this.verdictLoading.set(false);
-      this.verdictLoadFailed.set(false);
-    });
-    this.verdictRequests.add(requests);
   }
 
   private loadVideo(sessionId: string): void {
