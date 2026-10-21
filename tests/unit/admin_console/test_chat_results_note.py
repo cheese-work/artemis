@@ -7,6 +7,14 @@ from apps.admin_console.routers import chats
 from artemis.data_engine.chat_sessions import ChatStore
 
 
+@pytest.fixture(params=["native", "portable"], autouse=True)
+def platform(request, monkeypatch):
+    # "portable" simulates a platform without O_NOFOLLOW (Windows) on this host.
+    if request.param == "portable":
+        monkeypatch.delattr(os, "O_NOFOLLOW", raising=False)
+    return request.param
+
+
 @pytest.fixture
 def chat(library, monkeypatch):
     identity = library.seed("Check login", status="completed")
@@ -79,3 +87,60 @@ async def test_other_owner_cannot_read_note(qa2, chat, library):
     assert response.status_code == 200
     assert "private" not in response.text
     assert response.json()["results"][-1]["results_note"] is None
+
+
+def swap_at_open(monkeypatch, library, chat, swap):
+    """Run ``swap`` once, right before the results note is first opened (after any path check)."""
+    note = library.traces / chat / "notes" / "results.md"
+    triggers = {str(note), str(library.traces), os.path.realpath(library.traces)}
+    real_open = os.open
+    done = []
+
+    def open_after_swap(path, *args, **kwargs):
+        if not done and os.fspath(path) in triggers:
+            done.append(True)
+            swap(note)
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", open_after_swap)
+    return done
+
+
+@pytest.mark.asyncio
+async def test_note_swapped_for_a_link_at_open_is_ignored(qa, chat, library, tmp_path, monkeypatch):
+    library.write(chat, "notes/results.md", "mine")
+    outside = tmp_path / "secret.md"
+    outside.write_text("not yours")
+
+    def swap(note):
+        note.unlink()
+        note.symlink_to(outside)
+
+    done = swap_at_open(monkeypatch, library, chat, swap)
+
+    body = (await qa.get(f"/api/chats/{chat}")).json()
+
+    assert done
+    assert body["results"][-1]["results_note"] is None
+
+
+@pytest.mark.asyncio
+async def test_ancestor_swapped_for_a_link_at_open_is_ignored(
+    qa, chat, library, tmp_path, monkeypatch
+):
+    library.write(chat, "notes/results.md", "mine")
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "results.md").write_text("not yours")
+
+    def swap(note):
+        note.parent.rename(note.parent.with_name("notes.moved"))
+        note.parent.symlink_to(elsewhere, target_is_directory=True)
+
+    done = swap_at_open(monkeypatch, library, chat, swap)
+
+    body = (await qa.get(f"/api/chats/{chat}")).json()
+
+    assert done
+    assert "not yours" not in str(body)
+    assert body["results"][-1]["results_note"] is None
