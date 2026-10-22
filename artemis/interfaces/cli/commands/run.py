@@ -106,7 +106,7 @@ async def execute_task(
         from artemis.config import DB_PATH
         from artemis.data_engine.chat_sessions import ChatStore
         from artemis.runtime import DeviceExecutionLock
-        from artemis.runtime.chat_session_worker import run_chat_session
+        from artemis.runtime.chat_session_worker import follow_up_goal, run_chat_session
 
         options = locals().copy()
         options = {
@@ -145,7 +145,7 @@ async def execute_task(
                         execute_task(
                             **{
                                 **options,
-                                "goal": turn["goal"],
+                                "goal": follow_up_goal(turn),
                                 "session_id": turn["turn_id"],
                                 "_chat_turn": True,
                                 "run_id": run_id if turn["number"] == 1 else turn["turn_id"],

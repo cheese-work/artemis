@@ -16,13 +16,18 @@ env:
   PYTHONUTF8: "1"
   UV_NO_PROGRESS: "1"
 
+# Jobs run on the cheese-work X99 runner pool (ephemeral org runners labelled
+# cheese-x99), per Cheese's 2026-10-21 directive. The pool refuses fork pull
+# requests in its job-started hook; the job-level `if` skips them first.
+
 jobs:
   # Windows leg removed org-wide per CHE-522 (Cheese: Linux CI only, no
   # Windows jobs or artifacts).
   python-quality:
     name: Python 3.12
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["ubuntu-latest"]') }}
-    timeout-minutes: 45
+    timeout-minutes: 60  # X99 containers have 3 CPUs on a shared host: deterministic tests took 19 min against 9-13 on the previous hosted runner
 
     steps:
       - name: Check out repository
@@ -49,7 +54,7 @@ jobs:
           )
 
       - name: Set up uv
-        uses: astral-sh/setup-uv@v6
+        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e  # v6.8.0
         with:
           enable-cache: true
           cache-dependency-glob: uv.lock
@@ -105,6 +110,7 @@ jobs:
 
   frontend:
     name: Frontend tests and production build
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99","cheese-x99-browser"]') || fromJSON('["ubuntu-latest"]') }}
     timeout-minutes: 20
     defaults:
@@ -162,6 +168,7 @@ jobs:
 
   package:
     name: Build and smoke-test Python packages
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["ubuntu-latest"]') }}
     timeout-minutes: 30
 
@@ -182,7 +189,7 @@ jobs:
           )
 
       - name: Set up uv
-        uses: astral-sh/setup-uv@v6
+        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e  # v6.8.0
         with:
           enable-cache: true
           cache-dependency-glob: uv.lock
