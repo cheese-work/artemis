@@ -176,6 +176,27 @@ for (const width of checkChats ? [1440, 800, 390] : checkControls || checkModels
       failures.push(...disclosureErrors.map(error => `${name}-${width}: ${error}`));
     }
     await evaluate('document.fonts.ready.then(() => true)');
+    if (checkChats && name === 'run-detail') {
+      const initialName = `${label}-${name}-initial-${width}.png`;
+      const { data } = await send('Page.captureScreenshot', { format: 'png' });
+      writeFileSync(path.join(outDir, initialName), Buffer.from(data, 'base64'));
+      console.log(initialName);
+      const initial = await evaluate(`(() => {
+        const history = document.querySelector('.chat-history');
+        const card = document.querySelector('[data-testid="run-verdict"]');
+        const timeline = document.querySelector('[data-testid="run-step-timeline"]');
+        const evidence = document.querySelector('[data-testid="selected-step-evidence"]');
+        const evidenceGrid = document.querySelector('[data-testid="run-decisive-evidence"]');
+        const stepIndex = document.querySelector('[data-testid="evidence-index"]');
+        const evidenceImage = document.querySelector('[data-testid="run-evidence-screenshot"]');
+        const sidebar = document.querySelector('app-session-sidebar');
+        const composer = document.querySelector('[data-testid="run-chat-composer"]');
+        const labels = [...(evidence?.querySelectorAll('strong') ?? [])].filter(label => ['Mong đợi', 'Thực tế'].includes(label.textContent.trim()));
+        const rect = element => { const box = element.getBoundingClientRect(); return { top: box.top, bottom: box.bottom, left: box.left, right: box.right, width: box.width, height: box.height }; };
+        return { width: innerWidth, height: innerHeight, scrollTop: history?.scrollTop ?? null, card: card && rect(card), timeline: timeline && rect(timeline), evidenceGrid: evidenceGrid && rect(evidenceGrid), stepIndex: stepIndex && rect(stepIndex), evidenceImage: evidenceImage && rect(evidenceImage), sidebar: sidebar && rect(sidebar), composer: composer && rect(composer), labels: labels.map(label => ({ text: label.textContent.trim(), bounds: rect(label) })) };
+      })()`);
+      writeFileSync(path.join(outDir, `${label}-run-detail-initial-${width}.json`), JSON.stringify(initial, null, 2) + '\n');
+    }
     if (checkChats) {
       const chatErrors = await evaluate(`(async () => {
         const errors = [];
@@ -252,7 +273,6 @@ for (const width of checkChats ? [1440, 800, 390] : checkControls || checkModels
         return errors;
       })()`);
       failures.push(...errors.map(error => `${name}-${width}: ${error}`));
-      if (name === 'run-detail') await evaluate(`document.querySelector('.run-result-summary').scrollIntoView({ block: 'start' })`);
     }
 
     if (checkProviders) {
@@ -428,26 +448,13 @@ for (const width of checkChats ? [1440, 800, 390] : checkControls || checkModels
       })()`);
       failures.push(...focusErrors.map(error => `${name}-${width}: ${error}`));
     }
-    const { data } = await send('Page.captureScreenshot', { format: 'png' });
-    const initialName = `${label}-${name}-initial-${width}.png`;
-    writeFileSync(path.join(outDir, initialName), Buffer.from(data, 'base64'));
-    console.log(initialName);
+    if (!(checkChats && name === 'run-detail')) {
+      const { data } = await send('Page.captureScreenshot', { format: 'png' });
+      const initialName = `${label}-${name}-initial-${width}.png`;
+      writeFileSync(path.join(outDir, initialName), Buffer.from(data, 'base64'));
+      console.log(initialName);
+    }
     if (checkChats && name === 'run-detail') {
-      const initial = await evaluate(`(() => {
-        const history = document.querySelector('.chat-history');
-        const card = document.querySelector('[data-testid="run-verdict"]');
-        const timeline = document.querySelector('[data-testid="run-step-timeline"]');
-        const evidence = document.querySelector('[data-testid="selected-step-evidence"]');
-        const evidenceGrid = document.querySelector('[data-testid="run-decisive-evidence"]');
-        const stepIndex = document.querySelector('[data-testid="evidence-index"]');
-        const evidenceImage = document.querySelector('[data-testid="run-evidence-screenshot"]');
-        const sidebar = document.querySelector('app-session-sidebar');
-        const composer = document.querySelector('[data-testid="run-chat-composer"]');
-        const labels = [...(evidence?.querySelectorAll('strong') ?? [])].filter(label => ['Mong đợi', 'Thực tế'].includes(label.textContent.trim()));
-        const rect = element => { const box = element.getBoundingClientRect(); return { top: box.top, bottom: box.bottom, left: box.left, right: box.right, width: box.width, height: box.height }; };
-        return { width: innerWidth, height: innerHeight, scrollTop: history?.scrollTop ?? null, card: card && rect(card), timeline: timeline && rect(timeline), evidenceGrid: evidenceGrid && rect(evidenceGrid), stepIndex: stepIndex && rect(stepIndex), evidenceImage: evidenceImage && rect(evidenceImage), sidebar: sidebar && rect(sidebar), composer: composer && rect(composer), labels: labels.map(label => ({ text: label.textContent.trim(), bounds: rect(label) })) };
-      })()`);
-      writeFileSync(path.join(outDir, `${label}-run-detail-initial-${width}.json`), JSON.stringify(initial, null, 2) + '\n');
       const focused = await evaluate(`(async () => {
         const errors = [];
         const link = document.querySelector('[data-testid="evidence-index"] a[aria-current="step"]');
