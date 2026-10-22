@@ -129,9 +129,29 @@ def _session(identity, scope, *, write=False):
 @router.get("/api/chats/{session_id}")
 async def get_chat(session_id: str, scope: OwnerScope = Depends(actor_scope)):
     store, session = await asyncio.to_thread(_session, session_id, scope)
+    if await asyncio.to_thread(_sweep_stuck_turns, store, session):
+        session = await asyncio.to_thread(store.get, session["session_id"])
     session = await asyncio.to_thread(_timeline, session, store)
     session = await asyncio.to_thread(_attach_results, scope, session)
     return await asyncio.to_thread(present_session_data, scope, session["session_id"], session)
+
+
+STUCK_TURN_SECONDS = 120
+STUCK_TURN_REASON = "Lượt chạy không bắt đầu được. Gửi lại tin nhắn để chạy lại."
+
+
+def _sweep_stuck_turns(store, session):
+    """Fail queued turns that no worker, queue item or run row will ever pick up."""
+    pid = session["lease_pid"]
+    if pid and pid_is_alive(pid, session["lease_birth"]):
+        return False
+    swept = False
+    for turn in session["turns"]:
+        if turn["status"] == "queued" and not task_queue_service._queue_item_for(turn["turn_id"]):
+            swept |= store.fail_admission(
+                turn["turn_id"], STUCK_TURN_REASON, stuck_after=STUCK_TURN_SECONDS
+            )
+    return swept
 
 
 RESULTS_NOTE_LIMIT = 64 * 1024
@@ -264,6 +284,15 @@ async def _ensure_worker(store, identity, message):
             "The session phone could not be re-acquired. Reconnect the original phone, then send another message.",
         )
         raise result
+    if result.get("status") == "rejected":
+        reason = f"Điện thoại chưa kết nối — kết nối lại rồi gửi lại. ({result.get('error')})"
+        store.fail_admission(turn_id, reason)
+        raise AdminAPIError(
+            409,
+            "The session phone is not connected.",
+            "session_device_unavailable",
+            "Reconnect the phone, then send the message again.",
+        )
 
 
 @router.post("/api/chats/{session_id}/messages", dependencies=[Depends(require_qa)])
