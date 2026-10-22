@@ -58,12 +58,17 @@ class ChatStore:
                 (json.dumps(config), root),
             )
 
-    def fail_admission(self, turn_id, reason):
+    def fail_admission(self, turn_id, reason, *, stuck_after=None):
+        """Fail a queued turn; with ``stuck_after`` only if it never started and is that old."""
         from artemis.runtime.lifecycle import ensure_lifecycle_schema
 
         with closing(sqlite3.connect(self.path, timeout=30)) as connection:
             ensure_lifecycle_schema(connection)
         with self.transaction() as connection:
+            if stuck_after is not None and not self._never_started(
+                connection, turn_id, stuck_after
+            ):
+                return False
             self._transition(connection, turn_id, "failed")
             connection.execute(
                 "INSERT OR IGNORE INTO lifecycle_outbox "
@@ -71,6 +76,18 @@ class ChatStore:
                 (f"{turn_id}:outcome", str(turn_id), "failed", time.time()),
             )
             self._acknowledge_pending(connection, turn_id, reason)
+            return True
+
+    @staticmethod
+    def _never_started(connection, turn_id, min_age):
+        return (
+            connection.execute(
+                "SELECT 1 FROM chat_turns t WHERE t.turn_id=? AND t.status='queued' AND t.created_at<=? "
+                "AND NOT EXISTS (SELECT 1 FROM sessions s WHERE s.session_id=t.turn_id)",
+                (turn_id, time.time() - min_age),
+            ).fetchone()
+            is not None
+        )
 
     @staticmethod
     def _acknowledge_pending(connection, turn_id, reason):
