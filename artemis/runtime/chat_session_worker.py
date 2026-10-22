@@ -1,4 +1,5 @@
 import asyncio
+import io
 import json
 import logging
 import os
@@ -93,9 +94,17 @@ def _open_dirs_creating(parts):
             os.close(dir_fd)
 
 
+class NoteTooLarge(OSError):
+    """The note is over NOTE_LIMIT; it is not carried (a cut table would mislead the agent)."""
+
+
 def _write_note(fd, file, info):
+    """Write at most NOTE_LIMIT bytes. Reading one byte more catches a note that grew while copying."""
     with os.fdopen(fd, "wb") as out:
-        shutil.copyfileobj(file, out)
+        data = file.read(NOTE_LIMIT + 1)
+        if len(data) > NOTE_LIMIT:
+            raise NoteTooLarge(f"note is over {NOTE_LIMIT} bytes")
+        shutil.copyfileobj(io.BytesIO(data), out)
         out.flush()
         os.utime(out.fileno(), ns=(info.st_atime_ns, info.st_mtime_ns))
 

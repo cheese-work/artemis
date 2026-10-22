@@ -519,3 +519,55 @@ async def test_unsupported_platform_runs_the_turn_without_touching_any_trace_pat
     assert touched == []
     assert _listing(traces) == before
     assert store.turn(turn["turn_id"])["status"] == "completed"
+
+
+def _notes_dir(traces, turn_id):
+    return traces / turn_id / "notes"
+
+
+@pytest.mark.asyncio
+async def test_results_note_of_normal_size_is_still_copied(store, traces):
+    _write(traces, "run", "results.md", TABLE)
+    turn = await _run_turn_two(store, traces)
+    assert (_notes_dir(traces, turn["turn_id"]) / "results.md").read_text(encoding="utf-8") == TABLE
+
+
+@pytest.mark.asyncio
+async def test_results_note_of_exactly_the_limit_is_copied_whole(store, traces):
+    text = "x" * chat_session_worker.NOTE_LIMIT
+    _write(traces, "run", "results.md", text)
+    turn = await _run_turn_two(store, traces)
+    copy = _notes_dir(traces, turn["turn_id"]) / "results.md"
+    assert copy.stat().st_size == chat_session_worker.NOTE_LIMIT
+    assert store.turn(turn["turn_id"])["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_results_note_over_the_limit_is_not_copied_and_the_turn_still_runs(store, traces):
+    _write(traces, "run", "results.md", "x" * (chat_session_worker.NOTE_LIMIT + 1))
+    _write(traces, "run", "output.md", "Báo cáo.")
+    turn = await _run_turn_two(store, traces)
+    folder = _notes_dir(traces, turn["turn_id"])
+    assert not (folder / "results.md").exists()
+    assert not list(folder.glob(".*")) if folder.exists() else True
+    assert follow_up_goal(turn) == "tiếp tục"
+    assert store.turn(turn["turn_id"])["status"] == "completed"
+
+
+def test_copy_never_writes_more_than_the_limit_even_from_a_growing_source(tmp_path):
+    """The source stand-in stops by itself after 4 MB so a missing bound cannot fill the disk."""
+
+    class Growing:
+        def __init__(self):
+            self.left = 4 * 1024 * 1024
+
+        def read(self, size=-1):
+            size = min(size if size and size > 0 else 65536, self.left)
+            self.left -= size
+            return b"x" * size
+
+    target = tmp_path / "out.md"
+    fd = os.open(target, os.O_WRONLY | os.O_CREAT)
+    with pytest.raises(OSError):
+        chat_session_worker._write_note(fd, Growing(), os.stat(tmp_path))
+    assert target.stat().st_size <= chat_session_worker.NOTE_LIMIT
