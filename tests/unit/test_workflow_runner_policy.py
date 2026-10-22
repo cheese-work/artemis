@@ -1,6 +1,7 @@
 """CI runs on the cheese-work X99 runner pool, and never on a fork pull request."""
 
 from pathlib import Path
+import re
 
 import yaml
 
@@ -74,3 +75,15 @@ def test_karma_tolerates_a_browser_stall_on_a_shared_x99_host():
     karma = (WORKFLOWS.parents[1] / "apps" / "showcase_ui" / "karma.conf.js").read_text()
     for setting in ("browserDisconnectTimeout", "browserDisconnectTolerance", "captureTimeout"):
         assert setting in karma
+
+
+def test_third_party_actions_on_the_x99_pool_are_pinned_to_a_full_commit_sha():
+    """A mutable tag on a self-hosted runner can run changed upstream code."""
+    pattern = re.compile(r"^\s*-?\s*uses:\s*(astral-sh/[\w.-]+)@(\S+)", re.MULTILINE)
+    found = [
+        (path.name, action, ref)
+        for path in sorted(WORKFLOWS.glob("*.yml"))
+        for action, ref in pattern.findall(path.read_text(encoding="utf-8"))
+    ]
+    assert found, "expected at least one astral-sh action"
+    assert [item for item in found if not re.fullmatch(r"[0-9a-f]{40}", item[2])] == []
