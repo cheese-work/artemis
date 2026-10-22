@@ -148,7 +148,18 @@ for (const width of checkChats ? [1440, 800, 390] : checkControls || checkModels
     await send('Emulation.setDeviceMetricsOverride', { width, height: checkChats ? (width === 390 ? 844 : 900) : checkPrompts ? 1400 : checkProviders ? (width === 390 ? 3450 : 2200) : 800, deviceScaleFactor: 1, mobile: checkChats && width === 390 });
     const previousImproveCalls = mock.improveCalls;
     await send('Page.navigate', { url: base + route });
-    await sleep(2500);
+    let shellReady = false;
+    for (let attempt = 0; attempt < 100; attempt++) {
+      shellReady = await evaluate(`!!window.ng && !!document.querySelector('app-nav-switcher .floating-nav-switcher')`).catch(() => false);
+      if (shellReady) break;
+      await sleep(100);
+    }
+    if (!shellReady) {
+      const state = await evaluate(`({ title: document.title, text: document.body.innerText.slice(0, 240) })`);
+      failures.push(`${name}-${width}: app navigation did not become ready (${state.title}: ${state.text})`);
+      continue;
+    }
+    await sleep(500);
     if (name === 'check') {
       await evaluate(`(() => {
         const element = document.querySelector('app-legacy-agent-stream');
