@@ -20,7 +20,9 @@ const checkChats = audit === '--chats';
 const failures = [];
 const iconNames = readFileSync(new URL('../../public/fonts/material-symbols-outlined.txt', import.meta.url), 'utf8').trim().split(',');
 mkdirSync(outDir, { recursive: true });
-const dist = fileURLToPath(new URL('../../dist/frontend/browser', import.meta.url));
+const dist = process.env.ARTEMIS_SHOWCASE_DIST
+  ? path.resolve(process.env.ARTEMIS_SHOWCASE_DIST)
+  : fileURLToPath(new URL('../../dist/frontend/browser', import.meta.url));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const { server, url: base } = await startMockApi(dist);
 const profile = mkdtempSync(path.join(tmpdir(), 'shots-'));
@@ -51,7 +53,7 @@ const evaluate = async (expression) => {
   return result.value;
 };
 await send("Page.enable");
-const T0 = Math.floor(Date.now() / 1000) - 600;
+const T0 = Date.parse('2026-10-20T12:00:00Z') / 1000;
 if (checkProviders) {
   const root = 'https://congvc-c00.taila6fa8a.ts.net:31344';
   const official = { openai: 'https://api.openai.com/v1', google: 'https://generativelanguage.googleapis.com', anthropic: 'https://api.anthropic.com', xai: 'https://api.x.ai/v1', openrouter: 'https://openrouter.ai/api/v1' };
@@ -152,12 +154,12 @@ for (const width of checkChats ? [1440, 800, 390] : checkControls || checkModels
         const element = document.querySelector('app-legacy-agent-stream');
         const component = ng.getComponent(element);
         component.agentService.sessionLogs.set([
-          { type: 'step_recorded', timestamp: Date.now() / 1000, data: {
+          { type: 'step_recorded', timestamp: T0 + 120, data: {
             summary: 'Verify the settings screen', operator_native_thinking: 'Find the settings control.',
             operator_raw_thinking: 'Open settings, then verify the saved state.',
             action_taken: { action: 'tap', target: 'Settings' }, last_execution_result: { success: true }
           } },
-          { type: 'trace_recorded', timestamp: Date.now() / 1000, data: { message: 'Stream connected' } }
+          { type: 'trace_recorded', timestamp: T0 + 121, data: { message: 'Stream connected' } }
         ]);
         ng.applyChanges(element);
       })()`);
@@ -199,6 +201,14 @@ for (const width of checkChats ? [1440, 800, 390] : checkControls || checkModels
           if (stepLinks.length && !['Enter the payment details', 'Find the payment control', 'Confirm the order summary'].every(title => stepLinks.some(link => link.textContent.includes(title)))) errors.push('Step index omits actual step titles');
           if (stepRows.length < 3 || stepRows.filter(details => details.open).length !== 1) errors.push('Earlier steps are not individually collapsed');
           if (selectedEvidence && stepLinks[0] && !(selectedEvidence.compareDocumentPosition(stepLinks[0]) & 4)) errors.push('F5 evidence order is incorrect');
+          if (${width} === 1440) {
+            const evidenceGrid = document.querySelector('[data-testid="run-decisive-evidence"]');
+            const stepIndex = document.querySelector('[data-testid="evidence-index"]');
+            const evidenceImage = document.querySelector('[data-testid="run-evidence-screenshot"]');
+            const gridWidth = evidenceGrid?.getBoundingClientRect().width ?? 0;
+            if (!gridWidth || (stepIndex?.getBoundingClientRect().width ?? 0) < Math.max(200, gridWidth * 0.4)) errors.push('1440px step titles do not receive usable width');
+            if (!gridWidth || (evidenceImage?.getBoundingClientRect().width ?? 0) < Math.max(200, gridWidth * 0.4)) errors.push('1440px evidence screenshot does not receive usable width');
+          }
           if (!document.querySelector('[data-testid="run-chat-composer"]')) errors.push('Chat composer is missing');
           if (document.body.textContent.includes('Session details could not load.')) errors.push('Session sidebar fixture is unavailable');
           if (${width} === 390) {
@@ -428,11 +438,14 @@ for (const width of checkChats ? [1440, 800, 390] : checkControls || checkModels
         const card = document.querySelector('[data-testid="run-verdict"]');
         const timeline = document.querySelector('[data-testid="run-step-timeline"]');
         const evidence = document.querySelector('[data-testid="selected-step-evidence"]');
+        const evidenceGrid = document.querySelector('[data-testid="run-decisive-evidence"]');
+        const stepIndex = document.querySelector('[data-testid="evidence-index"]');
+        const evidenceImage = document.querySelector('[data-testid="run-evidence-screenshot"]');
         const sidebar = document.querySelector('app-session-sidebar');
         const composer = document.querySelector('[data-testid="run-chat-composer"]');
         const labels = [...(evidence?.querySelectorAll('strong') ?? [])].filter(label => ['Mong đợi', 'Thực tế'].includes(label.textContent.trim()));
         const rect = element => { const box = element.getBoundingClientRect(); return { top: box.top, bottom: box.bottom, left: box.left, right: box.right, width: box.width, height: box.height }; };
-        return { width: innerWidth, height: innerHeight, scrollTop: history?.scrollTop ?? null, card: card && rect(card), timeline: timeline && rect(timeline), sidebar: sidebar && rect(sidebar), composer: composer && rect(composer), labels: labels.map(label => ({ text: label.textContent.trim(), bounds: rect(label) })) };
+        return { width: innerWidth, height: innerHeight, scrollTop: history?.scrollTop ?? null, card: card && rect(card), timeline: timeline && rect(timeline), evidenceGrid: evidenceGrid && rect(evidenceGrid), stepIndex: stepIndex && rect(stepIndex), evidenceImage: evidenceImage && rect(evidenceImage), sidebar: sidebar && rect(sidebar), composer: composer && rect(composer), labels: labels.map(label => ({ text: label.textContent.trim(), bounds: rect(label) })) };
       })()`);
       writeFileSync(path.join(outDir, `${label}-run-detail-initial-${width}.json`), JSON.stringify(initial, null, 2) + '\n');
       const focused = await evaluate(`(async () => {

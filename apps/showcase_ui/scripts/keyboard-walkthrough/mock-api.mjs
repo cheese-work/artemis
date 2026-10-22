@@ -4,7 +4,7 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 
-const T0 = Math.floor(Date.now() / 1000) - 3600;
+const T0 = Date.parse('2026-10-20T12:00:00Z') / 1000;
 const id = (n) => `${String(n).padStart(8, '0')}-5d7e-4a10-9c33-0e1f2a3b4c5d`;
 const PROMPTS = [
   ['Log in and open settings', 'completed'],
@@ -126,7 +126,7 @@ export function startMockApi(distDir) {
         mock.improveCalls++;
         return setTimeout(() => {
           if (mock.improveError) return json(res, 502, { code: 'improve_model_failed', detail: 'openai/fixture-default: model unavailable. Try again.' });
-          const critique = { ...PROMPT_CRITIQUE, session_id: sessionId, id: `critique-${mock.improveCalls}`, created_at: Date.now() / 1000 };
+          const critique = { ...PROMPT_CRITIQUE, session_id: sessionId, id: `critique-${mock.improveCalls}`, created_at: T0 + 400 + mock.improveCalls };
           mock.critiques.unshift(critique);
           json(res, 200, critique);
         }, mock.improveDelay);
