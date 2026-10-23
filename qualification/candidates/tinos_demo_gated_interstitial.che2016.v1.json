@@ -1,0 +1,109 @@
+{
+  "receipt_version": 1,
+  "issue": "CHE-2016",
+  "candidate_kind": "testcase",
+  "source_candidate": {
+    "runner_source": {
+      "repository": "https://github.com/cheese-work/artemis",
+      "commit_sha": "feefd94c72dbce0fa1afc109ffe3d8254f565d6b",
+      "pin_role": "declared Artemis runner; not the testcase source revision"
+    },
+    "testcase_source": {
+      "repository": "https://github.com/cheese-work/artemis",
+      "commit_sha": "096411113522abc37964256833fecbbac4778af4",
+      "manifest_path": "qualification/manifests/pocket_actual_save_relaunch.v1.json",
+      "manifest_digest_sha256": "ed0dbaefeabb2a86c752dd94fcd5f61c4446e918836f3ecbc03ab1bada8cd6e9",
+      "manifest_version": 9,
+      "fork_sha": "feefd94c72dbce0fa1afc109ffe3d8254f565d6b",
+      "journey_path": "qualification/journeys/pocket_actual_save_relaunch.md",
+      "journey_digest_sha256": "6470edd3ebb2f8276812ebb7e9900589e6e715656a5b76a370400601d4c232c2"
+    },
+    "app_input_source": {
+      "repository": "https://github.com/tevo-studio/sa049-dual-app",
+      "pull_request": 145,
+      "commit_sha": "3277551509acfdfa2615491a6b197cec741e4388"
+    },
+    "app_sha": "3277551509acfdfa2615491a6b197cec741e4388",
+    "apk_digest_sha256": "d5b3e52c40941dd0b9e473d04029d61ca64e9369e721e947eb2eef470791dc08",
+    "apk_size_bytes": 67183120,
+    "package_name": "com.dualix.dualmessenger.webscanner",
+    "ad_id_policy": "test ad IDs only",
+    "placement": "main"
+  },
+  "testcase": {
+    "journey_path": "qualification/journeys/tinos_demo_gated_interstitial.md",
+    "journey_digest_sha256": "1b41ce464c8270d9d138bd698db4d3aef54f9620b028c549574c8c01d2de432f"
+  },
+  "fixture": {
+    "target": "X99 recyclable AVD; exact serial requires Sol's issue-visible grant",
+    "transport": "emulator",
+    "user_state": "non-premium test state, confirmed through the app before the attempt",
+    "reset": "Force-stop and cold-start before each attempt; each cold start resets show history; do not clear app data.",
+    "personal_data": "none"
+  },
+  "positive_case": {
+    "case_id": "tinos-demo-allow-then-interval-denial",
+    "trigger": "One home feature click for a non-premium user, followed by a second click less than 20 seconds later.",
+    "expected_events": [
+      "show allowed: shown and dismissed",
+      "revenue event for placement main",
+      "show denied by Tinos rules (NOT_ALLOWED)"
+    ],
+    "hourly_cap_coverage": "not covered; this case tests the 20-second minimum interval only"
+  },
+  "negative_control": {
+    "expected_verdict": "fail_assertion",
+    "false_assertion": "The first home feature click must be denied by Tinos rules (NOT_ALLOWED).",
+    "intended_reason": "The first click is allowed and logs show allowed: shown and dismissed; the deliberately false denial assertion must fail.",
+    "invalid_when_fill_fails": true,
+    "fill_failure_logs": [
+      "not loaded; skipping",
+      "show failed (<code>)"
+    ],
+    "requires_same_session_checker_capture": true,
+    "requires_runner_bound_final_capture": true,
+    "adapter": "Use the Tinos-specific log assertions in the journey and same-session native Checker evidence. Do not apply the Pocket Actual checker adapter unchanged.",
+    "not_satisfied_by": "completed orchestration status"
+  },
+  "execution": {
+    "entry_point": "Pinned Artemis direct CLI, standalone and collected in the foreground.",
+    "runner_command_template": "ARTEMIS_TRACES_DIR=<ledger-root> DATA_ENGINE_DB_PATH=<ledger-root>/data_engine.db artemis run --standalone --session-id <session-id> ...",
+    "session_policy": "Use a unique session ID per attempt and preserve the same session for its Checker result and final capture.",
+    "remaining_cli_arguments": "Confirm from the pinned runner revision; this receipt does not guess flags that may vary by runner.",
+    "author_execution": "NOT-RUN"
+  },
+  "reporting": {
+    "evidence_schema": {
+      "path": "qualification/evidence_schema.v1.json",
+      "version": 1
+    },
+    "record_each_attempt": [
+      "runner SHA and candidate commit SHA",
+      "source manifest version and candidate receipt digest",
+      "APK source commit, package ID, size, and SHA-256",
+      "target class, exact granted serial, session ID, and attempt kind",
+      "exact command, action timestamps, and observed event order",
+      "raw timestamped TinosDemo logcat, screen recording, and native traces",
+      "Checker verdict, Checker trace identity, and linked final-capture identity",
+      "cost, cleanup result, and verified device release"
+    ],
+    "interpretation": "An allow requires its exact allow log. A denial requires its exact gate log within 20 seconds of the first click. Fill-failure logs are neither. Keep the negative control's expected fail_assertion separate from the positive scenario's pass result."
+  },
+  "review_and_execution_boundary": {
+    "author_role": "Device-free testcase author only.",
+    "device_claim": "not granted",
+    "device_execution": "NOT-RUN",
+    "independent_non_author_reviews_required": 2,
+    "re_review_after_material_change": true,
+    "execution_requires": [
+      "Both independent reviews approve this exact testcase revision.",
+      "Sol completes the corrected-build re-review on CHE-2015.",
+      "Sol grants an exclusive exact-serial X99 AVD claim in the issue.",
+      "The executor verifies the pinned runner and APK identities before use.",
+      "The execution report preserves raw evidence and verified cleanup/release."
+    ],
+    "che_387_flake_baseline": "separate required-acceptance gate; not waived",
+    "android_cli_xml": "separate experimental evidence; not an Artemis substitute",
+    "no_self_review": true
+  }
+}
