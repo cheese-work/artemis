@@ -122,7 +122,10 @@ def test_display_labels_distinguish_null_category_from_explicit_unknown():
     service = _service()
     verified_pass = service.derive_result(
         "completed",
-        {"task_status": "completed", "tests": {"passed": 2, "failed": 0, "inconclusive": 0, "unchecked": 0}},
+        {
+            "task_status": "completed",
+            "tests": {"passed": 2, "failed": 0, "inconclusive": 0, "unchecked": 0},
+        },
         [],
     )
     explicit_unknown = {

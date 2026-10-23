@@ -669,12 +669,8 @@ def test_preview_reads_only_visible_compact_results_without_real_effects(library
     from apps.admin_console.routers import chats
     from tests.support.smartqa_verdict_fixtures import build_smartqa_verdict_case
 
-    own = build_smartqa_verdict_case(
-        library, monkeypatch, requested_by="qa1@example.test"
-    )
-    hidden = build_smartqa_verdict_case(
-        library, monkeypatch, requested_by="qa2@example.test"
-    )
+    own = build_smartqa_verdict_case(library, monkeypatch, requested_by="qa1@example.test")
+    hidden = build_smartqa_verdict_case(library, monkeypatch, requested_by="qa2@example.test")
     require_visible = chats.require_visible_run
 
     def hide_hidden_session(scope, session_ids, **kwargs):
@@ -710,7 +706,11 @@ def test_preview_reads_only_visible_compact_results_without_real_effects(library
         monkeypatch.setattr(owner, name, async_fail)
     for name in ("get_active_owner", "get_active_owners", "get_queued_tasks"):
         sync_fail, _ = forbid(name)
-        monkeypatch.setattr(DeviceExecutionLock, name, classmethod(lambda cls, *args, _fail=sync_fail, **kwargs: _fail()))
+        monkeypatch.setattr(
+            DeviceExecutionLock,
+            name,
+            classmethod(lambda cls, *args, _fail=sync_fail, **kwargs: _fail()),
+        )
     import httpx
 
     _, provider_fail = forbid("provider_http")
