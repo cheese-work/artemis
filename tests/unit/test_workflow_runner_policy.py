@@ -1,5 +1,6 @@
 """CI runs on the cheese-work X99 runner pool, and never on a fork pull request."""
 
+import json
 from pathlib import Path
 import re
 
@@ -26,18 +27,27 @@ def test_no_workflow_depends_on_blacksmith():
     assert offenders == []
 
 
+def _x99_labels(runs_on):
+    """The X99 label list a job selects, from a literal list or the owner-gated expression."""
+    if isinstance(runs_on, list):
+        return runs_on
+    match = re.search(
+        r"fromJSON\('(\[[^']*\])'\) \|\| fromJSON\('\[\"ubuntu-latest\"\]'\)", runs_on
+    )
+    assert match, runs_on
+    return json.loads(match.group(1))
+
+
 def test_every_active_job_runs_on_the_x99_pool():
     for file, name, _workflow, job in _jobs():
-        labels = job["runs-on"]
-        assert labels[:2] == ["self-hosted", "cheese-x99"] or (
-            labels[0] == "self-hosted" and "${{ matrix.os }}" in labels[1]
-        ), (file, name, labels)
+        labels = _x99_labels(job["runs-on"])
+        assert labels[0] == "self-hosted" and "cheese-x99" in labels, (file, name, labels)
 
 
-def test_python_matrix_names_the_x99_label():
-    workflow = yaml.safe_load((WORKFLOWS / "ci.yml").read_text(encoding="utf-8"))
-    matrix = workflow["jobs"]["python-quality"]["strategy"]["matrix"]["os"]
-    assert matrix == ["cheese-x99"]
+def test_only_the_frontend_job_requires_the_browser_runner():
+    for file, name, _workflow, job in _jobs():
+        browser = "cheese-x99-browser" in _x99_labels(job["runs-on"])
+        assert browser == (name == "frontend"), (file, name)
 
 
 def test_pull_request_jobs_skip_forks_before_a_self_hosted_runner_starts():
@@ -47,16 +57,13 @@ def test_pull_request_jobs_skip_forks_before_a_self_hosted_runner_starts():
             assert FORK_GUARD in job["if"], (file, name)
 
 
-def test_frontend_job_installs_its_own_chrome_and_keeps_an_existing_one():
+def test_frontend_job_provisions_chrome_without_disabling_its_sandbox():
     workflow = yaml.safe_load((WORKFLOWS / "ci.yml").read_text(encoding="utf-8"))
     steps = {step["name"]: step for step in workflow["jobs"]["frontend"]["steps"]}
-    install = steps["Install headless Chrome"]["run"]
-    assert "apt-get install" in install and "libnss3" in install and "CHROME_BIN" in install
-    assert "--install-deps" not in install  # the runner user is not root
-    assert (
-        ":-$(command -v google-chrome"
-        in steps["Check root and /preview/pr/70/ browser requests"]["run"]
+    assert re.fullmatch(
+        r"browser-actions/setup-chrome@[0-9a-f]{40}", steps["Set up headless Chrome"]["uses"]
     )
+    assert "--no-sandbox" not in (WORKFLOWS / "ci.yml").read_text(encoding="utf-8")
 
 
 def test_python_jobs_install_the_opencv_system_libraries():

@@ -13,7 +13,7 @@ jobs:
   entry:
     name: What's New entry
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
-    runs-on: [self-hosted, cheese-x99]
+    runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["ubuntu-latest"]') }}
     timeout-minutes: 5
 
     steps:
