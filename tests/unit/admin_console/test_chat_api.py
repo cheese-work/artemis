@@ -361,6 +361,54 @@ async def test_chat_results_returns_compact_batch_without_timeline(qa, library, 
 
 
 @pytest.mark.asyncio
+async def test_chat_results_batch_does_not_share_nonowner_run(qa2, library, monkeypatch):
+    import json
+
+    from tests.support.smartqa_verdict_fixtures import build_smartqa_verdict_case
+
+    case = build_smartqa_verdict_case(
+        library, monkeypatch, status="failed", screenshot_name="batch-evidence"
+    )
+    turn_id = case.turn_ids[-1]
+    library.write(
+        turn_id,
+        "run_outcome.json",
+        json.dumps(
+            {
+                "task_status": "failed",
+                "cause": "app_defect",
+                "evidence_step": 1,
+                "evidence_ref": {
+                    "step_id": case.evidence_step_id,
+                    "step_number": 1,
+                    "image_name": case.evidence_image_name,
+                    "which": "post",
+                },
+            }
+        ),
+    )
+    response = await qa2.post("/api/chats/results", json={"session_ids": [case.chat_id]})
+
+    assert response.status_code == 200
+    session = response.json()["sessions"][0]
+    assert session["session_id"] == case.chat_id
+    assert session["results"]
+    screenshot_url = session["results"][-1]["evidence"]["screenshot_url"]
+    assert screenshot_url
+    with sqlite3.connect(library.db) as connection:
+        shares = connection.execute(
+            "SELECT count(*) FROM run_link_shares WHERE email=? AND session_id=?",
+            ("qa2@example.com", case.chat_id),
+        ).fetchone()[0]
+    assert shares == 0
+
+    available = await qa2.get("/api/runs", params={"scope": "available"})
+    assert available.status_code == 200
+    assert case.chat_id not in {run["session_id"] for run in available.json()["runs"]}
+    assert (await qa2.get(screenshot_url)).status_code == 404
+
+
+@pytest.mark.asyncio
 async def test_chat_results_keeps_sibling_when_one_session_is_unavailable(qa, library, monkeypatch):
     from tests.support.smartqa_verdict_fixtures import build_smartqa_verdict_case
 

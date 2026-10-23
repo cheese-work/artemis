@@ -177,7 +177,7 @@ def _results_note(turn_id):
     }
 
 
-def _attach_results(scope, session, *, include_notes=True):
+def _attach_results(scope, session, *, include_notes=True, record_reads=True):
     turns = session["turns"]
     root = session["session_id"]
     # The agent's own notes are for the run's owner and admins, like a redacted shared view.
@@ -199,7 +199,8 @@ def _attach_results(scope, session, *, include_notes=True):
         if include_notes:
             result["results_note"] = _results_note(turn_id) if own_run else None
         results.append(result)
-        record_run_read(scope, turn_id)
+        if record_reads:
+            record_run_read(scope, turn_id)
     session["results"] = results
     if isinstance(session.get("verdict"), dict) and results:
         session["verdict"]["result"] = results[-1]
@@ -212,7 +213,9 @@ async def get_chat_results(request: ChatResultsRequest, scope: OwnerScope = Depe
     for identity in dict.fromkeys(request.session_ids):
         try:
             store, session = await asyncio.to_thread(_session, identity, scope)
-            session = await asyncio.to_thread(_attach_results, scope, session, include_notes=False)
+            session = await asyncio.to_thread(
+                _attach_results, scope, session, include_notes=False, record_reads=False
+            )
         except AdminAPIError as error:
             if error.status_code != 404:
                 raise
