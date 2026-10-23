@@ -21,6 +21,7 @@ from apps.admin_console.server import app
 from apps.admin_console.services.task_queue_service import TaskQueueService
 from artemis.runtime import trace_store
 from artemis.runtime.lifecycle import InterruptReason, LifecycleAuthority
+from tests.support.startup_budget import startup_budget
 
 DEAD_PID = 2**22 + 12345
 
@@ -431,7 +432,7 @@ os._exit(80)
         [sys.executable, "-c", child_code, str(db_path), session_id],
         capture_output=True,
         text=True,
-        timeout=30,
+        timeout=startup_budget(30.0),
     )
     assert child.returncode == 79, child.stderr
     assert events == [] and _outbox_pending(db_path) == 1
