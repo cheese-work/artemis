@@ -27,6 +27,7 @@ from typing import Annotated
 from langchain_core.callbacks.base import Callbacks
 from artemis.config import checker_overrides_for_level, initialize_llm_config, settings
 from artemis.runtime.endpoint_transport import EndpointTransport
+from artemis.interfaces.cli.qualification import d1_exit_code, prepare_d1_config
 from artemis.config.attempt_lifecycle_hooks import (
     record_attempt_manifest,
     reconcile_and_store_verdict,
@@ -76,6 +77,7 @@ async def execute_task(
     explorer_pro_mode: str | None = None,
     verification_level: str | None = None,
     run_id: str | None = None,
+    qualification: str | None = None,
     _chat_turn: bool = False,
 ) -> None:
     """Executes a single mobile automation task end-to-end.
@@ -101,6 +103,35 @@ async def execute_task(
             ``artemis.config.attempt_lifecycle_hooks``); defaults to the
             effective session id when omitted.
     """
+    if qualification is not None:
+        if qualification != "che984-d1":
+            raise ValueError("Unknown qualification profile")
+        if (
+            profile != "pro"
+            or locked_app_package != "com.example.synthetic.d1offline"
+            or not device_serial
+            or not device_serial.startswith("emulator-")
+            or not device_serial.removeprefix("emulator-").isascii()
+            or not device_serial.removeprefix("emulator-").isdigit()
+            or enable_checker is False
+            or verification_level == "off"
+            or any(
+                os.getenv(name)
+                for name in (
+                    "ARTEMIS_CHAT_SESSION_ID",
+                    "ARTEMIS_FAKE_LLM",
+                    "ARTEMIS_MOCK_DRIVER",
+                    "ARTEMIS_CLOUD_MODE",
+                    "ARTEMIS_CLOUD_SESSION_ID",
+                )
+            )
+        ):
+            raise ValueError(
+                "CHE-984 D1 requires pro, the synthetic package, a pinned AVD and real checks"
+            )
+        EndpointTransport.shared(None).require_local("CHE-984 D1 qualification")
+        verification_level = "strict"
+
     chat_identity = os.getenv("ARTEMIS_CHAT_SESSION_ID")
     if chat_identity and not _chat_turn:
         from artemis.config import DB_PATH
@@ -204,6 +235,8 @@ async def execute_task(
 
         try:
             llm_config = initialize_llm_config()
+            if qualification:
+                llm_config = prepare_d1_config(llm_config)
         except Exception as exc:
             if effective_sid:
                 try:
@@ -286,6 +319,7 @@ async def execute_task(
             await agent.init(
                 retry_count=int(os.getenv("ARTEMIS_HEALTH_RETRIES", 5)),
                 retry_wait_seconds=int(os.getenv("ARTEMIS_HEALTH_DELAY", 2)),
+                **({"prewarm_llm": False} if qualification else {}),
             )
 
             task = agent.new_task(goal)
@@ -305,7 +339,12 @@ async def execute_task(
             if llm_result_path:
                 task.with_llm_output_saving(path=llm_result_path)
 
-            await agent.run_task(request=task.build())
+            result = await agent.run_task(request=task.build())
+            if qualification:
+                exit_code = d1_exit_code(result)
+                Console().print(f"CHE984_D1_ASSERTION_EXIT={exit_code}")
+                if exit_code:
+                    raise SystemExit(exit_code)
         finally:
             # Reconciliation runs regardless of task outcome (success, failed
             # status, exception, or cancellation) and before cleanup, so an
@@ -320,6 +359,8 @@ async def execute_task(
                     await agent.clean()
                 except Exception as exc:
                     logger.error(f"Error cleaning agent: {exc}")
+                    if qualification:
+                        raise
     finally:
         # Restore whatever ARTEMIS_SESSION_ID held before this call so an
         # explicit session_id (or a generated fallback) never bleeds into a
@@ -469,6 +510,13 @@ def run_command(
             help="Run in standalone embedded mode without auto-spawning the Artemis Daemon.",
         ),
     ] = False,
+    qualification: Annotated[
+        str | None,
+        typer.Option(
+            "--qualification",
+            help="Opt-in che984-d1 model route and fail-closed native assertion exit (standalone only).",
+        ),
+    ] = None,
 ) -> None:
     """Run an autonomous UI automation task on the connected Android device."""
     ensure_video_recording_available(with_video_recording_tools)
@@ -480,6 +528,10 @@ def run_command(
         or os.environ.get("ARTEMIS_DEVICE_QUEUE_TICKET") is not None
     )
     is_standalone = standalone or os.environ.get("ARTEMIS_STANDALONE") == "1"
+    if qualification and (qualification != "che984-d1" or not is_standalone or is_worker):
+        raise typer.BadParameter(
+            "che984-d1 qualification requires --standalone, not a daemon worker"
+        )
 
     # All platforms route through unified Artemis Daemon unless specifically configured as standalone
     if not is_worker and not is_standalone:
@@ -567,15 +619,14 @@ def run_command(
                 f"[yellow]Daemon routing notice: {exc}. Falling back to local execution...[/yellow]"
             )
 
-    adb_client = None
-    try:
-        if EndpointTransport.adb_binary():
-            adb_client = EndpointTransport.shared(None).client()
-    except Exception as exc:
-        # Optional cosmetic device-status display; run continues without it.
-        logger.debug(f"Could not create ADB client for device status display: {exc}")
-
-    display_device_status(console, adb_client=adb_client)
+    if not qualification:
+        adb_client = None
+        try:
+            if EndpointTransport.adb_binary():
+                adb_client = EndpointTransport.shared(None).client()
+        except Exception as exc:
+            logger.debug(f"Could not create ADB client for device status display: {exc}")
+        display_device_status(console, adb_client=adb_client)
 
     cancelled = False
     original_sigterm = None
@@ -613,6 +664,7 @@ def run_command(
                 explorer_pro_mode=explorer_pro_mode,
                 verification_level=verification_level,
                 run_id=run_id,
+                qualification=qualification,
             )
         )
     except (KeyboardInterrupt, asyncio.CancelledError):
