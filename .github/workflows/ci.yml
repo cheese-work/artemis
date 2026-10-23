@@ -35,6 +35,11 @@ jobs:
         with:
           fetch-depth: 1
 
+      - name: Install system libraries for OpenCV
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install --no-install-recommends -y libgl1 libglib2.0-0 libxcb1
+
       - name: Set up Python 3.12
         uses: actions/setup-python@v5
         with:
@@ -45,13 +50,6 @@ jobs:
 
       - name: Check public dependency sources before installation
         run: python scripts/check_dependency_sources.py
-
-      - name: Install OpenCV runtime libraries
-        run: |
-          dpkg -s libxcb1 libgl1 >/dev/null 2>&1 || (
-            sudo apt-get update
-            sudo apt-get install -y --no-install-recommends libxcb1 libgl1
-          )
 
       - name: Set up uv
         uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e  # v6.8.0
@@ -141,8 +139,7 @@ jobs:
       - name: Export Chrome path
         env:
           CHROME_BIN: ${{ steps.chrome.outputs.chrome-path }}
-        run: |
-          printf 'CHROME_BIN=%s\n' "$CHROME_BIN" >> "$GITHUB_ENV"
+        run: printf 'CHROME_BIN=%s\n' "$CHROME_BIN" >> "$GITHUB_ENV"
 
       - name: Run frontend tests at 800 px and 1440 px
         run: npm test -- --watch=false --browsers=ChromeHeadlessNarrow,ChromeHeadlessWide
@@ -176,17 +173,15 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
+      - name: Install system libraries for OpenCV
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install --no-install-recommends -y libgl1 libglib2.0-0 libxcb1
+
       - name: Set up Python 3.12
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-
-      - name: Install OpenCV runtime libraries
-        run: |
-          dpkg -s libxcb1 libgl1 >/dev/null 2>&1 || (
-            sudo apt-get update
-            sudo apt-get install -y --no-install-recommends libxcb1 libgl1
-          )
 
       - name: Set up uv
         uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e  # v6.8.0

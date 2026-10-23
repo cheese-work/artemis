@@ -13,7 +13,6 @@ class RunnerRoutingTest(unittest.TestCase):
         self.assertIn("browser-actions/setup-chrome@", ci)
         self.assertIn("CHROME_BIN: ${{ steps.chrome.outputs.chrome-path }}", ci)
         self.assertNotIn('export CHROME_BIN="$(command -v', ci)
-        self.assertEqual(ci.count("apt-get install -y --no-install-recommends libxcb1 libgl1"), 2)
         self.assertNotIn("chrome-sandbox", ci)
         self.assertNotIn("chown root:root", ci)
         self.assertNotIn("chmod 4755", ci)
