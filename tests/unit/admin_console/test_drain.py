@@ -327,7 +327,8 @@ async def test_explicit_deploy_cut_is_recorded_before_restart(env):
 @pytest.mark.asyncio
 async def test_held_queue_survives_restart_without_reviving_cancelled_work(env):
     await _enqueue(session_id="kept")
-    await _enqueue(session_id="cancelled")
+    await _enqueue(session_id="cancelled", device_serial="emulator-5556")
+    assert _session_rows() == 2  # both were really queued, not folded into one by the 1 s debounce
     TaskQueueService.set_draining(True)
     session_repo.lifecycle.finish("cancelled", "cancelled")
     state.queue_items.clear()
