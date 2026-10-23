@@ -8,12 +8,19 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[3]
 RECEIPT_PATH = REPO_ROOT / "qualification/candidates/tinos_demo_gated_interstitial.che2016.v1.json"
 JOURNEY_PATH = REPO_ROOT / "qualification/journeys/tinos_demo_gated_interstitial.md"
+TINOS_MANIFEST_PATH = REPO_ROOT / "qualification/manifests/tinos_demo_gated_interstitial.che2016.v1.json"
 SOURCE_MANIFEST_PATH = REPO_ROOT / "qualification/manifests/pocket_actual_save_relaunch.v1.json"
 SOURCE_JOURNEY_PATH = REPO_ROOT / "qualification/journeys/pocket_actual_save_relaunch.md"
 RUNNER_SHA = "feefd94c72dbce0fa1afc109ffe3d8254f565d6b"
 TESTCASE_SOURCE_SHA = "096411113522abc37964256833fecbbac4778af4"
 APP_SHA = "3277551509acfdfa2615491a6b197cec741e4388"
 APK_SHA256 = "d5b3e52c40941dd0b9e473d04029d61ca64e9369e721e947eb2eef470791dc08"
+TEST_APP_ID = "ca-app-pub-3940256099942544~3347511713"
+TEST_INTERSTITIAL = "ca-app-pub-3940256099942544/1033173712"
+REVENUE_EXPECTATION = (
+    f"revenue <micros> <currency> unit={TEST_INTERSTITIAL} "
+    "network=<network> precision=<precision>"
+)
 
 
 def test_receipt_pins_runner_testcase_manifest_and_unchanged_app_build():
@@ -27,6 +34,11 @@ def test_receipt_pins_runner_testcase_manifest_and_unchanged_app_build():
     assert testcase["commit_sha"] == TESTCASE_SOURCE_SHA
     assert testcase["manifest_version"] == 9
     assert testcase["fork_sha"] == RUNNER_SHA
+    assert testcase["format_reference_only"] is True
+    assert testcase["manifest_path"] == str(SOURCE_MANIFEST_PATH.relative_to(REPO_ROOT))
+    assert testcase["manifest_digest_sha256"] == hashlib.sha256(
+        SOURCE_MANIFEST_PATH.read_bytes()
+    ).hexdigest()
 
     manifest_bytes = SOURCE_MANIFEST_PATH.read_bytes()
     assert hashlib.sha256(manifest_bytes).hexdigest() == testcase["manifest_digest_sha256"]
@@ -47,10 +59,62 @@ def test_receipt_pins_runner_testcase_manifest_and_unchanged_app_build():
     assert source["apk_digest_sha256"] == APK_SHA256
     assert source["apk_size_bytes"] == 67183120
     assert source["package_name"] == "com.dualix.dualmessenger.webscanner"
+    assert source["google_test_ad_app_id"] == TEST_APP_ID
     assert receipt["testcase"]["journey_path"] == str(JOURNEY_PATH.relative_to(REPO_ROOT))
     assert receipt["testcase"]["journey_digest_sha256"] == hashlib.sha256(
         JOURNEY_PATH.read_bytes()
     ).hexdigest()
+    assert receipt["testcase"]["manifest_path"] == str(
+        TINOS_MANIFEST_PATH.relative_to(REPO_ROOT)
+    )
+    assert receipt["testcase"]["manifest_digest_sha256"] == hashlib.sha256(
+        TINOS_MANIFEST_PATH.read_bytes()
+    ).hexdigest()
+
+
+def test_tinos_manifest_pins_profile_dependencies_revision_and_full_cli_contract():
+    assert TINOS_MANIFEST_PATH.is_file(), f"missing Tinos manifest: {TINOS_MANIFEST_PATH}"
+    manifest = json.loads(TINOS_MANIFEST_PATH.read_text(encoding="utf-8"))
+
+    assert manifest["manifest_version"] == 1
+    assert manifest["fork_sha"]["value"] == RUNNER_SHA
+    assert manifest["reference_source"] == {
+        "repository": "https://github.com/cheese-work/artemis",
+        "commit_sha": TESTCASE_SOURCE_SHA,
+        "manifest_version": 9,
+        "format_reference_only": True,
+    }
+    assert manifest["dependency_lock"] == {
+        "file": "uv.lock",
+        "digest_sha256": "2c63863dd5827482d7e206a887219c6438ce61dc494d9cc596f862378decc19a",
+        "runner_sha": RUNNER_SHA,
+    }
+    assert manifest["profile"] == "pro"
+    assert "No new spend is authorized" in manifest["spend_policy"]
+    entry_point = manifest["entry_point"]
+    assert entry_point["route"] == "cli"
+    command = entry_point["command_template"]
+    for argument in (
+        'artemis run "<case-goal>"',
+        "--profile pro",
+        "--locked-app com.dualix.dualmessenger.webscanner",
+        "--test-name <case-id>",
+        "--traces-path <attempt-root>/artemis-traces",
+        "--device-serial <Sol-granted-exact-serial>",
+        "--session-id <fresh-UUID>",
+        "--run-id <same-fresh-UUID>",
+        "--enable-checker",
+        "--verification-level final",
+        "--with-video-recording-tools",
+        "--standalone",
+    ):
+        assert argument in command
+    assert "..." not in command
+    assert set(entry_point["case_goals"]) == {
+        "tinos-demo-allow-then-interval-denial",
+        "tinos-demo-first-click-negative-control",
+    }
+    assert "revision_policy" in manifest
 
 
 def test_journey_distinguishes_allowed_show_denial_and_fill_failure():
@@ -68,17 +132,28 @@ def test_journey_distinguishes_allowed_show_denial_and_fill_failure():
         "20 seconds",
         "3 shows per hour",
         "non-premium",
-        "home feature click",
+        "Premium paywall",
+        "one second",
+        "Direct Message",
+        "home-screen-2-feature-direct_message",
+        "Android system Back",
+        "first exact allow-log timestamp",
+        "17 seconds",
+        "±1 second",
+        "PR #100's merge is not the runner pin",
+        "b219d55",
+        "NOT-RUN",
+        "revenue <micros> <currency> unit=<adUnitId> network=<network> precision=<precision>",
+        f"unit={TEST_INTERSTITIAL}",
     ):
         assert expected in journey
 
-    assert "log is neither" in journey
-    assert "an allow nor a denial" in journey
-    assert "Do not use `qualification/tools/checker_verdict_exit.py` unchanged" in journey
+    assert "neither an allow nor a denial" in journey
+    assert "Do not apply the Pocket Actual checker adapter unchanged to Tinos." in journey
     assert "ARTEMIS_TRACES_DIR" in journey
     assert "DATA_ENGINE_DB_PATH" in journey
-    assert "artemis run --standalone --session-id" in journey
-    assert "same-session" in journey
+    assert "qualification/manifests/tinos_demo_gated_interstitial.che2016.v1.json" in journey
+    assert "same session" in journey
     assert "fail_assertion" in journey
     assert "corrected-build re-review on CHE-2015" in journey
     assert "NOT-RUN" in journey
@@ -90,15 +165,24 @@ def test_candidate_records_a_single_allowed_scenario_and_intended_negative_contr
 
     assert receipt["positive_case"]["expected_events"] == [
         "show allowed: shown and dismissed",
-        "revenue event for placement main",
+        REVENUE_EXPECTATION,
         "show denied by Tinos rules (NOT_ALLOWED)",
     ]
+    assert "placement" not in receipt["positive_case"]["expected_events"][1]
+    assert receipt["positive_case"]["missing_revenue_result"] == (
+        "FAIL: revenue_event_missing; the revenue outcome is not a pass."
+    )
     control = receipt["negative_control"]
     assert control["expected_verdict"] == "fail_assertion"
     assert control["false_assertion"] == (
-        "The first home feature click must be denied by Tinos rules (NOT_ALLOWED)."
+        "The first Direct Message feature click must be denied by Tinos rules (NOT_ALLOWED)."
     )
     assert control["invalid_when_fill_fails"] is True
+    assert control["required_observations"] == [
+        "show allowed: shown and dismissed",
+        REVENUE_EXPECTATION,
+    ]
+    assert control["missing_revenue_result"] == "invalid_control"
     assert control["requires_same_session_checker_capture"] is True
     assert receipt["review_and_execution_boundary"]["device_execution"] == "NOT-RUN"
     assert receipt["review_and_execution_boundary"]["device_claim"] == "not granted"

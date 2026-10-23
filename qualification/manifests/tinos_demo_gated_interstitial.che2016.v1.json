@@ -1,0 +1,65 @@
+{
+  "manifest_version": 1,
+  "$schema_ref": "qualification/evidence_schema.v1.json",
+  "issue": "CHE-2016",
+  "fork_sha": {
+    "value": "feefd94c72dbce0fa1afc109ffe3d8254f565d6b",
+    "source": "git",
+    "repo": "https://github.com/cheese-work/artemis",
+    "note": "Declared Tinos runner pin from the CHE-2016 reference packet. This does not prove an installed host runner matches or that qualification passed."
+  },
+  "reference_source": {
+    "repository": "https://github.com/cheese-work/artemis",
+    "commit_sha": "096411113522abc37964256833fecbbac4778af4",
+    "manifest_version": 9,
+    "format_reference_only": true
+  },
+  "dependency_lock": {
+    "file": "uv.lock",
+    "digest_sha256": "2c63863dd5827482d7e206a887219c6438ce61dc494d9cc596f862378decc19a",
+    "runner_sha": "feefd94c72dbce0fa1afc109ffe3d8254f565d6b"
+  },
+  "profile": "pro",
+  "spend_policy": "No new spend is authorized by this candidate. If execution would incur new spend, do not run and report NOT-RUN.",
+  "entry_point": {
+    "route": "cli",
+    "command_template": "ARTEMIS_TRACES_DIR=<attempt-root>/ledger DATA_ENGINE_DB_PATH=<attempt-root>/ledger/data_engine.db artemis run \"<case-goal>\" --profile pro --locked-app com.dualix.dualmessenger.webscanner --test-name <case-id> --traces-path <attempt-root>/artemis-traces --device-serial <Sol-granted-exact-serial> --session-id <fresh-UUID> --run-id <same-fresh-UUID> --enable-checker --verification-level final --with-video-recording-tools --standalone",
+    "case_goals": {
+      "tinos-demo-allow-then-interval-denial": "Execute only the positive scenario in qualification/journeys/tinos_demo_gated_interstitial.md. Follow its steps exactly, including Android system Back to return to Home, and do not execute the negative control.",
+      "tinos-demo-first-click-negative-control": "Execute only the negative-control scenario in qualification/journeys/tinos_demo_gated_interstitial.md. Follow its steps exactly and report fail_assertion only for the specified intentionally false first-click denial assertion."
+    },
+    "runtime_values_only": [
+      "attempt-root: a new empty evidence directory for this case",
+      "case-goal and case-id: the exact matching entries above",
+      "Sol-granted-exact-serial: the exact serial in Sol's issue-visible grant",
+      "fresh-UUID: a new UUID per case, reused as both session and run ID"
+    ],
+    "collection": "Run in the foreground; preserve the complete command, stdout/stderr, exit status, trace directory, and the same-session Checker ledger and final capture. Do not run if execution would incur new spend."
+  },
+  "candidate_app": {
+    "repository": "https://github.com/tevo-studio/sa049-dual-app",
+    "pull_request": 145,
+    "app_sha": "3277551509acfdfa2615491a6b197cec741e4388",
+    "apk_digest_sha256": "d5b3e52c40941dd0b9e473d04029d61ca64e9369e721e947eb2eef470791dc08",
+    "apk_size_bytes": 67183120,
+    "package_name": "com.dualix.dualmessenger.webscanner",
+    "ad_id_policy": "test ad IDs only",
+    "google_test_ad_app_id": "ca-app-pub-3940256099942544~3347511713"
+  },
+  "candidate_testcase": {
+    "journey_path": "qualification/journeys/tinos_demo_gated_interstitial.md",
+    "runner_profile": "pro",
+    "first_home_interruption": "Premium auto-opens about one second after Home for a non-premium user; dismiss with Android system Back without purchase before each case.",
+    "tinos_placement": "main",
+    "interstitial_test_unit": "ca-app-pub-3940256099942544/1033173712",
+    "minimum_interval_seconds": 20,
+    "maximum_shows_per_hour": 3,
+    "show_history_reset": "cold start"
+  },
+  "revision_policy": {
+    "rule": "Any change to the pinned runner, app commit or APK digest/size, candidate journey, candidate manifest, command template, case goal, selector, assertion, fixture/reset, timing threshold, or evidence requirement creates a new candidate revision. Both independent non-author reviews must approve the same new revision before execution. Evidence does not transfer across candidate, runner, app, or APK revisions. No execution evidence exists until an authorized run is completed and Sol verifies the report.",
+    "reviews_required": 2,
+    "exact_revision_required": true,
+    "evidence_transfer": "prohibited across changed input revisions"
+  }
+}

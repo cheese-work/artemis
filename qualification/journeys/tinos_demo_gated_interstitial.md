@@ -1,122 +1,169 @@
 # Tinos gated-interstitial demo journey
 
-CHE-2016 device-free testcase candidate. This document defines one positive
-scenario and one negative control. It does not run a device, install or launch
-the app, or establish execution evidence.
+CHE-2016 device-free testcase candidate. This journey defines one allowed show,
+one 20-second gate denial, and a separate intentional negative control. No
+device has been used to author this candidate.
 
 ## Pinned inputs
 
 - Artemis runner: `feefd94c72dbce0fa1afc109ffe3d8254f565d6b`.
-- Immutable testcase/manifest source: `096411113522abc37964256833fecbbac4778af4`, manifest version `9`.
-- Candidate app: debug `adsTest` APK from `tevo-studio/sa049-dual-app` PR #145, head `3277551509acfdfa2615491a6b197cec741e4388`.
+- Testcase and manifest format reference: `096411113522abc37964256833fecbbac4778af4`, manifest version `9`. Pocket Actual files are format references only; the Tinos case uses its own manifest and assertions.
+- Candidate Tinos manifest: `qualification/manifests/tinos_demo_gated_interstitial.che2016.v1.json`.
+- App: debug `adsTest` APK from `tevo-studio/sa049-dual-app` PR #145, head `3277551509acfdfa2615491a6b197cec741e4388`.
+- This is a stack head, not `main`. Identify the APK by its pinned SHA-256 and byte size.
 - APK SHA-256: `d5b3e52c40941dd0b9e473d04029d61ca64e9369e721e947eb2eef470791dc08`; size `67183120` bytes.
 - Application ID: `com.dualix.dualmessenger.webscanner`. Use test ad IDs only. Do not rebuild or change the app build.
+- Google test ad app ID: `ca-app-pub-3940256099942544~3347511713`.
+- Tinos fixture: placement `main`, minimum interval 20 seconds, maximum 3 shows per hour. A cold start resets show history.
+- Test interstitial unit: `ca-app-pub-3940256099942544/1033173712`.
+- Do not use the older `b219d55` APK.
+- PR #100's merge is not the runner pin.
+
+The `TinosDemo` log tag emits the exact allow line
+`show allowed: shown and dismissed` and the exact denial line
+`show denied by Tinos rules (NOT_ALLOWED)`. A revenue line has the format
+`revenue <micros> <currency> unit=<adUnitId> network=<network> precision=<precision>`.
+The revenue line has no placement field. For this fixture, require
+`unit=ca-app-pub-3940256099942544/1033173712`; `main` is the configured Tinos
+placement, not a revenue-log field.
 
 ## Fixture and reset
 
-Run only after two independent non-author reviews approve this exact candidate
-and Sol grants an exclusive X99 AVD claim with an exact serial. The authored
-case is for the X99 recyclable AVD lane; an executor must not choose or use a
-device before that grant.
+Execution requires two independent non-author reviews of this exact revision.
+Sol's corrected-build re-review on CHE-2015 is PASS for the pinned app head.
+Sol must grant an exclusive X99 AVD claim with an exact serial. The X99 AVD
+must follow its live qualification or first-run route. CHE-387's flake
+baseline remains a separate required-acceptance gate.
 
-Before each positive or negative attempt:
+1. Verify the installed Artemis runner against the pinned SHA. Verify the APK
+   SHA-256, byte size, package ID, and app commit. Install only this APK after
+   all execution gates pass. Do not substitute or rebuild the app.
+2. Use an isolated test AVD with no personal data and a dedicated non-premium
+   test state. On the first cold start, expect the Splash/UMP consent gate. If
+   first-run flags require them, complete Language First-Open, Privacy Ack,
+   Forced Re-Login, and Onboarding in that order before Home. Do not enter
+   personal credentials or invent account state. If a required screen needs
+   personal data, or the app cannot reach Home in the test state, report
+   `NOT-RUN`.
+3. Before each independent case, force-stop and cold-start the app. Do not
+   clear app data. This cold start resets Tinos show history. Repeat any
+   required first-run screen only if the app presents it again. Do not
+   cold-start between the two clicks in the positive case.
+4. For a non-premium user, the Premium paywall auto-opens about one second
+   after Home appears. Dismiss that paywall with Android system Back, without
+   purchasing, and confirm Home is visible again. If the paywall does not close
+   or Home does not return, report `NOT-RUN`.
+5. At Home, confirm the `DiscountBadge` is visible. The app renders this cue
+   only when `rememberIsPremium()` is false. If the cue is absent or Premium is
+   open, report `NOT-RUN`; do not change subscription or account state to guess.
+6. Select the WhatsApp tab using `home-tab-whatsapp`. Confirm `home-screen-2`
+   and the Direct Message feature selector
+   `home-screen-2-feature-direct_message` are visible. The selector is the
+   feature row's app-defined Compose test tag.
+7. Capture the timestamped screen recording, native action trace, and raw
+   `TinosDemo` logcat for the same attempt. Record the logcat cursor before the
+   first click; do not clear shared ADB or log buffers.
 
-1. Verify the installed Artemis runner matches the pinned runner revision.
-2. Verify the APK SHA-256, byte size, package ID, and pinned app commit. Install
-   only this APK after the required review and device grant. Do not substitute
-   another build.
-3. Use an isolated test AVD and a non-premium test state. Use no personal data.
-   If the non-premium state or app identity cannot be confirmed, stop and
-   report `NOT-RUN`; do not change account state to guess.
-4. Force-stop the app, then cold-start it from the home screen. Each cold
-   start resets Tinos show history. Do not clear app data; no data clear is
-   needed for this fixture.
-5. Confirm the home screen is ready and the test user is non-premium. Record a
-   timestamped `TinosDemo` logcat baseline before the first feature click.
+After each attempt, stop the app, preserve all raw evidence, and return the
+exact granted AVD to Sol for verified cleanup and release. Record cleanup on
+success and failure. Never reset shared ADB or touch another owner's device.
 
-After each attempt, force-stop the app, confirm it is stopped, preserve the
-recording and logcat, and return the exact granted AVD to Sol for verified
-cleanup and release. Record cleanup even when an attempt fails. Do not reset
-shared ADB or another owner's device.
+## Positive case: allow, then deny
 
-## Positive scenario: allowed show, then gate denial
+Case ID: `tinos-demo-allow-then-interval-denial`.
 
-The test uses the normal home feature click for a non-premium user. It does not
-call an ad API directly.
+This case uses ordinary Home UI actions for the non-premium test state. It does
+not call the ad API directly.
 
-1. From the ready home screen, click the feature that triggers the interstitial
-   once. Preserve the timestamped screen recording, the native action trace,
-   and the `TinosDemo` logcat evidence.
-2. Require the exact log `show allowed: shown and dismissed` for this click.
-   Record any log line that starts with `revenue ` and verify that its
-   placement is `main`. The allowed-show assertion does not pass without the
-   expected allow log.
-3. Click the same home feature a second time less than 20 seconds after the
-   first click. Use native action timestamps to prove the interval.
-4. Require the exact log `show denied by Tinos rules (NOT_ALLOWED)` for the
-   second click. Tie the log to the second click by event order and timestamps.
-5. Capture a final native Checker result and final capture in the same
-   Artemis session. Preserve the raw timestamped `TinosDemo` logcat, recording,
-   native action timestamps, Checker ledger, and final-capture identity.
+1. At Home with the WhatsApp tab selected, tap the Direct Message row using
+   `home-screen-2-feature-direct_message`. Preserve the native action trace and
+   timestamped recording.
+2. Require `show allowed: shown and dismissed` for this tap. The app then
+   navigates to Direct Message. Require at least one revenue line for this
+   first tap that matches the format above and includes the exact test-unit
+   `unit=` value. Evaluate this revenue requirement from the continuous logcat
+   capture; do not delay the repeat tap to wait for it.
+3. Return to Home with Android system Back once, not the app toolbar/back
+   control. `NavDisplay` handles system Back by popping the route; the screen's
+   own back callback invokes the separate `inter_back` ad path. Confirm Home,
+   the WhatsApp tab, and the same Direct Message selector before tapping again.
+4. Measure `t0` at the first feature tap, `t1` at the first exact allow-log
+   timestamp, and `t2` at the second feature tap's native action timestamp.
+   Normalize the log and action timestamps to one monotonic timeline and record
+   the offset. Require both `t2 - t1` and `t2 - t0` to be no more than 17
+   seconds. The allowed total timestamp uncertainty is ±1 second, leaving at
+   least a 2-second margin below the 20-second rule. If the clocks cannot be
+   aligned within that tolerance, report the denial attempt as `NOT-RUN`.
+5. If dismissal or return-to-Home consumes the window, do not make a late tap
+   and do not count an earlier allow as a denial. Report the denial attempt as
+   `NOT-RUN`. Otherwise, tap the same Direct Message selector once and require
+   the exact denial log `show denied by Tinos rules (NOT_ALLOWED)` after that
+   tap. Tie it to the second tap by ordered timestamps. An exact denial is
+   required; timing alone is not a denial.
+6. Capture the final native Checker result and runner-bound final capture in
+   the same Artemis session. Preserve the raw logcat, recording, action
+   timestamps, Checker ledger, and final-capture identity.
 
-The exact `not loaded; skipping` log or a `show failed (<code>)` log is neither
-an allow nor a denial. If either appears instead of the required result, do
-not count that click as an allowed show or a gate denial. Preserve the output
-and report the attempt as failed or not-run according to the observed cause.
+If the first click logs `not loaded; skipping` or `show failed (<code>)`, it is
+neither an allow nor a denial; report that case `NOT-RUN`. If the second click
+logs either fill failure, it is neither a denial nor a pass; report the denial
+attempt `NOT-RUN`. If both clicks complete inside the verified window but the
+second click is allowed instead of denied, report `FAIL` for the gate case.
+If the required revenue line is absent at final capture, report the distinct
+result `FAIL: revenue_event_missing`; the revenue outcome is not a pass even
+when the allow and denial logs exist. This case does not cover the 3-shows-per-hour cap.
 
-The app rule also limits shows to at most 3 shows per hour. This scenario
-exercises the 20-second minimum interval only; it does not qualify or claim
-coverage of the hourly cap.
+## Negative control: false first-click denial
 
-## Negative control: deliberate first-click false assertion
+Case ID: `tinos-demo-first-click-negative-control`.
 
-Start from the same isolated cold-start fixture and capture the same evidence.
-Perform exactly one normal home feature click. The false final assertion must
-be this exact text:
+Use a separate cold start and a separate Artemis session. At the ready Home
+screen, tap the same Direct Message selector exactly once. Require both
+`show allowed: shown and dismissed` and a revenue line that includes
+`unit=ca-app-pub-3940256099942544/1033173712`. The revenue assertion must pass.
 
-> The first home feature click must be denied by Tinos rules (NOT_ALLOWED).
+The exact deliberately false final Checker assertion is:
 
-The actual first-click evidence must show `show allowed: shown and dismissed`
-and a `revenue ` event for placement `main`. The negative control is valid
-only when the same-session final Checker assertion fails specifically because
-the first-click denial assertion is false. Record that result as the evidence
-schema verdict `fail_assertion` only when the runner-bound final capture is
-linked to that Checker trace. Preserve the failed assertion, Checker trace
-identity, linked final-capture identity, click trace, and raw `TinosDemo`
-logcat. An orchestration status such as `completed` is not sufficient.
+> The first Direct Message feature click must be denied by Tinos rules (NOT_ALLOWED).
 
-If the first click logs `not loaded; skipping`, `show failed (<code>)`, or no
-allow event, the negative control is invalid; it did not fail for the intended
-reason. A pass, generic Checker failure, stale or mismatched capture, missing
-logcat, or missing same-session linkage is also an invalid control. Do not use
-`qualification/tools/checker_verdict_exit.py` unchanged: its oracle is
-Pocket Actual-specific. Apply the Tinos event assertions above to the raw
-Tinos evidence and the pinned runner's same-session Checker records.
+The negative control is valid only when the same-session final Checker report
+fails specifically because that denial assertion is false, while the required
+allow and revenue observations pass. Record evidence schema verdict
+`fail_assertion` only when the runner-bound final capture links to that Checker
+trace. Preserve the false assertion, Checker trace identity, linked final
+capture identity, click trace, recording, and raw `TinosDemo` logcat.
+
+If revenue is missing, record `invalid_control` with reason
+`revenue_event_missing`; do not treat it as the intended failure. If the first
+click logs `not loaded; skipping`, `show failed (<code>)`, or no exact allow,
+record `invalid_control`; the control did not fail for the intended reason.
+A pass, generic Checker failure, stale or mismatched capture, missing logcat,
+or missing same-session linkage is also `invalid_control`. An orchestration
+status such as `completed` is not sufficient. Do not apply the Pocket Actual
+checker adapter unchanged to Tinos.
 
 ## Execution and reporting
 
-Use the pinned runner's direct CLI entry point in foreground with a unique
-session ID for each attempt. Set `ARTEMIS_TRACES_DIR=<ledger-root>` and
-`DATA_ENGINE_DB_PATH=<ledger-root>/data_engine.db` before launching the
-standalone CLI. Use `artemis run --standalone --session-id <session-id>` and
-the app/goal arguments supported by that pinned runner revision. Do not use an
-asynchronous run-and-yield flow. A reviewer or executor must confirm the
-remaining CLI arguments from the pinned runner before execution; this
-candidate does not guess at flags that vary by runner revision.
+Use the Tinos-specific manifest at
+`qualification/manifests/tinos_demo_gated_interstitial.che2016.v1.json`.
+It pins the exact CLI flags, profile, dependency lock, case goals, and revision
+policy. Run each case once in the foreground with a fresh UUID per attempt;
+use that UUID for both `--session-id` and `--run-id`. Keep each case's Checker
+result and final capture in that same session. Do not substitute an MCP route,
+fill in omitted flags, or run the negative control as a positive. The command
+sets `ARTEMIS_TRACES_DIR` to `<attempt-root>/ledger` and
+`DATA_ENGINE_DB_PATH` to `<attempt-root>/ledger/data_engine.db`; its
+`--traces-path` is only for Artemis trace/video recording.
 
-For each attempt, record the exact command, runner SHA, candidate commit SHA,
-manifest version, APK identity and digest, target class, Sol-granted serial,
-session ID, attempt kind, timestamps, Checker verdict, same-session final
-capture identity, raw logs, recording, cleanup result, and observed cost. Use
-`qualification/evidence_schema.v1.json` version `1` for per-attempt records;
-keep its verdict separate from the issue-level result. Attach the raw logcat,
-recording, native traces, Checker ledger, and cleanup/release evidence to the
-execution report. Label all uncollected evidence `NOT-RUN`; never infer a pass
-from an orchestration result.
+Record each attempt's runner SHA, candidate commit SHA, manifest version and
+digest, journey digest, APK source commit/package/size/SHA-256, exact command,
+target class and Sol-granted serial, session/run ID, attempt kind, action and
+log timestamps, observed event order, raw logcat, recording, native traces,
+Checker verdict and trace ID, linked final-capture ID, exit status, cleanup
+result, and verified device release. Keep the two case results separate. The
+negative control's expected `fail_assertion` is not a positive pass.
 
-No device execution, qualification, revenue collection, or app publication
-occurred during testcase authoring. Two independent reviews and Sol's exact
-serial grant are still required before any execution. Sol's corrected-build
-re-review on CHE-2015 is also required before execution. CHE-387's flake
-baseline is a separate required-acceptance gate and is not waived by this
-candidate.
+No device command, claim, installation, launch, or execution was performed to
+author this candidate. Do not begin execution if it requires new spend.
+Android CLI XML journeys remain separate experimental evidence and cannot
+substitute for Artemis acceptance.
