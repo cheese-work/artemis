@@ -9,6 +9,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 
 def test_fresh_server_connect_then_run_uses_the_same_bridge_lease(tmp_path):
+    from tests.support.startup_budget import startup_budget
+
     environment = {
         **os.environ,
         "ARTEMIS_APP_DIR": str(tmp_path),
@@ -20,7 +22,7 @@ def test_fresh_server_connect_then_run_uses_the_same_bridge_lease(tmp_path):
         env=environment,
         capture_output=True,
         text=True,
-        timeout=30,
+        timeout=startup_budget(30.0),
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert '"accepted": true' in result.stdout
