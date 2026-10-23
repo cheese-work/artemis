@@ -42,6 +42,38 @@ The shared builder is `tests/support/smartqa_verdict_fixtures.py`. It creates a 
 
 The backend owns the label catalog. The API does not use agent-provided action URLs. Result reads keep `require_visible_run`; evidence URLs retain their own run-visibility checks. A caller who is not the owner does not receive the requester's email.
 
+## Result categories
+
+These stable category keys are returned by the API. The short Vietnamese names are display labels; they do not change classification or persistence.
+
+### smartqa_infra
+
+Hạ tầng SmartQA.
+
+### smartqa_agent
+
+Agent SmartQA.
+
+### provider
+
+Nhà cung cấp.
+
+### app_defect
+
+Lỗi ứng dụng.
+
+### user_prompt
+
+Prompt người dùng.
+
+### qa_environment
+
+Môi trường QA.
+
+### unknown
+
+Chưa xác định.
+
 ## Persistence and finalization
 
 `qa_results` stores append-only versions keyed by `(turn_id, version)`. A known final category is immutable. An `unknown` result can be upgraded once by a later classification. When an unknown label remains pending beyond `ARTEMIS_VERDICT_PENDING_CAP_SECONDS` (30 seconds by default), the endpoint appends a final `unknown` row. Cancelled and legacy runs retain their explicit label states.

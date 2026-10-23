@@ -5,7 +5,7 @@
     <a class="new-run" routerLink="/sessions/new" (click)="newRun.emit()"><span>New run</span></a>
   </header>
 
-  <div class="owner-tabs" role="tablist" aria-label="Run owner">
+  <div class="owner-tabs" role="tablist" aria-label="Run owner" data-testid="run-history-navigation">
     @for (tab of ['mine', 'everyone']; track tab) {
       <button type="button" role="tab" [attr.data-scope]="tab" [id]="'runs-tab-' + tab"
         [attr.aria-selected]="scope() === tab" [attr.tabindex]="scope() === tab ? 0 : -1"
@@ -21,6 +21,7 @@
 
   <section id="runs-panel" role="tabpanel" [attr.aria-labelledby]="'runs-tab-' + scope()">
 
+  <div data-testid="run-history-controls">
   <form class="search-form" role="search" (submit)="submitSearch($event)">
     <input
       type="search"
@@ -117,6 +118,7 @@
       }
     </section>
   </ng-template>
+  </div>
 
   @if (queueRuns().length) {
     <section class="queue-section" aria-label="Queue">
@@ -186,14 +188,19 @@
     @for (group of dateGroups(); track group.key) {
     <section class="date-group" [attr.aria-label]="group.label">
     <h3 class="date-group-title">{{ group.label }}</h3>
-    <ol class="run-list" [attr.aria-busy]="loading() ? 'true' : 'false'">
+    <ol class="run-list" data-testid="run-history-list" [attr.aria-busy]="loading() ? 'true' : 'false'">
       @for (run of group.runs; track trackRun($index, run)) {
         <li>
-          <a class="run-row" appRunCard [run]="run" [computer]="computer(run)" [device]="device(run)"
+          <a class="run-row" data-testid="run-card-actions" appRunCard [run]="run" [computer]="computer(run)" [device]="device(run)"
             [current]="isOpen(run)" [attr.aria-current]="isOpen(run) ? 'page' : null" [class.is-open]="isOpen(run)"
+            [result]="cardResult(run)" [resultState]="cardResultState(run)"
             [goalImages]="recordedImages().get(run.session_id) ?? []"
             [showOwner]="scope() === 'everyone'" [routerLink]="['/sessions', run.chat_session_id ?? run.session_id]"
-            [queryParams]="runQuery()" (click)="rememberPosition()"></a>
+            [queryParams]="evidenceQuery(run)" (click)="rememberPosition()"></a>
+          @if (cardResultState(run) === 'error') {
+            <button type="button" class="run-result-retry" [attr.aria-label]="'Retry result for ' + runTitle(run.prompt)"
+              (click)="retryCardResult(run)">Thử lại</button>
+          }
         </li>
       }
     </ol>

@@ -144,6 +144,10 @@ def test_approved_device_recovery_actions_require_a_signed_qa_identity():
     assert route_tier("/api/system/adb/restart", {"POST"}) == "admin"
 
 
+def test_chat_results_route_requires_a_signed_qa_identity():
+    assert route_tier("/api/chats/results", {"POST"}) == "qa"
+
+
 def test_drain_controls_are_loopback_tier_for_every_method():
     for method in ("GET", "POST", "DELETE"):
         assert route_tier("/api/system/drain", {method}) == "loopback"

@@ -80,6 +80,7 @@ describe('ChatInterfaceComponent device chip', () => {
         { provide: AgentService, useValue: agentService },
         { provide: RunsService, useValue: {
           lastLibraryQuery: signal({}),
+          chatResults: () => of({ sessions: [] }),
           list: () => defer(() => of({
             runs: sessions().filter((session) => !sessionStatusView(session.status, null).active).map((session) => {
               const info = typeof session.device_info === 'string' ? JSON.parse(session.device_info) : session.device_info;
@@ -437,6 +438,7 @@ describe('ChatInterfaceComponent per-QA scope (CHE-1152)', () => {
         { provide: HostsService, useValue: { list: () => of({ enabled: true, hosts: [], devices: [] }) } },
         { provide: RunsService, useValue: {
           lastLibraryQuery: signal({}),
+          chatResults: () => of({ sessions: [] }),
           list: () => of({ runs: [{
             session_id: 'h1', prompt: 'Past prompt', status: 'completed', requested_by: null,
             start_time: 1, end_time: null, host_id: null, device_ref: null, pinned: false,
