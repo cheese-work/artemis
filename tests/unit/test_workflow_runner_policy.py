@@ -69,8 +69,16 @@ def test_frontend_job_provisions_chrome_without_disabling_its_sandbox():
 def test_python_jobs_install_the_opencv_system_libraries():
     workflow = yaml.safe_load((WORKFLOWS / "ci.yml").read_text(encoding="utf-8"))
     for name in ("python-quality", "package"):
-        runs = [step.get("run", "") for step in workflow["jobs"][name]["steps"]]
-        assert any("libxcb1" in run and "libgl1" in run for run in runs), name
+        steps = workflow["jobs"][name]["steps"]
+        install = next(
+            (i for i, step in enumerate(steps) if "apt-get install" in step.get("run", "")), None
+        )
+        assert install is not None, name
+        for package in ("libgl1", "libglib2.0-0", "libxcb1"):
+            assert package in steps[install]["run"].split(), (name, package)
+        # OpenCV loads at import time, so the libraries precede every Python and uv step.
+        before = " ".join(str(step.get("uses", "")) for step in steps[:install])
+        assert "setup-python" not in before and "setup-uv" not in before, name
 
 
 def test_python_job_timeout_allows_the_slower_x99_container():
