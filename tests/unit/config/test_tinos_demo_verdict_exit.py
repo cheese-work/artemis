@@ -1,4 +1,4 @@
-"""Synthetic evidence tests for the Tinos negative-control exit adapter."""
+"""Synthetic evidence tests for the Tinos negative-control verdict."""
 
 import json
 from pathlib import Path
@@ -18,7 +18,7 @@ STALE_CAPTURE_STEP_ID = "60000000-0000-4000-8000-000000000004"
 FALSE_ASSERTION = (
     "The first Direct Message feature click must be denied by Tinos rules (NOT_ALLOWED)."
 )
-ALLOW_LOG = "1730000000.000 12 12 I TinosDemo: show allowed: shown and dismissed\n"
+ALLOW_LOG = "1730000000.500 12 12 I TinosDemo: show allowed: shown and dismissed\n"
 REVENUE_LOG = (
     "1730000001.000 12 12 I TinosDemo: revenue 123 micros USD "
     "unit=ca-app-pub-3940256099942544/1033173712 "
@@ -44,6 +44,19 @@ def _synthetic_evidence(
     session_dir.mkdir(parents=True)
     logcat_path = tmp_path / "tinos-demo-logcat.txt"
     logcat_path.write_text(log_text, encoding="utf-8")
+    capture_metadata_path = tmp_path / "tinos-demo-logcat.meta"
+    capture_metadata_path.write_text(
+        "serial=SYNTHETIC-ONLY-NO-DEVICE\n"
+        "start_cursor=1729999998.000\n"
+        "device_start_epoch=1729999998\n"
+        "host_time_before_epoch=1729999998.450\n"
+        "host_time_after_epoch=1729999998.550\n"
+        "logcat_pid=12345\n"
+        f"runner_exit_status={runner_exit_status}\n"
+        "logcat_stopped=true\n"
+        "logcat_wait_status=130\n",
+        encoding="utf-8",
+    )
     db_path = tmp_path / "data_engine.db"
 
     record = {
@@ -83,19 +96,28 @@ def _synthetic_evidence(
             "INSERT INTO images VALUES (?, ?)",
             ("synthetic-final-image", json.dumps({"screen": "synthetic"})),
         )
-        connection.execute(
+        connection.executemany(
             "INSERT INTO steps VALUES (?, ?, ?, ?, ?)",
             (
-                CAPTURE_STEP_ID,
-                SESSION_ID,
-                1730000002.0,
-                "synthetic-final-image",
-                json.dumps(
-                    {
-                        "action": "checker_final_capture",
-                        "attempt_id": capture_attempt_id,
-                        "checker_trace_id": CHECKER_TRACE_ID,
-                    }
+                (
+                    "60000000-0000-4000-8000-000000000005",
+                    SESSION_ID,
+                    1729999999.0,
+                    None,
+                    json.dumps({"action": "tap", "target": "first-feature"}),
+                ),
+                (
+                    CAPTURE_STEP_ID,
+                    SESSION_ID,
+                    1730000002.0,
+                    "synthetic-final-image",
+                    json.dumps(
+                        {
+                            "action": "checker_final_capture",
+                            "attempt_id": capture_attempt_id,
+                            "checker_trace_id": CHECKER_TRACE_ID,
+                        }
+                    ),
                 ),
             ),
         )
@@ -116,6 +138,14 @@ def _synthetic_evidence(
             SESSION_ID,
             "--logcat-file",
             str(logcat_path),
+            "--capture-metadata-file",
+            str(capture_metadata_path),
+            "--device-serial",
+            "SYNTHETIC-ONLY-NO-DEVICE",
+            "--mode",
+            "control",
+            "--first-tap-at",
+            "1729999999",
             "--runner-exit-status",
             str(runner_exit_status),
         ],
@@ -259,3 +289,19 @@ def test_tinos_adapter_rejects_a_non_test_ad_unit(tmp_path):
 
     assert result.returncode == 2
     assert json.loads(result.stdout)["reason"] == "revenue_format_or_unit"
+
+
+def test_tinos_adapter_rejects_a_denial_in_the_one_tap_control(tmp_path):
+    denial = "1730000000.800 12 12 I TinosDemo: show denied by Tinos rules (NOT_ALLOWED)\n"
+    result, _ = _synthetic_evidence(tmp_path, log_text=VALID_LOG + denial)
+
+    assert result.returncode == 2
+    assert json.loads(result.stdout)["reason"] == "unexpected_denial_event"
+
+
+def test_tinos_adapter_rejects_a_log_event_outside_the_session_window(tmp_path):
+    stale_allow = ALLOW_LOG.replace("1730000000.500", "1729999998.500")
+    result, _ = _synthetic_evidence(tmp_path, log_text=stale_allow + REVENUE_LOG)
+
+    assert result.returncode == 2
+    assert json.loads(result.stdout)["reason"] == "event_outside_session_window"

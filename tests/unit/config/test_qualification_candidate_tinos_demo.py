@@ -97,11 +97,33 @@ def test_receipt_pins_runner_testcase_manifest_and_unchanged_app_build():
         receipt["execution"]["runner_command_argv_template"]
         == manifest["entry_point"]["command_argv_template"]
     )
+    assert (
+        receipt["execution"]["log_capture_argv_template"]
+        == manifest["entry_point"]["log_capture_argv_template"]
+    )
+    assert (
+        receipt["execution"]["verdict_adapter_argv_templates"]
+        == manifest["entry_point"]["post_run_verifier_argv_templates"]
+    )
     assert receipt["execution"]["verdict_adapter"]["runner_change"] is False
+    assert receipt["execution"]["log_capture_tool"]["runner_change"] is False
+    assert receipt["positive_case"]["scripted_oracle"]["runner_change"] is False
+    assert receipt["negative_control"]["reject_if_denial_present"]
+    assert "MIN(timestamp)..MAX(timestamp)" in receipt["negative_control"]["event_time_validation"]
+    assert "full clock-uncertainty interval" in receipt["negative_control"]["event_time_validation"]
     adapter_path = REPO_ROOT / receipt["execution"]["verdict_adapter"]["path"]
     assert (
         receipt["execution"]["verdict_adapter"]["script_sha256"]
         == hashlib.sha256(adapter_path.read_bytes()).hexdigest()
+    )
+    capture_path = REPO_ROOT / receipt["execution"]["log_capture_tool"]["path"]
+    assert (
+        receipt["execution"]["log_capture_tool"]["script_sha256"]
+        == hashlib.sha256(capture_path.read_bytes()).hexdigest()
+    )
+    assert (
+        receipt["execution"]["log_capture_tool"]["clock_mapping"]["maximum_uncertainty_seconds"]
+        == 1
     )
 
 
@@ -160,13 +182,29 @@ def test_tinos_manifest_pins_profile_dependencies_revision_and_full_cli_contract
         "--with-video-recording-tools",
         "--standalone",
     ]
+    capture_argv = entry_point["log_capture_argv_template"]
+    assert capture_argv[:6] == [
+        "bash",
+        "qualification/tools/capture_tinos_demo_logs.sh",
+        "<Sol-granted-exact-serial>",
+        "<attempt-root>/tinos-demo-logcat.txt",
+        "<attempt-root>/tinos-demo-logcat.meta",
+        "--",
+    ]
+    assert capture_argv[6:] == command_argv
+    assert entry_point["capture_clock_policy"]["maximum_uncertainty_seconds"] == 1
+    assert "full uncertainty interval" in entry_point["capture_clock_policy"]["event_rule"]
     assert set(entry_point["case_goals"]) == {
         "tinos-demo-allow-then-interval-denial",
         "tinos-demo-first-click-negative-control",
     }
-    assert entry_point["post_run_verifier_argv_template"] == [
+    verifier_templates = entry_point["post_run_verifier_argv_templates"]
+    assert set(verifier_templates) == {"positive", "control"}
+    assert verifier_templates["positive"] == [
         "python",
         "qualification/tools/tinos_demo_verdict_exit.py",
+        "--mode",
+        "positive",
         "--traces-dir",
         "<attempt-root>/ledger",
         "--data-engine-db",
@@ -175,10 +213,25 @@ def test_tinos_manifest_pins_profile_dependencies_revision_and_full_cli_contract
         "<same-fresh-UUID>",
         "--logcat-file",
         "<attempt-root>/tinos-demo-logcat.txt",
+        "--capture-metadata-file",
+        "<attempt-root>/tinos-demo-logcat.meta",
+        "--device-serial",
+        "<Sol-granted-exact-serial>",
         "--runner-exit-status",
         "<observed-artemis-exit-status>",
+        "--first-tap-at",
+        "<first-tap-epoch>",
+        "--first-visible-at",
+        "<first-visible-epoch>",
+        "--closed-at",
+        "<closed-epoch>",
+        "--second-tap-at",
+        "<second-tap-epoch>",
     ]
+    assert verifier_templates["control"][3] == "control"
+    assert verifier_templates["control"][-2:] == ["--first-tap-at", "<first-tap-epoch>"]
     assert entry_point["testcase_side_tool"]["runner_change"] is False
+    assert entry_point["testcase_side_log_capture"]["runner_change"] is False
     assert "revision_policy" in manifest
 
 
@@ -198,6 +251,8 @@ def test_submitted_cli_goal_payload_contains_reviewed_scenario_assertions():
     assert "qualification/journeys/tinos_demo_gated_interstitial.md" not in control_goal
     assert "show allowed: shown and dismissed" in positive_goal
     assert "show allowed: shown and dismissed" in control_goal
+    assert "first-visible and close-control epoch timestamps" in positive_goal
+    assert "first feature tap epoch timestamp" in control_goal
     assert REVENUE_EXPECTATION in positive_goal
     assert REVENUE_EXPECTATION in control_goal
     assert "(t2 - t1) + D + 5 seconds <= 20 seconds" in positive_goal
@@ -248,6 +303,8 @@ def test_journey_distinguishes_allowed_show_denial_and_fill_failure():
         "±1 second",
         "close control within 15 seconds",
         "show and close timestamps from the recording",
+        "full uncertainty interval is inside",
+        "device epoch cursor",
         "PR #100's merge is not the runner pin",
         "b219d55",
         "NOT-RUN",

@@ -51,9 +51,54 @@
       "--with-video-recording-tools",
       "--standalone"
     ],
+    "log_capture_argv_template": [
+      "bash",
+      "qualification/tools/capture_tinos_demo_logs.sh",
+      "<Sol-granted-exact-serial>",
+      "<attempt-root>/tinos-demo-logcat.txt",
+      "<attempt-root>/tinos-demo-logcat.meta",
+      "--",
+      "artemis",
+      "run",
+      "<case-goal>",
+      "--profile",
+      "pro",
+      "--locked-app",
+      "com.dualix.dualmessenger.webscanner",
+      "--test-name",
+      "<case-id>",
+      "--traces-path",
+      "<attempt-root>/artemis-traces",
+      "--device-serial",
+      "<Sol-granted-exact-serial>",
+      "--session-id",
+      "<fresh-UUID>",
+      "--run-id",
+      "<same-fresh-UUID>",
+      "--enable-checker",
+      "--verification-level",
+      "final",
+      "--with-video-recording-tools",
+      "--standalone"
+    ],
+    "capture_clock_policy": {
+      "device_clock_command": [
+        "adb",
+        "-s",
+        "<Sol-granted-exact-serial>",
+        "shell",
+        "date",
+        "+%s"
+      ],
+      "host_clock_samples": "date +%s.%N immediately before and after the device clock command",
+      "device_to_host_offset_seconds": "(host_time_before_epoch + host_time_after_epoch) / 2 - device_start_epoch - 0.5",
+      "uncertainty_seconds": "(host_time_after_epoch - host_time_before_epoch + 1) / 2",
+      "maximum_uncertainty_seconds": 1,
+      "event_rule": "Map every recognized log event to the host epoch timeline and accept it only when its full uncertainty interval is inside the exact Artemis session step window and strictly after the first feature tap. Reject a capture cursor whose latest possible host time is after the first tap."
+    },
     "case_goals": {
-      "tinos-demo-allow-then-interval-denial": "Run only the Tinos positive case, using runner feefd94c72dbce0fa1afc109ffe3d8254f565d6b, profile pro, app com.dualix.dualmessenger.webscanner, test ad IDs only, placement main, a 20-second minimum interval, and a maximum of 3 shows per hour. Use a fresh cold start; do not clear app data. Reach Home through Splash/UMP consent, Language First-Open, Privacy Ack, Forced Re-Login, and Onboarding only when presented; do not enter personal credentials or invent account state. If a required screen needs personal data or Home is unavailable, report NOT-RUN. Dismiss the automatic Premium paywall with Android system Back without purchase, confirm Home and the visible DiscountBadge (non-premium), select WhatsApp with home-tab-whatsapp, then confirm home-screen-2 and home-screen-2-feature-direct_message. Record timestamped screen video, action trace, and raw TinosDemo logcat from before the first tap; do not clear shared ADB or log buffers. Tap home-screen-2-feature-direct_message once. Close the shown ad with its visible close control within 15 seconds of its first visible frame and record show/close timestamps; otherwise report NOT-RUN. After dismissal require the exact log `show allowed: shown and dismissed`; if it is absent after a close within 15 seconds, report NOT-RUN for the show-call timeout race. Require a revenue log matching `revenue <valueMicros> micros <currency> unit=ca-app-pub-3940256099942544/1033173712 network=<network> precision=<precision>`; if missing, report FAIL: revenue_event_missing, never pass the revenue claim. Let D be the ad visible duration, t1 the first exact allow-log timestamp, and t2 the native timestamp of the second feature tap after returning Home exactly once with Android system Back. Tap again only if `t2 - t1 <= 15 seconds - D` and `(t2 - t1) + D + 5 seconds <= 20 seconds`; the 5 seconds includes up to 4 seconds for the second fill and 1 second timestamp uncertainty. If `15 seconds - D <= 0`, clocks cannot align within ±1 second, Home does not return, or the derived timing window is missed, report the denial attempt NOT-RUN and do not tap late. Require the exact `show denied by Tinos rules (NOT_ALLOWED)` log after t2. Fill-failure logs `not loaded; skipping` and `show failed (<code>)` are neither allow nor denial; report NOT-RUN. Final assertions: the first tap has the exact allow log and matching test-unit revenue line; the second tap is within both timing bounds and has the exact Tinos denial log. Preserve the same-session final Checker ledger and runner-bound final-capture identity. Do not execute the negative control.",
-      "tinos-demo-first-click-negative-control": "Run only the Tinos negative control, using runner feefd94c72dbce0fa1afc109ffe3d8254f565d6b, profile pro, app com.dualix.dualmessenger.webscanner, test ad IDs only, placement main, a 20-second minimum interval, and a maximum of 3 shows per hour. Use a separate fresh cold start; do not clear app data. Reach Home through Splash/UMP consent, Language First-Open, Privacy Ack, Forced Re-Login, and Onboarding only when presented; do not enter personal credentials or invent account state. If a required screen needs personal data or Home is unavailable, report NOT-RUN. Dismiss the automatic Premium paywall with Android system Back without purchase, confirm Home and the visible DiscountBadge (non-premium), select WhatsApp with home-tab-whatsapp, then confirm home-screen-2 and home-screen-2-feature-direct_message. Record timestamped screen video, action trace, and raw TinosDemo logcat from before the tap; do not clear shared ADB or log buffers. Tap home-screen-2-feature-direct_message exactly once. Close the shown ad with its visible close control within 15 seconds of its first visible frame and record show/close timestamps; otherwise report NOT-RUN. After dismissal require the exact log `show allowed: shown and dismissed`; if it is absent after a close within 15 seconds, report NOT-RUN for the show-call timeout race. Require a revenue log matching `revenue <valueMicros> micros <currency> unit=ca-app-pub-3940256099942544/1033173712 network=<network> precision=<precision>`; missing revenue makes the control invalid, not a pass or intended failure. Fill-failure logs `not loaded; skipping` and `show failed (<code>)` are neither allow nor denial and make the control invalid. Declare the exact final Checker assertion `The first Direct Message feature click must be denied by Tinos rules (NOT_ALLOWED).` intentionally false. The valid negative-control result is only fail_assertion for this exact assertion, with the allow and revenue observations present and every other final assertion passed. Preserve the same-session final Checker ledger and runner-bound final-capture identity. Do not execute the positive case."
+      "tinos-demo-allow-then-interval-denial": "Run only the Tinos positive case, using runner feefd94c72dbce0fa1afc109ffe3d8254f565d6b, profile pro, app com.dualix.dualmessenger.webscanner, test ad IDs only, placement main, a 20-second minimum interval, and a maximum of 3 shows per hour. Use a fresh cold start; do not clear app data. Reach Home through Splash/UMP consent, Language First-Open, Privacy Ack, Forced Re-Login, and Onboarding only when presented; do not enter personal credentials or invent account state. If a required screen needs personal data or Home is unavailable, report NOT-RUN. Dismiss the automatic Premium paywall with Android system Back without purchase, confirm Home and the visible DiscountBadge (non-premium), select WhatsApp with home-tab-whatsapp, then confirm home-screen-2 and home-screen-2-feature-direct_message. The reviewed capture wrapper starts exact-serial TinosDemo logcat before this cold-start journey and records its cursor and PID; do not start another logger or clear buffers. Record the first tap and second tap epoch timestamps from the native action trace and the first-visible and close-control epoch timestamps from the recording, normalized to the same epoch timeline. Tap home-screen-2-feature-direct_message once. Close the shown ad with its visible close control within 15 seconds of its first visible frame; otherwise report NOT-RUN. After dismissal require the exact log `show allowed: shown and dismissed`; if it is absent after a close within 15 seconds, report NOT-RUN for the show-call timeout race. Require a revenue log matching `revenue <valueMicros> micros <currency> unit=ca-app-pub-3940256099942544/1033173712 network=<network> precision=<precision>`; if missing, report FAIL: revenue_event_missing, never pass the revenue claim. Let D be the ad visible duration from its first visible frame to close activation, t1 the first exact allow-log timestamp, and t2 the native timestamp of the second feature tap after returning Home exactly once with Android system Back. Tap again only if `t2 - t1 <= 15 seconds - D` and `(t2 - t1) + D + 5 seconds <= 20 seconds`; the 5 seconds includes up to 4 seconds for the second fill and 1 second timestamp uncertainty. If `15 seconds - D <= 0`, clocks cannot align within ±1 second, Home does not return, or the derived timing window is missed, report the denial attempt NOT-RUN and do not tap late. Require the exact `show denied by Tinos rules (NOT_ALLOWED)` log after t2. Fill-failure logs `not loaded; skipping` and `show failed (<code>)` are neither allow nor denial; report NOT-RUN. Final assertions: the first tap has the exact allow log and matching test-unit revenue line; the second tap is within both timing bounds and has the exact Tinos denial log. Preserve the same-session final Checker ledger and runner-bound final-capture identity. Do not execute the negative control.",
+      "tinos-demo-first-click-negative-control": "Run only the Tinos negative control, using runner feefd94c72dbce0fa1afc109ffe3d8254f565d6b, profile pro, app com.dualix.dualmessenger.webscanner, test ad IDs only, placement main, a 20-second minimum interval, and a maximum of 3 shows per hour. Use a separate fresh cold start; do not clear app data. Reach Home through Splash/UMP consent, Language First-Open, Privacy Ack, Forced Re-Login, and Onboarding only when presented; do not enter personal credentials or invent account state. If a required screen needs personal data or Home is unavailable, report NOT-RUN. Dismiss the automatic Premium paywall with Android system Back without purchase, confirm Home and the visible DiscountBadge (non-premium), select WhatsApp with home-tab-whatsapp, then confirm home-screen-2 and home-screen-2-feature-direct_message. The reviewed capture wrapper starts exact-serial TinosDemo logcat before this cold-start journey and records its cursor and PID; do not start another logger or clear buffers. Record the first feature tap epoch timestamp from the native action trace and the first-visible and close-control epoch timestamps from the recording, normalized to the same epoch timeline. Tap home-screen-2-feature-direct_message exactly once. Close the shown ad with its visible close control within 15 seconds of its first visible frame; otherwise report NOT-RUN. After dismissal require the exact log `show allowed: shown and dismissed`; if it is absent after a close within 15 seconds, report NOT-RUN for the show-call timeout race. Require a revenue log matching `revenue <valueMicros> micros <currency> unit=ca-app-pub-3940256099942544/1033173712 network=<network> precision=<precision>`; missing revenue makes the control invalid, not a pass or intended failure. Fill-failure logs `not loaded; skipping` and `show failed (<code>)` are neither allow nor denial and make the control invalid. Any `show denied by Tinos rules (NOT_ALLOWED)` line makes the one-tap control invalid. Declare the exact final Checker assertion `The first Direct Message feature click must be denied by Tinos rules (NOT_ALLOWED).` intentionally false. The valid negative-control result is only fail_assertion for this exact assertion, with the allow and revenue observations present and every other final assertion passed. Preserve the same-session final Checker ledger and runner-bound final-capture identity. Do not execute the positive case."
     },
     "runtime_values_only": [
       "attempt-root: a new empty evidence directory for this case",
@@ -61,11 +106,19 @@
       "case-id: the exact matching case id above",
       "Sol-granted-exact-serial: the exact serial in Sol's issue-visible grant",
       "fresh-UUID: a new UUID per case, reused as both session and run ID",
-      "observed-artemis-exit-status: the exact foreground Artemis process exit status"
+      "observed-artemis-exit-status: the exact foreground Artemis process exit status",
+      "first-tap-epoch: native action-trace host-epoch time",
+      "first-visible-epoch: recording time normalized to the native host-epoch timeline",
+      "closed-epoch: close-control time normalized to the native host-epoch timeline",
+      "second-tap-epoch: native action-trace host-epoch time for the positive case",
+      "log-event-epoch: device epoch timestamp mapped to host epoch with capture metadata and uncertainty"
     ],
-    "post_run_verifier_argv_template": [
+    "post_run_verifier_argv_templates": {
+      "positive": [
       "python",
       "qualification/tools/tinos_demo_verdict_exit.py",
+      "--mode",
+      "positive",
       "--traces-dir",
       "<attempt-root>/ledger",
       "--data-engine-db",
@@ -74,13 +127,53 @@
       "<same-fresh-UUID>",
       "--logcat-file",
       "<attempt-root>/tinos-demo-logcat.txt",
+      "--capture-metadata-file",
+      "<attempt-root>/tinos-demo-logcat.meta",
+      "--device-serial",
+      "<Sol-granted-exact-serial>",
       "--runner-exit-status",
-      "<observed-artemis-exit-status>"
-    ],
-    "collection": "Run in the foreground; preserve the complete argv and environment, stdout/stderr, runner and verifier exit statuses, trace directory, timestamped raw TinosDemo logcat, and same-session Checker ledger and runner-bound final capture. A verifier exit 1 with JSON verdict fail_assertion is the only valid intended negative-control result; exit 2 with verdict NOT-RUN means the allow line is missing after the timeout-race case; other exit 2 outcomes are invalid_control. The verifier requires Artemis exit status 0 and never treats an arbitrary process failure as control success. Do not run if execution would incur new spend.",
+      "<observed-artemis-exit-status>",
+      "--first-tap-at",
+      "<first-tap-epoch>",
+      "--first-visible-at",
+      "<first-visible-epoch>",
+      "--closed-at",
+      "<closed-epoch>",
+      "--second-tap-at",
+      "<second-tap-epoch>"
+      ],
+      "control": [
+        "python",
+        "qualification/tools/tinos_demo_verdict_exit.py",
+        "--mode",
+        "control",
+        "--traces-dir",
+        "<attempt-root>/ledger",
+        "--data-engine-db",
+        "<attempt-root>/ledger/data_engine.db",
+        "--session-id",
+        "<same-fresh-UUID>",
+        "--logcat-file",
+        "<attempt-root>/tinos-demo-logcat.txt",
+        "--capture-metadata-file",
+        "<attempt-root>/tinos-demo-logcat.meta",
+        "--device-serial",
+        "<Sol-granted-exact-serial>",
+        "--runner-exit-status",
+        "<observed-artemis-exit-status>",
+        "--first-tap-at",
+        "<first-tap-epoch>"
+      ]
+    },
+    "collection": "Run in the foreground; preserve the complete wrapper, runner, and verifier argv and environment, stdout/stderr, logger PID and stop status, cursor, runner and verifier exit statuses, trace directory, timestamped raw TinosDemo logcat, and same-session Checker ledger and runner-bound final capture. Control exit 1 with JSON fail_assertion is valid only for the intended false assertion; control exit 2 with NOT-RUN means the allow line is missing after the timeout race; other control exit 2 outcomes are invalid_control. Positive exit 0 is PASS, exit 10 is FAIL, exit 11 is NOT-RUN, and exit 12 is INVALID-EVIDENCE. Both modes require Artemis exit status 0 and session-bounded timestamped evidence. Do not run if execution would incur new spend.",
     "testcase_side_tool": {
       "path": "qualification/tools/tinos_demo_verdict_exit.py",
-      "purpose": "Validate Tinos log observations and same-session native Checker/final-capture identity before giving the intended false assertion a distinct exit status.",
+      "purpose": "Validate timestamped Tinos events and same-session Checker/final-capture identity for positive and negative-control modes.",
+      "runner_change": false
+    },
+    "testcase_side_log_capture": {
+      "path": "qualification/tools/capture_tinos_demo_logs.sh",
+      "purpose": "Start exact-serial TinosDemo logcat with a device-epoch start cursor before Artemis, record host clock samples around the device clock probe, refuse to launch Artemis if logcat does not remain running during startup, and stop the recorded logger PID on every exit path.",
       "runner_change": false
     }
   },

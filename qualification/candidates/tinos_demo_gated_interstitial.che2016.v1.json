@@ -33,9 +33,9 @@
   },
   "testcase": {
     "journey_path": "qualification/journeys/tinos_demo_gated_interstitial.md",
-    "journey_digest_sha256": "c1982bbf4f845fca5a2b9306eb0448fdf198bde1c84026c70c6bbcb86cb05b6e",
+    "journey_digest_sha256": "39b3e0e8dbf0a987e0ec26dfd216823a3748b049eab8c9d8fa8019b87a6671c7",
     "manifest_path": "qualification/manifests/tinos_demo_gated_interstitial.che2016.v1.json",
-    "manifest_digest_sha256": "4c3dfc95df879c0f64385fab4e0176621df4d7dbb9ce917b271e53da603d45f6",
+    "manifest_digest_sha256": "c170c64d2aea2e958865a64ec51b4c4d80fe45cbdb55b3ee23f0b14838c8be5c",
     "manifest_version": 1
   },
   "tinos_configuration": {
@@ -92,7 +92,33 @@
     },
     "missing_allow_result": "NOT-RUN: the show-call timeout can race a close within 15 seconds of the first visible frame.",
     "missing_revenue_result": "FAIL: revenue_event_missing; the revenue outcome is not a pass.",
-    "hourly_cap_coverage": "not covered; this case tests the 20-second minimum interval only"
+    "hourly_cap_coverage": "not covered; this case tests the 20-second minimum interval only",
+    "scripted_oracle": {
+      "path": "qualification/tools/tinos_demo_verdict_exit.py",
+      "mode": "positive",
+      "inputs": [
+        "first tap epoch timestamp from the native action trace",
+        "first-visible epoch timestamp from the recording",
+        "close-control epoch timestamp from the recording",
+        "second tap epoch timestamp from the native action trace"
+      ],
+      "checks": [
+        "all relevant log events are after the first tap and inside the native session step window",
+        "the allow log follows close-control activation",
+        "the revenue event matches the test unit and follows the first tap",
+        "the denial log follows the second tap",
+        "(t2 - t1) <= 15 - D",
+        "(t2 - t1) + D + 5 <= 20 seconds",
+        "same-session passing Checker ledger and runner-bound final capture"
+      ],
+      "exit_codes": {
+        "0": "PASS",
+        "10": "FAIL: required revenue or denial event missing or malformed",
+        "11": "NOT-RUN: fill failure, missing allow, missed close deadline, or missed timing window",
+        "12": "INVALID-EVIDENCE: malformed, stale, outside-session, mismatched, or incomplete evidence"
+      },
+      "runner_change": false
+    }
   },
   "negative_control": {
     "case_id": "tinos-demo-first-click-negative-control",
@@ -111,14 +137,16 @@
       "not loaded; skipping",
       "show failed (<code>)"
     ],
+    "reject_if_denial_present": "Any show denied by Tinos rules (NOT_ALLOWED) line makes the one-tap control invalid.",
+    "event_time_validation": "Map each device log epoch to the host epoch using capture metadata. Every recognized event's full clock-uncertainty interval must be inside the exact session's MIN(timestamp)..MAX(timestamp) step window and strictly after the first tap; every event must also be at or after the device-epoch logcat cursor.",
     "requires_same_session_checker_capture": true,
     "requires_runner_bound_final_capture": true,
-    "adapter": "qualification/tools/tinos_demo_verdict_exit.py; Tinos-specific testcase-side verdict-to-exit tool; not a runner change. Exit 1 with fail_assertion only when Artemis exit is 0, exact allow and revenue observations pass, and the sole failed final assertion is the exact false assertion with same-session Checker and runner-bound final-capture identity. Exit 2 with NOT-RUN when the allow line is missing after the timeout-race case, or invalid_control for missing revenue, malformed or fill-failed logs, stale or mismatched capture, a plain pass, or another non-intended result. Never apply the Pocket Actual adapter unchanged.",
+    "adapter": "qualification/tools/tinos_demo_verdict_exit.py control mode; Tinos-specific testcase-side verdict-to-exit tool; not a runner change. Exit 1 with fail_assertion only when Artemis exit is 0, exact allow and revenue observations pass, no denial event exists, all counted timestamps pass the same-session window and first-tap checks, and the sole failed final assertion is the exact false assertion with same-session Checker and runner-bound final-capture identity. Exit 2 with NOT-RUN when the allow line is missing after the timeout-race case, or invalid_control for missing revenue, malformed or fill-failed logs, an unexpected denial, stale or mismatched capture, a plain pass, or another non-intended result. Never apply the Pocket Actual adapter unchanged.",
     "not_satisfied_by": "completed orchestration status"
   },
   "execution": {
     "manifest_path": "qualification/manifests/tinos_demo_gated_interstitial.che2016.v1.json",
-    "entry_point": "Pinned Artemis direct CLI, standalone and collected in the foreground.",
+    "entry_point": "Pinned Artemis direct CLI wrapped by testcase-side exact-serial log capture, standalone and collected in the foreground.",
     "runner_environment_template": {
       "ARTEMIS_TRACES_DIR": "<attempt-root>/ledger",
       "DATA_ENGINE_DB_PATH": "<attempt-root>/ledger/data_engine.db"
@@ -147,9 +175,42 @@
       "--with-video-recording-tools",
       "--standalone"
     ],
-    "verdict_adapter_argv_template": [
+    "log_capture_argv_template": [
+      "bash",
+      "qualification/tools/capture_tinos_demo_logs.sh",
+      "<Sol-granted-exact-serial>",
+      "<attempt-root>/tinos-demo-logcat.txt",
+      "<attempt-root>/tinos-demo-logcat.meta",
+      "--",
+      "artemis",
+      "run",
+      "<case-goal>",
+      "--profile",
+      "pro",
+      "--locked-app",
+      "com.dualix.dualmessenger.webscanner",
+      "--test-name",
+      "<case-id>",
+      "--traces-path",
+      "<attempt-root>/artemis-traces",
+      "--device-serial",
+      "<Sol-granted-exact-serial>",
+      "--session-id",
+      "<fresh-UUID>",
+      "--run-id",
+      "<same-fresh-UUID>",
+      "--enable-checker",
+      "--verification-level",
+      "final",
+      "--with-video-recording-tools",
+      "--standalone"
+    ],
+    "verdict_adapter_argv_templates": {
+      "positive": [
       "python",
       "qualification/tools/tinos_demo_verdict_exit.py",
+      "--mode",
+      "positive",
       "--traces-dir",
       "<attempt-root>/ledger",
       "--data-engine-db",
@@ -158,15 +219,81 @@
       "<same-fresh-UUID>",
       "--logcat-file",
       "<attempt-root>/tinos-demo-logcat.txt",
+      "--capture-metadata-file",
+      "<attempt-root>/tinos-demo-logcat.meta",
+      "--device-serial",
+      "<Sol-granted-exact-serial>",
       "--runner-exit-status",
-      "<observed-artemis-exit-status>"
-    ],
+      "<observed-artemis-exit-status>",
+      "--first-tap-at",
+      "<first-tap-epoch>",
+      "--first-visible-at",
+      "<first-visible-epoch>",
+      "--closed-at",
+      "<closed-epoch>",
+      "--second-tap-at",
+      "<second-tap-epoch>"
+      ],
+      "control": [
+        "python",
+        "qualification/tools/tinos_demo_verdict_exit.py",
+        "--mode",
+        "control",
+        "--traces-dir",
+        "<attempt-root>/ledger",
+        "--data-engine-db",
+        "<attempt-root>/ledger/data_engine.db",
+        "--session-id",
+        "<same-fresh-UUID>",
+        "--logcat-file",
+        "<attempt-root>/tinos-demo-logcat.txt",
+        "--capture-metadata-file",
+        "<attempt-root>/tinos-demo-logcat.meta",
+        "--device-serial",
+        "<Sol-granted-exact-serial>",
+        "--runner-exit-status",
+        "<observed-artemis-exit-status>",
+        "--first-tap-at",
+        "<first-tap-epoch>"
+      ]
+    },
     "verdict_adapter": {
       "path": "qualification/tools/tinos_demo_verdict_exit.py",
-      "script_sha256": "13693fc6d71cd0239d56515e02a90a27ba0781e4ac9e2d057f7ef769f898af2a",
+      "script_sha256": "28cee2df15c7d77a53a4ad610bd5388d123ee09c4931448ef5ec4754a706124a",
       "runner_change": false,
-      "exit_1": "valid intended negative control only: Artemis returned 0; exact allow and revenue observations passed; exactly the specified false assertion failed; same-session Checker trace and final capture match",
-      "exit_2": "NOT-RUN for a missing allow line; otherwise invalid_control for missing or invalid evidence, a fill failure, stale or mismatched capture, plain pass, or Artemis process failure"
+      "control_exit_1": "valid intended negative control only: Artemis returned 0; exact allow and revenue observations passed; no denial event exists; timestamps pass session, cursor, and first-tap checks; exactly the specified false assertion failed; same-session Checker trace and final capture match",
+      "control_exit_2": "NOT-RUN for a missing allow line; otherwise invalid_control for missing or invalid evidence, a fill failure, an unexpected denial, stale or mismatched capture, plain pass, or Artemis process failure",
+      "positive_exit_0": "PASS only when the exact allow, revenue, and denial observations and the measured timing bound pass, with a same-session passing Checker trace and final capture",
+      "positive_exit_10": "FAIL for a missing or malformed revenue or denial observation",
+      "positive_exit_11": "NOT-RUN for fill failure, missing allow, missed close deadline, or missed timing window",
+      "positive_exit_12": "INVALID-EVIDENCE for malformed, stale, outside-session, mismatched, or incomplete evidence"
+    },
+    "log_capture_tool": {
+      "path": "qualification/tools/capture_tinos_demo_logs.sh",
+      "script_sha256": "620d9bf8527d243f22486b1361023db583140c410dd5972f59a8565309f94e8d",
+      "adb_argv_template": [
+        "adb",
+        "-s",
+        "<Sol-granted-exact-serial>",
+        "logcat",
+        "-v",
+        "epoch",
+        "-T",
+        "<start-cursor>",
+        "-s",
+        "TinosDemo:I",
+        "*:S"
+      ],
+      "start_cursor_source": "adb -s <Sol-granted-exact-serial> shell date +%s, recorded in device epoch before the exact-serial logger starts and before Artemis begins the cold-start action",
+      "clock_mapping": {
+        "host_samples": "date +%s.%N immediately before and after the device clock command",
+        "device_to_host_offset_seconds": "(host_time_before_epoch + host_time_after_epoch) / 2 - device_start_epoch - 0.5",
+        "uncertainty_seconds": "(host_time_after_epoch - host_time_before_epoch + 1) / 2",
+        "maximum_uncertainty_seconds": 1,
+        "event_rule": "Normalize device log epochs to host epoch and require the full uncertainty interval to fall inside the exact session window and after the first tap."
+      },
+      "pid_policy": "Record the adb logcat process ID; stop and wait for that exact PID on EXIT, INT, or TERM, including runner failure.",
+      "runner_change": false
     },
     "synthetic_device_free_test_cases": [
       "intended failure",
@@ -177,7 +304,18 @@
       "plain pass",
       "arbitrary Artemis process failure",
       "revenue missing micros token",
-      "wrong test ad unit"
+      "wrong test ad unit",
+      "unexpected denial in one-tap control",
+      "event outside same-session step window",
+      "event before first tap",
+      "event before logcat cursor",
+      "normalized device/host epoch offset",
+      "uncertain event ordering",
+      "positive event order and timing pass",
+      "positive missing denial",
+      "positive missed timing window",
+      "positive mismatched capture",
+      "capture helper cleanup after runner failure"
     ],
     "session_policy": "Use one fresh UUID for session and run IDs per independent case; preserve that same session for its Checker result and runner-bound final capture.",
     "author_execution": "NOT-RUN"
@@ -191,8 +329,8 @@
       "runner SHA, candidate commit SHA, Tinos manifest path/version/digest, and journey digest",
       "APK source commit, package ID, byte size, and SHA-256",
       "target class, exact Sol-granted serial, session/run ID, and attempt kind",
-      "exact command, exit status, event order, action/log timestamps, clock offset, and uncertainty",
-      "raw timestamped TinosDemo logcat, screen recording, and native traces",
+      "exact capture, runner, and verifier commands; exit statuses; event order; action/log timestamps; clock offset; and uncertainty",
+      "raw timestamped TinosDemo logcat, start cursor, logger PID and stop status, screen recording, and native traces",
       "Checker verdict, Checker trace identity, and linked runner-bound final-capture identity",
       "revenue line including exact test-unit ID, or the distinct missing-revenue result",
       "cost record; do not begin execution if it requires new spend",
