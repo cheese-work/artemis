@@ -21,20 +21,21 @@
     "app_input_source": {
       "repository": "https://github.com/tevo-studio/sa049-dual-app",
       "pull_request": 145,
-      "commit_sha": "3277551509acfdfa2615491a6b197cec741e4388"
+      "commit_sha": "24d3ad51350767d04a2951ab72685a45f67a6f75"
     },
-    "app_sha": "3277551509acfdfa2615491a6b197cec741e4388",
-    "apk_digest_sha256": "d5b3e52c40941dd0b9e473d04029d61ca64e9369e721e947eb2eef470791dc08",
-    "apk_size_bytes": 67183120,
+    "app_sha": "24d3ad51350767d04a2951ab72685a45f67a6f75",
+    "apk_digest_sha256": "b2a14979f173bc3e022a15aa5e3385085c8a02167ceda4b64b69da9e060efe64",
+    "apk_size_bytes": null,
+    "apk_size_note": "Not reported in the current issue source; record observed size after verifying the author-reported SHA-256.",
     "package_name": "com.dualix.dualmessenger.webscanner",
     "ad_id_policy": "test ad IDs only",
     "google_test_ad_app_id": "ca-app-pub-3940256099942544~3347511713"
   },
   "testcase": {
     "journey_path": "qualification/journeys/tinos_demo_gated_interstitial.md",
-    "journey_digest_sha256": "dea6e5f23610d8b4b3f254aba5d39e94ca91da3a840dcf89cd64d0b87eea34ac",
+    "journey_digest_sha256": "a88fc71bb5ab3cde0cd935ca5b606a944ee514d3a9091d29363eed48c9fbda1c",
     "manifest_path": "qualification/manifests/tinos_demo_gated_interstitial.che2016.v1.json",
-    "manifest_digest_sha256": "9092018b44675d1de692a3bb9a299b0308fa4a61b82e5f36041f0d55fe68a424",
+    "manifest_digest_sha256": "741079475fa78a7f2114247918c653dd8d1300a1b98b016e738491c1f5a16057",
     "manifest_version": 1
   },
   "tinos_configuration": {
@@ -75,11 +76,13 @@
       "show denied by Tinos rules (NOT_ALLOWED)"
     ],
     "second_click_timing": {
-      "measure_from": "first exact show allowed log timestamp",
+      "measure_from": "first exact show allowed log timestamp after dismissal",
       "measure_to": "second Direct Message tap start timestamp in the native action trace",
-      "max_elapsed_seconds": 17,
+      "max_elapsed_seconds": 3,
+      "max_dismissal_seconds_before_log": 15,
       "total_timestamp_uncertainty_seconds": 1,
-      "additional_bound_from_first_tap_seconds": 17,
+      "worst_case_elapsed_from_sdk_show_history_seconds": 19,
+      "interval_basis": "SDK show-history timing starts at show, not dismissal; a maximum 15-second dismissal plus a 3-second log-to-tap window and 1-second uncertainty stays below 20 seconds.",
       "missed_window_result": "NOT-RUN; do not count a late or absent denial as a pass"
     },
     "missing_revenue_result": "FAIL: revenue_event_missing; the revenue outcome is not a pass.",

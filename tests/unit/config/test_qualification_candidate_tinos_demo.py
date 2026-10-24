@@ -8,18 +8,19 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[3]
 RECEIPT_PATH = REPO_ROOT / "qualification/candidates/tinos_demo_gated_interstitial.che2016.v1.json"
 JOURNEY_PATH = REPO_ROOT / "qualification/journeys/tinos_demo_gated_interstitial.md"
-TINOS_MANIFEST_PATH = REPO_ROOT / "qualification/manifests/tinos_demo_gated_interstitial.che2016.v1.json"
+TINOS_MANIFEST_PATH = (
+    REPO_ROOT / "qualification/manifests/tinos_demo_gated_interstitial.che2016.v1.json"
+)
 SOURCE_MANIFEST_PATH = REPO_ROOT / "qualification/manifests/pocket_actual_save_relaunch.v1.json"
 SOURCE_JOURNEY_PATH = REPO_ROOT / "qualification/journeys/pocket_actual_save_relaunch.md"
 RUNNER_SHA = "feefd94c72dbce0fa1afc109ffe3d8254f565d6b"
 TESTCASE_SOURCE_SHA = "096411113522abc37964256833fecbbac4778af4"
-APP_SHA = "3277551509acfdfa2615491a6b197cec741e4388"
-APK_SHA256 = "d5b3e52c40941dd0b9e473d04029d61ca64e9369e721e947eb2eef470791dc08"
+APP_SHA = "24d3ad51350767d04a2951ab72685a45f67a6f75"
+APK_SHA256 = "b2a14979f173bc3e022a15aa5e3385085c8a02167ceda4b64b69da9e060efe64"
 TEST_APP_ID = "ca-app-pub-3940256099942544~3347511713"
 TEST_INTERSTITIAL = "ca-app-pub-3940256099942544/1033173712"
 REVENUE_EXPECTATION = (
-    f"revenue <micros> <currency> unit={TEST_INTERSTITIAL} "
-    "network=<network> precision=<precision>"
+    f"revenue <micros> <currency> unit={TEST_INTERSTITIAL} network=<network> precision=<precision>"
 )
 
 
@@ -36,18 +37,17 @@ def test_receipt_pins_runner_testcase_manifest_and_unchanged_app_build():
     assert testcase["fork_sha"] == RUNNER_SHA
     assert testcase["format_reference_only"] is True
     assert testcase["manifest_path"] == str(SOURCE_MANIFEST_PATH.relative_to(REPO_ROOT))
-    assert testcase["manifest_digest_sha256"] == hashlib.sha256(
-        SOURCE_MANIFEST_PATH.read_bytes()
-    ).hexdigest()
+    assert (
+        testcase["manifest_digest_sha256"]
+        == hashlib.sha256(SOURCE_MANIFEST_PATH.read_bytes()).hexdigest()
+    )
 
     manifest_bytes = SOURCE_MANIFEST_PATH.read_bytes()
     assert hashlib.sha256(manifest_bytes).hexdigest() == testcase["manifest_digest_sha256"]
     assert json.loads(manifest_bytes)["manifest_version"] == 9
     assert json.loads(manifest_bytes)["fork_sha"]["value"] == RUNNER_SHA
     source_journey_bytes = SOURCE_JOURNEY_PATH.read_bytes()
-    assert hashlib.sha256(source_journey_bytes).hexdigest() == testcase[
-        "journey_digest_sha256"
-    ]
+    assert hashlib.sha256(source_journey_bytes).hexdigest() == testcase["journey_digest_sha256"]
 
     app = source["app_input_source"]
     assert app == {
@@ -57,24 +57,31 @@ def test_receipt_pins_runner_testcase_manifest_and_unchanged_app_build():
     }
     assert source["app_sha"] == APP_SHA
     assert source["apk_digest_sha256"] == APK_SHA256
-    assert source["apk_size_bytes"] == 67183120
+    assert source["apk_size_bytes"] is None
+    assert "record observed size" in source["apk_size_note"]
     assert source["package_name"] == "com.dualix.dualmessenger.webscanner"
     assert source["google_test_ad_app_id"] == TEST_APP_ID
     assert receipt["testcase"]["journey_path"] == str(JOURNEY_PATH.relative_to(REPO_ROOT))
-    assert receipt["testcase"]["journey_digest_sha256"] == hashlib.sha256(
-        JOURNEY_PATH.read_bytes()
-    ).hexdigest()
-    assert receipt["testcase"]["manifest_path"] == str(
-        TINOS_MANIFEST_PATH.relative_to(REPO_ROOT)
+    assert (
+        receipt["testcase"]["journey_digest_sha256"]
+        == hashlib.sha256(JOURNEY_PATH.read_bytes()).hexdigest()
     )
-    assert receipt["testcase"]["manifest_digest_sha256"] == hashlib.sha256(
-        TINOS_MANIFEST_PATH.read_bytes()
-    ).hexdigest()
+    assert receipt["testcase"]["manifest_path"] == str(TINOS_MANIFEST_PATH.relative_to(REPO_ROOT))
+    assert (
+        receipt["testcase"]["manifest_digest_sha256"]
+        == hashlib.sha256(TINOS_MANIFEST_PATH.read_bytes()).hexdigest()
+    )
 
 
 def test_tinos_manifest_pins_profile_dependencies_revision_and_full_cli_contract():
     assert TINOS_MANIFEST_PATH.is_file(), f"missing Tinos manifest: {TINOS_MANIFEST_PATH}"
     manifest = json.loads(TINOS_MANIFEST_PATH.read_text(encoding="utf-8"))
+
+    app = manifest["candidate_app"]
+    assert app["app_sha"] == APP_SHA
+    assert app["apk_digest_sha256"] == APK_SHA256
+    assert app["apk_size_bytes"] is None
+    assert "record observed size" in app["apk_size_note"]
 
     assert manifest["manifest_version"] == 1
     assert manifest["fork_sha"]["value"] == RUNNER_SHA
@@ -138,7 +145,10 @@ def test_journey_distinguishes_allowed_show_denial_and_fill_failure():
         "home-screen-2-feature-direct_message",
         "Android system Back",
         "first exact allow-log timestamp",
-        "17 seconds",
+        "3 seconds",
+        "15 seconds",
+        "19 seconds",
+        "not dismissal",
         "±1 second",
         "PR #100's merge is not the runner pin",
         "b219d55",
@@ -178,6 +188,12 @@ def test_candidate_records_a_single_allowed_scenario_and_intended_negative_contr
         "The first Direct Message feature click must be denied by Tinos rules (NOT_ALLOWED)."
     )
     assert control["invalid_when_fill_fails"] is True
+
+    timing = receipt["positive_case"]["second_click_timing"]
+    assert timing["max_elapsed_seconds"] == 3
+    assert timing["max_dismissal_seconds_before_log"] == 15
+    assert timing["total_timestamp_uncertainty_seconds"] == 1
+    assert timing["worst_case_elapsed_from_sdk_show_history_seconds"] == 19
     assert control["required_observations"] == [
         "show allowed: shown and dismissed",
         REVENUE_EXPECTATION,

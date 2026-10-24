@@ -9,9 +9,9 @@ device has been used to author this candidate.
 - Artemis runner: `feefd94c72dbce0fa1afc109ffe3d8254f565d6b`.
 - Testcase and manifest format reference: `096411113522abc37964256833fecbbac4778af4`, manifest version `9`. Pocket Actual files are format references only; the Tinos case uses its own manifest and assertions.
 - Candidate Tinos manifest: `qualification/manifests/tinos_demo_gated_interstitial.che2016.v1.json`.
-- App: debug `adsTest` APK from `tevo-studio/sa049-dual-app` PR #145, head `3277551509acfdfa2615491a6b197cec741e4388`.
-- This is a stack head, not `main`. Identify the APK by its pinned SHA-256 and byte size.
-- APK SHA-256: `d5b3e52c40941dd0b9e473d04029d61ca64e9369e721e947eb2eef470791dc08`; size `67183120` bytes.
+- App: current SDK-main debug `adsTest` APK from `tevo-studio/sa049-dual-app` PR #145, head `24d3ad51350767d04a2951ab72685a45f67a6f75`.
+- APK SHA-256: `b2a14979f173bc3e022a15aa5e3385085c8a02167ceda4b64b69da9e060efe64` (author-reported; not independently re-hashed by Sol).
+- The current issue source does not report this APK's byte size. Record the observed size after verifying its SHA-256; do not use the superseded stack-head APK or the APKs in `workdir/out/` and `workdir/out2/`.
 - Application ID: `com.dualix.dualmessenger.webscanner`. Use test ad IDs only. Do not rebuild or change the app build.
 - Google test ad app ID: `ca-app-pub-3940256099942544~3347511713`.
 - Tinos fixture: placement `main`, minimum interval 20 seconds, maximum 3 shows per hour. A cold start resets show history.
@@ -30,14 +30,17 @@ placement, not a revenue-log field.
 ## Fixture and reset
 
 Execution requires two independent non-author reviews of this exact revision.
-Sol's corrected-build re-review on CHE-2015 is PASS for the pinned app head.
+Sol's corrected-build re-review on CHE-2015 must be PASS for the pinned app
+head. The current issue records an app-source PASS, not an independent
+verification of this APK. The executor must verify the APK SHA-256 before use.
 Sol must grant an exclusive X99 AVD claim with an exact serial. The X99 AVD
 must follow its live qualification or first-run route. CHE-387's flake
 baseline remains a separate required-acceptance gate.
 
 1. Verify the installed Artemis runner against the pinned SHA. Verify the APK
-   SHA-256, byte size, package ID, and app commit. Install only this APK after
-   all execution gates pass. Do not substitute or rebuild the app.
+   SHA-256, package ID, and app commit. Record its observed byte size. Install
+   only this APK after all execution gates pass. Do not substitute or rebuild
+   the app.
 2. Use an isolated test AVD with no personal data and a dedicated non-premium
    test state. On the first cold start, expect the Splash/UMP consent gate. If
    first-run flags require them, complete Language First-Open, Privacy Ack,
@@ -87,19 +90,22 @@ not call the ad API directly.
    control. `NavDisplay` handles system Back by popping the route; the screen's
    own back callback invokes the separate `inter_back` ad path. Confirm Home,
    the WhatsApp tab, and the same Direct Message selector before tapping again.
-4. Measure `t0` at the first feature tap, `t1` at the first exact allow-log
-   timestamp, and `t2` at the second feature tap's native action timestamp.
-   Normalize the log and action timestamps to one monotonic timeline and record
-   the offset. Require both `t2 - t1` and `t2 - t0` to be no more than 17
-   seconds. The allowed total timestamp uncertainty is ±1 second, leaving at
-   least a 2-second margin below the 20-second rule. If the clocks cannot be
-   aligned within that tolerance, report the denial attempt as `NOT-RUN`.
-5. If dismissal or return-to-Home consumes the window, do not make a late tap
-   and do not count an earlier allow as a denial. Report the denial attempt as
-   `NOT-RUN`. Otherwise, tap the same Direct Message selector once and require
-   the exact denial log `show denied by Tinos rules (NOT_ALLOWED)` after that
-   tap. Tie it to the second tap by ordered timestamps. An exact denial is
-   required; timing alone is not a denial.
+4. Measure `t1` at the first exact allow-log timestamp, after dismissal, and
+   `t2` at the second feature tap's native action timestamp. Normalize the log
+   and action timestamps to one monotonic timeline and record the offset. The
+   SDK measures its 20-second interval from show history, not dismissal. The
+   first show can take up to 15 seconds to dismiss. Require `t2 - t1` to be no
+   more than 3 seconds, with total timestamp uncertainty of ±1 second. This
+   bounds the second attempt to at most 19 seconds from the SDK show-history
+   time. If the clocks cannot be aligned within that tolerance, report the
+   denial attempt as `NOT-RUN`.
+5. If dismissal, Back, or return-to-Home consumes the 3-second window, do not
+   make a late tap and do not count an earlier allow as a denial. Report the
+   denial attempt as `NOT-RUN`. Otherwise, tap the same Direct Message selector
+   once and require the exact denial log
+   `show denied by Tinos rules (NOT_ALLOWED)` after that tap. Tie it to the
+   second tap by ordered timestamps. An exact denial is required; timing alone
+   is not a denial.
 6. Capture the final native Checker result and runner-bound final capture in
    the same Artemis session. Preserve the raw logcat, recording, action
    timestamps, Checker ledger, and final-capture identity.
