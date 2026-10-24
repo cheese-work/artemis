@@ -33,9 +33,9 @@
   },
   "testcase": {
     "journey_path": "qualification/journeys/tinos_demo_gated_interstitial.md",
-    "journey_digest_sha256": "0c0cf810b4a3252d690030396ec31d96f94311cd2a9209c5639d478441492741",
+    "journey_digest_sha256": "c1982bbf4f845fca5a2b9306eb0448fdf198bde1c84026c70c6bbcb86cb05b6e",
     "manifest_path": "qualification/manifests/tinos_demo_gated_interstitial.che2016.v1.json",
-    "manifest_digest_sha256": "a396898df77f2fe12e3bb50673b60d8ad77429283d5584fbe7e2f58c029257a3",
+    "manifest_digest_sha256": "4c3dfc95df879c0f64385fab4e0176621df4d7dbb9ce917b271e53da603d45f6",
     "manifest_version": 1
   },
   "tinos_configuration": {
@@ -71,10 +71,10 @@
   },
   "positive_case": {
     "case_id": "tinos-demo-allow-then-interval-denial",
-    "goal": "Execute only the positive scenario in qualification/journeys/tinos_demo_gated_interstitial.md. Follow its steps exactly, including one Android system Back action to return to Home, and do not execute the negative control.",
+    "goal_source": "qualification/manifests/tinos_demo_gated_interstitial.che2016.v1.json:entry_point.case_goals.tinos-demo-allow-then-interval-denial; submit the complete goal string verbatim as the single CLI goal argument.",
     "expected_events": [
       "show allowed: shown and dismissed",
-      "revenue <micros> <currency> unit=ca-app-pub-3940256099942544/1033173712 network=<network> precision=<precision>",
+      "revenue <valueMicros> micros <currency> unit=ca-app-pub-3940256099942544/1033173712 network=<network> precision=<precision>",
       "show denied by Tinos rules (NOT_ALLOWED)"
     ],
     "second_click_timing": {
@@ -96,15 +96,15 @@
   },
   "negative_control": {
     "case_id": "tinos-demo-first-click-negative-control",
-    "goal": "Execute only the negative-control scenario in qualification/journeys/tinos_demo_gated_interstitial.md. Follow its steps exactly and report fail_assertion only for the specified intentionally false first-click denial assertion.",
+    "goal_source": "qualification/manifests/tinos_demo_gated_interstitial.che2016.v1.json:entry_point.case_goals.tinos-demo-first-click-negative-control; submit the complete goal string verbatim as the single CLI goal argument.",
     "expected_verdict": "fail_assertion",
     "false_assertion": "The first Direct Message feature click must be denied by Tinos rules (NOT_ALLOWED).",
     "required_observations": [
       "show allowed: shown and dismissed",
-      "revenue <micros> <currency> unit=ca-app-pub-3940256099942544/1033173712 network=<network> precision=<precision>"
+      "revenue <valueMicros> micros <currency> unit=ca-app-pub-3940256099942544/1033173712 network=<network> precision=<precision>"
     ],
     "missing_allow_result": "NOT-RUN: the show-call timeout can race a close within 15 seconds of the first visible frame.",
-    "missing_revenue_result": "invalid_control",
+    "missing_revenue_result": "invalid_control: revenue_event_missing",
     "intended_reason": "The first click is allowed, the required revenue observation passes, and only the deliberately false denial assertion fails.",
     "invalid_when_fill_fails": true,
     "fill_failure_logs": [
@@ -113,13 +113,72 @@
     ],
     "requires_same_session_checker_capture": true,
     "requires_runner_bound_final_capture": true,
-    "adapter": "Use the Tinos-specific journey assertions and same-session native Checker evidence. Do not apply the Pocket Actual checker adapter unchanged.",
+    "adapter": "qualification/tools/tinos_demo_verdict_exit.py; Tinos-specific testcase-side verdict-to-exit tool; not a runner change. Exit 1 with fail_assertion only when Artemis exit is 0, exact allow and revenue observations pass, and the sole failed final assertion is the exact false assertion with same-session Checker and runner-bound final-capture identity. Exit 2 with NOT-RUN when the allow line is missing after the timeout-race case, or invalid_control for missing revenue, malformed or fill-failed logs, stale or mismatched capture, a plain pass, or another non-intended result. Never apply the Pocket Actual adapter unchanged.",
     "not_satisfied_by": "completed orchestration status"
   },
   "execution": {
     "manifest_path": "qualification/manifests/tinos_demo_gated_interstitial.che2016.v1.json",
     "entry_point": "Pinned Artemis direct CLI, standalone and collected in the foreground.",
-    "runner_command_template": "ARTEMIS_TRACES_DIR=<attempt-root>/ledger DATA_ENGINE_DB_PATH=<attempt-root>/ledger/data_engine.db artemis run \"<case-goal>\" --profile pro --locked-app com.dualix.dualmessenger.webscanner --test-name <case-id> --traces-path <attempt-root>/artemis-traces --device-serial <Sol-granted-exact-serial> --session-id <fresh-UUID> --run-id <same-fresh-UUID> --enable-checker --verification-level final --with-video-recording-tools --standalone",
+    "runner_environment_template": {
+      "ARTEMIS_TRACES_DIR": "<attempt-root>/ledger",
+      "DATA_ENGINE_DB_PATH": "<attempt-root>/ledger/data_engine.db"
+    },
+    "runner_command_argv_template": [
+      "artemis",
+      "run",
+      "<case-goal>",
+      "--profile",
+      "pro",
+      "--locked-app",
+      "com.dualix.dualmessenger.webscanner",
+      "--test-name",
+      "<case-id>",
+      "--traces-path",
+      "<attempt-root>/artemis-traces",
+      "--device-serial",
+      "<Sol-granted-exact-serial>",
+      "--session-id",
+      "<fresh-UUID>",
+      "--run-id",
+      "<same-fresh-UUID>",
+      "--enable-checker",
+      "--verification-level",
+      "final",
+      "--with-video-recording-tools",
+      "--standalone"
+    ],
+    "verdict_adapter_argv_template": [
+      "python",
+      "qualification/tools/tinos_demo_verdict_exit.py",
+      "--traces-dir",
+      "<attempt-root>/ledger",
+      "--data-engine-db",
+      "<attempt-root>/ledger/data_engine.db",
+      "--session-id",
+      "<same-fresh-UUID>",
+      "--logcat-file",
+      "<attempt-root>/tinos-demo-logcat.txt",
+      "--runner-exit-status",
+      "<observed-artemis-exit-status>"
+    ],
+    "verdict_adapter": {
+      "path": "qualification/tools/tinos_demo_verdict_exit.py",
+      "script_sha256": "13693fc6d71cd0239d56515e02a90a27ba0781e4ac9e2d057f7ef769f898af2a",
+      "runner_change": false,
+      "exit_1": "valid intended negative control only: Artemis returned 0; exact allow and revenue observations passed; exactly the specified false assertion failed; same-session Checker trace and final capture match",
+      "exit_2": "NOT-RUN for a missing allow line; otherwise invalid_control for missing or invalid evidence, a fill failure, stale or mismatched capture, plain pass, or Artemis process failure"
+    },
+    "synthetic_device_free_test_cases": [
+      "intended failure",
+      "missing revenue",
+      "missing allow",
+      "fill failure",
+      "stale or mismatched capture",
+      "plain pass",
+      "arbitrary Artemis process failure",
+      "revenue missing micros token",
+      "wrong test ad unit"
+    ],
     "session_policy": "Use one fresh UUID for session and run IDs per independent case; preserve that same session for its Checker result and runner-bound final capture.",
     "author_execution": "NOT-RUN"
   },

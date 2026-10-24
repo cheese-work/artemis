@@ -21,8 +21,27 @@ APK_SIZE_BYTES = 67183124
 TEST_APP_ID = "ca-app-pub-3940256099942544~3347511713"
 TEST_INTERSTITIAL = "ca-app-pub-3940256099942544/1033173712"
 REVENUE_EXPECTATION = (
-    f"revenue <micros> <currency> unit={TEST_INTERSTITIAL} network=<network> precision=<precision>"
+    f"revenue <valueMicros> micros <currency> unit={TEST_INTERSTITIAL} "
+    "network=<network> precision=<precision>"
 )
+
+
+def _submitted_argv(manifest, case_id):
+    attempt_uuid = "00000000-0000-4000-8000-000000000001"
+    replacements = {
+        "<case-goal>": manifest["entry_point"]["case_goals"][case_id],
+        "<case-id>": case_id,
+        "<attempt-root>": "/synthetic/attempt",
+        "<Sol-granted-exact-serial>": "SYNTHETIC-ONLY-NO-DEVICE",
+        "<fresh-UUID>": attempt_uuid,
+        "<same-fresh-UUID>": attempt_uuid,
+    }
+    argv = []
+    for argument in manifest["entry_point"]["command_argv_template"]:
+        for placeholder, value in replacements.items():
+            argument = argument.replace(placeholder, value)
+        argv.append(argument)
+    return argv
 
 
 def test_receipt_pins_runner_testcase_manifest_and_unchanged_app_build():
@@ -73,6 +92,17 @@ def test_receipt_pins_runner_testcase_manifest_and_unchanged_app_build():
         receipt["testcase"]["manifest_digest_sha256"]
         == hashlib.sha256(TINOS_MANIFEST_PATH.read_bytes()).hexdigest()
     )
+    manifest = json.loads(TINOS_MANIFEST_PATH.read_text(encoding="utf-8"))
+    assert (
+        receipt["execution"]["runner_command_argv_template"]
+        == manifest["entry_point"]["command_argv_template"]
+    )
+    assert receipt["execution"]["verdict_adapter"]["runner_change"] is False
+    adapter_path = REPO_ROOT / receipt["execution"]["verdict_adapter"]["path"]
+    assert (
+        receipt["execution"]["verdict_adapter"]["script_sha256"]
+        == hashlib.sha256(adapter_path.read_bytes()).hexdigest()
+    )
 
 
 def test_tinos_manifest_pins_profile_dependencies_revision_and_full_cli_contract():
@@ -103,28 +133,88 @@ def test_tinos_manifest_pins_profile_dependencies_revision_and_full_cli_contract
     assert "No new spend is authorized" in manifest["spend_policy"]
     entry_point = manifest["entry_point"]
     assert entry_point["route"] == "cli"
-    command = entry_point["command_template"]
-    for argument in (
-        'artemis run "<case-goal>"',
-        "--profile pro",
-        "--locked-app com.dualix.dualmessenger.webscanner",
-        "--test-name <case-id>",
-        "--traces-path <attempt-root>/artemis-traces",
-        "--device-serial <Sol-granted-exact-serial>",
-        "--session-id <fresh-UUID>",
-        "--run-id <same-fresh-UUID>",
+    assert entry_point["environment_template"] == {
+        "ARTEMIS_TRACES_DIR": "<attempt-root>/ledger",
+        "DATA_ENGINE_DB_PATH": "<attempt-root>/ledger/data_engine.db",
+    }
+    command_argv = entry_point["command_argv_template"]
+    assert command_argv[:3] == ["artemis", "run", "<case-goal>"]
+    assert command_argv[3:] == [
+        "--profile",
+        "pro",
+        "--locked-app",
+        "com.dualix.dualmessenger.webscanner",
+        "--test-name",
+        "<case-id>",
+        "--traces-path",
+        "<attempt-root>/artemis-traces",
+        "--device-serial",
+        "<Sol-granted-exact-serial>",
+        "--session-id",
+        "<fresh-UUID>",
+        "--run-id",
+        "<same-fresh-UUID>",
         "--enable-checker",
-        "--verification-level final",
+        "--verification-level",
+        "final",
         "--with-video-recording-tools",
         "--standalone",
-    ):
-        assert argument in command
-    assert "..." not in command
+    ]
     assert set(entry_point["case_goals"]) == {
         "tinos-demo-allow-then-interval-denial",
         "tinos-demo-first-click-negative-control",
     }
+    assert entry_point["post_run_verifier_argv_template"] == [
+        "python",
+        "qualification/tools/tinos_demo_verdict_exit.py",
+        "--traces-dir",
+        "<attempt-root>/ledger",
+        "--data-engine-db",
+        "<attempt-root>/ledger/data_engine.db",
+        "--session-id",
+        "<same-fresh-UUID>",
+        "--logcat-file",
+        "<attempt-root>/tinos-demo-logcat.txt",
+        "--runner-exit-status",
+        "<observed-artemis-exit-status>",
+    ]
+    assert entry_point["testcase_side_tool"]["runner_change"] is False
     assert "revision_policy" in manifest
+
+
+def test_submitted_cli_goal_payload_contains_reviewed_scenario_assertions():
+    manifest = json.loads(TINOS_MANIFEST_PATH.read_text(encoding="utf-8"))
+    positive_id = "tinos-demo-allow-then-interval-denial"
+    control_id = "tinos-demo-first-click-negative-control"
+    positive_argv = _submitted_argv(manifest, positive_id)
+    control_argv = _submitted_argv(manifest, control_id)
+    positive_goal = positive_argv[2]
+    control_goal = control_argv[2]
+
+    assert positive_goal == manifest["entry_point"]["case_goals"][positive_id]
+    assert control_goal == manifest["entry_point"]["case_goals"][control_id]
+    assert positive_goal != control_goal
+    assert "qualification/journeys/tinos_demo_gated_interstitial.md" not in positive_goal
+    assert "qualification/journeys/tinos_demo_gated_interstitial.md" not in control_goal
+    assert "show allowed: shown and dismissed" in positive_goal
+    assert "show allowed: shown and dismissed" in control_goal
+    assert REVENUE_EXPECTATION in positive_goal
+    assert REVENUE_EXPECTATION in control_goal
+    assert "(t2 - t1) + D + 5 seconds <= 20 seconds" in positive_goal
+    assert "t2 - t1 <= 15 seconds - D" in positive_goal
+    false_assertion = (
+        "The first Direct Message feature click must be denied by Tinos rules (NOT_ALLOWED)."
+    )
+    assert false_assertion not in positive_goal
+    assert false_assertion in control_goal
+    assert (
+        positive_argv[positive_argv.index("--session-id") + 1]
+        == positive_argv[positive_argv.index("--run-id") + 1]
+    )
+    assert (
+        control_argv[control_argv.index("--session-id") + 1]
+        == control_argv[control_argv.index("--run-id") + 1]
+    )
 
 
 def test_journey_distinguishes_allowed_show_denial_and_fill_failure():
@@ -161,7 +251,7 @@ def test_journey_distinguishes_allowed_show_denial_and_fill_failure():
         "PR #100's merge is not the runner pin",
         "b219d55",
         "NOT-RUN",
-        "revenue <micros> <currency> unit=<adUnitId> network=<network> precision=<precision>",
+        "revenue <valueMicros> micros <currency> unit=<adUnitId> network=<network> precision=<precision>",
         f"unit={TEST_INTERSTITIAL}",
     ):
         assert expected in journey
@@ -172,6 +262,9 @@ def test_journey_distinguishes_allowed_show_denial_and_fill_failure():
     assert "DATA_ENGINE_DB_PATH" in journey
     assert "qualification/manifests/tinos_demo_gated_interstitial.che2016.v1.json" in journey
     assert "same session" in journey
+    assert "tinos_demo_verdict_exit.py" in journey
+    assert "testcase-side tool, not a runner change" in journey
+    assert "only when Artemis exited `0`" in journey
     assert "fail_assertion" in journey
     assert "app-source PASS on CHE-2015" in journey
     assert "changes only the SDK pin and repo-local Maven artifacts" in journey
@@ -234,7 +327,7 @@ def test_candidate_records_a_single_allowed_scenario_and_intended_negative_contr
         "show allowed: shown and dismissed",
         REVENUE_EXPECTATION,
     ]
-    assert control["missing_revenue_result"] == "invalid_control"
+    assert control["missing_revenue_result"] == "invalid_control: revenue_event_missing"
     assert control["requires_same_session_checker_capture"] is True
     assert receipt["review_and_execution_boundary"]["device_execution"] == "NOT-RUN"
     assert receipt["review_and_execution_boundary"]["device_claim"] == "not granted"

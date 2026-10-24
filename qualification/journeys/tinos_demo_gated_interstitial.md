@@ -22,7 +22,7 @@ device has been used to author this candidate.
 The `TinosDemo` log tag emits the exact allow line
 `show allowed: shown and dismissed` and the exact denial line
 `show denied by Tinos rules (NOT_ALLOWED)`. A revenue line has the format
-`revenue <micros> <currency> unit=<adUnitId> network=<network> precision=<precision>`.
+`revenue <valueMicros> micros <currency> unit=<adUnitId> network=<network> precision=<precision>`.
 The revenue line has no placement field. For this fixture, require
 `unit=ca-app-pub-3940256099942544/1033173712`; `main` is the configured Tinos
 placement, not a revenue-log field.
@@ -96,7 +96,8 @@ not call the ad API directly.
    within 15 seconds, report this attempt `NOT-RUN`. After dismissal, require
    `show allowed: shown and dismissed` for this tap. The app then navigates to
    Direct Message. Require at least one revenue line for this first tap that
-   matches the format above and includes the exact test-unit `unit=` value.
+   matches the complete format above, including the literal `micros` token
+   and exact test-unit `unit=` value.
    Evaluate this revenue requirement from the continuous logcat capture; do
    not delay the repeat tap to wait for it.
 3. Return to Home exactly once with Android system Back, not the app
@@ -147,8 +148,8 @@ screen, tap the same Direct Message selector exactly once. Close the displayed
 ad with its close control within 15 seconds of its first visible frame. Record
 show and close timestamps from the recording; if the ad is not closed within
 15 seconds, report `NOT-RUN`. After dismissal, require both
-`show allowed: shown and dismissed` and a revenue line that includes
-`unit=ca-app-pub-3940256099942544/1033173712`. The revenue assertion must pass.
+`show allowed: shown and dismissed` and a revenue line matching
+`revenue <valueMicros> micros <currency> unit=ca-app-pub-3940256099942544/1033173712 network=<network> precision=<precision>`. The revenue assertion must pass.
 
 The exact deliberately false final Checker assertion is:
 
@@ -174,22 +175,48 @@ checker adapter unchanged to Tinos.
 
 Use the Tinos-specific manifest at
 `qualification/manifests/tinos_demo_gated_interstitial.che2016.v1.json`.
-It pins the exact CLI flags, profile, dependency lock, case goals, and revision
-policy. Run each case once in the foreground with a fresh UUID per attempt;
-use that UUID for both `--session-id` and `--run-id`. Keep each case's Checker
-result and final capture in that same session. Do not substitute an MCP route,
-fill in omitted flags, or run the negative control as a positive. The command
-sets `ARTEMIS_TRACES_DIR` to `<attempt-root>/ledger` and
-`DATA_ENGINE_DB_PATH` to `<attempt-root>/ledger/data_engine.db`; its
-`--traces-path` is only for Artemis trace/video recording.
+It pins the exact CLI argv, environment, profile, dependency lock, complete
+case-goal strings, post-run verifier, and revision policy. Each `case_goals`
+value is the complete reviewed scenario and final assertions submitted as the
+single `artemis run` goal argument. Do not pass a journey filename or invent a
+prompt-loading step. Substitute only the manifest's listed runtime values.
+Treat `command_argv_template` as argv elements, not a shell string. Run each
+case once in the foreground with a fresh UUID per attempt; use that UUID for
+both `--session-id` and `--run-id`. Keep each case's Checker result and final
+capture in that same session. Do not substitute an MCP route, fill in omitted
+flags, or run the negative control as a positive. Set
+`ARTEMIS_TRACES_DIR=<attempt-root>/ledger` and
+`DATA_ENGINE_DB_PATH=<attempt-root>/ledger/data_engine.db`; `--traces-path`
+is only for Artemis trace/video recording.
+
+For each attempt, collect a timestamped raw log file from before the first
+feature tap with `adb logcat -v epoch -s TinosDemo:I '*:S'` and save its raw
+output as `<attempt-root>/tinos-demo-logcat.txt`; do not clear shared ADB or
+log buffers. Keep the Artemis process exit status
+separate from the verifier exit status. After the foreground `artemis run`,
+invoke exactly the manifest's `post_run_verifier_argv_template`, replacing
+`<observed-artemis-exit-status>` with the recorded process status. The
+Tinos-specific `qualification/tools/tinos_demo_verdict_exit.py` is a
+testcase-side tool, not a runner change. It returns exit `1` and JSON
+`fail_assertion` only when Artemis exited `0`, the raw log contains exactly
+one allow line and matching test-unit revenue lines with the literal `micros`
+token, and the latest final Checker ledger has only the exact intended false
+assertion failure bound to a same-session native Checker trace and final
+capture. Exit `2` with JSON `NOT-RUN` means the allow line is missing after the
+timeout-race case. Exit `2` with JSON `invalid_control` means other evidence
+is missing, malformed, stale, mismatched, contains a fill failure, or does not
+show the intended failure. Never count an arbitrary Artemis process failure
+or a completed orchestration status as control success. Do not apply the
+Pocket Actual checker adapter unchanged to Tinos.
 
 Record each attempt's runner SHA, candidate commit SHA, manifest version and
 digest, journey digest, APK source commit/package/size/SHA-256, exact command,
 target class and Sol-granted serial, session/run ID, attempt kind, action and
 log timestamps, observed event order, raw logcat, recording, native traces,
-Checker verdict and trace ID, linked final-capture ID, exit status, cleanup
-result, and verified device release. Keep the two case results separate. The
-negative control's expected `fail_assertion` is not a positive pass.
+Checker verdict and trace ID, linked final-capture ID, Artemis exit status,
+verifier JSON and exit status, cleanup result, and verified device release.
+Keep the two case results separate. The negative control's expected
+`fail_assertion` is not a positive pass.
 
 No device command, claim, installation, launch, or execution was performed to
 author this candidate. Do not begin execution if it requires new spend.
