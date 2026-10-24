@@ -77,6 +77,21 @@ TIER_MODELS: dict[Tier, tuple[str, str]] = {
     "sol": ("openai", "gpt-5.6-sol"),
     "nova": ("anthropic", "claude-sonnet-5"),
 }
+TIER_MODEL_ALIASES: dict[tuple[str, str], Tier] = {
+    ("openai", "gpt-6.1-sol"): "sol",
+}
+
+
+def tier_for_provider_model(provider: str | None, model: str | None) -> Tier | None:
+    """Resolve a tier from an exact declared provider/model route."""
+    if provider is None or model is None:
+        return None
+    route = (provider, model)
+    for tier, canonical_route in TIER_MODELS.items():
+        if route == canonical_route:
+            return tier
+    return TIER_MODEL_ALIASES.get(route)
+
 
 # Environment variables whose presence/value can influence LLMConfig
 # resolution and must be captured (never their raw secret value) in the
@@ -272,10 +287,7 @@ def _llm_node_snapshot(llm: LLM | LLMWithFallback) -> dict[str, Any]:
 
 def _node_tier(llm: LLM | LLMWithFallback) -> Tier | None:
     """Which declared tier (if any) this node's primary provider/model matches."""
-    for tier, (provider, model) in TIER_MODELS.items():
-        if llm.provider == provider and llm.model == model:
-            return tier
-    return None
+    return tier_for_provider_model(llm.provider, llm.model)
 
 
 @dataclasses.dataclass(frozen=True)

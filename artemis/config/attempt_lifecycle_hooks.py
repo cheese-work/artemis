@@ -56,23 +56,19 @@ def record_attempt_manifest(
     """
     try:
         from artemis.config.attempt_manifest import (
-            TIER_MODELS,
             ManifestAlreadyExistsError,
             build_attempt_manifest,
             store_attempt_manifest,
+            tier_for_provider_model,
         )
         import os
 
-        tier = None
-        for candidate_tier, (provider, model_name) in TIER_MODELS.items():
-            if llm_config.planner.provider == provider and llm_config.planner.model == model_name:
-                tier = candidate_tier
-                break
+        tier = tier_for_provider_model(llm_config.planner.provider, llm_config.planner.model)
         if tier is None:
             print(
                 f"Attempt manifest [{checkpoint}] skipped: planner "
                 f"{llm_config.planner.provider}/{llm_config.planner.model} does not match "
-                "a declared tier in attempt_manifest.TIER_MODELS."
+                "a declared route in artemis.config.attempt_manifest."
             )
             return
 

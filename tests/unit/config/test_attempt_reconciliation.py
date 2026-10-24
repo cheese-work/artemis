@@ -695,6 +695,82 @@ class TestReconcileFinishedAttempt:
         )
         assert result is None
 
+    def test_gpt_61_sol_lifecycle_records_route_and_accepts_synthetic_receipts(
+        self, tmp_path, monkeypatch, _isolate_traces_dir
+    ):
+        """Offline synthetic lifecycle coverage for the selected Sol route."""
+        import json
+
+        from artemis.config import paths
+        from artemis.config.attempt_lifecycle_hooks import (
+            reconcile_and_store_verdict,
+            record_attempt_manifest,
+        )
+        from artemis.config.attempt_manifest import read_stored_manifest
+
+        trace_id = "trace-gpt-61-sol-synthetic"
+        api_base = "https://gateway.synthetic.invalid/v1"
+        traces_dir = tmp_path / "traces"
+        db_path = tmp_path / "synthetic-usage.db"
+        monkeypatch.setattr(trace_store, "TRACES_DIR", str(traces_dir))
+        monkeypatch.setattr(paths, "get_traces_dir", lambda: traces_dir)
+        monkeypatch.setattr(paths, "get_data_engine_db_path", lambda: db_path)
+        monkeypatch.delenv("ARTEMIS_FAKE_LLM", raising=False)
+
+        llm = LLMWithFallback(
+            provider="openai",
+            model="gpt-6.1-sol",
+            api_base=api_base,
+            fallback=LLM(provider="openai", model="gpt-6.1-sol", api_base=api_base),
+        )
+        config = LLMConfig(
+            **{node: llm for node in _REQUIRED_NODES},
+            utils=LLMConfigUtils(outputter=llm, hopper=llm),
+        )
+
+        storage = StorageManager(db_path, traces_dir)
+        storage.create_session(
+            SessionMetadata(session_id=trace_id, initial_goal="synthetic lifecycle test")
+        )
+        for node in _REQUIRED_NODES:
+            storage.create_trace(
+                TraceRecord(
+                    trace_id=f"synthetic-usage-{node}",
+                    session_id=trace_id,
+                    type="llm_call",
+                    name="llm_usage",
+                    payload={
+                        "node": node,
+                        "source": "openai:gpt-6.1-sol",
+                        "synthetic": True,
+                    },
+                )
+            )
+
+        record_attempt_manifest(
+            trace_id=trace_id,
+            checkpoint="launch",
+            llm_config=config,
+        )
+
+        stored = read_stored_manifest(trace_id, "launch")
+        assert stored is not None, "selected Sol route must store a launch manifest"
+        manifest = json.loads(stored[0].decode("utf-8"))
+        assert manifest["tier"] == "sol"
+        assert manifest["fake_llm_enabled"] is False
+        for node in ("planner", "checker"):
+            entry = manifest["nodes"][node]
+            assert entry["resolved_tier"] == "sol"
+            assert entry["config"]["provider"] == "openai"
+            assert entry["config"]["model"] == "gpt-6.1-sol"
+            assert entry["config"]["api_base"] == api_base
+
+        reconcile_and_store_verdict(trace_id=trace_id)
+        verdict_path = traces_dir / trace_id / "attempt_reconciliation_verdict.json"
+        verdict = json.loads(verdict_path.read_text(encoding="utf-8"))
+        assert verdict["accepted"] is True
+        assert verdict["reason"] is None
+
     def test_matching_usage_accepts_the_attempt(self, tmp_path, _isolate_traces_dir):
         trace_id = "trace-accept"
         manifest = _manifest(attempt_id=trace_id, trace_id=trace_id)
