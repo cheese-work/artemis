@@ -6,7 +6,7 @@ device has been used to author this candidate.
 
 ## Pinned inputs
 
-- Artemis runner: `9f8ef4868f9eb1d8f01526fef393db762f9f2ef6`.
+- Artemis runner: `c0e71f8c23ef4667c552cc78ad3540c741dfe732`.
 - Testcase and manifest format reference: `096411113522abc37964256833fecbbac4778af4`, manifest version `9`. Pocket Actual files are format references only; the Tinos case uses its own manifest and assertions.
 - Candidate Tinos manifest: `qualification/manifests/tinos_demo_gated_interstitial.che2016.v1.json`.
 - App: current SDK-main debug `adsTest` APK from `tevo-studio/sa049-dual-app` PR #145, head `24d3ad51350767d04a2951ab72685a45f67a6f75`.

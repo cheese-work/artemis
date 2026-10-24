@@ -33,9 +33,9 @@
   },
   "testcase": {
     "journey_path": "qualification/journeys/tinos_demo_gated_interstitial.md",
-      "journey_digest_sha256": "53e712ef82fc96849521a38c0df9309de82e281bfa7e13a3caf25423228e8210",
+      "journey_digest_sha256": "7a0e0f0c2b7b34d7784bde5d52399c371a66b8751de372db947d8881dd5cf461",
     "manifest_path": "qualification/manifests/tinos_demo_gated_interstitial.che2016.v1.json",
-      "manifest_digest_sha256": "b39d9573c41f098af8ba8e5d0e1608028691cc6c812ad0875deec4cd7a78df67",
+      "manifest_digest_sha256": "c774c52671ca8aaddd3ce98a427539007dd52887ef69dd26bd54522cf3d1ff95",
     "manifest_version": 1
   },
   "tinos_configuration": {

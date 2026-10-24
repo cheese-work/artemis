@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import re
 from pathlib import Path
 
 
@@ -364,6 +365,34 @@ def test_submitted_cli_goal_payload_contains_reviewed_scenario_assertions():
     assert (
         control_argv[control_argv.index("--session-id") + 1]
         == control_argv[control_argv.index("--run-id") + 1]
+    )
+
+
+def test_journey_and_submitted_goals_use_the_pinned_runner_sha():
+    journey = JOURNEY_PATH.read_text(encoding="utf-8")
+    manifest = json.loads(TINOS_MANIFEST_PATH.read_text(encoding="utf-8"))
+    goal_ids = (
+        "tinos-demo-allow-then-interval-denial",
+        "tinos-demo-first-click-negative-control",
+    )
+    runner_sha_pattern = re.compile(r"(?:Artemis runner: `|pinned Artemis runner )([0-9a-f]{40})")
+
+    journey_runner_shas = runner_sha_pattern.findall(journey)
+    assert journey_runner_shas
+    assert all(sha == RUNNER_SHA for sha in journey_runner_shas)
+
+    for goal_id in goal_ids:
+        goal = manifest["entry_point"]["case_goals"][goal_id]
+        goal_runner_shas = runner_sha_pattern.findall(goal)
+        assert goal_runner_shas
+        assert all(sha == RUNNER_SHA for sha in goal_runner_shas)
+
+    rejected_runner_sha = b"9f8ef4868f9eb1d8f01526fef393db762f9f2ef6"
+    qualification_root = REPO_ROOT / "qualification"
+    assert all(
+        rejected_runner_sha not in path.read_bytes()
+        for path in qualification_root.rglob("*")
+        if path.is_file()
     )
 
 
