@@ -70,7 +70,11 @@ baseline remains a separate required-acceptance gate.
 8. For each shown interstitial, close it with its visible close control within
    15 seconds of the first visible frame. Record show and close timestamps from
    the recording. If the ad is not closed within 15 seconds, report that
-   attempt `NOT-RUN`; the allow line is emitted only after dismissal.
+   attempt `NOT-RUN`; the allow line is emitted only after dismissal. The app's
+   15-second show wait starts when it calls `show`, not when the first frame is
+   visible. For either case, if the allow line is absent after a close within
+   15 seconds, report that attempt `NOT-RUN` for the timeout race. Do not count
+   the missing line as a denial or a pass.
 
 After each attempt, stop the app, preserve all raw evidence, and return the
 exact granted AVD to Sol for verified cleanup and release. Record cleanup on
@@ -95,13 +99,14 @@ not call the ad API directly.
    matches the format above and includes the exact test-unit `unit=` value.
    Evaluate this revenue requirement from the continuous logcat capture; do
    not delay the repeat tap to wait for it.
-3. Return to Home with Android system Back once, not the app toolbar/back
-   control. `NavDisplay` handles system Back by popping the route; the screen's
-   own back callback invokes the separate `inter_back` ad path. Confirm Home,
-   the WhatsApp tab, and the same Direct Message selector before tapping again.
-4. Measure `t1` at the first exact allow-log timestamp after dismissal, and
-   `t2` at the second feature tap's native action timestamp after returning to
-   Home. Normalize the log, action, and recording timestamps to one monotonic
+3. Return to Home exactly once with Android system Back, not the app
+   toolbar/back control. `NavDisplay` handles system Back by popping the route;
+   the screen's own back callback invokes the separate `inter_back` ad path.
+   Confirm Home, the WhatsApp tab, and the same Direct Message selector before
+   tapping again.
+4. Measure `t1` at the first exact allow-log timestamp after dismissal. Define
+   `t2` as the native action timestamp of the second feature tap after step 3.
+   Normalize the log, action, and recording timestamps to one monotonic
    timeline and record their offsets. Let `D` be the first ad's visible
    duration in seconds, from its first visible frame to close-control
    activation in the recording. The SDK records show history when the ad is
@@ -110,16 +115,16 @@ not call the ad API directly.
    the required bound: `(t2 - t1) + D + 5 seconds <= 20 seconds`. Derive the
    tap window as `t2 - t1 <= 15 seconds - D`. If `15 seconds - D <= 0`, or the
    clocks cannot be aligned within ±1 second, report the denial attempt
-   `NOT-RUN`.
-5. After the ad closes, return to Home with Android system Back once, not the
-   app toolbar/back control. Confirm Home, the WhatsApp tab, and the same
-   Direct Message selector before tapping again. If dismissal, Back, or return
-   to Home leaves insufficient time in the derived `15 seconds - D` window,
-   do not make a late tap; report the denial attempt `NOT-RUN`. Otherwise, tap
-   the same Direct Message selector once and require the exact denial log
-   `show denied by Tinos rules (NOT_ALLOWED)` after that tap. Tie it to the
-   second tap by ordered timestamps. An exact denial is required; timing alone
-   is not a denial.
+   `NOT-RUN`. Do not proceed with the second tap if returning to Home leaves
+   insufficient time in the derived window.
+5. If the derived window remains after step 3, tap the same Direct Message
+   selector once; this tap is `t2`. Do not press Back again. Record the native
+   action timestamp and require the exact denial log
+   `show denied by Tinos rules (NOT_ALLOWED)` after that tap. Tie the log to
+   the second tap by ordered timestamps. An exact denial is required; timing
+   alone is not a denial. If the observed timestamps do not satisfy the bound
+   in step 4, report the denial attempt `NOT-RUN`; do not count a late or absent
+   denial as a pass.
 6. Capture the final native Checker result and runner-bound final capture in
    the same Artemis session. Preserve the raw logcat, recording, action
    timestamps, Checker ledger, and final-capture identity.

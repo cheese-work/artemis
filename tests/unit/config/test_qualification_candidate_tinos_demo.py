@@ -179,6 +179,20 @@ def test_journey_distinguishes_allowed_show_denial_and_fill_failure():
     assert journey.count("close control within 15 seconds") >= 2
     assert "NOT-RUN" in journey
 
+    positive_case = journey.split("## Positive case: allow, then deny", 1)[1].split(
+        "## Negative control: false first-click denial", 1
+    )[0]
+    assert positive_case.count("Return to Home exactly once with Android system Back") == 1
+    assert (
+        "Define `t2` as the native action timestamp of the second feature tap after step 3"
+        in positive_case
+    )
+    assert (
+        "allow line is absent after a close within 15 seconds, report that attempt `NOT-RUN`"
+        in journey
+    )
+    assert "show wait starts when it calls `show`, not when the first frame is visible" in journey
+
 
 def test_candidate_records_a_single_allowed_scenario_and_intended_negative_control():
     assert RECEIPT_PATH.is_file(), f"missing candidate receipt: {RECEIPT_PATH}"
@@ -200,6 +214,14 @@ def test_candidate_records_a_single_allowed_scenario_and_intended_negative_contr
     )
     assert control["invalid_when_fill_fails"] is True
     assert "close control within 15 seconds" in receipt["fixture"]["interstitial_close"]
+    assert (
+        "allow line is absent after a close within 15 seconds"
+        in receipt["fixture"]["allow_log_timeout_race"]
+    )
+    assert "NOT-RUN" in receipt["fixture"]["allow_log_timeout_race"]
+    assert "not when the first frame is visible" in receipt["fixture"]["allow_log_timeout_race"]
+    assert receipt["positive_case"]["missing_allow_result"].startswith("NOT-RUN:")
+    assert receipt["negative_control"]["missing_allow_result"].startswith("NOT-RUN:")
 
     timing = receipt["positive_case"]["second_click_timing"]
     assert timing["max_visible_seconds"] == 15

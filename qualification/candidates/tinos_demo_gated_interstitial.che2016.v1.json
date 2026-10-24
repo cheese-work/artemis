@@ -33,7 +33,7 @@
   },
   "testcase": {
     "journey_path": "qualification/journeys/tinos_demo_gated_interstitial.md",
-    "journey_digest_sha256": "8ad274bdccba924b5f278f34b50220cad700004d6467bccd9450f359edf644c2",
+    "journey_digest_sha256": "0c0cf810b4a3252d690030396ec31d96f94311cd2a9209c5639d478441492741",
     "manifest_path": "qualification/manifests/tinos_demo_gated_interstitial.che2016.v1.json",
     "manifest_digest_sha256": "a396898df77f2fe12e3bb50673b60d8ad77429283d5584fbe7e2f58c029257a3",
     "manifest_version": 1
@@ -66,11 +66,12 @@
     },
     "reset": "Force-stop and cold-start before each independent case; each cold start resets show history; do not clear app data or cold-start between the positive case's two clicks.",
     "interstitial_close": "For each shown interstitial, close with its visible close control within 15 seconds of the first visible frame; record show and close timestamps from the recording; otherwise report NOT-RUN.",
+    "allow_log_timeout_race": "The app's 15-second show wait starts when it calls show, not when the first frame is visible. If the allow line is absent after a close within 15 seconds, report that attempt NOT-RUN for the timeout race; do not count the missing line as a denial or a pass.",
     "personal_data": "none"
   },
   "positive_case": {
     "case_id": "tinos-demo-allow-then-interval-denial",
-    "goal": "Execute only the positive scenario in qualification/journeys/tinos_demo_gated_interstitial.md. Follow its steps exactly, including Android system Back to return to Home, and do not execute the negative control.",
+    "goal": "Execute only the positive scenario in qualification/journeys/tinos_demo_gated_interstitial.md. Follow its steps exactly, including one Android system Back action to return to Home, and do not execute the negative control.",
     "expected_events": [
       "show allowed: shown and dismissed",
       "revenue <micros> <currency> unit=ca-app-pub-3940256099942544/1033173712 network=<network> precision=<precision>",
@@ -78,7 +79,7 @@
     ],
     "second_click_timing": {
       "measure_from": "t1: first exact show allowed log timestamp after dismissal",
-      "measure_to": "t2: second Direct Message tap timestamp in the native action trace after returning to Home",
+      "measure_to": "t2: second Direct Message tap timestamp in the native action trace after the single Android system Back action in step 3",
       "visible_duration": "D: first ad's visible duration from first visible frame to close-control activation in the recording",
       "max_visible_seconds": 15,
       "elapsed_window_formula": "t2 - t1 <= 15 - D",
@@ -89,6 +90,7 @@
       "not_run_when_remaining_window_seconds": "15 - D <= 0",
       "missed_window_result": "NOT-RUN; do not tap after the derived window or count a late or absent denial as a pass"
     },
+    "missing_allow_result": "NOT-RUN: the show-call timeout can race a close within 15 seconds of the first visible frame.",
     "missing_revenue_result": "FAIL: revenue_event_missing; the revenue outcome is not a pass.",
     "hourly_cap_coverage": "not covered; this case tests the 20-second minimum interval only"
   },
@@ -101,6 +103,7 @@
       "show allowed: shown and dismissed",
       "revenue <micros> <currency> unit=ca-app-pub-3940256099942544/1033173712 network=<network> precision=<precision>"
     ],
+    "missing_allow_result": "NOT-RUN: the show-call timeout can race a close within 15 seconds of the first visible frame.",
     "missing_revenue_result": "invalid_control",
     "intended_reason": "The first click is allowed, the required revenue observation passes, and only the deliberately false denial assertion fails.",
     "invalid_when_fill_fails": true,
