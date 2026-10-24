@@ -185,6 +185,12 @@ def _matches_target_text_label(target_text: str | None, label: str) -> bool:
     return text == label or first_line == label or first_comma_part == label
 
 
+def _has_single_effective_click(action: dict[str, object]) -> bool:
+    if "times" not in action:
+        return True
+    return type(action["times"]) is int and action["times"] == 1
+
+
 def _session_taps(
     db_path: Path, session_id: UUID
 ) -> tuple[list[dict[str, object]] | None, str | None]:
@@ -228,6 +234,8 @@ def _session_taps(
                     "target_text": target_text,
                 }
                 if _matches_target_text_label(target_text, FEATURE_TAP_LABEL):
+                    if not _has_single_effective_click(action):
+                        return None, "feature_tap_click_count"
                     trace = _matching_tap_trace(db_path, session_id, step_id, action)
                     if trace is None:
                         return None, "feature_tap_execution_missing"
@@ -288,6 +296,8 @@ def _matching_tap_trace(
         if not _matches_target_text_label(traced_target_text, FEATURE_TAP_LABEL):
             continue
         if all(planned_action.get(field) == traced_action.get(field) for field in identity_fields):
+            if not _has_single_effective_click(traced_action):
+                return "feature_tap_click_count"
             matching.append((trace, trace_payload))
 
     if not matching:

@@ -167,6 +167,15 @@ def test_tinos_manifest_pins_profile_dependencies_revision_and_full_cli_contract
     trigger = json.loads(RECEIPT_PATH.read_text(encoding="utf-8"))["fixture"]["trigger"]
     assert trigger["feature_visible_label"] == "Direct Message"
     assert trigger["platform_tab_visible_label"] == "WhatsApp"
+    assert trigger["effective_click_policy"] == (
+        "Each matched feature action and trace must have times absent or integer 1; "
+        "otherwise reject as feature_tap_click_count."
+    )
+    assert "without tapping it during setup" in trigger["visible_ui_evidence"]
+    assert (
+        "Select the WhatsApp tab by its UI-tree element index with times=1"
+        in trigger["visible_ui_evidence"]
+    )
     assert trigger["tap_record_match"] == {
         "action": "tap",
         "target_text": "Direct Message",
@@ -287,12 +296,22 @@ def test_submitted_cli_goal_payload_contains_reviewed_scenario_assertions():
     assert "exactly one planned tap step in this session's steps rows" in control_goal
     for goal in (positive_goal, control_goal):
         assert "steps timestamp is the planned turn, not tap evidence" in goal
-        assert "exactly one same-session action trace linked by step_id" in goal
+        assert "exactly one successful same-session action trace linked by step_id" in goal
         assert "status=success, payload success=true" in goal
         assert "trace timestamp and duration bound the dispatch interval" in goal
         assert "Missing, ambiguous, failed, or malformed traces are INVALID-EVIDENCE" in goal
         assert "unmodified target_text, trace ID, and dispatch interval" in goal
-        assert "UI-tree element index, never by a coordinate pair" in goal
+        assert "UI-tree element index" in goal
+        assert "never by a coordinate pair" in goal
+        assert "note the Direct Message row's UI-tree element index without tapping it" in goal
+        assert "Select the WhatsApp tab by its UI-tree element index with times=1" in goal
+        assert (
+            'After capture starts, tap the "Direct Message" feature row once with times=1' in goal
+        )
+        assert (
+            "Reject any matched feature action or trace whose times is present and not integer 1"
+            in goal
+        )
         assert (
             "matching target_text, target_bounds, target_resource_id, and target_class; "
             "ignore coordinates and normalized_coordinates"
@@ -312,6 +331,26 @@ def test_submitted_cli_goal_payload_contains_reviewed_scenario_assertions():
     assert "(t2 - t1) + D + 5 seconds <= 20 seconds" in positive_goal
     assert "t2 - t1 <= 15 seconds - D" in positive_goal
     assert "gate_allowed_inside_interval" in positive_goal
+    assert (
+        positive_goal.count(
+            'After capture starts, tap the "Direct Message" feature row once with times=1'
+        )
+        == 1
+    )
+    assert "After the timing gate, tap the same feature row once with times=1" in positive_goal
+    assert (
+        control_goal.count(
+            'After capture starts, tap the "Direct Message" feature row once with times=1'
+        )
+        == 1
+    )
+    assert "After the timing gate, tap the same feature row once with times=1" not in control_goal
+    for goal in (positive_goal, control_goal):
+        setup_goal = goal.split("Start the reviewed exact-serial TinosDemo capture wrapper", 1)[0]
+        assert (
+            "note the Direct Message row's UI-tree element index without tapping it" in setup_goal
+        )
+        assert 'Tap the "Direct Message" feature row once with times=1' not in setup_goal
     false_assertion = (
         "The first Direct Message feature click must be denied by Tinos rules (NOT_ALLOWED)."
     )
@@ -385,6 +424,10 @@ def test_journey_distinguishes_allowed_show_denial_and_fill_failure():
     assert "changes only the SDK pin and repo-local Maven artifacts" in journey
     assert "earlier binary evidence does not transfer" in journey
     assert journey.count("close control within 15 seconds") >= 2
+    fixture_steps = journey.split("## Positive case: allow, then deny", 1)[0]
+    setup_step = fixture_steps.split('6. Find the "WhatsApp" tab', 1)[1].split("7. Use a new", 1)[0]
+    assert 'Note the "Direct Message" row\'s UI-tree element index without tapping it' in setup_step
+    assert 'tap "Direct Message"' not in setup_step
     assert "NOT-RUN" in journey
     assert "Home does not expose those tags as UI-tree selectors" in journey
     assert "first line or first comma-separated part" in journey
@@ -401,6 +444,11 @@ def test_journey_distinguishes_allowed_show_denial_and_fill_failure():
         "## Negative control: false first-click denial", 1
     )[0]
     assert positive_case.count("Return to Home exactly once with Android system Back") == 1
+    assert (
+        'After capture starts, tap the "Direct Message" feature row once with `times=1`'
+        in positive_case
+    )
+    assert 'tap the same "Direct Message" feature row once with `times=1`' in positive_case
     assert "Use the interval's upper bound as `t2`" in positive_case
     assert (
         "allow line is absent after a close within 15 seconds, report that attempt `NOT-RUN`"
@@ -414,6 +462,11 @@ def test_journey_distinguishes_allowed_show_denial_and_fill_failure():
     assert "reads `first_visible_at` and `closed_at` from the recording" in journey
     assert "SIGKILL" in journey
     assert "confirm the logger PID is gone before device release" in journey
+    negative_case = journey.split("## Negative control: false first-click denial", 1)[1]
+    assert (
+        'After capture starts, tap the "Direct Message" feature row once with `times=1`'
+        in negative_case
+    )
 
 
 def test_candidate_records_a_single_allowed_scenario_and_intended_negative_control():

@@ -33,9 +33,9 @@
   },
   "testcase": {
     "journey_path": "qualification/journeys/tinos_demo_gated_interstitial.md",
-    "journey_digest_sha256": "21e330806aa8a3e185bd75295edc55d8fa05ec4527c20310e25234a3b899e1e4",
+    "journey_digest_sha256": "07963b4f0728abcdd8126ab79b196379b04f7ca00bc1b4643a465cb71ecdb121",
     "manifest_path": "qualification/manifests/tinos_demo_gated_interstitial.che2016.v1.json",
-    "manifest_digest_sha256": "d76a9580e6a8a8613086a8a189c3c9374c9bab99009d4c0fb32032dce64570a7",
+    "manifest_digest_sha256": "5b2acce25065bcf8edb2c06b940a625d04e7ae6b0a67653ba50037a762ddf2e0",
     "manifest_version": 1
   },
   "tinos_configuration": {
@@ -77,7 +77,8 @@
         "coordinates",
         "normalized_coordinates"
       ],
-      "visible_ui_evidence": "Find both elements in the UI tree, select the WhatsApp tab and tap the Direct Message row by UI-tree element index, never by a coordinate pair. For both labels, accept UI-tree text only when it equals the visible label or its first line or first comma-separated part equals the label; do not use Compose test tags or hidden resource identifiers."
+      "effective_click_policy": "Each matched feature action and trace must have times absent or integer 1; otherwise reject as feature_tap_click_count.",
+      "visible_ui_evidence": "Find both elements in the UI tree. Note the Direct Message row's UI-tree element index without tapping it during setup. Select the WhatsApp tab by its UI-tree element index with times=1, never by a coordinate pair. Tap the Direct Message feature only after capture starts, once with times=1 by its recorded element index. For both labels, accept UI-tree text only when it equals the visible label or its first line or first comma-separated part equals the label; do not use Compose test tags or hidden resource identifiers."
     },
     "tap_timestamp_source": "The verifier matches target_text equal to Direct Message or with that label as its first line or first comma-separated part, identifies taps from same-session steps rows, then requires exactly one successful same-session action trace linked by step_id, with type=action, name=tap, status=success, payload success=true, and a matching target text and selector. A steps timestamp is a planned-turn timestamp, not tap evidence. The trace timestamp and duration bound the dispatch interval, extended by a later payload end timestamp. Missing, ambiguous, failed, or malformed traces are INVALID-EVIDENCE. Positive requires exactly two matching taps; control requires exactly one. It reports each planned timestamp, unmodified target_text, action trace ID, and dispatch interval in tap_observations. Use the interval upper bound for timing and event ordering; do not enter tap timestamps manually.",
     "reset": "Force-stop and cold-start before each independent case; each cold start resets show history; do not clear app data or cold-start between the positive case's two clicks.",
@@ -275,7 +276,7 @@
     },
     "verdict_adapter": {
       "path": "qualification/tools/tinos_demo_verdict_exit.py",
-      "script_sha256": "2d1c25e2e9fb826180e68e2207b9ed899860ce77cea1195a17a97efdff126c4e",
+      "script_sha256": "0673012317fdfb118435338f03fb278d5cb1efe0f75c0a5d4e101755b29c4e29",
       "runner_change": false,
     "control_exit_1": "valid intended negative control only: Artemis returned 0; exactly one matching feature tap exists in the session; exact allow and revenue observations passed; no denial event exists; the action trace proves one successful tap and all timestamps pass session, cursor, and dispatch-interval ordering checks; exactly the specified false assertion failed; same-session Checker trace and final capture match",
       "control_exit_2": "NOT-RUN for a missing allow line; otherwise invalid_control for missing or invalid evidence, a fill failure, an unexpected denial, stale or mismatched capture, plain pass, or Artemis process failure",

@@ -42,6 +42,8 @@ def _synthetic_evidence(
     runner_exit_status: int = 0,
     feature_tap_count: int = 1,
     feature_tap_times: tuple[float, ...] | None = None,
+    feature_click_counts: tuple[int | None, ...] | None = None,
+    trace_click_counts: tuple[int | None, ...] | None = None,
     feature_tap_text: str = "Direct Message",
     feature_dispatch_interval: tuple[float, float] | None = None,
     include_feature_tap_trace: bool = True,
@@ -92,6 +94,32 @@ def _synthetic_evidence(
         )
     if feature_dispatch_interval is None:
         feature_dispatch_interval = (feature_tap_times[0] + 0.1, 0.2)
+    if feature_click_counts is None:
+        feature_click_counts = (None,) * len(feature_tap_times)
+    if trace_click_counts is None:
+        trace_click_counts = feature_click_counts
+
+    def feature_action(click_count: int | None) -> dict[str, object]:
+        if coordinate_pair_tap:
+            return {
+                "action": "tap",
+                "coordinates": [540, 900],
+                "target_description": "synthetic coordinates",
+            }
+        action = {
+            "action": "tap",
+            "coordinates": [540, 900],
+            "coordinate_space": "pixel",
+            "normalized_coordinates": [500, 375],
+            "delay_ms": 100,
+            "target_text": feature_tap_text,
+            "target_bounds": "[420,820][660,980]",
+            "target_resource_id": None,
+            "target_class": "android.widget.TextView",
+        }
+        if click_count is not None:
+            action["times"] = click_count
+        return action
 
     with sqlite3.connect(db_path) as connection:
         connection.executescript(
@@ -131,26 +159,7 @@ def _synthetic_evidence(
                 SESSION_ID,
                 tap_timestamp,
                 None,
-                json.dumps(
-                    {
-                        "action": "tap",
-                        "coordinates": [540, 900],
-                        "target_description": "synthetic coordinates",
-                    }
-                    if coordinate_pair_tap
-                    else {
-                        "action": "tap",
-                        "coordinates": [540, 900],
-                        "coordinate_space": "pixel",
-                        "normalized_coordinates": [500, 375],
-                        "times": 1,
-                        "delay_ms": 100,
-                        "target_text": feature_tap_text,
-                        "target_bounds": "[420,820][660,980]",
-                        "target_resource_id": None,
-                        "target_class": "android.widget.TextView",
-                    }
-                ),
+                json.dumps(feature_action(feature_click_counts[tap_number])),
             )
             for tap_number, tap_timestamp in enumerate(feature_tap_times)
         ]
@@ -162,6 +171,11 @@ def _synthetic_evidence(
             duration = feature_dispatch_interval[1]
             action = json.loads(tap_step[4])
             trace_action = action.copy()
+            trace_click_count = trace_click_counts[tap_number]
+            if trace_click_count is None:
+                trace_action.pop("times", None)
+            else:
+                trace_action["times"] = trace_click_count
             if self_heal_trace_coordinates:
                 trace_action["coordinates"] = [542, 902]
                 trace_action.pop("normalized_coordinates", None)
@@ -498,6 +512,37 @@ def test_tinos_control_requires_exactly_one_session_feature_tap(tmp_path):
     output = json.loads(result.stdout)
     assert output["verdict"] == "invalid_control"
     assert output["reason"] == "feature_tap_count"
+
+
+@pytest.mark.parametrize("mode", ["control", "positive"])
+@pytest.mark.parametrize("repeated_in", ["planned", "trace"])
+def test_synthetic_repeated_feature_clicks_are_rejected_in_both_modes(tmp_path, mode, repeated_in):
+    tap_times = (1729999999.0,) if mode == "control" else (1729999999.0, 1730000001.6)
+    click_counts = (2,) + (None,) * (len(tap_times) - 1)
+    planned_click_counts = click_counts if repeated_in == "planned" else None
+    traced_click_counts = click_counts if repeated_in == "trace" else None
+    positive_log = (
+        "1730000001.000 12 12 I TinosDemo: show allowed: shown and dismissed\n"
+        "1730000001.200 12 12 I TinosDemo: revenue 123 micros USD "
+        "unit=ca-app-pub-3940256099942544/1033173712 network=Google "
+        "precision=publisher\n"
+        "1730000002.500 12 12 I TinosDemo: "
+        "show denied by Tinos rules (NOT_ALLOWED)\n"
+    )
+    result, _ = _synthetic_evidence(
+        tmp_path,
+        log_text=positive_log if mode == "positive" else VALID_LOG,
+        assertion_status="passed" if mode == "positive" else "failed",
+        feature_tap_times=tap_times,
+        feature_click_counts=planned_click_counts,
+        trace_click_counts=traced_click_counts,
+        mode=mode,
+    )
+
+    assert result.returncode == (12 if mode == "positive" else 2)
+    output = json.loads(result.stdout)
+    assert output["verdict"] == ("INVALID-EVIDENCE" if mode == "positive" else "invalid_control")
+    assert output["reason"] == "feature_tap_click_count"
 
 
 def test_control_rejects_planned_tap_without_successful_action_trace(tmp_path):

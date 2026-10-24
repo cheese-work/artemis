@@ -61,15 +61,17 @@ baseline remains a separate required-acceptance gate.
    only when `rememberIsPremium()` is false. If the cue is absent or Premium is
    open, report `NOT-RUN`; do not change subscription or account state to guess.
 6. Find the "WhatsApp" tab and "Direct Message" feature row in the UI tree.
-   Select the "WhatsApp" tab and tap "Direct Message" by each element's UI-tree
-   index, never by a coordinate pair. For both labels, accept UI-tree text only
-   when it equals the label or its first line or first comma-separated part
-   equals the label. Confirm the selected tab and feature label. If either
+   Note the "Direct Message" row's UI-tree element index without tapping it
+   during setup. Select the "WhatsApp" tab by its UI-tree element index with
+   `times=1`, never by a coordinate pair. For both labels, accept UI-tree text
+   only when it equals the label or its first line or first comma-separated
+   part equals the label. Confirm the selected tab and feature label. If either
    element is missing, report `NOT-RUN`; do not guess. Do not use Compose test
    tags or hidden resource IDs; Home does not expose those tags as UI-tree
    selectors.
 7. Use a new, empty attempt root. Start logcat capture with the manifest's
-   `log_capture_argv_template` before starting Artemis. The testcase-side
+   `log_capture_argv_template` before starting Artemis and before any case
+   feature tap. Do not tap the "Direct Message" row during fixture setup. The testcase-side
    `qualification/tools/capture_tinos_demo_logs.sh` records a device epoch
    cursor from `adb -s <Sol-granted-exact-serial> shell date +%s`, bracketed by
    host epoch samples, then runs exactly
@@ -108,7 +110,10 @@ baseline remains a separate required-acceptance gate.
    verifier's `tap_observations` output records each planned timestamp,
    unmodified `target_text`, action trace ID, and dispatch interval; include it
    in the report. Do not call a planned timestamp an actual tap time or enter
-   tap timestamps manually. For positive mode, the executor reads
+   tap timestamps manually. Every matched planned feature action and its
+   same-step trace must have `times` absent or integer `1`; any other value is
+   `INVALID-EVIDENCE`. The case goals require each feature tap once with
+   `times=1`. For positive mode, the executor reads
    `first_visible_at` and
    `closed_at` from the recording; these are the only action-time verifier
    inputs.
@@ -132,12 +137,11 @@ Case ID: `tinos-demo-allow-then-interval-denial`.
 This case uses ordinary Home UI actions for the non-premium test state. It does
 not call the ad API directly.
 
-1. At Home, find the "WhatsApp" tab and "Direct Message" feature row in the UI
-   tree. Select the tab and tap the feature row by each element's UI-tree index,
-   never by a coordinate pair. Confirm the labels using the shared
-   exact/first-line/first-comma-part rule in step 6. Preserve the native action
-   trace and timestamped recording; the matching step must record `action: tap`
-   and a `target_text`
+1. After capture starts, tap the "Direct Message" feature row once with
+   `times=1` by its UI-tree element index; never use a coordinate
+   pair. Confirm the visible label using the shared exact/first-line/first-comma-part
+   rule in step 6. Preserve the native action trace and timestamped recording;
+   the matching step must record `action: tap` and a `target_text`
    equal to "Direct Message", or whose first line or first comma-separated
    part equals "Direct Message".
 2. Close the displayed ad with its close control within 15 seconds of its first
@@ -175,8 +179,9 @@ not call the ad API directly.
    clocks cannot be aligned within ±1 second, report the denial attempt
    `NOT-RUN`. Do not proceed with the second tap if returning to Home leaves
    insufficient time in the derived window.
-5. If the derived window remains after step 3, tap the "Direct Message" row by
-   its UI-tree element index once; never use a coordinate pair. This tap is
+5. If the derived window remains after step 3, tap the same "Direct Message"
+   feature row once with `times=1` by its UI-tree element index; never use a coordinate
+   pair. This tap is
    `t2`. Do not press Back again. The verifier uses
    the successful same-session action trace's dispatch-interval upper bound
    for `t2` and requires the exact denial log
@@ -206,9 +211,11 @@ when the allow and denial logs exist. This case does not cover the 3-shows-per-h
 Case ID: `tinos-demo-first-click-negative-control`.
 
 Use a separate cold start and a separate Artemis session. At the ready Home
-screen, find the "WhatsApp" tab and "Direct Message" feature row in the UI
-tree. Select the tab and tap the feature row by each element's UI-tree index,
-never by a coordinate pair. Confirm the labels using the shared
+screen, inspect the "WhatsApp" tab and "Direct Message" feature row in the UI
+tree. Note the feature row's element index without tapping it during setup.
+Select the "WhatsApp" tab by its UI-tree element index with `times=1`, never
+by a coordinate pair. After capture starts, tap the "Direct Message" feature
+row once with `times=1` by its recorded UI-tree element index. Confirm the labels using the shared
    exact/first-line/first-comma-part rule in step 6. The verifier requires
    exactly one
 matching planned action `tap` whose `target_text` equals `Direct Message`, or
