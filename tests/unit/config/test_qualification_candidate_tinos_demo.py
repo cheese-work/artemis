@@ -13,7 +13,7 @@ TINOS_MANIFEST_PATH = (
 )
 SOURCE_MANIFEST_PATH = REPO_ROOT / "qualification/manifests/pocket_actual_save_relaunch.v1.json"
 SOURCE_JOURNEY_PATH = REPO_ROOT / "qualification/journeys/pocket_actual_save_relaunch.md"
-RUNNER_SHA = "9f8ef4868f9eb1d8f01526fef393db762f9f2ef6"
+RUNNER_SHA = "c0e71f8c23ef4667c552cc78ad3540c741dfe732"
 TESTCASE_SOURCE_SHA = "096411113522abc37964256833fecbbac4778af4"
 TESTCASE_SOURCE_FORK_SHA = "feefd94c72dbce0fa1afc109ffe3d8254f565d6b"
 APP_SHA = "24d3ad51350767d04a2951ab72685a45f67a6f75"

@@ -3,10 +3,10 @@
   "$schema_ref": "qualification/evidence_schema.v1.json",
   "issue": "CHE-2016",
   "fork_sha": {
-    "value": "9f8ef4868f9eb1d8f01526fef393db762f9f2ef6",
+    "value": "c0e71f8c23ef4667c552cc78ad3540c741dfe732",
     "source": "git",
     "repo": "https://github.com/cheese-work/artemis",
-    "note": "Gate 1 repair commit with the explicit openai/gpt-6.1-sol route alias. This does not prove an installed host runner matches or that qualification passed."
+    "note": "Minimal Gate 1 route repair rooted at feefd94c72dbce0fa1afc109ffe3d8254f565d6b; preserves that runner's dependency lock and unrelated behavior. The selected openai/gpt-6.1-sol identity and API base remain explicit. This does not prove an installed host runner matches or that qualification passed."
   },
   "reference_source": {
     "repository": "https://github.com/cheese-work/artemis",
@@ -17,7 +17,7 @@
   "dependency_lock": {
     "file": "uv.lock",
     "digest_sha256": "2c63863dd5827482d7e206a887219c6438ce61dc494d9cc596f862378decc19a",
-    "runner_sha": "9f8ef4868f9eb1d8f01526fef393db762f9f2ef6"
+    "runner_sha": "c0e71f8c23ef4667c552cc78ad3540c741dfe732"
   },
   "profile": "pro",
   "spend_policy": "No new spend is authorized by this candidate. If execution would incur new spend, do not run and report NOT-RUN.",

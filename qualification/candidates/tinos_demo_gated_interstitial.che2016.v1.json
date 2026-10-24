@@ -5,7 +5,7 @@
   "source_candidate": {
     "runner_source": {
       "repository": "https://github.com/cheese-work/artemis",
-      "commit_sha": "9f8ef4868f9eb1d8f01526fef393db762f9f2ef6"
+      "commit_sha": "c0e71f8c23ef4667c552cc78ad3540c741dfe732"
     },
     "testcase_source": {
       "repository": "https://github.com/cheese-work/artemis",
@@ -35,7 +35,7 @@
     "journey_path": "qualification/journeys/tinos_demo_gated_interstitial.md",
       "journey_digest_sha256": "53e712ef82fc96849521a38c0df9309de82e281bfa7e13a3caf25423228e8210",
     "manifest_path": "qualification/manifests/tinos_demo_gated_interstitial.che2016.v1.json",
-      "manifest_digest_sha256": "a8f6b65b9327d676c50fb416ec5f9e239e11c0b4bc7bf323403629f2077d810c",
+      "manifest_digest_sha256": "b39d9573c41f098af8ba8e5d0e1608028691cc6c812ad0875deec4cd7a78df67",
     "manifest_version": 1
   },
   "tinos_configuration": {
