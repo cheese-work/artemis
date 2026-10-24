@@ -170,13 +170,19 @@ def test_tinos_manifest_pins_profile_dependencies_revision_and_full_cli_contract
     assert trigger["tap_record_match"] == {
         "action": "tap",
         "target_text": "Direct Message",
+        "match_rule": "exact label, first line, or first comma-separated part",
     }
+    assert "first line or first comma-separated part" in trigger["visible_ui_evidence"]
     assert "do not use Compose test tags" in trigger["visible_ui_evidence"]
     assert entry_point["route"] == "cli"
     assert entry_point["environment_template"] == {
         "ARTEMIS_TRACES_DIR": "<attempt-root>/ledger",
         "DATA_ENGINE_DB_PATH": "<attempt-root>/ledger/data_engine.db",
     }
+    assert any(
+        "first comma-separated part" in value and "tap_observations" in value
+        for value in entry_point["runtime_values_only"]
+    )
     command_argv = entry_point["command_argv_template"]
     assert command_argv[:3] == ["artemis", "run", "<case-goal>"]
     assert command_argv[3:] == [
@@ -268,20 +274,21 @@ def test_submitted_cli_goal_payload_contains_reviewed_scenario_assertions():
     assert "qualification/journeys/tinos_demo_gated_interstitial.md" not in control_goal
     assert "show allowed: shown and dismissed" in positive_goal
     assert "show allowed: shown and dismissed" in control_goal
-    assert (
-        "exactly two tap timestamps from this session's steps rows matching action tap "
-        "and target_text Direct Message" in positive_goal
-    )
-    assert (
-        "exactly one tap timestamp from this session's steps rows matching action tap "
-        "and target_text Direct Message" in control_goal
-    )
+    assert "exactly two planned tap steps in this session's steps rows" in positive_goal
+    assert "exactly one planned tap step in this session's steps rows" in control_goal
+    for goal in (positive_goal, control_goal):
+        assert "steps timestamp is the planned turn, not tap evidence" in goal
+        assert "exactly one same-session action trace linked by step_id" in goal
+        assert "status=success, payload success=true" in goal
+        assert "trace timestamp and duration bound the dispatch interval" in goal
+        assert "Missing, ambiguous, failed, or malformed traces are INVALID-EVIDENCE" in goal
+        assert "unmodified target_text, trace ID, and dispatch interval" in goal
     assert "first-visible and close-control timestamps from the recording" in positive_goal
     assert "first-visible and close-control timestamps from the recording" in control_goal
-    assert 'visible label "Direct Message"' in positive_goal
-    assert 'visible label "Direct Message"' in control_goal
-    assert 'visible label "WhatsApp"' in positive_goal
-    assert 'visible label "WhatsApp"' in control_goal
+    assert 'visible labels "WhatsApp" and "Direct Message"' in positive_goal
+    assert 'visible labels "WhatsApp" and "Direct Message"' in control_goal
+    assert "use the interval upper bound for timing and event ordering" in positive_goal
+    assert "second dispatch interval" in positive_goal
     assert "home-screen-2-feature-direct_message" not in positive_goal
     assert "home-screen-2-feature-direct_message" not in control_goal
     assert "home-tab-whatsapp" not in positive_goal
@@ -364,21 +371,28 @@ def test_journey_distinguishes_allowed_show_denial_and_fill_failure():
     assert journey.count("close control within 15 seconds") >= 2
     assert "NOT-RUN" in journey
     assert "Home does not expose those tags as UI-tree selectors" in journey
-    assert "target_text` exactly `Direct Message`" in journey
+    assert "first line or first comma-separated part" in journey
+    assert "tap_observations" in journey
+    assert 'For both "WhatsApp" and' in journey
+    assert "strictly after the first feature-tap action-trace dispatch interval" in journey
+    assert "cursor whose latest possible host time is" in journey
+    assert "second tap's dispatch-interval upper bound as `t2`" in journey
+    assert "include these observations in the report" in journey
 
     positive_case = journey.split("## Positive case: allow, then deny", 1)[1].split(
         "## Negative control: false first-click denial", 1
     )[0]
     assert positive_case.count("Return to Home exactly once with Android system Back") == 1
-    assert (
-        "`t2` from the second matching tap row in this same session after step 3" in positive_case
-    )
+    assert "Use the interval's upper bound as `t2`" in positive_case
     assert (
         "allow line is absent after a close within 15 seconds, report that attempt `NOT-RUN`"
         in journey
     )
     assert "show wait starts when it calls `show`, not when the first frame is visible" in journey
-    assert "reads exactly two feature-tap timestamps from this session's `steps` rows" in journey
+    assert "requires exactly two matching taps" in journey
+    assert "step timestamp is a planned-turn time, not tap evidence" in journey
+    assert "trace timestamp and duration bound the dispatch interval" in journey
+    assert "trace ID, and dispatch interval" in journey
     assert "reads `first_visible_at` and `closed_at` from the recording" in journey
     assert "SIGKILL" in journey
     assert "confirm the logger PID is gone before device release" in journey
@@ -402,7 +416,13 @@ def test_candidate_records_a_single_allowed_scenario_and_intended_negative_contr
         "verified timing window; record revenue_observation separately as present, missing, "
         "or malformed."
     )
-    assert "target_text is exactly Direct Message" in receipt["fixture"]["tap_timestamp_source"]
+    assert "first line or first comma-separated part" in receipt["fixture"]["tap_timestamp_source"]
+    assert "unmodified target_text" in receipt["fixture"]["tap_timestamp_source"]
+    assert "dispatch interval" in receipt["fixture"]["tap_timestamp_source"]
+    assert any(
+        "unmodified target_text, successful action-trace ID" in item
+        for item in receipt["reporting"]["record_each_attempt"]
+    )
     assert "SIGKILL can bypass" in receipt["fixture"]["sigkill_logger_limit"]
     control = receipt["negative_control"]
     assert control["expected_verdict"] == "fail_assertion"

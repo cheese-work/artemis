@@ -174,54 +174,173 @@ def _session_step_window(db_path: Path, session_id: UUID) -> tuple[float, float]
     return float(start), float(end)
 
 
-def _session_feature_taps(db_path: Path, session_id: UUID) -> list[float] | None:
+def _matches_target_text_label(target_text: str | None, label: str) -> bool:
+    if not isinstance(target_text, str):
+        return False
+    text = target_text.strip()
+    if not text:
+        return False
+    first_line = text.splitlines()[0].strip()
+    first_comma_part = text.split(",", 1)[0].strip()
+    return text == label or first_line == label or first_comma_part == label
+
+
+def _session_taps(
+    db_path: Path, session_id: UUID
+) -> tuple[list[dict[str, object]] | None, str | None]:
     try:
         uri = f"{db_path.resolve().as_uri()}?mode=ro"
         connection = sqlite3.connect(uri, uri=True)
         rows = connection.execute(
-            "SELECT timestamp, action_taken FROM steps WHERE session_id = ?",
+            "SELECT step_id, timestamp, action_taken FROM steps WHERE session_id = ?",
             (str(session_id),),
         ).fetchall()
     except (OSError, sqlite3.Error, TypeError, ValueError):
-        return None
+        return None, "feature_taps"
     finally:
         if "connection" in locals():
             connection.close()
 
-    tap_times = []
-    for timestamp, action_text in rows:
+    tap_observations = []
+    for step_id, timestamp, action_text in rows:
         if action_text is None:
             continue
         try:
             action_data = json.loads(action_text)
         except (TypeError, json.JSONDecodeError):
-            return None
+            return None, "feature_taps"
         actions = action_data if isinstance(action_data, list) else [action_data]
         for action in actions:
             if not isinstance(action, dict):
                 continue
-            if action.get("action") == "tap" and action.get("target_text") == FEATURE_TAP_LABEL:
+            if action.get("action") == "tap":
                 if (
                     isinstance(timestamp, bool)
                     or not isinstance(timestamp, (int, float))
                     or not math.isfinite(timestamp)
                 ):
-                    return None
-                tap_times.append(float(timestamp))
-    return sorted(tap_times)
+                    return None, "feature_taps"
+                target_text = action.get("target_text")
+                if target_text is not None and not isinstance(target_text, str):
+                    return None, "feature_taps"
+                observation: dict[str, object] = {
+                    "planned_timestamp": float(timestamp),
+                    "target_text": target_text,
+                }
+                if _matches_target_text_label(target_text, FEATURE_TAP_LABEL):
+                    trace = _matching_tap_trace(db_path, session_id, step_id, action)
+                    if trace is None:
+                        return None, "feature_tap_execution_missing"
+                    if isinstance(trace, str):
+                        return None, trace
+                    if trace["dispatch_start"] < timestamp:
+                        return None, "feature_tap_execution_invalid"
+                    observation.update(trace)
+                tap_observations.append(observation)
+    tap_observations.sort(key=lambda observation: observation["planned_timestamp"])
+    return tap_observations, None
+
+
+def _matching_tap_trace(
+    db_path: Path,
+    session_id: UUID,
+    step_id: str,
+    planned_action: dict[str, object],
+) -> dict[str, object] | str | None:
+    try:
+        uri = f"{db_path.resolve().as_uri()}?mode=ro"
+        connection = sqlite3.connect(uri, uri=True)
+        connection.row_factory = sqlite3.Row
+        traces = connection.execute(
+            """
+            SELECT trace_id, timestamp, duration, status, payload
+            FROM traces
+            WHERE session_id = ? AND step_id = ? AND type = 'action' AND name = 'tap'
+            """,
+            (str(session_id), step_id),
+        ).fetchall()
+    except (OSError, sqlite3.Error, TypeError, ValueError):
+        return "feature_tap_execution_invalid"
+    finally:
+        if "connection" in locals():
+            connection.close()
+
+    matching = []
+    identity_fields = (
+        "target_text",
+        "coordinates",
+        "target_bounds",
+        "target_resource_id",
+        "target_class",
+    )
+    for trace in traces:
+        try:
+            trace_payload = json.loads(trace["payload"])
+        except (TypeError, json.JSONDecodeError):
+            return "feature_tap_execution_invalid"
+        traced_action = trace_payload.get("action") if isinstance(trace_payload, dict) else None
+        if not isinstance(traced_action, dict):
+            continue
+        if traced_action.get("action") != "tap":
+            continue
+        traced_target_text = traced_action.get("target_text")
+        if traced_target_text is not None and not isinstance(traced_target_text, str):
+            return "feature_tap_execution_invalid"
+        if not _matches_target_text_label(traced_target_text, FEATURE_TAP_LABEL):
+            continue
+        if all(planned_action.get(field) == traced_action.get(field) for field in identity_fields):
+            matching.append((trace, trace_payload))
+
+    if not matching:
+        return None
+    if len(matching) != 1:
+        return "feature_tap_execution_ambiguous"
+    trace, trace_payload = matching[0]
+    start = trace["timestamp"]
+    duration = trace["duration"]
+    action_end = trace_payload.get("timestamp")
+    if (
+        isinstance(start, bool)
+        or not isinstance(start, (int, float))
+        or not math.isfinite(start)
+        or isinstance(duration, bool)
+        or not isinstance(duration, (int, float))
+        or not math.isfinite(duration)
+        or duration < 0
+        or isinstance(action_end, bool)
+        or not isinstance(action_end, (int, float))
+        or not math.isfinite(action_end)
+        or action_end < start
+    ):
+        return "feature_tap_execution_invalid"
+    if trace["status"] != "success" or trace_payload.get("success") is not True:
+        return "feature_tap_execution_failed"
+    try:
+        trace_id = str(UUID(trace["trace_id"]))
+    except (TypeError, ValueError):
+        return "feature_tap_execution_invalid"
+    return {
+        "action_trace_id": trace_id,
+        "dispatch_start": float(start),
+        "dispatch_end": max(float(start + duration), float(action_end)),
+    }
 
 
 def _event_time_error(
     events: list[tuple[float, str]],
     session_window: tuple[float, float],
     cursor: float,
-    first_tap_at: float,
+    first_tap_dispatch_start: float,
+    first_tap_dispatch_end: float,
     clock_offset: float,
     clock_uncertainty: float,
 ) -> str | None:
     start, end = session_window
     cursor_latest_host_time = cursor + clock_offset + clock_uncertainty
-    if not start <= first_tap_at <= end or cursor_latest_host_time > first_tap_at:
+    if (
+        not start <= first_tap_dispatch_start <= first_tap_dispatch_end <= end
+        or cursor_latest_host_time > first_tap_dispatch_start
+    ):
         return "first_tap_outside_session_window"
     for device_timestamp, _ in events:
         host_timestamp = device_timestamp + clock_offset
@@ -231,9 +350,9 @@ def _event_time_error(
             return "event_before_logcat_cursor"
         if earliest_host_time < start or latest_host_time > end:
             return "event_outside_session_window"
-        if latest_host_time <= first_tap_at:
+        if latest_host_time <= first_tap_dispatch_start:
             return "event_before_first_tap"
-        if earliest_host_time <= first_tap_at:
+        if earliest_host_time <= first_tap_dispatch_end:
             return "event_time_order_uncertain"
     return None
 
@@ -396,18 +515,24 @@ def validate_control(
         return _control_result("session_window")
     if capture is None:
         return _control_result("capture_metadata")
-    tap_times = _session_feature_taps(db_path, session_id)
-    if tap_times is None:
-        return _control_result("feature_taps")
-    if len(tap_times) != 1:
+    tap_observations, tap_error = _session_taps(db_path, session_id)
+    if tap_observations is None:
+        return _control_result(tap_error or "feature_taps")
+    feature_taps = [
+        observation
+        for observation in tap_observations
+        if _matches_target_text_label(observation["target_text"], FEATURE_TAP_LABEL)
+    ]
+    if len(feature_taps) != 1:
         return _control_result("feature_tap_count")
-    first_tap_at = tap_times[0]
+    first_tap = feature_taps[0]
     cursor, logcat_pid, clock_offset, clock_uncertainty = capture
     time_error = _event_time_error(
         events,
         session_window,
         cursor,
-        first_tap_at,
+        first_tap["dispatch_start"],
+        first_tap["dispatch_end"],
         clock_offset,
         clock_uncertainty,
     )
@@ -449,7 +574,8 @@ def validate_control(
         "revenue_line_count": len(revenue_messages),
         "runner_exit_status": runner_exit_status,
         "device_serial": device_serial,
-        "first_tap_timestamp": first_tap_at,
+        "first_tap_dispatch_start": first_tap["dispatch_start"],
+        "first_tap_dispatch_end": first_tap["dispatch_end"],
         "logcat_pid": logcat_pid,
         "logcat_start_cursor": cursor,
         "device_to_host_offset_seconds": clock_offset,
@@ -488,18 +614,30 @@ def validate_positive(
         return _positive_result(12, "INVALID-EVIDENCE", "session_window")
     if capture is None:
         return _positive_result(12, "INVALID-EVIDENCE", "capture_metadata")
-    tap_times = _session_feature_taps(db_path, session_id)
-    if tap_times is None:
-        return _positive_result(12, "INVALID-EVIDENCE", "feature_taps")
-    if len(tap_times) != 2:
+    tap_observations, tap_error = _session_taps(db_path, session_id)
+    if tap_observations is None:
+        return _positive_result(12, "INVALID-EVIDENCE", tap_error or "feature_taps")
+    feature_taps = [
+        observation
+        for observation in tap_observations
+        if _matches_target_text_label(observation["target_text"], FEATURE_TAP_LABEL)
+    ]
+    if len(feature_taps) != 2:
         return _positive_result(12, "INVALID-EVIDENCE", "feature_tap_count")
-    first_tap_at, second_tap_at = tap_times
+    session_start, session_end = session_window
+    if any(
+        not session_start <= tap["dispatch_start"] <= tap["dispatch_end"] <= session_end
+        for tap in feature_taps
+    ):
+        return _positive_result(12, "INVALID-EVIDENCE", "feature_tap_outside_session_window")
+    first_tap, second_tap = feature_taps
     cursor, logcat_pid, clock_offset, clock_uncertainty = capture
     time_error = _event_time_error(
         events,
         session_window,
         cursor,
-        first_tap_at,
+        first_tap["dispatch_start"],
+        first_tap["dispatch_end"],
         clock_offset,
         clock_uncertainty,
     )
@@ -509,7 +647,7 @@ def validate_positive(
     explicit_times = (first_visible_at, closed_at)
     if any(not math.isfinite(value) or value < start or value > end for value in explicit_times):
         return _positive_result(12, "INVALID-EVIDENCE", "action_time_outside_session_window")
-    if not first_tap_at <= first_visible_at < closed_at < second_tap_at:
+    if not first_tap["dispatch_end"] <= first_visible_at < closed_at < second_tap["dispatch_start"]:
         return _positive_result(12, "INVALID-EVIDENCE", "action_time_order")
     visible_duration = closed_at - first_visible_at
     if visible_duration > 15:
@@ -534,10 +672,11 @@ def validate_positive(
     allow_at = allows[0][0]
     if allow_at - clock_uncertainty <= closed_at:
         return _positive_result(12, "INVALID-EVIDENCE", "allow_before_close")
-    if second_tap_at <= allow_at + clock_uncertainty:
+    if second_tap["dispatch_start"] <= allow_at + clock_uncertainty:
         return _positive_result(12, "INVALID-EVIDENCE", "second_tap_before_allow")
 
-    elapsed = second_tap_at - allow_at
+    second_tap_latest = second_tap["dispatch_end"]
+    elapsed = second_tap_latest - allow_at
     if elapsed > 15 - visible_duration or elapsed + visible_duration + 5 > 20:
         return _positive_result(11, "NOT-RUN", "timing_window_missed")
 
@@ -557,14 +696,14 @@ def validate_positive(
     if len(allows) > 1:
         if not denials and len(allows) == 2:
             second_allow_at = allows[1][0]
-            if second_allow_at - clock_uncertainty <= second_tap_at:
+            if second_allow_at - clock_uncertainty <= second_tap_latest:
                 return _positive_result(12, "INVALID-EVIDENCE", "second_allow_before_second_tap")
             return _positive_result(
                 10,
                 "FAIL",
                 "gate_allowed_inside_interval",
-                first_tap_timestamp=first_tap_at,
-                second_tap_timestamp=second_tap_at,
+                first_tap_dispatch_end=first_tap["dispatch_end"],
+                second_tap_dispatch_end=second_tap_latest,
                 allow_timestamp=allow_at,
                 second_allow_timestamp=second_allow_at,
                 visible_duration_seconds=visible_duration,
@@ -584,9 +723,9 @@ def validate_positive(
     if len(denials) != 1:
         return _positive_result(12, "INVALID-EVIDENCE", "denial_event_duplicate")
     denial_at = denials[0][0]
-    if denial_at + clock_uncertainty <= second_tap_at:
+    if denial_at + clock_uncertainty <= second_tap["dispatch_start"]:
         return _positive_result(12, "INVALID-EVIDENCE", "denial_before_second_tap")
-    if denial_at - clock_uncertainty <= second_tap_at:
+    if denial_at - clock_uncertainty <= second_tap_latest:
         return _positive_result(12, "INVALID-EVIDENCE", "denial_order_uncertain")
 
     evidence, evidence_error = _checker_evidence(traces_dir, db_path, session_id, None)
@@ -604,8 +743,8 @@ def validate_positive(
         allow_timestamp=allow_at,
         revenue_line_count=len(revenue_messages),
         denial_timestamp=denial_at,
-        first_tap_timestamp=first_tap_at,
-        second_tap_timestamp=second_tap_at,
+        first_tap_dispatch_end=first_tap["dispatch_end"],
+        second_tap_dispatch_end=second_tap_latest,
         visible_duration_seconds=visible_duration,
         logcat_start_cursor=cursor,
         device_to_host_offset_seconds=clock_offset,
@@ -653,6 +792,8 @@ def main() -> int:
             args.device_serial,
             args.runner_exit_status,
         )
+    tap_observations, _tap_error = _session_taps(args.data_engine_db, args.session_id)
+    output["tap_observations"] = None if tap_observations is None else tap_observations
     print(json.dumps(output))
     return status
 

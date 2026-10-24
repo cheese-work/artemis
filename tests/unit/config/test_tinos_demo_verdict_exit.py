@@ -42,6 +42,9 @@ def _synthetic_evidence(
     runner_exit_status: int = 0,
     feature_tap_count: int = 1,
     feature_tap_times: tuple[float, ...] | None = None,
+    feature_tap_text: str = "Direct Message",
+    feature_dispatch_interval: tuple[float, float] | None = None,
+    include_feature_tap_trace: bool = True,
     mode: str = "control",
     captured_files: tuple[Path, Path] | None = None,
     first_visible_at: float = 1730000000,
@@ -85,6 +88,8 @@ def _synthetic_evidence(
         feature_tap_times = tuple(
             1729999999.0 + tap_number / 10 for tap_number in range(feature_tap_count)
         )
+    if feature_dispatch_interval is None:
+        feature_dispatch_interval = (feature_tap_times[0] + 0.1, 0.2)
 
     with sqlite3.connect(db_path) as connection:
         connection.executescript(
@@ -103,8 +108,14 @@ def _synthetic_evidence(
             CREATE TABLE traces (
                 trace_id TEXT PRIMARY KEY,
                 session_id TEXT,
+                step_id TEXT,
+                parent_trace_id TEXT,
                 type TEXT,
-                name TEXT
+                name TEXT,
+                timestamp REAL,
+                duration REAL,
+                status TEXT,
+                payload TEXT
             );
             """
         )
@@ -112,32 +123,64 @@ def _synthetic_evidence(
             "INSERT INTO images VALUES (?, ?)",
             ("synthetic-final-image", json.dumps({"screen": "synthetic"})),
         )
+        tap_steps = [
+            (
+                f"60000000-0000-4000-8000-{tap_number + 5:012d}",
+                SESSION_ID,
+                tap_timestamp,
+                None,
+                json.dumps(
+                    {
+                        "action": "tap",
+                        "coordinates": [540, 900],
+                        "coordinate_space": "pixel",
+                        "normalized_coordinates": [500, 375],
+                        "times": 1,
+                        "delay_ms": 100,
+                        "target_text": feature_tap_text,
+                        "target_bounds": "[420,820][660,980]",
+                        "target_resource_id": None,
+                        "target_class": "android.widget.TextView",
+                    }
+                ),
+            )
+            for tap_number, tap_timestamp in enumerate(feature_tap_times)
+        ]
+        action_traces = []
+        for tap_number, tap_step in enumerate(tap_steps):
+            if not include_feature_tap_trace:
+                continue
+            dispatch_start = feature_dispatch_interval[0] + (tap_step[2] - feature_tap_times[0])
+            duration = feature_dispatch_interval[1]
+            action = json.loads(tap_step[4])
+            action_traces.append(
+                (
+                    f"60000000-0000-4000-8000-{tap_number + 20:012d}",
+                    SESSION_ID,
+                    tap_step[0],
+                    None,
+                    "action",
+                    "tap",
+                    dispatch_start,
+                    duration,
+                    "success",
+                    json.dumps(
+                        {
+                            "action": action,
+                            "success": True,
+                            "error_msg": "",
+                            "post_screenshot": None,
+                            "timestamp": dispatch_start + duration,
+                            "relative_time": str(dispatch_start + duration - 1729999998),
+                            "burst": False,
+                        }
+                    ),
+                )
+            )
         connection.executemany(
             "INSERT INTO steps VALUES (?, ?, ?, ?, ?)",
             (
-                *(
-                    (
-                        f"60000000-0000-4000-8000-{tap_number + 5:012d}",
-                        SESSION_ID,
-                        tap_timestamp,
-                        None,
-                        json.dumps(
-                            {
-                                "action": "tap",
-                                "coordinates": [540, 900],
-                                "coordinate_space": "pixel",
-                                "normalized_coordinates": [500, 375],
-                                "times": 1,
-                                "delay_ms": 100,
-                                "target_text": "Direct Message",
-                                "target_bounds": "[420,820][660,980]",
-                                "target_resource_id": None,
-                                "target_class": "android.widget.TextView",
-                            }
-                        ),
-                    )
-                    for tap_number, tap_timestamp in enumerate(feature_tap_times)
-                ),
+                *tap_steps,
                 (
                     CAPTURE_STEP_ID,
                     SESSION_ID,
@@ -153,9 +196,23 @@ def _synthetic_evidence(
                 ),
             ),
         )
-        connection.execute(
-            "INSERT INTO traces VALUES (?, ?, ?, ?)",
-            (CHECKER_TRACE_ID, SESSION_ID, "agent", "checker"),
+        connection.executemany(
+            "INSERT INTO traces VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            [
+                *action_traces,
+                (
+                    CHECKER_TRACE_ID,
+                    SESSION_ID,
+                    None,
+                    None,
+                    "agent",
+                    "checker",
+                    max(feature_tap_times, default=1729999999.0) + 4,
+                    None,
+                    "success",
+                    "{}",
+                ),
+            ],
         )
 
     command = [
@@ -429,3 +486,54 @@ def test_tinos_control_requires_exactly_one_session_feature_tap(tmp_path):
     output = json.loads(result.stdout)
     assert output["verdict"] == "invalid_control"
     assert output["reason"] == "feature_tap_count"
+
+
+def test_control_rejects_planned_tap_without_successful_action_trace(tmp_path):
+    result, _ = _synthetic_evidence(tmp_path, include_feature_tap_trace=False)
+
+    assert result.returncode == 2
+    output = json.loads(result.stdout)
+    assert output["verdict"] == "invalid_control"
+    assert output["reason"] == "feature_tap_execution_missing"
+
+
+@pytest.mark.parametrize(
+    "target_text",
+    [
+        "Direct Message",
+        "Direct Message\nSend a message without saving the contact",
+        "Direct Message, Send a message without saving the contact",
+    ],
+    ids=["single-label", "merged-lines", "merged-comma"],
+)
+def test_control_accepts_and_reports_merged_feature_target_text(tmp_path, target_text):
+    result, _ = _synthetic_evidence(tmp_path, feature_tap_text=target_text)
+
+    assert result.returncode == 1
+    output = json.loads(result.stdout)
+    assert output["verdict"] == "fail_assertion"
+    assert output["tap_observations"] == [
+        {
+            "planned_timestamp": pytest.approx(1729999999.0),
+            "target_text": target_text,
+            "action_trace_id": "60000000-0000-4000-8000-000000000020",
+            "dispatch_start": pytest.approx(1729999999.1),
+            "dispatch_end": pytest.approx(1729999999.3),
+        }
+    ]
+
+
+def test_control_rejects_and_reports_unmatched_feature_target_text(tmp_path):
+    target_text = "Message Directly, Send a message without saving the contact"
+    result, _ = _synthetic_evidence(tmp_path, feature_tap_text=target_text)
+
+    assert result.returncode == 2
+    output = json.loads(result.stdout)
+    assert output["verdict"] == "invalid_control"
+    assert output["reason"] == "feature_tap_count"
+    assert output["tap_observations"] == [
+        {
+            "planned_timestamp": pytest.approx(1729999999.0),
+            "target_text": target_text,
+        }
+    ]

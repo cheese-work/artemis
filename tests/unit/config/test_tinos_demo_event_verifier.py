@@ -26,9 +26,9 @@ REVENUE = (
     "network=Google precision=publisher"
 )
 PASSING_LOG = (
-    f"1729999902.500 12 12 I TinosDemo: {REVENUE}\n"
+    f"1729999902.700 12 12 I TinosDemo: {REVENUE}\n"
     f"1729999904.100 12 12 I TinosDemo: {ALLOW}\n"
-    f"1729999905.700 12 12 I TinosDemo: {DENIAL}\n"
+    f"1729999906.000 12 12 I TinosDemo: {DENIAL}\n"
 )
 DEVICE_TO_HOST_OFFSET = 99.0
 
@@ -41,12 +41,16 @@ def _synthetic_run(
     close_at: float = 1730000001.5,
     second_tap_at: float = 1730000005,
     feature_tap_times: tuple[float, ...] | None = None,
+    feature_tap_texts: tuple[str, ...] | None = None,
+    feature_dispatch_intervals: tuple[tuple[float, float], ...] | None = None,
+    missing_feature_trace_indices: tuple[int, ...] = (),
+    failed_feature_trace_indices: tuple[int, ...] = (),
 ):
     if log_text is None:
         log_text = (
-            f"{1730000001.5 - DEVICE_TO_HOST_OFFSET:.3f} 12 12 I TinosDemo: {REVENUE}\n"
+            f"{1730000001.7 - DEVICE_TO_HOST_OFFSET:.3f} 12 12 I TinosDemo: {REVENUE}\n"
             f"{close_at + 0.8 - DEVICE_TO_HOST_OFFSET:.3f} 12 12 I TinosDemo: {ALLOW}\n"
-            f"{second_tap_at + 0.7 - DEVICE_TO_HOST_OFFSET:.3f} 12 12 I TinosDemo: {DENIAL}\n"
+            f"{second_tap_at + 1.0 - DEVICE_TO_HOST_OFFSET:.3f} 12 12 I TinosDemo: {DENIAL}\n"
         )
     traces = tmp_path / "ledger"
     session_dir = traces / SESSION_ID
@@ -74,6 +78,13 @@ def _synthetic_run(
     db_path = tmp_path / "data_engine.db"
     if feature_tap_times is None:
         feature_tap_times = (1730000000.75, second_tap_at)
+    if feature_tap_texts is None:
+        feature_tap_texts = ("Direct Message",) * len(feature_tap_times)
+    if feature_dispatch_intervals is None:
+        feature_dispatch_intervals = tuple(
+            (timestamp + 0.05, 0.2) for timestamp in feature_tap_times
+        )
+    assert len(feature_tap_times) == len(feature_tap_texts) == len(feature_dispatch_intervals)
     with sqlite3.connect(db_path) as connection:
         connection.executescript(
             """
@@ -83,34 +94,68 @@ def _synthetic_run(
                 pre_image_name TEXT, action_taken TEXT
             );
             CREATE TABLE traces (
-                trace_id TEXT PRIMARY KEY, session_id TEXT, type TEXT, name TEXT
+                trace_id TEXT PRIMARY KEY, session_id TEXT, step_id TEXT,
+                parent_trace_id TEXT, type TEXT, name TEXT, timestamp REAL,
+                duration REAL, status TEXT, payload TEXT
             );
             """
         )
         connection.execute("INSERT INTO images VALUES (?, ?)", ("synthetic-final", "{}"))
-        tap_steps = [
-            (
-                f"61000000-0000-4000-8000-{index + 10:012d}",
-                SESSION_ID,
-                timestamp,
-                None,
-                json.dumps(
-                    {
-                        "action": "tap",
-                        "coordinates": [540, 900],
-                        "coordinate_space": "pixel",
-                        "normalized_coordinates": [500, 375],
-                        "times": 1,
-                        "delay_ms": 100,
-                        "target_text": "Direct Message",
-                        "target_bounds": "[420,820][660,980]",
-                        "target_resource_id": None,
-                        "target_class": "android.widget.TextView",
-                    }
+        tap_steps = []
+        action_traces = []
+        for index, (timestamp, target_text, dispatch_interval) in enumerate(
+            zip(feature_tap_times, feature_tap_texts, feature_dispatch_intervals, strict=True)
+        ):
+            step_id = f"61000000-0000-4000-8000-{index + 10:012d}"
+            action = {
+                "action": "tap",
+                "coordinates": [540, 900],
+                "coordinate_space": "pixel",
+                "normalized_coordinates": [500, 375],
+                "times": 1,
+                "delay_ms": 100,
+                "target_text": target_text,
+                "target_bounds": "[420,820][660,980]",
+                "target_resource_id": None,
+                "target_class": "android.widget.TextView",
+            }
+            tap_steps.append((step_id, SESSION_ID, timestamp, None, json.dumps(action)))
+            if index in missing_feature_trace_indices:
+                continue
+            dispatch_start, duration = dispatch_interval
+            action_traces.append(
+                (
+                    f"61000000-0000-4000-8000-{index + 20:012d}",
+                    SESSION_ID,
+                    step_id,
+                    None,
+                    "action",
+                    "tap",
+                    dispatch_start,
+                    duration,
+                    "failed" if index in failed_feature_trace_indices else "success",
+                    json.dumps(
+                        {
+                            "action": action,
+                            "success": index not in failed_feature_trace_indices,
+                            "error_msg": "",
+                            "post_screenshot": None,
+                            "timestamp": dispatch_start + duration,
+                            "relative_time": str(dispatch_start + duration - 1729999999),
+                            "burst": False,
+                        }
+                    ),
+                )
+            )
+        final_capture_at = (
+            max(
+                max(feature_tap_times, default=1730000000),
+                max(
+                    (start + duration for start, duration in feature_dispatch_intervals), default=0
                 ),
             )
-            for index, timestamp in enumerate(feature_tap_times)
-        ]
+            + 2
+        )
         connection.executemany(
             "INSERT INTO steps VALUES (?, ?, ?, ?, ?)",
             [
@@ -125,7 +170,7 @@ def _synthetic_run(
                 (
                     CAPTURE_ID,
                     SESSION_ID,
-                    max(feature_tap_times, default=1730000000) + 2,
+                    final_capture_at,
                     "synthetic-final",
                     json.dumps(
                         {
@@ -137,9 +182,23 @@ def _synthetic_run(
                 ),
             ],
         )
-        connection.execute(
-            "INSERT INTO traces VALUES (?, ?, ?, ?)",
-            (TRACE_ID, SESSION_ID, "agent", "checker"),
+        connection.executemany(
+            "INSERT INTO traces VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            [
+                *action_traces,
+                (
+                    TRACE_ID,
+                    SESSION_ID,
+                    None,
+                    None,
+                    "agent",
+                    "checker",
+                    final_capture_at,
+                    None,
+                    "success",
+                    "{}",
+                ),
+            ],
         )
     record = {
         "attempt_id": "final#1",
@@ -191,8 +250,8 @@ def test_synthetic_positive_verifier_accepts_ordered_session_events(tmp_path):
     output = _json_result(result)
     assert output["verdict"] == "PASS"
     assert output["allow_timestamp"] == pytest.approx(1730000002.3)
-    assert output["first_tap_timestamp"] == pytest.approx(1730000000.75)
-    assert output["second_tap_timestamp"] == pytest.approx(1730000005)
+    assert output["first_tap_dispatch_end"] == pytest.approx(1730000001.0)
+    assert output["second_tap_dispatch_end"] == pytest.approx(1730000005.25)
     assert output["device_to_host_offset_seconds"] == pytest.approx(DEVICE_TO_HOST_OFFSET)
 
 
@@ -256,7 +315,7 @@ def test_synthetic_positive_verifier_accepts_ordered_session_events(tmp_path):
             id="synthetic-positive-timing-window-missed",
         ),
         pytest.param(
-            PASSING_LOG.replace("1729999902.500", "1729999802.500"),
+            PASSING_LOG.replace("1729999902.700", "1729999802.700"),
             1730000001,
             1730000001.5,
             1730000005,
@@ -285,7 +344,7 @@ def test_synthetic_positive_verifier_classifies_missing_and_stale_events(
 
 
 def test_synthetic_positive_verifier_rejects_denial_before_second_tap(tmp_path):
-    log_text = PASSING_LOG.replace("1729999905.700", "1729999904.500")
+    log_text = PASSING_LOG.replace("1729999906.000", "1729999903.400")
     result = _synthetic_run(tmp_path, log_text=log_text)
 
     assert result.returncode == 12
@@ -293,7 +352,7 @@ def test_synthetic_positive_verifier_rejects_denial_before_second_tap(tmp_path):
 
 
 def test_synthetic_positive_verifier_rejects_event_ambiguous_with_first_tap(tmp_path):
-    log_text = PASSING_LOG.replace("1729999902.500", "1729999901.250")
+    log_text = PASSING_LOG.replace("1729999902.700", "1729999901.900")
     result = _synthetic_run(tmp_path, log_text=log_text)
 
     assert result.returncode == 12
@@ -301,8 +360,8 @@ def test_synthetic_positive_verifier_rejects_event_ambiguous_with_first_tap(tmp_
 
 
 def test_synthetic_positive_second_allow_inside_window_is_gate_failure(tmp_path):
-    second_allow = f"{1730000005.8 - DEVICE_TO_HOST_OFFSET:.3f} 12 12 I TinosDemo: {ALLOW}\n"
-    log_text = PASSING_LOG.replace(f"1729999905.700 12 12 I TinosDemo: {DENIAL}\n", second_allow)
+    second_allow = f"{1730000006.0 - DEVICE_TO_HOST_OFFSET:.3f} 12 12 I TinosDemo: {ALLOW}\n"
+    log_text = PASSING_LOG.replace(f"1729999906.000 12 12 I TinosDemo: {DENIAL}\n", second_allow)
     result = _synthetic_run(tmp_path, log_text=log_text)
 
     assert result.returncode == 10
@@ -313,9 +372,9 @@ def test_synthetic_positive_second_allow_inside_window_is_gate_failure(tmp_path)
 
 
 def test_synthetic_positive_gate_failure_reports_missing_revenue_separately(tmp_path):
-    second_allow = f"{1730000005.8 - DEVICE_TO_HOST_OFFSET:.3f} 12 12 I TinosDemo: {ALLOW}\n"
-    no_revenue = PASSING_LOG.replace(f"1729999902.500 12 12 I TinosDemo: {REVENUE}\n", "").replace(
-        f"1729999905.700 12 12 I TinosDemo: {DENIAL}\n", second_allow
+    second_allow = f"{1730000006.0 - DEVICE_TO_HOST_OFFSET:.3f} 12 12 I TinosDemo: {ALLOW}\n"
+    no_revenue = PASSING_LOG.replace(f"1729999902.700 12 12 I TinosDemo: {REVENUE}\n", "").replace(
+        f"1729999906.000 12 12 I TinosDemo: {DENIAL}\n", second_allow
     )
     result = _synthetic_run(tmp_path, log_text=no_revenue)
 
@@ -328,7 +387,7 @@ def test_synthetic_positive_gate_failure_reports_missing_revenue_separately(tmp_
 def test_synthetic_positive_duplicate_allow_outside_window_is_not_run(tmp_path):
     second_tap_at = 1730000018
     second_allow = f"{second_tap_at + 0.8 - DEVICE_TO_HOST_OFFSET:.3f} 12 12 I TinosDemo: {ALLOW}\n"
-    log_text = PASSING_LOG.replace(f"1729999905.700 12 12 I TinosDemo: {DENIAL}\n", second_allow)
+    log_text = PASSING_LOG.replace(f"1729999906.000 12 12 I TinosDemo: {DENIAL}\n", second_allow)
     result = _synthetic_run(
         tmp_path,
         log_text=log_text,
@@ -348,6 +407,96 @@ def test_synthetic_positive_requires_exactly_two_session_feature_taps(tmp_path, 
 
     assert result.returncode == 12
     assert _json_result(result)["reason"] == "feature_tap_count"
+
+
+def test_synthetic_positive_rejects_planned_tap_without_successful_action_trace(tmp_path):
+    result = _synthetic_run(tmp_path, missing_feature_trace_indices=(1,))
+
+    assert result.returncode == 12
+    assert _json_result(result)["reason"] == "feature_tap_execution_missing"
+
+
+def test_synthetic_positive_rejects_failed_feature_action_trace(tmp_path):
+    result = _synthetic_run(tmp_path, failed_feature_trace_indices=(1,))
+
+    assert result.returncode == 12
+    assert _json_result(result)["reason"] == "feature_tap_execution_failed"
+
+
+def test_synthetic_positive_uses_dispatch_end_for_late_denial(tmp_path):
+    dispatch_intervals = ((1730000000.8, 0.2), (1730000017.5, 0.1))
+    log_text = (
+        f"{1730000001.7 - DEVICE_TO_HOST_OFFSET:.3f} 12 12 I TinosDemo: {REVENUE}\n"
+        f"{1730000002.3 - DEVICE_TO_HOST_OFFSET:.3f} 12 12 I TinosDemo: {ALLOW}\n"
+        f"{1730000018.0 - DEVICE_TO_HOST_OFFSET:.3f} 12 12 I TinosDemo: {DENIAL}\n"
+    )
+    result = _synthetic_run(
+        tmp_path,
+        log_text=log_text,
+        feature_dispatch_intervals=dispatch_intervals,
+    )
+
+    assert result.returncode == 11
+    assert _json_result(result)["reason"] == "timing_window_missed"
+
+
+def test_synthetic_positive_late_second_allow_is_not_run(tmp_path):
+    dispatch_intervals = ((1730000000.8, 0.2), (1730000017.5, 0.1))
+    log_text = (
+        f"{1730000001.7 - DEVICE_TO_HOST_OFFSET:.3f} 12 12 I TinosDemo: {REVENUE}\n"
+        f"{1730000002.3 - DEVICE_TO_HOST_OFFSET:.3f} 12 12 I TinosDemo: {ALLOW}\n"
+        f"{1730000018.0 - DEVICE_TO_HOST_OFFSET:.3f} 12 12 I TinosDemo: {ALLOW}\n"
+    )
+    result = _synthetic_run(
+        tmp_path,
+        log_text=log_text,
+        feature_dispatch_intervals=dispatch_intervals,
+    )
+
+    assert result.returncode == 11
+    assert _json_result(result)["reason"] == "timing_window_missed"
+
+
+@pytest.mark.parametrize(
+    "target_text",
+    [
+        "Direct Message",
+        "Direct Message\nSend a message without saving the contact",
+        "Direct Message, Send a message without saving the contact",
+    ],
+    ids=["single-label", "merged-lines", "merged-comma"],
+)
+def test_synthetic_positive_accepts_and_reports_merged_feature_target_text(tmp_path, target_text):
+    result = _synthetic_run(tmp_path, feature_tap_texts=(target_text, target_text))
+
+    assert result.returncode == 0
+    output = _json_result(result)
+    assert output["tap_observations"] == [
+        {
+            "planned_timestamp": pytest.approx(1730000000.75),
+            "target_text": target_text,
+            "action_trace_id": "61000000-0000-4000-8000-000000000020",
+            "dispatch_start": pytest.approx(1730000000.8),
+            "dispatch_end": pytest.approx(1730000001.0),
+        },
+        {
+            "planned_timestamp": pytest.approx(1730000005),
+            "target_text": target_text,
+            "action_trace_id": "61000000-0000-4000-8000-000000000021",
+            "dispatch_start": pytest.approx(1730000005.05),
+            "dispatch_end": pytest.approx(1730000005.25),
+        },
+    ]
+
+
+def test_synthetic_positive_rejects_and_reports_unmatched_feature_target_text(tmp_path):
+    target_text = "Message Directly, Send a message without saving the contact"
+    result = _synthetic_run(tmp_path, feature_tap_texts=(target_text, target_text))
+
+    assert result.returncode == 12
+    output = _json_result(result)
+    assert output["reason"] == "feature_tap_count"
+    assert [tap["target_text"] for tap in output["tap_observations"]] == [target_text] * 2
 
 
 @pytest.mark.parametrize(

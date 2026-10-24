@@ -33,9 +33,9 @@
   },
   "testcase": {
     "journey_path": "qualification/journeys/tinos_demo_gated_interstitial.md",
-    "journey_digest_sha256": "29ca190961002d067ca444b5a933f5aa664a49edfd81ba3c303476270f8e7433",
+    "journey_digest_sha256": "8d58fab69cb6133779dda29366e329c1691bb9a953ef9a0e93449d8bca10956d",
     "manifest_path": "qualification/manifests/tinos_demo_gated_interstitial.che2016.v1.json",
-    "manifest_digest_sha256": "0a28b9edaf5c34c0598465b1ccc44ced40a160db11bc7f58f70bb243f068b598",
+    "manifest_digest_sha256": "26e71a48be93f596dd70ae3473c3dcbaaaf0e7c6b12d5665f0d02e675089bd34",
     "manifest_version": 1
   },
   "tinos_configuration": {
@@ -64,11 +64,12 @@
       "platform_tab_visible_label": "WhatsApp",
       "tap_record_match": {
         "action": "tap",
-        "target_text": "Direct Message"
+        "target_text": "Direct Message",
+        "match_rule": "exact label, first line, or first comma-separated part"
       },
-      "visible_ui_evidence": "The Home UI tree must expose visible text Direct Message and the selected WhatsApp tab; do not use Compose test tags or hidden resource identifiers."
+      "visible_ui_evidence": "For both the Direct Message feature and selected WhatsApp tab, accept UI-tree text only when it equals the visible label or its first line or first comma-separated part equals the label; do not use Compose test tags or hidden resource identifiers."
     },
-    "tap_timestamp_source": "The verifier derives action tap timestamps from the same session's steps rows only when target_text is exactly Direct Message; positive requires exactly two and control exactly one. Tap timestamps are never typed as verifier inputs.",
+    "tap_timestamp_source": "The verifier matches target_text equal to Direct Message or with that label as its first line or first comma-separated part, identifies taps from same-session steps rows, then requires exactly one successful same-session action trace linked by step_id, with type=action, name=tap, status=success, payload success=true, and a matching target text and selector. A steps timestamp is a planned-turn timestamp, not tap evidence. The trace timestamp and duration bound the dispatch interval, extended by a later payload end timestamp. Missing, ambiguous, failed, or malformed traces are INVALID-EVIDENCE. Positive requires exactly two matching taps; control requires exactly one. It reports each planned timestamp, unmodified target_text, action trace ID, and dispatch interval in tap_observations. Use the interval upper bound for timing and event ordering; do not enter tap timestamps manually.",
     "reset": "Force-stop and cold-start before each independent case; each cold start resets show history; do not clear app data or cold-start between the positive case's two clicks.",
     "interstitial_close": "For each shown interstitial, close with its visible close control within 15 seconds of the first visible frame; record show and close timestamps from the recording; otherwise report NOT-RUN.",
     "allow_log_timeout_race": "The app's 15-second show wait starts when it calls show, not when the first frame is visible. If the allow line is absent after a close within 15 seconds, report that attempt NOT-RUN for the timeout race; do not count the missing line as a denial or a pass.",
@@ -85,7 +86,7 @@
     ],
     "second_click_timing": {
       "measure_from": "t1: first exact show allowed log timestamp after dismissal",
-      "measure_to": "t2: second matching tap action timestamp derived from this session's steps rows after the single Android system Back action in step 3",
+      "measure_to": "t2: upper bound of the second matching tap action's successful same-session trace dispatch interval after the single Android system Back action in step 3; the planned step timestamp is not used as the tap time",
       "visible_duration": "D: first ad's visible duration from first visible frame to close-control activation in the recording",
       "max_visible_seconds": 15,
       "elapsed_window_formula": "t2 - t1 <= 15 - D",
@@ -108,11 +109,11 @@
         "close-control epoch timestamp from the recording"
       ],
       "checks": [
-        "exactly two matching tap actions are read from the same session's steps rows",
-        "all relevant log events are after the first tap and inside the native session step window",
+        "exactly two matching feature taps are identified from session steps and each is correlated with exactly one successful same-session tap action trace",
+        "all relevant log events are after the first tap dispatch interval upper bound and inside the native session step window",
         "the allow log follows close-control activation",
-        "the revenue event matches the test unit and follows the first tap",
-        "the denial log follows the second tap",
+        "the revenue event matches the test unit and follows the first tap dispatch interval upper bound",
+        "the denial log follows the second tap dispatch interval upper bound",
         "(t2 - t1) <= 15 - D",
         "(t2 - t1) + D + 5 <= 20 seconds",
         "timing window is checked before allow count; two allows and no denial inside the window are FAIL: gate_allowed_inside_interval",
@@ -133,7 +134,7 @@
     "expected_verdict": "fail_assertion",
     "false_assertion": "The first Direct Message feature click must be denied by Tinos rules (NOT_ALLOWED).",
     "required_feature_tap_count": 1,
-    "tap_source": "Exactly one action tap with target_text exactly Direct Message from this same session's steps rows; not a manually entered verifier input.",
+    "tap_source": "Exactly one feature-tap step with target_text equal to Direct Message or with that label as its first line or first comma-separated part is identified from this session's steps rows and correlated with one successful same-session action trace linked by step_id, type=action, name=tap, status=success, payload success=true, and matching target text and selector. The step timestamp is not tap evidence. The action trace timestamp and duration bound the dispatch interval, extended by a later payload end timestamp. Report the planned timestamp, unmodified target_text, trace ID, and dispatch interval; the interval upper bound is used for event ordering.",
     "required_observations": [
       "show allowed: shown and dismissed",
       "revenue <valueMicros> micros <currency> unit=ca-app-pub-3940256099942544/1033173712 network=<network> precision=<precision>"
@@ -147,10 +148,10 @@
       "show failed (<code>)"
     ],
     "reject_if_denial_present": "Any show denied by Tinos rules (NOT_ALLOWED) line makes the one-tap control invalid.",
-    "event_time_validation": "Map each device log epoch to the host epoch using capture metadata. Every recognized event's full clock-uncertainty interval must be inside the exact session's MIN(timestamp)..MAX(timestamp) step window and strictly after the first tap; every event must also be at or after the device-epoch logcat cursor.",
+    "event_time_validation": "Map each device log epoch to the host epoch using capture metadata. Every recognized event's full clock-uncertainty interval must be inside the exact session's MIN(timestamp)..MAX(timestamp) step window and strictly after the first tap action-trace dispatch interval; every event must also be at or after the device-epoch logcat cursor, whose latest possible host time must precede the first tap action-trace start.",
     "requires_same_session_checker_capture": true,
     "requires_runner_bound_final_capture": true,
-    "adapter": "qualification/tools/tinos_demo_verdict_exit.py control mode; Tinos-specific testcase-side verdict-to-exit tool; not a runner change. Exit 1 with fail_assertion only when Artemis exit is 0, exact allow and revenue observations pass, no denial event exists, all counted timestamps pass the same-session window and first-tap checks, and the sole failed final assertion is the exact false assertion with same-session Checker and runner-bound final-capture identity. Exit 2 with NOT-RUN when the allow line is missing after the timeout-race case, or invalid_control for missing revenue, malformed or fill-failed logs, an unexpected denial, stale or mismatched capture, a plain pass, or another non-intended result. Never apply the Pocket Actual adapter unchanged.",
+    "adapter": "qualification/tools/tinos_demo_verdict_exit.py control mode; Tinos-specific testcase-side verdict-to-exit tool; not a runner change. Exit 1 with fail_assertion only when Artemis exit is 0, exact allow and revenue observations pass, no denial event exists, the successful tap action trace and all timestamps pass same-session window, cursor, and dispatch-interval ordering checks, and the sole failed final assertion is the exact false assertion with same-session Checker and runner-bound final-capture identity. Exit 2 with NOT-RUN when the allow line is missing after the timeout-race case, or invalid_control for missing revenue, malformed or fill-failed logs, an unexpected denial, stale or mismatched capture, a plain pass, or another non-intended result. Never apply the Pocket Actual adapter unchanged.",
     "not_satisfied_by": "completed orchestration status"
   },
   "execution": {
@@ -262,9 +263,9 @@
     },
     "verdict_adapter": {
       "path": "qualification/tools/tinos_demo_verdict_exit.py",
-      "script_sha256": "70f7d237017654a99491f74d29ea40824954c7a682af38d23494034a2ce0891a",
+      "script_sha256": "879acabee9ff98be06d5b0e33d87a6e33cae5cb1273a2cc3819a52dd86405301",
       "runner_change": false,
-    "control_exit_1": "valid intended negative control only: Artemis returned 0; exactly one matching feature tap exists in the session; exact allow and revenue observations passed; no denial event exists; timestamps pass session, cursor, and first-tap checks; exactly the specified false assertion failed; same-session Checker trace and final capture match",
+    "control_exit_1": "valid intended negative control only: Artemis returned 0; exactly one matching feature tap exists in the session; exact allow and revenue observations passed; no denial event exists; the action trace proves one successful tap and all timestamps pass session, cursor, and dispatch-interval ordering checks; exactly the specified false assertion failed; same-session Checker trace and final capture match",
       "control_exit_2": "NOT-RUN for a missing allow line; otherwise invalid_control for missing or invalid evidence, a fill failure, an unexpected denial, stale or mismatched capture, plain pass, or Artemis process failure",
       "positive_exit_0": "PASS only when the exact allow, revenue, and denial observations and the measured timing bound pass, with a same-session passing Checker trace and final capture",
     "positive_exit_10": "FAIL for a missing or malformed revenue or denial observation, or two allow lines and no denial inside the verified timing window (gate_allowed_inside_interval)",
@@ -293,7 +294,7 @@
         "device_to_host_offset_seconds": "(host_time_before_epoch + host_time_after_epoch) / 2 - device_start_epoch - 0.5",
         "uncertainty_seconds": "(host_time_after_epoch - host_time_before_epoch + 1) / 2",
         "maximum_uncertainty_seconds": 1,
-        "event_rule": "Normalize device log epochs to host epoch and require the full uncertainty interval to fall inside the exact session window and after the first tap."
+        "event_rule": "Normalize device log epochs to host epoch and require each full uncertainty interval inside the exact session window and after the first tap action-trace dispatch interval; require the cursor latest-time bound before the first tap action-trace start."
       },
       "pid_policy": "Record the adb logcat process ID; stop and wait for that exact PID on EXIT, INT, or TERM, including runner failure. SIGKILL can bypass the wrapper trap; confirm that the recorded logger PID is gone before device release and follow Sol's granted cleanup route if it remains.",
       "runner_change": false
@@ -338,6 +339,7 @@
       "APK source commit, package ID, byte size, and SHA-256",
       "target class, exact Sol-granted serial, session/run ID, and attempt kind",
       "exact capture, runner, and verifier commands; exit statuses; event order; action/log timestamps; clock offset; and uncertainty",
+      "each matching action tap's planned timestamp, unmodified target_text, successful action-trace ID, and conservative dispatch interval from tap_observations",
       "raw timestamped TinosDemo logcat, start cursor, logger PID, stop status, post-outcome PID-gone confirmation, screen recording, and native traces",
       "Checker verdict, Checker trace identity, and linked runner-bound final-capture identity",
       "revenue line including exact test-unit ID, or the distinct missing-revenue result",

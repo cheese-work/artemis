@@ -60,10 +60,12 @@ baseline remains a separate required-acceptance gate.
 5. At Home, confirm the `DiscountBadge` is visible. The app renders this cue
    only when `rememberIsPremium()` is false. If the cue is absent or Premium is
    open, report `NOT-RUN`; do not change subscription or account state to guess.
-6. Select the visible label "WhatsApp". Confirm the Home UI tree shows the
-   selected tab and visible label "Direct Message". If either label is missing,
-   report `NOT-RUN`; do not guess. Do not use Compose test tags or hidden
-   resource IDs; Home does not expose those tags as UI-tree selectors.
+6. Select the visible label "WhatsApp". For both "WhatsApp" and
+   "Direct Message", accept UI-tree text only when it equals the label or its
+   first line or first comma-separated part equals the label. Confirm the
+   selected tab and feature label. If either label is missing, report
+   `NOT-RUN`; do not guess. Do not use Compose test tags or hidden resource IDs;
+   Home does not expose those tags as UI-tree selectors.
 7. Use a new, empty attempt root. Start logcat capture with the manifest's
    `log_capture_argv_template` before starting Artemis. The testcase-side
    `qualification/tools/capture_tinos_demo_logs.sh` records a device epoch
@@ -83,13 +85,26 @@ baseline remains a separate required-acceptance gate.
    each device log timestamp to that timeline with the recorded host/device
    clock samples; retain the offset and uncertainty. The verifier rejects a
    recognized log event unless its full uncertainty interval is inside that
-   session's native step window and strictly after the first feature tap. It
-   also rejects a cursor that may begin after the first tap. Normalize
-   recording timestamps to the host epoch timeline. The verifier reads exactly
-   two feature-tap timestamps from this session's `steps` rows for positive
-   mode and exactly one for control, matching action `tap` with
-   `target_text` exactly `Direct Message`. Do not enter tap timestamps
-   manually. For positive mode, the executor reads `first_visible_at` and
+   session's native step window and strictly after the first feature-tap
+   dispatch interval. It also rejects a cursor that may begin after the first
+   tap action-trace start. Normalize
+   recording timestamps to the host epoch timeline. A matching `steps` row has
+   action `tap` and `target_text` equal to `Direct Message` or with that label
+   as its first line or first comma-separated part. The row identifies a
+   planned turn; its timestamp is not evidence that the tap ran or when it ran.
+   For each matching feature tap, the verifier requires exactly
+   one same-session `traces` row with `type=action`, `name=tap`,
+   `status=success`, payload `success=true`, and an action matching the step's
+   target text and selector. The trace timestamp and duration bound the
+   dispatch interval; the payload's end timestamp can extend its upper bound.
+   This interval includes the precondition gate and retries. Missing, ambiguous,
+   failed, or malformed action traces are `INVALID-EVIDENCE`. Positive mode
+   requires exactly two matching taps; control requires exactly one. The
+   verifier's `tap_observations` output records each planned timestamp,
+   unmodified `target_text`, action trace ID, and dispatch interval; include it
+   in the report. Do not call a planned timestamp an actual tap time or enter
+   tap timestamps manually. For positive mode, the executor reads
+   `first_visible_at` and
    `closed_at` from the recording; these are the only action-time verifier
    inputs.
 9. For each shown interstitial, close it with its visible close control within
@@ -112,10 +127,12 @@ Case ID: `tinos-demo-allow-then-interval-denial`.
 This case uses ordinary Home UI actions for the non-premium test state. It does
 not call the ad API directly.
 
-1. At Home, confirm visible label "WhatsApp" and visible label "Direct Message"
-   in the UI tree. Tap the visible label "Direct Message". Preserve the native
-   action trace and timestamped recording; the matching step must record
-   `action: tap` and `target_text: Direct Message`.
+1. At Home, confirm visible labels "WhatsApp" and "Direct Message" using the
+   shared exact/first-line/first-comma-part rule in step 6. Tap the visible
+   label "Direct Message". Preserve the native action trace and timestamped
+   recording; the matching step must record `action: tap` and a `target_text`
+   equal to "Direct Message", or whose first line or first comma-separated
+   part equals "Direct Message".
 2. Close the displayed ad with its close control within 15 seconds of its first
    visible frame. Record the show and close timestamps from the recording and
    calculate `D` as the visible duration in seconds. If the ad is not closed
@@ -133,21 +150,25 @@ not call the ad API directly.
    Message" row before tapping again.
 4. Measure `t1` at the first exact allow-log timestamp after dismissal, mapped
    to the host epoch timeline from the capture metadata. The verifier derives
-   `t2` from the second matching tap row in this same session after step 3; do
-   not enter either tap timestamp manually. Normalize action and recording timestamps to that host epoch timeline and record
-   their offsets. Let `D` be the first ad's visible
+   the second tap's dispatch interval from its successful same-session action
+   trace after step 3. Use the interval's upper bound as `t2`; do not treat the
+   planned step timestamp as the tap time or enter tap timestamps manually.
+   Normalize recording timestamps to that host epoch timeline and record their
+   offsets. Let `D` be the first ad's visible
    duration in seconds, from its first visible frame to close-control
    activation in the recording. The SDK records show history when the ad is
    shown, not dismissal, and checks the second show only after loading, which
-   can take up to 4 seconds. Include the 1-second timestamp uncertainty in
-   the required bound: `(t2 - t1) + D + 5 seconds <= 20 seconds`. Derive the
+   can take up to 4 seconds. Use the dispatch interval's upper bound for `t2`
+   and include the 1-second timestamp uncertainty in the required bound:
+   `(t2 - t1) + D + 5 seconds <= 20 seconds`. Derive the
    tap window as `t2 - t1 <= 15 seconds - D`. If `15 seconds - D <= 0`, or the
    clocks cannot be aligned within ±1 second, report the denial attempt
    `NOT-RUN`. Do not proceed with the second tap if returning to Home leaves
    insufficient time in the derived window.
 5. If the derived window remains after step 3, tap the visible label "Direct
-   Message" once; this tap is `t2`. Do not press Back again. The verifier reads
-   its native action timestamp from the same session and requires the exact denial log
+   Message" once; this tap is `t2`. Do not press Back again. The verifier uses
+   the successful same-session action trace's dispatch-interval upper bound
+   for `t2` and requires the exact denial log
    `show denied by Tinos rules (NOT_ALLOWED)` after that tap. Tie the log to
    the second tap by ordered timestamps. An exact denial is required; timing
    alone is not a denial. If the observed timestamps do not satisfy the bound
@@ -174,11 +195,17 @@ when the allow and denial logs exist. This case does not cover the 3-shows-per-h
 Case ID: `tinos-demo-first-click-negative-control`.
 
 Use a separate cold start and a separate Artemis session. At the ready Home
-screen, confirm visible label "WhatsApp" and visible label "Direct Message" in
-the UI tree, then tap the visible label "Direct Message" exactly once. The
-verifier requires exactly one matching action `tap` with `target_text` exactly
-`Direct Message` in this session's `steps` data and reads its timestamp there;
-do not enter a tap timestamp manually. Close the displayed
+screen, confirm visible labels "WhatsApp" and "Direct Message" using the
+shared exact/first-line/first-comma-part rule in step 6, then tap the visible
+label "Direct Message" exactly once. The verifier requires exactly one
+matching planned action `tap` whose `target_text` equals `Direct Message`, or
+whose first line or first comma-separated part equals `Direct Message`, plus
+exactly one successful same-session action trace for that tap. The step
+timestamp is a planned-turn time, not the tap time. The trace timestamp and
+duration bound the dispatch interval. The verifier records the planned
+timestamp, unmodified `target_text`, trace ID, and dispatch interval in
+`tap_observations`; include those observations in the report and do not enter a
+tap timestamp manually. Close the displayed
 ad with its close control within 15 seconds of its first visible frame. Record
 show and close timestamps from the recording; if the ad is not closed within
 15 seconds, report `NOT-RUN`. After dismissal, require both
@@ -245,9 +272,10 @@ testcase-side tool, not a runner change. The verifier maps each device log
 timestamp to the host epoch using the recorded device clock and bracketing host
 samples. It rejects a relevant Tinos log event unless its full clock-uncertainty
 interval is inside the exact session's `steps` window and strictly after the
-first tap. It also rejects any event before the device-epoch cursor or a cursor
-that may start after the first tap. The verifier checks the serial, cursor, PID,
-clock samples and stop record against the helper metadata.
+first feature-tap action-trace dispatch interval. It also rejects any event
+before the device-epoch cursor or a cursor whose latest possible host time is
+after the first tap action-trace start. The verifier checks the serial, cursor,
+PID, clock samples and stop record against the helper metadata.
 The control mode rejects any denial event. Its exit `1` with JSON
 `fail_assertion` is valid only when Artemis exited `0`, the allow and revenue
 observations pass, and the sole failed final Checker assertion is the exact
@@ -255,20 +283,32 @@ false assertion linked to the same-session native Checker trace and
 runner-bound final capture. Control exit `2` with `NOT-RUN` means the allow is
 missing after the timeout-race case; other control exit `2` results are
 `invalid_control`. Control mode requires exactly one matching feature-tap step
-in this same session. Never count an arbitrary Artemis process failure or a
-completed orchestration status as control success.
+and exactly one successful same-session tap action trace linked by `step_id`.
+The trace must match the planned action's text and selector. The verifier
+reports the planned timestamp, unmodified `target_text`, action-trace ID, and
+dispatch interval in `tap_observations`; include those observations in the
+report. Never count an arbitrary Artemis process failure or a completed
+orchestration status as control success.
 
-Positive mode derives exactly two feature-tap timestamps from this same
-session's `steps` rows matching action `tap` and `target_text` exactly
-`Direct Message`. The executor reads `first_visible_at`
-and `closed_at` from the recording and supplies only those two host-epoch-second
-values to the verifier. The verifier maps device log
-epochs to that host epoch using the capture clock samples. It requires every
-recognized event's full clock-uncertainty interval to fall inside the same
-session step window and strictly after the first tap. The verifier requires
-the allow line after the close time, revenue after the first tap, and the exact
-denial after the second tap. It calculates `D` from the two recording
-times and checks both `(t2 - t1) <= 15 - D` and
+Positive mode derives exactly two feature-tap steps from this same session's
+`steps` rows matching action `tap` and `target_text` equal to `Direct Message`,
+or with that label as its first line or first comma-separated part. Each step
+must link to exactly one successful same-session tap action trace by `step_id`,
+with matching text and selector. The step timestamp is a planned-turn time,
+not tap evidence. The trace timestamp and duration bound the dispatch interval;
+the payload end timestamp can extend its upper bound. The executor reads
+`first_visible_at` and `closed_at` from the recording and supplies only those
+two host-epoch-second values to the verifier. The verifier reports each
+planned timestamp, unmodified `target_text`, action-trace ID, and dispatch
+interval in `tap_observations`; include these observations in the report. Use
+the second tap's dispatch-interval upper bound as `t2`, not its planned step
+timestamp. The verifier maps device log epochs to that host epoch using the
+capture clock samples. It requires every recognized event's full
+clock-uncertainty interval to fall inside the same session step window and
+strictly after the first tap dispatch interval. It requires the allow line
+after close-control activation, revenue after the first tap dispatch interval,
+and the exact denial after the second tap dispatch interval. It calculates
+`D` from the two recording times and checks both `(t2 - t1) <= 15 - D` and
 `(t2 - t1) + D + 5 <= 20`. Positive exit `0` means `PASS`; exit `10` means
 `FAIL` for a missing revenue or denial observation or for
 `gate_allowed_inside_interval` when two allow lines and no denial occur inside
