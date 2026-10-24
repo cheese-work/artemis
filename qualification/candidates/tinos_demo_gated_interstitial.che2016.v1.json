@@ -33,9 +33,9 @@
   },
   "testcase": {
     "journey_path": "qualification/journeys/tinos_demo_gated_interstitial.md",
-    "journey_digest_sha256": "eb510b1ff112ccda606135d5fc1e0e8a888bf523fae5b466747ce777848ee0d1",
+    "journey_digest_sha256": "29ca190961002d067ca444b5a933f5aa664a49edfd81ba3c303476270f8e7433",
     "manifest_path": "qualification/manifests/tinos_demo_gated_interstitial.che2016.v1.json",
-    "manifest_digest_sha256": "efd5021c16c2b4ae1ddaba85310f093ec216ffabf91054e6d43da181cacc09dc",
+    "manifest_digest_sha256": "0a28b9edaf5c34c0598465b1ccc44ced40a160db11bc7f58f70bb243f068b598",
     "manifest_version": 1
   },
   "tinos_configuration": {
@@ -60,11 +60,15 @@
     "first_home_interruption": "Premium auto-opens about one second after Home for a non-premium user; dismiss with Android system Back without purchase before each case.",
     "trigger": {
       "feature": "Direct Message",
-      "selector": "home-screen-2-feature-direct_message",
-      "home_selector": "home-screen-2",
-      "platform_tab_selector": "home-tab-whatsapp"
+      "feature_visible_label": "Direct Message",
+      "platform_tab_visible_label": "WhatsApp",
+      "tap_record_match": {
+        "action": "tap",
+        "target_text": "Direct Message"
+      },
+      "visible_ui_evidence": "The Home UI tree must expose visible text Direct Message and the selected WhatsApp tab; do not use Compose test tags or hidden resource identifiers."
     },
-    "tap_timestamp_source": "The verifier derives matching tap action timestamps from the same session's steps rows; positive requires exactly two and control exactly one. Tap timestamps are never typed as verifier inputs.",
+    "tap_timestamp_source": "The verifier derives action tap timestamps from the same session's steps rows only when target_text is exactly Direct Message; positive requires exactly two and control exactly one. Tap timestamps are never typed as verifier inputs.",
     "reset": "Force-stop and cold-start before each independent case; each cold start resets show history; do not clear app data or cold-start between the positive case's two clicks.",
     "interstitial_close": "For each shown interstitial, close with its visible close control within 15 seconds of the first visible frame; record show and close timestamps from the recording; otherwise report NOT-RUN.",
     "allow_log_timeout_race": "The app's 15-second show wait starts when it calls show, not when the first frame is visible. If the allow line is absent after a close within 15 seconds, report that attempt NOT-RUN for the timeout race; do not count the missing line as a denial or a pass.",
@@ -129,7 +133,7 @@
     "expected_verdict": "fail_assertion",
     "false_assertion": "The first Direct Message feature click must be denied by Tinos rules (NOT_ALLOWED).",
     "required_feature_tap_count": 1,
-    "tap_source": "Exactly one matching tap action timestamp from this same session's steps rows; not a manually entered verifier input.",
+    "tap_source": "Exactly one action tap with target_text exactly Direct Message from this same session's steps rows; not a manually entered verifier input.",
     "required_observations": [
       "show allowed: shown and dismissed",
       "revenue <valueMicros> micros <currency> unit=ca-app-pub-3940256099942544/1033173712 network=<network> precision=<precision>"
@@ -258,7 +262,7 @@
     },
     "verdict_adapter": {
       "path": "qualification/tools/tinos_demo_verdict_exit.py",
-      "script_sha256": "9702e64b6ae6f6570cd665b6d19050e52d9c4ea4422d77b6c81ec3edabcd4416",
+      "script_sha256": "70f7d237017654a99491f74d29ea40824954c7a682af38d23494034a2ce0891a",
       "runner_change": false,
     "control_exit_1": "valid intended negative control only: Artemis returned 0; exactly one matching feature tap exists in the session; exact allow and revenue observations passed; no denial event exists; timestamps pass session, cursor, and first-tap checks; exactly the specified false assertion failed; same-session Checker trace and final capture match",
       "control_exit_2": "NOT-RUN for a missing allow line; otherwise invalid_control for missing or invalid evidence, a fill failure, an unexpected denial, stale or mismatched capture, plain pass, or Artemis process failure",
@@ -269,7 +273,7 @@
     },
     "log_capture_tool": {
       "path": "qualification/tools/capture_tinos_demo_logs.sh",
-      "script_sha256": "620d9bf8527d243f22486b1361023db583140c410dd5972f59a8565309f94e8d",
+      "script_sha256": "9cca5e83bd69fb239aabfc2f8ef27fb03ed402ab66d39bf83deb893d7bc92322",
       "adb_argv_template": [
         "adb",
         "-s",

@@ -17,6 +17,7 @@ FALSE_ASSERTION = (
 ALLOW_MESSAGE = "show allowed: shown and dismissed"
 DENIAL_MESSAGE = "show denied by Tinos rules (NOT_ALLOWED)"
 TEST_INTERSTITIAL = "ca-app-pub-3940256099942544/1033173712"
+FEATURE_TAP_LABEL = "Direct Message"
 REVENUE_LINE = re.compile(
     rf"revenue \d+ micros \S+ unit={re.escape(TEST_INTERSTITIAL)} "
     r"network=\S+ precision=\S+"
@@ -199,10 +200,7 @@ def _session_feature_taps(db_path: Path, session_id: UUID) -> list[float] | None
         for action in actions:
             if not isinstance(action, dict):
                 continue
-            if (
-                action.get("action") == "tap"
-                and action.get("target") == "home-screen-2-feature-direct_message"
-            ):
+            if action.get("action") == "tap" and action.get("target_text") == FEATURE_TAP_LABEL:
                 if (
                     isinstance(timestamp, bool)
                     or not isinstance(timestamp, (int, float))

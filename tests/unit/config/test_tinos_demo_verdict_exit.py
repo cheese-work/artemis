@@ -1,6 +1,7 @@
 """Synthetic evidence tests for the Tinos negative-control verdict."""
 
 import json
+import os
 from pathlib import Path
 import sqlite3
 import subprocess
@@ -11,6 +12,7 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 ADAPTER = REPO_ROOT / "qualification/tools/tinos_demo_verdict_exit.py"
+CAPTURE_WRAPPER = REPO_ROOT / "qualification/tools/capture_tinos_demo_logs.sh"
 SESSION_ID = "60000000-0000-4000-8000-000000000001"
 CHECKER_TRACE_ID = "60000000-0000-4000-8000-000000000002"
 CAPTURE_STEP_ID = "60000000-0000-4000-8000-000000000003"
@@ -39,25 +41,33 @@ def _synthetic_evidence(
     capture_attempt_id: str = "final#1",
     runner_exit_status: int = 0,
     feature_tap_count: int = 1,
+    feature_tap_times: tuple[float, ...] | None = None,
+    mode: str = "control",
+    captured_files: tuple[Path, Path] | None = None,
+    first_visible_at: float = 1730000000,
+    closed_at: float = 1730000000.2,
 ) -> tuple[subprocess.CompletedProcess[str], Path]:
     traces_dir = tmp_path / "ledger"
     session_dir = traces_dir / SESSION_ID
     session_dir.mkdir(parents=True)
-    logcat_path = tmp_path / "tinos-demo-logcat.txt"
-    logcat_path.write_text(log_text, encoding="utf-8")
-    capture_metadata_path = tmp_path / "tinos-demo-logcat.meta"
-    capture_metadata_path.write_text(
-        "serial=SYNTHETIC-ONLY-NO-DEVICE\n"
-        "start_cursor=1729999998.000\n"
-        "device_start_epoch=1729999998\n"
-        "host_time_before_epoch=1729999998.450\n"
-        "host_time_after_epoch=1729999998.550\n"
-        "logcat_pid=12345\n"
-        f"runner_exit_status={runner_exit_status}\n"
-        "logcat_stopped=true\n"
-        "logcat_wait_status=130\n",
-        encoding="utf-8",
-    )
+    if captured_files is None:
+        logcat_path = tmp_path / "tinos-demo-logcat.txt"
+        logcat_path.write_text(log_text, encoding="utf-8")
+        capture_metadata_path = tmp_path / "tinos-demo-logcat.meta"
+        capture_metadata_path.write_text(
+            "serial=SYNTHETIC-ONLY-NO-DEVICE\n"
+            "start_cursor=1729999998.000\n"
+            "device_start_epoch=1729999998\n"
+            "host_time_before_epoch=1729999998.450\n"
+            "host_time_after_epoch=1729999998.550\n"
+            "logcat_pid=12345\n"
+            f"runner_exit_status={runner_exit_status}\n"
+            "logcat_stopped=true\n"
+            "logcat_wait_status=130\n",
+            encoding="utf-8",
+        )
+    else:
+        logcat_path, capture_metadata_path = captured_files
     db_path = tmp_path / "data_engine.db"
 
     record = {
@@ -70,6 +80,11 @@ def _synthetic_evidence(
         "final_capture_step_id": ledger_capture_id,
     }
     (session_dir / "check_ledger.jsonl").write_text(json.dumps(record) + "\n", encoding="utf-8")
+
+    if feature_tap_times is None:
+        feature_tap_times = tuple(
+            1729999999.0 + tap_number / 10 for tap_number in range(feature_tap_count)
+        )
 
     with sqlite3.connect(db_path) as connection:
         connection.executescript(
@@ -100,22 +115,33 @@ def _synthetic_evidence(
         connection.executemany(
             "INSERT INTO steps VALUES (?, ?, ?, ?, ?)",
             (
-                (
-                    "60000000-0000-4000-8000-000000000005",
-                    SESSION_ID,
-                    1729999999.0,
-                    None,
-                    json.dumps(
-                        {
-                            "action": "tap",
-                            "target": "home-screen-2-feature-direct_message",
-                        }
-                    ),
+                *(
+                    (
+                        f"60000000-0000-4000-8000-{tap_number + 5:012d}",
+                        SESSION_ID,
+                        tap_timestamp,
+                        None,
+                        json.dumps(
+                            {
+                                "action": "tap",
+                                "coordinates": [540, 900],
+                                "coordinate_space": "pixel",
+                                "normalized_coordinates": [500, 375],
+                                "times": 1,
+                                "delay_ms": 100,
+                                "target_text": "Direct Message",
+                                "target_bounds": "[420,820][660,980]",
+                                "target_resource_id": None,
+                                "target_class": "android.widget.TextView",
+                            }
+                        ),
+                    )
+                    for tap_number, tap_timestamp in enumerate(feature_tap_times)
                 ),
                 (
                     CAPTURE_STEP_ID,
                     SESSION_ID,
-                    1730000002.0,
+                    max(feature_tap_times, default=1729999999.0) + 3,
                     "synthetic-final-image",
                     json.dumps(
                         {
@@ -127,53 +153,122 @@ def _synthetic_evidence(
                 ),
             ),
         )
-        for tap_number in range(1, feature_tap_count):
-            connection.execute(
-                "INSERT INTO steps VALUES (?, ?, ?, ?, ?)",
-                (
-                    f"60000000-0000-4000-8000-{tap_number + 10:012d}",
-                    SESSION_ID,
-                    1729999999.25 + tap_number / 10,
-                    None,
-                    json.dumps(
-                        {
-                            "action": "tap",
-                            "target": "home-screen-2-feature-direct_message",
-                        }
-                    ),
-                ),
-            )
         connection.execute(
             "INSERT INTO traces VALUES (?, ?, ?, ?)",
             (CHECKER_TRACE_ID, SESSION_ID, "agent", "checker"),
         )
 
+    command = [
+        sys.executable,
+        str(ADAPTER),
+        "--traces-dir",
+        str(traces_dir),
+        "--data-engine-db",
+        str(db_path),
+        "--session-id",
+        SESSION_ID,
+        "--logcat-file",
+        str(logcat_path),
+        "--capture-metadata-file",
+        str(capture_metadata_path),
+        "--device-serial",
+        "SYNTHETIC-ONLY-NO-DEVICE",
+        "--mode",
+        mode,
+        "--runner-exit-status",
+        str(runner_exit_status),
+    ]
+    if mode == "positive":
+        command.extend(
+            [
+                "--first-visible-at",
+                str(first_visible_at),
+                "--closed-at",
+                str(closed_at),
+            ]
+        )
+    result = subprocess.run(command, check=False, capture_output=True, text=True)
+    return result, db_path
+
+
+def _run_capture_wrapper(tmp_path: Path, log_text: str) -> tuple[Path, Path]:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "date").write_text(
+        "#!/bin/sh\nprintf '1729999998.450\\n'\n",
+        encoding="utf-8",
+    )
+    (bin_dir / "adb").write_text(
+        "#!/usr/bin/env python3\n"
+        "import os, signal, sys\n"
+        "args = sys.argv[1:]\n"
+        "if args == ['-s', 'SYNTHETIC-ONLY-NO-DEVICE', 'shell', 'date', '+%s']:\n"
+        "    print('1729999998')\n"
+        "elif args[:3] == ['-s', 'SYNTHETIC-ONLY-NO-DEVICE', 'logcat']:\n"
+        "    sys.stdout.write(os.environ['TINOS_SYNTHETIC_LOG_LINES'])\n"
+        "    sys.stdout.flush()\n"
+        "    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))\n"
+        "    signal.pause()\n"
+        "else:\n"
+        "    raise SystemExit(64)\n",
+        encoding="utf-8",
+    )
+    (bin_dir / "date").chmod(0o755)
+    (bin_dir / "adb").chmod(0o755)
+    logcat_path = tmp_path / "tinos-demo-logcat.txt"
+    metadata_path = tmp_path / "tinos-demo-logcat.meta"
+    environment = os.environ.copy()
+    environment["PATH"] = f"{bin_dir}:{environment['PATH']}"
+    environment["TINOS_SYNTHETIC_LOG_LINES"] = log_text
     result = subprocess.run(
         [
-            sys.executable,
-            str(ADAPTER),
-            "--traces-dir",
-            str(traces_dir),
-            "--data-engine-db",
-            str(db_path),
-            "--session-id",
-            SESSION_ID,
-            "--logcat-file",
-            str(logcat_path),
-            "--capture-metadata-file",
-            str(capture_metadata_path),
-            "--device-serial",
+            "/bin/bash",
+            str(CAPTURE_WRAPPER),
             "SYNTHETIC-ONLY-NO-DEVICE",
-            "--mode",
-            "control",
-            "--runner-exit-status",
-            str(runner_exit_status),
+            str(logcat_path),
+            str(metadata_path),
+            "--",
+            sys.executable,
+            "-c",
+            "pass",
         ],
         check=False,
         capture_output=True,
         text=True,
+        env=environment,
     )
-    return result, db_path
+    assert result.returncode == 0, result.stderr
+    return logcat_path, metadata_path
+
+
+def test_capture_wrapper_output_is_accepted_by_control_verifier(tmp_path):
+    captured_files = _run_capture_wrapper(tmp_path, VALID_LOG)
+    result, _ = _synthetic_evidence(tmp_path, captured_files=captured_files)
+
+    assert result.returncode == 1
+    assert json.loads(result.stdout)["reason"] == "intended_false_assertion"
+
+
+def test_capture_wrapper_output_is_accepted_by_positive_verifier(tmp_path):
+    positive_log = (
+        "1730000001.000 12 12 I TinosDemo: show allowed: shown and dismissed\n"
+        "1730000001.200 12 12 I TinosDemo: revenue 123 micros USD "
+        "unit=ca-app-pub-3940256099942544/1033173712 network=Google "
+        "precision=publisher\n"
+        "1730000002.500 12 12 I TinosDemo: "
+        "show denied by Tinos rules (NOT_ALLOWED)\n"
+    )
+    captured_files = _run_capture_wrapper(tmp_path, positive_log)
+    result, _ = _synthetic_evidence(
+        tmp_path,
+        assertion_status="passed",
+        feature_tap_times=(1729999999.0, 1730000001.6),
+        mode="positive",
+        captured_files=captured_files,
+    )
+
+    assert result.returncode == 0
+    assert json.loads(result.stdout)["verdict"] == "PASS"
 
 
 @pytest.mark.parametrize(

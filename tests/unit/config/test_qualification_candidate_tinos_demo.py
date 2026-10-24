@@ -164,6 +164,14 @@ def test_tinos_manifest_pins_profile_dependencies_revision_and_full_cli_contract
     assert manifest["profile"] == "pro"
     assert "No new spend is authorized" in manifest["spend_policy"]
     entry_point = manifest["entry_point"]
+    trigger = json.loads(RECEIPT_PATH.read_text(encoding="utf-8"))["fixture"]["trigger"]
+    assert trigger["feature_visible_label"] == "Direct Message"
+    assert trigger["platform_tab_visible_label"] == "WhatsApp"
+    assert trigger["tap_record_match"] == {
+        "action": "tap",
+        "target_text": "Direct Message",
+    }
+    assert "do not use Compose test tags" in trigger["visible_ui_evidence"]
     assert entry_point["route"] == "cli"
     assert entry_point["environment_template"] == {
         "ARTEMIS_TRACES_DIR": "<attempt-root>/ledger",
@@ -260,10 +268,24 @@ def test_submitted_cli_goal_payload_contains_reviewed_scenario_assertions():
     assert "qualification/journeys/tinos_demo_gated_interstitial.md" not in control_goal
     assert "show allowed: shown and dismissed" in positive_goal
     assert "show allowed: shown and dismissed" in control_goal
-    assert "exactly two tap timestamps from this same session's steps rows" in positive_goal
-    assert "exactly one tap timestamp from this same session's steps rows" in control_goal
+    assert (
+        "exactly two tap timestamps from this session's steps rows matching action tap "
+        "and target_text Direct Message" in positive_goal
+    )
+    assert (
+        "exactly one tap timestamp from this session's steps rows matching action tap "
+        "and target_text Direct Message" in control_goal
+    )
     assert "first-visible and close-control timestamps from the recording" in positive_goal
     assert "first-visible and close-control timestamps from the recording" in control_goal
+    assert 'visible label "Direct Message"' in positive_goal
+    assert 'visible label "Direct Message"' in control_goal
+    assert 'visible label "WhatsApp"' in positive_goal
+    assert 'visible label "WhatsApp"' in control_goal
+    assert "home-screen-2-feature-direct_message" not in positive_goal
+    assert "home-screen-2-feature-direct_message" not in control_goal
+    assert "home-tab-whatsapp" not in positive_goal
+    assert "home-tab-whatsapp" not in control_goal
     assert REVENUE_EXPECTATION in positive_goal
     assert REVENUE_EXPECTATION in control_goal
     assert "(t2 - t1) + D + 5 seconds <= 20 seconds" in positive_goal
@@ -302,7 +324,8 @@ def test_journey_distinguishes_allowed_show_denial_and_fill_failure():
         "Premium paywall",
         "one second",
         "Direct Message",
-        "home-screen-2-feature-direct_message",
+        'visible label "Direct Message"',
+        'visible label "WhatsApp"',
         "Android system Back",
         "first exact allow-log timestamp",
         "15 seconds",
@@ -340,6 +363,8 @@ def test_journey_distinguishes_allowed_show_denial_and_fill_failure():
     assert "earlier binary evidence does not transfer" in journey
     assert journey.count("close control within 15 seconds") >= 2
     assert "NOT-RUN" in journey
+    assert "Home does not expose those tags as UI-tree selectors" in journey
+    assert "target_text` exactly `Direct Message`" in journey
 
     positive_case = journey.split("## Positive case: allow, then deny", 1)[1].split(
         "## Negative control: false first-click denial", 1
@@ -377,9 +402,7 @@ def test_candidate_records_a_single_allowed_scenario_and_intended_negative_contr
         "verified timing window; record revenue_observation separately as present, missing, "
         "or malformed."
     )
-    assert receipt["fixture"]["tap_timestamp_source"].startswith(
-        "The verifier derives matching tap action timestamps from the same session's steps rows"
-    )
+    assert "target_text is exactly Direct Message" in receipt["fixture"]["tap_timestamp_source"]
     assert "SIGKILL can bypass" in receipt["fixture"]["sigkill_logger_limit"]
     control = receipt["negative_control"]
     assert control["expected_verdict"] == "fail_assertion"

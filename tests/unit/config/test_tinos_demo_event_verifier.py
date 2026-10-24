@@ -97,7 +97,15 @@ def _synthetic_run(
                 json.dumps(
                     {
                         "action": "tap",
-                        "target": "home-screen-2-feature-direct_message",
+                        "coordinates": [540, 900],
+                        "coordinate_space": "pixel",
+                        "normalized_coordinates": [500, 375],
+                        "times": 1,
+                        "delay_ms": 100,
+                        "target_text": "Direct Message",
+                        "target_bounds": "[420,820][660,980]",
+                        "target_resource_id": None,
+                        "target_class": "android.widget.TextView",
                     }
                 ),
             )

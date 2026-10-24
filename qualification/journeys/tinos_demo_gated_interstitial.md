@@ -60,10 +60,10 @@ baseline remains a separate required-acceptance gate.
 5. At Home, confirm the `DiscountBadge` is visible. The app renders this cue
    only when `rememberIsPremium()` is false. If the cue is absent or Premium is
    open, report `NOT-RUN`; do not change subscription or account state to guess.
-6. Select the WhatsApp tab using `home-tab-whatsapp`. Confirm `home-screen-2`
-   and the Direct Message feature selector
-   `home-screen-2-feature-direct_message` are visible. The selector is the
-   feature row's app-defined Compose test tag.
+6. Select the visible label "WhatsApp". Confirm the Home UI tree shows the
+   selected tab and visible label "Direct Message". If either label is missing,
+   report `NOT-RUN`; do not guess. Do not use Compose test tags or hidden
+   resource IDs; Home does not expose those tags as UI-tree selectors.
 7. Use a new, empty attempt root. Start logcat capture with the manifest's
    `log_capture_argv_template` before starting Artemis. The testcase-side
    `qualification/tools/capture_tinos_demo_logs.sh` records a device epoch
@@ -87,8 +87,8 @@ baseline remains a separate required-acceptance gate.
    also rejects a cursor that may begin after the first tap. Normalize
    recording timestamps to the host epoch timeline. The verifier reads exactly
    two feature-tap timestamps from this session's `steps` rows for positive
-   mode and exactly one for control, matching tap actions on
-   `home-screen-2-feature-direct_message`. Do not enter tap timestamps
+   mode and exactly one for control, matching action `tap` with
+   `target_text` exactly `Direct Message`. Do not enter tap timestamps
    manually. For positive mode, the executor reads `first_visible_at` and
    `closed_at` from the recording; these are the only action-time verifier
    inputs.
@@ -112,9 +112,10 @@ Case ID: `tinos-demo-allow-then-interval-denial`.
 This case uses ordinary Home UI actions for the non-premium test state. It does
 not call the ad API directly.
 
-1. At Home with the WhatsApp tab selected, tap the Direct Message row using
-   `home-screen-2-feature-direct_message`. Preserve the native action trace and
-   timestamped recording.
+1. At Home, confirm visible label "WhatsApp" and visible label "Direct Message"
+   in the UI tree. Tap the visible label "Direct Message". Preserve the native
+   action trace and timestamped recording; the matching step must record
+   `action: tap` and `target_text: Direct Message`.
 2. Close the displayed ad with its close control within 15 seconds of its first
    visible frame. Record the show and close timestamps from the recording and
    calculate `D` as the visible duration in seconds. If the ad is not closed
@@ -128,8 +129,8 @@ not call the ad API directly.
 3. Return to Home exactly once with Android system Back, not the app
    toolbar/back control. `NavDisplay` handles system Back by popping the route;
    the screen's own back callback invokes the separate `inter_back` ad path.
-   Confirm Home, the WhatsApp tab, and the same Direct Message selector before
-   tapping again.
+   Confirm Home, the visible "WhatsApp" tab label, and the same "Direct
+   Message" row before tapping again.
 4. Measure `t1` at the first exact allow-log timestamp after dismissal, mapped
    to the host epoch timeline from the capture metadata. The verifier derives
    `t2` from the second matching tap row in this same session after step 3; do
@@ -144,8 +145,8 @@ not call the ad API directly.
    clocks cannot be aligned within ±1 second, report the denial attempt
    `NOT-RUN`. Do not proceed with the second tap if returning to Home leaves
    insufficient time in the derived window.
-5. If the derived window remains after step 3, tap the same Direct Message
-   selector once; this tap is `t2`. Do not press Back again. The verifier reads
+5. If the derived window remains after step 3, tap the visible label "Direct
+   Message" once; this tap is `t2`. Do not press Back again. The verifier reads
    its native action timestamp from the same session and requires the exact denial log
    `show denied by Tinos rules (NOT_ALLOWED)` after that tap. Tie the log to
    the second tap by ordered timestamps. An exact denial is required; timing
@@ -173,9 +174,11 @@ when the allow and denial logs exist. This case does not cover the 3-shows-per-h
 Case ID: `tinos-demo-first-click-negative-control`.
 
 Use a separate cold start and a separate Artemis session. At the ready Home
-screen, tap the same Direct Message selector exactly once. The verifier
-requires exactly one matching tap row in this session's `steps` data and reads
-its timestamp there; do not enter a tap timestamp manually. Close the displayed
+screen, confirm visible label "WhatsApp" and visible label "Direct Message" in
+the UI tree, then tap the visible label "Direct Message" exactly once. The
+verifier requires exactly one matching action `tap` with `target_text` exactly
+`Direct Message` in this session's `steps` data and reads its timestamp there;
+do not enter a tap timestamp manually. Close the displayed
 ad with its close control within 15 seconds of its first visible frame. Record
 show and close timestamps from the recording; if the ad is not closed within
 15 seconds, report `NOT-RUN`. After dismissal, require both
@@ -256,8 +259,8 @@ in this same session. Never count an arbitrary Artemis process failure or a
 completed orchestration status as control success.
 
 Positive mode derives exactly two feature-tap timestamps from this same
-session's `steps` rows matching action `tap` and target
-`home-screen-2-feature-direct_message`. The executor reads `first_visible_at`
+session's `steps` rows matching action `tap` and `target_text` exactly
+`Direct Message`. The executor reads `first_visible_at`
 and `closed_at` from the recording and supplies only those two host-epoch-second
 values to the verifier. The verifier maps device log
 epochs to that host epoch using the capture clock samples. It requires every

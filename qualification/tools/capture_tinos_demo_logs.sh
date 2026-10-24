@@ -50,12 +50,6 @@ cleanup() {
   logcat_wait_status=$?
   logcat_stopped=true
   {
-    printf 'serial=%s\n' "$serial"
-    printf 'start_cursor=%s\n' "$start_cursor"
-    printf 'device_start_epoch=%s\n' "$device_start_epoch"
-    printf 'host_time_before_epoch=%s\n' "$host_time_before_epoch"
-    printf 'host_time_after_epoch=%s\n' "$host_time_after_epoch"
-    printf 'logcat_pid=%s\n' "$logcat_pid"
     printf 'runner_exit_status=%s\n' "$runner_status"
     printf 'logcat_stopped=%s\n' "$logcat_stopped"
     printf 'logcat_wait_status=%s\n' "$logcat_wait_status"
