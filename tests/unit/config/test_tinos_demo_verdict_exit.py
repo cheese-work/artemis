@@ -38,6 +38,7 @@ def _synthetic_evidence(
     ledger_capture_id: str = CAPTURE_STEP_ID,
     capture_attempt_id: str = "final#1",
     runner_exit_status: int = 0,
+    feature_tap_count: int = 1,
 ) -> tuple[subprocess.CompletedProcess[str], Path]:
     traces_dir = tmp_path / "ledger"
     session_dir = traces_dir / SESSION_ID
@@ -104,7 +105,12 @@ def _synthetic_evidence(
                     SESSION_ID,
                     1729999999.0,
                     None,
-                    json.dumps({"action": "tap", "target": "first-feature"}),
+                    json.dumps(
+                        {
+                            "action": "tap",
+                            "target": "home-screen-2-feature-direct_message",
+                        }
+                    ),
                 ),
                 (
                     CAPTURE_STEP_ID,
@@ -121,6 +127,22 @@ def _synthetic_evidence(
                 ),
             ),
         )
+        for tap_number in range(1, feature_tap_count):
+            connection.execute(
+                "INSERT INTO steps VALUES (?, ?, ?, ?, ?)",
+                (
+                    f"60000000-0000-4000-8000-{tap_number + 10:012d}",
+                    SESSION_ID,
+                    1729999999.25 + tap_number / 10,
+                    None,
+                    json.dumps(
+                        {
+                            "action": "tap",
+                            "target": "home-screen-2-feature-direct_message",
+                        }
+                    ),
+                ),
+            )
         connection.execute(
             "INSERT INTO traces VALUES (?, ?, ?, ?)",
             (CHECKER_TRACE_ID, SESSION_ID, "agent", "checker"),
@@ -144,8 +166,6 @@ def _synthetic_evidence(
             "SYNTHETIC-ONLY-NO-DEVICE",
             "--mode",
             "control",
-            "--first-tap-at",
-            "1729999999",
             "--runner-exit-status",
             str(runner_exit_status),
         ],
@@ -305,3 +325,12 @@ def test_tinos_adapter_rejects_a_log_event_outside_the_session_window(tmp_path):
 
     assert result.returncode == 2
     assert json.loads(result.stdout)["reason"] == "event_outside_session_window"
+
+
+def test_tinos_control_requires_exactly_one_session_feature_tap(tmp_path):
+    result, _ = _synthetic_evidence(tmp_path, feature_tap_count=2)
+
+    assert result.returncode == 2
+    output = json.loads(result.stdout)
+    assert output["verdict"] == "invalid_control"
+    assert output["reason"] == "feature_tap_count"

@@ -33,9 +33,9 @@
   },
   "testcase": {
     "journey_path": "qualification/journeys/tinos_demo_gated_interstitial.md",
-    "journey_digest_sha256": "39b3e0e8dbf0a987e0ec26dfd216823a3748b049eab8c9d8fa8019b87a6671c7",
+    "journey_digest_sha256": "eb510b1ff112ccda606135d5fc1e0e8a888bf523fae5b466747ce777848ee0d1",
     "manifest_path": "qualification/manifests/tinos_demo_gated_interstitial.che2016.v1.json",
-    "manifest_digest_sha256": "c170c64d2aea2e958865a64ec51b4c4d80fe45cbdb55b3ee23f0b14838c8be5c",
+    "manifest_digest_sha256": "efd5021c16c2b4ae1ddaba85310f093ec216ffabf91054e6d43da181cacc09dc",
     "manifest_version": 1
   },
   "tinos_configuration": {
@@ -64,9 +64,11 @@
       "home_selector": "home-screen-2",
       "platform_tab_selector": "home-tab-whatsapp"
     },
+    "tap_timestamp_source": "The verifier derives matching tap action timestamps from the same session's steps rows; positive requires exactly two and control exactly one. Tap timestamps are never typed as verifier inputs.",
     "reset": "Force-stop and cold-start before each independent case; each cold start resets show history; do not clear app data or cold-start between the positive case's two clicks.",
     "interstitial_close": "For each shown interstitial, close with its visible close control within 15 seconds of the first visible frame; record show and close timestamps from the recording; otherwise report NOT-RUN.",
     "allow_log_timeout_race": "The app's 15-second show wait starts when it calls show, not when the first frame is visible. If the allow line is absent after a close within 15 seconds, report that attempt NOT-RUN for the timeout race; do not count the missing line as a denial or a pass.",
+    "sigkill_logger_limit": "SIGKILL can bypass the capture wrapper's EXIT trap. Confirm the recorded logger PID is gone before device release; if it remains, follow Sol's granted cleanup route and do not release the device yet.",
     "personal_data": "none"
   },
   "positive_case": {
@@ -79,7 +81,7 @@
     ],
     "second_click_timing": {
       "measure_from": "t1: first exact show allowed log timestamp after dismissal",
-      "measure_to": "t2: second Direct Message tap timestamp in the native action trace after the single Android system Back action in step 3",
+      "measure_to": "t2: second matching tap action timestamp derived from this session's steps rows after the single Android system Back action in step 3",
       "visible_duration": "D: first ad's visible duration from first visible frame to close-control activation in the recording",
       "max_visible_seconds": 15,
       "elapsed_window_formula": "t2 - t1 <= 15 - D",
@@ -92,28 +94,29 @@
     },
     "missing_allow_result": "NOT-RUN: the show-call timeout can race a close within 15 seconds of the first visible frame.",
     "missing_revenue_result": "FAIL: revenue_event_missing; the revenue outcome is not a pass.",
+    "gate_failure_result": "FAIL: gate_allowed_inside_interval with two allow lines and no denial inside the verified timing window; record revenue_observation separately as present, missing, or malformed.",
     "hourly_cap_coverage": "not covered; this case tests the 20-second minimum interval only",
     "scripted_oracle": {
       "path": "qualification/tools/tinos_demo_verdict_exit.py",
       "mode": "positive",
       "inputs": [
-        "first tap epoch timestamp from the native action trace",
         "first-visible epoch timestamp from the recording",
-        "close-control epoch timestamp from the recording",
-        "second tap epoch timestamp from the native action trace"
+        "close-control epoch timestamp from the recording"
       ],
       "checks": [
+        "exactly two matching tap actions are read from the same session's steps rows",
         "all relevant log events are after the first tap and inside the native session step window",
         "the allow log follows close-control activation",
         "the revenue event matches the test unit and follows the first tap",
         "the denial log follows the second tap",
         "(t2 - t1) <= 15 - D",
         "(t2 - t1) + D + 5 <= 20 seconds",
+        "timing window is checked before allow count; two allows and no denial inside the window are FAIL: gate_allowed_inside_interval",
         "same-session passing Checker ledger and runner-bound final capture"
       ],
       "exit_codes": {
         "0": "PASS",
-        "10": "FAIL: required revenue or denial event missing or malformed",
+        "10": "FAIL: required revenue or denial event missing or malformed, or gate_allowed_inside_interval",
         "11": "NOT-RUN: fill failure, missing allow, missed close deadline, or missed timing window",
         "12": "INVALID-EVIDENCE: malformed, stale, outside-session, mismatched, or incomplete evidence"
       },
@@ -125,6 +128,8 @@
     "goal_source": "qualification/manifests/tinos_demo_gated_interstitial.che2016.v1.json:entry_point.case_goals.tinos-demo-first-click-negative-control; submit the complete goal string verbatim as the single CLI goal argument.",
     "expected_verdict": "fail_assertion",
     "false_assertion": "The first Direct Message feature click must be denied by Tinos rules (NOT_ALLOWED).",
+    "required_feature_tap_count": 1,
+    "tap_source": "Exactly one matching tap action timestamp from this same session's steps rows; not a manually entered verifier input.",
     "required_observations": [
       "show allowed: shown and dismissed",
       "revenue <valueMicros> micros <currency> unit=ca-app-pub-3940256099942544/1033173712 network=<network> precision=<precision>"
@@ -225,14 +230,10 @@
       "<Sol-granted-exact-serial>",
       "--runner-exit-status",
       "<observed-artemis-exit-status>",
-      "--first-tap-at",
-      "<first-tap-epoch>",
       "--first-visible-at",
       "<first-visible-epoch>",
       "--closed-at",
-      "<closed-epoch>",
-      "--second-tap-at",
-      "<second-tap-epoch>"
+      "<closed-epoch>"
       ],
       "control": [
         "python",
@@ -251,20 +252,18 @@
         "<attempt-root>/tinos-demo-logcat.meta",
         "--device-serial",
         "<Sol-granted-exact-serial>",
-        "--runner-exit-status",
-        "<observed-artemis-exit-status>",
-        "--first-tap-at",
-        "<first-tap-epoch>"
+      "--runner-exit-status",
+      "<observed-artemis-exit-status>"
       ]
     },
     "verdict_adapter": {
       "path": "qualification/tools/tinos_demo_verdict_exit.py",
-      "script_sha256": "28cee2df15c7d77a53a4ad610bd5388d123ee09c4931448ef5ec4754a706124a",
+      "script_sha256": "9702e64b6ae6f6570cd665b6d19050e52d9c4ea4422d77b6c81ec3edabcd4416",
       "runner_change": false,
-      "control_exit_1": "valid intended negative control only: Artemis returned 0; exact allow and revenue observations passed; no denial event exists; timestamps pass session, cursor, and first-tap checks; exactly the specified false assertion failed; same-session Checker trace and final capture match",
+    "control_exit_1": "valid intended negative control only: Artemis returned 0; exactly one matching feature tap exists in the session; exact allow and revenue observations passed; no denial event exists; timestamps pass session, cursor, and first-tap checks; exactly the specified false assertion failed; same-session Checker trace and final capture match",
       "control_exit_2": "NOT-RUN for a missing allow line; otherwise invalid_control for missing or invalid evidence, a fill failure, an unexpected denial, stale or mismatched capture, plain pass, or Artemis process failure",
       "positive_exit_0": "PASS only when the exact allow, revenue, and denial observations and the measured timing bound pass, with a same-session passing Checker trace and final capture",
-      "positive_exit_10": "FAIL for a missing or malformed revenue or denial observation",
+    "positive_exit_10": "FAIL for a missing or malformed revenue or denial observation, or two allow lines and no denial inside the verified timing window (gate_allowed_inside_interval)",
       "positive_exit_11": "NOT-RUN for fill failure, missing allow, missed close deadline, or missed timing window",
       "positive_exit_12": "INVALID-EVIDENCE for malformed, stale, outside-session, mismatched, or incomplete evidence"
     },
@@ -292,7 +291,7 @@
         "maximum_uncertainty_seconds": 1,
         "event_rule": "Normalize device log epochs to host epoch and require the full uncertainty interval to fall inside the exact session window and after the first tap."
       },
-      "pid_policy": "Record the adb logcat process ID; stop and wait for that exact PID on EXIT, INT, or TERM, including runner failure.",
+      "pid_policy": "Record the adb logcat process ID; stop and wait for that exact PID on EXIT, INT, or TERM, including runner failure. SIGKILL can bypass the wrapper trap; confirm that the recorded logger PID is gone before device release and follow Sol's granted cleanup route if it remains.",
       "runner_change": false
     },
     "synthetic_device_free_test_cases": [
@@ -311,7 +310,12 @@
       "event before logcat cursor",
       "normalized device/host epoch offset",
       "uncertain event ordering",
-      "positive event order and timing pass",
+    "positive event order and timing pass",
+    "positive two allows and no denial inside window fails as gate violation",
+    "positive gate failure reports missing revenue separately",
+    "positive duplicate allows outside window is NOT-RUN before count classification",
+    "positive wrong session tap count is invalid evidence",
+    "control wrong session tap count is invalid_control",
       "positive missing denial",
       "positive missed timing window",
       "positive mismatched capture",
@@ -330,13 +334,14 @@
       "APK source commit, package ID, byte size, and SHA-256",
       "target class, exact Sol-granted serial, session/run ID, and attempt kind",
       "exact capture, runner, and verifier commands; exit statuses; event order; action/log timestamps; clock offset; and uncertainty",
-      "raw timestamped TinosDemo logcat, start cursor, logger PID and stop status, screen recording, and native traces",
+      "raw timestamped TinosDemo logcat, start cursor, logger PID, stop status, post-outcome PID-gone confirmation, screen recording, and native traces",
       "Checker verdict, Checker trace identity, and linked runner-bound final-capture identity",
       "revenue line including exact test-unit ID, or the distinct missing-revenue result",
       "cost record; do not begin execution if it requires new spend",
       "cleanup outcome and Sol-verified device release"
     ],
-    "interpretation": "Require all listed positive events. An allow requires its exact allow log and matching revenue unit; a denial requires its exact gate log after the second tap within the measured 20-second test window. Fill failures are neither. Missing revenue never passes the revenue outcome. Keep the negative control fail_assertion separate from the positive result."
+    "interpretation": "Require all listed positive events. An allow requires its exact allow log and matching revenue unit; a denial requires its exact gate log after the second tap within the measured 20-second test window. Two allow lines and no denial inside the verified window are FAIL: gate_allowed_inside_interval; outside the timing window is NOT-RUN before event-count classification. Fill failures are neither. Missing revenue never passes the revenue outcome. Keep the negative control fail_assertion separate from the positive result.",
+    "logger_release_requirement": "The executor must confirm the recorded logger PID is gone after every outcome before Sol verifies device release; SIGKILL can bypass the wrapper trap."
   },
   "review_and_execution_boundary": {
     "author_role": "Device-free testcase author only.",

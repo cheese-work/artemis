@@ -173,6 +173,46 @@ def _session_step_window(db_path: Path, session_id: UUID) -> tuple[float, float]
     return float(start), float(end)
 
 
+def _session_feature_taps(db_path: Path, session_id: UUID) -> list[float] | None:
+    try:
+        uri = f"{db_path.resolve().as_uri()}?mode=ro"
+        connection = sqlite3.connect(uri, uri=True)
+        rows = connection.execute(
+            "SELECT timestamp, action_taken FROM steps WHERE session_id = ?",
+            (str(session_id),),
+        ).fetchall()
+    except (OSError, sqlite3.Error, TypeError, ValueError):
+        return None
+    finally:
+        if "connection" in locals():
+            connection.close()
+
+    tap_times = []
+    for timestamp, action_text in rows:
+        if action_text is None:
+            continue
+        try:
+            action_data = json.loads(action_text)
+        except (TypeError, json.JSONDecodeError):
+            return None
+        actions = action_data if isinstance(action_data, list) else [action_data]
+        for action in actions:
+            if not isinstance(action, dict):
+                continue
+            if (
+                action.get("action") == "tap"
+                and action.get("target") == "home-screen-2-feature-direct_message"
+            ):
+                if (
+                    isinstance(timestamp, bool)
+                    or not isinstance(timestamp, (int, float))
+                    or not math.isfinite(timestamp)
+                ):
+                    return None
+                tap_times.append(float(timestamp))
+    return sorted(tap_times)
+
+
 def _event_time_error(
     events: list[tuple[float, str]],
     session_window: tuple[float, float],
@@ -345,7 +385,6 @@ def validate_control(
     logcat_path: Path,
     capture_metadata_path: Path,
     device_serial: str,
-    first_tap_at: float,
     runner_exit_status: int,
 ) -> tuple[int, dict[str, object]]:
     if runner_exit_status != 0:
@@ -359,6 +398,12 @@ def validate_control(
         return _control_result("session_window")
     if capture is None:
         return _control_result("capture_metadata")
+    tap_times = _session_feature_taps(db_path, session_id)
+    if tap_times is None:
+        return _control_result("feature_taps")
+    if len(tap_times) != 1:
+        return _control_result("feature_tap_count")
+    first_tap_at = tap_times[0]
     cursor, logcat_pid, clock_offset, clock_uncertainty = capture
     time_error = _event_time_error(
         events,
@@ -406,6 +451,7 @@ def validate_control(
         "revenue_line_count": len(revenue_messages),
         "runner_exit_status": runner_exit_status,
         "device_serial": device_serial,
+        "first_tap_timestamp": first_tap_at,
         "logcat_pid": logcat_pid,
         "logcat_start_cursor": cursor,
         "device_to_host_offset_seconds": clock_offset,
@@ -429,10 +475,8 @@ def validate_positive(
     logcat_path: Path,
     capture_metadata_path: Path,
     device_serial: str,
-    first_tap_at: float,
     first_visible_at: float,
     closed_at: float,
-    second_tap_at: float,
     runner_exit_status: int,
 ) -> tuple[int, dict[str, object]]:
     if runner_exit_status != 0:
@@ -446,6 +490,12 @@ def validate_positive(
         return _positive_result(12, "INVALID-EVIDENCE", "session_window")
     if capture is None:
         return _positive_result(12, "INVALID-EVIDENCE", "capture_metadata")
+    tap_times = _session_feature_taps(db_path, session_id)
+    if tap_times is None:
+        return _positive_result(12, "INVALID-EVIDENCE", "feature_taps")
+    if len(tap_times) != 2:
+        return _positive_result(12, "INVALID-EVIDENCE", "feature_tap_count")
+    first_tap_at, second_tap_at = tap_times
     cursor, logcat_pid, clock_offset, clock_uncertainty = capture
     time_error = _event_time_error(
         events,
@@ -458,10 +508,10 @@ def validate_positive(
     if time_error is not None:
         return _positive_result(12, "INVALID-EVIDENCE", time_error)
     start, end = session_window
-    explicit_times = (first_tap_at, first_visible_at, closed_at, second_tap_at)
+    explicit_times = (first_visible_at, closed_at)
     if any(not math.isfinite(value) or value < start or value > end for value in explicit_times):
         return _positive_result(12, "INVALID-EVIDENCE", "action_time_outside_session_window")
-    if not first_tap_at <= first_visible_at < closed_at <= second_tap_at:
+    if not first_tap_at <= first_visible_at < closed_at < second_tap_at:
         return _positive_result(12, "INVALID-EVIDENCE", "action_time_order")
     visible_duration = closed_at - first_visible_at
     if visible_duration > 15:
@@ -482,37 +532,64 @@ def validate_positive(
     ]
     if not allows:
         return _positive_result(11, "NOT-RUN", "allow_event_missing")
-    if len(allows) != 1:
-        return _positive_result(12, "INVALID-EVIDENCE", "allow_event_duplicate")
+    allows.sort(key=lambda event: event[0])
     allow_at = allows[0][0]
     if allow_at - clock_uncertainty <= closed_at:
         return _positive_result(12, "INVALID-EVIDENCE", "allow_before_close")
+    if second_tap_at <= allow_at + clock_uncertainty:
+        return _positive_result(12, "INVALID-EVIDENCE", "second_tap_before_allow")
 
-    revenue_messages = [message for message in messages if message.startswith("revenue ")]
-    if not revenue_messages:
-        return _positive_result(10, "FAIL", "revenue_event_missing")
-    if any(REVENUE_LINE.fullmatch(message) is None for message in revenue_messages):
-        return _positive_result(10, "FAIL", "revenue_format_or_unit")
+    elapsed = second_tap_at - allow_at
+    if elapsed > 15 - visible_duration or elapsed + visible_duration + 5 > 20:
+        return _positive_result(11, "NOT-RUN", "timing_window_missed")
 
     denials = [
         (timestamp + clock_offset, message)
         for timestamp, message in events
         if message == DENIAL_MESSAGE
     ]
+    revenue_messages = [message for message in messages if message.startswith("revenue ")]
+    revenue_observation = (
+        "missing"
+        if not revenue_messages
+        else "malformed"
+        if any(REVENUE_LINE.fullmatch(message) is None for message in revenue_messages)
+        else "present"
+    )
+    if len(allows) > 1:
+        if not denials and len(allows) == 2:
+            second_allow_at = allows[1][0]
+            if second_allow_at - clock_uncertainty <= second_tap_at:
+                return _positive_result(12, "INVALID-EVIDENCE", "second_allow_before_second_tap")
+            return _positive_result(
+                10,
+                "FAIL",
+                "gate_allowed_inside_interval",
+                first_tap_timestamp=first_tap_at,
+                second_tap_timestamp=second_tap_at,
+                allow_timestamp=allow_at,
+                second_allow_timestamp=second_allow_at,
+                visible_duration_seconds=visible_duration,
+                revenue_observation=revenue_observation,
+                revenue_line_count=len(revenue_messages),
+                device_serial=device_serial,
+                logcat_pid=logcat_pid,
+            )
+        return _positive_result(12, "INVALID-EVIDENCE", "allow_event_duplicate")
+    if not revenue_messages:
+        return _positive_result(10, "FAIL", "revenue_event_missing")
+    if any(REVENUE_LINE.fullmatch(message) is None for message in revenue_messages):
+        return _positive_result(10, "FAIL", "revenue_format_or_unit")
+
     if not denials:
         return _positive_result(10, "FAIL", "denial_event_missing")
     if len(denials) != 1:
         return _positive_result(12, "INVALID-EVIDENCE", "denial_event_duplicate")
     denial_at = denials[0][0]
-    if second_tap_at <= allow_at + clock_uncertainty:
-        return _positive_result(12, "INVALID-EVIDENCE", "second_tap_before_allow")
     if denial_at + clock_uncertainty <= second_tap_at:
         return _positive_result(12, "INVALID-EVIDENCE", "denial_before_second_tap")
     if denial_at - clock_uncertainty <= second_tap_at:
         return _positive_result(12, "INVALID-EVIDENCE", "denial_order_uncertain")
-    elapsed = second_tap_at - allow_at
-    if elapsed > 15 - visible_duration or elapsed + visible_duration + 5 > 20:
-        return _positive_result(11, "NOT-RUN", "timing_window_missed")
 
     evidence, evidence_error = _checker_evidence(traces_dir, db_path, session_id, None)
     if evidence is None:
@@ -550,15 +627,13 @@ def main() -> int:
     parser.add_argument("--capture-metadata-file", type=Path, required=True)
     parser.add_argument("--device-serial", required=True)
     parser.add_argument("--runner-exit-status", type=int, required=True)
-    parser.add_argument("--first-tap-at", type=float, required=True)
     parser.add_argument("--first-visible-at", type=float)
     parser.add_argument("--closed-at", type=float)
-    parser.add_argument("--second-tap-at", type=float)
     args = parser.parse_args()
 
     if args.mode == "positive":
-        if None in (args.first_visible_at, args.closed_at, args.second_tap_at):
-            parser.error("positive mode requires first-visible, closed, and second-tap timestamps")
+        if None in (args.first_visible_at, args.closed_at):
+            parser.error("positive mode requires first-visible and closed timestamps")
         status, output = validate_positive(
             args.traces_dir,
             args.data_engine_db,
@@ -566,10 +641,8 @@ def main() -> int:
             args.logcat_file,
             args.capture_metadata_file,
             args.device_serial,
-            args.first_tap_at,
             args.first_visible_at,
             args.closed_at,
-            args.second_tap_at,
             args.runner_exit_status,
         )
     else:
@@ -580,7 +653,6 @@ def main() -> int:
             args.logcat_file,
             args.capture_metadata_file,
             args.device_serial,
-            args.first_tap_at,
             args.runner_exit_status,
         )
     print(json.dumps(output))

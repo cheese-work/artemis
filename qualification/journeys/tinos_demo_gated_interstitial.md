@@ -73,8 +73,11 @@ baseline remains a separate required-acceptance gate.
    It records the exact logger PID and cursor in
    `<attempt-root>/tinos-demo-logcat.meta`. Its exit, interrupt, and termination
    traps stop and wait for that PID after Artemis returns or on another outcome.
-   It records both exit statuses. Do not run a separate logcat process, clear
-   shared ADB or log buffers, or reuse either capture file.
+   It records both exit statuses. SIGKILL can bypass the wrapper's EXIT trap.
+   After every outcome, confirm the logger PID is gone before
+   device release. If the PID remains, follow Sol's granted cleanup route and
+   do not release the device until the logger is gone. Do not run a separate
+   logcat process, clear shared ADB or log buffers, or reuse either capture file.
 8. Capture the timestamped screen recording and native action trace in the same
    Artemis session. Use native step timestamps as the host epoch timeline. Map
    each device log timestamp to that timeline with the recorded host/device
@@ -82,7 +85,13 @@ baseline remains a separate required-acceptance gate.
    recognized log event unless its full uncertainty interval is inside that
    session's native step window and strictly after the first feature tap. It
    also rejects a cursor that may begin after the first tap. Normalize
-   recording timestamps to the host epoch timeline.
+   recording timestamps to the host epoch timeline. The verifier reads exactly
+   two feature-tap timestamps from this session's `steps` rows for positive
+   mode and exactly one for control, matching tap actions on
+   `home-screen-2-feature-direct_message`. Do not enter tap timestamps
+   manually. For positive mode, the executor reads `first_visible_at` and
+   `closed_at` from the recording; these are the only action-time verifier
+   inputs.
 9. For each shown interstitial, close it with its visible close control within
    15 seconds of the first visible frame. Record show and close timestamps from
    the recording. If the ad is not closed within 15 seconds, report that
@@ -122,9 +131,9 @@ not call the ad API directly.
    Confirm Home, the WhatsApp tab, and the same Direct Message selector before
    tapping again.
 4. Measure `t1` at the first exact allow-log timestamp after dismissal, mapped
-   to the host epoch timeline from the capture metadata. Define `t2` as the
-   native action timestamp of the second feature tap after step 3. Normalize
-   action and recording timestamps to that host epoch timeline and record
+   to the host epoch timeline from the capture metadata. The verifier derives
+   `t2` from the second matching tap row in this same session after step 3; do
+   not enter either tap timestamp manually. Normalize action and recording timestamps to that host epoch timeline and record
    their offsets. Let `D` be the first ad's visible
    duration in seconds, from its first visible frame to close-control
    activation in the recording. The SDK records show history when the ad is
@@ -136,8 +145,8 @@ not call the ad API directly.
    `NOT-RUN`. Do not proceed with the second tap if returning to Home leaves
    insufficient time in the derived window.
 5. If the derived window remains after step 3, tap the same Direct Message
-   selector once; this tap is `t2`. Do not press Back again. Record the native
-   action timestamp and require the exact denial log
+   selector once; this tap is `t2`. Do not press Back again. The verifier reads
+   its native action timestamp from the same session and requires the exact denial log
    `show denied by Tinos rules (NOT_ALLOWED)` after that tap. Tie the log to
    the second tap by ordered timestamps. An exact denial is required; timing
    alone is not a denial. If the observed timestamps do not satisfy the bound
@@ -151,7 +160,10 @@ If the first click logs `not loaded; skipping` or `show failed (<code>)`, it is
 neither an allow nor a denial; report that case `NOT-RUN`. If the second click
 logs either fill failure, it is neither a denial nor a pass; report the denial
 attempt `NOT-RUN`. If both clicks complete inside the verified window but the
-second click is allowed instead of denied, report `FAIL` for the gate case.
+second click is allowed instead of denied, report `FAIL` with reason
+`gate_allowed_inside_interval` when two allow lines and no denial are present.
+If that timing window is missed, report `NOT-RUN` before classifying event
+counts.
 If the required revenue line is absent at final capture, report the distinct
 result `FAIL: revenue_event_missing`; the revenue outcome is not a pass even
 when the allow and denial logs exist. This case does not cover the 3-shows-per-hour cap.
@@ -161,7 +173,9 @@ when the allow and denial logs exist. This case does not cover the 3-shows-per-h
 Case ID: `tinos-demo-first-click-negative-control`.
 
 Use a separate cold start and a separate Artemis session. At the ready Home
-screen, tap the same Direct Message selector exactly once. Close the displayed
+screen, tap the same Direct Message selector exactly once. The verifier
+requires exactly one matching tap row in this session's `steps` data and reads
+its timestamp there; do not enter a tap timestamp manually. Close the displayed
 ad with its close control within 15 seconds of its first visible frame. Record
 show and close timestamps from the recording; if the ad is not closed within
 15 seconds, report `NOT-RUN`. After dismissal, require both
@@ -217,6 +231,9 @@ runner status and stopped status as `<attempt-root>/tinos-demo-logcat.meta`,
 and stops the exact logger PID on every exit path. Its device command includes
 `-s <Sol-granted-exact-serial>` and `-T <start-cursor>`; it does not clear or
 replay the shared log buffer. Do not launch Artemis if capture startup fails.
+SIGKILL can bypass the wrapper trap. After every outcome, confirm the logger
+PID is gone before device release; if it remains, follow Sol's granted
+cleanup route and do not release the device yet.
 
 After the helper returns, run exactly the verifier argv template for the case,
 replacing only listed runtime values. Use the separate `positive` and
@@ -234,12 +251,15 @@ observations pass, and the sole failed final Checker assertion is the exact
 false assertion linked to the same-session native Checker trace and
 runner-bound final capture. Control exit `2` with `NOT-RUN` means the allow is
 missing after the timeout-race case; other control exit `2` results are
-`invalid_control`. Never count an arbitrary Artemis process failure or a
+`invalid_control`. Control mode requires exactly one matching feature-tap step
+in this same session. Never count an arbitrary Artemis process failure or a
 completed orchestration status as control success.
 
-Positive mode takes the first tap and second tap timestamps from the native
-action trace and the first-visible and close-control timestamps from the
-recording as explicit host-epoch-second inputs. The verifier maps device log
+Positive mode derives exactly two feature-tap timestamps from this same
+session's `steps` rows matching action `tap` and target
+`home-screen-2-feature-direct_message`. The executor reads `first_visible_at`
+and `closed_at` from the recording and supplies only those two host-epoch-second
+values to the verifier. The verifier maps device log
 epochs to that host epoch using the capture clock samples. It requires every
 recognized event's full clock-uncertainty interval to fall inside the same
 session step window and strictly after the first tap. The verifier requires
@@ -247,7 +267,10 @@ the allow line after the close time, revenue after the first tap, and the exact
 denial after the second tap. It calculates `D` from the two recording
 times and checks both `(t2 - t1) <= 15 - D` and
 `(t2 - t1) + D + 5 <= 20`. Positive exit `0` means `PASS`; exit `10` means
-`FAIL` for a missing revenue or denial observation; exit `11` means `NOT-RUN`
+`FAIL` for a missing revenue or denial observation or for
+`gate_allowed_inside_interval` when two allow lines and no denial occur inside
+the verified timing window. The timing window is checked before allow-event
+counts; a missed window returns `NOT-RUN`. Exit `11` means `NOT-RUN`
 for fill failure, missing allow, a missed close or timing window; exit `12`
 means `INVALID-EVIDENCE`. These positive-mode exit codes do not overlap the
 negative-control result codes. Do not apply the Pocket Actual checker adapter
@@ -257,7 +280,8 @@ Record each attempt's runner SHA, candidate commit SHA, manifest version and
 digest, journey digest, APK source commit/package/size/SHA-256, exact wrapper,
 runner and verifier argv, target class and Sol-granted serial, session/run ID,
 attempt kind, action and log timestamps, capture cursor and logger PID, logger
-stop status, observed event order, raw logcat, recording, native traces,
+stop status and post-outcome PID-gone confirmation, observed event order, raw
+logcat, recording, native traces,
 Checker verdict and trace ID, linked final-capture ID, Artemis exit status,
 verifier JSON and exit status, cleanup result, and verified device release.
 Keep the two case results separate. The negative control's expected

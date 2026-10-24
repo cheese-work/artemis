@@ -108,6 +108,11 @@ def test_receipt_pins_runner_testcase_manifest_and_unchanged_app_build():
     assert receipt["execution"]["verdict_adapter"]["runner_change"] is False
     assert receipt["execution"]["log_capture_tool"]["runner_change"] is False
     assert receipt["positive_case"]["scripted_oracle"]["runner_change"] is False
+    assert receipt["positive_case"]["scripted_oracle"]["inputs"] == [
+        "first-visible epoch timestamp from the recording",
+        "close-control epoch timestamp from the recording",
+    ]
+    assert receipt["negative_control"]["required_feature_tap_count"] == 1
     assert receipt["negative_control"]["reject_if_denial_present"]
     assert "MIN(timestamp)..MAX(timestamp)" in receipt["negative_control"]["event_time_validation"]
     assert "full clock-uncertainty interval" in receipt["negative_control"]["event_time_validation"]
@@ -124,6 +129,11 @@ def test_receipt_pins_runner_testcase_manifest_and_unchanged_app_build():
     assert (
         receipt["execution"]["log_capture_tool"]["clock_mapping"]["maximum_uncertainty_seconds"]
         == 1
+    )
+    assert "SIGKILL can bypass" in receipt["execution"]["log_capture_tool"]["pid_policy"]
+    assert (
+        "confirm the recorded logger PID is gone"
+        in receipt["reporting"]["logger_release_requirement"]
     )
 
 
@@ -219,17 +229,16 @@ def test_tinos_manifest_pins_profile_dependencies_revision_and_full_cli_contract
         "<Sol-granted-exact-serial>",
         "--runner-exit-status",
         "<observed-artemis-exit-status>",
-        "--first-tap-at",
-        "<first-tap-epoch>",
         "--first-visible-at",
         "<first-visible-epoch>",
         "--closed-at",
         "<closed-epoch>",
-        "--second-tap-at",
-        "<second-tap-epoch>",
     ]
     assert verifier_templates["control"][3] == "control"
-    assert verifier_templates["control"][-2:] == ["--first-tap-at", "<first-tap-epoch>"]
+    assert verifier_templates["control"][-2:] == [
+        "--runner-exit-status",
+        "<observed-artemis-exit-status>",
+    ]
     assert entry_point["testcase_side_tool"]["runner_change"] is False
     assert entry_point["testcase_side_log_capture"]["runner_change"] is False
     assert "revision_policy" in manifest
@@ -251,12 +260,15 @@ def test_submitted_cli_goal_payload_contains_reviewed_scenario_assertions():
     assert "qualification/journeys/tinos_demo_gated_interstitial.md" not in control_goal
     assert "show allowed: shown and dismissed" in positive_goal
     assert "show allowed: shown and dismissed" in control_goal
-    assert "first-visible and close-control epoch timestamps" in positive_goal
-    assert "first feature tap epoch timestamp" in control_goal
+    assert "exactly two tap timestamps from this same session's steps rows" in positive_goal
+    assert "exactly one tap timestamp from this same session's steps rows" in control_goal
+    assert "first-visible and close-control timestamps from the recording" in positive_goal
+    assert "first-visible and close-control timestamps from the recording" in control_goal
     assert REVENUE_EXPECTATION in positive_goal
     assert REVENUE_EXPECTATION in control_goal
     assert "(t2 - t1) + D + 5 seconds <= 20 seconds" in positive_goal
     assert "t2 - t1 <= 15 seconds - D" in positive_goal
+    assert "gate_allowed_inside_interval" in positive_goal
     false_assertion = (
         "The first Direct Message feature click must be denied by Tinos rules (NOT_ALLOWED)."
     )
@@ -334,14 +346,17 @@ def test_journey_distinguishes_allowed_show_denial_and_fill_failure():
     )[0]
     assert positive_case.count("Return to Home exactly once with Android system Back") == 1
     assert (
-        "Define `t2` as the native action timestamp of the second feature tap after step 3"
-        in positive_case
+        "`t2` from the second matching tap row in this same session after step 3" in positive_case
     )
     assert (
         "allow line is absent after a close within 15 seconds, report that attempt `NOT-RUN`"
         in journey
     )
     assert "show wait starts when it calls `show`, not when the first frame is visible" in journey
+    assert "reads exactly two feature-tap timestamps from this session's `steps` rows" in journey
+    assert "reads `first_visible_at` and `closed_at` from the recording" in journey
+    assert "SIGKILL" in journey
+    assert "confirm the logger PID is gone before device release" in journey
 
 
 def test_candidate_records_a_single_allowed_scenario_and_intended_negative_control():
@@ -357,6 +372,15 @@ def test_candidate_records_a_single_allowed_scenario_and_intended_negative_contr
     assert receipt["positive_case"]["missing_revenue_result"] == (
         "FAIL: revenue_event_missing; the revenue outcome is not a pass."
     )
+    assert receipt["positive_case"]["gate_failure_result"] == (
+        "FAIL: gate_allowed_inside_interval with two allow lines and no denial inside the "
+        "verified timing window; record revenue_observation separately as present, missing, "
+        "or malformed."
+    )
+    assert receipt["fixture"]["tap_timestamp_source"].startswith(
+        "The verifier derives matching tap action timestamps from the same session's steps rows"
+    )
+    assert "SIGKILL can bypass" in receipt["fixture"]["sigkill_logger_limit"]
     control = receipt["negative_control"]
     assert control["expected_verdict"] == "fail_assertion"
     assert control["false_assertion"] == (

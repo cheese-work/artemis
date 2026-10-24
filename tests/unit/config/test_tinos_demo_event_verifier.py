@@ -40,6 +40,7 @@ def _synthetic_run(
     first_visible_at: float = 1730000001,
     close_at: float = 1730000001.5,
     second_tap_at: float = 1730000005,
+    feature_tap_times: tuple[float, ...] | None = None,
 ):
     if log_text is None:
         log_text = (
@@ -71,6 +72,8 @@ def _synthetic_run(
         encoding="utf-8",
     )
     db_path = tmp_path / "data_engine.db"
+    if feature_tap_times is None:
+        feature_tap_times = (1730000000.75, second_tap_at)
     with sqlite3.connect(db_path) as connection:
         connection.executescript(
             """
@@ -85,9 +88,24 @@ def _synthetic_run(
             """
         )
         connection.execute("INSERT INTO images VALUES (?, ?)", ("synthetic-final", "{}"))
+        tap_steps = [
+            (
+                f"61000000-0000-4000-8000-{index + 10:012d}",
+                SESSION_ID,
+                timestamp,
+                None,
+                json.dumps(
+                    {
+                        "action": "tap",
+                        "target": "home-screen-2-feature-direct_message",
+                    }
+                ),
+            )
+            for index, timestamp in enumerate(feature_tap_times)
+        ]
         connection.executemany(
             "INSERT INTO steps VALUES (?, ?, ?, ?, ?)",
-            (
+            [
                 (
                     "61000000-0000-4000-8000-000000000006",
                     SESSION_ID,
@@ -95,24 +113,11 @@ def _synthetic_run(
                     None,
                     json.dumps({"action": "launch", "target": "home"}),
                 ),
-                (
-                    FIRST_TAP_ID,
-                    SESSION_ID,
-                    1730000000.75,
-                    None,
-                    json.dumps({"action": "tap", "target": "home-screen-2-feature-direct_message"}),
-                ),
-                (
-                    SECOND_TAP_ID,
-                    SESSION_ID,
-                    second_tap_at,
-                    None,
-                    json.dumps({"action": "tap", "target": "home-screen-2-feature-direct_message"}),
-                ),
+                *tap_steps,
                 (
                     CAPTURE_ID,
                     SESSION_ID,
-                    second_tap_at + 2,
+                    max(feature_tap_times, default=1730000000) + 2,
                     "synthetic-final",
                     json.dumps(
                         {
@@ -122,7 +127,7 @@ def _synthetic_run(
                         }
                     ),
                 ),
-            ),
+            ],
         )
         connection.execute(
             "INSERT INTO traces VALUES (?, ?, ?, ?)",
@@ -158,14 +163,10 @@ def _synthetic_run(
         SERIAL,
         "--runner-exit-status",
         "0",
-        "--first-tap-at",
-        "1730000000.75",
         "--first-visible-at",
         str(first_visible_at),
         "--closed-at",
         str(close_at),
-        "--second-tap-at",
-        str(second_tap_at),
     ]
     result = subprocess.run(command, check=False, capture_output=True, text=True)
     return result
@@ -182,6 +183,8 @@ def test_synthetic_positive_verifier_accepts_ordered_session_events(tmp_path):
     output = _json_result(result)
     assert output["verdict"] == "PASS"
     assert output["allow_timestamp"] == pytest.approx(1730000002.3)
+    assert output["first_tap_timestamp"] == pytest.approx(1730000000.75)
+    assert output["second_tap_timestamp"] == pytest.approx(1730000005)
     assert output["device_to_host_offset_seconds"] == pytest.approx(DEVICE_TO_HOST_OFFSET)
 
 
@@ -287,6 +290,56 @@ def test_synthetic_positive_verifier_rejects_event_ambiguous_with_first_tap(tmp_
 
     assert result.returncode == 12
     assert _json_result(result)["reason"] == "event_time_order_uncertain"
+
+
+def test_synthetic_positive_second_allow_inside_window_is_gate_failure(tmp_path):
+    second_allow = f"{1730000005.8 - DEVICE_TO_HOST_OFFSET:.3f} 12 12 I TinosDemo: {ALLOW}\n"
+    log_text = PASSING_LOG.replace(f"1729999905.700 12 12 I TinosDemo: {DENIAL}\n", second_allow)
+    result = _synthetic_run(tmp_path, log_text=log_text)
+
+    assert result.returncode == 10
+    output = _json_result(result)
+    assert output["verdict"] == "FAIL"
+    assert output["reason"] == "gate_allowed_inside_interval"
+    assert output["revenue_observation"] == "present"
+
+
+def test_synthetic_positive_gate_failure_reports_missing_revenue_separately(tmp_path):
+    second_allow = f"{1730000005.8 - DEVICE_TO_HOST_OFFSET:.3f} 12 12 I TinosDemo: {ALLOW}\n"
+    no_revenue = PASSING_LOG.replace(f"1729999902.500 12 12 I TinosDemo: {REVENUE}\n", "").replace(
+        f"1729999905.700 12 12 I TinosDemo: {DENIAL}\n", second_allow
+    )
+    result = _synthetic_run(tmp_path, log_text=no_revenue)
+
+    assert result.returncode == 10
+    output = _json_result(result)
+    assert output["reason"] == "gate_allowed_inside_interval"
+    assert output["revenue_observation"] == "missing"
+
+
+def test_synthetic_positive_duplicate_allow_outside_window_is_not_run(tmp_path):
+    second_tap_at = 1730000018
+    second_allow = f"{second_tap_at + 0.8 - DEVICE_TO_HOST_OFFSET:.3f} 12 12 I TinosDemo: {ALLOW}\n"
+    log_text = PASSING_LOG.replace(f"1729999905.700 12 12 I TinosDemo: {DENIAL}\n", second_allow)
+    result = _synthetic_run(
+        tmp_path,
+        log_text=log_text,
+        second_tap_at=second_tap_at,
+    )
+
+    assert result.returncode == 11
+    output = _json_result(result)
+    assert output["verdict"] == "NOT-RUN"
+    assert output["reason"] == "timing_window_missed"
+
+
+@pytest.mark.parametrize("tap_count", [1, 3], ids=["one-tap", "three-taps"])
+def test_synthetic_positive_requires_exactly_two_session_feature_taps(tmp_path, tap_count):
+    tap_times = tuple(1730000000.75 + index for index in range(tap_count))
+    result = _synthetic_run(tmp_path, feature_tap_times=tap_times)
+
+    assert result.returncode == 12
+    assert _json_result(result)["reason"] == "feature_tap_count"
 
 
 @pytest.mark.parametrize(
