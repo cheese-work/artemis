@@ -27,7 +27,13 @@ import json
 from pathlib import Path
 from typing import Any, Literal
 
-from artemis.config.attempt_manifest import TIER_MODELS, Tier, digest_of, read_stored_manifest
+from artemis.config.attempt_manifest import (
+    TIER_MODELS,
+    Tier,
+    digest_of,
+    read_stored_manifest,
+    tier_for_provider_model,
+)
 from artemis.config.attempt_usage_reader import read_llm_usage_events
 from artemis.runtime import trace_store
 
@@ -241,13 +247,10 @@ def _tier_of_provider_model(provider: str | None, model: str | None) -> Tier | N
     Dict-based counterpart of ``attempt_manifest._node_tier`` (which takes an
     ``LLM``/``LLMWithFallback`` instance): this module only ever sees the
     already-serialized ``config``/``would_resolve_to`` dicts a stored manifest
-    carries, never the original ``LLM`` objects, so it re-does the same
-    ``TIER_MODELS`` lookup directly against those two plain strings.
+    carries, never the original ``LLM`` objects, so it uses the shared exact-route
+    resolver against those two plain strings.
     """
-    for tier, (tier_provider, tier_model) in TIER_MODELS.items():
-        if provider == tier_provider and model == tier_model:
-            return tier
-    return None
+    return tier_for_provider_model(provider, model)
 
 
 def _manifest_expected_source(node_entry: dict[str, Any], manifest_tier: Tier | None) -> str | None:
