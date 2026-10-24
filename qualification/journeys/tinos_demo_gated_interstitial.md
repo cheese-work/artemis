@@ -10,8 +10,8 @@ device has been used to author this candidate.
 - Testcase and manifest format reference: `096411113522abc37964256833fecbbac4778af4`, manifest version `9`. Pocket Actual files are format references only; the Tinos case uses its own manifest and assertions.
 - Candidate Tinos manifest: `qualification/manifests/tinos_demo_gated_interstitial.che2016.v1.json`.
 - App: current SDK-main debug `adsTest` APK from `tevo-studio/sa049-dual-app` PR #145, head `24d3ad51350767d04a2951ab72685a45f67a6f75`.
-- APK SHA-256: `b2a14979f173bc3e022a15aa5e3385085c8a02167ceda4b64b69da9e060efe64` (author-reported; not independently re-hashed by Sol).
-- The current issue source does not report this APK's byte size. Record the observed size after verifying its SHA-256; do not use the superseded stack-head APK or the APKs in `workdir/out/` and `workdir/out2/`.
+- APK SHA-256: `b2a14979f173bc3e022a15aa5e3385085c8a02167ceda4b64b69da9e060efe64` (preserved-copy observation matches the author-reported digest; Sol has not independently hashed this APK).
+- APK size: `67183124` bytes (observed on the preserved copy; verify the APK SHA-256 before use; do not use the superseded stack-head APK or the APKs in `workdir/out/` and `workdir/out2/`).
 - Application ID: `com.dualix.dualmessenger.webscanner`. Use test ad IDs only. Do not rebuild or change the app build.
 - Google test ad app ID: `ca-app-pub-3940256099942544~3347511713`.
 - Tinos fixture: placement `main`, minimum interval 20 seconds, maximum 3 shows per hour. A cold start resets show history.
@@ -67,6 +67,10 @@ baseline remains a separate required-acceptance gate.
 7. Capture the timestamped screen recording, native action trace, and raw
    `TinosDemo` logcat for the same attempt. Record the logcat cursor before the
    first click; do not clear shared ADB or log buffers.
+8. For each shown interstitial, close it with its visible close control within
+   15 seconds of the first visible frame. Record show and close timestamps from
+   the recording. If the ad is not closed within 15 seconds, report that
+   attempt `NOT-RUN`; the allow line is emitted only after dismissal.
 
 After each attempt, stop the app, preserve all raw evidence, and return the
 exact granted AVD to Sol for verified cleanup and release. Record cleanup on
@@ -82,28 +86,37 @@ not call the ad API directly.
 1. At Home with the WhatsApp tab selected, tap the Direct Message row using
    `home-screen-2-feature-direct_message`. Preserve the native action trace and
    timestamped recording.
-2. Require `show allowed: shown and dismissed` for this tap. The app then
-   navigates to Direct Message. Require at least one revenue line for this
-   first tap that matches the format above and includes the exact test-unit
-   `unit=` value. Evaluate this revenue requirement from the continuous logcat
-   capture; do not delay the repeat tap to wait for it.
+2. Close the displayed ad with its close control within 15 seconds of its first
+   visible frame. Record the show and close timestamps from the recording and
+   calculate `D` as the visible duration in seconds. If the ad is not closed
+   within 15 seconds, report this attempt `NOT-RUN`. After dismissal, require
+   `show allowed: shown and dismissed` for this tap. The app then navigates to
+   Direct Message. Require at least one revenue line for this first tap that
+   matches the format above and includes the exact test-unit `unit=` value.
+   Evaluate this revenue requirement from the continuous logcat capture; do
+   not delay the repeat tap to wait for it.
 3. Return to Home with Android system Back once, not the app toolbar/back
    control. `NavDisplay` handles system Back by popping the route; the screen's
    own back callback invokes the separate `inter_back` ad path. Confirm Home,
    the WhatsApp tab, and the same Direct Message selector before tapping again.
-4. Measure `t1` at the first exact allow-log timestamp, after dismissal, and
-   `t2` at the second feature tap's native action timestamp. Normalize the log
-   and action timestamps to one monotonic timeline and record the offset. The
-   SDK measures its 20-second interval from show history, not dismissal. The
-   first show can take up to 15 seconds to dismiss. Require `t2 - t1` to be no
-   more than 3 seconds, with total timestamp uncertainty of ±1 second. This
-   bounds the second attempt to at most 19 seconds from the SDK show-history
-   time. If the clocks cannot be aligned within that tolerance, report the
-   denial attempt as `NOT-RUN`.
-5. If dismissal, Back, or return-to-Home consumes the 3-second window, do not
-   make a late tap and do not count an earlier allow as a denial. Report the
-   denial attempt as `NOT-RUN`. Otherwise, tap the same Direct Message selector
-   once and require the exact denial log
+4. Measure `t1` at the first exact allow-log timestamp after dismissal, and
+   `t2` at the second feature tap's native action timestamp after returning to
+   Home. Normalize the log, action, and recording timestamps to one monotonic
+   timeline and record their offsets. Let `D` be the first ad's visible
+   duration in seconds, from its first visible frame to close-control
+   activation in the recording. The SDK records show history when the ad is
+   shown, not dismissal, and checks the second show only after loading, which
+   can take up to 4 seconds. Include the 1-second timestamp uncertainty in
+   the required bound: `(t2 - t1) + D + 5 seconds <= 20 seconds`. Derive the
+   tap window as `t2 - t1 <= 15 seconds - D`. If `15 seconds - D <= 0`, or the
+   clocks cannot be aligned within ±1 second, report the denial attempt
+   `NOT-RUN`.
+5. After the ad closes, return to Home with Android system Back once, not the
+   app toolbar/back control. Confirm Home, the WhatsApp tab, and the same
+   Direct Message selector before tapping again. If dismissal, Back, or return
+   to Home leaves insufficient time in the derived `15 seconds - D` window,
+   do not make a late tap; report the denial attempt `NOT-RUN`. Otherwise, tap
+   the same Direct Message selector once and require the exact denial log
    `show denied by Tinos rules (NOT_ALLOWED)` after that tap. Tie it to the
    second tap by ordered timestamps. An exact denial is required; timing alone
    is not a denial.
@@ -125,7 +138,10 @@ when the allow and denial logs exist. This case does not cover the 3-shows-per-h
 Case ID: `tinos-demo-first-click-negative-control`.
 
 Use a separate cold start and a separate Artemis session. At the ready Home
-screen, tap the same Direct Message selector exactly once. Require both
+screen, tap the same Direct Message selector exactly once. Close the displayed
+ad with its close control within 15 seconds of its first visible frame. Record
+show and close timestamps from the recording; if the ad is not closed within
+15 seconds, report `NOT-RUN`. After dismissal, require both
 `show allowed: shown and dismissed` and a revenue line that includes
 `unit=ca-app-pub-3940256099942544/1033173712`. The revenue assertion must pass.
 

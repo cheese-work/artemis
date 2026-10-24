@@ -17,6 +17,7 @@ RUNNER_SHA = "feefd94c72dbce0fa1afc109ffe3d8254f565d6b"
 TESTCASE_SOURCE_SHA = "096411113522abc37964256833fecbbac4778af4"
 APP_SHA = "24d3ad51350767d04a2951ab72685a45f67a6f75"
 APK_SHA256 = "b2a14979f173bc3e022a15aa5e3385085c8a02167ceda4b64b69da9e060efe64"
+APK_SIZE_BYTES = 67183124
 TEST_APP_ID = "ca-app-pub-3940256099942544~3347511713"
 TEST_INTERSTITIAL = "ca-app-pub-3940256099942544/1033173712"
 REVENUE_EXPECTATION = (
@@ -57,8 +58,9 @@ def test_receipt_pins_runner_testcase_manifest_and_unchanged_app_build():
     }
     assert source["app_sha"] == APP_SHA
     assert source["apk_digest_sha256"] == APK_SHA256
-    assert source["apk_size_bytes"] is None
-    assert "record observed size" in source["apk_size_note"]
+    assert source["apk_size_bytes"] == APK_SIZE_BYTES
+    assert f"{APK_SIZE_BYTES} bytes" in source["apk_size_note"]
+    assert "Sol has not independently hashed" in source["apk_size_note"]
     assert source["package_name"] == "com.dualix.dualmessenger.webscanner"
     assert source["google_test_ad_app_id"] == TEST_APP_ID
     assert receipt["testcase"]["journey_path"] == str(JOURNEY_PATH.relative_to(REPO_ROOT))
@@ -80,8 +82,9 @@ def test_tinos_manifest_pins_profile_dependencies_revision_and_full_cli_contract
     app = manifest["candidate_app"]
     assert app["app_sha"] == APP_SHA
     assert app["apk_digest_sha256"] == APK_SHA256
-    assert app["apk_size_bytes"] is None
-    assert "record observed size" in app["apk_size_note"]
+    assert app["apk_size_bytes"] == APK_SIZE_BYTES
+    assert f"{APK_SIZE_BYTES} bytes" in app["apk_size_note"]
+    assert "Sol has not independently hashed" in app["apk_size_note"]
 
     assert manifest["manifest_version"] == 1
     assert manifest["fork_sha"]["value"] == RUNNER_SHA
@@ -145,11 +148,16 @@ def test_journey_distinguishes_allowed_show_denial_and_fill_failure():
         "home-screen-2-feature-direct_message",
         "Android system Back",
         "first exact allow-log timestamp",
-        "3 seconds",
         "15 seconds",
-        "19 seconds",
+        "visible duration in seconds",
+        "`67183124` bytes",
+        "15 seconds - D",
+        "(t2 - t1) + D + 5 seconds <= 20 seconds",
+        "up to 4 seconds",
         "not dismissal",
         "±1 second",
+        "close control within 15 seconds",
+        "show and close timestamps from the recording",
         "PR #100's merge is not the runner pin",
         "b219d55",
         "NOT-RUN",
@@ -168,6 +176,7 @@ def test_journey_distinguishes_allowed_show_denial_and_fill_failure():
     assert "app-source PASS on CHE-2015" in journey
     assert "changes only the SDK pin and repo-local Maven artifacts" in journey
     assert "earlier binary evidence does not transfer" in journey
+    assert journey.count("close control within 15 seconds") >= 2
     assert "NOT-RUN" in journey
 
 
@@ -190,12 +199,15 @@ def test_candidate_records_a_single_allowed_scenario_and_intended_negative_contr
         "The first Direct Message feature click must be denied by Tinos rules (NOT_ALLOWED)."
     )
     assert control["invalid_when_fill_fails"] is True
+    assert "close control within 15 seconds" in receipt["fixture"]["interstitial_close"]
 
     timing = receipt["positive_case"]["second_click_timing"]
-    assert timing["max_elapsed_seconds"] == 3
-    assert timing["max_dismissal_seconds_before_log"] == 15
+    assert timing["max_visible_seconds"] == 15
+    assert timing["elapsed_window_formula"] == "t2 - t1 <= 15 - D"
+    assert timing["gate_check_bound_formula"] == "(t2 - t1) + D + 5 <= 20 seconds"
+    assert timing["second_fill_load_max_seconds"] == 4
     assert timing["total_timestamp_uncertainty_seconds"] == 1
-    assert timing["worst_case_elapsed_from_sdk_show_history_seconds"] == 19
+    assert timing["not_run_when_remaining_window_seconds"] == "15 - D <= 0"
     assert control["required_observations"] == [
         "show allowed: shown and dismissed",
         REVENUE_EXPECTATION,
