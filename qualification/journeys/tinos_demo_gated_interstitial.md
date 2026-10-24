@@ -30,9 +30,10 @@ placement, not a revenue-log field.
 ## Fixture and reset
 
 Execution requires two independent non-author reviews of this exact revision.
-Sol's corrected-build re-review on CHE-2015 must be PASS for the pinned app
-head. The current issue records an app-source PASS, not an independent
-verification of this APK. The executor must verify the APK SHA-256 before use.
+The signed app-source PASS on CHE-2015 remains applicable because the main
+build changes only the SDK pin and repo-local Maven artifacts. It does not
+verify this APK's bytes. The executor must verify the author-reported APK
+SHA-256 before use; earlier binary evidence does not transfer to this build.
 Sol must grant an exclusive X99 AVD claim with an exact serial. The X99 AVD
 must follow its live qualification or first-run route. CHE-387's flake
 baseline remains a separate required-acceptance gate.

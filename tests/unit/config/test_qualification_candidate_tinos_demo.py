@@ -165,7 +165,9 @@ def test_journey_distinguishes_allowed_show_denial_and_fill_failure():
     assert "qualification/manifests/tinos_demo_gated_interstitial.che2016.v1.json" in journey
     assert "same session" in journey
     assert "fail_assertion" in journey
-    assert "corrected-build re-review on CHE-2015" in journey
+    assert "app-source PASS on CHE-2015" in journey
+    assert "changes only the SDK pin and repo-local Maven artifacts" in journey
+    assert "earlier binary evidence does not transfer" in journey
     assert "NOT-RUN" in journey
 
 
@@ -203,6 +205,7 @@ def test_candidate_records_a_single_allowed_scenario_and_intended_negative_contr
     assert receipt["review_and_execution_boundary"]["device_execution"] == "NOT-RUN"
     assert receipt["review_and_execution_boundary"]["device_claim"] == "not granted"
     assert any(
-        "corrected-build re-review on CHE-2015" in condition
+        "signed app-source PASS on CHE-2015" in condition
+        and "earlier binary evidence does not transfer" in condition
         for condition in receipt["review_and_execution_boundary"]["execution_requires"]
     )

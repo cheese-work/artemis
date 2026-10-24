@@ -33,7 +33,7 @@
   },
   "testcase": {
     "journey_path": "qualification/journeys/tinos_demo_gated_interstitial.md",
-    "journey_digest_sha256": "a88fc71bb5ab3cde0cd935ca5b606a944ee514d3a9091d29363eed48c9fbda1c",
+    "journey_digest_sha256": "7988d3124a03763acfcc7998913bdfd1597864b73108c7d136cd921df8df4cf9",
     "manifest_path": "qualification/manifests/tinos_demo_gated_interstitial.che2016.v1.json",
     "manifest_digest_sha256": "741079475fa78a7f2114247918c653dd8d1300a1b98b016e738491c1f5a16057",
     "manifest_version": 1
@@ -142,7 +142,7 @@
     "re_review_after_material_change": true,
     "execution_requires": [
       "Both independent non-author reviews approve this exact testcase revision.",
-      "Sol's corrected-build re-review on CHE-2015 is PASS for the pinned app head.",
+      "The signed app-source PASS on CHE-2015 applies to unchanged app sources; verify the author-reported current APK SHA-256 before use because earlier binary evidence does not transfer.",
       "Sol grants an exclusive exact-serial X99 AVD claim in the issue.",
       "The executor verifies the pinned runner and APK identities before use.",
       "The execution report preserves raw evidence and verified cleanup/release."
