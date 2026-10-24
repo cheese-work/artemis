@@ -63,20 +63,29 @@ Tier = Literal["luna", "terra", "sol", "nova"]
 
 TIERS: tuple[Tier, ...] = ("luna", "terra", "sol", "nova")
 
-# Provider/model pairs that identify each tier. This fork's config/artemis.jsonc
-# does not (yet) declare an explicit tier->model table; its "default" node
-# resolves to openai/gpt-6-sol today, so "sol" is mapped to that pair as the
-# only tier presently exercised end-to-end. "luna"/"terra" are declared for
-# forward compatibility with the escalation controller (Gate 2, out of scope
-# here) and must be updated here (not inferred) if/when config/artemis.jsonc
-# grows an explicit tier table. "nova" is the Anthropic tier added for the
-# CHE-491 qualification pilot against the sub2api gateway (CHE-639).
+# Canonical provider/model pair for each declared tier. Route aliases are
+# explicit below; unknown provider/model pairs are never inferred.
 TIER_MODELS: dict[Tier, tuple[str, str]] = {
     "luna": ("google", "gemini-3.5-flash-lite"),
     "terra": ("google", "gemini-3.8-flash"),
     "sol": ("openai", "gpt-6-sol"),
     "nova": ("anthropic", "claude-sonnet-5"),
 }
+TIER_MODEL_ALIASES: dict[tuple[str, str], Tier] = {
+    ("openai", "gpt-6.1-sol"): "sol",
+}
+
+
+def tier_for_provider_model(provider: str | None, model: str | None) -> Tier | None:
+    """Resolve a declared tier from an exact provider/model route."""
+    if provider is None or model is None:
+        return None
+    route = (provider, model)
+    for tier, canonical_route in TIER_MODELS.items():
+        if route == canonical_route:
+            return tier
+    return TIER_MODEL_ALIASES.get(route)
+
 
 # Environment variables whose presence/value can influence LLMConfig
 # resolution and must be captured (never their raw secret value) in the
@@ -272,10 +281,7 @@ def _llm_node_snapshot(llm: LLM | LLMWithFallback) -> dict[str, Any]:
 
 def _node_tier(llm: LLM | LLMWithFallback) -> Tier | None:
     """Which declared tier (if any) this node's primary provider/model matches."""
-    for tier, (provider, model) in TIER_MODELS.items():
-        if llm.provider == provider and llm.model == model:
-            return tier
-    return None
+    return tier_for_provider_model(llm.provider, llm.model)
 
 
 @dataclasses.dataclass(frozen=True)

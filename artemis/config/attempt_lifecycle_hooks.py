@@ -42,8 +42,8 @@ def record_attempt_manifest(
 
     Mirrors ``token_meter.record_llm_usage``'s own contract: this must never
     raise into the task execution path. A tier that cannot be inferred from
-    ``llm_config`` (this fork's ``config/artemis.jsonc`` does not yet declare
-    an explicit tier table -- see ``attempt_manifest.TIER_MODELS``) or a
+    ``llm_config`` using the explicit provider/model routes in
+    ``attempt_manifest`` or a
     checkpoint that collides with an already-stored one (create-only storage)
     are both recorded as skips, not failures, so a manifest gap is visible in
     the caller's own log without ever aborting a live mobile task.
@@ -56,23 +56,19 @@ def record_attempt_manifest(
     """
     try:
         from artemis.config.attempt_manifest import (
-            TIER_MODELS,
             ManifestAlreadyExistsError,
             build_attempt_manifest,
             store_attempt_manifest,
+            tier_for_provider_model,
         )
         import os
 
-        tier = None
-        for candidate_tier, (provider, model_name) in TIER_MODELS.items():
-            if llm_config.planner.provider == provider and llm_config.planner.model == model_name:
-                tier = candidate_tier
-                break
+        tier = tier_for_provider_model(llm_config.planner.provider, llm_config.planner.model)
         if tier is None:
             print(
                 f"Attempt manifest [{checkpoint}] skipped: planner "
                 f"{llm_config.planner.provider}/{llm_config.planner.model} does not match "
-                "a declared tier in attempt_manifest.TIER_MODELS."
+                "a declared route in artemis.config.attempt_manifest."
             )
             return
 
