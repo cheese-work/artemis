@@ -13,8 +13,9 @@ TINOS_MANIFEST_PATH = (
 )
 SOURCE_MANIFEST_PATH = REPO_ROOT / "qualification/manifests/pocket_actual_save_relaunch.v1.json"
 SOURCE_JOURNEY_PATH = REPO_ROOT / "qualification/journeys/pocket_actual_save_relaunch.md"
-RUNNER_SHA = "feefd94c72dbce0fa1afc109ffe3d8254f565d6b"
+RUNNER_SHA = "9f8ef4868f9eb1d8f01526fef393db762f9f2ef6"
 TESTCASE_SOURCE_SHA = "096411113522abc37964256833fecbbac4778af4"
+TESTCASE_SOURCE_FORK_SHA = "feefd94c72dbce0fa1afc109ffe3d8254f565d6b"
 APP_SHA = "24d3ad51350767d04a2951ab72685a45f67a6f75"
 APK_SHA256 = "b2a14979f173bc3e022a15aa5e3385085c8a02167ceda4b64b69da9e060efe64"
 APK_SIZE_BYTES = 67183124
@@ -54,7 +55,7 @@ def test_receipt_pins_runner_testcase_manifest_and_unchanged_app_build():
     assert runner["commit_sha"] == RUNNER_SHA
     assert testcase["commit_sha"] == TESTCASE_SOURCE_SHA
     assert testcase["manifest_version"] == 9
-    assert testcase["fork_sha"] == RUNNER_SHA
+    assert testcase["fork_sha"] == TESTCASE_SOURCE_FORK_SHA
     assert testcase["format_reference_only"] is True
     assert testcase["manifest_path"] == str(SOURCE_MANIFEST_PATH.relative_to(REPO_ROOT))
     assert (
@@ -65,7 +66,7 @@ def test_receipt_pins_runner_testcase_manifest_and_unchanged_app_build():
     manifest_bytes = SOURCE_MANIFEST_PATH.read_bytes()
     assert hashlib.sha256(manifest_bytes).hexdigest() == testcase["manifest_digest_sha256"]
     assert json.loads(manifest_bytes)["manifest_version"] == 9
-    assert json.loads(manifest_bytes)["fork_sha"]["value"] == RUNNER_SHA
+    assert json.loads(manifest_bytes)["fork_sha"]["value"] == TESTCASE_SOURCE_FORK_SHA
     source_journey_bytes = SOURCE_JOURNEY_PATH.read_bytes()
     assert hashlib.sha256(source_journey_bytes).hexdigest() == testcase["journey_digest_sha256"]
 
