@@ -174,6 +174,15 @@ def test_tinos_manifest_pins_profile_dependencies_revision_and_full_cli_contract
     }
     assert "first line or first comma-separated part" in trigger["visible_ui_evidence"]
     assert "do not use Compose test tags" in trigger["visible_ui_evidence"]
+    assert "UI-tree element index" in trigger["visible_ui_evidence"]
+    assert "never by a coordinate pair" in trigger["visible_ui_evidence"]
+    assert trigger["trace_identity_fields"] == [
+        "target_text",
+        "target_bounds",
+        "target_resource_id",
+        "target_class",
+    ]
+    assert trigger["trace_matching_excludes"] == ["coordinates", "normalized_coordinates"]
     assert entry_point["route"] == "cli"
     assert entry_point["environment_template"] == {
         "ARTEMIS_TRACES_DIR": "<attempt-root>/ledger",
@@ -283,6 +292,11 @@ def test_submitted_cli_goal_payload_contains_reviewed_scenario_assertions():
         assert "trace timestamp and duration bound the dispatch interval" in goal
         assert "Missing, ambiguous, failed, or malformed traces are INVALID-EVIDENCE" in goal
         assert "unmodified target_text, trace ID, and dispatch interval" in goal
+        assert "UI-tree element index, never by a coordinate pair" in goal
+        assert (
+            "matching target_text, target_bounds, target_resource_id, and target_class; "
+            "ignore coordinates and normalized_coordinates"
+        ) in goal
     assert "first-visible and close-control timestamps from the recording" in positive_goal
     assert "first-visible and close-control timestamps from the recording" in control_goal
     assert 'visible labels "WhatsApp" and "Direct Message"' in positive_goal
@@ -331,8 +345,10 @@ def test_journey_distinguishes_allowed_show_denial_and_fill_failure():
         "Premium paywall",
         "one second",
         "Direct Message",
-        'visible label "Direct Message"',
-        'visible label "WhatsApp"',
+        '"Direct Message" feature row in the UI tree',
+        '"WhatsApp" tab and "Direct Message" feature row',
+        "UI-tree element index",
+        "never by a coordinate pair",
         "Android system Back",
         "first exact allow-log timestamp",
         "15 seconds",
@@ -373,11 +389,13 @@ def test_journey_distinguishes_allowed_show_denial_and_fill_failure():
     assert "Home does not expose those tags as UI-tree selectors" in journey
     assert "first line or first comma-separated part" in journey
     assert "tap_observations" in journey
-    assert 'For both "WhatsApp" and' in journey
+    assert '"WhatsApp" tab and "Direct Message" feature row' in journey
     assert "strictly after the first feature-tap action-trace dispatch interval" in journey
     assert "cursor whose latest possible host time is" in journey
     assert "second tap's dispatch-interval upper bound as `t2`" in journey
     assert "include these observations in the report" in journey
+    assert "The SDK currently has no ad preloading or automatic reload" in journey
+    assert "Denial-order validation relies on that behavior" in journey
 
     positive_case = journey.split("## Positive case: allow, then deny", 1)[1].split(
         "## Negative control: false first-click denial", 1
@@ -424,7 +442,20 @@ def test_candidate_records_a_single_allowed_scenario_and_intended_negative_contr
         for item in receipt["reporting"]["record_each_attempt"]
     )
     assert "SIGKILL can bypass" in receipt["fixture"]["sigkill_logger_limit"]
+    assert "no ad preloading or automatic reload" in receipt["fixture"]["denial_order_known_limit"]
+    assert receipt["fixture"]["trigger"]["trace_identity_fields"] == [
+        "target_text",
+        "target_bounds",
+        "target_resource_id",
+        "target_class",
+    ]
+    assert receipt["fixture"]["trigger"]["trace_matching_excludes"] == [
+        "coordinates",
+        "normalized_coordinates",
+    ]
     control = receipt["negative_control"]
+    assert "same step_id" in control["tap_trace_identity"]
+    assert "do not compare coordinates" in control["tap_trace_identity"]
     assert control["expected_verdict"] == "fail_assertion"
     assert control["false_assertion"] == (
         "The first Direct Message feature click must be denied by Tinos rules (NOT_ALLOWED)."
@@ -439,6 +470,13 @@ def test_candidate_records_a_single_allowed_scenario_and_intended_negative_contr
     assert "not when the first frame is visible" in receipt["fixture"]["allow_log_timeout_race"]
     assert receipt["positive_case"]["missing_allow_result"].startswith("NOT-RUN:")
     assert receipt["negative_control"]["missing_allow_result"].startswith("NOT-RUN:")
+    assert (
+        "self-healed tap trace accepted" in receipt["execution"]["synthetic_device_free_test_cases"]
+    )
+    assert (
+        "coordinate-pair tap rejected as feature tap evidence"
+        in receipt["execution"]["synthetic_device_free_test_cases"]
+    )
 
     timing = receipt["positive_case"]["second_click_timing"]
     assert timing["max_visible_seconds"] == 15

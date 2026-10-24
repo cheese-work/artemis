@@ -268,7 +268,6 @@ def _matching_tap_trace(
     matching = []
     identity_fields = (
         "target_text",
-        "coordinates",
         "target_bounds",
         "target_resource_id",
         "target_class",

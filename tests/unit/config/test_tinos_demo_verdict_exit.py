@@ -45,6 +45,8 @@ def _synthetic_evidence(
     feature_tap_text: str = "Direct Message",
     feature_dispatch_interval: tuple[float, float] | None = None,
     include_feature_tap_trace: bool = True,
+    coordinate_pair_tap: bool = False,
+    self_heal_trace_coordinates: bool = False,
     mode: str = "control",
     captured_files: tuple[Path, Path] | None = None,
     first_visible_at: float = 1730000000,
@@ -133,6 +135,12 @@ def _synthetic_evidence(
                     {
                         "action": "tap",
                         "coordinates": [540, 900],
+                        "target_description": "synthetic coordinates",
+                    }
+                    if coordinate_pair_tap
+                    else {
+                        "action": "tap",
+                        "coordinates": [540, 900],
                         "coordinate_space": "pixel",
                         "normalized_coordinates": [500, 375],
                         "times": 1,
@@ -153,6 +161,10 @@ def _synthetic_evidence(
             dispatch_start = feature_dispatch_interval[0] + (tap_step[2] - feature_tap_times[0])
             duration = feature_dispatch_interval[1]
             action = json.loads(tap_step[4])
+            trace_action = action.copy()
+            if self_heal_trace_coordinates:
+                trace_action["coordinates"] = [542, 902]
+                trace_action.pop("normalized_coordinates", None)
             action_traces.append(
                 (
                     f"60000000-0000-4000-8000-{tap_number + 20:012d}",
@@ -166,7 +178,7 @@ def _synthetic_evidence(
                     "success",
                     json.dumps(
                         {
-                            "action": action,
+                            "action": trace_action,
                             "success": True,
                             "error_msg": "",
                             "post_screenshot": None,
@@ -495,6 +507,24 @@ def test_control_rejects_planned_tap_without_successful_action_trace(tmp_path):
     output = json.loads(result.stdout)
     assert output["verdict"] == "invalid_control"
     assert output["reason"] == "feature_tap_execution_missing"
+
+
+def test_synthetic_self_healed_trace_matches_planned_tap_identity(tmp_path):
+    result, _ = _synthetic_evidence(tmp_path, self_heal_trace_coordinates=True)
+
+    assert result.returncode == 1
+    output = json.loads(result.stdout)
+    assert output["verdict"] == "fail_assertion"
+    assert output["reason"] == "intended_false_assertion"
+
+
+def test_synthetic_coordinate_pair_tap_is_not_feature_tap_evidence(tmp_path):
+    result, _ = _synthetic_evidence(tmp_path, coordinate_pair_tap=True)
+
+    assert result.returncode == 2
+    output = json.loads(result.stdout)
+    assert output["verdict"] == "invalid_control"
+    assert output["reason"] == "feature_tap_count"
 
 
 @pytest.mark.parametrize(

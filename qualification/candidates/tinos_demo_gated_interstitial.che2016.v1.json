@@ -33,9 +33,9 @@
   },
   "testcase": {
     "journey_path": "qualification/journeys/tinos_demo_gated_interstitial.md",
-    "journey_digest_sha256": "8d58fab69cb6133779dda29366e329c1691bb9a953ef9a0e93449d8bca10956d",
+    "journey_digest_sha256": "21e330806aa8a3e185bd75295edc55d8fa05ec4527c20310e25234a3b899e1e4",
     "manifest_path": "qualification/manifests/tinos_demo_gated_interstitial.che2016.v1.json",
-    "manifest_digest_sha256": "26e71a48be93f596dd70ae3473c3dcbaaaf0e7c6b12d5665f0d02e675089bd34",
+    "manifest_digest_sha256": "d76a9580e6a8a8613086a8a189c3c9374c9bab99009d4c0fb32032dce64570a7",
     "manifest_version": 1
   },
   "tinos_configuration": {
@@ -67,12 +67,23 @@
         "target_text": "Direct Message",
         "match_rule": "exact label, first line, or first comma-separated part"
       },
-      "visible_ui_evidence": "For both the Direct Message feature and selected WhatsApp tab, accept UI-tree text only when it equals the visible label or its first line or first comma-separated part equals the label; do not use Compose test tags or hidden resource identifiers."
+      "trace_identity_fields": [
+        "target_text",
+        "target_bounds",
+        "target_resource_id",
+        "target_class"
+      ],
+      "trace_matching_excludes": [
+        "coordinates",
+        "normalized_coordinates"
+      ],
+      "visible_ui_evidence": "Find both elements in the UI tree, select the WhatsApp tab and tap the Direct Message row by UI-tree element index, never by a coordinate pair. For both labels, accept UI-tree text only when it equals the visible label or its first line or first comma-separated part equals the label; do not use Compose test tags or hidden resource identifiers."
     },
     "tap_timestamp_source": "The verifier matches target_text equal to Direct Message or with that label as its first line or first comma-separated part, identifies taps from same-session steps rows, then requires exactly one successful same-session action trace linked by step_id, with type=action, name=tap, status=success, payload success=true, and a matching target text and selector. A steps timestamp is a planned-turn timestamp, not tap evidence. The trace timestamp and duration bound the dispatch interval, extended by a later payload end timestamp. Missing, ambiguous, failed, or malformed traces are INVALID-EVIDENCE. Positive requires exactly two matching taps; control requires exactly one. It reports each planned timestamp, unmodified target_text, action trace ID, and dispatch interval in tap_observations. Use the interval upper bound for timing and event ordering; do not enter tap timestamps manually.",
     "reset": "Force-stop and cold-start before each independent case; each cold start resets show history; do not clear app data or cold-start between the positive case's two clicks.",
     "interstitial_close": "For each shown interstitial, close with its visible close control within 15 seconds of the first visible frame; record show and close timestamps from the recording; otherwise report NOT-RUN.",
     "allow_log_timeout_race": "The app's 15-second show wait starts when it calls show, not when the first frame is visible. If the allow line is absent after a close within 15 seconds, report that attempt NOT-RUN for the timeout race; do not count the missing line as a denial or a pass.",
+    "denial_order_known_limit": "Denial-order validation assumes the pinned SDK has no ad preloading or automatic reload; re-review the assertion if preload behavior changes.",
     "sigkill_logger_limit": "SIGKILL can bypass the capture wrapper's EXIT trap. Confirm the recorded logger PID is gone before device release; if it remains, follow Sol's granted cleanup route and do not release the device yet.",
     "personal_data": "none"
   },
@@ -134,6 +145,7 @@
     "expected_verdict": "fail_assertion",
     "false_assertion": "The first Direct Message feature click must be denied by Tinos rules (NOT_ALLOWED).",
     "required_feature_tap_count": 1,
+    "tap_trace_identity": "Require exactly one same-session action tap trace on the same step_id, matching target_text, target_bounds, target_resource_id, and target_class; do not compare coordinates or normalized_coordinates because runner self-healing can change them.",
     "tap_source": "Exactly one feature-tap step with target_text equal to Direct Message or with that label as its first line or first comma-separated part is identified from this session's steps rows and correlated with one successful same-session action trace linked by step_id, type=action, name=tap, status=success, payload success=true, and matching target text and selector. The step timestamp is not tap evidence. The action trace timestamp and duration bound the dispatch interval, extended by a later payload end timestamp. Report the planned timestamp, unmodified target_text, trace ID, and dispatch interval; the interval upper bound is used for event ordering.",
     "required_observations": [
       "show allowed: shown and dismissed",
@@ -263,7 +275,7 @@
     },
     "verdict_adapter": {
       "path": "qualification/tools/tinos_demo_verdict_exit.py",
-      "script_sha256": "879acabee9ff98be06d5b0e33d87a6e33cae5cb1273a2cc3819a52dd86405301",
+      "script_sha256": "2d1c25e2e9fb826180e68e2207b9ed899860ce77cea1195a17a97efdff126c4e",
       "runner_change": false,
     "control_exit_1": "valid intended negative control only: Artemis returned 0; exactly one matching feature tap exists in the session; exact allow and revenue observations passed; no denial event exists; the action trace proves one successful tap and all timestamps pass session, cursor, and dispatch-interval ordering checks; exactly the specified false assertion failed; same-session Checker trace and final capture match",
       "control_exit_2": "NOT-RUN for a missing allow line; otherwise invalid_control for missing or invalid evidence, a fill failure, an unexpected denial, stale or mismatched capture, plain pass, or Artemis process failure",
@@ -315,6 +327,8 @@
       "event before logcat cursor",
       "normalized device/host epoch offset",
       "uncertain event ordering",
+      "self-healed tap trace accepted",
+      "coordinate-pair tap rejected as feature tap evidence",
     "positive event order and timing pass",
     "positive two allows and no denial inside window fails as gate violation",
     "positive gate failure reports missing revenue separately",
