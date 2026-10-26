@@ -31,6 +31,12 @@ import pytest
 from artemis.interfaces.cli.commands import run as run_module
 
 
+@pytest.fixture(autouse=True)
+def no_device_selection(monkeypatch):
+    """execute_task asks the device pool for a phone, which runs ``adb devices`` on the default server."""
+    monkeypatch.setattr("artemis.runtime.device_pool.select_device", lambda *_a, **_k: None)
+
+
 def _fake_llm_config():
     """A real, minimal LLMConfig (AgentProfile validates this via pydantic,
     so a bare MagicMock is rejected) -- provider/model values don't matter

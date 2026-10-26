@@ -129,6 +129,21 @@ def isolate_adb_environment():
             os.environ[key] = value
 
 
+@pytest.fixture(autouse=True)
+def refuse_real_adb_server(request):
+    """Keep the default suite off this machine's own adb server.
+
+    Device tests (``android``, and the integration and e2e trees) need the real one.
+    """
+    if any(request.node.get_closest_marker(name) for name in ("android", "integration", "e2e")):
+        yield
+        return
+    from tests.support.adb_server_guard import refuse_default_adb_server
+
+    with refuse_default_adb_server():
+        yield
+
+
 @pytest.fixture
 def fake_provider_credentials(monkeypatch):
     """Configure clients with synthetic credentials and never live keys."""
