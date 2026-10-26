@@ -20,7 +20,9 @@ const checkChats = audit === '--chats';
 const failures = [];
 const iconNames = readFileSync(new URL('../../public/fonts/material-symbols-outlined.txt', import.meta.url), 'utf8').trim().split(',');
 mkdirSync(outDir, { recursive: true });
-const dist = fileURLToPath(new URL('../../dist/frontend/browser', import.meta.url));
+const dist = process.env.ARTEMIS_SHOWCASE_DIST
+  ? path.resolve(process.env.ARTEMIS_SHOWCASE_DIST)
+  : fileURLToPath(new URL('../../dist/frontend/browser', import.meta.url));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const { server, url: base } = await startMockApi(dist);
 const profile = mkdtempSync(path.join(tmpdir(), 'shots-'));
@@ -51,7 +53,7 @@ const evaluate = async (expression) => {
   return result.value;
 };
 await send("Page.enable");
-const T0 = Math.floor(Date.now() / 1000) - 600;
+const T0 = Date.parse('2026-10-20T12:00:00Z') / 1000;
 if (checkProviders) {
   const root = 'https://congvc-c00.taila6fa8a.ts.net:31344';
   const official = { openai: 'https://api.openai.com/v1', google: 'https://generativelanguage.googleapis.com', anthropic: 'https://api.anthropic.com', xai: 'https://api.x.ai/v1', openrouter: 'https://openrouter.ai/api/v1' };
@@ -81,21 +83,50 @@ if (checkControls) {
 }
 const pages = { workspace: '/workspace', runs: '/runs', 'run-detail': `/runs/${RUNS[1].session_id}`, setup: '/setup', check: '/check' };
 if (checkChats) {
-  for (const name of Object.keys(pages)) if (name !== 'run-detail') delete pages[name];
+  for (const name of Object.keys(pages)) if (!['runs', 'run-detail'].includes(name)) delete pages[name];
   const root = RUNS[1].session_id;
-  const next = RUNS[0].session_id;
+  const next = 'follow-up';
   RUNS[1].prompt = 'Check login, then continue on the same phone';
+  const passResult = {
+    catalog_key: 'pass.verified', verdict: 'pass', verification: 'checked', category: null,
+    display_labels: { verification: 'Đã kiểm' }, reason: 'Guest login passed.',
+    action: { text: '' }, responsible: '',
+    evidence: { turn_id: root, step: null, screenshot_url: null },
+    turn_index: 1, turn_count: 2, label_state: 'final', source: 'outcome'
+  };
+  const failResult = {
+    catalog_key: 'fail.app_defect', verdict: 'fail', verification: 'self_reported', category: 'app_defect',
+    display_labels: { verification: 'Agent tự báo', category: 'Lỗi ứng dụng' }, reason: 'Payment button is missing.',
+    action: { text: 'Review the screen and report the missing payment control.' }, responsible: 'App under test',
+    evidence: { turn_id: next, step: 2, screenshot_url: '/images/post2.svg' },
+    turn_index: 2, turn_count: 2, label_state: 'final', source: 'outcome'
+  };
+  const historyPass = { ...passResult, evidence: { ...passResult.evidence, turn_id: RUNS[0].session_id }, turn_count: 1 };
+  const historyFail = { ...failResult, evidence: { ...failResult.evidence, turn_id: root }, turn_index: 1, turn_count: 1 };
+  mock.results = RUNS.map(run => ({
+    session_id: run.session_id,
+    results: run.session_id === RUNS[0].session_id ? [historyPass] : run.session_id === root ? [historyFail] : []
+  }));
   mock.chat = { session_id: root, lease_pid: 123, idle_until: null,
     turns: [
       { turn_id: root, session_id: root, number: 1, status: 'completed', created_at: T0 },
-      { turn_id: next, session_id: root, number: 2, status: 'paused', created_at: T0 + 90 }
+      { turn_id: next, session_id: root, number: 2, status: 'completed', created_at: T0 + 90 }
     ],
     messages: [
-      { sequence: 1, turn_id: root, role: 'human', content: 'Check that guest login works.', acknowledged_at: T0 },
-      { sequence: 2, turn_id: root, role: 'agent', content: 'Guest login passed. The phone stays on the account screen.' },
-      { sequence: 3, turn_id: next, role: 'human', content: 'Now check logout on this phone.', acknowledged_at: T0 + 90 },
-      { sequence: 4, turn_id: next, role: 'agent', content: 'Proposed plan: check logout instead of login. Paused for confirmation.' }
-    ]
+      { sequence: 1, turn_id: root, role: 'human', kind: 'message', content: 'Check that guest login works.', acknowledged_at: T0, created_at: T0 },
+      { sequence: 4, turn_id: next, role: 'human', kind: 'message', content: 'Now verify the payment control.', acknowledged_at: T0 + 90, created_at: T0 + 90 }
+    ],
+    timeline: [
+      { sequence: 1, turn_id: root, role: 'human', kind: 'message', content: 'Check that guest login works.', created_at: T0 },
+      { sequence: 2, turn_id: root, role: 'agent', kind: 'step', content: 'Open guest checkout', created_at: T0 + 1, payload: { step_number: 1, post_image_name: 'post1.svg' } },
+      { sequence: 3, turn_id: root, role: 'agent', kind: 'step', content: 'Confirm the delivery details', created_at: T0 + 2, payload: { step_number: 2, post_image_name: 'post2.svg' } },
+      { sequence: 4, turn_id: next, role: 'human', kind: 'message', content: 'Now verify the payment control.', created_at: T0 + 90 },
+      { sequence: 5, turn_id: next, role: 'agent', kind: 'step', content: 'Enter the payment details', created_at: T0 + 91, payload: { step_number: 1, post_image_name: 'post1.svg' } },
+      { sequence: 6, turn_id: next, role: 'agent', kind: 'step', content: 'Find the payment control', created_at: T0 + 92, payload: { step_number: 2, post_image_name: 'post2.svg', last_execution_result: { expected: 'Payment button is visible.', actual: 'Payment button is missing.' } } },
+      { sequence: 7, turn_id: next, role: 'agent', kind: 'step', content: 'Confirm the order summary', created_at: T0 + 93, payload: { step_number: 3, post_image_name: 'post3.svg' } }
+    ],
+    results: [passResult, failResult],
+    verdict: { status: 'completed', outcome: { tests: { passed: 1, failed: 0, inconclusive: 0, unchecked: 0 } } }
   };
 }
 if (checkPrompts) {
@@ -112,23 +143,34 @@ if (checkModels) for (const name of Object.keys(pages)) if (name !== 'workspace'
 if (checkComposer) for (const name of Object.keys(pages)) if (!['workspace', 'run-detail'].includes(name)) delete pages[name];
 if (checkModels) for (const run of RUNS) run.agent_model = 'fixture-default';
 if (checkModels) for (const session of mock.sessions) session.model_info = { name: 'Flash', id: 'fixture-default', provider: 'openai' };
-for (const width of checkControls || checkModels || checkComposer || checkPrompts || checkProviders || checkChats ? [1440, 390] : [1280, 1024]) {
+for (const width of checkChats ? [1440, 800, 390] : checkControls || checkModels || checkComposer || checkPrompts || checkProviders ? [1440, 390] : [1280, 1024]) {
   for (const [name, route] of Object.entries(pages)) {
-    await send('Emulation.setDeviceMetricsOverride', { width, height: checkChats ? (width === 390 ? 1100 : 900) : checkPrompts ? 1400 : checkProviders ? (width === 390 ? 3450 : 2200) : 800, deviceScaleFactor: 1, mobile: false });
+    await send('Emulation.setDeviceMetricsOverride', { width, height: checkChats ? (width === 390 ? 844 : 900) : checkPrompts ? 1400 : checkProviders ? (width === 390 ? 3450 : 2200) : 800, deviceScaleFactor: 1, mobile: checkChats && width === 390 });
     const previousImproveCalls = mock.improveCalls;
     await send('Page.navigate', { url: base + route });
-    await sleep(2500);
+    let shellReady = false;
+    for (let attempt = 0; attempt < 100; attempt++) {
+      shellReady = await evaluate(`!!window.ng && !!document.querySelector('app-nav-switcher .floating-nav-switcher')`).catch(() => false);
+      if (shellReady) break;
+      await sleep(100);
+    }
+    if (!shellReady) {
+      const state = await evaluate(`({ title: document.title, text: document.body.innerText.slice(0, 240) })`);
+      failures.push(`${name}-${width}: app navigation did not become ready (${state.title}: ${state.text})`);
+      continue;
+    }
+    await sleep(500);
     if (name === 'check') {
       await evaluate(`(() => {
         const element = document.querySelector('app-legacy-agent-stream');
         const component = ng.getComponent(element);
         component.agentService.sessionLogs.set([
-          { type: 'step_recorded', timestamp: Date.now() / 1000, data: {
+          { type: 'step_recorded', timestamp: T0 + 120, data: {
             summary: 'Verify the settings screen', operator_native_thinking: 'Find the settings control.',
             operator_raw_thinking: 'Open settings, then verify the saved state.',
             action_taken: { action: 'tap', target: 'Settings' }, last_execution_result: { success: true }
           } },
-          { type: 'trace_recorded', timestamp: Date.now() / 1000, data: { message: 'Stream connected' } }
+          { type: 'trace_recorded', timestamp: T0 + 121, data: { message: 'Stream connected' } }
         ]);
         ng.applyChanges(element);
       })()`);
@@ -145,12 +187,78 @@ for (const width of checkControls || checkModels || checkComposer || checkPrompt
       failures.push(...disclosureErrors.map(error => `${name}-${width}: ${error}`));
     }
     await evaluate('document.fonts.ready.then(() => true)');
+    if (checkChats && name === 'run-detail') {
+      const initialName = `${label}-${name}-initial-${width}.png`;
+      const { data } = await send('Page.captureScreenshot', { format: 'png' });
+      writeFileSync(path.join(outDir, initialName), Buffer.from(data, 'base64'));
+      console.log(initialName);
+      const initial = await evaluate(`(() => {
+        const history = document.querySelector('.chat-history');
+        const card = document.querySelector('[data-testid="run-verdict"]');
+        const timeline = document.querySelector('[data-testid="run-step-timeline"]');
+        const evidence = document.querySelector('[data-testid="selected-step-evidence"]');
+        const evidenceGrid = document.querySelector('[data-testid="run-decisive-evidence"]');
+        const stepIndex = document.querySelector('[data-testid="evidence-index"]');
+        const evidenceImage = document.querySelector('[data-testid="run-evidence-screenshot"]');
+        const sidebar = document.querySelector('app-session-sidebar');
+        const composer = document.querySelector('[data-testid="run-chat-composer"]');
+        const labels = [...(evidence?.querySelectorAll('strong') ?? [])].filter(label => ['Mong đợi', 'Thực tế'].includes(label.textContent.trim()));
+        const rect = element => { const box = element.getBoundingClientRect(); return { top: box.top, bottom: box.bottom, left: box.left, right: box.right, width: box.width, height: box.height }; };
+        return { width: innerWidth, height: innerHeight, scrollTop: history?.scrollTop ?? null, card: card && rect(card), timeline: timeline && rect(timeline), evidenceGrid: evidenceGrid && rect(evidenceGrid), stepIndex: stepIndex && rect(stepIndex), evidenceImage: evidenceImage && rect(evidenceImage), sidebar: sidebar && rect(sidebar), composer: composer && rect(composer), labels: labels.map(label => ({ text: label.textContent.trim(), bounds: rect(label) })) };
+      })()`);
+      writeFileSync(path.join(outDir, `${label}-run-detail-initial-${width}.json`), JSON.stringify(initial, null, 2) + '\n');
+    }
     if (checkChats) {
-      const chatErrors = await evaluate(`(() => {
+      const chatErrors = await evaluate(`(async () => {
         const errors = [];
-        if (document.querySelectorAll('.chat-turn').length !== 2) errors.push('Missing two-turn session');
-        if (document.querySelectorAll('.turn-evidence[open]').length) errors.push('Evidence is not collapsed');
-        if (![...document.querySelectorAll('.composer-actions button')].some(button => button.textContent.trim() === 'Continue')) errors.push('Missing Continue');
+        if (${JSON.stringify(name === 'runs')}) {
+          const card = document.querySelector('[data-testid="run-card-verdict"]');
+          if (!card || !card.textContent.includes('Pass')) errors.push('Missing verified history verdict');
+          if (card?.querySelector('.run-verdict-category')) errors.push('Null category shown in history');
+        } else {
+          const verdicts = document.querySelectorAll('[data-testid="run-verdict"]');
+          const selectedTurn = document.querySelector('.run-turn-selector button[aria-pressed="true"]');
+          const selectedEvidence = document.querySelector('[data-testid="selected-step-evidence"]');
+          const timeline = document.querySelector('[data-testid="run-step-timeline"]');
+          const image = document.querySelector('[data-testid="run-evidence-screenshot"] img');
+          const stepLinks = [...document.querySelectorAll('[data-testid="evidence-index"] a')];
+          const stepRows = [...document.querySelectorAll('.step-row details')];
+          if (verdicts.length !== 1 || verdicts[0].closest('.flat-timeline')) errors.push('Verdict is not a single page-level card');
+          if (verdicts[0] && timeline && !(verdicts[0].compareDocumentPosition(timeline) & Node.DOCUMENT_POSITION_FOLLOWING)) errors.push('Verdict card follows timeline scrollback');
+          if (!selectedTurn || selectedTurn.getAttribute('data-turn-id') !== 'follow-up') errors.push('Latest historical turn is not selected');
+          if (!selectedEvidence?.textContent.includes('Payment button is missing')) errors.push('Selected-turn evidence is missing');
+          if (image) { image.loading = 'eager'; await image.decode().catch(() => {}); }
+          if (!image || image.naturalWidth < 200) errors.push('Usable synthetic evidence screenshot is missing');
+          if (!stepLinks.length || stepLinks.some(link => !link.getAttribute('href')?.startsWith('#step-') || !document.querySelector(link.getAttribute('href')))) errors.push('Step index links are not real anchors');
+          if (stepLinks.length && !['Enter the payment details', 'Find the payment control', 'Confirm the order summary'].every(title => stepLinks.some(link => link.textContent.includes(title)))) errors.push('Step index omits actual step titles');
+          if (stepRows.length < 3 || stepRows.filter(details => details.open).length !== 1) errors.push('Earlier steps are not individually collapsed');
+          if (selectedEvidence && stepLinks[0] && !(selectedEvidence.compareDocumentPosition(stepLinks[0]) & 4)) errors.push('F5 evidence order is incorrect');
+          if (${width} === 1440) {
+            const evidenceGrid = document.querySelector('[data-testid="run-decisive-evidence"]');
+            const stepIndex = document.querySelector('[data-testid="evidence-index"]');
+            const evidenceImage = document.querySelector('[data-testid="run-evidence-screenshot"]');
+            const gridWidth = evidenceGrid?.getBoundingClientRect().width ?? 0;
+            if (!gridWidth || (stepIndex?.getBoundingClientRect().width ?? 0) < Math.max(200, gridWidth * 0.4)) errors.push('1440px step titles do not receive usable width');
+            if (!gridWidth || (evidenceImage?.getBoundingClientRect().width ?? 0) < Math.max(200, gridWidth * 0.4)) errors.push('1440px evidence screenshot does not receive usable width');
+          }
+          if (!document.querySelector('[data-testid="run-chat-composer"]')) errors.push('Chat composer is missing');
+          if (document.body.textContent.includes('Session details could not load.')) errors.push('Session sidebar fixture is unavailable');
+          if (${width} === 390) {
+            const history = document.querySelector('.chat-history');
+            const sidebar = document.querySelector('app-session-sidebar');
+            const sidebarTabs = [...(sidebar?.querySelectorAll('[role="tab"]') ?? [])].map(tab => tab.textContent.trim());
+            const labels = [...(selectedEvidence?.querySelectorAll('strong') ?? [])].filter(label => ['Mong đợi', 'Thực tế'].includes(label.textContent.trim()));
+            const withinViewport = element => {
+              const box = element.getBoundingClientRect();
+              const clip = history.getBoundingClientRect();
+              return box.width > 0 && box.height > 0 && box.top >= Math.max(0, clip.top) && box.bottom <= Math.min(innerHeight, clip.bottom);
+            };
+            if (history?.scrollTop !== 0) errors.push('Initial 390px view auto-scrolled away from the selected-turn card');
+            if (labels.length !== 2 || labels.some(label => !withinViewport(label))) errors.push('Initial 390x844 view does not show Mong đợi and Thực tế');
+            if (!sidebar || sidebarTabs.join('|') !== 'Live|Details|Stats') errors.push('Compact evidence tabs are missing');
+            if (sidebar && sidebar.getBoundingClientRect().height > 55 && sidebar.querySelector('.muted')) errors.push('Empty media panel consumes the compact evidence viewport');
+          }
+        }
         if (document.documentElement.scrollWidth > innerWidth) errors.push('Horizontal overflow');
         for (const button of document.querySelectorAll('app-run-chat button')) {
           const box = button.getBoundingClientRect();
@@ -176,7 +284,6 @@ for (const width of checkControls || checkModels || checkComposer || checkPrompt
         return errors;
       })()`);
       failures.push(...errors.map(error => `${name}-${width}: ${error}`));
-      if (name === 'run-detail') await evaluate(`document.querySelector('.run-result-summary').scrollIntoView({ block: 'start' })`);
     }
 
     if (checkProviders) {
@@ -352,9 +459,37 @@ for (const width of checkControls || checkModels || checkComposer || checkPrompt
       })()`);
       failures.push(...focusErrors.map(error => `${name}-${width}: ${error}`));
     }
-    const { data } = await send('Page.captureScreenshot', { format: 'png' });
-    writeFileSync(path.join(outDir, `${label}-${name}-${width}.png`), Buffer.from(data, 'base64'));
-    console.log(`${label}-${name}-${width}.png`);
+    if (!(checkChats && name === 'run-detail')) {
+      const { data } = await send('Page.captureScreenshot', { format: 'png' });
+      const initialName = `${label}-${name}-initial-${width}.png`;
+      writeFileSync(path.join(outDir, initialName), Buffer.from(data, 'base64'));
+      console.log(initialName);
+    }
+    if (checkChats && name === 'run-detail') {
+      const focused = await evaluate(`(async () => {
+        const errors = [];
+        const link = document.querySelector('[data-testid="evidence-index"] a[aria-current="step"]');
+        const target = link && document.getElementById(decodeURIComponent(link.hash.slice(1)));
+        if (!link || !target) return { errors: ['Selected evidence anchor is missing'], width: innerWidth, height: innerHeight };
+        link.click();
+        await new Promise(resolve => setTimeout(resolve, 200));
+        const evidence = target.querySelector('.evidence');
+        const before = target.querySelector('.evidence-before');
+        const after = target.querySelector('.evidence-after');
+        const image = after?.querySelector('img.step-screenshot');
+        if (image) { image.loading = 'eager'; await image.decode().catch(() => {}); }
+        if (!target.querySelector('details')?.open) errors.push('Focused evidence step did not open');
+        if (before) errors.push('Empty Before panel consumes the evidence viewport');
+        if (!image || image.naturalWidth < 200) errors.push('Focused evidence screenshot is unavailable');
+        if (evidence && after && after.getBoundingClientRect().width < evidence.getBoundingClientRect().width * .75) errors.push('Selected After screenshot does not use the available evidence width');
+        const rect = element => { const box = element.getBoundingClientRect(); return { top: box.top, bottom: box.bottom, left: box.left, right: box.right, width: box.width, height: box.height }; };
+        return { errors, width: innerWidth, height: innerHeight, scrollTop: document.querySelector('.chat-history')?.scrollTop ?? null, evidence: evidence && rect(evidence), after: after && rect(after), image: image && { naturalWidth: image.naturalWidth, naturalHeight: image.naturalHeight }, sidebar: document.querySelector('app-session-sidebar') && rect(document.querySelector('app-session-sidebar')) };
+      })()`);
+      failures.push(...focused.errors.map(error => `run-detail-${width}: ${error}`));
+      writeFileSync(path.join(outDir, `${label}-run-detail-selected-evidence-focused-${width}.json`), JSON.stringify(focused, null, 2) + '\n');
+      const { data: evidenceData } = await send('Page.captureScreenshot', { format: 'png' });
+      writeFileSync(path.join(outDir, `${label}-run-detail-selected-evidence-focused-${width}.png`), Buffer.from(evidenceData, 'base64'));
+    }
     if (checkPrompts && name === 'run-detail') {
       mock.improveDelay = 300;
       mock.improveError = true;

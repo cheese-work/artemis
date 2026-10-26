@@ -11,11 +11,14 @@ const frontendStage = stages.find((stage) => stage.startsWith('node:') && stage.
 if (!frontendStage) throw new Error('Dockerfile frontend-builder stage was not found');
 
 const frontendLines = frontendStage.split('\n').map((line) => line.trim());
+const workdirLine = frontendLines.find((line) => line.startsWith('WORKDIR '));
 const installIndex = frontendLines.findIndex((line) => /^RUN\s+npm ci(?:\s|$)/.test(line));
 const earlyScriptsCopyIndex = frontendLines.findIndex((line) => line === 'COPY apps/showcase_ui/scripts/ ./scripts/');
-if (installIndex === -1 || earlyScriptsCopyIndex === -1 || earlyScriptsCopyIndex > installIndex) {
+if (!workdirLine || installIndex === -1 || earlyScriptsCopyIndex === -1 || earlyScriptsCopyIndex > installIndex) {
   throw new Error('Dockerfile frontend-builder stage must copy apps/showcase_ui/scripts/ before npm ci');
 }
+const dockerWorkdir = path.posix.normalize(workdirLine.slice('WORKDIR '.length));
+const dockerBuildRoot = path.posix.resolve(dockerWorkdir, '../..');
 
 const copyInstructions = frontendLines
   .filter((line) => line.startsWith('COPY '))
@@ -29,6 +32,18 @@ if (!buildInstruction || copyInstructions.length === 0) {
 
 await mkdir(path.join(appDirectory, '.angular'), { recursive: true });
 const stageDirectory = await mkdtemp(path.join(appDirectory, '.angular/docker-build-inputs-'));
+const stageWorkdir = path.join(stageDirectory, path.posix.relative(dockerBuildRoot, dockerWorkdir));
+
+function resolveDestination(destination) {
+  const dockerPath = path.posix.isAbsolute(destination)
+    ? path.posix.normalize(destination)
+    : path.posix.resolve(dockerWorkdir, destination);
+  const stagePath = path.posix.relative(dockerBuildRoot, dockerPath);
+  if (stagePath === '..' || stagePath.startsWith('../') || path.posix.isAbsolute(stagePath)) {
+    throw new Error(`Dockerfile COPY destination escapes the frontend build root: ${destination}`);
+  }
+  return path.join(stageDirectory, stagePath);
+}
 
 async function expandSource(source) {
   if (!/[*?]/.test(source)) return [source];
@@ -45,7 +60,7 @@ async function expandSource(source) {
 }
 
 try {
-  await mkdir(stageDirectory, { recursive: true });
+  await mkdir(stageWorkdir, { recursive: true });
   for (const instruction of copyInstructions) {
     const destination = instruction.at(-1);
     const sourcePatterns = instruction.slice(0, -1);
@@ -54,7 +69,7 @@ try {
       for (const source of sources) {
         const sourcePath = path.join(repositoryDirectory, source);
         const sourceIsDirectory = (await lstat(sourcePath)).isDirectory();
-        const destinationPath = path.resolve(stageDirectory, destination);
+        const destinationPath = resolveDestination(destination);
         const targetPath = sourceIsDirectory
           ? destinationPath
           : destination.endsWith('/') || sourcePatterns.length > 1
@@ -65,8 +80,8 @@ try {
       }
     }
   }
-  await symlink(path.join(appDirectory, 'node_modules'), path.join(stageDirectory, 'node_modules'), 'dir');
-  execFileSync('npm', ['run', 'build'], { cwd: stageDirectory, stdio: 'inherit' });
+  await symlink(path.join(appDirectory, 'node_modules'), path.join(stageWorkdir, 'node_modules'), 'dir');
+  execFileSync('npm', ['run', 'build'], { cwd: stageWorkdir, stdio: 'inherit' });
   console.log('Docker frontend copied-input build passed.');
 } finally {
   await rm(stageDirectory, { recursive: true, force: true });

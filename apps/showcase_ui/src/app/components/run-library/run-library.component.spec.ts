@@ -3,12 +3,12 @@ import { OverlayContainer } from '@angular/cdk/overlay';
 import { Location } from '@angular/common';
 import { provideLocationMocks } from '@angular/common/testing';
 import { HttpErrorResponse } from '@angular/common/http';
-import { TestBed } from '@angular/core/testing';
+import { fakeAsync, flushMicrotasks, TestBed, tick } from '@angular/core/testing';
 import { Router, provideRouter } from '@angular/router';
 import { RouterTestingHarness } from '@angular/router/testing';
 import { Observable, Subject, of, throwError } from 'rxjs';
 import { HostsResponse } from '../../core/models/host.model';
-import { RunPage, RunSummary } from '../../core/models/run.model';
+import { ChatResultsResponse, ChatSession, ChatTurnResult, RunPage, RunSummary } from '../../core/models/run.model';
 import { Session } from '../../core/models/session.model';
 import { AdminConfigService, AdminIdentity } from '../../services/admin-config.service';
 import { HostsService } from '../../services/hosts.service';
@@ -104,9 +104,13 @@ describe('RunLibraryComponent', () => {
 
   beforeEach(async () => {
     localStorage.removeItem(SELECTED_DEVICE_SERIAL_KEY);
-    runs = jasmine.createSpyObj<RunsService>('RunsService', ['list', 'get'], {
+    runs = jasmine.createSpyObj<RunsService>('RunsService', ['list', 'get', 'chat', 'chatResults'], {
       lastLibraryQuery: signal<Record<string, string>>({})
     });
+    runs.chat.and.returnValue(of({ results: [] } as unknown as ChatSession));
+    runs.chatResults.and.callFake((sessionIds) => of({
+      sessions: sessionIds.map((session_id) => ({ session_id, results: [] }))
+    } satisfies ChatResultsResponse));
     hosts = jasmine.createSpyObj<HostsService>('HostsService', ['list']);
     hosts.list.and.returnValue(of(hostsResponse));
     adminApi = jasmine.createSpyObj<AdminConfigService>('AdminConfigService', ['getIdentity']);
@@ -130,7 +134,7 @@ describe('RunLibraryComponent', () => {
   });
 
   describe('rows', () => {
-    it('renders 56px rows with an execution word, package and mono time, never a Passed chip', async () => {
+    it('preserves run metadata and minimum row height with a visible result state', async () => {
       await open('/sessions', of(page([run({ app_package: 'com.example.shop' })])));
       expect(q('.run-meta')!.textContent!.trim()).toBe('Completed · com.example.shop · emulator-5554');
       expect(q('.run-row')!.textContent).not.toContain('Passed');
@@ -139,8 +143,165 @@ describe('RunLibraryComponent', () => {
       expect(q('.run-icon .material-symbols-outlined')!.textContent!.trim()).toBe('description');
       expect(q('.run-package')!.getBoundingClientRect().left - q('.run-outcome')!.getBoundingClientRect().right).toBeGreaterThanOrEqual(3);
       expect(getComputedStyle(q('.run-package')!).fontFamily).toContain('JetBrains Mono');
-      expect(q('.run-row')!.getBoundingClientRect().height).toBe(56);
+      expect(q('.run-row')!.getBoundingClientRect().height).toBeGreaterThanOrEqual(56);
     });
+
+    it('renders the backend result and opens the exact cited turn and step', async () => {
+      const result: ChatTurnResult = {
+        catalog_key: 'fail.app_defect', verdict: 'fail', verification: 'self_reported', category: 'app_defect',
+        display_labels: { verification: 'Agent tự báo', category: 'Lỗi ứng dụng' },
+        reason: 'The sign-in screen rejected valid credentials.', action: { text: 'Review evidence and report a bug.' },
+        responsible: 'App under test', evidence: { turn_id: 'turn-2', step: 7, screenshot_url: '/images/failed.png' },
+        turn_index: 2, turn_count: 4, label_state: 'final', source: 'outcome'
+      };
+      runs.chatResults.and.returnValue(of({
+        sessions: [{ session_id: 'chat-root', results: [result] }]
+      }));
+      const selectedRun = run({ session_id: 'turn-2', chat_session_id: 'chat-root', verdict: 'fail' });
+      await open('/sessions', of(page([selectedRun])));
+      await settle();
+
+      expect(runs.chatResults).toHaveBeenCalledWith(['chat-root']);
+      expect(runs.chat).not.toHaveBeenCalled();
+      const card = q<HTMLElement>('[data-testid="run-card-verdict"]')!;
+      expect(card.getAttribute('data-catalog-key')).toBe('fail.app_defect');
+      expect(card.textContent).not.toContain('fail.app_defect');
+      expect(card.textContent).toContain('Lỗi ứng dụng');
+      expect(card.textContent).toContain('The sign-in screen rejected valid credentials.');
+      expect(card.textContent).toContain('Review evidence and report a bug.');
+      expect(card.textContent).toContain('App under test');
+      expect(card.textContent).toContain('2/4');
+      const evidence = q<HTMLElement>('[data-testid="run-card-evidence"]')!;
+      expect(evidence.textContent).toContain('Lượt 2');
+      expect(evidence.textContent).toContain('Bước 7');
+      const row = q<HTMLAnchorElement>('.run-row')!;
+      expect(row.href).toContain('turn=turn-2');
+      expect(row.href).toContain('step=7');
+    });
+
+    it('polls compact history results until a pending verdict resolves', fakeAsync(() => {
+      const pendingResult: ChatTurnResult = {
+        catalog_key: 'blocked.unknown', verdict: 'blocked', verification: 'none', category: 'unknown',
+        display_labels: { verification: 'Chưa xác minh', category: 'Chưa xác định' },
+        reason: 'Đang xác định kết quả', action: { text: '' }, responsible: '',
+        evidence: { turn_id: ID, step: null, screenshot_url: null }, turn_index: 1, turn_count: 1,
+        label_state: 'pending', source: 'outcome'
+      };
+      const finalResult: ChatTurnResult = { ...pendingResult, catalog_key: 'fail.app_defect', verdict: 'fail', category: 'app_defect',
+        display_labels: { verification: 'Agent tự báo', category: 'Lỗi ứng dụng' }, label_state: 'final' };
+      runs.chatResults.and.returnValues(
+        of({ sessions: [{ session_id: 'chat-root', results: [pendingResult] }] }),
+        of({ sessions: [{ session_id: 'chat-root', results: [finalResult] }] })
+      );
+      const selectedRun = run({ chat_session_id: 'chat-root' });
+      runs.list.and.returnValue(of(page([selectedRun])));
+      harness.navigateByUrl('/sessions', RunLibraryComponent).then(value => { component = value; });
+      flushMicrotasks();
+      harness.fixture.detectChanges();
+      root = harness.fixture.nativeElement;
+      tick(0);
+      expect(component.cardResultState(selectedRun)).toBe('pending');
+      tick(1000);
+      harness.fixture.detectChanges();
+
+      expect(runs.chatResults.calls.count()).toBe(2);
+      expect(component.cardResultState(selectedRun)).toBe('final');
+      expect((component.cardResult(selectedRun) as unknown as { display_labels?: { category?: string } })?.display_labels?.category)
+        .toBe('Lỗi ứng dụng');
+      expect(runs.chat).not.toHaveBeenCalled();
+    }));
+
+    it('renders explicit unknown categories but omits null categories in history cards', async () => {
+      const passResult = {
+        catalog_key: 'pass.verified', verdict: 'pass', verification: 'verified', category: null,
+        display_labels: { verification: 'Đã kiểm' }, reason: 'Đã kiểm', action: { text: '' }, responsible: '',
+        evidence: { turn_id: 'pass-run', step: null, screenshot_url: null }, turn_index: 1, turn_count: 1,
+        label_state: 'final', source: 'outcome'
+      };
+      const unknownResult = {
+        catalog_key: 'blocked.unknown', verdict: 'blocked', verification: 'none', category: 'unknown',
+        display_labels: { verification: 'Chưa xác minh', category: 'Chưa xác định' }, reason: 'Chưa rõ — đã ghi nhận',
+        action: { text: 'Chạy lại; admin sẽ xem' }, responsible: 'SmartQA',
+        evidence: { turn_id: 'unknown-run', step: null, screenshot_url: null }, turn_index: 1, turn_count: 1,
+        label_state: 'final', source: 'outcome'
+      };
+      const passRun = run({ session_id: 'pass-run', chat_session_id: 'pass-chat', prompt: 'Verified pass' });
+      const unknownRun = run({ session_id: 'unknown-run', chat_session_id: 'unknown-chat', prompt: 'Explicit unknown' });
+      runs.chatResults.and.returnValue(of({ sessions: [
+        { session_id: 'pass-chat', results: [passResult] },
+        { session_id: 'unknown-chat', results: [unknownResult] }
+      ] } as any));
+      await open('/sessions', of(page([passRun, unknownRun])));
+
+      const passCard = qa<HTMLElement>('.run-row').find(row => row.textContent?.includes('Verified pass'))!;
+      const unknownCard = qa<HTMLElement>('.run-row').find(row => row.textContent?.includes('Explicit unknown'))!;
+      expect(passCard.querySelector('.run-verdict-category')).toBeNull();
+      expect(unknownCard.querySelector('.run-verdict-category')?.textContent?.trim()).toBe('Chưa xác định');
+    });
+
+    it('keeps a successful sibling result during mixed availability and retries only the failed card', fakeAsync(() => {
+      const finalResult = {
+        catalog_key: 'pass.verified', verdict: 'pass', verification: 'verified', category: null,
+        display_labels: { verification: 'Đã kiểm' }, reason: 'Đã kiểm', action: { text: '' }, responsible: '',
+        evidence: { turn_id: 'good-run', step: null, screenshot_url: null }, turn_index: 1, turn_count: 1,
+        label_state: 'final', source: 'outcome'
+      };
+      const goodRun = run({ session_id: 'good-run', chat_session_id: 'good-chat', prompt: 'Successful sibling' });
+      const unavailableRun = run({ session_id: 'hidden-run', chat_session_id: 'hidden-chat', prompt: 'Unavailable session' });
+      runs.list.and.returnValue(of(page([goodRun, unavailableRun])));
+      runs.chatResults.and.returnValues(
+        of({ sessions: [
+          { session_id: 'good-chat', results: [finalResult] },
+          { session_id: 'hidden-chat', status: 'unavailable', results: [] }
+        ] } as any),
+        of({ sessions: [{ session_id: 'hidden-chat', results: [{ ...finalResult, evidence: { ...finalResult.evidence, turn_id: 'hidden-run' } }] }] } as any)
+      );
+      harness.navigateByUrl('/sessions', RunLibraryComponent).then(value => { component = value; });
+      flushMicrotasks(); harness.fixture.detectChanges(); root = harness.fixture.nativeElement; tick(0); harness.fixture.detectChanges();
+
+      expect(component.cardResultState(goodRun)).toBe('final');
+      expect(component.cardResultState(unavailableRun)).toBe('error');
+      expect(root.querySelectorAll('.run-card-verdict').length).toBe(1);
+      root.querySelector<HTMLButtonElement>('.run-result-retry')!.click();
+      harness.fixture.detectChanges(); tick(0); harness.fixture.detectChanges();
+      expect(runs.chatResults.calls.mostRecent().args[0]).toEqual(['hidden-chat']);
+      expect(component.cardResultState(goodRun)).toBe('final');
+      expect(component.cardResultState(unavailableRun)).toBe('final');
+    }));
+
+    it('stops terminal-pending history polling at its cap and leaves a retryable card error', fakeAsync(() => {
+      const pendingResult: ChatTurnResult = {
+        catalog_key: 'blocked.unknown', verdict: 'blocked', verification: 'none', category: 'unknown',
+        display_labels: { verification: 'Chưa xác minh', category: 'Chưa xác định' }, reason: 'Đang xác định kết quả',
+        action: { text: '' }, responsible: '', evidence: { turn_id: ID, step: null, screenshot_url: null },
+        turn_index: 1, turn_count: 1, label_state: 'pending', source: 'outcome'
+      };
+      const selectedRun = run({ chat_session_id: 'chat-root' });
+      runs.list.and.returnValue(of(page([selectedRun])));
+      runs.chatResults.and.returnValue(of({ sessions: [{ session_id: 'chat-root', results: [pendingResult] }] }));
+      harness.navigateByUrl('/sessions', RunLibraryComponent).then(value => { component = value; });
+      flushMicrotasks(); harness.fixture.detectChanges(); root = harness.fixture.nativeElement; tick(30000); harness.fixture.detectChanges();
+
+      expect(runs.chatResults.calls.count()).toBe(30);
+      expect(component.cardResultState(selectedRun)).toBe('error');
+      expect(root.querySelector('.run-result-retry')).not.toBeNull();
+      tick(10000);
+      expect(runs.chatResults.calls.count()).toBe(30);
+    }));
+
+    it('bounds consecutive history result request failures and keeps the card retryable', fakeAsync(() => {
+      const selectedRun = run({ chat_session_id: 'chat-root' });
+      runs.list.and.returnValue(of(page([selectedRun])));
+      runs.chatResults.and.returnValue(httpError(503));
+      harness.navigateByUrl('/sessions', RunLibraryComponent).then(value => { component = value; });
+      flushMicrotasks(); harness.fixture.detectChanges(); root = harness.fixture.nativeElement; tick(5000); harness.fixture.detectChanges();
+
+      expect(runs.chatResults.calls.count()).toBe(3);
+      expect(component.cardResultState(selectedRun)).toBe('error');
+      expect(root.querySelector('.run-result-retry')).not.toBeNull();
+      tick(10000);
+      expect(runs.chatResults.calls.count()).toBe(3);
+    }));
 
     for (const verdictView of [
       { verdict: 'pass', label: 'Pass', icon: 'check_circle', tone: 'ok' },
