@@ -257,6 +257,35 @@ describe('buildRunSummary', () => {
     expect(summary).not.toContain('PRIVATE_ERROR_SENTINEL');
   });
 
+  for (const format of ['snapshots', 'events']) {
+    it(`keeps the newest unresolved failure after an unrelated anonymous update in ${format}`, () => {
+      const failedTool = {
+        trace_id: 'ta', step_id: 'A', type: 'tool', name: 'failed_A', status: 'failed',
+        payload: { error: 'PRIVATE_ERROR_SENTINEL' }
+      };
+      const newerTool = { ...failedTool, trace_id: 'tc', step_id: 'C', name: 'newer_failed_C' };
+      const steps = [
+        { step_id: 'A', step_number: 3, generic_tools: [failedTool] },
+        { step_id: 'B', step_number: 3, action_taken: { action: 'tap' }, last_execution_result: { status: 'success' } },
+        { step_id: 'C', step_number: 4, generic_tools: [newerTool] },
+        { step_number: 3, generic_tools: [{ trace_id: 'anonymous-ok', type: 'tool', name: 'anonymous_ok', status: 'success' }] }
+      ];
+      const logs = format === 'events' ? steps.map(data => ({ type: 'step_updated', data })) : steps;
+
+      for (const end of [3, 4]) {
+        const summary = buildRunSummary(session, 'failed', logs.slice(0, end), null);
+
+        expect(summary).toContain('- Failing step: Step 4: newer_failed_C');
+        expect(summary).not.toContain('PRIVATE_ERROR_SENTINEL');
+        expect(summary).not.toContain(session.initial_goal);
+      }
+
+      const recovery = { step_id: 'C', step_number: 4, generic_tools: [{ ...newerTool, status: 'success' }] };
+      const recoveredLogs = [...logs, format === 'events' ? { type: 'step_updated', data: recovery } : recovery];
+      expect(buildRunSummary(session, 'failed', recoveredLogs, null)).toContain('- Failing step: Step 3: failed_A');
+    });
+  }
+
   it('keeps the newest failure state across number-only and ID-bearing updates', () => {
     const failedTool = {
       trace_id: 'tool-3',

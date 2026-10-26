@@ -207,7 +207,7 @@ function applyCheckerLog(blocks: StepBlock[], log: any): void {
  * attempt's trace id), move those traces to the attempt they belong to and
  * drop the agent trace itself.
  */
-function relocateCheckerTools(blocks: StepBlock[]): void {
+function relocateCheckerTools(blocks: StepBlock[], eventOrder: WeakMap<StepBlock, number>): void {
   const checkerByTrace = new Map<string, number>();
   blocks.forEach((b, i) => {
     if (b.type === 'checker' && b.data?.trace_id) {
@@ -242,7 +242,10 @@ function relocateCheckerTools(blocks: StepBlock[]): void {
       moved = true;
     }
     if (moved) {
-      blocks[i] = { ...block, data: { ...block.data, generic_tools: keep } };
+      const updatedBlock = { ...block, data: { ...block.data, generic_tools: keep } };
+      blocks[i] = updatedBlock;
+      const order = eventOrder.get(block);
+      if (order !== undefined) eventOrder.set(updatedBlock, order);
     }
   });
 }
@@ -259,11 +262,11 @@ export function isBackendSwitchNote(tool: any): boolean {
 }
 
 /** Consolidate raw SSE logs into deduplicated and ordered StepBlocks. */
-export function consolidateLogsToBlocks(rawLogs: any[]): StepBlock[] {
+export function consolidateLogsToBlocks(rawLogs: any[], eventOrder?: WeakMap<StepBlock, number>): StepBlock[] {
   if (!rawLogs || rawLogs.length === 0) return [];
 
   const blocks: StepBlock[] = [];
-  const lastUpdateOrder = new WeakMap<StepBlock, number>();
+  const lastUpdateOrder = eventOrder ?? new WeakMap<StepBlock, number>();
 
   rawLogs.forEach((log, eventIndex) => {
     if (!log) return;
@@ -656,7 +659,7 @@ export function consolidateLogsToBlocks(rawLogs: any[]): StepBlock[] {
     }
   });
 
-  relocateCheckerTools(blocks);
+  relocateCheckerTools(blocks, lastUpdateOrder);
 
   blocks.sort((a, b) => {
     const timeA = a.timestamp ? new Date(a.timestamp).getTime() : 0;
