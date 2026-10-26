@@ -1,0 +1,7 @@
+{
+  "id": "2026-10-26-newest-failing-step",
+  "date": "2026-10-26",
+  "title": "Copied run summaries keep the newest failing step",
+  "body": "A successful update to another step no longer replaces the latest unresolved failure in a copied run summary.",
+  "issues": ["CHE-1068"]
+}
