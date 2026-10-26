@@ -7,7 +7,7 @@ Source: [CHE-2082](mention://issue/01a1765a-477b-7030-b320-992e95573dbd), Plan r
 
 - Issue: [CHE-2096](mention://issue/01a1769a-ae5a-70b8-a296-321215806a40)
 - Pages in scope: `phones-computers-leases`, `agent-qa-report`, `sessions-shell`
-- Status: exploring
+- Status: rev-1 posted
 
 The approved `sessions-v2.1` and `smartqa-verdicts` records remain unchanged. This revision adds three directions for device/lease visibility and the agent QA report, plus a shell polish pass. Report content uses synthetic examples and represents the S4.2 flow artifact, hard gate, first-run rubric, and T1–T5 data safeguards.
 
