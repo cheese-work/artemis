@@ -33,6 +33,17 @@ def isolated_lock_directory(tmp_path, monkeypatch):
     )
 
 
+@pytest.fixture(autouse=True)
+def no_property_reads(monkeypatch):
+    """Property reads would run ``adb shell getprop`` against the default server."""
+
+    async def unread(_pool, _serial):
+        return {}
+
+    monkeypatch.setattr(DevicePool, "_read_properties_sync", lambda _pool, _serial: {})
+    monkeypatch.setattr(DevicePool, "_read_properties_async", unread)
+
+
 def test_device_pool_parse_lines():
     lines = [
         "List of devices attached",
