@@ -267,7 +267,7 @@ Design topics live in `design/<topic>/rev-<n>/` on a draft PR per topic (standar
 |-------|----------|-----------|-----------|-----------------|-------|
 | sessions-v2.1 | rev-4 | C — Inspector | #200 | `e8b93218c694f91a983c0933adfc72010b6c0009` | Approved by merge |
 | smartqa-verdicts | rev-5 | C — Evidence inspector | #220 | `5c4f8077d4807733332a4dba173acd9571cbad39` | Approved by merge |
-| smartqa-agent-qa | rev-1 | A/B/C — exploring | #231 (draft) | `f213b2e8203873b654a10f3cf4ce207f7f1bf797` | Exploring; no direction selected; not approved |
+| smartqa-agent-qa | rev-2 | A — selected | #231 (draft) | `42500d05bc3984c1a7f101d9ea33512d7473b417` | Cheese selected A; awaiting fresh UX review; not approved until PR #231 merges |
 
 ## Decisions Log
 | Date | Decision | Rationale |
