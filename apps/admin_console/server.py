@@ -143,6 +143,7 @@ try:
         run_bundle,
         runs,
         sessions,
+        smartqa_check,
         steps,
         stream,
         system,
@@ -171,6 +172,7 @@ except ImportError:
         run_bundle,
         runs,
         sessions,
+        smartqa_check,
         steps,
         stream,
         system,
@@ -455,6 +457,7 @@ app.include_router(run_bundle.router)
 app.include_router(run_admin.router)
 app.include_router(prompt_critiques.router)
 app.include_router(failures.router)
+app.include_router(smartqa_check.router)
 app.include_router(steps.router)
 app.include_router(tasks.router)
 app.include_router(replay.router)

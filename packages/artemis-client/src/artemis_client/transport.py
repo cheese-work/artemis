@@ -67,20 +67,25 @@ class JsonTransport:
         path: str,
         *,
         json_body: Mapping[str, Any] | None = None,
+        data: bytes | None = None,
+        content_type: str | None = None,
+        headers: Mapping[str, str] | None = None,
     ) -> Any:
         if not path.startswith("/"):
             path = f"/{path}"
         url = f"{self.base_url}{path}"
-        body = None
-        headers = dict(self.headers)
+        body = data
+        request_headers = {**self.headers, **dict(headers or {})}
         if json_body is not None:
             body = json.dumps(json_body, separators=(",", ":")).encode("utf-8")
-            headers["Content-Type"] = "application/json"
+            request_headers["Content-Type"] = "application/json"
+        elif content_type:
+            request_headers["Content-Type"] = content_type
 
         request = urllib.request.Request(
             url,
             data=body,
-            headers=headers,
+            headers=request_headers,
             method=method.upper(),
         )
         try:

@@ -97,3 +97,28 @@ Interrupts persist `{reason, client_close.reason, visibility_state}` in the life
 
 - **Daily digest.** Once a day, one message lists `smartqa_*` causes not reported before, sent through the notifier channels (`ARTEMIS_WEBHOOK_URL` and the others in `mcp_server/notifiers`). A cause counts as reported only after a channel accepted the message; with no channel configured, the digest repeats daily and `POST /api/system/failures/digest` returns `"sent": false`.
 - **Evidence** is redacted and cut to 300 characters. Run causes use structured per-turn terminal errors and interrupt evidence; the `stdout.log` tail is a legacy fallback only when structured evidence is absent.
+
+## Agent entry point: `smartqa check` (CHE-2101)
+
+`smartqa check --apk app.apk --manifest smartqa.yml --themes light,dark [--pool x99-avd | --device <id>] [--route route.json] [--server <url>]`
+ships with `packages/artemis-client`. Per theme it leases a device, submits one run and
+releases the lease. Exit 0 = every theme completed, 1 = a run failed or the check was refused,
+2 = usage error or missing credentials.
+
+- **Auth.** Non-loopback servers need `CF_ACCESS_CLIENT_ID` + `CF_ACCESS_CLIENT_SECRET` (or
+  `ARTEMIS_TOKEN`); the CLI refuses to start without them. The client id must be mapped in
+  `ARTEMIS_SERVICE_PRINCIPALS`; routes may use `{name}` for one path segment, for example
+  `"GET /api/sessions/{session_id}"`. Map `POST /api/smartqa/apks`, `POST /api/leases`,
+  `POST /api/leases/{lease_id}/release`, `POST /api/run` and `GET /api/sessions/{session_id}`.
+- **APK upload.** `POST /api/smartqa/apks` (raw body, optional `X-Content-SHA256`) stores the
+  file as `<sha256>.apk` under `ARTEMIS_SMARTQA_APK_DIR` (default `<test data>/smartqa_apks`).
+  Cap: `ARTEMIS_SMARTQA_APK_MAX_BYTES` (default 200 MiB). The endpoint is 404 unless
+  `ARTEMIS_SMARTQA_CHECK=1`.
+- **Manifest.** `smartqa.yml`: `package`, `screens` (`id`, `purpose`), `test_accounts`, optional
+  `backend`. `backend: production` is refused (`prod_backend_refused`).
+- **Route.** `{"steps": [{"action": "tap|swipe|back|type", ...}]}`. A `type` step with
+  `"secret": true` must carry a `${secret:NAME}` placeholder (`route_secret_literal` otherwise).
+- **Server contract still to land.** The run receives `options.smartqa` (`theme`,
+  `fresh_install`, `clear_data`, `mode` persona|route, `route`, `max_model_calls`). Applying it
+  (`cmd uimode`, `pm clear`, route replay) belongs to the worker and the restricted command
+  gate (CHE-2129); the lease endpoints belong to CHE-2099.
