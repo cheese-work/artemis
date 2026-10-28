@@ -1,6 +1,6 @@
 import json
 
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 import pytest
 
 from apps.admin_console.services.agent_qa.contrast import (
@@ -234,3 +234,22 @@ def test_rule4_declared_screens_empty_with_captures_is_not_green(tmp_path):
     result = evaluate_gate(session)
     assert not result.green
     assert _rule(result, 4).findings[0]["error"] == "no_declared_screens"
+
+
+def _bordered_text_png(path, border_px):
+    """Real glyphs at 1.67:1 (200 grey on white) inside a black control outline."""
+    img = Image.new("RGB", (120, 60), (255, 255, 255))
+    draw = ImageDraw.Draw(img)
+    draw.text((20, 14), "Start", fill=(200, 200, 200), font=ImageFont.load_default(size=24))
+    for k in range(border_px):
+        draw.rectangle([k, k, 119 - k, 59 - k], outline=(0, 0, 0))
+    img.save(path)
+
+
+@pytest.mark.parametrize("border_px", [1, 2])
+def test_rule3_black_control_border_does_not_turn_low_contrast_text_green(tmp_path, border_px):
+    root = write_session(tmp_path, themes=("light",))
+    _bordered_text_png(root / "light" / "1-after.png", border_px)
+    assert measure_node(root / "light" / "1-after.png", {"bounds": [0, 0, 120, 60]}) < 4.5
+    session = _edit(root, lambda d: d["themes"]["light"]["steps"][0].update(text_nodes=[_node()]))
+    assert not _rule(evaluate_gate(session), 3).passed

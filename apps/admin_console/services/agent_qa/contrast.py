@@ -38,6 +38,24 @@ def required_ratio(node: dict[str, Any]) -> float:
 
 
 STRAY_SHARE = 0.05
+FRAME_SHARE = 0.9
+
+
+def _peel_frame(crop: Image.Image) -> Image.Image:
+    """Drop outer rings that are one colour (control outline, padding), so they are never read as text.
+
+    Stops at the first ring that holds glyph pixels, and always keeps at least a 2 px core.
+    """
+    px = crop.load()
+    left, top, right, bottom = 0, 0, crop.width, crop.height
+    while right - left > 2 and bottom - top > 2 and px is not None:
+        ring = [px[x, y] for x in range(left, right) for y in (top, bottom - 1)] + [
+            px[x, y] for y in range(top + 1, bottom - 1) for x in (left, right - 1)
+        ]
+        if Counter(ring).most_common(1)[0][1] < FRAME_SHARE * len(ring):
+            break
+        left, top, right, bottom = left + 1, top + 1, right - 1, bottom - 1
+    return crop.crop((left, top, right, bottom))
 
 
 def measure_node(png: Path, node: dict[str, Any]) -> float | None:
@@ -45,7 +63,8 @@ def measure_node(png: Path, node: dict[str, Any]) -> float | None:
 
     The text colour is the colour farthest from the background among those that
     cover at least ``STRAY_SHARE`` of the non-background pixels, so a stray pixel
-    cannot stand in for the text. ``None`` when the bounds hold one colour only:
+    cannot stand in for the text. Uniform outer rings (a control's outline) are
+    peeled first, so a border cannot stand in for the text either. ``None`` when the bounds hold one colour only:
     there is no text pixel to measure. Raises ``ValueError`` for bounds that are
     malformed, empty or outside the image: such a node is never measured on padding.
     """
@@ -57,7 +76,7 @@ def measure_node(png: Path, node: dict[str, Any]) -> float | None:
         rgb = img.convert("RGB")
         if not (0 <= left < right <= rgb.width and 0 <= top < bottom <= rgb.height):
             raise ValueError("bounds_invalid")
-        raw = rgb.crop((left, top, right, bottom)).tobytes()
+        raw = _peel_frame(rgb.crop((left, top, right, bottom))).tobytes()
     colours = Counter(zip(raw[0::3], raw[1::3], raw[2::3]))
     bg = colours.most_common(1)[0][0]
     if len(colours) == 1:
