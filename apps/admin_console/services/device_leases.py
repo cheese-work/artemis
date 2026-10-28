@@ -68,21 +68,25 @@ def _lease(row: sqlite3.Row | tuple) -> Lease:
 
 @contextmanager
 def _transaction(db_path):
-    """A write transaction: committed on success or refusal, rolled back on any other error."""
+    """A write transaction yielding ``(conn, now)``; ``now`` is read once the write lock is held.
+
+    Committed on success or refusal, rolled back on any other error or interruption.
+    """
     with db_session(db_path) as conn:
         conn.isolation_level = None  # explicit BEGIN/COMMIT below, no implicit ones
         for statement in _DDL:
             conn.execute(statement)
         conn.execute("BEGIN IMMEDIATE")
+        commit = False
         try:
-            yield conn
-        except (DeviceBusy, LeaseError):
-            conn.execute("COMMIT")  # a refusal still keeps the purge of expired rows
-            raise
-        except BaseException:
-            conn.execute("ROLLBACK")
-            raise
-        conn.execute("COMMIT")
+            try:
+                yield conn, clock()
+                commit = True
+            except (DeviceBusy, LeaseError):
+                commit = True  # a refusal still keeps the purge of expired rows
+                raise
+        finally:
+            conn.execute("COMMIT" if commit else "ROLLBACK")
 
 
 def _purge(conn: sqlite3.Connection, now: float) -> None:
@@ -103,8 +107,7 @@ def acquire(
 
     A phone in ``always_restricted`` is leased restricted whatever the caller asked.
     """
-    now = clock()
-    with _transaction(db_path) as conn:
+    with _transaction(db_path) as (conn, now):
         _purge(conn, now)
         held = []
         for device_id in device_ids:
@@ -146,8 +149,8 @@ def acquire(
 
 
 def active(db_path) -> list[Lease]:
-    with _transaction(db_path) as conn:
-        _purge(conn, clock())
+    with _transaction(db_path) as (conn, now):
+        _purge(conn, now)
         rows = conn.execute(f"SELECT {_COLUMNS} FROM device_leases ORDER BY created_at").fetchall()
     return [_lease(row) for row in rows]
 
@@ -170,8 +173,7 @@ def _owned(conn: sqlite3.Connection, lease_id: str, holder: str, admin: bool, no
 
 
 def renew(db_path, lease_id: str, holder: str, ttl: float, *, admin: bool = False) -> Lease:
-    now = clock()
-    with _transaction(db_path) as conn:
+    with _transaction(db_path) as (conn, now):
         lease = _owned(conn, lease_id, holder, admin, now)
         conn.execute(
             "UPDATE device_leases SET expires_at = ? WHERE lease_id = ?", (now + ttl, lease_id)
@@ -182,8 +184,8 @@ def renew(db_path, lease_id: str, holder: str, ttl: float, *, admin: bool = Fals
 
 
 def release(db_path, lease_id: str, holder: str, *, admin: bool = False) -> None:
-    with _transaction(db_path) as conn:
-        _owned(conn, lease_id, holder, admin, clock())
+    with _transaction(db_path) as (conn, now):
+        _owned(conn, lease_id, holder, admin, now)
         conn.execute("DELETE FROM device_leases WHERE lease_id = ?", (lease_id,))
         boundary("release:deleted")
     boundary("release:committed")

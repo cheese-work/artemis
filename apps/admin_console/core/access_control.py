@@ -33,7 +33,9 @@ logger = logging.getLogger(__name__)
 @dataclass(frozen=True)
 class ServicePrincipal:
     name: str
-    routes: frozenset[tuple[str, str]]  # (METHOD, exact path)
+    routes: frozenset[
+        tuple[str, str]
+    ]  # (METHOD, path); a whole `{name}` segment matches any one segment
 
 
 @dataclass(frozen=True)
@@ -515,8 +517,27 @@ def _log_safe_route(request: HTTPConnection) -> str:
     return f"{request.scope.get('method', 'WEBSOCKET')} {_log_safe_path(request)}"
 
 
+def _service_route_allowed(method: str, path: str, routes: frozenset[tuple[str, str]]) -> bool:
+    """Exact match, or a grant whose `{name}` segments each match one non-empty path segment."""
+    if (method, path) in routes:
+        return True
+    segments = path.split("/")
+    for granted_method, granted_path in routes:
+        granted = granted_path.split("/")
+        if (
+            granted_method == method
+            and len(granted) == len(segments)
+            and all(
+                (g.startswith("{") and g.endswith("}") and s and not s.isspace()) or g == s
+                for g, s in zip(granted, segments, strict=True)
+            )
+        ):
+            return True
+    return False
+
+
 def _enforce_service_principal_routes(request: HTTPConnection, identity: AccessIdentity) -> None:
-    """A service token reaches only the exact routes its principal maps; nothing else."""
+    """A service token reaches only the routes its principal maps (exact or `{name}` templates); nothing else."""
     if identity.reason == "service_principal_unmapped":
         logger.warning("Service token denied: unmapped client id route=%s", _log_safe_path(request))
         allowed = False
@@ -525,7 +546,7 @@ def _enforce_service_principal_routes(request: HTTPConnection, identity: AccessI
     else:
         method = request.scope.get("method", "WEBSOCKET")
         # The router matches scope["path"]; request.url.path drops tabs and newlines.
-        allowed = (method, request.scope["path"]) in identity.service_routes
+        allowed = _service_route_allowed(method, request.scope["path"], identity.service_routes)
         logger.info(
             "Service principal request principal=%s route=%s %s allowed=%s",
             identity.service_principal,

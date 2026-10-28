@@ -2,6 +2,7 @@
 
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+import sqlite3
 import subprocess
 import sys
 import threading
@@ -222,3 +223,57 @@ def test_a_crash_after_the_release_commits_frees_the_phone(db):
     crash(db, "release:committed", "release", lease.lease_id)
 
     assert leases.active(db) == []
+
+
+# The clock is read after the write lock is held: a call that waited behind another writer must
+# judge expiry by the time it got the lock, not the time it started waiting.
+def _call_blocked_by_a_writer(db, clock, operation, lease_id):
+    seen = threading.Event()
+
+    def sampling_clock():
+        value = clock[0]
+        seen.set()
+        return value
+
+    leases.clock = sampling_clock
+    blocker = sqlite3.connect(db)
+    blocker.execute("BEGIN IMMEDIATE")
+
+    def attempt():
+        try:
+            if operation == "acquire":
+                return leases.acquire(db, ["dev_a"], "agent-2", 60, "qa")
+            return leases.renew(db, lease_id, "agent-1", 60)
+        except (leases.DeviceBusy, leases.LeaseError) as refusal:
+            return refusal
+
+    with ThreadPoolExecutor(1) as pool:
+        pending = pool.submit(attempt)
+        try:
+            clock[0] = NOW + 61  # the phone expired while the call waited for the lock
+        finally:
+            seen.wait(0.5)
+            blocker.commit()
+            blocker.close()
+        return pending.result(timeout=30)
+
+
+def test_an_acquire_that_waited_for_the_lock_frees_a_phone_that_expired_meanwhile(db, clock):
+    lease = take(db, holder="agent-1", ttl=60)
+    clock[0] = NOW + 59
+
+    result = _call_blocked_by_a_writer(db, clock, "acquire", lease.lease_id)
+
+    assert isinstance(result, leases.Lease), "the expired holder was still reported busy"
+    assert result.holder == "agent-2"
+    assert result.expires_at == NOW + 61 + 60
+
+
+def test_a_renew_that_waited_for_the_lock_cannot_revive_a_lease_that_expired_meanwhile(db, clock):
+    lease = take(db, holder="agent-1", ttl=60)
+    clock[0] = NOW + 59
+
+    result = _call_blocked_by_a_writer(db, clock, "renew", lease.lease_id)
+
+    assert isinstance(result, leases.LeaseError), "the expired lease was renewed"
+    assert result.code == "lease_expired"
