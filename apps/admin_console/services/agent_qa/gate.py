@@ -75,9 +75,12 @@ def _contrast(session: Session) -> RuleResult:
                     item["error"] = "screenshot_unreadable"
                 else:
                     required = required_ratio(node)
-                    if ratio is None or ratio >= required:
+                    if ratio is None:
+                        item["error"] = "contrast_unmeasurable"
+                    elif ratio >= required:
                         continue
-                    item |= {"ratio": round(ratio, 2), "required": required}
+                    else:
+                        item |= {"ratio": round(ratio, 2), "required": required}
                 (informational if node.get("kind") == "image" else findings).append(item)
     return _rule(3, findings, informational)
 

@@ -294,3 +294,58 @@ def test_rule3_readable_text_without_border_stays_green(tmp_path, size_px, fg, b
     _glyph_png(root / "light" / "1-after.png", fg=fg, bg=bg, size_px=size_px)
     session = _edit(root, lambda d: d["themes"]["light"]["steps"][0].update(text_nodes=[_node()]))
     assert _rule(evaluate_gate(session), 3).passed
+
+
+def _bounds(img_w=120, img_h=60):
+    return {"bounds": [0, 0, img_w, img_h]}
+
+
+def test_small_low_contrast_text_is_measured_not_skipped(tmp_path):
+    """12 px text at 1.673:1 has a core of only ~67 px; it must still be measured."""
+    png = tmp_path / "x.png"
+    _glyph_png(png, fg=(200, 200, 200), size_px=12)
+    assert measure_node(png, _bounds()) == pytest.approx(1.673, abs=0.05)
+
+
+def test_text_in_the_background_colour_bucket_is_measured_not_skipped(tmp_path):
+    """(230,230,230) text on white shares a coarse colour bucket with the background."""
+    png = tmp_path / "x.png"
+    _glyph_png(png, fg=(230, 230, 230))
+    assert measure_node(png, _bounds()) == pytest.approx(1.248, abs=0.03)
+
+
+@pytest.mark.parametrize("size_px", [12, 24])
+def test_rounded_border_cannot_hide_small_or_same_bucket_text(tmp_path, size_px):
+    png = tmp_path / "x.png"
+    _glyph_png(png, fg=(200, 200, 200), size_px=size_px, frame=("rounded", (0, 0, 0)))
+    assert measure_node(png, _bounds()) < 4.5
+    png2 = tmp_path / "y.png"
+    _glyph_png(png2, fg=(230, 230, 230), size_px=size_px, frame=("rounded", (0, 0, 0)))
+    assert measure_node(png2, _bounds()) < 4.5
+
+
+@pytest.mark.parametrize("size_px", [12, 16, 24])
+@pytest.mark.parametrize(
+    ("fg", "bg"),
+    [((0, 0, 0), (255, 255, 255)), ((240, 240, 240), (18, 18, 18))],
+    ids=["light", "dark"],
+)
+def test_readable_text_measures_a_passing_ratio(tmp_path, size_px, fg, bg):
+    png = tmp_path / "x.png"
+    _glyph_png(png, fg=fg, bg=bg, size_px=size_px)
+    ratio = measure_node(png, _bounds())
+    assert ratio is not None and ratio >= 4.5
+
+
+def test_rule3_text_node_with_nothing_to_measure_is_not_green(tmp_path):
+    """A declared text node over a single-colour crop cannot be shown readable."""
+    root = write_session(tmp_path, themes=("light",))
+    write_png(root / "light" / "1-after.png", blank=True)
+    session = _edit(
+        root,
+        lambda d: d["themes"]["light"]["steps"][0].update(
+            text_nodes=[_node(bounds=[0, 0, 120, 60])]
+        ),
+    )
+    rule = _rule(evaluate_gate(session), 3)
+    assert not rule.passed and rule.findings[0]["error"] == "contrast_unmeasurable"

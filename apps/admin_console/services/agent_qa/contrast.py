@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from collections import Counter
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 from PIL import Image
 
 NORMAL_RATIO = 4.5
@@ -37,21 +37,34 @@ def required_ratio(node: dict[str, Any]) -> float:
     return LARGE_RATIO if large else NORMAL_RATIO
 
 
-STRONG_SHARE = 0.01
-QUANT_SHIFT = 5
+MIN_CORE_PX = 4
+"""A core colour needs this many pixels, so a stray pixel is never read as text."""
+
+
+def _neighbour_max(a: np.ndarray) -> np.ndarray:
+    """Per pixel, the largest value among its 8 neighbours (edges padded with -inf)."""
+    padded = np.pad(a, 1, constant_values=-np.inf)
+    h, w = a.shape
+    shifted = (
+        padded[dy : dy + h, dx : dx + w] for dy in range(3) for dx in range(3) if (dy, dx) != (1, 1)
+    )
+    return np.maximum.reduce(list(shifted))
 
 
 def measure_node(png: Path, node: dict[str, Any]) -> float | None:
-    """Worst ratio between the node's background and any strong non-background colour.
+    """Worst ratio between the node's background and any text-core colour in its bounds.
 
-    The background is the commonest colour in the bounds. Colours are quantised
-    (``QUANT_SHIFT``) into clusters; a cluster is strong when it holds at least
-    ``STRONG_SHARE`` of the crop. The result is the *minimum* ratio over strong
-    clusters, so a border, icon or any other non-text shape can only add a cluster
-    and never lift the result: the failure mode is a false red, not a false green.
-    Anti-aliasing blends and a stray pixel are too small to be strong clusters.
-    ``None`` when no strong cluster exists: there is no text to measure. Raises
-    ``ValueError`` for bounds that are malformed, empty or outside the image.
+    The background is the commonest exact colour. Every other pixel is foreground:
+    nothing is dropped by share or colour bucket. A *core* pixel is a foreground
+    local maximum of contrast (no neighbour is farther from the background), so
+    the anti-aliasing ramp around a stroke is excluded by position, not by size.
+    The result is the *minimum* over core colours of at least ``MIN_CORE_PX`` pixels:
+    a border, icon or other non-text shape only adds a core colour and cannot lift
+    the result. The failure mode is a false red, never a false green.
+
+    ``None`` when no core colour exists (a single-colour crop): the caller must
+    treat declared text it cannot measure as not readable. Raises ``ValueError`` for
+    bounds that are malformed, empty or outside the image.
     """
     try:
         left, top, right, bottom = (int(v) for v in node["bounds"])
@@ -61,18 +74,21 @@ def measure_node(png: Path, node: dict[str, Any]) -> float | None:
         rgb = img.convert("RGB")
         if not (0 <= left < right <= rgb.width and 0 <= top < bottom <= rgb.height):
             raise ValueError("bounds_invalid")
-        raw = rgb.crop((left, top, right, bottom)).tobytes()
-    pixels = list(zip(raw[0::3], raw[1::3], raw[2::3]))
-    clusters: dict[RGB, list[RGB]] = {}
-    for px in pixels:
-        clusters.setdefault(
-            (px[0] >> QUANT_SHIFT, px[1] >> QUANT_SHIFT, px[2] >> QUANT_SHIFT), []
-        ).append(px)
-    bg_key = max(clusters, key=lambda k: len(clusters[k]))
-    bg = Counter(clusters[bg_key]).most_common(1)[0][0]
-    ratios = [
-        contrast_ratio(Counter(members).most_common(1)[0][0], bg)
-        for key, members in clusters.items()
-        if key != bg_key and len(members) >= STRONG_SHARE * len(pixels)
-    ]
-    return min(ratios) if ratios else None
+        crop = np.asarray(rgb.crop((left, top, right, bottom)), dtype=np.uint32)
+    packed = (crop[..., 0] << 16) | (crop[..., 1] << 8) | crop[..., 2]
+    colours, inverse, counts = np.unique(packed, return_inverse=True, return_counts=True)
+    bg = colours[counts.argmax()]
+    bg_rgb = ((bg >> 16) & 255, (bg >> 8) & 255, bg & 255)
+    ratio_of = np.array(
+        [
+            contrast_ratio(((c >> 16) & 255, (c >> 8) & 255, c & 255), bg_rgb)  # type: ignore[arg-type]
+            for c in colours.tolist()
+        ]
+    )
+    ratio = ratio_of[inverse.reshape(packed.shape)]
+    core = (packed != bg) & (ratio >= _neighbour_max(ratio))
+    core_colours, core_counts = np.unique(packed[core], return_counts=True)
+    keep = core_counts >= MIN_CORE_PX
+    if not keep.any():
+        return None
+    return float(ratio_of[np.searchsorted(colours, core_colours[keep])].min())
