@@ -228,6 +228,7 @@ class CheckOptions:
     max_apk_bytes: int = DEFAULT_MAX_APK_BYTES
     lease_ttl: int = 1800
     run_timeout: float = 1800.0
+    stop_confirm_timeout: float = 90.0  # Above the server's 45 s cancel grace.
 
 
 @dataclass(frozen=True)
@@ -307,12 +308,29 @@ def _goal(options: CheckOptions, manifest: Manifest, route: Any) -> str:
     return f"{_PERSONA_BRIEFS[options.persona]}\nDeclared screens:\n{screens}"
 
 
-async def _stopped(client: ArtemisClient, task_id: str) -> bool:
-    """Ask the server to stop a task; True only when it confirms ``stopped``."""
+async def _terminated(client: ArtemisClient, task_id: str, timeout: float) -> bool:
+    """Stop a task, then wait for the server to report a terminal status.
+
+    A ``stopped`` reply only means a cancel was scheduled: the worker can keep
+    running for the cancel grace period. Only a terminal session status is
+    evidence that execution ended, so that alone returns True.
+    """
     try:
-        return await client.stop(task_id)
+        await client.stop(task_id)
+        return (await client.wait_for_task(task_id, timeout=timeout)).done
     except ArtemisClientError:
         return False
+
+
+def _proven_not_admitted(exc: BaseException) -> bool:
+    """True only when the failure proves the host never admitted the task.
+
+    A 5xx, a timeout or a dropped connection is ambiguous: the host may have
+    admitted the client-generated task before the failure.
+    """
+    if isinstance(exc, (TaskRejectedError, ValueError)):
+        return True
+    return isinstance(exc, ApiError) and 400 <= exc.status_code < 500 and exc.status_code != 408
 
 
 async def _check_theme(
@@ -349,8 +367,8 @@ async def _check_theme(
         result = await client.wait_for_task(task_id, timeout=options.run_timeout)
         fenced = False
     except BaseException as exc:  # Includes cancellation: stop the task before the device is freed.
-        refused = not submitted and isinstance(exc, (ApiError, TaskRejectedError, ValueError))
-        fenced = False if refused else not await _stopped(client, task_id)
+        refused = not submitted and _proven_not_admitted(exc)
+        fenced = not (refused or await _terminated(client, task_id, options.stop_confirm_timeout))
         raise
     finally:
         if fenced:

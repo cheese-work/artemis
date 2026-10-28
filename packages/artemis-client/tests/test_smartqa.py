@@ -5,11 +5,21 @@ import hashlib
 import json
 import tempfile
 import unittest
+import uuid
 from collections import defaultdict
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
-from artemis_client import ArtemisClient, ConflictError, NetworkError
+from artemis_client import (
+    ApiError,
+    ArtemisClient,
+    ArtemisClientError,
+    ConflictError,
+    NetworkError,
+    NotFoundError,
+    ProtocolError,
+)
 from artemis_client.smartqa import (
     CheckError,
     CheckOptions,
@@ -258,13 +268,20 @@ LEASE_RELEASE = "POST /api/leases/lease-0/release"
 class ReviewRegressionTests(SmartQATestCase):
     """Sol's CHE-2101 review findings 1 to 3 (fence, shared call cap, manifest fail-closed)."""
 
-    def poll_then_fail(self, stop_response: Any) -> None:
+    def poll_then_fail(self, stop_response: Any, after_stop: str | None = "cancelled") -> None:
         self.queue_happy_path(themes=1)
-        self.transport.responses[("GET", f"/api/sessions/{SESSION}")] = [
+        sessions = [
             {"session_id": SESSION, "status": "running"},
             NetworkError("poll connection lost"),
         ]
+        # None: the session never reports a terminal status after the stop.
+        status = after_stop or "running"
+        sessions += [{"session_id": SESSION, "status": status}] * (1 if after_stop else 5000)
+        self.transport.responses[("GET", f"/api/sessions/{SESSION}")] = sessions
         self.transport.add("POST", "/api/stop", stop_response)
+
+    def check_options(self, **overrides: Any) -> CheckOptions:
+        return self.options(themes=("light",), stop_confirm_timeout=0.05, **overrides)
 
     async def test_call_cap_is_shared_across_themes(self) -> None:
         self.queue_happy_path()
@@ -281,9 +298,9 @@ class ReviewRegressionTests(SmartQATestCase):
         for stop in ({"status": "unknown"}, NetworkError("stop failed")):
             with self.subTest(stop=stop):
                 self.transport.calls.clear()
-                self.poll_then_fail(stop)
+                self.poll_then_fail(stop, after_stop=None)
                 with self.assertRaises(NetworkError):
-                    await run_check(self.client, self.options(themes=("light",)))
+                    await run_check(self.client, self.check_options())
                 self.assertIn("POST /api/stop", self.transport.paths())
                 self.assertNotIn(LEASE_RELEASE, self.transport.paths())
                 self.transport.responses.clear()
@@ -291,29 +308,75 @@ class ReviewRegressionTests(SmartQATestCase):
     async def test_poll_error_releases_the_lease_once_stop_is_confirmed(self) -> None:
         self.poll_then_fail({"status": "stopped"})
         with self.assertRaises(NetworkError):
-            await run_check(self.client, self.options(themes=("light",)))
+            await run_check(self.client, self.check_options())
         self.assertLess(
             self.transport.paths().index("POST /api/stop"),
             self.transport.paths().index(LEASE_RELEASE),
         )
 
     async def test_cancellation_stops_the_task_and_fences_unless_stop_is_confirmed(self) -> None:
-        for stop, released in (({"status": "stopped"}, True), ({"status": "unknown"}, False)):
-            with self.subTest(stop=stop):
+        running = {"session_id": SESSION, "status": "running"}
+        cancelled = {"session_id": SESSION, "status": "cancelled"}
+        for stop, after, released in (
+            ({"status": "stopped"}, cancelled, True),
+            ({"status": "stopped"}, running, False),
+            ({"status": "unknown"}, running, False),
+        ):
+            with self.subTest(stop=stop, after=after["status"]):
                 self.transport.calls.clear()
                 self.transport.responses.clear()
                 self.queue_happy_path(themes=1)
-                running = {"session_id": SESSION, "status": "running"}
-                self.transport.responses[("GET", f"/api/sessions/{SESSION}")] = [running] * 5000
+                sessions = [running] * 5000
+                self.transport.responses[("GET", f"/api/sessions/{SESSION}")] = sessions
                 self.transport.add("POST", "/api/stop", stop)
-                job = asyncio.create_task(run_check(self.client, self.options(themes=("light",))))
-                while "POST /api/run" not in self.transport.paths():
-                    await asyncio.sleep(0.001)
+                job = asyncio.create_task(run_check(self.client, self.check_options()))
+                while f"GET /api/sessions/{SESSION}" not in self.transport.paths():
+                    await asyncio.sleep(0.001)  # Submitted and polling.
                 job.cancel()
+                sessions[:] = [after] * 5000
                 with self.assertRaises(asyncio.CancelledError):
                     await job
                 self.assertIn("POST /api/stop", self.transport.paths())
                 self.assertEqual(LEASE_RELEASE in self.transport.paths(), released)
+
+    async def test_stopped_reply_is_not_termination_until_the_session_is_terminal(self) -> None:
+        # The server answers "stopped" when it only scheduled a deferred kill (45 s grace).
+        self.poll_then_fail({"status": "stopped"}, after_stop=None)
+        with self.assertRaises(NetworkError):
+            await run_check(self.client, self.check_options())
+        self.assertNotIn(LEASE_RELEASE, self.transport.paths())
+
+    async def test_ambiguous_submit_failure_stops_the_known_task_before_release(self) -> None:
+        for error in (ApiError(500, "boom"), NetworkError("reset"), ProtocolError("bad body")):
+            with self.subTest(error=type(error).__name__, status=getattr(error, "status_code", 0)):
+                self.transport.calls.clear()
+                self.transport.responses.clear()
+                t = self.transport
+                t.add(
+                    "POST", "/api/smartqa/apks", {"sha256": APK_SHA, "size_bytes": 1, "path": "/x"}
+                )
+                t.add("POST", "/api/leases", {"lease_id": "lease-0", "device_id": "emulator-0"})
+                t.add("POST", "/api/run", error)
+                t.add("POST", "/api/stop", {"status": "no_running_task"})
+                # The host never heard of the task, so no terminal status can be observed.
+                t.add("GET", f"/api/sessions/{SESSION}", *[NotFoundError(404, "x")] * 5000)
+                t.add("GET", "/api/status", *[{"running": [], "queued": []}] * 5000)
+                with patch("artemis_client.smartqa.uuid.uuid4", return_value=uuid.UUID(SESSION)):
+                    with self.assertRaises(ArtemisClientError):
+                        await run_check(self.client, self.check_options())
+                self.assertIn("POST /api/stop", self.transport.paths())
+                self.assertNotIn(LEASE_RELEASE, self.transport.paths())
+
+    async def test_client_error_status_proves_non_admission_and_releases(self) -> None:
+        t = self.transport
+        t.add("POST", "/api/smartqa/apks", {"sha256": APK_SHA, "size_bytes": 1, "path": "/x"})
+        t.add("POST", "/api/leases", {"lease_id": "lease-0", "device_id": "emulator-0"})
+        t.add("POST", "/api/run", ApiError(422, "invalid"))
+        t.add("POST", "/api/leases/lease-0/release", {})
+        with self.assertRaises(ApiError):
+            await run_check(self.client, self.check_options())
+        self.assertNotIn("POST /api/stop", self.transport.paths())
+        self.assertIn(LEASE_RELEASE, self.transport.paths())
 
     async def test_rejected_run_has_no_task_so_the_lease_is_released(self) -> None:
         t = self.transport
