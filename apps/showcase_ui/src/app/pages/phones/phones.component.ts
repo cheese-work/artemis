@@ -12,6 +12,19 @@ import { deviceChipView } from '../../utils/device-chip.util';
 
 type PhoneStatus = 'Held' | 'Available' | 'Disconnected' | 'Needs attention';
 
+interface Lease { lease_id: string; device_id: string; holder: string; purpose: string; expires_at: number; }
+
+const isLease = (value: unknown): value is Lease => {
+  const lease = value as Partial<Lease> | null;
+  return typeof lease?.device_id === 'string' && typeof lease.holder === 'string' && typeof lease.expires_at === 'number';
+};
+
+const LEASE_ERRORS = new Map([
+  ['device_leases_disabled', 'Phone borrowing is turned off on this server. Ask an administrator to turn it on.'],
+  ['device_unknown', 'SmartQA does not know this phone yet. Reload the page; if it stays, reconnect the phone.'],
+  ['device_store_not_ready', 'Phone identity is not ready. Try again in a minute.']
+]);
+
 const key = (device: RegistryDevice) => `${device.computer_id}:${device.serial}`;
 
 @Component({
@@ -77,7 +90,7 @@ const key = (device: RegistryDevice) => `${device.computer_id}:${device.serial}`
                       <span class="device-icon"><span class="material-symbols-outlined" aria-hidden="true">smartphone</span></span>
                       <strong>{{ v.label }}</strong>
                     </div>
-                    <span class="status" [class]="'status ' + phoneTone(status)" [attr.aria-label]="status">
+                    <span class="status" [class]="'status ' + phoneTone(status)">
                       <span class="material-symbols-outlined" aria-hidden="true">{{ phoneIcon(status) }}</span>{{ status }}
                     </span>
                   </div>
@@ -87,12 +100,12 @@ const key = (device: RegistryDevice) => `${device.computer_id}:${device.serial}`
                       <div class="endpoint">
                         <strong>{{ device.source === 'browser' ? 'Browser connection' : 'Computer connection' }}</strong>
                         <span class="mono phone-serial">{{ device.serial }}</span>
-                        <span class="status" [class]="'status ' + phoneTone(status)" [attr.aria-label]="status">
-                          <span class="material-symbols-outlined" aria-hidden="true">{{ phoneIcon(status) }}</span>{{ status }}
-                        </span>
                       </div>
                     </div>
                   </div>
+                  @if (leaseOf(device); as lease) {
+                    <p class="lease-details"><strong>Leased by {{ lease.holder }}:</strong> {{ lease.purpose || 'No purpose given' }}, until {{ leaseEnd(lease) }}</p>
+                  }
                   @if (live) {
                     <p class="lease-details"><strong>Active session:</strong> {{ live.initial_goal || 'Session in progress' }}</p>
                     <a class="session-link" [routerLink]="['/sessions', live.session_id]">Open live session</a>
@@ -120,7 +133,7 @@ const key = (device: RegistryDevice) => `${device.computer_id}:${device.serial}`
                   <article class="computer-card">
                     <div class="computer-title">
                       <strong>{{ host.name }}</strong>
-                      <span class="status" [class]="'status ' + computerTone(host.status)" [attr.aria-label]="computerLabel(host.status)">
+                      <span class="status" [class]="'status ' + computerTone(host.status)">
                         <span class="material-symbols-outlined" aria-hidden="true">{{ computerIcon(host.status) }}</span>{{ computerLabel(host.status) }}
                       </span>
                     </div>
@@ -199,7 +212,7 @@ const key = (device: RegistryDevice) => `${device.computer_id}:${device.serial}`
     .heading { display: flex; align-items: flex-end; justify-content: space-between; gap: var(--space-lg); }
     .eyebrow { margin-bottom: var(--space-xs); color: var(--color-text-muted); font-size: var(--text-label); font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
     h1, h2, p { margin: 0; }
-    h1 { color: var(--color-ink); font-size: var(--text-page-title); line-height: 1.2; }
+    h1 { color: var(--color-ink); font-size: var(--text-title); line-height: 1.2; }
     h2 { color: var(--color-ink); font-size: var(--text-section); }
     .heading p { margin-top: var(--space-xs); color: var(--color-text-muted); }
     .top-actions, .phone-actions { display: flex; flex-wrap: wrap; gap: var(--space-sm); }
@@ -211,7 +224,7 @@ const key = (device: RegistryDevice) => `${device.computer_id}:${device.serial}`
     .panel { min-width: 0; overflow: hidden; border: 1px solid var(--color-rule); border-radius: var(--radius-md); background: var(--color-surface); }
     .panel-head { display: flex; align-items: center; justify-content: space-between; gap: var(--space-sm); padding: var(--space-md); border-bottom: 1px solid var(--color-rule); }
     .panel-body { display: grid; gap: var(--space-md); padding: var(--space-md); }
-    .tag { flex: none; padding: 3px 9px; border-radius: 999px; background: var(--color-bg-subtle); color: var(--color-text-muted); font-size: var(--text-label); font-weight: 600; }
+    .tag { flex: none; padding: 3px 9px; border-radius: 999px; background: var(--color-surface-subtle); color: var(--color-text-muted); font-size: var(--text-label); font-weight: 600; }
     .inventory-summary { display: flex; align-items: center; gap: var(--space-md); padding: var(--space-md); border: 1px solid var(--color-rule); border-radius: var(--radius-md); background: var(--color-surface); }
     .summary-icon, .device-icon { display: grid; place-items: center; flex: none; width: 40px; height: 40px; border-radius: var(--radius-md); background: var(--color-ink); color: var(--color-surface); }
     .summary-icon .material-symbols-outlined { font-size: 22px; }
@@ -232,10 +245,10 @@ const key = (device: RegistryDevice) => `${device.computer_id}:${device.serial}`
     .mono { font: var(--text-label) var(--font-mono); overflow-wrap: anywhere; }
     .status { display: inline-flex; align-items: center; justify-content: center; gap: 4px; width: fit-content; padding: 3px 9px; border-radius: 999px; font-size: var(--text-label); font-weight: 650; white-space: nowrap; }
     .status .material-symbols-outlined { font-size: 15px; }
-    .status.pass { background: var(--color-success-tint); color: var(--color-success); }
-    .status.warn { background: var(--color-warning-tint); color: var(--color-warning); }
-    .status.fail { background: var(--color-error-tint); color: var(--color-error); }
-    .status.neutral { background: var(--color-bg-subtle); color: var(--color-text-muted); }
+    .status.pass { background: var(--color-success-bg); color: var(--color-success); }
+    .status.warn { background: var(--color-warning-bg); color: var(--color-warning); }
+    .status.fail { background: var(--color-error-bg); color: var(--color-error); }
+    .status.neutral { background: var(--color-surface-subtle); color: var(--color-text-muted); }
     .lease-details { color: var(--color-text-muted); font-size: var(--text-label); overflow-wrap: anywhere; }
     .lease-details strong { color: var(--color-ink); }
     .session-link { width: fit-content; color: var(--color-primary); font-size: var(--text-label); }
@@ -262,8 +275,8 @@ const key = (device: RegistryDevice) => `${device.computer_id}:${device.serial}`
     .borrow-step { display: grid; justify-items: center; gap: 4px; min-width: 0; padding: var(--space-sm) 2px; border: 1px solid var(--color-rule); border-radius: var(--radius-md); color: var(--color-text-muted); font-size: 11px; text-align: center; }
     .borrow-step .material-symbols-outlined { font-size: 16px; }
     .notice { padding: var(--space-sm) var(--space-md); border: 1px solid var(--color-rule); border-radius: var(--radius-md); background: var(--color-surface); color: var(--color-text-muted); line-height: 1.5; }
-    .notice.error { border-color: var(--color-error-tint); color: var(--color-error); }
-    .notice.success { border-color: var(--color-success-tint); color: var(--color-success); }
+    .notice.error { border-color: var(--color-error-bg); color: var(--color-error); }
+    .notice.success { border-color: var(--color-success-bg); color: var(--color-success); }
     .loading { display: flex; align-items: center; gap: var(--space-sm); min-height: 100px; padding: var(--space-md); color: var(--color-text-muted); }
     .spinning { animation: spin 1.2s linear infinite; }
     @keyframes spin { to { transform: rotate(360deg); } }
@@ -298,13 +311,15 @@ export class PhonesComponent {
   protected readonly phone = inject(WorkspacePhoneService);
   protected readonly registry = signal<HostsResponse | null>(null);
   protected readonly failed = signal(false);
-  protected readonly purpose = signal('Run first-run QA preview');
+  protected readonly purpose = signal('');
   protected readonly duration = signal(1800);
   protected readonly leaseDeviceKey = signal<string | null>(null);
   protected readonly requesting = signal(false);
   protected readonly leaseMessage = signal<string | null>(null);
   protected readonly leaseError = signal<string | null>(null);
-  protected readonly availablePhones = computed(() => (this.registry()?.devices ?? []).filter(device => this.statusOf(device) === 'Available'));
+  /** Leases this person took in this tab; `GET /api/leases` is admin-only, so the page cannot list others. */
+  protected readonly leases = signal<Record<string, Lease>>({});
+  protected readonly availablePhones = computed(() => (this.registry()?.devices ?? []).filter(device => !!device.device_id && this.statusOf(device) === 'Available'));
   protected readonly selectedLeaseDevice = computed(() => {
     const available = this.availablePhones();
     return available.find(device => key(device) === this.leaseDeviceKey()) ?? available[0] ?? null;
@@ -348,7 +363,16 @@ export class PhonesComponent {
     const { state } = this.view(device);
     if (state === 'Offline') return 'Disconnected';
     if (state === 'Needs attention') return state;
-    return this.liveSession(device) ? 'Held' : 'Available';
+    return this.liveSession(device) || this.leaseOf(device) ? 'Held' : 'Available';
+  }
+
+  protected leaseOf(device: RegistryDevice): Lease | null {
+    const lease = device.device_id ? this.leases()[device.device_id] : undefined;
+    return lease && lease.expires_at * 1000 > Date.now() ? lease : null;
+  }
+
+  protected leaseEnd(lease: Lease): string {
+    return new Date(lease.expires_at * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   }
 
   protected phoneTone(status: PhoneStatus): string {
@@ -413,10 +437,12 @@ export class PhonesComponent {
     this.leaseError.set(null);
     this.requesting.set(true);
     this.leaseRequest?.unsubscribe();
-    this.leaseRequest = this.hosts.requestLease(key(device), ttl, purpose).subscribe({
-      next: () => {
+    this.leaseRequest = this.hosts.requestLease(device.device_id!, ttl, purpose).subscribe({
+      next: lease => {
         this.requesting.set(false);
         this.leaseMessage.set('Lease request submitted.');
+        if (isLease(lease)) this.leases.update(current => ({ ...current, [lease.device_id]: lease }));
+        this.load();
       },
       error: error => {
         this.requesting.set(false);
@@ -447,6 +473,7 @@ export class PhonesComponent {
         ? `Phone is already held by ${holder}. Choose another phone.`
         : 'This phone is already held. Choose another phone.';
     }
-    return 'Lease request failed. Retry the request.';
+    const code = error instanceof HttpErrorResponse ? (error.error as { code?: unknown } | null)?.code : undefined;
+    return (typeof code === 'string' ? LEASE_ERRORS.get(code) : undefined) ?? 'Lease request failed. Retry the request.';
   }
 }

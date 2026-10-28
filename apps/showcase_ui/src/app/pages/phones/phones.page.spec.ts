@@ -23,9 +23,9 @@ const device = (over: Partial<RegistryDevice>): RegistryDevice => ({
   since: 1_800_000_000,
   ...over
 });
-const inUse = device({});
-const idle = device({ serial: '93AX01X9Q', model: 'Pixel 3a', source: 'browser', owner: 'qa@example.test', computer_id: null, computer_name: null });
-const off = device({ serial: 'f3a1c09e', model: 'Xiaomi 10', computer_id: 'c2', computer_name: 'Thean PC', computer_status: 'offline', reason: 'agent_disconnected' });
+const inUse = device({ device_id: 'dev_pixel6' });
+const idle = device({ serial: '93AX01X9Q', model: 'Pixel 3a', source: 'browser', owner: 'qa@example.test', computer_id: null, computer_name: null, device_id: 'dev_pixel3a' });
+const off = device({ serial: 'f3a1c09e', model: 'Xiaomi 10', computer_id: 'c2', computer_name: 'Thean PC', computer_status: 'offline', reason: 'agent_disconnected', device_id: 'dev_xiaomi' });
 const computers: Computer[] = [
   {
     id: 'c1', name: 'Lab Mac', os: 'macOS', agent_version: '1.2.0', protocol_version: 1,
@@ -62,6 +62,8 @@ describe('Phones page (Sessions v2.1 C rev-4)', () => {
     });
     return { fixture, root, fakes, button, router: TestBed.inject(Router) };
   }
+  /** A chip's visible label, without its icon ligature. */
+  const chipText = (chip: Element | null) => Array.from(chip?.childNodes ?? []).filter(n => n.nodeType === Node.TEXT_NODE).map(n => n.textContent).join('').trim();
   const rows = (root: HTMLElement) => Array.from(root.querySelectorAll<HTMLElement>('.phone-card'));
 
   it('is a route outside Setup', () => {
@@ -106,12 +108,73 @@ describe('Phones page (Sessions v2.1 C rev-4)', () => {
     duration.dispatchEvent(new Event('change', { bubbles: true }));
     form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
     fixture.detectChanges();
-    expect(fakes.hosts.requestLease).toHaveBeenCalledOnceWith('null:93AX01X9Q', 3600, 'Run first-run QA preview');
+    expect(fakes.hosts.requestLease).toHaveBeenCalledOnceWith('dev_pixel3a', 3600, 'Run first-run QA preview');
     expect(root.textContent).toContain('Lease request submitted.');
+  });
+
+  it('starts with an empty purpose so no fixture text is submitted', async () => {
+    const { root } = await create();
+    expect(root.querySelector<HTMLInputElement>('#purpose')!.value).toBe('');
+    expect(root.querySelector<HTMLButtonElement>('button.submit')!.disabled).toBeTrue();
+  });
+
+  it('does not offer a phone the server has no device id for', async () => {
+    const { root } = await create([{ ...idle, device_id: null }]);
+    const options = Array.from(root.querySelector<HTMLSelectElement>('#phone-choice')!.options).map(o => o.textContent?.trim());
+    expect(options).toEqual(['No available phones']);
+  });
+
+  it('tells the person what to do for each lease error the server can return', async () => {
+    const { fixture, root, fakes } = await create();
+    const submit = () => {
+      root.querySelector<HTMLFormElement>('form[aria-label="Borrow a phone"]')!
+        .dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+      fixture.detectChanges();
+      return root.querySelector('[role="alert"]')?.textContent ?? '';
+    };
+    const purpose = root.querySelector<HTMLInputElement>('#purpose')!;
+    purpose.value = 'Run first-run QA preview';
+    purpose.dispatchEvent(new Event('input', { bubbles: true }));
+    const failWith = (status: number, code: string) => fakes.hosts.requestLease.and.returnValue(
+      throwError(() => new HttpErrorResponse({ status, error: { code, detail: 'x', fix: 'y' } })));
+
+    failWith(404, 'device_leases_disabled');
+    expect(submit()).toContain('turned off');
+    failWith(404, 'device_unknown');
+    expect(submit()).toContain('does not know this phone');
+    failWith(503, 'device_store_not_ready');
+    expect(submit()).toContain('Try again in a minute');
+    failWith(500, 'other');
+    expect(submit()).toContain('Retry the request');
+  });
+
+  it('shows the new lease on its phone and reloads the list after a request', async () => {
+    const { fixture, root, fakes } = await create();
+    const purpose = root.querySelector<HTMLInputElement>('#purpose')!;
+    purpose.value = 'Check onboarding';
+    purpose.dispatchEvent(new Event('input', { bubbles: true }));
+    fakes.hosts.requestLease.and.returnValue(of({
+      lease_id: 'l1', device_id: 'dev_pixel3a', holder: 'qa@example.test', purpose: 'Check onboarding',
+      restricted: false, space_epoch: 1, created_at: 1, expires_at: Date.now() / 1000 + 3600
+    }));
+    const lists = fakes.hosts.list.calls.count();
+    root.querySelector<HTMLFormElement>('form[aria-label="Borrow a phone"]')!
+      .dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    fixture.detectChanges();
+    const card = rows(root).find(row => row.textContent?.includes('Pixel 3a'))!;
+    expect(fakes.hosts.list.calls.count()).toBe(lists + 1);
+    expect(chipText(card.querySelector('.phone-card-main .status'))).toBe('Held');
+    expect(card.querySelector('.lease-details')?.textContent).toContain('Check onboarding');
+    expect(card.querySelector<HTMLButtonElement>('button')!.disabled).toBeTrue();
+    expect(Array.from(root.querySelector<HTMLSelectElement>('#phone-choice')!.options).map(o => o.textContent?.trim()))
+      .toEqual(['No available phones']);
   });
 
   it('shows the lease holder from a device_busy response', async () => {
     const { fixture, root, fakes } = await create();
+    const purpose = root.querySelector<HTMLInputElement>('#purpose')!;
+    purpose.value = 'Run first-run QA preview';
+    purpose.dispatchEvent(new Event('input', { bubbles: true }));
     fakes.hosts.requestLease.and.returnValue(throwError(() => new HttpErrorResponse({
       status: 409,
       error: {
@@ -131,7 +194,8 @@ describe('Phones page (Sessions v2.1 C rev-4)', () => {
     expect(root.querySelector('#phones-title')?.textContent).toContain('Phones');
     expect(rows(root).map(row => row.querySelector('.phone-name strong')?.textContent?.trim())).toEqual(['Pixel 6 Pro', 'Pixel 3a', 'Xiaomi 10']);
     expect(rows(root).map(row => row.querySelector('.phone-serial')?.textContent?.trim())).toEqual([inUse.serial, idle.serial, off.serial]);
-    expect(rows(root).map(row => row.querySelector('.phone-card-main .status')?.getAttribute('aria-label'))).toEqual(['Held', 'Available', 'Disconnected']);
+    expect(rows(root).map(row => chipText(row.querySelector('.phone-card-main .status')))).toEqual(['Held', 'Available', 'Disconnected']);
+    expect(rows(root).every(row => row.querySelectorAll('.status').length === 1)).withContext('one status chip per card').toBeTrue();
   });
 
   it('shows the active session on its phone card and keeps offline phones unavailable', async () => {
