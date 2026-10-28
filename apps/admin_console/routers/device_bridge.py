@@ -393,6 +393,7 @@ async def open_bridge_session(websocket: WebSocket) -> None:
                 "listener": {"host": "127.0.0.1", "port": session.port},
                 "expires_in_seconds": session.remaining_seconds(),
                 "reconnect_token": session.reconnect_token,
+                "bridge_fixes": bridge_fixes_enabled(),
             },
             send_lock,
         )
@@ -499,6 +500,7 @@ async def resume_bridge_session(websocket: WebSocket) -> None:
                 "serial": session.serial,
                 "expires_in_seconds": session.remaining_seconds(),
                 "reconnect_token": session.reconnect_token,
+                "bridge_fixes": bridge_fixes_enabled(),
             },
             send_lock,
         )
