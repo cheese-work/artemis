@@ -253,3 +253,44 @@ def test_rule3_black_control_border_does_not_turn_low_contrast_text_green(tmp_pa
     assert measure_node(root / "light" / "1-after.png", {"bounds": [0, 0, 120, 60]}) < 4.5
     session = _edit(root, lambda d: d["themes"]["light"]["steps"][0].update(text_nodes=[_node()]))
     assert not _rule(evaluate_gate(session), 3).passed
+
+
+def _glyph_png(path, *, fg, bg=(255, 255, 255), size_px=24, frame=None):
+    """Real "Start" glyphs, optionally inside a ``frame`` (kind, colour) control outline."""
+    img = Image.new("RGB", (120, 60), bg)
+    draw = ImageDraw.Draw(img)
+    draw.text((20, 14), "Start", fill=fg, font=ImageFont.load_default(size=size_px))
+    if frame:
+        kind, colour = frame
+        if kind == "rounded":
+            draw.rounded_rectangle([0, 0, 119, 59], radius=12, outline=colour)
+        elif kind == "uneven":  # outline whose colour changes along its length
+            for x in range(120):
+                shade = (colour[0] + x, colour[1] + x, colour[2] + x)
+                draw.point([(x, 0), (x, 59)], fill=shade)
+            draw.line([(0, 0), (0, 59)], fill=colour)
+            draw.line([(119, 0), (119, 59)], fill=(255, 255, 255))
+    img.save(path)
+
+
+@pytest.mark.parametrize(
+    "frame", [("rounded", (0, 0, 0)), ("uneven", (0, 0, 0))], ids=["rounded", "uneven"]
+)
+def test_rule3_rounded_or_uneven_border_keeps_low_contrast_text_red(tmp_path, frame):
+    root = write_session(tmp_path, themes=("light",))
+    _glyph_png(root / "light" / "1-after.png", fg=(200, 200, 200), frame=frame)
+    session = _edit(root, lambda d: d["themes"]["light"]["steps"][0].update(text_nodes=[_node()]))
+    assert not _rule(evaluate_gate(session), 3).passed
+
+
+@pytest.mark.parametrize("size_px", [12, 16, 24])
+@pytest.mark.parametrize(
+    ("fg", "bg"),
+    [((0, 0, 0), (255, 255, 255)), ((240, 240, 240), (18, 18, 18))],
+    ids=["light", "dark"],
+)
+def test_rule3_readable_text_without_border_stays_green(tmp_path, size_px, fg, bg):
+    root = write_session(tmp_path, themes=("light",))
+    _glyph_png(root / "light" / "1-after.png", fg=fg, bg=bg, size_px=size_px)
+    session = _edit(root, lambda d: d["themes"]["light"]["steps"][0].update(text_nodes=[_node()]))
+    assert _rule(evaluate_gate(session), 3).passed
