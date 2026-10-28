@@ -119,9 +119,11 @@ releases the lease. Exit 0 = every theme completed, 1 = a run failed or the chec
   and simply quoted scalars only; tags, anchors, block scalars, escapes and quoted keys are
   refused (`manifest_invalid`), never guessed.
 - **Spend and fence.** One check spends at most 80 model calls in total (an equal share per
-  theme; a route spends none). The lease is released only when the task ended or the server
-  confirmed `stopped`; after an error or cancellation with no confirmation the lease stays
-  held until its TTL.
+  theme; a route spends none). The lease is released only when the task ended or the host
+  provably never admitted it (a rejection or an HTTP 4xx other than 408). After any other
+  error or a cancellation, the client stops the task and waits up to `stop_confirm_timeout`
+  (90 s) for a terminal session status; a `stopped` reply alone is not enough. With no
+  terminal status the lease stays held until its TTL.
 - **Route.** `{"steps": [{"action": "tap|swipe|back|type", ...}]}`. A `type` step with
   `"secret": true` must carry a `${secret:NAME}` placeholder (`route_secret_literal` otherwise).
 - **Server contract still to land.** The run receives `options.smartqa` (`theme`,
