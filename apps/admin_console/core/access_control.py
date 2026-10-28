@@ -581,6 +581,13 @@ async def require_qa(identity: AccessIdentity = Depends(public_tier)) -> AccessI
     )
 
 
+async def require_qa_or_service(identity: AccessIdentity = Depends(public_tier)) -> AccessIdentity:
+    """A signed-in user, an admin, or a service principal whose exact route `public_tier` allowed."""
+    if identity.service_principal is not None:
+        return identity
+    return await require_qa(identity)
+
+
 async def require_websocket_admin(identity: AccessIdentity = Depends(public_tier)) -> None:
     if not identity.admin:
         reason = "not_signed_in" if identity.email is None else "admin_required"
@@ -687,7 +694,14 @@ _ADMIN_GET_PATHS = {
 }
 
 # Admin reads that a mapped service principal may also call (see require_admin_or_service_read).
-_SERVICE_READ_GET_PATHS = {"/api/system/failures"}
+_SERVICE_READ_GET_PATHS = {"/api/system/failures", "/api/leases"}
+
+# Device leases (CHE-2099): agents call these with a service token, QA users in a browser.
+_LEASE_POST_PATHS = {
+    "/api/leases",
+    "/api/leases/{lease_id}/renew",
+    "/api/leases/{lease_id}/release",
+}
 
 _ADMIN_MUTATING_PATHS = {
     "/api/system/failures/collect",
@@ -791,6 +805,8 @@ def route_tier(path: str, methods: set[str], is_websocket: bool = False) -> str 
         return "qa"
     if methods == {"POST"} and path in _QA_MUTATING_PATHS:
         return "qa"
+    if methods == {"POST"} and path in _LEASE_POST_PATHS:
+        return "qa_or_service"
     if methods in ({"POST"}, {"PUT"}) and path in _ADMIN_MUTATING_PATHS:
         return "admin"
     return None
