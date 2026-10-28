@@ -228,7 +228,6 @@ class CheckOptions:
     max_apk_bytes: int = DEFAULT_MAX_APK_BYTES
     lease_ttl: int = 1800
     run_timeout: float = 1800.0
-    stop_confirm_timeout: float = 90.0  # Above the server's 45 s cancel grace.
 
 
 @dataclass(frozen=True)
@@ -308,18 +307,15 @@ def _goal(options: CheckOptions, manifest: Manifest, route: Any) -> str:
     return f"{_PERSONA_BRIEFS[options.persona]}\nDeclared screens:\n{screens}"
 
 
-async def _terminated(client: ArtemisClient, task_id: str, timeout: float) -> bool:
-    """Stop a task, then wait for the server to report a terminal status.
+_SELF_ENDED = frozenset({"completed", "success", "failed"})  # Statuses only the worker writes.
 
-    A ``stopped`` reply only means a cancel was scheduled: the worker can keep
-    running for the cancel grace period. Only a terminal session status is
-    evidence that execution ended, so that alone returns True.
-    """
+
+async def _stop_best_effort(client: ArtemisClient, task_id: str) -> None:
+    """Ask the host to stop a task. No reply proves the worker exited, so none is awaited."""
     try:
         await client.stop(task_id)
-        return (await client.wait_for_task(task_id, timeout=timeout)).done
     except ArtemisClientError:
-        return False
+        pass  # The lease expires on its own.
 
 
 def _proven_not_admitted(exc: BaseException) -> bool:
@@ -365,14 +361,18 @@ async def _check_theme(
         submitted = True
         task_id = handle.task_id
         result = await client.wait_for_task(task_id, timeout=options.run_timeout)
-        fenced = False
-    except BaseException as exc:  # Includes cancellation: stop the task before the device is freed.
-        refused = not submitted and _proven_not_admitted(exc)
-        fenced = not (refused or await _terminated(client, task_id, options.stop_confirm_timeout))
+        # `cancelled` is written before the worker exits, so only a self-ended task frees the device.
+        fenced = result.status not in _SELF_ENDED
+        if fenced:
+            await _stop_best_effort(client, task_id)
+    except BaseException as exc:  # Includes cancellation.
+        fenced = not (not submitted and _proven_not_admitted(exc))
+        if fenced:
+            await _stop_best_effort(client, task_id)
         raise
     finally:
         if fenced:
-            release_error = "lease kept: task termination not confirmed"
+            release_error = "lease kept until its TTL: worker exit not proven"
         else:
             try:
                 await client.request_json("POST", f"/api/leases/{lease['lease_id']}/release")
