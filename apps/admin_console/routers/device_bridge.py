@@ -34,6 +34,7 @@ from apps.admin_console.services.bridge_session_service import (
     DEFAULT_RECONNECT_GRACE_SECONDS,
     MAX_ADB_PACKET_BYTES,
     BridgeSession,
+    bridge_fixes_enabled,
     bridge_session_service,
 )
 
@@ -349,9 +350,11 @@ async def _close_websocket(
 
 def _should_resume(session: BridgeSession) -> bool:
     report = session.client_close or {}
+    # uvicorn reports 1005, not 1006, for a drop after the handshake (CHE-2097 F1).
+    unreported_drop_codes = (1005, 1006) if bridge_fixes_enabled() else (1006,)
     return session.connected.is_set() and (
         report.get("reason") in {"socket_closed", "socket_error"}
-        or (session.close_code == 1006 and not report)
+        or (session.close_code in unreported_drop_codes and not report)
     )
 
 
@@ -390,6 +393,7 @@ async def open_bridge_session(websocket: WebSocket) -> None:
                 "listener": {"host": "127.0.0.1", "port": session.port},
                 "expires_in_seconds": session.remaining_seconds(),
                 "reconnect_token": session.reconnect_token,
+                "bridge_fixes": bridge_fixes_enabled(),
             },
             send_lock,
         )
@@ -496,6 +500,7 @@ async def resume_bridge_session(websocket: WebSocket) -> None:
                 "serial": session.serial,
                 "expires_in_seconds": session.remaining_seconds(),
                 "reconnect_token": session.reconnect_token,
+                "bridge_fixes": bridge_fixes_enabled(),
             },
             send_lock,
         )
