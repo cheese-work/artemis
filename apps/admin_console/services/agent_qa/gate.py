@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import re
 
+from PIL import UnidentifiedImageError
+
 from apps.admin_console.services.agent_qa.contrast import measure_node, required_ratio
 from apps.admin_console.services.agent_qa.session import Session
 
@@ -64,28 +66,31 @@ def _contrast(session: Session) -> RuleResult:
     for theme, run in session.themes.items():
         for step in run.steps:
             for node in step.text_nodes:
-                ratio = measure_node(session.base_dir / step.after_png, node)
-                if ratio is None:
-                    continue
-                required = required_ratio(node)
-                if ratio >= required:
-                    continue
-                item = {
-                    "theme": theme,
-                    "step": step.step,
-                    "text": node.get("text", ""),
-                    "ratio": round(ratio, 2),
-                    "required": required,
-                }
+                item = {"theme": theme, "step": step.step, "text": node.get("text", "")}
+                try:
+                    ratio = measure_node(session.base_dir / step.after_png, node)
+                except ValueError:
+                    item["error"] = "bounds_invalid"
+                except (OSError, UnidentifiedImageError):
+                    item["error"] = "screenshot_unreadable"
+                else:
+                    required = required_ratio(node)
+                    if ratio is None or ratio >= required:
+                        continue
+                    item |= {"ratio": round(ratio, 2), "required": required}
                 (informational if node.get("kind") == "image" else findings).append(item)
     return _rule(3, findings, informational)
 
 
 def _coverage(session: Session) -> RuleResult:
     declared = [s["id"] for s in session.declared_screens]
-    findings = []
+    findings: list[dict] = []
+    if not declared:
+        findings.append({"error": "no_declared_screens"})
     for theme in THEMES:
         run = session.themes.get(theme)
+        if not (run and run.steps):
+            findings.append({"theme": theme, "error": "no_captures"})
         seen = {s for st in (run.steps if run else ()) for s in (st.screen_before, st.screen_after)}
         findings += [
             {"theme": theme, "screen": screen} for screen in declared if screen not in seen

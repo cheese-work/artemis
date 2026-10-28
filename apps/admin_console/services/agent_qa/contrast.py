@@ -37,22 +37,32 @@ def required_ratio(node: dict[str, Any]) -> float:
     return LARGE_RATIO if large else NORMAL_RATIO
 
 
+STRAY_SHARE = 0.05
+
+
 def measure_node(png: Path, node: dict[str, Any]) -> float | None:
     """Ratio between the node's background (commonest colour in its bounds) and its text.
 
-    The text colour is the sampled pixel farthest from the background. ``None``
-    when the bounds hold one colour only: there is no text pixel to measure.
+    The text colour is the colour farthest from the background among those that
+    cover at least ``STRAY_SHARE`` of the non-background pixels, so a stray pixel
+    cannot stand in for the text. ``None`` when the bounds hold one colour only:
+    there is no text pixel to measure. Raises ``ValueError`` for bounds that are
+    malformed, empty or outside the image: such a node is never measured on padding.
     """
-    left, top, right, bottom = node["bounds"]
+    try:
+        left, top, right, bottom = (int(v) for v in node["bounds"])
+    except (KeyError, TypeError, ValueError) as err:
+        raise ValueError("bounds_invalid") from err
     with Image.open(png) as img:
-        crop = img.convert("RGB").crop((left, top, right, bottom))
-        raw = crop.tobytes()
-    pixels = list(zip(raw[0::3], raw[1::3], raw[2::3]))
-    if not pixels:
-        return None
-    colours = Counter(pixels)
+        rgb = img.convert("RGB")
+        if not (0 <= left < right <= rgb.width and 0 <= top < bottom <= rgb.height):
+            raise ValueError("bounds_invalid")
+        raw = rgb.crop((left, top, right, bottom)).tobytes()
+    colours = Counter(zip(raw[0::3], raw[1::3], raw[2::3]))
     bg = colours.most_common(1)[0][0]
     if len(colours) == 1:
         return None
-    fg = max(colours, key=lambda c: contrast_ratio(c, bg))
+    non_bg = sum(colours.values()) - colours[bg]
+    text = [c for c, n in colours.items() if c != bg and n >= STRAY_SHARE * non_bg]
+    fg = max(text, key=lambda c: contrast_ratio(c, bg))
     return contrast_ratio(fg, bg)

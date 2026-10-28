@@ -59,3 +59,27 @@ def test_write_report_writes_json_flow_and_html(tmp_path):
     assert [len(flow[t]) for t in ("light", "dark")] == [6, 6]
     html = (out / "report.html").read_text()
     assert 'src="../s/light/1-before.png"' in html
+
+
+def test_empty_session_report_is_red(tmp_path):
+    root = write_session(tmp_path)
+    data = json.loads((root / "session.json").read_text())
+    data.update(declared_screens=[], themes={})
+    (root / "session.json").write_text(json.dumps(data))
+    report = build_report(load_session(root))
+    assert report["green"] is False
+
+
+def test_missing_after_png_under_text_node_gives_red_flow_incomplete_report(tmp_path):
+    root = write_session(tmp_path)
+    data = json.loads((root / "session.json").read_text())
+    data["themes"]["dark"]["steps"][2]["text_nodes"] = [
+        {"kind": "text", "text": "x", "bounds": [0, 0, 120, 60], "size_pt": 12}
+    ]
+    (root / "session.json").write_text(json.dumps(data))
+    (root / "dark" / "3-after.png").unlink()
+    report = build_report(load_session(root))
+    assert report["green"] is False
+    assert report["flow_errors"] == {"dark": "flow_incomplete"}
+    contrast = next(r for r in report["gate"]["rules"] if r["rule"] == 3)
+    assert contrast["findings"][0]["error"] == "screenshot_unreadable"
