@@ -115,7 +115,13 @@ releases the lease. Exit 0 = every theme completed, 1 = a run failed or the chec
   Cap: `ARTEMIS_SMARTQA_APK_MAX_BYTES` (default 200 MiB). The endpoint is 404 unless
   `ARTEMIS_SMARTQA_CHECK=1`.
 - **Manifest.** `smartqa.yml`: `package`, `screens` (`id`, `purpose`), `test_accounts`, optional
-  `backend`. `backend: production` is refused (`prod_backend_refused`).
+  `backend`. `backend: production` is refused (`prod_backend_refused`). The parser reads plain
+  and simply quoted scalars only; tags, anchors, block scalars, escapes and quoted keys are
+  refused (`manifest_invalid`), never guessed.
+- **Spend and fence.** One check spends at most 80 model calls in total (an equal share per
+  theme; a route spends none). The lease is released only when the task ended or the server
+  confirmed `stopped`; after an error or cancellation with no confirmation the lease stays
+  held until its TTL.
 - **Route.** `{"steps": [{"action": "tap|swipe|back|type", ...}]}`. A `type` step with
   `"secret": true` must carry a `${secret:NAME}` placeholder (`route_secret_literal` otherwise).
 - **Server contract still to land.** The run receives `options.smartqa` (`theme`,

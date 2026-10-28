@@ -81,9 +81,16 @@ def _assert_routes_have_declared_tiers(routes):
                     "/api/tasks/{session_id}/cancel-queued",
                     "/api/resume",
                 }
-                assert tier in {"admin", "qa", "lifecycle", "loopback", "agent", "admin_or_service"} or (
-                    tier == "public" and path in public_task_controls
-                ), f"Unprotected mutation: {path}"
+                assert tier in {
+                    "admin",
+                    "qa",
+                    "lifecycle",
+                    "loopback",
+                    "agent",
+                    "admin_or_service",
+                } or (tier == "public" and path in public_task_controls), (
+                    f"Unprotected mutation: {path}"
+                )
 
 
 def _dependency_calls(route) -> set[object]:

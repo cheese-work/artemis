@@ -18,13 +18,14 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from artemis_client.client import ArtemisClient
-from artemis_client.errors import ArtemisClientError, ConflictError, TaskTimeoutError
+from artemis_client.errors import ApiError, ArtemisClientError, ConflictError, TaskRejectedError
 
 THEMES = ("light", "dark")
 PERSONAS = ("first-time-user",)
@@ -85,11 +86,28 @@ class RouteStep:
         return {key: value for key, value in raw.items() if value is not None}
 
 
+_PLAIN_KEY = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*$")
+_UNSUPPORTED_START = "!&*|>[{%@`"
+
+
 def _scalar(raw: str) -> str:
+    """Plain or simply quoted scalar; any other YAML syntax raises so it can never be misread."""
     raw = re.sub(r"\s+#.*$", "", raw).strip()
     if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in "\"'":
-        return raw[1:-1]
+        body = raw[1:-1]
+        if raw[0] in body or (raw[0] == '"' and "\\" in body):
+            raise ValueError(f"unsupported escape in quoted scalar {raw!r}")
+        return body
+    if raw[:1] in _UNSUPPORTED_START or raw[:1] in "\"'":
+        raise ValueError(f"unsupported YAML syntax {raw!r}; use a plain or quoted scalar")
     return raw
+
+
+def _key(raw: str) -> str:
+    name = raw.strip()
+    if not _PLAIN_KEY.match(name):
+        raise ValueError(f"unsupported YAML key {name!r}")
+    return name
 
 
 def _parse_yaml_subset(text: str) -> dict[str, Any]:
@@ -100,26 +118,27 @@ def _parse_yaml_subset(text: str) -> dict[str, Any]:
     key: str | None = None
     item: dict[str, str] | None = None
     for line in text.splitlines():
-        if not line.strip() or line.lstrip().startswith("#"):
+        if not line.strip() or line.lstrip().startswith("#") or line.strip() == "---":
             continue
         stripped = line.strip()
         if not line[0].isspace():
             name, _, rest = stripped.partition(":")
-            key, item = name.strip(), None
+            key, item = _key(name), None
             result[key] = _scalar(rest) if rest.strip() else []
-        elif key is not None and isinstance(result[key], list):
-            if stripped.startswith("- "):
-                body = stripped[2:]
-                name, sep, rest = body.partition(":")
-                if sep and not body.startswith(("'", '"')):
-                    item = {name.strip(): _scalar(rest)}
-                    result[key].append(item)
-                else:
-                    item = None
-                    result[key].append(_scalar(body))
-            elif item is not None:
-                name, _, rest = stripped.partition(":")
-                item[name.strip()] = _scalar(rest)
+        elif key is not None and isinstance(result[key], list) and stripped.startswith("- "):
+            body = stripped[2:]
+            name, sep, rest = body.partition(":")
+            if sep and not body.startswith(("'", '"')):
+                item = {_key(name): _scalar(rest)}
+                result[key].append(item)
+            else:
+                item = None
+                result[key].append(_scalar(body))
+        elif item is not None and ":" in stripped:
+            name, _, rest = stripped.partition(":")
+            item[_key(name)] = _scalar(rest)
+        else:
+            raise ValueError(f"unsupported YAML line {stripped!r}")
     return result
 
 
@@ -266,6 +285,8 @@ async def _upload(client: ArtemisClient, options: CheckOptions) -> Mapping[str, 
 
 
 def _smartqa_options(options: CheckOptions, manifest: Manifest, theme: str, route: Any) -> dict:
+    # One check may spend MAX_MODEL_CALLS in total, so each theme gets an equal share.
+    calls = MAX_MODEL_CALLS // len(options.themes)
     block: dict[str, Any] = {
         "theme": theme,
         "fresh_install": True,
@@ -275,7 +296,7 @@ def _smartqa_options(options: CheckOptions, manifest: Manifest, theme: str, rout
     if route:
         block.update(mode="route", route=[s.to_payload() for s in route], max_model_calls=0)
     else:
-        block.update(mode="persona", persona=options.persona, max_model_calls=MAX_MODEL_CALLS)
+        block.update(mode="persona", persona=options.persona, max_model_calls=calls)
     return {"smartqa": block}
 
 
@@ -284,6 +305,14 @@ def _goal(options: CheckOptions, manifest: Manifest, route: Any) -> str:
         return f"Replay the scripted SmartQA route on {manifest.package}."
     screens = "\n".join(f"- {s.id}: {s.purpose}" for s in manifest.screens)
     return f"{_PERSONA_BRIEFS[options.persona]}\nDeclared screens:\n{screens}"
+
+
+async def _stopped(client: ArtemisClient, task_id: str) -> bool:
+    """Ask the server to stop a task; True only when it confirms ``stopped``."""
+    try:
+        return await client.stop(task_id)
+    except ArtemisClientError:
+        return False
 
 
 async def _check_theme(
@@ -302,6 +331,9 @@ async def _check_theme(
     except ConflictError as exc:
         raise CheckError("device_busy", f"{exc.detail}: {exc.payload}") from exc
     release_error: str | None = None
+    task_id = str(uuid.uuid4())  # Known before submit, so an unknown outcome can still be stopped.
+    submitted = False
+    fenced = True  # While True a task may still run; the lease then expires on its own.
     try:
         handle = await client.submit(
             _goal(options, manifest, route),
@@ -310,17 +342,24 @@ async def _check_theme(
             locked_app_package=manifest.package,
             app_path=stored.get("path"),
             options=_smartqa_options(options, manifest, theme, route),
+            task_id=task_id,
         )
-        try:
-            result = await client.wait_for_task(handle.task_id, timeout=options.run_timeout)
-        except TaskTimeoutError:
-            await client.stop(handle.task_id)
-            raise
+        submitted = True
+        task_id = handle.task_id
+        result = await client.wait_for_task(task_id, timeout=options.run_timeout)
+        fenced = False
+    except BaseException as exc:  # Includes cancellation: stop the task before the device is freed.
+        refused = not submitted and isinstance(exc, (ApiError, TaskRejectedError, ValueError))
+        fenced = False if refused else not await _stopped(client, task_id)
+        raise
     finally:
-        try:
-            await client.request_json("POST", f"/api/leases/{lease['lease_id']}/release")
-        except ArtemisClientError as exc:  # The lease auto-expires; never mask the run outcome.
-            release_error = str(exc)
+        if fenced:
+            release_error = "lease kept: task termination not confirmed"
+        else:
+            try:
+                await client.request_json("POST", f"/api/leases/{lease['lease_id']}/release")
+            except ArtemisClientError as exc:  # The lease auto-expires; never mask the outcome.
+                release_error = str(exc)
     return ThemeResult(
         theme, result.task_id, result.status, result.device_serial, result.error, release_error
     )

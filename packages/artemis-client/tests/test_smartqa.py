@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import tempfile
@@ -8,7 +9,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
-from artemis_client import ArtemisClient, ConflictError
+from artemis_client import ArtemisClient, ConflictError, NetworkError
 from artemis_client.smartqa import (
     CheckError,
     CheckOptions,
@@ -248,6 +249,107 @@ class RunCheckTests(SmartQATestCase):
         with self.assertRaises(CheckError) as caught:
             await run_check(self.client, self.options())
         self.assertEqual(caught.exception.code, "apk_sha_mismatch")
+
+
+SESSION = "00000000-0000-4000-8000-000000000000"
+LEASE_RELEASE = "POST /api/leases/lease-0/release"
+
+
+class ReviewRegressionTests(SmartQATestCase):
+    """Sol's CHE-2101 review findings 1 to 3 (fence, shared call cap, manifest fail-closed)."""
+
+    def poll_then_fail(self, stop_response: Any) -> None:
+        self.queue_happy_path(themes=1)
+        self.transport.responses[("GET", f"/api/sessions/{SESSION}")] = [
+            {"session_id": SESSION, "status": "running"},
+            NetworkError("poll connection lost"),
+        ]
+        self.transport.add("POST", "/api/stop", stop_response)
+
+    async def test_call_cap_is_shared_across_themes(self) -> None:
+        self.queue_happy_path()
+        await run_check(self.client, self.options())
+        budgets = [
+            body["options"]["smartqa"]["max_model_calls"]
+            for method, path, body, _ in self.transport.calls
+            if method == "POST" and path == "/api/run"
+        ]
+        self.assertEqual(len(budgets), 2)
+        self.assertLessEqual(sum(budgets), 80, f"per-theme budgets: {budgets}")
+
+    async def test_poll_error_keeps_the_lease_when_stop_is_not_confirmed(self) -> None:
+        for stop in ({"status": "unknown"}, NetworkError("stop failed")):
+            with self.subTest(stop=stop):
+                self.transport.calls.clear()
+                self.poll_then_fail(stop)
+                with self.assertRaises(NetworkError):
+                    await run_check(self.client, self.options(themes=("light",)))
+                self.assertIn("POST /api/stop", self.transport.paths())
+                self.assertNotIn(LEASE_RELEASE, self.transport.paths())
+                self.transport.responses.clear()
+
+    async def test_poll_error_releases_the_lease_once_stop_is_confirmed(self) -> None:
+        self.poll_then_fail({"status": "stopped"})
+        with self.assertRaises(NetworkError):
+            await run_check(self.client, self.options(themes=("light",)))
+        self.assertLess(
+            self.transport.paths().index("POST /api/stop"),
+            self.transport.paths().index(LEASE_RELEASE),
+        )
+
+    async def test_cancellation_stops_the_task_and_fences_unless_stop_is_confirmed(self) -> None:
+        for stop, released in (({"status": "stopped"}, True), ({"status": "unknown"}, False)):
+            with self.subTest(stop=stop):
+                self.transport.calls.clear()
+                self.transport.responses.clear()
+                self.queue_happy_path(themes=1)
+                running = {"session_id": SESSION, "status": "running"}
+                self.transport.responses[("GET", f"/api/sessions/{SESSION}")] = [running] * 5000
+                self.transport.add("POST", "/api/stop", stop)
+                job = asyncio.create_task(run_check(self.client, self.options(themes=("light",))))
+                while "POST /api/run" not in self.transport.paths():
+                    await asyncio.sleep(0.001)
+                job.cancel()
+                with self.assertRaises(asyncio.CancelledError):
+                    await job
+                self.assertIn("POST /api/stop", self.transport.paths())
+                self.assertEqual(LEASE_RELEASE in self.transport.paths(), released)
+
+    async def test_rejected_run_has_no_task_so_the_lease_is_released(self) -> None:
+        t = self.transport
+        t.add("POST", "/api/smartqa/apks", {"sha256": APK_SHA, "size_bytes": 1, "path": "/x"})
+        t.add("POST", "/api/leases", {"lease_id": "lease-0", "device_id": "emulator-0"})
+        t.add("POST", "/api/run", {"status": "rejected", "tasks": [], "error": "nope"})
+        t.add("POST", "/api/leases/lease-0/release", {})
+        with self.assertRaises(Exception):
+            await run_check(self.client, self.options(themes=("light",)))
+        self.assertNotIn("POST /api/stop", self.transport.paths())
+        self.assertIn(LEASE_RELEASE, self.transport.paths())
+
+    def test_production_spelled_in_yaml_syntax_is_never_accepted(self) -> None:
+        for line in (
+            "backend: !!str production",
+            'backend: "prod\\u0075ction"',
+            "backend: &b production",
+            "backend: *b",
+            '"backend": production',
+            "backend: |\n  production",
+            "backend:\n  production",
+        ):
+            with self.subTest(line=line):
+                self.manifest.write_text(
+                    f"package: com.example.sample\n{line}\nscreens:\n  - id: home\n"
+                )
+                with self.assertRaises(CheckError) as caught:
+                    load_manifest(self.manifest)
+                self.assertIn(caught.exception.code, {"prod_backend_refused", "manifest_invalid"})
+
+    def test_plain_quoted_and_document_marker_manifests_still_load(self) -> None:
+        self.manifest.write_text(
+            "---\npackage: 'com.example.sample'\nbackend: \"staging\"\n"
+            'screens:\n  - id: home\n    purpose: "A: b"\n'
+        )
+        self.assertEqual(load_manifest(self.manifest).screens[0].purpose, "A: b")
 
 
 class CliTests(SmartQATestCase):
