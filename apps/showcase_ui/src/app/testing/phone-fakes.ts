@@ -49,7 +49,10 @@ export function phoneFakes() {
     currentSession: signal<{ status?: string; initial_goal?: string; interrupt_reason?: string | null } | null>(null),
     resumeTask: jasmine.createSpy('resumeTask')
   };
-  const hosts = { list: jasmine.createSpy('list').and.returnValue(of({ enabled: true, hosts: [], devices: [] })) };
+  const hosts = {
+    list: jasmine.createSpy('list').and.returnValue(of({ enabled: true, hosts: [], devices: [] })),
+    requestLease: jasmine.createSpy('requestLease').and.returnValue(of({}))
+  };
   const tabs = { requestRelease: jasmine.createSpy('requestRelease').and.resolveTo(undefined) };
   const providers = [
     { provide: PhoneTabService, useValue: tabs },

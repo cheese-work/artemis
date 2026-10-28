@@ -1,7 +1,8 @@
+import { HttpErrorResponse } from '@angular/common/http';
 import { ChangeDetectionStrategy, Component, DestroyRef, computed, effect, inject, signal, untracked } from '@angular/core';
 import { Router, RouterLink } from '@angular/router';
 import { Subscription } from 'rxjs';
-import { HostsResponse, RegistryDevice } from '../../core/models/host.model';
+import { Computer, ComputerStatus, HostsResponse, RegistryDevice } from '../../core/models/host.model';
 import { AgentService } from '../../services/agent.service';
 import { HostsService } from '../../services/hosts.service';
 import { SystemService } from '../../services/system.service';
@@ -9,96 +10,281 @@ import { UsbDeviceRelayService } from '../../services/usb-device-relay.service';
 import { WorkspacePhoneService } from '../../services/workspace-phone.service';
 import { deviceChipView } from '../../utils/device-chip.util';
 
-type PhoneStatus = 'In use' | 'Idle' | 'Disconnected' | 'Needs attention';
+type PhoneStatus = 'Held' | 'Available' | 'Disconnected' | 'Needs attention';
 
 const key = (device: RegistryDevice) => `${device.computer_id}:${device.serial}`;
 
-/** Every phone people can use (shared by a computer or plugged into a browser): list on the left, the selected phone on the right. */
 @Component({
   selector: 'app-phones',
   standalone: true,
   imports: [RouterLink],
   template: `
-    <div class="phones">
-      <section class="list" aria-labelledby="phones-title">
-        <header>
-          <h2 id="phones-title">Phones</h2>
-          <button type="button" class="primary" [disabled]="!phone.canConnectFromBrowser()" (click)="phone.connectFromBrowser()">Connect</button>
-        </header>
-        @if (phone.connectionError(); as error) {
-          <p class="note error" role="alert">{{ error }}</p>
-        }
-        @if (failed()) {
-          <p class="note" role="alert">Phones could not be loaded. <button type="button" (click)="load()">Retry</button>.</p>
-        } @else if (registry(); as current) {
-          @for (device of current.devices; track key(device)) {
-            <button type="button" class="phone-row" [attr.aria-current]="device === selected() ? 'true' : null" (click)="selectedKey.set(key(device))">
-              <span class="dot" [class]="statusOf(device).replace(' ', '-').toLowerCase()" aria-hidden="true"></span>
-              <span class="who">
-                <span class="phone-name">{{ view(device).label }}</span>
-                <span class="phone-source">{{ view(device).source }}</span>
-                <small class="phone-serial">{{ device.serial }}</small>
-              </span>
-              <span class="phone-status">{{ statusOf(device) }}</span>
-            </button>
-          } @empty {
-            <p class="note">No phones yet. Connect one by USB or start a Cloud emulator.</p>
-          }
-        }
-      </section>
-      @if (selected(); as device) {
-        @let v = view(device);
-        @let live = liveSession(device);
-        <section class="phone-detail" aria-label="Selected phone">
-          <h3>{{ v.label }}</h3>
-          <div class="serial">{{ device.serial }}</div>
-          <div class="acts">
-            <span class="state">{{ statusOf(device) }}</span>
-            @if (live) { <a [routerLink]="['/sessions', live.session_id]">Open live session</a> }
-            <button type="button" (click)="newSession(device)">New session on this phone</button>
-          </div>
-          <dl>
-            <dt>Source</dt><dd>{{ v.source }}. {{ v.detail }}</dd>
-            @if (live) { <dt>In use by</dt><dd>{{ live.initial_goal }}</dd> }
-            <dt>Owner</dt><dd>{{ device.owner || device.computer_name || 'Not recorded' }}</dd>
-          </dl>
+    <main class="page" aria-labelledby="page-title">
+      <header class="heading">
+        <div>
+          <div class="eyebrow">Inventory</div>
+          <h1 id="page-title">Phones and computers</h1>
+          <p>See phone availability and the computers that share them with SmartQA.</p>
+        </div>
+        <div class="top-actions">
+          <button type="button" class="button secondary" [disabled]="!phone.canConnectFromBrowser()" (click)="phone.connectFromBrowser()">
+            <span class="material-symbols-outlined" aria-hidden="true">usb</span>Connect
+          </button>
+          <button type="button" class="button primary" (click)="focusBorrowForm()">
+            <span class="material-symbols-outlined" aria-hidden="true">devices</span>Request a phone
+          </button>
+        </div>
+      </header>
+
+      @if (phone.connectionError(); as error) {
+        <p class="notice error" role="alert">{{ error }}</p>
+      }
+      @if (failed()) {
+        <p class="notice error" role="alert">Phones could not be loaded. <button type="button" class="text-button" (click)="load()">Retry</button>.</p>
+      }
+      @if (!registry() && !failed()) {
+        <section class="panel loading" aria-label="Loading phones" aria-busy="true">
+          <span class="material-symbols-outlined spinning" aria-hidden="true">progress_activity</span>
+          <span>Loading phones and computers…</span>
         </section>
       }
-    </div>
+      @if (registry(); as current) {
+        @if (!current.enabled) {
+          <p class="notice">Phone sharing is disabled on this server. Ask an administrator to enable computer sharing.</p>
+        }
+        <section class="inventory-summary" aria-label="Inventory summary">
+          <span class="summary-icon"><span class="material-symbols-outlined" aria-hidden="true">smartphone</span></span>
+          <div>
+            <strong>{{ current.devices.length }} phones · {{ current.hosts.length }} computers</strong>
+            <p>Phone availability updates from registered computers and browser connections.</p>
+          </div>
+        </section>
+
+        <div class="device-layout">
+          <section class="panel inventory-panel" aria-labelledby="phones-title">
+            <header class="panel-head">
+              <h2 id="phones-title">Phones</h2>
+              <span class="tag">{{ current.devices.length }} {{ current.devices.length === 1 ? 'phone' : 'phones' }}</span>
+            </header>
+            <div class="phone-list">
+              @for (device of current.devices; track key(device)) {
+                @let v = view(device);
+                @let live = liveSession(device);
+                @let status = statusOf(device);
+                <article class="phone-card">
+                  <div class="phone-card-main">
+                    <div class="phone-name">
+                      <span class="device-icon"><span class="material-symbols-outlined" aria-hidden="true">smartphone</span></span>
+                      <strong>{{ v.label }}</strong>
+                    </div>
+                    <span class="status" [class]="'status ' + phoneTone(status)" [attr.aria-label]="status">
+                      <span class="material-symbols-outlined" aria-hidden="true">{{ phoneIcon(status) }}</span>{{ status }}
+                    </span>
+                  </div>
+                  <div class="phone-details">
+                    <p>{{ v.source }}<span aria-hidden="true"> · </span><span>{{ v.detail }}</span></p>
+                    <div class="endpoint-list" aria-label="Phone connection">
+                      <div class="endpoint">
+                        <strong>{{ device.source === 'browser' ? 'Browser connection' : 'Computer connection' }}</strong>
+                        <span class="mono phone-serial">{{ device.serial }}</span>
+                        <span class="status" [class]="'status ' + phoneTone(status)" [attr.aria-label]="status">
+                          <span class="material-symbols-outlined" aria-hidden="true">{{ phoneIcon(status) }}</span>{{ status }}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                  @if (live) {
+                    <p class="lease-details"><strong>Active session:</strong> {{ live.initial_goal || 'Session in progress' }}</p>
+                    <a class="session-link" [routerLink]="['/sessions', live.session_id]">Open live session</a>
+                  }
+                  <div class="phone-actions">
+                    <button type="button" class="button secondary" [disabled]="status !== 'Available'" (click)="newSession(device)">New session on this phone</button>
+                  </div>
+                </article>
+              } @empty {
+                <div class="empty-state">
+                  <span class="material-symbols-outlined" aria-hidden="true">devices</span>
+                  <strong>No phones are enrolled</strong>
+                  <p>Connect one by USB or start a Cloud emulator.</p>
+                </div>
+              }
+            </div>
+
+            <section class="computers" aria-labelledby="computers-title">
+              <header class="panel-head">
+                <h2 id="computers-title">Computers</h2>
+                <span class="tag">{{ current.hosts.length }} enrolled</span>
+              </header>
+              <div class="computer-list">
+                @for (host of current.hosts; track host.id) {
+                  <article class="computer-card">
+                    <div class="computer-title">
+                      <strong>{{ host.name }}</strong>
+                      <span class="status" [class]="'status ' + computerTone(host.status)" [attr.aria-label]="computerLabel(host.status)">
+                        <span class="material-symbols-outlined" aria-hidden="true">{{ computerIcon(host.status) }}</span>{{ computerLabel(host.status) }}
+                      </span>
+                    </div>
+                    <p>
+                      {{ host.os || 'Operating system not reported' }}<span aria-hidden="true"> · </span>
+                      {{ host.phones_shared }} phones shared
+                    </p>
+                    @if (host.reason) { <p class="computer-reason">{{ host.reason }}</p> }
+                  </article>
+                } @empty {
+                  <p class="empty-computers">No computers are enrolled.</p>
+                }
+              </div>
+            </section>
+          </section>
+
+          <section class="panel borrow-panel" id="borrow-panel" aria-labelledby="borrow-title">
+            <header class="panel-head">
+              <h2 id="borrow-title">Borrow a phone</h2>
+              <span class="tag">Lease request</span>
+            </header>
+            <div class="panel-body">
+              <p class="borrow-intro">Choose an available phone, state the purpose, then set how long you need it.</p>
+              @if (current.enabled) {
+                <form aria-label="Borrow a phone" (submit)="requestLease($event)">
+                  <div class="field">
+                    <label for="phone-choice">Phone</label>
+                    <select id="phone-choice" [value]="selectedLeaseDevice() ? key(selectedLeaseDevice()!) : ''" [disabled]="!availablePhones().length || requesting()" (change)="selectLeasePhone($event)">
+                      @for (device of availablePhones(); track key(device)) {
+                        <option [value]="key(device)">{{ view(device).label }}, {{ view(device).source }}</option>
+                      } @empty {
+                        <option value="">No available phones</option>
+                      }
+                    </select>
+                  </div>
+                  <div class="field">
+                    <label for="purpose">Purpose</label>
+                    <input id="purpose" [value]="purpose()" (input)="setPurpose($event)" maxlength="160" required>
+                  </div>
+                  <div class="field">
+                    <label for="duration">Duration</label>
+                    <select id="duration" [value]="duration()" (change)="setDuration($event)" [disabled]="requesting()">
+                      <option value="1800">30 minutes</option>
+                      <option value="3600">1 hour</option>
+                      <option value="7200">2 hours</option>
+                    </select>
+                  </div>
+                  <button type="submit" class="button primary submit" [disabled]="!current.enabled || !selectedLeaseDevice() || !purpose().trim() || requesting()">
+                    @if (requesting()) { Requesting… } @else { Request lease }
+                  </button>
+                </form>
+                @if (!availablePhones().length) {
+                  <p class="form-help">No available phones right now. Disconnected or in-use phones cannot be requested.</p>
+                }
+              } @else {
+                <p class="form-help">Phone sharing is disabled. Lease requests are unavailable.</p>
+              }
+              @if (leaseMessage()) { <p class="notice success" role="status" aria-live="polite">{{ leaseMessage() }}</p> }
+              @if (leaseError()) { <p class="notice error" role="alert">{{ leaseError() }}</p> }
+              <div class="borrow-steps" aria-label="Borrow flow: phone, purpose, duration, queue, decision">
+                <div class="borrow-step"><span class="material-symbols-outlined" aria-hidden="true">smartphone</span>Phone</div>
+                <div class="borrow-step"><span class="material-symbols-outlined" aria-hidden="true">description</span>Purpose</div>
+                <div class="borrow-step"><span class="material-symbols-outlined" aria-hidden="true">schedule</span>Duration</div>
+                <div class="borrow-step"><span class="material-symbols-outlined" aria-hidden="true">hourglass_empty</span>Queue</div>
+                <div class="borrow-step"><span class="material-symbols-outlined" aria-hidden="true">check_circle</span>Decision</div>
+              </div>
+            </div>
+          </section>
+        </div>
+      }
+    </main>
   `,
   styles: `
     :host { display: block; }
-    .phones { display: grid; grid-template-columns: 340px minmax(0, 1fr); min-height: 420px; color: var(--color-text); }
-    .list { border-right: 1px solid var(--color-rule); }
-    header { display: flex; align-items: center; gap: var(--space-smd); padding: var(--space-md) var(--space-lg); }
-    h2 { flex: 1; margin: 0; font-size: var(--text-title); color: var(--color-ink); }
-    button, .acts a { display: inline-flex; align-items: center; min-height: 44px; padding: 0 var(--space-md); border: 1px solid var(--color-rule-strong); border-radius: var(--radius-md); background: var(--color-surface); color: var(--color-text); font: inherit; cursor: pointer; text-decoration: none; }
-    button.primary { background: var(--color-primary); border-color: var(--color-primary); color: var(--color-on-primary); }
-    button:disabled { opacity: .5; cursor: not-allowed; }
-    button:focus-visible, a:focus-visible { outline: 3px solid var(--color-focus); outline-offset: 2px; }
-    .phone-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: var(--space-smd); align-items: center; width: 100%; min-height: 56px; padding: 0 var(--space-lg); border: 0; border-top: 1px solid var(--color-rule); border-radius: 0; text-align: left; }
-    .phone-row[aria-current=true] { background: var(--color-primary-tint); box-shadow: inset 3px 0 0 var(--color-primary); }
-    .who { display: grid; min-width: 0; }
-    .phone-name { color: var(--color-ink); font-weight: 500; overflow-wrap: anywhere; }
-    .phone-source { font-size: var(--text-label); color: var(--color-text-muted); }
-    .phone-serial, .serial { font: var(--text-label) var(--font-mono); color: var(--color-text-faint); overflow-wrap: anywhere; }
-    .phone-status { font-size: var(--text-label); color: var(--color-text-muted); }
-    .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--color-text-faint); }
-    .dot.in-use { background: var(--color-success); }
-    .dot.disconnected, .dot.needs-attention { background: var(--color-error-solid); }
-    .note.error { color: var(--color-error); white-space: pre-line; }
-    .note { margin: 0; padding: var(--space-md) var(--space-lg); color: var(--color-text-muted); }
-    .phone-detail { padding: var(--space-lg); }
-    h3 { margin: 0 0 var(--space-xs); font-size: var(--text-section); color: var(--color-ink); }
-    .acts { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-smd); margin: var(--space-md) 0; }
-    .state { font-weight: 600; }
-    dl { display: grid; grid-template-columns: max-content 1fr; gap: var(--space-xs) var(--space-md); margin: 0; font-size: var(--text-label); color: var(--color-text-muted); }
-    dt { font-weight: 600; color: var(--color-text); }
-    dd { margin: 0; overflow-wrap: anywhere; }
-    @media (max-width: 800px) {
-      .phones { grid-template-columns: 1fr; }
-      .list { border-right: 0; }
-      .phone-detail { border-top: 1px solid var(--color-rule); }
+    .page { display: grid; gap: var(--space-md); max-width: 1440px; margin: 0 auto; padding: var(--space-lg); color: var(--color-text); }
+    .heading { display: flex; align-items: flex-end; justify-content: space-between; gap: var(--space-lg); }
+    .eyebrow { margin-bottom: var(--space-xs); color: var(--color-text-muted); font-size: var(--text-label); font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
+    h1, h2, p { margin: 0; }
+    h1 { color: var(--color-ink); font-size: var(--text-page-title); line-height: 1.2; }
+    h2 { color: var(--color-ink); font-size: var(--text-section); }
+    .heading p { margin-top: var(--space-xs); color: var(--color-text-muted); }
+    .top-actions, .phone-actions { display: flex; flex-wrap: wrap; gap: var(--space-sm); }
+    .button, .text-button { display: inline-flex; align-items: center; justify-content: center; gap: var(--space-xs); min-height: 44px; padding: 0 var(--space-md); border: 1px solid var(--color-rule-strong); border-radius: var(--radius-md); background: var(--color-surface); color: var(--color-text); font: inherit; cursor: pointer; text-decoration: none; }
+    .button .material-symbols-outlined { font-size: 18px; }
+    .button.primary { border-color: var(--color-primary); background: var(--color-primary); color: var(--color-on-primary); }
+    .button:disabled { opacity: .52; cursor: not-allowed; }
+    .text-button { min-height: auto; padding: 0; border: 0; color: var(--color-primary); text-decoration: underline; }
+    .panel { min-width: 0; overflow: hidden; border: 1px solid var(--color-rule); border-radius: var(--radius-md); background: var(--color-surface); }
+    .panel-head { display: flex; align-items: center; justify-content: space-between; gap: var(--space-sm); padding: var(--space-md); border-bottom: 1px solid var(--color-rule); }
+    .panel-body { display: grid; gap: var(--space-md); padding: var(--space-md); }
+    .tag { flex: none; padding: 3px 9px; border-radius: 999px; background: var(--color-bg-subtle); color: var(--color-text-muted); font-size: var(--text-label); font-weight: 600; }
+    .inventory-summary { display: flex; align-items: center; gap: var(--space-md); padding: var(--space-md); border: 1px solid var(--color-rule); border-radius: var(--radius-md); background: var(--color-surface); }
+    .summary-icon, .device-icon { display: grid; place-items: center; flex: none; width: 40px; height: 40px; border-radius: var(--radius-md); background: var(--color-ink); color: var(--color-surface); }
+    .summary-icon .material-symbols-outlined { font-size: 22px; }
+    .inventory-summary strong { color: var(--color-ink); }
+    .inventory-summary p { margin-top: 3px; color: var(--color-text-muted); }
+    .device-layout { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(320px, .8fr); align-items: start; gap: var(--space-md); }
+    .phone-list { display: grid; gap: var(--space-sm); padding: var(--space-sm); }
+    .phone-card { display: grid; gap: var(--space-sm); min-width: 0; padding: var(--space-md); border: 1px solid var(--color-rule); border-radius: var(--radius-md); background: var(--color-surface); }
+    .phone-card-main, .phone-name, .computer-title { display: flex; align-items: center; justify-content: space-between; gap: var(--space-sm); min-width: 0; }
+    .phone-name { justify-content: flex-start; color: var(--color-ink); }
+    .phone-name strong { overflow-wrap: anywhere; }
+    .device-icon { width: 36px; height: 40px; }
+    .device-icon .material-symbols-outlined { font-size: 20px; }
+    .phone-details p, .computer-card p { color: var(--color-text-muted); font-size: var(--text-label); overflow-wrap: anywhere; }
+    .endpoint-list { display: grid; margin-top: var(--space-sm); border-top: 1px solid var(--color-rule); }
+    .endpoint { display: grid; grid-template-columns: minmax(100px, .7fr) minmax(0, 1fr) auto; align-items: center; gap: var(--space-sm); padding-top: var(--space-sm); }
+    .endpoint strong { font-size: var(--text-label); font-weight: 600; }
+    .mono { font: var(--text-label) var(--font-mono); overflow-wrap: anywhere; }
+    .status { display: inline-flex; align-items: center; justify-content: center; gap: 4px; width: fit-content; padding: 3px 9px; border-radius: 999px; font-size: var(--text-label); font-weight: 650; white-space: nowrap; }
+    .status .material-symbols-outlined { font-size: 15px; }
+    .status.pass { background: var(--color-success-tint); color: var(--color-success); }
+    .status.warn { background: var(--color-warning-tint); color: var(--color-warning); }
+    .status.fail { background: var(--color-error-tint); color: var(--color-error); }
+    .status.neutral { background: var(--color-bg-subtle); color: var(--color-text-muted); }
+    .lease-details { color: var(--color-text-muted); font-size: var(--text-label); overflow-wrap: anywhere; }
+    .lease-details strong { color: var(--color-ink); }
+    .session-link { width: fit-content; color: var(--color-primary); font-size: var(--text-label); }
+    .phone-actions { padding-top: var(--space-xs); border-top: 1px solid var(--color-rule); }
+    .computers { border-top: 1px solid var(--color-rule); }
+    .computers .panel-head { border-bottom: 1px solid var(--color-rule); }
+    .computer-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-sm); padding: var(--space-sm); }
+    .computer-card { display: grid; align-content: start; gap: var(--space-xs); min-width: 0; padding: var(--space-sm); border: 1px solid var(--color-rule); border-radius: var(--radius-md); }
+    .computer-title strong { min-width: 0; color: var(--color-ink); overflow-wrap: anywhere; }
+    .computer-card p { line-height: 1.5; }
+    .computer-reason { color: var(--color-error) !important; }
+    .empty-computers { grid-column: 1 / -1; padding: var(--space-sm); color: var(--color-text-muted); }
+    .empty-state { display: grid; justify-items: center; gap: var(--space-xs); padding: var(--space-lg); color: var(--color-text-muted); text-align: center; }
+    .empty-state .material-symbols-outlined { font-size: 26px; }
+    .empty-state strong { color: var(--color-ink); }
+    .borrow-intro, .form-help { color: var(--color-text-muted); line-height: 1.5; }
+    .borrow-panel form { display: grid; gap: var(--space-sm); }
+    .field { display: grid; gap: 6px; }
+    .field label { color: var(--color-ink); font-size: var(--text-label); font-weight: 650; }
+    .field select, .field input { width: 100%; min-height: 44px; padding: 0 var(--space-sm); border: 1px solid var(--color-rule-strong); border-radius: var(--radius-md); background: var(--color-surface); color: var(--color-text); font: inherit; }
+    .field select:disabled { color: var(--color-text-muted); }
+    .submit { width: 100%; }
+    .borrow-steps { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 5px; margin-top: var(--space-sm); }
+    .borrow-step { display: grid; justify-items: center; gap: 4px; min-width: 0; padding: var(--space-sm) 2px; border: 1px solid var(--color-rule); border-radius: var(--radius-md); color: var(--color-text-muted); font-size: 11px; text-align: center; }
+    .borrow-step .material-symbols-outlined { font-size: 16px; }
+    .notice { padding: var(--space-sm) var(--space-md); border: 1px solid var(--color-rule); border-radius: var(--radius-md); background: var(--color-surface); color: var(--color-text-muted); line-height: 1.5; }
+    .notice.error { border-color: var(--color-error-tint); color: var(--color-error); }
+    .notice.success { border-color: var(--color-success-tint); color: var(--color-success); }
+    .loading { display: flex; align-items: center; gap: var(--space-sm); min-height: 100px; padding: var(--space-md); color: var(--color-text-muted); }
+    .spinning { animation: spin 1.2s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    @media (max-width: 900px) {
+      .page { padding: var(--space-md); }
+      .device-layout { grid-template-columns: minmax(0, 1fr); }
+    }
+    @media (max-width: 600px) {
+      .page { gap: var(--space-sm); padding: var(--space-sm); }
+      .heading { display: grid; gap: var(--space-sm); }
+      h1 { font-size: var(--text-title); }
+      .top-actions { display: grid; grid-template-columns: 1fr 1fr; }
+      .button { padding: 0 var(--space-sm); }
+      .computer-list { grid-template-columns: minmax(0, 1fr); }
+      .endpoint { grid-template-columns: minmax(0, 1fr) auto; }
+      .endpoint strong { grid-column: 1 / -1; }
+      .borrow-steps { gap: 3px; }
+      .borrow-step { font-size: 10px; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .spinning { animation: none; }
     }
   `,
   changeDetection: ChangeDetectionStrategy.OnPush
@@ -112,23 +298,32 @@ export class PhonesComponent {
   protected readonly phone = inject(WorkspacePhoneService);
   protected readonly registry = signal<HostsResponse | null>(null);
   protected readonly failed = signal(false);
-  protected readonly selectedKey = signal<string | null>(null);
-  protected readonly selected = computed(() => {
-    const devices = this.registry()?.devices ?? [];
-    return devices.find(device => key(device) === this.selectedKey()) ?? devices[0] ?? null;
+  protected readonly purpose = signal('Run first-run QA preview');
+  protected readonly duration = signal(1800);
+  protected readonly leaseDeviceKey = signal<string | null>(null);
+  protected readonly requesting = signal(false);
+  protected readonly leaseMessage = signal<string | null>(null);
+  protected readonly leaseError = signal<string | null>(null);
+  protected readonly availablePhones = computed(() => (this.registry()?.devices ?? []).filter(device => this.statusOf(device) === 'Available'));
+  protected readonly selectedLeaseDevice = computed(() => {
+    const available = this.availablePhones();
+    return available.find(device => key(device) === this.leaseDeviceKey()) ?? available[0] ?? null;
   });
   protected readonly key = key;
 
   private request?: Subscription;
+  private leaseRequest?: Subscription;
 
   constructor() {
-    // Load on open, and again when a phone connects or adb lists another one (same triggers as the Workspace phone service).
     effect(() => {
       this.relay.state().serial;
       this.system.connectedDevices();
       untracked(() => this.load());
     });
-    inject(DestroyRef).onDestroy(() => this.request?.unsubscribe());
+    inject(DestroyRef).onDestroy(() => {
+      this.request?.unsubscribe();
+      this.leaseRequest?.unsubscribe();
+    });
   }
 
   protected load(): void {
@@ -153,11 +348,105 @@ export class PhonesComponent {
     const { state } = this.view(device);
     if (state === 'Offline') return 'Disconnected';
     if (state === 'Needs attention') return state;
-    return this.liveSession(device) ? 'In use' : 'Idle';
+    return this.liveSession(device) ? 'Held' : 'Available';
+  }
+
+  protected phoneTone(status: PhoneStatus): string {
+    if (status === 'Available') return 'pass';
+    if (status === 'Held') return 'warn';
+    if (status === 'Disconnected') return 'fail';
+    return 'neutral';
+  }
+
+  protected phoneIcon(status: PhoneStatus): string {
+    if (status === 'Available') return 'check_circle';
+    if (status === 'Held') return 'lock';
+    if (status === 'Disconnected') return 'error';
+    return 'info';
+  }
+
+  protected computerLabel(status: ComputerStatus): string {
+    const labels: Record<ComputerStatus, string> = {
+      online: 'Online', reconnecting: 'Reconnecting', offline: 'Disconnected',
+      update_required: 'Update required', revoked: 'Revoked'
+    };
+    return labels[status];
+  }
+
+  protected computerTone(status: ComputerStatus): string {
+    if (status === 'online') return 'pass';
+    if (status === 'reconnecting' || status === 'update_required') return 'warn';
+    if (status === 'offline' || status === 'revoked') return 'fail';
+    return 'neutral';
+  }
+
+  protected computerIcon(status: ComputerStatus): string {
+    if (status === 'online') return 'check_circle';
+    if (status === 'reconnecting') return 'sync';
+    if (status === 'update_required') return 'system_update';
+    return 'error';
+  }
+
+  protected selectLeasePhone(event: Event): void {
+    this.leaseDeviceKey.set((event.target as HTMLSelectElement).value || null);
+    this.leaseMessage.set(null);
+    this.leaseError.set(null);
+  }
+
+  protected setPurpose(event: Event): void {
+    this.purpose.set((event.target as HTMLInputElement).value);
+    this.leaseMessage.set(null);
+    this.leaseError.set(null);
+  }
+
+  protected setDuration(event: Event): void {
+    this.duration.set(Number((event.target as HTMLSelectElement).value));
+  }
+
+  protected requestLease(event: Event): void {
+    event.preventDefault();
+    const device = this.selectedLeaseDevice();
+    const purpose = this.purpose().trim();
+    const ttl = this.duration();
+    if (!this.registry()?.enabled || !device || !purpose || this.requesting()) return;
+    this.leaseMessage.set(null);
+    this.leaseError.set(null);
+    this.requesting.set(true);
+    this.leaseRequest?.unsubscribe();
+    this.leaseRequest = this.hosts.requestLease(key(device), ttl, purpose).subscribe({
+      next: () => {
+        this.requesting.set(false);
+        this.leaseMessage.set('Lease request submitted.');
+      },
+      error: error => {
+        this.requesting.set(false);
+        this.leaseError.set(this.leaseFailure(error));
+      }
+    });
+  }
+
+  protected focusBorrowForm(): void {
+    document.getElementById('phone-choice')?.focus();
   }
 
   protected newSession(device: RegistryDevice): void {
     this.system.chooseRunTarget(device.serial);
     void this.router.navigateByUrl('/sessions/new');
+  }
+
+  private leaseFailure(error: unknown): string {
+    if (error instanceof HttpErrorResponse && error.status === 409) {
+      const body = error.error as { holder?: unknown; detail?: { holder?: unknown } } | null;
+      const holderDetails = body?.holder;
+      const holder = typeof holderDetails === 'string'
+        ? holderDetails
+        : holderDetails !== null && typeof holderDetails === 'object' && 'holder' in holderDetails
+          ? holderDetails.holder
+          : body?.detail?.holder;
+      return typeof holder === 'string' && holder.trim()
+        ? `Phone is already held by ${holder}. Choose another phone.`
+        : 'This phone is already held. Choose another phone.';
+    }
+    return 'Lease request failed. Retry the request.';
   }
 }
