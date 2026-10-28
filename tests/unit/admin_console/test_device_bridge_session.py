@@ -1370,3 +1370,107 @@ def test_websocket_revoke_logs_main_reason_and_close_code(
     assert "bytes_device_to_browser=0" in close_record
     assert "private-invalid-adb-packet" not in caplog.text
     _assert_listener_closed(lease["listener"]["port"])
+
+
+def _dropped_session(close_code, client_close=None) -> BridgeSession:
+    session = BridgeSession(session_id="dropped", expires_at=float("inf"))
+    session.connected.set()
+    session.close_code = close_code
+    session.client_close = client_close
+    return session
+
+
+@pytest.mark.parametrize("close_code", [1005, 1006])
+def test_bridge_fixes_on_resumes_unreported_network_drop(monkeypatch, close_code):
+    """uvicorn reports 1005 (not 1006) for a drop after the handshake (CHE-2097 F1)."""
+    monkeypatch.setenv("ARTEMIS_BRIDGE_FIXES", "on")
+
+    assert device_bridge._should_resume(_dropped_session(close_code)) is True
+
+
+@pytest.mark.parametrize(
+    "reason", ["usb_disconnected", "page_unload", "manual_disconnect", "service_destroyed"]
+)
+def test_bridge_fixes_on_keeps_deliberate_closes_non_resumable(monkeypatch, reason):
+    monkeypatch.setenv("ARTEMIS_BRIDGE_FIXES", "on")
+    report = {"reason": reason, "usb_error": None, "visibility_state": None}
+
+    assert device_bridge._should_resume(_dropped_session(1005, report)) is False
+
+
+def test_bridge_fixes_on_does_not_resume_clean_close_or_unattached_session(monkeypatch):
+    monkeypatch.setenv("ARTEMIS_BRIDGE_FIXES", "on")
+    unattached = _dropped_session(1005)
+    unattached.connected.clear()
+
+    assert device_bridge._should_resume(_dropped_session(1000)) is False
+    assert device_bridge._should_resume(unattached) is False
+
+
+@pytest.mark.parametrize("flag", [None, "", "off", "0", "true-ish"])
+def test_bridge_fixes_off_keeps_old_resume_behaviour(monkeypatch, flag):
+    if flag is None:
+        monkeypatch.delenv("ARTEMIS_BRIDGE_FIXES", raising=False)
+    else:
+        monkeypatch.setenv("ARTEMIS_BRIDGE_FIXES", flag)
+
+    assert device_bridge._should_resume(_dropped_session(1005)) is False
+    assert device_bridge._should_resume(_dropped_session(1006)) is True
+    socket_closed = {"reason": "socket_closed", "usb_error": None, "visibility_state": None}
+    assert device_bridge._should_resume(_dropped_session(1005, socket_closed)) is True
+
+
+@pytest.mark.parametrize(("flag", "expected"), [(None, False), ("off", False), ("on", True)])
+def test_session_and_resume_leases_tell_the_browser_the_bridge_fixes_flag(
+    loopback_client, monkeypatch, _mock_adb, flag, expected
+):
+    """The server owns ARTEMIS_BRIDGE_FIXES; the browser reads it from the lease (CHE-2098)."""
+    if flag is None:
+        monkeypatch.delenv("ARTEMIS_BRIDGE_FIXES", raising=False)
+    else:
+        monkeypatch.setenv("ARTEMIS_BRIDGE_FIXES", flag)
+    peer = {}
+
+    async def fake_adb_command(*arguments):
+        if arguments[0] == "connect":
+            host, port = arguments[1].split(":")
+            peer["reader"], peer["writer"] = await asyncio.open_connection(host, int(port))
+            return f"connected to {arguments[1]}"
+        writer = peer.get("writer")
+        if writer is not None:
+            writer.close()
+            await writer.wait_closed()
+        return "disconnected"
+
+    monkeypatch.setattr(bridge_session_service_module, "_run_adb_command", fake_adb_command)
+
+    with loopback_client.websocket_connect(PATH, headers=_HOST_HEADER) as websocket:
+        leased = websocket.receive_json()
+        websocket.receive_json()  # device_attached
+        websocket.send_text(
+            json.dumps(
+                {
+                    "type": "client_close",
+                    "reason": "socket_error",
+                    "usb_error": None,
+                    "visibility_state": "visible",
+                }
+            )
+        )
+
+    assert leased["bridge_fixes"] is expected
+    with loopback_client.websocket_connect(RESUME_PATH, headers=_HOST_HEADER) as websocket:
+        websocket.send_text(
+            json.dumps(
+                {
+                    "type": "resume",
+                    "session_id": leased["session_id"],
+                    "reconnect_token": leased["reconnect_token"],
+                }
+            )
+        )
+        resumed = websocket.receive_json()
+        websocket.receive_json()  # device_attached
+        websocket.send_text("close")
+
+    assert resumed["bridge_fixes"] is expected
