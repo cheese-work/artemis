@@ -276,9 +276,7 @@ def _scrub_run_files(out_dir: Path, values: set[str]) -> None:
     The in-process registry is lost on restart; the bundle step must not rely on it.
     """
     needles = {
-        form
-        for value in values
-        for form in (value, quote(value, safe=""), json.dumps(value)[1:-1])
+        form for value in values for form in (value, quote(value, safe=""), json.dumps(value)[1:-1])
     }
     if not needles or not out_dir.is_dir():
         return

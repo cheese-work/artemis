@@ -97,8 +97,12 @@ def _write_t4_session(root, sentinel, *, secret_fields=True):
                 screenshot = session_root / theme / f"{index + 1}-{side}.png"
                 with Image.open(screenshot) as image:
                     draw = ImageDraw.Draw(image)
-                    draw.rectangle([0, 8, 119, 34], fill=(255, 255, 255))  # readable, so the mask is not vacuous
-                    draw.text((2, 16), sentinel, fill=(0, 0, 0), font=ImageFont.load_default(size=9))
+                    draw.rectangle(
+                        [0, 8, 119, 34], fill=(255, 255, 255)
+                    )  # readable, so the mask is not vacuous
+                    draw.text(
+                        (2, 16), sentinel, fill=(0, 0, 0), font=ImageFont.load_default(size=9)
+                    )
                     image.save(screenshot)
         steps[2]["flag_secure"] = True
     (session_root / "session.json").write_text(json.dumps(session_data), encoding="utf-8")
