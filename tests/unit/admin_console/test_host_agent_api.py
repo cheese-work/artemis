@@ -679,6 +679,7 @@ def test_devices_report_counts_shared_and_unshared_phones(admin):
                 "attention": None,
                 "also_visible_on": [],
                 "device_id": shared[0]["device_id"],
+                "lease": None,
             }
         ]
         assert shared[0]["device_id"].startswith("dev_")  # the id the lease API takes (CHE-2100)

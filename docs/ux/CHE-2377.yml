@@ -1,0 +1,10 @@
+issue: CHE-2377
+design: design/smartqa-agent-qa/rev-3/A.html @ 74c13fa1c3710164dcbf34066ba198a17300f293
+pages:
+  - id: phones
+    url: /phones
+    keep: [page-title, phones-title, computers-title, phone-choice, purpose, borrow-panel]
+    change:
+      - phone-card: "one card per phone; its USB and Wi-Fi endpoints are listed inside it"
+      - lease-details: "shows the holder, purpose and end time of a lease anyone holds, not only this tab's"
+    remove: []

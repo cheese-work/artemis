@@ -1,0 +1,7 @@
+{
+  "id": "2026-10-29-phones-lease-holders",
+  "date": "2026-10-29",
+  "title": "Phones page shows who holds a phone and groups its connections",
+  "body": "A phone someone else borrowed now shows as Held, with who has it, why and until when. A phone connected by USB and Wi-Fi shows as one card with both connections.",
+  "issues": ["CHE-2377"]
+}

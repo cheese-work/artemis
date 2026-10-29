@@ -89,7 +89,8 @@ if (checkPhones) {
     ],
     devices: [
       { serial: '2A091FDH200B2X', model: 'Pixel 6 Pro', product: 'oriole', device_kind: 'phone', source: 'computer', owner: null, device_id: 'dev_pixel6', computer_id: 'x99', computer_name: 'X99 local host', computer_status: 'online', reason: null, since: Date.now() / 1000 - 12 },
-      { serial: 'emulator-5554', model: 'Pixel 3a', product: 'sargo', device_kind: 'phone', source: 'computer', owner: null, device_id: 'dev_pixel3a', computer_id: 'x99', computer_name: 'X99 local host', computer_status: 'online', reason: null, since: Date.now() / 1000 - 12 },
+      { serial: '192.168.1.20:5555', model: 'Pixel 6 Pro', product: 'oriole', device_kind: 'phone', source: 'computer', owner: null, device_id: 'dev_pixel6', computer_id: 'x99', computer_name: 'X99 local host', computer_status: 'online', reason: null, since: Date.now() / 1000 - 12 },
+      { serial: 'emulator-5554', model: 'Pixel 3a', product: 'sargo', device_kind: 'phone', source: 'computer', owner: null, device_id: 'dev_pixel3a', lease: { holder: 'qa-owner@example.test', purpose: 'Nightly regression', expires_at: Date.now() / 1000 + 5400 }, computer_id: 'x99', computer_name: 'X99 local host', computer_status: 'online', reason: null, since: Date.now() / 1000 - 12 },
       { serial: 'f3a1c09e', model: 'Xiaomi 10', product: 'umi', device_kind: 'phone', source: 'computer', owner: null, device_id: 'dev_xiaomi', computer_id: 'mac', computer_name: 'Mac phone host', computer_status: 'offline', reason: 'agent_disconnected', since: Date.now() / 1000 - 360 }
     ]
   };

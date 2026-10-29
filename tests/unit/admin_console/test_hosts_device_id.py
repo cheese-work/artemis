@@ -101,3 +101,44 @@ async def test_a_missing_device_store_still_lists_phones(hosts, monkeypatch):
     monkeypatch.setattr(Matched, "not_ready", True)
     body = await _hosts()
     assert body["devices"] and all(d["device_id"] is None for d in body["devices"])
+
+
+# --- CHE-2377: every holder's lease shows on the phone, not only the caller's own ---
+
+
+def _lease(holder="other@example.com", purpose="nightly run", ttl=600):
+    from apps.admin_console.database.repositories.run_catalog_repository import run_catalog_repo
+    from apps.admin_console.services import device_leases
+
+    return device_leases.acquire(run_catalog_repo.db_path, ["dev_abc"], holder, ttl, purpose)
+
+
+@pytest.fixture
+def leasing(hosts, library, monkeypatch):
+    monkeypatch.setenv("ARTEMIS_DEVICE_LEASES", "enabled")
+
+
+@pytest.mark.asyncio
+async def test_a_phone_leased_by_someone_else_shows_holder_purpose_and_expiry(leasing):
+    lease = _lease()
+    body = await _hosts()
+    phone = next(d for d in body["devices"] if d["serial"] == HOST_PHONE["serial"])
+    assert phone["lease"] == {
+        "holder": "other@example.com",
+        "purpose": "nightly run",
+        "expires_at": lease.expires_at,
+    }
+
+
+@pytest.mark.asyncio
+async def test_a_free_phone_has_no_lease(leasing):
+    body = await _hosts()
+    assert all(d["lease"] is None for d in body["devices"])
+
+
+@pytest.mark.asyncio
+async def test_leases_stay_hidden_while_the_flag_is_off(leasing, monkeypatch):
+    _lease()
+    monkeypatch.delenv("ARTEMIS_DEVICE_LEASES")
+    body = await _hosts()
+    assert all(d["lease"] is None for d in body["devices"])
