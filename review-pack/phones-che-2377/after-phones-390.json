@@ -2,7 +2,15 @@
   "overflowX": 0,
   "underNav": [
     {
-      "text": "Nightly regression, until 11:46 AM",
+      "text": "Leased by qa-owner@example.test:",
+      "clipped": true
+    },
+    {
+      "text": "Nightly regression, until 12:51 PM",
+      "clipped": true
+    },
+    {
+      "text": "Nightly regression, until 12:51 PM",
       "clipped": true
     },
     {

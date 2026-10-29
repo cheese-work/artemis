@@ -216,16 +216,41 @@ describe('Phones page (Sessions v2.1 C rev-4)', () => {
     expect(rows(root)[0].querySelector('.lease-details')).toBeNull();
   });
 
-  it('groups the USB and Wi-Fi endpoints of one phone into one card (CHE-2377)', async () => {
-    const usb = device({ serial: 'R58M1234a1b2', model: 'Pixel 7', device_id: 'dev_pixel7' });
-    const wifi = device({ serial: '192.168.1.20:5555', model: 'Pixel 7', device_id: 'dev_pixel7' });
-    const { root } = await create([usb, wifi, idle]);
+  const endpointRows = (card: Element) =>
+    Array.from(card.querySelectorAll('.endpoint')).map(e => e.querySelector('strong')!.textContent);
+
+  it('shows the USB and Wi-Fi connections a computer reports for one phone as one card (CHE-2377)', async () => {
+    const both = device({ serial: 'sd-0000000000000007', model: 'Pixel 7', device_id: 'dev_pixel7', connections: ['usb', 'wifi'] });
+    const { root } = await create([both, idle]);
     expect(rows(root).length).toBe(2);
     expect(root.querySelector('.inventory-summary strong')?.textContent).toContain('2 phones');
-    const pixel7 = rows(root)[0];
-    expect(Array.from(pixel7.querySelectorAll('.endpoint')).map(e => [e.querySelector('strong')!.textContent, e.querySelector('.phone-serial')!.textContent]))
-      .toEqual([['USB', 'R58M1234a1b2'], ['Wi-Fi', '192.168.1.20:5555']]);
+    expect(endpointRows(rows(root)[0])).toEqual(['USB', 'Wi-Fi']);
     expect(Array.from(root.querySelector<HTMLSelectElement>('#phone-choice')!.options).filter(o => o.textContent?.includes('Pixel 7')).length).toBe(1);
+  });
+
+  it('groups a computer connection and a browser connection of one phone into one card (CHE-2377)', async () => {
+    const onComputer = device({ model: 'Pixel 7', device_id: 'dev_pixel7', connections: ['wifi'] });
+    const inBrowser = device({ serial: '127.0.0.1:41001', model: 'Pixel 7', source: 'browser', owner: 'qa@example.test', computer_id: null, computer_name: null, device_id: 'dev_pixel7' });
+    const { root } = await create([onComputer, inBrowser]);
+    expect(rows(root).length).toBe(1);
+    expect(endpointRows(rows(root)[0])).toEqual(['Wi-Fi', 'Browser connection']);
+  });
+
+  it('does not guess a connection kind from a serial (CHE-2377)', async () => {
+    const { root } = await create([device({ serial: '192.168.1.20:5555', device_id: 'dev_pixel7' })]);
+    expect(endpointRows(rows(root)[0])).toEqual(['Lab Mac']);
+  });
+
+  [false, true].forEach(readyFirst => {
+    it(`prefers the Ready connection over one that needs an update, ${readyFirst ? 'Ready' : 'update'} first (CHE-2377)`, async () => {
+      const stale = device({ serial: 'old-host', device_id: 'dev_pixel7', computer_id: 'c3', computer_name: 'Old PC', computer_status: 'update_required' });
+      const ready = device({ serial: 'ready-host', device_id: 'dev_pixel7' });
+      const { fixture, fakes, root } = await create(readyFirst ? [ready, stale] : [stale, ready]);
+      expect(chipText(rows(root)[0].querySelector('.phone-card-main .status'))).toBe('Available');
+      rows(root)[0].querySelector<HTMLButtonElement>('.phone-actions button')!.click();
+      fixture.detectChanges();
+      expect(fakes.system.chooseRunTarget).toHaveBeenCalledOnceWith('ready-host');
+    });
   });
 
   it('keeps phones without a device id apart, one card each (CHE-2377)', async () => {

@@ -50,6 +50,7 @@ SHARE_COMMAND = "smartqa-host share <serial>"
 DEVICE_ID = re.compile(r"^sd-[0-9a-f]{16}$")
 _DEVICE_KINDS = {"physical", "emulator"}
 _DEVICE_STATES = {"device", "offline", "unauthorized", "no"}
+_CONNECTIONS = ("usb", "wifi")  # the only transport facts the agent may report; never an address
 _DEVICE_ATTENTION = {
     "offline",
     "unauthorized",
@@ -170,6 +171,11 @@ def _clean(value: object, limit: int, default: str = "") -> str:
     return text or default
 
 
+def _reported(item: dict) -> list:
+    value = item.get("connections")
+    return value if isinstance(value, list) else []
+
+
 class HostRegistry:
     def __init__(self) -> None:
         self.db_path = None  # None = the shared Artemis database
@@ -188,7 +194,7 @@ class HostRegistry:
             if key not in self._schema_ready:
                 conn.executescript(_SCHEMA)
                 columns = {row[1] for row in conn.execute("PRAGMA table_info(host_devices)")}
-                for column in ("kind", "state", "attention"):  # B3a-2, additive
+                for column in ("kind", "state", "attention", "connections"):  # additive
                     if column not in columns:
                         conn.execute(f"ALTER TABLE host_devices ADD COLUMN {column} TEXT")
                 # Rows from before B3a-2 hold raw adb serials: drop them; the agent re-registers.
@@ -513,6 +519,7 @@ class HostRegistry:
                         item.get("attention")
                         if item.get("attention") in _DEVICE_ATTENTION
                         else None,
+                        ",".join(name for name in _CONNECTIONS if name in _reported(item)),
                     )
                 )
         with self._db() as conn:
@@ -526,7 +533,7 @@ class HostRegistry:
             conn.execute("DELETE FROM host_devices WHERE host_id=?", (host_id,))
             conn.executemany(
                 "INSERT OR REPLACE INTO host_devices (host_id, serial, model, shared, updated_at,"
-                " kind, state, attention) VALUES (?,?,?,?,?,?,?,?)",
+                " kind, state, attention, connections) VALUES (?,?,?,?,?,?,?,?,?)",
                 rows[:MAX_DEVICES_PER_HOST],
             )
         from apps.admin_console.services.device_identity import device_identity
@@ -637,6 +644,7 @@ class HostRegistry:
                     "since": host["since"],
                     "attention": "also_visible" if d["also_visible_on"] else None,
                     "also_visible_on": d["also_visible_on"],
+                    "connections": [c for c in (d["connections"] or "").split(",") if c],
                 }
                 for d in mine
                 if d["shared"]

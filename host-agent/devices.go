@@ -14,20 +14,21 @@ import (
 )
 
 type device struct {
-	ID        string         `json:"id,omitempty"`
-	Serial    string         `json:"serial"`
-	State     string         `json:"state"`
-	Model     string         `json:"model,omitempty"`
-	Transport string         `json:"transport_id,omitempty"`
-	Kind      string         `json:"kind,omitempty"`
-	HWID      string         `json:"hw_id,omitempty"`
-	Label     string         `json:"label,omitempty"`
-	Identity  string         `json:"identity,omitempty"`
-	Attention string         `json:"attention,omitempty"`
-	Shared    bool           `json:"shared"`
-	Auto      bool           `json:"auto_shared,omitempty"`
-	Props     transportProps `json:"-"`
-	serials   []string
+	ID          string         `json:"id,omitempty"`
+	Serial      string         `json:"serial"`
+	State       string         `json:"state"`
+	Model       string         `json:"model,omitempty"`
+	Transport   string         `json:"transport_id,omitempty"`
+	Kind        string         `json:"kind,omitempty"`
+	HWID        string         `json:"hw_id,omitempty"`
+	Label       string         `json:"label,omitempty"`
+	Identity    string         `json:"identity,omitempty"`
+	Attention   string         `json:"attention,omitempty"`
+	Shared      bool           `json:"shared"`
+	Auto        bool           `json:"auto_shared,omitempty"`
+	Props       transportProps `json:"-"`
+	serials     []string
+	connections []string
 }
 
 func allowedADB(arguments []string) bool {

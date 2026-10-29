@@ -9,7 +9,6 @@ import { SystemService } from '../../services/system.service';
 import { UsbDeviceRelayService } from '../../services/usb-device-relay.service';
 import { WorkspacePhoneService } from '../../services/workspace-phone.service';
 import { deviceChipView } from '../../utils/device-chip.util';
-import { serialShape } from '../../utils/device-label.util';
 
 type PhoneStatus = 'Held' | 'Available' | 'Disconnected' | 'Needs attention';
 
@@ -23,6 +22,9 @@ const key = (device: RegistryDevice) => `${device.computer_id}:${device.serial}`
 
 /** One phone and every way it is connected: the server names them with one device id. */
 interface PhoneGroup { device: RegistryDevice; endpoints: RegistryDevice[]; }
+/** One way a phone is connected; `serial` is set on the first row of a device only. */
+interface PhoneEndpoint { id: string; label: string; via: string | null; serial: string | null; }
+const STATE_RANK = { 'Ready': 0, 'Needs attention': 1, 'Offline': 2 } as const;
 
 @Component({
   selector: 'app-phones',
@@ -95,10 +97,11 @@ interface PhoneGroup { device: RegistryDevice; endpoints: RegistryDevice[]; }
                   <div class="phone-details">
                     <p>{{ v.source }}<span aria-hidden="true"> · </span><span>{{ v.detail }}</span></p>
                     <div class="endpoint-list" aria-label="Phone connections">
-                      @for (endpoint of group.endpoints; track key(endpoint)) {
+                      @for (endpoint of endpointsOf(group); track endpoint.id) {
                         <div class="endpoint">
-                          <strong>{{ endpointLabel(endpoint) }}</strong>
-                          <span class="mono phone-serial">{{ endpoint.serial }}</span>
+                          <strong>{{ endpoint.label }}</strong>
+                          @if (endpoint.via) { <span>{{ endpoint.via }}</span> }
+                          @if (endpoint.serial) { <span class="mono phone-serial">{{ endpoint.serial }}</span> }
                         </div>
                       }
                     </div>
@@ -332,8 +335,9 @@ export class PhonesComponent {
       groups.push(group);
       if (device.device_id) byId.set(device.device_id, group);
     }
-    // Show the connected endpoint: it is the one a session can start on.
-    return groups.map(endpoints => ({ endpoints, device: endpoints.find(e => this.view(e).state !== 'Offline') ?? endpoints[0] }));
+    // Show the best endpoint: Ready beats Needs attention beats Offline; the first of equals wins.
+    const rank = (e: RegistryDevice) => STATE_RANK[this.view(e).state];
+    return groups.map(endpoints => ({ endpoints, device: endpoints.reduce((best, e) => rank(e) < rank(best) ? e : best) }));
   });
   protected readonly availablePhones = computed(() => this.phones().filter(group => !!group.device.device_id && this.statusOf(group) === 'Available'));
   protected readonly selectedLeaseDevice = computed(() => {
@@ -392,9 +396,16 @@ export class PhonesComponent {
     return lease && lease.expires_at * 1000 > this.now() ? lease : null;
   }
 
-  protected endpointLabel(endpoint: RegistryDevice): string {
-    if (endpoint.source === 'browser') return 'Browser connection';
-    return serialShape(endpoint.serial) === 'network' ? 'Wi-Fi' : 'USB';
+  /** What the server reports: a browser, or the connection kinds a computer's agent sent; never guessed from a serial. */
+  protected endpointsOf(group: PhoneGroup): PhoneEndpoint[] {
+    return group.endpoints.flatMap((endpoint): PhoneEndpoint[] => {
+      const id = key(endpoint);
+      if (endpoint.source === 'browser') return [{ id, label: 'Browser connection', via: null, serial: endpoint.serial }];
+      const via = this.view(endpoint).source;
+      const kinds = endpoint.connections ?? [];
+      if (!kinds.length) return [{ id, label: via, via: null, serial: endpoint.serial }];
+      return kinds.map((kind, index) => ({ id: `${id}:${kind}`, label: kind === 'wifi' ? 'Wi-Fi' : 'USB', via, serial: index ? null : endpoint.serial }));
+    });
   }
 
   protected leaseEnd(lease: DeviceLease): string {

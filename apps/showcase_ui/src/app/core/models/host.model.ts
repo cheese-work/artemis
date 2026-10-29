@@ -33,6 +33,8 @@ export interface RegistryDevice {
   device_id?: string | null;
   /** The live lease on this phone, whoever holds it; null or absent when free or leases are off. */
   lease?: DeviceLease | null;
+  /** Live connection kinds a computer's agent reports for this phone; never an address. */
+  connections?: ('usb' | 'wifi')[];
   model: string | null;
   product?: string | null;
   /** Classified from adb properties; absent when the computer's agent did not report it. */
