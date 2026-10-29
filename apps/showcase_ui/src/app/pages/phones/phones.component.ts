@@ -319,6 +319,9 @@ export class PhonesComponent {
   protected readonly leaseError = signal<string | null>(null);
   /** Leases this person took in this tab; `GET /api/leases` is admin-only, so the page cannot list others. */
   protected readonly leases = signal<Record<string, Lease>>({});
+  /** Bumped when a lease expires so `leaseOf` and everything derived from it re-evaluate. */
+  private readonly now = signal(Date.now());
+  private readonly expiryTimers = new Set<ReturnType<typeof setTimeout>>();
   protected readonly availablePhones = computed(() => (this.registry()?.devices ?? []).filter(device => !!device.device_id && this.statusOf(device) === 'Available'));
   protected readonly selectedLeaseDevice = computed(() => {
     const available = this.availablePhones();
@@ -338,6 +341,7 @@ export class PhonesComponent {
     inject(DestroyRef).onDestroy(() => {
       this.request?.unsubscribe();
       this.leaseRequest?.unsubscribe();
+      this.expiryTimers.forEach(clearTimeout);
     });
   }
 
@@ -368,7 +372,7 @@ export class PhonesComponent {
 
   protected leaseOf(device: RegistryDevice): Lease | null {
     const lease = device.device_id ? this.leases()[device.device_id] : undefined;
-    return lease && lease.expires_at * 1000 > Date.now() ? lease : null;
+    return lease && lease.expires_at * 1000 > this.now() ? lease : null;
   }
 
   protected leaseEnd(lease: Lease): string {
@@ -441,7 +445,10 @@ export class PhonesComponent {
       next: lease => {
         this.requesting.set(false);
         this.leaseMessage.set('Lease request submitted.');
-        if (isLease(lease)) this.leases.update(current => ({ ...current, [lease.device_id]: lease }));
+        if (isLease(lease)) {
+          this.leases.update(current => ({ ...current, [lease.device_id]: lease }));
+          this.expireAt(lease);
+        }
         this.load();
       },
       error: error => {
@@ -449,6 +456,15 @@ export class PhonesComponent {
         this.leaseError.set(this.leaseFailure(error));
       }
     });
+  }
+
+  private expireAt(lease: Lease): void {
+    this.now.set(Date.now());
+    const timer = setTimeout(() => {
+      this.expiryTimers.delete(timer);
+      this.now.set(Date.now());
+    }, Math.max(lease.expires_at * 1000 - Date.now(), 0) + 1);
+    this.expiryTimers.add(timer);
   }
 
   protected focusBorrowForm(): void {

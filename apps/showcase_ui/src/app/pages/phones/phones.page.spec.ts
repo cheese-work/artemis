@@ -170,6 +170,36 @@ describe('Phones page (Sessions v2.1 C rev-4)', () => {
       .toEqual(['No available phones']);
   });
 
+  it('offers the phone again once its lease expires', async () => {
+    const { fixture, root, fakes } = await create();
+    jasmine.clock().install();
+    try {
+      jasmine.clock().mockDate(new Date());
+      const purpose = root.querySelector<HTMLInputElement>('#purpose')!;
+      purpose.value = 'Check onboarding';
+      purpose.dispatchEvent(new Event('input', { bubbles: true }));
+      fakes.hosts.requestLease.and.returnValue(of({
+        lease_id: 'l1', device_id: 'dev_pixel3a', holder: 'qa@example.test', purpose: 'Check onboarding',
+        restricted: false, space_epoch: 1, created_at: 1, expires_at: Date.now() / 1000 + 60
+      }));
+      root.querySelector<HTMLFormElement>('form[aria-label="Borrow a phone"]')!
+        .dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+      fixture.detectChanges();
+      expect(Array.from(root.querySelector<HTMLSelectElement>('#phone-choice')!.options).map(o => o.textContent?.trim()))
+        .toEqual(['No available phones']);
+
+      jasmine.clock().tick(61_000);
+      fixture.detectChanges();
+      const card = rows(root).find(row => row.textContent?.includes('Pixel 3a'))!;
+      expect(chipText(card.querySelector('.phone-card-main .status'))).toBe('Available');
+      expect(card.querySelector('.lease-details')).toBeNull();
+      expect(Array.from(root.querySelector<HTMLSelectElement>('#phone-choice')!.options).map(o => o.textContent?.trim()))
+        .toEqual([jasmine.stringMatching(/Pixel 3a/) as unknown as string]);
+    } finally {
+      jasmine.clock().uninstall();
+    }
+  });
+
   it('shows the lease holder from a device_busy response', async () => {
     const { fixture, root, fakes } = await create();
     const purpose = root.querySelector<HTMLInputElement>('#purpose')!;
