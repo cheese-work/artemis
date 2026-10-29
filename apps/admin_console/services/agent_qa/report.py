@@ -4,15 +4,28 @@ from __future__ import annotations
 
 from dataclasses import asdict
 from html import escape
+from io import BytesIO
 import json
 import os
 from pathlib import Path
+import re
+from types import SimpleNamespace
 from typing import Any
 
-from apps.admin_console.services.agent_qa.flow import FlowError, build_flow
+from PIL import Image
+
+from apps.admin_console.core.redaction import redact_json
+from apps.admin_console.services.agent_qa.flow import (
+    FlowError,
+    build_flow,
+    redact_known_values,
+    secret_values,
+)
 from apps.admin_console.services.agent_qa.frc import evaluate_first_run
 from apps.admin_console.services.agent_qa.gate import evaluate_gate
 from apps.admin_console.services.agent_qa.session import Session
+from artemis.utils.private_screen import mask_password_observation
+from artemis.utils.redaction import register_secrets
 
 _CSS = """
 body{font:14px/1.5 Inter,system-ui,sans-serif;background:#fafafa;color:#27272a;margin:0;padding:24px}
@@ -55,7 +68,109 @@ def build_report(session: Session) -> dict[str, Any]:
         report["first_run_comprehension"] = evaluate_first_run(
             session.first_run, session.declared_screens
         )
-    return report
+    return redact_known_values(redact_json(report), secret_values(session))
+
+
+def _rect(bounds: object, width: int, height: int) -> tuple[int, int, int, int] | None:
+    if isinstance(bounds, str):
+        match = re.fullmatch(r"\[(-?\d+),(-?\d+)\]\[(-?\d+),(-?\d+)\]", bounds)
+        if match is None:
+            return None
+        coordinates = tuple(map(int, match.groups()))
+    elif (
+        isinstance(bounds, list | tuple)
+        and len(bounds) == 4
+        and all(isinstance(value, int) and not isinstance(value, bool) for value in bounds)
+    ):
+        coordinates = tuple(bounds)
+    else:
+        return None
+    left, top, right, bottom = coordinates
+    left, top = max(0, left), max(0, top)
+    right, bottom = min(width, right), min(height, bottom)
+    return (left, top, right, bottom) if right > left and bottom > top else None
+
+
+def _android_bounds(bounds: object, width: int, height: int) -> str | None:
+    rectangle = _rect(bounds, width, height)
+    if rectangle is None:
+        return None
+    left, top, right, bottom = rectangle
+    return f"[{left},{top}][{right},{bottom}]"
+
+
+def _masked_png(session: Session, step, source: Path) -> bytes:
+    raw = source.read_bytes()
+    with Image.open(BytesIO(raw)) as opened:
+        width, height = opened.size
+    elements = []
+    if step.flag_secure:
+        bounds = f"[0,0][{width},{height}]"
+        elements.append({"password": True, "bounds": bounds})
+    else:
+        private_nodes = [
+            node
+            for node in step.text_nodes
+            if node.get("password") in (True, "true") or node.get("secret") in (True, "true")
+        ]
+        action_private = step.action.get("secret") is True
+        system_bounds = [session.status_bar_bounds, session.navigation_bar_bounds]
+        private_bounds = [node.get("bounds") for node in private_nodes]
+        if action_private:
+            target = step.action.get("target")
+            target_bounds = target.get("bounds") if isinstance(target, dict) else None
+            if target_bounds is not None:
+                private_bounds.append(target_bounds)
+        if action_private and not any(private_bounds):
+            elements.append({"password": True})
+        for item in system_bounds:
+            if not item:
+                continue
+            normalized = _android_bounds(item, width, height)
+            elements.append({"password": True, **({"bounds": normalized} if normalized else {})})
+        for item in private_bounds:
+            if not item:
+                elements.append({"password": True})
+                continue
+            normalized = _android_bounds(item, width, height)
+            elements.append({"password": True, **({"bounds": normalized} if normalized else {})})
+    if not elements:
+        return raw
+    screen = SimpleNamespace(
+        ui_elements=elements,
+        ui_hierarchy_xml=None,
+        screenshot_bytes=raw,
+        screenshot_base64="",
+        width=width,
+        height=height,
+    )
+    return mask_password_observation(screen).screenshot_bytes
+
+
+def _write_screenshots(session: Session, report: dict[str, Any], out_dir: Path) -> None:
+    session_root = session.base_dir.resolve()
+    output_root = out_dir.resolve()
+    for theme, data in report["themes"].items():
+        steps = session.themes[theme].steps
+        if len(steps) != len(data["flow"]):
+            continue
+        for step, record in zip(steps, data["flow"], strict=True):
+            for key in ("before_png", "after_png"):
+                relative = Path(record[key])
+                source = (session_root / relative).resolve()
+                destination = output_root / "smartqa" / relative
+                try:
+                    source.relative_to(session_root)
+                    destination.resolve().relative_to(output_root)
+                except ValueError as exc:
+                    raise FlowError("flow_incomplete") from exc
+                current = output_root
+                for part in ("smartqa", *relative.parts):
+                    current /= part
+                    if current.is_symlink():
+                        raise FlowError("flow_incomplete")
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_bytes(_masked_png(session, step, source))
 
 
 def _rule_rows(report: dict[str, Any]) -> str:
@@ -84,8 +199,11 @@ def _theme_block(theme: str, data: dict[str, Any], error: str | None, prefix: st
         action = step["action"]
         target = action.get("target", {})
         label = f"{action['type']} {target.get('text') or target.get('resource_id') or ''}".strip()
+        screenshot_label = (
+            f" ({escape(step['screenshot_label'])})" if step.get("screenshot_label") else ""
+        )
         figs = "".join(
-            f'<figure><img src="{escape(prefix + step[key])}" alt="{name} step {step["step"]}"><figcaption>{name}</figcaption></figure>'
+            f'<figure><img src="{escape(prefix + step[key])}" alt="{name} step {step["step"]}"><figcaption>{name}{screenshot_label}</figcaption></figure>'
             for key, name in (("before_png", "Before"), ("after_png", "After"))
         )
         out.append(
@@ -150,10 +268,11 @@ def render_html(report: dict[str, Any], *, png_prefix: str = "") -> str:
 
 def write_report(session: Session, out_dir: Path) -> dict[str, Any]:
     """Write ``report.json``, ``flow.json`` and ``report.html``; return the report."""
+    values = secret_values(session)
+    register_secrets(list(values))
     report = build_report(session)
     out_dir.mkdir(parents=True, exist_ok=True)
-    rel = os.path.relpath(session.base_dir, out_dir)
-    prefix = "" if rel == "." else rel + "/"
+    _write_screenshots(session, report, out_dir)
     (out_dir / "report.json").write_text(
         json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
     )
@@ -161,5 +280,7 @@ def write_report(session: Session, out_dir: Path) -> dict[str, Any]:
     (out_dir / "flow.json").write_text(
         json.dumps(flows, ensure_ascii=False, indent=2), encoding="utf-8"
     )
-    (out_dir / "report.html").write_text(render_html(report, png_prefix=prefix), encoding="utf-8")
+    (out_dir / "report.html").write_text(
+        render_html(report, png_prefix="smartqa/"), encoding="utf-8"
+    )
     return report
