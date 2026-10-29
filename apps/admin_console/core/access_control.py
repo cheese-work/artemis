@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
-import functools
 import hmac
 import ipaddress
 import json
@@ -34,7 +33,9 @@ logger = logging.getLogger(__name__)
 @dataclass(frozen=True)
 class ServicePrincipal:
     name: str
-    routes: frozenset[tuple[str, str]]  # (METHOD, exact path)
+    routes: frozenset[
+        tuple[str, str]
+    ]  # (METHOD, path); a whole `{name}` segment matches any one segment
 
 
 @dataclass(frozen=True)
@@ -516,25 +517,27 @@ def _log_safe_route(request: HTTPConnection) -> str:
     return f"{request.scope.get('method', 'WEBSOCKET')} {_log_safe_path(request)}"
 
 
-@functools.lru_cache(maxsize=256)
-def _route_pattern(template: str) -> re.Pattern[str]:
-    parts = re.split(r"\{[A-Za-z_][A-Za-z0-9_]*\}", template)
-    return re.compile("[^/]+".join(re.escape(part) for part in parts))
-
-
-def _route_allowed(routes: frozenset[tuple[str, str]], method: str, path: str) -> bool:
-    """Exact match, or a ``{name}`` template that stands for exactly one path segment."""
-    return any(
-        route_method == method
-        and (
-            route_path == path or ("{" in route_path and _route_pattern(route_path).fullmatch(path))
-        )
-        for route_method, route_path in routes
-    )
+def _service_route_allowed(method: str, path: str, routes: frozenset[tuple[str, str]]) -> bool:
+    """Exact match, or a grant whose `{name}` segments each match one non-empty path segment."""
+    if (method, path) in routes:
+        return True
+    segments = path.split("/")
+    for granted_method, granted_path in routes:
+        granted = granted_path.split("/")
+        if (
+            granted_method == method
+            and len(granted) == len(segments)
+            and all(
+                (g.startswith("{") and g.endswith("}") and s and not s.isspace()) or g == s
+                for g, s in zip(granted, segments, strict=True)
+            )
+        ):
+            return True
+    return False
 
 
 def _enforce_service_principal_routes(request: HTTPConnection, identity: AccessIdentity) -> None:
-    """A service token reaches only the exact routes its principal maps; nothing else."""
+    """A service token reaches only the routes its principal maps (exact or `{name}` templates); nothing else."""
     if identity.reason == "service_principal_unmapped":
         logger.warning("Service token denied: unmapped client id route=%s", _log_safe_path(request))
         allowed = False
@@ -543,7 +546,7 @@ def _enforce_service_principal_routes(request: HTTPConnection, identity: AccessI
     else:
         method = request.scope.get("method", "WEBSOCKET")
         # The router matches scope["path"]; request.url.path drops tabs and newlines.
-        allowed = _route_allowed(identity.service_routes, method, request.scope["path"])
+        allowed = _service_route_allowed(method, request.scope["path"], identity.service_routes)
         logger.info(
             "Service principal request principal=%s route=%s %s allowed=%s",
             identity.service_principal,
@@ -582,7 +585,7 @@ async def require_admin(identity: AccessIdentity = Depends(public_tier)) -> Acce
 async def require_admin_or_service_read(
     identity: AccessIdentity = Depends(public_tier),
 ) -> AccessIdentity:
-    """Admin, or a service principal whose route `public_tier` already allowed."""
+    """Admin, or a service principal whose exact route `public_tier` already allowed."""
     if identity.service_principal is not None:
         return identity
     return await require_admin(identity)
@@ -597,6 +600,13 @@ async def require_qa(identity: AccessIdentity = Depends(public_tier)) -> AccessI
         "not_signed_in",
         "Open the protected SmartQA URL and sign in, then retry.",
     )
+
+
+async def require_qa_or_service(identity: AccessIdentity = Depends(public_tier)) -> AccessIdentity:
+    """A signed-in user, an admin, or a service principal whose exact route `public_tier` allowed."""
+    if identity.service_principal is not None:
+        return identity
+    return await require_qa(identity)
 
 
 async def require_websocket_admin(identity: AccessIdentity = Depends(public_tier)) -> None:
@@ -705,7 +715,14 @@ _ADMIN_GET_PATHS = {
 }
 
 # Admin reads that a mapped service principal may also call (see require_admin_or_service_read).
-_SERVICE_READ_GET_PATHS = {"/api/system/failures"}
+_SERVICE_READ_GET_PATHS = {"/api/system/failures", "/api/leases"}
+
+# Device leases (CHE-2099): agents call these with a service token, QA users in a browser.
+_LEASE_POST_PATHS = {
+    "/api/leases",
+    "/api/leases/{lease_id}/renew",
+    "/api/leases/{lease_id}/release",
+}
 
 # Admin mutations that a mapped service principal may also call (the SmartQA agent upload).
 _SERVICE_MUTATING_PATHS = {"/api/smartqa/apks"}
@@ -814,6 +831,8 @@ def route_tier(path: str, methods: set[str], is_websocket: bool = False) -> str 
         return "qa"
     if methods == {"POST"} and path in _QA_MUTATING_PATHS:
         return "qa"
+    if methods == {"POST"} and path in _LEASE_POST_PATHS:
+        return "qa_or_service"
     if methods in ({"POST"}, {"PUT"}) and path in _ADMIN_MUTATING_PATHS:
         return "admin"
     return None

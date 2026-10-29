@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 from apps.admin_console.core.access_control import (
     AccessConfig,
     CloudflareAccessVerifier,
-    _route_allowed,
+    _service_route_allowed,
     _service_principals_from_environment,
 )
 
@@ -130,10 +130,10 @@ def test_flag_off_hides_the_endpoint(call, monkeypatch):
 
 def test_principal_route_templates_match_one_segment_only():
     routes = frozenset({("GET", "/api/sessions/{session_id}")})
-    assert _route_allowed(routes, "GET", "/api/sessions/abc-123")
-    assert not _route_allowed(routes, "GET", "/api/sessions/abc/steps")
-    assert not _route_allowed(routes, "GET", "/api/sessions/")
-    assert not _route_allowed(routes, "POST", "/api/sessions/abc-123")
+    assert _service_route_allowed("GET", "/api/sessions/abc-123", routes)
+    assert not _service_route_allowed("GET", "/api/sessions/abc/steps", routes)
+    assert not _service_route_allowed("GET", "/api/sessions/", routes)
+    assert not _service_route_allowed("POST", "/api/sessions/abc-123", routes)
 
 
 def test_template_route_reaches_the_session_but_not_other_paths(call):

@@ -11,6 +11,7 @@ from apps.admin_console.core.access_control import (
     require_effective_loopback,
     require_lifecycle_token,
     require_qa,
+    require_qa_or_service,
     require_websocket_admin,
     route_tier,
 )
@@ -59,6 +60,8 @@ def _assert_routes_have_declared_tiers(routes):
             assert require_admin_or_service_read in dependency_calls, f"Missing guard: {path}"
         if tier == "qa":
             assert require_qa in dependency_calls, f"Missing QA guard: {path}"
+        if tier == "qa_or_service":
+            assert require_qa_or_service in dependency_calls, f"Missing guard: {path}"
         if tier == "lifecycle":
             assert require_lifecycle_token in dependency_calls, f"Missing lifecycle guard: {path}"
         if tier == "loopback":
@@ -84,6 +87,7 @@ def _assert_routes_have_declared_tiers(routes):
                 assert tier in {
                     "admin",
                     "qa",
+                    "qa_or_service",
                     "lifecycle",
                     "loopback",
                     "agent",

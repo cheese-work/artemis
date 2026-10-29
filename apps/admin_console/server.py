@@ -135,6 +135,7 @@ try:
         drain,
         failures,
         hosts,
+        leases,
         media,
         preview_synthetic,
         prompt_critiques,
@@ -164,6 +165,7 @@ except ImportError:
         drain,
         failures,
         hosts,
+        leases,
         media,
         preview_synthetic,
         prompt_critiques,
@@ -468,6 +470,7 @@ app.include_router(providers.router)
 app.include_router(drain.router)
 app.include_router(device_bridge.router)
 app.include_router(hosts.router)
+app.include_router(leases.router)
 app.include_router(agent.router)
 
 # Mount cloud gateway router for Frappe / Cloud integration if present

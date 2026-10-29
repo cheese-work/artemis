@@ -171,6 +171,11 @@ DISABLED = frozenset(
         # Host agents, enrollment and the device bridge.
         f"{WEBSOCKET} /api/device-bridge/session",
         f"{WEBSOCKET} /api/device-bridge/resume",
+        # A device lease reserves a phone, so a per-PR preview never takes one.
+        "GET /api/leases",
+        "POST /api/leases",
+        "POST /api/leases/{lease_id}/renew",
+        "POST /api/leases/{lease_id}/release",
         "GET /api/hosts",
         "POST /api/hosts/enrollment-codes",
         "GET /api/hosts/enrollment-codes/{code_id}",
