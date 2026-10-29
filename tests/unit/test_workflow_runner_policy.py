@@ -85,7 +85,7 @@ def test_python_jobs_install_the_opencv_system_libraries():
 
 def test_python_job_timeout_allows_the_slower_x99_container():
     workflow = yaml.safe_load((WORKFLOWS / "ci.yml").read_text(encoding="utf-8"))
-    assert workflow["jobs"]["python-tests"]["timeout-minutes"] == 60
+    assert workflow["jobs"]["python-tests"]["timeout-minutes"] == 90
 
 
 def test_ci_does_not_duplicate_pull_request_runs_on_branch_pushes():
@@ -99,7 +99,7 @@ def test_ci_does_not_duplicate_pull_request_runs_on_branch_pushes():
 def test_python_passes_have_independent_budgets_without_extra_runner_contention():
     workflow = yaml.safe_load((WORKFLOWS / "ci.yml").read_text(encoding="utf-8"))
     tests = workflow["jobs"]["python-tests"]
-    assert tests["timeout-minutes"] == 60
+    assert tests["timeout-minutes"] == 90
     assert tests["strategy"] == {
         "fail-fast": False,
         "max-parallel": 1,
