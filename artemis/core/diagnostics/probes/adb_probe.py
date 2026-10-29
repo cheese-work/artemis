@@ -33,6 +33,7 @@ from artemis.core.diagnostics.schema import (
     ProbeStatus,
 )
 from artemis.platform import OSType, platform
+from artemis.runtime import device_policy
 from artemis.runtime.adb_endpoint import AdbEndpoint, current_adb_endpoint
 from artemis.runtime.endpoint_transport import EndpointTransport
 from artemis.utils.device_kind import DeviceKind, classify_properties, device_title, parse_getprop
@@ -207,7 +208,12 @@ class AdbDeviceProbe(BaseProbe):
         serial: str,
         timeout_seconds: float = 2.0,
     ) -> bool | None:
-        """Query Keyguard state without changing or waking the target device."""
+        """Query Keyguard state without changing or waking the target device.
+
+        ``None`` (unknown) for a restricted phone: no run policy exists yet to gate the query.
+        """
+        if not device_policy.may_describe(serial):
+            return None
 
         async def run_dumpsys(*service_args: str) -> str:
             proc = await self._transport(adb_path).create_subprocess(
@@ -538,7 +544,8 @@ class AdbDeviceProbe(BaseProbe):
         # Lock state stays live, while static device properties and the installed
         # package inventory are cached to keep frequent dashboard probes cheap.
         for dev in devices:
-            if dev.state == "device":
+            # A restricted phone is listed, never asked anything.
+            if dev.state == "device" and device_policy.may_describe(dev.serial):
                 try:
                     lock_state_task = asyncio.create_task(
                         self._get_dashboard_lock_state(adb_path, dev.serial)

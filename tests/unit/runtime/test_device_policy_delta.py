@@ -28,6 +28,7 @@ from tests.unit.runtime.test_device_policy_hardening import (  # noqa: F401  (fi
     lease_db,
     needs_adb,
 )
+from tests.unit.runtime.test_device_policy_hardening import OTHER  # noqa: E402
 
 ELSEWHERE = "com.other.bank"
 OTHER_PORT = 19999
@@ -161,6 +162,145 @@ async def test_initialization_sends_the_restricted_phone_nothing_before_the_poli
     assert guest.log == []  # no shell (``wm size`` and the like) reached the phone
     assert instance._device_policy is not None
     assert all(e["decision"] != "allowed" for e in instance._device_policy.audit.entries())
+
+
+# ------------------- R1: automatic device selection asks a restricted phone nothing either
+
+
+def _cold_pool(guest):
+    from artemis.runtime.device_pool import DevicePool
+
+    guest.server.devices.pop(OTHER, None)  # one phone: automatic selection picks it
+    return DevicePool(endpoint=guest.server.endpoint)
+
+
+@needs_adb
+@pytest.mark.asyncio
+async def test_automatic_selection_sends_the_restricted_phone_nothing_before_the_policy_is_on(
+    guest, lease_db, monkeypatch
+):
+    import importlib
+
+    from artemis import runtime
+    from artemis.sdk import agent as agent_module
+    from artemis.sdk.agent import Agent
+
+    device_policy.reset()  # the lease, not a pre-registered device, must switch the policy on
+    guest.log.clear()
+    guest.server.devices.pop(OTHER)  # one phone: automatic selection picks it
+    lease_db.leases.acquire(lease_db.path, ["dev_guest"], "qa", 600, "run", restricted=True)
+    monkeypatch.setattr(runtime, "device_pool", _cold_pool(guest))
+    monkeypatch.setattr(
+        importlib.import_module("artemis.runtime.device_pool"), "identity_observer", None
+    )
+    monkeypatch.setattr(
+        agent_module.EndpointTransport, "shared", classmethod(lambda cls, *_a: guest.transport)
+    )
+    monkeypatch.setattr(agent_module, "create_screen_client", lambda *_a, **_k: MagicMock())
+    monkeypatch.setattr(agent_module, "publish_startup_progress", lambda *_a, **_k: None)
+    instance = Agent.__new__(Agent)
+    instance._initialized = False
+    instance._session_id = "run-auto"
+    instance._tmp_traces_dir = lease_db.path.parent
+    instance._prewarm_llm_connections = AsyncMock()
+    instance._config = SimpleNamespace(
+        device_id=None,  # automatic selection
+        device_platform=None,
+        servers=SimpleNamespace(adb_host="127.0.0.1", adb_port=guest.server.endpoint.port),
+    )
+
+    await instance._init_internal()
+
+    assert guest.log == []  # not even ``getprop`` reached the phone
+    assert not any(r.startswith("shell:") for r in guest.server.request_strings())
+    assert instance._device_policy is not None
+    assert instance._device_policy.serial == SERIAL
+
+
+@needs_adb
+def test_a_cold_pool_reads_no_properties_of_a_restricted_phone(guest, lease_db):
+    device_policy.reset()
+    guest.log.clear()
+    lease_db.leases.acquire(lease_db.path, ["dev_guest"], "qa", 600, "run", restricted=True)
+
+    assert _cold_pool(guest).select_device() == SERIAL
+
+    assert not any(r.startswith("shell:") for r in guest.server.request_strings())
+
+
+@needs_adb
+@pytest.mark.asyncio
+async def test_a_cold_async_pool_reads_no_properties_of_a_restricted_phone(guest, lease_db):
+    device_policy.reset()
+    guest.log.clear()
+    lease_db.leases.acquire(lease_db.path, ["dev_guest"], "qa", 600, "run", restricted=True)
+
+    assert await _cold_pool(guest).select_device_async() == SERIAL
+
+    assert not any(r.startswith("shell:") for r in guest.server.request_strings())
+
+
+@needs_adb
+def test_an_unreadable_lease_store_means_no_property_read(guest, monkeypatch, tmp_path):
+    device_policy.reset()
+    guest.log.clear()
+    broken = tmp_path / "broken.db"
+    broken.write_bytes(b"this is not a sqlite database" * 100)
+    monkeypatch.setattr("artemis.runtime.device_policy.lease_db_path", lambda: broken)
+
+    _cold_pool(guest).select_device()
+
+    assert not any(r.startswith("shell:") for r in guest.server.request_strings())
+
+
+@needs_adb
+def test_a_phone_without_a_lease_is_still_described_by_its_properties(guest, lease_db):
+    device_policy.reset()  # no restricted lease: discovery is unchanged
+
+    pool = _cold_pool(guest)
+    pool.select_device()
+
+    assert any(r.startswith("shell:") for r in guest.server.request_strings())
+
+
+@needs_adb
+@pytest.mark.asyncio
+async def test_the_dashboard_probe_asks_a_restricted_phone_nothing(guest, lease_db, monkeypatch):
+    from artemis.core.diagnostics.probes.adb_probe import AdbDeviceProbe
+
+    device_policy.reset()
+    guest.log.clear()
+    lease_db.leases.acquire(lease_db.path, ["dev_guest"], "qa", 600, "run", restricted=True)
+    guest.server.devices.pop(OTHER, None)
+    probe = AdbDeviceProbe(endpoint=guest.server.endpoint)
+    monkeypatch.setattr(probe, "_transport", lambda _adb: guest.transport)
+
+    listed = await probe._parse_adb_devices(probe._locate_adb())
+
+    assert [d.serial for d in listed] == [SERIAL]
+    assert guest.log == []
+    assert not any(r.startswith("shell:") for r in guest.server.request_strings())
+
+
+@needs_adb
+@pytest.mark.asyncio
+async def test_the_submission_readiness_probe_does_not_query_a_restricted_phone(
+    guest, lease_db, monkeypatch
+):
+    from artemis.core.diagnostics.probes.adb_probe import AdbDeviceProbe
+
+    device_policy.reset()
+    guest.log.clear()
+    lease_db.leases.acquire(lease_db.path, ["dev_guest"], "qa", 600, "run", restricted=True)
+    guest.server.devices.pop(OTHER, None)
+    probe = AdbDeviceProbe(target_serial=SERIAL, endpoint=guest.server.endpoint)
+    monkeypatch.setattr(probe, "_transport", lambda _adb: guest.transport)
+
+    result = await probe.probe_submission_readiness(SERIAL)
+
+    assert result.metadata["active_device"] == {"serial": SERIAL, "is_locked": None}  # unknown
+    assert guest.log == []
+    assert not any(r.startswith("shell:") for r in guest.server.request_strings())
 
 
 # ---------------------------------------- R4: /action carries only the commands a run needs

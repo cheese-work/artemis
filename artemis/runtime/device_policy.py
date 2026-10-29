@@ -583,6 +583,22 @@ def is_restricted(serial: str) -> bool:
     return serial in (s.strip() for s in listed) or _restricted_by_lease(serial)
 
 
+def may_describe(serial: str) -> bool:
+    """May discovery run a command on ``serial``? ``False`` for a restricted or unknown phone.
+
+    Automatic selection lists phones before any run (and so any policy) exists; a restricted
+    phone is then picked from the host-only listing and described by nothing it is asked.
+    """
+    if serial in _DEVICES:
+        return False
+    if not enabled():
+        return True
+    try:
+        return not is_restricted(serial)
+    except (sqlite3.Error, OSError):  # an unreadable lease store must not read as "unrestricted"
+        return False
+
+
 def activate_for_run(
     transport: Any,
     serial: str,
