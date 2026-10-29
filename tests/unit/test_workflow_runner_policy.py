@@ -1,8 +1,10 @@
 """CI runs on the cheese-work X99 runner pool, and never on a fork pull request."""
 
 import json
+import os
 from pathlib import Path
 import re
+import subprocess
 
 import yaml
 
@@ -68,7 +70,7 @@ def test_frontend_job_provisions_chrome_without_disabling_its_sandbox():
 
 def test_python_jobs_install_the_opencv_system_libraries():
     workflow = yaml.safe_load((WORKFLOWS / "ci.yml").read_text(encoding="utf-8"))
-    for name in ("python-quality", "package"):
+    for name in ("python-tests", "package"):
         steps = workflow["jobs"][name]["steps"]
         install = next(
             (i for i, step in enumerate(steps) if "apt-get install" in step.get("run", "")), None
@@ -83,7 +85,59 @@ def test_python_jobs_install_the_opencv_system_libraries():
 
 def test_python_job_timeout_allows_the_slower_x99_container():
     workflow = yaml.safe_load((WORKFLOWS / "ci.yml").read_text(encoding="utf-8"))
-    assert workflow["jobs"]["python-quality"]["timeout-minutes"] == 60
+    assert workflow["jobs"]["python-tests"]["timeout-minutes"] == 60
+
+
+def test_ci_does_not_duplicate_pull_request_runs_on_branch_pushes():
+    workflow = yaml.safe_load((WORKFLOWS / "ci.yml").read_text(encoding="utf-8"))
+    triggers = workflow[True] if True in workflow else workflow["on"]
+    assert triggers["push"] == {"branches": ["main"]}
+    assert "pull_request" in triggers
+    assert "workflow_dispatch" in triggers
+
+
+def test_python_passes_have_independent_budgets_without_extra_runner_contention():
+    workflow = yaml.safe_load((WORKFLOWS / "ci.yml").read_text(encoding="utf-8"))
+    tests = workflow["jobs"]["python-tests"]
+    assert tests["timeout-minutes"] == 60
+    assert tests["strategy"] == {
+        "fail-fast": False,
+        "max-parallel": 1,
+        "matrix": {"suite": ["deterministic", "reverse"]},
+    }
+    steps = {step["name"]: step for step in tests["steps"]}
+    normal = steps["Run deterministic Python tests"]
+    reverse = steps["Run unit tests in reverse file order"]
+    assert normal["if"] == "matrix.suite == 'deterministic'"
+    assert reverse["if"] == "matrix.suite == 'reverse'"
+    for path in ("tests/unit", "tests/tools", "packages/artemis-client/tests"):
+        assert path in normal["run"]
+    assert "--cov-fail-under=60" in normal["run"]
+    assert "sort -zr" in reverse["run"]
+    assert 'pytest "${test_files[@]}"' in reverse["run"]
+    for step in (normal, reverse):
+        assert "--durations=20" in step["run"]
+    assert "Fetch CHE-844 receipt sources" in steps
+
+
+def test_required_python_check_fails_unless_both_matrix_passes_succeed():
+    workflow = yaml.safe_load((WORKFLOWS / "ci.yml").read_text(encoding="utf-8"))
+    gate = workflow["jobs"]["python-quality"]
+    assert gate["name"] == "Python 3.12"
+    assert gate["needs"] == "python-tests"
+    assert "always()" in gate["if"]
+    assert gate["timeout-minutes"] == 5
+    assert len(gate["steps"]) == 1
+    step = gate["steps"][0]
+    assert step["env"]["PYTHON_TEST_RESULT"] == "${{ needs.python-tests.result }}"
+    for result in ("success", "failure", "cancelled", "skipped", ""):
+        completed = subprocess.run(
+            ["bash", "-e", "-c", step["run"]],
+            env={**os.environ, "PYTHON_TEST_RESULT": result},
+            capture_output=True,
+            text=True,
+        )
+        assert (completed.returncode == 0) == (result == "success"), result
 
 
 def test_karma_tolerates_a_browser_stall_on_a_shared_x99_host():
