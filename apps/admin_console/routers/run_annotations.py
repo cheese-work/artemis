@@ -12,7 +12,7 @@ from urllib.parse import quote
 from fastapi import APIRouter, Depends, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.routing import APIRoute
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, StrictStr
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, StrictStr, field_validator
 
 from apps.admin_console.core.access_control import (
     AccessIdentity,
@@ -83,16 +83,25 @@ class RecordingAnchor(BaseModel):
     offset_ms: StrictInt = Field(le=2**63 - 1)
 
 
+def _reject_nul(body: str | None) -> str | None:
+    # SQLite measures a NUL-bearing text as shorter, so the length CHECK would 500.
+    if body is not None and "\x00" in body:
+        raise ValueError("body must not contain NUL")
+    return body
+
+
 class AnnotationCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
     anchor: Annotated[StepAnchor | RecordingAnchor, Field(discriminator="kind")]
     body: StrictStr = Field(min_length=1, max_length=4000)
+    _no_nul = field_validator("body")(_reject_nul)
 
 
 class AnnotationUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
     body: StrictStr = Field(default=None, min_length=1, max_length=4000)
     resolved: StrictBool = Field(default=None)
+    _no_nul = field_validator("body")(_reject_nul)
 
 
 @contextmanager

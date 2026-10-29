@@ -174,7 +174,7 @@ async def test_unsigned_caller_cannot_read_or_write_notes(annotation_run):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("body", ["", "x" * 4001, None, 12])
+@pytest.mark.parametrize("body", ["", "x" * 4001, None, 12, "\u0000", "a\u0000b"])
 async def test_invalid_bodies_use_the_contract_error(annotation_run, body):
     run, step = annotation_run
     for method, suffix, payload in (
@@ -183,6 +183,16 @@ async def test_invalid_bodies_use_the_contract_error(annotation_run, body):
     ):
         response = await _call("qa", method, run, suffix, json=payload)
         assert response.status_code == 422 and response.json()["code"] == "request_invalid"
+
+
+@pytest.mark.asyncio
+async def test_nul_body_edit_of_existing_note_is_rejected_and_leaves_it_unchanged(annotation_run):
+    run, step = annotation_run
+    annotation = (await _add(run, step)).json()
+    suffix = f"/{annotation['annotation_id']}"
+    invalid = await _call("qa", "PATCH", run, suffix, json={"body": "\u0000"})
+    assert invalid.status_code == 422 and invalid.json()["code"] == "request_invalid"
+    assert (await _call("qa", "GET", run, suffix)).json() == annotation
 
 
 @pytest.mark.asyncio
