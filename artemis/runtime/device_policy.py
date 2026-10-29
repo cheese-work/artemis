@@ -75,6 +75,10 @@ _HELPER_ROUTES = frozenset(
         ("POST", "/action"),
     }
 )
+#: Loopback port the accessibility helper binds on the device: the only service a helper stream may reach.
+HELPER_PORT = 18888
+#: ``/action`` commands a run needs. Clipboard, ``global`` (but ``back``) and the rest are refused.
+_ACTION_COMMANDS = frozenset({"tap", "double_tap", "long_press", "swipe", "type", "clear"})
 _SERVER_HOST_COMMANDS = (  # adb-server commands that select no device
     "host:version",
     "host:devices",
@@ -83,7 +87,6 @@ _SERVER_HOST_COMMANDS = (  # adb-server commands that select no device
     "host:disconnect:",
     "host:list-forward",
 )
-_TCP = re.compile(r"tcp:\d+")
 _ANIMATION_SCALES = (
     "window_animation_scale",
     "transition_animation_scale",
@@ -205,6 +208,9 @@ class RestrictedDevice:
             if granted is not None and granted[:2] == key:
                 self._permit = None  # single use
                 command = granted[2]
+            elif self.stopped:  # a left-app stop ends the run's commands; only a permit passes
+                self.record(_withheld(argv), "denied")
+                raise LeftTestApp(f"left_test_app: {self.serial}")
             else:
                 command = self._match(list(argv))
         if command is None:
@@ -303,20 +309,35 @@ class RestrictedDevice:
             self.check_foreground()  # the app may have left while the frame was taken: discard it
             dest.write_bytes(png)
 
-    def helper(self, method: str, path: str, call: Callable[[], bytes]) -> bytes:
-        """One accessibility-helper request: route allowlist, foreground checks, audit.
+    def helper(
+        self,
+        method: str,
+        path: str,
+        call: Callable[[], bytes],
+        *,
+        port: int,
+        body: bytes | None = None,
+    ) -> bytes:
+        """One accessibility-helper request: port, route and command allowlist, foreground checks, audit.
 
         The payload is withheld (``LeftTestApp``) when the test app was not in front
         before the request or is not in front after it.
         """
+        if self.stopped:
+            raise LeftTestApp(f"left_test_app: {self.serial}")
         route = (method, path.split("?", 1)[0])
-        if route not in _HELPER_ROUTES:
+        action = _action_command(body) if route[1] == "/action" else None
+        if (
+            port != HELPER_PORT
+            or route not in _HELPER_ROUTES
+            or (route[1] == "/action" and action is None)
+        ):
             self.record("helper", "denied")
             raise DevicePolicyDenied(f"device_policy_denied: {self.serial}")
         observed = route[1] != "/ping"
         if observed:
             self.check_foreground()
-        self.record(f"helper {route[0]} {route[1]}", "allowed")
+        self.record(" ".join(("helper", *route, *filter(None, [action]))), "allowed")
         token = _helper_serial.set(self.serial)
         try:
             payload = call()
@@ -329,6 +350,8 @@ class RestrictedDevice:
     def apply_setting(self, key: str, value: str) -> None:
         """Set a device setting (or ``night_mode``), remembering the first value for restore."""
         self._check_setting(key, value)
+        if self.stopped:
+            raise LeftTestApp(f"left_test_app: {self.serial}")
         with self._operation:
             if key not in self._saved:
                 self._saved[key] = self._get(key)
@@ -477,7 +500,7 @@ def guard_connection(connection: Any) -> Any:
 
 def _check_server_command(command: str, state: dict[str, bool]) -> None:
     if state["tcp_only"]:  # a helper stream: one tcp: service, nothing else
-        if not _TCP.fullmatch(command):
+        if command != f"tcp:{HELPER_PORT}":
             _deny_all("adbutils", "only the helper stream may use this connection")
         return
     for serial, device in list(_DEVICES.items()):
@@ -498,10 +521,30 @@ def _check_server_command(command: str, state: dict[str, bool]) -> None:
 # -- the accessibility helper --------------------------------------------------
 
 
-def helper_call(serial: str, method: str, path: str, call: Callable[[], bytes]) -> bytes:
+def _action_command(body: bytes | None) -> str | None:
+    """The name of the allowed ``/action`` command in ``body`` (``global back`` too), else ``None``."""
+    try:
+        data = json.loads(body or b"")
+    except (ValueError, RecursionError):
+        return None
+    cmd = data.get("cmd") if isinstance(data, dict) else None
+    if isinstance(cmd, str) and cmd in _ACTION_COMMANDS:
+        return cmd
+    return "global back" if cmd == "global" and data.get("action") == "back" else None
+
+
+def helper_call(
+    serial: str,
+    method: str,
+    path: str,
+    call: Callable[[], bytes],
+    *,
+    port: int,
+    body: bytes | None = None,
+) -> bytes:
     """Run one helper request ``call`` under the policy of ``serial`` (none: just run it)."""
     device = _DEVICES.get(serial)
-    return call() if device is None else device.helper(method, path, call)
+    return call() if device is None else device.helper(method, path, call, port=port, body=body)
 
 
 # -- run lifecycle -------------------------------------------------------------

@@ -242,12 +242,12 @@ class Agent(AgentBase):
                 adb_client=self._adb_client,
             )
 
+        if os.environ.get("ARTEMIS_CLOUD_MODE") != "1":  # before the first command to the phone
+            self.activate_device_policy(device_id, run_id=self._session_id or uuid.uuid4().hex)
         self._device_context = await self._get_device_context(
             device_id=device_id, platform=platform
         )
         logger.info(self._device_context.to_str())
-        if os.environ.get("ARTEMIS_CLOUD_MODE") != "1":
-            self.activate_device_policy(device_id, run_id=self._session_id or uuid.uuid4().hex)
         publish_startup_progress(
             "device_ready", "Android device connected", session_id=self._session_id
         )

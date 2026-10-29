@@ -90,6 +90,8 @@ def request(
         lambda: _request(
             transport, serial, port, method, path, body=body, headers=headers, timeout=timeout
         ),
+        port=port,
+        body=body,
     )
 
 
