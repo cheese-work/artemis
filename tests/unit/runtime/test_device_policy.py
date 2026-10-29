@@ -158,10 +158,7 @@ ALLOWED = [
     ["shell", "logcat", "-d", "--uid", str(UID)],
     ["shell", "logcat", "-b", "crash", "-d", "--uid", str(UID)],
     ["shell", "cmd", "uimode", "night"],
-    ["shell", "cmd", "uimode", "night", "yes"],
-    ["shell", "settings", "put", "global", "window_animation_scale", "0"],
     ["shell", "settings", "get", "global", "animator_duration_scale"],
-    ["shell", "settings", "put", "global", "stay_on_while_plugged_in", "3"],
 ]
 
 
@@ -192,6 +189,10 @@ def test_install_logs_the_apk_name_not_its_directory(device, transport, sink, au
 # ------------------------------------------------------------------------- denied
 
 DENIED = [
+    # writes are only admitted through apply_setting, which tracks them for restore
+    ["shell", "cmd", "uimode", "night", "yes"],
+    ["shell", "settings", "put", "global", "window_animation_scale", "0"],
+    ["shell", "settings", "put", "global", "stay_on_while_plugged_in", "3"],
     ["shell", "pm", "list", "packages"],
     ["shell", "content", "query", "--uri", "content://sms/inbox"],
     ["shell", "pm", "clear", "com.other.bank"],
@@ -255,7 +256,7 @@ def test_command_without_a_serial_is_refused_while_a_device_is_restricted(
 
 
 def test_denied_entries_carry_no_arguments(device, transport, sink, audit):
-    for command in DENIED[:4]:
+    for command in DENIED[3:7]:
         with pytest.raises(DevicePolicyDenied):
             transport.run(["-s", SERIAL, *command])
 
@@ -323,9 +324,8 @@ def test_screenshot_after_foreground_check_is_written(device, sink, tmp_path, au
     assert set(decisions(audit)) == {"allowed"}
 
 
-def test_screencap_needs_a_fresh_foreground_check_each_time(device, transport, sink, audit):
+def test_a_raw_screencap_is_denied_even_after_a_foreground_check(device, transport, sink, audit):
     device.check_foreground()
-    transport.run(["-s", SERIAL, "exec-out", "screencap", "-p"])
     with pytest.raises(DevicePolicyDenied):
         transport.run(["-s", SERIAL, "exec-out", "screencap", "-p"])
 

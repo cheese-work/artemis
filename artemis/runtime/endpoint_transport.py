@@ -285,8 +285,13 @@ def _build_client(endpoint: AdbEndpoint, *, spawn_allowed: bool) -> AdbClient:
     from adbutils._adb import AdbConnection
     from adbutils.errors import AdbTimeout
 
+    class _GuardedClient(AdbClient):
+        # every adb-server connection (device(), device_list(), ...) goes through the policy
+        def make_connection(self, timeout: float | None = None):
+            return device_policy.guard_connection(super().make_connection(timeout))
+
     if spawn_allowed:
-        client = AdbClient(host=endpoint.host, port=endpoint.port)
+        client = _GuardedClient(host=endpoint.host, port=endpoint.port)
         client.artemis_endpoint = endpoint
         return client
 
@@ -294,13 +299,13 @@ def _build_client(endpoint: AdbEndpoint, *, spawn_allowed: bool) -> AdbClient:
         def _safe_connect(self):  # adbutils would start a local server here
             return self._create_socket()
 
-    class _NoSpawnClient(AdbClient):
+    class _NoSpawnClient(_GuardedClient):
         def make_connection(self, timeout: float | None = None):
             try:
                 connection = _NoSpawnConnection(self.host, self.port)
                 if timeout:
                     connection.conn.settimeout(timeout)
-                return connection
+                return device_policy.guard_connection(connection)
             except TimeoutError as error:
                 raise AdbTimeout("connect to adb server timeout") from error
 
