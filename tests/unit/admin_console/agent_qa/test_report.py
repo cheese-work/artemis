@@ -1,8 +1,9 @@
 import json
 import shutil
 import subprocess
+import tempfile
 
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFont
 import pytest
 
 from apps.admin_console.services.agent_qa.report import build_report, render_html, write_report
@@ -79,7 +80,7 @@ def _write_t4_session(root, sentinel, *, secret_fields=True):
             marked = secret_fields
             step["action"] = {
                 "type": "type",
-                "secret": marked,
+                "secret": marked and flag == "secret",
                 field: sentinel,
                 "target": {"text": "Account field", "bounds": bounds},
             }
@@ -95,7 +96,9 @@ def _write_t4_session(root, sentinel, *, secret_fields=True):
             for side in ("before", "after"):
                 screenshot = session_root / theme / f"{index + 1}-{side}.png"
                 with Image.open(screenshot) as image:
-                    ImageDraw.Draw(image).text((1, 11), sentinel, fill=(0, 0, 0))
+                    draw = ImageDraw.Draw(image)
+                    draw.rectangle([0, 8, 119, 34], fill=(255, 255, 255))  # readable, so the mask is not vacuous
+                    draw.text((2, 16), sentinel, fill=(0, 0, 0), font=ImageFont.load_default(size=9))
                     image.save(screenshot)
         steps[2]["flag_secure"] = True
     (session_root / "session.json").write_text(json.dumps(session_data), encoding="utf-8")
@@ -108,9 +111,15 @@ def test_t4_secret_values_are_redacted_and_screenshots_masked_before_write(libra
 
     sid = library.seed("fixture smartqa run")
     run_root = library.traces / sid
-    report = write_report(load_session(session_root), run_root)
     library.write(sid, "stdout.log", f"typed fixture value {sentinel}\n")
     library.write(sid, "notes/llm-request.json", json.dumps({"content": sentinel}))
+    report = write_report(load_session(session_root), run_root)
+    for name in ("stdout.log", "notes/llm-request.json"):
+        assert sentinel not in (run_root / name).read_text(encoding="utf-8")
+    # A server restart or another process builds the bundle: the registry is empty.
+    from artemis.utils import redaction
+
+    redaction._REGISTERED_SECRETS.clear()
 
     action = report["themes"]["light"]["flow"][0]["action"]
     assert action["text"] == "[redacted]"
@@ -150,31 +159,33 @@ def test_t4_secret_values_are_redacted_and_screenshots_masked_before_write(libra
                     assert set(image.crop((0, 8, 120, 35)).getdata()) == {(0, 0, 0)}
 
 
-@pytest.mark.skipif(shutil.which("tesseract") is None, reason="Tesseract is not installed")
-def test_t4_tesseract_checks_masked_pngs_and_unmarked_negative_control(tmp_path):
-    sentinel = "SMARTQA-SENTINEL-7f3c"
-    secret_root = _write_t4_session(tmp_path / "secret", sentinel)
-    secret_output = tmp_path / "secret-output"
-    write_report(load_session(secret_root), secret_output)
-    for image_path in (secret_output / "smartqa").rglob("*.png"):
-        text = subprocess.run(
-            ["tesseract", str(image_path), "stdout"],
+def _ocr(path):
+    """OCR a fixture PNG upscaled 6x: the 120 px wide fixture text is too small to read as is."""
+    with Image.open(path) as image, tempfile.TemporaryDirectory() as scratch:
+        big = image.convert("L").resize((image.width * 6, image.height * 6), Image.LANCZOS)
+        big.save(f"{scratch}/ocr.png")
+        return subprocess.run(
+            ["tesseract", f"{scratch}/ocr.png", "stdout"],
             capture_output=True,
             text=True,
             check=True,
         ).stdout
-        assert sentinel not in text
+
+
+@pytest.mark.skipif(shutil.which("tesseract") is None, reason="Tesseract is not installed")
+def test_t4_tesseract_checks_masked_pngs_and_unmarked_negative_control(tmp_path):
+    sentinel = "SMARTQA-SENTINEL-7f3c"
+    fragment = "SENTINEL-7f3c"  # OCR misreads single glyphs (Q as O); the tail is stable
+    secret_root = _write_t4_session(tmp_path / "secret", sentinel)
+    secret_output = tmp_path / "secret-output"
+    write_report(load_session(secret_root), secret_output)
+    for image_path in (secret_output / "smartqa").rglob("*.png"):
+        assert fragment not in _ocr(image_path)
 
     control_root = _write_t4_session(tmp_path / "negative-control", sentinel, secret_fields=False)
     control_output = tmp_path / "negative-control-output"
     write_report(load_session(control_root), control_output)
-    text = subprocess.run(
-        ["tesseract", str(control_output / "smartqa/light/1-before.png"), "stdout"],
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout
-    assert sentinel in text
+    assert fragment in _ocr(control_output / "smartqa/light/1-before.png")
 
 
 def test_empty_session_report_is_red(tmp_path):

@@ -11,6 +11,7 @@ from pathlib import Path
 import re
 from types import SimpleNamespace
 from typing import Any
+from urllib.parse import quote
 
 from PIL import Image
 
@@ -266,10 +267,35 @@ def render_html(report: dict[str, Any], *, png_prefix: str = "") -> str:
     )
 
 
+_SCRUBBED_SUFFIXES = (".log", ".json", ".jsonl", ".txt", ".md", ".html")
+
+
+def _scrub_run_files(out_dir: Path, values: set[str]) -> None:
+    """Replace secret values in the run's text files (logs, LLM request) on disk.
+
+    The in-process registry is lost on restart; the bundle step must not rely on it.
+    """
+    needles = {
+        form
+        for value in values
+        for form in (value, quote(value, safe=""), json.dumps(value)[1:-1])
+    }
+    if not needles or not out_dir.is_dir():
+        return
+    for path in out_dir.rglob("*"):
+        if path.is_symlink() or not path.is_file() or path.suffix not in _SCRUBBED_SUFFIXES:
+            continue
+        text = path.read_text(encoding="utf-8", errors="replace")
+        scrubbed = redact_known_values(text, needles)
+        if scrubbed != text:
+            path.write_text(scrubbed, encoding="utf-8")
+
+
 def write_report(session: Session, out_dir: Path) -> dict[str, Any]:
     """Write ``report.json``, ``flow.json`` and ``report.html``; return the report."""
     values = secret_values(session)
     register_secrets(list(values))
+    _scrub_run_files(out_dir, values)
     report = build_report(session)
     out_dir.mkdir(parents=True, exist_ok=True)
     _write_screenshots(session, report, out_dir)
