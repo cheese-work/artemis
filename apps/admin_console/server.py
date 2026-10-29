@@ -135,11 +135,13 @@ try:
         drain,
         failures,
         hosts,
+        leases,
         media,
         preview_synthetic,
         prompt_critiques,
         replay,
         run_admin,
+        run_annotations,
         run_bundle,
         runs,
         sessions,
@@ -163,11 +165,13 @@ except ImportError:
         drain,
         failures,
         hosts,
+        leases,
         media,
         preview_synthetic,
         prompt_critiques,
         replay,
         run_admin,
+        run_annotations,
         run_bundle,
         runs,
         sessions,
@@ -281,8 +285,10 @@ async def on_startup():
     state.shutdown_event.clear()
     if PREVIEW_PROFILE:
         initialize_preview_fixtures(PREVIEW_ROOT, app.state.access_config)
+        await asyncio.to_thread(run_annotations.initialize_notes)
         return
     qa_results.activate(session_repo.db_path, app.state.access_config.admin_emails)
+    await asyncio.to_thread(run_annotations.initialize_notes)
     from apps.admin_console.services.config_store import ConfigStoreError
     from apps.admin_console.services.provider_settings import get_provider_settings
 
@@ -453,6 +459,7 @@ app.include_router(chats.router)
 app.include_router(runs.router)
 app.include_router(run_bundle.router)
 app.include_router(run_admin.router)
+app.include_router(run_annotations.router)
 app.include_router(prompt_critiques.router)
 app.include_router(failures.router)
 app.include_router(steps.router)
@@ -465,6 +472,7 @@ app.include_router(providers.router)
 app.include_router(drain.router)
 app.include_router(device_bridge.router)
 app.include_router(hosts.router)
+app.include_router(leases.router)
 app.include_router(agent.router)
 
 # Mount cloud gateway router for Frappe / Cloud integration if present

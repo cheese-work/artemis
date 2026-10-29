@@ -11,6 +11,7 @@ from apps.admin_console.core.access_control import (
     require_effective_loopback,
     require_lifecycle_token,
     require_qa,
+    require_qa_or_service,
     require_websocket_admin,
     route_tier,
 )
@@ -59,6 +60,8 @@ def _assert_routes_have_declared_tiers(routes):
             assert require_admin_or_service_read in dependency_calls, f"Missing guard: {path}"
         if tier == "qa":
             assert require_qa in dependency_calls, f"Missing QA guard: {path}"
+        if tier == "qa_or_service":
+            assert require_qa_or_service in dependency_calls, f"Missing guard: {path}"
         if tier == "lifecycle":
             assert require_lifecycle_token in dependency_calls, f"Missing lifecycle guard: {path}"
         if tier == "loopback":
@@ -81,9 +84,26 @@ def _assert_routes_have_declared_tiers(routes):
                     "/api/tasks/{session_id}/cancel-queued",
                     "/api/resume",
                 }
-                assert tier in {"admin", "qa", "lifecycle", "loopback", "agent"} or (
-                    tier == "public" and path in public_task_controls
-                ), f"Unprotected mutation: {path}"
+                public_note_controls = {
+                    "/api/runs/{session_id}/annotations",
+                    "/api/runs/{session_id}/annotations/{annotation_id}",
+                }
+                if path in public_note_controls:
+                    from apps.admin_console.core.ownership import evidence_scope
+
+                    assert evidence_scope in dependency_calls, (
+                        f"Missing note visibility guard: {path}"
+                    )
+                assert tier in {
+                    "admin",
+                    "qa",
+                    "qa_or_service",
+                    "lifecycle",
+                    "loopback",
+                    "agent",
+                } or (tier == "public" and path in public_task_controls | public_note_controls), (
+                    f"Unprotected mutation: {path}"
+                )
 
 
 def _dependency_calls(route) -> set[object]:
