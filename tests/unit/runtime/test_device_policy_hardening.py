@@ -475,3 +475,26 @@ async def test_clean_restores_settings_exports_the_receipt_and_lifts_the_policy(
         ["-s", SERIAL, "shell", "pm", "list", "packages"]
     )
     assert len(sink.calls) == 1
+
+
+def test_one_failed_restore_does_not_stop_the_others_and_stays_tracked(device, sink, monkeypatch):
+    sink.replies["settings get global window_animation_scale"] = b"1.0\n"
+    sink.replies["settings get global transition_animation_scale"] = b"1.0\n"
+    device.apply_setting("window_animation_scale", "0")
+    device.apply_setting("transition_animation_scale", "0")
+    put = device._put
+
+    def flaky(key, value):
+        if key == "transition_animation_scale" and value == "1.0":
+            raise OSError("adb gone")
+        put(key, value)
+
+    monkeypatch.setattr(device, "_put", flaky)
+
+    with pytest.raises(OSError):
+        device.restore_settings()
+
+    assert ["settings", "put", "global", "window_animation_scale", "1.0"] in [
+        c[-5:] for c in sink.calls
+    ]
+    assert list(device._saved) == ["transition_animation_scale"]

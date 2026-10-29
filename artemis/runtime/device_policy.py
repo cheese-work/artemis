@@ -50,6 +50,7 @@ import os
 from pathlib import Path
 import re
 import sqlite3
+import subprocess
 import threading
 import time
 from typing import Any
@@ -341,7 +342,8 @@ class RestrictedDevice:
                 try:
                     self._put(key, self._saved[key])
                     del self._saved[key]
-                except Exception as exc:  # noqa: BLE001  keep restoring the others
+                except (OSError, subprocess.SubprocessError, DevicePolicyDenied) as exc:
+                    # keep restoring the others; the first failure is raised last
                     failure = failure or exc
         if failure is not None:
             raise failure
