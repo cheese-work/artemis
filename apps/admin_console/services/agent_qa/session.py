@@ -38,6 +38,7 @@ class Session:
     declared_screens: tuple[dict[str, str], ...]
     themes: dict[str, ThemeRun] = field(default_factory=dict)
     base_dir: Path = Path(".")
+    first_run: dict[str, Any] | None = None
 
 
 def load_session(directory: Path) -> Session:
@@ -58,4 +59,5 @@ def load_session(directory: Path) -> Session:
         declared_screens=tuple(raw["declared_screens"]),
         themes=themes,
         base_dir=directory,
+        first_run=raw.get("first_run"),
     )
