@@ -45,6 +45,7 @@ import subprocess
 import threading
 from typing import TYPE_CHECKING, Any
 
+from artemis.runtime import device_policy
 from artemis.runtime.adb_endpoint import AdbEndpoint, AdbSession, current_adb_endpoint
 
 if TYPE_CHECKING:
@@ -188,10 +189,12 @@ class EndpointTransport:
         return self.session.environment(base)
 
     def run(self, arguments: Sequence[str], **kwargs: Any) -> subprocess.CompletedProcess:
+        device_policy.authorize(arguments)
         self._preflight()
         return self.session.run(arguments, **kwargs)
 
     def popen(self, arguments: Sequence[str], **kwargs: Any) -> subprocess.Popen:
+        device_policy.authorize(arguments)
         self._preflight()
         kwargs.setdefault("env", self.environment())
         return subprocess.Popen(self.command(arguments), **kwargs)  # noqa: S603
@@ -199,6 +202,7 @@ class EndpointTransport:
     async def create_subprocess(
         self, arguments: Sequence[str], **kwargs: Any
     ) -> asyncio.subprocess.Process:
+        device_policy.authorize(arguments)
         # The pre-check is a blocking connect (up to its timeout on a filtered port): keep it
         # off the event loop so one slow endpoint cannot stall every other coroutine.
         await asyncio.to_thread(self._preflight)
@@ -216,6 +220,7 @@ class EndpointTransport:
         return self._client
 
     def device(self, serial: str) -> AdbDevice:
+        device_policy.refuse_raw_access(serial)  # an AdbDevice runs any shell command
         return self.client().device(serial)
 
     def device_list(self) -> list[AdbDevice]:
@@ -232,7 +237,7 @@ class EndpointTransport:
         from adbutils import Network
 
         self._preflight()
-        stream = self.device(serial).create_connection(Network.TCP, port)
+        stream = self.client().device(serial).create_connection(Network.TCP, port)
         if timeout is not None:
             stream.settimeout(timeout)
         with self._streams_lock:
@@ -280,8 +285,13 @@ def _build_client(endpoint: AdbEndpoint, *, spawn_allowed: bool) -> AdbClient:
     from adbutils._adb import AdbConnection
     from adbutils.errors import AdbTimeout
 
+    class _GuardedClient(AdbClient):
+        # every adb-server connection (device(), device_list(), ...) goes through the policy
+        def make_connection(self, timeout: float | None = None):
+            return device_policy.guard_connection(super().make_connection(timeout))
+
     if spawn_allowed:
-        client = AdbClient(host=endpoint.host, port=endpoint.port)
+        client = _GuardedClient(host=endpoint.host, port=endpoint.port)
         client.artemis_endpoint = endpoint
         return client
 
@@ -289,13 +299,13 @@ def _build_client(endpoint: AdbEndpoint, *, spawn_allowed: bool) -> AdbClient:
         def _safe_connect(self):  # adbutils would start a local server here
             return self._create_socket()
 
-    class _NoSpawnClient(AdbClient):
+    class _NoSpawnClient(_GuardedClient):
         def make_connection(self, timeout: float | None = None):
             try:
                 connection = _NoSpawnConnection(self.host, self.port)
                 if timeout:
                     connection.conn.settimeout(timeout)
-                return connection
+                return device_policy.guard_connection(connection)
             except TimeoutError as error:
                 raise AdbTimeout("connect to adb server timeout") from error
 
