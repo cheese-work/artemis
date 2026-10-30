@@ -254,6 +254,7 @@ skip_covered = true
 
 [dependency-groups]
 dev = [
+    "PyYAML>=6.0.3",
     "ruff>=0.15.2",
     "pytest>=8.4.1",
     "pytest-asyncio>=1.2.0",

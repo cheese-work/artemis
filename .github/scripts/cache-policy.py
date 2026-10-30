@@ -3,6 +3,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 
 
 def plan_deletions(
@@ -75,9 +76,19 @@ def main():
     )
     if not arguments.dry_run:
         for identifier in deletions:
-            subprocess.run(
-                ["gh", "cache", "delete", str(identifier), "--repo", repository], check=True
-            )
+            try:
+                subprocess.run(
+                    ["gh", "cache", "delete", str(identifier), "--repo", repository],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+            except subprocess.CalledProcessError as error:
+                if not re.search(r"\bHTTP 404\b", error.stderr or ""):
+                    raise
+                print(
+                    f"Cache {identifier} is already absent (HTTP 404); continuing.", file=sys.stderr
+                )
         print(json.dumps(api(f"repos/{repository}/actions/cache/usage")))
 
 
