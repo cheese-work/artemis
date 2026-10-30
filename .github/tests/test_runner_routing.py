@@ -8,7 +8,7 @@ class RunnerRoutingTest(unittest.TestCase):
     def test_artemis_uses_x99_and_provisions_chrome(self):
         ci = Path(".github/workflows/ci.yml").read_text()
         whats_new = Path(".github/workflows/whats-new.yml").read_text()
-        self.assertEqual(ci.count("github.repository_owner == 'cheese-work'"), 3)
+        self.assertEqual(ci.count("github.repository_owner == 'cheese-work'"), 4)
         self.assertIn("cheese-x99", whats_new)
         self.assertIn("browser-actions/setup-chrome@", ci)
         self.assertIn("CHROME_BIN: ${{ steps.chrome.outputs.chrome-path }}", ci)
@@ -26,6 +26,16 @@ class RunnerRoutingTest(unittest.TestCase):
             frontend,
         )
         self.assertIn("fromJSON('[\"ubuntu-latest\"]')", frontend)
+
+    def test_reverse_order_run_has_its_own_job_under_the_timeout(self):
+        ci = Path(".github/workflows/ci.yml").read_text()
+        quality = ci.split("  python-quality:\n", 1)[1].split("  python-reverse-order:\n", 1)[0]
+        reverse = ci.split("  python-reverse-order:\n", 1)[1].split("  frontend:\n", 1)[0]
+        self.assertNotIn("reverse file order", quality)
+        self.assertIn("reverse file order", reverse)
+        self.assertIn("name: Python 3.12\n", quality)
+        self.assertIn("cheese-x99", reverse)
+        self.assertIn("timeout-minutes: 60", reverse)
 
     def test_no_paid_runner_selectors(self):
         workflows = list(Path(".github/workflows").glob("*.y*ml"))

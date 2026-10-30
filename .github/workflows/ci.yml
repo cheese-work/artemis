@@ -27,7 +27,7 @@ jobs:
     name: Python 3.12
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["ubuntu-latest"]') }}
-    timeout-minutes: 60  # X99 containers have 3 CPUs on a shared host: deterministic tests took 19 min against 9-13 on the previous hosted runner
+    timeout-minutes: 60  # X99 containers have 3 CPUs on a shared host: deterministic tests took 19-31 min against 9-13 on the previous hosted runner
 
     steps:
       - name: Check out repository
@@ -95,16 +95,49 @@ jobs:
           --cov=third_party
           --cov-fail-under=60
 
+      - name: Enforce B2 ADB allowlist and tunnel fuzz merge gate
+        run: >-
+          uv run pytest tests/unit/runtime/test_host_tunnel.py
+          tests/unit/admin_console/test_host_tunnel_service.py -q
+
+  # Own job so the two ~30 min suite passes run in parallel instead of
+  # sharing one 60 min timeout (CHE-2621).
+  python-reverse-order:
+    name: Python 3.12 reverse order
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["ubuntu-latest"]') }}
+    timeout-minutes: 60
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Install system libraries for OpenCV
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install --no-install-recommends -y libgl1 libglib2.0-0 libxcb1
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e  # v6.8.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Install locked development environment
+        run: uv sync --dev --locked
+
       - name: Run unit tests in reverse file order
         shell: bash
         run: |
           mapfile -d '' -t test_files < <(find tests/unit -type f \( -name 'test_*.py' -o -name '*_test.py' -o -name '*.test.py' \) -print0 | LC_ALL=C sort -zr)
           uv run pytest "${test_files[@]}" -q
-
-      - name: Enforce B2 ADB allowlist and tunnel fuzz merge gate
-        run: >-
-          uv run pytest tests/unit/runtime/test_host_tunnel.py
-          tests/unit/admin_console/test_host_tunnel_service.py -q
 
   frontend:
     name: Frontend tests and production build
