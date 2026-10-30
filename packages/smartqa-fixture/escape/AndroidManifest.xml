@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.cheese.smartqa.fixture.escape">
+    <application android:label="SmartQA fixture escape">
+        <activity android:name=".EscapeActivity" android:exported="true" />
+    </application>
+</manifest>

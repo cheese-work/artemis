@@ -82,6 +82,7 @@ import urllib.error
 from artemis.config.constants import ENV_ARTEMIS_HELPER_AUTO_INSTALL
 from artemis.config.paths import get_temp_dir
 from artemis.runtime import helper_stream
+from artemis.runtime.device_policy import HELPER_PORT
 from artemis.runtime.adb_endpoint import AdbEndpoint
 from artemis.runtime.endpoint_transport import EndpointTransport, EndpointUnreachable
 from third_party.mobile_use.utils.logger import get_logger
@@ -93,7 +94,7 @@ SERVICE_NAME = f"{PACKAGE_NAME}/.ArtemisAccessibilityService"
 TOKEN_RECEIVER = f"{PACKAGE_NAME}/.TokenReceiver"
 TOKEN_ACTION = f"{PACKAGE_NAME}.SET_TOKEN"
 #: Loopback port the service binds on the device. Never used as a host port.
-DEVICE_PORT = 18888
+DEVICE_PORT = HELPER_PORT
 #: Oldest helper HTTP contract this host can talk to (see PROTOCOL_VERSION in the APK).
 MIN_PROTOCOL_VERSION = 2
 TOKEN_FILE_NAME = "session.token"

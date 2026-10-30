@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from apps.admin_console.services.agent_qa.flow import FlowError, build_flow
+from apps.admin_console.services.agent_qa.frc import evaluate_first_run
 from apps.admin_console.services.agent_qa.gate import evaluate_gate
 from apps.admin_console.services.agent_qa.session import Session
 
@@ -43,13 +44,18 @@ def build_report(session: Session) -> dict[str, Any]:
         except FlowError as err:
             flow_errors[theme] = err.code
             themes[theme] = {"flow": [], "screen_map": {}}
-    return {
+    report = {
         "package": session.package,
         "green": gate.green and not flow_errors,
         "gate": asdict(gate),
         "themes": themes,
         "flow_errors": flow_errors,
     }
+    if os.environ.get("ARTEMIS_SMARTQA_FRC") == "on" and session.first_run is not None:
+        report["first_run_comprehension"] = evaluate_first_run(
+            session.first_run, session.declared_screens
+        )
+    return report
 
 
 def _rule_rows(report: dict[str, Any]) -> str:
@@ -96,12 +102,40 @@ def _theme_block(theme: str, data: dict[str, Any], error: str | None, prefix: st
     return "\n".join(out)
 
 
+def _frc_block(frc: dict[str, Any]) -> str:
+    rows = []
+    for criterion, result in frc["criteria"].items():
+        evidence = escape(json.dumps(result["evidence"], ensure_ascii=False))
+        rows.append(
+            f"<tr><td>{escape(criterion)}</td><td>{escape(result['verdict'])}</td>"
+            f"<td><code>{evidence}</code></td></tr>"
+        )
+    calibration = frc.get("calibration")
+    calibration_row = ""
+    if calibration is not None:
+        calibration_verdict = "pass" if calibration["passed"] else "fail"
+        calibration_row = (
+            f"<p>Fixture calibration: {calibration_verdict}; {calibration['matched_builds']}/"
+            f"{calibration['total_builds']} labels; repeated hard-gate result stable: "
+            f"{str(calibration['stable_gate_runs']).lower()}.</p>"
+        )
+    return (
+        "<section><h2>First-run comprehension (advisory)</h2>"
+        f"<p>Verdict: {escape(frc['verdict'])}; this result does not change the hard gate.</p>"
+        "<table><tr><th>Criterion</th><th>Result</th><th>Evidence</th></tr>"
+        f"{' '.join(rows)}</table>{calibration_row}</section>"
+    )
+
+
 def render_html(report: dict[str, Any], *, png_prefix: str = "") -> str:
     """Self-contained page (inline CSS, no script, no SVG); PNGs are linked relatively."""
     verdict = ("green", "GREEN") if report["green"] else ("red", "RED")
     blocks = "\n".join(
         _theme_block(theme, data, report["flow_errors"].get(theme), png_prefix)
         for theme, data in report["themes"].items()
+    )
+    frc = (
+        _frc_block(report["first_run_comprehension"]) if "first_run_comprehension" in report else ""
     )
     return (
         f'<!doctype html><html lang="en"><head><meta charset="utf-8"><title>SmartQA report</title>'
@@ -110,7 +144,7 @@ def render_html(report: dict[str, Any], *, png_prefix: str = "") -> str:
         f"<p><code>{escape(report['package'])}</code></p>"
         "<h2>Hard gate</h2><table><tr><th>#</th><th>Rule</th><th>Result</th><th>Findings</th></tr>"
         f"{_rule_rows(report)}</table>"
-        f'<h2>Flow</h2><div class="grid">{blocks}</div></body></html>'
+        f'{frc}<h2>Flow</h2><div class="grid">{blocks}</div></body></html>'
     )
 
 
