@@ -27,7 +27,7 @@ jobs:
     name: Python 3.12
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["ubuntu-latest"]') }}
-    timeout-minutes: 60  # X99 containers have 3 CPUs on a shared host: deterministic tests took 19 min against 9-13 on the previous hosted runner
+    timeout-minutes: 90  # X99 containers have 3 CPUs on a shared host: deterministic tests took 19 min against 9-13 on the previous hosted runner. The job runs the suite twice (forward, then reverse); with a busy host disk (fsync 100-270 ms) 60 min was not enough (CHE-2111)
 
     steps:
       - name: Check out repository

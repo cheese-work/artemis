@@ -62,6 +62,8 @@ def write_session(root: Path, *, themes=("light", "dark"), route=ROUTE, **overri
     data = {
         "package": PACKAGE,
         "declared_screens": [{"id": s, "purpose": f"{s} purpose"} for s in SCREENS],
+        "status_bar_bounds": [],
+        "navigation_bar_bounds": [],
         "themes": {
             t: {"steps": _theme_steps(root, t, route), "logcat_crash": "", "logcat": ""}
             for t in themes

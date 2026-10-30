@@ -83,7 +83,7 @@ def test_python_jobs_install_the_opencv_system_libraries():
 
 def test_python_job_timeout_allows_the_slower_x99_container():
     workflow = yaml.safe_load((WORKFLOWS / "ci.yml").read_text(encoding="utf-8"))
-    assert workflow["jobs"]["python-quality"]["timeout-minutes"] == 60
+    assert workflow["jobs"]["python-quality"]["timeout-minutes"] == 90
 
 
 def test_karma_tolerates_a_browser_stall_on_a_shared_x99_host():

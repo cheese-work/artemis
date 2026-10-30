@@ -1,4 +1,10 @@
 import json
+import shutil
+import subprocess
+import tempfile
+
+from PIL import Image, ImageDraw, ImageFont
+import pytest
 
 from apps.admin_console.services.agent_qa.report import build_report, render_html, write_report
 from apps.admin_console.services.agent_qa.session import load_session
@@ -58,7 +64,146 @@ def test_write_report_writes_json_flow_and_html(tmp_path):
     flow = json.loads((out / "flow.json").read_text())
     assert [len(flow[t]) for t in ("light", "dark")] == [6, 6]
     html = (out / "report.html").read_text()
-    assert 'src="../s/light/1-before.png"' in html
+    assert 'src="smartqa/light/1-before.png"' in html
+
+
+def _write_t4_session(root, sentinel, *, secret_fields=True):
+    session_root = write_session(root)
+    session_data = json.loads((session_root / "session.json").read_text())
+    session_data["status_bar_bounds"] = [0, 0, 120, 5]
+    session_data["navigation_bar_bounds"] = [0, 55, 120, 60]
+    for theme in ("light", "dark"):
+        steps = session_data["themes"][theme]["steps"]
+        for index, field, flag in ((0, "text", "password"), (1, "value", "secret")):
+            step = steps[index]
+            bounds = [0, 8, 120, 35]
+            marked = secret_fields
+            step["action"] = {
+                "type": "type",
+                "secret": marked and flag == "secret",
+                field: sentinel,
+                "target": {"text": "Account field", "bounds": bounds},
+            }
+            step["text_nodes"] = [
+                {
+                    "kind": "text",
+                    "text": sentinel,
+                    "password": marked and flag == "password",
+                    "secret": marked and flag == "secret",
+                    "bounds": bounds,
+                }
+            ]
+            for side in ("before", "after"):
+                screenshot = session_root / theme / f"{index + 1}-{side}.png"
+                with Image.open(screenshot) as image:
+                    draw = ImageDraw.Draw(image)
+                    draw.rectangle(
+                        [0, 8, 119, 34], fill=(255, 255, 255)
+                    )  # readable, so the mask is not vacuous
+                    draw.text(
+                        (2, 16), sentinel, fill=(0, 0, 0), font=ImageFont.load_default(size=9)
+                    )
+                    image.save(screenshot)
+        steps[2]["flag_secure"] = True
+    (session_root / "session.json").write_text(json.dumps(session_data), encoding="utf-8")
+    return session_root
+
+
+def test_t4_secret_values_are_redacted_and_screenshots_masked_before_write(library, qa, tmp_path):
+    sentinel = "SMARTQA-SENTINEL-7f3c"
+    session_root = _write_t4_session(tmp_path / "recorded", sentinel)
+
+    sid = library.seed("fixture smartqa run")
+    run_root = library.traces / sid
+    library.write(sid, "stdout.log", f"typed fixture value {sentinel}\n")
+    library.write(sid, "notes/llm-request.json", json.dumps({"content": sentinel}))
+    library.write(sid, "notes/llm-request.yaml", f"content: {sentinel}\n")
+    report = write_report(load_session(session_root), run_root)
+    for name in ("stdout.log", "notes/llm-request.json", "notes/llm-request.yaml"):
+        assert sentinel not in (run_root / name).read_text(encoding="utf-8")
+    # A server restart or another process builds the bundle: the registry is empty.
+    from artemis.utils import redaction
+
+    redaction._REGISTERED_SECRETS.clear()
+
+    action = report["themes"]["light"]["flow"][0]["action"]
+    assert action["text"] == "[redacted]"
+    assert action["text_length_class"] == "long"
+    assert report["themes"]["light"]["flow"][2]["screenshot_label"] == "FLAG_SECURE"
+    for name in ("flow.json", "report.json", "report.html"):
+        assert sentinel not in (run_root / name).read_text(encoding="utf-8")
+    assert "FLAG_SECURE" in (run_root / "report.html").read_text(encoding="utf-8")
+
+    image_paths = sorted((run_root / "smartqa").rglob("*.png"))
+    assert len(image_paths) == 24
+    for image_path in image_paths:
+        with Image.open(image_path) as image:
+            assert set(image.crop((0, 0, 120, 5)).getdata()) == {(0, 0, 0)}
+            assert set(image.crop((0, 55, 120, 60)).getdata()) == {(0, 0, 0)}
+            if image_path.name.startswith(("1-", "2-", "3-")):
+                assert set(image.crop((0, 8, 120, 35)).getdata()) == {(0, 0, 0)}
+
+    import io
+    import zipfile
+    from apps.admin_console.services import run_bundle
+
+    bundle = run_bundle.prepare(sid)
+    try:
+        bundle_data = bundle.path.read_bytes()
+    finally:
+        bundle.finish()
+    with zipfile.ZipFile(io.BytesIO(bundle_data)) as archive:
+        assert "flow.json" in archive.namelist()
+        assert any(name.endswith("/1-before.png") for name in archive.namelist())
+        for name in archive.namelist():
+            if name.endswith((".json", ".html", ".log", ".yaml")):
+                assert sentinel not in archive.read(name).decode("utf-8", "replace")
+        for name in archive.namelist():
+            if name.endswith(("/1-before.png", "/1-after.png", "/2-before.png", "/2-after.png")):
+                with Image.open(io.BytesIO(archive.read(name))) as image:
+                    assert set(image.crop((0, 8, 120, 35)).getdata()) == {(0, 0, 0)}
+
+
+def test_t4_write_report_must_be_the_last_writer_of_the_run_directory(library, qa, tmp_path):
+    """A log line written after write_report stays on disk until write_report runs again."""
+    sentinel = "SMARTQA-SENTINEL-7f3c"
+    session = load_session(_write_t4_session(tmp_path / "recorded", sentinel))
+    sid = library.seed("fixture smartqa run")
+    run_root = library.traces / sid
+    write_report(session, run_root)
+    library.write(sid, "stdout.log", f"late line {sentinel}\n")
+    assert sentinel in (run_root / "stdout.log").read_text(encoding="utf-8")
+    write_report(session, run_root)
+    assert sentinel not in (run_root / "stdout.log").read_text(encoding="utf-8")
+
+
+def _ocr(path):
+    """OCR a fixture PNG upscaled 6x: the 120 px wide fixture text is too small to read as is."""
+    with Image.open(path) as image, tempfile.TemporaryDirectory() as scratch:
+        big = image.convert("L").resize((image.width * 6, image.height * 6), Image.LANCZOS)
+        big.save(f"{scratch}/ocr.png")
+        return subprocess.run(
+            ["tesseract", f"{scratch}/ocr.png", "stdout"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+
+
+@pytest.mark.skipif(shutil.which("tesseract") is None, reason="Tesseract is not installed")
+def test_t4_tesseract_checks_masked_pngs_and_unmarked_negative_control(tmp_path):
+    sentinel = "SMARTQA-SENTINEL-7f3c"
+    fragment = "SENTINEL-7f3c"  # OCR misreads single glyphs (Q as O); the tail is stable
+    secret_root = _write_t4_session(tmp_path / "secret", sentinel)
+    secret_output = tmp_path / "secret-output"
+    write_report(load_session(secret_root), secret_output)
+    for image_path in (secret_output / "smartqa").rglob("*.png"):
+        assert fragment not in _ocr(image_path)
+
+    control_root = _write_t4_session(tmp_path / "negative-control", sentinel, secret_fields=False)
+    control_output = tmp_path / "negative-control-output"
+    write_report(load_session(control_root), control_output)
+    assert fragment in _ocr(control_output / "smartqa/light/1-before.png")
 
 
 def test_empty_session_report_is_red(tmp_path):

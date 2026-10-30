@@ -1,10 +1,22 @@
 import pytest
 
+from apps.admin_console.services.agent_qa import flow as flow_module
 from apps.admin_console.services.agent_qa.flow import FlowError, build_flow, verify_route
 from apps.admin_console.services.agent_qa.session import load_session
 from tests.support.agent_qa_fixtures import ROUTE, write_png, write_session
 
 FIVE = ROUTE[:5]
+
+
+def test_t4_secret_route_requires_a_server_secret_placeholder():
+    validator = getattr(flow_module, "validate_route", None)
+    assert callable(validator), "secret route validation is missing"
+
+    with pytest.raises(FlowError) as exc:
+        validator([{"type": "type", "secret": True, "value": "SMARTQA-SENTINEL-7f3c"}])
+
+    assert exc.value.code == "route_secret_literal"
+    validator([{"type": "type", "secret": True, "value": "${secret:TEST_LOGIN_PASSWORD}"}])
 
 
 def test_t1_five_step_session_produces_ordered_flow_with_ten_real_pngs(tmp_path):

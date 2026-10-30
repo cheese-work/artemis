@@ -55,6 +55,9 @@ _SESSION_FILES = {
     "check_streams.jsonl": "checks",
     "run_outcome.json": "checks",
     "status.json": "",
+    "flow.json": "",
+    "report.json": "",
+    "report.html": "",
 }
 
 
@@ -512,3 +515,21 @@ def _add_session_files(manifest: Manifest, traces: Path, session_id: str) -> Non
             names = sorted(e.name for e in entries if Path(e.name).suffix in _NOTE_SUFFIXES)
         for name in names:
             _add_file(manifest, traces, notes / name, f"notes/{name}", "text", f"notes/{name}")
+    smartqa, reason = safe_dir(traces, session_dir / "smartqa")
+    if reason:
+        _skip(manifest, "smartqa", reason)
+    elif smartqa is not None:
+        for directory, children, names in os.walk(smartqa, followlinks=False):
+            safe_children = []
+            for child in children:
+                child_path = Path(directory) / child
+                if child_path.is_symlink():
+                    _skip(manifest, child_path.relative_to(session_dir).as_posix(), "symlink")
+                else:
+                    safe_children.append(child)
+            children[:] = sorted(safe_children)
+            for name in sorted(names):
+                candidate = Path(directory) / name
+                arcname = candidate.relative_to(session_dir).as_posix()
+                kind = "media" if candidate.suffix.casefold() == ".png" else "text"
+                _add_file(manifest, traces, candidate, arcname, kind, arcname)
