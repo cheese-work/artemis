@@ -17,12 +17,14 @@ class RunnerRoutingTest(unittest.TestCase):
         self.assertNotIn("chown root:root", ci)
         self.assertNotIn("chmod 4755", ci)
 
-    def test_only_frontend_requires_browser_runner(self):
+    def test_no_job_requires_a_browser_runner_label(self):
+        # No org runner carries cheese-x99-browser (CHE-2619); the frontend job
+        # installs Chrome itself, so it runs on the plain cheese-x99 pool.
         ci = Path(".github/workflows/ci.yml").read_text()
         frontend = ci.split("  frontend:\n", 1)[1].split("  package:\n", 1)[0]
-        self.assertEqual(ci.count('"cheese-x99-browser"'), 1)
+        self.assertNotIn("cheese-x99-browser", ci)
         self.assertIn(
-            'fromJSON(\'["self-hosted","Linux","X64","cheese-x99","cheese-x99-browser"]\')',
+            'fromJSON(\'["self-hosted","Linux","X64","cheese-x99"]\')',
             frontend,
         )
         self.assertIn("fromJSON('[\"ubuntu-latest\"]')", frontend)

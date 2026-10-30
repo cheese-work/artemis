@@ -44,10 +44,10 @@ def test_every_active_job_runs_on_the_x99_pool():
         assert labels[0] == "self-hosted" and "cheese-x99" in labels, (file, name, labels)
 
 
-def test_only_the_frontend_job_requires_the_browser_runner():
+def test_no_job_requires_a_browser_runner_label():
+    # No org runner carries cheese-x99-browser (CHE-2619); the frontend job installs Chrome itself.
     for file, name, _workflow, job in _jobs():
-        browser = "cheese-x99-browser" in _x99_labels(job["runs-on"])
-        assert browser == (name == "frontend"), (file, name)
+        assert "cheese-x99-browser" not in _x99_labels(job["runs-on"]), (file, name)
 
 
 def test_pull_request_jobs_skip_forks_before_a_self_hosted_runner_starts():
