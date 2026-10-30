@@ -55,7 +55,10 @@ class RunnerRoutingTest(unittest.TestCase):
                 self.assertIn("--junitxml=", job)
                 self.assertIn("-rfE", job)
                 upload = job.split("actions/upload-artifact@v4", 1)[1]
-                self.assertIn("if: ${{ always() }}", job.split("actions/upload-artifact@v4", 1)[0].rsplit("- name:", 1)[1])
+                self.assertIn(
+                    "if: ${{ always() }}",
+                    job.split("actions/upload-artifact@v4", 1)[0].rsplit("- name:", 1)[1],
+                )
                 self.assertIn("junit", upload)
 
     def test_no_paid_runner_selectors(self):
