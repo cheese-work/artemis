@@ -218,7 +218,7 @@ addopts = [
     "--strict-config",      # reject misspelled or stale pytest configuration
     "--strict-markers",     # strict marker checking
     "-m",                   # keep the default suite hermetic
-    "not integration and not e2e and not cloud and not manual and not android",
+    "not integration and not e2e and not cloud and not manual and not android and not wheel_build",
 ]
 
 markers = [
@@ -227,6 +227,7 @@ markers = [
     "e2e: end-to-end tests requiring a running Artemis environment",
     "cloud: tests requiring the optional cloud_service package",
     "manual: tests that must only be launched explicitly by an operator",
+    "wheel_build: rebuilds the wheel (minutes on a shared runner); run on demand with -m wheel_build",
     "real_reachability: keep EndpointTransport's real adb-server reachability pre-check",
 ]
 

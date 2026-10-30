@@ -230,6 +230,9 @@ jobs:
           assert bundled_config is not None and bundled_config.is_file()
           assert bundled_ui is not None and (bundled_ui / "index.html").is_file()
           assert not any("node_modules" in str(path) for path in (files("artemis") or ()))
+          from apps.admin_console.core.preview_demo import CLIP
+
+          assert CLIP.is_file(), CLIP
           print(f"Installed Artemis {artemis.__version__} with bundled runtime resources")
           PY
           artemis --version
