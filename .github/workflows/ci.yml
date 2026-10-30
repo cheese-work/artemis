@@ -37,7 +37,7 @@ jobs:
 
       - name: Use disposable build caches
         shell: bash
-        run: bash .github/scripts/build-cache-env.sh
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/build-cache-env.sh"
 
       - name: Install system libraries for OpenCV
         run: |
@@ -131,7 +131,7 @@ jobs:
 
       - name: Use disposable build caches
         shell: bash
-        run: bash .github/scripts/build-cache-env.sh
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/build-cache-env.sh"
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -189,7 +189,7 @@ jobs:
 
       - name: Use disposable build caches
         shell: bash
-        run: bash .github/scripts/build-cache-env.sh
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/build-cache-env.sh"
 
       - name: Install system libraries for OpenCV
         run: |

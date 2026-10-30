@@ -55,11 +55,12 @@ class BuildCacheTests(unittest.TestCase):
                         output = Path(directory, "environment")
                         result = subprocess.run(
                             ["bash", "-euc", step["run"]],
-                            cwd=ROOT,
+                            cwd=directory,
                             capture_output=True,
                             text=True,
                             env={
                                 **os.environ,
+                                "GITHUB_WORKSPACE": str(ROOT),
                                 "PATH": directory + os.pathsep + os.environ["PATH"],
                                 "RUNNER_TEMP": directory,
                                 "GITHUB_ENV": str(output),
@@ -93,7 +94,8 @@ class BuildCacheTests(unittest.TestCase):
                     ):
                         shared += 1
                         self.assertEqual(
-                            step["run"].strip(), "bash .github/scripts/build-cache-env.sh"
+                            step["run"].strip(),
+                            'bash "$GITHUB_WORKSPACE/.github/scripts/build-cache-env.sh"',
                         )
         self.assertGreater(shared, 0)
 
@@ -138,10 +140,11 @@ class BuildCacheTests(unittest.TestCase):
                         output = Path(directory, "environment")
                         subprocess.run(
                             ["bash", "-euc", step["run"]],
-                            cwd=ROOT,
+                            cwd=directory,
                             check=True,
                             env={
                                 **os.environ,
+                                "GITHUB_WORKSPACE": str(ROOT),
                                 "RUNNER_TEMP": directory,
                                 "GITHUB_ENV": str(output),
                                 "GOFLAGS": "-count=1",
