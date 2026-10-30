@@ -11,6 +11,19 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class BuildCacheTests(unittest.TestCase):
+    def test_uv_action_keeps_the_disposable_cache_path(self):
+        for path in (ROOT / ".github/workflows").glob("*.yml"):
+            workflow = yaml.safe_load(path.read_text())
+            for name, job in workflow.get("jobs", {}).items():
+                for step in job.get("steps", []):
+                    if "setup-uv@" in step.get("uses", ""):
+                        with self.subTest(workflow=path.name, job=name):
+                            self.assertEqual(
+                                step.get("with", {}).get("cache-local-path"),
+                                "${{ runner.temp }}/build-cache/uv",
+                                "setup-uv otherwise overrides UV_CACHE_DIR with runner-home storage",
+                            )
+
     def test_ssd2_cache_storage_is_rejected_before_any_cache_export(self):
         filename = (
             "release.yml"

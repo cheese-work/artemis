@@ -112,6 +112,7 @@ jobs:
       - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e  # v6.8.0
         with:
           enable-cache: true
+          cache-local-path: ${{ runner.temp }}/build-cache/uv
           cache-dependency-glob: uv.lock
       - run: uv sync --dev --locked
       - run: uv run pytest tests/unit/runtime/test_host_tunnel.py tests/unit/admin_console/test_host_tunnel_service.py tests/unit/runtime/test_fake_adb_lifecycle.py tests/unit/runtime/test_fake_adb_seam.py -q
