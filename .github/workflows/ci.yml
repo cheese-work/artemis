@@ -94,11 +94,24 @@ jobs:
           --cov=apps/admin_console
           --cov=third_party
           --cov-fail-under=60
+          -rfE
+          --junitxml=test-reports/junit-deterministic.xml
 
       - name: Enforce B2 ADB allowlist and tunnel fuzz merge gate
         run: >-
           uv run pytest tests/unit/runtime/test_host_tunnel.py
           tests/unit/admin_console/test_host_tunnel_service.py -q
+
+      # Job logs of long X99 Python jobs came back 404 (CHE-2621): keep the
+      # failing test names in an artifact as well.
+      - name: Upload test report
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-deterministic
+          path: test-reports/*.xml
+          if-no-files-found: warn
+          retention-days: 7
 
   # Own job so the two ~30 min suite passes run in parallel instead of
   # sharing one 60 min timeout (CHE-2621).
@@ -145,7 +158,16 @@ jobs:
         shell: bash
         run: |
           mapfile -d '' -t test_files < <(find tests/unit -type f \( -name 'test_*.py' -o -name '*_test.py' -o -name '*.test.py' \) -print0 | LC_ALL=C sort -zr)
-          uv run pytest "${test_files[@]}" -q
+          uv run pytest "${test_files[@]}" -q -rfE --junitxml=test-reports/junit-reverse.xml
+
+      - name: Upload test report
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-reverse
+          path: test-reports/*.xml
+          if-no-files-found: warn
+          retention-days: 7
 
   frontend:
     name: Frontend tests and production build

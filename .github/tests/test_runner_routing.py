@@ -44,6 +44,20 @@ class RunnerRoutingTest(unittest.TestCase):
             reverse.index("reverse file order"),
         )
 
+    def test_python_jobs_keep_their_test_report_when_the_job_log_is_lost(self):
+        # GitHub returned 404 for the long Python job logs (CHE-2621), so a
+        # failing test could not be named. The report lives in an artifact.
+        ci = Path(".github/workflows/ci.yml").read_text()
+        quality = ci.split("  python-quality:\n", 1)[1].split("  python-reverse-order:\n", 1)[0]
+        reverse = ci.split("  python-reverse-order:\n", 1)[1].split("  frontend:\n", 1)[0]
+        for name, job in (("quality", quality), ("reverse", reverse)):
+            with self.subTest(job=name):
+                self.assertIn("--junitxml=", job)
+                self.assertIn("-rfE", job)
+                upload = job.split("actions/upload-artifact@v4", 1)[1]
+                self.assertIn("if: ${{ always() }}", job.split("actions/upload-artifact@v4", 1)[0].rsplit("- name:", 1)[1])
+                self.assertIn("junit", upload)
+
     def test_no_paid_runner_selectors(self):
         workflows = list(Path(".github/workflows").glob("*.y*ml"))
         self.assertTrue(workflows, "No workflows found")
