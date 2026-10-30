@@ -11,6 +11,10 @@ export class HostsService {
     return this.http.get<HostsResponse>('/api/hosts');
   }
 
+  public requestLease(deviceId: string, ttl: number, purpose: string): Observable<unknown> {
+    return this.http.post<unknown>('/api/leases', { device_id: deviceId, ttl, purpose });
+  }
+
   public createCode(): Observable<EnrollmentCode> {
     return this.http.post<EnrollmentCode>('/api/hosts/enrollment-codes', {});
   }

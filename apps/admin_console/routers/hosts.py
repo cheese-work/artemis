@@ -12,8 +12,13 @@ from pydantic import BaseModel, Field
 
 from apps.admin_console.core.access_control import AccessIdentity, AdminAPIError, require_admin
 from apps.admin_console.core.ownership import OwnerScope, actor_scope, require_actor
+from apps.admin_console.database.repositories.device_repository import (
+    DeviceRepository,
+    DeviceStoreNotReady,
+)
 from apps.admin_console.services import host_registry as hr
 from apps.admin_console.services.bridge_session_service import bridge_session_service
+from apps.admin_console.services.device_identity import device_identity
 from apps.admin_console.services.host_hub import CLOSE_REVOKED, host_hub
 from apps.admin_console.services.host_registry import host_registry
 from apps.admin_console.services.host_tunnel import host_tunnels
@@ -43,6 +48,17 @@ def _active_run_count(host_id: str) -> int:
     return sum(1 for run in state.active_runs.values() if run.get("host_id") == host_id)
 
 
+def _device_id(
+    repo: DeviceRepository, *, source: str, host_id: str | None, serial: str
+) -> str | None:
+    """The canonical device id of a routing key, or None before the identity layer matched it."""
+    try:
+        match = repo.connection(source=source, host_id=host_id, serial=serial)
+    except DeviceStoreNotReady:
+        return None
+    return match.device_id if match else None
+
+
 @router.get("")
 async def list_hosts(actor: OwnerScope = Depends(actor_scope)) -> dict:
     """Computers, and every phone the caller can pick: shared by a computer or plugged into their browser."""
@@ -50,6 +66,11 @@ async def list_hosts(actor: OwnerScope = Depends(actor_scope)) -> dict:
     if not hr.host_agent_enabled():
         return {"enabled": False, "hosts": [], "devices": []}
     hosts, devices = host_registry.list_hosts()
+    repo = DeviceRepository(host_registry.db_path)
+    for device in devices:
+        device["device_id"] = _device_id(
+            repo, source="host", host_id=device["computer_id"], serial=device["serial"]
+        )
     for host in hosts:
         host["active_run_count"] = _active_run_count(host["id"])
     # The pool classifies phones from adb properties; a browser phone's address
@@ -67,6 +88,12 @@ async def list_hosts(actor: OwnerScope = Depends(actor_scope)) -> dict:
             "product": pool[s.serial].product if s.serial in pool else None,
             "device_kind": pool[s.serial].device_kind if s.serial in pool else "unknown",
             "source": "browser",
+            "device_id": _device_id(
+                repo,
+                source="bridge",
+                host_id=None,
+                serial=device_identity.transport_key(AdbEndpoint.local(), s.serial),
+            ),
             "owner": s.owner,
             "computer_id": None,
             "computer_name": None,

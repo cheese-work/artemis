@@ -17,6 +17,7 @@ const checkComposer = audit === '--composer';
 const checkPrompts = audit === '--prompts';
 const checkProviders = audit === '--providers';
 const checkChats = audit === '--chats';
+const checkPhones = audit === '--phones';
 const failures = [];
 const iconNames = readFileSync(new URL('../../public/fonts/material-symbols-outlined.txt', import.meta.url), 'utf8').trim().split(',');
 mkdirSync(outDir, { recursive: true });
@@ -79,6 +80,21 @@ if (checkControls) {
     sources: { default: 'fixture', env: 'fixture' }
   };
 }
+if (checkPhones) {
+  mock.hosts = {
+    enabled: true,
+    hosts: [
+      { id: 'x99', name: 'X99 local host', os: 'Linux', agent_version: '1.2.0', protocol_version: 1, status: 'online', reason: null, since: Date.now() / 1000 - 12, phones_shared: 2, phones_not_shared: 0, unshared_serials: [], share_command: '', active_run_count: 1 },
+      { id: 'mac', name: 'Mac phone host', os: 'macOS', agent_version: '1.2.0', protocol_version: 1, status: 'offline', reason: 'agent_disconnected', since: Date.now() / 1000 - 360, phones_shared: 1, phones_not_shared: 0, unshared_serials: [], share_command: '', active_run_count: 0 }
+    ],
+    devices: [
+      { serial: '2A091FDH200B2X', model: 'Pixel 6 Pro', product: 'oriole', device_kind: 'phone', source: 'computer', owner: null, device_id: 'dev_pixel6', computer_id: 'x99', computer_name: 'X99 local host', computer_status: 'online', reason: null, since: Date.now() / 1000 - 12 },
+      { serial: 'emulator-5554', model: 'Pixel 3a', product: 'sargo', device_kind: 'phone', source: 'computer', owner: null, device_id: 'dev_pixel3a', computer_id: 'x99', computer_name: 'X99 local host', computer_status: 'online', reason: null, since: Date.now() / 1000 - 12 },
+      { serial: 'f3a1c09e', model: 'Xiaomi 10', product: 'umi', device_kind: 'phone', source: 'computer', owner: null, device_id: 'dev_xiaomi', computer_id: 'mac', computer_name: 'Mac phone host', computer_status: 'offline', reason: 'agent_disconnected', since: Date.now() / 1000 - 360 }
+    ]
+  };
+  mock.sessions = [{ session_id: 'phone-fixture-session', initial_goal: 'Run first-run QA preview', start_time: T0, end_time: null, status: 'running', device_serial: '2A091FDH200B2X' }];
+}
 const pages = { workspace: '/workspace', runs: '/runs', 'run-detail': `/runs/${RUNS[1].session_id}`, setup: '/setup', check: '/check' };
 if (checkChats) {
   for (const name of Object.keys(pages)) if (name !== 'run-detail') delete pages[name];
@@ -107,14 +123,19 @@ if (checkProviders) {
   for (const name of Object.keys(pages)) delete pages[name];
   pages.providers = '/providers';
 }
+if (checkPhones) {
+  for (const name of Object.keys(pages)) delete pages[name];
+  pages.phones = '/phones';
+}
 if (checkControls) delete pages['run-detail'];
 if (checkModels) for (const name of Object.keys(pages)) if (name !== 'workspace') delete pages[name];
 if (checkComposer) for (const name of Object.keys(pages)) if (!['workspace', 'run-detail'].includes(name)) delete pages[name];
 if (checkModels) for (const run of RUNS) run.agent_model = 'fixture-default';
 if (checkModels) for (const session of mock.sessions) session.model_info = { name: 'Flash', id: 'fixture-default', provider: 'openai' };
-for (const width of checkControls || checkModels || checkComposer || checkPrompts || checkProviders || checkChats ? [1440, 390] : [1280, 1024]) {
+for (const width of checkControls || checkModels || checkComposer || checkPrompts || checkProviders || checkChats || checkPhones ? [1440, 390] : [1280, 1024]) {
   for (const [name, route] of Object.entries(pages)) {
-    await send('Emulation.setDeviceMetricsOverride', { width, height: checkChats ? (width === 390 ? 1100 : 900) : checkPrompts ? 1400 : checkProviders ? (width === 390 ? 3450 : 2200) : 800, deviceScaleFactor: 1, mobile: false });
+    const height = checkPhones ? (width === 390 ? 844 : 900) : checkChats ? (width === 390 ? 1100 : 900) : checkPrompts ? 1400 : checkProviders ? (width === 390 ? 3450 : 2200) : 800;
+    await send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false });
     const previousImproveCalls = mock.improveCalls;
     await send('Page.navigate', { url: base + route });
     await sleep(2500);

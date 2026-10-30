@@ -678,8 +678,10 @@ def test_devices_report_counts_shared_and_unshared_phones(admin):
                 "since": shared[0]["since"],
                 "attention": None,
                 "also_visible_on": [],
+                "device_id": shared[0]["device_id"],
             }
         ]
+        assert shared[0]["device_id"].startswith("dev_")  # the id the lease API takes (CHE-2100)
     finally:
         context.__exit__(None, None, None)
 
