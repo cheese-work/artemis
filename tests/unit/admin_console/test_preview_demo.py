@@ -230,6 +230,7 @@ def test_normal_boot_refuses_the_demo_selector_before_live_imports(tmp_path):
     assert list(tmp_path.iterdir()) == [sentinel]
 
 
+@pytest.mark.wheel_build  # CI checks the clip in the wheel it already builds (package job)
 @pytest.mark.skipif(shutil.which("uv") is None, reason="needs uv to build the wheel")
 def test_built_wheel_boots_the_demo_fixture(tmp_path):
     """The clip must ship in the wheel, not only sit in the checkout."""

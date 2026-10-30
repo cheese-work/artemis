@@ -27,7 +27,7 @@ jobs:
     name: Python 3.12
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["ubuntu-latest"]') }}
-    timeout-minutes: 60  # X99 containers have 3 CPUs on a shared host: deterministic tests took 19 min against 9-13 on the previous hosted runner
+    timeout-minutes: 60  # X99 containers have 3 CPUs on a shared host: deterministic tests took 19-31 min against 9-13 on the previous hosted runner
 
     steps:
       - name: Check out repository
@@ -94,17 +94,80 @@ jobs:
           --cov=apps/admin_console
           --cov=third_party
           --cov-fail-under=60
-
-      - name: Run unit tests in reverse file order
-        shell: bash
-        run: |
-          mapfile -d '' -t test_files < <(find tests/unit -type f \( -name 'test_*.py' -o -name '*_test.py' -o -name '*.test.py' \) -print0 | LC_ALL=C sort -zr)
-          uv run pytest "${test_files[@]}" -q
+          -rfE
+          --junitxml=test-reports/junit-deterministic.xml
 
       - name: Enforce B2 ADB allowlist and tunnel fuzz merge gate
         run: >-
           uv run pytest tests/unit/runtime/test_host_tunnel.py
           tests/unit/admin_console/test_host_tunnel_service.py -q
+
+      # Job logs of long X99 Python jobs came back 404 (CHE-2621): keep the
+      # failing test names in an artifact as well.
+      - name: Upload test report
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-deterministic
+          path: test-reports/*.xml
+          if-no-files-found: warn
+          retention-days: 7
+
+  # Own job so the two ~30 min suite passes run in parallel instead of
+  # sharing one 60 min timeout (CHE-2621).
+  python-reverse-order:
+    name: Python 3.12 reverse order
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["ubuntu-latest"]') }}
+    timeout-minutes: 60
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Install system libraries for OpenCV
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install --no-install-recommends -y libgl1 libglib2.0-0 libxcb1
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e  # v6.8.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Install locked development environment
+        run: uv sync --dev --locked
+
+      - name: Fetch CHE-844 receipt sources
+        run: |
+          git fetch --no-tags --depth=1 origin \
+            feefd94c72dbce0fa1afc109ffe3d8254f565d6b \
+            096411113522abc37964256833fecbbac4778af4
+          git cat-file -e feefd94c72dbce0fa1afc109ffe3d8254f565d6b^{commit}
+          git cat-file -e 096411113522abc37964256833fecbbac4778af4^{commit}
+
+      - name: Run unit tests in reverse file order
+        shell: bash
+        run: |
+          mapfile -d '' -t test_files < <(find tests/unit -type f \( -name 'test_*.py' -o -name '*_test.py' -o -name '*.test.py' \) -print0 | LC_ALL=C sort -zr)
+          uv run pytest "${test_files[@]}" -q -rfE --junitxml=test-reports/junit-reverse.xml
+
+      - name: Upload test report
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-reverse
+          path: test-reports/*.xml
+          if-no-files-found: warn
+          retention-days: 7
 
   frontend:
     name: Frontend tests and production build
@@ -230,6 +293,9 @@ jobs:
           assert bundled_config is not None and bundled_config.is_file()
           assert bundled_ui is not None and (bundled_ui / "index.html").is_file()
           assert not any("node_modules" in str(path) for path in (files("artemis") or ()))
+          from apps.admin_console.core.preview_demo import CLIP
+
+          assert CLIP.is_file(), CLIP
           print(f"Installed Artemis {artemis.__version__} with bundled runtime resources")
           PY
           artemis --version
