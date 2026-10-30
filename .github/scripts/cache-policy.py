@@ -13,7 +13,9 @@ def plan_deletions(
     deleted = []
     for cache in sorted(caches, key=lambda entry: (entry["created_at"], entry["id"]), reverse=True):
         family = cache["key"]
-        managed = family.startswith(("turbo-", "go-build-race-", "release-go-"))
+        managed = family.startswith(
+            ("turbo-", "go-build-race-", "release-go-", "golangci-lint.cache-", "go-job-")
+        )
         if managed:
             family = family.split("-refs/", 1)[0]
             family = re.sub(r"-(?:[a-f0-9]{40}|[a-f0-9]{64})$", "", family)
@@ -84,11 +86,11 @@ def main():
                     text=True,
                 )
             except subprocess.CalledProcessError as error:
-                if not re.search(r"\bHTTP 404\b", error.stderr or ""):
+                if not re.search(
+                    r"\bHTTP 404\b|Could not find a cache matching\b", error.stderr or ""
+                ):
                     raise
-                print(
-                    f"Cache {identifier} is already absent (HTTP 404); continuing.", file=sys.stderr
-                )
+                print(f"Cache {identifier} is already absent; continuing.", file=sys.stderr)
         print(json.dumps(api(f"repos/{repository}/actions/cache/usage")))
 
 
