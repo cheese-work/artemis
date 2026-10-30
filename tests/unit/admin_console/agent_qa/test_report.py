@@ -117,8 +117,9 @@ def test_t4_secret_values_are_redacted_and_screenshots_masked_before_write(libra
     run_root = library.traces / sid
     library.write(sid, "stdout.log", f"typed fixture value {sentinel}\n")
     library.write(sid, "notes/llm-request.json", json.dumps({"content": sentinel}))
+    library.write(sid, "notes/llm-request.yaml", f"content: {sentinel}\n")
     report = write_report(load_session(session_root), run_root)
-    for name in ("stdout.log", "notes/llm-request.json"):
+    for name in ("stdout.log", "notes/llm-request.json", "notes/llm-request.yaml"):
         assert sentinel not in (run_root / name).read_text(encoding="utf-8")
     # A server restart or another process builds the bundle: the registry is empty.
     from artemis.utils import redaction
@@ -155,12 +156,25 @@ def test_t4_secret_values_are_redacted_and_screenshots_masked_before_write(libra
         assert "flow.json" in archive.namelist()
         assert any(name.endswith("/1-before.png") for name in archive.namelist())
         for name in archive.namelist():
-            if name.endswith((".json", ".html", ".log")):
+            if name.endswith((".json", ".html", ".log", ".yaml")):
                 assert sentinel not in archive.read(name).decode("utf-8", "replace")
         for name in archive.namelist():
             if name.endswith(("/1-before.png", "/1-after.png", "/2-before.png", "/2-after.png")):
                 with Image.open(io.BytesIO(archive.read(name))) as image:
                     assert set(image.crop((0, 8, 120, 35)).getdata()) == {(0, 0, 0)}
+
+
+def test_t4_write_report_must_be_the_last_writer_of_the_run_directory(library, qa, tmp_path):
+    """A log line written after write_report stays on disk until write_report runs again."""
+    sentinel = "SMARTQA-SENTINEL-7f3c"
+    session = load_session(_write_t4_session(tmp_path / "recorded", sentinel))
+    sid = library.seed("fixture smartqa run")
+    run_root = library.traces / sid
+    write_report(session, run_root)
+    library.write(sid, "stdout.log", f"late line {sentinel}\n")
+    assert sentinel in (run_root / "stdout.log").read_text(encoding="utf-8")
+    write_report(session, run_root)
+    assert sentinel not in (run_root / "stdout.log").read_text(encoding="utf-8")
 
 
 def _ocr(path):

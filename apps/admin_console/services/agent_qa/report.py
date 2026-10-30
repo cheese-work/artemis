@@ -25,6 +25,7 @@ from apps.admin_console.services.agent_qa.flow import (
 from apps.admin_console.services.agent_qa.frc import evaluate_first_run
 from apps.admin_console.services.agent_qa.gate import evaluate_gate
 from apps.admin_console.services.agent_qa.session import Session
+from apps.admin_console.services.run_artifacts import _NOTE_SUFFIXES, _SESSION_FILES
 from artemis.utils.private_screen import mask_password_observation
 from artemis.utils.redaction import register_secrets
 
@@ -267,7 +268,16 @@ def render_html(report: dict[str, Any], *, png_prefix: str = "") -> str:
     )
 
 
-_SCRUBBED_SUFFIXES = (".log", ".json", ".jsonl", ".txt", ".md", ".html")
+# Same text sources the bundle packs, so the two lists cannot drift: session files,
+# notes, and everything under smartqa/ except the PNGs.
+_TEXT_SUFFIXES = _NOTE_SUFFIXES | {Path(name).suffix for name in _SESSION_FILES}
+
+
+def _is_text_source(path: Path, out_dir: Path) -> bool:
+    if path.suffix in _TEXT_SUFFIXES:
+        return True
+    parts = path.relative_to(out_dir).parts
+    return parts[0] == "smartqa" and path.suffix.casefold() != ".png"
 
 
 def _scrub_run_files(out_dir: Path, values: set[str]) -> None:
@@ -281,7 +291,7 @@ def _scrub_run_files(out_dir: Path, values: set[str]) -> None:
     if not needles or not out_dir.is_dir():
         return
     for path in out_dir.rglob("*"):
-        if path.is_symlink() or not path.is_file() or path.suffix not in _SCRUBBED_SUFFIXES:
+        if path.is_symlink() or not path.is_file() or not _is_text_source(path, out_dir):
             continue
         text = path.read_text(encoding="utf-8", errors="replace")
         scrubbed = redact_known_values(text, needles)
@@ -290,7 +300,11 @@ def _scrub_run_files(out_dir: Path, values: set[str]) -> None:
 
 
 def write_report(session: Session, out_dir: Path) -> dict[str, Any]:
-    """Write ``report.json``, ``flow.json`` and ``report.html``; return the report."""
+    """Write ``report.json``, ``flow.json`` and ``report.html``; return the report.
+
+    Must be the last writer of ``out_dir``: it scrubs the run's text files once, so a
+    line written afterwards stays on disk until this runs again (CHE-2101 owns the order).
+    """
     values = secret_values(session)
     register_secrets(list(values))
     _scrub_run_files(out_dir, values)
