@@ -35,6 +35,23 @@ jobs:
         with:
           fetch-depth: 1
 
+      - name: Use disposable build caches
+        shell: bash
+        run: |
+          printf '%s\n' \
+            "GOCACHE=$RUNNER_TEMP/build-cache/go-build" \
+            "GOPATH=$RUNNER_TEMP/build-cache/go" \
+            "GOMODCACHE=$RUNNER_TEMP/build-cache/go/pkg/mod" \
+            "GOFLAGS=${GOFLAGS:+$GOFLAGS }-modcacherw" \
+            "XDG_CACHE_HOME=$RUNNER_TEMP/build-cache/xdg" \
+            "XDG_DATA_HOME=$RUNNER_TEMP/build-cache/data" \
+            "npm_config_cache=$RUNNER_TEMP/build-cache/npm" \
+            "npm_config_store_dir=$RUNNER_TEMP/build-cache/pnpm" \
+            "PIP_CACHE_DIR=$RUNNER_TEMP/build-cache/pip" \
+            "UV_CACHE_DIR=$RUNNER_TEMP/build-cache/uv" \
+            "BUILDX_CONFIG=$RUNNER_TEMP/build-cache/buildx" \
+            >> "$GITHUB_ENV"
+
       - name: Install system libraries for OpenCV
         run: |
           sudo apt-get update -qq
@@ -59,6 +76,11 @@ jobs:
 
       - name: Install locked development environment
         run: uv sync --dev --locked
+
+      - name: Check disposable build caches and free retention policy
+        run: |
+          uv run python .github/tests/test_build_cache.py
+          uv run python .github/scripts/test_cache_policy.py
 
       - name: Check Python formatting
         run: uv run ruff format --check .
@@ -119,6 +141,23 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
+      - name: Use disposable build caches
+        shell: bash
+        run: |
+          printf '%s\n' \
+            "GOCACHE=$RUNNER_TEMP/build-cache/go-build" \
+            "GOPATH=$RUNNER_TEMP/build-cache/go" \
+            "GOMODCACHE=$RUNNER_TEMP/build-cache/go/pkg/mod" \
+            "GOFLAGS=${GOFLAGS:+$GOFLAGS }-modcacherw" \
+            "XDG_CACHE_HOME=$RUNNER_TEMP/build-cache/xdg" \
+            "XDG_DATA_HOME=$RUNNER_TEMP/build-cache/data" \
+            "npm_config_cache=$RUNNER_TEMP/build-cache/npm" \
+            "npm_config_store_dir=$RUNNER_TEMP/build-cache/pnpm" \
+            "PIP_CACHE_DIR=$RUNNER_TEMP/build-cache/pip" \
+            "UV_CACHE_DIR=$RUNNER_TEMP/build-cache/uv" \
+            "BUILDX_CONFIG=$RUNNER_TEMP/build-cache/buildx" \
+            >> "$GITHUB_ENV"
+
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
@@ -172,6 +211,23 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+
+      - name: Use disposable build caches
+        shell: bash
+        run: |
+          printf '%s\n' \
+            "GOCACHE=$RUNNER_TEMP/build-cache/go-build" \
+            "GOPATH=$RUNNER_TEMP/build-cache/go" \
+            "GOMODCACHE=$RUNNER_TEMP/build-cache/go/pkg/mod" \
+            "GOFLAGS=${GOFLAGS:+$GOFLAGS }-modcacherw" \
+            "XDG_CACHE_HOME=$RUNNER_TEMP/build-cache/xdg" \
+            "XDG_DATA_HOME=$RUNNER_TEMP/build-cache/data" \
+            "npm_config_cache=$RUNNER_TEMP/build-cache/npm" \
+            "npm_config_store_dir=$RUNNER_TEMP/build-cache/pnpm" \
+            "PIP_CACHE_DIR=$RUNNER_TEMP/build-cache/pip" \
+            "UV_CACHE_DIR=$RUNNER_TEMP/build-cache/uv" \
+            "BUILDX_CONFIG=$RUNNER_TEMP/build-cache/buildx" \
+            >> "$GITHUB_ENV"
 
       - name: Install system libraries for OpenCV
         run: |

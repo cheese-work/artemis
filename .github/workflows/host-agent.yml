@@ -36,10 +36,28 @@ jobs:
         working-directory: host-agent
     steps:
       - uses: actions/checkout@v4
+      - name: Use disposable build caches
+        shell: bash
+        run: |
+          printf '%s\n' \
+            "GOCACHE=$RUNNER_TEMP/build-cache/go-build" \
+            "GOPATH=$RUNNER_TEMP/build-cache/go" \
+            "GOMODCACHE=$RUNNER_TEMP/build-cache/go/pkg/mod" \
+            "GOFLAGS=${GOFLAGS:+$GOFLAGS }-modcacherw" \
+            "XDG_CACHE_HOME=$RUNNER_TEMP/build-cache/xdg" \
+            "XDG_DATA_HOME=$RUNNER_TEMP/build-cache/data" \
+            "npm_config_cache=$RUNNER_TEMP/build-cache/npm" \
+            "npm_config_store_dir=$RUNNER_TEMP/build-cache/pnpm" \
+            "PIP_CACHE_DIR=$RUNNER_TEMP/build-cache/pip" \
+            "UV_CACHE_DIR=$RUNNER_TEMP/build-cache/uv" \
+            "BUILDX_CONFIG=$RUNNER_TEMP/build-cache/buildx" \
+            >> "$GITHUB_ENV"
+
       - uses: actions/setup-go@v5
         with:
           go-version: '1.26.2'
-          cache: false
+          cache: true
+          cache-dependency-path: host-agent/go.sum
       - run: go test -race ./...
       - run: go vet ./...
       - run: sh -n build.sh install.sh
@@ -55,6 +73,23 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+      - name: Use disposable build caches
+        shell: bash
+        run: |
+          printf '%s\n' \
+            "GOCACHE=$RUNNER_TEMP/build-cache/go-build" \
+            "GOPATH=$RUNNER_TEMP/build-cache/go" \
+            "GOMODCACHE=$RUNNER_TEMP/build-cache/go/pkg/mod" \
+            "GOFLAGS=${GOFLAGS:+$GOFLAGS }-modcacherw" \
+            "XDG_CACHE_HOME=$RUNNER_TEMP/build-cache/xdg" \
+            "XDG_DATA_HOME=$RUNNER_TEMP/build-cache/data" \
+            "npm_config_cache=$RUNNER_TEMP/build-cache/npm" \
+            "npm_config_store_dir=$RUNNER_TEMP/build-cache/pnpm" \
+            "PIP_CACHE_DIR=$RUNNER_TEMP/build-cache/pip" \
+            "UV_CACHE_DIR=$RUNNER_TEMP/build-cache/uv" \
+            "BUILDX_CONFIG=$RUNNER_TEMP/build-cache/buildx" \
+            >> "$GITHUB_ENV"
+
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -62,6 +97,7 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install --no-install-recommends -y libgl1 libglib2.0-0 libxcb1
       - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e  # v6.8.0
         with:
-          enable-cache: false
+          enable-cache: true
+          cache-dependency-glob: uv.lock
       - run: uv sync --dev --locked
       - run: uv run pytest tests/unit/runtime/test_host_tunnel.py tests/unit/admin_console/test_host_tunnel_service.py tests/unit/runtime/test_fake_adb_lifecycle.py tests/unit/runtime/test_fake_adb_seam.py -q
