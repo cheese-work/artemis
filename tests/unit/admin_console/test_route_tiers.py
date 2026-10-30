@@ -101,6 +101,7 @@ def _assert_routes_have_declared_tiers(routes):
                     "lifecycle",
                     "loopback",
                     "agent",
+                    "admin_or_service",
                 } or (tier == "public" and path in public_task_controls | public_note_controls), (
                     f"Unprotected mutation: {path}"
                 )
