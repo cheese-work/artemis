@@ -36,6 +36,13 @@ class RunnerRoutingTest(unittest.TestCase):
         self.assertIn("name: Python 3.12\n", quality)
         self.assertIn("cheese-x99", reverse)
         self.assertIn("timeout-minutes: 60", reverse)
+        # The shallow checkout needs the pinned CHE-844 receipt commits for
+        # the receipt unit test; another job's fetch does not carry over.
+        self.assertIn("Fetch CHE-844 receipt sources", reverse)
+        self.assertLess(
+            reverse.index("Fetch CHE-844 receipt sources"),
+            reverse.index("reverse file order"),
+        )
 
     def test_no_paid_runner_selectors(self):
         workflows = list(Path(".github/workflows").glob("*.y*ml"))
