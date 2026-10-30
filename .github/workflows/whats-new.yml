@@ -22,6 +22,10 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Use disposable build caches
+        shell: bash
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/build-cache-env.sh"
+
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:

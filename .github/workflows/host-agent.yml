@@ -36,10 +36,15 @@ jobs:
         working-directory: host-agent
     steps:
       - uses: actions/checkout@v4
+      - name: Use disposable build caches
+        shell: bash
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/build-cache-env.sh"
+
       - uses: actions/setup-go@v5
         with:
           go-version: '1.26.2'
-          cache: false
+          cache: true
+          cache-dependency-path: host-agent/go.sum
       - run: go test -race ./...
       - run: go vet ./...
       - run: sh -n build.sh install.sh
@@ -55,6 +60,10 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+      - name: Use disposable build caches
+        shell: bash
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/build-cache-env.sh"
+
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -62,6 +71,8 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install --no-install-recommends -y libgl1 libglib2.0-0 libxcb1
       - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e  # v6.8.0
         with:
-          enable-cache: false
+          enable-cache: true
+          cache-local-path: ${{ runner.temp }}/build-cache/uv
+          cache-dependency-glob: uv.lock
       - run: uv sync --dev --locked
       - run: uv run pytest tests/unit/runtime/test_host_tunnel.py tests/unit/admin_console/test_host_tunnel_service.py tests/unit/runtime/test_fake_adb_lifecycle.py tests/unit/runtime/test_fake_adb_seam.py -q

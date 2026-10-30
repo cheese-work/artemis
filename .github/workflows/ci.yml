@@ -35,6 +35,10 @@ jobs:
         with:
           fetch-depth: 1
 
+      - name: Use disposable build caches
+        shell: bash
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/build-cache-env.sh"
+
       - name: Install system libraries for OpenCV
         run: |
           sudo apt-get update -qq
@@ -55,10 +59,16 @@ jobs:
         uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e  # v6.8.0
         with:
           enable-cache: true
+          cache-local-path: ${{ runner.temp }}/build-cache/uv
           cache-dependency-glob: uv.lock
 
       - name: Install locked development environment
         run: uv sync --dev --locked
+
+      - name: Check disposable build caches and free retention policy
+        run: |
+          uv run python .github/tests/test_build_cache.py
+          uv run python .github/scripts/test_cache_policy.py
 
       - name: Check Python formatting
         run: uv run ruff format --check .
@@ -119,6 +129,10 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
+      - name: Use disposable build caches
+        shell: bash
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/build-cache-env.sh"
+
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
@@ -173,6 +187,10 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
+      - name: Use disposable build caches
+        shell: bash
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/build-cache-env.sh"
+
       - name: Install system libraries for OpenCV
         run: |
           sudo apt-get update -qq
@@ -187,6 +205,7 @@ jobs:
         uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e  # v6.8.0
         with:
           enable-cache: true
+          cache-local-path: ${{ runner.temp }}/build-cache/uv
           cache-dependency-glob: uv.lock
 
       - name: Set up Node.js
