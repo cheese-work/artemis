@@ -1,0 +1,22 @@
+{
+  "overflowX": 0,
+  "underNav": [
+    {
+      "text": "Leased by qa-owner@example.test:",
+      "clipped": true
+    },
+    {
+      "text": "Nightly regression, until 12:51 PM",
+      "clipped": true
+    },
+    {
+      "text": "Nightly regression, until 12:51 PM",
+      "clipped": true
+    },
+    {
+      "text": "New session on this phone",
+      "clipped": true
+    }
+  ],
+  "targets": []
+}

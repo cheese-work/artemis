@@ -39,7 +39,10 @@ The host agent sends the hash as `hardware_id` (64 lowercase hex) on each
 trusted phone in its `devices` message; an agent that sends none is an old host
 agent. With it, the agent sends `previous_ids`: the opaque ids the phone's
 transports had before its identity was read, so the server re-keys that
-connection after authorization instead of creating a second device. A server
+connection after authorization instead of creating a second device.
+The agent also sends `connections` (CHE-2377): the live connection kinds of a
+physical phone, `usb` and `wifi`. The server keeps only those two words, never an
+address or serial, and the Phones page lists one row per kind. A server
 adb connection stores only a keyed hash of its transport serial and its adb
 server, never the serial itself. An AVD seen through a host agent is keyed by
 its opaque id, which the agent derives from the AVD name; a server AVD is keyed

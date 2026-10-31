@@ -16,12 +16,15 @@ from apps.admin_console.database.repositories.device_repository import (
     DeviceRepository,
     DeviceStoreNotReady,
 )
+from apps.admin_console.database.repositories.run_catalog_repository import run_catalog_repo
+from apps.admin_console.services import device_leases
 from apps.admin_console.services import host_registry as hr
 from apps.admin_console.services.bridge_session_service import bridge_session_service
 from apps.admin_console.services.device_identity import device_identity
 from apps.admin_console.services.host_hub import CLOSE_REVOKED, host_hub
 from apps.admin_console.services.host_registry import host_registry
 from apps.admin_console.services.host_tunnel import host_tunnels
+from artemis.config.device_leases import device_leases_enabled
 from artemis.runtime import device_pool
 from artemis.runtime.adb_endpoint import AdbEndpoint
 
@@ -57,6 +60,20 @@ def _device_id(
     except DeviceStoreNotReady:
         return None
     return match.device_id if match else None
+
+
+def _lease_views() -> dict[str, dict]:
+    """Who holds each leased phone, by device id; never the lease id, which is the holder's handle."""
+    if not device_leases_enabled():
+        return {}
+    return {
+        lease.device_id: {
+            "holder": lease.holder,
+            "purpose": lease.purpose,
+            "expires_at": lease.expires_at,
+        }
+        for lease in device_leases.active(run_catalog_repo.db_path)
+    }
 
 
 @router.get("")
@@ -103,7 +120,11 @@ async def list_hosts(actor: OwnerScope = Depends(actor_scope)) -> dict:
         }
         for s in sessions
     ]
-    return {"enabled": True, "hosts": hosts, "devices": [*devices, *browser]}
+    held = _lease_views()
+    everyone = [*devices, *browser]
+    for device in everyone:
+        device["lease"] = held.get(device["device_id"])
+    return {"enabled": True, "hosts": hosts, "devices": everyone}
 
 
 @router.post("/enrollment-codes")

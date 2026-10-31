@@ -679,9 +679,38 @@ def test_devices_report_counts_shared_and_unshared_phones(admin):
                 "attention": None,
                 "also_visible_on": [],
                 "device_id": shared[0]["device_id"],
+                "lease": None,
+                "connections": [],
             }
         ]
         assert shared[0]["device_id"].startswith("dev_")  # the id the lease API takes (CHE-2100)
+    finally:
+        context.__exit__(None, None, None)
+
+
+def test_a_phone_lists_its_usb_and_wifi_connections_and_nothing_else(admin):
+    """CHE-2377: the Phones page groups a phone's endpoints from what the agent reports."""
+    key, host_id = _enrolled(admin)
+    context, ws, _reply = _handshake(admin, key, host_id)
+    try:
+        ws.send_json(
+            {
+                "type": "devices",
+                "devices": [
+                    {
+                        "serial": "sd-00000000000000a1",
+                        "shared": True,
+                        "connections": ["wifi", "usb", "usb", "192.168.1.5:5555", 7],
+                    },
+                    {"serial": "sd-00000000000000a2", "shared": True},
+                ],
+            }
+        )
+        ws.send_json({"type": "ping"})
+        assert ws.receive_json()["type"] == "pong"
+        phones = {d["serial"]: d for d in admin.get("/api/hosts").json()["devices"]}
+        assert phones["sd-00000000000000a1"]["connections"] == ["usb", "wifi"]
+        assert phones["sd-00000000000000a2"]["connections"] == []
     finally:
         context.__exit__(None, None, None)
 

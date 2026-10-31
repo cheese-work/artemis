@@ -138,6 +138,27 @@ func TestIdentityResolverFixtures(test *testing.T) {
 			test.Fatalf("USB not canonical: %+v", entry)
 		}
 	})
+	test.Run("a phone reports each live connection kind, never a serial", func(test *testing.T) {
+		devices, _ := testRegistry(test, "")
+		devices.replace([]device{usbPhone("192.168.1.5:5555", "2", "R5CT1234ABC"), usbPhone("R5CT1234ABC", "1", "R5CT1234ABC")})
+		if got := strings.Join(onlyDevice(test, devices).connections, ","); got != "usb,wifi" {
+			test.Fatalf("both connections: %q", got)
+		}
+		devices.replace([]device{usbPhone("192.168.1.5:5555", "2", "R5CT1234ABC")})
+		if got := strings.Join(onlyDevice(test, devices).connections, ","); got != "wifi" {
+			test.Fatalf("wireless only: %q", got)
+		}
+		offline := usbPhone("R5CT1234ABC", "1", "R5CT1234ABC")
+		offline.State = "offline"
+		devices.replace([]device{usbPhone("192.168.1.5:5555", "2", "R5CT1234ABC"), offline})
+		if got := strings.Join(onlyDevice(test, devices).connections, ","); got != "wifi" {
+			test.Fatalf("offline USB listed: %q", got)
+		}
+		devices.replace([]device{runningAVD("emulator-5554", "3", "Pixel_A")})
+		if got := onlyDevice(test, devices).connections; len(got) != 0 {
+			test.Fatalf("emulator has no USB or Wi-Fi: %v", got)
+		}
+	})
 	test.Run("emulator-5554 reused by another AVD gets another id and no share", func(test *testing.T) {
 		devices, _ := testRegistry(test, "")
 		devices.replace([]device{runningAVD("emulator-5554", "3", "Pixel_A")})

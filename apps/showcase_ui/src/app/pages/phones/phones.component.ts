@@ -1,8 +1,8 @@
 import { HttpErrorResponse } from '@angular/common/http';
-import { ChangeDetectionStrategy, Component, DestroyRef, computed, effect, inject, signal, untracked } from '@angular/core';
+import { ChangeDetectionStrategy, Component, DestroyRef, NgZone, computed, effect, inject, signal, untracked } from '@angular/core';
 import { Router, RouterLink } from '@angular/router';
 import { Subscription } from 'rxjs';
-import { Computer, ComputerStatus, HostsResponse, RegistryDevice } from '../../core/models/host.model';
+import { Computer, ComputerStatus, DeviceLease, HostsResponse, RegistryDevice } from '../../core/models/host.model';
 import { AgentService } from '../../services/agent.service';
 import { HostsService } from '../../services/hosts.service';
 import { SystemService } from '../../services/system.service';
@@ -12,13 +12,6 @@ import { deviceChipView } from '../../utils/device-chip.util';
 
 type PhoneStatus = 'Held' | 'Available' | 'Disconnected' | 'Needs attention';
 
-interface Lease { lease_id: string; device_id: string; holder: string; purpose: string; expires_at: number; }
-
-const isLease = (value: unknown): value is Lease => {
-  const lease = value as Partial<Lease> | null;
-  return typeof lease?.device_id === 'string' && typeof lease.holder === 'string' && typeof lease.expires_at === 'number';
-};
-
 const LEASE_ERRORS = new Map([
   ['device_leases_disabled', 'Phone borrowing is turned off on this server. Ask an administrator to turn it on.'],
   ['device_unknown', 'SmartQA does not know this phone yet. Reload the page; if it stays, reconnect the phone.'],
@@ -26,6 +19,12 @@ const LEASE_ERRORS = new Map([
 ]);
 
 const key = (device: RegistryDevice) => `${device.computer_id}:${device.serial}`;
+
+/** One phone and every way it is connected: the server names them with one device id. */
+interface PhoneGroup { device: RegistryDevice; endpoints: RegistryDevice[]; }
+/** One way a phone is connected; `serial` is set on the first row of a device only. */
+interface PhoneEndpoint { id: string; label: string; via: string | null; serial: string | null; }
+const STATE_RANK = { 'Ready': 0, 'Needs attention': 1, 'Offline': 2 } as const;
 
 @Component({
   selector: 'app-phones',
@@ -68,7 +67,7 @@ const key = (device: RegistryDevice) => `${device.computer_id}:${device.serial}`
         <section class="inventory-summary" aria-label="Inventory summary">
           <span class="summary-icon"><span class="material-symbols-outlined" aria-hidden="true">smartphone</span></span>
           <div>
-            <strong>{{ current.devices.length }} phones · {{ current.hosts.length }} computers</strong>
+            <strong>{{ phones().length }} phones · {{ current.hosts.length }} computers</strong>
             <p>Phone availability updates from registered computers and browser connections.</p>
           </div>
         </section>
@@ -77,13 +76,14 @@ const key = (device: RegistryDevice) => `${device.computer_id}:${device.serial}`
           <section class="panel inventory-panel" aria-labelledby="phones-title">
             <header class="panel-head">
               <h2 id="phones-title">Phones</h2>
-              <span class="tag">{{ current.devices.length }} {{ current.devices.length === 1 ? 'phone' : 'phones' }}</span>
+              <span class="tag">{{ phones().length }} {{ phones().length === 1 ? 'phone' : 'phones' }}</span>
             </header>
             <div class="phone-list">
-              @for (device of current.devices; track key(device)) {
+              @for (group of phones(); track key(group.device)) {
+                @let device = group.device;
                 @let v = view(device);
-                @let live = liveSession(device);
-                @let status = statusOf(device);
+                @let live = liveSession(group);
+                @let status = statusOf(group);
                 <article class="phone-card">
                   <div class="phone-card-main">
                     <div class="phone-name">
@@ -96,14 +96,17 @@ const key = (device: RegistryDevice) => `${device.computer_id}:${device.serial}`
                   </div>
                   <div class="phone-details">
                     <p>{{ v.source }}<span aria-hidden="true"> · </span><span>{{ v.detail }}</span></p>
-                    <div class="endpoint-list" aria-label="Phone connection">
-                      <div class="endpoint">
-                        <strong>{{ device.source === 'browser' ? 'Browser connection' : 'Computer connection' }}</strong>
-                        <span class="mono phone-serial">{{ device.serial }}</span>
-                      </div>
+                    <div class="endpoint-list" aria-label="Phone connections">
+                      @for (endpoint of endpointsOf(group); track endpoint.id) {
+                        <div class="endpoint">
+                          <strong>{{ endpoint.label }}</strong>
+                          @if (endpoint.via) { <span>{{ endpoint.via }}</span> }
+                          @if (endpoint.serial) { <span class="mono phone-serial">{{ endpoint.serial }}</span> }
+                        </div>
+                      }
                     </div>
                   </div>
-                  @if (leaseOf(device); as lease) {
+                  @if (leaseOf(group); as lease) {
                     <p class="lease-details"><strong>Leased by {{ lease.holder }}:</strong> {{ lease.purpose || 'No purpose given' }}, until {{ leaseEnd(lease) }}</p>
                   }
                   @if (live) {
@@ -111,7 +114,7 @@ const key = (device: RegistryDevice) => `${device.computer_id}:${device.serial}`
                     <a class="session-link" [routerLink]="['/sessions', live.session_id]">Open live session</a>
                   }
                   <div class="phone-actions">
-                    <button type="button" class="button secondary" [disabled]="status !== 'Available'" (click)="newSession(device)">New session on this phone</button>
+                    <button type="button" class="button secondary" [disabled]="status !== 'Available'" (click)="newSession(group)">New session on this phone</button>
                   </div>
                 </article>
               } @empty {
@@ -161,9 +164,9 @@ const key = (device: RegistryDevice) => `${device.computer_id}:${device.serial}`
                 <form aria-label="Borrow a phone" (submit)="requestLease($event)">
                   <div class="field">
                     <label for="phone-choice">Phone</label>
-                    <select id="phone-choice" [value]="selectedLeaseDevice() ? key(selectedLeaseDevice()!) : ''" [disabled]="!availablePhones().length || requesting()" (change)="selectLeasePhone($event)">
-                      @for (device of availablePhones(); track key(device)) {
-                        <option [value]="key(device)">{{ view(device).label }}, {{ view(device).source }}</option>
+                    <select id="phone-choice" [value]="selectedLeaseDevice() ? key(selectedLeaseDevice()!.device) : ''" [disabled]="!availablePhones().length || requesting()" (change)="selectLeasePhone($event)">
+                      @for (group of availablePhones(); track key(group.device)) {
+                        <option [value]="key(group.device)">{{ view(group.device).label }}, {{ view(group.device).source }}</option>
                       } @empty {
                         <option value="">No available phones</option>
                       }
@@ -307,6 +310,7 @@ export class PhonesComponent {
   private readonly agent = inject(AgentService);
   private readonly system = inject(SystemService);
   private readonly router = inject(Router);
+  private readonly zone = inject(NgZone);
   private readonly relay = inject(UsbDeviceRelayService);
   protected readonly phone = inject(WorkspacePhoneService);
   protected readonly registry = signal<HostsResponse | null>(null);
@@ -317,15 +321,28 @@ export class PhonesComponent {
   protected readonly requesting = signal(false);
   protected readonly leaseMessage = signal<string | null>(null);
   protected readonly leaseError = signal<string | null>(null);
-  /** Leases this person took in this tab; `GET /api/leases` is admin-only, so the page cannot list others. */
-  protected readonly leases = signal<Record<string, Lease>>({});
   /** Bumped when a lease expires so `leaseOf` and everything derived from it re-evaluate. */
   private readonly now = signal(Date.now());
   private readonly expiryTimers = new Set<ReturnType<typeof setTimeout>>();
-  protected readonly availablePhones = computed(() => (this.registry()?.devices ?? []).filter(device => !!device.device_id && this.statusOf(device) === 'Available'));
+  /** Endpoints sharing a device id are one phone; a phone the server has not matched stays alone. */
+  protected readonly phones = computed<PhoneGroup[]>(() => {
+    const byId = new Map<string, RegistryDevice[]>();
+    const groups: RegistryDevice[][] = [];
+    for (const device of this.registry()?.devices ?? []) {
+      const shared = device.device_id ? byId.get(device.device_id) : undefined;
+      if (shared) { shared.push(device); continue; }
+      const group = [device];
+      groups.push(group);
+      if (device.device_id) byId.set(device.device_id, group);
+    }
+    // Show the best endpoint: Ready beats Needs attention beats Offline; the first of equals wins.
+    const rank = (e: RegistryDevice) => STATE_RANK[this.view(e).state];
+    return groups.map(endpoints => ({ endpoints, device: endpoints.reduce((best, e) => rank(e) < rank(best) ? e : best) }));
+  });
+  protected readonly availablePhones = computed(() => this.phones().filter(group => !!group.device.device_id && this.statusOf(group) === 'Available'));
   protected readonly selectedLeaseDevice = computed(() => {
     const available = this.availablePhones();
-    return available.find(device => key(device) === this.leaseDeviceKey()) ?? available[0] ?? null;
+    return available.find(group => key(group.device) === this.leaseDeviceKey()) ?? available[0] ?? null;
   });
   protected readonly key = key;
 
@@ -349,7 +366,10 @@ export class PhonesComponent {
     this.failed.set(false);
     this.request?.unsubscribe();
     this.request = this.hosts.list().subscribe({
-      next: response => this.registry.set(response),
+      next: response => {
+        this.registry.set(response);
+        response.devices.forEach(device => device.lease && this.expireAt(device.lease));
+      },
       error: () => this.failed.set(true)
     });
   }
@@ -358,24 +378,37 @@ export class PhonesComponent {
     return deviceChipView(device, this.registry()?.hosts ?? [], this.relay.state().serial);
   }
 
-  protected liveSession(device: RegistryDevice) {
+  protected liveSession(group: PhoneGroup) {
     return this.agent.sessions().find(session =>
-      (session.status === 'running' || session.status === 'paused') && (session.device_serial ?? session.device_id) === device.serial);
+      (session.status === 'running' || session.status === 'paused') && group.endpoints.some(e => (session.device_serial ?? session.device_id) === e.serial));
   }
 
-  protected statusOf(device: RegistryDevice): PhoneStatus {
-    const { state } = this.view(device);
+  protected statusOf(group: PhoneGroup): PhoneStatus {
+    const { state } = this.view(group.device);
     if (state === 'Offline') return 'Disconnected';
     if (state === 'Needs attention') return state;
-    return this.liveSession(device) || this.leaseOf(device) ? 'Held' : 'Available';
+    return this.liveSession(group) || this.leaseOf(group) ? 'Held' : 'Available';
   }
 
-  protected leaseOf(device: RegistryDevice): Lease | null {
-    const lease = device.device_id ? this.leases()[device.device_id] : undefined;
+  /** The server sends the lease on every endpoint of a leased phone, whoever holds it. */
+  protected leaseOf(group: PhoneGroup): DeviceLease | null {
+    const lease = group.endpoints.find(e => e.lease)?.lease;
     return lease && lease.expires_at * 1000 > this.now() ? lease : null;
   }
 
-  protected leaseEnd(lease: Lease): string {
+  /** What the server reports: a browser, or the connection kinds a computer's agent sent; never guessed from a serial. */
+  protected endpointsOf(group: PhoneGroup): PhoneEndpoint[] {
+    return group.endpoints.flatMap((endpoint): PhoneEndpoint[] => {
+      const id = key(endpoint);
+      if (endpoint.source === 'browser') return [{ id, label: 'Browser connection', via: null, serial: endpoint.serial }];
+      const via = this.view(endpoint).source;
+      const kinds = endpoint.connections ?? [];
+      if (!kinds.length) return [{ id, label: via, via: null, serial: endpoint.serial }];
+      return kinds.map((kind, index) => ({ id: `${id}:${kind}`, label: kind === 'wifi' ? 'Wi-Fi' : 'USB', via, serial: index ? null : endpoint.serial }));
+    });
+  }
+
+  protected leaseEnd(lease: DeviceLease): string {
     return new Date(lease.expires_at * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   }
 
@@ -433,22 +466,18 @@ export class PhonesComponent {
 
   protected requestLease(event: Event): void {
     event.preventDefault();
-    const device = this.selectedLeaseDevice();
+    const group = this.selectedLeaseDevice();
     const purpose = this.purpose().trim();
     const ttl = this.duration();
-    if (!this.registry()?.enabled || !device || !purpose || this.requesting()) return;
+    if (!this.registry()?.enabled || !group || !purpose || this.requesting()) return;
     this.leaseMessage.set(null);
     this.leaseError.set(null);
     this.requesting.set(true);
     this.leaseRequest?.unsubscribe();
-    this.leaseRequest = this.hosts.requestLease(device.device_id!, ttl, purpose).subscribe({
-      next: lease => {
+    this.leaseRequest = this.hosts.requestLease(group.device.device_id!, ttl, purpose).subscribe({
+      next: () => {
         this.requesting.set(false);
         this.leaseMessage.set('Lease request submitted.');
-        if (isLease(lease)) {
-          this.leases.update(current => ({ ...current, [lease.device_id]: lease }));
-          this.expireAt(lease);
-        }
         this.load();
       },
       error: error => {
@@ -458,12 +487,13 @@ export class PhonesComponent {
     });
   }
 
-  private expireAt(lease: Lease): void {
+  private expireAt(lease: DeviceLease): void {
     this.now.set(Date.now());
-    const timer = setTimeout(() => {
+    // Outside the zone: an hour-long timer would otherwise keep the app "unstable". The signal still repaints.
+    const timer = this.zone.runOutsideAngular(() => setTimeout(() => {
       this.expiryTimers.delete(timer);
       this.now.set(Date.now());
-    }, Math.max(lease.expires_at * 1000 - Date.now(), 0) + 1);
+    }, Math.max(lease.expires_at * 1000 - Date.now(), 0) + 1));
     this.expiryTimers.add(timer);
   }
 
@@ -471,8 +501,8 @@ export class PhonesComponent {
     document.getElementById('phone-choice')?.focus();
   }
 
-  protected newSession(device: RegistryDevice): void {
-    this.system.chooseRunTarget(device.serial);
+  protected newSession(group: PhoneGroup): void {
+    this.system.chooseRunTarget(group.device.serial);
     void this.router.navigateByUrl('/sessions/new');
   }
 

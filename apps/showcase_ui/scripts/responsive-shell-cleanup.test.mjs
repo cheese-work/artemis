@@ -136,3 +136,51 @@ test('responsive assertions pass and normal plus stalled teardown leave no child
   assert.ok(cleanupDuration <= 7500, `stalled teardown took ${cleanupDuration} ms`);
   console.log(`STALLED exit=${stalled.code} total=${stalled.durationMs}ms cleanup=${cleanupDuration}ms Chrome=absent Node/server=absent`);
 });
+
+const spawnLeakyChrome = () => spawn(process.execPath, [
+  '-e',
+  "const { spawn } = require('node:child_process'); spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' }); setInterval(() => {}, 1000);"
+], { detached: true, stdio: 'ignore' });
+
+test('cleanup tolerates a slow Chrome exit after Browser.close on a loaded runner', async () => {
+  const chrome = spawnLeakyChrome();
+  const chromeExit = once(chrome, 'exit');
+  // Browser.close is acknowledged at once; Chrome itself needs 400 ms (> timeoutMs) to wind down.
+  const slowExit = delay(400).then(() => process.kill(-chrome.pid, 'SIGKILL'));
+  try {
+    const cleanup = await cleanupResponsiveShell({
+      chrome,
+      sendBrowserClose: async () => {},
+      chromeExit,
+      timeoutMs: 100,
+      chromeExitTimeoutMs: 2000,
+      processGraceMs: 100
+    });
+    assert.deepEqual(cleanup.errors, []);
+  } finally {
+    await slowExit;
+    if (groupExists(chrome.pid)) process.kill(-chrome.pid, 'SIGKILL');
+  }
+  assert.equal(groupExists(chrome.pid), false, 'browser process group must be absent');
+});
+
+test('cleanup still reports and kills a Chrome that never exits after Browser.close', async () => {
+  const chrome = spawnLeakyChrome();
+  const chromeExit = once(chrome, 'exit');
+  try {
+    const cleanup = await cleanupResponsiveShell({
+      chrome,
+      sendBrowserClose: async () => {},
+      chromeExit: new Promise(() => {}),
+      timeoutMs: 100,
+      chromeExitTimeoutMs: 200,
+      processGraceMs: 100
+    });
+    assert.deepEqual(cleanup.errors.map(error => error.message), ['Chrome exit timed out after 200 ms']);
+    assert.equal(cleanup.forcedTermination, true);
+  } finally {
+    if (groupExists(chrome.pid)) process.kill(-chrome.pid, 'SIGKILL');
+    await Promise.race([chromeExit, delay(1000)]);
+  }
+  assert.equal(groupExists(chrome.pid), false, 'leaked browser process group must be killed');
+});
