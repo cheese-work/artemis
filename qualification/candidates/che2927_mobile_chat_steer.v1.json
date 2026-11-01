@@ -1,0 +1,135 @@
+{
+  "receipt_version": 1,
+  "issue": "CHE-2927",
+  "parent_issue": "CHE-2820",
+  "candidate_kind": "testcase",
+  "source_candidate": {
+    "runner_source": {
+      "repository": "https://github.com/cheese-work/artemis",
+      "commit_sha": "feefd94c72dbce0fa1afc109ffe3d8254f565d6b"
+    },
+    "testcase_source": {
+      "repository": "https://github.com/cheese-work/artemis",
+      "journey_path": "qualification/journeys/che2927_mobile_chat_steer.md",
+      "journey_digest_sha256": "ce349a3569264b11d153d2924e5e57c6afe435080d18179b510ed97f3efea559"
+    },
+    "app_input_source": {
+      "repository": "https://github.com/cheese-work/multica",
+      "pull_request": 767,
+      "commit_sha": "c6812181ab042ec395e62ea14d98cc7f1f5f26e3"
+    },
+    "server_contract_source": {
+      "repository": "https://github.com/cheese-work/multica",
+      "pull_request": 763,
+      "commit_sha": "272a5996013d65be5014ab8172da559f84a06bac"
+    },
+    "app_artifact": {
+      "package_name": "ai.multica.mobile",
+      "apk_sha256": null,
+      "status": "NOT_BUILT"
+    }
+  },
+  "coverage": [
+    {
+      "id": "long_queue_keyboard",
+      "screenshots_by_theme": {
+        "light": "queue and composer visible with keyboard; fourth row after inner scroll",
+        "dark": "queue and composer visible with keyboard; fourth row after inner scroll"
+      }
+    },
+    {
+      "id": "steer_capable_head",
+      "screenshots_by_theme": {
+        "light": "server-backed queue removal and Added to run bubble",
+        "dark": "server-backed queue removal and Added to run bubble"
+      }
+    },
+    {
+      "id": "fallback_starting",
+      "screenshots_by_theme": {
+        "light": "Run is starting reason and disabled Steer button",
+        "dark": "Run is starting reason and disabled Steer button"
+      }
+    },
+    {
+      "id": "fallback_unsupported",
+      "screenshots_by_theme": {
+        "light": "unsupported reason and disabled Steer button",
+        "dark": "unsupported reason and disabled Steer button"
+      }
+    },
+    {
+      "id": "supplement_added",
+      "screenshots_by_theme": {
+        "light": "Added to run label without resend action",
+        "dark": "Added to run label without resend action"
+      }
+    },
+    {
+      "id": "supplement_read",
+      "screenshots_by_theme": {
+        "light": "Read by agent label without resend action",
+        "dark": "Read by agent label without resend action"
+      }
+    },
+    {
+      "id": "supplement_not_received",
+      "screenshots_by_theme": {
+        "light": "Not received label and Send as a new run action",
+        "dark": "Not received label and Send as a new run action"
+      }
+    },
+    {
+      "id": "supplement_uncertain_confirm",
+      "screenshots_by_theme": {
+        "light": "uncertain label and open native duplicate confirmation dialog",
+        "dark": "uncertain label and open native duplicate confirmation dialog"
+      }
+    }
+  ],
+  "fixture_contract": {
+    "server_revision": "272a5996013d65be5014ab8172da559f84a06bac",
+    "seeded_receipt_states": ["pending", "delivered", "failed", "uncertain"],
+    "head_supplement_values": ["capable", "starting", "unsupported"],
+    "queue_minimum": 4,
+    "stub_head_must_remain_running": true,
+    "reset_before_each_scenario": true,
+    "test_workspace_only": true
+  },
+  "review_scope": {
+    "required_reviewers": [
+      {
+        "name": "x99-claude-sonnet",
+        "lab": "Anthropic"
+      },
+      {
+        "name": "x99-codex-sol",
+        "lab": "OpenAI"
+      }
+    ],
+    "same_revision_required": true,
+    "must_precede_device_admission": true,
+    "review_checks": [
+      "Stable selectors and accessible roles",
+      "Repeatable fixtures, reset and cleanup",
+      "Observable assertions and false-pass guards",
+      "All eight scenarios and both screenshot themes"
+    ]
+  },
+  "execution_boundary": {
+    "author_role": "testcase author only",
+    "device_or_adb_actions": false,
+    "emulator_actions": false,
+    "fixture_actions": false,
+    "provider_calls": false,
+    "artemis_execution": false,
+    "apk_build": false,
+    "execution_requires": [
+      "two independent non-author reviews of this exact revision",
+      "Sol's issue-visible exclusive AVD admission",
+      "X99-built APK from the pinned app SHA",
+      "local server at the pinned server SHA",
+      "seeded test workspace and supplement receipt fixtures"
+    ]
+  }
+}
