@@ -11,7 +11,7 @@
     "testcase_source": {
       "repository": "https://github.com/cheese-work/artemis",
       "journey_path": "qualification/journeys/che2927_mobile_chat_steer.md",
-      "journey_digest_sha256": "ce349a3569264b11d153d2924e5e57c6afe435080d18179b510ed97f3efea559"
+      "journey_digest_sha256": "763f184ac75d5dc46e70cce2ce8b5de62f56d94d2b759f4f0f52ad0fc2f88179"
     },
     "app_input_source": {
       "repository": "https://github.com/cheese-work/multica",
@@ -22,6 +22,12 @@
       "repository": "https://github.com/cheese-work/multica",
       "pull_request": 763,
       "commit_sha": "272a5996013d65be5014ab8172da559f84a06bac"
+    },
+    "model_inputs": {
+      "nova": {
+        "config_path": "qualification/configs/nova.artemis.jsonc",
+        "config_digest_sha256": "f191cd671d6d0d748640386c912bbce98c708a2057c0af74d35277fe1aceff73"
+      }
     },
     "app_artifact": {
       "package_name": "ai.multica.mobile",
@@ -93,20 +99,19 @@
     "head_supplement_values": ["capable", "starting", "unsupported"],
     "queue_minimum": 4,
     "stub_head_must_remain_running": true,
+    "stub_supplement_behavior": "does_not_claim_or_ack",
+    "receipt_status_at_screenshot": ["pending", "delivering"],
+    "head_remains_running_through_receipt_screenshots": true,
+    "app_preferences": {
+      "install": "fresh_without_restored_app_data",
+      "theme": "system",
+      "locale": "system",
+      "device_locale": "en"
+    },
     "reset_before_each_scenario": true,
     "test_workspace_only": true
   },
   "review_scope": {
-    "required_reviewers": [
-      {
-        "name": "x99-claude-sonnet",
-        "lab": "Anthropic"
-      },
-      {
-        "name": "x99-codex-sol",
-        "lab": "OpenAI"
-      }
-    ],
     "same_revision_required": true,
     "must_precede_device_admission": true,
     "review_checks": [
