@@ -11,7 +11,7 @@
     "testcase_source": {
       "repository": "https://github.com/cheese-work/artemis",
       "journey_path": "qualification/journeys/che2927_mobile_chat_steer.md",
-      "journey_digest_sha256": "763f184ac75d5dc46e70cce2ce8b5de62f56d94d2b759f4f0f52ad0fc2f88179"
+      "journey_digest_sha256": "220e98672a84d8a5aa956b5f5f7cb7261ac9f4ad0f7187597400bba8bc2b9b26"
     },
     "app_input_source": {
       "repository": "https://github.com/cheese-work/multica",
@@ -100,6 +100,17 @@
     "queue_minimum": 4,
     "stub_head_must_remain_running": true,
     "stub_supplement_behavior": "does_not_claim_or_ack",
+    "stub_head_running_exceptions": ["fallback_starting"],
+    "starting_scenario_head_status": "dispatched",
+    "capability_seeds": {
+      "capable": {
+        "row": "GetTaskSupplementCapability",
+        "capability": "task_supplement_chat_v1"
+      },
+      "unsupported": {
+        "row": null
+      }
+    },
     "receipt_status_at_screenshot": ["pending", "delivering"],
     "head_remains_running_through_receipt_screenshots": true,
     "app_preferences": {

@@ -46,6 +46,14 @@ def test_candidate_pins_sources_and_covers_all_states_in_both_themes():
         "pending",
         "delivering",
     ]
+    assert candidate["fixture_contract"]["starting_scenario_head_status"] == "dispatched"
+    assert candidate["fixture_contract"]["capability_seeds"] == {
+        "capable": {
+            "row": "GetTaskSupplementCapability",
+            "capability": "task_supplement_chat_v1",
+        },
+        "unsupported": {"row": None},
+    }
     assert candidate["execution_boundary"]["device_or_adb_actions"] is False
     assert candidate["execution_boundary"]["artemis_execution"] is False
 
@@ -59,7 +67,13 @@ def test_candidate_pins_sources_and_covers_all_states_in_both_themes():
         "Sent again as a new run",
         "resent_task_id",
         "task-row count",
+        "POST /messages/{messageId}/supplement/resend",
+        "status `200`",
+        "zero resend entries",
+        "no `409` entry",
+        "Seed the head as `dispatched`",
         "theme and locale preferences are both `system`",
         "Set English with the device locale",
     ):
         assert assertion in journey_text
+    assert "confirmPossibleDuplicate" not in journey_text
