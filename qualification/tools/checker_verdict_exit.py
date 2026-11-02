@@ -41,6 +41,18 @@ def _has_exact_value(value: object, expected: str) -> bool:
     return False
 
 
+def _has_route_tag(tree: object, tags: tuple[str, ...]) -> bool:
+    # The route tag is the screen root's resource-id (testTagsAsResourceId); a text or
+    # content-desc "home" (bottom-nav label) is not route identity.
+    if isinstance(tree, dict):
+        return tree.get("resource_id") in tags or any(
+            _has_route_tag(child, tags) for child in tree.values()
+        )
+    if isinstance(tree, list):
+        return any(_has_route_tag(child, tags) for child in tree)
+    return False
+
+
 def _finite_timestamp(value: object) -> float | None:
     if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
         return None
@@ -96,10 +108,10 @@ def _native_control_proof(
             saved_tree = json.loads(saved["ui_tree"])
             capture_tree = json.loads(capture["ui_tree"])
             if not (
-                _has_exact_value(saved_tree, "recovery-snapshot")
+                _has_route_tag(saved_tree, ("recovery-snapshot",))
                 and _has_exact_value(saved_tree, observed_account)
                 and _has_exact_value(saved_tree, expected_balance)
-                and any(_has_exact_value(capture_tree, tag) for tag in SNAPSHOT_ROUTE_TAGS)
+                and _has_route_tag(capture_tree, SNAPSHOT_ROUTE_TAGS)
                 and _has_exact_value(capture_tree, observed_account)
                 and _has_exact_value(capture_tree, expected_balance)
             ):
@@ -179,6 +191,16 @@ def _latest_final_record(
         and token.search(record["item_text"])
     ]
     if not matches or any(record.get("status") != "failed" for record in matches):
+        return None
+    # main() trusts one record's capture/trace refs, so all matches must agree on them.
+    reference_pairs = []
+    for record in matches:
+        final_capture_step_id = record.get("final_capture_step_id")
+        trace_id = record.get("trace_id")
+        if not isinstance(final_capture_step_id, str) or not isinstance(trace_id, str):
+            return None
+        reference_pairs.append((final_capture_step_id, trace_id))
+    if len(set(reference_pairs)) != 1:
         return None
     return latest_attempt, matches[0]
 
