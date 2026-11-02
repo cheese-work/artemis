@@ -2,6 +2,7 @@ name: CI
 
 on:
   push:
+    branches: [main]
   pull_request:
   workflow_dispatch:
 
@@ -23,11 +24,18 @@ env:
 jobs:
   # Windows leg removed org-wide per CHE-522 (Cheese: Linux CI only, no
   # Windows jobs or artifacts).
-  python-quality:
-    name: Python 3.12
+  python-tests:
+    name: Python 3.12 (${{ matrix.suite }})
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["ubuntu-latest"]') }}
-    timeout-minutes: 60  # X99 containers have 3 CPUs on a shared host: deterministic tests took 19 min against 9-13 on the previous hosted runner
+    # Each matrix leg gets its own budget. The deterministic suite grew from ~21 to
+    # ~42 min between 28 and 29 Oct and swings up to 2.6x under shared-runner load.
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        suite: [deterministic, reverse]
 
     steps:
       - name: Check out repository
@@ -61,15 +69,19 @@ jobs:
         run: uv sync --dev --locked
 
       - name: Check Python formatting
+        if: matrix.suite == 'deterministic'
         run: uv run ruff format --check .
 
       - name: Lint Python
+        if: matrix.suite == 'deterministic'
         run: uv run ruff check .
 
       - name: Enforce quality ratchets
+        if: matrix.suite == 'deterministic'
         run: uv run python scripts/quality_ratchet.py
 
       - name: Type-check protected core modules
+        if: matrix.suite == 'deterministic'
         run: uv run pyright --project pyright-core.json
 
       # Device, cloud, manual, and end-to-end suites require dedicated
@@ -83,12 +95,14 @@ jobs:
           git cat-file -e 096411113522abc37964256833fecbbac4778af4^{commit}
 
       - name: Run deterministic Python tests
+        if: matrix.suite == 'deterministic'
         run: >-
           uv run pytest
           tests/unit
           tests/tools
           packages/artemis-client/tests
           -q
+          --durations=20
           --cov=artemis
           --cov=mcp_server
           --cov=apps/admin_console
@@ -96,15 +110,29 @@ jobs:
           --cov-fail-under=60
 
       - name: Run unit tests in reverse file order
+        if: matrix.suite == 'reverse'
         shell: bash
         run: |
           mapfile -d '' -t test_files < <(find tests/unit -type f \( -name 'test_*.py' -o -name '*_test.py' -o -name '*.test.py' \) -print0 | LC_ALL=C sort -zr)
-          uv run pytest "${test_files[@]}" -q
+          uv run pytest "${test_files[@]}" -q --durations=20
 
       - name: Enforce B2 ADB allowlist and tunnel fuzz merge gate
+        if: matrix.suite == 'deterministic'
         run: >-
           uv run pytest tests/unit/runtime/test_host_tunnel.py
           tests/unit/admin_console/test_host_tunnel_service.py -q
+
+  python-quality:
+    name: Python 3.12
+    needs: python-tests
+    if: ${{ always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+    runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["ubuntu-latest"]') }}
+    timeout-minutes: 5
+    steps:
+      - name: Require both Python test passes
+        env:
+          PYTHON_TEST_RESULT: ${{ needs.python-tests.result }}
+        run: test "$PYTHON_TEST_RESULT" = success
 
   frontend:
     name: Frontend tests and production build
