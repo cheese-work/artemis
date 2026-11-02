@@ -291,8 +291,9 @@ describe('UsbDeviceRelayService', () => {
     await service.connect();
 
     expect(service.state().error).toBe(
-      'Another program on this computer is using the phone (adb, Android Studio, scrcpy). ' +
-      'Quit it or run adb kill-server, unplug and replug, then retry.'
+      'Another program on this computer may be using the phone (adb, Android Studio, scrcpy). ' +
+      'Stop the host ADB server on this computer by running adb kill-server. ' +
+      'Quit other programs using the phone, unplug and replug, then retry.'
     );
     expect(device.raw.close).toHaveBeenCalled();
   });
@@ -369,8 +370,9 @@ describe('UsbDeviceRelayService', () => {
     await service.connect();
 
     expect(service.state().error).toBe(
-      'Another program on this computer is using the phone (adb, Android Studio, scrcpy). ' +
-      'Quit it or run adb kill-server, unplug and replug, then retry.'
+      'Another program on this computer may be using the phone (adb, Android Studio, scrcpy). ' +
+      'Stop the host ADB server on this computer by running adb kill-server. ' +
+      'Quit other programs using the phone, unplug and replug, then retry.'
     );
   });
 
@@ -380,7 +382,7 @@ describe('UsbDeviceRelayService', () => {
 
     await service.connect();
 
-    expect(service.state().error).toContain('Another program on this computer is using the phone');
+    expect(service.state().error).toContain('Another program on this computer may be using the phone');
   });
 
   it('shows transfer details instead of USB contention for a mid-session network error', async () => {
