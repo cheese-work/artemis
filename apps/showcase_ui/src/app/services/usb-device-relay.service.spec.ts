@@ -10,6 +10,7 @@ import {
   AdbDaemonWebUsbDeviceManager
 } from '@yume-chan/adb-daemon-webusb';
 import { Consumable } from '@yume-chan/stream-extra';
+import { UsbPhoneConnectionComponent } from '../components/usb-phone-connection/usb-phone-connection.component';
 import { LoggerService } from './logger.service';
 import { PHONE_TAB_CHANNEL, TabChannel } from './phone-tab.service';
 import {
@@ -140,6 +141,7 @@ describe('UsbDeviceRelayService', () => {
     webUsbDeviceManager = manager as unknown as AdbDaemonWebUsbDeviceManager;
 
     TestBed.configureTestingModule({
+      imports: [UsbPhoneConnectionComponent],
       providers: [
         UsbDeviceRelayService,
         {
@@ -293,6 +295,71 @@ describe('UsbDeviceRelayService', () => {
       'Quit it or run adb kill-server, unplug and replug, then retry.'
     );
     expect(device.raw.close).toHaveBeenCalled();
+  });
+
+  for (const error of [
+    new DOMException('Access denied.', 'NetworkError'),
+    new DOMException('Access Denied', 'SecurityError'),
+    new Error('LIBUSB_ERROR_BUSY'),
+    'USB open failed: LIBUSB_ERROR_BUSY'
+  ]) {
+    it(`shows stop-host-ADB guidance for USB setup contention: ${String(error)}`, async () => {
+      device.connect.and.rejectWith(error);
+      service = TestBed.inject(UsbDeviceRelayService);
+      const fixture = TestBed.createComponent(UsbPhoneConnectionComponent);
+
+      await service.connect();
+      fixture.detectChanges();
+
+      expect(service.state().status).toBe('error');
+      const alert = fixture.nativeElement.querySelector('[role="alert"]') as HTMLElement;
+      expect(alert.textContent).toContain('Stop the host ADB server on this computer');
+      expect(alert.textContent).toContain('adb kill-server');
+      expect(alert.textContent).not.toContain('Check its cable');
+      expect(fixture.nativeElement.querySelector('button').disabled).toBeFalse();
+      expect(device.raw.close).toHaveBeenCalledTimes(1);
+      expect(service.attaching()).toBeFalse();
+      expect(socketUrl).toBeUndefined();
+    });
+  }
+
+  it('keeps chooser access denial as a permission error', async () => {
+    manager.requestDevice.and.rejectWith(new DOMException('Access denied.', 'NotAllowedError'));
+    service = TestBed.inject(UsbDeviceRelayService);
+
+    await service.connect();
+
+    expect(service.state().error).toContain('USB permission was not granted');
+    expect(service.state().error).not.toContain('adb kill-server');
+    expect(device.connect).not.toHaveBeenCalled();
+  });
+
+  it('does not diagnose every USB setup network error as host ADB contention', async () => {
+    device.connect.and.rejectWith(new DOMException('USB device unavailable.', 'NetworkError'));
+    service = TestBed.inject(UsbDeviceRelayService);
+
+    await service.connect();
+
+    expect(service.state().error).toContain('USB device unavailable');
+    expect(service.state().error).not.toContain('adb kill-server');
+  });
+
+  it('does not diagnose a transfer access denial as host ADB contention', async () => {
+    service = TestBed.inject(UsbDeviceRelayService);
+    const connecting = service.connect();
+    await flushMicrotasks();
+    socket.open();
+    await connecting;
+    socket.message(JSON.stringify({ type: 'session_leased', session_id: 'lease-1', expires_in_seconds: 300 }));
+    socket.message(JSON.stringify({ type: 'device_attached', serial: 'R58M123' }));
+
+    packetController.error(new DOMException('Access denied.', 'NetworkError'));
+    await new Promise<void>(resolve => setTimeout(resolve, 0));
+    await flushMicrotasks();
+
+    expect(service.state().status).toBe('dropped');
+    expect(service.state().error).toContain('Details: NetworkError: Access denied.');
+    expect(service.state().error).not.toContain('adb kill-server');
   });
 
   it('explains a WebUSB network error as a competing USB program', async () => {
