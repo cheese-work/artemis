@@ -791,6 +791,66 @@ describe('UsbDeviceRelayService', () => {
     }
   });
 
+  it('warns when an attached tab is hidden and keeps the warning on return', async () => {
+    const visibility = spyOnProperty(document, 'visibilityState', 'get').and.returnValue('visible');
+    await openRelay();
+    expect(service!.backgroundWarning()).toBeFalse();
+
+    visibility.and.returnValue('hidden');
+    document.dispatchEvent(new Event('visibilitychange'));
+    expect(service!.backgroundWarning()).toBeTrue();
+    expect(service!.state().status).toBe('connected');
+    expect(socket.readyState).toBe(1);
+
+    visibility.and.returnValue('visible');
+    document.dispatchEvent(new Event('visibilitychange'));
+    expect(service!.backgroundWarning()).toBeTrue();
+
+    await service!.disconnect();
+    expect(service!.backgroundWarning()).toBeFalse();
+  });
+
+  it('warns if attachment finishes while the tab is already hidden', async () => {
+    spyOnProperty(document, 'visibilityState', 'get').and.returnValue('hidden');
+    await openRelay();
+    expect(service!.backgroundWarning()).toBeTrue();
+  });
+
+  it('warns while reconnecting and clears the warning when the bridge drops', async () => {
+    const visibility = spyOnProperty(document, 'visibilityState', 'get').and.returnValue('visible');
+    await openRelay();
+    socket.drop();
+    expect(service!.state().status).toBe('reconnecting');
+    visibility.and.returnValue('hidden');
+    document.dispatchEvent(new Event('visibilitychange'));
+    expect(service!.backgroundWarning()).toBeTrue();
+
+    const closed = new Promise<void>(resolve => {
+      closeLog.and.callFake((message: string) => {
+        if (message === 'Device bridge closing:') resolve();
+      });
+    });
+    packetController.error(new Error('USB connection lost'));
+    await closed;
+    expect(service!.state().status).toBe('dropped');
+    expect(service!.backgroundWarning()).toBeFalse();
+  });
+
+  it('ignores visibility changes without an attached phone and removes the listener on destroy', async () => {
+    const visibility = spyOnProperty(document, 'visibilityState', 'get').and.returnValue('hidden');
+    service = TestBed.inject(UsbDeviceRelayService);
+    document.dispatchEvent(new Event('visibilitychange'));
+    expect(service.backgroundWarning()).toBeFalse();
+    visibility.and.returnValue('visible');
+    await openRelay();
+    const remove = spyOn(document, 'removeEventListener').and.callThrough();
+    service!.ngOnDestroy();
+    expect(remove).toHaveBeenCalledWith('visibilitychange', jasmine.any(Function));
+    visibility.and.returnValue('hidden');
+    document.dispatchEvent(new Event('visibilitychange'));
+    expect(service!.backgroundWarning()).toBeFalse();
+  });
+
   it('does not close an attached bridge just because the tab becomes hidden', async () => {
     jasmine.clock().install();
     try {
