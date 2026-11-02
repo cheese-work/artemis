@@ -24,8 +24,8 @@ flag. The server records transport close codes/reasons from ASGI disconnect even
 cleanup, for example when a `client_close` report ended the relay first.
 
 Unexpected network loss or laptop suspension can make a diagnostic frame
-impossible to send. A missing `client_close` plus code `1006` is an abnormal
-transport loss, not proof of a Cloudflare failure or a USB error. Page-unload
+impossible to send. A missing `client_close` plus code `1005` or `1006` can indicate
+transport loss; it is not proof of a Cloudflare failure or a USB error. Page-unload
 delivery is also best-effort. Background visibility is context, not a proven cause.
 
 ## Verification limits
@@ -37,6 +37,40 @@ sleep, actual browser throttling, or the original run `22d8d458`.
 
 Real background-tab and laptop-sleep evidence still requires the Android device
 squad's admission, independently reviewed testcases, and the dedicated physical
-device/browser executor. No automatic reconnect is claimed: a new session currently
-allocates a new loopback ADB serial rather than preserving the interrupted run's
-transport identity.
+device/browser executor. A transient socket failure can resume the existing session,
+token and loopback ADB serial within the reconnect grace period. Opening a new
+session allocates a new serial. This is separate from resuming an interrupted run.
+
+## Recovery flag and endpoint readback (CHE-3077)
+
+`ARTEMIS_BRIDGE_FIXES` defaults to off. After trimming whitespace and ignoring case,
+only `on` enables it. With the flag on, an attached session without a client-close
+report can resume after close code `1005` or `1006`. With the flag off, only `1006`
+gets that treatment. Explicit socket-error/closed reports remain resumable in
+either mode. USB disconnect, page unload, manual disconnect and service destruction
+remain final. Both lease messages expose the server's flag value as `bridge_fixes`.
+
+Read-only X99 service check, 02 Nov 2026, 15:20 ICT: `artemis-qa.service` was active
+in `/home/congvc/services/artemis-qa`. `ARTEMIS_BRIDGE_FIXES` was unset in its launch
+environment and `/home/congvc/.local/share/artemis-qa/.env`. Both configured inputs
+therefore select off. This is a configuration readback, not an in-process flag
+probe. No flag or service setting was changed.
+
+The WebUSB bridge intentionally connects to `AdbEndpoint.local()`: a remote ADB
+server cannot dial this server's loopback listener. Browser-run device enumeration,
+readiness and queue binding also use that local endpoint, while other runs use the
+global preference. A differing global preference is not itself a bridge failure.
+CHE-1410 first fixed that routing in PR #136; its later PR #144 fixed duplicate
+module imports that gave the queue a different, empty lease registry. Do not infer
+an endpoint mismatch from the generic `device_offline` message alone.
+
+The relay integration test sends ADB packets through a real loopback TCP stream
+before and after two unreported `1005`/`1006` drops. It verifies the same session,
+token and serial, bidirectional packet forwarding, one ADB connection and final
+listener cleanup. A separate queue regression pins local routing with a remote
+global preference. These are synthetic checks, not physical-device qualification.
+
+Recommendation: enable `ARTEMIS_BRIDGE_FIXES=on` only through the separate
+production deployment decision after review and passing checks. Read back the
+flag from a lease during an admitted browser/device acceptance run. Validate both
+close codes and deliberate-disconnect cleanup, and retain flag-off as the rollback.
