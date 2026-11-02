@@ -203,6 +203,28 @@ describe('UsbDeviceRelayService', () => {
     expect(service.attaching()).toBeFalse();
   });
 
+  it('reads the server-owned ARTEMIS_BRIDGE_FIXES flag from the lease, off unless it says true (CHE-2098)', async () => {
+    service = TestBed.inject(UsbDeviceRelayService);
+    expect(service.bridgeFixes()).toBeFalse();
+    const connecting = service.connect();
+    await flushMicrotasks();
+    socket.open();
+    await connecting;
+
+    socket.message(JSON.stringify({ type: 'session_leased', session_id: 'lease-1', expires_in_seconds: 300 }));
+    expect(service.bridgeFixes()).toBeFalse();
+
+    socket.message(JSON.stringify({
+      type: 'session_leased', session_id: 'lease-1', expires_in_seconds: 300, bridge_fixes: 'on'
+    }));
+    expect(service.bridgeFixes()).toBeFalse();
+
+    socket.message(JSON.stringify({
+      type: 'session_leased', session_id: 'lease-1', expires_in_seconds: 300, bridge_fixes: true
+    }));
+    expect(service.bridgeFixes()).toBeTrue();
+  });
+
   it('tells other tabs which phone it holds, and that it let go (OCR F3)', async () => {
     service = TestBed.inject(UsbDeviceRelayService);
     const connecting = service.connect();

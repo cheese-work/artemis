@@ -42,6 +42,11 @@ _sleep = asyncio.sleep
 logger = logging.getLogger(__name__)
 
 
+def bridge_fixes_enabled() -> bool:
+    """CHE-2098 browser-link fixes ship dark: only the exact value ``on`` enables them."""
+    return os.environ.get("ARTEMIS_BRIDGE_FIXES", "").strip().lower() == "on"
+
+
 def _session_ttl_seconds() -> float:
     raw = os.environ.get("ARTEMIS_BRIDGE_SESSION_TTL_SECONDS")
     if not raw:

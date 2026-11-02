@@ -54,6 +54,12 @@ def _clear_credential_inputs(monkeypatch):
         monkeypatch.delenv(env_name, raising=False)
 
 
+@pytest.fixture
+def no_adb_binary(monkeypatch):
+    """Probe as a machine without adb: the probe then never contacts an adb server."""
+    monkeypatch.setattr(AdbDeviceProbe, "_locate_adb", lambda _probe: None)
+
+
 @pytest.mark.asyncio
 async def test_submission_endpoint_override_does_not_change_the_shared_probe(monkeypatch):
     engine = ReadinessEngine()
@@ -87,7 +93,7 @@ async def test_submission_endpoint_override_does_not_change_the_shared_probe(mon
 
 
 @pytest.mark.asyncio
-async def test_readiness_engine_run_all():
+async def test_readiness_engine_run_all(no_adb_binary):
     """Verify that ReadinessEngine aggregates probes and builds structured report."""
     engine = ReadinessEngine()
     report: SystemReadinessReport = await engine.run_all()
@@ -151,7 +157,7 @@ async def test_vision_ocr_probe_structure():
 
 
 @pytest.mark.asyncio
-async def test_adb_probe_structure():
+async def test_adb_probe_structure(no_adb_binary):
     """Verify AdbDeviceProbe returns correct category, blocker status, and schema."""
     probe = AdbDeviceProbe()
     assert probe.probe_id == "android_adb"

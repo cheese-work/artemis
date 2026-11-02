@@ -82,6 +82,8 @@ export class UsbDeviceRelayService implements OnDestroy {
 
   /** The USB chooser is done and the bridge has not reported the phone yet. */
   public readonly attaching = signal(false);
+  /** The server's ARTEMIS_BRIDGE_FIXES flag, as the last lease reported it; off until a lease says true. */
+  public readonly bridgeFixes = signal(false);
   /** The phone another tab of this browser holds; null when none does. */
   public readonly heldInAnotherTab = this.tabs.heldElsewhere;
 
@@ -554,6 +556,7 @@ export class UsbDeviceRelayService implements OnDestroy {
         }
         this.sessionLeased = true;
         this.leasedSessionId = value.session_id;
+        this.bridgeFixes.set(value.bridge_fixes === true);
         if (typeof value.reconnect_token === 'string') {
           this.reconnectToken = value.reconnect_token;
         }
@@ -782,6 +785,7 @@ interface BridgeControlMessage {
   session_id?: unknown;
   expires_in_seconds?: unknown;
   reconnect_token?: unknown;
+  bridge_fixes?: unknown;
   serial?: unknown;
 }
 

@@ -50,7 +50,7 @@ export const PROMPT_CRITIQUE = {
   ],
   lessons: ['Give the task a clear stopping point.', 'Name the visible result that proves the check passed.']
 };
-export const mock = { chat: null, results: null, streamState: null, streamImage: null, critiques: [], lessonsError: false, improveCalls: 0, improveError: false, improveDelay: 0, sessions: [], status: null, failSessions: false, failVideo: false, identity: null, readiness: null, config: null, providers: null };
+export const mock = { chat: null, results: null, streamState: null, streamImage: null, critiques: [], lessonsError: false, improveCalls: 0, improveError: false, improveDelay: 0, sessions: [], status: null, failSessions: false, failVideo: false, identity: null, readiness: null, config: null, providers: null, hosts: null };
 
 const json = (res, code, body) => {
   res.writeHead(code, { 'content-type': 'application/json' });
@@ -179,7 +179,7 @@ export function startMockApi(distDir) {
     if (p === '/api/sessions' && mock.failSessions) return json(res, 500, { error: 'boom' });
     if (p === '/api/sessions' && mock.sessions.length) return json(res, 200, mock.sessions);
 
-    if (p === '/api/hosts') return json(res, 200, { enabled: true, hosts: [], devices: [] });
+    if (p === '/api/hosts') return json(res, 200, mock.hosts ?? { enabled: true, hosts: [], devices: [] });
     if (p.startsWith('/images/')) {
       res.writeHead(200, { 'content-type': 'image/svg+xml' });
       return res.end(SYNTHETIC_SCREENSHOT);
