@@ -47,7 +47,7 @@ for (const prefix of ['/', '/preview/pr/70/']) {
   });
   const profile = mkdtempSync(path.join(tmpdir(), 'artemis-preview-path-'));
   const chrome = spawn(process.env.CHROME_BIN || 'google-chrome', [
-    '--headless=new', '--no-sandbox', '--disable-gpu', '--disable-background-networking', '--no-proxy-server',
+    '--headless=new', '--no-sandbox', '--password-store=basic', '--disable-gpu', '--disable-background-networking', '--no-proxy-server',
     '--disable-extensions', '--disable-component-extensions-with-background-pages',
     '--host-resolver-rules=MAP *.googleapis.com ~NOTFOUND, MAP *.gstatic.com ~NOTFOUND',
     '--remote-debugging-port=0', `--user-data-dir=${profile}`, 'about:blank'
