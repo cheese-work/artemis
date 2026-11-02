@@ -8,7 +8,7 @@ class RunnerRoutingTest(unittest.TestCase):
     def test_artemis_uses_x99_and_provisions_chrome(self):
         ci = Path(".github/workflows/ci.yml").read_text()
         whats_new = Path(".github/workflows/whats-new.yml").read_text()
-        self.assertEqual(ci.count("github.repository_owner == 'cheese-work'"), 3)
+        self.assertEqual(ci.count("github.repository_owner == 'cheese-work'"), 4)
         self.assertIn("cheese-x99", whats_new)
         self.assertIn("browser-actions/setup-chrome@", ci)
         self.assertIn("CHROME_BIN: ${{ steps.chrome.outputs.chrome-path }}", ci)

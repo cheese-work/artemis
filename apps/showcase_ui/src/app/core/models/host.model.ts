@@ -21,6 +21,8 @@ export interface Computer {
 
 export interface RegistryDevice {
   serial: string;
+  /** Canonical id the lease API takes; null until the server has matched the phone. */
+  device_id?: string | null;
   model: string | null;
   product?: string | null;
   /** Classified from adb properties; absent when the computer's agent did not report it. */
