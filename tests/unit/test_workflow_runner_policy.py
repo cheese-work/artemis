@@ -77,7 +77,7 @@ def test_frontend_job_provisions_chrome_without_disabling_its_sandbox():
 
 def test_python_jobs_install_the_opencv_system_libraries():
     workflow = yaml.safe_load((WORKFLOWS / "ci.yml").read_text(encoding="utf-8"))
-    for name in ("python-quality", "python-tests", "package"):
+    for name in ("python-quality", "python-tests", "b2-gate", "package"):
         steps = workflow["jobs"][name]["steps"]
         install = next(
             (i for i, step in enumerate(steps) if "apt-get install" in step.get("run", "")), None
@@ -138,6 +138,7 @@ def test_pull_request_required_job_set_is_the_fast_lane():
     }
     assert on_pull_request == {
         "Python 3.12",
+        "B2 ADB allowlist and tunnel fuzz",
         "Frontend tests and production build",
         "Build and smoke-test Python packages",
     }
@@ -169,8 +170,29 @@ def test_python_pull_request_lane_runs_checks_and_the_fast_subset():
     assert "--ignore=tests/unit/admin_console" in runs
     assert "--cov" not in runs
     assert "sort -zr" not in runs
+    assert "test_host_tunnel" not in runs  # B2 is its own check: see the next test
+
+
+def test_b2_gate_is_its_own_pull_request_check_that_can_be_required():
+    """Branch rules can require a check by name; a step inside `Python 3.12` cannot be required alone."""
+    jobs = _ci()["jobs"]
+    job = jobs["b2-gate"]
+    assert job["name"] == "B2 ADB allowlist and tunnel fuzz"
+    assert not _skips_pull_request(job)
+    assert FORK_GUARD in job["if"]
+    runs = "\n".join(step.get("run", "") for step in job["steps"])
     assert "tests/unit/runtime/test_host_tunnel.py" in runs
     assert "tests/unit/admin_console/test_host_tunnel_service.py" in runs
+    assert "|| true" not in runs
+
+
+def test_mapped_test_selection_fails_closed():
+    steps = _ci()["jobs"]["python-quality"]["steps"]
+    run = next(step for step in steps if "ci_mapped_tests.py" in step.get("run", ""))["run"]
+    assert "set -euo pipefail" in run
+    # A selector error must stop the job; only an empty grep result may be tolerated.
+    assert "ci_mapped_tests.py | grep" not in run
+    assert '> "$RUNNER_TEMP/mapped.txt"' in run
 
 
 def test_python_pull_request_lane_runs_tests_mapped_from_the_changed_paths():

@@ -203,15 +203,54 @@ jobs:
           --durations=20
 
       # tests/unit/admin_console is skipped above; run the part the PR touches.
+      # Fail closed: a git or selector error stops the job. Only an empty
+      # selection passes without running tests.
       - name: Run admin_console tests mapped from the changed paths
         env:
           BASE_REF: ${{ github.base_ref }}
         run: |
+          set -euo pipefail
           git fetch --no-tags --depth=1 origin "$BASE_REF"
-          mapfile -t tests < <(git diff --name-only FETCH_HEAD HEAD | python scripts/ci_mapped_tests.py | grep . || true)
+          git diff --name-only FETCH_HEAD HEAD > "$RUNNER_TEMP/changed.txt"
+          python scripts/ci_mapped_tests.py < "$RUNNER_TEMP/changed.txt" > "$RUNNER_TEMP/mapped.txt"
+          mapfile -t tests < <(grep . "$RUNNER_TEMP/mapped.txt" || true)
           if [ "${#tests[@]}" -eq 0 ]; then echo "No admin_console tests map to this change"; exit 0; fi
           printf 'Mapped test: %s\n' "${tests[@]}"
           uv run pytest "${tests[@]}" -q --durations=20
+
+  # The B2 ADB allowlist and tunnel fuzz merge gate is its own check so a branch
+  # rule can require it by name (CHE-3276, eng review D15 = A). It was a step of
+  # the full-suite job before. The full suite still runs it on main.
+  b2-gate:
+    name: B2 ADB allowlist and tunnel fuzz
+    if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["ubuntu-latest"]') }}
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Install system libraries for OpenCV
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install --no-install-recommends -y libgl1 libglib2.0-0 libxcb1
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e  # v6.8.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Install locked development environment
+        run: uv sync --dev --locked
 
       - name: Enforce B2 ADB allowlist and tunnel fuzz merge gate
         run: >-

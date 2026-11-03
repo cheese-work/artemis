@@ -41,3 +41,16 @@ def test_paths_outside_admin_console_map_to_nothing():
 
 def test_a_deleted_test_file_is_not_selected():
     assert _load().mapped_tests(["tests/unit/admin_console/test_gone_zzz.py"], ROOT) == []
+
+
+def test_a_module_maps_to_every_test_that_imports_it():
+    """Auth regressions must not slip past the lane: test_security_boundary imports access_control."""
+    mapped = _load().mapped_tests(["apps/admin_console/core/access_control.py"], ROOT)
+    assert "tests/unit/admin_console/test_access_control.py" in mapped
+    assert "tests/unit/admin_console/test_security_boundary.py" in mapped
+    assert "tests/unit/admin_console/test_route_tiers.py" in mapped
+
+
+def test_a_changed_shared_fixture_maps_to_the_whole_directory():
+    mapped = _load().mapped_tests(["tests/unit/admin_console/conftest.py"], ROOT)
+    assert mapped == ["tests/unit/admin_console"]
