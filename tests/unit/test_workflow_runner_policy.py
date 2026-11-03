@@ -173,6 +173,17 @@ def test_python_pull_request_lane_runs_checks_and_the_fast_subset():
     assert "tests/unit/admin_console/test_host_tunnel_service.py" in runs
 
 
+def test_python_pull_request_lane_runs_tests_mapped_from_the_changed_paths():
+    steps = _ci()["jobs"]["python-quality"]["steps"]
+    mapped = next(step for step in steps if "ci_mapped_tests.py" in step.get("run", ""))
+    assert "git diff --name-only" in mapped["run"]
+    assert "github.base_ref" in mapped["env"]["BASE_REF"]
+    assert "pytest" in mapped["run"]
+    # The mapped tests follow the B2 gate position check: both run before the job ends.
+    names = [step["name"] for step in steps]
+    assert names.index(mapped["name"]) > names.index("Run fast Python tests")
+
+
 def test_host_agent_does_not_run_on_branch_pushes_beside_pull_requests():
     workflow = yaml.safe_load((WORKFLOWS / "host-agent.yml").read_text(encoding="utf-8"))
     triggers = _triggers(workflow)

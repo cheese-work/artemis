@@ -202,6 +202,17 @@ jobs:
           -q
           --durations=20
 
+      # tests/unit/admin_console is skipped above; run the part the PR touches.
+      - name: Run admin_console tests mapped from the changed paths
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          git fetch --no-tags --depth=1 origin "$BASE_REF"
+          mapfile -t tests < <(git diff --name-only FETCH_HEAD HEAD | python scripts/ci_mapped_tests.py | grep . || true)
+          if [ "${#tests[@]}" -eq 0 ]; then echo "No admin_console tests map to this change"; exit 0; fi
+          printf 'Mapped test: %s\n' "${tests[@]}"
+          uv run pytest "${tests[@]}" -q --durations=20
+
       - name: Enforce B2 ADB allowlist and tunnel fuzz merge gate
         run: >-
           uv run pytest tests/unit/runtime/test_host_tunnel.py
