@@ -970,6 +970,9 @@ def attach_test_summary(output, run_outcome: dict | None):
     untouched. String outputs are wrapped into a dict so that callers such as
     ``mobile_run_task`` receive the summary without parsing report prose.
     """
+    if isinstance(output, dict):
+        # Trust boundary: a model-supplied ``test_summary`` is never evidence.
+        output = {key: value for key, value in output.items() if key != "test_summary"}
     if not run_outcome:
         return output
     tests = run_outcome.get("tests") or {}
@@ -984,7 +987,7 @@ def attach_test_summary(output, run_outcome: dict | None):
     summary = {"task_status": run_outcome.get("task_status"), **tests}
     if isinstance(output, dict):
         merged = dict(output)
-        merged.setdefault("test_summary", summary)
+        merged["test_summary"] = summary
         return merged
     if output is None:
         return {"test_summary": summary}
