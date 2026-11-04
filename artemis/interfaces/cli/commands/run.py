@@ -28,7 +28,7 @@ from artemis.config.attempt_lifecycle_hooks import (
     record_attempt_manifest,
     reconcile_and_store_verdict,
 )
-from artemis.interfaces.cli.assertion_exit import native_assertion_exit_code
+from artemis.interfaces.cli.assertion_exit import native_assertion_exit_code, require_native_scope
 from artemis.runtime import trace_store
 from artemis.utils.startup_progress import publish_startup_progress
 from artemis import Agent, Builders
@@ -94,12 +94,11 @@ async def execute_task(
         assertion_exit: Opt-in. Map the native test summary to a process exit
             (``SystemExit``: 1 assertion FAIL, 2 missing/incomplete evidence)
             and let an ``Agent.clean()`` failure propagate. Requires an
-            explicit ``device_serial`` and ``locked_app_package``.
+            ``profile='pro'`` and explicit ``device_serial`` and
+            ``locked_app_package``.
     """
-    if assertion_exit and not all(
-        isinstance(v, str) and v.strip() for v in (device_serial, locked_app_package)
-    ):
-        raise ValueError("assertion-exit requires explicit device_serial and locked_app_package")
+    if assertion_exit:
+        require_native_scope(profile, device_serial, locked_app_package)
     effective_sid = (
         session_id
         or os.getenv("ARTEMIS_SESSION_ID")
@@ -433,7 +432,7 @@ def run_command(
             "--assertion-exit",
             help=(
                 "Opt-in: exit 1 on a completed native assertion FAIL, 2 on missing or "
-                "incomplete evidence. Requires --standalone, --device-serial and --locked-app."
+                "incomplete evidence. Requires --standalone, --profile pro, --device-serial and --locked-app."
             ),
         ),
     ] = False,
@@ -451,6 +450,11 @@ def run_command(
     is_standalone = standalone or os.environ.get("ARTEMIS_STANDALONE") == "1"
     if assertion_exit and (not is_standalone or is_worker):
         raise typer.BadParameter("--assertion-exit requires --standalone, not a daemon worker")
+    if assertion_exit:
+        try:
+            require_native_scope(profile, device_serial, locked_app_package)
+        except ValueError as exc:
+            raise typer.BadParameter(str(exc)) from exc
 
     # All platforms route through unified Artemis Daemon unless specifically configured as standalone
     if not is_worker and not is_standalone:

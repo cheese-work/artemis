@@ -20,6 +20,7 @@ ARGS = {
     "session_id": SID,
     "device_serial": "emulator-5554",
     "locked_app_package": "ai.multica.mobile",
+    "profile": "pro",
     "assertion_exit": True,
 }
 FAILED_ITEM = {"kind": "assert", "item_text": "x is visible", "evidence": "x not on screen"}
@@ -243,3 +244,42 @@ def test_standalone_cli_exit_code_follows_native_result(result, code):
         )
     assert out.exit_code == code
     agent.clean.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("profile", ["flash", "FLASH", None, "", "other"])
+async def test_only_graph_profile_is_supported_before_agent(profile):
+    """The flash runner returns model tool-call arguments as its report, so a
+    model could supply a complete PASS summary. Reject it before Agent creation."""
+    with patch.object(run_module, "Agent") as agent:
+        with pytest.raises(ValueError, match="assertion-exit"):
+            await run_module.execute_task(**{**ARGS, "profile": profile})
+    agent.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        ["-p", "flash"],
+        ["-p", "flash", "-s", "emulator-5554", "-a", "ai.multica.mobile"],
+        ["-a", "ai.multica.mobile"],  # no serial
+        ["-s", "emulator-5554"],  # no package
+        ["-s", " ", "-a", "ai.multica.mobile"],
+    ],
+)
+def test_cli_rejects_bad_scope_before_device_discovery(extra):
+    with (
+        patch.object(run_module, "execute_task", new_callable=AsyncMock) as execute,
+        patch.object(run_module, "AdbClient") as adb,
+        patch.object(run_module, "display_device_status") as device_probe,
+        patch.object(run_module, "which", return_value="/usr/bin/adb"),
+        patch.object(run_module, "Agent") as agent,
+    ):
+        result = CliRunner().invoke(
+            app, ["run", "goal", "--standalone", "--assertion-exit", *extra]
+        )
+    assert result.exit_code != 0
+    execute.assert_not_called()
+    adb.assert_not_called()
+    device_probe.assert_not_called()
+    agent.assert_not_called()

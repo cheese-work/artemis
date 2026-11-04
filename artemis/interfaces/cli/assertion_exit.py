@@ -41,3 +41,16 @@ def native_assertion_exit_code(result) -> int:
     if summary["failed"]:
         return EXIT_ASSERTION_FAIL
     return EXIT_PASS if summary["passed"] > 0 else EXIT_INCONCLUSIVE
+
+
+def require_native_scope(profile, device_serial, locked_app_package) -> None:
+    """Reject unsupported invocations before any device discovery or Agent creation.
+
+    Only the graph ('pro') profile attaches native evidence; the flash runner
+    returns model tool-call arguments as its report, which a model could use to
+    supply a PASS summary.
+    """
+    if str(profile).lower() != "pro":
+        raise ValueError("assertion-exit requires --profile pro")
+    if not all(isinstance(v, str) and v.strip() for v in (device_serial, locked_app_package)):
+        raise ValueError("assertion-exit requires explicit device_serial and locked_app_package")
