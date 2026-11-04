@@ -11,7 +11,11 @@ import yaml
 WORKFLOWS = Path(__file__).resolve().parents[2] / ".github" / "workflows"
 FORK_GUARD = "github.event.pull_request.head.repo.full_name == github.repository"
 # Runs only when dispatched by hand and uses its own protected controller group.
-INACTIVE = {("preview-controller.yml", "preview-controller")}
+INACTIVE = {
+    ("preview-controller.yml", "preview-controller"),
+    # Deletes GitHub Actions caches with the repo token; needs no X99 disk or browser.
+    ("cache-maintenance.yml", "cleanup"),
+}
 
 
 def _jobs():
