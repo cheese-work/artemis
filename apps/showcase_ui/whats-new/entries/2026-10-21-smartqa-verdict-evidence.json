@@ -1,0 +1,7 @@
+{
+  "id": "2026-10-21-smartqa-verdict-evidence",
+  "date": "2026-10-21",
+  "title": "SmartQA results now show cited evidence and clearer labels.",
+  "body": "History and session details show Vietnamese result labels and cited evidence. Pending verdicts update as results become available.",
+  "issues": ["CHE-1649"]
+}

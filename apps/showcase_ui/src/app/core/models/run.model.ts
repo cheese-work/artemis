@@ -66,13 +66,42 @@ export interface ResultsNote {
   truncated: boolean;
 }
 
+export interface ChatTurnResult {
+  catalog_key: string;
+  verdict: string;
+  verification: string;
+  category: string | null;
+  display_labels?: { verification: string; category?: string };
+  reason: string;
+  action: { text: string; href?: string | null };
+  responsible: string;
+  evidence: { turn_id: string; step: number | null; screenshot_url: string | null };
+  turn_index: number;
+  turn_count: number;
+  label_state: 'pending' | 'final' | 'legacy' | 'cancelled' | 'error';
+  source: string;
+  updated?: boolean;
+  results_note?: ResultsNote | null;
+}
+
+export interface ChatResultsSession {
+  session_id: string;
+  status?: 'unavailable';
+  results: ChatTurnResult[];
+}
+
+export interface ChatResultsResponse {
+  sessions: ChatResultsSession[];
+}
+
 export interface ChatSession {
   session_id: string;
   title?: string | null;
   turns: ChatTurn[];
   messages: ChatMessage[];
   timeline?: ChatMessage[];
-  verdict?: { status: string; outcome: CheckerBlockData | null; report?: string | null; details: Record<string, any>; tip?: { state: 'generating' | 'complete' | 'failed'; text: string | null } | null; result?: { results_note?: ResultsNote | null } | null };
+  verdict?: { status: string; outcome: CheckerBlockData | null; report?: string | null; details: Record<string, any>; tip?: { state: 'generating' | 'complete' | 'failed'; text: string | null } | null; result?: ChatTurnResult | null };
+  results?: ChatTurnResult[];
   idle_until: number | null;
   lease_pid: number | null;
 }

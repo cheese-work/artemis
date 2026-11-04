@@ -23,6 +23,21 @@ _KNOWN_CATEGORIES = frozenset(
     }
 )
 _LABEL_STATES = frozenset({"pending", "final", "legacy", "cancelled", "error"})
+_VERIFICATION_DISPLAY_LABELS = {
+    "self_reported": "Agent tự báo",
+    "verified": "Đã kiểm",
+    "none": "Chưa xác minh",
+    "pending": "Chưa xác minh",
+}
+_CATEGORY_DISPLAY_LABELS = {
+    "smartqa_infra": "Hạ tầng SmartQA",
+    "smartqa_agent": "Agent SmartQA",
+    "provider": "Nhà cung cấp",
+    "app_defect": "Lỗi ứng dụng",
+    "user_prompt": "Prompt người dùng",
+    "qa_environment": "Môi trường QA",
+    "unknown": "Chưa xác định",
+}
 _IMAGE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,199}\Z")
 _SIGNAL_PRIORITY = {"raw_error_text": 0, "stuck_run": 1, "run_step": 2}
 _CATALOG = {
@@ -566,6 +581,15 @@ def _with_turn_metadata(record, turn_id, turn_index, turn_count):
     result["label_state"] = record["label_state"]
     result["source"] = record["source"]
     result["updated"] = record["version"] > 1
+    result["display_labels"] = {
+        "verification": _VERIFICATION_DISPLAY_LABELS.get(
+            result.get("verification"), "Chưa xác minh"
+        ),
+    }
+    if result.get("category") is not None:
+        result["display_labels"]["category"] = _CATEGORY_DISPLAY_LABELS.get(
+            result["category"], "Chưa xác định"
+        )
     return result
 
 

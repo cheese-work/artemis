@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SmartQA verdict results</title>
+  <style>
+    :root { color-scheme: light dark; font: 16px/1.6 system-ui, sans-serif; }
+    body { max-width: 72rem; margin: 0 auto; padding: 2rem 1rem 5rem; }
+    h1, h2, h3 { line-height: 1.25; margin-block: 2rem 0.75rem; }
+    p, li { max-width: 72ch; }
+    code, pre { font-family: ui-monospace, monospace; }
+    code { overflow-wrap: anywhere; }
+    pre { overflow-x: auto; padding: 1rem; border: 1px solid #8886; border-radius: 0.5rem; }
+    a { min-height: 44px; }
+  </style>
+</head>
+<body>
+<main>
+<h1>SmartQA verdict results</h1>
+<h2>Quickstart: labelled verdict locally in under 5 minutes</h2>
+<p>With the locked development dependencies installed, run the pure mapper without a device or model:</p>
+<pre><code>uv run python - &lt;&lt;&#39;PY&#39;
+from apps.admin_console.services.qa_results import derive_result
+
+result = derive_result(
+    &quot;failed&quot;,
+    {&quot;task_status&quot;: &quot;failed&quot;, &quot;cause&quot;: &quot;goal_unreachable&quot;},
+    [],
+)
+print(f&#39;{result[&quot;verdict&quot;].upper()} · {result[&quot;reason&quot;]} ({result[&quot;catalog_key&quot;]})&#39;)
+PY</code></pre>
+<p>Expected output:</p>
+<pre><code>BLOCKED · Không đạt được mục tiêu (xem lại prompt) (blocked.user_prompt)</code></pre>
+<p>To exercise the chat endpoint with a fixture-backed run, run:</p>
+<pre><code>uv run pytest -q tests/unit/admin_console/test_chat_api.py::test_chat_adds_per_turn_results_without_changing_legacy_verdict</code></pre>
+<p>The shared builder is <code>tests/support/smartqa_verdict_fixtures.py</code>. It creates a local SQLite-backed chat, outcome, ledger rows, and evidence without a connected device.</p>
+<h2>API shape</h2>
+<p><code>GET /api/chats/{session_id}</code> keeps the existing <code>verdict</code> fields. It adds <code>verdict.result</code> for the latest turn and <code>results[]</code> for every turn. Each result includes:</p>
+<ul><li><code>catalog_key</code>, <code>verdict</code>, <code>verification</code>, <code>category</code>, and Vietnamese <code>reason</code>.</li><li><code>action.text</code> and an optional server-selected <code>action.href</code>.</li><li><code>responsible</code> and <code>evidence</code> (<code>turn_id</code>, <code>step</code>, <code>screenshot_url</code>).</li><li><code>turn_index</code>, <code>turn_count</code>, <code>label_state</code>, <code>source</code>, and <code>updated</code> (a version was appended).</li></ul>
+<p>The backend owns the label catalog. The API does not use agent-provided action URLs. Result reads keep <code>require_visible_run</code>; evidence URLs retain their own run-visibility checks. A caller who is not the owner does not receive the requester&#39;s email.</p>
+<h2>Result categories</h2>
+<p>These stable category keys are returned by the API. The short Vietnamese names are display labels; they do not change classification or persistence.</p>
+<h3 id="smartqa_infra">smartqa_infra</h3>
+<p>Hạ tầng SmartQA.</p>
+<h3 id="smartqa_agent">smartqa_agent</h3>
+<p>Agent SmartQA.</p>
+<h3 id="provider">provider</h3>
+<p>Nhà cung cấp.</p>
+<h3 id="app_defect">app_defect</h3>
+<p>Lỗi ứng dụng.</p>
+<h3 id="user_prompt">user_prompt</h3>
+<p>Prompt người dùng.</p>
+<h3 id="qa_environment">qa_environment</h3>
+<p>Môi trường QA.</p>
+<h3 id="unknown">unknown</h3>
+<p>Chưa xác định.</p>
+<h2>Persistence and finalization</h2>
+<p><code>qa_results</code> stores append-only versions keyed by <code>(turn_id, version)</code>. A known final category is immutable. An <code>unknown</code> result can be upgraded once by a later classification. When an unknown label remains pending beyond <code>ARTEMIS_VERDICT_PENDING_CAP_SECONDS</code> (30 seconds by default), the endpoint appends a final <code>unknown</code> row. Cancelled and legacy runs retain their explicit label states.</p>
+<p>The result mapper is pure: <code>derive_result(execution_status, outcome, ledger_rows)</code>. A non-completed execution cannot pass. A known ledger category takes precedence over the agent&#39;s cause. The cause is used only when the ledger has no known category. App-defect results require a valid step citation and evidence; unverified citations become <code>unknown</code>.</p>
+<h2>Activation and local maintenance</h2>
+<p>The first non-preview server startup records the activation timestamp and an immutable snapshot of <code>ARTEMIS_ADMIN_EMAILS</code> in <code>qa_result_activation</code>. Restarts and later admin-list changes do not move that window. Operators can record the snapshot explicitly before starting the server:</p>
+<pre><code>uv run python -m apps.admin_console.services.qa_result_commands activate --at &#39;2026-10-20T10:00:00+07:00&#39;</code></pre>
+<p>The sweep classifies terminal outbox events at or after activation. Earlier events still finish broadcast/notification delivery but do not trigger automatic historical classification. An explicitly replayed event bypasses that boundary. Classification errors retry up to 5 times, then mark the classifier abandoned without blocking the other consumers.</p>
+<p>Backfill and replay are local CLI operations, not HTTP endpoints. They never stop or restart runs. Both accept a half-open time range <code>[since, until)</code> and <code>--limit</code> (default 100, maximum 1000). The default lower bound is 9 October 2026 at 00:00 ICT; the default upper bound is the command&#39;s start time. Explicit timestamps must include their timezone offset.</p>
+<pre><code>uv run python -m apps.admin_console.services.qa_result_commands backfill --until &#39;2026-10-20T10:00:00+07:00&#39; --limit 100
+uv run python -m apps.admin_console.services.qa_result_commands replay --until &#39;2026-10-20T10:00:00+07:00&#39; --limit 100</code></pre>
+<p>Backfill uses terminal end times, includes old rows without an outbox entry, and skips turns that already have a result. Repeat a bounded command until <code>processed</code> is zero. Freeze <code>--until</code> when processing multiple batches. Backfill uses the same collector and result mapper as the live consumer. It does not alter the activation window.</p>
+<p>Replay re-arms only rows whose classifier is abandoned. It clears the classifier&#39;s attempts, delivery mark and abandonment token, then lets the regular sweep retry. The durable <code>classify_replay_at</code> field records the explicit replay request. Broadcast/notification marks, attempts and abandonment tokens remain unchanged. Repeat until <code>replayed</code> is zero. An offline database needs a subsequent server sweep to execute the replay.</p>
+<p>For an offline copy, place <code>--db PATH --traces PATH</code> before the subcommand. No device or model is required. Do not use maintenance commands to reset the activation snapshot.</p>
+<h2>Admin relabel</h2>
+<p><code>POST /api/system/qa-results/{turn_id}/relabel</code> requires the existing admin identity dependency. The request contains <code>category</code> and a non-empty audit <code>reason</code> (maximum 2000 characters). The server takes the actor from the verified identity. Unknown fields, including a caller-supplied actor, are rejected.</p>
+<pre><code>{&quot;category&quot;:&quot;qa_environment&quot;,&quot;reason&quot;:&quot;Confirmed that the device was locked&quot;}</code></pre>
+<p>Relabel appends a final version and a <code>qa_result_audit</code> record in one transaction. The audit keeps the actor, timestamp, reason, previous/new versions and previous/new result JSON. SQLite triggers reject audit updates and deletes. Concurrent relabels serialize. An audit-write failure rolls back the result version.</p>
+<p>The allowed categories are <code>smartqa_infra</code>, <code>smartqa_agent</code>, <code>provider</code>, <code>app_defect</code>, <code>user_prompt</code>, <code>qa_environment</code> and <code>unknown</code>. A category correction produces a Blocked result, except <code>app_defect</code>, which produces Fail and requires existing cited evidence. Pending and cancelled results cannot be relabelled. Unknown admin labels remain authoritative until another admin relabel. Automated classification never overwrites an admin label. The QA response sets <code>updated=true</code> after an appended version.</p>
+<h2>Gate A</h2>
+<p><code>GET /api/system/qa-results/gate-a</code> is admin-only. It returns 409 until activation exists. The fixed measurement window is the 7 days after activation, using each turn&#39;s start time. Follow-ups and admission failures without a <code>sessions</code> row count as separate turns. The snapshot admin list excludes admin-requested turns; unowned turns remain in the denominator conservatively.</p>
+<ul><li><code>N</code> / <code>denominator</code>: QA turns except <code>cancelled</code>, <code>running</code>, <code>queued</code> and <code>paused</code>.</li><li><code>numerator</code>: the latest final result has a verdict and a known category. Pass results with no failure category count. Unknown, legacy, pending and insufficient-evidence/check results do not count.</li><li><code>coverage</code>: numerator divided by denominator, or zero when N is zero.</li><li><code>cancelled</code>, <code>qa_turns</code>, <code>cancel_rate</code>: cancellations divided by all QA turns in the window, including live turns.</li><li><code>legacy</code> and <code>pending</code>: separate label counts; pending includes live turns and turns awaiting their first result. These are not extra exclusions from N.</li></ul>
+<p><code>deploy_killed</code> counts structured <code>deploy_cut</code> reasons for all turns in the window, including admin turns. <code>passed</code> requires N greater than zero, at least 80% coverage, and zero deploy kills. The endpoint uses machine fields, never translated reason text. <code>window_complete</code> distinguishes a completed window from an interim measurement; an interim <code>passed</code> value is not deployment or acceptance authorization.</p>
+<p>Run the maintenance regressions without a device:</p>
+<pre><code>uv run pytest -q tests/unit/admin_console/test_qa_result_operations.py tests/unit/admin_console/test_lifecycle_outcome_classification.py tests/unit/runtime/test_lifecycle_authority.py</code></pre>
+</main>
+</body>
+</html>

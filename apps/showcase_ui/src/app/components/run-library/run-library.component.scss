@@ -367,6 +367,15 @@ input {
   }
 }
 
+.run-result-retry {
+  min-width: 44px;
+  min-height: 44px;
+  margin: 0 var(--space-smd) var(--space-sm);
+  padding: 0 var(--space-smd);
+  color: var(--evidence-text);
+  background: var(--color-surface-subtle);
+}
+
 .queue-row {
   display: flex;
   align-items: center;
