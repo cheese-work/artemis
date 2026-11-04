@@ -31,6 +31,8 @@ class _Transport(Protocol):
         json_body: Mapping[str, Any] | None = None,
     ) -> Any: ...
 
+    # Transports that upload bytes also accept ``data=``/``content_type=``/``headers=``.
+
 
 #: Pro-profile Checker presets accepted by ``/api/run`` (``verification_level``).
 VerificationLevel = Literal["off", "final", "checkpoints", "strict"]
@@ -363,13 +365,38 @@ class ArtemisClient:
         path: str,
         *,
         json_body: Mapping[str, Any] | None = None,
+        **extra: Any,
     ) -> Any:
         return await asyncio.to_thread(
             self._transport.request,
             method,
             path,
             json_body=json_body,
+            **extra,
         )
+
+    async def request_json(
+        self,
+        method: str,
+        path: str,
+        json_body: Mapping[str, Any] | None = None,
+    ) -> Mapping[str, Any]:
+        """Call any JSON endpoint; for APIs that have no typed method yet (leases, SmartQA)."""
+        return self._mapping(await self._request(method, path, json_body=json_body), endpoint=path)
+
+    async def upload_bytes(
+        self,
+        path: str,
+        data: bytes,
+        *,
+        content_type: str = "application/octet-stream",
+        headers: Mapping[str, str] | None = None,
+    ) -> Mapping[str, Any]:
+        """POST raw bytes and return the JSON object response."""
+        payload = await self._request(
+            "POST", path, data=data, content_type=content_type, headers=headers
+        )
+        return self._mapping(payload, endpoint=path)
 
     @staticmethod
     def _mapping(payload: Any, *, endpoint: str) -> Mapping[str, Any]:
