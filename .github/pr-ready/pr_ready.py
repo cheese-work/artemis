@@ -41,7 +41,10 @@ import unicodedata
 # ponytail: bare `blocked` is a deliberate false-positive trade for no false negative; the message names the marker
 # so the author rewords. Upgrade path: scope it to a status line if authors keep tripping on it.
 MARKERS = (
-    ("status draft/wip/blocked", r"\bstatus\b *:? *(?:draft|wip|blocked|not ready|on hold|do not merge|in progress)\b"),
+    (
+        "status draft/wip/blocked",
+        r"\bstatus\b *:? *(?:draft|wip|blocked|not ready|on hold|do not merge|in progress)\b",
+    ),
     ("wip", r"\bwip\b"),
     ("do not merge", r"\bdo[ -]?not[ -]merge\b|\bdon'?t[ -]merge\b"),
     ("not ready", r"\bnot[ -]ready\b"),
@@ -50,24 +53,54 @@ MARKERS = (
     ("stacked on", r"\bstacked[ -]on\b"),
     ("merge after", r"\bmerge[ -]after\b"),
     ("blocked", r"\bblocked\b"),
-    ("review pending", r"\b(?:cross[ -]lab|independent)\b[^.]{0,30}\bpending\b|\bpending\b[^.]{0,20}\b(?:cross[ -]lab|independent)\b"),
+    (
+        "review pending",
+        r"\b(?:cross[ -]lab|independent)\b[^.]{0,30}\bpending\b|\bpending\b[^.]{0,20}\b(?:cross[ -]lab|independent)\b",
+    ),
 )
 MARKER_RES = [(name, re.compile(rx)) for name, rx in MARKERS]
 # Cyrillic/Greek letters that render as Latin ones; ponytail: a short list, not the full Unicode confusables table.
-LOOKALIKES = str.maketrans("аеорсхуіѕјԁοα",
-                           "aeopcxyisjdoa")
+LOOKALIKES = str.maketrans("аеорсхуіѕјԁοα", "aeopcxyisjdoa")
 # Registered identities, same as skills/multica-cheese-work-github/scripts/trusted-authors.json (id, not login).
 TRUSTED_BOT_IDS, HUMAN_IDS = {282619718}, {129714106}
 # Agents allowed to author or review, with their lab. One shared GitHub App posts every verdict, so GitHub cannot say
 # which agent wrote it; this list stops an invented name and ties the name to a lab. Upgrade path: one App identity
 # per agent (owner-only), then drop the name check.
 AGENT_LABS = {
-    **dict.fromkeys(("x99-claude-opus", "x99-claude-sonnet", "x99-claude-sonnet-200k", "x99-claude-sonnet-design",
-                     "x99-claude-gstack", "mbp-claude-opus", "mbp-claude-sonnet", "Tofu"), "anthropic"),
-    **dict.fromkeys(("x99-codex-sol", "x99-codex-sol-200k", "x99-codex-terra", "x99-codex-luna", "x99-codex-luna-2",
-                     "x99-codex-luna-design", "x99-codex-luna-android-lead", "x99-codex-luna-avd", "mbp-codex-sol",
-                     "mbp-codex-luna", "mbp-codex-luna-lead", "mbp-codex-luna-browser", "mbp-codex-luna-pixel6pro",
-                     "mbp-codex-luna-pixel3a", "c00-hermes-devops", "OpenCodeReview"), "openai"),
+    **dict.fromkeys(
+        (
+            "x99-claude-opus",
+            "x99-claude-sonnet",
+            "x99-claude-sonnet-200k",
+            "x99-claude-sonnet-design",
+            "x99-claude-gstack",
+            "mbp-claude-opus",
+            "mbp-claude-sonnet",
+            "Tofu",
+        ),
+        "anthropic",
+    ),
+    **dict.fromkeys(
+        (
+            "x99-codex-sol",
+            "x99-codex-sol-200k",
+            "x99-codex-terra",
+            "x99-codex-luna",
+            "x99-codex-luna-2",
+            "x99-codex-luna-design",
+            "x99-codex-luna-android-lead",
+            "x99-codex-luna-avd",
+            "mbp-codex-sol",
+            "mbp-codex-luna",
+            "mbp-codex-luna-lead",
+            "mbp-codex-luna-browser",
+            "mbp-codex-luna-pixel6pro",
+            "mbp-codex-luna-pixel3a",
+            "c00-hermes-devops",
+            "OpenCodeReview",
+        ),
+        "openai",
+    ),
     **dict.fromkeys(("x99-agy-gemini", "x99-agy-gemini-ux"), "google"),
 }
 NO_QUEUE = "no merge queue found for the base branch"
@@ -77,17 +110,23 @@ MAX_TREE_DIRS = 100
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 FINDING_RE = re.compile(r"^- (\S+:\d+)\s+\S")
 REVIEWER_RE = re.compile(r"^(\S+) \(([^)]+)\)$")
-QUEUE_QUERY = ("query($owner:String!,$name:String!,$branch:String!){repository(owner:$owner,name:$name){"
-               "mergeQueue(branch:$branch){entries(first:100){pageInfo{hasNextPage} "
-               "nodes{position headCommit{oid} pullRequest{number headRefOid}}}}}}")
+QUEUE_QUERY = (
+    "query($owner:String!,$name:String!,$branch:String!){repository(owner:$owner,name:$name){"
+    "mergeQueue(branch:$branch){entries(first:100){pageInfo{hasNextPage} "
+    "nodes{position headCommit{oid} pullRequest{number headRefOid}}}}}}"
+)
 
 
 def _rendered(body: str, tag_sep: str, punct_sep: str) -> str:
-    text = re.sub(r"<!--.*?-->|~~.*?~~|<(s|del|strike)>.*?</\1>", " ", body or "", flags=re.S | re.I)
+    text = re.sub(
+        r"<!--.*?-->|~~.*?~~|<(s|del|strike)>.*?</\1>", " ", body or "", flags=re.S | re.I
+    )
     text = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", text)  # a link shows its text
     text = re.sub(r"<[^>]*>", tag_sep, html.unescape(text))
     text = unicodedata.normalize("NFKD", text)
-    text = "".join(c for c in text if unicodedata.category(c) not in ("Cf", "Mn", "Cc") or c in "\n\t")
+    text = "".join(
+        c for c in text if unicodedata.category(c) not in ("Cf", "Mn", "Cc") or c in "\n\t"
+    )
     text = unicodedata.normalize("NFKC", text).translate(LOOKALIKES).lower()
     text = re.sub(r"[*_`~\\]", punct_sep, text)
     return " ".join(re.sub(r"[^a-z0-9']+", " ", text).split())
@@ -105,7 +144,11 @@ def unfinished(body: str) -> str | None:
 def lab_of(name: str) -> str | None:
     """Lab of a MODEL string (`gpt-6.1-sol`); agent names go through AGENT_LABS."""
     n = name.lower()
-    for lab, words in (("anthropic", ("claude",)), ("openai", ("codex", "gpt", "hermes")), ("google", ("gemini",))):
+    for lab, words in (
+        ("anthropic", ("claude",)),
+        ("openai", ("codex", "gpt", "hermes")),
+        ("google", ("gemini",)),
+    ):
         if any(w in n for w in words):
             return lab
     return None
@@ -113,17 +156,26 @@ def lab_of(name: str) -> str | None:
 
 def parse_verdict(body: str) -> tuple[dict | None, str]:
     lines = body.replace("\r", "").splitlines()
-    start = next((i for i, l in enumerate(lines) if l.startswith("Security-Gate-Verdict:")), None)
+    start = next((i for i, ln in enumerate(lines) if ln.startswith("Security-Gate-Verdict:")), None)
     if start is None:
         return None, ""
     fields, findings, in_findings = {}, [], False
-    for l in lines[start:]:
-        key, _, val = l.partition(":")
-        if key in ("Security-Gate-Verdict", "Reviewer", "Signed", "Repo", "PR", "Base", "SHA", "Findings"):
+    for ln in lines[start:]:
+        key, _, val = ln.partition(":")
+        if key in (
+            "Security-Gate-Verdict",
+            "Reviewer",
+            "Signed",
+            "Repo",
+            "PR",
+            "Base",
+            "SHA",
+            "Findings",
+        ):
             fields[key] = val.strip()
             in_findings = key == "Findings"
-        elif in_findings and l.startswith("- "):
-            findings.append(l.strip())
+        elif in_findings and ln.startswith("- "):
+            findings.append(ln.strip())
     result, rev = fields.get("Security-Gate-Verdict"), REVIEWER_RE.match(fields.get("Reviewer", ""))
     if result not in ("PASS", "FAIL"):
         return None, "result must be PASS or FAIL"
@@ -139,8 +191,16 @@ def parse_verdict(body: str) -> tuple[dict | None, str]:
         return None, "PASS needs `Findings: none`"
     if result == "FAIL" and not any(FINDING_RE.match(f) for f in findings):
         return None, "FAIL needs `- path:line <exploit path>`"
-    return {"result": result, "agent": rev.group(1), "model": rev.group(2), "sha": fields["SHA"],
-            "repo": fields["Repo"], "pr": int(fields["PR"]), "base": fields["Base"], "findings": findings}, ""
+    return {
+        "result": result,
+        "agent": rev.group(1),
+        "model": rev.group(2),
+        "sha": fields["SHA"],
+        "repo": fields["Repo"],
+        "pr": int(fields["PR"]),
+        "base": fields["Base"],
+        "findings": findings,
+    }, ""
 
 
 def pass_problem(pull: dict, comments: list[dict], default_branch: str, repo: str) -> str | None:
@@ -161,7 +221,10 @@ def pass_problem(pull: dict, comments: list[dict], default_branch: str, repo: st
         return f"PR author {author_id} is not a registered agent or human: fail closed"
     why: list[str] = []
     latest: dict[str, dict] = {}
-    for c in sorted((c for c in comments if c["user"]["id"] in TRUSTED_BOT_IDS), key=lambda c: (c["updated_at"], c["id"])):
+    for c in sorted(
+        (c for c in comments if c["user"]["id"] in TRUSTED_BOT_IDS),
+        key=lambda c: (c["updated_at"], c["id"]),
+    ):
         v, err = parse_verdict(c["body"] or "")
         if v is None:
             if err:
@@ -178,7 +241,9 @@ def pass_problem(pull: dict, comments: list[dict], default_branch: str, repo: st
     for agent, v in latest.items():
         lab = AGENT_LABS.get(agent)
         if lab is None or lab_of(v["model"]) != lab:
-            why.append(f"reviewer {agent} ({v['model']}): not a registered agent of that model's lab")
+            why.append(
+                f"reviewer {agent} ({v['model']}): not a registered agent of that model's lab"
+            )
         elif agent == author or lab == author_lab:
             why.append(f"reviewer {agent} fails RGS-1 (author lab {author_lab})")
         elif v["result"] == "FAIL":
@@ -190,11 +255,17 @@ def pass_problem(pull: dict, comments: list[dict], default_branch: str, repo: st
     return f"no trusted cross-lab PASS for {head[:12]}" + (f" ({why[-1]})" if why else "")
 
 
-def queue_prs(commits: list[dict], entries: list[dict], base_sha: str, head_sha: str, head_ref: str):
+def queue_prs(
+    commits: list[dict], entries: list[dict], base_sha: str, head_sha: str, head_ref: str
+):
     """({PR number: (queued head SHA, queue commit)}, problems). Every commit of the first-parent chain base..head
     must be the head commit of one queue entry; `commits` are compare-API commits, `entries` are mergeQueue nodes."""
     by_sha = {c["sha"]: c for c in commits}
-    entry_of = {e["headCommit"]["oid"]: e["pullRequest"] for e in entries if e.get("headCommit") and e.get("pullRequest")}
+    entry_of = {
+        e["headCommit"]["oid"]: e["pullRequest"]
+        for e in entries
+        if e.get("headCommit") and e.get("pullRequest")
+    }
     members, problems, sha = {}, [], head_sha
     while sha != base_sha:
         c = by_sha.get(sha)
@@ -209,7 +280,9 @@ def queue_prs(commits: list[dict], entries: list[dict], base_sha: str, head_sha:
         sha = c["parents"][0]["sha"]
     m = re.search(r"/pr-(\d+)-", head_ref)
     if not m:
-        problems.append(f"group ref {head_ref!r} names no PR: cannot tie the group to a queue entry")
+        problems.append(
+            f"group ref {head_ref!r} names no PR: cannot tie the group to a queue entry"
+        )
     elif entry_of.get(head_sha, {}).get("number") != int(m[1]):
         problems.append(f"group ref names #{m[1]}, not the queue entry at {head_sha[:12]}")
     if not members:
@@ -240,7 +313,9 @@ def modes_at(gh, repo: str, commit: str, paths: list[str]) -> dict | None:
             continue
         if listing.get("truncated"):
             return None
-        entries.update({f"{d}/{t['path']}" if d else t["path"]: (t["mode"], t["sha"]) for t in listing["tree"]})
+        entries.update(
+            {f"{d}/{t['path']}" if d else t["path"]: (t["mode"], t["sha"]) for t in listing["tree"]}
+        )
     return {p: entries.get(p) for p in paths}
 
 
@@ -251,7 +326,11 @@ def bind_problem(gh, repo: str, pull: dict, commit: dict) -> str | None:
     which fails closed (a false fail, never a false pass)."""
     head, parents = pull["head"]["sha"], commit["parents"]
     if len(parents) >= 2:
-        return None if parents[1]["sha"] == head else f"queue commit {commit['sha'][:12]} does not hold the PR head {head[:12]}"
+        return (
+            None
+            if parents[1]["sha"] == head
+            else f"queue commit {commit['sha'][:12]} does not hold the PR head {head[:12]}"
+        )
     queued = changed_files(gh, repo, f"{parents[0]['sha']}...{commit['sha']}")
     own = changed_files(gh, repo, f"{pull['base']['ref']}...{head}")
     if queued is None or own is None:
@@ -277,7 +356,9 @@ def list_paged(gh, path: str) -> list[dict]:
         page += 1
 
 
-def check_pr(gh, repo: str, number: int, default_branch: str, queued: tuple | None = None) -> list[str]:
+def check_pr(
+    gh, repo: str, number: int, default_branch: str, queued: tuple | None = None
+) -> list[str]:
     """Problems for one PR. `queued` = (head SHA the queue entry holds, the queue commit) inside a merge group."""
     pull = gh(f"repos/{repo}/pulls/{number}")
     out = []
@@ -286,15 +367,21 @@ def check_pr(gh, repo: str, number: int, default_branch: str, queued: tuple | No
     if queued is not None:
         queued_head, queue_commit = queued
         if queued_head != pull["head"]["sha"]:
-            out.append(f"#{number}: queued at {queued_head[:12]} but the PR head is {pull['head']['sha'][:12]}")
-        elif (why := bind_problem(gh, repo, pull, queue_commit)):
+            out.append(
+                f"#{number}: queued at {queued_head[:12]} but the PR head is {pull['head']['sha'][:12]}"
+            )
+        elif why := bind_problem(gh, repo, pull, queue_commit):
             out.append(f"#{number}: {why}")
         if pull["base"]["ref"] != default_branch:
             out.append(f"#{number}: base {pull['base']['ref']} is not {default_branch}")
     marker = unfinished(pull["body"])
     if marker:
-        out.append(f"#{number} body says unfinished ({marker}): set Status to Ready after the PASS lands at the final head")
-    why = pass_problem(pull, list_paged(gh, f"repos/{repo}/issues/{number}/comments"), default_branch, repo)
+        out.append(
+            f"#{number} body says unfinished ({marker}): set Status to Ready after the PASS lands at the final head"
+        )
+    why = pass_problem(
+        pull, list_paged(gh, f"repos/{repo}/issues/{number}/comments"), default_branch, repo
+    )
     if why:
         out.append(f"#{number}: {why}")
     return out
@@ -312,7 +399,9 @@ def group_commits(gh, repo: str, base_sha: str, head_sha: str) -> list[dict]:
 
 def queue_entries(gql, repo: str, base_ref: str) -> tuple[list[dict], list[str]]:
     owner, name = repo.split("/", 1)
-    q = (gql(QUEUE_QUERY, owner=owner, name=name, branch=base_ref.removeprefix("refs/heads/")) or {}).get("data", {})
+    q = (
+        gql(QUEUE_QUERY, owner=owner, name=name, branch=base_ref.removeprefix("refs/heads/")) or {}
+    ).get("data", {})
     queue = (q.get("repository") or {}).get("mergeQueue")
     if not queue:
         return [], [NO_QUEUE]
@@ -332,7 +421,9 @@ def rerun_when_done(gh, post, sleep, repo: str, run: dict, polls: list[int]) -> 
             post(f"repos/{repo}/actions/runs/{run['id']}/rerun")
             return None
         if polls[0] <= 0:
-            return f"run {run['id']} is still {status} after {WAIT_POLLS} polls: cannot re-evaluate it"
+            return (
+                f"run {run['id']} is still {status} after {WAIT_POLLS} polls: cannot re-evaluate it"
+            )
         polls[0] -= 1
         sleep(POLL_SECONDS)
 
@@ -351,12 +442,14 @@ def recheck(env: dict, gh, gql, post, sleep) -> list[str]:
     repo, number = env["REPO"], int(env["PR_NUMBER"])
     polls = [WAIT_POLLS]
     head = gh(f"repos/{repo}/pulls/{number}")["head"]["sha"]
-    runs = gh(f"repos/{repo}/actions/workflows/pr-ready.yml/runs?event=pull_request_target&head_sha={head}")["workflow_runs"]
+    runs = gh(
+        f"repos/{repo}/actions/workflows/pr-ready.yml/runs?event=pull_request_target&head_sha={head}"
+    )["workflow_runs"]
     mine = latest([r for r in runs if r.get("display_title") == RUN_NAME.format(number)])
     problems = []
     if mine is None:
         problems.append(f"no pr-ready run found for #{number} at {head[:12]}: nothing to re-run")
-    elif (why := rerun_when_done(gh, post, sleep, repo, mine, polls)):
+    elif why := rerun_when_done(gh, post, sleep, repo, mine, polls):
         problems.append(why)
     entries, queue_problems = queue_entries(gql, repo, env["DEFAULT_BRANCH"])
     problems += [p for p in queue_problems if p != NO_QUEUE]
@@ -365,7 +458,9 @@ def recheck(env: dict, gh, gql, post, sleep) -> list[str]:
         if e["position"] < here:
             continue
         oid = e["headCommit"]["oid"]
-        queued = gh(f"repos/{repo}/actions/workflows/pr-ready-queue.yml/runs?event=merge_group&head_sha={oid}")["workflow_runs"]
+        queued = gh(
+            f"repos/{repo}/actions/workflows/pr-ready-queue.yml/runs?event=merge_group&head_sha={oid}"
+        )["workflow_runs"]
         if (run := latest(queued)) and (why := rerun_when_done(gh, post, sleep, repo, run, polls)):
             problems.append(why)
     return problems
@@ -376,10 +471,22 @@ def run(env: dict, gh, gql=None, post=None, sleep=None) -> list[str]:
     repo, default = env["REPO"], env["DEFAULT_BRANCH"]
     if env["EVENT"] == "merge_group":
         entries, problems = queue_entries(gql, repo, env["BASE_REF"])
-        members, more = queue_prs(group_commits(gh, repo, env["BASE_SHA"], env["HEAD_SHA"]), entries,
-                                  env["BASE_SHA"], env["HEAD_SHA"], env["HEAD_REF"])
-        return problems + more + [p for n, queued in sorted(members.items())
-                                  for p in check_pr(gh, repo, n, default, queued)]
+        members, more = queue_prs(
+            group_commits(gh, repo, env["BASE_SHA"], env["HEAD_SHA"]),
+            entries,
+            env["BASE_SHA"],
+            env["HEAD_SHA"],
+            env["HEAD_REF"],
+        )
+        return (
+            problems
+            + more
+            + [
+                p
+                for n, queued in sorted(members.items())
+                for p in check_pr(gh, repo, n, default, queued)
+            ]
+        )
     if env["EVENT"] == "pull_request_target":
         return check_pr(gh, repo, int(env["PR_NUMBER"]), default)
     if env["EVENT"] == "issue_comment":
@@ -388,7 +495,9 @@ def run(env: dict, gh, gql=None, post=None, sleep=None) -> list[str]:
 
 
 def _gh(path: str):
-    return json.loads(subprocess.run(["gh", "api", path], check=True, capture_output=True, text=True).stdout)
+    return json.loads(
+        subprocess.run(["gh", "api", path], check=True, capture_output=True, text=True).stdout
+    )
 
 
 def _post(path: str) -> None:
@@ -396,14 +505,21 @@ def _post(path: str) -> None:
 
 
 def _gql(query: str, **variables):
-    args = ["gh", "api", "graphql", "-f", f"query={query}"] + [a for k, v in variables.items() for a in ("-f", f"{k}={v}")]
+    args = ["gh", "api", "graphql", "-f", f"query={query}"] + [
+        a for k, v in variables.items() for a in ("-f", f"{k}={v}")
+    ]
     return json.loads(subprocess.run(args, check=True, capture_output=True, text=True).stdout)
 
 
 def main() -> int:
     try:
         problems = run(os.environ, _gh, _gql, _post)
-    except (subprocess.CalledProcessError, KeyError, ValueError, TypeError) as e:  # cannot read: never a silent pass
+    except (
+        subprocess.CalledProcessError,
+        KeyError,
+        ValueError,
+        TypeError,
+    ) as e:  # cannot read: never a silent pass
         problems = [f"cannot evaluate: {type(e).__name__}: {str(e)[-120:]}"]
     for p in problems:
         print(f"::error::{p}")
