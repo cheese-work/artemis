@@ -23,6 +23,7 @@ import { of } from 'rxjs';
 import { AgentService } from './services/agent.service';
 import { AppComponent } from './app.component';
 import { ShellLayoutService } from './services/shell-layout.service';
+import { UsbDeviceRelayService } from './services/usb-device-relay.service';
 
 describe('AppComponent', () => {
   beforeEach(async () => {
@@ -59,6 +60,7 @@ describe('AppComponent', () => {
 });
 
 describe('AppComponent layout', () => {
+  const backgroundWarning = signal(false);
   @Component({ selector: 'app-nav-switcher', template: '' })
   class NavStub {
     @Input() hasWhatsNew = false;
@@ -70,12 +72,14 @@ describe('AppComponent layout', () => {
   class WhatsNewStub {}
 
   beforeEach(async () => {
+    backgroundWarning.set(false);
     await TestBed.configureTestingModule({
       imports: [AppComponent],
       providers: [
         provideRouter([]),
         { provide: HttpClient, useValue: { get: () => of([]) } },
-        { provide: AgentService, useValue: { whatsNewHasUpdates: signal(false), whatsNewHasUnread: signal(false) } }
+        { provide: AgentService, useValue: { whatsNewHasUpdates: signal(false), whatsNewHasUnread: signal(false) } },
+        { provide: UsbDeviceRelayService, useValue: { backgroundWarning } }
       ]
     })
       .overrideComponent(AppComponent, { set: { imports: [RouterOutlet, NavStub, WhatsNewStub] } })
@@ -108,5 +112,24 @@ describe('AppComponent layout', () => {
     TestBed.inject(ShellLayoutService).activePane.set('detail');
     fixture.detectChanges();
     expect(page.dataset['activePane']).toBe('detail');
+  });
+
+  it('shows a dismissible background-phone warning across routes', () => {
+    const fixture = TestBed.createComponent(AppComponent);
+    fixture.detectChanges();
+    expect(fixture.nativeElement.querySelector('[role="alert"]')).toBeNull();
+
+    backgroundWarning.set(true);
+    fixture.detectChanges();
+    const alert = fixture.nativeElement.querySelector('[role="alert"]') as HTMLElement;
+    expect(alert).withContext('global phone warning').not.toBeNull();
+    expect(alert?.textContent).toContain('Keep this tab visible');
+    expect(alert?.textContent).toContain('may disconnect');
+    const dismiss = alert?.querySelector('button');
+    expect(dismiss?.getAttribute('aria-label')).toBe('Dismiss phone connection warning');
+    dismiss?.click();
+    fixture.detectChanges();
+    expect(backgroundWarning()).toBeFalse();
+    expect(fixture.nativeElement.querySelector('[role="alert"]')).toBeNull();
   });
 });

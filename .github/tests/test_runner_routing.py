@@ -8,7 +8,7 @@ class RunnerRoutingTest(unittest.TestCase):
     def test_artemis_uses_x99_and_provisions_chrome(self):
         ci = Path(".github/workflows/ci.yml").read_text()
         whats_new = Path(".github/workflows/whats-new.yml").read_text()
-        self.assertEqual(ci.count("github.repository_owner == 'cheese-work'"), 3)
+        self.assertEqual(ci.count("github.repository_owner == 'cheese-work'"), 4)
         self.assertIn("cheese-x99", whats_new)
         self.assertIn("browser-actions/setup-chrome@", ci)
         self.assertIn("CHROME_BIN: ${{ steps.chrome.outputs.chrome-path }}", ci)
@@ -26,6 +26,17 @@ class RunnerRoutingTest(unittest.TestCase):
             frontend,
         )
         self.assertIn("fromJSON('[\"ubuntu-latest\"]')", frontend)
+
+    def test_python_matrix_legs_keep_their_test_report_when_the_job_log_is_lost(self):
+        # GitHub returned 404 for the long Python job logs (CHE-2621), so a
+        # failing test could not be named. The report lives in an artifact.
+        ci = Path(".github/workflows/ci.yml").read_text()
+        tests = ci.split("  python-tests:\n", 1)[1].split("  python-quality:\n", 1)[0]
+        self.assertEqual(tests.count("--junitxml="), 2)
+        self.assertEqual(tests.count("-rfE"), 2)
+        before, upload = tests.split("actions/upload-artifact@v4", 1)
+        self.assertIn("if: ${{ always() }}", before.rsplit("- name:", 1)[1])
+        self.assertIn("junit-${{ matrix.suite }}", upload)
 
     def test_no_paid_runner_selectors(self):
         workflows = list(Path(".github/workflows").glob("*.y*ml"))

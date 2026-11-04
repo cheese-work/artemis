@@ -29,6 +29,7 @@ from typing import Any
 
 from artemis.runtime.adb_endpoint import AdbEndpoint, current_adb_endpoint
 from artemis.runtime.device_lock import DeviceExecutionLock
+from artemis.runtime import device_policy
 from artemis.runtime.endpoint_transport import EndpointTransport
 from artemis.utils.device_kind import DeviceKind, classify_properties, parse_getprop
 from artemis.toolchain import toolchain
@@ -289,7 +290,7 @@ class DevicePool:
 
     def _read_properties_sync(self, serial: str) -> dict[str, str]:
         """`adb shell getprop` for one device; empty when it could not be read."""
-        if not self._resolve_adb():
+        if not self._resolve_adb() or not device_policy.may_describe(serial):
             return {}
         try:
             res = self._transport().run(
@@ -306,7 +307,7 @@ class DevicePool:
         return parse_getprop(res.stdout) if res.returncode == 0 else {}
 
     async def _read_properties_async(self, serial: str) -> dict[str, str]:
-        if not self._resolve_adb():
+        if not self._resolve_adb() or not device_policy.may_describe(serial):
             return {}
         proc = None
         try:
