@@ -28,6 +28,7 @@ from artemis.config.attempt_lifecycle_hooks import (
     record_attempt_manifest,
     reconcile_and_store_verdict,
 )
+from artemis.interfaces.cli.assertion_exit import native_assertion_exit_code
 from artemis.runtime import trace_store
 from artemis.utils.startup_progress import publish_startup_progress
 from artemis import Agent, Builders
@@ -66,6 +67,7 @@ async def execute_task(
     explorer_pro_mode: str | None = None,
     verification_level: str | None = None,
     run_id: str | None = None,
+    assertion_exit: bool = False,
 ) -> None:
     """Executes a single mobile automation task end-to-end.
 
@@ -89,7 +91,15 @@ async def execute_task(
         run_id: Gate 1 batch-grouping key for this attempt's manifest (see
             ``artemis.config.attempt_lifecycle_hooks``); defaults to the
             effective session id when omitted.
+        assertion_exit: Opt-in. Map the native test summary to a process exit
+            (``SystemExit``: 1 assertion FAIL, 2 missing/incomplete evidence)
+            and let an ``Agent.clean()`` failure propagate. Requires an
+            explicit ``device_serial`` and ``locked_app_package``.
     """
+    if assertion_exit and not all(
+        isinstance(v, str) and v.strip() for v in (device_serial, locked_app_package)
+    ):
+        raise ValueError("assertion-exit requires explicit device_serial and locked_app_package")
     effective_sid = (
         session_id
         or os.getenv("ARTEMIS_SESSION_ID")
@@ -216,7 +226,12 @@ async def execute_task(
             if llm_result_path:
                 task.with_llm_output_saving(path=llm_result_path)
 
-            await agent.run_task(request=task.build())
+            result = await agent.run_task(request=task.build())
+            if assertion_exit:
+                exit_code = native_assertion_exit_code(result)
+                Console().print(f"ARTEMIS_ASSERTION_EXIT={exit_code}")
+                if exit_code:
+                    raise SystemExit(exit_code)
         finally:
             # Reconciliation runs regardless of task outcome (success, failed
             # status, exception, or cancellation) and before cleanup, so an
@@ -231,6 +246,8 @@ async def execute_task(
                     await agent.clean()
                 except Exception as exc:
                     logger.error(f"Error cleaning agent: {exc}")
+                    if assertion_exit:
+                        raise  # a cleanup error after a nominal pass is not a clean PASS
     finally:
         # Restore whatever ARTEMIS_SESSION_ID held before this call so an
         # explicit session_id (or a generated fallback) never bleeds into a
@@ -410,6 +427,16 @@ def run_command(
             help="Run in standalone embedded mode without auto-spawning the Artemis Daemon.",
         ),
     ] = False,
+    assertion_exit: Annotated[
+        bool,
+        typer.Option(
+            "--assertion-exit",
+            help=(
+                "Opt-in: exit 1 on a completed native assertion FAIL, 2 on missing or "
+                "incomplete evidence. Requires --standalone, --device-serial and --locked-app."
+            ),
+        ),
+    ] = False,
 ) -> None:
     """Run an autonomous UI automation task on the connected Android device."""
     if with_video_recording_tools:
@@ -422,6 +449,8 @@ def run_command(
         or os.environ.get("ARTEMIS_DEVICE_QUEUE_TICKET") is not None
     )
     is_standalone = standalone or os.environ.get("ARTEMIS_STANDALONE") == "1"
+    if assertion_exit and (not is_standalone or is_worker):
+        raise typer.BadParameter("--assertion-exit requires --standalone, not a daemon worker")
 
     # All platforms route through unified Artemis Daemon unless specifically configured as standalone
     if not is_worker and not is_standalone:
@@ -556,6 +585,7 @@ def run_command(
                 explorer_pro_mode=explorer_pro_mode,
                 verification_level=verification_level,
                 run_id=run_id,
+                assertion_exit=assertion_exit,
             )
         )
     except (KeyboardInterrupt, asyncio.CancelledError):
