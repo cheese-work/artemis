@@ -3,6 +3,7 @@ name: Host agent core
 on:
   workflow_dispatch:
   push:
+    branches: [main]
     paths:
       - 'host-agent/**'
       - 'artemis/runtime/adb_gateway.py'
