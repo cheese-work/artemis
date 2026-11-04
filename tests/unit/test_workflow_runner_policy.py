@@ -43,7 +43,8 @@ def _x99_labels(runs_on):
 def test_every_active_job_runs_on_the_x99_pool():
     for file, name, _workflow, job in _jobs():
         labels = _x99_labels(job["runs-on"])
-        assert labels[0] == "self-hosted" and "cheese-x99" in labels, (file, name, labels)
+        on_pool = "cheese-x99" in labels or "cheese-x99-gate" in labels
+        assert labels[0] == "self-hosted" and on_pool, (file, name, labels)
 
 
 def test_only_the_frontend_job_requires_the_browser_runner():
