@@ -313,6 +313,7 @@ export class UsbDeviceRelayService implements OnDestroy {
       return;
     }
 
+    this.clearSocketTimers();
     const current = this.state();
     if (
       (current.status === 'connected' || current.status === 'reconnecting') &&
