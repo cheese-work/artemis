@@ -62,6 +62,8 @@ export async function cleanupResponsiveShell({
   server,
   profile,
   timeoutMs = 2000,
+  // Chrome's own wind-down after Browser.close is slow on a loaded shared runner; the leak check stays, only the wait grows.
+  chromeExitTimeoutMs = Number(process.env.RESPONSIVE_SHELL_CHROME_EXIT_TIMEOUT_MS) || 15000,
   processGraceMs = 1000
 }) {
   const startedAt = Date.now();
@@ -82,7 +84,7 @@ export async function cleanupResponsiveShell({
 
     if (!forcedTermination && chromeExit) {
       try {
-        await within(() => chromeExit, timeoutMs, 'Chrome exit');
+        await within(() => chromeExit, chromeExitTimeoutMs, 'Chrome exit');
       } catch (error) {
         errors.push(error);
         forcedTermination = true;

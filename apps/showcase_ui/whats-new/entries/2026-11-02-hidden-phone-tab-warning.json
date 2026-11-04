@@ -1,0 +1,7 @@
+{
+  "id": "2026-11-02-hidden-phone-tab-warning",
+  "date": "2026-11-02",
+  "title": "A warning helps you keep your browser phone connected",
+  "body": "If you hide a tab connected to your phone, a warning reminds you to keep it visible. The warning stays when you return, until you dismiss it or disconnect.",
+  "issues": ["CHE-3076"]
+}

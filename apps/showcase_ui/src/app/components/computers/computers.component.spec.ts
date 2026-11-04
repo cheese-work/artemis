@@ -234,9 +234,10 @@ describe('ComputersComponent', () => {
   });
 
   describe('Connect a computer dialog', () => {
-    const code = { code_id: 'c1', code: 'SECRETCODE', expires_at: Date.now() / 1000 + 900 };
+    let code: { code_id: string; code: string; expires_at: number };
 
     beforeEach(() => {
+      code = { code_id: 'c1', code: 'SECRETCODE', expires_at: Date.now() / 1000 + 900 };
       hosts.list.and.returnValue(of(response([])));
       hosts.createCode.and.returnValue(of(code));
       hosts.codeStatus.and.returnValue(of({ status: 'waiting', computer_name: null }));

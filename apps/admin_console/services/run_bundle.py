@@ -34,7 +34,7 @@ import time
 from typing import BinaryIO
 import zipfile
 
-from apps.admin_console.core.redaction import redact_json, redact_text
+from apps.admin_console.core.redaction import redact, redact_json, redact_text
 
 try:
     from admin_console.database.repositories.run_catalog_repository import (
@@ -96,10 +96,10 @@ def _redacted_text(arcname: str, raw: str) -> str:
     """JSON documents are redacted structurally, anything else (or bad JSON) as text."""
     from apps.admin_console.core.redaction import redact_image_data
 
-    raw = redact_image_data(raw)
+    raw = redact(redact_image_data(raw))
     if arcname.endswith(".json"):
         try:
-            return json.dumps(redact_json(json.loads(raw)), ensure_ascii=False, indent=2)
+            return json.dumps(redact(redact_json(json.loads(raw))), ensure_ascii=False, indent=2)
         except ValueError:
             return redact_text(raw)
     if arcname.endswith(".jsonl"):
