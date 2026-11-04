@@ -14,7 +14,6 @@
 
 """Interactive setup wizard for first-time ARTEMIS onboarding (artemis init)."""
 
-import shutil
 import subprocess
 
 from rich.console import Console
@@ -22,6 +21,7 @@ from rich.panel import Panel
 from rich.prompt import Prompt
 
 from artemis.config.paths import get_env_file
+from artemis.runtime.endpoint_transport import EndpointTransport
 
 
 def init_command() -> None:
@@ -62,11 +62,10 @@ def init_command() -> None:
     # 3. Scan for Android Devices
     console.print("\n[bold]Step 3: Detecting Android Devices / Emulators...[/bold]")
     detected_devices = []
-    adb_path = shutil.which("adb")
-    if adb_path:
+    if EndpointTransport.adb_binary():
         try:
-            res = subprocess.run(
-                [adb_path, "devices", "-l"],
+            res = EndpointTransport.shared(None).run(
+                ["devices", "-l"],
                 capture_output=True,
                 text=True,
                 timeout=5,

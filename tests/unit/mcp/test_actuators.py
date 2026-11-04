@@ -14,6 +14,9 @@
 
 """Actuator layer tests: coordinate conversion, message parity, driver dispatch."""
 
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
 import pytest
 
 from artemis.mcp.action_manifest import DEVICE_ACTIONS
@@ -127,6 +130,22 @@ async def test_wait_for_delay(actuator):
     res = await actuator.wait_for_delay(1)
     assert res.ok
     assert res.message == "Waited 1ms."
+
+
+@pytest.mark.asyncio
+async def test_manage_app_stop_propagates_termination_failure(monkeypatch):
+    monkeypatch.setattr(
+        "artemis.tools.mobile.launch_app.find_package", lambda *_args, **_kwargs: "pkg"
+    )
+    controller = SimpleNamespace(terminate_app=AsyncMock(return_value=False))
+
+    result = await AdbActuator(ctx=SimpleNamespace(), controller=controller).manage_app(
+        "stop", "Pocket"
+    )
+
+    assert not result.ok
+    assert result.code is ActionCode.DEVICE_ERROR
+    controller.terminate_app.assert_awaited_once_with("pkg")
 
 
 def test_partial_capabilities_are_reported():

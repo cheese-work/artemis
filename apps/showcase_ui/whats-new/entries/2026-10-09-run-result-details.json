@@ -1,0 +1,7 @@
+{
+  "id": "2026-10-09-run-result-details",
+  "date": "2026-10-09",
+  "title": "Run summaries and expandable step details are back",
+  "body": "Read the task report and check results at the top of a run.\nOpen step details to see actions, reasoning, and checker output.",
+  "issues": ["CHE-1459"]
+}

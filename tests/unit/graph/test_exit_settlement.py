@@ -29,6 +29,7 @@ from artemis.graph.checkpoints import (
     append_ledger_record,
     compute_run_outcome,
     read_ledger,
+    read_run_outcome,
     resolve_item_status,
     settle_all_checkpoints,
 )
@@ -341,6 +342,37 @@ async def test_verify_unmet_bounces_back_then_blocks_on_budget_exhaustion(tmp_pa
     assert second["exit_settlement_route"] == "end"
     outcome = second["run_outcome"]
     assert outcome["task_status"] == "blocked"
+
+
+@pytest.mark.asyncio
+async def test_verify_blocked_without_check_items_persists_outcome_and_findings(tmp_path):
+    _write_plan(tmp_path, DONE_PLAN_NO_CHECKS)
+    ctx = _make_ctx(tmp_path, final_check_max_attempts=1)
+    report = CheckReport(verdicts=[], unmet_subgoals=["Create alarm"])
+
+    with patch("artemis.graph.graph.run_final_check", new=AsyncMock(return_value=report)):
+        update = await exit_settlement_node(_make_state(), ctx)
+
+    assert update["exit_settlement_route"] == "end"
+    assert update["run_outcome"]["task_status"] == "blocked"
+    persisted = read_run_outcome(tmp_path)
+    assert persisted["task_status"] == "blocked"
+    assert persisted["last_findings"] == ["[unmet subgoal] 'Create alarm'"]
+
+
+@pytest.mark.asyncio
+async def test_outcome_write_error_does_not_abort_pro_settlement(tmp_path, caplog):
+    _write_plan(tmp_path, DONE_PLAN_WITH_CHECKS)
+    ctx = _make_ctx(tmp_path, disable_final_check=True)
+
+    with (
+        patch("artemis.graph.graph.settle_all_checkpoints", new=AsyncMock()),
+        patch("artemis.graph.graph.write_run_outcome", side_effect=OSError("disk full")),
+    ):
+        update = await exit_settlement_node(_make_state(), ctx)
+
+    assert update["run_outcome"]["task_status"] == "completed"
+    assert "Failed to write run outcome" in caplog.text
 
 
 def test_no_run_outcome_without_check_material(tmp_path):

@@ -40,9 +40,9 @@ from artemis.tools.tool_wrapper import (
     split_multimodal_result,
     tool_result_messages,
 )
-from artemis.utils.logger import get_logger
 from artemis.utils.notes import get_note_file_path
 from artemis.utils.task_tree import get_active_subgoal_hashes
+from third_party.mobile_use.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
@@ -156,7 +156,9 @@ class HistoryAnalyzer:
                         span.status = "failed"
                         span.error = result
                     else:
-                        logger.info(f"HistoryAnalyzer executing tool {tool_name} with args: {args}")
+                        logger.info(
+                            f"event=tool_called tool={tool_name} args_length={len(str(args))}"
+                        )
                         try:
                             result = await invoke_tool_with_injection(
                                 tool=tool, args=args, tool_call_id=tc["id"]

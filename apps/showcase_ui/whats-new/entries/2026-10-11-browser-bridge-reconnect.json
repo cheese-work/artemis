@@ -1,0 +1,6 @@
+{
+  "id": "2026-10-11-browser-bridge-reconnect",
+  "date": "2026-10-11",
+  "title": "Artemis can now reconnect to the same phone after a brief browser interruption.",
+  "issues": ["CHE-1350"]
+}

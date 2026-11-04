@@ -35,6 +35,7 @@ from artemis.core.diagnostics.schema import (
     SystemReadinessReport,
 )
 from artemis.runtime import trace_store
+from artemis.runtime.lifecycle import finish_trace
 from artemis.runtime.device_lock import DeviceLockOwner
 from mcp_server.tools import diagnose
 from mcp_server.tools.diagnose import mobile_diagnose
@@ -104,33 +105,46 @@ def _probe(
     )
 
 
+def _patch_fake_credentials(monkeypatch, values: dict[str, str]) -> None:
+    from pydantic import SecretStr
+
+    from artemis.config import settings
+
+    monkeypatch.setattr(
+        type(settings),
+        "get_api_key",
+        lambda _settings, provider: SecretStr(values[provider]) if provider in values else None,
+    )
+    for name in ("OPENAI_BASE_URL", "ANTHROPIC_BASE_URL", "OLLAMA_BASE_URL", "VLLM_BASE_URL"):
+        monkeypatch.setattr(settings, name, None)
+    for env_name in (
+        "DEEPSEEK_API_KEY",
+        "GROQ_API_KEY",
+        "OLLAMA_BASE_URL",
+        "VLLM_BASE_URL",
+        "VERTEX_AI_PROJECT",
+        "OPENAI_BASE_URL",
+    ):
+        monkeypatch.delenv(env_name, raising=False)
+
+
 def _credentials_metadata() -> dict:
     return {
         "providers": [
             {
                 "provider": "google",
                 "label": "Gemini",
-                "masked": "AIza...abcd",
-                "raw_key": "SECRET-GOOGLE",
-                "key": "SECRET-GOOGLE",
+                "is_set": True,
+                "masked": "****abcd",
             },
             {
                 "provider": "openai",
                 "label": "ChatGPT",
-                "masked": "sk-...wxyz",
-                "raw_key": "SECRET-OPENAI",
-                "key": "SECRET-OPENAI",
+                "is_set": True,
+                "masked": "****wxyz",
             },
         ],
-        "api_keys": {
-            "google": "SECRET-GOOGLE",
-            "gemini": "SECRET-GOOGLE",
-            "openai": "SECRET-OPENAI",
-            "ocr": "SECRET-OCR",
-        },
-        "current_key": "SECRET-GOOGLE",
-        "current_gemini_key": "SECRET-GOOGLE",
-        "has_ocr_key": True,
+        "is_set": True,
     }
 
 
@@ -368,7 +382,6 @@ def _helper_healthy(serial: str = "pixel-1") -> dict:
         "bundled_apk_present": True,
         "outdated": False,
         "enabled": True,
-        "forward_port": 41234,
         "reachable": True,
         "reported_version": 2,
         "transport_id": "7",
@@ -511,8 +524,18 @@ def test_failing_checks_keep_scrubbed_facts_and_fix_list(temp_trace_env):
     creds = next(c for c in result["checks"] if c["id"] == "gemini_api_key")
     assert creds["category"] == "auth"
     assert creds["facts"]["providers"] == [
-        {"provider": "google", "label": "Gemini", "masked": "AIza...abcd"},
-        {"provider": "openai", "label": "ChatGPT", "masked": "sk-...wxyz"},
+        {
+            "provider": "google",
+            "label": "Gemini",
+            "is_set": True,
+            "masked": "****abcd",
+        },
+        {
+            "provider": "openai",
+            "label": "ChatGPT",
+            "is_set": True,
+            "masked": "****wxyz",
+        },
     ]
     assert "api_keys" not in creds["facts"]
     assert creds["fix"] == []
@@ -810,7 +833,13 @@ def test_launch_avd_failure_is_required_step(temp_trace_env):
 # --------------------------------------------------------------------------- #
 
 
-def test_verify_credentials_reports_every_provider_without_leaking_keys(temp_trace_env):
+def test_verify_credentials_reports_every_provider_without_leaking_keys(
+    temp_trace_env, monkeypatch
+):
+    _patch_fake_credentials(
+        monkeypatch,
+        {"google": "SECRET-GOOGLE", "openai": "SECRET-OPENAI", "ocr": "SECRET-OCR"},
+    )
     validate = AsyncMock(return_value=(True, "verified"))
     result = _run(_healthy_probes(), validate=validate, verify_credentials=True)
 
@@ -826,10 +855,10 @@ def test_verify_credentials_reports_every_provider_without_leaking_keys(temp_tra
     assert "SECRET" not in repr(result)
 
 
-def test_verify_credentials_calls_endpoint_providers_by_url(temp_trace_env):
-    """A custom / Ollama / vLLM entry carries its base URL as the "key": the
-    check must hit that endpoint (no auth header) instead of validating the
-    URL as if it were an API key."""
+def test_verify_credentials_calls_endpoint_providers_by_url(temp_trace_env, monkeypatch):
+    """Endpoint providers are verified by URL without treating it as a key."""
+    _patch_fake_credentials(monkeypatch, {"google": "SECRET-GOOGLE"})
+    monkeypatch.setenv("OLLAMA_BASE_URL", "http://localhost:11434/v1")
     validate = AsyncMock(return_value=(True, "verified"))
     cred = _probe(
         "gemini_api_key",
@@ -840,11 +869,16 @@ def test_verify_credentials_calls_endpoint_providers_by_url(temp_trace_env):
                 {
                     "provider": "ollama",
                     "label": "Local Ollama",
-                    "raw_key": "http://localhost:11434/v1",
+                    "is_set": True,
+                    "masked": "****/v1",
                 },
-                {"provider": "google", "label": "Gemini", "raw_key": "SECRET-GOOGLE"},
+                {
+                    "provider": "google",
+                    "label": "Gemini",
+                    "is_set": True,
+                    "masked": "****OGLE",
+                },
             ],
-            "api_keys": {},
         },
     )
     probes = [p for p in _healthy_probes() if p.id != "gemini_api_key"] + [cred]
@@ -857,7 +891,11 @@ def test_verify_credentials_calls_endpoint_providers_by_url(temp_trace_env):
     assert "base_url" not in calls["google"].kwargs
 
 
-def test_verify_credentials_uses_provider_base_url(temp_trace_env):
+def test_verify_credentials_uses_provider_base_url(temp_trace_env, monkeypatch):
+    _patch_fake_credentials(monkeypatch, {"anthropic": "SECRET-ANTHROPIC"})
+    from artemis.config import settings
+
+    monkeypatch.setattr(settings, "ANTHROPIC_BASE_URL", "https://anthropic-proxy.example")
     validate = AsyncMock(return_value=(True, "verified"))
     cred = _probe(
         "gemini_api_key",
@@ -868,11 +906,10 @@ def test_verify_credentials_uses_provider_base_url(temp_trace_env):
                 {
                     "provider": "anthropic",
                     "label": "Claude",
-                    "raw_key": "SECRET-ANTHROPIC",
-                    "base_url": "https://anthropic-proxy.example",
+                    "is_set": True,
+                    "masked": "****HROP",
                 }
             ],
-            "api_keys": {},
         },
     )
     probes = [p for p in _healthy_probes() if p.id != "gemini_api_key"] + [cred]
@@ -883,7 +920,12 @@ def test_verify_credentials_uses_provider_base_url(temp_trace_env):
     assert call.kwargs["base_url"] == "https://anthropic-proxy.example"
 
 
-def test_invalid_primary_credential_blocks_and_redacts_message(temp_trace_env):
+def test_invalid_primary_credential_blocks_and_redacts_message(temp_trace_env, monkeypatch):
+    _patch_fake_credentials(
+        monkeypatch,
+        {"google": "SECRET-GOOGLE", "openai": "SECRET-OPENAI", "ocr": "SECRET-OCR"},
+    )
+
     async def _validate(provider, api_key, timeout=12.0):
         if provider == "google":
             return False, f"Gemini API verification failed (400): key {api_key} invalid"
@@ -914,7 +956,12 @@ def test_invalid_primary_credential_blocks_and_redacts_message(temp_trace_env):
     assert "Gemini key verification" in result["summary"]
 
 
-def test_invalid_secondary_credential_only_degrades(temp_trace_env):
+def test_invalid_secondary_credential_only_degrades(temp_trace_env, monkeypatch):
+    _patch_fake_credentials(
+        monkeypatch,
+        {"google": "SECRET-GOOGLE", "openai": "SECRET-OPENAI", "ocr": "SECRET-OCR"},
+    )
+
     async def _validate(provider, api_key, timeout=12.0):
         return (provider != "openai", "ok" if provider != "openai" else "401 unauthorized")
 
@@ -1185,9 +1232,9 @@ def test_logs_surface_recent_errors_and_last_failed_task(temp_trace_env, monkeyp
         encoding="utf-8",
     )
     trace_store.init_trace("ok-trace", "fine", "Flash", None)
-    trace_store.update_trace_status("ok-trace", "completed")
+    finish_trace("ok-trace", "completed")
     trace_store.init_trace("bad-trace", "broken", "Flash", None)
-    trace_store.update_trace_status("bad-trace", "failed", error="adb: device offline")
+    finish_trace("bad-trace", "failed", error="adb: device offline")
     with open(trace_store.get_trace_stderr_log_path("bad-trace"), "w", encoding="utf-8") as fh:
         fh.write("starting runner\n")
         fh.write("ERROR adb: device offline\n")

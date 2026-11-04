@@ -55,10 +55,15 @@ class ModelService:
         return provider, model_id
 
     @classmethod
-    def get_active_model_info(cls, profile: str | None = None) -> dict[str, str]:
+    def get_active_model_info(
+        cls, profile: str | None = None, recorded: dict[str, Any] | None = None
+    ) -> dict[str, str]:
         """Return active architecture and underlying LLM model configuration."""
         # 1. Determine underlying LLM model and provider from config (cached)
         provider, model_id = cls._get_llm_provider_and_model()
+        if recorded and recorded.get("agent_model"):
+            model_id = recorded["agent_model"]
+            provider = recorded.get("agent_provider") or "unknown"
 
         # 2. Determine agent architecture name (Flash vs Pro)
         arch_name = "Flash"
@@ -77,6 +82,20 @@ class ModelService:
             "provider": provider,
             "architecture": f"ARTEMIS {arch_name}",
         }
+
+    @staticmethod
+    def get_recorded_model(row: dict[str, Any] | None) -> dict[str, Any] | None:
+        if not row:
+            return None
+        selection = row.get("model")
+        if isinstance(selection, dict) and selection.get("model"):
+            return {"agent_model": selection["model"], "agent_provider": selection.get("provider")}
+        raw = row.get("device_info")
+        try:
+            info = json.loads(raw) if isinstance(raw, str) else raw
+        except (ValueError, TypeError):
+            return None
+        return info if isinstance(info, dict) else None
 
     @staticmethod
     def resolve_session_profile(

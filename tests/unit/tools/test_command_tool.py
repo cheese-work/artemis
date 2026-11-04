@@ -120,9 +120,9 @@ async def test_run_command_sync(mock_exec, mock_ctx):
     # Check that adb was called with device ID and "shell"
     args, kwargs = mock_exec.call_args
     assert args[0].lower().replace(".exe", "").endswith("adb")
-    assert args[1] == "-s"
-    assert args[2] == "test_device_1234"
-    assert args[3] == "shell"
+    # The command is pinned to the process's adb endpoint (-H/-P) before the device.
+    assert args[1:5] == ("-H", "127.0.0.1", "-P", "5037")
+    assert args[5:8] == ("-s", "test_device_1234", "shell")
 
 
 @pytest.mark.asyncio
@@ -294,11 +294,10 @@ async def test_run_short_command_success(mock_exec, mock_ctx):
     mock_exec.assert_called_once()
     args, kwargs = mock_exec.call_args
     assert args[0].lower().replace(".exe", "").endswith("adb")
-    assert args[1] == "-s"
-    assert args[2] == "test_device_1234"
-    assert args[3] == "shell"
+    assert args[1:5] == ("-H", "127.0.0.1", "-P", "5037")
+    assert args[5:8] == ("-s", "test_device_1234", "shell")
     # Verify it cd'd to /data/local/tmp by default
-    assert "cd /data/local/tmp" in args[4]
+    assert "cd /data/local/tmp" in args[8]
 
 
 @pytest.mark.asyncio

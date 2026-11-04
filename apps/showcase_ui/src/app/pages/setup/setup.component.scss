@@ -1,0 +1,131 @@
+// Tokens mirror the Home page (SmartQA light theme) so Step 2 and Credentials
+// read as part of the same page as Step 1 and Step 3.
+$font-sans: var(--font-ui);
+$bg-base: var(--color-bg);
+$card-bg: var(--color-surface);
+$card-border: var(--color-rule);
+$surface-muted: var(--color-surface-subtle);
+$primary: var(--color-primary);
+$primary-dark: var(--color-primary-hover);
+$primary-light: var(--color-primary-tint);
+$emerald-dark: var(--color-success);
+$rose-dark: var(--color-error);
+$rose-light: var(--color-error-bg);
+$text-main: var(--color-ink);
+$text-secondary: var(--color-text-muted);
+$text-muted: var(--color-text-faint);
+
+:host {
+  display: block;
+  min-height: 100vh;
+  font-family: $font-sans;
+  color: $text-main;
+  background: $bg-base;
+}
+
+:host(.embedded) {
+  min-height: 0;
+  color: inherit;
+  background: transparent;
+}
+
+.setup-page {
+  width: min(1040px, calc(100% - 2rem));
+  margin: 0 auto;
+  padding: 3rem 0 5rem;
+}
+
+.setup-page.setup-embedded {
+  width: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+.setup-header,
+.section-heading,
+.provider-heading,
+.form-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.setup-header { margin-bottom: 1.5rem; }
+.eyebrow { margin: 0 0 .4rem; color: $text-muted; font-size: .72rem; font-weight: 700; letter-spacing: .14em; text-transform: uppercase; }
+h1, h2, h3, p { margin-top: 0; }
+h1 { margin-bottom: .45rem; font-size: clamp(2rem, 5vw, 3rem); letter-spacing: -.04em; }
+h2 { margin: 0; font-size: 15px; font-weight: 600; color: $text-main; }
+h3 { margin: 0; font-size: 14px; font-weight: 600; color: $text-main; text-transform: capitalize; }
+.subtitle { margin: 0; color: $text-secondary; }
+.version-chip, .source-label { color: $text-secondary; font-size: .78rem; }
+.version-chip { border: 0; border-radius: var(--radius-full); background: $surface-muted; padding: .45rem .7rem; font-family: var(--font-mono); }
+.setup-grid { display: grid; gap: 1rem; }
+.panel, .notice { border: 0; border-radius: var(--radius-lg); background: $card-bg; padding: var(--space-lg); }
+.notice { margin-bottom: 1rem; color: $text-secondary; }
+.notice p:last-child { margin-bottom: 0; }
+.notice a { color: $primary-dark; }
+.notice.read-only { background: $primary-light; }
+.notice.error { background: $rose-light; color: $rose-dark; }
+.section-heading { align-items: flex-end; margin-bottom: 1.25rem; }
+.field-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; }
+label { display: grid; gap: .45rem; color: $text-secondary; font-size: .85rem; font-weight: 500; }
+input, select {
+  width: 100%;
+  min-height: var(--target);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: $card-bg;
+  color: $text-main;
+  padding: .65rem .75rem;
+  font: inherit;
+}
+input::placeholder { color: $text-muted; }
+input:hover:not(:disabled):not([readonly]), select:hover:not(:disabled) { border-color: $text-muted; }
+input:focus, select:focus { outline: 3px solid var(--color-focus); outline-offset: 2px; }
+input:disabled::placeholder, input[readonly]::placeholder { color: $text-secondary; }
+input:disabled, input[readonly], select:disabled { color: $text-secondary; background: $surface-muted; cursor: not-allowed; }
+.provider-row { display: grid; gap: .75rem; border-top: 1px solid $surface-muted; padding: 1rem 0; }
+.provider-row:first-of-type { border-top: 0; padding-top: 0; }
+.configured { color: $emerald-dark; font-size: .8rem; }
+.configured.not-configured { color: $text-muted; }
+.key-field { max-width: 720px; }
+.source-note { margin: 0; color: $text-muted; font-size: .72rem; }
+.form-footer { padding-top: .5rem; }
+.save-hint { color: $text-secondary; font-size: .82rem; }
+.primary-button, .secondary-button {
+  min-height: var(--target);
+  min-width: var(--target);
+  border: 0;
+  border-radius: var(--radius-md);
+  padding: .65rem 1rem;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+.primary-button { background: $primary; color: var(--color-on-primary); }
+.primary-button:hover:not(:disabled) { background: $primary-dark; }
+.secondary-button { background: $surface-muted; color: $text-main; }
+.secondary-button:hover:not(:disabled) { background: var(--color-rule); }
+.primary-button:focus-visible, .secondary-button:focus-visible, .text-button:focus-visible { outline: 3px solid var(--color-focus); outline-offset: 2px; }
+.primary-button:disabled, .secondary-button:disabled { cursor: wait; opacity: .65; }
+.text-button { justify-self: start; min-height: var(--target); min-width: var(--target); border: 0; border-radius: var(--radius-md); background: $rose-light; color: $rose-dark; padding: 0 var(--space-sm); cursor: pointer; }
+.text-button:hover:not(:disabled) { text-decoration: underline; }
+.text-button:disabled { opacity: .65; }
+
+@media (max-width: 640px) {
+  .setup-page { width: min(100% - 1.25rem, 1040px); padding-top: 2rem; }
+  .setup-header, .section-heading, .form-footer { align-items: flex-start; flex-direction: column; }
+  .field-grid { grid-template-columns: 1fr; }
+}
+
+.deploy-status {
+  margin: 0 0 12px;
+  color: var(--color-text-faint);
+  font-size: 12px;
+}
+
+.setup-tabs { display: flex; flex-wrap: wrap; gap: var(--space-xs); margin-bottom: var(--space-md); }
+.setup-tabs button { min-height: var(--target); min-width: var(--target); border: 0; border-radius: var(--radius-md); background: $surface-muted; color: $text-secondary; padding: 0 1rem; font: inherit; cursor: pointer; }
+.setup-tabs button:hover { color: $text-main; }
+.setup-tabs button[aria-selected='true'] { background: $primary-light; color: $text-main; font-weight: 700; }

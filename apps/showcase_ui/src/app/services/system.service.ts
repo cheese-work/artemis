@@ -14,9 +14,11 @@
  * limitations under the License.
  */
 
-import { Injectable, signal, computed, inject, DestroyRef, NgZone } from '@angular/core';
+import { LoggerService } from './logger.service';
+import { Injectable, signal, computed, inject, DestroyRef, NgZone, effect } from '@angular/core';
+import { BrowserStorageService } from './browser-storage.service';
 import { HttpClient } from '@angular/common/http';
-import { Observable, finalize, shareReplay, tap } from 'rxjs';
+import { Observable, finalize, map, shareReplay, tap } from 'rxjs';
 import {
   AdbServerConnectionResponse,
   AdbServerStatus,
@@ -27,11 +29,44 @@ import {
   EmulatorLaunchStage
 } from '../core/models/system.model';
 
+export const SELECTED_DEVICE_SERIAL_KEY = 'artemis.selected_device_serial';
+
+function rememberedRunTarget(logger: LoggerService, storage: BrowserStorageService): string | null {
+  try {
+    return storage.getItem(SELECTED_DEVICE_SERIAL_KEY);
+  } catch (error) {
+    logger.warn('Unable to restore the run target:', error);
+    return null;
+  }
+}
+
 @Injectable({
   providedIn: 'root'
 })
 export class SystemService {
+  private readonly browserStorage = inject(BrowserStorageService);
+  private readonly logger = inject(LoggerService);
   private http = inject(HttpClient);
+  public configWritesLocked = signal<boolean>(true);
+  /** The phone this browser runs on next; null means automatic. */
+  public selectedRunTarget = signal<string | null>(rememberedRunTarget(this.logger, this.browserStorage));
+
+  /**
+   * Remember which phone this browser uses for its next run. Unlike {@link selectDevice} it
+   * changes nothing on the server, so any signed-in person may use it.
+   */
+  public chooseRunTarget(serial: string | null): void {
+    try {
+      if (serial) {
+        this.browserStorage.setItem(SELECTED_DEVICE_SERIAL_KEY, serial);
+      } else {
+        this.browserStorage.removeItem(SELECTED_DEVICE_SERIAL_KEY);
+      }
+    } catch (error) {
+      this.logger.warn('Unable to remember the run target in this browser:', error);
+    }
+    this.selectedRunTarget.set(serial);
+  }
 
   // Core reactive signals
   public readinessReport = signal<SystemReadinessReport | null>(null);
@@ -154,11 +189,12 @@ export class SystemService {
   private lastAppliedReportJson: string | null = null;
   private onVisibilityChange = () => {
     if (typeof document !== 'undefined' && !document.hidden) {
-      this.fetchReadiness(true).subscribe({ error: () => {} });
+      this.fetchReadiness(true).subscribe({ error: (error) => this.logger.error('Request failed:', error) });
     }
   };
 
   constructor() {
+    effect(() => this.selectedRunTarget.set(rememberedRunTarget(this.logger, this.browserStorage)));
     this.startAutoPolling(3000);
     if (typeof document !== 'undefined') {
       document.addEventListener('visibilitychange', this.onVisibilityChange);
@@ -189,7 +225,7 @@ export class SystemService {
         }
         // Perform silent background check without disturbing UI loading state
         this.fetchReadiness(true).subscribe({
-          error: () => {} // Silent catch
+          error: (error) => this.logger.error('Request failed:', error) // Silent catch
         });
       }, intervalMs);
     });
@@ -231,7 +267,7 @@ export class SystemService {
           this.applyReadinessReport(report);
         },
         error: (err) => {
-          console.error('Failed to fetch system readiness:', err);
+          this.logger.error('Failed to fetch system readiness:', err);
         }
       }),
       finalize(() => {
@@ -284,7 +320,7 @@ export class SystemService {
           }
         },
         error: (err) => {
-          console.error('Failed to fetch emulator status:', err);
+          this.logger.error('Failed to fetch emulator status:', err);
         }
       })
     );
@@ -299,7 +335,7 @@ export class SystemService {
     }
     this.emulatorPollTimer = setInterval(() => {
       this.fetchEmulatorStatus().subscribe({
-        error: () => {}
+        error: (error) => this.logger.error('Request failed:', error)
       });
     }, 1000);
   }
@@ -344,7 +380,7 @@ export class SystemService {
           }
         },
         error: (err) => {
-          console.error('Failed to launch emulator:', err);
+          this.logger.error('Failed to launch emulator:', err);
           this.launchingAvd.set(null);
           const errorMsg = err?.error?.detail || err?.message || 'Failed to start emulator process.';
           this.emulatorLaunchState.set({
@@ -410,7 +446,7 @@ export class SystemService {
           this.isRestartingAdb.set(false);
         },
         error: (err) => {
-          console.error('Failed to restart ADB server:', err);
+          this.logger.error('Failed to restart ADB server:', err);
           this.isRestartingAdb.set(false);
         }
       })
@@ -503,28 +539,31 @@ export class SystemService {
     return this.http.post<any>('/api/system/devices/select', { serial }).pipe(
       tap({
         next: (res) => {
+          this.chooseRunTarget(typeof res?.selected_serial === 'string' ? res.selected_serial : serial);
           if (res?.report) {
             this.applyReadinessReport(res.report);
           }
           this.isLoading.set(false);
         },
         error: (err) => {
-          console.error('Failed to select active device:', err);
+          this.logger.error('Failed to select active device:', err);
           this.isLoading.set(false);
         }
       })
     );
   }
 
-  public currentApiKey = computed<string>(() => {
-    return (this.llmProbe()?.metadata?.['current_key'] as string) || '';
-  });
-
-  public apiKeysMap = computed<Record<string, string>>(() => {
-    return (this.llmProbe()?.metadata?.['api_keys'] as Record<string, string>) || {};
-  });
-
   public modelConfigEnv = signal<ModelConfigEnvResponse | null>(null);
+
+  public fetchCredentialStatus(): Observable<{ config_writes_locked: boolean }> {
+    return this.http.get<{ admin: boolean }>('/api/system/whoami').pipe(
+      map((identity) => ({ config_writes_locked: !identity.admin })),
+      tap({
+        next: (data) => this.configWritesLocked.set(data.config_writes_locked !== false),
+        error: () => this.configWritesLocked.set(true)
+      })
+    );
+  }
 
   /**
    * Fetch current model configuration (artemis.jsonc) and environment (.env) status
@@ -536,7 +575,7 @@ export class SystemService {
           this.modelConfigEnv.set(data);
         },
         error: (err) => {
-          console.error('Failed to fetch model config and env:', err);
+          this.logger.error('Failed to fetch model config and env:', err);
         }
       })
     );
@@ -569,9 +608,10 @@ export class SystemService {
           }
           // Refresh model config & env after updating key
           this.fetchModelConfigEnv().subscribe();
+          this.fetchCredentialStatus().subscribe();
         },
         error: (err) => {
-          console.error(`Failed to update credentials for ${provider}:`, err);
+          this.logger.error(`Failed to update credentials for ${provider}:`, err);
         }
       })
     );
@@ -607,4 +647,3 @@ export interface ModelConfigEnvResponse {
     description: string;
   }>;
 }
-

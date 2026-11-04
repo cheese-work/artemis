@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import json
+import os
 import threading
 import time
 
@@ -418,3 +419,20 @@ def test_safe_unlink_and_replace_retry(tmp_path):
     src.write_text("world")
     assert DeviceExecutionLock._safe_replace(src, dst) is True
     assert dst.read_text() == "world"
+
+
+def _queue_files(tmp_path):
+    return sorted((tmp_path / "artemis-global-device.queue").glob("*.wait"))
+
+
+def test_queue_head_token_skips_dead_owners_and_other_scopes():
+    first = DeviceExecutionLock.reserve("t", "d1", session_id="a", lock_scope="host:a")
+    DeviceExecutionLock.reserve("t", "d1", session_id="b", lock_scope="host:a")
+    DeviceExecutionLock.reserve("t", "d1", session_id="x", lock_scope="host:other")
+
+    assert DeviceExecutionLock.queue_head_token("d1", "host:a") == first
+    assert DeviceExecutionLock.queue_head_token("d9", "host:a") is None
+
+    DeviceExecutionLock.cancel_reservation(first)
+    head = DeviceExecutionLock.queue_head_token("d1", "host:a")
+    assert head is not None and head != first

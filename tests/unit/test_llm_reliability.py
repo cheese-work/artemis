@@ -1,5 +1,9 @@
 """Tests for the generic LLM failure taxonomy and circuit breaker."""
 
+import httpx
+from openai import BadRequestError
+import pytest
+
 from artemis.llm.reliability import (
     CircuitBreaker,
     FailureCategory,
@@ -47,6 +51,47 @@ def test_non_retryable_categories_get_single_attempt():
     assert retry_policy_for(FailureCategory.AUTHENTICATION).max_attempts == 1
     assert retry_policy_for(FailureCategory.BAD_REQUEST).max_attempts == 1
     assert retry_policy_for(FailureCategory.RATE_LIMIT).max_attempts > 1
+
+
+def test_gateway_model_refusal_has_a_bounded_policy_without_fallback_or_breaker():
+    response = httpx.Response(400, request=httpx.Request("POST", "https://gateway.test/v1"))
+    error = BadRequestError(
+        "The 'gpt-6.1-sol' model is not supported when using Codex with a ChatGPT account.",
+        response=response,
+        body=None,
+    )
+    failure = classify_failure(error)
+
+    assert failure.category.value == "gateway_model_rejected"
+    assert failure.retryable
+    assert not failure.should_fallback
+    assert retry_policy_for(failure.category).max_attempts == 3
+    breaker = CircuitBreaker(threshold=1)
+    breaker.record_failure("gateway", failure)
+    assert breaker.allow("gateway")
+
+
+@pytest.mark.parametrize(
+    ("status", "message", "category"),
+    [
+        (400, "invalid request payload", "bad_request"),
+        (400, "The model is not supported for this endpoint.", "bad_request"),
+        (400, "Streaming is not supported when using Codex with a ChatGPT account.", "bad_request"),
+        (400, "The model is not supported when using an API account.", "bad_request"),
+        (404, "The model is not supported when using Codex with a ChatGPT account.", "bad_request"),
+        (
+            403,
+            "The model is not supported when using Codex with a ChatGPT account.",
+            "authentication",
+        ),
+    ],
+)
+def test_gateway_model_refusal_does_not_reclassify_other_input_errors(status, message, category):
+    error = RuntimeError(message)
+    error.status_code = status
+    failure = classify_failure(error)
+    assert failure.category.value == category
+    assert not failure.retryable
 
 
 def test_breaker_only_trips_on_transient_categories():

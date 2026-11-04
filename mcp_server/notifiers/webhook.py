@@ -72,12 +72,12 @@ class WebhookNotifier(BaseNotifier):
 
         try:
             req_data = json.dumps(data).encode("utf-8")
-            req = urllib.request.Request(
-                url,
-                data=req_data,
-                headers={"Content-Type": "application/json", "User-Agent": "Artemis-MCP/3.0"},
-                method="POST",
-            )
+            headers = {"Content-Type": "application/json", "User-Agent": "Artemis-MCP/3.0"}
+            event_id = (payload or {}).get("event_id")
+            if event_id:
+                # Lets the receiver drop a replayed delivery of the same event.
+                headers["Idempotency-Key"] = str(event_id)
+            req = urllib.request.Request(url, data=req_data, headers=headers, method="POST")
             with urllib.request.urlopen(req, timeout=5) as response:
                 if response.status in (200, 201, 202, 204):
                     logger.info(f"Webhook notification delivered to {url}.")

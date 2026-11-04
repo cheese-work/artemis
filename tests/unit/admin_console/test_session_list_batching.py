@@ -2,6 +2,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from apps.admin_console.core.ownership import SYSTEM_PRINCIPAL
 from apps.admin_console.routers import sessions as sessions_router
 
 
@@ -46,7 +47,7 @@ async def test_list_sessions_uses_batched_history_metadata(monkeypatch):
         sessions_router.media_service, "resolve_video_url", MagicMock(return_value=None)
     )
 
-    result = await sessions_router.list_sessions()
+    result = await sessions_router.list_sessions(SYSTEM_PRINCIPAL)
 
     assert len(result) == 3
     repo.get_latest_video_recordings_map.assert_called_once_with()
@@ -89,7 +90,7 @@ async def test_list_sessions_extracts_device_serial(monkeypatch):
         sessions_router.media_service, "resolve_video_url", MagicMock(return_value=None)
     )
 
-    result = await sessions_router.list_sessions()
+    result = await sessions_router.list_sessions(SYSTEM_PRINCIPAL)
 
     assert len(result) == 2
     assert result[0]["device_serial"] == "63191FDKX00062"

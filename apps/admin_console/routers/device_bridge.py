@@ -12,39 +12,77 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Authenticated WSS session-lease stub for the browser device-bridge.
-
-Scope (CHE-786): authorize one bearer-authenticated session, bind an
-ephemeral loopback-only TCP listener, and reliably tear it down on explicit
-close, socket disconnect, or timeout. This route does not parse or emulate
-ADB, does not enumerate a device, and does not invoke ``adb``. A browser-side
-WebUSB/ADB protocol client is a separate, not-yet-vetted follow-up (CHE-785).
-"""
+"""Loopback WebSocket relay for whole ADB packets."""
 
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Mapping
 import ipaddress
-import secrets
+import json
+import logging
+import struct
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, WebSocket, WebSocketException
+from starlette.websockets import WebSocketDisconnect
 
-try:
-    from admin_console.services.bridge_session_service import bridge_session_service
-except ImportError:
-    from apps.admin_console.services.bridge_session_service import bridge_session_service
+from apps.admin_console.core.access_control import AccessIdentity, public_tier
+from artemis.utils.redaction import redact_text
+
+
+from apps.admin_console.services.bridge_session_service import (
+    DEFAULT_RECONNECT_GRACE_SECONDS,
+    MAX_ADB_PACKET_BYTES,
+    BridgeSession,
+    bridge_fixes_enabled,
+    bridge_session_service,
+)
 
 router = APIRouter(prefix="/api/device-bridge", tags=["device-bridge"])
 
-# WebSocket close codes (RFC 6455 private-use range, 4000-4999).
-_CLOSE_UNAUTHORIZED = 4001
 _CLOSE_FORBIDDEN_REMOTE = 4003
 _CLOSE_SESSION_EXPIRED = 4008
+_CLOSE_RESUME_REJECTED = 4009
+_CLOSE_BRIDGE_ERROR = 1011
+_ADB_HEADER_BYTES = 24
+_MAX_PENDING_BYTES = MAX_ADB_PACKET_BYTES * 4
+_WEBSOCKET_SEND_TIMEOUT_SECONDS = 2
+_CLIENT_CLOSE_REASONS = frozenset(
+    {
+        "manual_disconnect",
+        "service_destroyed",
+        "page_unload",
+        "connect_error",
+        "socket_open_timeout",
+        "attachment_timeout",
+        "socket_error",
+        "socket_closed",
+        "protocol_error",
+        "bridge_rejected",
+        "usb_read_error",
+        "usb_write_error",
+        "usb_disconnected",
+        "another_tab",
+    }
+)
+
+logger = logging.getLogger(__name__)
+_sleep = asyncio.sleep
+
+
+async def require_bridge_access(
+    websocket: WebSocket,
+    identity: AccessIdentity = Depends(public_tier),
+) -> None:
+    if websocket.headers.get("x-forwarded-for") and not identity.email:
+        raise WebSocketException(code=1008, reason="not_signed_in")
 
 
 def _client_is_loopback(websocket: WebSocket) -> bool:
-    client = websocket.client
-    host = client.host if client else None
+    client = websocket.scope.get("artemis.transport_peer", websocket.client)
+    if not client:
+        return False
+    host = getattr(client, "host", None) or client[0]
     if not host:
         return False
     try:
@@ -53,65 +91,453 @@ def _client_is_loopback(websocket: WebSocket) -> bool:
         return host.lower() == "localhost"
 
 
-def _bearer_token_is_valid(websocket: WebSocket) -> bool:
-    expected = getattr(websocket.app.state, "lifecycle_token", None)
-    if not isinstance(expected, str) or not expected:
+def _adb_packet(frame: bytes) -> bytes | None:
+    if not frame:
+        return None
+    if len(frame) < _ADB_HEADER_BYTES or len(frame) > MAX_ADB_PACKET_BYTES:
+        raise ValueError("invalid ADB packet size")
+    payload_size = struct.unpack_from("<I", frame, 12)[0]
+    if payload_size + _ADB_HEADER_BYTES != len(frame):
+        raise ValueError("WebSocket frame must contain one complete ADB packet")
+    return frame
+
+
+async def _forward_tcp_packets(
+    reader: asyncio.StreamReader,
+    websocket: WebSocket,
+    send_lock: asyncio.Lock,
+    session: BridgeSession,
+) -> None:
+    while True:
+        packet = session.pending_device_packet
+        if packet is None:
+            packet = await reader.readexactly(_ADB_HEADER_BYTES)
+            session.pending_device_packet = packet
+        header = packet[:_ADB_HEADER_BYTES]
+        payload_size = struct.unpack_from("<I", header, 12)[0]
+        if payload_size + _ADB_HEADER_BYTES > MAX_ADB_PACKET_BYTES:
+            raise ValueError("ADB packet exceeds relay limit")
+        if len(packet) == _ADB_HEADER_BYTES:
+            payload = await reader.readexactly(payload_size)
+            packet += payload
+            session.pending_device_packet = packet
+        await _send_bytes(websocket, packet, send_lock)
+        session.bytes_device_to_browser += len(packet)
+        session.pending_device_packet = None
+        if not await _renew_lease(session, websocket, send_lock):
+            return
+
+
+async def _send_bytes(websocket: WebSocket, message: bytes, send_lock: asyncio.Lock) -> None:
+    async def send_locked() -> None:
+        async with send_lock:
+            await websocket.send_bytes(message)
+
+    await asyncio.wait_for(send_locked(), timeout=_WEBSOCKET_SEND_TIMEOUT_SECONDS)
+
+
+async def _send_json(
+    websocket: WebSocket,
+    message: dict[str, object],
+    send_lock: asyncio.Lock,
+) -> None:
+    async def send_locked() -> None:
+        async with send_lock:
+            await websocket.send_json(message)
+
+    await asyncio.wait_for(send_locked(), timeout=_WEBSOCKET_SEND_TIMEOUT_SECONDS)
+
+
+def _client_has_closed(message: Mapping[str, object], session: BridgeSession) -> bool:
+    if message["type"] == "websocket.disconnect":
+        session.close_reason = session.close_reason or "client"
+        code = message.get("code")
+        session.close_code = code if isinstance(code, int) else None
+        session.websocket_close_reason = str(message.get("reason", ""))
+        return True
+    text = message.get("text")
+    if text == "close":
+        session.close_reason = "client"
+        session.close_code = 1000
+        return True
+    if not isinstance(text, str):
         return False
+    if len(text) > 2048:
+        raise ValueError("client close diagnostic exceeds limit")
+    report = json.loads(text)
+    if not isinstance(report, dict) or report.get("type") != "client_close":
+        raise ValueError("expected a client close diagnostic")
+    reason = report.get("reason")
+    usb_error = report.get("usb_error")
+    visibility = report.get("visibility_state")
+    if (
+        not isinstance(reason, str)
+        or reason not in _CLIENT_CLOSE_REASONS
+        or (usb_error is not None and (not isinstance(usb_error, str) or len(usb_error) > 512))
+        or visibility not in (None, "hidden", "visible")
+    ):
+        raise ValueError("invalid client close diagnostic")
+    session.client_close = {
+        "reason": reason,
+        "usb_error": redact_text(usb_error) if usb_error else None,
+        "visibility_state": visibility,
+    }
+    session.close_reason = "client"
+    return True
 
-    header = websocket.headers.get("authorization", "")
-    scheme, _, supplied = header.partition(" ")
-    if scheme.lower() != "bearer" or not supplied:
-        return False
 
-    return secrets.compare_digest(expected, supplied)
+async def _forward_websocket_packets(
+    websocket: WebSocket,
+    writer: asyncio.StreamWriter,
+    receive_task: asyncio.Task[dict[str, object]],
+    session: BridgeSession,
+    send_lock: asyncio.Lock,
+) -> None:
+    while True:
+        message = await receive_task
+        if _client_has_closed(message, session):
+            return
+        frame = message.get("bytes")
+        if frame is None:
+            raise ValueError("expected a binary ADB packet or close message")
+        packet = _adb_packet(frame)
+        if packet is not None:
+            writer.write(packet)
+            await writer.drain()
+            session.bytes_browser_to_device += len(packet)
+            if not await _renew_lease(session, websocket, send_lock):
+                return
+        receive_task = asyncio.create_task(websocket.receive())
 
 
-@router.websocket("/session")
+async def _relay_packets(
+    websocket: WebSocket,
+    session: BridgeSession,
+    send_lock: asyncio.Lock,
+) -> None:
+    accept_task = asyncio.create_task(session.connected.wait())
+    receive_task = asyncio.create_task(websocket.receive())
+    tcp_to_websocket_task: asyncio.Task[None] | None = None
+    websocket_to_tcp_task: asyncio.Task[None] | None = None
+    pending_packets: list[bytes] = []
+    pending_bytes = 0
+
+    try:
+        while not session.connected.is_set():
+            done, _ = await asyncio.wait(
+                (accept_task, receive_task), return_when=asyncio.FIRST_COMPLETED
+            )
+            if receive_task in done:
+                message = receive_task.result()
+                if _client_has_closed(message, session):
+                    return
+                frame = message.get("bytes")
+                if frame is None:
+                    raise ValueError("expected a binary ADB packet or close message")
+                packet = _adb_packet(frame)
+                if packet is None:
+                    receive_task = asyncio.create_task(websocket.receive())
+                    continue
+                pending_bytes += len(packet)
+                if pending_bytes > _MAX_PENDING_BYTES:
+                    raise ValueError("too much ADB data before the loopback connection")
+                pending_packets.append(packet)
+                receive_task = asyncio.create_task(websocket.receive())
+            if accept_task in done:
+                break
+
+        reader = session.reader
+        writer = session.writer
+        if reader is None or writer is None:
+            raise ConnectionError("ADB server did not establish the loopback connection")
+
+        for packet in pending_packets:
+            writer.write(packet)
+        if pending_packets:
+            await writer.drain()
+            session.bytes_browser_to_device += pending_bytes
+            for _packet in pending_packets:
+                if not await _renew_lease(session, websocket, send_lock):
+                    return
+
+        tcp_to_websocket_task = asyncio.create_task(
+            _forward_tcp_packets(reader, websocket, send_lock, session)
+        )
+        websocket_to_tcp_task = asyncio.create_task(
+            _forward_websocket_packets(websocket, writer, receive_task, session, send_lock)
+        )
+        done, _ = await asyncio.wait(
+            (tcp_to_websocket_task, websocket_to_tcp_task),
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        for task in done:
+            task.result()
+    except WebSocketDisconnect as error:
+        _client_has_closed(
+            {"type": "websocket.disconnect", "code": error.code, "reason": error.reason}, session
+        )
+        return
+    except (asyncio.IncompleteReadError, OSError):
+        session.close_reason = "error"
+        session.close_code = _CLOSE_BRIDGE_ERROR
+        raise
+    finally:
+        for task in (
+            accept_task,
+            receive_task,
+            tcp_to_websocket_task,
+            websocket_to_tcp_task,
+        ):
+            if task is not None and not task.done():
+                task.cancel()
+        await asyncio.gather(
+            *(
+                task
+                for task in (
+                    accept_task,
+                    receive_task,
+                    tcp_to_websocket_task,
+                    websocket_to_tcp_task,
+                )
+                if task is not None
+            ),
+            return_exceptions=True,
+        )
+
+
+async def _expire_session(
+    websocket: WebSocket,
+    session: BridgeSession,
+    send_lock: asyncio.Lock,
+) -> None:
+    while True:
+        remaining_seconds = session.remaining_seconds()
+        if remaining_seconds <= 0:
+            session.close_reason = session.expiration_reason()
+            session.close_code = _CLOSE_SESSION_EXPIRED
+            await _close_websocket(websocket, _CLOSE_SESSION_EXPIRED, send_lock)
+            return
+        await _sleep(remaining_seconds)
+
+
+async def _renew_lease(
+    session: BridgeSession,
+    websocket: WebSocket,
+    send_lock: asyncio.Lock,
+) -> bool:
+    if session.renew():
+        return True
+    session.close_reason = session.expiration_reason()
+    session.close_code = _CLOSE_SESSION_EXPIRED
+    await _close_websocket(websocket, _CLOSE_SESSION_EXPIRED, send_lock)
+    return False
+
+
+async def _close_websocket(
+    websocket: WebSocket,
+    code: int,
+    send_lock: asyncio.Lock,
+) -> None:
+    async def close_locked() -> None:
+        async with send_lock:
+            await websocket.close(code=code)
+
+    try:
+        await asyncio.wait_for(close_locked(), timeout=_WEBSOCKET_SEND_TIMEOUT_SECONDS)
+    except (RuntimeError, TimeoutError, WebSocketDisconnect):
+        pass
+
+
+def _should_resume(session: BridgeSession) -> bool:
+    report = session.client_close or {}
+    # uvicorn reports 1005, not 1006, for a drop after the handshake (CHE-2097 F1).
+    unreported_drop_codes = (1005, 1006) if bridge_fixes_enabled() else (1006,)
+    return session.connected.is_set() and (
+        report.get("reason") in {"socket_closed", "socket_error"}
+        or (session.close_code in unreported_drop_codes and not report)
+    )
+
+
+async def _finish_bridge_connection(session: BridgeSession, generation: int) -> None:
+    if _should_resume(session) and await bridge_session_service.begin_reconnect(
+        session.session_id,
+        generation,
+        grace_seconds=DEFAULT_RECONNECT_GRACE_SECONDS,
+    ):
+        return
+    await bridge_session_service.revoke(session.session_id)
+
+
+@router.websocket("/session", dependencies=[Depends(require_bridge_access)])
 async def open_bridge_session(websocket: WebSocket) -> None:
-    """Lease one authenticated, loopback-only session for its WSS lifetime.
-
-    The lease is a listener-and-identity pair: it exists exactly as long as
-    this WebSocket connection does, and is revoked on every exit path
-    (explicit close message, client disconnect, or TTL timeout) so no
-    listener can outlive its authorization.
-    """
     if not _client_is_loopback(websocket):
         await websocket.close(code=_CLOSE_FORBIDDEN_REMOTE)
         return
 
-    if not _bearer_token_is_valid(websocket):
-        await websocket.close(code=_CLOSE_UNAUTHORIZED)
-        return
-
     await websocket.accept()
-
-    session = await bridge_session_service.create_session()
+    session: BridgeSession | None = None
+    generation: int | None = None
+    tasks: list[asyncio.Task[object]] = []
+    send_lock = asyncio.Lock()
     try:
-        await websocket.send_json(
+        identity = getattr(getattr(websocket, "state", None), "identity", None)
+        session = await bridge_session_service.create_session(
+            owner=identity.email if identity else None
+        )
+        generation = session.connection_generation
+        await _send_json(
+            websocket,
             {
                 "type": "session_leased",
                 "session_id": session.session_id,
                 "listener": {"host": "127.0.0.1", "port": session.port},
                 "expires_in_seconds": session.remaining_seconds(),
-            }
+                "reconnect_token": session.reconnect_token,
+                "bridge_fixes": bridge_fixes_enabled(),
+            },
+            send_lock,
         )
 
-        while True:
-            if session.is_expired:
-                await websocket.close(code=_CLOSE_SESSION_EXPIRED)
-                break
-            try:
-                message = await asyncio.wait_for(
-                    websocket.receive_text(), timeout=session.remaining_seconds()
-                )
-            except TimeoutError:
-                await websocket.close(code=_CLOSE_SESSION_EXPIRED)
-                break
-            except WebSocketDisconnect:
-                break
+        connect_task = asyncio.create_task(bridge_session_service.connect(session))
+        relay_task = asyncio.create_task(_relay_packets(websocket, session, send_lock))
+        expiry_task = asyncio.create_task(_expire_session(websocket, session, send_lock))
+        tasks.extend((connect_task, relay_task, expiry_task))
 
-            if message == "close":
-                await websocket.close(code=1000)
-                break
+        done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        if expiry_task in done:
+            expiry_task.result()
+            return
+        if relay_task in done:
+            relay_task.result()
+            return
+        if connect_task in done:
+            serial = connect_task.result()
+            await _send_json(
+                websocket,
+                {"type": "device_attached", "serial": serial},
+                send_lock,
+            )
+            done, _ = await asyncio.wait(
+                (relay_task, expiry_task), return_when=asyncio.FIRST_COMPLETED
+            )
+            if expiry_task in done:
+                expiry_task.result()
+                return
+            relay_task.result()
+    except WebSocketDisconnect as error:
+        if session is not None:
+            _client_has_closed(
+                {"type": "websocket.disconnect", "code": error.code, "reason": error.reason},
+                session,
+            )
+        return
+    except Exception as error:
+        if session is not None:
+            session.close_reason = "error"
+            session.close_code = _CLOSE_BRIDGE_ERROR
+        logger.warning(
+            "Device bridge session failed session_id=%s error_type=%s",
+            session.session_id if session is not None else None,
+            type(error).__name__,
+        )
+        await _close_websocket(websocket, _CLOSE_BRIDGE_ERROR, send_lock)
     finally:
-        await bridge_session_service.revoke(session.session_id)
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+
+        async def finish_session() -> None:
+            await asyncio.gather(*tasks, return_exceptions=True)
+            if session is not None and generation is not None:
+                await _finish_bridge_connection(session, generation)
+
+        cleanup_task = asyncio.create_task(finish_session())
+        try:
+            await asyncio.shield(cleanup_task)
+        except asyncio.CancelledError:
+            await cleanup_task
+            raise
+
+
+@router.websocket("/resume", dependencies=[Depends(require_bridge_access)])
+async def resume_bridge_session(websocket: WebSocket) -> None:
+    if not _client_is_loopback(websocket):
+        await websocket.close(code=_CLOSE_FORBIDDEN_REMOTE)
+        return
+
+    await websocket.accept()
+    session: BridgeSession | None = None
+    generation: int | None = None
+    tasks: list[asyncio.Task[object]] = []
+    send_lock = asyncio.Lock()
+    try:
+        message = await asyncio.wait_for(websocket.receive(), timeout=5)
+        text = message.get("text")
+        if not isinstance(text, str) or len(text) > 2048:
+            raise ValueError("invalid bridge resume request")
+        request = json.loads(text)
+        if (
+            not isinstance(request, dict)
+            or request.get("type") != "resume"
+            or not isinstance(request.get("session_id"), str)
+            or not request["session_id"]
+            or not isinstance(request.get("reconnect_token"), str)
+        ):
+            raise ValueError("invalid bridge resume request")
+
+        identity = getattr(getattr(websocket, "state", None), "identity", None)
+        session = await bridge_session_service.resume(
+            request["session_id"],
+            request["reconnect_token"],
+            identity.email if identity else None,
+        )
+        generation = session.connection_generation
+        await _send_json(
+            websocket,
+            {
+                "type": "session_leased",
+                "session_id": session.session_id,
+                "serial": session.serial,
+                "expires_in_seconds": session.remaining_seconds(),
+                "reconnect_token": session.reconnect_token,
+                "bridge_fixes": bridge_fixes_enabled(),
+            },
+            send_lock,
+        )
+        await _send_json(
+            websocket,
+            {"type": "device_attached", "serial": session.serial},
+            send_lock,
+        )
+
+        relay_task = asyncio.create_task(_relay_packets(websocket, session, send_lock))
+        expiry_task = asyncio.create_task(_expire_session(websocket, session, send_lock))
+        tasks.extend((relay_task, expiry_task))
+        done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        for task in done:
+            task.result()
+    except WebSocketDisconnect as error:
+        if session is not None:
+            _client_has_closed(
+                {"type": "websocket.disconnect", "code": error.code, "reason": error.reason},
+                session,
+            )
+    except (ValueError, TimeoutError):
+        await _close_websocket(websocket, _CLOSE_RESUME_REJECTED, send_lock)
+    except (OSError, RuntimeError) as error:
+        if session is not None:
+            session.close_reason = "error"
+            session.close_code = _CLOSE_BRIDGE_ERROR
+        logger.warning(
+            "Device bridge resume failed session_id=%s error_type=%s",
+            session.session_id if session is not None else None,
+            type(error).__name__,
+        )
+        await _close_websocket(websocket, _CLOSE_BRIDGE_ERROR, send_lock)
+    finally:
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        if session is not None and generation is not None:
+            await _finish_bridge_connection(session, generation)

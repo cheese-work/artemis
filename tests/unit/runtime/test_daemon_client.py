@@ -220,3 +220,27 @@ def test_stop_task_on_daemon():
     mock_resp.read.return_value = b'{"status": "no_running_task"}'
     with patch("urllib.request.urlopen", return_value=mock_resp):
         assert stop_task_on_daemon("non-existent-sess") is False
+
+
+def test_wait_for_daemon_task_stops_on_interrupted(monkeypatch):
+    from artemis.runtime import daemon_client
+
+    replies = iter(
+        [
+            {"session_id": "s", "status": "running"},
+            {"session_id": "s", "status": "interrupted", "interrupt_reason": "device_offline"},
+        ]
+    )
+    calls = []
+
+    def fake_session(session_id, base_url=None):
+        calls.append(session_id)
+        return next(replies)
+
+    monkeypatch.setattr(daemon_client, "get_daemon_session", fake_session)
+
+    result = daemon_client.wait_for_daemon_task("s", timeout=5, poll_interval=0.001)
+
+    assert result["status"] == "interrupted"
+    assert result["interrupt_reason"] == "device_offline"
+    assert len(calls) == 2  # no further polling after the terminal state

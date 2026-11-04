@@ -1,0 +1,7 @@
+{
+  "id": "2026-10-09-device-evidence",
+  "date": "2026-10-09",
+  "title": "Browse screenshots beside your run steps.",
+  "body": "Wide screens show the selected screenshot in a phone pane. Smaller screens show a screenshot strip above the steps. Use the step slider or switch to the video; recording problems and Check again stay in the caption.",
+  "issues": ["CHE-1506"]
+}

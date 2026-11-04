@@ -17,6 +17,7 @@
 import { StepBlock, PhaseBlock, StepEvent, StreamSegment, StreamResetNotice, DEFAULT_STREAM_RESET_MESSAGE, PersistedCheckerStream } from '../core/models/stream.model';
 import { isAndroidAction, isReportStatusAction, getReportStatusExplanation, getReportStatusValue, getActionObject } from './action-formatter.util';
 import { getUniqueGenericTools, isInternalPlumbingTool } from './tool-formatter.util';
+import { compareStepIdentity } from './step-identity.util';
 
 /**
  * Helper to safely extract milliseconds timestamp
@@ -206,7 +207,7 @@ function applyCheckerLog(blocks: StepBlock[], log: any): void {
  * attempt's trace id), move those traces to the attempt they belong to and
  * drop the agent trace itself.
  */
-function relocateCheckerTools(blocks: StepBlock[]): void {
+function relocateCheckerTools(blocks: StepBlock[], eventOrder: WeakMap<StepBlock, number>): void {
   const checkerByTrace = new Map<string, number>();
   blocks.forEach((b, i) => {
     if (b.type === 'checker' && b.data?.trace_id) {
@@ -241,7 +242,10 @@ function relocateCheckerTools(blocks: StepBlock[]): void {
       moved = true;
     }
     if (moved) {
-      blocks[i] = { ...block, data: { ...block.data, generic_tools: keep } };
+      const updatedBlock = { ...block, data: { ...block.data, generic_tools: keep } };
+      blocks[i] = updatedBlock;
+      const order = eventOrder.get(block);
+      if (order !== undefined) eventOrder.set(updatedBlock, order);
     }
   });
 }
@@ -258,12 +262,13 @@ export function isBackendSwitchNote(tool: any): boolean {
 }
 
 /** Consolidate raw SSE logs into deduplicated and ordered StepBlocks. */
-export function consolidateLogsToBlocks(rawLogs: any[]): StepBlock[] {
+export function consolidateLogsToBlocks(rawLogs: any[], eventOrder?: WeakMap<StepBlock, number>): StepBlock[] {
   if (!rawLogs || rawLogs.length === 0) return [];
 
   const blocks: StepBlock[] = [];
+  const lastUpdateOrder = eventOrder ?? new WeakMap<StepBlock, number>();
 
-  rawLogs.forEach(log => {
+  rawLogs.forEach((log, eventIndex) => {
     if (!log) return;
 
     if (log.type === 'checker_event') {
@@ -387,10 +392,12 @@ export function consolidateLogsToBlocks(rawLogs: any[]): StepBlock[] {
           updatedData.stream_resets = updatedData.stream_resets.map((r: any) => ({ ...r, isWaiting: false }));
         }
 
-        blocks[existingIndex] = {
+        const updatedBlock = {
           ...existing,
           data: updatedData
         };
+        blocks[existingIndex] = updatedBlock;
+        lastUpdateOrder.set(updatedBlock, eventIndex);
       } else {
         const blockId = stepId ? `step-${stepId}` : `stream-${execId}`;
         const blockData: any = {
@@ -415,17 +422,53 @@ export function consolidateLogsToBlocks(rawLogs: any[]): StepBlock[] {
           blockData.operator_raw_thinking_timestamp = log.timestamp;
         }
 
-        blocks.push({
+        const block: StepBlock = {
           id: blockId,
           type: stepId ? 'step' : 'llm_stream',
           timestamp: log.timestamp,
           data: blockData
-        });
+        };
+        blocks.push(block);
+        lastUpdateOrder.set(block, eventIndex);
       }
     } else if (log.type === 'step_recorded' || log.type === 'step_updated') {
-      const stepId = log.data.step_id || log.data.step_number || 'unknown';
-      // Find if there is an existing block for this step or an unattached stream block from this turn
-      let existingIndex = blocks.findIndex(b => b.id === `step-${stepId}` || b.data?.step_id === stepId);
+      const explicitStepId = log.data.step_id === undefined || log.data.step_id === null
+        ? ''
+        : String(log.data.step_id).trim();
+      const stepId = explicitStepId || log.data.step_number || 'unknown';
+      const stepNumber = Number(log.data.step_number);
+      const hasStepNumber = log.data.step_number !== undefined
+        && log.data.step_number !== null
+        && String(log.data.step_number).trim() !== ''
+        && Number.isFinite(stepNumber);
+      const numberMatches = hasStepNumber
+        ? blocks.map((block, index) => ({ block, index })).filter(({ block }) =>
+          block.data?.step_number !== undefined
+          && block.data.step_number !== null
+          && String(block.data.step_number).trim() !== ''
+          && Number(block.data.step_number) === stepNumber)
+        : [];
+      const stableMatches = blocks.map((block, index) => ({ block, index }))
+        .filter(({ block }) => block.type === 'step'
+          && compareStepIdentity(block.data, log.data) === 'same');
+      const explicitIdIndex = explicitStepId
+        ? stableMatches.find(({ block }) => block.id === `step-${explicitStepId}` || block.data?.step_id === explicitStepId)?.index ?? -1
+        : -1;
+      const numberIdentities = new Set(numberMatches.map(({ block }) => {
+        const blockStepId = block.data?.step_id === undefined || block.data.step_id === null
+          ? ''
+          : String(block.data.step_id).trim();
+        return blockStepId || `number:${stepNumber}`;
+      }));
+      const matchingIndices = new Set<number>(stableMatches.map(({ index }) => index));
+      if (numberIdentities.size <= 1) {
+        numberMatches.forEach(({ block, index }) => {
+          if (compareStepIdentity(block.data, log.data) !== 'conflict') matchingIndices.add(index);
+        });
+      }
+      const primaryIndex = explicitIdIndex > -1
+        ? explicitIdIndex
+        : stableMatches[0]?.index ?? matchingIndices.values().next().value ?? -1;
 
       // No adoption of untagged stream blocks here: the Operator's streams
       // always carry the step id (Perception / the Flash turn pre-allocate it
@@ -434,9 +477,26 @@ export function consolidateLogsToBlocks(rawLogs: any[]): StepBlock[] {
       // and no text used to steal the latest such block -- typically the
       // Planner's -- and render its action inside it at the top of the timeline.
 
-      if (existingIndex > -1) {
-        const existingBlock = blocks[existingIndex];
-        const existingTools = existingBlock.data.generic_tools || [];
+      if (primaryIndex > -1) {
+        const orderedExistingBlocks = [...matchingIndices]
+          .sort((left, right) => (lastUpdateOrder.get(blocks[left]) ?? left) - (lastUpdateOrder.get(blocks[right]) ?? right))
+          .map(index => blocks[index]);
+        const mergedExistingData: any = {};
+        const existingTools: any[] = [];
+        orderedExistingBlocks.forEach(block => {
+          Object.assign(mergedExistingData, block.data);
+          (block.data.generic_tools || []).forEach((tool: any) => {
+            const matchIndex = tool.trace_id
+              ? existingTools.findIndex(existingTool => existingTool.trace_id === tool.trace_id)
+              : -1;
+            if (matchIndex > -1) {
+              existingTools[matchIndex] = { ...existingTools[matchIndex], ...tool };
+            } else {
+              existingTools.push(tool);
+            }
+          });
+        });
+        const existingBlock = { ...blocks[primaryIndex], data: mergedExistingData };
         const newTools = log.data.generic_tools || [];
         const mergedTools = [...existingTools];
         newTools.forEach((nt: any) => {
@@ -468,15 +528,22 @@ export function consolidateLogsToBlocks(rawLogs: any[]): StepBlock[] {
           mergedData.stream_resets = mergedData.stream_resets.map((r: any) => ({ ...r, isWaiting: false }));
         }
 
-        blocks[existingIndex] = {
+        const updatedBlock: StepBlock = {
           ...existingBlock,
           id: `step-${stepId}`,
           type: 'step',
           timestamp: existingBlock.timestamp || log.timestamp,
           data: mergedData
         };
+        const duplicateIndices = [...matchingIndices]
+          .filter(index => index !== primaryIndex)
+          .sort((left, right) => right - left);
+        duplicateIndices.forEach(index => blocks.splice(index, 1));
+        const adjustedPrimaryIndex = primaryIndex - duplicateIndices.filter(index => index < primaryIndex).length;
+        blocks[adjustedPrimaryIndex] = updatedBlock;
+        lastUpdateOrder.set(updatedBlock, eventIndex);
       } else {
-        blocks.push({
+        const block: StepBlock = {
           id: `step-${stepId}`,
           type: 'step',
           timestamp: log.timestamp,
@@ -489,7 +556,9 @@ export function consolidateLogsToBlocks(rawLogs: any[]): StepBlock[] {
               || (log.data.operator_raw_thinking ? log.timestamp : undefined),
             generic_tools: log.data.generic_tools || []
           }
-        });
+        };
+        blocks.push(block);
+        lastUpdateOrder.set(block, eventIndex);
       }
     } else if (log.type === 'trace_recorded') {
       const isAction = log.data.type === 'action';
@@ -563,16 +632,18 @@ export function consolidateLogsToBlocks(rawLogs: any[]): StepBlock[] {
           genericTools.push(log.data);
         }
 
-        blocks[existingIndex] = {
+        const updatedBlock = {
           ...blocks[existingIndex],
           data: {
             ...stepData,
             generic_tools: genericTools
           }
         };
+        blocks[existingIndex] = updatedBlock;
+        lastUpdateOrder.set(updatedBlock, eventIndex);
       } else {
         const fallbackStepId = stepId || 'pre-planning';
-        blocks.push({
+        const block: StepBlock = {
           id: `step-${fallbackStepId}`,
           type: 'step',
           timestamp: log.timestamp,
@@ -581,12 +652,14 @@ export function consolidateLogsToBlocks(rawLogs: any[]): StepBlock[] {
             isCompleted: true,
             generic_tools: [log.data]
           }
-        });
+        };
+        blocks.push(block);
+        lastUpdateOrder.set(block, eventIndex);
       }
     }
   });
 
-  relocateCheckerTools(blocks);
+  relocateCheckerTools(blocks, lastUpdateOrder);
 
   blocks.sort((a, b) => {
     const timeA = a.timestamp ? new Date(a.timestamp).getTime() : 0;
@@ -785,6 +858,94 @@ export function groupBlocksToPhases(blocks: StepBlock[], sessionStartTime: numbe
   });
 
   return phases;
+}
+
+export function buildCheckerSnapshotLogs(
+  sessionId: string,
+  records: any[],
+  runOutcome: any,
+  streams: PersistedCheckerStream[] = []
+): any[] {
+  const byAttempt = new Map<string, any>();
+  const segmentsByAttempt = new Map<string, StreamSegment[]>();
+  for (const stream of streams || []) {
+    if (!stream || !stream.attempt_id) continue;
+    const segments = persistedStreamToSegments(stream);
+    if (segments.length > 0) segmentsByAttempt.set(String(stream.attempt_id), segments);
+  }
+  for (const rec of records) {
+    if (!rec || !rec.attempt_id) continue;
+    const attemptId = String(rec.attempt_id);
+    const checkpointId = String(rec.checkpoint_id || '');
+    let attempt = byAttempt.get(attemptId);
+    if (!attempt) {
+      attempt = {
+        event: 'attempt_finished',
+        phase: checkpointId === 'final' ? 'final' : 'checkpoint',
+        attempt_id: attemptId,
+        checkpoint_id: checkpointId,
+        subgoal_text: String(rec.subgoal_text || (checkpointId === 'final'
+          ? "Final review against the user's original goal"
+          : `Subgoal ${checkpointId.slice(0, 8)}`)),
+        anchor_step_id: rec.anchor_step_id ?? null,
+        trace_id: rec.trace_id ?? null,
+        status: 'done',
+        verdicts: [],
+        findings: [],
+        ts: typeof rec.ts === 'number' ? rec.ts : undefined,
+        session_id: sessionId
+      };
+      byAttempt.set(attemptId, attempt);
+    }
+    if (typeof rec.ts === 'number') {
+      attempt.ts = attempt.ts === undefined ? rec.ts : Math.min(attempt.ts, rec.ts);
+    }
+    if (!attempt.trace_id && rec.trace_id) {
+      attempt.trace_id = rec.trace_id;
+    }
+    attempt.verdicts.push({
+      item_text: String(rec.item_text || ''),
+      kind: String(rec.kind || ''),
+      status: String(rec.status || ''),
+      evidence: String(rec.evidence || ''),
+      suggestion: rec.suggestion ? String(rec.suggestion) : '',
+      when: rec.when ? String(rec.when) : undefined
+    });
+  }
+
+  const logs: any[] = [];
+  for (const attempt of byAttempt.values()) {
+    const statuses = new Set(attempt.verdicts.map((v: any) => v.status));
+    if (statuses.size === 1) {
+      const only = [...statuses][0];
+      if (only === 'superseded' || only === 'unchecked') attempt.status = only;
+    }
+    const ts = attempt.ts ?? Date.now() / 1000;
+    attempt.timestamp = ts;
+    const segments = segmentsByAttempt.get(attempt.attempt_id);
+    if (segments) attempt.stream_segments = segments;
+    logs.push({
+      type: 'checker_event',
+      session_id: sessionId,
+      timestamp: new Date(ts * 1000).toISOString(),
+      checks_snapshot: true,
+      data: attempt
+    });
+  }
+  if (runOutcome && typeof runOutcome === 'object') {
+    const lastTs = logs.length > 0
+      ? Math.max(...logs.map((l) => new Date(l.timestamp).getTime() / 1000))
+      : Date.now() / 1000;
+    const ts = lastTs + 0.001;
+    logs.push({
+      type: 'checker_event',
+      session_id: sessionId,
+      timestamp: new Date(ts * 1000).toISOString(),
+      checks_snapshot: true,
+      data: { event: 'run_outcome', phase: 'outcome', ...runOutcome, ts, timestamp: ts, session_id: sessionId }
+    });
+  }
+  return logs;
 }
 
 /**

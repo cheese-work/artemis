@@ -29,11 +29,12 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from artemis.clients import ui_automator_client
 from artemis.runtime.awake_lease import ScreenAwakeLease
 from artemis.runtime.awake_service import _run_awake_adb_command
-from artemis.utils.logger import get_logger
+from third_party.mobile_use.clients import ui_automator_client
+from third_party.mobile_use.utils.logger import get_logger
 from mcp_server.utils import device_utils, env_utils
+from tests.support.startup_budget import startup_budget
 
 
 def _readline_with_timeout(pipe, timeout: float) -> str | None:
@@ -70,6 +71,7 @@ def test_mcp_stdio_handshake_immediate_input():
         os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     )
     python_exe = sys.executable
+    budget = startup_budget(6.0)
 
     p = subprocess.Popen(
         [python_exe, "-m", "mcp_server"],
@@ -118,10 +120,10 @@ def test_mcp_stdio_handshake_immediate_input():
         p.stdin.flush()
 
         # Read initialize response with a strict timeout
-        init_resp_line = _readline_with_timeout(p.stdout, 6.0)
+        init_resp_line = _readline_with_timeout(p.stdout, budget)
 
         assert init_resp_line is not None, (
-            "MCP server failed to respond to initialize request within 6 seconds (deadlock detected)!"
+            f"MCP server failed to respond to initialize request within {budget:.1f} seconds (deadlock detected)!"
         )
         init_data = json.loads(init_resp_line)
         assert init_data.get("id") == 1
@@ -134,7 +136,7 @@ def test_mcp_stdio_handshake_immediate_input():
         p.stdin.write(json.dumps(tools_req).encode("utf-8") + b"\n")
         p.stdin.flush()
 
-        tools_resp_line = _readline_with_timeout(p.stdout, 4.0)
+        tools_resp_line = _readline_with_timeout(p.stdout, startup_budget(4.0))
 
         assert tools_resp_line is not None, "MCP server failed to respond to tools/list request!"
         tools_data = json.loads(tools_resp_line)
@@ -205,13 +207,13 @@ def test_device_utils_isolates_stdin():
 
 def test_ui_automator_client_isolates_stdin():
     """Verify ui_automator_client helper commands isolate stdin."""
-    with patch("artemis.clients.ui_automator_client.subprocess.run") as mock_run:
+    with patch("third_party.mobile_use.clients.ui_automator_client.subprocess.run") as mock_run:
         mock_run.return_value = MagicMock(returncode=0, stdout="package:com.test\n", stderr="")
         ui_automator_client._is_package_installed("dev-1", "com.test")
         assert mock_run.called
         assert mock_run.call_args.kwargs.get("stdin") == subprocess.DEVNULL
 
-    with patch("artemis.clients.ui_automator_client.subprocess.run") as mock_run:
+    with patch("third_party.mobile_use.clients.ui_automator_client.subprocess.run") as mock_run:
         mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
         ui_automator_client._uninstall_package("dev-1", "com.test")
         assert mock_run.called

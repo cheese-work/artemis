@@ -270,9 +270,9 @@ async def test_only_graph_profile_is_supported_before_agent(profile):
 def test_cli_rejects_bad_scope_before_device_discovery(extra):
     with (
         patch.object(run_module, "execute_task", new_callable=AsyncMock) as execute,
-        patch.object(run_module, "AdbClient") as adb,
+        patch.object(run_module.EndpointTransport, "adb_binary", return_value="/usr/bin/adb"),
+        patch.object(run_module.EndpointTransport, "shared") as adb,
         patch.object(run_module, "display_device_status") as device_probe,
-        patch.object(run_module, "which", return_value="/usr/bin/adb"),
         patch.object(run_module, "Agent") as agent,
     ):
         result = CliRunner().invoke(
@@ -282,4 +282,14 @@ def test_cli_rejects_bad_scope_before_device_discovery(extra):
     execute.assert_not_called()
     adb.assert_not_called()
     device_probe.assert_not_called()
+    agent.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_chat_session_route_is_rejected_before_agent(monkeypatch):
+    """The chat-session worker returns before the native exit mapping."""
+    monkeypatch.setenv("ARTEMIS_CHAT_SESSION_ID", "chat-1")
+    with patch.object(run_module, "Agent") as agent:
+        with pytest.raises(ValueError, match="assertion-exit"):
+            await run_module.execute_task(**ARGS)
     agent.assert_not_called()

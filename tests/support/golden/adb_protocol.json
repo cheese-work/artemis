@@ -1,0 +1,78 @@
+{
+  "adb": {
+    "connect": [
+      "host:version",
+      "host:connect:127.0.0.1:40000"
+    ],
+    "devices_long": [
+      "host:version",
+      "host:devices-l"
+    ],
+    "exec_out_screencap": [
+      "host:version",
+      "host:tport:serial:emulator-5554",
+      "exec:screencap '-p'"
+    ],
+    "forward_list": [
+      "host:version",
+      "host:list-forward"
+    ],
+    "get_state": [
+      "host:version",
+      "host-serial:emulator-5554:get-state"
+    ],
+    "shell": [
+      "host:version",
+      "host-serial:emulator-5554:features",
+      "host:tport:serial:emulator-5554",
+      "shell:echo x"
+    ]
+  },
+  "adbutils": {
+    "connect": [
+      "host:connect:127.0.0.1:40000"
+    ],
+    "device_list": [
+      "host:devices"
+    ],
+    "disconnect": [
+      "host:disconnect:127.0.0.1:40000"
+    ],
+    "exec_screencap_stream": [
+      "host:version",
+      "host:tport:serial:emulator-5554",
+      "shell:screencap -p"
+    ],
+    "forward_list": [
+      "host:list-forward"
+    ],
+    "server_version": [
+      "host:version"
+    ],
+    "shell": [
+      "host:version",
+      "host:tport:serial:emulator-5554",
+      "shell:echo hi"
+    ],
+    "tcp_stream": [
+      "host:version",
+      "host:tport:serial:emulator-5554",
+      "tcp:7912"
+    ]
+  },
+  "uiautomator2": {
+    "connect_until_sync": [
+      "host:version",
+      "host:tport:serial:emulator-5554",
+      "shell:toybox md5sum /data/local/tmp/u2.jar",
+      "host:version",
+      "host:tport:serial:emulator-5554",
+      "sync:"
+    ]
+  },
+  "versions": {
+    "adb": "37.0.0-14910828",
+    "adbutils": "2.12.0",
+    "uiautomator2": "3.7.0"
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "id": "2026-10-11-run-model-picker",
+  "date": "2026-10-11",
+  "title": "Choose the AI model for each run",
+  "body": "Choose a model next to Flash and Pro before sending a task. The list shows models available to the server, with the default first. Your choice is remembered for your account, and the run header shows the model used. If your chosen model fails, the run names the model and cause instead of switching models. Pick another model and run again.",
+  "issues": ["CHE-1536"]
+}

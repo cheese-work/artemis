@@ -41,7 +41,7 @@ from artemis.config.llm import LLM, LLMConfig, LLMConfigUtils, LLMWithFallback
 from artemis.runtime import trace_store
 
 
-def _llm(provider: str = "openai", model: str = "gpt-5.6-sol") -> LLMWithFallback:
+def _llm(provider: str = "openai", model: str = "gpt-6-sol") -> LLMWithFallback:
     return LLMWithFallback(
         provider=provider, model=model, fallback=LLM(provider=provider, model=model)
     )
@@ -63,7 +63,7 @@ _REQUIRED_NODES = (
 )
 
 
-def _uniform_config(provider: str = "openai", model: str = "gpt-5.6-sol") -> LLMConfig:
+def _uniform_config(provider: str = "openai", model: str = "gpt-6-sol") -> LLMConfig:
     """A fully-populated LLMConfig where every required node resolves to one tier."""
     base = {node: _llm(provider, model) for node in _REQUIRED_NODES}
     return LLMConfig(
@@ -154,7 +154,7 @@ class TestCanonicalDigestStability:
         # at provider/model), so this stays within tier 'sol' while still
         # changing a field that must affect the digest.
         config_b = _sol_config(
-            planner=_llm(model="gpt-5.6-sol").model_copy(update={"temperature": 0.9})
+            planner=_llm(model="gpt-6-sol").model_copy(update={"temperature": 0.9})
         )
         manifest_a = build_attempt_manifest(
             run_id="r",

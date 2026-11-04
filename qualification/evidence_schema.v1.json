@@ -38,7 +38,7 @@
     },
     "tier": {
       "type": "string",
-      "enum": ["luna", "terra", "sol"],
+      "enum": ["luna", "terra", "sol", "nova"],
       "description": "Gate 1 tier vocabulary (artemis/config/attempt_manifest.py TIER_MODELS, PR #1 / CHE-491)."
     },
     "profile": {

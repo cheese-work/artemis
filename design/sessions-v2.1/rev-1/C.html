@@ -1,0 +1,269 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>sessions-v2.1 rev-1 · C — Inspector</title>
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="mock.css">
+<style>
+  /* Direction C — Inspector: the timeline stays a compact list of actions; the right pane (today's
+     Live / Details / Stats sidebar) becomes an Evidence inspector for the selected step, with
+     before/after side by side and session cost in its footer. Shown with the nav in pinned-icons mode. */
+  .main { display: grid; grid-template-columns: minmax(0, 1fr) 440px; min-width: 0; min-height: 0; }
+  .col { display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--color-bg); }
+  .head { display: flex; align-items: center; gap: var(--space-md); padding: 0 var(--space-lg); min-height: 60px; border-bottom: 1px solid var(--color-rule); background: var(--color-surface); }
+  .head h1 { flex: 1; margin: 0; font-size: var(--text-title); color: var(--color-ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .tl { flex: 1; padding: var(--space-lg); display: grid; gap: var(--space-smd); align-content: start; }
+  .turn { display: flex; align-items: center; gap: var(--space-smd); color: var(--color-text-muted); font-size: var(--text-label); }
+  .turn::after { content: ''; flex: 1; border-top: 1px solid var(--color-rule); }
+  .bubble { max-width: 85%; padding: var(--space-md); border: 1px solid var(--color-rule-strong); border-radius: var(--radius-lg); background: var(--color-surface); }
+  .bubble.you { margin-left: auto; background: var(--color-primary-tint); border-color: var(--color-primary-edge); }
+  .bubble .who { font-size: var(--text-label); font-weight: 600; color: var(--color-text-muted); }
+  .bubble p { margin: 2px 0 0; }
+  .steps { list-style: none; margin: 0; padding: 0; border: 1px solid var(--color-rule); border-radius: var(--radius-lg); background: var(--color-surface); overflow: hidden; }
+  .row { display: grid; grid-template-columns: 24px 20px minmax(0, 1fr) auto 28px; gap: var(--space-smd); align-items: center; min-height: 48px; padding: 0 var(--space-md); border-top: 1px solid var(--color-rule); cursor: pointer; }
+  .row:first-child { border-top: 0; }
+  .row.sel { background: var(--color-primary-tint); box-shadow: inset 3px 0 0 var(--color-primary); }
+  .row .n { font-family: var(--font-mono); font-size: var(--text-label); color: var(--color-text-faint); text-align: right; }
+  .row .ms { font-size: 18px; color: var(--color-text-muted); }
+  .row .a { color: var(--color-ink); font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .row .a small { font-weight: 400; color: var(--color-text-muted); }
+  .row .th { font-size: var(--text-label); color: var(--color-text-faint); }
+  .row .shot { --w: 18px; border-width: 1px; border-radius: 3px; }
+  .row.live { color: var(--color-text-muted); }
+  .verdict { padding: var(--space-md); border: 1px solid var(--color-rule-strong); border-radius: var(--radius-md); background: var(--color-surface); display: flex; gap: var(--space-md); align-items: center; }
+  /* Composer: picker fused as the left segment */
+  .composer { margin: 0 var(--space-lg) var(--space-lg); }
+  .bar { display: flex; align-items: stretch; border: 1px solid var(--color-border); border-radius: var(--radius-lg); background: var(--color-surface); overflow: hidden; }
+  .seg { display: flex; align-items: center; gap: var(--space-smd); padding: 0 var(--space-md); min-height: 48px; border: 0; border-right: 1px solid var(--color-rule-strong); background: var(--color-surface-subtle); color: var(--color-text-muted); font: inherit; white-space: nowrap; }
+  .seg .ms { font-size: 18px; color: var(--color-text-faint); }
+  .seg.free { background: var(--color-surface); color: var(--color-ink); cursor: pointer; }
+  .bar textarea { flex: 1; min-width: 0; border: 0; resize: none; padding: var(--space-md); font: inherit; color: var(--color-text); background: transparent; min-height: 48px; }
+  .bar .act { display: flex; align-items: center; gap: var(--space-xs); padding: 0 var(--space-xs); }
+  .icon-btn { width: 44px; height: 44px; display: grid; place-items: center; border: 1px solid transparent; border-radius: var(--radius-md); background: transparent; color: var(--color-text-muted); }
+  .icon-btn.primary { background: var(--color-primary); color: var(--color-on-primary); }
+  .icon-btn[disabled] { background: var(--color-surface-subtle); color: var(--color-text-faint); }
+  .chint { font-size: var(--text-label); color: var(--color-text-muted); margin-top: var(--space-xs); }
+  .bar.off { border-color: var(--color-error-solid); }
+  .bar.off .seg { background: var(--color-error-bg); color: var(--color-error); border-right-color: var(--color-error-bg); }
+  .bar.off textarea { background: var(--color-surface-subtle); }
+  /* Inspector */
+  .insp { display: flex; flex-direction: column; min-height: 0; border-left: 1px solid var(--color-rule); background: var(--color-surface); }
+  .tabs { display: flex; border-bottom: 1px solid var(--color-rule); }
+  .tabs button { flex: 1; min-height: 44px; border: 0; border-bottom: 3px solid transparent; background: transparent; font: inherit; color: var(--color-text-muted); }
+  .tabs button[aria-selected=true] { border-bottom-color: var(--color-primary); color: var(--color-ink); font-weight: 600; }
+  .ib { flex: 1; padding: var(--space-lg); display: grid; gap: var(--space-md); align-content: start; }
+  .nav2 { display: flex; align-items: center; gap: var(--space-xs); }
+  .nav2 .grow { flex: 1; font-size: var(--text-label); color: var(--color-text-muted); }
+  .ib h3 { margin: 0; font-size: var(--text-section); color: var(--color-ink); }
+  .pair { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-md); }
+  .pair figure { margin: 0; display: grid; gap: var(--space-xs); justify-items: center; padding: var(--space-smd); border: 1px solid var(--color-rule); border-radius: var(--radius-md); }
+  .pair figcaption { font-size: var(--text-label); font-weight: 600; color: var(--color-text-muted); justify-self: start; }
+  .pair .shot { --w: 150px; }
+  .seg2 { display: inline-flex; border: 1px solid var(--color-rule-strong); border-radius: var(--radius-md); overflow: hidden; justify-self: start; }
+  .seg2 button { min-height: 32px; padding: 0 var(--space-md); border: 0; background: var(--color-surface); font: inherit; font-size: var(--text-label); color: var(--color-text-muted); }
+  .seg2 button[aria-pressed=true] { background: var(--color-primary-tint); color: var(--color-ink); font-weight: 600; }
+  .think summary { list-style: none; display: flex; align-items: center; gap: 2px; min-height: 32px; color: var(--color-text-faint); font-size: var(--text-label); cursor: pointer; }
+  .think summary::-webkit-details-marker { display: none; }
+  .think summary .ms { font-size: 16px; }
+  .facts { margin: 0; display: grid; grid-template-columns: max-content 1fr; gap: var(--space-xs) var(--space-md); font-size: var(--text-label); color: var(--color-text-muted); }
+  .facts dt { font-weight: 600; color: var(--color-text); }
+  .facts dd { margin: 0; overflow-wrap: anywhere; }
+  .stats { border-top: 1px solid var(--color-rule); padding: var(--space-md) var(--space-lg); background: var(--color-surface-subtle); display: grid; gap: var(--space-xs); }
+  .stats .big { display: flex; align-items: baseline; gap: var(--space-md); color: var(--color-text-muted); font-size: var(--text-label); }
+  .stats .big b { font-family: var(--font-mono); font-size: var(--text-section); color: var(--color-ink); font-weight: 500; }
+  .stats table { width: 100%; border-collapse: collapse; font-size: var(--text-label); }
+  .stats td { padding: 2px 0; color: var(--color-text-muted); }
+  .stats td.r { text-align: right; font-family: var(--font-mono); color: var(--color-text); }
+  .pop { width: 360px; border: 1px solid var(--color-rule-strong); border-radius: var(--radius-lg); background: var(--color-surface); box-shadow: var(--shadow-2); padding: var(--space-smd); }
+  .pop h3 { margin: var(--space-xs) var(--space-smd) var(--space-smd); font-size: var(--text-label); color: var(--color-text-muted); text-transform: uppercase; letter-spacing: .04em; }
+  .pop .opt { display: flex; align-items: center; gap: var(--space-smd); min-height: 44px; padding: 0 var(--space-smd); border-radius: var(--radius-md); }
+  .pop .opt.hl { background: var(--color-primary-tint); }
+  .pop .opt .grow { flex: 1; }
+  .pop hr { border: 0; border-top: 1px solid var(--color-rule); margin: var(--space-smd) 0; }
+  .pop .note { font-size: var(--text-label); color: var(--color-text-muted); padding: 0 var(--space-smd) var(--space-xs); }
+  /* Phones: list + detail */
+  .ph { display: grid; grid-template-columns: 340px minmax(0, 1fr); min-height: 420px; }
+  .ph .plist { border-right: 1px solid var(--color-rule); }
+  .ph .plist header { display: flex; align-items: center; gap: var(--space-smd); padding: var(--space-md) var(--space-lg); }
+  .ph .plist header h2 { flex: 1; }
+  .ph .pr { display: grid; grid-template-columns: auto 1fr auto; gap: var(--space-smd); align-items: center; min-height: 56px; padding: 0 var(--space-lg); border-top: 1px solid var(--color-rule); }
+  .ph .pr.sel { background: var(--color-primary-tint); box-shadow: inset 3px 0 0 var(--color-primary); }
+  .ph .pr small { display: block; font-family: var(--font-mono); font-size: var(--text-label); color: var(--color-text-faint); }
+  .ph .pd { display: grid; grid-template-columns: auto 1fr; gap: var(--space-xl); padding: var(--space-lg); align-items: start; }
+  .ph .pd .shot { --w: 150px; }
+  .ph .pd h3 { margin: 0 0 var(--space-xs); color: var(--color-ink); font-size: var(--text-section); }
+  .ph .pd .acts { display: flex; gap: var(--space-smd); flex-wrap: wrap; margin: var(--space-md) 0; }
+  .modes { display: flex; gap: var(--space-xl); flex-wrap: wrap; }
+  .mode { display: flex; gap: var(--space-md); align-items: center; }
+  .mode b { display: block; color: var(--color-ink); }
+  .sheet { border: 1px solid var(--color-rule-strong); border-radius: var(--radius-lg) var(--radius-lg) 0 0; box-shadow: var(--shadow-3); background: var(--color-surface); overflow: hidden; max-width: 390px; }
+  .sheet .grab { width: 36px; height: 4px; border-radius: 2px; background: var(--color-rule-strong); margin: var(--space-smd) auto 0; }
+  @media (max-width: 800px) {
+    .main { grid-template-columns: minmax(0, 1fr); }
+    .insp { display: none; }
+    .tl { padding: var(--space-md); }
+    .composer { margin: 0 var(--space-smd) var(--space-smd); }
+    .bar { flex-wrap: wrap; }
+    .seg { flex-basis: 100%; border-right: 0; border-bottom: 1px solid var(--color-rule-strong); min-height: 40px; }
+    .seg .lbl { flex: 1; text-align: left; }
+    .head { display: none; }
+    .pop { width: 100%; }
+    .ph { grid-template-columns: 1fr; }
+    .ph .pd { grid-template-columns: 1fr; justify-items: start; border-top: 1px solid var(--color-rule); }
+    .pair .shot { --w: 130px; }
+  }
+</style>
+</head>
+<body>
+<header class="doc-head">
+  <h1>C — Inspector</h1>
+  <p>Compact timeline, rich right pane. Steps are one-line action rows with a tiny post-action thumbnail; the selected step opens in an Evidence inspector on the right: before and after side by side, thinking folded, screen text and tapped element. Session tokens and cost sit in the inspector footer. The phone is the fixed left segment of the composer. Shown with the nav in pinned-icons mode.</p>
+</header>
+
+<div class="app tall icons">
+  <nav class="nav" aria-label="Main">
+    <div class="brand"><span class="ms" style="color:var(--color-primary)">verified_user</span><span class="label">SmartQA</span></div>
+    <a class="active" href="#" title="Sessions"><span class="ms">space_dashboard</span><span class="label">Sessions</span></a>
+    <a href="#" title="Phones"><span class="ms">smartphone</span><span class="label">Phones</span></a>
+    <a href="#" title="Providers"><span class="ms">lock</span><span class="label">Providers</span></a>
+    <a href="#" title="Setup"><span class="ms">settings</span><span class="label">Setup</span></a>
+    <a href="#" title="What's New"><span class="ms">campaign</span><span class="label">What's New</span></a>
+    <div class="spacer"></div>
+    <button class="navtoggle" title="Navigation: pinned icons. Click for expand on hover." aria-label="Navigation mode: pinned icons. Activate to switch to expand on hover."><span class="ms">keyboard_tab</span><span class="pip"><i></i><i class="on"></i><i></i></span></button>
+  </nav>
+
+  <aside class="list" aria-label="Sessions">
+    <header><h2>Sessions</h2><button class="btn sm primary"><span class="ms">add_circle</span>New</button></header>
+    <div class="search"><span class="ms">search</span>Search or paste a run ID</div>
+    <ul>
+      <li class="sel"><span class="t">open youtube and play gangnam style at maximum…</span><span class="m"><span class="dot ok"></span>Running · step 8 · <span class="mono">13:58 ICT</span></span></li>
+      <li><span class="t">Scan notifications</span><span class="m"><span class="chip ok"><span class="ms">check_circle</span>Pass</span><span class="mono">11:20 ICT</span></span></li>
+      <li><span class="t">Summarize a video</span><span class="m"><span class="chip err"><span class="ms">cancel</span>Fail</span><span class="mono">10:02 ICT</span></span></li>
+    </ul>
+  </aside>
+
+  <div class="topbar"><button class="navtoggle" aria-label="Back to sessions"><span class="ms flip">keyboard_tab</span></button><span class="t">open youtube and play gangnam style…</span><span class="mono label muted">≈ $0.14</span></div>
+
+  <main class="main">
+    <div class="col">
+      <div class="head"><h1>open youtube and play gangnam style at maximum speaker volumn</h1></div>
+      <section class="tl" aria-label="Chat history">
+        <div class="turn">Turn 1</div>
+        <div class="bubble you"><div class="who">You</div><p>open youtube and play gangnam style at maximum speaker volumn</p></div>
+        <ol class="steps" aria-label="Turn 1 steps">
+          <li class="row"><span class="n">1</span><span class="ms">touch_app</span><span class="a">Tap <q>YouTube</q> <small>home screen</small></span><span class="th">Thinking</span><span class="shot yt" role="img" aria-label="After step 1: YouTube home feed"></span></li>
+          <li class="row"><span class="n">2</span><span class="ms">touch_app</span><span class="a">Tap Search <small>top right</small></span><span class="th">Thinking</span><span class="shot search"></span></li>
+          <li class="row"><span class="n">3</span><span class="ms">keyboard</span><span class="a">Type <q>gangnam style</q>, press Enter</span><span class="th">Thinking</span><span class="shot results"></span></li>
+          <li class="row sel" aria-current="true"><span class="n">4</span><span class="ms">touch_app</span><span class="a">Tap first result <small><q>PSY - GANGNAM STYLE</q></small></span><span class="th">Thinking</span><span class="shot ad"></span></li>
+          <li class="row"><span class="n">5</span><span class="ms">touch_app</span><span class="a">Tap <q>Skip ad</q> <small>after 5 s</small></span><span class="th">Thinking</span><span class="shot video"></span></li>
+          <li class="row"><span class="n">6</span><span class="ms">tune</span><span class="a">Press Volume up ×15</span><span class="th">Thinking</span><span class="shot vol" style="--lvl:60%"></span></li>
+          <li class="row"><span class="n">7</span><span class="ms">tune</span><span class="a">Press Volume up ×5</span><span class="th">Thinking</span><span class="shot vol"></span></li>
+          <li class="row live"><span class="n">8</span><span class="ms">progress_activity</span><span class="a" style="color:var(--color-text-muted)">Checking the volume panel…</span><span></span><span class="shot skel"></span></li>
+        </ol>
+      </section>
+      <form class="composer" aria-label="Message the agent">
+        <div class="bar">
+          <button type="button" class="seg" aria-disabled="true" aria-label="Phone for this session: Pixel 6 Pro, USB, your PC. Connected. Locked after the first run."><span class="dot ok"></span><span class="lbl">Pixel 6 Pro, USB, your PC</span><span class="ms">lock</span></button>
+          <textarea rows="1" aria-label="Message the agent" placeholder="Correct or steer the next step…"></textarea>
+          <div class="act"><button type="button" class="icon-btn" aria-label="Pause"><span class="ms">pause_circle</span></button><button type="button" class="icon-btn" aria-label="Stop"><span class="ms">stop_circle</span></button><button type="submit" class="icon-btn primary" aria-label="Send"><span class="ms">arrow_upward</span></button></div>
+        </div>
+        <div class="chint">Steer by default · a plan change pauses for confirmation</div>
+      </form>
+    </div>
+
+    <aside class="insp" aria-label="Step evidence">
+      <div class="tabs" role="tablist"><button role="tab" aria-selected="true">Evidence</button><button role="tab">Live</button><button role="tab">Details</button></div>
+      <div class="ib">
+        <div class="nav2"><button class="icon-btn" aria-label="Previous step"><span class="ms flip">play_arrow</span></button><span class="grow mono">Step 4 of 8</span><button class="icon-btn" aria-label="Next step"><span class="ms">play_arrow</span></button></div>
+        <h3>Tap first result <q>PSY - GANGNAM STYLE (강남스타일) M/V</q></h3>
+        <div class="seg2" role="group" aria-label="Compare view"><button aria-pressed="true">Before | After</button><button aria-pressed="false">After only</button></div>
+        <div class="pair">
+          <figure><figcaption>Before</figcaption><span class="shot results" role="img" aria-label="Before step 4: search results, first result PSY - GANGNAM STYLE"></span></figure>
+          <figure><figcaption>After</figcaption><span class="shot ad" role="img" aria-label="After step 4: player shows an ad, Skip ad in 5"></span></figure>
+        </div>
+        <details class="think"><summary><span class="ms">expand_more</span>Thinking</summary></details>
+        <dl class="facts"><dt>Screen text after</dt><dd>Ad · 0:05 · Skip ad in 5 · Visit advertiser</dd><dt>Tapped element</dt><dd class="mono">video_title "PSY - GANGNAM STYLE (강남스타일) M/V"</dd><dt>Result</dt><dd>Ad started before the video</dd></dl>
+      </div>
+      <div class="stats" aria-label="Session usage">
+        <div class="big"><span><b>48,212</b> tokens</span><span><b>≈ $0.14</b> est.</span><span><b>1 m 52 s</b></span></div>
+        <table><tr><td>Input · Output</td><td class="r">45,930 · 2,282</td></tr><tr><td>Turn 1 · gpt-6.1-sol</td><td class="r">48,212 · ≈ $0.14</td></tr><tr><td colspan="2" class="faint">Estimate at list price; your provider bill may differ.</td></tr></table>
+      </div>
+    </aside>
+  </main>
+
+  <nav class="tabbar" aria-label="Main"><a class="active" href="#"><span class="ms">space_dashboard</span>Sessions</a><a href="#"><span class="ms">smartphone</span>Phones</a><a href="#"><span class="ms">settings</span>Setup</a><a href="#"><span class="ms">more_horiz</span>More</a></nav>
+</div>
+
+<section class="board" aria-label="States">
+  <h2>Phone width: tapping a step opens the inspector as a bottom sheet</h2>
+  <div class="sheet" role="dialog" aria-label="Step 4 evidence">
+    <div class="grab"></div>
+    <div class="ib">
+      <div class="nav2"><button class="icon-btn" aria-label="Previous step"><span class="ms flip">play_arrow</span></button><span class="grow mono">Step 4 of 8</span><button class="icon-btn" aria-label="Next step"><span class="ms">play_arrow</span></button><button class="icon-btn" aria-label="Close"><span class="ms">close</span></button></div>
+      <h3>Tap first result <q>PSY - GANGNAM STYLE</q></h3>
+      <div class="pair"><figure><figcaption>Before</figcaption><span class="shot results" style="--w:130px"></span></figure><figure><figcaption>After</figcaption><span class="shot ad" style="--w:130px"></span></figure></div>
+      <details class="think"><summary><span class="ms">expand_more</span>Thinking</summary></details>
+    </div>
+  </div>
+
+  <h2>Composer phone states</h2>
+  <div class="grid">
+    <div class="state"><div class="tag"><span class="dot off"></span>Disconnected · picker blinks · composer off</div><div class="body">
+      <div class="bar off">
+        <button type="button" class="seg blink" aria-expanded="true" aria-label="Phone disconnected: Pixel 6 Pro. Open to reconnect or choose another phone."><span class="dot off"></span><span class="lbl">Pixel 6 Pro · Disconnected</span><span class="ms">expand_more</span></button>
+        <textarea rows="1" disabled placeholder="Reconnect the phone first"></textarea>
+        <div class="act"><button class="icon-btn" disabled aria-label="Send"><span class="ms">arrow_upward</span></button></div>
+      </div>
+      <div class="pop" style="margin-top:var(--space-smd)">
+        <h3>Pixel 6 Pro lost connection · <span class="mono">14:02 ICT</span></h3>
+        <div class="opt hl"><span class="ms">usb</span><span class="grow">Reconnect Pixel 6 Pro</span><span class="ms">refresh</span></div>
+        <hr><h3>Or run the first prompt on</h3>
+        <div class="opt"><span class="dot ok"></span><span class="grow">Pixel 3a, USB, your PC</span><span class="ms">open_in_new</span></div>
+        <div class="opt"><span class="dot ok"></span><span class="grow">Pixel 3a emulator, AVD, Cloud</span><span class="ms">open_in_new</span></div>
+        <div class="note">A new session opens with the same first prompt.</div>
+      </div>
+    </div></div>
+    <div class="state"><div class="tag">New session · phone not chosen</div><div class="body">
+      <div class="bar"><button type="button" class="seg free" aria-haspopup="menu"><span class="ms">smartphone</span><span class="lbl">Choose a phone</span><span class="ms">expand_more</span></button><textarea rows="1" placeholder="Describe a task for the phone"></textarea><div class="act"><button class="icon-btn primary" aria-label="Start"><span class="ms">arrow_upward</span></button></div></div>
+      <div class="chint">The phone locks to this session after the first run.</div>
+    </div></div>
+    <div class="state"><div class="tag">Inspector: loading · error · no price</div><div class="body" style="display:grid;gap:var(--space-md)">
+      <div class="pair"><figure><figcaption>Before</figcaption><span class="shot skel" style="--w:90px"></span></figure><figure><figcaption>After</figcaption><span class="shot missing" style="--w:90px"><span class="ms">image_not_supported</span></span></figure></div>
+      <p class="label" style="margin:0;color:var(--color-error)"><span class="ms" style="font-size:16px;vertical-align:-3px">error</span> After screenshot unavailable. <a href="#">Retry</a></p>
+      <div class="stats" style="border:1px solid var(--color-rule);border-radius:var(--radius-md)"><div class="big"><span><b>48,212</b> tokens</span><span><b>—</b> cost</span></div><span class="label faint">No list price for this model.</span></div>
+    </div></div>
+  </div>
+
+  <h2>Phones page (new, out of Setup): list + detail</h2>
+  <div class="state"><div class="body" style="padding:0">
+    <div class="ph">
+      <div class="plist">
+        <header><h2>Phones</h2><button class="btn sm primary"><span class="ms">add_circle</span>Connect</button></header>
+        <div class="pr sel"><span class="dot ok"></span><span>Pixel 6 Pro, USB, your PC<small>2A091FDH200B2X</small></span><span class="label muted">In use</span></div>
+        <div class="pr"><span class="dot idle"></span><span>Pixel 3a, USB, your PC browser<small>93AX01X9Q</small></span><span class="label muted">Idle</span></div>
+        <div class="pr"><span class="dot off"></span><span>Xiaomi 10, USB, Thean's PC (qa1 team)<small>f3a1c09e</small></span><span class="label" style="color:var(--color-error)">Disconnected</span></div>
+      </div>
+      <div class="pd">
+        <span class="shot vol"></span>
+        <div>
+          <h3>Pixel 6 Pro, USB, your PC</h3>
+          <div class="mono label faint">2A091FDH200B2X · Android 15 · 1440×3120</div>
+          <div class="acts"><span class="chip ok"><span class="ms">check_circle</span>Connected</span><button class="btn sm">Open live screen</button><button class="btn sm">New session on this phone</button></div>
+          <dl class="facts"><dt>In use by</dt><dd>open youtube and play gangnam style… · <span class="mono">13:58 ICT</span></dd><dt>Last 7 days</dt><dd><span class="mono">23</span> sessions</dd><dt>Owner</dt><dd>Cheese</dd></dl>
+        </div>
+      </div>
+    </div>
+    <p class="muted label" style="padding:var(--space-md) var(--space-lg);margin:0;border-top:1px solid var(--color-rule)">Empty: “No phones yet. Connect one by USB or start a Cloud emulator.” · Error: “Phones could not be loaded. Retry.”</p>
+  </div></div>
+
+  <h2>Nav mode toggle (nav footer, icon only)</h2>
+  <div class="modes">
+    <div class="mode"><button class="navtoggle"><span class="ms flip">keyboard_tab</span><span class="pip"><i class="on"></i><i></i><i></i></span></button><span><b>Pinned expanded</b><span class="muted label">→ pinned icons</span></span></div>
+    <div class="mode"><button class="navtoggle"><span class="ms">keyboard_tab</span><span class="pip"><i></i><i class="on"></i><i></i></span></button><span><b>Pinned icons</b><span class="muted label">→ expand on hover</span></span></div>
+    <div class="mode"><button class="navtoggle"><span class="ms">ads_click</span><span class="pip"><i></i><i></i><i class="on"></i></span></button><span><b>Expand on hover</b><span class="muted label">→ pinned expanded</span></span></div>
+  </div>
+</section>
+</body>
+</html>

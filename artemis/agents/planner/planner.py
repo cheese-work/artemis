@@ -44,7 +44,7 @@ from artemis.tools.tool_wrapper import (
     invoke_tool_with_injection,
 )
 from artemis.utils.decorators import wrap_with_callbacks
-from artemis.utils.logger import get_logger
+from artemis.utils.goal_images import goal_image_blocks
 from artemis.utils.notes import get_note_file_path
 from artemis.utils.plan_grammar import (
     CHECKBOX_LINE_RE,
@@ -53,6 +53,9 @@ from artemis.utils.plan_grammar import (
     render_plan_grammar_spec,
 )
 from artemis.memory.context_policy import build_history_for
+from artemis.utils.cython_compat import CyFunctionDetector
+from third_party.mobile_use.utils.decorators import agent_lifecycle_logging
+from third_party.mobile_use.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
@@ -106,24 +109,6 @@ def build_planner_system_blocks(prompts_data: dict, mode: str, include_checks: b
         if extra in prompts_data.get("blocks", {}):
             blocks.append(extra)
     return blocks
-
-
-class _CyFunctionDetectorMeta(type):
-    def __instancecheck__(self, instance):
-        name = type(instance).__name__
-        return (
-            name
-            in (
-                "cyfunction",
-                "cython_function_or_method",
-                "builtin_function_or_method",
-            )
-            or "cyfunction" in name.lower()
-        )
-
-
-class CyFunctionDetector(metaclass=_CyFunctionDetectorMeta):
-    pass
 
 
 class ValidationResult(BaseModel):
@@ -224,11 +209,7 @@ class PlannerNode:
         self.ctx = ctx
         self.tools = tools or []
 
-    @wrap_with_callbacks(
-        before=lambda: logger.info("Starting Planner Agent..."),
-        on_success=lambda _: logger.success("Planner Agent"),
-        on_failure=lambda _: logger.error("Planner Agent"),
-    )
+    @agent_lifecycle_logging("Planner", logger)
     @trace(type="agent", name="planner")
     async def __call__(self, state: State):
         state = strict_state(state, "planner")
@@ -295,7 +276,7 @@ class PlannerNode:
 
         human_message = Template(human_content).render(**render_kwargs)
 
-        human_message_content = [{"type": "text", "text": human_message}]
+        human_message_content = [{"type": "text", "text": human_message}, *goal_image_blocks()]
         if screenshot_b64:
             human_message_content.append(
                 {
@@ -351,7 +332,9 @@ class PlannerNode:
 
                 for tc in response.tool_calls:
                     tool_name = tc["name"]
-                    logger.info(f"Planner called tool: {tool_name} with args: {tc['args']}")
+                    logger.info(
+                        f"event=tool_called tool={tool_name} args_length={len(str(tc['args']))}"
+                    )
                     if ":" in tool_name:
                         tool_to_run = get_tool_by_name(tool_name, all_tools)
                     else:
@@ -372,7 +355,9 @@ class PlannerNode:
                                     f" {list(tool_to_run.args.keys())}"
                                 )
 
-                                logger.info(f"Invoking {tool_name} with args: {list(args.keys())}")
+                                logger.info(
+                                    f"event=tool_called tool={tool_name} args_length={len(str(args))}"
+                                )
                                 result_obj = await invoke_tool_with_injection(
                                     tool=tool_to_run,
                                     args=args,

@@ -14,10 +14,12 @@
 
 import asyncio
 from datetime import datetime
+import json
 import logging
 import os
 from pathlib import Path
 import shutil
+import sqlite3
 import sys
 import threading
 import time
@@ -25,16 +27,31 @@ from typing import Any
 import uuid
 
 try:
-    from admin_console.core.state import state
+    from admin_console.core.state import IN_FLIGHT_STATUSES, state
     from admin_console.database.repositories.session_repository import session_repo
     from admin_console.services import worker_process_io
+    from admin_console.services.host_admission import RunPhase, WaitReason, host_admission
+    from admin_console.services.host_admission import enabled as host_agent_enabled
     from admin_console.services.media_service import media_service
 except ImportError:
-    from apps.admin_console.core.state import state
+    from apps.admin_console.core.state import IN_FLIGHT_STATUSES, state
     from apps.admin_console.database.repositories.session_repository import session_repo
     from apps.admin_console.services import worker_process_io
+    from apps.admin_console.services.host_admission import RunPhase, WaitReason, host_admission
+    from apps.admin_console.services.host_admission import enabled as host_agent_enabled
     from apps.admin_console.services.media_service import media_service
 
+from apps.admin_console.core.access_control import AdminAPIError
+from apps.admin_console.services import run_images
+from apps.admin_console.services.deploy_drain import (
+    ServerDraining,
+    admission_lock,
+    drain_file,
+    read_drain,
+    sync_directory,
+    write_drain,
+)
+from apps.admin_console.services.device_reservation import device_reservations
 from artemis.config import (
     PAUSE_FILE,
     TEST_DATA_DIR,
@@ -52,8 +69,23 @@ from artemis.runtime import (
     request_cancel,
     trace_store,
 )
+from artemis.runtime.adb_endpoint import InvalidAdbEndpoint
+from artemis.runtime.host_endpoints import host_endpoints
+from artemis.runtime.lifecycle import TERMINAL_STATUSES
+from artemis.runtime.lifecycle import InterruptReason
+from artemis.runtime.run_device_binding import RunDeviceBinding
+from artemis.utils.redaction import bind_session, goal_metadata, write_goal_file
 
 logger = logging.getLogger(__name__)
+
+_STOPPED_FROM_FRONTEND = "Task stopped from the Artemis frontend."
+_CANCELLED_WHILE_QUEUED = "Queued task cancelled from the Artemis frontend."
+# Cadence of the sweep that fails running sessions whose worker vanished.
+_VANISHED_WORKER_SWEEP_SECONDS = 15.0
+
+
+class TaskEndpointUnavailable(RuntimeError):
+    """A queued task's adb endpoint snapshot cannot be turned into an endpoint."""
 
 
 class TaskQueueService:
@@ -66,6 +98,8 @@ class TaskQueueService:
     _run_tasks: set[asyncio.Task] = set()
     # Deadline enforcers for graceful stops (see _stop_worker_gracefully).
     _forced_stop_tasks: set[asyncio.Task] = set()
+    # In-flight run coroutines by session id, so a NACKed start can be cancelled.
+    _run_tasks_by_session: dict[str, asyncio.Task] = {}
 
     DEFAULT_CANCEL_GRACE_SECONDS = 45.0
 
@@ -216,31 +250,166 @@ class TaskQueueService:
         ).start()
 
     @staticmethod
-    def _task_target(task_item: dict[str, Any]) -> AdbTarget:
+    def _scheduling_lock_key(task_item: dict[str, Any]) -> str:
+        """Lock key for the scheduler; never raises.
+
+        A snapshot that can no longer be turned into an endpoint (a host task queued
+        before the host agent flag went off) still has an identity to schedule on. The
+        task then fails alone when it launches, instead of the scheduler loop dying.
+        """
+        try:
+            return TaskQueueService._task_target(task_item).lock_key
+        except TaskEndpointUnavailable:
+            snapshot = task_item.get("adb_endpoint")
+            identity = snapshot.get("identity") if isinstance(snapshot, dict) else None
+            serial = task_item.get("device_serial")
+            return f"{identity or 'unavailable'}/{serial or 'pending'}"
+
+    @staticmethod
+    def _task_target(task_item: dict[str, Any], *, resolve_host: bool = False) -> AdbTarget:
+        """The task's adb target from its queued snapshot.
+
+        A host endpoint is snapshotted by host id; its tunnel port is only valid *now*, so
+        ``resolve_host=True`` (used when the worker launches) swaps in the host's live
+        endpoint and raises :class:`HostOffline` when it has none. The scheduler keeps
+        the snapshot: host-scoped lock keys do not depend on the port.
+        """
         endpoint_data = task_item.get("adb_endpoint")
-        endpoint = (
-            AdbEndpoint.from_mapping(endpoint_data)
-            if isinstance(endpoint_data, dict)
-            else current_adb_endpoint()
-        )
+        try:
+            endpoint = (
+                AdbEndpoint.from_mapping(endpoint_data)
+                if isinstance(endpoint_data, dict)
+                else current_adb_endpoint()
+            )
+        except InvalidAdbEndpoint as exc:
+            raise TaskEndpointUnavailable(
+                f"The task's adb endpoint {endpoint_data!r} cannot be used: {exc}"
+            ) from exc
         serial = task_item.get("device_serial")
-        return AdbTarget(endpoint=endpoint, serial=str(serial) if serial else None)
+        target = AdbTarget(
+            endpoint=endpoint,
+            serial=str(serial) if serial else None,
+            host_id=task_item.get("host_id"),
+        )
+        binding_data = task_item.get("device_binding")
+        binding = None
+        if binding_data is not None:
+            try:
+                binding = RunDeviceBinding.from_mapping(binding_data)
+                binding.require_selection(target)
+            except (KeyError, TypeError, ValueError) as exc:
+                raise TaskEndpointUnavailable(f"Invalid run device binding: {exc}") from exc
+            if resolve_host:
+                try:
+                    session = session_repo.read_session(str(task_item.get("session_id")))
+                except (OSError, sqlite3.Error) as exc:
+                    raise TaskEndpointUnavailable("Cannot verify durable run admission") from exc
+                if session is None:
+                    raise TaskEndpointUnavailable("Bound run has no durable admission")
+                if session.get("status") in TERMINAL_STATUSES:
+                    raise TaskEndpointUnavailable(f"Bound run is already {session['status']}")
+                try:
+                    stored = json.loads(session.get("device_info") or "{}").get("device_binding")
+                except (TypeError, ValueError) as exc:
+                    raise TaskEndpointUnavailable("Invalid durable run device binding") from exc
+                if stored != binding_data:
+                    raise TaskEndpointUnavailable("Run binding differs from accepted identity")
+            if resolve_host and binding.bridge_session_id:
+                from apps.admin_console.services.bridge_session_service import (
+                    bridge_session_service,
+                )
+
+                if not any(
+                    lease.session_id == binding.bridge_session_id
+                    and lease.serial == target.serial
+                    and not lease.revoked
+                    for lease in bridge_session_service.live_sessions()
+                ):
+                    TaskQueueService.interrupt_device_binding(
+                        str(task_item.get("session_id")), "bridge_closed"
+                    )
+                    raise TaskEndpointUnavailable("Bound browser lease is unavailable")
+        if resolve_host and endpoint.is_host:
+            target = AdbTarget(
+                host_endpoints.resolve(str(endpoint.host_id)), target.serial, target.host_id
+            )
+            if binding is not None:
+                try:
+                    binding.require_selection(target, recovery=True)
+                except ValueError as exc:
+                    raise TaskEndpointUnavailable(f"Invalid run device binding: {exc}") from exc
+        return target
 
     @classmethod
-    def _broadcast_event(cls, event_type: str, data: Any):
-        """Broadcasts an event safely to all registered subscribers."""
+    def interrupt_device_binding(
+        cls, session_id: str, reason: str, *, client_close: dict[str, Any] | None = None
+    ) -> None:
+        outcome = session_repo.lifecycle.interrupt(session_id, reason, client_close=client_close)
+        if not outcome.committed:
+            return
+        for run_key, run in list(state.active_runs.items()):
+            if str(run.get("session_id") or run_key) != session_id:
+                continue
+            process = run.get("process")
+            if process is not None and process.returncode is None:
+                try:
+                    process.kill()
+                except ProcessLookupError:
+                    pass
+
+    @classmethod
+    def interrupt_bridge_binding(
+        cls, bridge_session_id: str, *, client_close: dict[str, Any] | None = None
+    ) -> None:
+        for item in list(state.queue_items):
+            if item.get("bridge_session_id") == bridge_session_id:
+                cls.interrupt_device_binding(
+                    str(item["session_id"]), "bridge_closed", client_close=client_close
+                )
+
+    @classmethod
+    def validate_host_device_inventory(
+        cls, host_id: str, generation: int, shared_serials: set[str]
+    ) -> None:
+        for item in list(state.queue_items):
+            binding = item.get("device_binding") or {}
+            if (
+                binding.get("host_id") == host_id
+                and generation >= binding["endpoint"]["generation"]
+                and binding.get("serial") not in shared_serials
+            ):
+                cls.interrupt_device_binding(str(item["session_id"]), "device_offline")
+
+    @classmethod
+    def _broadcast_event(
+        cls, event_type: str, data: Any, delivered: set[tuple[int, str]] | None = None
+    ) -> bool:
+        """Broadcasts an event safely to all registered subscribers.
+
+        With ``delivered`` (outcome events), subscribers already recorded there
+        are skipped and each success is recorded, so a retry reaches only the
+        subscribers that failed. Returns False if any subscriber failed.
+        """
+        all_ok = True
         for cb in list(state.ipc_subscribers):
+            if delivered is not None and (id(cb), event_type) in delivered:
+                continue
             try:
                 cb(event_type, data)
             except Exception:
                 # One broken subscriber must not block the others, but a
                 # silent drop hides it entirely.
+                all_ok = False
                 logger.warning(
                     "Event subscriber %r failed for event %s",
                     cb,
                     event_type,
                     exc_info=True,
                 )
+            else:
+                if delivered is not None:
+                    delivered.add((id(cb), event_type))
+        return all_ok
 
     @classmethod
     def _broadcast_startup_progress(cls, session_id: str | None, stage: str, message: str) -> None:
@@ -268,6 +437,11 @@ class TaskQueueService:
         """Removes a task from queue_items by session_id."""
         if not session_id:
             return
+        if (
+            str(session_id) not in state.executing_run_keys
+            and str(session_id) not in state.active_runs
+        ):
+            device_reservations.release(session_id)
         removed_items = [
             t
             for t in state.queue_items
@@ -275,36 +449,15 @@ class TaskQueueService:
         ]
         for item in removed_items:
             DeviceExecutionLock.cancel_reservation(item.get("queue_ticket"))
+            if item.get("host_id") and item.get("device_binding"):
+                from apps.admin_console.services.host_tunnel import host_tunnels
+
+                host_tunnels.release_run(item["host_id"], str(session_id))
         state.queue_items = [
             t
             for t in state.queue_items
             if not (isinstance(t, dict) and t.get("session_id") == session_id)
         ]
-
-    @staticmethod
-    def _resolve_terminal_status(
-        current_status: str | None,
-        returncode: int,
-        was_stopped_manually: bool,
-    ) -> tuple[str, bool]:
-        """Resolve final status while preserving an authoritative task result.
-
-        The worker exit code is only a fallback for sessions that have not
-        reached a terminal state. ``success`` is the DataEngine alias for the
-        UI-facing ``completed`` status and is normalized here.
-
-        Returns:
-            A tuple of ``(resolved_status, should_persist)``.
-        """
-        if was_stopped_manually:
-            return "cancelled", True
-
-        normalized = current_status.lower().strip() if isinstance(current_status, str) else None
-        if normalized == "success":
-            return "completed", True
-        if normalized in {"completed", "failed", "cancelled"}:
-            return normalized, False
-        return ("completed" if returncode == 0 else "failed"), True
 
     # Worker subprocess I/O plumbing lives in worker_process_io; the historical
     # private names stay bound here so callers and tests keep working unchanged.
@@ -348,6 +501,47 @@ class TaskQueueService:
         return DeviceExecutionLock.resolve_env_concurrency()
 
     @classmethod
+    def _reap_vanished_workers(cls) -> list[str]:
+        """Fail running sessions that no live worker, lock or run owns.
+
+        This is the writer-side replacement for the repair that used to run
+        inside ``GET /api/sessions``; it covers workers started outside this
+        server (CLI, MCP) that died without finalizing. It also redelivers any
+        outcome event left pending by a crash or an earlier delivery failure.
+        """
+        cls._deliver_outcome(None)
+        try:
+            owner_sids = {
+                str(owner.session_id)
+                for owner in DeviceExecutionLock.get_active_owners().values()
+                if owner.session_id
+            }
+        except Exception:
+            cls._classify_owed_outcomes()
+            return []  # lock state unknown: never declare a worker dead on a guess
+        in_flight = {
+            str(i.get("session_id"))
+            for i in state.queue_items
+            if isinstance(i, dict) and i.get("status") in IN_FLIGHT_STATUSES
+        }
+
+        def owned(sid: str) -> bool:
+            return (
+                sid in owner_sids
+                or sid in in_flight
+                or sid in state.active_runs
+                or sid in state.active_connections
+                or (state.is_running and sid == str(state.active_session_id))
+            )
+
+        swept = session_repo.lifecycle.fail_vanished_workers(session_repo.process_is_alive, owned)
+        for sid in swept:
+            print(f"[QueueWorker] Failed vanished running session {sid}")
+            cls._deliver_outcome(sid)
+        cls._classify_owed_outcomes()
+        return swept
+
+    @classmethod
     async def queue_worker(cls):
         """Persistent dispatcher scheduling pending tasks onto devices.
 
@@ -366,12 +560,19 @@ class TaskQueueService:
         except Exception as exc:
             print(f"[QueueWorker] Initial stale lock cleanup notice: {exc}")
 
+        next_sweep = time.monotonic()
         try:
             while True:
                 try:
                     cls._dispatch_pending_tasks()
                 except Exception as exc:
                     print(f"[QueueWorker] Dispatch error: {exc}")
+                if time.monotonic() >= next_sweep:
+                    next_sweep = time.monotonic() + _VANISHED_WORKER_SWEEP_SECONDS
+                    try:
+                        cls._reap_vanished_workers()
+                    except Exception as exc:
+                        print(f"[QueueWorker] Vanished-worker sweep error: {exc}")
                 try:
                     await asyncio.wait_for(state.wake_event.wait(), timeout=0.3)
                     state.wake_event.clear()
@@ -388,8 +589,11 @@ class TaskQueueService:
     @classmethod
     def _dispatch_pending_tasks(cls) -> None:
         """Launch every pending task admissible under the current concurrency limit."""
+        if cls.drain_status()["draining"]:
+            return
         limit = cls._concurrency_limit()
         state.prune_finished_runs()
+        cls._promote_started_runs()
         if limit == 1 and state.is_running:
             return
 
@@ -397,7 +601,9 @@ class TaskQueueService:
         # "running" state, so admission must count those too -- active_runs alone
         # lags behind by the subprocess startup latency.
         in_flight = [
-            i for i in state.queue_items if isinstance(i, dict) and i.get("status") == "running"
+            i
+            for i in state.queue_items
+            if isinstance(i, dict) and i.get("status") in IN_FLIGHT_STATUSES
         ]
         capacity = None
         if limit >= 1:
@@ -414,7 +620,7 @@ class TaskQueueService:
             if capacity <= 0:
                 return
         busy_devices = state.busy_device_ids | {
-            cls._task_target(i).lock_key for i in in_flight if i.get("device_serial")
+            cls._scheduling_lock_key(i) for i in in_flight if i.get("device_serial")
         }
         dispatched_any = False
         loop = asyncio.get_running_loop()
@@ -427,24 +633,53 @@ class TaskQueueService:
                 continue
 
             device = item.get("device_serial")
-            target = cls._task_target(item)
+            lock_key = cls._scheduling_lock_key(item)
             if limit == 0:
                 # A task without a resolved device may bind to any serial, so it
                 # only launches on an otherwise idle scheduler; the device lock
                 # then allocates freely without contending against active runs.
                 if device is None and (state.active_runs or in_flight or dispatched_any):
                     continue
-                if device is not None and target.lock_key in busy_devices:
+                if device is not None and lock_key in busy_devices:
                     continue
-            elif limit > 1 and device is not None and target.lock_key in busy_devices:
+            elif limit > 1 and device is not None and lock_key in busy_devices:
                 # A second worker for this device would wait on its lock.
                 continue
 
-            item["status"] = "running"
+            if item.get("host_id") and host_agent_enabled() and not cls._host_device_eligible(item):
+                # Another owner holds the device lock or is ahead in its queue (any
+                # ingress): waiting here must not hold one of the host's run slots.
+                item["wait_reason"] = str(WaitReason.DEVICE_BUSY)
+                continue
+            # The single host-admission hook: a host that is not active, is full or
+            # shares an ambiguous device keeps the row waiting, in place.
+            if (reason := host_admission.admit(item)) is not None:
+                item["wait_reason"] = str(reason)
+                continue
+            item.pop("wait_reason", None)
+
+            item["status"] = "starting" if host_agent_enabled() else "running"
             dispatched_any = True
             if device is not None:
-                busy_devices.add(target.lock_key)
+                busy_devices.add(lock_key)
+            # Count from scheduling, not from the coroutine's first step: a stop
+            # can drop the queue row, or cancel the task, before it ever runs.
+            run_key = str(sess_id) if sess_id else uuid.uuid4().hex
+            state.executing_run_keys.add(run_key)
             run_task = loop.create_task(cls._execute_task_item(item))
+            run_task.add_done_callback(
+                lambda _t, key=run_key: state.executing_run_keys.discard(key)
+            )
+            cls._run_tasks_by_session[run_key] = run_task
+            # A run cancelled before its first step never reaches its own cleanup.
+            run_task.add_done_callback(
+                lambda t, key=run_key: (
+                    host_admission.release(key),
+                    cls._run_tasks_by_session.pop(key, None)
+                    if cls._run_tasks_by_session.get(key) is t
+                    else None,
+                )
+            )
             # Hold a strong reference: asyncio keeps only weak refs to running
             # tasks, and a collected run would strand its queue item forever.
             cls._run_tasks.add(run_task)
@@ -455,6 +690,54 @@ class TaskQueueService:
                     break
 
     @classmethod
+    def _held_lock_session_ids(cls) -> set[str] | None:
+        """Sessions whose worker holds a device lock; None when lock state is unreadable."""
+        try:
+            return {
+                str(owner.session_id)
+                for owner in DeviceExecutionLock.get_active_owners().values()
+                if owner.session_id
+            }
+        except OSError:
+            return None
+
+    @classmethod
+    def _host_device_eligible(cls, item: dict[str, Any]) -> bool:
+        """The authoritative lock and FIFO state lets this row start now; unknown means no."""
+        target = cls._task_target(item)
+        device = str(item.get("device_serial"))
+        try:
+            if DeviceExecutionLock.get_active_owner(device, target.lock_scope) is not None:
+                return False
+            head = DeviceExecutionLock.queue_head_token(device, target.lock_scope)
+        except OSError:
+            return False
+        ticket = item.get("queue_ticket")
+        return not (ticket and head and head != ticket)
+
+    @classmethod
+    def _promote_started_runs(cls) -> None:
+        """Move "starting" rows to "running" once their worker holds the device lock."""
+        starting = [
+            i for i in state.queue_items if isinstance(i, dict) and i.get("status") == "starting"
+        ]
+        held = cls._held_lock_session_ids() if starting else None
+        if not held:
+            return
+        now = time.time()
+        for item in starting:
+            sid = str(item.get("session_id"))
+            if sid not in held:
+                continue
+            item["status"] = "running"
+            item["execution_started_at"] = now
+            host_admission.mark(sid, RunPhase.RUNNING)
+            try:
+                session_repo.lifecycle.mark_execution_started(sid, now)
+            except (OSError, sqlite3.Error):
+                logger.exception("Could not persist execution_started_at for %s", sid)
+
+    @classmethod
     def _begin_task_run(
         cls,
         task_item: dict[str, Any],
@@ -463,8 +746,9 @@ class TaskQueueService:
         goal: str,
         profile: str,
     ) -> None:
-        """Mark the task as running and announce the launch to subscribers."""
-        task_item["status"] = "running"
+        """Announce the launch; the row is "running" now, or once it holds the lock."""
+        if not host_agent_enabled():
+            task_item["status"] = "running"
         task_item["start_time"] = time.time()
 
         # A fresh launch clears a stale stop request left over for this run
@@ -499,6 +783,7 @@ class TaskQueueService:
         goal: str,
         profile: str,
         target: AdbTarget,
+        base_environment: dict[str, str] | None = None,
     ) -> tuple[list[str], dict[str, str]]:
         """Assemble the worker subprocess command line and environment."""
         expected_output = task_item.get("expected_output")
@@ -510,7 +795,8 @@ class TaskQueueService:
         run_id = task_item.get("run_id")
 
         test_name = f"web_{int(time.time())}_{run_key[:8]}"
-        env = os.environ.copy()
+        env = dict(base_environment) if base_environment is not None else os.environ.copy()
+        env["PYTHON_DOTENV_DISABLED"] = "1"
         pythonpath_parts = [
             str(WORKSPACE_ROOT),
             str(WORKSPACE_ROOT / "apps" / "admin_console"),
@@ -524,6 +810,10 @@ class TaskQueueService:
             env["ARTEMIS_IPC_PORT"] = str(state.ipc_port)
         if sess_id:
             env["ARTEMIS_SESSION_ID"] = str(sess_id)
+            if task_item.get("ingress", "frontend") == "frontend":
+                from artemis.data_engine.chat_sessions import ChatStore
+
+                env["ARTEMIS_CHAT_SESSION_ID"] = task_item.get("chat_session_id") or str(sess_id)
         env["ARTEMIS_TASK_INGRESS"] = str(task_item.get("ingress", "frontend"))
         env["ARTEMIS_TASK_WORKER"] = "1"
         target.endpoint.apply_to_environment(env)
@@ -536,7 +826,8 @@ class TaskQueueService:
             sys.executable,
             "-m",
             "artemis.main",
-            goal,
+            "--goal-file",
+            write_goal_file(goal),
             "--profile",
             profile,
             "--test-name",
@@ -562,6 +853,8 @@ class TaskQueueService:
         if device_serial:
             cmd.extend(["--device-serial", str(device_serial)])
             env["ADB_DEVICE_SERIAL"] = str(device_serial)
+        if task_item.get("goal_images") and sess_id:
+            env.update(run_images.worker_environment(str(sess_id), task_item["goal_images"]))
         return cmd, env
 
     @classmethod
@@ -581,12 +874,22 @@ class TaskQueueService:
         task_item["pid"] = proc.pid
         state.active_runs[run_key] = {
             "process": proc,
+            "session_id": str(sess_id) if sess_id else run_key,
             "device_id": str(device_serial) if device_serial else None,
             "lock_key": target.lock_key if device_serial else None,
             "adb_endpoint": target.endpoint.to_dict(),
             "goal": goal,
             "profile": profile,
+            "host_id": target.host_id,
+            "device_binding": task_item.get("device_binding"),
+            "bridge_session_id": task_item.get("bridge_session_id"),
         }
+        if target.host_id and sess_id:
+            from apps.admin_console.services.host_tunnel import host_tunnels
+
+            host_tunnels.bind_run(
+                target.host_id, str(sess_id), str(device_serial) if device_serial else None
+            )
         if sess_id:
             try:
                 # Preserve status updates written concurrently by the worker.
@@ -603,7 +906,7 @@ class TaskQueueService:
             transferred = DeviceExecutionLock.transfer_reservation(
                 str(queue_ticket),
                 proc.pid,
-                description=f"{ingress_type} task: {goal[:120]}",
+                description=f"{ingress_type} task: {goal_metadata(goal)}",
                 device_id=device_serial or "pending",
                 session_id=str(sess_id) if sess_id else None,
                 ingress=ingress_type,
@@ -637,7 +940,21 @@ class TaskQueueService:
         cls, run_key: str, sess_id: Any, proc: asyncio.subprocess.Process
     ) -> None:
         """Terminate a worker whose task was cancelled while it was being launched."""
-        if sess_id and (
+        if sess_id and cls._queue_item_for(sess_id).get("device_binding"):
+            try:
+                session = session_repo.read_session(str(sess_id))
+            except (OSError, sqlite3.Error) as exc:
+                await cls._terminate_worker_process(proc)
+                raise TaskEndpointUnavailable("Cannot verify durable run admission") from exc
+            if session is None:
+                await cls._terminate_worker_process(proc)
+                raise TaskEndpointUnavailable("Bound run has no durable admission")
+            if session.get("status") in TERMINAL_STATUSES:
+                await cls._terminate_worker_process(proc)
+                return
+        if sess_id and session_repo.get_session_status(str(sess_id)) == "interrupted":
+            await cls._terminate_worker_process(proc)
+        elif sess_id and (
             str(sess_id) in getattr(state, "cancelled_session_ids", set())
             or run_key in state.manually_stopped_run_ids
         ):
@@ -648,53 +965,39 @@ class TaskQueueService:
     async def _persist_terminal_session_status(
         cls, sess_id: Any, returncode: int, manual_stop: bool
     ) -> str:
-        """Resolve and persist the session's terminal status in the DB and trace store."""
-        current_status = session_repo.get_session_status(sess_id)
-        new_status, should_persist = cls._resolve_terminal_status(
-            current_status,
-            returncode,
-            manual_stop,
+        """Settle the session after its worker exits and return the published status.
+
+        The worker's exit code is only a fallback: the lifecycle authority keeps
+        any outcome already committed (completed, cancelled, interrupted, ...).
+
+        Settlement owns the run's outcome from this call on: a host NACK is
+        refused once ``settling`` is set, and a requeued row is never settled.
+        """
+        item = cls._queue_item_for(sess_id)
+        if item.get("requeue"):
+            return "queued"
+        item["settling"] = True  # before the first await: the NACK check cannot miss it
+        if item.get("host_id") and not manual_stop:
+            from apps.admin_console.services.host_tunnel import host_tunnels
+
+            await host_tunnels.wait_for_run(str(sess_id))
+        try:
+            outcome = await asyncio.to_thread(
+                session_repo.lifecycle.settle_worker_exit, str(sess_id), returncode, manual_stop
+            )
+        except Exception:
+            logger.exception("[QueueWorker] Could not settle terminal status for %s", sess_id)
+            outcome = None
+        if outcome is not None and outcome.status:
+            logger.info("event=task_finished session_id=%s status=%s", sess_id, outcome.status)
+            return outcome.status
+        fallback = "cancelled" if manual_stop else ("completed" if returncode == 0 else "failed")
+        logger.error(
+            "[QueueWorker] Could not persist terminal DB status '%s' for session %s",
+            fallback,
+            sess_id,
         )
-        if should_persist:
-            if session_repo.update_session_status(sess_id, new_status, time.time()):
-                print(f"[QueueWorker] Updated session {sess_id} status to '{new_status}'")
-            else:
-                # The DB row is the fallback MCP pollers reconcile
-                # against when status.json is stale, so a failed DB
-                # write must not pass silently.
-                logger.error(
-                    "[QueueWorker] Could not persist terminal DB status '%s' for session %s",
-                    new_status,
-                    sess_id,
-                )
-        else:
-            print(f"[QueueWorker] Preserved authoritative session {sess_id} status '{new_status}'")
-        # A stale status.json would leave MCP pollers seeing "running"
-        # until their next DB reconcile, so retry transient write
-        # failures before giving up.
-        for attempt in range(3):
-            try:
-                if trace_store.read_status(str(sess_id)):
-                    canonical_mcp_status = (
-                        "completed" if new_status in ("completed", "success") else new_status
-                    )
-                    trace_store.update_trace_status(
-                        str(sess_id),
-                        canonical_mcp_status,
-                    )
-                break
-            except OSError as exc:
-                if attempt < 2:
-                    await asyncio.sleep(0.5 * (attempt + 1))
-                    continue
-                logger.error(
-                    "[QueueWorker] Could not persist terminal MCP status "
-                    "for %s after %d attempts: %s",
-                    sess_id,
-                    attempt + 1,
-                    exc,
-                )
-        return new_status
+        return fallback
 
     @classmethod
     async def _recover_or_fail_recording(cls, sess_id: Any) -> None:
@@ -761,54 +1064,340 @@ class TaskQueueService:
                 {"session_id": sess_id, "error": recording_error},
             )
 
+    # Outcome events are delivered at-least-once from the durable outbox, and
+    # every effect is idempotent by ``event_id`` where it lands: the broadcast
+    # step first records the event (``record_event``, insert-if-absent) and fans
+    # out live only for a new record; the notifiers write-if-absent by event id
+    # (FileNotifier) or pass it as an idempotency key (webhook, script). A
+    # consumer is marked delivered after its effect, the row is acknowledged
+    # once every consumer is done, and a replay after a crash is a no-op. A
+    # failing consumer is retried with a persisted attempt count and, after the
+    # cap, abandoned durably so the row still acknowledges.
+    _MAX_DELIVERY_ATTEMPTS = 5
+    _delivery_lock = threading.Lock()
+    _delivered_to: dict[str, set[tuple[int, str]]] = {}  # event_id -> (subscriber, event type)
+    _fanout_pending: set[str] = set()  # event ids whose live fanout still needs a retry
+    _classification_owed: dict[str, dict[str, Any]] = {}
+    _classifying: set[str] = set()
+
     @classmethod
-    def _announce_session_end(
-        cls,
-        task_item: dict[str, Any],
-        sess_id: Any,
-        goal: str,
-        new_status: str,
-        manual_stop: bool,
+    def _forget_delivery_memory(cls) -> None:
+        """Drop in-process delivery memory (what a restart does)."""
+        cls._delivered_to.clear()
+        cls._fanout_pending.clear()
+        cls._classification_owed.clear()
+        cls._classifying.clear()
+
+    @classmethod
+    def _deliver_outcome(
+        cls, sess_id: Any = None, task_item: dict[str, Any] | None = None, goal: str | None = None
     ) -> None:
-        """Broadcast session_ended and dispatch the external completion notification."""
-        state.active_connections.pop(sess_id, None)
-        cls._broadcast_event(
-            "session_ended",
-            {
-                "session_id": sess_id,
-                "status": new_status,
-                "was_stopped_manually": manual_stop,
-            },
+        """Deliver the pending outcome event of ``sess_id`` (every session when None).
+
+        Every finalizer (worker exit, stop, sweep, startup, shutdown) may call this.
+        """
+        if sess_id is not None:
+            state.active_connections.pop(sess_id, None)
+        lifecycle = session_repo.lifecycle
+        with cls._delivery_lock:
+            try:
+                events = lifecycle.pending_events(str(sess_id) if sess_id is not None else None)
+            except sqlite3.Error:
+                logger.warning("Could not read pending outcome events", exc_info=True)
+                return
+            delivered: list[str] = []
+            for event in events:
+                item = task_item
+                if item is None or str(item.get("session_id")) != str(event["session_id"]):
+                    item = cls._queue_item_for(event["session_id"])
+                if cls._deliver_event(lifecycle, event, item, goal):
+                    delivered.append(event["dedupe_id"])
+            try:
+                lifecycle.acknowledge(delivered)
+            except sqlite3.Error:
+                logger.warning("Could not acknowledge outcome events", exc_info=True)
+                return
+            for event_id in delivered:
+                cls._delivered_to.pop(event_id, None)
+                cls._fanout_pending.discard(event_id)
+
+    @classmethod
+    def _deliver_event(
+        cls, lifecycle: Any, event: dict[str, Any], task_item: dict[str, Any], goal: str | None
+    ) -> bool:
+        """Run each consumer not yet delivered; False leaves the event pending.
+
+        A failing consumer never blocks the others: each is tried in turn and
+        the event stays pending if any is still owed a retry.
+        """
+        event_id = event["dedupe_id"]
+        steps = (
+            ("broadcast", "broadcast_at", lambda: cls._broadcast_outcome(lifecycle, event)),
+            (
+                "notify",
+                "notified_at",
+                lambda: cls._notify_session_end(
+                    lifecycle, task_item, event["session_id"], goal, event["status"], event_id
+                ),
+            ),
+            ("classify", "classified_at", None),
+        )
+        pending = False
+        for consumer, column, effect in steps:
+            if event.get(column) is not None:
+                continue  # delivered earlier, possibly before a restart
+            if consumer == "classify":
+                if column in event:
+                    cls._classification_owed[event_id] = dict(event)
+                    pending = True
+                continue
+            try:
+                ok = effect()
+            except (OSError, RuntimeError, ValueError, KeyError, TypeError, sqlite3.Error):
+                logger.warning("Could not %s %s", consumer, event_id, exc_info=True)
+                ok = False
+            try:
+                if ok:
+                    lifecycle.mark_delivered(event_id, consumer)
+                    continue
+                failures = lifecycle.note_failed_attempt(event_id, consumer)
+                if failures < cls._MAX_DELIVERY_ATTEMPTS:
+                    pending = True
+                    continue
+                logger.error(
+                    "Abandoning %s of %s after %d failed attempts", consumer, event_id, failures
+                )
+                lifecycle.mark_delivered(event_id, consumer, abandoned=True)
+            except sqlite3.Error:
+                logger.warning("Could not record %s of %s", consumer, event_id, exc_info=True)
+                pending = True
+        return not pending
+
+    @classmethod
+    def _classify_owed_outcomes(cls) -> None:
+        with cls._delivery_lock:
+            owed = {
+                event_id: event
+                for event_id, event in cls._classification_owed.items()
+                if event_id not in cls._classifying
+            }
+            for event_id in owed:
+                cls._classification_owed.pop(event_id, None)
+                cls._classifying.add(event_id)
+        if not owed:
+            return
+
+        acknowledged = False
+        for event_id, event in owed.items():
+            try:
+                cls._classify_terminal_outcome(event)
+                session_repo.lifecycle.mark_delivered(event_id, "classify")
+                acknowledged = True
+                with cls._delivery_lock:
+                    cls._classification_owed.pop(event_id, None)
+            except Exception:
+                logger.warning("Could not classify outcome %s", event_id, exc_info=True)
+                try:
+                    failures = session_repo.lifecycle.note_failed_attempt(event_id, "classify")
+                    if failures >= cls._MAX_DELIVERY_ATTEMPTS:
+                        session_repo.lifecycle.mark_delivered(event_id, "classify", abandoned=True)
+                        acknowledged = True
+                        logger.error(
+                            "Abandoning classify event=%s turn=%s after %d attempts",
+                            event_id,
+                            event.get("session_id"),
+                            failures,
+                        )
+                        continue
+                except Exception:
+                    logger.warning(
+                        "Could not record classify attempt for %s", event_id, exc_info=True
+                    )
+                with cls._delivery_lock:
+                    cls._classification_owed[event_id] = event
+            finally:
+                with cls._delivery_lock:
+                    cls._classifying.discard(event_id)
+
+        if acknowledged:
+            cls._deliver_outcome(None)
+
+    @staticmethod
+    def _classify_terminal_outcome(event: dict[str, Any]) -> None:
+        from apps.admin_console.database.repositories.run_catalog_repository import run_catalog_repo
+        from apps.admin_console.services import failure_ledger, qa_results
+
+        session_id = str(event["session_id"])
+        db_path = session_repo.lifecycle.db_path
+        snapshot = qa_results.activation(db_path)
+        if (
+            snapshot
+            and event["created_at"] < snapshot["activated_at"]
+            and not event.get("classify_replay_at")
+        ):
+            return
+        failure_ledger.collect(session_id, db_path=db_path)
+        with sqlite3.connect(db_path) as connection:
+            chat_turns = connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='chat_turns'"
+            ).fetchone()
+            turn = (
+                connection.execute(
+                    "SELECT number, session_id FROM chat_turns WHERE turn_id=?", (session_id,)
+                ).fetchone()
+                if chat_turns
+                else None
+            )
+            if turn:
+                turn_index = int(turn[0])
+                turn_count = int(
+                    connection.execute(
+                        "SELECT COUNT(*) FROM chat_turns WHERE session_id=?", (turn[1],)
+                    ).fetchone()[0]
+                )
+            else:
+                turn_index = turn_count = 1
+        result = qa_results.result_for_turn(
+            db_path,
+            run_catalog_repo.traces_dir,
+            session_id,
+            event["status"],
+            turn_index,
+            turn_count,
+        )
+        if result is None:
+            raise RuntimeError(f"No QA result was recorded for terminal turn {session_id}")
+
+    @classmethod
+    def _drain_outcome_events(cls) -> None:
+        """Deliver every pending outcome event (startup, shutdown and the periodic sweep)."""
+        cls._deliver_outcome(None)
+        cls._classify_owed_outcomes()
+
+    @staticmethod
+    def _queue_item_for(session_id: Any) -> dict[str, Any]:
+        return next(
+            (
+                i
+                for i in state.queue_items
+                if isinstance(i, dict) and str(i.get("session_id")) == str(session_id)
+            ),
+            {},
         )
 
-        conversation_id = task_item.get("conversation_id") if task_item else None
-        if conversation_id or task_item.get("ingress") == "mcp":
-            try:
-                from mcp_server.notifiers import notify
+    @classmethod
+    def _broadcast_outcome(cls, lifecycle: Any, event: dict[str, Any]) -> bool:
+        """Record the event durably, then fan it out live; True once every subscriber took it.
 
-                notify(
-                    conversation_id=conversation_id or "",
-                    message=f"Artemis autonomous task '{goal}' finished with status '{new_status}'.\nTrace ID: {sess_id}",
-                    title=f"Task {new_status.capitalize()}: {goal[:40]}",
-                    event_type=new_status,
-                    payload={
-                        "trace_id": sess_id,
+        Recording is insert-if-absent by event id, so only the first delivery
+        fans out; a replay after a crash finds the record and does nothing.
+        Clients that missed the live fanout replay from ``/api/sessions/{id}/events``.
+        """
+        event_id = event["dedupe_id"]
+        sess_id, status, reason = event["session_id"], event["status"], event["interrupt_reason"]
+        messages: list[tuple[str, dict[str, Any]]] = [
+            (
+                "session_ended",
+                {
+                    "event_id": event_id,
+                    "session_id": sess_id,
+                    "status": status,
+                    "was_stopped_manually": status == "cancelled",
+                    **({"interrupt_reason": reason} if reason else {}),
+                },
+            )
+        ]
+        if status == "interrupted":
+            messages.append(
+                (
+                    "run_interrupted",
+                    {
+                        "event_id": event_id,
                         "session_id": sess_id,
-                        "status": new_status,
-                        "goal": goal,
+                        "interrupt_reason": reason,
+                        "interrupted_at": event["created_at"],
                     },
                 )
-            except Exception as notif_err:
-                print(f"[QueueWorker] Notification dispatch notice: {notif_err}")
+            )
+        fanout = event_id in cls._fanout_pending
+        for event_type, data in messages:
+            if lifecycle.record_event(event_id, event_type, sess_id, data):
+                fanout = True
+        if not fanout:
+            return True
+        done = cls._delivered_to.setdefault(event_id, set())
+        ok = all([cls._broadcast_event(t, d, delivered=done) for t, d in messages])
+        if ok:
+            cls._fanout_pending.discard(event_id)
+        else:
+            cls._fanout_pending.add(event_id)
+        return ok
+
+    @classmethod
+    def _notify_session_end(
+        cls,
+        lifecycle: Any,
+        task_item: dict[str, Any],
+        sess_id: Any,
+        goal: str | None,
+        status: str,
+        event_id: str | None = None,
+    ) -> bool:
+        """Dispatch the external notification; False when the notifier did not take it.
+
+        Who to notify comes from the in-memory queue item, else from the context
+        persisted with the session, so a restarted server still notifies.
+        """
+        context = task_item if task_item and task_item.get("conversation_id") else None
+        if context is None and not (task_item and task_item.get("ingress") == "mcp"):
+            context = lifecycle.get_notify_context(str(sess_id)) or task_item or {}
+        context = context or task_item or {}
+        conversation_id = context.get("conversation_id")
+        if not (conversation_id or context.get("ingress") == "mcp"):
+            return True  # nobody to notify
+        goal = goal or context.get("goal") or ""
+        try:
+            from mcp_server.notifiers import notify
+
+            return bool(
+                notify(
+                    conversation_id=conversation_id or "",
+                    message=f"Artemis autonomous task {goal_metadata(goal)} finished with status '{status}'.\nTrace ID: {sess_id}",
+                    title=f"Task {status.capitalize()}: {sess_id}",
+                    event_type=status,
+                    payload={
+                        "event_id": event_id,
+                        "trace_id": sess_id,
+                        "session_id": sess_id,
+                        "status": status,
+                        "goal_length": len(goal),
+                    },
+                )
+            )
+        except Exception as notif_err:
+            print(f"[QueueWorker] Notification dispatch notice: {notif_err}")
+            return False
 
     @classmethod
     def _release_run_slot(
-        cls, sess_id: Any, run_key: str, proc: asyncio.subprocess.Process | None
+        cls,
+        sess_id: Any,
+        run_key: str,
+        proc: asyncio.subprocess.Process | None,
+        *,
+        keep_row: bool = False,
     ) -> None:
-        """Clean up the finished task and release this run's scheduling slot."""
-        if sess_id:
+        """Clean up the finished task and release this run's scheduling slot.
+
+        ``keep_row`` preserves a requeued start's reservation only while its row exists.
+        """
+        if sess_id and not keep_row:
             cls._remove_task(sess_id)
+            device_reservations.release(sess_id)
             state.cancelled_session_ids.discard(str(sess_id))
+        elif sess_id and not cls._queue_item_for(sess_id):
+            device_reservations.release(sess_id)
+        host_admission.release(run_key)
         state.cancelled_session_ids.discard(run_key)
         state.manually_stopped_run_ids.discard(run_key)
         try:
@@ -820,7 +1409,11 @@ class TaskQueueService:
             # Marker cleanup is best-effort: an unwritable temp dir or an odd
             # pid value must not block releasing the run slot.
             pass
-        state.active_runs.pop(run_key, None)
+        released_run = state.active_runs.pop(run_key, None)
+        if released_run and released_run.get("host_id") and sess_id:
+            from apps.admin_console.services.host_tunnel import host_tunnels
+
+            host_tunnels.release_run(released_run["host_id"], str(sess_id))
         if proc is not None and state.current_process is proc:
             state.current_process = None
         if not state.active_runs:
@@ -838,23 +1431,49 @@ class TaskQueueService:
         sess_id = task_item.get("session_id")
         run_key = str(sess_id) if sess_id else uuid.uuid4().hex
         goal = task_item.get("goal")
+        bind_session(str(sess_id) if sess_id else None, goal if isinstance(goal, str) else None)
         profile = task_item.get("profile", "flash")
         proc: asyncio.subprocess.Process | None = None
         output_task: asyncio.Task[None] | None = None
+        config_snapshot = None
+        cmd = None
+        state.executing_run_keys.add(run_key)
         try:
             if not isinstance(goal, str) or not goal.strip():
                 raise ValueError("Queued task must contain a non-empty string goal.")
             cls._begin_task_run(task_item, run_key, sess_id, goal, profile)
 
-            target = cls._task_target(task_item)
+            target = cls._task_target(task_item, resolve_host=True)
+            from apps.admin_console.services.config_store import get_config_store
+
+            config_snapshot = await get_config_store().snapshot_for_spawn(
+                **(
+                    {"operator_model": task_item["model"]}
+                    if task_item.get("model") and task_item.get("model_explicit")
+                    else {}
+                )
+            )
+            target = cls._task_target(task_item, resolve_host=True)
             cmd, env = cls._build_worker_invocation(
-                task_item, run_key, sess_id, goal, profile, target
+                task_item,
+                run_key,
+                sess_id,
+                goal,
+                profile,
+                target,
+                base_environment=config_snapshot.environment,
             )
 
             device_serial = task_item.get("device_serial")
-            print(
-                f"[QueueWorker] Starting task [{sess_id}]: '{goal}' (profile: {profile}, device: {device_serial or 'auto'}, outputter: {bool(task_item.get('expected_output') or task_item.get('enable_outputter'))})"
+            logger.info(
+                "event=task_started session_id=%s %s profile=%s",
+                sess_id,
+                goal_metadata(goal),
+                profile,
             )
+            # From here a worker process may exist before it is registered: the host
+            # NACK (requeue_starting) must treat this run as spawned.
+            task_item["worker_spawned"] = True
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
                 cwd=str(WORKSPACE_ROOT),
@@ -867,7 +1486,7 @@ class TaskQueueService:
 
             # 3. Await subprocess completion
             returncode = await cls._wait_for_worker_process(proc)
-            print(f"[QueueWorker] Task [{sess_id}] exited with returncode {returncode}")
+            logger.info("event=task_exited session_id=%s returncode=%s", sess_id, returncode)
 
             manual_stop = run_key in state.manually_stopped_run_ids or bool(
                 sess_id and str(sess_id) in state.cancelled_session_ids
@@ -875,11 +1494,9 @@ class TaskQueueService:
 
             # 4. Perform fallback database status update and notification
             if sess_id:
-                new_status = await cls._persist_terminal_session_status(
-                    sess_id, returncode, manual_stop
-                )
+                await cls._persist_terminal_session_status(sess_id, returncode, manual_stop)
                 await cls._recover_or_fail_recording(sess_id)
-                cls._announce_session_end(task_item, sess_id, goal, new_status, manual_stop)
+                cls._deliver_outcome(sess_id, task_item, goal)
 
         except asyncio.CancelledError:
             print(f"[QueueWorker] Task [{sess_id}] received cancellation signal.")
@@ -891,18 +1508,181 @@ class TaskQueueService:
             # A spawn failure must also leave a terminal session status.
             if sess_id:
                 try:
-                    new_status = await cls._persist_terminal_session_status(
+                    await cls._persist_terminal_session_status(
                         sess_id, returncode=1, manual_stop=False
                     )
-                    cls._announce_session_end(task_item, sess_id, goal or "", new_status, False)
+                    cls._deliver_outcome(sess_id, task_item, goal)
                 except (OSError, RuntimeError, ValueError):
                     logger.exception(
                         f"[QueueWorker] Could not persist failure status for [{sess_id}]"
                     )
         finally:
+            host_admission.mark(run_key, RunPhase.CLEANING_UP)
             await cls._finish_output_forwarder(output_task)
+            if cmd is not None and "--goal-file" in cmd:
+                try:
+                    Path(cmd[cmd.index("--goal-file") + 1]).unlink(missing_ok=True)
+                except OSError:
+                    logger.exception("event=worker_goal_cleanup_failed")
+            if config_snapshot is not None:
+                try:
+                    config_snapshot.config_path.unlink(missing_ok=True)
+                except OSError:
+                    logger.warning("Could not remove temporary run config snapshot")
             # 5. Clean up the finished task and release this run's scheduling slot
-            cls._release_run_slot(sess_id, run_key, proc)
+            try:
+                cls._release_run_slot(
+                    sess_id, run_key, proc, keep_row=bool(task_item.get("requeue"))
+                )
+            finally:
+                state.executing_run_keys.discard(run_key)
+
+    @classmethod
+    def active_run_count(cls) -> int:
+        """Accepted work that has not finished cleanup, one count per session.
+
+        A queue row lives until its run slot is released; ``executing_run_keys``
+        outlives the row for runs removed early (stop) and ``active_runs`` covers
+        registered workers, so a run is counted from acceptance to cleanup end.
+        """
+        keys = {
+            str(item.get("session_id") or f"item:{id(item)}")
+            for item in state.queue_items
+            if isinstance(item, dict)
+        }
+        keys.update(state.active_runs)
+        keys.update(state.executing_run_keys)
+        return len(keys)
+
+    @classmethod
+    def set_draining(
+        cls, draining: bool, owner: str | None = None, deadline: float | None = None
+    ) -> None:
+        with admission_lock:
+            existing = read_drain()
+            if existing and owner is not None and existing["owner"] != owner:
+                raise AdminAPIError(
+                    409,
+                    "Drain belongs to another deployment.",
+                    "drain_owner_conflict",
+                    "Use the recorded deployment owner.",
+                )
+            if draining:
+                if existing is None:
+                    write_drain(
+                        {
+                            "owner": owner or "loopback",
+                            "deadline": deadline
+                            if deadline is not None
+                            else time.time()
+                            + float(os.getenv("ARTEMIS_DRAIN_TIMEOUT_SECONDS", "600")),
+                            "queued_items": [
+                                dict(item)
+                                for item in state.queue_items
+                                if isinstance(item, dict) and item.get("status") == "pending"
+                            ],
+                        }
+                    )
+            else:
+                cls.restore_drained_queue()
+                path = drain_file()
+                path.unlink(missing_ok=True)
+                if path.parent.exists():
+                    sync_directory(path.parent)
+                state.wake_event.set()
+            state.draining = draining
+
+    @classmethod
+    def drain_status(cls) -> dict[str, Any]:
+        record = read_drain()
+        draining = record is not None or state.draining
+        pending = (
+            {
+                str(item.get("session_id") or f"item:{id(item)}")
+                for item in state.queue_items
+                if isinstance(item, dict) and item.get("status") == "pending"
+            }
+            - set(state.active_runs)
+            - state.executing_run_keys
+        )
+        result = {
+            "draining": draining,
+            "active_run_count": cls.active_run_count() - len(pending)
+            if draining
+            else cls.active_run_count(),
+        }
+        if record:
+            result.update(
+                owner=record["owner"], deadline=record["deadline"], queued_run_count=len(pending)
+            )
+        return result
+
+    @classmethod
+    def restore_drained_queue(cls) -> int:
+        record = read_drain()
+        restored = 0
+        existing = {item.get("session_id") for item in state.queue_items if isinstance(item, dict)}
+        for saved in (record or {}).get("queued_items", []):
+            if not isinstance(saved, dict):
+                continue
+            session_id = saved.get("session_id")
+            if (
+                not session_id
+                or session_id in existing
+                or session_repo.get_session_status(session_id) != "queued"
+            ):
+                continue
+            item = dict(saved)
+            target = cls._task_target(item)
+            DeviceExecutionLock.cancel_reservation(item.get("queue_ticket"))
+            item["queue_ticket"] = DeviceExecutionLock.reserve(
+                device_id=item.get("device_serial") or "pending",
+                session_id=session_id,
+                ingress=item.get("ingress"),
+                lock_scope=target.lock_scope,
+            )
+            state.queue_items.append(item)
+            existing.add(session_id)
+            restored += 1
+        return restored
+
+    @staticmethod
+    def require_admission_open() -> None:
+        record = read_drain()
+        if record is not None or state.draining:
+            raise ServerDraining(record)
+
+    @classmethod
+    def cut_for_deploy(cls, owner: str) -> list[str]:
+        with admission_lock:
+            record = read_drain()
+            if record is None or record["owner"] != owner:
+                raise AdminAPIError(
+                    409,
+                    "Drain belongs to another deployment.",
+                    "drain_owner_conflict",
+                    "Use the recorded deployment owner.",
+                )
+            sessions = (
+                set(state.active_runs)
+                | state.executing_run_keys
+                | {
+                    str(item["session_id"])
+                    for item in state.queue_items
+                    if isinstance(item, dict)
+                    and item.get("session_id")
+                    and item.get("status") in IN_FLIGHT_STATUSES
+                }
+            )
+            for session_id in sorted(sessions):
+                session_repo.lifecycle.interrupt(
+                    session_id,
+                    InterruptReason.DEPLOY_CUT,
+                    error="Run interrupted by an explicit deployment cut.",
+                )
+                cls._deliver_outcome(session_id)
+            logger.warning("event=deploy_drain owner=%s cut=%s", owner, sorted(sessions))
+            return sorted(sessions)
 
     @classmethod
     def _find_duplicate_submission(
@@ -912,6 +1692,8 @@ class TaskQueueService:
         device_serial: str | None,
         endpoint: AdbEndpoint,
         now: float,
+        host_id: str | None = None,
+        requested_by: str | None = None,
     ) -> dict[str, Any] | None:
         """Return the short-circuit response for a duplicate submission, if any."""
         # 1. Deduplication by session_id: if session_id is already running or queued, do not re-enqueue
@@ -949,9 +1731,14 @@ class TaskQueueService:
                     for item in reversed(state.queue_items)
                     if isinstance(item, dict)
                     and item.get("status") == "pending"
+                    and item.get("requested_by") == requested_by
                     and item.get("goal") == first_goal
                     and (not device_serial or item.get("device_serial") == device_serial)
-                    and item.get("adb_endpoint", {}).get("identity") == endpoint.identity
+                    and (
+                        host_id is not None
+                        or item.get("adb_endpoint", {}).get("identity") == endpoint.identity
+                    )
+                    and item.get("host_id") == host_id
                     and (now - float(item.get("created_at", 0))) < 1.0
                 ),
                 None,
@@ -966,7 +1753,9 @@ class TaskQueueService:
         return None
 
     @classmethod
-    async def _reject_unavailable_device(cls, device_serial: str | None) -> dict[str, Any] | None:
+    async def _reject_unavailable_device(
+        cls, device_serial: str | None, endpoint: AdbEndpoint | None = None
+    ) -> dict[str, Any] | None:
         """Return the rejection response for an unattached explicit serial, if any."""
         # Strict device binding: reject an explicitly requested serial that is not
         # attached and authorized, instead of silently running on another device.
@@ -976,7 +1765,8 @@ class TaskQueueService:
             try:
                 from artemis.runtime import device_pool
 
-                rejection = await device_pool.validate_explicit_serial_async(device_serial)
+                pool = device_pool.pool_for(endpoint) if endpoint else device_pool
+                rejection = await pool.validate_explicit_serial_async(device_serial)
             except Exception:
                 rejection = None
             if rejection:
@@ -1008,19 +1798,64 @@ class TaskQueueService:
         verification_level: str | None = None,
         explorer_mode: str | None = None,
         run_id: str | None = None,
+        host_id: str | None = None,
+        requested_by: str | None = None,
+        bridge_session_id: str | None = None,
+        reservation_group: str | None = None,
     ) -> dict[str, Any]:
         """Reserve a device slot and build one pending queue item for a goal."""
         sess_id = single_session_id if single_session_id else str(uuid.uuid4())
         # enqueue_tasks resolves the device before creating queue items.
         assigned_serial = device_serial
+        from apps.admin_console.services.bridge_session_service import bridge_session_service
 
-        queue_ticket = DeviceExecutionLock.reserve(
-            description=f"{ingress} task: {goal[:120]}",
-            device_id=assigned_serial or "pending",
-            session_id=sess_id,
-            ingress=ingress,
-            lock_scope=endpoint.identity,
+        leases = [
+            lease
+            for lease in bridge_session_service.live_sessions()
+            if not host_id
+            and endpoint.is_local_default
+            and lease.serial == assigned_serial
+            and not lease.revoked
+        ]
+        lease = next(
+            (
+                lease
+                for lease in leases
+                if bridge_session_id is None or lease.session_id == bridge_session_id
+            ),
+            None,
         )
+        if bridge_session_id is not None and lease is None:
+            logger.warning(
+                "event=bridge_queue_admission_rejected bridge_session_id=%s device_serial=%s "
+                "reason=lease_not_found_for_target",
+                bridge_session_id,
+                assigned_serial,
+            )
+            raise AdminAPIError(
+                409,
+                "Your phone is not connected.",
+                "bridge_queue_binding_unavailable",
+                "Connect the phone again, then start the run.",
+            )
+        binding = RunDeviceBinding(
+            AdbTarget(endpoint, assigned_serial, host_id), lease.session_id if lease else None
+        )
+
+        reservation = device_reservations.claim(
+            binding, session_repo.db_path, sess_id, reservation_group
+        )
+        try:
+            queue_ticket = DeviceExecutionLock.reserve(
+                description=f"{ingress} task: {goal_metadata(goal)}",
+                device_id=assigned_serial or "pending",
+                session_id=sess_id,
+                ingress=ingress,
+                lock_scope=binding.target.lock_scope,
+            )
+        except (OSError, RuntimeError):
+            device_reservations.release(sess_id)
+            raise
         return {
             "session_id": sess_id,
             "goal": goal,
@@ -1033,14 +1868,29 @@ class TaskQueueService:
             "app_path": app_path,
             "device_serial": assigned_serial,
             "adb_endpoint": endpoint.to_dict(),
+            "device_binding": binding.to_dict(),
+            "connection_id": reservation.connection_id,
             "ingress": ingress,
             "conversation_id": conversation_id,
             "run_id": run_id,
+            "host_id": host_id,
+            "requested_by": requested_by,
+            # The bridge lease a browser-held phone's run was admitted under; None otherwise.
+            "bridge_session_id": binding.bridge_session_id or bridge_session_id,
             "status": "pending",
             "queue_ticket": queue_ticket,
             "created_at": now + index * 0.001,
             "start_time": now + index * 0.001,
         }
+
+    @classmethod
+    def _fail_queued_batch(cls, tasks: list[dict[str, Any]]) -> None:
+        for task in tasks:
+            session_id = str(task["session_id"])
+            session_repo.update_session_status(
+                session_id, "failed", time.time(), error="Task batch could not be queued."
+            )
+            cls._remove_task(session_id)
 
     @classmethod
     async def enqueue_tasks(
@@ -1058,8 +1908,24 @@ class TaskQueueService:
         verification_level: str | None = None,
         explorer_mode: str | None = None,
         run_id: str | None = None,
+        host_id: str | None = None,
+        requested_by: str | None = None,
+        goal_images: list[run_images.ValidatedImage] | None = None,
+        bridge_session_id: str | None = None,
+        model: dict[str, str] | None = None,
+        model_explicit: bool = False,
     ) -> dict[str, Any]:
         """Enqueues one or more goals and wakes up the background worker.
+
+        ``goal_images`` are validated pictures for the single goal; they are stored
+        with the run and the queue item names them (never their server paths).
+
+        ``requested_by`` is the verified identity that owns the new runs (None:
+        no owner); it is persisted with each session and shown on the queue item.
+
+        ``host_id`` binds the run to a host-agent computer: it requires
+        ``ARTEMIS_HOST_AGENT`` and an explicit ``device_serial`` (the opaque device
+        ref), skips the local ADB checks, and waits on that host's admission.
 
         ``verification_level`` and ``explorer_mode`` are Pro-profile tuning knobs
         forwarded to the worker as ``--verification-level`` / ``--explorer-pro-mode``;
@@ -1070,24 +1936,43 @@ class TaskQueueService:
         spawned worker as ``--run-id`` so daemon-dispatched attempts get the
         same manifest/reconciliation evidence as standalone runs.
         """
+        if session_id:
+            run_images.require_safe_session_id(str(session_id))  # before any side effect
         verification_level = (
             str(verification_level).strip().lower() or None if verification_level else None
         )
         explorer_mode = str(explorer_mode).strip().lower() or None if explorer_mode else None
+        if host_id and not host_agent_enabled():
+            raise ValueError("Host runs need ARTEMIS_HOST_AGENT to be enabled.")
+        if host_id and not device_serial:
+            raise ValueError("A host run must name its device (device_ref).")
         cls.ensure_worker_running()
 
         enqueued_tasks = []
-        created_trace_session_ids: set[str] = set()
         now = time.time()
-        endpoint = current_adb_endpoint()
+        endpoint = AdbEndpoint.local() if bridge_session_id else current_adb_endpoint()
 
         duplicate_response = cls._find_duplicate_submission(
-            goals, session_id, device_serial, endpoint, now
+            goals,
+            session_id,
+            device_serial,
+            endpoint,
+            now,
+            host_id=host_id,
+            requested_by=requested_by,
         )
         if duplicate_response is not None:
             return duplicate_response
 
-        rejection_response = await cls._reject_unavailable_device(device_serial)
+        if host_id:
+            endpoint = host_endpoints.resolve(host_id)
+
+        # Cheap early refusal; the authoritative check follows the last await.
+        cls.require_admission_open()
+
+        rejection_response = (
+            None if host_id else await cls._reject_unavailable_device(device_serial, endpoint)
+        )
         if rejection_response is not None:
             return rejection_response
 
@@ -1097,29 +1982,53 @@ class TaskQueueService:
             from artemis.runtime import device_pool
 
             try:
-                device_serial = await device_pool.select_device_async()
+                device_serial = await device_pool.pool_for(endpoint).select_device_async()
             except Exception:
                 device_serial = None
+        # Last await is behind us: from here to the queue append nothing yields,
+        # so a drain enabled during the awaits above is seen before any session
+        # or device reservation exists.
+        cls.require_admission_open()
+        if not device_serial:
+            return {
+                "status": "rejected",
+                "error": "No device could be selected. Select a device before submitting a run.",
+                "tasks": [],
+                "enqueued_count": 0,
+                "total_queued": len(state.queue_tasks),
+            }
+        reservation_group = uuid.uuid4().hex
         for i, goal in enumerate(goals):
-            task_item = cls._create_queue_item(
-                goal,
-                i,
-                now,
-                endpoint,
-                single_session_id,
-                profile,
-                expected_output,
-                enable_outputter,
-                locked_app_package,
-                app_path,
-                device_serial,
-                ingress,
-                conversation_id,
-                verification_level=verification_level,
-                explorer_mode=explorer_mode,
-                run_id=run_id,
-            )
+            try:
+                task_item = cls._create_queue_item(
+                    goal,
+                    i,
+                    now,
+                    endpoint,
+                    single_session_id,
+                    profile,
+                    expected_output,
+                    enable_outputter,
+                    locked_app_package,
+                    app_path,
+                    device_serial,
+                    ingress,
+                    conversation_id,
+                    verification_level=verification_level,
+                    explorer_mode=explorer_mode,
+                    run_id=run_id,
+                    host_id=host_id,
+                    requested_by=requested_by,
+                    bridge_session_id=bridge_session_id,
+                    reservation_group=reservation_group,
+                )
+            except (AdminAPIError, OSError, RuntimeError):
+                cls._fail_queued_batch(enqueued_tasks)
+                raise
             session_id = str(task_item["session_id"])
+            if model:
+                task_item["model"] = dict(model)
+                task_item["model_explicit"] = model_explicit
             existing_trace = trace_store.read_status(session_id)
             trace_created = existing_trace is None
             existing_trace_is_terminal = bool(
@@ -1137,45 +2046,77 @@ class TaskQueueService:
                         task_item.get("conversation_id"),
                         task_item.get("device_serial"),
                     )
-                    created_trace_session_ids.add(session_id)
+                notify_context = (
+                    {
+                        "conversation_id": task_item.get("conversation_id"),
+                        "ingress": task_item.get("ingress"),
+                        "goal": goal,
+                    }
+                    if task_item.get("conversation_id") or task_item.get("ingress") == "mcp"
+                    else None
+                )
                 if not session_repo.create_queued_session(
                     session_id,
                     goal,
                     task_item["profile"],
                     task_item.get("device_serial"),
                     task_item.get("start_time"),
+                    notify_context,
+                    requested_by,
+                    device_binding=task_item["device_binding"],
+                    connection_id=task_item["connection_id"],
+                    **({"model": model} if model else {}),
                 ):
                     raise RuntimeError(f"Could not persist queued session {session_id}")
-            except (OSError, RuntimeError) as exc:
+                if ingress == "frontend":
+                    chat_identity = session_repo.register_chat_launch(
+                        session_id,
+                        {
+                            key: task_item.get(key)
+                            for key in (
+                                "profile",
+                                "expected_output",
+                                "enable_outputter",
+                                "verification_level",
+                                "explorer_mode",
+                                "locked_app_package",
+                                "device_serial",
+                                "adb_endpoint",
+                                "device_binding",
+                                "host_id",
+                                "requested_by",
+                                "bridge_session_id",
+                                "model",
+                                "model_explicit",
+                            )
+                        },
+                    )
+                    task_item["chat_session_id"] = (
+                        chat_identity if isinstance(chat_identity, str) else session_id
+                    )
+                if goal_images:
+                    # Synchronous on purpose: nothing may yield before the queue append.
+                    task_item["goal_images"] = run_images.store(session_id, goal_images)
+            except (OSError, RuntimeError, sqlite3.Error) as exc:
                 DeviceExecutionLock.cancel_reservation(task_item.get("queue_ticket"))
+                device_reservations.release(session_id)
                 if trace_created or (
                     not existing_trace_is_terminal
                     and session_repo.get_session_by_id(session_id) is None
                 ):
                     try:
-                        trace_store.update_trace_status(session_id, "failed", error=str(exc))
-                    except OSError:
+                        session_repo.lifecycle.finish(session_id, "failed", error=str(exc))
+                    except (OSError, sqlite3.Error):
                         logger.exception(
                             "Could not mark queue setup failure for session %s", session_id
                         )
-                for enqueued_task in enqueued_tasks:
-                    enqueued_session_id = str(enqueued_task["session_id"])
-                    session_repo.update_session_status(enqueued_session_id, "failed", time.time())
-                    if enqueued_session_id in created_trace_session_ids:
-                        try:
-                            trace_store.update_trace_status(
-                                enqueued_session_id,
-                                "failed",
-                                error="Task batch could not be queued.",
-                            )
-                        except OSError:
-                            logger.exception(
-                                "Could not mark rolled-back queue session %s failed",
-                                enqueued_session_id,
-                            )
-                    cls._remove_task(enqueued_session_id)
+                cls._fail_queued_batch(enqueued_tasks)
                 raise
             state.queue_items.append(task_item)
+            if host_id:
+                from apps.admin_console.services.host_tunnel import host_tunnels
+
+                host_tunnels.bind_run(host_id, session_id)
             enqueued_tasks.append(task_item)
             cls._broadcast_startup_progress(
                 task_item["session_id"], "queued", "Task received and queued"
@@ -1192,15 +2133,22 @@ class TaskQueueService:
         }
 
     @staticmethod
-    def _clear_pause_file() -> None:
-        """Remove a leftover pause marker after a stop request."""
-        if PAUSE_FILE.exists():
-            try:
-                PAUSE_FILE.unlink()
-            except OSError:
-                # Best-effort cleanup of the pause marker; a leftover file
-                # only pauses until the next resume request.
-                pass
+    def clear_pause_marker() -> bool:
+        """Remove the shared pause marker; True if one was removed.
+
+        The one place the console deletes it. The marker is global, so callers
+        outside the service must first prove the requester may resume every run
+        it affects (``routers.tasks._pause_authority``); stop paths take
+        ``clear_pause=False`` when they cannot.
+        """
+        if not PAUSE_FILE.exists():
+            return False
+        try:
+            PAUSE_FILE.unlink()
+        except OSError:
+            # A leftover marker only pauses until the next resume request.
+            return False
+        return True
 
     @classmethod
     def _terminate_all_device_owners(cls) -> None:
@@ -1225,27 +2173,10 @@ class TaskQueueService:
                 DeviceExecutionLock.cleanup_stale_locks(dev_owner.device_id)
                 sid = dev_owner.session_id
                 if sid:
-                    session_repo.update_session_status(str(sid), "cancelled", time.time())
-                    try:
-                        is_mcp = bool(dev_owner and dev_owner.ingress == "mcp")
-                        if is_mcp or trace_store.read_status(str(sid)):
-                            trace_store.update_trace_status(
-                                str(sid),
-                                "cancelled",
-                                error="Task stopped from the Artemis frontend.",
-                            )
-                    except OSError as exc:
-                        print(
-                            f"[stop_tasks] Could not persist cancelled MCP status for {sid}: {exc}"
-                        )
-                    cls._broadcast_event(
-                        "session_ended",
-                        {
-                            "session_id": sid,
-                            "status": "cancelled",
-                            "was_stopped_manually": True,
-                        },
+                    session_repo.update_session_status(
+                        str(sid), "cancelled", time.time(), error=_STOPPED_FROM_FRONTEND
                     )
+                    cls._deliver_outcome(sid)
 
     @classmethod
     def _kill_all_local_runs(cls) -> None:
@@ -1283,8 +2214,9 @@ class TaskQueueService:
         """Terminate all active device owners and clear pending queue submissions."""
         # 1. Cancel local queue reservations
         for item in state.queue_items:
-            if isinstance(item, dict) and item.get("status") != "running":
+            if isinstance(item, dict) and item.get("status") not in IN_FLIGHT_STATUSES:
                 DeviceExecutionLock.cancel_reservation(item.get("queue_ticket"))
+                device_reservations.release(item.get("session_id"))
         state.clear_queue()
 
         # 2. Terminate all active owners across all devices
@@ -1296,7 +2228,7 @@ class TaskQueueService:
         state.current_goal = None
         state.current_profile = None
 
-        cls._clear_pause_file()
+        cls.clear_pause_marker()  # every run was just terminated: nothing left to pause
 
         cls.ensure_worker_running()
         state.wake_event.set()
@@ -1392,7 +2324,7 @@ class TaskQueueService:
                 item
                 for item in state.queue_items
                 if isinstance(item, dict)
-                and item.get("status") == "running"
+                and item.get("status") in IN_FLIGHT_STATUSES
                 and (not target_sid or str(item.get("session_id")) == target_sid)
             ),
             None,
@@ -1561,25 +2493,10 @@ class TaskQueueService:
                 state.active_connections.pop(sid, None)
 
         if stopped_session_id:
-            session_repo.update_session_status(str(stopped_session_id), "cancelled", time.time())
-            try:
-                is_mcp = bool(owner and owner.ingress == "mcp")
-                if is_mcp or trace_store.read_status(str(stopped_session_id)):
-                    trace_store.update_trace_status(
-                        str(stopped_session_id),
-                        "cancelled",
-                        error="Task stopped from the Artemis frontend.",
-                    )
-            except Exception as exc:
-                print(f"Failed to update MCP cancellation status: {exc}")
-            cls._broadcast_event(
-                "session_ended",
-                {
-                    "session_id": stopped_session_id,
-                    "status": "cancelled",
-                    "was_stopped_manually": True,
-                },
+            session_repo.update_session_status(
+                str(stopped_session_id), "cancelled", time.time(), error=_STOPPED_FROM_FRONTEND
             )
+            cls._deliver_outcome(stopped_session_id)
 
         if state.active_session_id and (
             not stopped_session_id or str(state.active_session_id) == str(stopped_session_id)
@@ -1595,6 +2512,11 @@ class TaskQueueService:
         """Drop the stopped session's queue item and cancel its reservation."""
         if not stopped_session_id:
             return
+        if (
+            str(stopped_session_id) not in state.executing_run_keys
+            and str(stopped_session_id) not in state.active_runs
+        ):
+            device_reservations.release(stopped_session_id)
         stopped_item = next(
             (
                 item
@@ -1614,7 +2536,71 @@ class TaskQueueService:
         ]
 
     @classmethod
-    def _stop_targeted_task(cls, target_sid: str | None, target_device: str | None) -> bool:
+    def active_session_ids(cls, running_only: bool = False) -> set[str | None]:
+        """Every run that is queued or running, in this process or any other.
+
+        Covers the in-process queue and workers plus live device-lock owners
+        (other processes: CLI, SDK, MCP) and, unless ``running_only``, their
+        global queue tickets. A ``None`` member is a lock record that names no
+        session, or is still being published: a run that cannot be attributed.
+        """
+        wanted = IN_FLIGHT_STATUSES if running_only else IN_FLIGHT_STATUSES | {"pending"}
+        ids: set[str | None] = {
+            str(item["session_id"])
+            for item in state.queue_items
+            if isinstance(item, dict) and item.get("session_id") and item.get("status") in wanted
+        }
+        ids.update(str(sid) for sid in state.active_runs)
+        if state.active_session_id:
+            ids.add(str(state.active_session_id))
+        try:
+            owners = list(DeviceExecutionLock.get_active_owners().values())
+            fallback = DeviceExecutionLock.get_active_owner()  # scoped/legacy records
+            queued = [] if running_only else DeviceExecutionLock.get_queued_tasks()
+            # get_active_owners skips unreadable files, so a readable owner cannot
+            # vouch for the whole directory: ask about unreadable records too.
+            record_unreadable = DeviceExecutionLock.has_unreadable_owner_record()
+        except OSError:
+            owners, fallback, queued, record_unreadable = [], None, [], True
+        if fallback is not None:
+            owners.append(fallback)
+        ids.update(str(owner.session_id) if owner.session_id else None for owner in owners)
+        ids.update(str(t["session_id"]) for t in queued if t.get("session_id"))
+        if record_unreadable:
+            ids.add(None)
+        return ids
+
+    @classmethod
+    def sessions_on_device(cls, device_id: str) -> set[str | None]:
+        """Runs a device-targeted stop would reach, via the stop resolver itself.
+
+        A ``None`` entry is a lock record that names no session: unattributable.
+        """
+        ids: set[str | None] = {
+            str(sid) for sid, run in state.active_runs.items() if run.get("device_id") == device_id
+        }
+        ids.update(
+            str(item["session_id"])
+            for item in state.queue_items
+            if isinstance(item, dict)
+            and item.get("session_id")
+            and item.get("device_serial") == device_id
+        )
+        try:
+            owners = DeviceExecutionLock.get_active_owners()
+        except OSError:
+            owners = {}
+        owner = cls._resolve_stop_owner(owners, None, device_id)
+        if owner is not None:
+            ids.add(str(owner.session_id) if owner.session_id else None)
+        elif DeviceExecutionLock.has_owner_record(device_id):
+            ids.add(None)
+        return ids
+
+    @classmethod
+    def _stop_targeted_task(
+        cls, target_sid: str | None, target_device: str | None, clear_pause: bool = True
+    ) -> bool:
         """Stop a specific task (or default single-device active task)."""
         active_owners = {}
         try:
@@ -1665,9 +2651,89 @@ class TaskQueueService:
         )
         cls._remove_stopped_queue_item(stopped_session_id, reservation_cancelled)
 
-        cls._clear_pause_file()
+        if clear_pause:
+            cls.clear_pause_marker()
 
         cls.ensure_worker_running()
+        state.wake_event.set()
+        return True
+
+    @classmethod
+    def cancel_queued(cls, session_id: str) -> str:
+        """Cancel a run only while it waits; never stops one that has started.
+
+        Returns ``cancelled``, ``already_started``, ``not_found`` or ``retry`` (the
+        session could not be read or the cancellation not persisted; nothing
+        changed). Only a session confirmed absent is cancelled in memory. Runs on
+        the event loop without yielding, so it is ordered against dispatch.
+        """
+        sid = str(session_id)
+        item = cls._queue_item_for(sid)
+        try:
+            row = session_repo.read_session(sid)
+        except (sqlite3.Error, OSError):
+            logger.exception("[QueueWorker] Could not read session %s to cancel it", sid)
+            return "retry"  # a failed read is not proof the session is absent
+        waiting = (item and item.get("status") == "pending") or (
+            not item and row and row.get("status") == "queued"
+        )
+        if not waiting:
+            started = item or sid in state.active_runs or sid in state.executing_run_keys or row
+            return "already_started" if started else "not_found"
+        settled = session_repo.update_session_status(
+            sid, "cancelled", time.time(), error=_CANCELLED_WHILE_QUEUED
+        )
+        if not settled and row:
+            # Not ours to claim: another writer settled it, or the commit failed.
+            try:
+                now = session_repo.read_session(sid)
+            except (sqlite3.Error, OSError):
+                logger.exception("[QueueWorker] Could not re-read session %s", sid)
+                return "retry"
+            if now and now.get("status") != "queued":
+                return "already_started"
+            return "retry"  # still queued and persisted as such: nothing was cancelled
+        cls._deliver_outcome(sid)
+        cls._remove_task(sid)  # also cancels the queue ticket, keeping the others' order
+        state.wake_event.set()
+        return "cancelled"
+
+    @classmethod
+    async def requeue_starting(cls, session_id: str) -> bool:
+        """The host agent NACKed a start that raced its barrier: wait again, in place.
+
+        Honored only while no worker process exists for the run and terminal
+        settlement has not started: the run is then cancelled before spawn, the
+        row goes back to ``pending`` at its list position, its ticket (never
+        handed to a worker) keeps its original timestamp and its session stays
+        queued. Once a worker was, or may have been, spawned, once settlement
+        owns the outcome, or when the state is unknown, the NACK is refused and
+        nothing is killed: a worker may already hold the device, and stopping a
+        spawned worker belongs to the host agent protocol (B2/B3a), where the
+        agent is authoritative for its own processes. False when refused.
+        """
+        sid = str(session_id)
+        item = cls._queue_item_for(sid)
+        if (
+            item.get("status") != "starting"
+            or item.get("worker_spawned")
+            or item.get("settling")
+            or not item.get("queue_ticket")
+            or sid in state.active_runs
+            or item not in state.queue_items
+        ):
+            return False
+        # No await from the decision to the cancel: the run cannot move meanwhile.
+        item["requeue"] = True
+        run_task = cls._run_tasks_by_session.get(sid)
+        if run_task is not None:
+            run_task.cancel()
+            await asyncio.gather(run_task, return_exceptions=True)
+        host_admission.release(sid)
+        item.pop("requeue", None)
+        if item not in state.queue_items:  # stopped while we waited
+            return True
+        item["status"] = "pending"
         state.wake_event.set()
         return True
 
@@ -1677,8 +2743,12 @@ class TaskQueueService:
         clear_all: bool = False,
         session_id: str | None = None,
         device_id: str | None = None,
+        clear_pause: bool = True,
     ) -> bool:
         """Stop the active task controlling a mobile device or all tasks.
+
+        ``clear_pause=False`` leaves the global pause marker alone (a targeted
+        stop by a caller who may not resume the other runs it covers).
 
         The active lease is shared by frontend, MCP, CLI, SDK, and other UI
         processes across all connected devices.
@@ -1695,14 +2765,11 @@ class TaskQueueService:
         if clear_all:
             return cls._stop_all_tasks()
 
-        return cls._stop_targeted_task(target_sid, target_device)
+        return cls._stop_targeted_task(target_sid, target_device, clear_pause)
 
     @classmethod
     def resume_task(cls) -> bool:
-        if PAUSE_FILE.exists():
-            PAUSE_FILE.unlink()
-            return True
-        return False
+        return cls.clear_pause_marker()
 
     @classmethod
     def recover_orphaned_recordings_on_launch(cls) -> int:

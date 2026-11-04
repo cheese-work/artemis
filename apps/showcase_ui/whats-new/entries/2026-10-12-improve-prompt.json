@@ -1,0 +1,7 @@
+{
+  "id": "2026-10-12-improve-prompt",
+  "date": "2026-10-12",
+  "title": "Improve a prompt after a run finishes",
+  "body": "Click Improve prompt to get an editable prompt with reasons for each change. Run it again with any model, or find the saved advice in Prompt lessons.",
+  "issues": ["CHE-1544"]
+}

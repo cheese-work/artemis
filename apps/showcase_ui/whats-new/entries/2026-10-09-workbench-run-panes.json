@@ -1,0 +1,7 @@
+{
+  "id": "2026-10-09-workbench-run-panes",
+  "date": "2026-10-09",
+  "title": "Browse runs beside their steps",
+  "body": "The run list stays on the left on wide screens. Select a run to see its steps on the right. Narrow screens show one pane at a time.",
+  "issues": ["CHE-1498"]
+}

@@ -13,11 +13,23 @@
 # limitations under the License.
 
 import json
-from unittest.mock import patch, MagicMock
+from types import SimpleNamespace
 
 import pytest
 
 from apps.admin_console.services.model_service import ModelService
+
+
+@pytest.fixture(autouse=True)
+def isolate_llm_model_config(monkeypatch):
+    monkeypatch.setattr(ModelService, "_llm_info_cache", None)
+    monkeypatch.setattr(
+        "artemis.config.parse_llm_config",
+        lambda: SimpleNamespace(
+            operator=SimpleNamespace(provider="google", model="gemini-3.7-flash"),
+            default=None,
+        ),
+    )
 
 
 def test_get_active_model_info_pro_architecture():
@@ -35,6 +47,16 @@ def test_get_active_model_info_flash_architecture():
     assert info["name"] == "Flash"
     assert info["architecture"] == "ARTEMIS Flash"
     assert info["provider"] == "google"
+
+
+def test_recorded_model_is_not_relabelled_by_the_current_server_default():
+    recorded = ModelService.get_recorded_model(
+        {"device_info": json.dumps({"agent_model": "chosen-model", "agent_provider": "openai"})}
+    )
+    info = ModelService.get_active_model_info("flash", recorded)
+    assert info["id"] == "chosen-model"
+    assert info["provider"] == "openai"
+    assert info["name"] == "Flash"
 
 
 def test_resolve_session_profile_from_device_info():

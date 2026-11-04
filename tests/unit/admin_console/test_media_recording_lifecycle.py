@@ -2,6 +2,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from apps.admin_console.core.ownership import SYSTEM_PRINCIPAL
 from apps.admin_console.routers import media as media_router
 
 
@@ -20,7 +21,7 @@ async def test_session_video_does_not_expose_recording_in_progress(monkeypatch):
     resolve = MagicMock(return_value="/videos/recording.mkv")
     monkeypatch.setattr(media_router.media_service, "resolve_video_url", resolve)
 
-    response = await media_router.get_session_video("session-1")
+    response = await media_router.get_session_video("session-1", SYSTEM_PRINCIPAL)
 
     assert response["status"] == "processing"
     assert response["has_video"] is False
@@ -62,7 +63,7 @@ async def test_session_video_publishes_only_finalized_versioned_media(monkeypatc
         ),
     )
 
-    response = await media_router.get_session_video("session-1")
+    response = await media_router.get_session_video("session-1", SYSTEM_PRINCIPAL)
 
     assert response["status"] == "ready"
     assert response["has_video"] is True
@@ -83,7 +84,7 @@ async def test_session_video_surfaces_terminal_recording_failure(monkeypatch):
     monkeypatch.setattr(media_router, "session_repo", repo, raising=False)
     monkeypatch.setattr(media_router.media_service, "build_video_index", MagicMock(return_value={}))
 
-    response = await media_router.get_session_video("session-1")
+    response = await media_router.get_session_video("session-1", SYSTEM_PRINCIPAL)
 
     assert response["status"] == "failed"
     assert response["message"] == "ffmpeg failed"

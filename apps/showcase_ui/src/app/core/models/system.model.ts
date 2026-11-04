@@ -24,6 +24,8 @@ export interface ProbeAction {
   payload: string;
 }
 
+export type DeviceKind = 'phone' | 'emulator' | 'unknown';
+
 export interface DeviceInfo {
   serial: string;
   state: string;
@@ -33,6 +35,7 @@ export interface DeviceInfo {
   screen_resolution: string | null;
   is_locked: boolean | null;
   is_emulator: boolean;
+  device_kind?: DeviceKind;
   installed_packages?: string[];
 }
 

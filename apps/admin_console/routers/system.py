@@ -19,7 +19,9 @@ import os
 import secrets
 from urllib.parse import urlsplit
 
-from fastapi import APIRouter, HTTPException, Request
+from typing import Any
+
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from artemis.core.diagnostics import readiness_engine
@@ -28,8 +30,82 @@ from artemis.core.diagnostics.adb_server_connection import (
     adb_server_connection,
 )
 from artemis.core.diagnostics.schema import SystemReadinessReport
+from apps.admin_console.core.access_control import (
+    AccessIdentity,
+    AdminAPIError,
+    public_tier,
+    require_admin,
+    require_effective_loopback,
+    require_lifecycle_token,
+    require_qa,
+)
+from apps.admin_console.core.device_ownership import hide_foreign_devices
+from apps.admin_console.core.ownership import OwnerScope, actor_scope, require_actor
+from apps.admin_console.services.deploy_version import read_deploy_version
+from apps.admin_console.services.config_store import (
+    ConfigStoreError,
+    get_config_store,
+)
 
 router = APIRouter(prefix="/api/system", tags=["system"])
+
+
+class ConfigWriteRequest(BaseModel):
+    version: str
+    default: dict[str, Any]
+    credentials: dict[str, str | None] = Field(default_factory=dict)
+    base_urls: dict[str, str | None] = Field(default_factory=dict)
+
+
+@router.get("/whoami")
+async def whoami(identity: AccessIdentity = Depends(public_tier)):
+    return {
+        "email": identity.email,
+        "subject": identity.subject,
+        "admin": identity.admin,
+        "auth_mode": identity.auth_mode,
+        "reason": identity.reason,
+    }
+
+
+@router.get("/version")
+async def get_deployed_version():
+    """Deployed commit and deploy time; ``status: unknown`` when not recorded."""
+    return read_deploy_version()
+
+
+@router.get("/config")
+async def get_live_config():
+    try:
+        return await get_config_store().read()
+    except ConfigStoreError as exc:
+        raise AdminAPIError(
+            exc.status_code,
+            exc.detail,
+            exc.code,
+            "Check ARTEMIS_ARTEMIS_JSONC and the writable configuration directory.",
+        ) from exc
+
+
+@router.put("/config", dependencies=[Depends(require_admin)])
+async def save_live_config(request: Request, payload: ConfigWriteRequest):
+    identity = getattr(request.state, "identity", None)
+    try:
+        snapshot = await get_config_store().save(
+            expected_version=payload.version,
+            default=payload.default,
+            credentials=payload.credentials,
+            base_urls=payload.base_urls,
+            actor_email=identity.email if identity else None,
+        )
+    except ConfigStoreError as exc:
+        fix = {
+            "config_conflict": "Reload settings and reapply the intended changes.",
+            "config_source_conflict": "Change the service environment and restart the service instead.",
+            "config_unwritable": "Check ARTEMIS_ARTEMIS_JSONC and the writable configuration directory.",
+        }.get(exc.code, "Correct the configuration values and retry.")
+        raise AdminAPIError(exc.status_code, exc.detail, exc.code, fix) from exc
+    return {"status": "saved", "applies_to": "next_run", "config": snapshot}
 
 
 def _require_local_admin_request(request: Request) -> None:
@@ -99,12 +175,20 @@ class SelectDeviceRequest(BaseModel):
 
 
 @router.get("/readiness", response_model=SystemReadinessReport)
-async def get_system_readiness(force: bool = False) -> SystemReadinessReport:
-    """Execute all diagnostic probes and return a comprehensive system readiness report."""
-    return await readiness_engine.run_all(force_refresh=force)
+async def get_system_readiness(
+    force: bool = False, actor: OwnerScope = Depends(actor_scope)
+) -> dict[str, Any]:
+    """Execute all diagnostic probes and return the readiness report the caller may see."""
+    report = await readiness_engine.run_all(force_refresh=force)
+    return hide_foreign_devices(require_actor(actor), report.model_dump(mode="json"))
 
 
-@router.post("/devices/select")
+@router.get("/service-readiness", dependencies=[Depends(require_effective_loopback)])
+async def get_service_readiness() -> dict[str, bool]:
+    return {"service_ready": True}
+
+
+@router.post("/devices/select", dependencies=[Depends(require_admin)])
 async def select_active_device(request: SelectDeviceRequest):
     """Select the active Android device or emulator for subsequent automated tasks."""
     serial = request.serial.strip()
@@ -121,7 +205,7 @@ async def select_active_device(request: SelectDeviceRequest):
     }
 
 
-@router.post("/adb/restart")
+@router.post("/adb/restart", dependencies=[Depends(require_admin)])
 async def restart_adb_server():
     """Restart local ADB server and return an updated readiness check."""
     restart_result = await readiness_engine.restart_adb_server()
@@ -133,7 +217,7 @@ async def restart_adb_server():
     }
 
 
-@router.post("/adb/heal-keys")
+@router.post("/adb/heal-keys", dependencies=[Depends(require_qa)])
 async def heal_adb_keys():
     """Auto-heal corrupted ADB authentication RSA keys and return updated readiness."""
     heal_result = await readiness_engine.heal_adb_keys()
@@ -151,7 +235,7 @@ class ConnectAdbRequest(BaseModel):
     port: int = Field(default=5555, description="Port number")
 
 
-@router.post("/adb/connect")
+@router.post("/adb/connect", dependencies=[Depends(require_admin)])
 async def connect_wireless_adb(request: ConnectAdbRequest):
     """Connect to a device over Wi-Fi and return updated readiness."""
     connect_result = await readiness_engine.connect_wireless_adb(request.host, request.port)
@@ -177,10 +261,12 @@ async def get_adb_server_status():
     return adb_server_connection.status()
 
 
-@router.post("/adb/server/connect")
-async def connect_adb_server(payload: ConnectAdbServerRequest, request: Request):
+@router.post(
+    "/adb/server/connect",
+    dependencies=[Depends(_require_local_admin_request), Depends(require_admin)],
+)
+async def connect_adb_server(payload: ConnectAdbServerRequest):
     """Validate and activate an ADB server endpoint."""
-    _require_local_admin_request(request)
     try:
         connection_result = await adb_server_connection.connect(
             payload.host,
@@ -198,10 +284,12 @@ async def connect_adb_server(payload: ConnectAdbServerRequest, request: Request)
     return response
 
 
-@router.post("/adb/server/probe")
-async def probe_adb_server(payload: ConnectAdbServerRequest, request: Request):
+@router.post(
+    "/adb/server/probe",
+    dependencies=[Depends(_require_local_admin_request), Depends(require_admin)],
+)
+async def probe_adb_server(payload: ConnectAdbServerRequest):
     """Test an ADB server endpoint without changing the active endpoint."""
-    _require_local_admin_request(request)
     try:
         connection_result = await adb_server_connection.probe(payload.host, payload.port)
     except InvalidAdbServerEndpoint as exc:
@@ -209,10 +297,12 @@ async def probe_adb_server(payload: ConnectAdbServerRequest, request: Request):
     return {"connection_result": connection_result}
 
 
-@router.post("/adb/server/local")
-async def use_local_adb_server(request: Request, persist: bool = True):
+@router.post(
+    "/adb/server/local",
+    dependencies=[Depends(_require_local_admin_request), Depends(require_admin)],
+)
+async def use_local_adb_server(persist: bool = True):
     """Restore the standard local ADB server without touching a remote daemon."""
-    _require_local_admin_request(request)
     connection_result = await adb_server_connection.use_local_server(persist=persist)
     readiness_engine.set_probe_target_serial(None)
     readiness_engine.invalidate_cache()
@@ -231,7 +321,7 @@ class LaunchEmulatorRequest(BaseModel):
     )
 
 
-@router.post("/emulator/launch")
+@router.post("/emulator/launch", dependencies=[Depends(require_admin)])
 async def launch_emulator(request: LaunchEmulatorRequest):
     """Launch an Android emulator in the background and return initiation status."""
     avd_name = request.avd_name.strip()
@@ -248,13 +338,13 @@ async def get_emulator_status():
     return readiness_engine.get_emulator_status()
 
 
-@router.post("/emulator/stop")
+@router.post("/emulator/stop", dependencies=[Depends(require_admin)])
 async def stop_emulator():
     """Stop active emulator process."""
     return await readiness_engine.stop_emulator()
 
 
-@router.post("/emulator/dismiss")
+@router.post("/emulator/dismiss", dependencies=[Depends(require_qa)])
 async def dismiss_emulator():
     """Dismiss emulator launch tracking state."""
     return readiness_engine.dismiss_emulator()
@@ -304,7 +394,7 @@ async def get_credentials():
     }
 
 
-@router.post("/credentials/test")
+@router.post("/credentials/test", dependencies=[Depends(require_admin)])
 async def test_credentials(request: ValidateCredentialsRequest):
     """Test and verify whether an API key is valid and usable with the corresponding provider endpoint."""
     from artemis.utils.credentials_validator import validate_api_key
@@ -330,8 +420,8 @@ async def test_credentials(request: ValidateCredentialsRequest):
     }
 
 
-@router.post("/credentials")
-async def update_credentials(request: UpdateCredentialsRequest):
+@router.post("/credentials", dependencies=[Depends(require_admin)])
+async def update_credentials(request: UpdateCredentialsRequest, http_request: Request):
     """Dynamically configure and persist LLM or Vision API key, returning updated readiness report."""
     from artemis.utils.credentials_validator import validate_api_key
 
@@ -348,9 +438,16 @@ async def update_credentials(request: UpdateCredentialsRequest):
             )
 
     try:
-        from artemis.config import settings
-
-        settings.set_api_key(provider, key, persist_to_env=request.persist_to_env)
+        config_store = get_config_store()
+        current = await config_store.read()
+        identity = getattr(http_request.state, "identity", None)
+        await config_store.save(
+            expected_version=current["version"],
+            default=current["default"],
+            credentials={provider: key or None},
+            base_urls={},
+            actor_email=identity.email if identity else None,
+        )
 
         # Re-run all diagnostic probes to build updated report
         readiness_engine.invalidate_cache()
@@ -371,12 +468,12 @@ async def update_credentials(request: UpdateCredentialsRequest):
 
 
 @router.get("/model-config-env")
-async def get_model_config_and_env():
+async def get_model_config_and_env(identity: AccessIdentity = Depends(public_tier)):
     """Retrieve the current active artemis.jsonc configuration and .env status for custom setup."""
     import os
     from artemis.config.paths import get_config_path, get_env_file
     from artemis.config import settings
-    from artemis.utils.file import load_jsonc
+    from third_party.mobile_use.utils.file import load_jsonc
 
     from artemis.config.settings import is_placeholder_key
 
@@ -491,12 +588,63 @@ async def get_model_config_and_env():
         },
     ]
 
+    if not identity.admin:
+
+        def public_model(value: Any) -> dict[str, Any]:
+            if not isinstance(value, dict):
+                return {}
+            result = {
+                key: value[key] for key in ("provider", "model") if isinstance(value.get(key), str)
+            }
+            if isinstance(value.get("fallback"), dict):
+                result["fallback"] = public_model(value["fallback"])
+            base = value.get("api_base")
+            if isinstance(base, str):
+                try:
+                    hostname = urlsplit(base).hostname
+                except ValueError:
+                    hostname = None
+                if hostname:
+                    result["api_base_host"] = hostname
+            return result
+
+        parsed_default = public_model(parsed_config.get("default", {}))
+        raw_presets = parsed_config.get("presets", {})
+        presets = (
+            {name: public_model(value) for name, value in raw_presets.items()}
+            if isinstance(raw_presets, dict)
+            else {}
+        )
+        base_url_names = {"OPENAI_BASE_URL", "ANTHROPIC_BASE_URL"}
+        public_env_vars = []
+        for item in env_vars:
+            safe_item = {
+                key: item[key]
+                for key in ("name", "provider", "is_set", "description")
+                if key in item
+            }
+            if item.get("name") in base_url_names:
+                try:
+                    host = urlsplit(item.get("preview") or "").hostname
+                except ValueError:
+                    host = None
+                if host:
+                    safe_item["host"] = host
+            public_env_vars.append(safe_item)
+        config_content = ""
+        env_vars = public_env_vars
+        config_path = "artemis.jsonc"
+        env_path = ".env"
+    else:
+        parsed_default = parsed_config.get("default", {})
+        presets = parsed_config.get("presets", {})
+
     return {
         "config_path": config_path or "config/artemis.jsonc",
         "config_filename": "artemis.jsonc",
         "config_content": config_content,
-        "default_model": parsed_config.get("default", {}),
-        "presets": parsed_config.get("presets", {}),
+        "default_model": parsed_default,
+        "presets": presets,
         "env_path": str(env_path),
         "env_filename": ".env",
         "env_vars": env_vars,
@@ -505,9 +653,17 @@ async def get_model_config_and_env():
 
 @router.get("/server-status")
 async def get_server_runtime_status():
-    """Retrieve runtime status, PID, port, and uptime of the Artemis server."""
+    """Retrieve runtime status, PID, port, and uptime of the Artemis server.
+
+    Answers from in-process state. ``server_lifecycle.get_server_status`` is
+    not used here: it runs ``lsof``/``fuser``, which can take over a second and
+    is too slow for the ``is_artemis_daemon`` probe.
+    """
     import os
-    from artemis.runtime.server_lifecycle import get_server_status
+    import time
+
+    from artemis.runtime.process_probe import pid_is_alive
+    from artemis.runtime.server_lifecycle import read_server_info
 
     try:
         from apps.admin_console.core.state import state
@@ -515,30 +671,48 @@ async def get_server_runtime_status():
         from admin_console.core.state import state
 
     port = getattr(state, "port", 8000)
-    status = get_server_status(port=port)
+    current_pid = os.getpid()
+    pids = {current_pid}
+    started_at = None
+
+    info = read_server_info()
+    if info and info.get("port") == port:
+        saved_pid = info.get("pid")
+        if isinstance(saved_pid, int) and saved_pid != current_pid and pid_is_alive(saved_pid):
+            pids.add(saved_pid)
+        if isinstance(info.get("started_at"), (int, float)):
+            started_at = float(info["started_at"])
+    if started_at is None:
+        try:
+            import psutil
+
+            started_at = psutil.Process(current_pid).create_time()
+        except Exception:  # pylint: disable=broad-exception-caught
+            # psutil is optional; uptime is best-effort.
+            started_at = None
+
+    uptime_seconds = max(0.0, time.time() - started_at) if started_at is not None else None
     # Explicit DTO: the raw metadata file additionally holds the lifecycle
     # token, cmdline, and filesystem paths, none of which belong on the wire.
     return {
-        "running": status["running"],
-        "port": status["port"],
-        "pids": status["pids"],
-        "active_pid": status["active_pid"],
-        "uptime_seconds": status["uptime_seconds"],
-        "url": status["url"],
-        "admin_url": status["admin_url"],
-        "current_pid": os.getpid(),
+        "running": True,
+        "port": port,
+        "pids": sorted(pids),
+        "active_pid": current_pid,
+        "uptime_seconds": uptime_seconds,
+        "url": f"http://localhost:{port}",
+        "admin_url": f"http://localhost:{port}/admin",
+        "current_pid": current_pid,
     }
 
 
-@router.post("/restart")
+@router.post("/restart", dependencies=[Depends(require_admin)])
 async def restart_server_endpoint(request: Request):
     """Request a graceful restart of the Artemis server from thin clients/UI."""
     import asyncio
     import os
     import sys
     import threading
-
-    _require_loopback_request(request, "Server lifecycle controls are local-only.")
 
     try:
         from apps.admin_console.core.state import state
@@ -576,7 +750,7 @@ async def restart_server_endpoint(request: Request):
     }
 
 
-@router.post("/shutdown", status_code=202)
+@router.post("/shutdown", status_code=202, dependencies=[Depends(require_lifecycle_token)])
 async def shutdown_server_endpoint(request: Request):
     """Request a graceful shutdown of the Artemis server."""
     import asyncio

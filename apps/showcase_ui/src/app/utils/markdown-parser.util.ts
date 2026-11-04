@@ -229,6 +229,54 @@ function formatInlineMarkdown(text: string): string {
     .replace(/~~([^~]+)~~/g, '<del>$1</del>');
 }
 
+/** GFM table separator row, e.g. `| --- | :---: |`. */
+const TABLE_SEPARATOR = /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)*\|?\s*$/;
+
+/** Split on unescaped pipes only; a pipe is escaped when preceded by an odd run of backslashes. `\|` becomes a literal pipe. */
+function splitTableRow(line: string): string[] {
+  const text = line.trim().replace(/^\|/, '');
+  const cells: string[] = [];
+  let current = '';
+  let backslashes = 0;
+  let endedOnSeparator = false;
+  for (const char of text) {
+    endedOnSeparator = false;
+    if (char === '|' && backslashes % 2 === 0) {
+      cells.push(current);
+      current = '';
+      endedOnSeparator = true;
+    } else if (char === '|') {
+      current = `${current.slice(0, -1)}|`;
+    } else {
+      current += char;
+    }
+    backslashes = char === '\\' ? backslashes + 1 : 0;
+  }
+  if (!endedOnSeparator) cells.push(current);
+  return cells.map(cell => cell.trim());
+}
+
+/** True when the line starts a non-table block, which ends a table body. */
+function endsTableBody(line: string): boolean {
+  const trimmed = line.trim();
+  return trimmed === ''
+    || trimmed.startsWith('```')
+    || /^#{1,6}\s+/.test(trimmed)
+    || /^(\-{3,}|\*{3,}|_{3,})$/.test(trimmed)
+    || trimmed.startsWith('&gt;')
+    || /^\s*([*-]|\d+\.)\s+/.test(line);
+}
+
+/** Pad with empty cells or drop extras so every row has the header's column count. */
+function normalizeCells(cells: string[], count: number): string[] {
+  return Array.from({ length: count }, (_, index) => cells[index] ?? '');
+}
+
+/** Keep only a safe language token for the code-fence class name. */
+function safeFenceLang(info: string): string {
+  return (info.split(/\s+/)[0] ?? '').replace(/[^A-Za-z0-9_+-]/g, '');
+}
+
 /**
  * Convert basic markdown text to safe HTML for agent logs/thinking
  */
@@ -279,7 +327,7 @@ export function renderMarkdownToHtml(text: string): string {
       } else {
         closeList();
         inCodeBlock = true;
-        codeBlockLang = trimmed.substring(3).trim();
+        codeBlockLang = safeFenceLang(trimmed.substring(3).trim());
         codeBlockLines = [];
       }
       continue;
@@ -287,6 +335,25 @@ export function renderMarkdownToHtml(text: string): string {
 
     if (inCodeBlock) {
       codeBlockLines.push(rawLine);
+      continue;
+    }
+
+    // 1b. Tables: header row, separator row, then body rows (input is already escaped)
+    // GFM: the header and separator rows must have the same number of cells, otherwise it is not a table.
+    if (trimmed.includes('|') && i + 1 < rawLines.length && rawLines[i + 1].includes('|') && TABLE_SEPARATOR.test(rawLines[i + 1])
+        && splitTableRow(trimmed).length === splitTableRow(rawLines[i + 1].trim()).length) {
+      closeList();
+      const headerCells = splitTableRow(trimmed);
+      const header = headerCells.map(cell => `<th>${formatInlineMarkdown(cell)}</th>`).join('');
+      const body: string[] = [];
+      i += 2;
+      while (i < rawLines.length && !endsTableBody(rawLines[i])) {
+        const cells = normalizeCells(splitTableRow(rawLines[i]), headerCells.length).map(cell => `<td>${formatInlineMarkdown(cell)}</td>`).join('');
+        body.push(`<tr>${cells}</tr>`);
+        i++;
+      }
+      i--;
+      result.push(`<div class="md-table-wrap"><table><thead><tr>${header}</tr></thead><tbody>${body.join('')}</tbody></table></div>`);
       continue;
     }
 

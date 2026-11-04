@@ -15,15 +15,33 @@
  */
 
 import { TestBed } from '@angular/core/testing';
-import { provideRouter } from '@angular/router';
+import { RouterOutlet, provideRouter } from '@angular/router';
 import { provideHttpClient, withXhr } from '@angular/common/http';
+import { HttpClient } from '@angular/common/http';
+import { Component, EventEmitter, Input, Output, signal } from '@angular/core';
+import { of } from 'rxjs';
+import { AgentService } from './services/agent.service';
 import { AppComponent } from './app.component';
+import { ShellLayoutService } from './services/shell-layout.service';
+import { UsbDeviceRelayService } from './services/usb-device-relay.service';
 
 describe('AppComponent', () => {
   beforeEach(async () => {
     await TestBed.configureTestingModule({
       imports: [AppComponent],
-      providers: [provideRouter([]), provideHttpClient(withXhr())]
+      providers: [
+        provideRouter([]),
+        provideHttpClient(withXhr()),
+        { provide: HttpClient, useValue: { get: () => of([]) } },
+        {
+          provide: AgentService,
+          useValue: {
+            agentStatus: signal('idle'),
+            activeTasks: signal([]),
+            hasFetchedStatus: signal(true)
+          }
+        }
+      ]
     }).compileComponents();
   });
 
@@ -33,10 +51,85 @@ describe('AppComponent', () => {
     expect(app).toBeTruthy();
   });
 
-  it(`should have the 'frontend' title`, () => {
+  it(`should have the 'SmartQA' title`, () => {
     const fixture = TestBed.createComponent(AppComponent);
     const app = fixture.componentInstance;
-    expect(app.title).toEqual('frontend');
+    expect(app.title).toEqual('SmartQA');
   });
 
+});
+
+describe('AppComponent layout', () => {
+  const backgroundWarning = signal(false);
+  @Component({ selector: 'app-nav-switcher', template: '' })
+  class NavStub {
+    @Input() hasWhatsNew = false;
+    @Input() hasUnreadWhatsNew = false;
+    @Output() showWhatsNew = new EventEmitter<void>();
+  }
+
+  @Component({ selector: 'app-whats-new', template: '' })
+  class WhatsNewStub {}
+
+  beforeEach(async () => {
+    backgroundWarning.set(false);
+    await TestBed.configureTestingModule({
+      imports: [AppComponent],
+      providers: [
+        provideRouter([]),
+        { provide: HttpClient, useValue: { get: () => of([]) } },
+        { provide: AgentService, useValue: { whatsNewHasUpdates: signal(false), whatsNewHasUnread: signal(false) } },
+        { provide: UsbDeviceRelayService, useValue: { backgroundWarning } }
+      ]
+    })
+      .overrideComponent(AppComponent, { set: { imports: [RouterOutlet, NavStub, WhatsNewStub] } })
+      .compileComponents();
+  });
+
+  it('removes the fixed footer and reserves the sidebar, rail or mobile bars', () => {
+    const fixture = TestBed.createComponent(AppComponent);
+    fixture.detectChanges();
+    const root = fixture.nativeElement as HTMLElement;
+    const page = root.querySelector<HTMLElement>('.app-page');
+    const footer = root.querySelector<HTMLElement>('app-version-footer');
+
+    expect(page).withContext('page area').not.toBeNull();
+    expect(footer).toBeNull();
+    expect(getComputedStyle(page!).overflowY).toBe('auto');
+    if (window.innerWidth >= 800) {
+      expect(page!.getBoundingClientRect().left).toBe(window.innerWidth >= 1200 ? 224 : 72);
+    } else {
+      expect(getComputedStyle(page!).marginTop).toBe('48px');
+      expect(getComputedStyle(page!).marginBottom).toBe('56px');
+    }
+  });
+
+  it('publishes the selected pane for the next slice', () => {
+    const fixture = TestBed.createComponent(AppComponent);
+    fixture.detectChanges();
+    const page = fixture.nativeElement.querySelector('.app-page') as HTMLElement;
+    expect(page.dataset['activePane']).toBe('list');
+    TestBed.inject(ShellLayoutService).activePane.set('detail');
+    fixture.detectChanges();
+    expect(page.dataset['activePane']).toBe('detail');
+  });
+
+  it('shows a dismissible background-phone warning across routes', () => {
+    const fixture = TestBed.createComponent(AppComponent);
+    fixture.detectChanges();
+    expect(fixture.nativeElement.querySelector('[role="alert"]')).toBeNull();
+
+    backgroundWarning.set(true);
+    fixture.detectChanges();
+    const alert = fixture.nativeElement.querySelector('[role="alert"]') as HTMLElement;
+    expect(alert).withContext('global phone warning').not.toBeNull();
+    expect(alert?.textContent).toContain('Keep this tab visible');
+    expect(alert?.textContent).toContain('may disconnect');
+    const dismiss = alert?.querySelector('button');
+    expect(dismiss?.getAttribute('aria-label')).toBe('Dismiss phone connection warning');
+    dismiss?.click();
+    fixture.detectChanges();
+    expect(backgroundWarning()).toBeFalse();
+    expect(fixture.nativeElement.querySelector('[role="alert"]')).toBeNull();
+  });
 });

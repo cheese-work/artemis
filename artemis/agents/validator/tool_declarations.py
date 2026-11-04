@@ -39,12 +39,19 @@ from artemis.core.tool_declaration import ToolDeclaration
 from artemis.mcp.action_specs import tool_declaration
 from artemis.mcp.observation import observe
 from artemis.graph.state import State
-from artemis.utils.logger import get_logger
 from artemis.utils.notes import (
     LIST_NOTES_DOCSTRING,
     READ_NOTE_ARG_KEY_DESC,
     READ_NOTE_DOCSTRING,
+    SAVE_NOTE_ARG_CONTENT_DESC,
+    SAVE_NOTE_ARG_KEY_DESC,
+    SAVE_NOTE_DOCSTRING,
+    UPDATE_NOTE_ARG_KEY_DESC,
+    UPDATE_NOTE_ARG_REPLACEMENT_DESC,
+    UPDATE_NOTE_ARG_TARGET_DESC,
+    UPDATE_NOTE_DOCSTRING,
 )
+from third_party.mobile_use.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
@@ -269,6 +276,35 @@ LIST_NOTES_TOOL = ToolDeclaration(
     parameters={"type": "object", "properties": {}},
 )
 
+# Write tools for agents that keep their own ledger (Flash); the Validator set
+# stays read-only.
+SAVE_NOTE_TOOL = ToolDeclaration(
+    name="save_note",
+    description=SAVE_NOTE_DOCSTRING,
+    parameters={
+        "type": "object",
+        "properties": {
+            "key": {"type": "string", "description": SAVE_NOTE_ARG_KEY_DESC},
+            "content": {"type": "string", "description": SAVE_NOTE_ARG_CONTENT_DESC},
+        },
+        "required": ["key", "content"],
+    },
+)
+
+UPDATE_NOTE_TOOL = ToolDeclaration(
+    name="update_note",
+    description=UPDATE_NOTE_DOCSTRING,
+    parameters={
+        "type": "object",
+        "properties": {
+            "key": {"type": "string", "description": UPDATE_NOTE_ARG_KEY_DESC},
+            "target": {"type": "string", "description": UPDATE_NOTE_ARG_TARGET_DESC},
+            "replacement": {"type": "string", "description": UPDATE_NOTE_ARG_REPLACEMENT_DESC},
+        },
+        "required": ["key", "target", "replacement"],
+    },
+)
+
 MANAGE_APP_TOOL = tool_declaration("manage_app")
 
 WAIT_FOR_DELAY_TOOL = tool_declaration("wait_for_delay")
@@ -284,11 +320,34 @@ REPORT_TASK_STATUS_TOOL = ToolDeclaration(
         "properties": {
             "status": {
                 "type": "string",
+                "enum": ["completed", "failed"],
                 "description": (
                     "Whether the task was completed successfully ('completed') or"
                     " failed/unreachable ('failed')."
                 ),
             },
+            "cause": {
+                "type": "string",
+                "enum": ["app_defect", "goal_unreachable", "blocked_by_environment"],
+                "description": (
+                    "For failed tasks only: app_defect means an observed defect in the app"
+                    " under test; cite evidence_step with a screenshot and describe expected"
+                    " versus actual behavior. goal_unreachable means the requested goal"
+                    " cannot be reached or the prompt needs clarification, not an app bug."
+                    " blocked_by_environment means the device, permissions, connection or"
+                    " test setup prevented execution. Omit cause when completed or uncertain."
+                ),
+            },
+            "evidence_step": {
+                "type": "integer",
+                "minimum": 1,
+                "description": (
+                    "The exact recorded step number whose screenshot shows the app_defect."
+                    " Required for an app defect claim; do not cite an unrelated nearby step."
+                ),
+            },
+            "expected": {"type": "string", "description": "The expected app behavior."},
+            "actual": {"type": "string", "description": "The observed app behavior."},
             "explanation": {
                 "type": "string",
                 "description": "Provide the final explanation or summary of the task execution.",

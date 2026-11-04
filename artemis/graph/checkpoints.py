@@ -33,6 +33,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -40,7 +41,6 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-from artemis.utils.logger import get_logger
 from artemis.utils.notes import append_note_content, get_note_file_path
 from artemis.utils.plan_grammar import (
     CHECKBOX_LINE_RE,
@@ -52,6 +52,7 @@ from artemis.utils.plan_grammar import (
     parse_plan,
     subgoal_hash,
 )
+from third_party.mobile_use.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
@@ -150,6 +151,7 @@ class RunOutcome(BaseModel):
 
     task_status: Literal["completed", "partial", "blocked"]
     tests: TestSummary
+    checker_items: list[dict] = Field(default_factory=list)
 
 
 # --- Live process events --------------------------------------------------------------
@@ -1185,6 +1187,7 @@ def compute_test_summary(
                     "item_text": text,
                     "kind": kind,
                     "evidence": failing[-1].get("evidence", "") if failing else "",
+                    "anchor_step_id": failing[-1].get("anchor_step_id") if failing else None,
                 }
             )
         elif status == "inconclusive":
@@ -1215,22 +1218,33 @@ def compute_run_outcome(
         task_status = "completed"
     else:
         task_status = "partial"
-    return RunOutcome(task_status=task_status, tests=tests)
+    return RunOutcome(task_status=task_status, tests=tests, checker_items=list(records))
 
 
-def write_run_outcome(base_dir: str | Path, outcome: RunOutcome, extra: dict | None = None) -> None:
+def write_run_outcome(
+    base_dir: str | Path, outcome: RunOutcome | dict, extra: dict | None = None
+) -> None:
+    payload = outcome.model_dump() if isinstance(outcome, RunOutcome) else dict(outcome)
+    if extra:
+        payload.update(extra)
+    path = Path(base_dir) / RUN_OUTCOME_FILENAME
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path = None
     try:
-        payload = outcome.model_dump()
-        if extra:
-            payload.update(extra)
-        path = Path(base_dir) / RUN_OUTCOME_FILENAME
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2),
+        with tempfile.NamedTemporaryFile(
+            mode="w",
             encoding="utf-8",
-        )
-    except Exception as e:
-        logger.error(f"Failed to write run outcome: {e}")
+            dir=path.parent,
+            prefix=f".{RUN_OUTCOME_FILENAME}.",
+            suffix=".tmp",
+            delete=False,
+        ) as temporary:
+            temporary_path = Path(temporary.name)
+            json.dump(payload, temporary, ensure_ascii=False, indent=2)
+        temporary_path.replace(path)
+    finally:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
 
 
 def read_run_outcome(base_dir: str | Path) -> dict | None:

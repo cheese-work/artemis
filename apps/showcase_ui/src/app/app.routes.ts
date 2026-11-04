@@ -18,10 +18,22 @@ import { Routes } from '@angular/router';
 import { HomeComponent } from './pages/home/home.component';
 import { WorkspaceComponent } from './pages/workspace/workspace.component';
 import { LegacyWorkspaceComponent } from './pages/legacy-workspace/legacy-workspace.component';
+import { firstRunGuard } from './guards/first-run.guard';
+import { adminGuard } from './guards/admin.guard';
+import { ProvidersComponent } from './pages/providers/providers.component';
+import { PhonesComponent } from './pages/phones/phones.component';
 
 export const routes: Routes = [
-  { path: '', component: HomeComponent },
-  { path: 'workspace', component: WorkspaceComponent },
+  { path: '', pathMatch: 'full', redirectTo: 'sessions/new' },
+  { path: 'setup', component: HomeComponent },
+  { path: 'phones', component: PhonesComponent },
+  { path: 'providers', component: ProvidersComponent, canActivate: [adminGuard] },
+  { path: 'sessions', component: WorkspaceComponent, data: { review: true } },
+  { path: 'sessions/new', component: WorkspaceComponent, data: { newSession: true }, canActivate: [firstRunGuard] },
+  { path: 'sessions/:id', component: WorkspaceComponent, data: { review: true } },
+  { path: 'workspace', pathMatch: 'full', redirectTo: 'sessions/new' },
+  { path: 'runs', pathMatch: 'full', redirectTo: 'sessions' },
+  { path: 'runs/:id', redirectTo: 'sessions/:id' },
   { path: 'check', component: LegacyWorkspaceComponent },
-  { path: '**', redirectTo: '' }
+  { path: '**', redirectTo: 'sessions' }
 ];

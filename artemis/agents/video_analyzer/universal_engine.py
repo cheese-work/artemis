@@ -41,7 +41,7 @@ from artemis.agents.video_analyzer.reliability import (
     classify_video_failure,
 )
 from artemis.data_engine.trace import CURRENT_TRACE_ID, TraceSpan
-from artemis.utils.logger import get_logger
+from third_party.mobile_use.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
@@ -442,7 +442,7 @@ async def run_universal(
                 t_name = tc["name"]
                 t_args = tc.get("args", {})
                 t_id = tc.get("id", f"call_{iterations}")
-                logger.info(f"Executing universal tool '{t_name}' with args {t_args}")
+                logger.info(f"event=tool_called tool={t_name} args_length={len(str(t_args))}")
 
                 res = await _execute_universal_tool(analyzer, t_name, t_args)
 

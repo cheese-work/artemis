@@ -1,0 +1,7 @@
+{
+  "id": "2026-10-14-step-evidence-action-marker",
+  "date": "2026-10-14",
+  "title": "Open a step to compare Before and After, with the agent's action marked",
+  "body": "Open a step to see its Before and After screenshots side by side. The Before screenshot marks what the agent did: a ring for a tap, a box for typing, an arrow for a swipe, a bar on the edge for a key press. The line under it names the element, for example Tap · first result. The After screenshot stays clean.",
+  "issues": ["CHE-1654"]
+}

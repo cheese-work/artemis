@@ -36,6 +36,19 @@ class FileNotifier(BaseNotifier):
     def is_available(self) -> bool:
         return True
 
+    @staticmethod
+    def _already_recorded(log_file: str, event_id: str) -> bool:
+        if not os.path.exists(log_file):
+            return False
+        with open(log_file, encoding="utf-8") as f:
+            for line in f:
+                try:
+                    if json.loads(line).get("payload", {}).get("event_id") == event_id:
+                        return True
+                except ValueError:
+                    continue  # a torn or foreign line is not a match
+        return False
+
     def notify(
         self,
         conversation_id: str,
@@ -61,8 +74,15 @@ class FileNotifier(BaseNotifier):
                 "message": message,
                 "payload": payload or {},
             }
-            with open(log_file, "a", encoding="utf-8") as f:
-                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+            event_id = (payload or {}).get("event_id")
+            # Idempotent by event_id: the existence check and the append share
+            # one locked step, so a replay (after a crash, a retry, a second
+            # process) writes nothing and still reports success.
+            with trace_store.exclusive_file_lock(log_file):
+                if event_id and self._already_recorded(log_file, event_id):
+                    return True
+                with open(log_file, "a", encoding="utf-8") as f:
+                    f.write(json.dumps(entry, ensure_ascii=False) + "\n")
             return True
         except Exception as e:
             logger.debug(f"File notification record failed: {e}")

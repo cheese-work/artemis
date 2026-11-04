@@ -1,0 +1,81 @@
+<section class="storage" aria-labelledby="storage-heading">
+  <div class="section-heading">
+    <div>
+      <h2 id="storage-heading">Storage</h2>
+      <p class="intro">Runs, recordings and files kept on this server.</p>
+    </div>
+  </div>
+
+  @if (loading()) {
+    <p class="notice" role="status">Reading storage…</p>
+  } @else if (failed()) {
+    <div class="notice error" role="alert">
+      <p>Couldn’t read storage.</p>
+      <button type="button" class="secondary-button retry" (click)="load()">Retry</button>
+    </div>
+  } @else if (report(); as current) {
+    @for (warning of current.warnings; track warning.code) {
+      <div class="notice warning" [class.critical]="warning.level === 'critical'" role="alert">
+        <strong>{{ warning.level === 'critical' ? 'Critical' : 'Warning' }}</strong>
+        <span>{{ warning.message }}</span>
+      </div>
+    }
+
+    <div class="meter-block">
+      <div
+        class="meter"
+        role="meter"
+        aria-label="Disk used"
+        aria-valuemin="0"
+        aria-valuemax="100"
+        [attr.aria-valuenow]="usedPercent()"
+      >
+        <span class="meter-fill" [style.width.%]="usedPercent()"></span>
+      </div>
+      <p class="meta">
+        {{ current.disk.free_percent }}% free · {{ formatBytes(current.disk.free_bytes) }} of
+        {{ formatBytes(current.disk.total_bytes) }}
+      </p>
+    </div>
+
+    <dl class="facts">
+      <div><dt>Used by runs</dt><dd>{{ formatBytes(current.usage_bytes) }}</dd></div>
+      <div><dt>Runs</dt><dd>{{ current.run_count }} runs</dd></div>
+      <div>
+        <dt>Pinned</dt>
+        <dd>{{ current.pinned_count }} pinned · {{ formatBytes(current.pinned_bytes) }}</dd>
+      </div>
+      <div>
+        <dt>Auto-delete</dt>
+        <dd>{{ current.retention.enabled ? 'On, after ' + current.retention.days + ' days' : 'Off' }}</dd>
+      </div>
+    </dl>
+
+    @if (isAdmin()) {
+      @if (!clearing()) {
+        <button type="button" class="secondary-button clear-all danger" (click)="askClear()">Clear all…</button>
+      } @else {
+        <div class="confirm" role="group" aria-label="Confirm clear all">
+          <p>
+            This deletes {{ current.clearable_count }} runs for everyone, with their videos and files. Pinned and
+            running runs are kept. Type {{ current.clearable_count }} to confirm.
+          </p>
+          <input
+            class="confirm-count"
+            inputmode="numeric"
+            aria-label="Number of runs to delete"
+            [value]="typedCount()"
+            (input)="typedCount.set($any($event.target).value)"
+          />
+          <button type="button" class="primary-button danger confirm-clear" [disabled]="!countMatches()" (click)="confirmClear()">
+            Delete {{ current.clearable_count }} runs
+          </button>
+          <button type="button" class="text-button" (click)="cancelClear()">Cancel</button>
+          @if (clearError()) {
+            <p class="clear-error" role="alert">{{ clearError() }}</p>
+          }
+        </div>
+      }
+    }
+  }
+</section>

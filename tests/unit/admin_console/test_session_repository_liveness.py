@@ -25,15 +25,5 @@ def test_startup_cleanup_keeps_live_cross_process_session(tmp_path):
         assert repository.cleanup_orphans_on_startup() == 1
 
     assert repository.get_session_status("live") == "running"
-    assert repository.get_session_status("dead") == "failed"
-
-
-def test_session_list_harvest_rechecks_worker_liveness(tmp_path):
-    db_path = tmp_path / "sessions.db"
-    repository = SessionRepository(db_path)
-    _insert_running_session(db_path, "external-live", 333)
-
-    with patch.object(repository, "process_is_alive", return_value=True):
-        assert repository.harvest_orphaned_sessions(["external-live"]) == 0
-
-    assert repository.get_session_status("external-live") == "running"
+    assert repository.get_session_status("dead") == "interrupted"
+    assert repository.get_session_by_id("dead")["interrupt_reason"] == "server_restarted"

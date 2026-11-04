@@ -19,11 +19,199 @@ integration and end-to-end trees remain directly runnable, and receive stable
 markers here so callers can select them without relying on filename patterns.
 """
 
+import os
 from pathlib import Path
+import sqlite3
 
 import pytest
+from pydantic import SecretStr
 
 from artemis.drivers.mock.mock_driver import MockDeviceDriver
+
+PROVIDER_CREDENTIAL_FIELDS = (
+    "OPENAI_API_KEY",
+    "GOOGLE_API_KEY",
+    "GEMINI_API_KEY",
+    "GCP_API_KEY",
+    "ANTHROPIC_API_KEY",
+    "XAI_API_KEY",
+    "OPEN_ROUTER_API_KEY",
+    "OCR_API_KEY",
+    "VISION_API_KEY",
+    "API_KEY",
+    "TYPESAFE_API_KEY",
+)
+FAKE_PROVIDER_CREDENTIAL_FIELDS = (
+    "OPENAI_API_KEY",
+    "GOOGLE_API_KEY",
+    "GEMINI_API_KEY",
+    "GCP_API_KEY",
+    "ANTHROPIC_API_KEY",
+    "XAI_API_KEY",
+    "OPEN_ROUTER_API_KEY",
+)
+
+
+@pytest.fixture(autouse=True, scope="session")
+def storage_without_fsync():
+    """Skip sqlite and ``os.fsync`` flushes: tests need no durability, and each blocks on the shared runner disk.
+
+    On the X99 pool one commit or fsync took 0.3-0.5 s and a stall reached 21 min, so one fixture with
+    ~50 commits cost 40 s and the deterministic job passed its 60 min timeout (CHE-2621).
+    """
+    real_connect, real_fsync, real_fdatasync = (
+        sqlite3.connect,
+        os.fsync,
+        getattr(os, "fdatasync", None),
+    )
+
+    def connect(*args, **kwargs):
+        conn = real_connect(*args, **kwargs)
+        conn.execute("PRAGMA synchronous=OFF")
+        return conn
+
+    sqlite3.connect = connect
+    os.fsync = lambda fd: None
+    if real_fdatasync:
+        os.fdatasync = lambda fd: None
+    yield
+    sqlite3.connect, os.fsync = real_connect, real_fsync
+    if real_fdatasync:
+        os.fdatasync = real_fdatasync
+
+
+@pytest.fixture(autouse=True)
+def isolate_provider_credentials(monkeypatch):
+    """Keep the deterministic suite independent of ambient credentials."""
+    from artemis.config.settings import settings
+    from artemis.utils import redaction
+
+    monkeypatch.setattr(redaction, "_REGISTERED_SECRETS", set())
+
+    for field in PROVIDER_CREDENTIAL_FIELDS:
+        monkeypatch.delenv(field, raising=False)
+        if hasattr(settings, field):
+            monkeypatch.setattr(settings, field, None)
+
+
+@pytest.fixture(autouse=True)
+def isolate_current_data_engine():
+    """``DataEngine.start_session`` publishes ``self`` to a module global.
+
+    The logger drain thread and tools read it later, so an engine left over from an earlier
+    test would receive this test's log records and open IPC sockets / call ``urlopen`` mid-test.
+    Teardown also waits for a drain callback that already captured the engine.
+    """
+    from tests.support.data_engine_isolation import quiesce_data_engine_logs
+
+    quiesce_data_engine_logs()
+    yield
+    quiesce_data_engine_logs()
+
+
+@pytest.fixture(autouse=True)
+def isolate_awake_service():
+    """Stop heartbeat threads that an earlier test left on the process-wide awake service.
+
+    A leftover heartbeat fires ``subprocess.run`` every few seconds, so it lands in a later
+    test's ``subprocess.run`` patch and corrupts the command that test captures.
+    """
+    from tests.support.awake_service_isolation import stop_awake_service
+
+    stop_awake_service()
+    yield
+    stop_awake_service()
+
+
+ADB_ENVIRONMENT_KEYS = (
+    "ADB_HOST",
+    "ADB_PORT",
+    "ADB_SERVER_SOCKET",
+    "ANDROID_ADB_SERVER_HOST",
+    "ANDROID_ADB_SERVER_PORT",
+    "ARTEMIS_ADB_ENDPOINT_ID",
+    "ARTEMIS_ADB_HOST_ID",
+    "ARTEMIS_ADB_GENERATION",
+    "ARTEMIS_HOST_AGENT",
+)
+
+
+@pytest.fixture(autouse=True)
+def isolate_adb_environment():
+    """Undo adb endpoint activation (``AdbEndpoint.apply_to_environment`` writes ``os.environ``).
+
+    Process-wide endpoint selection is real production behaviour, so tests that exercise
+    it must not leak the selected server into the next test: device-lock scopes and every
+    adb call derive from it.
+    """
+    import os
+
+    from artemis.config.settings import settings
+
+    saved = {key: os.environ.get(key) for key in ADB_ENVIRONMENT_KEYS}
+    saved_settings = (settings.ADB_HOST, settings.ADB_PORT)
+    yield
+    settings.ADB_HOST, settings.ADB_PORT = saved_settings
+    for key, value in saved.items():
+        if value is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = value
+
+
+@pytest.fixture(autouse=True)
+def refuse_real_adb_server(request):
+    """Keep the default suite off this machine's own adb server.
+
+    Device tests (``android``, and the integration and e2e trees) need the real one.
+    """
+    if any(request.node.get_closest_marker(name) for name in ("android", "integration", "e2e")):
+        yield
+        return
+    from tests.support.adb_server_guard import refuse_default_adb_server
+
+    with refuse_default_adb_server():
+        yield
+
+
+@pytest.fixture
+def fake_provider_credentials(monkeypatch):
+    """Configure clients with synthetic credentials and never live keys."""
+    from artemis.config.settings import settings
+
+    for field in FAKE_PROVIDER_CREDENTIAL_FIELDS:
+        value = f"unit-test-{field.lower()}"
+        monkeypatch.setenv(field, value)
+        if hasattr(settings, field):
+            monkeypatch.setattr(settings, field, SecretStr(value))
+
+
+@pytest.fixture
+def default_agent_config(monkeypatch, tmp_path):
+    config_path = tmp_path / "artemis.jsonc"
+    config_path.write_text('{"agent": {}}', encoding="utf-8")
+    monkeypatch.setenv("ARTEMIS_ARTEMIS_JSONC", str(config_path))
+
+
+@pytest.fixture
+def fake_adb_server_factory():
+    """Start fake adb servers on ephemeral loopback ports; all stop at teardown.
+
+    Every client under test must be pointed at ``server.endpoint`` explicitly:
+    the fake never replaces, and is never reachable as, the machine's adb server.
+    """
+    from tests.support.fake_adb import FakeAdbServer
+
+    servers: list[FakeAdbServer] = []
+
+    def make(name: str = "fake-adb", **kwargs) -> FakeAdbServer:
+        server = FakeAdbServer(name, **kwargs).start()
+        servers.append(server)
+        return server
+
+    yield make
+    for server in servers:
+        server.stop()
 
 
 @pytest.fixture

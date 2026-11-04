@@ -31,9 +31,10 @@ from artemis.tools.command_tool import (
     _format_long_output_response,
     _is_output_long,
 )
-from artemis.utils.logger import get_logger
+from artemis.utils.goal_images import goal_image_blocks
 from artemis.utils.plan_grammar import parse_plan, render_plan_grammar_spec
 from artemis.utils.task_tree import SELF_DESCRIBED_MARKER, action_intent_phrase
+from third_party.mobile_use.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
@@ -380,6 +381,11 @@ class ObservationPromptComponent(PromptComponent):
         latest_screenshot_b64 = kwargs.get("latest_screenshot_b64")
         minimal_list = kwargs.get("minimal_list")
 
+        # Only the legacy per-turn prompt repeats the pictures; the transcript path already
+        # holds them once in its static prefix.
+        if kwargs.get("include_goal_images"):
+            for block in goal_image_blocks():
+                builder.add_human_content(block)
         builder.add_human_content("--- Current Screenshot ---")
         builder.add_human_content(
             {
@@ -673,6 +679,8 @@ def unwritten_action_streak(steps: list[dict]) -> int:
     """Count trailing action steps since the last ``task_plan`` write."""
     streak = 0
     for step in reversed(steps or []):
+        if (step.get("extra_metadata") or {}).get("decision_source") == "jev":
+            continue
         if step_updated_task_plan(step):
             break
         if step.get("action_taken"):
