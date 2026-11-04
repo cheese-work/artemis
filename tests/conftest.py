@@ -19,7 +19,9 @@ integration and end-to-end trees remain directly runnable, and receive stable
 markers here so callers can select them without relying on filename patterns.
 """
 
+import os
 from pathlib import Path
+import sqlite3
 
 import pytest
 from pydantic import SecretStr
@@ -48,6 +50,34 @@ FAKE_PROVIDER_CREDENTIAL_FIELDS = (
     "XAI_API_KEY",
     "OPEN_ROUTER_API_KEY",
 )
+
+
+@pytest.fixture(autouse=True, scope="session")
+def storage_without_fsync():
+    """Skip sqlite and ``os.fsync`` flushes: tests need no durability, and each blocks on the shared runner disk.
+
+    On the X99 pool one commit or fsync took 0.3-0.5 s and a stall reached 21 min, so one fixture with
+    ~50 commits cost 40 s and the deterministic job passed its 60 min timeout (CHE-2621).
+    """
+    real_connect, real_fsync, real_fdatasync = (
+        sqlite3.connect,
+        os.fsync,
+        getattr(os, "fdatasync", None),
+    )
+
+    def connect(*args, **kwargs):
+        conn = real_connect(*args, **kwargs)
+        conn.execute("PRAGMA synchronous=OFF")
+        return conn
+
+    sqlite3.connect = connect
+    os.fsync = lambda fd: None
+    if real_fdatasync:
+        os.fdatasync = lambda fd: None
+    yield
+    sqlite3.connect, os.fsync = real_connect, real_fsync
+    if real_fdatasync:
+        os.fdatasync = real_fdatasync
 
 
 @pytest.fixture(autouse=True)

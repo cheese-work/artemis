@@ -82,6 +82,8 @@ export class UsbDeviceRelayService implements OnDestroy {
 
   /** The USB chooser is done and the bridge has not reported the phone yet. */
   public readonly attaching = signal(false);
+  /** Stays visible after returning to the tab, until dismissed or disconnected. */
+  public readonly backgroundWarning = signal(false);
   /** The server's ARTEMIS_BRIDGE_FIXES flag, as the last lease reported it; off until a lease says true. */
   public readonly bridgeFixes = signal(false);
   /** The phone another tab of this browser holds; null when none does. */
@@ -104,6 +106,13 @@ export class UsbDeviceRelayService implements OnDestroy {
   private reconnectWaiters: Array<(connected: boolean) => void> = [];
   private unloadWarningRegistered = false;
 
+  private readonly warnWhenHidden = (): void => {
+    if (this.document.visibilityState === 'hidden' &&
+      ['connected', 'reconnecting'].includes(this.state().status)) {
+      this.backgroundWarning.set(true);
+    }
+  };
+
   private readonly warnBeforeUnload = (event: BeforeUnloadEvent): void => {
     const status = this.state().status;
     if (status === 'connecting' || status === 'connected' || status === 'reconnecting') {
@@ -117,6 +126,7 @@ export class UsbDeviceRelayService implements OnDestroy {
   };
 
   constructor() {
+    this.document.addEventListener('visibilitychange', this.warnWhenHidden);
     // Another tab asked for the phone this tab holds: let go and say so.
     this.tabs.onReleaseRequest(() => {
       void this.finishConnection(this.generation, 'This phone is now used in another tab.', 'another_tab');
@@ -124,6 +134,7 @@ export class UsbDeviceRelayService implements OnDestroy {
   }
 
   public ngOnDestroy(): void {
+    this.document.removeEventListener('visibilitychange', this.warnWhenHidden);
     void this.finishConnection(this.generation, null, 'service_destroyed');
   }
 
@@ -313,6 +324,7 @@ export class UsbDeviceRelayService implements OnDestroy {
       return;
     }
 
+    this.clearSocketTimers();
     const current = this.state();
     if (
       (current.status === 'connected' || current.status === 'reconnecting') &&
@@ -578,6 +590,7 @@ export class UsbDeviceRelayService implements OnDestroy {
           sessionId: this.leasedSessionId,
           error: null
         });
+        this.warnWhenHidden();
         this.tabs.announceHeld(value.serial.trim());
         this.resolveReconnectWaiters(true);
         return;
@@ -615,6 +628,7 @@ export class UsbDeviceRelayService implements OnDestroy {
     this.logger.warn('Device bridge closing:', report);
     this.generation += 1;
     const wasConnected = ['connected', 'reconnecting'].includes(this.state().status);
+    this.backgroundWarning.set(false);
     this.state.set(error
       ? { status: wasConnected ? 'dropped' : 'error', serial: null, sessionId: null, error }
       : { status: 'idle', serial: null, sessionId: null, error: null });

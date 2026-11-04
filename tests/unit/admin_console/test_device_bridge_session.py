@@ -276,6 +276,88 @@ def test_transient_websocket_close_resumes_same_bridge_session(
     _assert_listener_closed(int(serial.rsplit(":", 1)[1]))
 
 
+@pytest.mark.parametrize("close_code", [1005, 1006])
+def test_repeated_unreported_drops_resume_bidirectional_relay(
+    loopback_client, monkeypatch, _mock_adb, close_code
+):
+    """Real loopback TCP + ASGI relay; no USB, device or real ADB server."""
+    from apps.admin_console import server
+
+    monkeypatch.setenv("ARTEMIS_BRIDGE_FIXES", "on")
+    # Keep one event loop across connections, without starting server workers.
+    monkeypatch.setattr(server, "on_startup", AsyncMock())
+    monkeypatch.setattr(server, "on_shutdown", AsyncMock())
+    client_packet = _adb_packet(b"WRTE", b"browser-payload")
+    server_packet = _adb_packet(b"WRTE", b"server-payload")
+    peer = {}
+
+    async def echo_packets(reader, writer):
+        for _ in range(3):
+            assert (
+                await asyncio.wait_for(reader.readexactly(len(client_packet)), 5) == client_packet
+            )
+            writer.write(server_packet)
+            await writer.drain()
+
+    async def fake_adb_command(*arguments):
+        _mock_adb.append(arguments)
+        if arguments[0] == "connect":
+            host, port = arguments[1].split(":")
+            reader, writer = await asyncio.open_connection(host, int(port))
+            peer["writer"] = writer
+            peer["echo"] = asyncio.create_task(echo_packets(reader, writer))
+            return f"connected to {arguments[1]}"
+        await asyncio.wait_for(peer["echo"], 5)
+        peer["writer"].close()
+        await peer["writer"].wait_closed()
+        return "disconnected"
+
+    monkeypatch.setattr(bridge_session_service_module, "_run_adb_command", fake_adb_command)
+    session_id = None
+    token = None
+    with loopback_client:
+        try:
+            for attempt in range(3):
+                path = PATH if attempt == 0 else RESUME_PATH
+                with loopback_client.websocket_connect(path, headers=_HOST_HEADER) as ws:
+                    if attempt:
+                        ws.send_json(
+                            {"type": "resume", "session_id": session_id, "reconnect_token": token}
+                        )
+                    leased = ws.receive_json()
+                    assert leased["type"] == "session_leased"
+                    assert leased["bridge_fixes"] is True
+                    if attempt == 0:
+                        session_id = leased["session_id"]
+                        token = leased["reconnect_token"]
+                        port = leased["listener"]["port"]
+                        serial = f"127.0.0.1:{port}"
+                    else:
+                        assert leased["session_id"] == session_id
+                        assert leased["serial"] == serial
+                        assert leased["reconnect_token"] == token
+                    assert ws.receive_json() == {"type": "device_attached", "serial": serial}
+                    ws.send_bytes(client_packet)
+                    assert ws.receive_bytes() == server_packet
+                    if attempt < 2:
+                        ws.close(code=close_code)
+                    else:
+                        ws.send_text("close")
+                if attempt < 2:
+                    retained = loopback_client.portal.call(bridge_session_service.get, session_id)
+                    assert retained is not None
+                    assert retained.close_code == close_code
+                    assert retained.client_close is None
+                    assert not retained.websocket_attached
+            assert loopback_client.portal.call(bridge_session_service.get, session_id) is None
+        finally:
+            if session_id is not None:
+                loopback_client.portal.call(bridge_session_service.revoke, session_id)
+
+    assert _mock_adb == [("connect", serial), ("disconnect", serial)]
+    _assert_listener_closed(port)
+
+
 def test_loopback_session_binds_listener_and_closes(loopback_client, _mock_adb):
     with loopback_client.websocket_connect(PATH, headers=_HOST_HEADER) as ws:
         payload = ws.receive_json()

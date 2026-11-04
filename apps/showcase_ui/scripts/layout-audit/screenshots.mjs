@@ -88,8 +88,8 @@ if (checkPhones) {
       { id: 'mac', name: 'Mac phone host', os: 'macOS', agent_version: '1.2.0', protocol_version: 1, status: 'offline', reason: 'agent_disconnected', since: Date.now() / 1000 - 360, phones_shared: 1, phones_not_shared: 0, unshared_serials: [], share_command: '', active_run_count: 0 }
     ],
     devices: [
-      { serial: '2A091FDH200B2X', model: 'Pixel 6 Pro', product: 'oriole', device_kind: 'phone', source: 'computer', owner: null, device_id: 'dev_pixel6', computer_id: 'x99', computer_name: 'X99 local host', computer_status: 'online', reason: null, since: Date.now() / 1000 - 12 },
-      { serial: 'emulator-5554', model: 'Pixel 3a', product: 'sargo', device_kind: 'phone', source: 'computer', owner: null, device_id: 'dev_pixel3a', computer_id: 'x99', computer_name: 'X99 local host', computer_status: 'online', reason: null, since: Date.now() / 1000 - 12 },
+      { serial: '2A091FDH200B2X', connections: ['usb', 'wifi'], model: 'Pixel 6 Pro', product: 'oriole', device_kind: 'phone', source: 'computer', owner: null, device_id: 'dev_pixel6', computer_id: 'x99', computer_name: 'X99 local host', computer_status: 'online', reason: null, since: Date.now() / 1000 - 12 },
+      { serial: 'emulator-5554', model: 'Pixel 3a', product: 'sargo', device_kind: 'phone', source: 'computer', owner: null, device_id: 'dev_pixel3a', lease: { holder: 'qa-owner@example.test', purpose: 'Nightly regression', expires_at: Date.now() / 1000 + 5400 }, computer_id: 'x99', computer_name: 'X99 local host', computer_status: 'online', reason: null, since: Date.now() / 1000 - 12 },
       { serial: 'f3a1c09e', model: 'Xiaomi 10', product: 'umi', device_kind: 'phone', source: 'computer', owner: null, device_id: 'dev_xiaomi', computer_id: 'mac', computer_name: 'Mac phone host', computer_status: 'offline', reason: 'agent_disconnected', since: Date.now() / 1000 - 360 }
     ]
   };
