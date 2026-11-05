@@ -1,0 +1,69 @@
+{
+  "manifest_version": 1,
+  "issue": "CHE-3101",
+  "sdk": "tinos",
+  "journey": "qualification/journeys/license_proof_tinos.md",
+  "runner": {
+    "repository": "https://github.com/cheese-work/artemis",
+    "base_sha": "41374d3d17888f968b4cefa095ac8e36f627e4ec"
+  },
+  "inputs": {
+    "sample_repository": "https://github.com/tevo-studio/tinos-mobile",
+    "sample_pr": 12,
+    "sample_sha": "8b1fd020eaa284c8127b7074546516aa5fc60df2",
+    "service_repository": "https://github.com/tevo-studio/tevo-license-mobile-sdk",
+    "service_pr": 7,
+    "service_sha": "f91c99e1645343819b56fee00ea1adea7aa55367",
+    "service_image": "ghcr.io/tevo-studio/tevo-license-mobile-sdk@sha256:89f972bcf5c83fcb794575ba43360200596d9c97b24ea67ca11393f8a30cbad7"
+  },
+  "app": {
+    "package": "digital.tinos.sample.kotlin",
+    "proof_variant": "licenseProof",
+    "proof_variant_debuggable": false,
+    "apk_sha256": "3d7c1dd8ed7f4a7dab31b2a00e69d8fb442ae99e250f2d64726d2d83afed4cf3",
+    "signer_certificate_sha256": "c97526384d69480e018d6ebd4a96fa3b046f46a10502e47afe49a2b6ce8d04b4"
+  },
+  "service": {
+    "profile": "license-test",
+    "mode": "enforce",
+    "host": "congvc-X99",
+    "license_test_port": 18080,
+    "app_base_url": "http://10.0.2.2:18080",
+    "fresh_tmpfs_database_per_suite": true,
+    "admin_status_changes": "service /admin UI after observing the exact package/certificate pair"
+  },
+  "scenarios": {
+    "approved": "LicenseResult.Licensed; initialization proceeds; server row stays approved",
+    "pending": "LicenseResult.NotLicensed; initialization is denied; one SDK license error",
+    "revoked": "LicenseResult.NotLicensed; initialization is denied; one SDK license error",
+    "offline-no-cache": "LicenseResult.Unverified; initialization follows fail-open path; service is stopped",
+    "debug-pending": "debuggable=true pending row is observed; debug initialization proceeds"
+  },
+  "debug_case_input": {
+    "required": "A debuggable APK that routes to the X99 license-test endpoint",
+    "available_in_pinned_sources": false,
+    "reason": "The pinned licenseProof build is non-debuggable and defines the emulator HTTP endpoint only for that build type.",
+    "disposition": "NOT-RUN until a compatible APK is pinned"
+  },
+  "fixture_reset": {
+    "before_each_case": "adb shell pm clear digital.tinos.sample.kotlin",
+    "before_each_suite": "start a fresh task-owned Compose project with the license-test profile",
+    "offline_case": "stop only the task-owned license-test service; this is the final case",
+    "after_suite": "docker compose -p <task-project> --profile license-test down"
+  },
+  "evidence_per_case": [
+    "logcat",
+    "screen",
+    "server_row",
+    "testcase_revision",
+    "apk_sha256",
+    "device_serial",
+    "command_exit_status",
+    "fixture_cleanup_readback"
+  ],
+  "review": {
+    "independent_non_author_reviewers_required": 2,
+    "same_testcase_revision": true,
+    "must_precede_device_execution": true
+  }
+}
