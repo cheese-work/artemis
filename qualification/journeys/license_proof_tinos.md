@@ -6,7 +6,7 @@ This journey is an authoring artifact for review. It does not run Artemis, build
 
 - Sample and SDK source: `tevo-studio/tinos-mobile` PR #12, head `8b1fd020eaa284c8127b7074546516aa5fc60df2`.
 - Service source: `tevo-studio/tevo-license-mobile-sdk` PR #7, head `f91c99e1645343819b56fee00ea1adea7aa55367`.
-- Service image: `ghcr.io/tevo-studio/tevo-license-mobile-sdk@sha256:89f972bcf5c83fcb794575ba43360200596d9c97b24ea67ca11393f8a30cbad7`.
+- Service image: `ghcr.io/tevo-studio/tevo-license-mobile-sdk@sha256:c233b81eddfd0dd45b577b31e35597d792e35747f4a4270f4fbcd81a05c78729`.
 - Package: `digital.tinos.sample.kotlin`. The proof build is `sample-kotlin:assembleLicenseProof`, non-debuggable, signed by a disposable CI key.
 - Use port `18080` for both sides: start the service with `LICENSE_TEST_PORT=18080` and build with `-PlicenseProofPort=18080`. The app endpoint is `http://10.0.2.2:18080/v1/check`; `10.0.2.2` works only in an emulator on X99.
 
