@@ -27,7 +27,10 @@ class LicenseGateContractTest(unittest.TestCase):
                 self.assertEqual(data["service"]["license_test_port"], 18080)
                 self.assertEqual(set(data["scenarios"]), set(SCENARIOS))
                 self.assertFalse(data["debug_case_input"]["available_in_pinned_sources"])
-                self.assertEqual(data["debug_case_input"]["disposition"], "NOT-RUN until a compatible APK is pinned")
+                self.assertEqual(
+                    data["debug_case_input"]["disposition"],
+                    "NOT-RUN until a compatible APK is pinned",
+                )
                 self.assertIn("adb -s <device_serial> shell pm clear", text)
                 self.assertIn("fixture DB", text)
                 self.assertIn("docker compose", text)
