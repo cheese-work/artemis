@@ -1,0 +1,46 @@
+{
+  "receipt_version": 1,
+  "issue": "CHE-3386",
+  "parent_issue": "CHE-3385",
+  "candidate_kind": "testcase",
+  "source_candidate": {
+    "runner_source": {
+      "repository": "https://github.com/cheese-work/artemis",
+      "commit_sha": "a14514a4508c366344c367aa39f672454de9c38f",
+      "identity": "ARTEMIS CLI via uv run artemis run"
+    },
+    "testcase_source": {
+      "path": "qualification/journeys/sa077_inter_font_rendering.che3386.v1.md",
+      "digest_sha256": "448dfbf447e12d23b66559ad54aa0f7967c82b3bfc1ec3db1ae176ad68f26c20"
+    },
+    "checker_adapter": {
+      "path": "qualification/tools/checker_negative_control_exit.py",
+      "digest_sha256": "3d860340ac97bacba401f3d91457428f0f7d1dc9dbd573c079e2400787e49628",
+      "exit_contract": {
+        "pass": 0,
+        "assertion_failure": 1,
+        "invalid_evidence": 2
+      }
+    },
+    "app_input_source": {
+      "repository": "https://github.com/tevo-studio/sa077-astrology-3",
+      "commit_sha": "05c98f602bc0a211381000db82487caef0d5cb8a",
+      "package_name": "com.horoscope.tarotreader.palmistry.facereader",
+      "apk_digest_sha256": "1d2315b9004695a6f0bab6c1e82e703f1e5a6b29d10887c8d6e2a564f58aee02"
+    }
+  },
+  "target": {
+    "device_class": "x99_api35_medium_phone",
+    "api": 35,
+    "abi": "x86_64",
+    "serial": "assigned by Android device squad after exclusive claim"
+  },
+  "execution_boundary": {
+    "authoring_only": true,
+    "device_access_granted": false,
+    "execution_allowed_after": [
+      "two independent non-author reviews of the exact candidate revision",
+      "Android device squad admission and exclusive claim"
+    ]
+  }
+}
