@@ -8,6 +8,13 @@ from pathlib import Path
 import re
 
 FINAL_ATTEMPT = re.compile(r"final#([1-9]\d*)")
+REQUIRED_RENDERING_ASSERTIONS = (
+    "CHE3386_VISIBLE_CONTENT",
+    "CHE3386_NO_CLIPPING",
+    "CHE3386_DATE_PICKER_INTER_WEIGHTS",
+    "CHE3386_PROFILE_PICKER_INTER_VALUES",
+    "CHE3386_SCREENSHOT_EACH_ROUTE",
+)
 
 
 def _result(verdict: str, **details: object) -> int:
@@ -71,9 +78,40 @@ def main() -> int:
     if final is None:
         return _result("invalid_control", reason="checker_ledger")
     attempt_id, assertions = final
+    missing = [
+        label
+        for label in REQUIRED_RENDERING_ASSERTIONS
+        if not any(label in item["item_text"] for item in assertions)
+    ]
+    failed_required = [
+        label
+        for label in REQUIRED_RENDERING_ASSERTIONS
+        if any(label in item["item_text"] and item["status"] != "passed" for item in assertions)
+    ]
+    if missing:
+        return _result(
+            "invalid_control",
+            reason="rendering_assertions",
+            final_attempt_id=attempt_id,
+            missing=missing,
+        )
     if args.expect == "pass":
-        verdict = "pass" if all(item["status"] == "passed" for item in assertions) else "fail_assertion"
-        return _result(verdict, final_attempt_id=attempt_id, assertion_count=len(assertions))
+        verdict = (
+            "pass" if all(item["status"] == "passed" for item in assertions) else "fail_assertion"
+        )
+        return _result(
+            verdict,
+            final_attempt_id=attempt_id,
+            assertion_count=len(assertions),
+            failed_rendering_assertions=failed_required,
+        )
+    if failed_required:
+        return _result(
+            "invalid_control",
+            reason="rendering_assertions",
+            final_attempt_id=attempt_id,
+            failed=failed_required,
+        )
 
     token_pattern = re.compile(rf"(?<![\w-]){re.escape(args.token)}(?![\w-])")
     matching = [item for item in assertions if token_pattern.search(item["item_text"])]

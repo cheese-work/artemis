@@ -33,6 +33,13 @@ LAYOUTS = {
     "native_full.xml",
     "native_no_media_loading.xml",
 }
+REQUIRED_RENDERING_ASSERTIONS = (
+    "CHE3386_VISIBLE_CONTENT",
+    "CHE3386_NO_CLIPPING",
+    "CHE3386_DATE_PICKER_INTER_WEIGHTS",
+    "CHE3386_PROFILE_PICKER_INTER_VALUES",
+    "CHE3386_SCREENSHOT_EACH_ROUTE",
+)
 
 
 def test_receipt_pins_runner_app_and_exact_journey_bytes():
@@ -115,6 +122,71 @@ def test_journey_defines_positive_rerun_and_negative_control_execution_contract(
     ):
         assert required in journey
 
+    positive_goal = journey.split("Positive goal, used for the first run", maxsplit=1)[1]
+    positive_goal = positive_goal.split("Positive output description:", maxsplit=1)[0]
+    for required in (
+        "CHE3386_VISIBLE_CONTENT",
+        "CHE3386_NO_CLIPPING",
+        "CHE3386_DATE_PICKER_INTER_WEIGHTS",
+        "CHE3386_PROFILE_PICKER_INTER_VALUES",
+        "CHE3386_SCREENSHOT_EACH_ROUTE",
+        "Select English and Horoscope during onboarding",
+        "Artemis QA",
+        "Do not use a real person's profile",
+        "Do not start a camera flow, purchase, subscription, or sign-in",
+    ):
+        assert required in positive_goal
+
+    negative_goal = journey.split("Negative-control goal:", maxsplit=1)[1]
+    negative_goal = negative_goal.split("Negative-control output description:", maxsplit=1)[0]
+    for required in (
+        "seven navigation steps",
+        "Artemis QA",
+        "Do not use a real person's profile",
+        "Do not start a camera flow, purchase, subscription, or sign-in",
+        "CHE3386_DATE_PICKER_INTER_WEIGHTS",
+        "CHE3386_PROFILE_PICKER_INTER_VALUES",
+        "MUST_FAIL_CHE3386_<run-id>",
+    ):
+        assert required in negative_goal
+
+
+def test_negative_control_requires_each_rendering_assertion_to_pass(tmp_path):
+    token = "MUST_FAIL_CHE3386_run-123"
+    records = [
+        {
+            "attempt_id": "final#1",
+            "kind": "assert",
+            "item_text": "Startup completed",
+            "status": "passed",
+        },
+        {
+            "attempt_id": "final#1",
+            "kind": "assert",
+            "item_text": f"{token} is visible",
+            "status": "failed",
+        },
+    ]
+    result = _adapter_result(tmp_path, records, "--expect", "negative-control", "--token", token)
+
+    assert result.returncode == 2
+    assert json.loads(result.stdout)["verdict"] == "invalid_control"
+
+
+def test_positive_run_rejects_a_ledger_without_rendering_assertions(tmp_path):
+    records = [
+        {
+            "attempt_id": "final#1",
+            "kind": "assert",
+            "item_text": "Startup completed",
+            "status": "passed",
+        },
+    ]
+    result = _adapter_result(tmp_path, records, "--expect", "pass")
+
+    assert result.returncode == 2
+    assert json.loads(result.stdout)["verdict"] == "invalid_control"
+
 
 def _adapter_result(tmp_path, records, *args):
     ledger = tmp_path / "ledger.jsonl"
@@ -130,8 +202,13 @@ def _adapter_result(tmp_path, records, *args):
 
 def test_checker_adapter_accepts_only_all_passed_latest_final_assertions(tmp_path):
     records = [
-        {"attempt_id": "final#1", "kind": "assert", "item_text": "font visible", "status": "passed"},
-        {"attempt_id": "final#1", "kind": "assert", "item_text": "no clipping", "status": "passed"},
+        {
+            "attempt_id": "final#1",
+            "kind": "assert",
+            "item_text": f"{label}: passed",
+            "status": "passed",
+        }
+        for label in REQUIRED_RENDERING_ASSERTIONS
     ]
     result = _adapter_result(tmp_path, records, "--expect", "pass")
 
@@ -142,8 +219,20 @@ def test_checker_adapter_accepts_only_all_passed_latest_final_assertions(tmp_pat
 def test_checker_adapter_accepts_only_the_deliberate_negative_assertion_failure(tmp_path):
     token = "MUST_FAIL_CHE3386_run-123"
     records = [
-        {"attempt_id": "final#1", "kind": "assert", "item_text": "font visible", "status": "passed"},
-        {"attempt_id": "final#1", "kind": "assert", "item_text": f"{token} is visible", "status": "failed"},
+        {
+            "attempt_id": "final#1",
+            "kind": "assert",
+            "item_text": f"{label}: passed",
+            "status": "passed",
+        }
+        for label in REQUIRED_RENDERING_ASSERTIONS
+    ] + [
+        {
+            "attempt_id": "final#1",
+            "kind": "assert",
+            "item_text": f"{token} is visible",
+            "status": "failed",
+        },
     ]
     result = _adapter_result(tmp_path, records, "--expect", "negative-control", "--token", token)
 
@@ -154,8 +243,20 @@ def test_checker_adapter_accepts_only_the_deliberate_negative_assertion_failure(
 def test_checker_adapter_rejects_an_unrelated_failed_assertion(tmp_path):
     token = "MUST_FAIL_CHE3386_run-123"
     records = [
-        {"attempt_id": "final#1", "kind": "assert", "item_text": "font visible", "status": "failed"},
-        {"attempt_id": "final#1", "kind": "assert", "item_text": f"{token} is visible", "status": "failed"},
+        {
+            "attempt_id": "final#1",
+            "kind": "assert",
+            "item_text": f"{label}: {'failed' if label == REQUIRED_RENDERING_ASSERTIONS[0] else 'passed'}",
+            "status": "failed" if label == REQUIRED_RENDERING_ASSERTIONS[0] else "passed",
+        }
+        for label in REQUIRED_RENDERING_ASSERTIONS
+    ] + [
+        {
+            "attempt_id": "final#1",
+            "kind": "assert",
+            "item_text": f"{token} is visible",
+            "status": "failed",
+        },
     ]
     result = _adapter_result(tmp_path, records, "--expect", "negative-control", "--token", token)
 
@@ -173,4 +274,6 @@ if __name__ == "__main__":
         test_checker_adapter_accepts_only_all_passed_latest_final_assertions(temp_path)
         test_checker_adapter_accepts_only_the_deliberate_negative_assertion_failure(temp_path)
         test_checker_adapter_rejects_an_unrelated_failed_assertion(temp_path)
+        test_negative_control_requires_each_rendering_assertion_to_pass(temp_path)
+        test_positive_run_rejects_a_ledger_without_rendering_assertions(temp_path)
     print("CHE-3386 candidate checks passed")

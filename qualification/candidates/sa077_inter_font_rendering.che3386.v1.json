@@ -11,11 +11,11 @@
     },
     "testcase_source": {
       "path": "qualification/journeys/sa077_inter_font_rendering.che3386.v1.md",
-      "digest_sha256": "eba576e0f8de43ca0d88bf40ba77c72a146d7a2dd1f5975005790363ed23a32f"
+      "digest_sha256": "448dfbf447e12d23b66559ad54aa0f7967c82b3bfc1ec3db1ae176ad68f26c20"
     },
     "checker_adapter": {
       "path": "qualification/tools/checker_negative_control_exit.py",
-      "digest_sha256": "6c236da1d2d92ae7f09614ed74dd9b2fdd27706e86fbbcb097519b914f63031c",
+      "digest_sha256": "3d860340ac97bacba401f3d91457428f0f7d1dc9dbd573c079e2400787e49628",
       "exit_contract": {
         "pass": 0,
         "assertion_failure": 1,

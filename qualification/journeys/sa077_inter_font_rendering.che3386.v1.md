@@ -51,7 +51,25 @@ Use these goal and output-description texts for each attempt. Replace the angle-
 
 Positive goal, used for the first run and the clean rerun:
 
-> Follow the Journey steps using the synthetic fixture. Capture one privacy-safe screenshot for each reached target screen. At every target, verify nonempty visible content, legible text without clipped glyphs or text cut off by its parent or viewport edge, and a stable layout after it settles. On the date picker, verify the selected Inter 600 value and adjacent unselected Inter 400 values. On the profile picker, verify visible Inter 400 values. Report each route and screenshot filename, and mark unavailable routes BLOCKED or NOT-RUN with the observed reason.
+> Start from clean app data. Select English and Horoscope during onboarding. Use only these synthetic profile values: name `Artemis QA`, date `2000-01-01`, time `12:00 PM`, and birthplace `London`. Do not use a real person's profile, account, address, photo, or other personal data. Deny location, notification, and camera permission prompts. Do not start a camera flow, purchase, subscription, or sign-in.
+>
+> Navigate the app in this order:
+> 1. Finish the synthetic profile. Capture the profile form with `ProfileNumberPickerView`, selected and adjacent values, visible. Search for London in birthplace search, select a matching city, and capture the search screen. Finish the profile to reach Home.
+> 2. Open Read Chart and capture the settled chart screen. A service error or empty terminal state is BLOCKED.
+> 3. Open Face Reading, then its information screen. Open the date field and capture the date picker with `WheelColumnView`, selected Inter 600 and adjacent unselected Inter 400 values visible. Capture the information screen separately. Do not continue to the camera.
+> 4. Open Tarot and capture its home screen. Open the premium screen from its crown, capture it, and return without selecting purchase or restore.
+> 5. Open the Tarot library, capture the list and one visible card detail, then return. Open Start Reading, enter `How can I make a thoughtful choice today?`, continue through normal card selection, and capture the result only after its sections render. A service error or empty terminal state is BLOCKED. Do not retry.
+> 6. Return to Tarot and open Destiny/Book Guide. Capture the guide and visible rows. Continue through its ordinary free flow and capture Book Open only if the app produces a result. A service error or empty terminal state is BLOCKED. Do not retry.
+> 7. Relaunch the app through its launcher. Capture Welcome Back while the loading placeholder is visible. If it changes before a stable capture, report the observed replacement state.
+>
+> Create a distinct Checker assertion for each identifier below. Include each identifier verbatim in its assertion text. Mark an assertion passed only after direct observation:
+> - `CHE3386_VISIBLE_CONTENT`: every reached target has nonempty visible content and legible text.
+> - `CHE3386_NO_CLIPPING`: no target has clipped glyphs or text cut off by its parent or viewport edge; normal scrolling is not clipping.
+> - `CHE3386_DATE_PICKER_INTER_WEIGHTS`: the date picker shows the selected Inter 600 value beside unselected Inter 400 values.
+> - `CHE3386_PROFILE_PICKER_INTER_VALUES`: the profile picker shows visible Inter 400 values.
+> - `CHE3386_SCREENSHOT_EACH_ROUTE`: every reached target has one privacy-safe screenshot, and the report maps each route to its screenshot filename.
+>
+> Report unavailable routes as BLOCKED or NOT-RUN with the observed reason. Do not retry an application or service failure. Do not report PASS without the matching screenshot and passed Checker assertions.
 
 Positive output description:
 
@@ -59,7 +77,20 @@ Positive output description:
 
 Negative-control goal:
 
-> Follow the same Journey with the same rendering assertions and capture requirements. Add this deliberately false final assertion verbatim: `The visible screen contains the text MUST_FAIL_CHE3386_<run-id>.` The token is unique to this run and is not part of the app UI. The Checker must pass every rendering assertion and fail this token assertion. Do not change or weaken any rendering assertion to make the control fail.
+> Use the same clean setup, synthetic values, safety restrictions, and seven navigation steps as the positive goal:
+> 1. Select English and Horoscope during onboarding. Enter `Artemis QA`, `2000-01-01`, `12:00 PM`, and `London`; finish the profile and capture its picker and birthplace search.
+> 2. Open Read Chart and capture it after it settles.
+> 3. Open Face Reading information. Open and capture the date picker with selected Inter 600 and adjacent unselected Inter 400 values, then capture the information screen. Do not open the camera.
+> 4. Capture Tarot home and the premium screen. Do not purchase or restore.
+> 5. Capture the Tarot library and one card detail. Enter `How can I make a thoughtful choice today?` in Start Reading, complete ordinary card selection, and capture the rendered result.
+> 6. Capture Destiny/Book Guide and its visible rows. Continue through its ordinary free flow and capture Book Open only if a result is produced.
+> 7. Relaunch the app and capture the Welcome Back placeholder if it remains visible.
+>
+> Use only synthetic values. Do not use a real person's profile, account, address, photo, or other personal data. Deny location, notification, and camera permission prompts. Do not start a camera flow, purchase, subscription, or sign-in. A service error or empty terminal state is BLOCKED. Do not retry.
+>
+> Create separate Checker assertions containing these exact identifiers: `CHE3386_VISIBLE_CONTENT`, `CHE3386_NO_CLIPPING`, `CHE3386_DATE_PICKER_INTER_WEIGHTS`, `CHE3386_PROFILE_PICKER_INTER_VALUES`, and `CHE3386_SCREENSHOT_EACH_ROUTE`. The first four assertions must directly verify the same positive rendering conditions. The screenshot assertion must verify one privacy-safe screenshot for every reached target and the route-to-filename mapping. Mark each passed only after direct observation.
+>
+> Add this deliberately false final assertion verbatim: `The visible screen contains the text MUST_FAIL_CHE3386_<run-id>.` The token is unique to this run and is not part of the app UI. The Checker must pass every required rendering assertion and fail only this token assertion. Do not change or weaken any rendering assertion to make the control fail.
 
 Negative-control output description:
 
