@@ -11,7 +11,16 @@
     },
     "testcase_source": {
       "path": "qualification/journeys/sa077_inter_font_rendering.che3386.v1.md",
-      "digest_sha256": "c64cb7d88fe8eb402c651d69f5e58074d35dcb7ed8e6b765df5d7ee9c12c416f"
+      "digest_sha256": "eba576e0f8de43ca0d88bf40ba77c72a146d7a2dd1f5975005790363ed23a32f"
+    },
+    "checker_adapter": {
+      "path": "qualification/tools/checker_negative_control_exit.py",
+      "digest_sha256": "6c236da1d2d92ae7f09614ed74dd9b2fdd27706e86fbbcb097519b914f63031c",
+      "exit_contract": {
+        "pass": 0,
+        "assertion_failure": 1,
+        "invalid_evidence": 2
+      }
     },
     "app_input_source": {
       "repository": "https://github.com/tevo-studio/sa077-astrology-3",

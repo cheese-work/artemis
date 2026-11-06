@@ -3,6 +3,9 @@
 import hashlib
 import json
 from pathlib import Path
+import subprocess
+import sys
+import tempfile
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -51,6 +54,10 @@ def test_receipt_pins_runner_app_and_exact_journey_bytes():
     testcase = source["testcase_source"]
     assert testcase["path"] == str(JOURNEY_PATH.relative_to(REPO_ROOT))
     assert hashlib.sha256(JOURNEY_PATH.read_bytes()).hexdigest() == testcase["digest_sha256"]
+    adapter = source["checker_adapter"]
+    adapter_path = REPO_ROOT / adapter["path"]
+    assert adapter["path"] == "qualification/tools/checker_negative_control_exit.py"
+    assert hashlib.sha256(adapter_path.read_bytes()).hexdigest() == adapter["digest_sha256"]
 
 
 def test_journey_covers_every_direct_layout_and_both_picker_surfaces():
@@ -84,8 +91,86 @@ def test_journey_defines_synthetic_fixture_reset_and_evidence_contract():
         assert required.lower() in journey.lower()
 
 
+def test_journey_defines_positive_rerun_and_negative_control_execution_contract():
+    journey = JOURNEY_PATH.read_text(encoding="utf-8")
+    for required in (
+        "one positive run, one clean rerun",
+        "Negative-control goal:",
+        "--profile pro --verification-level final",
+        '--device-serial "<claimed-serial>"',
+        'SESSION_ID="<fresh-session-uuid>"',
+        "ARTEMIS_TRACES_DIR=<ledger-root>",
+        "DATA_ENGINE_DB_PATH=<ledger-root>/data_engine.db",
+        "<ledger-root>/<session-id>/check_ledger.jsonl",
+        "checker_negative_control_exit.py",
+        "--expect pass",
+        "--expect negative-control",
+        "MUST_FAIL_CHE3386_<run-id>",
+        "exit 1",
+        "exit 2",
+        "Do not treat a completed task status or a generic runner exit as proof",
+        "--output-description",
+        "900s",
+        "latest `final#N` attempt",
+    ):
+        assert required in journey
+
+
+def _adapter_result(tmp_path, records, *args):
+    ledger = tmp_path / "ledger.jsonl"
+    ledger.write_text("".join(f"{json.dumps(record)}\n" for record in records), encoding="utf-8")
+    adapter = REPO_ROOT / "qualification/tools/checker_negative_control_exit.py"
+    return subprocess.run(
+        [sys.executable, str(adapter), "--ledger", str(ledger), *args],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+
+def test_checker_adapter_accepts_only_all_passed_latest_final_assertions(tmp_path):
+    records = [
+        {"attempt_id": "final#1", "kind": "assert", "item_text": "font visible", "status": "passed"},
+        {"attempt_id": "final#1", "kind": "assert", "item_text": "no clipping", "status": "passed"},
+    ]
+    result = _adapter_result(tmp_path, records, "--expect", "pass")
+
+    assert result.returncode == 0
+    assert json.loads(result.stdout)["verdict"] == "pass"
+
+
+def test_checker_adapter_accepts_only_the_deliberate_negative_assertion_failure(tmp_path):
+    token = "MUST_FAIL_CHE3386_run-123"
+    records = [
+        {"attempt_id": "final#1", "kind": "assert", "item_text": "font visible", "status": "passed"},
+        {"attempt_id": "final#1", "kind": "assert", "item_text": f"{token} is visible", "status": "failed"},
+    ]
+    result = _adapter_result(tmp_path, records, "--expect", "negative-control", "--token", token)
+
+    assert result.returncode == 1
+    assert json.loads(result.stdout)["verdict"] == "fail_assertion"
+
+
+def test_checker_adapter_rejects_an_unrelated_failed_assertion(tmp_path):
+    token = "MUST_FAIL_CHE3386_run-123"
+    records = [
+        {"attempt_id": "final#1", "kind": "assert", "item_text": "font visible", "status": "failed"},
+        {"attempt_id": "final#1", "kind": "assert", "item_text": f"{token} is visible", "status": "failed"},
+    ]
+    result = _adapter_result(tmp_path, records, "--expect", "negative-control", "--token", token)
+
+    assert result.returncode == 2
+    assert json.loads(result.stdout)["verdict"] == "invalid_control"
+
+
 if __name__ == "__main__":
     test_receipt_pins_runner_app_and_exact_journey_bytes()
     test_journey_covers_every_direct_layout_and_both_picker_surfaces()
     test_journey_defines_synthetic_fixture_reset_and_evidence_contract()
+    test_journey_defines_positive_rerun_and_negative_control_execution_contract()
+    with tempfile.TemporaryDirectory() as temp_dir:
+        temp_path = Path(temp_dir)
+        test_checker_adapter_accepts_only_all_passed_latest_final_assertions(temp_path)
+        test_checker_adapter_accepts_only_the_deliberate_negative_assertion_failure(temp_path)
+        test_checker_adapter_rejects_an_unrelated_failed_assertion(temp_path)
     print("CHE-3386 candidate checks passed")

@@ -39,7 +39,59 @@ Capture one screenshot per reached screen before navigating away. Keep each scre
 
 For each captured target, assert that the screen has nonempty visible content, text is legible with no clipped glyphs or text cut off by its parent or viewport edge, and the rendered layout is stable after the screen settles. Allow content below a scroll viewport; do not treat normal scrolling as clipping. On the wheel date picker, inspect the selected Inter 600 value beside unselected Inter 400 values. On the profile picker, inspect visible Inter 400 values. Do not infer font identity from a screenshot if the glyphs are missing or the relevant values are not visible.
 
-Capture the first attempt and any retry outcome separately. Do not retry an application or service failure. Report `PASS` only for observed assertions with their screenshots, `FAIL` only for observed contradictory rendering, `BLOCKED` for an unavailable route, artifact, service, or device, and `NOT-RUN` for any route not attempted. Do not claim that a screen passed because its layout is statically referenced.
+Do not retry an application or service failure. Report `PASS` only for observed assertions with their screenshots, `FAIL` only for observed contradictory rendering, `BLOCKED` for an unavailable route, artifact, service, or device, and `NOT-RUN` for any route not attempted. Do not claim that a screen passed because its layout is statically referenced.
+
+## Qualification runs and verdicts
+
+After two independent non-author reviews accept this exact candidate revision and the Android device squad grants an exclusive claim, run three separate attempts against the pinned APK: one positive run, one clean rerun, and one negative control. Use a fresh fixture, `session-id`, `run-id`, and evidence directory for every attempt. The clean rerun repeats the positive goal from the same clean state. Do not retry any attempt. The negative control is a deliberate Checker assertion failure, not an application failure.
+
+Use the `pro` profile with the final Checker enabled and midway checks disabled: `--profile pro --verification-level final`. The final Checker must evaluate the original task goal. Give each run its own `<ledger-root>` and set both `ARTEMIS_TRACES_DIR=<ledger-root>` and `DATA_ENGINE_DB_PATH=<ledger-root>/data_engine.db` so the Checker ledger and native action records share the same evidence root. The expected ledger is `<ledger-root>/<session-id>/check_ledger.jsonl`.
+
+Use these goal and output-description texts for each attempt. Replace the angle-bracket values with the admitted serial, fresh UUIDs, verified APK path, and unique attempt evidence directory. Keep the rendering assertions above identical for all three runs.
+
+Positive goal, used for the first run and the clean rerun:
+
+> Follow the Journey steps using the synthetic fixture. Capture one privacy-safe screenshot for each reached target screen. At every target, verify nonempty visible content, legible text without clipped glyphs or text cut off by its parent or viewport edge, and a stable layout after it settles. On the date picker, verify the selected Inter 600 value and adjacent unselected Inter 400 values. On the profile picker, verify visible Inter 400 values. Report each route and screenshot filename, and mark unavailable routes BLOCKED or NOT-RUN with the observed reason.
+
+Positive output description:
+
+> Return the exact route-to-screenshot mapping, the observed rendering assertions for each route, unavailable routes with their reasons, and the completed task status. Do not report PASS for a route without its screenshot and passed Checker assertion.
+
+Negative-control goal:
+
+> Follow the same Journey with the same rendering assertions and capture requirements. Add this deliberately false final assertion verbatim: `The visible screen contains the text MUST_FAIL_CHE3386_<run-id>.` The token is unique to this run and is not part of the app UI. The Checker must pass every rendering assertion and fail this token assertion. Do not change or weaken any rendering assertion to make the control fail.
+
+Negative-control output description:
+
+> Return the route-to-screenshot mapping and Checker assertions. The token assertion must appear in the latest final Checker ledger attempt with status failed. Every other assertion in that attempt must have status passed. Do not treat a completed task status or a generic runner exit as proof that the control worked.
+
+Run each goal with the pinned runner from the Artemis repository root. Use a 900-second wall limit per attempt. The executor supplies the exact serial and verified APK path only after admission:
+
+```bash
+SESSION_ID="<fresh-session-uuid>"
+RUN_ID="<fresh-run-uuid>"
+ARTEMIS_TRACES_DIR="<attempt-evidence-dir>"
+test "$SESSION_ID" != "$RUN_ID"
+export ARTEMIS_TRACES_DIR
+export DATA_ENGINE_DB_PATH="$ARTEMIS_TRACES_DIR/data_engine.db"
+timeout --signal=TERM --kill-after=30s 900s uv run artemis run "<positive-or-negative-goal>" \
+  --profile pro --verification-level final --standalone \
+  --device-serial "<claimed-serial>" --session-id "$SESSION_ID" \
+  --run-id "$RUN_ID" --app-path "<verified-apk-path>" \
+  --output-description "<matching-output-description>"
+```
+
+After each positive run, verify the run report says `completed`, then run the adapter below with `--expect pass`. Exit 0 is a Checker pass; exit 1 is an assertion failure; exit 2 is invalid evidence. After the negative run, run the adapter with `--expect negative-control --token MUST_FAIL_CHE3386_<run-id>`. Exit 1 is the expected negative-control result only when the adapter JSON says `fail_assertion`; exit 0 means the deliberately false assertion passed and the control is invalid; exit 2 means missing, malformed, or unrelated Checker evidence and the control is invalid. The adapter checks only the latest `final#N` attempt in the ledger and requires every non-token assertion in that attempt to pass.
+
+```bash
+python qualification/tools/checker_negative_control_exit.py \
+  --ledger "$ARTEMIS_TRACES_DIR/$SESSION_ID/check_ledger.jsonl" \
+  --expect negative-control --token "MUST_FAIL_CHE3386_$RUN_ID"
+```
+
+For either positive attempt, use the same adapter command with `--expect pass` and omit `--token`.
+
+For each attempt, preserve the command, runner exit, completed-task result, adapter JSON and exit, ledger, report, screenshots, and exact session/run IDs in the evidence destination recorded by the execution report. Any absent ledger or failed prerequisite is BLOCKED. A malformed ledger, missing final Checker assertions, unrelated failed assertion, or wrong adapter exit invalidates the attempt; it is not a pass. Run fixture cleanup after each attempt and verify release before the next attempt. This authoring document does not authorize device access or execution.
 
 ## Layout coverage
 
