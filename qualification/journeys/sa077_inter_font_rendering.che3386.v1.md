@@ -5,9 +5,9 @@ This is an authoring candidate for CHE-3385. It is a testcase definition, not ex
 ## Pinned inputs
 
 - App repository: `https://github.com/tevo-studio/sa077-astrology-3`.
-- App commit: `c4b7f91e304b58f6eaf3d2b6791232d7d97020cf`.
+- App commit: `05c98f602bc0a211381000db82487caef0d5cb8a`.
 - Package: `com.horoscope.tarotreader.palmistry.facereader`.
-- Expected APK SHA-256: `a8d690b6d7707ac1962ff33d7a1c1f0015a86727774f4f4d2a59391668e367c6`.
+- Expected APK SHA-256: `1d2315b9004695a6f0bab6c1e82e703f1e5a6b29d10887c8d6e2a564f58aee02`.
 - Runner: ARTEMIS CLI from `https://github.com/cheese-work/artemis` at `a14514a4508c366344c367aa39f672454de9c38f`.
 - Device requirement: admitted X99 AVD class `x99_api35_medium_phone`, API 35, x86_64. The exact serial is supplied by the Android device squad after an exclusive claim.
 

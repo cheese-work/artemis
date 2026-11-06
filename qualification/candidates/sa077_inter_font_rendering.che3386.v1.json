@@ -11,13 +11,13 @@
     },
     "testcase_source": {
       "path": "qualification/journeys/sa077_inter_font_rendering.che3386.v1.md",
-      "digest_sha256": "059979dd64ad4f1a3196391a23ef623ba34421e9cad5294bc7e52fec85cf4345"
+      "digest_sha256": "c64cb7d88fe8eb402c651d69f5e58074d35dcb7ed8e6b765df5d7ee9c12c416f"
     },
     "app_input_source": {
       "repository": "https://github.com/tevo-studio/sa077-astrology-3",
-      "commit_sha": "c4b7f91e304b58f6eaf3d2b6791232d7d97020cf",
+      "commit_sha": "05c98f602bc0a211381000db82487caef0d5cb8a",
       "package_name": "com.horoscope.tarotreader.palmistry.facereader",
-      "apk_digest_sha256": "a8d690b6d7707ac1962ff33d7a1c1f0015a86727774f4f4d2a59391668e367c6"
+      "apk_digest_sha256": "1d2315b9004695a6f0bab6c1e82e703f1e5a6b29d10887c8d6e2a564f58aee02"
     }
   },
   "target": {

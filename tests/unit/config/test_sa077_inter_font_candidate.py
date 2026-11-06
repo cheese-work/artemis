@@ -43,10 +43,10 @@ def test_receipt_pins_runner_app_and_exact_journey_bytes():
     assert runner["identity"] == "ARTEMIS CLI via uv run artemis run"
     app = source["app_input_source"]
     assert app["repository"] == "https://github.com/tevo-studio/sa077-astrology-3"
-    assert app["commit_sha"] == "c4b7f91e304b58f6eaf3d2b6791232d7d97020cf"
+    assert app["commit_sha"] == "05c98f602bc0a211381000db82487caef0d5cb8a"
     assert app["package_name"] == "com.horoscope.tarotreader.palmistry.facereader"
     assert app["apk_digest_sha256"] == (
-        "a8d690b6d7707ac1962ff33d7a1c1f0015a86727774f4f4d2a59391668e367c6"
+        "1d2315b9004695a6f0bab6c1e82e703f1e5a6b29d10887c8d6e2a564f58aee02"
     )
     testcase = source["testcase_source"]
     assert testcase["path"] == str(JOURNEY_PATH.relative_to(REPO_ROOT))
