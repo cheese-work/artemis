@@ -74,7 +74,9 @@ class LicenseGateContractTest(unittest.TestCase):
                     )
                 if sdk == "mmonetize":
                     for case in ("approved", "debug-pending"):
-                        self.assertIsNone(re.compile(expected_result_logs[case]).search("NotLicensed"))
+                        self.assertIsNone(
+                            re.compile(expected_result_logs[case]).search("NotLicensed")
+                        )
                 self.assertTrue(
                     all(json.dumps(value)[1:-1] in text for value in expected_result_logs.values())
                 )
