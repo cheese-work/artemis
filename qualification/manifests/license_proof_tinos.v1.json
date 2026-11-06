@@ -20,24 +20,62 @@
     "package": "digital.tinos.sample.kotlin",
     "proof_variant": "licenseProof",
     "proof_variant_debuggable": false,
+    "license_proof_port": 8080,
     "apk_sha256": "3d7c1dd8ed7f4a7dab31b2a00e69d8fb442ae99e250f2d64726d2d83afed4cf3",
-    "signer_certificate_sha256": "c97526384d69480e018d6ebd4a96fa3b046f46a10502e47afe49a2b6ce8d04b4"
+    "signer_certificate_sha256": "c97526384d69480e018d6ebd4a96fa3b046f46a10502e47afe49a2b6ce8d04b4",
+    "artifact_available": false,
+    "artifact_location": "https://github.com/tevo-studio/tinos-mobile/pull/12 (proof APK SHA and signer are recorded in the PR evidence)",
+    "build_command": "bash ./gradlew :tinos-android:testLicenseProofUnitTest :sample-kotlin:assembleLicenseProof -PtevoLicenseRepository=<local-S6-artifact> -PlicenseProofPort=8080 --no-daemon --console=plain --max-workers=2"
   },
   "service": {
     "profile": "license-test",
     "mode": "enforce",
     "host": "congvc-X99",
-    "license_test_port": 18080,
-    "app_base_url": "http://10.0.2.2:18080",
+    "license_test_port": 8080,
+    "app_base_url": "http://10.0.2.2:8080",
     "fresh_tmpfs_database_per_suite": true,
-    "admin_status_changes": "service /admin UI after observing the exact package/certificate pair"
+    "admin_status_changes": "loopback /admin GET and /admin/status POST; require local test header, exact Origin, and observed package/certificate pair"
   },
   "scenarios": {
-    "approved": "LicenseResult.Licensed; initialization proceeds; server row stays approved",
-    "pending": "LicenseResult.NotLicensed; initialization is denied; one SDK license error",
-    "revoked": "LicenseResult.NotLicensed; initialization is denied; one SDK license error",
-    "offline-no-cache": "LicenseResult.Unverified; initialization follows fail-open path; service is stopped",
-    "debug-pending": "debuggable=true pending row is observed; debug initialization proceeds"
+    "approved": "LicenseResult.Licensed; server row stays approved; zero SDK denial logs",
+    "pending": "LicenseResult.NotLicensed; server row stays pending; one SDK denial log",
+    "revoked": "LicenseResult.NotLicensed; server row stays revoked; one SDK denial log",
+    "offline-no-cache": "LicenseResult.Unverified transport failure; app remains usable; service is stopped",
+    "debug-pending": "NOT-RUN: debuggable client returns LicenseResult.Licensed without contacting the service; server-seen acceptance is unresolved"
+  },
+  "case_order": ["pending", "approved", "revoked", "debug-pending", "offline-no-cache"],
+  "observation": {
+    "wait_timeout_seconds": 12,
+    "case_log_scope": "new launch PID only; filter the SDK denial tag, level and message",
+    "online_server_freshness": "record the pair last_seen before launch and require a strictly later value after launch",
+    "denial_log": {
+      "tag": "Tinos",
+      "level": "WARN",
+      "message_contains": "Not licensed"
+    },
+    "result_log": {
+      "tag": "TinosSample",
+      "level": "INFO",
+      "message_contains_by_case": {
+        "approved": "LicenseResult.Licensed",
+        "pending": "LicenseResult.NotLicensed: digital.tinos.sample.kotlin",
+        "revoked": "LicenseResult.NotLicensed: digital.tinos.sample.kotlin",
+        "offline-no-cache": "LicenseResult.Unverified:",
+        "debug-pending": "LicenseResult.Licensed"
+      },
+      "message_regex_by_case": {
+        "approved": "LicenseResult\\.Licensed",
+        "pending": "LicenseResult\\.NotLicensed: digital\\.tinos\\.sample\\.kotlin",
+        "revoked": "LicenseResult\\.NotLicensed: digital\\.tinos\\.sample\\.kotlin",
+        "offline-no-cache": "LicenseResult\\.Unverified:",
+        "debug-pending": "LicenseResult\\.Licensed"
+      }
+    }
+  },
+  "initialization": {
+    "coverage": "NOT-PROVEN",
+    "gap_owner": "CHE-3101 before acceptance",
+    "reason": "The pinned sample publishes the typed license callback result, but it has no observable that proves runtime construction succeeded or was denied."
   },
   "debug_case_input": {
     "required": "A debuggable APK that routes to the X99 license-test endpoint",
@@ -53,8 +91,10 @@
   },
   "evidence_per_case": [
     "logcat",
+    "launch_pid",
     "screen",
     "server_row",
+    "server_last_seen_before_after",
     "testcase_revision",
     "apk_sha256",
     "device_serial",
