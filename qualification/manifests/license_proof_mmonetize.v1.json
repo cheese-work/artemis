@@ -17,7 +17,7 @@
     "service_repository": "https://github.com/tevo-studio/tevo-license-mobile-sdk",
     "service_pr": 7,
     "service_sha": "f91c99e1645343819b56fee00ea1adea7aa55367",
-    "service_image": "ghcr.io/tevo-studio/tevo-license-mobile-sdk@sha256:89f972bcf5c83fcb794575ba43360200596d9c97b24ea67ca11393f8a30cbad7"
+    "service_image": "ghcr.io/tevo-studio/tevo-license-mobile-sdk@sha256:c233b81eddfd0dd45b577b31e35597d792e35747f4a4270f4fbcd81a05c78729"
   },
   "app": {
     "package": "io.mmonetize.sample",

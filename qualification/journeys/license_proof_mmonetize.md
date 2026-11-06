@@ -7,7 +7,7 @@ This journey is an authoring artifact for review. It does not run Artemis, build
 - SDK source: `tevo-studio/mMonetize` PR #336, head `e6202a48d1411ff57410e3dff98899ae019a0c97`.
 - Sample source: `tevo-studio/mMonetize-sample` PR #154, head `0b1c085bd7242da6364a303884eb12ae9215b53f`.
 - Service source: `tevo-studio/tevo-license-mobile-sdk` PR #7, head `f91c99e1645343819b56fee00ea1adea7aa55367`.
-- Service image: `ghcr.io/tevo-studio/tevo-license-mobile-sdk@sha256:89f972bcf5c83fcb794575ba43360200596d9c97b24ea67ca11393f8a30cbad7`.
+- Service image: `ghcr.io/tevo-studio/tevo-license-mobile-sdk@sha256:c233b81eddfd0dd45b577b31e35597d792e35747f4a4270f4fbcd81a05c78729`.
 - Package: `io.mmonetize.sample`. The proof build is `adsTestLicenseProof`, non-debuggable, signed by a disposable CI key.
 - Use port `18080` for both sides: start the service with `LICENSE_TEST_PORT=18080` and build the proof app with `-PlicenseProofPort=18080`. The app endpoint is `http://10.0.2.2:18080/v1/check`; `10.0.2.2` works only in an emulator on X99.
 
