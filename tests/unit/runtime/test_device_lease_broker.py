@@ -10,11 +10,12 @@ import unittest
 import json
 import socket
 import subprocess
+import os
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tools/device-lease"))
-from broker import Broker, Device, DeviceRegistry, Refused
+from broker import Broker, Device, DeviceRegistry, Refused, process_identity
 from daemon import BrokerServer
 
 
@@ -24,6 +25,7 @@ class BrokerTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.path = Path(self.temp.name) / "leases.db"
         self.now = 100_000.0
+        self.claim_guard = threading.RLock()
         self.registry = DeviceRegistry(
             [
                 Device("a", ("usb-a", "192.0.2.1:5555"), restricted=False, identity_confirmed=True),
@@ -34,13 +36,17 @@ class BrokerTests(unittest.TestCase):
         self.broker = self.new_broker()
 
     def new_broker(self, **kwargs):
-        return Broker(
+        broker = Broker(
             self.path,
             self.registry,
             clock=lambda: self.now,
+            monotonic=lambda: self.now,
             admitted={"a": "usb-a", "b": "usb-b", "root-a": "root-a"},
             **kwargs,
         )
+        broker.admission_sources = {"artemis": lambda: [], "android": lambda: []}
+        broker.admission_guard = lambda: self.claim_guard
+        return broker
 
     def take(self, broker=None, **changes):
         request = dict(
@@ -295,6 +301,7 @@ class BrokerTests(unittest.TestCase):
                         pool="rig",
                         ttl=300,
                         idempotency_key="rpc",
+                        binding=process_identity(os.getpid()),
                     ),
                 }
             )
@@ -342,6 +349,12 @@ class BrokerTests(unittest.TestCase):
                     "2",
                     "--idempotency-key",
                     "cli",
+                    "--pid",
+                    str(os.getpid()),
+                    "--agent-id",
+                    "agent",
+                    "--issue-id",
+                    "CHE-fixture",
                 ],
                 capture_output=True,
                 text=True,
