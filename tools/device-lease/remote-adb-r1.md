@@ -1,7 +1,7 @@
 # Remote ADB R1: isolated-agent design
 
-Revision 2: closes CHE-4532 findings F1–F5 on network adbd bypass,
-feature replies, key replay, log redaction and loopback access enforcement.
+Revision 3: addresses CHE-4533 findings N1–N2 on persistent device state
+and device-network pivots, retaining the CHE-4532 F1–F5 corrections.
 This note specifies slice 5b (CHE-4513); it does not implement or enable R1.
 Live SSH, firewall, USB isolation and device execution are **NOT-RUN**.
 
@@ -120,6 +120,14 @@ network rules also deny device-originated access to shared port 5037.
 An allowed device shell/UI can enable network adbd or pair a key; service-name
 denials alone cannot stop that path. Direct network access stays denied even
 while the lease is active and after the gateway has closed.
+Require AP client isolation on the device-facing Wi-Fi segment and equivalent
+network-enforced isolation for every other device-facing interface. Deny
+device-to-device paths and device-originated routes to unrelated LAN services,
+including peer network adbd, on IPv4 and IPv6. A host firewall alone cannot
+control peers on the same AP. The leased device's shell is untrusted and can
+run a network client; the device network must enforce the boundary independently
+of that shell. Only explicit authorized control/service destinations may pass;
+no whole-LAN exception. Missing isolation makes the device ineligible for raw R1.
 A shared UID or access to a host container daemon is
 not an isolation boundary. Same-user local agents remain cooperative under
 DLP-1 Rule 1; this design does not claim they are isolated.
@@ -131,6 +139,14 @@ and attempted bypass results from the actual isolated runtime. Include the
 effective loopback owner rule: the tunnel UID can reach its registered gateway
 port, while an agent UID on the host or in a container cannot. Prove denial of
 device network adbd through every available route and dynamic port class.
+Include AP client isolation configuration and effective device-to-device paths:
+attempts from an authorized leased-device fixture to an unleased peer's fake
+adbd and unrelated LAN service must fail on IPv4 and IPv6. Cover alternate
+interfaces and routed paths, not only the AP setting. Record the permitted
+control/service destination positive control. Fixture evidence must show that
+the blocked peer service is reachable without isolation in a separate authorized
+test segment; never weaken a live segment. No device class is admitted on
+host-firewall evidence alone.
 Use a separately authorized positive control to prove the fixture is reachable
 when the isolation rule is absent; never remove live isolation for this check.
 Missing evidence
@@ -282,9 +298,37 @@ digests in protected recovery evidence, never private keys or personal data.
 Unknown state, a changed key set or an enabled network listener quarantines
 the device even if every recorded cleanup action succeeded. Do not remove
 unrecognized/pre-existing keys or reset network debugging automatically:
-recovery needs the named authorized owner and leader verification. Closing a
-gateway does not undo an unrecorded device pairing; the network denial in
-R1-I1 remains enforced during recovery and after release.
+recovery needs the named authorized owner and leader verification.
+
+The authorized pre-lease baseline and pre-`Eligible` verification must also
+cover persistent state that allowed shell, sync and package-install streams
+can leave behind. At minimum compare, for every relevant user/profile:
+
+- installed packages with signer/version, and runtime permissions and appop grants;
+- enabled accessibility services;
+- notification listeners, device admins, input methods and role holders;
+- global/secure/system settings;
+- shell-UID processes and processes absent from the baseline, using process
+  start identities rather than PIDs alone.
+
+An opaque raw shell cannot be trusted to report its own changes. Capture and
+compare this state through an authorized verifier outside the holder's control,
+after fencing and owned-work closure. Reconcile observed differences against
+recorded authorized changes and their verified cleanup, not holder assertions.
+Quarantine on any unexplained persistent-state difference or unavailable
+attestation, even if every tracked stream closed and the adb/key checks passed.
+Do not uninstall packages, kill unowned processes, reset settings or erase
+device data automatically. Recovery stays with the named authorized owner;
+leader verification is required before reuse. New or unowned persistent work
+cannot be accepted as a new baseline to clear quarantine.
+This attestation grants no root, new privacy access or personal-data inspection.
+Use protected state digests and minimal process identities, never app contents,
+command payloads or personal setting values in logs/evidence. If a device class
+cannot attest this state within its existing access/privacy grant, that class
+is ineligible for raw R1. A point-in-time debugging check alone is insufficient:
+unexplained persistent services or detached processes can re-enable debugging.
+Closing a gateway does not undo unrecorded device work or pairing; R1-I1
+network isolation remains enforced during recovery and after release.
 Only Cheese or ops may revoke (Rule 5); automated fencing does not grant
 agents arbitrary revoke or shared-server restart authority. Append redacted
 ticket/lease/fence/cleanup/verification events with ICT time, agent, run,
@@ -328,6 +372,8 @@ stream counts, close completion, byte counters and recovery state.
 | `malformed-fragmented-coalesced-frames` | Split every header/payload boundary; combine multiple valid frames; DENY malformed, zero/invalid length services, UTF-8/control/NUL violations, oversized or timed-out partials and bad upstream replies. Valid fragments/coalescing decode once, preserve order and cannot smuggle a denied second request. Assert deadline and byte/stream caps, no partial upstream write and released counters after close. | DLP-1 R1: Gateway; R1-G1, R1-G6 |
 | `global-controls-and-implicit-transport` | DENY host:kill, host:connect, host:disconnect, transport-any/usb/local/id, tport any/usb/local, unknown services, forwards and reverse. Check exact leased legacy/tport selection, raw 8-byte tport reply, host-serial metadata/wait and suffix/NUL attacks as positive/negative pairs; zero upstream writes for denied services. The `feature-intersection` assertion checks both feature replies against the approved set, including a sole unleased attached device and mixed leased capabilities; assert zero plain host:features upstream writes and no untested feature advertisement. | DLP-1 R1: Gateway; R1-G2–G5 |
 | `device-enabled-network-adbd` | Fake an unrestricted device enabling Wireless debugging, TCP adbd or adding a paired/authorized key through allowed shell/UI. DENY direct 5555 and dynamic pairing/connect traffic on every isolated-runtime route, both during and after the lease. An authorized isolated fixture positive control reaches the fake service without the deny rule. Verification requires off/off and unchanged key fingerprints; any changed or unavailable attestation quarantines, with no new grant until authorized recovery and leader verification. Ops separately proves the actual namespace/host and device-state evidence under R1-I2; the unit fake is not live isolation proof. | DLP-1 R1: Isolation; R1-I1–I2, R1-E2 |
+| `device-side-persistence` | Independently fake an installed package, enabled accessibility service, secure-setting mutation and detached shell-UID process after streams close. Each unexplained difference must quarantine and DENY regrant, even with off/off debugging and unchanged adb keys. Cover each remaining R1-E2 baseline category and unavailable attestation across users/profiles. Assert no automatic uninstall, unowned-process kill, setting reset or baseline adoption. A clean authorized baseline/release comparison plus leader verification is the positive control. Unit fakes are not device attestation proof. | DLP-1 R1: End of access; R1-E1–E2 |
+| `device-network-pivot` | Fake a leased device reaching an unleased peer's network adbd and unrelated LAN service. DENY both device-originated paths under AP/client and routed isolation, including IPv4/IPv6 and alternate interfaces; no host-only firewall assumption. An explicitly allowed control/service destination is the positive control. Ops separately supplies the authorized segment/fixture evidence in R1-I2; no live device execution occurs in slice 5b. | DLP-1 R1: Isolation; R1-I1–I2 |
 | `release-expiry-revoke-authority-change` | Open discovery, track, wait, unselected and selected/raw streams; trigger each end event with a fake clock. DENY new auth/channels/requests and close every existing stream/session at the fencing barrier. Race dispatch against fence; queued bytes cannot leak. Device work remains tracked; incomplete cleanup cannot regrant before leader verification. | DLP-1 R1: End of access; R1-E1–E2 |
 | `restart-reconcile` | Restart with active records, orphan SSH sessions, a stale generation and simulated PID/port reuse. DENY old bindings before any grant, close/reconcile every old path and quarantine unknown state. Repeat with broker-control loss and a clock jump. No B2 grace or automatic regrant. | DLP-1 R1: Broker restart; R1-B1 |
 

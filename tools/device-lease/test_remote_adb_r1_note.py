@@ -99,6 +99,25 @@ class RemoteAdbR1NoteTest(unittest.TestCase):
                 with self.subTest(finding=finding, clause=clause):
                     self.assertTrue(clause in self.note, f"Missing {finding} contract: {clause}")
 
+    def test_persistence_and_device_network_verification_are_explicit(self):
+        clauses = (
+            "installed packages with signer/version",
+            "runtime permissions and appop grants",
+            "enabled accessibility services",
+            "notification listeners, device admins, input methods and role holders",
+            "global/secure/system settings",
+            "shell-UID processes and processes absent from the baseline",
+            "Quarantine on any unexplained persistent-state difference",
+            "`device-side-persistence`",
+            "AP client isolation",
+            "device-to-device paths",
+        )
+        for clause in clauses:
+            with self.subTest(clause=clause):
+                self.assertTrue(
+                    clause in self.note, f"Missing persistence/network contract: {clause}"
+                )
+
 
 if __name__ == "__main__":
     unittest.main()
