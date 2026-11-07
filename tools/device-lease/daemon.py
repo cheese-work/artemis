@@ -13,6 +13,7 @@ from pathlib import Path
 import socket
 import socketserver
 import stat
+import subprocess
 import sys
 
 from broker import Broker, DeviceRegistry, Refused, process_identity
@@ -45,8 +46,9 @@ class Handler(socketserver.StreamRequestHandler):
 
 class BrokerServer(socketserver.UnixStreamServer):
     # ponytail: one bounded request at a time; add workers if measured load requires it.
-    def __init__(self, state_dir, broker):
+    def __init__(self, state_dir, broker, *, offer_worker=None):
         self.state_dir, self.broker = Path(state_dir), broker
+        self.offer_worker = offer_worker
         self.state_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
         info = self.state_dir.lstat()
         if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
@@ -95,13 +97,15 @@ class BrokerServer(socketserver.UnixStreamServer):
             "ticket-status": self.broker.ticket_status,
             "cancel-ticket": self.broker.cancel_ticket,
             "heartbeat": self.broker.heartbeat,
+            "park": self.broker.park,
+            "claim": self.broker.claim,
         }
         if not isinstance(request["op"], str) or request["op"] not in methods:
             raise Refused("invalid_request")
         method = methods[request["op"]]
         if not isinstance(request["args"], dict):
             raise Refused("invalid_request")
-        if request["op"] == "acquire":
+        if request["op"] in {"acquire", "claim"}:
             binding = request["args"].get("binding")
             if not isinstance(binding, dict) or binding.get("mode") != "local":
                 raise Refused("invalid_request")
@@ -114,6 +118,8 @@ class BrokerServer(socketserver.UnixStreamServer):
     def service_actions(self):
         # The owner loop stays foreground. It also maintains leases while clients are idle.
         self.broker.maintain()
+        if self.offer_worker is not None:
+            self.offer_worker.run_once()
 
     def server_close(self):
         if hasattr(self, "socket"):
@@ -148,6 +154,18 @@ def main(argv=None):
     serve = sub.add_parser("serve")
     serve.add_argument("--state-dir", type=Path, default=DEFAULT_STATE)
     serve.add_argument("--registry", type=Path)
+    serve.add_argument("--offer-property-id")
+    serve.add_argument("--multica-profile", help="dedicated ops-owned CLI profile")
+    wait = sub.add_parser("wait", help="one fallback poll, condition wakeup and final comment")
+    for flag in ("principal", "agent-id", "issue-id", "ticket", "offer-property-id"):
+        wait.add_argument(
+            f"--{flag}",
+            required=True,
+            dest="ticket_id" if flag == "ticket" else flag.replace("-", "_"),
+        )
+    wait.add_argument(
+        "--wakeup-block-file", type=Path, help="actual run [WAKEUP] block, if present"
+    )
     for op in (
         "acquire",
         "renew",
@@ -156,13 +174,20 @@ def main(argv=None):
         "heartbeat",
         "ticket-status",
         "cancel-ticket",
+        "park",
+        "claim",
     ):
         command = sub.add_parser(op)
         command.add_argument("--principal", required=True)
-        if op in ("ticket-status", "cancel-ticket"):
-            command.add_argument("--ticket-id", required=True)
+        if op in ("ticket-status", "cancel-ticket", "park", "claim"):
+            command.add_argument("--ticket", "--ticket-id", dest="ticket_id", required=True)
             command.add_argument("--agent-id", required=True)
             command.add_argument("--issue-id", required=True)
+            if op in {"park", "claim"}:
+                command.add_argument("--run-id", required=True)
+            if op == "claim":
+                command.add_argument("--pid", type=int, required=True)
+                command.add_argument("--idempotency-key", required=True)
             continue
         command.add_argument("--run-id", required=True)
         if op == "acquire":
@@ -195,16 +220,46 @@ def main(argv=None):
             # Closed until ops composes trusted grants/readiness, both admission sources
             # with their shared guard, and a deadline-bounded recovery adapter.
             broker = Broker(state / "leases.sqlite3", registry)
+            if bool(args["multica_profile"]) != bool(args["offer_property_id"]):
+                raise ValueError("offer property and ops profile must be configured together")
+            from resume import MulticaClient, OfferWorker
+
+            # Validate private directory/socket ownership before enabling the capability.
             with BrokerServer(state, broker) as server:
+                if args["multica_profile"]:
+                    client = MulticaClient(
+                        profile=args["multica_profile"], audit_path=state / "capabilities.jsonl"
+                    )
+                    server.offer_worker = OfferWorker(broker, client, args["offer_property_id"])
                 server.serve_forever()
             return 0
-        if op == "acquire":
+        if op == "wait":
+            from resume import MulticaClient, fallback_wait
+
+            class TicketClient:
+                def ticket_status(self, **identity):
+                    result = rpc(socket_path, {"op": "ticket-status", "args": identity})
+                    if "code" in result:
+                        raise Refused(result["code"])
+                    return result
+
+            block_file = args.pop("wakeup_block_file")
+            response = fallback_wait(
+                TicketClient(),
+                MulticaClient(),
+                args.pop("offer_property_id"),
+                **args,
+                wakeup_block=block_file.read_text() if block_file else "",
+            )
+            print(json.dumps(response))
+            return 0
+        if op in {"acquire", "claim"}:
             args["binding"] = process_identity(args.pop("pid"))
         response = rpc(socket_path, {"op": op, "args": args})
         print(json.dumps(response))
         return 1 if "code" in response else 0
     except KeyboardInterrupt:
         return 0
-    except (OSError, ValueError, RuntimeError):
+    except (OSError, ValueError, RuntimeError, Refused, subprocess.SubprocessError):
         print("device-lease: broker unavailable or invalid configuration", file=sys.stderr)
         return 2
