@@ -512,6 +512,11 @@ class RemoteAccess:
         if self.monitor is not None:
             self.monitor.cancel()
             await asyncio.gather(self.monitor, return_exceptions=True)
+        # A replacement owner may have closed the durable row while this owner
+        # still holds its listener, timer and process-budget reservation.
+        for binding, tunnel in list(self.tunnels.items()):
+            if tunnel.control_reserved:
+                await self.fence(binding)
         await self.reconcile()
         self.ready = False
 

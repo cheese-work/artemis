@@ -25,6 +25,7 @@ for name, directory in (
         sys.modules[name] = package
 
 from artemis.runtime.adb_gateway import pack_message
+from artemis.runtime.host_mux import PROCESS_BUDGET
 from remote_adb import LeaseGateway, RemoteAccess
 
 
@@ -314,6 +315,7 @@ class Listener:
 
 class AccessTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
+        self.process_budget_before = PROCESS_BUDGET.used
         real_connect = sqlite3.connect
 
         def connect_without_flush(*args, **kwargs):
@@ -387,6 +389,7 @@ class AccessTests(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self):
         if hasattr(self.access, "close"):
             await self.access.close()
+        self.assertEqual(PROCESS_BUDGET.used, self.process_budget_before)
 
     async def test_stale_key_after_reacquire_and_durable_fingerprint_replay(self):
         old, session = await self.session()
@@ -685,7 +688,6 @@ class AccessTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_tunnel_budgets_return_to_zero_after_fencing(self):
         from artemis.runtime.host_protocol import CONTRACT
-        from artemis.runtime.host_mux import PROCESS_BUDGET
 
         start = PROCESS_BUDGET.used
         binding, _ = await self.session()
