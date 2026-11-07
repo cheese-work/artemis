@@ -86,6 +86,78 @@ async def exchange(payload, gateway=None, remote=None):
 
 
 class GatewayTests(unittest.IsolatedAsyncioTestCase):
+    async def test_large_raw_stream_uses_backpressure_without_losing_bytes(self):
+        from remote_adb import listen_loopback
+
+        payload = bytes(range(256)) * 4096
+        received = bytearray()
+        outcome = asyncio.get_running_loop().create_future()
+
+        async def echo(reader, writer):
+            try:
+                while len(received) < len(payload):
+                    chunk = await reader.read(8192)
+                    if not chunk:
+                        break
+                    received.extend(chunk)
+                    writer.write(chunk)
+                    await writer.drain()
+                outcome.set_result(True)
+            except Exception:
+                outcome.set_result(False)
+            finally:
+                writer.close()
+                await writer.wait_closed()
+
+        server = await listen_loopback(echo, "127.0.0.1", 0)
+        reader, writer = await asyncio.open_connection(
+            "127.0.0.1", server.sockets[0].getsockname()[1]
+        )
+        try:
+            writer.write(payload)
+
+            async def consume():
+                try:
+                    return await reader.readexactly(len(payload))
+                except (asyncio.IncompleteReadError, ConnectionError):
+                    return b""
+
+            _, returned = await asyncio.wait_for(asyncio.gather(writer.drain(), consume()), 2)
+            self.assertTrue(await outcome, "large raw bursts must not abort the bounded reader")
+            self.assertEqual(bytes(received), payload)
+            self.assertEqual(returned, payload)
+        finally:
+            writer.close()
+            await asyncio.gather(writer.wait_closed(), return_exceptions=True)
+            server.close()
+            await server.wait_closed()
+
+    async def test_shared_stream_closure_has_a_deadline_and_aborts_stalled_writer(self):
+        from artemis.runtime.stream_owner import StreamOwner
+
+        class Stalled(Writer):
+            async def wait_closed(self):
+                await asyncio.Future()
+
+        writer = Stalled()
+        aborted = []
+        writer.transport = types.SimpleNamespace(abort=lambda: aborted.append(True))
+        owner = StreamOwner()
+        owner.clients[writer] = None
+        with patch("artemis.runtime.stream_owner.CLOSE_SECONDS", 0.01, create=True):
+            task = asyncio.create_task(owner.close_streams())
+            try:
+                try:
+                    result = await asyncio.wait_for(asyncio.shield(task), 0.1)
+                except TimeoutError:
+                    self.fail("B2/R1 shared close exceeded its deadline")
+                self.assertIs(result, False)
+                self.assertTrue(writer.closed)
+                self.assertEqual(aborted, [True])
+            finally:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+
     async def test_partial_request_and_upstream_status_share_one_completion_deadline(self):
         class PartialRemote(Remote):
             async def write(self, data):
@@ -327,6 +399,65 @@ class AccessTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(session, self.ops.stopped)
         self.assertFalse(self.access.valid(old["id"]))
 
+    async def test_concurrent_old_key_registration_cannot_race_fence_or_reacquire(self):
+        old, _ = await self.session()
+        results = await asyncio.gather(
+            self.access.fence(old["id"]),
+            *(self.access.issue(self.identity, key(1)) for _ in range(8)),
+        )
+        self.assertIs(results[0], True)
+        self.assertEqual(results[1:], [None] * 8)
+        self.snapshot["lease"] = self.identity["lease"] = "lease-2"
+        fresh = await self.issue(2)
+        self.assertNotEqual(old["id"], fresh["id"])
+        self.assertEqual(
+            await asyncio.gather(*(self.access.issue(self.identity, key(1)) for _ in range(8))),
+            [None] * 8,
+        )
+        with self.access.db() as conn:
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM r1_keys").fetchone()[0], 2)
+
+    async def test_restart_clock_jumps_never_bypass_session_reconciliation(self):
+        _, session = await self.session()
+        for now in (900, 1500):
+            self.now = now
+            other = RemoteAccess(
+                self.path,
+                resolve=lambda identity: dict(self.snapshot),
+                ops=self.ops,
+                quarantine=lambda lease: self.quarantined.append(lease),
+                clock=lambda: self.now,
+            )
+            try:
+                self.assertIsNone(await other.issue(self.identity, key(2)))
+                self.assertTrue(await other.reconcile())
+                self.assertIn(session, self.ops.stopped)
+                self.assertIsNone(await other.issue(self.identity, key(1)))
+            finally:
+                await other.close()
+
+    async def test_reused_pid_and_uncertain_destination_cannot_be_retired_or_reissued(self):
+        first, session = await self.session()
+        current_process = dict(session, start="reused-pid-new-start")
+        killed = []
+
+        async def identity_checked_stop(recorded):
+            self.assertEqual(recorded, session, "owner receives the durable original identity")
+            if recorded != current_process:
+                return False  # conservative adapter: closure cannot be confirmed
+            killed.append(current_process)
+            return True
+
+        self.ops.stop = identity_checked_stop
+        self.assertFalse(await self.access.fence(first["id"]))
+        self.assertEqual(killed, [])
+        self.assertNotIn(first["port"], self.ops.retired)
+        self.snapshot["lease"] = self.identity["lease"] = "lease-2"
+        self.ops.port = first["port"] - 1  # faulty reserve attempts the still-owned destination
+        self.assertIsNone(await self.access.issue(self.identity, key(2)))
+        self.assertNotIn(first["port"], self.ops.retired)
+        self.assertIn("lease-1", self.quarantined)
+
     async def test_nat_shared_node_missing_wrong_or_other_run_key_never_authenticates(self):
         binding, session = await self.session()
         for credential in ("", "lease-1", key(2)):
@@ -452,6 +583,68 @@ class AccessTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(await self.access.fence(binding["id"]))
         self.assertIn("lease-1", self.quarantined)
         self.assertNotIn(binding["port"], self.ops.retired)
+
+    async def test_monitor_survives_quarantine_failure_and_fences_another_lease(self):
+        first, session1 = await self.session()
+        snapshots = {self.identity["lease"]: dict(self.snapshot)}
+        self.snapshot["lease"] = self.identity["lease"] = "lease-2"
+        snapshots["lease-2"] = self.snapshot
+        self.access.resolve = lambda identity: dict(snapshots[identity["lease"]])
+        second, session2 = await self.session(2)
+        original = self.access.quarantine
+        stop = self.ops.stop
+
+        async def selective_stop(session):
+            await stop(session)
+            return session != session1
+
+        def broken_quarantine(lease):
+            raise OSError("control unavailable")
+
+        self.ops.stop = selective_stop
+        self.access.quarantine = broken_quarantine
+        try:
+            snapshots["lease-1"]["live"] = False
+            await asyncio.sleep(0.12)
+            self.assertFalse(
+                self.access.monitor.done(), "one failed quarantine cannot stop monitoring"
+            )
+            self.assertFalse(self.access.ready, "unconfirmed quarantine closes admission")
+            snapshots["lease-2"]["live"] = False
+            await asyncio.sleep(0.12)
+            self.assertIn(session2, self.ops.stopped)
+            self.assertNotIn(second["id"], self.ops.keys)
+            self.assertFalse(self.access.valid(first["id"]))
+        finally:
+            self.ops.stop = stop
+            self.access.quarantine = original
+
+    async def test_database_finalize_failure_reports_unconfirmed_fence(self):
+        from contextlib import contextmanager
+
+        binding, _ = await self.session()
+        original = self.access.db
+
+        @contextmanager
+        def failing_db():
+            with original() as conn:
+
+                class Broken:
+                    def execute(self, sql, *args):
+                        if "phase='closed'" in sql:
+                            raise sqlite3.OperationalError("commit unavailable")
+                        return conn.execute(sql, *args)
+
+                yield Broken()
+
+        with patch.object(self.access, "db", failing_db):
+            try:
+                result = await self.access.fence(binding["id"])
+            except sqlite3.Error:
+                result = "raised"
+        self.assertIs(result, False, "failed durable close must quarantine and report failure")
+        self.assertFalse(self.access.ready)
+        self.assertIn("lease-1", self.quarantined)
 
     async def test_observed_policy_loss_never_revives_a_credential(self):
         binding = await self.issue()

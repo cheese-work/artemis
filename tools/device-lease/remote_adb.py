@@ -12,6 +12,7 @@ import base64
 from contextlib import contextmanager
 import hashlib
 import json
+import logging
 import math
 import os
 from pathlib import Path
@@ -27,6 +28,7 @@ from artemis.runtime.host_peer import SocketRemote
 from artemis.runtime.host_protocol import CONTRACT, ProtocolError
 from artemis.runtime.stream_owner import StreamOwner
 
+logger = logging.getLogger(__name__)
 IDENTITY = ("principal", "agent", "issue", "run", "lease")
 SSH_SERVER_POLICY = """AllowTcpForwarding local
 AllowStreamLocalForwarding no
@@ -118,10 +120,28 @@ class BoundedReader(asyncio.StreamReader):
         super().feed_data(data)
 
 
+class BoundedProtocol(asyncio.StreamReaderProtocol, asyncio.BufferedProtocol):
+    """Fixed receive chunks let StreamReader pause before its hard buffer ceiling.
+
+    A normal socket transport may deliver 256 KiB in one data_received call.
+    BufferedProtocol limits each receive without changing private transport fields.
+    """
+
+    def __init__(self, reader, callback=None):
+        super().__init__(reader, callback)
+        self.receive_buffer = bytearray(8192)
+
+    def get_buffer(self, sizehint):
+        return self.receive_buffer
+
+    def buffer_updated(self, nbytes):
+        self.data_received(memoryview(self.receive_buffer)[:nbytes])
+
+
 async def listen_loopback(callback, host, port, **kwargs):
     loop = asyncio.get_running_loop()
     return await loop.create_server(
-        lambda: asyncio.StreamReaderProtocol(BoundedReader(), callback),
+        lambda: BoundedProtocol(BoundedReader(), callback),
         host,
         port,
         backlog=CONTRACT.max_streams,
@@ -131,7 +151,7 @@ async def listen_loopback(callback, host, port, **kwargs):
 async def connect_adb():
     loop = asyncio.get_running_loop()
     reader = BoundedReader()
-    protocol = asyncio.StreamReaderProtocol(reader)
+    protocol = BoundedProtocol(reader)
     transport, _ = await loop.create_connection(lambda: protocol, "127.0.0.1", 5037)
     transport.set_write_buffer_limits(high=0, low=0)
     return SocketRemote(reader, asyncio.StreamWriter(transport, protocol, reader, loop))
@@ -171,6 +191,7 @@ class RemoteAccess:
         self.lock = asyncio.Lock()
         self.tunnels = {}
         self.dead = set()
+        self.unconfirmed = set()
         self.closed = False
         self.monitor = None
         self.ready = False
@@ -411,10 +432,14 @@ class RemoteAccess:
         except Exception:
             ok = False
         if ok:
-            with self.db() as conn:
-                conn.execute("DELETE FROM r1_sessions WHERE binding=?", (binding,))
-                conn.execute("UPDATE r1_keys SET phase='closed' WHERE id=?", (binding,))
-        else:
+            try:
+                with self.db() as conn:
+                    conn.execute("DELETE FROM r1_sessions WHERE binding=?", (binding,))
+                    conn.execute("UPDATE r1_keys SET phase='closed' WHERE id=?", (binding,))
+                self.unconfirmed.discard(binding)
+            except Exception:
+                self.ready, ok = False, False
+        if not ok:
             lease = (
                 json.loads(row["identity"])["lease"]
                 if row
@@ -422,24 +447,43 @@ class RemoteAccess:
                 if tunnel
                 else None
             )
-            self.quarantine(lease)
+            try:
+                self.quarantine(lease)
+            except Exception:
+                self.ready = False
+                if binding not in self.unconfirmed:
+                    logger.error("event=r1_quarantine_unconfirmed")
+                self.unconfirmed.add(binding)
         return ok
 
     async def maintain(self):
         try:
             with self.db() as conn:
-                active = [r[0] for r in conn.execute("SELECT id FROM r1_keys WHERE phase='active'")]
+                active = [
+                    r[0]
+                    for r in conn.execute(
+                        "SELECT id FROM r1_keys WHERE phase IN ('active','revoked')"
+                    )
+                ]
         except Exception:
             self.ready = False
             active = list(self.tunnels)
         for binding in active:
-            if not self.valid(binding):
-                await self.fence(binding)
+            try:
+                if not self.valid(binding):
+                    await self.fence(binding)
+            except Exception:
+                self.ready = False
+                logger.error("event=r1_fence_unconfirmed")
 
     async def _monitor(self):
         while not self.closed:
             await asyncio.sleep(0.05)
-            await self.maintain()
+            try:
+                await self.maintain()
+            except Exception:
+                self.ready = False
+                logger.error("event=r1_monitor_unconfirmed")
 
     async def fence_lease(self, lease):
         """Owner event hook for release/revoke/policy/authority/control-loss barriers."""

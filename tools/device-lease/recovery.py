@@ -89,6 +89,8 @@ def recover_pending(broker):
             # R1's independent device-state comparison runs after all recorded undo.
             # Legacy local adapters have no raw-remote attestation contract.
             verify_state = getattr(broker.recovery_io, "verify_state", None)
+            if group["binding"].get("mode") == "remote" and not callable(verify_state):
+                raise RuntimeError("remote release attestation unavailable")
             if verify_state is not None and (
                 remaining() <= 0 or verify_state(group, timeout=remaining()) is not True
             ):

@@ -130,8 +130,47 @@ class RemoteRecovery:
         return self.owned.undo(group, change, timeout=timeout)
 
     def verify_state(self, group, *, timeout):
-        for device in group["devices"]:
-            evidence = self.inspection(group, device["device_id"], timeout=timeout)
-            if not verified(evidence["profile"], evidence["baseline"], evidence["observed"]):
+        try:
+            # Fencing retains the admission snapshots. Never re-learn a baseline
+            # from release-time inspection or from the now-inactive live resolver.
+            admitted = []
+            with self.access.db() as conn:
+                for row in conn.execute("SELECT identity,snapshot,phase FROM r1_keys"):
+                    identity = json.loads(row["identity"])
+                    if all(
+                        identity[k] == group[v]
+                        for k, v in (
+                            ("lease", "lease_id"),
+                            ("principal", "holder"),
+                            ("run", "run_id"),
+                        )
+                    ):
+                        frozen = json.loads(row["snapshot"])
+                        if row["phase"] != "closed" or any(
+                            frozen[k] != value for k, value in identity.items()
+                        ):
+                            return False
+                        admitted.append(frozen)
+            if not admitted:
                 return False
-        return True
+            devices = {d["device_id"]: d["endpoint"] for d in group["devices"]}
+            evidence = {}
+            for canonical in devices:
+                item = self.inspection(group, canonical, timeout=timeout)
+                if not verified(item["profile"], item["baseline"], item["observed"]):
+                    return False
+                evidence[canonical] = (
+                    digest(item["profile"]),
+                    attest(item["profile"], item["baseline"]),
+                )
+            # Every rotation of this run/lease must agree with the frozen evidence.
+            for frozen in admitted:
+                if {d[0]: d[1] for d in frozen["devices"]} != devices:
+                    return False
+                profiles = [(d[0], evidence[d[0]][0]) for d in frozen["devices"]]
+                baselines = [(d[0], evidence[d[0]][1]) for d in frozen["devices"]]
+                if digest(profiles) != frozen["profile"] or digest(baselines) != frozen["baseline"]:
+                    return False
+            return True
+        except Exception:
+            return False

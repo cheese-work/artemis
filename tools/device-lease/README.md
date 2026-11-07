@@ -378,6 +378,12 @@ For recovery, wrap the existing owned-work adapter in
 gateway event loop and SQLite writer transaction. Gateway/session closure comes
 before stopping owned device work. After recorded undo, `verify_state` compares
 independent post-cleanup evidence with the protected pre-lease baseline.
+The comparison also checks the profile and baseline digests retained in every
+credential admission snapshot for that principal/run/lease. All bindings must be
+closed and the canonical device mapping must agree. Missing history or a changed
+release-time baseline/profile refuses reuse, even when the new baseline equals
+the observed state. Remote-mode recovery requires `verify_state`; an adapter
+without that method quarantines instead of falling back to local recovery.
 `remote_attestation.py` requires all reviewed reachable state classes, the complete
 user/profile set, off/off network debugging and unchanged key fingerprints.
 It pins build, services, privacy grant and verifier/normalization implementation.
@@ -405,6 +411,12 @@ buffer cap before buffering; drained writes apply backpressure. Fencing awaits
 listener/client/task closure and returns every reservation. Unconfirmed closure
 quarantines and does not retire the port. Logs contain a service family/decision,
 never request strings, command arguments, sync paths or private credentials.
+The socket protocol uses fixed 8 KiB receive buffers so flow control pauses before
+the hard text-buffer ceiling, including during large raw transfers. Shared B2/R1
+closure has a 5 s deadline and aborts stalled client transports on timeout.
+The monitor contains each fence failure and retries revoked bindings. A failed
+quarantine callback or durable close write closes admission. Quarantine callback
+failures remain in the owner's `unconfirmed` set and emit a payload-free event.
 
 Run the standalone fake checks from the repository root:
 

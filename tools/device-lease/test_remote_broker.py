@@ -1,6 +1,8 @@
 """Real broker domain, synthetic identity, device policy and recovery I/O."""
 
 from pathlib import Path
+import asyncio
+import copy
 import sys
 import unittest
 from unittest.mock import patch
@@ -11,7 +13,9 @@ sys.path.insert(0, str(ROOT / "tests/unit/runtime"))
 import test_device_lease_broker as fixtures
 from test_device_lease_recovery import FakeRecovery
 import test_remote_attestation as attestation_fixtures
-from remote_broker import BrokerAdmission
+from remote_broker import BrokerAdmission, RemoteRecovery
+from test_remote_adb import SSH, Listener, key
+from remote_adb import RemoteAccess
 
 
 class BrokerRemoteTests(unittest.TestCase):
@@ -83,6 +87,65 @@ class BrokerRemoteTests(unittest.TestCase):
             lease_id=self.group["lease_id"], principal="agent", run_id="run-1"
         )
         self.assertEqual(group["state"], "quarantine")
+
+    def test_remote_recovery_requires_independent_attestation_adapter(self):
+        self.broker.recovery_io = FakeRecovery()  # deliberately has no verify_state
+        self.broker.recovery_owner, self.broker.ops_issue = "owner", "CHE-recovery"
+        self.broker.release(lease_id=self.group["lease_id"], principal="agent", run_id="run-1")
+        self.broker.maintain()
+        group = self.broker.status(
+            lease_id=self.group["lease_id"], principal="agent", run_id="run-1"
+        )
+        self.assertEqual(group["state"], "quarantine", "remote attestation cannot be skipped")
+
+    def test_release_evidence_must_match_durable_admission_not_a_new_baseline(self):
+        async def listen(*args):
+            return Listener()
+
+        async def admit():
+            access = RemoteAccess(
+                Path(self.temp.name) / "keys.db",
+                resolve=self.resolver,
+                ops=SSH(),
+                quarantine=lambda lease: None,
+                clock=lambda: self.now,
+                listen=listen,
+                bootstrap=True,
+            )
+            self.assertIsNotNone(await access.issue(self.identity, key(1)))
+            await access.close()  # release verification must use retained history after fencing
+            return access
+
+        access = asyncio.run(admit())
+        clean = dict(
+            profile=self.policy["profile"],
+            baseline=self.policy["baseline"],
+            observed=copy.deepcopy(self.policy["baseline"]),
+        )
+        recovery = RemoteRecovery(access, None, FakeRecovery(), inspection=lambda *a, **kw: clean)
+        self.assertTrue(recovery.verify_state(self.group, timeout=1), "pinned clean state passes")
+        for change in ("baseline", "profile"):
+            evidence = copy.deepcopy(clean)
+            if change == "baseline":
+                user = next(iter(evidence["baseline"]["users"]))
+                evidence["baseline"]["users"][user]["packages"] = "planted-post-lease-state"
+                evidence["observed"] = copy.deepcopy(evidence["baseline"])
+            else:
+                evidence["profile"]["review"] = "different-release-time-profile"
+            recovery.inspection = lambda *a, **kw: evidence
+            with self.subTest(change=change):
+                self.assertFalse(recovery.verify_state(self.group, timeout=1))
+        recovery.inspection = lambda *a, **kw: clean
+        for field in ("lease_id", "run_id", "holder"):
+            with self.subTest(wrong_group=field):
+                self.assertFalse(
+                    recovery.verify_state(dict(self.group, **{field: "other"}), timeout=1)
+                )
+        with access.db() as conn:
+            conn.execute("DELETE FROM r1_keys")
+        self.assertFalse(
+            recovery.verify_state(self.group, timeout=1), "missing history denies reuse"
+        )
 
 
 if __name__ == "__main__":
