@@ -76,6 +76,29 @@ class RemoteAdbR1NoteTest(unittest.TestCase):
         ):
             self.assertIn(required, self.note)
 
+    def test_security_review_corrections_have_explicit_contracts(self):
+        requirements = {
+            "F1": (
+                "deny every direct route to device-facing networks",
+                "Wireless debugging is off",
+                "TCP adbd is off",
+                "paired/authorized adb key fingerprints match the pre-lease baseline",
+                "`device-enabled-network-adbd`",
+            ),
+            "F2": (
+                "Synthesize both feature replies from the per-lease approved set",
+                "Never send plain `host:features` upstream",
+                "feature-intersection",
+            ),
+            "F3": ("Reject any public-key fingerprint ever bound before", "old-key-registration"),
+            "F4": ("log only the service family and decision", "payload-log-redaction"),
+            "F5": ("loopback OUTPUT owner match", "tunnel account UID"),
+        }
+        for finding, clauses in requirements.items():
+            for clause in clauses:
+                with self.subTest(finding=finding, clause=clause):
+                    self.assertTrue(clause in self.note, f"Missing {finding} contract: {clause}")
+
 
 if __name__ == "__main__":
     unittest.main()

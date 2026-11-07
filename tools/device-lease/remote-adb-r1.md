@@ -1,6 +1,7 @@
 # Remote ADB R1: isolated-agent design
 
-Revision 1: initial design for CHE-4512, slice 5a of CHE-4285.
+Revision 2: closes CHE-4532 findings F1–F5 on network adbd bypass,
+feature replies, key replay, log redaction and loopback access enforcement.
 This note specifies slice 5b (CHE-4513); it does not implement or enable R1.
 Live SSH, firewall, USB isolation and device execution are **NOT-RUN**.
 
@@ -50,6 +51,12 @@ Dispose of the run's private key at end of access; deletion alone is not fencing
 **R1-A3 — Never revive old credentials.** (DLP-1 R1: Authentication)
 Reacquire, successor claim and authority change require a fresh key and listener
 binding, even for the same principal, device or run. Never reassign an old key.
+Reject any public-key fingerprint ever bound before, including a key submitted
+again by its former principal. Keep durable fingerprint tombstones across
+release, restart and authority migration; an unavailable replay history fails
+closed. The tombstone check and new binding are atomic, so concurrent key
+registration cannot reuse a fingerprint. An idempotent retry returns only the
+existing still-active binding; it cannot register the key for another lease.
 Credential expiry is no later than the lease expiry and hard cap; renew cannot
 extend it silently. An authenticated successful renew can issue a replacement
 key, invalidate the old key and close its sessions before retiring its listener.
@@ -92,19 +99,41 @@ network/admin capabilities and no mounts of host sockets, credentials, ADB
 keys or `/dev/bus/usb`. Device permissions/cgroups deny USB; agents cannot join
 the ADB-authorized group or tunnel account. Host rules reject agent traffic
 to port 5037 on every host interface, address family, bridge and host-gateway
-alias, and reject direct access to per-run gateway ports. Remote agents get
+alias. Enforce a host loopback OUTPUT owner match for the registered gateway
+ports: allow only the tunnel account UID, then reject every other UID on
+IPv4/IPv6 loopback, including ordinary host processes outside containers.
+Agent runtimes cannot become that UID or change these ops-owned rules.
+Reserve ports and install the rule before listening; retain it through session
+reconciliation and port retirement. Remote agents get
 only the constrained SSH ingress, never exposed ADB or gateway listeners.
 Run namespaces also deny ingress from other runs to local-forward listeners,
 even if an agent binds a local forward to a non-loopback address.
-Include device-facing networks in the 5037 denial boundary to prevent a
-device-routed bypass. A shared UID or access to a host container daemon is
+Also deny every direct route to device-facing networks from isolated agents,
+including port 5555 and all dynamic wireless-debugging pairing/connect ports.
+Cover IPv4, IPv6, LAN, bridge NAT, tailnet, aliases and alternate interfaces.
+Use host-controlled default-deny egress with explicit broker/control/service
+exceptions, never an exception for an entire device-facing address or subnet.
+Only the constrained SSH service is reachable on a host that also routes to
+devices. Apply the equivalent boundary at remote isolated-runner hosts; a
+runner whose routes cannot be controlled is not admitted to R1. Device-facing
+network rules also deny device-originated access to shared port 5037.
+An allowed device shell/UI can enable network adbd or pair a key; service-name
+denials alone cannot stop that path. Direct network access stays denied even
+while the lease is active and after the gateway has closed.
+A shared UID or access to a host container daemon is
 not an isolation boundary. Same-user local agents remain cooperative under
 DLP-1 Rule 1; this design does not claim they are isolated.
 
 **R1-I2 — Prove the deployment boundary separately.** (DLP-1 R1: Isolation)
 Slice 5b uses fakes for control/data paths. Before live isolated-agent rollout,
 ops must provide effective SSH restrictions, network/device permission evidence
-and attempted bypass results from the actual isolated runtime. Missing evidence
+and attempted bypass results from the actual isolated runtime. Include the
+effective loopback owner rule: the tunnel UID can reach its registered gateway
+port, while an agent UID on the host or in a container cannot. Prove denial of
+device network adbd through every available route and dynamic port class.
+Use a separately authorized positive control to prove the fixture is reachable
+when the isolation rule is absent; never remove live isolation for this check.
+Missing evidence
 means R1 is disabled, not an insecure direct-connect fallback. No live device
 probe is authorized by this note; device work follows Android squad admission,
 claim, scoped grant, immutable testcase review and executor rules.
@@ -119,6 +148,11 @@ Reuse stream ownership and closure from
 `tasks`, listener close, cancellation and close completion. Add the lease
 authorization/policy hook in the shared path with existing callers preserved;
 the lease adapter supplies authorization, not another smart-socket decoder.
+For R1, log only the service family and decision, with permitted lease/run
+identifiers. Replace the reused relay's `service[:128]` denial logging in the
+R1 path; sanitizing only the audit sink is insufficient. Never log raw service
+strings, shell/exec arguments, sync paths or parser error payloads on any
+allow/deny/error path. Test application logs as well as the audit output.
 No shared symbol changes occur in slice 5a.
 
 At source base `41374d3d17888f968b4cefa095ac8e36f627e4ec`, `Gateway` filters
@@ -143,11 +177,13 @@ The table applies only after R1-A2, R1-G2 and the restricted-device check below.
 
 | Phase/service | R1 decision and response contract |
 | --- | --- |
-| `host:version`, `host:features` | Allow bounded metadata; advertise only the supported feature intersection. |
+| `host:version` | Allow bounded server protocol metadata. |
+| `host:features` | Synthesize the bounded reply locally from the per-lease approved feature set (R1-G5). No implicit upstream device selection. |
 | `host:devices`, `host:devices-l`, `host:track-devices`, `host:track-devices-l` | Allow; filter every snapshot/update, including removal and empty lists. Track streams remain owned by the lease even before serial selection. |
 | `host:transport:<serial>` | Allow validated explicit selection; `OKAY`, then device service. |
 | `host:tport:serial:<serial>` | Allow validated explicit selection; `OKAY` plus exactly 8 raw transport-id bytes, then device service. Never accept the returned id as a later selector. |
-| `host-serial:<serial>:features`, `get-state`, `get-serialno` | Allow exact scoped commands; bounded length-prefixed reply. Parse serials containing `:` with the existing parser. |
+| `host-serial:<serial>:features` | Validate the explicit leased mapping and synthesize the bounded per-lease approved reply (R1-G5), never pass upstream features through. |
+| `host-serial:<serial>:get-state`, `host-serial:<serial>:get-serialno` | Allow exact scoped commands; bounded length-prefixed reply. Parse serials containing `:` with the existing parser. |
 | `host-serial:<serial>:wait-for-*` | Allow only the existing `_WAIT_SERVICE` grammar, still scoped to the exact serial. Relay the second `OKAY` or bounded `FAIL`; expiry cancels a pending wait. No global wait or suffix injection. |
 | After selection: `shell:`, `shell,`, `exec:`, `abb_exec:`, `sync:`, `framebuffer:` | Allow only on an unrestricted, granted device. NUL-separated `abb_exec:` arguments are allowed only as already parsed after explicit selection; metadata and other commands reject NUL. Device streams remain revocable after raw relay begins. |
 | After selection: `tcp:`, `localabstract:` | Deny in the initial R1 profile; the shared B2 gateway's broader allowance does not opt these into R1. A later explicit scoped service policy needs review. |
@@ -174,7 +210,16 @@ scoped metadata/wait, legacy shell, shell v2, exec-out, sync and package-install
 streams on unrestricted devices. R1 starts with an empty advertised optional
 feature set (legacy fallback). Add `shell_v2`, `cmd`, `stat_v2` or `abb_exec`
 advertisement only after slice 5b tests the negotiated path end to end; never
-pass upstream feature lists through unchanged. Do not advertise forwarding,
+pass upstream feature lists through unchanged.
+Synthesize both feature replies from the per-lease approved set.
+Never send plain `host:features` upstream: the server can select an arbitrary
+attached device. Compute optional features as the intersection of tested R1
+features and explicitly queried, validated leased-device capabilities. The
+unscoped reply uses the intersection across the authorized lease group; the
+scoped reply uses that serial's approved intersection. Empty/unknown mappings
+yield an empty local set or denial, never capabilities from an unleased device.
+No upstream feature discovery is needed while the approved set is empty.
+Do not advertise forwarding,
 reverse forwarding or automatic reconnect. Device TCP/localabstract consumers
 such as uiautomator2's HTTP connection are outside this initial R1 profile;
 this note does not claim full Artemis/uiautomator2 workflow compatibility.
@@ -225,6 +270,21 @@ failed closure, cleanup or verification sends the device to `Quarantine`
 with a named recovery owner. The 2 min fencing/cleanup budget never returns
 a device to `Eligible` automatically. Keep `Cleaning` then `Verifying` until
 the Android squad leader verifies release under DLP-1 Rules 8–10.
+Before granting raw access, obtain an authorized pre-lease attestation that
+Wireless debugging is off, TCP adbd is off and the paired/authorized adb key
+fingerprints form the known baseline. Missing access to attest these facts
+makes the device ineligible for raw R1; this does not authorize root, new
+privacy access or inspection of unrelated device data. Before `Eligible`,
+verify that Wireless debugging is off and TCP adbd is off again, and that
+paired/authorized adb key fingerprints match the pre-lease baseline.
+Attest all relevant device users/profiles; store only state and fingerprint
+digests in protected recovery evidence, never private keys or personal data.
+Unknown state, a changed key set or an enabled network listener quarantines
+the device even if every recorded cleanup action succeeded. Do not remove
+unrecognized/pre-existing keys or reset network debugging automatically:
+recovery needs the named authorized owner and leader verification. Closing a
+gateway does not undo an unrecorded device pairing; the network denial in
+R1-I1 remains enforced during recovery and after release.
 Only Cheese or ops may revoke (Rule 5); automated fencing does not grant
 agents arbitrary revoke or shared-server restart authority. Append redacted
 ticket/lease/fence/cleanup/verification events with ICT time, agent, run,
@@ -262,11 +322,12 @@ stream counts, close completion, byte counters and recovery state.
 
 | Case id | Setup and decisive assertions | Source |
 | --- | --- | --- |
-| `stale-credential-after-reacquire` | Reacquire the same device/run with a fresh key. DENY the old key and old SSH session, including a new channel on that session; no upstream write. Accept the new key only for its current tuple. Also alter principal, issue, run, devices, expiry and generation individually; each mismatch denies. | DLP-1 R1: Authentication; R1-A1–A3 |
+| `stale-credential-after-reacquire` | Reacquire the same device/run with a fresh key. DENY the old key and old SSH session, including a new channel on that session; no upstream write. The `old-key-registration` negative control submits the old fingerprint again, including concurrent registration and restart variants; it must not create a new binding. Accept a never-bound fresh key only for its current tuple; an idempotent active retry preserves that binding only. Also alter principal, issue, run, devices, expiry and generation individually; each mismatch denies. | DLP-1 R1: Authentication; R1-A1–A3 |
 | `nat-shared-node-without-credential` | Two principals share NAT or a tailnet node. DENY missing, wrong or other-run keys despite identical network source; a lease id alone fails. The correctly bound key passes. | DLP-1 R1: Authentication; R1-A1–A2 |
-| `restricted-command-bypass` | Mark the device restricted or unknown, including alias and policy-change variants. DENY raw credentials and legacy/v2 shell, exec, abb_exec, sync and socket attempts before upstream write. Verify no alternate raw listener; only the separate audited route is eligible. | DLP-1 R1: Gateway; R1-G2–G4 |
+| `restricted-command-bypass` | Mark the device restricted or unknown, including alias and policy-change variants. DENY raw credentials and legacy/v2 shell, exec, abb_exec, sync and socket attempts before upstream write. Verify no alternate raw listener; only the separate audited route is eligible. For `payload-log-redaction`, put a unique secret marker in denied/malformed arguments; assert the marker and raw request are absent from every application/audit log while the allowed service-family/decision fields remain. | DLP-1 R1: Gateway; R1-G1–G4 |
 | `malformed-fragmented-coalesced-frames` | Split every header/payload boundary; combine multiple valid frames; DENY malformed, zero/invalid length services, UTF-8/control/NUL violations, oversized or timed-out partials and bad upstream replies. Valid fragments/coalescing decode once, preserve order and cannot smuggle a denied second request. Assert deadline and byte/stream caps, no partial upstream write and released counters after close. | DLP-1 R1: Gateway; R1-G1, R1-G6 |
-| `global-controls-and-implicit-transport` | DENY host:kill, host:connect, host:disconnect, transport-any/usb/local/id, tport any/usb/local, unknown services, forwards and reverse. Check exact leased legacy/tport selection, raw 8-byte tport reply, host-serial metadata/wait and suffix/NUL attacks as positive/negative pairs; zero upstream writes for denied services. | DLP-1 R1: Gateway; R1-G2–G5 |
+| `global-controls-and-implicit-transport` | DENY host:kill, host:connect, host:disconnect, transport-any/usb/local/id, tport any/usb/local, unknown services, forwards and reverse. Check exact leased legacy/tport selection, raw 8-byte tport reply, host-serial metadata/wait and suffix/NUL attacks as positive/negative pairs; zero upstream writes for denied services. The `feature-intersection` assertion checks both feature replies against the approved set, including a sole unleased attached device and mixed leased capabilities; assert zero plain host:features upstream writes and no untested feature advertisement. | DLP-1 R1: Gateway; R1-G2–G5 |
+| `device-enabled-network-adbd` | Fake an unrestricted device enabling Wireless debugging, TCP adbd or adding a paired/authorized key through allowed shell/UI. DENY direct 5555 and dynamic pairing/connect traffic on every isolated-runtime route, both during and after the lease. An authorized isolated fixture positive control reaches the fake service without the deny rule. Verification requires off/off and unchanged key fingerprints; any changed or unavailable attestation quarantines, with no new grant until authorized recovery and leader verification. Ops separately proves the actual namespace/host and device-state evidence under R1-I2; the unit fake is not live isolation proof. | DLP-1 R1: Isolation; R1-I1–I2, R1-E2 |
 | `release-expiry-revoke-authority-change` | Open discovery, track, wait, unselected and selected/raw streams; trigger each end event with a fake clock. DENY new auth/channels/requests and close every existing stream/session at the fencing barrier. Race dispatch against fence; queued bytes cannot leak. Device work remains tracked; incomplete cleanup cannot regrant before leader verification. | DLP-1 R1: End of access; R1-E1–E2 |
 | `restart-reconcile` | Restart with active records, orphan SSH sessions, a stale generation and simulated PID/port reuse. DENY old bindings before any grant, close/reconcile every old path and quarantine unknown state. Repeat with broker-control loss and a clock jump. No B2 grace or automatic regrant. | DLP-1 R1: Broker restart; R1-B1 |
 
