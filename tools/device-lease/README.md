@@ -1,5 +1,9 @@
 # DLP-1 registry and broker core (CHE-4506, CHE-4508)
 
+The additive SmartQA HTTP contract is documented in
+[SMARTQA-EXTENSIONS.md](SMARTQA-EXTENSIONS.md) (CHE-4515). Its backend stays
+unconfigured in production; phase 1 installs no second allocating authority.
+
 `registry.py` is a standard-library inventory and candidate filter for the
 CHE-4285 rev 4 protocol. It performs no ADB, network, Multica or lease operation.
 The existing SmartQA lease API keeps its CHE-2099 behavior. The broker core below
