@@ -118,6 +118,38 @@ class RemoteAdbR1NoteTest(unittest.TestCase):
                     clause in self.note, f"Missing persistence/network contract: {clause}"
                 )
 
+    def test_attestation_profile_closes_unlisted_persistent_state(self):
+        release = self.note.partition("**R1-E2 ")[2].partition("**R1-B1 ")[0]
+        for clause in (
+            "reviewed attestation profile",
+            "including input injection through shell",
+            "Every reachable persistent-state class must be attested",
+            "Unlisted, unknown or unattestable classes make the device class ineligible",
+            "user/profile set itself",
+            "user CA certificates and credential storage entries",
+            "accounts, Wi-Fi and VPN profiles including per-network proxy",
+            "screen-lock state",
+            "DeviceConfig flags",
+            "package enabled/suspended/hidden and component state",
+            "preferred activities",
+            "`/data/local/tmp`, shared storage and `run-as` data",
+            "reviewed normalization rules",
+            "No device class is qualified by this note",
+        ):
+            with self.subTest(clause=clause):
+                self.assertTrue(clause in release, f"Missing attestation closure: {clause}")
+        row = next(
+            (
+                line
+                for line in self.note.splitlines()
+                if line.startswith("| `device-side-persistence` |")
+            ),
+            "",
+        )
+        for mutation in ("new managed profile", "user CA", "per-network proxy", "/data/local/tmp"):
+            with self.subTest(mutation=mutation):
+                self.assertIn(mutation, row)
+
 
 if __name__ == "__main__":
     unittest.main()

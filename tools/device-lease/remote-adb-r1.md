@@ -1,7 +1,7 @@
 # Remote ADB R1: isolated-agent design
 
-Revision 3: addresses CHE-4533 findings N1–N2 on persistent device state
-and device-network pivots, retaining the CHE-4532 F1–F5 corrections.
+Revision 4: addresses CHE-4534 M1 with attestation-profile closure and
+additional persistent-state checks, retaining the F1–F5 and N1–N2 corrections.
 This note specifies slice 5b (CHE-4513); it does not implement or enable R1.
 Live SSH, firewall, USB isolation and device execution are **NOT-RUN**.
 
@@ -302,7 +302,22 @@ recovery needs the named authorized owner and leader verification.
 
 The authorized pre-lease baseline and pre-`Eligible` verification must also
 cover persistent state that allowed shell, sync and package-install streams
-can leave behind. At minimum compare, for every relevant user/profile:
+can leave behind. Each admitted device class requires a reviewed attestation profile.
+Bind the profile's version and digest to the device OS/build, granted service
+set, applicable privacy/access grant and verifier implementation. An independent
+security review must establish the profile's reachability coverage and verification
+methods before admission. Include indirect changes via installed applications,
+including input injection through shell and any permitted UI flow.
+Every reachable persistent-state class must be attested.
+Unlisted, unknown or unattestable classes make the device class ineligible
+for raw R1 before a lease; discovery of such a class during or after a lease
+fences access and quarantines the device. A minimum list is not a completeness
+claim. A build, service, policy or verifier change invalidates admission until
+the updated profile is reviewed. No default profile or unchecked fallback.
+Compare the user/profile set itself before enumerating state; discover both
+current and baseline users/profiles, including newly created or hidden profiles.
+Unknown enumeration or an unexplained added/removed profile quarantines.
+At minimum compare, for every user/profile in that union:
 
 - installed packages with signer/version, and runtime permissions and appop grants;
 - enabled accessibility services;
@@ -310,6 +325,34 @@ can leave behind. At minimum compare, for every relevant user/profile:
 - global/secure/system settings;
 - shell-UID processes and processes absent from the baseline, using process
   start identities rather than PIDs alone.
+
+The minimum also includes these persistent surfaces:
+
+- user CA certificates and credential storage entries;
+- accounts, Wi-Fi and VPN profiles including per-network proxy, and screen-lock state;
+- DeviceConfig flags;
+- package enabled/suspended/hidden and component state, and preferred activities;
+- shell-writable paths: `/data/local/tmp`, shared storage and `run-as` data
+  of debuggable apps, including file inventory, ownership/mode, links and content
+  digests needed to detect planted or changed executable/loadable content.
+
+These categories require explicit profile coverage even when a device denies
+the relevant operation; the profile must establish that denial rather than
+assume it. Attest shell-writable storage before reuse; later tooling must also
+verify expected content hashes before executing or loading from those paths.
+A later hash check does not replace release attestation or clear quarantine.
+Never follow an untrusted link to inspect unrelated or unauthorized data.
+This requirement grants no access to personal files, account secrets, private
+keys, lock credentials or certificate private material. If state cannot be
+attested within the existing grant, refuse raw R1 rather than inspect it.
+
+Use only reviewed normalization rules for identified volatile fields.
+Each rule must establish that the ignored change cannot persist authority,
+alter network trust, execute/load content or hide work across leases.
+No wildcard exclusion, holder-selected rule or learning of a new baseline
+from the post-lease device is permitted. Unknown differences quarantine.
+Pin the normalization rules to the same reviewed profile digest and test
+normal churn as a positive control alongside malicious-state negative controls.
 
 An opaque raw shell cannot be trusted to report its own changes. Capture and
 compare this state through an authorized verifier outside the holder's control,
@@ -327,6 +370,10 @@ command payloads or personal setting values in logs/evidence. If a device class
 cannot attest this state within its existing access/privacy grant, that class
 is ineligible for raw R1. A point-in-time debugging check alone is insufficient:
 unexplained persistent services or detached processes can re-enable debugging.
+No device class is qualified by this note. The author records the availability
+trade-off: raw R1 stays disabled for any class without complete, independently
+reviewed attestation under its existing grant, even if no current class qualifies.
+Implementation must not weaken that condition to make a device available.
 Closing a gateway does not undo unrecorded device work or pairing; R1-I1
 network isolation remains enforced during recovery and after release.
 Only Cheese or ops may revoke (Rule 5); automated fencing does not grant
@@ -372,7 +419,7 @@ stream counts, close completion, byte counters and recovery state.
 | `malformed-fragmented-coalesced-frames` | Split every header/payload boundary; combine multiple valid frames; DENY malformed, zero/invalid length services, UTF-8/control/NUL violations, oversized or timed-out partials and bad upstream replies. Valid fragments/coalescing decode once, preserve order and cannot smuggle a denied second request. Assert deadline and byte/stream caps, no partial upstream write and released counters after close. | DLP-1 R1: Gateway; R1-G1, R1-G6 |
 | `global-controls-and-implicit-transport` | DENY host:kill, host:connect, host:disconnect, transport-any/usb/local/id, tport any/usb/local, unknown services, forwards and reverse. Check exact leased legacy/tport selection, raw 8-byte tport reply, host-serial metadata/wait and suffix/NUL attacks as positive/negative pairs; zero upstream writes for denied services. The `feature-intersection` assertion checks both feature replies against the approved set, including a sole unleased attached device and mixed leased capabilities; assert zero plain host:features upstream writes and no untested feature advertisement. | DLP-1 R1: Gateway; R1-G2–G5 |
 | `device-enabled-network-adbd` | Fake an unrestricted device enabling Wireless debugging, TCP adbd or adding a paired/authorized key through allowed shell/UI. DENY direct 5555 and dynamic pairing/connect traffic on every isolated-runtime route, both during and after the lease. An authorized isolated fixture positive control reaches the fake service without the deny rule. Verification requires off/off and unchanged key fingerprints; any changed or unavailable attestation quarantines, with no new grant until authorized recovery and leader verification. Ops separately proves the actual namespace/host and device-state evidence under R1-I2; the unit fake is not live isolation proof. | DLP-1 R1: Isolation; R1-I1–I2, R1-E2 |
-| `device-side-persistence` | Independently fake an installed package, enabled accessibility service, secure-setting mutation and detached shell-UID process after streams close. Each unexplained difference must quarantine and DENY regrant, even with off/off debugging and unchanged adb keys. Cover each remaining R1-E2 baseline category and unavailable attestation across users/profiles. Assert no automatic uninstall, unowned-process kill, setting reset or baseline adoption. A clean authorized baseline/release comparison plus leader verification is the positive control. Unit fakes are not device attestation proof. | DLP-1 R1: End of access; R1-E1–E2 |
+| `device-side-persistence` | Independently fake an installed package, enabled accessibility service, secure-setting mutation and detached shell-UID process after streams close. Also fake a new managed profile, a user CA, a per-network proxy and a planted file in `/data/local/tmp`; each must quarantine. Each unexplained difference must quarantine and DENY regrant, even with off/off debugging and unchanged adb keys. Cover each remaining R1-E2 baseline category and unavailable attestation across the union of current/baseline users/profiles. DENY admission for an unlisted reachable class or incomplete/stale profile; discovery after admission fences and quarantines. Assert no automatic uninstall, unowned-process kill, setting reset or baseline adoption. Test that normalization cannot hide malicious state. A clean authorized baseline/release comparison with reviewed normal churn plus leader verification is the positive control. Unit fakes are not device attestation proof. | DLP-1 R1: End of access; R1-E1–E2 |
 | `device-network-pivot` | Fake a leased device reaching an unleased peer's network adbd and unrelated LAN service. DENY both device-originated paths under AP/client and routed isolation, including IPv4/IPv6 and alternate interfaces; no host-only firewall assumption. An explicitly allowed control/service destination is the positive control. Ops separately supplies the authorized segment/fixture evidence in R1-I2; no live device execution occurs in slice 5b. | DLP-1 R1: Isolation; R1-I1–I2 |
 | `release-expiry-revoke-authority-change` | Open discovery, track, wait, unselected and selected/raw streams; trigger each end event with a fake clock. DENY new auth/channels/requests and close every existing stream/session at the fencing barrier. Race dispatch against fence; queued bytes cannot leak. Device work remains tracked; incomplete cleanup cannot regrant before leader verification. | DLP-1 R1: End of access; R1-E1–E2 |
 | `restart-reconcile` | Restart with active records, orphan SSH sessions, a stale generation and simulated PID/port reuse. DENY old bindings before any grant, close/reconcile every old path and quarantine unknown state. Repeat with broker-control loss and a clock jump. No B2 grace or automatic regrant. | DLP-1 R1: Broker restart; R1-B1 |
