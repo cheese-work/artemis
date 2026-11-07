@@ -1,0 +1,81 @@
+"""Offline acceptance checks for the R1 design note, not gateway/device tests."""
+
+import json
+from pathlib import Path
+import re
+import unittest
+
+
+ROOT = Path(__file__).resolve().parents[2]
+NOTE = Path(__file__).with_name("remote-adb-r1.md")
+BULLETS = {
+    "Authentication",
+    "Tunnel",
+    "Isolation",
+    "Gateway",
+    "End of access",
+    "Broker restart",
+    "Rejected",
+}
+CASES = {
+    "stale-credential-after-reacquire": "Authentication",
+    "nat-shared-node-without-credential": "Authentication",
+    "restricted-command-bypass": "Gateway",
+    "malformed-fragmented-coalesced-frames": "Gateway",
+    "global-controls-and-implicit-transport": "Gateway",
+    "release-expiry-revoke-authority-change": "End of access",
+    "restart-reconcile": "Broker restart",
+}
+
+
+class RemoteAdbR1NoteTest(unittest.TestCase):
+    def setUp(self):
+        # Missing content is a failed acceptance assertion, not a collection error.
+        self.note = NOTE.read_text(encoding="utf-8") if NOTE.exists() else ""
+
+    def test_design_rules_trace_to_every_r1_bullet(self):
+        rules = re.findall(r"^\*\*(R1-[A-Z]\d+) .+$", self.note, re.MULTILINE)
+        self.assertTrue(rules, "No R1 design rules with DLP-1 citations")
+        self.assertEqual(len(rules), len(set(rules)), "Duplicate design rule id")
+        citations = set()
+        for line in self.note.splitlines():
+            if re.match(r"^\*\*R1-[A-Z]\d+ ", line):
+                match = re.search(r"\(DLP-1 R1: ([^)]+)\)", line)
+                self.assertIsNotNone(match, f"Untraced design rule: {line}")
+                citations.add(match[1])
+        self.assertEqual(citations, BULLETS)
+
+    def test_slice_5b_negative_cases_have_citations_and_denial_assertions(self):
+        for case, bullet in CASES.items():
+            with self.subTest(case=case):
+                row = next(
+                    (line for line in self.note.splitlines() if line.startswith(f"| `{case}` |")),
+                    "",
+                )
+                self.assertTrue(row, f"Missing slice 5b case: {case}")
+                self.assertIn(f"DLP-1 R1: {bullet}", row)
+                self.assertIn("DENY", row, "Case must state a denial assertion")
+        for service in (
+            "host:kill",
+            "host:connect",
+            "host:disconnect",
+            "host:transport-any",
+            "host:transport-usb",
+        ):
+            self.assertIn(f"`{service}`", self.note)
+
+    def test_client_pin_and_shared_code_are_explicit(self):
+        golden = json.loads((ROOT / "tests/support/golden/adb_protocol.json").read_text())
+        self.assertIn(golden["versions"]["adb"], self.note)
+        for required in (
+            "artemis/runtime/adb_gateway.py",
+            "apps/admin_console/services/host_tunnel.py",
+            "No second parser",
+            "NOT-RUN",
+            "500c592",
+        ):
+            self.assertIn(required, self.note)
+
+
+if __name__ == "__main__":
+    unittest.main()
