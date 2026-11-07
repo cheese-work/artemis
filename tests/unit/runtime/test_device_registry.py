@@ -41,8 +41,10 @@ class DeviceRegistryTests(unittest.TestCase):
         for alias in (device.device_id, *device.aliases):
             with self.subTest(alias=alias):
                 self.assertIs(registry.resolve(alias), device)
-        self.assertEqual((device.pool, device.model, device.api, device.abi),
-                         ("rig", "Fixture phone", 34, "arm64-v8a"))
+        self.assertEqual(
+            (device.pool, device.model, device.api, device.abi),
+            ("rig", "Fixture phone", 34, "arm64-v8a"),
+        )
         self.assertIsNone(registry.resolve("unregistered"))
 
     def test_only_registered_confirmed_device_state_is_eligible(self):
@@ -63,8 +65,7 @@ class DeviceRegistryTests(unittest.TestCase):
         self.assertEqual(device.pool, "root")
         self.assertFalse(registry.eligible("500c592", "device"))
         # A renamed canonical id or a false flag cannot remove this serial's restriction.
-        device = phone(aliases=("500c592", "192.0.2.11:5555"),
-                       restricted_policy="che-2129")
+        device = phone(aliases=("500c592", "192.0.2.11:5555"), restricted_policy="che-2129")
         self.assertTrue(device.restricted)
         registry = DeviceRegistry([device])
         for alias in (device.device_id, *device.aliases):
@@ -80,22 +81,36 @@ class DeviceRegistryTests(unittest.TestCase):
         self.assertFalse(registry.eligible("usb-fixture-1", "device"))
         self.assertTrue(registry.eligible("usb-fixture-1", "device", route="che-2129"))
         self.assertFalse(registry.eligible("usb-fixture-1", "unauthorized", route="che-2129"))
-        registry = DeviceRegistry([phone(restricted=True, restricted_policy="che-2129",
-                                        identity_confirmed=False)])
+        registry = DeviceRegistry(
+            [phone(restricted=True, restricted_policy="che-2129", identity_confirmed=False)]
+        )
         self.assertFalse(registry.eligible("usb-fixture-1", "device", route="che-2129"))
-        self.assertFalse(DeviceRegistry([phone()]).eligible("usb-fixture-1", "device", route="typo"))
+        self.assertFalse(
+            DeviceRegistry([phone()]).eligible("usb-fixture-1", "device", route="typo")
+        )
 
     def test_ambiguous_aliases_and_canonical_id_collisions_are_rejected(self):
-        for second in (phone(), phone(device_id="second"),
-                       phone(device_id="usb-fixture-1", aliases=("other",))):
+        for second in (
+            phone(),
+            phone(device_id="second"),
+            phone(device_id="usb-fixture-1", aliases=("other",)),
+        ):
             with self.subTest(second=second):
                 with self.assertRaises(ValueError):
                     DeviceRegistry([phone(), second])
 
     def test_invalid_metadata_is_rejected_and_records_are_immutable(self):
-        for changes in ({"device_id": ""}, {"aliases": ("",)}, {"aliases": "usb"},
-                        {"restricted": "false"}, {"identity_confirmed": "true"},
-                        {"api": True}, {"api": 0}, {"pool": ""}, {"abi": 123}):
+        for changes in (
+            {"device_id": ""},
+            {"aliases": ("",)},
+            {"aliases": "usb"},
+            {"restricted": "false"},
+            {"identity_confirmed": "true"},
+            {"api": True},
+            {"api": 0},
+            {"pool": ""},
+            {"abi": 123},
+        ):
             with self.subTest(changes=changes):
                 with self.assertRaises(ValueError):
                     phone(**changes)
@@ -105,17 +120,33 @@ class DeviceRegistryTests(unittest.TestCase):
     def test_load_registry_json_and_reject_malformed_config(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "devices.json"
-            path.write_text(json.dumps([{
-                "device_id": "registered", "aliases": ["usb", "192.0.2.12:5555"],
-                "pool": "rig", "model": None, "api": None, "abi": None,
-                "restricted": False, "identity_confirmed": True,
-            }]), encoding="utf-8")
+            path.write_text(
+                json.dumps(
+                    [
+                        {
+                            "device_id": "registered",
+                            "aliases": ["usb", "192.0.2.12:5555"],
+                            "pool": "rig",
+                            "model": None,
+                            "api": None,
+                            "abi": None,
+                            "restricted": False,
+                            "identity_confirmed": True,
+                        }
+                    ]
+                ),
+                encoding="utf-8",
+            )
             registry = DeviceRegistry.load(path)
             self.assertEqual(registry.resolve("usb").device_id, "registered")
             self.assertTrue(registry.eligible("192.0.2.12:5555", "device"))
             self.assertTrue(registry.resolve("500c592").restricted)
-            for content in ('{}', '[{"device_id": "x", "pool": "rig", "restricted": "false"}]',
-                            '[{"device_id": "x", "pool": "rig", "extra": true}]', '{broken'):
+            for content in (
+                "{}",
+                '[{"device_id": "x", "pool": "rig", "restricted": "false"}]',
+                '[{"device_id": "x", "pool": "rig", "extra": true}]',
+                "{broken",
+            ):
                 path.write_text(content, encoding="utf-8")
                 with self.subTest(content=content), self.assertRaises(ValueError):
                     DeviceRegistry.load(path)
