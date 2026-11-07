@@ -2,6 +2,7 @@
 
 import asyncio
 from collections.abc import Callable
+from contextlib import nullcontext
 import logging
 import re
 
@@ -90,11 +91,20 @@ async def read_message(source) -> bytes:
 
 
 class Gateway:
-    def __init__(self, shared: Callable[[], set[str]]):
+    def __init__(
+        self,
+        shared: Callable[[], set[str]],
+        *,
+        access=lambda: True,
+        track=lambda *streams: nullcontext(),
+    ):
         self.shared = shared
+        self.access, self.track = access, track
         self.serial: str | None = None
 
     def allows(self, service: str) -> bool:
+        if not self.access():
+            return False
         if "\0" in service and not service.startswith("abb_exec:"):
             return False
         if self.serial is not None:
@@ -115,6 +125,10 @@ class Gateway:
         return False
 
     async def relay(self, reader, writer, remote) -> None:
+        with self.track(writer, remote):
+            await self._relay(reader, writer, remote)
+
+    async def _relay(self, reader, writer, remote) -> None:
         try:
             while True:
                 request = await read_message(reader)

@@ -1,5 +1,8 @@
 # DLP-1 registry, broker, queue and recovery
 
+Authority generation and the G4-gated phase 3 preparation runbook are in
+[CUTOVER.md](CUTOVER.md). No live authority switch is performed here.
+
 The additive SmartQA HTTP contract is documented in
 [SMARTQA-EXTENSIONS.md](SMARTQA-EXTENSIONS.md) (CHE-4515). Its backend stays
 unconfigured in production; phase 1 installs no second allocating authority.
@@ -342,8 +345,8 @@ not production SmartQA scheduler parity or queue/live-binding qualification.
 Future queue operations need corresponding snapshot and projection support.
 
 Each comparison records both inputs, both decisions, and `match`, `different`,
-`error` or `timeout`. Only the generated top-level lease id is ignored when
-comparing acquire results; device ids, timing, ownership and refusal details
+`error` or `timeout`. Only the generated top-level lease id and a newly generated ticket id are ignored
+when comparing acquire results; existing ticket ids and all other fields remain significant; device ids, timing, ownership and refusal details
 remain significant. Evaluator exception text is excluded. A replacement pure
 evaluator can be supplied as `compare(..., decide=client.decide)`; it receives
 bytes, never a database connection or an allocating client capability.
