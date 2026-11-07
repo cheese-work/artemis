@@ -7,6 +7,7 @@ CHE-2099 authority until its explicitly approved migration/cutover.
 
 from contextlib import contextmanager
 import json
+import os
 from pathlib import Path
 import sqlite3
 import time
@@ -32,7 +33,40 @@ _DDL = (
     "CREATE TABLE IF NOT EXISTS broker_requests ("
     "principal TEXT NOT NULL, run_id TEXT NOT NULL, key TEXT NOT NULL, "
     "fingerprint TEXT NOT NULL, response TEXT NOT NULL, PRIMARY KEY(principal, run_id, key))",
+    "CREATE TABLE IF NOT EXISTS broker_tickets ("
+    "ticket_id TEXT PRIMARY KEY, principal TEXT NOT NULL, agent_id TEXT NOT NULL, "
+    "issue_id TEXT NOT NULL, pool TEXT NOT NULL, device_id TEXT, count INTEGER NOT NULL, "
+    "ttl INTEGER NOT NULL, position INTEGER NOT NULL, state TEXT NOT NULL, "
+    "reserved TEXT NOT NULL DEFAULT '[]', offer_sequence INTEGER NOT NULL DEFAULT 0, "
+    "offer_expires_at REAL, missed_offers INTEGER NOT NULL DEFAULT 0)",
+    "CREATE UNIQUE INDEX IF NOT EXISTS broker_open_issue ON broker_tickets(issue_id) "
+    "WHERE state IN ('queued','offered')",
+    "CREATE TABLE IF NOT EXISTS broker_bindings (lease_id TEXT PRIMARY KEY, "
+    "binding TEXT NOT NULL, heartbeat_mono REAL NOT NULL, expiry_mono REAL NOT NULL)",
+    "CREATE TABLE IF NOT EXISTS broker_reconcile (lease_id TEXT PRIMARY KEY)",
+    "CREATE TABLE IF NOT EXISTS broker_offer_clock (ticket_id TEXT PRIMARY KEY, expires_mono REAL NOT NULL)",
 )
+
+
+def process_identity(pid):
+    """Linux process identity, including zombie rejection. Never called under a writer lock."""
+    fields = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+    if fields[0] in {"Z", "X"}:
+        raise ProcessLookupError(pid)
+    return {
+        "mode": "local",
+        "pid": pid,
+        "process_start": fields[19],
+        "boot_id": Path("/proc/sys/kernel/random/boot_id").read_text().strip(),
+    }
+
+
+def local_run_alive(binding):
+    try:
+        observed = process_identity(binding["pid"])
+        return all(observed[k] == binding[k] for k in observed)
+    except (OSError, ValueError, IndexError):
+        return False
 
 
 class Refused(Exception):
@@ -51,14 +85,18 @@ class Broker:
         clock=time.time,
         boundary=lambda name: None,
         conflicting_waiter=lambda conn, ids: False,
+        monotonic=time.monotonic,
+        run_probe=local_run_alive,
     ):
         self.db_path = Path(db_path)
         self.registry = registry
         self.admitted = dict(admitted or {})
         self.clock, self.boundary = clock, boundary
-        # Pure SQL hook for slice 3's eligible, conflicting queue entries.
+        # Optional additional pure SQL conflicts, alongside this broker's durable queue.
         self.conflicting_waiter = conflicting_waiter
         self.draining = False
+        self.monotonic, self.run_probe = monotonic, run_probe
+        self._last_clock = None
 
     def _owned(self, conn, lease_id, principal, run_id):
         group = self._view(conn, lease_id)
@@ -95,12 +133,19 @@ class Broker:
                 raise Refused("device_unknown")
             maximum = 1800 if any(self.registry.resolve(d).pool == "root" for d in ids) else 3600
             self._ttl(ttl, maximum)
-            if self.conflicting_waiter(conn, frozenset(ids)):
+            if self.conflicting_waiter(conn, frozenset(ids)) or any(
+                set(ids) & set(self._candidates(t["pool"], t["device_id"]))
+                for t in self._tickets(conn)
+            ):
                 raise Refused("conflicting_waiter")
             expiry = min(now + ttl, group["hard_deadline"])
             conn.execute(
                 "UPDATE broker_groups SET expires_at=?, ttl=? WHERE lease_id=?",
                 (expiry, ttl, lease_id),
+            )
+            conn.execute(
+                "UPDATE broker_bindings SET expiry_mono=? WHERE lease_id=?",
+                (self._mono + expiry - now, lease_id),
             )
             self.boundary("renew:updated")
             response = self._view(conn, lease_id)
@@ -143,6 +188,70 @@ class Broker:
             )
             return self._view(conn, lease_id)
 
+    def restart(self):
+        """Owner-only startup barrier, called after taking the daemon's exclusive lock."""
+        with self.transaction() as (conn, now):
+            self._fence_all(conn)
+
+    @staticmethod
+    def _fence_all(conn):
+        conn.execute(
+            "INSERT OR IGNORE INTO broker_reconcile SELECT lease_id "
+            "FROM broker_groups WHERE state != 'released' AND state != 'quarantine'"
+        )
+        conn.execute("UPDATE broker_groups SET state='fencing' WHERE state='active'")
+        # Restart/clock discontinuity invalidates signals; FIFO and sequence numbers survive.
+        conn.execute(
+            "UPDATE broker_tickets SET state='queued', reserved='[]', "
+            "offer_expires_at=NULL WHERE state='offered'"
+        )
+        conn.execute("DELETE FROM broker_offer_clock")
+
+    def finish_reconcile(self, lease_id):
+        """Recovery acknowledgment, not release verification and never a holder RPC."""
+        with self.transaction() as (conn, now):
+            group = self._view(conn, lease_id)
+            if group["state"] not in {"verifying", "quarantine", "released"}:
+                raise Refused("reconcile_incomplete")
+            conn.execute("DELETE FROM broker_reconcile WHERE lease_id=?", (lease_id,))
+
+    def heartbeat(self, *, lease_id, principal, run_id):
+        self._text(lease_id, principal, run_id)
+        with self.transaction() as (conn, now):
+            self._expire(conn, now)
+            group = self._owned(conn, lease_id, principal, run_id)
+            if group["state"] != "active":
+                raise Refused("lease_not_active")
+            conn.execute(
+                "UPDATE broker_bindings SET heartbeat_mono=? WHERE lease_id=?",
+                (self._mono, lease_id),
+            )
+            return self._view(conn, lease_id)
+
+    def maintain(self):
+        """Periodic foreground maintenance; fencing records never free ownership."""
+        with self.transaction() as (conn, now):
+            self._expire(conn, now)
+
+    def _maintenance(self, conn, now, observations):
+        self._mono = self.monotonic()
+        if self._last_clock is not None:
+            wall, mono = self._last_clock
+            if self._mono < mono or abs((now - wall) - (self._mono - mono)) > 5:
+                self._fence_all(conn)
+        for row in conn.execute("SELECT * FROM broker_bindings"):
+            binding = json.loads(row["binding"])
+            dead = (
+                binding["mode"] == "local"
+                and observations.get((row["lease_id"], row["binding"])) is False
+            )
+            suspect = binding["mode"] == "remote" and self._mono - row["heartbeat_mono"] >= 90
+            if dead or suspect or self._mono >= row["expiry_mono"]:
+                conn.execute(
+                    "UPDATE broker_groups SET state='fencing' WHERE lease_id=? AND state='active'",
+                    (row["lease_id"],),
+                )
+
     @contextmanager
     def transaction(self):
         conn = sqlite3.connect(self.db_path, timeout=10, isolation_level=None)
@@ -150,8 +259,25 @@ class Broker:
         try:
             for statement in _DDL:
                 conn.execute(statement)
-            with write_transaction(conn, self.clock, refusals=(Refused,)) as value:
-                yield value
+            # Process and boot-id reads happen before BEGIN IMMEDIATE, never under its lock.
+            observations = {}
+            for row in conn.execute(
+                "SELECT b.* FROM broker_bindings b JOIN broker_groups g "
+                "ON b.lease_id=g.lease_id WHERE g.state='active'"
+            ).fetchall():
+                binding = json.loads(row["binding"])
+                if binding["mode"] == "local":
+                    observations[row["lease_id"], row["binding"]] = self.run_probe(binding)
+            try:
+                with write_transaction(conn, self.clock, refusals=(Refused,)) as value:
+                    self._maintenance(conn, value[1], observations)
+                    yield value
+            except Refused:
+                # Refusals commit maintenance; interruptions must retain the old clock sample.
+                self._last_clock = value[1], self._mono
+                raise
+            else:
+                self._last_clock = value[1], self._mono
         finally:
             conn.close()
 
@@ -175,6 +301,154 @@ class Broker:
             "UPDATE broker_groups SET state='fencing' WHERE state='active' AND expires_at <= ?",
             (now,),
         )
+        self._schedule(conn, now)
+
+    def _candidates(self, pool, target=None):
+        ids = canonical_ids([target] if target else self.admitted, self._canonical)
+        return [
+            canonical
+            for canonical in ids
+            if self.registry.resolve(canonical).pool == pool
+            and self.admitted.get(canonical)
+            and self._canonical(self.admitted[canonical]) == canonical
+            and self.registry.eligible(self.admitted[canonical], "device")
+        ]
+
+    @staticmethod
+    def _tickets(conn):
+        return conn.execute(
+            "SELECT * FROM broker_tickets WHERE state IN ('queued','offered') "
+            "ORDER BY position, ticket_id"
+        ).fetchall()
+
+    @staticmethod
+    def _occupied(conn):
+        return {
+            r["device_id"]: r["lease_id"]
+            for r in conn.execute(
+                "SELECT d.device_id, d.lease_id FROM broker_devices d JOIN broker_groups g "
+                "ON d.lease_id=g.lease_id WHERE g.state != 'released'"
+            )
+        }
+
+    @staticmethod
+    def _ticket_view(conn, ticket_id):
+        row = conn.execute(
+            "SELECT * FROM broker_tickets WHERE ticket_id=?", (ticket_id,)
+        ).fetchone()
+        if row is None:
+            raise Refused("ticket_unknown")
+        result = dict(row)
+        result["reserved"] = json.loads(result["reserved"])
+        return result
+
+    def _ticket_owned(self, conn, ticket_id, principal, agent_id, issue_id):
+        ticket = self._ticket_view(conn, ticket_id)
+        if (ticket["principal"], ticket["agent_id"], ticket["issue_id"]) != (
+            principal,
+            agent_id,
+            issue_id,
+        ):
+            raise Refused("ticket_not_yours")
+        return ticket
+
+    def ticket_status(self, *, ticket_id, principal, agent_id, issue_id):
+        self._text(ticket_id, principal, agent_id, issue_id)
+        with self.transaction() as (conn, now):
+            self._expire(conn, now)
+            return self._ticket_owned(conn, ticket_id, principal, agent_id, issue_id)
+
+    def cancel_ticket(self, *, ticket_id, principal, agent_id, issue_id):
+        self._text(ticket_id, principal, agent_id, issue_id)
+        with self.transaction() as (conn, now):
+            self._ticket_owned(conn, ticket_id, principal, agent_id, issue_id)
+            conn.execute(
+                "UPDATE broker_tickets SET state='cancelled', reserved='[]', "
+                "offer_expires_at=NULL WHERE ticket_id=? AND state IN ('queued','offered')",
+                (ticket_id,),
+            )
+            conn.execute("DELETE FROM broker_offer_clock WHERE ticket_id=?", (ticket_id,))
+            self._expire(conn, now)
+            return self._ticket_view(conn, ticket_id)
+
+    def start_offer_window(self, ticket_id, offer_sequence):
+        """Trusted signal worker calls this only after matching property read-back."""
+        self._text(ticket_id)
+        if type(offer_sequence) is not int or offer_sequence < 1:
+            raise Refused("invalid_request")
+        with self.transaction() as (conn, now):
+            self._expire(conn, now)
+            ticket = self._ticket_view(conn, ticket_id)
+            if ticket["state"] != "offered" or ticket["offer_sequence"] != offer_sequence:
+                raise Refused("offer_stale")
+            if ticket["offer_expires_at"] is None:
+                conn.execute(
+                    "INSERT OR REPLACE INTO broker_offer_clock VALUES (?,?)",
+                    (ticket_id, self._mono + 900),
+                )
+            conn.execute(
+                "UPDATE broker_tickets SET offer_expires_at=? "
+                "WHERE ticket_id=? AND offer_expires_at IS NULL",
+                (now + 900, ticket_id),
+            )
+            return self._ticket_view(conn, ticket_id)
+
+    def _schedule(self, conn, now):
+        if self.draining or conn.execute("SELECT 1 FROM broker_reconcile LIMIT 1").fetchone():
+            return
+        for ticket in self._tickets(conn):
+            deadline = conn.execute(
+                "SELECT expires_mono FROM broker_offer_clock WHERE ticket_id=?",
+                (ticket["ticket_id"],),
+            ).fetchone()
+            if ticket["offer_expires_at"] is not None and (
+                ticket["offer_expires_at"] <= now or (deadline and self._mono >= deadline[0])
+            ):
+                tail = conn.execute(
+                    "SELECT coalesce(max(position),0)+1 FROM broker_tickets"
+                ).fetchone()[0]
+                conn.execute(
+                    "UPDATE broker_tickets SET missed_offers=missed_offers+1, "
+                    "state=CASE WHEN missed_offers+1 >= 2 THEN 'cancelled' ELSE 'queued' END, "
+                    "position=?, reserved='[]', offer_expires_at=NULL WHERE ticket_id=?",
+                    (tail, ticket["ticket_id"]),
+                )
+                conn.execute(
+                    "DELETE FROM broker_offer_clock WHERE ticket_id=?", (ticket["ticket_id"],)
+                )
+        occupied = self._occupied(conn)
+        blocked = set()
+        # ponytail: linear queue scan; index conflict sets if measured queue size requires it.
+        for ticket in self._tickets(conn):
+            candidates = self._candidates(ticket["pool"], ticket["device_id"])
+            conflict = bool(blocked.intersection(candidates))
+            blocked.update(candidates)
+            free = [d for d in candidates if d not in occupied] if not conflict else []
+            previous = json.loads(ticket["reserved"])
+            reserved = (
+                previous
+                if ticket["state"] == "offered" and set(previous) <= set(free)
+                else free[: ticket["count"]]
+            )
+            offered = len(reserved) == ticket["count"]
+            state = "offered" if offered else "queued"
+            new_offer = offered and (ticket["state"] != "offered" or previous != reserved)
+            sequence = ticket["offer_sequence"] + new_offer
+            if new_offer or not offered:
+                conn.execute(
+                    "DELETE FROM broker_offer_clock WHERE ticket_id=?", (ticket["ticket_id"],)
+                )
+            conn.execute(
+                "UPDATE broker_tickets SET state=?, reserved=?, offer_sequence=?, "
+                "offer_expires_at=CASE WHEN ? THEN offer_expires_at ELSE NULL END WHERE ticket_id=?",
+                (
+                    state,
+                    json.dumps(reserved),
+                    sequence,
+                    offered and not new_offer,
+                    ticket["ticket_id"],
+                ),
+            )
 
     @staticmethod
     def _view(conn, lease_id):
@@ -189,6 +463,10 @@ class Broker:
             (lease_id,),
         ).fetchall()
         group["devices"] = [dict(d, restricted=bool(d["restricted"])) for d in devices]
+        binding = conn.execute(
+            "SELECT binding FROM broker_bindings WHERE lease_id=?", (lease_id,)
+        ).fetchone()
+        group["binding"] = json.loads(binding[0]) if binding else None
         return group
 
     @staticmethod
@@ -222,34 +500,82 @@ class Broker:
         count=1,
         ttl=1800,
         idempotency_key,
+        agent_id=None,
+        issue_id=None,
+        binding=None,
     ):
+        agent_id = principal if agent_id is None else agent_id
+        issue_id = purpose if issue_id is None else issue_id
         self._text(principal, run_id, purpose, pool, idempotency_key)
+        self._text(agent_id, issue_id)
         self._ttl(ttl, 1800 if pool == "root" else 3600)
         if type(count) is not int or count < 1:
             raise Refused("invalid_request")
         if device_id is not None:
             self._text(device_id)
+        binding = (
+            dict(binding)
+            if isinstance(binding, dict)
+            else process_identity(os.getpid())
+            if binding is None
+            else {}
+        )
+        if binding.get("mode") == "local":
+            if (
+                set(binding) != {"mode", "pid", "process_start", "boot_id"}
+                or type(binding["pid"]) is not int
+                or binding["pid"] < 1
+            ):
+                raise Refused("invalid_request")
+            self._text(binding["process_start"], binding["boot_id"])
+            if not self.run_probe(binding):
+                raise Refused("run_not_live")
+        elif binding != {"mode": "remote"}:
+            raise Refused("invalid_request")
+        binding["run_id"] = run_id
         with self.transaction() as (conn, now):
             target = self._canonical(device_id) if device_id else None
-            fingerprint = json.dumps(["acquire", pool, target or device_id, count, ttl, purpose])
+            fingerprint = json.dumps(
+                [
+                    "acquire",
+                    pool,
+                    target or device_id,
+                    count,
+                    ttl,
+                    purpose,
+                    agent_id,
+                    issue_id,
+                    binding,
+                ],
+                sort_keys=True,
+            )
             self._expire(conn, now)
             replay = self._replay(conn, principal, run_id, idempotency_key, fingerprint)
             if replay is not None:
                 return replay
             if self.draining:
                 raise Refused("draining")
-            ids = canonical_ids([device_id] if device_id else self.admitted, self._canonical)
-            candidates = []
-            for canonical in ids:
-                device = self.registry.resolve(canonical)
-                endpoint = self.admitted.get(canonical)
-                if (
-                    device.pool == pool
-                    and endpoint
-                    and self._canonical(endpoint) == canonical
-                    and self.registry.eligible(endpoint, "device")
-                ):
-                    candidates.append(canonical)
+            if conn.execute("SELECT 1 FROM broker_reconcile LIMIT 1").fetchone():
+                raise Refused("restart_reconcile")
+            existing = conn.execute(
+                "SELECT ticket_id FROM broker_tickets WHERE issue_id=? "
+                "AND state IN ('queued','offered')",
+                (issue_id,),
+            ).fetchone()
+            if existing:
+                ticket = self._ticket_owned(conn, existing[0], principal, agent_id, issue_id)
+                occupied = self._occupied(conn)
+                holders = [
+                    self._view(conn, occupied[d])
+                    for d in self._candidates(ticket["pool"], ticket["device_id"])
+                    if d in occupied
+                ]
+                raise Refused(
+                    "device_busy",
+                    ticket=ticket,
+                    holder=min(holders, key=lambda g: g["expires_at"]) if holders else None,
+                )
+            candidates = self._candidates(pool, target or device_id)
             if count > len(candidates):
                 raise Refused("impossible_batch")
             held = conn.execute(
@@ -259,17 +585,6 @@ class Broker:
             ).fetchone()
             if held:
                 raise Refused("run_already_holds")
-            occupied = {
-                r["device_id"]: r["lease_id"]
-                for r in conn.execute(
-                    "SELECT d.device_id, d.lease_id FROM broker_devices d JOIN broker_groups g "
-                    "ON d.lease_id=g.lease_id WHERE g.state != 'released'"
-                )
-            }
-            free = [d for d in candidates if d not in occupied]
-            if len(free) < count:
-                holders = [self._view(conn, occupied[d]) for d in candidates if d in occupied]
-                raise Refused("device_busy", holder=min(holders, key=lambda g: g["expires_at"]))
             budget = conn.execute(
                 "SELECT * FROM broker_runs WHERE principal=? AND run_id=?", (principal, run_id)
             ).fetchone()
@@ -278,6 +593,40 @@ class Broker:
             deadline = min(started + cap, budget["hard_deadline"]) if budget else now + cap
             if now >= deadline:
                 raise Refused("hard_cap")
+            occupied = self._occupied(conn)
+            free = [d for d in candidates if d not in occupied]
+            conflict = any(
+                set(candidates) & set(self._candidates(t["pool"], t["device_id"]))
+                for t in self._tickets(conn)
+            )
+            if len(free) < count or conflict:
+                ticket_id = uuid.uuid4().hex
+                position = conn.execute(
+                    "SELECT coalesce(max(position),0)+1 FROM broker_tickets"
+                ).fetchone()[0]
+                conn.execute(
+                    "INSERT INTO broker_tickets "
+                    "(ticket_id, principal, agent_id, issue_id, pool, device_id, count, ttl, position, state) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,'queued')",
+                    (
+                        ticket_id,
+                        principal,
+                        agent_id,
+                        issue_id,
+                        pool,
+                        target or device_id,
+                        count,
+                        ttl,
+                        position,
+                    ),
+                )
+                self._schedule(conn, now)
+                holders = [self._view(conn, occupied[d]) for d in candidates if d in occupied]
+                raise Refused(
+                    "device_busy",
+                    ticket=self._ticket_view(conn, ticket_id),
+                    holder=min(holders, key=lambda g: g["expires_at"]) if holders else None,
+                )
             lease_id = uuid.uuid4().hex
             conn.execute(
                 "INSERT INTO broker_groups VALUES (?,?,?,?,?,?,?,?,?,?,?)",
@@ -306,6 +655,15 @@ class Broker:
                 "INSERT INTO broker_runs VALUES (?,?,?,?) ON CONFLICT(principal,run_id) "
                 "DO UPDATE SET hard_deadline=excluded.hard_deadline",
                 (principal, run_id, started, deadline),
+            )
+            conn.execute(
+                "INSERT INTO broker_bindings VALUES (?,?,?,?)",
+                (
+                    lease_id,
+                    json.dumps(binding, sort_keys=True),
+                    self._mono,
+                    self._mono + min(ttl, deadline - now),
+                ),
             )
             response = self._view(conn, lease_id)
             self._record(conn, principal, run_id, idempotency_key, fingerprint, response)

@@ -15,7 +15,7 @@ import socketserver
 import stat
 import sys
 
-from broker import Broker, DeviceRegistry, Refused
+from broker import Broker, DeviceRegistry, Refused, process_identity
 
 MAX_FRAME = 65536
 DEFAULT_STATE = Path.home() / ".local/state/artemis-device-lease"
@@ -79,6 +79,7 @@ class BrokerServer(socketserver.UnixStreamServer):
             self._owns_socket = True
             self.server_activate()
             os.chmod(self.socket_path, 0o600)
+            broker.restart()
         except BaseException:
             self.server_close()
             raise
@@ -91,17 +92,28 @@ class BrokerServer(socketserver.UnixStreamServer):
             "renew": self.broker.renew,
             "release": self.broker.release,
             "status": self.broker.status,
+            "ticket-status": self.broker.ticket_status,
+            "cancel-ticket": self.broker.cancel_ticket,
+            "heartbeat": self.broker.heartbeat,
         }
         if not isinstance(request["op"], str) or request["op"] not in methods:
             raise Refused("invalid_request")
         method = methods[request["op"]]
         if not isinstance(request["args"], dict):
             raise Refused("invalid_request")
+        if request["op"] == "acquire":
+            binding = request["args"].get("binding")
+            if not isinstance(binding, dict) or binding.get("mode") != "local":
+                raise Refused("invalid_request")
         try:
             inspect.signature(method).bind(**request["args"])
         except TypeError as exc:
             raise Refused("invalid_request") from exc
         return method(**request["args"])
+
+    def service_actions(self):
+        # The owner loop stays foreground. It also maintains leases while clients are idle.
+        self.broker.maintain()
 
     def server_close(self):
         if hasattr(self, "socket"):
@@ -136,15 +148,36 @@ def main(argv=None):
     serve = sub.add_parser("serve")
     serve.add_argument("--state-dir", type=Path, default=DEFAULT_STATE)
     serve.add_argument("--registry", type=Path)
-    for op in ("acquire", "renew", "release", "status"):
+    for op in (
+        "acquire",
+        "renew",
+        "release",
+        "status",
+        "heartbeat",
+        "ticket-status",
+        "cancel-ticket",
+    ):
         command = sub.add_parser(op)
         command.add_argument("--principal", required=True)
+        if op in ("ticket-status", "cancel-ticket"):
+            command.add_argument("--ticket-id", required=True)
+            command.add_argument("--agent-id", required=True)
+            command.add_argument("--issue-id", required=True)
+            continue
         command.add_argument("--run-id", required=True)
         if op == "acquire":
             command.add_argument("--pool", default="rig")
             command.add_argument("--device-id")
             command.add_argument("--count", type=int, default=1)
             command.add_argument("--purpose", required=True)
+            command.add_argument("--agent-id", required=True)
+            command.add_argument("--issue-id", required=True)
+            command.add_argument(
+                "--pid",
+                type=int,
+                required=True,
+                help="live agent run PID (not this short-lived CLI process)",
+            )
         else:
             command.add_argument("--lease-id", required=True)
         if op in ("acquire", "renew"):
@@ -164,6 +197,8 @@ def main(argv=None):
             with BrokerServer(state, broker) as server:
                 server.serve_forever()
             return 0
+        if op == "acquire":
+            args["binding"] = process_identity(args.pop("pid"))
         response = rpc(socket_path, {"op": op, "args": args})
         print(json.dumps(response))
         return 1 if "code" in response else 0

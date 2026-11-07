@@ -1,4 +1,4 @@
-# DLP-1 registry and broker core (CHE-4506, CHE-4508)
+# DLP-1 registry, broker and queue (CHE-4506, CHE-4508, CHE-4509)
 
 `registry.py` is a standard-library inventory and candidate filter for the
 CHE-4285 rev 4 protocol. It performs no ADB, network, Multica or lease operation.
@@ -83,16 +83,16 @@ canonical device id -> currently allowed endpoint alias. The owner must collect
 and validate readiness, grants, claims and execution locks before supplying that
 snapshot. Only snapshot entries with a matching registered endpoint and confirmed,
 unrestricted identity can be allocated. No discovery, device command, network or
-Multica call runs inside the writer transaction. The `conflicting_waiter(conn,
-device_ids)` hook must use only the current SQLite transaction; slice 3 supplies
-the eligible conflicting ticket query. The default is empty because no queue
-exists in this slice. Clients cannot supply the snapshot or hook over RPC.
+Multica call runs inside the writer transaction. The durable queue supplies renewal
+conflicts. The optional `conflicting_waiter(conn, device_ids)` hook adds other pure
+SQL conflicts. Clients cannot supply the snapshot or hook over RPC.
 
 Acquire accepts `principal`, `run_id`, `purpose`, `pool`, optional `device_id`,
 `count`, integer `ttl` and `idempotency_key`. Canonical selection, run uniqueness
 and all-or-none reservation occur in one transaction. `count` defaults to 1.
 An impossible batch raises `impossible_batch`; a busy batch raises `device_busy`
-with the holder whose expiry comes first, without reserving the free remainder.
+with a durable ticket and the holder whose expiry comes first. A head batch ticket
+reserves the free remainder without granting access.
 USB and wireless aliases never count as separate phones. A run cannot nest or
 expand its lease group. Mixed pools are not supported by this slice.
 
@@ -132,8 +132,9 @@ Unix socket. The default state directory is
 `~/.local/state/artemis-device-lease` (0700); the socket is `broker.sock` (0600).
 An existing state directory must already have the correct owner and permissions.
 The lock file stays on disk after shutdown to preserve inode-based exclusion.
-No client command opens or writes a database. Only `acquire`, `renew`, `release`
-and `status` are allowed over newline-delimited JSON RPC. Frames are bounded to
+No client command opens or writes a database. `acquire`, `renew`, `release`,
+`status`, `heartbeat`, `ticket-status` and `cancel-ticket` are allowed over
+newline-delimited JSON RPC. Frames are bounded to
 64 KiB and reads to 2 s; the cooperative transport handles one request at a time.
 
 This CLI invocation illustrates the contract; the supplied daemon currently
@@ -144,6 +145,7 @@ connect admission and recovery.
 ```sh
 tools/device-lease/device-lease acquire --pool rig --count 2 --ttl 1800 \
   --principal fixture-agent --run-id fixture-run --purpose CHE-fixture \
+  --agent-id fixture-agent --issue-id CHE-fixture --pid "$AGENT_RUN_PID" \
   --idempotency-key fixture-acquire
 tools/device-lease/device-lease renew --lease-id LEASE_ID --ttl 1800 \
   --principal fixture-agent --run-id fixture-run --idempotency-key fixture-renew
@@ -154,11 +156,17 @@ an allocating authority. `serve --state-dir PATH [--registry FILE]` is the owner
 entry point for an isolated development instance. Client exit codes: 0 for a
 response, 1 for a domain refusal, 2 for configuration/transport failure.
 
+`AGENT_RUN_PID` must name the live agent run process, not this short-lived CLI.
+The CLI reads that PID's Linux start time and boot id and submits the complete
+identity. RPC acquire refuses a missing binding or a remote binding. Direct
+in-process `Broker.acquire` defaults to the current process identity; its
+`agent_id` and `issue_id` default to `principal` and `purpose` for existing callers.
+An explicitly empty identity field is invalid.
+
 Same-UID local callers remain cooperative. Principal/run strings are labels,
 not authentication. The private socket excludes other Unix users, but this slice
 does not claim enforced isolation from agents sharing the daemon's Unix user.
-Live run bindings, heartbeat, restart/clock-jump reconciliation and queue tickets
-are slice 3. Fencing actions and live admission are slice 4. Remote authentication
+Park, claim and Multica signaling are slice 3b. Fencing actions and live admission are slice 4. Remote authentication
 and access are slice 5. SmartQA extensions and single-authority cutover are slice 6;
 the unchanged CHE-2099 service must not be enabled alongside a live broker as a
 second admitting authority. `500c592` remains excluded from raw ADB (G5/CHE-2082).
@@ -167,4 +175,56 @@ Run the core and transport tests without dependencies or live devices:
 
 ```sh
 python3 tests/unit/runtime/test_device_lease_broker.py -v
+python3 tests/unit/runtime/test_device_lease_queue.py -v
 ```
+
+## Durable queue and offers
+
+Busy acquire commits one open ticket per issue in SQLite. A ticket records its
+principal, agent, issue, pool/exact selector, count, TTL and FIFO position. It has
+no run binding. Another acquire on the same issue returns that ticket only to
+the same owner, including when the new run changes its request. Poll and cancel
+require the principal, agent and issue to match. Cancellation frees its position.
+
+Exact and pool selectors share one FIFO among conflicting eligible sets. A later
+ticket or direct acquire can pass earlier tickets only when the sets are disjoint.
+A head batch reserves free members until all N are free. Only then does it become
+`offered`. Selection, run uniqueness, queue order and reservation share the writer
+transaction. Offered selection stays stable while the devices remain eligible.
+Offers provide no lease, credential or device endpoint access.
+
+`start_offer_window(ticket_id, offer_sequence)` is a trusted worker hook, not an
+RPC. Slice 3b calls it only after the matching Multica property write/read-back,
+outside the writer transaction. Until then `offer_expires_at` is null. Repeating
+the hook cannot extend a window. After 900 s without a claim, the ticket moves to
+the tail; a second miss cancels it. Re-offering increments the sequence. Claim,
+park, 75 min abandonment, wakeups and the property writer remain slice 3b work.
+
+## Run liveness and restart barrier
+
+Every active lease persists its run id and local PID/start-time/boot-id identity.
+The broker reads local process identities before taking the writer lock, rejecting
+dead, reused or zombie PIDs. Probe and clock seams permit hermetic tests. The
+trusted domain also supports remote bindings and heartbeats every 30 s; 90 s
+without a heartbeat fences the group. Remote authentication remains slice 5 and
+remote acquisition is refused by this local transport. Heartbeats never extend
+lease expiry or resurrect a fenced group.
+
+The foreground daemon checks liveness, expiry and offers even when clients are
+idle. Epoch expiries persist for responses and recovery. Monotonic deadlines
+govern running lease/offer durations. A backward monotonic clock or a wall versus
+monotonic discontinuity over 5 s fences active groups and invalidates offers.
+
+After taking the exclusive database lock and before serving clients, the daemon
+calls `restart()`. It fences every active group and persists a reconciliation
+barrier, including unfinished recovery from earlier restarts. All new grants and
+offers wait, even for disjoint devices. The trusted slice 4 recovery worker must
+bring each group to `verifying`, `quarantine` with its owner/ops issue, or verified
+`released`, then call `finish_reconcile(lease_id)`. This acknowledgment cannot free
+a device: `verifying` and `quarantine` still block reuse. No client can invoke
+restart, reconciliation, signal acknowledgment or recovery over RPC. An embedded
+owner must call `restart()` once after obtaining exclusive ownership too.
+
+No daemon is installed or live admission enabled here. Fencing records intent;
+slice 4 must close streams, stop run-owned device work and verify cleanup before
+any live reuse. No device command, ADB server reset or policy change is performed.

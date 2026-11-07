@@ -10,11 +10,12 @@ import unittest
 import json
 import socket
 import subprocess
+import os
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tools/device-lease"))
-from broker import Broker, Device, DeviceRegistry, Refused
+from broker import Broker, Device, DeviceRegistry, Refused, process_identity
 from daemon import BrokerServer
 
 
@@ -38,6 +39,7 @@ class BrokerTests(unittest.TestCase):
             self.path,
             self.registry,
             clock=lambda: self.now,
+            monotonic=lambda: self.now,
             admitted={"a": "usb-a", "b": "usb-b", "root-a": "root-a"},
             **kwargs,
         )
@@ -295,6 +297,7 @@ class BrokerTests(unittest.TestCase):
                         pool="rig",
                         ttl=300,
                         idempotency_key="rpc",
+                        binding=process_identity(os.getpid()),
                     ),
                 }
             )
@@ -342,6 +345,12 @@ class BrokerTests(unittest.TestCase):
                     "2",
                     "--idempotency-key",
                     "cli",
+                    "--pid",
+                    str(os.getpid()),
+                    "--agent-id",
+                    "agent",
+                    "--issue-id",
+                    "CHE-fixture",
                 ],
                 capture_output=True,
                 text=True,
