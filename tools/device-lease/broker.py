@@ -44,6 +44,13 @@ _DDL = (
     "CREATE TABLE IF NOT EXISTS broker_bindings (lease_id TEXT PRIMARY KEY, "
     "binding TEXT NOT NULL, heartbeat_mono REAL NOT NULL, expiry_mono REAL NOT NULL)",
     "CREATE TABLE IF NOT EXISTS broker_reconcile (lease_id TEXT PRIMARY KEY)",
+    "CREATE TABLE IF NOT EXISTS broker_ticket_wait (ticket_id TEXT PRIMARY KEY, "
+    "purpose TEXT NOT NULL, last_activity REAL NOT NULL, binding TEXT)",
+    "CREATE TABLE IF NOT EXISTS broker_parked_runs (ticket_id TEXT NOT NULL, run_id TEXT NOT NULL, "
+    "PRIMARY KEY(ticket_id, run_id))",
+    "CREATE TABLE IF NOT EXISTS broker_claim_latency (ticket_id TEXT PRIMARY KEY, "
+    "offer_sequence INTEGER NOT NULL, readback_at REAL NOT NULL, claimed_at REAL NOT NULL, "
+    "latency_seconds REAL NOT NULL, run_id TEXT NOT NULL)",
     "CREATE TABLE IF NOT EXISTS broker_offer_clock (ticket_id TEXT PRIMARY KEY, expires_mono REAL NOT NULL)",
 )
 
@@ -239,6 +246,17 @@ class Broker:
             wall, mono = self._last_clock
             if self._mono < mono or abs((now - wall) - (self._mono - mono)) > 5:
                 self._fence_all(conn)
+        # Legacy queued tickets receive an initial activity sample on first upgrade.
+        conn.execute(
+            "INSERT OR IGNORE INTO broker_ticket_wait SELECT ticket_id, issue_id, ?, NULL "
+            "FROM broker_tickets WHERE state IN ('queued','offered')",
+            (now,),
+        )
+        for row in conn.execute(
+            "SELECT ticket_id, binding FROM broker_ticket_wait WHERE binding IS NOT NULL"
+        ):
+            if observations.get((row["ticket_id"], row["binding"])) is False:
+                self._park_binding(conn, row["ticket_id"], json.loads(row["binding"])["run_id"])
         for row in conn.execute("SELECT * FROM broker_bindings"):
             binding = json.loads(row["binding"])
             dead = (
@@ -268,6 +286,13 @@ class Broker:
                 binding = json.loads(row["binding"])
                 if binding["mode"] == "local":
                     observations[row["lease_id"], row["binding"]] = self.run_probe(binding)
+            for row in conn.execute(
+                "SELECT w.ticket_id, w.binding FROM broker_ticket_wait w JOIN broker_tickets t "
+                "ON w.ticket_id=t.ticket_id WHERE t.state IN ('queued','offered') AND w.binding IS NOT NULL"
+            ).fetchall():
+                binding = json.loads(row["binding"])
+                if binding["mode"] == "local":
+                    observations[row["ticket_id"], row["binding"]] = self.run_probe(binding)
             try:
                 with write_transaction(conn, self.clock, refusals=(Refused,)) as value:
                     self._maintenance(conn, value[1], observations)
@@ -340,6 +365,11 @@ class Broker:
             raise Refused("ticket_unknown")
         result = dict(row)
         result["reserved"] = json.loads(result["reserved"])
+        wait = conn.execute(
+            "SELECT * FROM broker_ticket_wait WHERE ticket_id=?", (ticket_id,)
+        ).fetchone()
+        result["binding"] = json.loads(wait["binding"]) if wait and wait["binding"] else None
+        result["last_activity"] = wait["last_activity"] if wait else None
         return result
 
     def _ticket_owned(self, conn, ticket_id, principal, agent_id, issue_id):
@@ -356,7 +386,105 @@ class Broker:
         self._text(ticket_id, principal, agent_id, issue_id)
         with self.transaction() as (conn, now):
             self._expire(conn, now)
-            return self._ticket_owned(conn, ticket_id, principal, agent_id, issue_id)
+            self._ticket_owned(conn, ticket_id, principal, agent_id, issue_id)
+            conn.execute(
+                "UPDATE broker_ticket_wait SET last_activity=? WHERE ticket_id=? "
+                "AND EXISTS (SELECT 1 FROM broker_tickets WHERE ticket_id=? AND state IN ('queued','offered'))",
+                (now, ticket_id, ticket_id),
+            )
+            return self._ticket_view(conn, ticket_id)
+
+    @staticmethod
+    def _park_binding(conn, ticket_id, run_id):
+        conn.execute("INSERT OR IGNORE INTO broker_parked_runs VALUES (?,?)", (ticket_id, run_id))
+        conn.execute("UPDATE broker_ticket_wait SET binding=NULL WHERE ticket_id=?", (ticket_id,))
+
+    def park(self, *, ticket_id, principal, agent_id, issue_id, run_id):
+        self._text(ticket_id, principal, agent_id, issue_id, run_id)
+        with self.transaction() as (conn, now):
+            self._expire(conn, now)
+            ticket = self._ticket_owned(conn, ticket_id, principal, agent_id, issue_id)
+            if ticket["state"] not in {"queued", "offered"}:
+                raise Refused("ticket_closed")
+            if ticket["binding"] and ticket["binding"]["run_id"] != run_id:
+                raise Refused("run_not_yours")
+            self._park_binding(conn, ticket_id, run_id)
+            return self._ticket_view(conn, ticket_id)
+
+    def claim(self, *, ticket_id, principal, agent_id, issue_id, run_id, binding, idempotency_key):
+        self._text(ticket_id, principal, agent_id, issue_id, run_id, idempotency_key)
+        if not isinstance(binding, dict):
+            raise Refused("invalid_request")
+        binding = self._binding(binding, run_id)
+        fingerprint = json.dumps(["claim", ticket_id, agent_id, issue_id, binding], sort_keys=True)
+        with self.transaction() as (conn, now):
+            self._expire(conn, now)
+            replay = self._replay(conn, principal, run_id, idempotency_key, fingerprint)
+            if replay is not None:
+                return replay
+            ticket = self._ticket_owned(conn, ticket_id, principal, agent_id, issue_id)
+            if conn.execute(
+                "SELECT 1 FROM broker_parked_runs WHERE ticket_id=? AND run_id=?",
+                (ticket_id, run_id),
+            ).fetchone():
+                raise Refused("run_parked")
+            if self.draining:
+                raise Refused("draining")
+            if conn.execute("SELECT 1 FROM broker_reconcile LIMIT 1").fetchone():
+                raise Refused("restart_reconcile")
+            if ticket["state"] != "offered":
+                raise Refused("ticket_not_offered")
+            if ticket["binding"] is not None:
+                raise Refused("ticket_not_parked")
+            purpose = conn.execute(
+                "SELECT purpose FROM broker_ticket_wait WHERE ticket_id=?", (ticket_id,)
+            ).fetchone()[0]
+            response = self._grant(
+                conn,
+                now,
+                principal,
+                run_id,
+                purpose,
+                ticket["pool"],
+                ticket["ttl"],
+                ticket["reserved"],
+                binding,
+            )
+            conn.execute(
+                "UPDATE broker_tickets SET state='claimed', reserved='[]' WHERE ticket_id=?",
+                (ticket_id,),
+            )
+            conn.execute(
+                "UPDATE broker_ticket_wait SET last_activity=? WHERE ticket_id=?", (now, ticket_id)
+            )
+            conn.execute("DELETE FROM broker_offer_clock WHERE ticket_id=?", (ticket_id,))
+            if ticket["offer_expires_at"] is not None:
+                readback = ticket["offer_expires_at"] - 900
+                conn.execute(
+                    "INSERT INTO broker_claim_latency VALUES (?,?,?,?,?,?)",
+                    (
+                        ticket_id,
+                        ticket["offer_sequence"],
+                        readback,
+                        now,
+                        max(0, now - readback),
+                        run_id,
+                    ),
+                )
+            self._record(conn, principal, run_id, idempotency_key, fingerprint, response)
+            self._schedule(conn, now)
+        self.boundary("claim:committed")
+        return response
+
+    def pending_offers(self):
+        """Owner-only snapshot; no poll refresh and no client property credential."""
+        with self.transaction() as (conn, now):
+            self._expire(conn, now)
+            return [
+                dict(t)
+                for t in self._tickets(conn)
+                if t["state"] == "offered" and t["offer_expires_at"] is None
+            ]
 
     def cancel_ticket(self, *, ticket_id, principal, agent_id, issue_id):
         self._text(ticket_id, principal, agent_id, issue_id)
@@ -394,6 +522,16 @@ class Broker:
             return self._ticket_view(conn, ticket_id)
 
     def _schedule(self, conn, now):
+        conn.execute(
+            "UPDATE broker_tickets SET state='cancelled', reserved='[]', offer_expires_at=NULL "
+            "WHERE state IN ('queued','offered') AND ticket_id IN "
+            "(SELECT ticket_id FROM broker_ticket_wait WHERE last_activity <= ?)",
+            (now - 4500,),
+        )
+        conn.execute(
+            "DELETE FROM broker_offer_clock WHERE ticket_id IN "
+            "(SELECT ticket_id FROM broker_tickets WHERE state='cancelled')"
+        )
         if self.draining or conn.execute("SELECT 1 FROM broker_reconcile LIMIT 1").fetchone():
             return
         for ticket in self._tickets(conn):
@@ -513,26 +651,7 @@ class Broker:
             raise Refused("invalid_request")
         if device_id is not None:
             self._text(device_id)
-        binding = (
-            dict(binding)
-            if isinstance(binding, dict)
-            else process_identity(os.getpid())
-            if binding is None
-            else {}
-        )
-        if binding.get("mode") == "local":
-            if (
-                set(binding) != {"mode", "pid", "process_start", "boot_id"}
-                or type(binding["pid"]) is not int
-                or binding["pid"] < 1
-            ):
-                raise Refused("invalid_request")
-            self._text(binding["process_start"], binding["boot_id"])
-            if not self.run_probe(binding):
-                raise Refused("run_not_live")
-        elif binding != {"mode": "remote"}:
-            raise Refused("invalid_request")
-        binding["run_id"] = run_id
+        binding = self._binding(binding, run_id)
         with self.transaction() as (conn, now):
             target = self._canonical(device_id) if device_id else None
             fingerprint = json.dumps(
@@ -578,21 +697,7 @@ class Broker:
             candidates = self._candidates(pool, target or device_id)
             if count > len(candidates):
                 raise Refused("impossible_batch")
-            held = conn.execute(
-                "SELECT lease_id FROM broker_groups WHERE principal=? "
-                "AND run_id=? AND state != 'released'",
-                (principal, run_id),
-            ).fetchone()
-            if held:
-                raise Refused("run_already_holds")
-            budget = conn.execute(
-                "SELECT * FROM broker_runs WHERE principal=? AND run_id=?", (principal, run_id)
-            ).fetchone()
-            started = budget["started_at"] if budget else now
-            cap = 3600 if pool == "root" else 7200
-            deadline = min(started + cap, budget["hard_deadline"]) if budget else now + cap
-            if now >= deadline:
-                raise Refused("hard_cap")
+            self._run_budget(conn, now, principal, run_id, pool)
             occupied = self._occupied(conn)
             free = [d for d in candidates if d not in occupied]
             conflict = any(
@@ -620,6 +725,10 @@ class Broker:
                         position,
                     ),
                 )
+                conn.execute(
+                    "INSERT INTO broker_ticket_wait VALUES (?,?,?,?)",
+                    (ticket_id, purpose, now, json.dumps(binding, sort_keys=True)),
+                )
                 self._schedule(conn, now)
                 holders = [self._view(conn, occupied[d]) for d in candidates if d in occupied]
                 raise Refused(
@@ -627,45 +736,93 @@ class Broker:
                     ticket=self._ticket_view(conn, ticket_id),
                     holder=min(holders, key=lambda g: g["expires_at"]) if holders else None,
                 )
-            lease_id = uuid.uuid4().hex
-            conn.execute(
-                "INSERT INTO broker_groups VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-                (
-                    lease_id,
-                    principal,
-                    run_id,
-                    purpose,
-                    started,
-                    min(now + ttl, deadline),
-                    ttl,
-                    deadline,
-                    "active",
-                    None,
-                    None,
-                ),
+            response = self._grant(
+                conn, now, principal, run_id, purpose, pool, ttl, free[:count], binding
             )
-            for device_id in free[:count]:
-                device = self.registry.resolve(device_id)
-                conn.execute(
-                    "INSERT INTO broker_devices VALUES (?,?,?,?,?)",
-                    (lease_id, device_id, self.admitted[device_id], int(device.restricted), None),
-                )
-                self.boundary("acquire:device")
-            conn.execute(
-                "INSERT INTO broker_runs VALUES (?,?,?,?) ON CONFLICT(principal,run_id) "
-                "DO UPDATE SET hard_deadline=excluded.hard_deadline",
-                (principal, run_id, started, deadline),
-            )
-            conn.execute(
-                "INSERT INTO broker_bindings VALUES (?,?,?,?)",
-                (
-                    lease_id,
-                    json.dumps(binding, sort_keys=True),
-                    self._mono,
-                    self._mono + min(ttl, deadline - now),
-                ),
-            )
-            response = self._view(conn, lease_id)
             self._record(conn, principal, run_id, idempotency_key, fingerprint, response)
         self.boundary("acquire:committed")
+        return response
+
+    def _binding(self, binding, run_id):
+        binding = (
+            dict(binding)
+            if isinstance(binding, dict)
+            else process_identity(os.getpid())
+            if binding is None
+            else {}
+        )
+        if binding.get("mode") == "local":
+            if (
+                set(binding) != {"mode", "pid", "process_start", "boot_id"}
+                or type(binding["pid"]) is not int
+                or binding["pid"] < 1
+            ):
+                raise Refused("invalid_request")
+            self._text(binding["process_start"], binding["boot_id"])
+            if not self.run_probe(binding):
+                raise Refused("run_not_live")
+        elif binding != {"mode": "remote"}:
+            raise Refused("invalid_request")
+        binding["run_id"] = run_id
+        return binding
+
+    def _run_budget(self, conn, now, principal, run_id, pool):
+        held = conn.execute(
+            "SELECT lease_id FROM broker_groups WHERE principal=? "
+            "AND run_id=? AND state != 'released'",
+            (principal, run_id),
+        ).fetchone()
+        if held:
+            raise Refused("run_already_holds")
+        budget = conn.execute(
+            "SELECT * FROM broker_runs WHERE principal=? AND run_id=?", (principal, run_id)
+        ).fetchone()
+        started = budget["started_at"] if budget else now
+        cap = 3600 if pool == "root" else 7200
+        deadline = min(started + cap, budget["hard_deadline"]) if budget else now + cap
+        if now >= deadline:
+            raise Refused("hard_cap")
+        return started, deadline
+
+    def _grant(self, conn, now, principal, run_id, purpose, pool, ttl, devices, binding):
+        started, deadline = self._run_budget(conn, now, principal, run_id, pool)
+        lease_id = uuid.uuid4().hex
+        conn.execute(
+            "INSERT INTO broker_groups VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                lease_id,
+                principal,
+                run_id,
+                purpose,
+                started,
+                min(now + ttl, deadline),
+                ttl,
+                deadline,
+                "active",
+                None,
+                None,
+            ),
+        )
+        for device_id in devices:
+            device = self.registry.resolve(device_id)
+            conn.execute(
+                "INSERT INTO broker_devices VALUES (?,?,?,?,?)",
+                (lease_id, device_id, self.admitted[device_id], int(device.restricted), None),
+            )
+            self.boundary("acquire:device")
+        conn.execute(
+            "INSERT INTO broker_runs VALUES (?,?,?,?) ON CONFLICT(principal,run_id) "
+            "DO UPDATE SET hard_deadline=excluded.hard_deadline",
+            (principal, run_id, started, deadline),
+        )
+        conn.execute(
+            "INSERT INTO broker_bindings VALUES (?,?,?,?)",
+            (
+                lease_id,
+                json.dumps(binding, sort_keys=True),
+                self._mono,
+                self._mono + min(ttl, deadline - now),
+            ),
+        )
+        response = self._view(conn, lease_id)
         return response
