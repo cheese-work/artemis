@@ -25,6 +25,7 @@ class BrokerTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.path = Path(self.temp.name) / "leases.db"
         self.now = 100_000.0
+        self.claim_guard = threading.RLock()
         self.registry = DeviceRegistry(
             [
                 Device("a", ("usb-a", "192.0.2.1:5555"), restricted=False, identity_confirmed=True),
@@ -35,7 +36,7 @@ class BrokerTests(unittest.TestCase):
         self.broker = self.new_broker()
 
     def new_broker(self, **kwargs):
-        return Broker(
+        broker = Broker(
             self.path,
             self.registry,
             clock=lambda: self.now,
@@ -43,6 +44,9 @@ class BrokerTests(unittest.TestCase):
             admitted={"a": "usb-a", "b": "usb-b", "root-a": "root-a"},
             **kwargs,
         )
+        broker.admission_sources = {"artemis": lambda: [], "android": lambda: []}
+        broker.admission_guard = lambda: self.claim_guard
+        return broker
 
     def take(self, broker=None, **changes):
         request = dict(

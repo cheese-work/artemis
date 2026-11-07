@@ -5,13 +5,16 @@ Inventory alone never admits a device. This is separate from the legacy
 CHE-2099 authority until its explicitly approved migration/cutover.
 """
 
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 import json
 import os
 from pathlib import Path
 import sqlite3
 import time
+import threading
 import uuid
+
+import audit
 
 from registry import Device, DeviceRegistry
 
@@ -45,6 +48,12 @@ _DDL = (
     "binding TEXT NOT NULL, heartbeat_mono REAL NOT NULL, expiry_mono REAL NOT NULL)",
     "CREATE TABLE IF NOT EXISTS broker_reconcile (lease_id TEXT PRIMARY KEY)",
     "CREATE TABLE IF NOT EXISTS broker_offer_clock (ticket_id TEXT PRIMARY KEY, expires_mono REAL NOT NULL)",
+    "CREATE TABLE IF NOT EXISTS broker_context (lease_id TEXT PRIMARY KEY, agent TEXT NOT NULL, issue TEXT NOT NULL)",
+    "CREATE TABLE IF NOT EXISTS broker_audit (seq INTEGER PRIMARY KEY AUTOINCREMENT, payload TEXT NOT NULL)",
+    "CREATE TABLE IF NOT EXISTS broker_changes (seq INTEGER PRIMARY KEY AUTOINCREMENT, lease_id TEXT NOT NULL, change TEXT NOT NULL)",
+    "CREATE TABLE IF NOT EXISTS broker_verifications (lease_id TEXT PRIMARY KEY, verifier TEXT NOT NULL, evidence TEXT NOT NULL)",
+    "CREATE TABLE IF NOT EXISTS broker_recovery_deadlines (lease_id TEXT PRIMARY KEY, deadline_mono REAL NOT NULL)",
+    "CREATE TABLE IF NOT EXISTS broker_ticket_origins (ticket_id TEXT PRIMARY KEY, run_id TEXT NOT NULL)",
 )
 
 
@@ -87,6 +96,11 @@ class Broker:
         conflicting_waiter=lambda conn, ids: False,
         monotonic=time.monotonic,
         run_probe=local_run_alive,
+        admission_sources=None,
+        recovery_io=None,
+        recovery_owner=None,
+        ops_issue=None,
+        admission_guard=nullcontext,
     ):
         self.db_path = Path(db_path)
         self.registry = registry
@@ -97,6 +111,15 @@ class Broker:
         self.draining = False
         self.monotonic, self.run_probe = monotonic, run_probe
         self._last_clock = None
+        self.admission_sources = dict(admission_sources or {})
+        self._admission = threading.local()
+        self.recovery_io = recovery_io
+        self.recovery_owner = recovery_owner
+        self.ops_issue = ops_issue
+        # The owner supplies one guard shared with claim writers; never a client option.
+        self.admission_guard = admission_guard
+        if recovery_io is not None:
+            self._text(recovery_owner, ops_issue)
 
     def _owned(self, conn, lease_id, principal, run_id):
         group = self._view(conn, lease_id)
@@ -126,6 +149,8 @@ class Broker:
                 raise Refused("lease_not_active")
             if self.draining:
                 raise Refused("draining")
+            if self._admission.unavailable or not self._admission.audit_ok:
+                raise Refused("admission_unavailable")
             if group["expires_at"] - now > group["ttl"] / 3:
                 raise Refused("renew_too_early")
             ids = [d["device_id"] for d in group["devices"]]
@@ -149,16 +174,18 @@ class Broker:
             )
             self.boundary("renew:updated")
             response = self._view(conn, lease_id)
+            self._event(conn, "renew", now, response)
             self._record(conn, principal, run_id, idempotency_key, fingerprint, response)
         self.boundary("renew:committed")
         return response
 
     def release(self, *, lease_id, principal, run_id):
         self._text(lease_id, principal, run_id)
-        with self.transaction() as (conn, now):
+        with self.transaction(allow_audit_failure=True) as (conn, now):
             self._expire(conn, now)
             group = self._owned(conn, lease_id, principal, run_id)
             if group["state"] == "active":
+                self._event(conn, "release", now, group)
                 conn.execute(
                     "UPDATE broker_groups SET state='fencing' WHERE lease_id=?", (lease_id,)
                 )
@@ -167,8 +194,8 @@ class Broker:
     def recovery(self, lease_id, expected, target, *, recovery_owner=None, ops_issue=None):
         """Trusted recovery-worker CAS, never a holder RPC. No automatic free path.
 
-        Actual fencing/cleanup and leader-verified release belong to slice 4.
-        Until then, even 'verifying' is unavailable and cannot be client-freed.
+        Only the trusted recovery worker calls this after its actions succeed.
+        Even 'verifying' is unavailable and cannot be client-freed.
         """
         allowed = {("fencing", "cleaning"), ("cleaning", "verifying")}
         if target == "quarantine" and expected in {"fencing", "cleaning", "verifying"}:
@@ -177,7 +204,7 @@ class Broker:
             self._text(recovery_owner, ops_issue)
         elif (expected, target) not in allowed:
             raise Refused("invalid_transition")
-        with self.transaction() as (conn, now):
+        with self.transaction(allow_audit_failure=True) as (conn, now):
             self._expire(conn, now)
             group = self._view(conn, lease_id)
             if group["state"] != expected:
@@ -190,11 +217,13 @@ class Broker:
 
     def restart(self):
         """Owner-only startup barrier, called after taking the daemon's exclusive lock."""
-        with self.transaction() as (conn, now):
+        with self.transaction(allow_audit_failure=True) as (conn, now):
             self._fence_all(conn)
+            conn.execute(
+                "UPDATE broker_recovery_deadlines SET deadline_mono=?", (self._mono + 120,)
+            )
 
-    @staticmethod
-    def _fence_all(conn):
+    def _fence_all(self, conn):
         conn.execute(
             "INSERT OR IGNORE INTO broker_reconcile SELECT lease_id "
             "FROM broker_groups WHERE state != 'released' AND state != 'quarantine'"
@@ -209,7 +238,7 @@ class Broker:
 
     def finish_reconcile(self, lease_id):
         """Recovery acknowledgment, not release verification and never a holder RPC."""
-        with self.transaction() as (conn, now):
+        with self.transaction(allow_audit_failure=True) as (conn, now):
             group = self._view(conn, lease_id)
             if group["state"] not in {"verifying", "quarantine", "released"}:
                 raise Refused("reconcile_incomplete")
@@ -230,8 +259,12 @@ class Broker:
 
     def maintain(self):
         """Periodic foreground maintenance; fencing records never free ownership."""
-        with self.transaction() as (conn, now):
+        with self.transaction(allow_audit_failure=True) as (conn, now):
             self._expire(conn, now)
+        if self.recovery_io is not None:
+            from recovery import recover_pending
+
+            recover_pending(self)
 
     def _maintenance(self, conn, now, observations):
         self._mono = self.monotonic()
@@ -247,18 +280,58 @@ class Broker:
             )
             suspect = binding["mode"] == "remote" and self._mono - row["heartbeat_mono"] >= 90
             if dead or suspect or self._mono >= row["expiry_mono"]:
+                group = self._view(conn, row["lease_id"])
+                if group["state"] == "active":
+                    self._event(
+                        conn,
+                        "expire" if self._mono >= row["expiry_mono"] else "suspect",
+                        now,
+                        group,
+                    )
                 conn.execute(
                     "UPDATE broker_groups SET state='fencing' WHERE lease_id=? AND state='active'",
                     (row["lease_id"],),
                 )
 
     @contextmanager
-    def transaction(self):
+    def transaction(self, *, allow_audit_failure=False):
+        with self.admission_guard():
+            with self._transaction(allow_audit_failure=allow_audit_failure) as value:
+                yield value
+
+    @contextmanager
+    def _transaction(self, *, allow_audit_failure=False):
         conn = sqlite3.connect(self.db_path, timeout=10, isolation_level=None)
         conn.row_factory = sqlite3.Row
         try:
             for statement in _DDL:
                 conn.execute(statement)
+            self._admission.audit_ok = True
+            try:
+                audit.flush(self.db_path)
+            except (OSError, RuntimeError, UnicodeError):
+                self._admission.audit_ok = False
+            # Trusted readers only. Failure/unknown identity closes admission; no stale cache.
+            blocked = set()
+            self._admission.unavailable = (
+                not {"artemis", "android"} <= self.admission_sources.keys()
+                or self.admission_guard is nullcontext
+            )
+            try:
+                for reader in self.admission_sources.values():
+                    aliases = reader()
+                    if not isinstance(aliases, (list, tuple, set, frozenset)):
+                        raise ValueError("invalid claim snapshot")
+                    for alias in aliases:
+                        canonical = self._canonical(alias)
+                        if canonical is None:
+                            raise ValueError("unknown claim identity")
+                        blocked.add(canonical)
+            except Exception:
+                self._admission.unavailable = True
+            if self._admission.unavailable:
+                blocked = set(self.admitted)
+            self._admission.blocked = blocked
             # Process and boot-id reads happen before BEGIN IMMEDIATE, never under its lock.
             observations = {}
             for row in conn.execute(
@@ -270,8 +343,12 @@ class Broker:
                     observations[row["lease_id"], row["binding"]] = self.run_probe(binding)
             try:
                 with write_transaction(conn, self.clock, refusals=(Refused,)) as value:
-                    self._maintenance(conn, value[1], observations)
-                    yield value
+                    before = self._audit_snapshot(conn)
+                    try:
+                        self._maintenance(conn, value[1], observations)
+                        yield value
+                    finally:
+                        self._audit_changes(conn, value[1], before)
             except Refused:
                 # Refusals commit maintenance; interruptions must retain the old clock sample.
                 self._last_clock = value[1], self._mono
@@ -280,6 +357,175 @@ class Broker:
                 self._last_clock = value[1], self._mono
         finally:
             conn.close()
+            # Includes committed maintenance on a domain refusal; rolled-back events vanish.
+            try:
+                audit.flush(self.db_path)
+            except (OSError, RuntimeError, UnicodeError):
+                if not allow_audit_failure:
+                    raise
+
+    @staticmethod
+    def _audit_snapshot(conn):
+        return (
+            {r["lease_id"]: dict(r) for r in conn.execute("SELECT * FROM broker_groups")},
+            {r["ticket_id"]: dict(r) for r in conn.execute("SELECT * FROM broker_tickets")},
+        )
+
+    def _event(self, conn, event, now, group, **details):
+        context = conn.execute(
+            "SELECT agent, issue FROM broker_context WHERE lease_id=?", (group["lease_id"],)
+        ).fetchone()
+        audit.enqueue(
+            conn,
+            event,
+            now,
+            agent=context["agent"] if context else group["holder"],
+            issue=context["issue"] if context else group["purpose"],
+            run_id=group["run_id"],
+            devices=[d["device_id"] for d in group["devices"]],
+            lease_id=group["lease_id"],
+            **details,
+        )
+
+    def _audit_changes(self, conn, now, before):
+        groups, tickets = self._audit_snapshot(conn)
+        names = {
+            "fencing": "fence",
+            "cleaning": "cleanup",
+            "verifying": "verify_pending",
+            "released": "verify",
+            "quarantine": "quarantine",
+        }
+        for key, row in groups.items():
+            old = before[0].get(key)
+            event = (
+                "acquire"
+                if old is None
+                else names.get(row["state"])
+                if old["state"] != row["state"]
+                else None
+            )
+            if event:
+                if row["state"] == "fencing":
+                    binding = conn.execute(
+                        "SELECT expiry_mono,heartbeat_mono,binding FROM broker_bindings WHERE lease_id=?",
+                        (key,),
+                    ).fetchone()
+                    start = min(self._mono, binding[0]) if binding else self._mono
+                    if binding and json.loads(binding[2])["mode"] == "remote":
+                        start = min(start, binding[1] + 90)
+                    conn.execute(
+                        "INSERT OR REPLACE INTO broker_recovery_deadlines VALUES (?,?)",
+                        (key, start + 120),
+                    )
+                self._event(
+                    conn,
+                    event,
+                    now,
+                    self._view(conn, key),
+                    recovery_owner=row["recovery_owner"],
+                    ops_issue=row["ops_issue"],
+                )
+        for key, row in tickets.items():
+            old = before[1].get(key)
+            if old != row:
+                origin = conn.execute(
+                    "SELECT run_id FROM broker_ticket_origins WHERE ticket_id=?", (key,)
+                ).fetchone()
+                audit.enqueue(
+                    conn,
+                    "offer" if row["state"] == "offered" else "ticket",
+                    now,
+                    agent=row["agent_id"],
+                    run_id=origin[0] if origin else "legacy-unknown",
+                    issue=row["issue_id"],
+                    devices=json.loads(row["reserved"])
+                    or self._candidates(row["pool"], row["device_id"]),
+                    ticket_id=key,
+                    state=row["state"],
+                    sequence=row["offer_sequence"],
+                )
+
+    def record_change(self, *, lease_id, principal, run_id, change):
+        """Owner records the undo intent BEFORE mutation; no arbitrary command strings."""
+        from recovery import validate_change
+
+        validate_change(change)
+        with self.transaction() as (conn, now):
+            self._expire(conn, now)
+            group = self._owned(conn, lease_id, principal, run_id)
+            if group["state"] != "active":
+                raise Refused("lease_not_active")
+            if change["device_id"] not in {d["device_id"] for d in group["devices"]}:
+                raise Refused("device_not_yours")
+            conn.execute(
+                "INSERT INTO broker_changes(lease_id,change) VALUES (?,?)",
+                (lease_id, json.dumps(change)),
+            )
+            self._event(conn, "change", now, group, kind=change["kind"])
+
+    def verify_release(self, lease_id, *, verifier, evidence, passed):
+        """Trusted leader entry point, deliberately absent from holder RPC/CLI."""
+        self._text(verifier, evidence)
+        if verifier != "5cd75ce5-d323-4004-9779-7e2ccf16bde4":
+            raise Refused("leader_required")
+        if type(passed) is not bool:
+            raise Refused("invalid_request")
+        with self.transaction() as (conn, now):
+            group = self._view(conn, lease_id)
+            if group["state"] != "verifying":
+                raise Refused("state_conflict")
+            if not passed:
+                self._text(self.recovery_owner, self.ops_issue)
+            conn.execute(
+                "INSERT OR REPLACE INTO broker_verifications VALUES (?,?,?)",
+                (lease_id, verifier, evidence),
+            )
+            conn.execute(
+                "UPDATE broker_groups SET state=?, recovery_owner=?, ops_issue=? WHERE lease_id=?",
+                (
+                    "released" if passed else "quarantine",
+                    None if passed else self.recovery_owner,
+                    None if passed else self.ops_issue,
+                    lease_id,
+                ),
+            )
+            self._event(
+                conn,
+                "leader_evidence",
+                now,
+                group,
+                verifier=verifier,
+                evidence=evidence,
+                passed=passed,
+            )
+            conn.execute("DELETE FROM broker_reconcile WHERE lease_id=?", (lease_id,))
+            return self._view(conn, lease_id)
+
+    def revoke(self, lease_id, *, actor, role):
+        """Trusted control-plane entry point. The caller authenticates role; no holder RPC."""
+        self._text(actor)
+        if role not in {"cheese", "ops"}:
+            raise Refused("revoke_forbidden")
+        with self.transaction() as (conn, now):
+            group = self._view(conn, lease_id)
+            if group["state"] == "active":
+                self._event(conn, "revoke", now, group, actor=actor)
+                conn.execute(
+                    "UPDATE broker_groups SET state='fencing' WHERE lease_id=?", (lease_id,)
+                )
+            return self._view(conn, lease_id)
+
+    def recover_quarantine(self, lease_id, *, recovery_owner, evidence):
+        """Named owner supplies recovery evidence; leader verification still follows."""
+        self._text(recovery_owner, evidence)
+        with self.transaction() as (conn, now):
+            group = self._view(conn, lease_id)
+            if group["state"] != "quarantine" or group["recovery_owner"] != recovery_owner:
+                raise Refused("recovery_owner_required")
+            self._event(conn, "recovery_evidence", now, group, evidence=evidence)
+            conn.execute("UPDATE broker_groups SET state='verifying' WHERE lease_id=?", (lease_id,))
+            return self._view(conn, lease_id)
 
     @staticmethod
     def _text(*values):
@@ -297,6 +543,10 @@ class Broker:
 
     def _expire(self, conn, now):
         # Expiry never frees ownership. Recovery must prove release first.
+        for row in conn.execute(
+            "SELECT lease_id FROM broker_groups WHERE state='active' AND expires_at <= ?", (now,)
+        ).fetchall():
+            self._event(conn, "expire", now, self._view(conn, row[0]))
         conn.execute(
             "UPDATE broker_groups SET state='fencing' WHERE state='active' AND expires_at <= ?",
             (now,),
@@ -423,7 +673,11 @@ class Broker:
             candidates = self._candidates(ticket["pool"], ticket["device_id"])
             conflict = bool(blocked.intersection(candidates))
             blocked.update(candidates)
-            free = [d for d in candidates if d not in occupied] if not conflict else []
+            free = (
+                [d for d in candidates if d not in occupied and d not in self._admission.blocked]
+                if not conflict
+                else []
+            )
             previous = json.loads(ticket["reserved"])
             reserved = (
                 previous
@@ -555,6 +809,8 @@ class Broker:
                 return replay
             if self.draining:
                 raise Refused("draining")
+            if self._admission.unavailable or not self._admission.audit_ok:
+                raise Refused("admission_unavailable")
             if conn.execute("SELECT 1 FROM broker_reconcile LIMIT 1").fetchone():
                 raise Refused("restart_reconcile")
             existing = conn.execute(
@@ -594,13 +850,14 @@ class Broker:
             if now >= deadline:
                 raise Refused("hard_cap")
             occupied = self._occupied(conn)
-            free = [d for d in candidates if d not in occupied]
+            free = [d for d in candidates if d not in occupied and d not in self._admission.blocked]
             conflict = any(
                 set(candidates) & set(self._candidates(t["pool"], t["device_id"]))
                 for t in self._tickets(conn)
             )
             if len(free) < count or conflict:
                 ticket_id = uuid.uuid4().hex
+                conn.execute("INSERT INTO broker_ticket_origins VALUES (?,?)", (ticket_id, run_id))
                 position = conn.execute(
                     "SELECT coalesce(max(position),0)+1 FROM broker_tickets"
                 ).fetchone()[0]
@@ -628,6 +885,9 @@ class Broker:
                     holder=min(holders, key=lambda g: g["expires_at"]) if holders else None,
                 )
             lease_id = uuid.uuid4().hex
+            conn.execute(
+                "INSERT INTO broker_context VALUES (?,?,?)", (lease_id, agent_id, issue_id)
+            )
             conn.execute(
                 "INSERT INTO broker_groups VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                 (
