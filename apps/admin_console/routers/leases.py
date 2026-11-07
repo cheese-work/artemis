@@ -27,11 +27,13 @@ from apps.admin_console.database.repositories.device_repository import (
 )
 from apps.admin_console.database.repositories.run_catalog_repository import run_catalog_repo
 from apps.admin_console.services import device_leases as leases
+from apps.admin_console.routers.lease_extensions import router as extensions_router
 from artemis.config.device_leases import device_leases_enabled
 from device_lease import canonical_ids
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/leases", tags=["leases"])
+router.include_router(extensions_router)
 
 MAX_TTL_SECONDS = 4 * 3600
 
