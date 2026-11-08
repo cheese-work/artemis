@@ -1,10 +1,42 @@
 """Regression check for runner billing and fork-safe fallbacks."""
 
 from pathlib import Path
+import re
 import unittest
 
 
 class RunnerRoutingTest(unittest.TestCase):
+    def test_shared_x99_jobs_skip_upstream_sync_heads(self):
+        expected = (
+            "${{ !startsWith(github.head_ref || github.ref_name, 'upstream-sync/') "
+            "&& (github.event_name != 'pull_request' "
+            "|| github.event.pull_request.head.repo.full_name == github.repository) }}"
+        )
+        workflows = list(Path(".github/workflows").glob("*.y*ml"))
+        self.assertTrue(workflows, "No workflows found")
+        for workflow in workflows:
+            jobs = re.split(r"(?m)^  ([\w-]+):\n", workflow.read_text().split("\njobs:\n", 1)[1])
+            for name, body in zip(jobs[1::2], jobs[2::2]):
+                if "cheese-x99" not in body:
+                    continue
+                with self.subTest(workflow=workflow.name, job=name):
+                    condition = re.search(r"(?m)^    if: (.+)$", body)
+                    self.assertIsNotNone(condition, "X99 job needs a job-level guard")
+                    # The preview controller is intentionally inactive on every ref.
+                    if condition[1] != "${{ false }}":
+                        job_expected = expected
+                        if (workflow.name, name) == ("ci.yml", "python-quality"):
+                            job_expected = expected.replace("${{ ", "${{ always() && ", 1)
+                        self.assertEqual(condition[1], job_expected)
+
+    def test_main_push_ci_keeps_python_matrix_and_result_gate(self):
+        ci = Path(".github/workflows/ci.yml").read_text()
+        self.assertIn(
+            "\non:\n  push:\n    branches: [main]\n  pull_request:\n  workflow_dispatch:\n", ci
+        )
+        jobs = re.split(r"(?m)^  ([\w-]+):\n", ci.split("\njobs:\n", 1)[1])
+        self.assertEqual(jobs[1::2], ["python-tests", "python-quality", "frontend", "package"])
+
     def test_artemis_uses_x99_and_provisions_chrome(self):
         ci = Path(".github/workflows/ci.yml").read_text()
         whats_new = Path(".github/workflows/whats-new.yml").read_text()
