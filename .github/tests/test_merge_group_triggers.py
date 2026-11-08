@@ -4,6 +4,7 @@
 The merge queue waits for the required checks on the queue commit; a workflow that never
 triggers there leaves the queue hanging. Text checks only, no PyYAML (runners may lack it).
 """
+
 import pathlib
 import re
 import sys
