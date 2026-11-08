@@ -16,6 +16,8 @@ INACTIVE = {
     # Deletes GitHub Actions caches with the repo token; needs no X99 disk or browser.
     ("cache-maintenance.yml", "cleanup"),
 }
+# CHE-3604: light jobs that run on a GitHub-hosted runner (free: this repository is public).
+HOSTED = {("whats-new.yml", "entry")}
 
 
 def _jobs():
@@ -44,14 +46,24 @@ def _x99_labels(runs_on):
     return json.loads(match.group(1))
 
 
+def test_light_jobs_run_on_a_github_hosted_runner():
+    jobs = {(file, name): job for file, name, _workflow, job in _jobs()}
+    for key in HOSTED:
+        assert jobs[key]["runs-on"] == "ubuntu-latest", key
+
+
 def test_every_active_job_runs_on_the_x99_pool():
     for file, name, _workflow, job in _jobs():
+        if (file, name) in HOSTED:
+            continue
         labels = _x99_labels(job["runs-on"])
         assert labels[0] == "self-hosted" and "cheese-x99" in labels, (file, name, labels)
 
 
 def test_only_the_frontend_job_requires_the_browser_runner():
     for file, name, _workflow, job in _jobs():
+        if (file, name) in HOSTED:
+            continue
         browser = "cheese-x99-browser" in _x99_labels(job["runs-on"])
         assert browser == (name == "frontend"), (file, name)
 

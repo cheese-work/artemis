@@ -41,7 +41,9 @@ class RunnerRoutingTest(unittest.TestCase):
         ci = Path(".github/workflows/ci.yml").read_text()
         whats_new = Path(".github/workflows/whats-new.yml").read_text()
         self.assertEqual(ci.count("github.repository_owner == 'cheese-work'"), 4)
-        self.assertIn("cheese-x99", whats_new)
+        # CHE-3604: the What's New check is a light job (5 min limit), so it runs GitHub-hosted.
+        self.assertIn("runs-on: ubuntu-latest", whats_new)
+        self.assertNotIn("cheese-x99", whats_new)
         self.assertIn("browser-actions/setup-chrome@", ci)
         self.assertIn("CHROME_BIN: ${{ steps.chrome.outputs.chrome-path }}", ci)
         self.assertNotIn('export CHROME_BIN="$(command -v', ci)
