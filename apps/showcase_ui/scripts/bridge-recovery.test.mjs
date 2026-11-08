@@ -16,7 +16,8 @@ const result = await build({
         const injector = Injector.create({ providers: [
           { provide: DOCUMENT, useValue: {
             baseURI: 'http://127.0.0.1/', location: { href: 'http://127.0.0.1/' },
-            defaultView: null, visibilityState: 'visible'
+            defaultView: null, visibilityState: 'visible',
+            addEventListener() {}, removeEventListener() {}
           } },
           { provide: LoggerService, useValue: { warn() {} } },
           { provide: PhoneTabService, useValue: {
