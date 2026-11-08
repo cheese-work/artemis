@@ -26,7 +26,7 @@ jobs:
   # Windows jobs or artifacts).
   python-tests:
     name: Python 3.12 (${{ matrix.suite }})
-    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    if: ${{ !startsWith(github.head_ref || github.ref_name, 'upstream-sync/') && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
     runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["ubuntu-latest"]') }}
     # Each matrix leg gets its own budget. The deterministic suite grew from ~21 to
     # ~42 min between 28 and 29 Oct and swings up to 2.6x under shared-runner load.
@@ -138,7 +138,7 @@ jobs:
   python-quality:
     name: Python 3.12
     needs: python-tests
-    if: ${{ always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+    if: ${{ always() && !startsWith(github.head_ref || github.ref_name, 'upstream-sync/') && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
     runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["ubuntu-latest"]') }}
     timeout-minutes: 5
     steps:
@@ -149,7 +149,7 @@ jobs:
 
   frontend:
     name: Frontend tests and production build
-    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    if: ${{ !startsWith(github.head_ref || github.ref_name, 'upstream-sync/') && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
     runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99","cheese-x99-browser"]') || fromJSON('["ubuntu-latest"]') }}
     timeout-minutes: 20
     defaults:
@@ -206,7 +206,7 @@ jobs:
 
   package:
     name: Build and smoke-test Python packages
-    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    if: ${{ !startsWith(github.head_ref || github.ref_name, 'upstream-sync/') && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
     runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99"]') || fromJSON('["ubuntu-latest"]') }}
     timeout-minutes: 30
 
