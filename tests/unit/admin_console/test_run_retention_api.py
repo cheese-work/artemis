@@ -24,6 +24,11 @@ import zipfile
 
 import pytest
 
+from apps.admin_console.core.access_control import (
+    AccessIdentity,
+    AdminAPIError,
+    _enforce_service_principal_routes,
+)
 from apps.admin_console.database.repositories.run_catalog_repository import run_catalog_repo
 from apps.admin_console.services import run_bundle, run_retention, run_storage
 
@@ -44,6 +49,68 @@ def _populate(library, sid):
     library.step(sid, 1, pre=f"img-{sid[:8]}")
     library.write(sid, "stdout.log", "log")
     return library.video(sid)
+
+
+@pytest.mark.asyncio
+async def test_flow_artifacts_are_owner_scoped_and_retained_with_their_run(
+    library, admin, qa, qa2, monkeypatch, tmp_path
+):
+    from apps.admin_console.services.agent_qa.report import write_report
+    from apps.admin_console.services.agent_qa.session import load_session
+    from tests.support.agent_qa_fixtures import write_session
+
+    now = 1_800_000_000.0
+    monkeypatch.setattr(run_retention.time, "time", lambda: now)
+    expired = library.seed("expired flow report", age_days=31)
+    pinned = library.seed("pinned flow report", age_days=31, pinned=True)
+    report_roots = {sid: library.traces / sid for sid in (expired, pinned)}
+    for sid, report_root in report_roots.items():
+        write_report(load_session(write_session(tmp_path / sid)), report_root)
+        library.write(sid, "stdout.log", "fixture server log")
+        with sqlite3.connect(library.db) as conn:
+            conn.execute(
+                "UPDATE run_meta SET requested_by = ? WHERE session_id = ?",
+                ("qa@example.com", sid),
+            )
+
+    assert (report_roots[expired] / "flow.json").is_file()
+    assert (report_roots[pinned] / "flow.json").is_file()
+
+    async with qa, qa2, admin:
+        owner_runs = (await qa.get("/api/runs")).json()["runs"]
+        other_runs = (await qa2.get("/api/runs")).json()["runs"]
+        assert {run["session_id"] for run in owner_runs} >= {expired, pinned}
+        assert expired not in {run["session_id"] for run in other_runs}
+        assert pinned not in {run["session_id"] for run in other_runs}
+        await _enable(admin)
+        response = await admin.post("/api/system/retention/run")
+
+    assert response.status_code == 200, response.text
+    assert not report_roots[expired].exists()
+    assert (report_roots[pinned] / "flow.json").is_file()
+    assert list((report_roots[pinned] / "smartqa").rglob("*.png"))
+
+
+def test_other_service_principal_is_denied_foreign_flow_report():
+    from types import SimpleNamespace
+
+    own_path = "/api/runs/owned-run/bundle.zip"
+    foreign_path = "/api/runs/foreign-run/bundle.zip"
+    identity = AccessIdentity(
+        None,
+        False,
+        "cloudflare",
+        service_principal="fixture-agent",
+        service_routes=frozenset({("GET", own_path)}),
+    )
+    own_request = SimpleNamespace(scope={"method": "GET", "path": own_path})
+    foreign_request = SimpleNamespace(scope={"method": "GET", "path": foreign_path})
+
+    _enforce_service_principal_routes(own_request, identity)
+    with pytest.raises(AdminAPIError) as exc:
+        _enforce_service_principal_routes(foreign_request, identity)
+
+    assert exc.value.status_code == 403
 
 
 async def _enable(admin, days=30):

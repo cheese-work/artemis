@@ -57,7 +57,8 @@ def _triggers(workflow):
 
 
 def _skips_pull_request(job):
-    return job.get("if", "").strip("${} ") == "github.event_name != 'pull_request'"
+    conditions = job.get("if", "").strip("${} ").split(" && ")
+    return "github.event_name != 'pull_request'" in conditions
 
 
 def test_pull_request_jobs_skip_forks_before_a_self_hosted_runner_starts():
