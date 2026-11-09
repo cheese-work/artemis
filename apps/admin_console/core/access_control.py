@@ -727,6 +727,9 @@ _LEASE_POST_PATHS = {
     "/api/leases/{lease_id}/release",
 }
 
+# Admin mutations that a mapped service principal may also call (the SmartQA agent upload).
+_SERVICE_MUTATING_PATHS = {"/api/smartqa/apks"}
+
 _ADMIN_MUTATING_PATHS = {
     "/api/system/failures/collect",
     "/api/system/failures/digest",
@@ -823,6 +826,8 @@ def route_tier(path: str, methods: set[str], is_websocket: bool = False) -> str 
     if methods == {"GET"} and path in _ADMIN_GET_PATHS:
         return "admin"
     if methods == {"GET"} and path in _SERVICE_READ_GET_PATHS:
+        return "admin_or_service"
+    if methods == {"POST"} and path in _SERVICE_MUTATING_PATHS:
         return "admin_or_service"
     if methods == {"POST"} and path in _PUBLIC_MUTATING_PATHS:
         return "public"
