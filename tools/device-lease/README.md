@@ -1,4 +1,4 @@
-# DLP-1 registry, broker and queue (CHE-4506, CHE-4508, CHE-4509)
+# DLP-1 registry, broker, queue and recovery
 
 `registry.py` is a standard-library inventory and candidate filter for the
 CHE-4285 rev 4 protocol. It performs no ADB, network, Multica or lease operation.
@@ -80,8 +80,10 @@ The shared package is included in the existing wheel's package discovery.
 
 The domain receives an immutable registry and a trusted `admitted` snapshot:
 canonical device id -> currently allowed endpoint alias. The owner must collect
-and validate readiness, grants, claims and execution locks before supplying that
-snapshot. Only snapshot entries with a matching registered endpoint and confirmed,
+and validate readiness and grants before supplying that snapshot. Trusted
+`admission_sources` readers additionally join current Artemis execution locks and
+Android issue claims on every decision; aliases resolve to canonical devices.
+Only snapshot entries with a matching registered endpoint and confirmed,
 unrestricted identity can be allocated. No discovery, device command, network or
 Multica call runs inside the writer transaction. The durable queue supplies renewal
 conflicts. The optional `conflicting_waiter(conn, device_ids)` hook adds other pure
@@ -119,10 +121,11 @@ Checks at the eventual gateway must use current state, expiry and authority.
 Release or observed expiry changes `active` to `fencing`; it never deletes
 ownership. The trusted recovery worker can compare-and-set `fencing` -> `cleaning`
 -> `verifying`, or move a recovery state to `quarantine` with a named recovery
-owner and ops issue. These calls only record state. They perform no fencing or
-cleanup action. Every state except `released` blocks a new grant. There is no
-client or automatic transition to `released`: slice 4 must implement leader-verified
-release. Failed or uncertain recovery cannot silently free a phone.
+owner and ops issue. These CAS calls record state after the trusted recovery worker
+performs its actions. Every state except `released` blocks a new grant. There is no
+client or automatic transition to `released`; only `verify_release` in the trusted
+leader control plane can record that decision. Failed or uncertain recovery cannot
+silently free a phone.
 
 ## Local daemon and clients
 
@@ -139,8 +142,9 @@ newline-delimited JSON RPC. Frames are bounded to
 
 This CLI invocation illustrates the contract; the supplied daemon currently
 admits no devices, even with an inventory. No live broker is installed or started
-by this change. Do not use the core as the live authority until the later slices
-connect admission and recovery.
+by this change. Live use requires ops to compose current grants/readiness, both
+claim readers with their shared guard, and a deadline-bounded recovery adapter.
+Remote authentication, isolation and single-authority cutover remain later slices.
 
 ```sh
 tools/device-lease/device-lease acquire --pool rig --count 2 --ttl 1800 \
@@ -166,7 +170,8 @@ An explicitly empty identity field is invalid.
 Same-UID local callers remain cooperative. Principal/run strings are labels,
 not authentication. The private socket excludes other Unix users, but this slice
 does not claim enforced isolation from agents sharing the daemon's Unix user.
-Park, claim and Multica signaling are slice 3b. Fencing actions and live admission are slice 4. Remote authentication
+Park, claim and Multica signaling are slice 3b. Recovery composition is described
+below. Remote authentication
 and access are slice 5. SmartQA extensions and single-authority cutover are slice 6;
 the unchanged CHE-2099 service must not be enabled alongside a live broker as a
 second admitting authority. `500c592` remains excluded from raw ADB (G5/CHE-2082).
@@ -218,13 +223,86 @@ monotonic discontinuity over 5 s fences active groups and invalidates offers.
 After taking the exclusive database lock and before serving clients, the daemon
 calls `restart()`. It fences every active group and persists a reconciliation
 barrier, including unfinished recovery from earlier restarts. All new grants and
-offers wait, even for disjoint devices. The trusted slice 4 recovery worker must
+offers wait, even for disjoint devices. The trusted recovery worker must
 bring each group to `verifying`, `quarantine` with its owner/ops issue, or verified
 `released`, then call `finish_reconcile(lease_id)`. This acknowledgment cannot free
 a device: `verifying` and `quarantine` still block reuse. No client can invoke
 restart, reconciliation, signal acknowledgment or recovery over RPC. An embedded
 owner must call `restart()` once after obtaining exclusive ownership too.
 
-No daemon is installed or live admission enabled here. Fencing records intent;
-slice 4 must close streams, stop run-owned device work and verify cleanup before
-any live reuse. No device command, ADB server reset or policy change is performed.
+No daemon is installed or live admission enabled here. The owner-provided recovery
+adapter must close streams, stop run-owned work and confirm cleanup. No device
+command, ADB server reset or policy change is performed by the hermetic tests.
+
+## Recovery and admission runbook (DLP-1 rules 5, 8–11, Authority 3)
+
+1. **Compose before admitting.** Keep one exclusive broker owner and one authority.
+   Pass trusted current `admitted` grants/readiness. Set `admission_sources` to
+   `{"artemis": read_execution_locks, "android": read_issue_claims}`. Each reader
+   returns a collection of canonical ids or registered aliases; include all existing
+   claims, including the requesting run's. Read Artemis execution-lock metadata
+   (`DeviceExecutionLock.get_active_owners`) on the intended host/endpoint, and
+   Android issue claims through the authorized Multica client. Do not use
+   `DevicePool.get_claimed_serials` here: that convenience reader swallows failures.
+   Unknown identities, invalid snapshots and reader failures close new admission.
+   Readers run outside SQLite's writer transaction. Supply `admission_guard`, a
+   context-manager factory shared by both claim writers and broker decisions, to
+   hold exclusion from source reads through commit. Without cooperative writers,
+   the snapshot cannot prevent a new external claim racing the grant; do not
+   enable live admission in that configuration. Missing either named source or
+   the shared guard closes admission; inventory alone cannot bypass these checks.
+2. **Record before changing.** The trusted owner calls
+   `record_change(lease_id=..., principal=..., run_id=..., change=...)` before each
+   allowed device mutation. A change names a canonical `device_id` in the lease.
+   Supported typed intents are setting (`name`, `before`, `after`), app (`package`,
+   `installed_by_run=true`, `allowed_remove=true`) and HOME (`allowed=true`).
+   Each includes `kind` and `device_id`. The journal is append-only and cleanup
+   walks it in reverse order. No arbitrary shell command is accepted. Only a
+   trusted grant/execution adapter may assert app provenance and HOME permission;
+   holder-supplied booleans are not authorization. Keep pre-existing apps/data.
+3. **Fence and clean.** Configure `recovery_io`, `recovery_owner` and an existing
+   `ops_issue`. `maintain()` is the foreground worker, also called by the daemon
+   while idle. Release, expiry, revoke, suspect liveness and restart retain device
+   ownership. `recovery_io.fence(group, timeout=remaining_seconds)` must reject
+   new access, revoke credentials, close every stream and confirm termination of
+   only old-run tracked work, including device processes and reverse forwards.
+   Closing sockets alone is insufficient. Return exactly `True` only on confirmed
+   success. `undo(group, change, timeout=...)` restores only recorded changes,
+   compares current values to the recorded mutation, and must be idempotent.
+   Both callbacks run outside the SQLite writer lock and honor their deadlines.
+   The two-minute monotonic budget includes fencing and cleanup. Overdue recovery
+   still attempts emergency fencing, then quarantines. Exceptions, false results
+   and interrupted cleanup quarantine the whole group with the named owner/issue.
+4. **Hold for independent release verification.** Successful cleanup stops at
+   `verifying`. Preserve lease id, run binding, audit and cleanup evidence for the
+   Android squad leader. Only the trusted leader control plane calls
+   `verify_release(lease_id, verifier=LEADER_ID, evidence=REFERENCE, passed=True)`.
+   `LEADER_ID` is `5cd75ce5-d323-4004-9779-7e2ccf16bde4` under the current policy.
+   A failed verdict quarantines. The named recovery owner can supply evidence
+   using `recover_quarantine`; this returns only to `verifying`, never directly
+   to availability. A successful leader verdict records `released`. No TTL-only
+   release exists. These control-plane hooks and `record_change` are absent from
+   the holder socket/CLI. The caller authenticates the operator; a string id is
+   not a credential, and same-UID access remains cooperative.
+5. **Retain and inspect evidence.** Every committed lifecycle/ticket event is
+   queued transactionally in `broker_audit`, then exported outside the writer
+   transaction to `<database>.audit.jsonl` with sequence, ICT time, agent, run id,
+   issue and canonical device id. A batch produces one line per member/event.
+   Ticket events retain the originating run label, not a live run binding.
+   Export appends and fsyncs; a retry validates the exact existing prefix before
+   appending the missing suffix, without duplicating events after a lost response.
+   Audit corruption or export failure closes new grants/renewals; fencing and
+   cleanup continue, with events retained in SQLite. Ops restores the preserved
+   exact log prefix and re-exports; never truncate/overwrite the audit in place.
+   Keep an unrepaired device unavailable with its named owner and ops issue.
+
+On startup, call `restart()` after taking the daemon lock; reconcile every held
+group before new grants. A state already in `cleaning` is uncertain after an
+interruption and requires manual recovery. Automatic verification, gateway
+authentication, production wiring and cutover are outside this slice. Restricted
+devices and `500c592` keep their existing G5/CHE-2082 restrictions. Neither broker
+nor adapter may restart shared ADB or reset unrelated devices/data.
+
+```sh
+python3 tests/unit/runtime/test_device_lease_recovery.py -v
+```

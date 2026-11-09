@@ -192,7 +192,8 @@ def main(argv=None):
             registry = (
                 DeviceRegistry.load(args["registry"]) if args["registry"] else DeviceRegistry()
             )
-            # Closed until slice 4 supplies grants/claims/locks and fresh eligibility.
+            # Closed until ops composes trusted grants/readiness, both admission sources
+            # with their shared guard, and a deadline-bounded recovery adapter.
             broker = Broker(state / "leases.sqlite3", registry)
             with BrokerServer(state, broker) as server:
                 server.serve_forever()
