@@ -6,6 +6,8 @@ exit code. Fail closed: only complete, well-formed native evidence yields 0
 2 also collides with CLI usage errors; both are non-success.
 """
 
+import os
+
 EXIT_PASS = 0
 EXIT_ASSERTION_FAIL = 1
 EXIT_INCONCLUSIVE = 2
@@ -54,3 +56,6 @@ def require_native_scope(profile, device_serial, locked_app_package) -> None:
         raise ValueError("assertion-exit requires --profile pro")
     if not all(isinstance(v, str) and v.strip() for v in (device_serial, locked_app_package)):
         raise ValueError("assertion-exit requires explicit device_serial and locked_app_package")
+    if os.getenv("ARTEMIS_CHAT_SESSION_ID"):
+        # The chat-session worker returns before the native exit mapping.
+        raise ValueError("assertion-exit does not support chat sessions")

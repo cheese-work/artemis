@@ -293,3 +293,33 @@ async def test_chat_session_route_is_rejected_before_agent(monkeypatch):
         with pytest.raises(ValueError, match="assertion-exit"):
             await run_module.execute_task(**ARGS)
     agent.assert_not_called()
+
+
+def test_cli_rejects_chat_session_before_device_discovery():
+    with (
+        patch.object(run_module, "execute_task", new_callable=AsyncMock) as execute,
+        patch.object(run_module.EndpointTransport, "adb_binary", return_value="/usr/bin/adb"),
+        patch.object(run_module.EndpointTransport, "shared") as adb,
+        patch.object(run_module, "display_device_status") as device_probe,
+        patch.object(run_module, "Agent") as agent,
+    ):
+        result = CliRunner().invoke(
+            app,
+            [
+                "run",
+                "goal",
+                "--standalone",
+                "--assertion-exit",
+                "-s",
+                "emulator-5554",
+                "-a",
+                "ai.multica.mobile",
+            ],
+            env={"ARTEMIS_CHAT_SESSION_ID": "chat-1"},
+        )
+    assert result.exit_code != 0
+    assert "chat" in unstyle(result.output)
+    execute.assert_not_called()
+    adb.assert_not_called()
+    device_probe.assert_not_called()
+    agent.assert_not_called()

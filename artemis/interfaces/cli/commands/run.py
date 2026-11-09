@@ -111,9 +111,6 @@ async def execute_task(
     chat_identity = os.getenv("ARTEMIS_CHAT_SESSION_ID")
     if assertion_exit:
         require_native_scope(profile, device_serial, locked_app_package)
-        if chat_identity:
-            # The chat-session worker returns before the native exit mapping below.
-            raise ValueError("assertion-exit does not support chat sessions")
     if chat_identity and not _chat_turn:
         from artemis.config import DB_PATH
         from artemis.data_engine.chat_sessions import ChatStore
