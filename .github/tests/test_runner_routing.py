@@ -32,7 +32,9 @@ class RunnerRoutingTest(unittest.TestCase):
     def test_main_push_ci_keeps_python_matrix_and_result_gate(self):
         ci = Path(".github/workflows/ci.yml").read_text()
         self.assertIn(
-            "\non:\n  push:\n    branches: [main]\n  pull_request:\n  workflow_dispatch:\n", ci
+            "\non:\n  push:\n    branches: [main]\n  pull_request:\n"
+            "  merge_group:\n    types: [checks_requested]\n  workflow_dispatch:\n",
+            ci,
         )
         jobs = re.split(r"(?m)^  ([\w-]+):\n", ci.split("\njobs:\n", 1)[1])
         self.assertEqual(jobs[1::2], ["python-tests", "python-quality", "frontend", "package"])
