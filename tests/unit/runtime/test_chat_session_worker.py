@@ -1,5 +1,6 @@
 import asyncio
 import sqlite3
+from types import SimpleNamespace
 
 import pytest
 
@@ -32,9 +33,26 @@ def store(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_fake_loop_follow_up_keeps_one_lease_and_full_history(store):
+@pytest.mark.parametrize("human_delay", [0, 0.06])
+async def test_fake_loop_follow_up_keeps_one_lease_and_full_history(
+    store, monkeypatch, human_delay
+):
     lease = FakeLease()
     seen = []
+    now = 0.0
+    monkeypatch.setattr(
+        "artemis.runtime.chat_session_worker.time", SimpleNamespace(time=lambda: now)
+    )
+    original_idle = store.idle
+
+    def idle(identity, pid, deadline):
+        nonlocal now
+        original_idle(identity, pid, deadline)
+        # Expire only after the follow-up finishes, independent of host scheduling.
+        if deadline is not None and len(seen) == 2:
+            now = deadline
+
+    monkeypatch.setattr(store, "idle", idle)
 
     async def execute(turn):
         assert lease.held
@@ -50,12 +68,16 @@ async def test_fake_loop_follow_up_keeps_one_lease_and_full_history(store):
     async def human():
         while store.turn("run")["status"] != "completed":
             await asyncio.sleep(0)
+        await asyncio.sleep(human_delay)
         assert lease.held
         store.send("run", "Check logout", "follow-up")
 
-    await asyncio.gather(
-        run_chat_session(store, "run", lease, execute, idle_seconds=0.03, poll_seconds=0.001),
-        human(),
+    await asyncio.wait_for(
+        asyncio.gather(
+            run_chat_session(store, "run", lease, execute, idle_seconds=0.03, poll_seconds=0.001),
+            human(),
+        ),
+        timeout=30,
     )
     assert [turn["goal"] for turn in seen] == ["Check login", "Check logout"]
     assert seen[0]["turn_id"] != seen[1]["turn_id"]
