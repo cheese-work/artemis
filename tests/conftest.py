@@ -19,8 +19,9 @@ integration and end-to-end trees remain directly runnable, and receive stable
 markers here so callers can select them without relying on filename patterns.
 """
 
-import sys
+import os
 from pathlib import Path
+import sqlite3
 
 import pytest
 from pydantic import SecretStr
@@ -51,6 +52,34 @@ FAKE_PROVIDER_CREDENTIAL_FIELDS = (
 )
 
 
+@pytest.fixture(autouse=True, scope="session")
+def storage_without_fsync():
+    """Skip sqlite and ``os.fsync`` flushes: tests need no durability, and each blocks on the shared runner disk.
+
+    On the X99 pool one commit or fsync took 0.3-0.5 s and a stall reached 21 min, so one fixture with
+    ~50 commits cost 40 s and the deterministic job passed its 60 min timeout (CHE-2621).
+    """
+    real_connect, real_fsync, real_fdatasync = (
+        sqlite3.connect,
+        os.fsync,
+        getattr(os, "fdatasync", None),
+    )
+
+    def connect(*args, **kwargs):
+        conn = real_connect(*args, **kwargs)
+        conn.execute("PRAGMA synchronous=OFF")
+        return conn
+
+    sqlite3.connect = connect
+    os.fsync = lambda fd: None
+    if real_fdatasync:
+        os.fdatasync = lambda fd: None
+    yield
+    sqlite3.connect, os.fsync = real_connect, real_fsync
+    if real_fdatasync:
+        os.fdatasync = real_fdatasync
+
+
 @pytest.fixture(autouse=True)
 def isolate_provider_credentials(monkeypatch):
     """Keep the deterministic suite independent of ambient credentials."""
@@ -67,22 +96,31 @@ def isolate_provider_credentials(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def isolate_current_data_engine():
-    """Drop the module-global DataEngine around every test.
+    """``DataEngine.start_session`` publishes ``self`` to a module global.
 
-    The log handler's drain thread forwards every record to that global, and the engine
-    then publishes IPC events through ``socket.create_connection`` and ``urlopen``. A
-    leaked engine would use up the finite ``side_effect`` lists of tests that patch those
-    two process-wide functions.
+    The logger drain thread and tools read it later, so an engine left over from an earlier
+    test would receive this test's log records and open IPC sockets / call ``urlopen`` mid-test.
+    Teardown also waits for a drain callback that already captured the engine.
     """
+    from tests.support.data_engine_isolation import quiesce_data_engine_logs
 
-    def clear() -> None:
-        module = sys.modules.get("artemis.data_engine.engine")
-        if module is not None:
-            module._CURRENT_DATA_ENGINE = None
-
-    clear()
+    quiesce_data_engine_logs()
     yield
-    clear()
+    quiesce_data_engine_logs()
+
+
+@pytest.fixture(autouse=True)
+def isolate_awake_service():
+    """Stop heartbeat threads that an earlier test left on the process-wide awake service.
+
+    A leftover heartbeat fires ``subprocess.run`` every few seconds, so it lands in a later
+    test's ``subprocess.run`` patch and corrupts the command that test captures.
+    """
+    from tests.support.awake_service_isolation import stop_awake_service
+
+    stop_awake_service()
+    yield
+    stop_awake_service()
 
 
 ADB_ENVIRONMENT_KEYS = (
@@ -119,6 +157,21 @@ def isolate_adb_environment():
             os.environ.pop(key, None)
         else:
             os.environ[key] = value
+
+
+@pytest.fixture(autouse=True)
+def refuse_real_adb_server(request):
+    """Keep the default suite off this machine's own adb server.
+
+    Device tests (``android``, and the integration and e2e trees) need the real one.
+    """
+    if any(request.node.get_closest_marker(name) for name in ("android", "integration", "e2e")):
+        yield
+        return
+    from tests.support.adb_server_guard import refuse_default_adb_server
+
+    with refuse_default_adb_server():
+        yield
 
 
 @pytest.fixture

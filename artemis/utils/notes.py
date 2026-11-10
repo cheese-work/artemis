@@ -20,8 +20,8 @@ import re
 
 from artemis.core.tool_failure import ToolFailure
 from artemis.data_engine.engine import _CURRENT_DATA_ENGINE
-from artemis.utils.logger import get_logger
 from artemis.utils.plan_grammar import parse_plan
+from third_party.mobile_use.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
@@ -80,6 +80,14 @@ UPDATE_NOTE_ARG_REPLACEMENT_DESC = (
 
 
 # Core Business Logic Filesystem Functions
+
+
+_SAFE_NOTE_KEY = re.compile(r"[A-Za-z0-9_-]{1,64}")
+
+
+def is_safe_note_key(key: str) -> bool:
+    """Whether a model-supplied key names a note directly inside the notes directory."""
+    return isinstance(key, str) and _SAFE_NOTE_KEY.fullmatch(key.removesuffix(".md")) is not None
 
 
 def get_notes_dir(base_dir: str | Path) -> Path:

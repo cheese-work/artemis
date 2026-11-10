@@ -32,7 +32,7 @@ from artemis.platform import OSType, platform
 from artemis.runtime.adb_endpoint import AdbEndpoint
 from artemis.runtime.endpoint_transport import EndpointTransport
 from artemis.toolchain import toolchain
-from artemis.utils.logger import get_logger
+from third_party.mobile_use.utils.logger import get_logger
 
 logger = get_logger(__name__)
 

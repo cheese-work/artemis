@@ -116,7 +116,7 @@ let nextId = 0;
               <button type="button" class="action" (click)="askDisconnect()">Disconnect</button>
             }
           }
-          <a class="action more" routerLink="/setup" (click)="close(false)">More options</a>
+          <a class="action more" routerLink="/phones" (click)="close(false)">More options</a>
         </div>
       }
     </div>

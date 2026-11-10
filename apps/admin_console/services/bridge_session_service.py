@@ -42,6 +42,11 @@ _sleep = asyncio.sleep
 logger = logging.getLogger(__name__)
 
 
+def bridge_fixes_enabled() -> bool:
+    """CHE-2098 browser-link fixes ship dark: only the exact value ``on`` enables them."""
+    return os.environ.get("ARTEMIS_BRIDGE_FIXES", "").strip().lower() == "on"
+
+
 def _session_ttl_seconds() -> float:
     raw = os.environ.get("ARTEMIS_BRIDGE_SESSION_TTL_SECONDS")
     if not raw:
@@ -264,7 +269,9 @@ class BridgeSessionService:
             reconnect_task.cancel()
         from apps.admin_console.services.task_queue_service import TaskQueueService
 
-        TaskQueueService.interrupt_bridge_binding(session.session_id)
+        TaskQueueService.interrupt_bridge_binding(
+            session.session_id, client_close=session.client_close
+        )
         logger.info(
             "event=bridge_close session_id=%s serial=%s reason=%s close_code=%s close_reason=%s "
             "client_close=%s bytes_browser_to_device=%d bytes_device_to_browser=%d duration_ms=%d",

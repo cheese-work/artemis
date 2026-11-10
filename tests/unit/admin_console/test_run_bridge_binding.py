@@ -39,15 +39,24 @@ def queue(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_the_bridge_session_id_survives_admission_into_the_queue_row(queue, monkeypatch):
+@pytest.mark.parametrize("remote_preference", [False, True])
+async def test_the_bridge_session_id_survives_admission_into_the_queue_row(
+    queue, monkeypatch, remote_preference
+):
     bridge = BridgeSessionService()
     lease = BridgeSession("s41001", port=41001, expires_at=time.monotonic() + 60)
     bridge._sessions[lease.session_id] = lease
     monkeypatch.setattr(
         "apps.admin_console.services.bridge_session_service.bridge_session_service", bridge
     )
+    preferred = (
+        AdbEndpoint.create("adb-preference.invalid", 15037)
+        if remote_preference
+        else AdbEndpoint.local()
+    )
+    preference = MagicMock(return_value=preferred)
     monkeypatch.setattr(
-        "apps.admin_console.services.task_queue_service.current_adb_endpoint", AdbEndpoint.local
+        "apps.admin_console.services.task_queue_service.current_adb_endpoint", preference
     )
     result = await TaskQueueService.enqueue_tasks(
         ["Open Settings"], device_serial="127.0.0.1:41001", bridge_session_id="s41001"
@@ -57,6 +66,8 @@ async def test_the_bridge_session_id_survives_admission_into_the_queue_row(queue
     assert result["tasks"][0]["bridge_session_id"] == "s41001"
     assert queue[0]["device_serial"] == "127.0.0.1:41001"
     assert queue[0]["device_binding"]["bridge_session_id"] == "s41001"
+    assert queue[0]["device_binding"]["endpoint"] == AdbEndpoint.local().to_dict()
+    preference.assert_not_called()
 
 
 @pytest.mark.asyncio

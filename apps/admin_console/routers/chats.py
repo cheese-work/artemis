@@ -1,5 +1,7 @@
 import asyncio
 import json
+import os
+import stat
 import time
 import uuid
 
@@ -14,16 +16,21 @@ from apps.admin_console.core.access_control import AdminAPIError, require_qa
 from apps.admin_console.core.ownership import (
     OwnerScope,
     actor_scope,
+    owners_of,
     present_session_data,
     require_access,
     require_actor,
     require_visible_run,
+    record_run_read,
 )
 from apps.admin_console.services.task_queue_service import task_queue_service
+from apps.admin_console.services.deploy_drain import ServerDraining, admission_lock
 from apps.admin_console.database.repositories.session_repository import session_repo
 from apps.admin_console.database.repositories.step_repository import step_repo
 from apps.admin_console.services.media_service import media_service
 from apps.admin_console.services.automatic_prompt_tips import read_tip
+from apps.admin_console.services.qa_results import result_for_turn
+from apps.admin_console.services.run_artifacts import open_under
 
 router = APIRouter(tags=["chat sessions"])
 
@@ -122,8 +129,74 @@ def _session(identity, scope, *, write=False):
 @router.get("/api/chats/{session_id}")
 async def get_chat(session_id: str, scope: OwnerScope = Depends(actor_scope)):
     store, session = await asyncio.to_thread(_session, session_id, scope)
+    if await asyncio.to_thread(_sweep_stuck_turns, store, session):
+        session = await asyncio.to_thread(store.get, session["session_id"])
     session = await asyncio.to_thread(_timeline, session, store)
+    session = await asyncio.to_thread(_attach_results, scope, session)
     return await asyncio.to_thread(present_session_data, scope, session["session_id"], session)
+
+
+STUCK_TURN_SECONDS = 120
+STUCK_TURN_REASON = "Lượt chạy không bắt đầu được. Gửi lại tin nhắn để chạy lại."
+
+
+def _sweep_stuck_turns(store, session):
+    """Fail queued turns that no worker, queue item or run row will ever pick up."""
+    pid = session["lease_pid"]
+    if pid and pid_is_alive(pid, session["lease_birth"]):
+        return False
+    swept = False
+    for turn in session["turns"]:
+        if turn["status"] == "queued" and not task_queue_service._queue_item_for(turn["turn_id"]):
+            swept |= store.fail_admission(
+                turn["turn_id"], STUCK_TURN_REASON, stuck_after=STUCK_TURN_SECONDS
+            )
+    return swept
+
+
+RESULTS_NOTE_LIMIT = 64 * 1024
+
+
+def _results_note(turn_id):
+    """The agent's results.md for a turn (at most 64 KB), or None; never follows a link out."""
+    path = TRACES_PATH / turn_id / "notes" / "results.md"
+    try:
+        with open_under(TRACES_PATH, path) as file:
+            info = os.fstat(file.fileno())
+            data = file.read(RESULTS_NOTE_LIMIT + 1)
+    except OSError:
+        return None
+    return {
+        "text": data[:RESULTS_NOTE_LIMIT].decode("utf-8", errors="ignore"),
+        "modified_at": info.st_mtime,
+        "truncated": len(data) > RESULTS_NOTE_LIMIT,
+    }
+
+
+def _attach_results(scope, session):
+    turns = session["turns"]
+    root = session["session_id"]
+    # The agent's own notes are for the run's owner and admins, like a redacted shared view.
+    own_run = not scope.enforced or scope.admin or scope.may_act_on(owners_of([root]).get(root))
+    count = len(turns)
+    results = []
+    for index, turn in enumerate(turns, start=1):
+        turn_id = turn["turn_id"]
+        result = result_for_turn(
+            DB_PATH,
+            TRACES_PATH,
+            turn_id,
+            turn["status"],
+            index,
+            count,
+        )
+        result["results_note"] = _results_note(turn_id) if own_run else None
+        results.append(result)
+        record_run_read(scope, turn_id)
+    session["results"] = results
+    if isinstance(session.get("verdict"), dict) and results:
+        session["verdict"]["result"] = results[-1]
+    return session
 
 
 @router.patch("/api/chats/{session_id}/title", dependencies=[Depends(require_qa)])
@@ -134,6 +207,7 @@ async def rename_chat(
     await asyncio.to_thread(store.rename, session["session_id"], request.title)
     updated = await asyncio.to_thread(store.get, session["session_id"])
     updated = await asyncio.to_thread(_timeline, updated, store)
+    updated = await asyncio.to_thread(_attach_results, scope, updated)
     return await asyncio.to_thread(present_session_data, scope, session["session_id"], updated)
 
 
@@ -202,11 +276,23 @@ async def _ensure_worker(store, identity, message):
     if isinstance(result, asyncio.CancelledError):
         raise result
     if isinstance(result, Exception):
+        if isinstance(result, ServerDraining):
+            store.fail_admission(turn_id, str(result))
+            raise result.http_error() from result
         store.fail_admission(
             turn_id,
             "The session phone could not be re-acquired. Reconnect the original phone, then send another message.",
         )
         raise result
+    if result.get("status") == "rejected":
+        reason = f"Điện thoại chưa kết nối — kết nối lại rồi gửi lại. ({result.get('error')})"
+        store.fail_admission(turn_id, reason)
+        raise AdminAPIError(
+            409,
+            "The session phone is not connected.",
+            "session_device_unavailable",
+            "Reconnect the phone, then send the message again.",
+        )
 
 
 @router.post("/api/chats/{session_id}/messages", dependencies=[Depends(require_qa)])
@@ -214,10 +300,16 @@ async def send_message(
     session_id: str, request: MessageRequest, scope: OwnerScope = Depends(actor_scope)
 ):
     store, session = await asyncio.to_thread(_session, session_id, scope, write=True)
+
+    def persist():
+        with admission_lock:
+            task_queue_service.require_admission_open()
+            return store.send(session["session_id"], request.content, request.client_id)
+
     try:
-        message = await asyncio.to_thread(
-            store.send, session["session_id"], request.content, request.client_id
-        )
+        message = await asyncio.to_thread(persist)
+    except ServerDraining as error:
+        raise error.http_error() from error
     except ValueError as error:
         raise AdminAPIError(409, str(error), str(error)) from error
     await _ensure_worker(store, session["session_id"], message)
@@ -226,10 +318,19 @@ async def send_message(
 
 async def _control(identity, request, scope, kind):
     store, session = await asyncio.to_thread(_session, identity, scope, write=True)
+
+    def persist():
+        with admission_lock:
+            if kind == "continue":
+                task_queue_service.require_admission_open()
+            return store.send(
+                session["session_id"], kind.capitalize(), request.client_id, kind=kind
+            )
+
     try:
-        return await asyncio.to_thread(
-            store.send, session["session_id"], kind.capitalize(), request.client_id, kind=kind
-        )
+        return await asyncio.to_thread(persist)
+    except ServerDraining as error:
+        raise error.http_error() from error
     except ValueError as error:
         raise AdminAPIError(409, str(error), str(error)) from error
 

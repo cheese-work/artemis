@@ -2,6 +2,7 @@ import { afterRenderEffect, ChangeDetectionStrategy, Component, computed, effect
 import { FormsModule } from '@angular/forms';
 import { CdkTextareaAutosize } from '@angular/cdk/text-field';
 import { HttpErrorResponse } from '@angular/common/http';
+import { deployDrainMessage } from '../../utils/deploy-drain.util';
 import { DatePipe, JsonPipe } from '@angular/common';
 import { catchError, distinctUntilChanged, of, switchMap, takeWhile, timer } from 'rxjs';
 import { ChatSession, RunSummary } from '../../core/models/run.model';
@@ -10,8 +11,13 @@ import { StepItemData } from '../../core/models/stream.model';
 import { StartupProgressEvent } from '../../services/agent.service';
 import { RunsService } from '../../services/runs.service';
 import { ShellLayoutService } from '../../services/shell-layout.service';
+import { SystemService } from '../../services/system.service';
+import { WorkspacePhoneService } from '../../services/workspace-phone.service';
 import { mediaUrl } from '../../utils/app-url.util';
+import { deviceTitle, isIdentifiedDevice } from '../../utils/device-label.util';
+import { recordedDevice } from '../../utils/session-device.util';
 import { runTitle } from '../../utils/run-title.util';
+import { actionMarker } from '../../utils/step-evidence.util';
 import { SessionSidebarComponent } from '../session-sidebar/session-sidebar.component';
 
 @Component({
@@ -25,6 +31,8 @@ import { SessionSidebarComponent } from '../session-sidebar/session-sidebar.comp
 export class RunChatComponent {
   private readonly api = inject(RunsService);
   private readonly zone = inject(NgZone);
+  private readonly system = inject(SystemService);
+  private readonly phones = inject(WorkspacePhoneService);
   public readonly shell = inject(ShellLayoutService);
   private readonly failedImages = signal(new Set<string>());
   private readonly revision = signal(0);
@@ -56,6 +64,7 @@ export class RunChatComponent {
   public readonly error = signal<string | null>(null);
   public readonly sending = signal(false);
   public readonly latest = computed(() => this.chat()?.turns.at(-1));
+  public readonly usageTurns = computed(() => (this.chat()?.turns ?? []).map(turn => ({ id: turn.turn_id, number: turn.number })));
   public readonly active = computed(() => ['queued', 'running', 'paused'].includes(this.latest()?.status ?? ''));
   public readonly paused = computed(() => this.latest()?.status === 'paused');
   public readonly inputRequest = computed(() => {
@@ -65,9 +74,26 @@ export class RunChatComponent {
     return request?.payload?.['state'] === 'pending' && request.payload['expires_at'] * 1000 > Date.now() ? request : null;
   });
   public readonly canWrite = computed(() => !this.readOnly() && !this.rootRun()?.read_only);
+  /** The session's phone, labelled model → product → "Android phone"; never the serial. */
+  public readonly phone = computed(() => {
+    const live = this.liveSession();
+    const serial = this.rootRun()?.device_ref?.serial ?? live?.device_serial ?? live?.device_id;
+    if (!serial || ['pending', 'null', 'undefined'].includes(serial)) return null;
+    const listed = this.system.connectedDevices().find(device => device.serial === serial);
+    const device = [listed, live && recordedDevice(live, serial)].find(known => known && isIdentifiedDevice(known));
+    return { serial, label: device ? deviceTitle(device) : 'Android phone', online: listed?.state === 'device', known: this.system.readinessReport() !== null };
+  });
+  /** The session's phone is gone: the composer is off and the chip opens the way out. Unknown until the first phone list arrives. */
+  public readonly disconnected = computed(() => { const phone = this.phone(); return !!phone && phone.known && !phone.online; });
+  public readonly pickerOpen = signal(false);
+  /** Other phones that could run this session's first prompt as a new session. */
+  public readonly otherPhones = computed(() => this.phones.options().filter(option => option.usable && option.serial !== this.phone()?.serial));
+  public readonly canReconnect = this.phones.canConnectFromBrowser;
   public readonly title = computed(() => this.chat()?.title || this.rootRun()?.chat_title || runTitle(this.rootRun()?.chat_prompt ?? this.rootRun()?.prompt));
-  public readonly timeline = computed(() => (this.chat()?.timeline ?? this.chat()?.messages ?? [])
-    .filter(message => message.kind !== 'verdict' && (this.shell.technicalDetails() || message.kind !== 'thinking')));
+  public readonly timeline = computed(() => (this.chat()?.timeline ?? this.chat()?.messages ?? []).filter(message => message.kind !== 'verdict'));
+  public readonly stepCount = computed(() => this.timeline().filter(message => message.kind === 'step').length);
+  public readonly emptyMessage = computed(() => this.active() ? 'Waiting for the first step. Steps appear here as the agent acts.'
+    : this.canWrite() ? 'No steps were recorded. Send a new message to try again.' : 'No steps were recorded.');
   public readonly verdictTitle = computed(() => {
     const verdict = this.chat()?.verdict;
     if (!verdict) return '';
@@ -125,6 +151,18 @@ export class RunChatComponent {
     return this.chat()?.messages.filter((message) => message.turn_id === turnId) ?? [];
   }
 
+  public reconnect(): void {
+    this.pickerOpen.set(false);
+    void this.phones.connectFromBrowser();
+  }
+
+  /** Same first prompt, another phone: fills a new session draft, like a sample prompt. */
+  public runOn(serial: string): void {
+    this.pickerOpen.set(false);
+    this.phones.choose(serial);
+    this.newRunPrompt.emit(this.rootRun()?.chat_prompt ?? this.rootRun()?.prompt ?? '');
+  }
+
   public async copyTip(): Promise<void> {
     const text = this.chat()?.verdict?.tip?.text;
     if (!text || this.chat()?.verdict?.status !== 'completed') return;
@@ -172,7 +210,7 @@ export class RunChatComponent {
   public send(): void {
     const chat = this.chat();
     const content = this.draft.trim();
-    if (!chat || !content || !this.canWrite() || this.sending() || this.inputRequest()) return;
+    if (!chat || !content || !this.canWrite() || this.sending() || this.inputRequest() || this.disconnected()) return;
     this.retry = this.retry?.content === content ? this.retry : { content, id: crypto.randomUUID() };
     this.sending.set(true);
     this.error.set(null);
@@ -220,13 +258,15 @@ export class RunChatComponent {
     if (this.chat()?.session_id === identity) this.revision.update(value => value + 1);
   }
 
-  public screenshot(payload: Record<string, any> | undefined): string | null {
-    const image = payload?.['post_image_name'] || payload?.['pre_image_name'];
+  public readonly actionMarker = actionMarker;
+
+  public screenshot(payload: Record<string, any> | undefined, key: 'pre_image_name' | 'post_image_name' = 'post_image_name'): string | null {
+    const image = payload?.[key];
     return typeof image === 'string' && !this.failedImages().has(image) ? mediaUrl('/images/' + encodeURIComponent(image)) : null;
   }
 
-  public failScreenshot(payload: Record<string, any> | undefined): void {
-    const image = payload?.['post_image_name'] || payload?.['pre_image_name'];
+  public failScreenshot(payload: Record<string, any> | undefined, key: 'pre_image_name' | 'post_image_name' = 'post_image_name'): void {
+    const image = payload?.[key];
     if (typeof image === 'string') this.failedImages.update(images => new Set([...images, image]));
   }
 
@@ -235,6 +275,6 @@ export class RunChatComponent {
   }
 
   private reportError(error: HttpErrorResponse): void {
-    this.error.set(typeof error.error?.detail === 'string' ? error.error.detail : 'Chat could not connect. Your draft is kept. Try again.');
+    this.error.set(deployDrainMessage(error) ?? (typeof error.error?.detail === 'string' ? error.error.detail : 'Chat could not connect. Your draft is kept. Try again.'));
   }
 }

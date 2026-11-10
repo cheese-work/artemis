@@ -1,4 +1,4 @@
-export type FailureCategory = 'smartqa_infra' | 'smartqa_agent' | 'provider' | 'user_prompt' | 'unknown';
+export type FailureCategory = 'smartqa_infra' | 'smartqa_agent' | 'provider' | 'user_prompt' | 'qa_environment' | 'app_defect' | 'unknown';
 
 export interface FailureCount {
   day: string;

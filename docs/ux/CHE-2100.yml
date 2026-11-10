@@ -1,0 +1,11 @@
+issue: CHE-2100
+design: design/smartqa-agent-qa/rev-3/A.html @ 74c13fa1c3710164dcbf34066ba198a17300f293
+pages:
+  - id: phones
+    url: /phones
+    keep: [page-title, phones-title, computers-title]
+    change:
+      - phone-choice: "offers only phones the server has a canonical device id for"
+      - purpose: "starts empty; Request lease stays disabled until it is filled"
+      - borrow-panel: "lease errors name the next step; a new lease shows on its phone as Held"
+    remove: []

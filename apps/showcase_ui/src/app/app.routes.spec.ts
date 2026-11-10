@@ -23,6 +23,12 @@ describe('app routes', () => {
     expect(routes.find(route => route.path === 'workspace')?.redirectTo).toBe('sessions/new');
   });
 
+  it('serves Phones at /phones, not behind the admin guard', () => {
+    const route = routes.find(candidate => candidate.path === 'phones');
+    expect(route).toBeDefined();
+    expect(route?.canActivate).toBeUndefined();
+  });
+
   it('opens the run library and a run in the workspace shell in review mode', () => {
     for (const path of ['sessions', 'sessions/:id']) {
       const route = routes.find(candidate => candidate.path === path);

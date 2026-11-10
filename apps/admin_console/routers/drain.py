@@ -34,23 +34,36 @@ router = APIRouter(
 class DrainStatus(BaseModel):
     draining: bool
     active_run_count: int = Field(ge=0)
+    owner: str | None = None
+    deadline: float | None = None
+    queued_run_count: int | None = None
 
 
-@router.get("", response_model=DrainStatus)
+class DrainRequest(BaseModel):
+    owner: str = Field(default="loopback", min_length=1, max_length=200)
+    deadline: float | None = Field(default=None, gt=0, allow_inf_nan=False)
+
+
+@router.get("", response_model=DrainStatus, response_model_exclude_none=True)
 async def get_drain() -> dict:
     """Report drain state and accepted work that has not finished cleanup."""
     return task_queue_service.drain_status()
 
 
-@router.post("", response_model=DrainStatus)
-async def enable_drain() -> dict:
+@router.post("", response_model=DrainStatus, response_model_exclude_none=True)
+async def enable_drain(request: DrainRequest = DrainRequest()) -> dict:
     """Close admission to new runs. Idempotent; running work continues."""
-    task_queue_service.set_draining(True)
+    task_queue_service.set_draining(True, request.owner, request.deadline)
     return task_queue_service.drain_status()
 
 
-@router.delete("", response_model=DrainStatus)
-async def clear_drain() -> dict:
+@router.delete("", response_model=DrainStatus, response_model_exclude_none=True)
+async def clear_drain(owner: str = "loopback") -> dict:
     """Reopen admission. Idempotent."""
-    task_queue_service.set_draining(False)
+    task_queue_service.set_draining(False, owner)
     return task_queue_service.drain_status()
+
+
+@router.post("/cut")
+async def cut_runs(request: DrainRequest) -> dict:
+    return {"session_ids": task_queue_service.cut_for_deploy(request.owner)}

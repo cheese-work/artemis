@@ -14,6 +14,9 @@
 
 """Task execution command (artemis run)."""
 
+from artemis import Agent, Builders
+from artemis.sdk.types.task import AgentProfile
+from artemis.utils.cli_helpers import display_device_status
 import asyncio
 import os
 import sqlite3
@@ -29,13 +32,21 @@ from artemis.config.attempt_lifecycle_hooks import (
     record_attempt_manifest,
     reconcile_and_store_verdict,
 )
+from artemis.interfaces.cli.assertion_exit import native_assertion_exit_code, require_native_scope
 from artemis.runtime.lifecycle import finish_trace
 from artemis.utils.startup_progress import publish_startup_progress
-from artemis import Agent, Builders
-from artemis.sdk.types.task import AgentProfile
-from artemis.utils.cli_helpers import display_device_status
-from artemis.utils.logger import get_logger
-from artemis.utils.video import check_ffmpeg_available
+from third_party.mobile_use.main import (
+    GoalArgument,
+    OutputDescriptionOption,
+    TestNameOption,
+    TracesPathOption,
+    VideoRecordingToolsOption,
+    ensure_video_recording_available,
+    new_default_config_builder,
+    run_automation,
+)
+from third_party.mobile_use.utils.cli_helpers import display_local_device_status
+from third_party.mobile_use.utils.logger import get_logger
 import signal
 from rich.console import Console
 from rich.panel import Panel
@@ -68,6 +79,7 @@ async def execute_task(
     verification_level: str | None = None,
     run_id: str | None = None,
     qualification: str | None = None,
+    assertion_exit: bool = False,
     _chat_turn: bool = False,
 ) -> None:
     """Executes a single mobile automation task end-to-end.
@@ -92,6 +104,11 @@ async def execute_task(
         run_id: Gate 1 batch-grouping key for this attempt's manifest (see
             ``artemis.config.attempt_lifecycle_hooks``); defaults to the
             effective session id when omitted.
+        assertion_exit: Opt-in. Map the native test summary to a process exit
+            (``SystemExit``: 1 assertion FAIL, 2 missing/incomplete evidence)
+            and let an ``Agent.clean()`` failure propagate. Requires
+            ``profile='pro'`` and explicit ``device_serial`` and
+            ``locked_app_package``; chat sessions are unsupported.
     """
     if qualification is not None:
         if qualification != "che984-d1":
@@ -123,11 +140,13 @@ async def execute_task(
         verification_level = "strict"
 
     chat_identity = os.getenv("ARTEMIS_CHAT_SESSION_ID")
+    if assertion_exit:
+        require_native_scope(profile, device_serial, locked_app_package)
     if chat_identity and not _chat_turn:
         from artemis.config import DB_PATH
         from artemis.data_engine.chat_sessions import ChatStore
         from artemis.runtime import DeviceExecutionLock
-        from artemis.runtime.chat_session_worker import run_chat_session
+        from artemis.runtime.chat_session_worker import follow_up_goal, run_chat_session
 
         options = locals().copy()
         options = {
@@ -166,7 +185,7 @@ async def execute_task(
                         execute_task(
                             **{
                                 **options,
-                                "goal": turn["goal"],
+                                "goal": follow_up_goal(turn),
                                 "session_id": turn["turn_id"],
                                 "_chat_turn": True,
                                 "run_id": run_id if turn["number"] == 1 else turn["turn_id"],
@@ -335,6 +354,11 @@ async def execute_task(
                 Console().print(f"CHE984_D1_ASSERTION_EXIT={exit_code}")
                 if exit_code:
                     raise SystemExit(exit_code)
+            elif assertion_exit:
+                exit_code = native_assertion_exit_code(result)
+                Console().print(f"ARTEMIS_ASSERTION_EXIT={exit_code}")
+                if exit_code:
+                    raise SystemExit(exit_code)
         finally:
             # Reconciliation runs regardless of task outcome (success, failed
             # status, exception, or cancellation) and before cleanup, so an
@@ -349,8 +373,8 @@ async def execute_task(
                     await agent.clean()
                 except Exception as exc:
                     logger.error(f"Error cleaning agent: {exc}")
-                    if qualification:
-                        raise
+                    if qualification or assertion_exit:
+                        raise  # a cleanup error after a nominal pass is not a clean PASS
     finally:
         # Restore whatever ARTEMIS_SESSION_ID held before this call so an
         # explicit session_id (or a generated fallback) never bleeds into a
@@ -362,7 +386,7 @@ async def execute_task(
 
 
 def run_command(
-    goal: Annotated[str, typer.Argument(help="The main goal for the agent to achieve.")],
+    goal: GoalArgument,
     profile: Annotated[
         str | None,
         typer.Option(
@@ -379,40 +403,10 @@ def run_command(
             help="Optional Android package name to restrict the agent to.",
         ),
     ] = None,
-    test_name: Annotated[
-        str | None,
-        typer.Option(
-            "--test-name",
-            "-n",
-            help="Name of the test run for trace recording.",
-        ),
-    ] = None,
-    traces_path: Annotated[
-        str | None,
-        typer.Option(
-            "--traces-path",
-            "-t",
-            help="Directory where execution traces are persisted.",
-        ),
-    ] = None,
-    output_description: Annotated[
-        str | None,
-        typer.Option(
-            "--output-description",
-            "-o",
-            help="Natural language or schema description of the expected output.",
-        ),
-    ] = None,
-    with_video_recording_tools: Annotated[
-        bool | None,
-        typer.Option(
-            "--with-video-recording-tools/--without-video-recording-tools",
-            help=(
-                "Enable or disable dynamic video recording and screen analysis "
-                "tools (auto-detected if omitted)."
-            ),
-        ),
-    ] = None,
+    test_name: TestNameOption = None,
+    traces_path: TracesPathOption = None,
+    output_description: OutputDescriptionOption = None,
+    with_video_recording_tools: VideoRecordingToolsOption = None,
     app_path: Annotated[
         str | None,
         typer.Option(
@@ -537,10 +531,19 @@ def run_command(
             help="Opt-in che984-d1 model route and fail-closed native assertion exit (standalone only).",
         ),
     ] = None,
+    assertion_exit: Annotated[
+        bool,
+        typer.Option(
+            "--assertion-exit",
+            help=(
+                "Opt-in: exit 1 on a completed native assertion FAIL, 2 on missing or "
+                "incomplete evidence. Requires --standalone, --profile pro, --device-serial and --locked-app."
+            ),
+        ),
+    ] = False,
 ) -> None:
     """Run an autonomous UI automation task on the connected Android device."""
-    if with_video_recording_tools:
-        check_ffmpeg_available()
+    ensure_video_recording_available(with_video_recording_tools)
 
     console = Console()
 
@@ -553,6 +556,13 @@ def run_command(
         raise typer.BadParameter(
             "che984-d1 qualification requires --standalone, not a daemon worker"
         )
+    if assertion_exit and (not is_standalone or is_worker):
+        raise typer.BadParameter("--assertion-exit requires --standalone, not a daemon worker")
+    if assertion_exit:
+        try:
+            require_native_scope(profile, device_serial, locked_app_package)
+        except ValueError as exc:
+            raise typer.BadParameter(str(exc)) from exc
 
     # All platforms route through unified Artemis Daemon unless specifically configured as standalone
     if not is_worker and not is_standalone:
@@ -686,6 +696,7 @@ def run_command(
                 verification_level=verification_level,
                 run_id=run_id,
                 qualification=qualification,
+                assertion_exit=assertion_exit,
             )
         )
     except (KeyboardInterrupt, asyncio.CancelledError):

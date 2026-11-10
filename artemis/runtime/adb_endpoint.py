@@ -212,7 +212,7 @@ class AdbTarget:
 
     @property
     def lock_scope(self) -> str:
-        """Host plus serial scopes a device: the same serial on two servers is two devices."""
+        """Transport lock scope; physical-device admission is a separate reservation."""
         return f"host:{self.host_id}" if self.host_id else self.endpoint.lock_scope
 
     @property

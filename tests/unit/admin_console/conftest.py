@@ -36,6 +36,13 @@ DAY = 86400.0
 
 
 @pytest.fixture(autouse=True)
+def isolate_execution_reservations(monkeypatch):
+    from apps.admin_console.services.device_reservation import device_reservations
+
+    monkeypatch.setattr(device_reservations, "_claims", {})
+
+
+@pytest.fixture(autouse=True)
 def synced_run_model(request, monkeypatch):
     if request.node.path.stem.startswith("test_preview_"):
         return

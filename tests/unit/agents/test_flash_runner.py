@@ -65,10 +65,8 @@ def test_flash_runner_tools_initialization(mock_context):
         assert "report_task_status" in tool_names
         # Validator's report_failure_analysis should NOT be in FlashRunner
         assert "report_failure_analysis" not in tool_names
-        # Flash has no note-writing tool and its prompt never teaches notes:
-        # the Validator set's note readers are not bound.
-        assert "read_note" not in tool_names
-        assert "list_notes" not in tool_names
+        # Flash keeps a results.md ledger: it reads and writes notes.
+        assert {"read_note", "list_notes", "save_note", "update_note"} <= set(tool_names)
         assert tool_names[:2] == ["click", "click_sequence"]
 
 

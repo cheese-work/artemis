@@ -40,6 +40,7 @@ Identity headers are trusted only behind the authenticating proxy; see
 | `GET /api/runs` | Existing run list, extended with the search filters below. |
 | `POST /api/runs/{session_id}/retry` | Create linked replacement work for an interrupted run. |
 | `GET, POST /api/runs/{session_id}/annotations` | List or add annotations. |
+| `GET /api/runs/{session_id}/annotations/{annotation_id}` | Read the annotation selected by a deep link. |
 | `PATCH, DELETE /api/runs/{session_id}/annotations/{annotation_id}` | Edit, resolve or delete an annotation. |
 | `GET /api/runs/{session_id}/annotations/{annotation_id}/evidence` | Resolve an annotation anchor. |
 | `GET, POST /api/runs/{session_id}/comments` | List or add comments. |
@@ -320,6 +321,31 @@ Snippets are built after the visibility join. Unknown historical values stay
 `null` and match no value filter. When FTS5 is unavailable the response carries
 the existing `search_fallback_substring` warning.
 
+#### Query-layer slice (CHE-1470)
+
+The implemented filters are `status`, `review`, `device` (the existing serial
+filter), `host`, `requester`, `app_build`, repeatable `model`, `suite`, `since`
+and `until`. Different filters intersect; repeated `model` values are alternatives.
+`model` matches `run_meta.agent_model`; `suite` matches `run_meta.suite_version`.
+Unknown snapshot values match no value filter. Date bounds are finite epoch
+seconds or ISO-8601: `since` is inclusive and `until` is exclusive. Undated runs
+remain in an unbounded listing but match no date bound.
+
+Each page adds `total`: the count after scope, search and value filters, before
+the cursor and limit. Counts and pages use the same SQL visibility predicates
+and read transaction, including `mine` and `available` link shares. Hidden and
+deleted runs contribute to neither. Existing open-mode and spaces rules stay
+unchanged; `all` remains admin-only in Cloudflare mode with spaces off and
+forbidden with spaces on. Open mode continues to list without an owner filter.
+
+`review` is returned separately from execution `status`. It remains `null`
+until a QA review writer supplies a value; the query layer does not derive a
+review from execution. CHE-1331 owns the review vocabulary and verdict reducer.
+The verdict-filter hook belongs beside `review` in the router and
+`RunCatalogRepository.list_query`, using that reducer's stored verdict, never
+`sessions.status`. No verdict filter or FTS change ships in this slice.
+`include_notes` and canonical `device_id` alias filtering remain later slices.
+
 ```bash
 curl -sS -G "$ARTEMIS/api/runs" -H "$AUTH" --data-urlencode 'q=dark theme' \
   --data-urlencode 'scope=available' --data-urlencode 'verdict=fail' \
@@ -378,6 +404,45 @@ Annotation:
   "Run not found or not shared with you".
 - No notifications in v1 (T3 A).
 - Who may add, edit, resolve and delete: [permission matrix](board-permissions.md#permission-matrix).
+
+### Annotation API (CHE-1465)
+
+The annotation routes are implemented over the `notes` module. Creation returns
+201 and the annotation. Listing returns `{"annotations": [...]}`, oldest first
+with the annotation id as the tie-breaker. Reading or patching returns the
+annotation. Deletion returns 204. `author_principal_id` is server-assigned from
+the verified issuer and subject; changing an email does not transfer authorship.
+Preview authors use an isolated namespace and do not reserve email history.
+
+PATCH accepts only `body` and/or `resolved`. Only the author may change text;
+any caller who can add notes may toggle Resolved. A combined text-and-toggle
+request from a non-author fails without changing either field. An admin may
+delete any note, but not edit another author's text. With spaces enabled the
+global-admin designation grants no extra run-data permissions.
+
+An annotation API path requires the full run id, including for its author.
+Unknown, removed and prefix-only runs and notes from a different run all answer
+the same `run_not_visible` 404. The deep link selects the note through the run
+route; the single-annotation GET provides the selection to the UI layer.
+
+The evidence response has `status` and `evidence`. Only `exact` carries
+`image_urls` or `video_url`, with the anchored `step_id` or `recording_id` and
+`position_ms`. Recording URLs address that recording only, not the run's latest
+video. Missing or legacy-uncertain evidence returns no media reference. Expired
+evidence answers `evidence_expired` 410 while the annotation remains readable.
+
+All six routes are public-tier, subject to run visibility, and preview `REAL`:
+they use only the preview's isolated database and media. Mutation calls the
+`routers.run_annotations.annotation_changed` hook after commit. The hook is a
+no-op until a visibility-checked SSE registry exists; no notifications or
+`run.annotated` events are emitted yet. The existing stream event set is not
+such a registry. The `require_note_write` hook shares a process-local 30-write
+per-principal, 60-second budget for the forthcoming comment API.
+
+#### notes_not_ready
+
+503 with `Retry-After: 5` if the annotation tables are unavailable. Restart the
+console to apply the additive notes migration. No annotation data is returned.
 
 ## Live updates (SSE)
 

@@ -33,7 +33,8 @@ from artemis.runtime.adb_endpoint import (
     current_adb_endpoint,
 )
 from artemis.runtime.endpoint_transport import EndpointTransport, EndpointUnreachable
-from artemis.utils.logger import get_logger
+from artemis.toolchain import toolchain
+from third_party.mobile_use.utils.logger import get_logger
 
 logger = get_logger(__name__)
 

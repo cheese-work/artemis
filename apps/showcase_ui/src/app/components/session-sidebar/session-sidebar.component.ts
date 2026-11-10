@@ -1,11 +1,14 @@
 import { DatePipe } from '@angular/common';
 import { HttpClient } from '@angular/common/http';
 import { ChangeDetectionStrategy, Component, computed, effect, inject, input, NgZone, signal } from '@angular/core';
-import { catchError, forkJoin, of, switchMap, takeWhile, timer } from 'rxjs';
+import { catchError, forkJoin, map, of, switchMap, takeWhile, timer } from 'rxjs';
 import { RunSummary, SessionVideo } from '../../core/models/run.model';
 import { SessionUsage } from '../../core/models/session.model';
 import { RunsService } from '../../services/runs.service';
 import { appUrl, mediaUrl } from '../../utils/app-url.util';
+
+const formatCount = (count: number | undefined) => (count ?? 0).toLocaleString('en-US');
+const formatCost = (usd: number) => usd > 0 && usd < 0.01 ? '< $0.01' : (usd === 0 ? '$0.00' : '≈ $' + usd.toFixed(2));
 
 @Component({
   selector: 'app-session-sidebar',
@@ -47,10 +50,19 @@ import { appUrl, mediaUrl } from '../../utils/app-url.util';
           <dl>
             <dt>Steps</dt><dd>{{ steps() ?? 'Unavailable' }}</dd>
             @if (technicalDetails()) { <dt>Duration</dt><dd>{{ elapsed() }} seconds</dd> }
-            <dt>Total tokens</dt><dd>{{ usage()?.total_tokens ?? 'Unavailable' }}</dd>
-            <dt>Input tokens</dt><dd>{{ usage()?.prompt_tokens ?? 'Unavailable' }}</dd>
-            <dt>Output tokens</dt><dd>{{ usage()?.completion_tokens ?? 'Unavailable' }}</dd>
           </dl>
+          @if (stats(); as totals) {
+            <div class="stats" aria-label="Session usage">
+              <div class="big"><span><b>{{ totals.tokens }}</b> tokens</span><span><b>{{ totals.cost ?? '—' }}</b> {{ totals.cost ? 'est.' : 'cost' }}</span></div>
+              <table>
+                <tr><td>Input · Output</td><td class="r">{{ totals.input }} · {{ totals.output }}</td></tr>
+                @for (turn of totals.turns; track turn.number) {
+                  <tr><td>{{ 'Turn ' + turn.number + ' · ' + turn.model }}</td><td class="r">{{ turn.tokens }} · {{ turn.cost ?? '—' }}</td></tr>
+                }
+                <tr><td colspan="2" class="faint">{{ totals.cost ? 'Estimate at list price; your provider bill may differ.' : 'No list price for this model.' }}</td></tr>
+              </table>
+            </div>
+          } @else { <p class="muted">Usage unavailable.</p> }
         }
         @if (error()) { <p role="alert">{{ error() }}</p> }
       </section>
@@ -70,6 +82,13 @@ import { appUrl, mediaUrl } from '../../utils/app-url.util';
     dl { margin: 0; } dt { margin-top: var(--space-md); color: var(--color-text-muted); font-size: var(--text-label); }
     dd { margin: var(--space-xs) 0 0; overflow-wrap: anywhere; } .prompt { white-space: pre-wrap; } .mono { font-family: var(--font-mono); }
     .muted { color: var(--color-text-muted); font-size: var(--text-ui); }
+    .stats { display: grid; gap: var(--space-xs); margin-top: var(--space-md); padding-top: var(--space-md); border-top: 1px solid var(--color-rule); }
+    .stats .big { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--space-md); color: var(--color-text-muted); font-size: var(--text-label); }
+    .stats .big b { font-family: var(--font-mono); font-size: var(--text-section); color: var(--color-ink); font-weight: 500; }
+    .stats table { width: 100%; border-collapse: collapse; font-size: var(--text-label); }
+    .stats td { padding: 2px 0; color: var(--color-text-muted); overflow-wrap: anywhere; }
+    .stats td.r { text-align: right; font-family: var(--font-mono); color: var(--color-text); white-space: nowrap; padding-left: var(--space-sm); }
+    .stats td.faint { color: var(--color-text-faint); }
   `,
   changeDetection: ChangeDetectionStrategy.OnPush
 })
@@ -80,10 +99,31 @@ export class SessionSidebarComponent {
   public readonly runId = input('');
   public readonly technicalDetails = input(false);
   public readonly firstPrompt = input<string | null>(null);
+  /** Every turn of the session, so Stats totals the whole session; defaults to the viewed run alone. */
+  public readonly turns = input<readonly { id: string; number: number }[]>([]);
   public readonly tabs = ['Live', 'Details', 'Stats'] as const;
   public readonly tab = signal<(typeof this.tabs)[number]>('Live');
   public readonly run = signal<RunSummary | null>(null);
-  public readonly usage = signal<SessionUsage | null>(null);
+  public readonly usage = signal<{ number: number; usage: SessionUsage }[] | null>(null);
+  private readonly turnKey = computed(() => this.turns().map(turn => turn.id + ':' + turn.number).join(','));
+  public readonly stats = computed(() => {
+    const entries = this.usage();
+    if (!entries?.length) return null;
+    const sum = (pick: (u: SessionUsage) => number | undefined) => entries.reduce((total, entry) => total + (pick(entry.usage) ?? 0), 0);
+    const costs = entries.map(entry => entry.usage.estimated_cost_usd ?? null);
+    return {
+      tokens: formatCount(sum(u => u.total_tokens)),
+      input: formatCount(sum(u => u.prompt_tokens)),
+      output: formatCount(sum(u => u.completion_tokens)),
+      cost: costs.every(cost => cost !== null) ? formatCost(costs.reduce<number>((total, cost) => total + (cost ?? 0), 0)) : null,
+      turns: entries.map(entry => ({
+        number: entry.number,
+        model: entry.usage.model ?? 'Unknown model',
+        tokens: formatCount(entry.usage.total_tokens),
+        cost: entry.usage.estimated_cost_usd == null ? null : formatCost(entry.usage.estimated_cost_usd)
+      }))
+    };
+  });
   public readonly steps = signal<number | null>(null);
   public readonly video = signal<SessionVideo | null>(null);
   public readonly error = signal<string | null>(null);
@@ -104,6 +144,7 @@ export class SessionSidebarComponent {
   constructor() {
     effect(onCleanup => {
       const id = this.runId();
+      this.turnKey();
       this.run.set(null);
       this.video.set(null);
       this.usage.set(null);
@@ -113,13 +154,14 @@ export class SessionSidebarComponent {
       this.videoFailed.set(false);
       this.error.set(null);
       if (!id) return;
+      const usageTurns = this.turns().length ? this.turns() : [{ id, number: 1 }];
       const subscription = this.zone.runOutsideAngular(() => timer(0, 2000).pipe(switchMap(() => forkJoin({
         run: this.api.get(id).pipe(catchError(() => { this.error.set('Session details could not load.'); return of(null); })),
         video: this.api.video(id).pipe(catchError(() => of(null))),
         steps: this.api.steps(id).pipe(catchError(() => of(null))),
-        usage: this.http.get<SessionUsage>(
-          '/api/sessions/' + encodeURIComponent(id) + '/usage'
-        ).pipe(catchError(() => of(null))),
+        usage: forkJoin(usageTurns.map(turn => this.http.get<SessionUsage>(
+          '/api/sessions/' + encodeURIComponent(turn.id) + '/usage'
+        ).pipe(catchError(() => of(null)), map(usage => usage && { number: turn.number, usage })))),
         stream: this.http.get<{ serial: string | null; live_stream_url: string | null }>(
           '/api/stream/device-state'
         ).pipe(catchError(() => of(null)))
@@ -128,7 +170,8 @@ export class SessionSidebarComponent {
         this.run.set(result.run);
         this.video.set(result.video);
         this.steps.set(result.steps?.length ?? null);
-        this.usage.set(result.usage);
+        const usage = result.usage.filter(entry => entry !== null);
+        this.usage.set(usage.length === result.usage.length ? usage : null);
         this.stream.set(result.stream);
         if (result.run) this.error.set(null);
       })));

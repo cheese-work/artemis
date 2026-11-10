@@ -88,6 +88,10 @@ export interface SessionUsage {
   operator_context_tokens: number | null;
   operator_context_window_tokens: number;
   operator_context_updated_at?: number | null;
+  /** Run model the cost is priced for (no `provider/` prefix). */
+  model?: string | null;
+  /** USD at the model's list price; null when it has none. */
+  estimated_cost_usd?: number | null;
   profile?: string | null;
   run_tuning?: SessionRunTuning | null;
 }
