@@ -135,6 +135,50 @@ class ResumeTests(unittest.TestCase):
         offered = self.offered()
         self.refused("invalid_request", lambda: self.claim(offered, binding=None))
 
+    def test_acquire_and_successor_claim_keep_audit_identity(self):
+        group = self.take(agent_id="distinct-agent", issue_id="CHE-audit", purpose="test purpose")
+        offered = self.offered_after_release(group)
+        successor = self.claim(offered)
+        events = [
+            json.loads(line)
+            for line in Path(str(self.path) + ".audit.jsonl").read_text().splitlines()
+        ]
+        acquired = next(
+            e for e in events if e["event"] == "acquire" and e["lease_id"] == group["lease_id"]
+        )
+        claimed = next(
+            e for e in events if e["event"] == "acquire" and e["lease_id"] == successor["lease_id"]
+        )
+        self.assertEqual((acquired["agent"], acquired["issue"]), ("distinct-agent", "CHE-audit"))
+        self.assertEqual((claimed["agent"], claimed["issue"]), ("agent", offered["issue_id"]))
+
+    def offered_after_release(self, group):
+        ticket = self.wait(
+            "wait", device_id=group["devices"][0]["device_id"], issue_id="CHE-successor-audit"
+        )
+        self.park(ticket)
+        self.free(group)
+        return self.ticket(ticket)
+
+    def test_claim_with_failed_audit_never_commits_a_grant(self):
+        offered = self.offered()
+        with patch("audit.flush", side_effect=OSError("audit unavailable")):
+            with self.assertRaises(OSError):
+                self.claim(offered)
+        with sqlite3.connect(self.path) as conn:
+            self.assertEqual(
+                conn.execute("SELECT count(*) FROM broker_groups WHERE state='active'").fetchone()[
+                    0
+                ],
+                0,
+            )
+            self.assertEqual(
+                conn.execute(
+                    "SELECT state FROM broker_tickets WHERE ticket_id=?", (offered["ticket_id"],)
+                ).fetchone()[0],
+                "offered",
+            )
+
     def test_busy_acquire_cannot_nest(self):
         self.take(run_id="nested", purpose="CHE-nested", device_id="b", idempotency_key="nested")
         self.refused(

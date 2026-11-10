@@ -1,4 +1,4 @@
-# DLP-1 registry, broker, queue and recovery
+# DLP-1 registry, broker, queue, resume and recovery
 
 Authority generation and the G4-gated phase 3 preparation runbook are in
 [CUTOVER.md](CUTOVER.md). No live authority switch is performed here.
