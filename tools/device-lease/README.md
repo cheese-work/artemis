@@ -1,5 +1,12 @@
 # DLP-1 registry, broker, queue, resume and recovery
 
+Authority generation and the G4-gated phase 3 preparation runbook are in
+[CUTOVER.md](CUTOVER.md). No live authority switch is performed here.
+
+The additive SmartQA HTTP contract is documented in
+[SMARTQA-EXTENSIONS.md](SMARTQA-EXTENSIONS.md) (CHE-4515). Its backend stays
+unconfigured in production; phase 1 installs no second allocating authority.
+
 `registry.py` is a standard-library inventory and candidate filter for the
 CHE-4285 rev 4 protocol. It performs no ADB, network, Multica or lease operation.
 The existing SmartQA lease API keeps its CHE-2099 behavior. The broker core below
@@ -232,6 +239,131 @@ No daemon is installed or live admission enabled here. The owner-provided recove
 adapter must close streams, stop run-owned work and confirm cleanup. No device
 command, ADB server reset or policy change is performed by the hermetic tests.
 
+## Recovery and admission runbook (DLP-1 rules 5, 8–11, Authority 3)
+
+1. **Compose before admitting.** Keep one exclusive broker owner and one authority.
+   Pass trusted current `admitted` grants/readiness. Set `admission_sources` to
+   `{"artemis": read_execution_locks, "android": read_issue_claims}`. Each reader
+   returns a collection of canonical ids or registered aliases; include all existing
+   claims, including the requesting run's. Read Artemis execution-lock metadata
+   (`DeviceExecutionLock.get_active_owners`) on the intended host/endpoint, and
+   Android issue claims through the authorized Multica client. Do not use
+   `DevicePool.get_claimed_serials` here: that convenience reader swallows failures.
+   Unknown identities, invalid snapshots and reader failures close new admission.
+   Readers run outside SQLite's writer transaction. Supply `admission_guard`, a
+   context-manager factory shared by both claim writers and broker decisions, to
+   hold exclusion from source reads through commit. Without cooperative writers,
+   the snapshot cannot prevent a new external claim racing the grant; do not
+   enable live admission in that configuration. Missing either named source or
+   the shared guard closes admission; inventory alone cannot bypass these checks.
+2. **Record before changing.** The trusted owner calls
+   `record_change(lease_id=..., principal=..., run_id=..., change=...)` before each
+   allowed device mutation. A change names a canonical `device_id` in the lease.
+   Supported typed intents are setting (`name`, `before`, `after`), app (`package`,
+   `installed_by_run=true`, `allowed_remove=true`) and HOME (`allowed=true`).
+   Each includes `kind` and `device_id`. The journal is append-only and cleanup
+   walks it in reverse order. No arbitrary shell command is accepted. Only a
+   trusted grant/execution adapter may assert app provenance and HOME permission;
+   holder-supplied booleans are not authorization. Keep pre-existing apps/data.
+3. **Fence and clean.** Configure `recovery_io`, `recovery_owner` and an existing
+   `ops_issue`. `maintain()` is the foreground worker, also called by the daemon
+   while idle. Release, expiry, revoke, suspect liveness and restart retain device
+   ownership. `recovery_io.fence(group, timeout=remaining_seconds)` must reject
+   new access, revoke credentials, close every stream and confirm termination of
+   only old-run tracked work, including device processes and reverse forwards.
+   Closing sockets alone is insufficient. Return exactly `True` only on confirmed
+   success. `undo(group, change, timeout=...)` restores only recorded changes,
+   compares current values to the recorded mutation, and must be idempotent.
+   Both callbacks run outside the SQLite writer lock and honor their deadlines.
+   The two-minute monotonic budget includes fencing and cleanup. Overdue recovery
+   still attempts emergency fencing, then quarantines. Exceptions, false results
+   and interrupted cleanup quarantine the whole group with the named owner/issue.
+4. **Hold for independent release verification.** Successful cleanup stops at
+   `verifying`. Preserve lease id, run binding, audit and cleanup evidence for the
+   Android squad leader. Only the trusted leader control plane calls
+   `verify_release(lease_id, verifier=LEADER_ID, evidence=REFERENCE, passed=True)`.
+   `LEADER_ID` is `5cd75ce5-d323-4004-9779-7e2ccf16bde4` under the current policy.
+   A failed verdict quarantines. The named recovery owner can supply evidence
+   using `recover_quarantine`; this returns only to `verifying`, never directly
+   to availability. A successful leader verdict records `released`. No TTL-only
+   release exists. These control-plane hooks and `record_change` are absent from
+   the holder socket/CLI. The caller authenticates the operator; a string id is
+   not a credential, and same-UID access remains cooperative.
+5. **Retain and inspect evidence.** Every committed lifecycle/ticket event is
+   queued transactionally in `broker_audit`, then exported outside the writer
+   transaction to `<database>.audit.jsonl` with sequence, ICT time, agent, run id,
+   issue and canonical device id. A batch produces one line per member/event.
+   Ticket events retain the originating run label, not a live run binding.
+   Export appends and fsyncs; a retry validates the exact existing prefix before
+   appending the missing suffix, without duplicating events after a lost response.
+   Audit corruption or export failure closes new grants/renewals; fencing and
+   cleanup continue, with events retained in SQLite. Ops restores the preserved
+   exact log prefix and re-exports; never truncate/overwrite the audit in place.
+   Keep an unrepaired device unavailable with its named owner and ops issue.
+
+On startup, call `restart()` after taking the daemon lock; reconcile every held
+group before new grants. A state already in `cleaning` is uncertain after an
+interruption and requires manual recovery. Automatic verification, gateway
+authentication, production wiring and cutover are outside this slice. Restricted
+devices and `500c592` keep their existing G5/CHE-2082 restrictions. Neither broker
+nor adapter may restart shared ADB or reset unrelated devices/data.
+
+```sh
+python3 tests/unit/runtime/test_device_lease_recovery.py -v
+```
+
+## Non-admitting SmartQA shadow (CHE-4517, phase 2)
+
+Every core acquire, renew, release, status and recovery decision appends a
+`broker_decisions` row in the same SQLite transaction as its outcome. The entry
+contains the operation, request, ICT time, pre-decision inventory, admission map,
+groups, run budgets, idempotency responses and the broker response or refusal.
+Renewal also captures the existing SQL waiter's result. A rollback leaves no
+decision; a lost response after commit leaves a replayable decision. Journal
+failure rolls back the decision. Invalid RPC envelopes are transport errors,
+not core decisions. The journal is private owner state, not a new client RPC.
+
+Run the shadow explicitly in a separate process, after broker requests:
+
+```sh
+python3 tools/device-lease/shadow.py --database /private/state/leases.sqlite3 \
+  --output /private/state/shadow.jsonl --after 0 --limit 100
+```
+
+Use the real private owner directory for these example paths. The command prints
+the last processed sequence. Supply that number as `--after` on the next run.
+The JSONL is append-only; retrying an older cursor may append duplicate sequences.
+The bounded batch limit is 1..1000. No worker, timer or live backend is installed.
+
+The reader opens SQLite with `mode=ro` and `query_only`, materializes its batch,
+and closes the connection before evaluation. `smartqa_decide` computes the
+proposed DLP-1 extension decision from immutable JSON bytes. It uses shared input
+validation and registry eligibility, with independent selection and lifecycle
+projection. It never calls the broker's allocating methods, the HTTP dispatch,
+or the legacy CHE-2099 allocator. This is a projection of the extension contract,
+not production SmartQA scheduler parity or queue/live-binding qualification.
+Future queue operations need corresponding snapshot and projection support.
+
+Each comparison records both inputs, both decisions, and `match`, `different`,
+`error` or `timeout`. Only the generated top-level lease id and a newly generated ticket id are ignored
+when comparing acquire results; existing ticket ids and all other fields remain significant; device ids, timing, ownership and refusal details
+remain significant. Evaluator exception text is excluded. A replacement pure
+evaluator can be supplied as `compare(..., decide=client.decide)`; it receives
+bytes, never a database connection or an allocating client capability.
+
+Shadow exceptions or timeouts cannot change broker state or hold its transaction.
+A hung evaluator stalls only the separately invoked shadow process; the caller
+owns that process's deadline. Comparison output errors also affect only that
+invocation. Output files are private (0600), regular, and cannot alias the source
+database or its sidecars. Keep logs inside the private owner directory: snapshots
+contain device endpoints and principal/run labels. Full snapshots retain history;
+measure journal size before any live rollout and define owner-controlled retention
+there. This slice does not enable live admission or approve G4 cutover.
+
+```sh
+TMPDIR=/tmp python3 tests/unit/runtime/test_device_lease_shadow.py -v
+```
+
 ## Park, claim and waiting (CHE-4510, DLP-1 Waiting and resume 1–11)
 
 A busy acquire records a provisional waiting-run binding. `park` drops it and
@@ -344,75 +476,127 @@ Run all broker/queue/resume tests with synthetic devices and fake Multica:
 python3 -m unittest discover -s tests/unit/runtime -p 'test_device_lease*.py' -v
 ```
 
-## Recovery and admission runbook (DLP-1 rules 5, 8–11, Authority 3)
+## R1 remote access (owner-composed, disabled in the local daemon)
 
-1. **Compose before admitting.** Keep one exclusive broker owner and one authority.
-   Pass trusted current `admitted` grants/readiness. Set `admission_sources` to
-   `{"artemis": read_execution_locks, "android": read_issue_claims}`. Each reader
-   returns a collection of canonical ids or registered aliases; include all existing
-   claims, including the requesting run's. Read Artemis execution-lock metadata
-   (`DeviceExecutionLock.get_active_owners`) on the intended host/endpoint, and
-   Android issue claims through the authorized Multica client. Do not use
-   `DevicePool.get_claimed_serials` here: that convenience reader swallows failures.
-   Unknown identities, invalid snapshots and reader failures close new admission.
-   Readers run outside SQLite's writer transaction. Supply `admission_guard`, a
-   context-manager factory shared by both claim writers and broker decisions, to
-   hold exclusion from source reads through commit. Without cooperative writers,
-   the snapshot cannot prevent a new external claim racing the grant; do not
-   enable live admission in that configuration. Missing either named source or
-   the shared guard closes admission; inventory alone cannot bypass these checks.
-2. **Record before changing.** The trusted owner calls
-   `record_change(lease_id=..., principal=..., run_id=..., change=...)` before each
-   allowed device mutation. A change names a canonical `device_id` in the lease.
-   Supported typed intents are setting (`name`, `before`, `after`), app (`package`,
-   `installed_by_run=true`, `allowed_remove=true`) and HOME (`allowed=true`).
-   Each includes `kind` and `device_id`. The journal is append-only and cleanup
-   walks it in reverse order. No arbitrary shell command is accepted. Only a
-   trusted grant/execution adapter may assert app provenance and HOME permission;
-   holder-supplied booleans are not authorization. Keep pre-existing apps/data.
-3. **Fence and clean.** Configure `recovery_io`, `recovery_owner` and an existing
-   `ops_issue`. `maintain()` is the foreground worker, also called by the daemon
-   while idle. Release, expiry, revoke, suspect liveness and restart retain device
-   ownership. `recovery_io.fence(group, timeout=remaining_seconds)` must reject
-   new access, revoke credentials, close every stream and confirm termination of
-   only old-run tracked work, including device processes and reverse forwards.
-   Closing sockets alone is insufficient. Return exactly `True` only on confirmed
-   success. `undo(group, change, timeout=...)` restores only recorded changes,
-   compares current values to the recorded mutation, and must be idempotent.
-   Both callbacks run outside the SQLite writer lock and honor their deadlines.
-   The two-minute monotonic budget includes fencing and cleanup. Overdue recovery
-   still attempts emergency fencing, then quarantines. Exceptions, false results
-   and interrupted cleanup quarantine the whole group with the named owner/issue.
-4. **Hold for independent release verification.** Successful cleanup stops at
-   `verifying`. Preserve lease id, run binding, audit and cleanup evidence for the
-   Android squad leader. Only the trusted leader control plane calls
-   `verify_release(lease_id, verifier=LEADER_ID, evidence=REFERENCE, passed=True)`.
-   `LEADER_ID` is `5cd75ce5-d323-4004-9779-7e2ccf16bde4` under the current policy.
-   A failed verdict quarantines. The named recovery owner can supply evidence
-   using `recover_quarantine`; this returns only to `verifying`, never directly
-   to availability. A successful leader verdict records `released`. No TTL-only
-   release exists. These control-plane hooks and `record_change` are absent from
-   the holder socket/CLI. The caller authenticates the operator; a string id is
-   not a credential, and same-UID access remains cooperative.
-5. **Retain and inspect evidence.** Every committed lifecycle/ticket event is
-   queued transactionally in `broker_audit`, then exported outside the writer
-   transaction to `<database>.audit.jsonl` with sequence, ICT time, agent, run id,
-   issue and canonical device id. A batch produces one line per member/event.
-   Ticket events retain the originating run label, not a live run binding.
-   Export appends and fsyncs; a retry validates the exact existing prefix before
-   appending the missing suffix, without duplicating events after a lost response.
-   Audit corruption or export failure closes new grants/renewals; fencing and
-   cleanup continue, with events retained in SQLite. Ops restores the preserved
-   exact log prefix and re-exports; never truncate/overwrite the audit in place.
-   Keep an unrepaired device unavailable with its named owner and ops issue.
+`remote_adb.py` adds per-run Ed25519 public-key bindings and one filtered loopback
+listener per binding. It reuses the shared smart-socket parser and gateway.
+`StreamOwner` factors the listener/client/task closure previously in `HostTunnel`;
+both B2 and R1 use it. B2 keeps its existing service profile.
 
-On startup, call `restart()` after taking the daemon lock; reconcile every held
-group before new grants. A state already in `cleaning` is uncertain after an
-interruption and requires manual recovery. Automatic verification, gateway
-authentication, production wiring and cutover are outside this slice. Restricted
-devices and `500c592` keep their existing G5/CHE-2082 restrictions. Neither broker
-nor adapter may restart shared ADB or reset unrelated devices/data.
+This library does not install SSH, firewall rules, USB permissions or a live
+device profile. The cooperative holder RPC exposes none of these owner methods.
+Live isolated-agent rollout remains disabled until ops and the independent
+security review establish the R1 boundary in the CHE-4512 design note, revision 4.
+No device class is admitted by these fake tests. There is no direct-ADB fallback.
+
+Compose the library under the broker's exclusive owner lock:
+
+1. Supply `BrokerAdmission(broker, authenticate=..., generation=..., inspect=...)`
+   as `RemoteAccess.resolve`. Authentication verifies the control principal,
+   agent/issue and current live Multica run, not caller labels or a network source.
+   Admission joins the current remote broker lease, its canonical registry mapping,
+   current device grant, mapping revision, reviewed attestation profile, frozen
+   pre-lease baseline and effective isolation evidence. Unknown reads return no
+   snapshot. The broker retains expiry, heartbeat and hard-cap authority.
+2. Use a private owner directory (0700) and store (0600). Set `bootstrap=True`
+   **only** for a new deployment store; ordinary startup refuses missing history.
+   Fingerprint tombstones never expire. Registration is serialized and atomic;
+   only an idempotent retry of the same still-active binding can reuse its key.
+   Startup changes the incarnation and requires `await access.reconcile()` to
+   close recorded sessions before admission. Run the broker restart recovery too;
+   credential reconciliation never frees a device.
+3. Supply an ops adapter with async `reserve(binding)`, `publish(binding, line)`,
+   `revoke(binding)`, `stop(session)` and `retire(binding, port)` methods.
+   `reserve` durably records the destination and installs the tunnel-UID-only
+   loopback rule **before** returning a port. No port 5037, wildcard or another
+   binding's port is accepted. `publish` installs only the generated
+   `restrict,port-forwarding,permitopen="127.0.0.1:PORT"` public-key line.
+   It must verify the complete `SSH_SERVER_POLICY` too: local TCP forwarding only,
+   no stream-local/remote forwarding, sessions, shell, exec, SFTP, PTY, agent/X11
+   forwarding or tunnels. Bound SSH connection/channel buffering and counts before
+   allocation. Do not use a generic host account or trust loopback source identity.
+4. The trusted SSH authentication callback calls `authenticate` **after** proving
+   private-key possession. Supply the supervisor-observed PID/start/boot identity,
+   never a client-provided process identity. Persist registration before auth
+   succeeds; no registration means no forwarding. The supervisor must stop exact
+   run-owned children on broker death, including interrupted authentication.
+   `stop` verifies start time/boot id before stopping only that session and returns
+   true only after closure is confirmed. `retire` verifies no orphan listener or
+   session can reach the old destination before removing its isolation rule.
+5. Route release/revoke/authority/policy/control-loss events through
+   `await access.fence_lease(lease_id)` on the gateway owner loop. The local dead
+   binding barrier precedes all awaits. Dispatch and raw relay revalidate the
+   tuple; a 50 ms monitor handles lost control and a monotonic deadline handles
+   expiry independently of wall-clock changes. An observed authorization failure
+   cannot revive the key. Renewal requires explicit fencing and a fresh key;
+   failure to rotate never extends the original deadline.
+
+The client keeps its fresh private key in its run's private 0700 directory with
+0600 key permissions. The broker never receives that private key. Use a private
+network namespace, a loopback-only local forward, pinned known host keys,
+`StrictHostKeyChecking=yes`, `IdentitiesOnly=yes`, `ExitOnForwardFailure=yes`,
+`ControlMaster=no`, `ControlPath=none`, `-N` and `-T`. Point `ADB_SERVER_SOCKET`
+only at that forward; an absent tunnel must fail closed. Ops must prove host and
+container agent UIDs cannot reach gateway ports, port 5037 or USB, and that
+device-facing IPv4/IPv6 networks enforce R1-I1, including device-to-device paths.
+An opaque evidence string or successful SSH launch does not prove that boundary.
+
+For recovery, wrap the existing owned-work adapter in
+`RemoteRecovery(access, owner_loop, owned, inspection=...)` and use it as
+`Broker.recovery_io`. Run broker recovery on a worker thread, outside both the
+gateway event loop and SQLite writer transaction. Gateway/session closure comes
+before stopping owned device work. After recorded undo, `verify_state` compares
+independent post-cleanup evidence with the protected pre-lease baseline.
+The comparison also checks the profile and baseline digests retained in every
+credential admission snapshot for that principal/run/lease. All bindings must be
+closed and the canonical device mapping must agree. Missing history or a changed
+release-time baseline/profile refuses reuse, even when the new baseline equals
+the observed state. Remote-mode recovery requires `verify_state`; an adapter
+without that method quarantines instead of falling back to local recovery.
+`remote_attestation.py` requires all reviewed reachable state classes, the complete
+user/profile set, off/off network debugging and unchanged key fingerprints.
+It pins build, services, privacy grant and verifier/normalization implementation.
+The verifier normalizes only fields approved by that exact profile review.
+Unknown differences or missing evidence quarantine; no reset, uninstall, unowned
+process kill or baseline adoption occurs here. Successful recovery still stops at
+`verifying` for the Android squad leader. The quarantine callback must record the
+broker quarantine with its recovery owner/ops issue; it must not free a device.
+
+R1 denies global controls, implicit/id selectors, forwarding/reverse, root,
+remount, reboot, tcpip, TCP/localabstract sockets and unknown services. A restricted
+or unknown device gets no raw credential. `500c592` stays excluded. Both feature
+replies are synthesized locally as empty; no unscoped upstream feature discovery
+is permitted. All serials, including wireless aliases, come from the pinned
+canonical mapping. Mapping, grant, baseline/profile or authority changes fence.
+
+Framing uses the shared four-hex parser, strict request text, a single 5 s partial
+frame/status deadline and bounded upstream replies. Valid fragmentation and
+coalescing preserve order. After selection, raw device bytes are not reparsed as
+host commands. Admission reserves a full 256 KiB stream window in the shared
+64 MiB process budget and the 4 MiB lease budget, preserving 64 KiB control space.
+This conservative reservation admits at most 15 simultaneous full-window streams
+per lease, below the shared 32-stream ceiling. Socket readers enforce a hard text
+buffer cap before buffering; drained writes apply backpressure. Fencing awaits
+listener/client/task closure and returns every reservation. Unconfirmed closure
+quarantines and does not retire the port. Logs contain a service family/decision,
+never request strings, command arguments, sync paths or private credentials.
+The socket protocol uses fixed 8 KiB receive buffers so flow control pauses before
+the hard text-buffer ceiling, including during large raw transfers. Shared B2/R1
+closure has a 5 s deadline and aborts stalled client transports on timeout.
+The monitor contains each fence failure and retries revoked bindings. A failed
+quarantine callback or durable close write closes admission. Quarantine callback
+failures remain in the owner's `unconfirmed` set and emit a payload-free event.
+
+Run the standalone fake checks from the repository root:
 
 ```sh
-python3 tests/unit/runtime/test_device_lease_recovery.py -v
+python3 -B -m unittest discover -s tools/device-lease -p 'test_remote_*.py' -v
 ```
+
+`tests/unit/runtime/test_device_lease_remote.py` also exposes these checks to the
+normal unit suite. To exercise the optional stock-client fixture, set `R1_ADB`
+to the exact `adb 37.0.0-14910828` binary. That test checks the version, uses only
+private fake endpoints with explicit `-H/-P`, and exercises filtered discovery,
+legacy shell and exec-out. The optional feature set remains empty. Sync/package
+wire compatibility and a complete Artemis/uiautomator2 journey are not claimed
+by those three client probes. Live SSH/isolation/device verification is NOT-RUN.
