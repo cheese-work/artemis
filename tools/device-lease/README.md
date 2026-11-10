@@ -172,3 +172,55 @@ Run the core and transport tests without dependencies or live devices:
 ```sh
 python3 tests/unit/runtime/test_device_lease_broker.py -v
 ```
+
+## Non-admitting SmartQA shadow (CHE-4517, phase 2)
+
+Every core acquire, renew, release, status and recovery decision appends a
+`broker_decisions` row in the same SQLite transaction as its outcome. The entry
+contains the operation, request, ICT time, pre-decision inventory, admission map,
+groups, run budgets, idempotency responses and the broker response or refusal.
+Renewal also captures the existing SQL waiter's result. A rollback leaves no
+decision; a lost response after commit leaves a replayable decision. Journal
+failure rolls back the decision. Invalid RPC envelopes are transport errors,
+not core decisions. The journal is private owner state, not a new client RPC.
+
+Run the shadow explicitly in a separate process, after broker requests:
+
+```sh
+python3 tools/device-lease/shadow.py --database /private/state/leases.sqlite3 \
+  --output /private/state/shadow.jsonl --after 0 --limit 100
+```
+
+Use the real private owner directory for these example paths. The command prints
+the last processed sequence. Supply that number as `--after` on the next run.
+The JSONL is append-only; retrying an older cursor may append duplicate sequences.
+The bounded batch limit is 1..1000. No worker, timer or live backend is installed.
+
+The reader opens SQLite with `mode=ro` and `query_only`, materializes its batch,
+and closes the connection before evaluation. `smartqa_decide` computes the
+proposed DLP-1 extension decision from immutable JSON bytes. It uses shared input
+validation and registry eligibility, with independent selection and lifecycle
+projection. It never calls the broker's allocating methods, the HTTP dispatch,
+or the legacy CHE-2099 allocator. This is a projection of the extension contract,
+not production SmartQA scheduler parity or queue/live-binding qualification.
+Future queue operations need corresponding snapshot and projection support.
+
+Each comparison records both inputs, both decisions, and `match`, `different`,
+`error` or `timeout`. Only the generated top-level lease id is ignored when
+comparing acquire results; device ids, timing, ownership and refusal details
+remain significant. Evaluator exception text is excluded. A replacement pure
+evaluator can be supplied as `compare(..., decide=client.decide)`; it receives
+bytes, never a database connection or an allocating client capability.
+
+Shadow exceptions or timeouts cannot change broker state or hold its transaction.
+A hung evaluator stalls only the separately invoked shadow process; the caller
+owns that process's deadline. Comparison output errors also affect only that
+invocation. Output files are private (0600), regular, and cannot alias the source
+database or its sidecars. Keep logs inside the private owner directory: snapshots
+contain device endpoints and principal/run labels. Full snapshots retain history;
+measure journal size before any live rollout and define owner-controlled retention
+there. This slice does not enable live admission or approve G4 cutover.
+
+```sh
+TMPDIR=/tmp python3 tests/unit/runtime/test_device_lease_shadow.py -v
+```

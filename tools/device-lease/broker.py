@@ -6,6 +6,8 @@ CHE-2099 authority until its explicitly approved migration/cutover.
 """
 
 from contextlib import contextmanager
+from dataclasses import asdict
+from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
 import sqlite3
@@ -32,6 +34,8 @@ _DDL = (
     "CREATE TABLE IF NOT EXISTS broker_requests ("
     "principal TEXT NOT NULL, run_id TEXT NOT NULL, key TEXT NOT NULL, "
     "fingerprint TEXT NOT NULL, response TEXT NOT NULL, PRIMARY KEY(principal, run_id, key))",
+    "CREATE TABLE IF NOT EXISTS broker_decisions ("
+    "sequence INTEGER PRIMARY KEY AUTOINCREMENT, entry TEXT NOT NULL)",
 )
 
 
@@ -67,21 +71,21 @@ class Broker:
         return group
 
     def status(self, *, lease_id, principal, run_id):
-        self._text(lease_id, principal, run_id)
-        with self.transaction() as (conn, now):
+        with self.decision("status", locals()) as (conn, now, entry):
+            self._text(lease_id, principal, run_id)
             self._expire(conn, now)
-            return self._owned(conn, lease_id, principal, run_id)
+            return self._decide(entry, self._owned(conn, lease_id, principal, run_id))
 
     def renew(self, *, lease_id, principal, run_id, ttl=1800, idempotency_key):
-        self._text(lease_id, principal, run_id, idempotency_key)
-        self._ttl(ttl)
-        fingerprint = json.dumps(["renew", lease_id, ttl])
-        with self.transaction() as (conn, now):
+        with self.decision("renew", locals()) as (conn, now, entry):
+            self._text(lease_id, principal, run_id, idempotency_key)
+            self._ttl(ttl)
+            fingerprint = json.dumps(["renew", lease_id, ttl])
             self._expire(conn, now)
             group = self._owned(conn, lease_id, principal, run_id)
             replay = self._replay(conn, principal, run_id, idempotency_key, fingerprint)
             if replay is not None:
-                return replay
+                return self._decide(entry, replay)
             if now >= group["expires_at"]:
                 raise Refused("lease_expired")
             if group["state"] != "active":
@@ -95,7 +99,10 @@ class Broker:
                 raise Refused("device_unknown")
             maximum = 1800 if any(self.registry.resolve(d).pool == "root" for d in ids) else 3600
             self._ttl(ttl, maximum)
-            if self.conflicting_waiter(conn, frozenset(ids)):
+            entry["snapshot"]["conflicting_waiter"] = bool(
+                self.conflicting_waiter(conn, frozenset(ids))
+            )
+            if entry["snapshot"]["conflicting_waiter"]:
                 raise Refused("conflicting_waiter")
             expiry = min(now + ttl, group["hard_deadline"])
             conn.execute(
@@ -105,19 +112,20 @@ class Broker:
             self.boundary("renew:updated")
             response = self._view(conn, lease_id)
             self._record(conn, principal, run_id, idempotency_key, fingerprint, response)
+            self._decide(entry, response)
         self.boundary("renew:committed")
         return response
 
     def release(self, *, lease_id, principal, run_id):
-        self._text(lease_id, principal, run_id)
-        with self.transaction() as (conn, now):
+        with self.decision("release", locals()) as (conn, now, entry):
+            self._text(lease_id, principal, run_id)
             self._expire(conn, now)
             group = self._owned(conn, lease_id, principal, run_id)
             if group["state"] == "active":
                 conn.execute(
                     "UPDATE broker_groups SET state='fencing' WHERE lease_id=?", (lease_id,)
                 )
-            return self._view(conn, lease_id)
+            return self._decide(entry, self._view(conn, lease_id))
 
     def recovery(self, lease_id, expected, target, *, recovery_owner=None, ops_issue=None):
         """Trusted recovery-worker CAS, never a holder RPC. No automatic free path.
@@ -125,14 +133,14 @@ class Broker:
         Actual fencing/cleanup and leader-verified release belong to slice 4.
         Until then, even 'verifying' is unavailable and cannot be client-freed.
         """
-        allowed = {("fencing", "cleaning"), ("cleaning", "verifying")}
-        if target == "quarantine" and expected in {"fencing", "cleaning", "verifying"}:
-            if not recovery_owner or not ops_issue:
-                raise Refused("recovery_owner_required")
-            self._text(recovery_owner, ops_issue)
-        elif (expected, target) not in allowed:
-            raise Refused("invalid_transition")
-        with self.transaction() as (conn, now):
+        with self.decision("recovery", locals()) as (conn, now, entry):
+            allowed = {("fencing", "cleaning"), ("cleaning", "verifying")}
+            if target == "quarantine" and expected in {"fencing", "cleaning", "verifying"}:
+                if not recovery_owner or not ops_issue:
+                    raise Refused("recovery_owner_required")
+                self._text(recovery_owner, ops_issue)
+            elif (expected, target) not in allowed:
+                raise Refused("invalid_transition")
             self._expire(conn, now)
             group = self._view(conn, lease_id)
             if group["state"] != expected:
@@ -141,7 +149,53 @@ class Broker:
                 "UPDATE broker_groups SET state=?, recovery_owner=?, ops_issue=? WHERE lease_id=?",
                 (target, recovery_owner, ops_issue, lease_id),
             )
-            return self._view(conn, lease_id)
+            return self._decide(entry, self._view(conn, lease_id))
+
+    @staticmethod
+    def _decide(entry, response):
+        entry["broker"] = response
+        return response
+
+    @contextmanager
+    def decision(self, operation, arguments):
+        """Journal the committed outcome and its inputs, never invoke the shadow."""
+        with self.transaction() as (conn, now):
+            # ponytail: full development snapshots; bound retention before live rollout.
+            inventory = {d.device_id: asdict(d) for d in self.registry._aliases.values()}
+            entry = {
+                "version": 1,
+                "time_ict": datetime.fromtimestamp(now, timezone(timedelta(hours=7))).strftime(
+                    "%Y-%m-%d %H:%M:%S ICT"
+                ),
+                "operation": operation,
+                "request": {k: v for k, v in arguments.items() if k != "self"},
+                "snapshot": {
+                    "now": now,
+                    "draining": self.draining,
+                    "admitted": dict(self.admitted),
+                    "inventory": list(inventory.values()),
+                    "groups": [
+                        self._view(conn, r[0])
+                        for r in conn.execute(
+                            "SELECT lease_id FROM broker_groups ORDER BY lease_id"
+                        )
+                    ],
+                    "runs": [dict(r) for r in conn.execute("SELECT * FROM broker_runs")],
+                    "requests": [dict(r) for r in conn.execute("SELECT * FROM broker_requests")],
+                    "conflicting_waiter": False,
+                },
+            }
+            try:
+                yield conn, now, entry
+            except Refused as exc:
+                entry["broker"] = {"code": exc.code, **exc.details}
+                raise
+            finally:
+                # Unexpected errors roll back both mutations and this journal entry.
+                if "broker" in entry:
+                    conn.execute(
+                        "INSERT INTO broker_decisions(entry) VALUES (?)", (json.dumps(entry),)
+                    )
 
     @contextmanager
     def transaction(self):
@@ -223,19 +277,19 @@ class Broker:
         ttl=1800,
         idempotency_key,
     ):
-        self._text(principal, run_id, purpose, pool, idempotency_key)
-        self._ttl(ttl, 1800 if pool == "root" else 3600)
-        if type(count) is not int or count < 1:
-            raise Refused("invalid_request")
-        if device_id is not None:
-            self._text(device_id)
-        with self.transaction() as (conn, now):
+        with self.decision("acquire", locals()) as (conn, now, entry):
+            self._text(principal, run_id, purpose, pool, idempotency_key)
+            self._ttl(ttl, 1800 if pool == "root" else 3600)
+            if type(count) is not int or count < 1:
+                raise Refused("invalid_request")
+            if device_id is not None:
+                self._text(device_id)
             target = self._canonical(device_id) if device_id else None
             fingerprint = json.dumps(["acquire", pool, target or device_id, count, ttl, purpose])
             self._expire(conn, now)
             replay = self._replay(conn, principal, run_id, idempotency_key, fingerprint)
             if replay is not None:
-                return replay
+                return self._decide(entry, replay)
             if self.draining:
                 raise Refused("draining")
             ids = canonical_ids([device_id] if device_id else self.admitted, self._canonical)
@@ -309,5 +363,6 @@ class Broker:
             )
             response = self._view(conn, lease_id)
             self._record(conn, principal, run_id, idempotency_key, fingerprint, response)
+            self._decide(entry, response)
         self.boundary("acquire:committed")
         return response
