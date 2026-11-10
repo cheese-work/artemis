@@ -26,6 +26,9 @@ class ShadowTests(unittest.TestCase):
             DeviceRegistry([Device("a", ("usb-a",), restricted=False, identity_confirmed=True)]),
             admitted={"a": "usb-a"},
             clock=lambda: self.now,
+            monotonic=lambda: self.now,
+            admission_sources={"artemis": lambda: [], "android": lambda: []},
+            admission_guard=threading.RLock,
         )
 
     def take(self, **changes):

@@ -6,6 +6,7 @@ from pathlib import Path
 import sqlite3
 import sys
 import tempfile
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -36,6 +37,7 @@ class ExtensionTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.now = 100_000.0
         self.calls = []
+        claim_guard = threading.RLock()
         self.broker = Broker(
             Path(self.temp.name) / "broker.sqlite3",
             DeviceRegistry(
@@ -46,6 +48,9 @@ class ExtensionTests(unittest.TestCase):
             ),
             admitted={"a": "usb-a", "b": "usb-b"},
             clock=lambda: self.now,
+            monotonic=lambda: self.now,
+            admission_sources={"artemis": lambda: [], "android": lambda: []},
+            admission_guard=lambda: claim_guard,
         )
         self.app = FastAPI()
         self.app.include_router(router)
@@ -62,12 +67,22 @@ class ExtensionTests(unittest.TestCase):
     def dispatch(self, op, args):
         self.calls.append((op, args.copy()))
         try:
-            # Core has no live bindings/queue yet. The trusted owner must verify
-            # these before dispatch; this fixture models a successful check.
+            # The trusted owner verifies HTTP identity and binding before
+            # dispatch; this fixture uses the live test process as its binding.
             args = {k: v for k, v in args.items() if k not in {"binding", "agent_id", "issue_id"}}
             return getattr(self.broker, op)(**args)
         except Refused as exc:
-            return {"code": exc.code, **exc.details}
+            result = {"code": exc.code, **exc.details}
+            if ticket := result.get("ticket"):
+                # The trusted HTTP adapter projects the broker's private queue
+                # shape. Offered-ticket projection is covered by the queue mock.
+                result["ticket"] = {
+                    k: ticket[k] for k in ("ticket_id", "state", "agent_id", "issue_id", "position")
+                }
+                result["ticket"].update(
+                    next_offer_sequence=ticket["offer_sequence"] + 1, offer=None
+                )
+            return result
 
     def body(self, **changes):
         body = dict(
@@ -97,13 +112,28 @@ class ExtensionTests(unittest.TestCase):
         self.assertNotIn("run_id", busy.json()["holder"])
         with closing(sqlite3.connect(self.broker.db_path)) as conn:
             self.assertEqual(conn.execute("SELECT count(*) FROM broker_devices").fetchone()[0], 1)
-        group = self.acquire(device_id="b", run_id="run-3", idempotency_key="free")
-        self.assertEqual(group.status_code, 201, group.text)
+        # A later singleton cannot bypass the queued batch for the free device.
+        later = self.acquire(device_id="b", run_id="run-3", idempotency_key="free")
+        self.assertEqual(later.status_code, 409, later.text)
         self.assertEqual(
-            group.json()["devices"][0],
-            dict(device_id="b", endpoint="usb-b", restricted=False, space_epoch=None),
+            first.json()["devices"][0],
+            dict(device_id="a", endpoint="usb-a", restricted=False, space_epoch=None),
         )
-        self.assertEqual(group.json()["started_at"], self.now)
+        self.assertEqual(first.json()["started_at"], self.now)
+
+    def test_admission_reader_failure_closes_http_grants(self):
+        made = self.acquire(device_id="a")
+        self.assertEqual(made.status_code, 201, made.text)
+
+        def unavailable():
+            raise OSError("fixture admission source unavailable")
+
+        self.broker.admission_sources["android"] = unavailable
+        denied = self.acquire(device_id="b", run_id="run-2", idempotency_key="unavailable")
+        self.assertEqual(denied.status_code, 503, denied.text)
+        self.assertEqual(denied.json()["code"], "dlp1_unavailable")
+        with closing(sqlite3.connect(self.broker.db_path)) as conn:
+            self.assertEqual(conn.execute("SELECT count(*) FROM broker_groups").fetchone()[0], 1)
 
     def test_acquire_and_renew_retries_do_not_extend_twice(self):
         made = self.acquire(count=2)

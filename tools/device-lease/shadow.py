@@ -26,6 +26,12 @@ def smartqa_decide(value):
     now, groups = snapshot["now"], snapshot["groups"]
     registry = DeviceRegistry(Device(**row) for row in snapshot["inventory"])
     try:
+        if op in {"acquire", "renew"} and "authority" in snapshot:
+            row = snapshot["authority"]
+            if [row["name"], row["generation"]] != snapshot["caller_authority"]:
+                raise Refused("authority_stale")
+            if snapshot["draining"]:
+                raise Refused("draining")
         if op == "recovery":
             expected, target = args["expected"], args["target"]
             if target == "quarantine" and expected in {"fencing", "cleaning", "verifying"}:
@@ -74,9 +80,13 @@ def smartqa_decide(value):
                     args["count"],
                     args["ttl"],
                     args["purpose"],
+                    args["agent_id"],
+                    args["issue_id"],
+                    args["binding"],
                 ]
                 if op == "acquire"
-                else ["renew", args["lease_id"], args["ttl"]]
+                else ["renew", args["lease_id"], args["ttl"]],
+                sort_keys=True,
             )
             replay = next(
                 (
@@ -95,6 +105,47 @@ def smartqa_decide(value):
         if op == "acquire":
             if snapshot["draining"]:
                 raise Refused("draining")
+            if snapshot.get("admission_unavailable"):
+                raise Refused("admission_unavailable")
+            if snapshot.get("reconcile"):
+                raise Refused("restart_reconcile")
+            existing = next(
+                (
+                    t
+                    for t in snapshot.get("tickets", [])
+                    if t["issue_id"] == args["issue_id"] and t["state"] in {"queued", "offered"}
+                ),
+                None,
+            )
+            if existing:
+                if (existing["principal"], existing["agent_id"]) != (
+                    args["principal"],
+                    args["agent_id"],
+                ):
+                    raise Refused("ticket_not_yours")
+                holders = [
+                    g
+                    for g in groups
+                    if g["state"] != "released"
+                    and any(
+                        d["device_id"]
+                        in {
+                            r.device_id
+                            for r in registry._aliases.values()
+                            if r.pool == existing["pool"]
+                            and (
+                                existing["device_id"] is None
+                                or r.device_id == existing["device_id"]
+                            )
+                        }
+                        for d in g["devices"]
+                    )
+                ]
+                raise Refused(
+                    "device_busy",
+                    ticket=existing,
+                    holder=min(holders, key=lambda g: g["expires_at"]) if holders else None,
+                )
             aliases = [args["device_id"]] if args["device_id"] else snapshot["admitted"]
             candidates = {}
             for alias in aliases:
@@ -124,9 +175,34 @@ def smartqa_decide(value):
                 and any(d["device_id"] in candidates for d in g["devices"])
             ]
             occupied = {d["device_id"] for g in holders for d in g["devices"]}
-            free = [d for d in candidates if d not in occupied]
+            free = [
+                d for d in candidates if d not in occupied and d not in snapshot.get("blocked", [])
+            ]
             if len(free) < args["count"]:
-                raise Refused("device_busy", holder=min(holders, key=lambda g: g["expires_at"]))
+                ticket = dict(
+                    ticket_id="generated",
+                    principal=args["principal"],
+                    agent_id=args["agent_id"],
+                    issue_id=args["issue_id"],
+                    pool=args["pool"],
+                    device_id=target.device_id if target else args["device_id"],
+                    count=args["count"],
+                    ttl=args["ttl"],
+                    position=max((t["position"] for t in snapshot.get("tickets", [])), default=0)
+                    + 1,
+                    state="queued",
+                    reserved=free[: args["count"]],
+                    offer_sequence=0,
+                    offer_expires_at=None,
+                    missed_offers=0,
+                    binding=args["binding"],
+                    last_activity=now,
+                )
+                raise Refused(
+                    "device_busy",
+                    ticket=ticket,
+                    holder=min(holders, key=lambda g: g["expires_at"]) if holders else None,
+                )
             budget = next(
                 (
                     r
@@ -142,6 +218,7 @@ def smartqa_decide(value):
             if now >= deadline:
                 raise Refused("hard_cap")
             return dict(
+                binding=args["binding"],
                 holder=args["principal"],
                 run_id=args["run_id"],
                 purpose=args["purpose"],
@@ -246,11 +323,18 @@ def compare(db_path, output, *, decide=smartqa_decide, after=0, limit=100):
                 json.dumps(row["shadow"], allow_nan=False)
 
                 def comparable(result):
-                    return {
-                        k: v
-                        for k, v in result.items()
-                        if not (entry["operation"] == "acquire" and k == "lease_id")
-                    }
+                    result = dict(result)
+                    if entry["operation"] == "acquire":
+                        result.pop("lease_id", None)
+                        if isinstance(result.get("ticket"), dict) and not any(
+                            t["issue_id"] == entry["request"]["issue_id"]
+                            and t["state"] in {"queued", "offered"}
+                            for t in entry["snapshot"].get("tickets", [])
+                        ):
+                            result["ticket"] = {
+                                k: v for k, v in result["ticket"].items() if k != "ticket_id"
+                            }
+                    return result
 
                 row["comparison"] = (
                     "match"
