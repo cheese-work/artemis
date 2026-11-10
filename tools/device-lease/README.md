@@ -1,5 +1,12 @@
 # DLP-1 registry, broker, queue and recovery
 
+Authority generation and the G4-gated phase 3 preparation runbook are in
+[CUTOVER.md](CUTOVER.md). No live authority switch is performed here.
+
+The additive SmartQA HTTP contract is documented in
+[SMARTQA-EXTENSIONS.md](SMARTQA-EXTENSIONS.md) (CHE-4515). Its backend stays
+unconfigured in production; phase 1 installs no second allocating authority.
+
 `registry.py` is a standard-library inventory and candidate filter for the
 CHE-4285 rev 4 protocol. It performs no ADB, network, Multica or lease operation.
 The existing SmartQA lease API keeps its CHE-2099 behavior. The broker core below
@@ -136,7 +143,7 @@ Unix socket. The default state directory is
 An existing state directory must already have the correct owner and permissions.
 The lock file stays on disk after shutdown to preserve inode-based exclusion.
 No client command opens or writes a database. `acquire`, `renew`, `release`,
-`status`, `heartbeat`, `ticket-status` and `cancel-ticket` are allowed over
+`status`, `heartbeat`, `ticket-status`, `cancel-ticket`, `park` and `claim` are allowed over
 newline-delimited JSON RPC. Frames are bounded to
 64 KiB and reads to 2 s; the cooperative transport handles one request at a time.
 
@@ -170,8 +177,7 @@ An explicitly empty identity field is invalid.
 Same-UID local callers remain cooperative. Principal/run strings are labels,
 not authentication. The private socket excludes other Unix users, but this slice
 does not claim enforced isolation from agents sharing the daemon's Unix user.
-Park, claim and Multica signaling are slice 3b. Recovery composition is described
-below. Remote authentication
+Park, claim, Multica signaling and recovery composition are described below. Remote authentication
 and access are slice 5. SmartQA extensions and single-authority cutover are slice 6;
 the unchanged CHE-2099 service must not be enabled alongside a live broker as a
 second admitting authority. `500c592` remains excluded from raw ADB (G5/CHE-2082).
@@ -202,8 +208,7 @@ Offers provide no lease, credential or device endpoint access.
 RPC. Slice 3b calls it only after the matching Multica property write/read-back,
 outside the writer transaction. Until then `offer_expires_at` is null. Repeating
 the hook cannot extend a window. After 900 s without a claim, the ticket moves to
-the tail; a second miss cancels it. Re-offering increments the sequence. Claim,
-park, 75 min abandonment, wakeups and the property writer remain slice 3b work.
+the tail; a second miss cancels it. Re-offering increments the sequence. Park, claim, abandonment and the property writer are described below.
 
 ## Run liveness and restart barrier
 
@@ -305,6 +310,170 @@ nor adapter may restart shared ADB or reset unrelated devices/data.
 
 ```sh
 python3 tests/unit/runtime/test_device_lease_recovery.py -v
+```
+
+## Non-admitting SmartQA shadow (CHE-4517, phase 2)
+
+Every core acquire, renew, release, status and recovery decision appends a
+`broker_decisions` row in the same SQLite transaction as its outcome. The entry
+contains the operation, request, ICT time, pre-decision inventory, admission map,
+groups, run budgets, idempotency responses and the broker response or refusal.
+Renewal also captures the existing SQL waiter's result. A rollback leaves no
+decision; a lost response after commit leaves a replayable decision. Journal
+failure rolls back the decision. Invalid RPC envelopes are transport errors,
+not core decisions. The journal is private owner state, not a new client RPC.
+
+Run the shadow explicitly in a separate process, after broker requests:
+
+```sh
+python3 tools/device-lease/shadow.py --database /private/state/leases.sqlite3 \
+  --output /private/state/shadow.jsonl --after 0 --limit 100
+```
+
+Use the real private owner directory for these example paths. The command prints
+the last processed sequence. Supply that number as `--after` on the next run.
+The JSONL is append-only; retrying an older cursor may append duplicate sequences.
+The bounded batch limit is 1..1000. No worker, timer or live backend is installed.
+
+The reader opens SQLite with `mode=ro` and `query_only`, materializes its batch,
+and closes the connection before evaluation. `smartqa_decide` computes the
+proposed DLP-1 extension decision from immutable JSON bytes. It uses shared input
+validation and registry eligibility, with independent selection and lifecycle
+projection. It never calls the broker's allocating methods, the HTTP dispatch,
+or the legacy CHE-2099 allocator. This is a projection of the extension contract,
+not production SmartQA scheduler parity or queue/live-binding qualification.
+Future queue operations need corresponding snapshot and projection support.
+
+Each comparison records both inputs, both decisions, and `match`, `different`,
+`error` or `timeout`. Only the generated top-level lease id and a newly generated ticket id are ignored
+when comparing acquire results; existing ticket ids and all other fields remain significant; device ids, timing, ownership and refusal details
+remain significant. Evaluator exception text is excluded. A replacement pure
+evaluator can be supplied as `compare(..., decide=client.decide)`; it receives
+bytes, never a database connection or an allocating client capability.
+
+Shadow exceptions or timeouts cannot change broker state or hold its transaction.
+A hung evaluator stalls only the separately invoked shadow process; the caller
+owns that process's deadline. Comparison output errors also affect only that
+invocation. Output files are private (0600), regular, and cannot alias the source
+database or its sidecars. Keep logs inside the private owner directory: snapshots
+contain device endpoints and principal/run labels. Full snapshots retain history;
+measure journal size before any live rollout and define owner-controlled retention
+there. This slice does not enable live admission or approve G4 cutover.
+
+```sh
+TMPDIR=/tmp python3 tests/unit/runtime/test_device_lease_shadow.py -v
+```
+
+## Park, claim and waiting (CHE-4510, DLP-1 Waiting and resume 1–11)
+
+A busy acquire records a provisional waiting-run binding. `park` drops it and
+persists a tombstone for that run id. The principal, agent and issue continue to
+own the ticket. A later claim from the parked run is refused even when that PID
+still exists. Maintenance auto-parks a dead local waiting run after checking its
+PID/start time/boot id outside the writer lock. A ticket imported from slice 3a
+has no recorded binding; upgrade initializes its 75 min activity clock once.
+
+The successor must supply the same principal, agent and issue plus its own live
+run id and process identity. Claim consumes only an offered, parked ticket. The
+lease group, run budget, claiming binding, ticket state, latency and idempotency
+response commit together. Claim does not grant a second group to a run that
+already holds one, bypass FIFO, extend a hard cap or bypass restart reconciliation.
+The existing cooperative same-UID boundary still applies; labels are not credentials.
+
+Illustrative recipe with synthetic identifiers (no live device access):
+
+```sh
+# Before ending the waiting run: register exactly one condition, then park.
+multica issue wakeup create ISSUE_ID --until-property DO_ID=TICKET_ID:NEXT_SEQUENCE \
+  --expires-in 60m --on-timeout wake
+tools/device-lease/device-lease park --ticket TICKET_ID --principal PRINCIPAL \
+  --agent-id AGENT_ID --issue-id ISSUE_ID --run-id WAITING_RUN_ID
+# End the turn. A successor run reads the ticket and claims an offer:
+tools/device-lease/device-lease ticket-status --ticket TICKET_ID \
+  --principal PRINCIPAL --agent-id AGENT_ID --issue-id ISSUE_ID
+tools/device-lease/device-lease claim --ticket TICKET_ID --principal PRINCIPAL \
+  --agent-id AGENT_ID --issue-id ISSUE_ID --run-id SUCCESSOR_RUN_ID \
+  --pid "$AGENT_RUN_PID" --idempotency-key CLAIM_KEY
+```
+
+`NEXT_SEQUENCE` is the ticket's `offer_sequence + 1` while queued. If the ticket
+is already offered, use its current sequence or claim in the current live run
+after parking the old binding. A value already set when a condition is registered
+fires on the next platform check. An old sequence never satisfies a new condition.
+An offer is only a reservation: it has no holder access or credential.
+
+On a condition-timeout run, invoke `wait` once:
+
+```sh
+tools/device-lease/device-lease wait --ticket TICKET_ID --principal PRINCIPAL \
+  --agent-id AGENT_ID --issue-id ISSUE_ID --offer-property-id DO_ID
+```
+
+`wait` polls and refreshes the ticket. If still queued, it creates one next-sequence
+condition wakeup with a 60 min timeout and posts exactly one one-line final comment.
+End the turn after that comment; do not post a duplicate final comment. If offered,
+`wait` returns `action=claim`; if cancelled it returns `action=reacquire`. Continue
+that same run with the indicated action instead of ending without a final result.
+The wait CLI performs Multica calls with the waiting agent's own task credentials.
+
+Only when the actual run's `[WAKEUP]` block explicitly offers check-in, pass that
+block in `--wakeup-block-file FILE`. Then `wait` uses the offered check-in instead
+of the comment. Do not construct this file from issue history. A condition-timeout
+block does not offer check-in, so omit this option on that route.
+
+Only a valid owner poll or successful claim refreshes activity. Broker maintenance,
+property retries, repeated acquire and parking do not refresh it. After 75 min
+without a poll/claim, a ticket is cancelled before a late poll can resurrect it.
+After one 15 min offer miss, the ticket moves behind its conflicts; after two it is
+cancelled. A successor that finds cancellation acquires a new ticket. These waits
+cost at most one fallback run/comment per 60 min plus one run per offer.
+
+## Owner-only Device offer signal
+
+Live setup is NOT-RUN. Creating the workspace text property `Device offer` needs
+a workspace owner or admin; the setup request is separate from this fake-tested
+PR and does not block its review. Ops must provision and own a dedicated Multica
+CLI profile on X99. Do not copy the profile or its credential into a lease client,
+a run's task config, RPC, logs or the repository. Launch the owner outside an agent
+task's `MULTICA_TASK_CONFIG_ROOT`; the CLI refuses named profiles in task sandboxes.
+Only the `Device offer` property is written by the offer worker. No device admission
+or shared-service deployment is enabled by this slice.
+
+The foreground owner can opt into signaling with the paired flags
+`serve --multica-profile OPS_PROFILE --offer-property-id DO_ID`. Startup appends a
+`kind:capability-change` event, with ICT time and the profile name, to its private
+state directory's `capabilities.jsonl`. Missing one flag refuses configuration.
+Without the flags there is no Multica writer. No client RPC exposes either flag.
+To reverse setup, stop using these flags, revoke the dedicated profile, and have
+an owner/admin archive the property. Do not archive a property while waits use it.
+
+`OfferWorker.run_once()` snapshots pending offers, commits the transaction, sets
+`DO=TICKET_ID:SEQUENCE` through the dedicated profile and reads it back. Only a
+matching read-back acknowledges the current offer and starts its 900 s window.
+Write failures and mismatches leave the deadline unset. The foreground loop retries
+with exponential backoff from 60 s to 3600 s, without sleeps or background jobs.
+A stale acknowledgment cannot start a later offer. The fallback poll covers a lost
+signal; a valid live successor can claim an offered ticket even if signaling failed.
+
+Each signalled claim records `ticket_id`, `offer_sequence`, `readback_at`,
+`claimed_at`, `latency_seconds` and `run_id` in `broker_claim_latency` in the same
+transaction as the grant. Idempotent retries cannot add another sample. Unsignalled
+fallback claims have no read-back origin and are excluded from latency samples.
+For an owner-side read-only snapshot, the nearest-rank p95 is:
+
+```sql
+SELECT latency_seconds FROM broker_claim_latency ORDER BY latency_seconds
+LIMIT 1 OFFSET (SELECT max(0, (count(*) * 95 + 99) / 100 - 1) FROM broker_claim_latency);
+```
+
+The hermetic measured sample is 12 s. Live p95 is NOT-RUN; no live property or device
+was used. The 15 min window remains provisional: if live p95 exceeds 10 min, raise
+the window in the plan before slice 4 merges (Waiting and resume 11).
+
+Run all broker/queue/resume tests with synthetic devices and fake Multica:
+
+```sh
+python3 -m unittest discover -s tests/unit/runtime -p 'test_device_lease*.py' -v
 ```
 
 ## R1 remote access (owner-composed, disabled in the local daemon)
