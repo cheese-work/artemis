@@ -69,8 +69,9 @@ class InventoryTests(unittest.TestCase):
         }
         for device_id, (eligible, reason) in expected.items():
             with self.subTest(device_id=device_id):
-                self.assertEqual((rows[device_id]["eligible"], rows[device_id]["reason"]),
-                                 (eligible, reason))
+                self.assertEqual(
+                    (rows[device_id]["eligible"], rows[device_id]["reason"]), (eligible, reason)
+                )
         self.assertEqual(rows["spare-1"]["pool"], "spare")
         self.assertEqual(rows["500c592"]["pool"], "root")
         self.assertEqual(rows["rig-1"]["lease"]["lease_id"], lease["lease_id"])

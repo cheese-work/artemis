@@ -16,6 +16,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 import json
@@ -83,6 +85,8 @@ class DeviceExecutionLock:
     _MALFORMED_LOCK_GRACE_SECONDS = 5.0
     _DEFAULT_POLL_INTERVAL_SECONDS = 0.1
     QUEUE_TICKET_ENV = "ARTEMIS_DEVICE_QUEUE_TICKET"
+    # CHE-5297: path of the DLP-1 broker's shared claim guard (flock), when composed.
+    ADMISSION_GUARD_ENV = "ARTEMIS_DEVICE_ADMISSION_GUARD"
     LOCK_SCOPE_ENV = "ARTEMIS_ADB_ENDPOINT_ID"
 
     @staticmethod
@@ -550,7 +554,32 @@ class DeviceExecutionLock:
                 pass
         return removed
 
+    @classmethod
+    @contextmanager
+    def _admission_guard(cls) -> Iterator[None]:
+        """Hold the broker's claim guard while creating an owner record.
+
+        The DLP-1 broker reads Artemis owner records inside the same exclusion,
+        so it never sees a half-written record or races a new claim into a grant.
+        """
+        path = os.getenv(cls.ADMISSION_GUARD_ENV)
+        if not path:
+            yield
+            return
+        import fcntl  # POSIX only; a configured guard on another OS fails closed.
+
+        fd = os.open(path, os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            yield
+        finally:
+            os.close(fd)
+
     def _try_acquire_owner_lock(self) -> bool:
+        with self._admission_guard():
+            return self._try_acquire_owner_lock_unguarded()
+
+    def _try_acquire_owner_lock_unguarded(self) -> bool:
         owner_payload = self._owner_payload(
             self.token,
             self.device_id,

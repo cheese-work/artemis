@@ -115,6 +115,7 @@ class Broker:
         recovery_owner=None,
         ops_issue=None,
         admission_guard=nullcontext,
+        admission_snapshot=None,
         authority_name="broker",
         authority_generation=1,
     ):
@@ -138,6 +139,8 @@ class Broker:
         self.ops_issue = ops_issue
         # The owner supplies one guard shared with claim writers; never a client option.
         self.admission_guard = admission_guard
+        # Optional trusted reader of fresh readiness/grants, re-read on every decision.
+        self.admission_snapshot = admission_snapshot
         if recovery_io is not None:
             self._text(recovery_owner, ops_issue)
 
@@ -277,8 +280,7 @@ class Broker:
                     }
                 )
             return {
-                "admission_available": not self._admission.unavailable
-                and self._admission.audit_ok,
+                "admission_available": not self._admission.unavailable and self._admission.audit_ok,
                 "devices": devices,
             }
 
@@ -479,6 +481,19 @@ class Broker:
                 not {"artemis", "android"} <= self.admission_sources.keys()
                 or self.admission_guard is nullcontext
             )
+            if self.admission_snapshot is not None:
+                # Stale or failed readiness admits nothing; no cached snapshot survives.
+                try:
+                    snapshot = self.admission_snapshot()
+                    if not isinstance(snapshot, dict) or any(
+                        not isinstance(k, str) or not isinstance(v, str)
+                        for k, v in snapshot.items()
+                    ):
+                        raise ValueError("invalid admission snapshot")
+                    self.admitted = dict(snapshot)
+                except Exception:
+                    self.admitted = {}
+                    self._admission.unavailable = True
             try:
                 for reader in self.admission_sources.values():
                     aliases = reader()
