@@ -4,13 +4,13 @@ This journey is an authoring artifact. It does not execute Artemis, build or ins
 
 ## Pinned inputs
 
-- Sample and SDK source: `tevo-studio/tinos-mobile` PR #12, head `8b1fd020eaa284c8127b7074546516aa5fc60df2`.
+- Sample and SDK source: `tevo-studio/tinos-mobile` commit `ee151046c072e39f127b1e7b0c4c17edc9dce570`. The 5 feature-file blobs at PR #14 head `a2e32dccd9db686459a822d1f3b694e597da6cd3` are identical to this commit (signed review `01a1b9ce-63c2-7dc8-b48a-d70f4e15dbe7`). If PR #14 changes before merge, re-pin.
 - Service source: `tevo-studio/tevo-license-mobile-sdk` PR #7, head `f91c99e1645343819b56fee00ea1adea7aa55367`.
-- Service image: `ghcr.io/tevo-studio/tevo-license-mobile-sdk@sha256:c233b81eddfd0dd45b577b31e35597d792e35747f4a4270f4fbcd81a05c78729`.
+- Service image: `ghcr.io/tevo-studio/tevo-license-mobile-sdk@sha256:cfcf54ffbc989049d85bca3e74677cd4e42aca2ed8c5b244f5ba4c066b9d2d8b`.
 - Package and variant: `digital.tinos.sample.kotlin`, `licenseProof`, non-debuggable.
-- APK SHA-256: `3d7c1dd8ed7f4a7dab31b2a00e69d8fb442ae99e250f2d64726d2d83afed4cf3`.
-- Signer certificate SHA-256: `c97526384d69480e018d6ebd4a96fa3b046f46a10502e47afe49a2b6ce8d04b4`.
-- The hashes are recorded in PR #12's proof evidence. The APK binary is not available from its GitHub Actions artifacts at this head; generate and verify the APK on X99 with the command below before any device action.
+- APK SHA-256: `739a0711e14a828546372e15a1f4fd4b7c5db2bd1a0c106429781e495933e6c1`.
+- Signer certificate SHA-256: `75c03eae7a89f96434fc3a8b580525a595be1fc41cb5ebda4dcd269710934aaf`.
+- APK binary: CHE-4387 attachments `CHE-4387-tinos-licenseProof-ee151046.apk.part01` to `part10`. Concatenate them in order, then verify size 6922004, the SHA-256 above and the `apksigner` signer above against `CHE-4387-artifact-receipt.json` before any device action. Do not rebuild the APK: a rebuild generates a new signing key and a different hash.
 - Build command: `bash ./gradlew :tinos-android:testLicenseProofUnitTest :sample-kotlin:assembleLicenseProof -PtevoLicenseRepository=<local-S6-artifact> -PlicenseProofPort=8080 --no-daemon --console=plain --max-workers=2`.
 - Use port `8080` for the service and app. The endpoint is `http://10.0.2.2:8080/v1/check`. `10.0.2.2` works only in an emulator on X99.
 
@@ -37,7 +37,7 @@ curl --fail-with-body -X POST -H 'Cf-Access-Jwt-Assertion: license-test-local' -
 
 Before each case, run `adb -s <device_serial> shell pm clear digital.tinos.sample.kotlin` and confirm success. Uninstall an older APK before installing this disposable signer. Verify the installed APK SHA and certificate with `apksigner` before starting the suite.
 
-For each launch, read the package PID after launch and capture only that process with `adb -s <device_serial> logcat --pid <launch_pid> -v epoch`. Do not count earlier process output. Wait up to 12 seconds for the result view to leave `Checking license`; fail on timeout. For each online case, record the row's `last_seen` before launch and after the result. Require the after value to be strictly later. An unchanged or missing value is inconclusive and cannot pass.
+For each launch, read the package PID after launch and capture only that process with `adb -s <device_serial> logcat --pid <launch_pid> -v epoch`. Do not count earlier process output. Wait up to 12 seconds for this case's terminal result: poll the launch-PID log until a `message_regex_by_case` match for the case appears. The in-progress view text (`LicenseResult: checking`) is already present before the network result arrives and never counts; fail on timeout. Bound every log capture: run `adb -s <device_serial> logcat --pid <launch_pid> -v epoch -d` after the wait ends so the command exits by itself, or wrap a streaming capture in `timeout 15`. Never leave an unbounded `logcat`. For each online case, record the row's `last_seen` before launch, then wait until the wall clock passes the next whole second before you launch. `/admin` renders `last_seen` to whole seconds, so this boundary makes a new request show a strictly later value. Record `last_seen` again after the result. Require the after value to be strictly later. An unchanged or missing value is inconclusive and cannot pass.
 
 The `/admin` result view can be read with the same header. A status POST must include that header and the exact Origin above. Keep the header value out of command logs and evidence.
 

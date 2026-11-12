@@ -9,23 +9,23 @@
   },
   "inputs": {
     "sample_repository": "https://github.com/tevo-studio/tinos-mobile",
-    "sample_pr": 12,
-    "sample_sha": "8b1fd020eaa284c8127b7074546516aa5fc60df2",
+    "sample_pr": 14,
+    "sample_sha": "ee151046c072e39f127b1e7b0c4c17edc9dce570",
     "service_repository": "https://github.com/tevo-studio/tevo-license-mobile-sdk",
     "service_pr": 7,
     "service_sha": "f91c99e1645343819b56fee00ea1adea7aa55367",
-    "service_image": "ghcr.io/tevo-studio/tevo-license-mobile-sdk@sha256:c233b81eddfd0dd45b577b31e35597d792e35747f4a4270f4fbcd81a05c78729"
+    "service_image": "ghcr.io/tevo-studio/tevo-license-mobile-sdk@sha256:cfcf54ffbc989049d85bca3e74677cd4e42aca2ed8c5b244f5ba4c066b9d2d8b"
   },
   "app": {
     "package": "digital.tinos.sample.kotlin",
     "proof_variant": "licenseProof",
     "proof_variant_debuggable": false,
     "license_proof_port": 8080,
-    "apk_sha256": "3d7c1dd8ed7f4a7dab31b2a00e69d8fb442ae99e250f2d64726d2d83afed4cf3",
-    "signer_certificate_sha256": "c97526384d69480e018d6ebd4a96fa3b046f46a10502e47afe49a2b6ce8d04b4",
-    "artifact_available": false,
-    "artifact_location": "https://github.com/tevo-studio/tinos-mobile/pull/12 (proof APK SHA and signer are recorded in the PR evidence)",
-    "build_command": "bash ./gradlew :tinos-android:testLicenseProofUnitTest :sample-kotlin:assembleLicenseProof -PtevoLicenseRepository=<local-S6-artifact> -PlicenseProofPort=8080 --no-daemon --console=plain --max-workers=2"
+    "apk_sha256": "739a0711e14a828546372e15a1f4fd4b7c5db2bd1a0c106429781e495933e6c1",
+    "signer_certificate_sha256": "75c03eae7a89f96434fc3a8b580525a595be1fc41cb5ebda4dcd269710934aaf",
+    "artifact_available": true,
+    "artifact_location": "CHE-4387 attachments CHE-4387-tinos-licenseProof-ee151046.apk.part01..part10 (concatenate in order; size 6922004; receipt CHE-4387-artifact-receipt.json)",
+    "build_command": "Do not rebuild: a rebuild generates a new signing key. Original build: bash ./gradlew :sample-kotlin:assembleLicenseProof -PlicenseProofPort=8080 --no-daemon --console=plain --max-workers=2 at tinos-mobile ee151046c072e39f127b1e7b0c4c17edc9dce570"
   },
   "service": {
     "profile": "license-test",
@@ -43,7 +43,13 @@
     "offline-no-cache": "LicenseResult.Unverified transport failure; app remains usable; service is stopped",
     "debug-pending": "NOT-RUN: debuggable client returns LicenseResult.Licensed without contacting the service; server-seen acceptance is unresolved"
   },
-  "case_order": ["pending", "approved", "revoked", "debug-pending", "offline-no-cache"],
+  "case_order": [
+    "pending",
+    "approved",
+    "revoked",
+    "debug-pending",
+    "offline-no-cache"
+  ],
   "observation": {
     "wait_timeout_seconds": 12,
     "case_log_scope": "new launch PID only; filter the SDK denial tag, level and message",

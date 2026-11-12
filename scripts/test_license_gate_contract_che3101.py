@@ -13,6 +13,20 @@ SCENARIOS = {
     "debug-pending": "debuggable",
 }
 CASE_ORDER = ["pending", "approved", "revoked", "debug-pending", "offline-no-cache"]
+SERVICE_IMAGE = (
+    "ghcr.io/tevo-studio/tevo-license-mobile-sdk@sha256:"
+    "cfcf54ffbc989049d85bca3e74677cd4e42aca2ed8c5b244f5ba4c066b9d2d8b"
+)
+APP_PINS = {
+    "mmonetize": (
+        "87688b2232242fd9ab0efa5ae7b23ceb2e024ae409cf80c19644c60e41924039",
+        "5d2891b7657e01b8b3a0eb0a6315a651385454e4a834d4bd1f58ed4e41aedae1",
+    ),
+    "tinos": (
+        "739a0711e14a828546372e15a1f4fd4b7c5db2bd1a0c106429781e495933e6c1",
+        "75c03eae7a89f96434fc3a8b580525a595be1fc41cb5ebda4dcd269710934aaf",
+    ),
+}
 
 
 class LicenseGateContractTest(unittest.TestCase):
@@ -33,7 +47,12 @@ class LicenseGateContractTest(unittest.TestCase):
                     self.assertRegex(data["app"][pin], re.compile(r"^[0-9a-f]{64}$"))
                 self.assertTrue(data["app"]["artifact_location"])
                 self.assertTrue(data["app"]["build_command"])
-                self.assertEqual(data["app"]["artifact_available"], sdk == "mmonetize")
+                self.assertEqual(
+                    (data["app"]["apk_sha256"], data["app"]["signer_certificate_sha256"]),
+                    APP_PINS[sdk],
+                )
+                self.assertEqual(data["inputs"]["service_image"], SERVICE_IMAGE)
+                self.assertTrue(data["app"]["artifact_available"])
                 self.assertEqual(data["observation"]["wait_timeout_seconds"], 12)
                 self.assertIn(data["inputs"]["service_image"], text)
                 self.assertIn(data["inputs"]["service_sha"], text)
@@ -49,6 +68,11 @@ class LicenseGateContractTest(unittest.TestCase):
                 self.assertIn("adb -s <device_serial> shell pm clear", text)
                 self.assertIn("adb -s <device_serial> logcat --pid <launch_pid>", text)
                 self.assertIn("12 seconds", text)
+                self.assertNotIn("leave `Checking license`", text)
+                self.assertIn("terminal result", text)
+                self.assertIn("logcat --pid <launch_pid> -v epoch -d", text)
+                self.assertIn("timeout 15", text)
+                self.assertIn("next whole second", text)
                 self.assertIn("Cf-Access-Jwt-Assertion", text)
                 self.assertIn("Origin: http://127.0.0.1:8080", text)
                 self.assertIn("license-test-local", text)
