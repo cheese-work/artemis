@@ -9,25 +9,25 @@
   },
   "inputs": {
     "sdk_repository": "https://github.com/tevo-studio/mMonetize",
-    "sdk_pr": 336,
-    "sdk_sha": "e6202a48d1411ff57410e3dff98899ae019a0c97",
+    "sdk_pr": 338,
+    "sdk_sha": "c18ae2c45914fbce2b11c70c690e1fc3d9a6b4c7",
     "sample_repository": "https://github.com/tevo-studio/mMonetize-sample",
-    "sample_pr": 154,
-    "sample_sha": "0b1c085bd7242da6364a303884eb12ae9215b53f",
+    "sample_pr": 156,
+    "sample_sha": "8f070b9a47b82795ea72111d9b29b766a90217b2",
     "service_repository": "https://github.com/tevo-studio/tevo-license-mobile-sdk",
     "service_pr": 7,
     "service_sha": "f91c99e1645343819b56fee00ea1adea7aa55367",
-    "service_image": "ghcr.io/tevo-studio/tevo-license-mobile-sdk@sha256:c233b81eddfd0dd45b577b31e35597d792e35747f4a4270f4fbcd81a05c78729"
+    "service_image": "ghcr.io/tevo-studio/tevo-license-mobile-sdk@sha256:cfcf54ffbc989049d85bca3e74677cd4e42aca2ed8c5b244f5ba4c066b9d2d8b"
   },
   "app": {
     "package": "io.mmonetize.sample",
     "proof_variant": "adsTestLicenseProof",
     "proof_variant_debuggable": false,
     "license_proof_port": 8080,
-    "apk_sha256": "56f98069b48aa4a861865cdd4c8be60a006faffa25e261ed8ed41c3ebd22724a",
-    "signer_certificate_sha256": "933d7c0697b33cd8672b1ebfe795d891f898e7ba4a8ac2c4afe86a39fe19b8ce",
+    "apk_sha256": "87688b2232242fd9ab0efa5ae7b23ceb2e024ae409cf80c19644c60e41924039",
+    "signer_certificate_sha256": "5d2891b7657e01b8b3a0eb0a6315a651385454e4a834d4bd1f58ed4e41aedae1",
     "artifact_available": true,
-    "artifact_location": "https://github.com/tevo-studio/mMonetize/actions/runs/42023273884 (artifact license-proof-42023273884-1)",
+    "artifact_location": "https://github.com/tevo-studio/mMonetize/actions/runs/42334402737 (artifact 13559715890, expires 2026-11-14 10:45 ICT; hashes from the CHE-4388 receipt; download unverified by the author's token)",
     "build_command": "LICENSE_PROOF_PORT=8080 bash sample/.github/scripts/build-license-proof.sh <mMonetize-SDK-checkout>"
   },
   "service": {
@@ -46,7 +46,13 @@
     "offline-no-cache": "Unverified transport failure; app remains usable; service is stopped",
     "debug-pending": "NOT-RUN: debuggable client returns Licensed without contacting the service; server-seen acceptance is unresolved"
   },
-  "case_order": ["pending", "approved", "revoked", "debug-pending", "offline-no-cache"],
+  "case_order": [
+    "pending",
+    "approved",
+    "revoked",
+    "debug-pending",
+    "offline-no-cache"
+  ],
   "observation": {
     "wait_timeout_seconds": 12,
     "case_log_scope": "new launch PID only; filter the SDK denial tag, level and message",
