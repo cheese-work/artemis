@@ -147,11 +147,11 @@ No client command opens or writes a database. `acquire`, `renew`, `release`,
 newline-delimited JSON RPC. Frames are bounded to
 64 KiB and reads to 2 s; the cooperative transport handles one request at a time.
 
-This CLI invocation illustrates the contract; the supplied daemon currently
-admits no devices, even with an inventory. No live broker is installed or started
-by this change. Live use requires ops to compose current grants/readiness, both
-claim readers with their shared guard, and a deadline-bounded recovery adapter.
-Remote authentication, isolation and single-authority cutover remain later slices.
+This CLI invocation illustrates the contract. Without `serve --composition` the
+daemon admits no devices, even with an inventory. With a complete composition (see
+"Live serve composition" below) it admits only freshly ready, granted, unclaimed
+devices. No live broker is installed or started by this change. Remote
+authentication, isolation and single-authority cutover remain later slices.
 
 ```sh
 tools/device-lease/device-lease acquire --pool rig --count 2 --ttl 1800 \
@@ -187,6 +187,85 @@ Run the core and transport tests without dependencies or live devices:
 ```sh
 python3 tests/unit/runtime/test_device_lease_broker.py -v
 python3 tests/unit/runtime/test_device_lease_queue.py -v
+```
+
+## Fleet inventory readback (CHE-5297)
+
+`device-lease inventory` asks the running daemon for every registry device once,
+including the default `500c592` record. It needs no principal, run or lease id
+and changes no lease. Output is JSON:
+
+```json
+{"admission_available": true,
+ "devices": [{"device_id": "rig-1", "aliases": ["usb-rig-1"], "pool": "rig",
+              "model": null, "restricted": false, "eligible": true, "reason": null,
+              "claimed": false, "lease": {"lease_id": "...", "state": "active",
+              "holder": "agent", "run_id": "run-1", "expires_at": 100300.0}}]}
+```
+
+`eligible` mirrors candidate selection; it grants nothing. `reason` is the first
+failing check: `restricted` (spare and `500c592` records stay here),
+`identity_unconfirmed`, `not_admitted` (no fresh readiness/grant) or
+`endpoint_mismatch`. `claimed` reports a current Artemis lock or Android claim.
+`lease` is the device's current non-released group, or null. When any composition
+input is missing or stale, `admission_available` is false and no device is
+admitted, whatever its row shows.
+
+## Live serve composition (CHE-5297)
+
+`serve --composition FILE` reads an owner-only JSON file (regular file, owned by
+the daemon user, not group/world writable). Every field is required; a missing or
+invalid field exits 2 with `composition incomplete: <field>` before any state
+directory, database or socket is created:
+
+```json
+{
+  "admitted": {"path": "/private/state/admitted.json", "max_age_seconds": 60},
+  "artemis_locks_dir": "/path/to/artemis/temp/device-locks",
+  "android_claims": {"path": "/private/state/android-claims.json", "max_age_seconds": 300},
+  "guard_path": "/private/state/claims.guard",
+  "recovery": {"adapter": "module:factory", "owner": "OPS_OWNER", "ops_issue": "CHE-NNNN"},
+  "leader_control_socket": "/private/leader/control.sock"
+}
+```
+
+1. **Fresh readiness and grants.** `admitted.path` holds
+   `{"observed_at": EPOCH, "devices": {"CANONICAL_ID": "ENDPOINT_ALIAS"}}`, written
+   by the trusted readiness/grant job. The broker re-reads it on every decision.
+   Older than `max_age_seconds` (or more than 5 s in the future), unreadable or
+   malformed closes admission and admits nothing; no cached snapshot survives.
+2. **Claim readers.** `artemis` reads every `artemis-device-*.lock` (and the legacy
+   global lock) in `artemis_locks_dir` without importing the SDK. Every record
+   blocks its device, live or not; a partial or unreadable record closes
+   admission. `android` reads `{"observed_at": EPOCH, "claims": [ALIAS, ...]}`
+   from `android_claims.path` with the same freshness rule. Unknown identities
+   close admission (existing broker rule).
+3. **One shared exclusion.** `guard_path` is an `flock` file. Broker decisions hold
+   it from source reads through commit. Artemis lock writers hold it while creating
+   an owner record when `ARTEMIS_DEVICE_ADMISSION_GUARD=<guard_path>` is set in
+   their environment. The Android claim writer replaces its snapshot under the same
+   guard with `device-lease write-android-claims --composition FILE --claim SERIAL`
+   (repeat `--claim`; none clears the list). Do not enable live admission while any
+   claim writer runs without the guard.
+4. **Deadline-bounded recovery.** `recovery.adapter` names an importable
+   `module:factory`; the factory returns an object with callable `fence` and `undo`
+   (and `verify_state` for remote mode). `recover_pending` passes the remaining
+   two-minute deadline. `owner` and `ops_issue` name the quarantine owner.
+5. **Leader release control plane.** The daemon serves `verify-release` and
+   `recover-quarantine` only on `leader_control_socket`, in its own 0700 directory
+   (socket 0600). The holder socket refuses both. Same-UID callers stay
+   cooperative: the separate directory is the boundary, not authentication.
+
+```sh
+tools/device-lease/device-lease --control-socket /private/leader/control.sock \
+  verify-release --lease-id LEASE_ID --verifier LEADER_ID --evidence REFERENCE --passed
+```
+
+Run the hermetic composition and inventory tests:
+
+```sh
+python3 -B tests/unit/runtime/test_device_lease_compose.py -v
+python3 -B tests/unit/runtime/test_device_lease_inventory.py -v
 ```
 
 ## Durable queue and offers

@@ -57,6 +57,11 @@ class DeviceRegistry:
         if "500c592" not in self._aliases:
             self._aliases["500c592"] = Device(device_id="500c592", pool="root")
 
+    def devices(self) -> list[Device]:
+        """Every registered physical device once, ordered by canonical id."""
+        unique = {device.device_id: device for device in self._aliases.values()}
+        return [unique[key] for key in sorted(unique)]
+
     def resolve(self, alias: str) -> Device | None:
         """Resolve a canonical id, USB serial or inventoried wireless alias."""
         return self._aliases.get(alias)
