@@ -12,12 +12,14 @@ from artemis.runtime.adb_gateway import Gateway
 from artemis.runtime.host_endpoints import host_endpoints
 from artemis.runtime.host_mux import Multiplexer
 from artemis.runtime.host_protocol import CONTRACT
+from artemis.runtime.stream_owner import StreamOwner
 
 logger = logging.getLogger(__name__)
 
 
-class HostTunnel:
+class HostTunnel(StreamOwner):
     def __init__(self, host_id, generation, ws, shared, *, port=0):
+        super().__init__()
         self.host_id = host_id
         self.generation = generation
         self.ws = ws
@@ -106,18 +108,11 @@ class HostTunnel:
         await self._close()
 
     async def _close(self) -> None:
-        if self.listener is not None:
-            self.listener.close()
-            await self.listener.wait_closed()
         self.mux.close()
-        tasks = list(self.tasks)
+        await self.close_streams()
         if self.sender is not None:
-            tasks.append(self.sender)
-        for task in tasks:
-            task.cancel()
-        for writer in list(self.clients):
-            writer.close()
-        await asyncio.gather(*tasks, return_exceptions=True)
+            self.sender.cancel()
+            await asyncio.gather(self.sender, return_exceptions=True)
 
 
 def _set_status(host_id, status, reason):

@@ -1,4 +1,4 @@
-# DLP-1 registry, broker, queue and recovery
+# DLP-1 registry, broker, queue, resume and recovery
 
 Authority generation and the G4-gated phase 3 preparation runbook are in
 [CUTOVER.md](CUTOVER.md). No live authority switch is performed here.
@@ -475,3 +475,128 @@ Run all broker/queue/resume tests with synthetic devices and fake Multica:
 ```sh
 python3 -m unittest discover -s tests/unit/runtime -p 'test_device_lease*.py' -v
 ```
+
+## R1 remote access (owner-composed, disabled in the local daemon)
+
+`remote_adb.py` adds per-run Ed25519 public-key bindings and one filtered loopback
+listener per binding. It reuses the shared smart-socket parser and gateway.
+`StreamOwner` factors the listener/client/task closure previously in `HostTunnel`;
+both B2 and R1 use it. B2 keeps its existing service profile.
+
+This library does not install SSH, firewall rules, USB permissions or a live
+device profile. The cooperative holder RPC exposes none of these owner methods.
+Live isolated-agent rollout remains disabled until ops and the independent
+security review establish the R1 boundary in the CHE-4512 design note, revision 4.
+No device class is admitted by these fake tests. There is no direct-ADB fallback.
+
+Compose the library under the broker's exclusive owner lock:
+
+1. Supply `BrokerAdmission(broker, authenticate=..., generation=..., inspect=...)`
+   as `RemoteAccess.resolve`. Authentication verifies the control principal,
+   agent/issue and current live Multica run, not caller labels or a network source.
+   Admission joins the current remote broker lease, its canonical registry mapping,
+   current device grant, mapping revision, reviewed attestation profile, frozen
+   pre-lease baseline and effective isolation evidence. Unknown reads return no
+   snapshot. The broker retains expiry, heartbeat and hard-cap authority.
+2. Use a private owner directory (0700) and store (0600). Set `bootstrap=True`
+   **only** for a new deployment store; ordinary startup refuses missing history.
+   Fingerprint tombstones never expire. Registration is serialized and atomic;
+   only an idempotent retry of the same still-active binding can reuse its key.
+   Startup changes the incarnation and requires `await access.reconcile()` to
+   close recorded sessions before admission. Run the broker restart recovery too;
+   credential reconciliation never frees a device.
+3. Supply an ops adapter with async `reserve(binding)`, `publish(binding, line)`,
+   `revoke(binding)`, `stop(session)` and `retire(binding, port)` methods.
+   `reserve` durably records the destination and installs the tunnel-UID-only
+   loopback rule **before** returning a port. No port 5037, wildcard or another
+   binding's port is accepted. `publish` installs only the generated
+   `restrict,port-forwarding,permitopen="127.0.0.1:PORT"` public-key line.
+   It must verify the complete `SSH_SERVER_POLICY` too: local TCP forwarding only,
+   no stream-local/remote forwarding, sessions, shell, exec, SFTP, PTY, agent/X11
+   forwarding or tunnels. Bound SSH connection/channel buffering and counts before
+   allocation. Do not use a generic host account or trust loopback source identity.
+4. The trusted SSH authentication callback calls `authenticate` **after** proving
+   private-key possession. Supply the supervisor-observed PID/start/boot identity,
+   never a client-provided process identity. Persist registration before auth
+   succeeds; no registration means no forwarding. The supervisor must stop exact
+   run-owned children on broker death, including interrupted authentication.
+   `stop` verifies start time/boot id before stopping only that session and returns
+   true only after closure is confirmed. `retire` verifies no orphan listener or
+   session can reach the old destination before removing its isolation rule.
+5. Route release/revoke/authority/policy/control-loss events through
+   `await access.fence_lease(lease_id)` on the gateway owner loop. The local dead
+   binding barrier precedes all awaits. Dispatch and raw relay revalidate the
+   tuple; a 50 ms monitor handles lost control and a monotonic deadline handles
+   expiry independently of wall-clock changes. An observed authorization failure
+   cannot revive the key. Renewal requires explicit fencing and a fresh key;
+   failure to rotate never extends the original deadline.
+
+The client keeps its fresh private key in its run's private 0700 directory with
+0600 key permissions. The broker never receives that private key. Use a private
+network namespace, a loopback-only local forward, pinned known host keys,
+`StrictHostKeyChecking=yes`, `IdentitiesOnly=yes`, `ExitOnForwardFailure=yes`,
+`ControlMaster=no`, `ControlPath=none`, `-N` and `-T`. Point `ADB_SERVER_SOCKET`
+only at that forward; an absent tunnel must fail closed. Ops must prove host and
+container agent UIDs cannot reach gateway ports, port 5037 or USB, and that
+device-facing IPv4/IPv6 networks enforce R1-I1, including device-to-device paths.
+An opaque evidence string or successful SSH launch does not prove that boundary.
+
+For recovery, wrap the existing owned-work adapter in
+`RemoteRecovery(access, owner_loop, owned, inspection=...)` and use it as
+`Broker.recovery_io`. Run broker recovery on a worker thread, outside both the
+gateway event loop and SQLite writer transaction. Gateway/session closure comes
+before stopping owned device work. After recorded undo, `verify_state` compares
+independent post-cleanup evidence with the protected pre-lease baseline.
+The comparison also checks the profile and baseline digests retained in every
+credential admission snapshot for that principal/run/lease. All bindings must be
+closed and the canonical device mapping must agree. Missing history or a changed
+release-time baseline/profile refuses reuse, even when the new baseline equals
+the observed state. Remote-mode recovery requires `verify_state`; an adapter
+without that method quarantines instead of falling back to local recovery.
+`remote_attestation.py` requires all reviewed reachable state classes, the complete
+user/profile set, off/off network debugging and unchanged key fingerprints.
+It pins build, services, privacy grant and verifier/normalization implementation.
+The verifier normalizes only fields approved by that exact profile review.
+Unknown differences or missing evidence quarantine; no reset, uninstall, unowned
+process kill or baseline adoption occurs here. Successful recovery still stops at
+`verifying` for the Android squad leader. The quarantine callback must record the
+broker quarantine with its recovery owner/ops issue; it must not free a device.
+
+R1 denies global controls, implicit/id selectors, forwarding/reverse, root,
+remount, reboot, tcpip, TCP/localabstract sockets and unknown services. A restricted
+or unknown device gets no raw credential. `500c592` stays excluded. Both feature
+replies are synthesized locally as empty; no unscoped upstream feature discovery
+is permitted. All serials, including wireless aliases, come from the pinned
+canonical mapping. Mapping, grant, baseline/profile or authority changes fence.
+
+Framing uses the shared four-hex parser, strict request text, a single 5 s partial
+frame/status deadline and bounded upstream replies. Valid fragmentation and
+coalescing preserve order. After selection, raw device bytes are not reparsed as
+host commands. Admission reserves a full 256 KiB stream window in the shared
+64 MiB process budget and the 4 MiB lease budget, preserving 64 KiB control space.
+This conservative reservation admits at most 15 simultaneous full-window streams
+per lease, below the shared 32-stream ceiling. Socket readers enforce a hard text
+buffer cap before buffering; drained writes apply backpressure. Fencing awaits
+listener/client/task closure and returns every reservation. Unconfirmed closure
+quarantines and does not retire the port. Logs contain a service family/decision,
+never request strings, command arguments, sync paths or private credentials.
+The socket protocol uses fixed 8 KiB receive buffers so flow control pauses before
+the hard text-buffer ceiling, including during large raw transfers. Shared B2/R1
+closure has a 5 s deadline and aborts stalled client transports on timeout.
+The monitor contains each fence failure and retries revoked bindings. A failed
+quarantine callback or durable close write closes admission. Quarantine callback
+failures remain in the owner's `unconfirmed` set and emit a payload-free event.
+
+Run the standalone fake checks from the repository root:
+
+```sh
+python3 -B -m unittest discover -s tools/device-lease -p 'test_remote_*.py' -v
+```
+
+`tests/unit/runtime/test_device_lease_remote.py` also exposes these checks to the
+normal unit suite. To exercise the optional stock-client fixture, set `R1_ADB`
+to the exact `adb 37.0.0-14910828` binary. That test checks the version, uses only
+private fake endpoints with explicit `-H/-P`, and exercises filtered discovery,
+legacy shell and exec-out. The optional feature set remains empty. Sync/package
+wire compatibility and a complete Artemis/uiautomator2 journey are not claimed
+by those three client probes. Live SSH/isolation/device verification is NOT-RUN.

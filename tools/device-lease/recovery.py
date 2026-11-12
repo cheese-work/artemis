@@ -86,6 +86,15 @@ def recover_pending(broker):
                     or broker.recovery_io.undo(group, change, timeout=remaining()) is not True
                 ):
                     raise RuntimeError("cleanup unconfirmed")
+            # R1's independent device-state comparison runs after all recorded undo.
+            # Legacy local adapters have no raw-remote attestation contract.
+            verify_state = getattr(broker.recovery_io, "verify_state", None)
+            if group["binding"].get("mode") == "remote" and not callable(verify_state):
+                raise RuntimeError("remote release attestation unavailable")
+            if verify_state is not None and (
+                remaining() <= 0 or verify_state(group, timeout=remaining()) is not True
+            ):
+                raise RuntimeError("release attestation unconfirmed")
             if remaining() <= 0:
                 raise RuntimeError("cleanup overdue")
             broker.recovery(lease_id, state, "verifying")

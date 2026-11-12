@@ -1168,8 +1168,8 @@ class Broker:
         devices,
         binding,
         *,
-        agent_id=None,
-        issue_id=None,
+        agent_id,
+        issue_id,
     ):
         if self._admission.unavailable or not self._admission.audit_ok:
             raise Refused("admission_unavailable")
@@ -1178,10 +1178,7 @@ class Broker:
         self._require_authority(conn)
         started, deadline = self._run_budget(conn, now, principal, run_id, pool)
         lease_id = uuid.uuid4().hex
-        conn.execute(
-            "INSERT INTO broker_context VALUES (?,?,?)",
-            (lease_id, agent_id or principal, issue_id or purpose),
-        )
+        conn.execute("INSERT INTO broker_context VALUES (?,?,?)", (lease_id, agent_id, issue_id))
         conn.execute(
             "INSERT INTO broker_groups VALUES (?,?,?,?,?,?,?,?,?,?,?)",
             (
