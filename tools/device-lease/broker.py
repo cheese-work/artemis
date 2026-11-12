@@ -231,6 +231,57 @@ class Broker:
                 )
             return self._decide(entry, self._view(conn, lease_id))
 
+    def inventory(self):
+        """Owner fleet readback: every registry device, eligibility reason and lease.
+
+        Eligibility mirrors candidate selection (identity, restriction, fresh
+        admission and endpoint mapping). It grants nothing; `claimed` reports an
+        external Artemis/Android claim and `lease` the current non-released group.
+        """
+        with self.transaction(allow_audit_failure=True) as (conn, now):
+            self._expire(conn, now)
+            occupied = self._occupied(conn)
+            devices = []
+            for device in self.registry.devices():
+                endpoint = self.admitted.get(device.device_id)
+                if device.restricted:
+                    reason = "restricted"
+                elif not device.identity_confirmed:
+                    reason = "identity_unconfirmed"
+                elif endpoint is None:
+                    reason = "not_admitted"
+                elif self._canonical(endpoint) != device.device_id or not self.registry.eligible(
+                    endpoint, "device"
+                ):
+                    reason = "endpoint_mismatch"
+                else:
+                    reason = None
+                lease = None
+                if device.device_id in occupied:
+                    group = self._view(conn, occupied[device.device_id])
+                    lease = {
+                        k: group[k] for k in ("lease_id", "state", "holder", "run_id", "expires_at")
+                    }
+                devices.append(
+                    {
+                        "device_id": device.device_id,
+                        "aliases": list(device.aliases),
+                        "pool": device.pool,
+                        "model": device.model,
+                        "restricted": device.restricted,
+                        "eligible": reason is None,
+                        "reason": reason,
+                        "claimed": device.device_id in self._admission.blocked
+                        and not self._admission.unavailable,
+                        "lease": lease,
+                    }
+                )
+            return {
+                "admission_available": not self._admission.unavailable
+                and self._admission.audit_ok,
+                "devices": devices,
+            }
+
     def recovery(self, lease_id, expected, target, *, recovery_owner=None, ops_issue=None):
         """Trusted recovery-worker CAS, never a holder RPC. No automatic free path.
 

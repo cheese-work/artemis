@@ -99,6 +99,7 @@ class BrokerServer(socketserver.UnixStreamServer):
             "heartbeat": self.broker.heartbeat,
             "park": self.broker.park,
             "claim": self.broker.claim,
+            "inventory": self.broker.inventory,
         }
         if not isinstance(request["op"], str) or request["op"] not in methods:
             raise Refused("invalid_request")
@@ -166,6 +167,7 @@ def main(argv=None):
     wait.add_argument(
         "--wakeup-block-file", type=Path, help="actual run [WAKEUP] block, if present"
     )
+    sub.add_parser("inventory", help="owner fleet readback: eligibility, reason, lease")
     for op in (
         "acquire",
         "renew",
