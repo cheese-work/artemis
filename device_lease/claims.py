@@ -210,3 +210,17 @@ class ClaimLedger:
             )
             if result.rowcount != 1:
                 raise ValueError("claim not yours")
+
+    def snapshot(self):
+        """Owner audit readback, including stale census; never an admission decision."""
+        with self.guard(), sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                "SELECT generation,complete,observed_at FROM android_claim_source"
+            ).fetchone()
+            return {
+                "source": dict(row) if row else None,
+                "claims": [
+                    dict(r) for r in conn.execute("SELECT * FROM android_claims ORDER BY claim_id")
+                ],
+            }

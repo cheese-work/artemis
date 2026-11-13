@@ -222,9 +222,9 @@ directory, database or socket is created:
 {
   "admitted": {"path": "/private/state/admitted.json", "max_age_seconds": 60},
   "artemis_locks_dir": "/path/to/artemis/temp/device-locks",
-  "android_claims": {"path": "/private/state/android-claims.json", "max_age_seconds": 300},
+  "android_claims": {"source": "ledger", "max_age_seconds": 300},
   "guard_path": "/private/state/claims.guard",
-  "recovery": {"adapter": "module:factory", "owner": "OPS_OWNER", "ops_issue": "CHE-NNNN"},
+  "recovery": {"adapter": "owned", "owner": "OPS_OWNER", "ops_issue": "CHE-NNNN"},
   "leader_control_socket": "/private/leader/control.sock"
 }
 ```
@@ -239,26 +239,25 @@ directory, database or socket is created:
    grant. Stale, offline, restricted, spare, or mismatched devices are excluded.
    Unreadable or malformed sources close admission; no cached snapshot survives.
    Legacy plain device maps are rejected.
-2. **Claim readers.** `artemis` reads every `artemis-device-*.lock` (and the legacy
-   global lock) in `artemis_locks_dir` without importing the SDK. Every record
-   blocks its device, live or not; a partial or unreadable record closes
-   admission. `android` reads `{"observed_at": EPOCH, "claims": [ALIAS, ...]}`
-   from `android_claims.path` with the same freshness rule. Unknown identities
-   close admission (existing broker rule).
-3. **One shared exclusion.** `guard_path` is an `flock` file. Broker decisions hold
-   it from source reads through commit. Artemis lock writers hold it while creating
-   an owner record when `ARTEMIS_DEVICE_ADMISSION_GUARD=<guard_path>` is set in
-   their environment. The Android claim writer replaces its snapshot under the same
-   guard with `device-lease write-android-claims --composition FILE --claim SERIAL`
-   (repeat `--claim`; none clears the list). Do not enable live admission while any
-   claim writer runs without the guard.
-4. **Deadline-bounded recovery.** `recovery.adapter` names an importable
-   `module:factory`; the factory returns an object with callable `fence` and `undo`
-   (and `verify_state` for remote mode). `recover_pending` passes the remaining
-   two-minute deadline. `owner` and `ops_issue` name the quarantine owner.
-5. **Leader release control plane.** The daemon serves `verify-release` and
-   `recover-quarantine` only on `leader_control_socket`, in its own 0700 directory
-   (socket 0600). The holder socket refuses both. Same-UID callers stay
+2. **Claim readers.** `artemis` reads every execution-lock owner file, including
+   stale records. Partial, unreadable or unknown identities close admission.
+   `android` reads the authoritative ledger in the same `leases.sqlite3` used by
+   the daemon. Missing, incomplete or stale census closes admission even with
+   zero rows. Registry membership is not evidence of an empty census.
+3. **One shared exclusion.** Broker decisions and BOTH writers hold `guard_path`
+   through their ownership check and commit. SDK writers require both
+   `ARTEMIS_DEVICE_ADMISSION_GUARD=<guard_path>` and
+   `ARTEMIS_DEVICE_CLAIMS_DB=<state-dir>/leases.sqlite3`. Configure every writer
+   and the exact SDK lock directory before attesting the complete census.
+   Arbitrary snapshot replacement and `write-android-claims` are disabled.
+4. **Deadline-bounded recovery.** `recovery.adapter` must be `owned`, the concrete
+   local adapter. Imported callback factories cannot enable live serve. The owner
+   journals complete work manifests and allowed undo intents before execution.
+   `recover_pending` passes the remaining two-minute deadline. Unknown work or
+   uncertain undo quarantines with `owner` and `ops_issue`.
+5. **Leader control plane.** `record-change`, `verify-release` and
+   `recover-quarantine` use only `leader_control_socket` (0700 directory, 0600
+   socket). The holder socket refuses these operations. Same-UID callers stay
    cooperative: the separate directory is the boundary, not authentication.
 
 ```sh
@@ -704,8 +703,7 @@ before the owner attests the census. Standalone SDK use without either variable
 is unchanged; it must not share an enabled broker's fleet.
 
 `write_claims_snapshot` is disabled. Caller-provided lists are not an authority.
-The live serve/owner CLI wiring follows in layer 4; legacy JSON claim readers
-remain only for existing composition fixtures until that wiring replaces them.
+Live serve uses the ledger only. Legacy JSON claim mirrors cannot enable admission.
 
 ### Concrete local owner recovery (CHE-5438)
 
@@ -736,5 +734,49 @@ compare current value to recorded before/after, restore numeric/null before valu
 then read back. App undo requires an explicitly removable run-installed package,
 valid package syntax and exact package absence readback. Unsupported or ambiguous
 changes (including legacy HOME without comparable state) quarantine. Recovery
-never resets a device or restarts ADB. Raw local ADB remains cooperative; remote
-transports must wrap this adapter with `RemoteRecovery` for stream/key fencing.
+never resets a device or restarts ADB. Raw local ADB remains cooperative.
+This adapter accepts local bindings only; remote bindings fail closed.
+
+### Owner producer operations and activation
+
+The following commands are owner operations, not holder RPCs. Use the same
+`--state-dir`, `--registry` and private `--composition` as `serve`. They initialize
+schema and write records, never enable admission by discovering inventory. They
+execute no device commands. Source inputs must be owner-owned regular JSON files
+that are not group/world writable. Run `device-lease OP --help` for exact flags.
+
+| Operation | Additional flags | Result |
+| --- | --- | --- |
+| `write-readiness` | `--input OBSERVATIONS.json` | Validate and atomically publish per-device grants and observations |
+| `census-android-claims` | `--input CENSUS.json` | Attest a complete writer census and generation |
+| `claim-android` | `--device-id ALIAS --owner OWNER --run-id RUN --reference AUDIT_REF` | Return owned claim ID, or refuse occupancy |
+| `release-android` | `--claim-id ID --owner OWNER --run-id RUN` | Remove only that owned claim |
+| `list-android-claims` | none | Read source metadata and all authoritative claim rows, including stale state |
+
+A census input contains `generation` (positive integer), `observed_at` (epoch),
+`complete: true`, `writers: ["android", "artemis"]`, and `claims` (the full list of
+`claim_id`, canonical `device_id`, `owner`, `run_id`, `reference` records). Empty
+claims require an actual complete census. Existing claims cannot be discarded by
+replacement. Refresh the observation before `android_claims.max_age_seconds`
+expires and carry every live claim forward. Configuration changes require a new
+generation. Readiness inputs use the format above and cannot roll back generation.
+
+`record-change --lease-id ID --principal OWNER --run-id RUN --change-file JSON`
+requires global `--control-socket`, not the holder socket. It journals allowed
+intent through the live broker before execution. It does not perform the mutation.
+
+CHE-5042 owns the real census, installing the merged release, configuring every
+writer and producer, enabling admission, and the live race/renew/reaper smoke.
+Before enabling admission, verify every SDK launcher exports both
+`ARTEMIS_DEVICE_ADMISSION_GUARD` and `ARTEMIS_DEVICE_CLAIMS_DB` with the same guard
+and database as `serve`. Verify the launcher's SDK lock directory matches the
+census. With neither variable set, the SDK keeps standalone locking behavior;
+that launcher must not use the enabled broker's fleet.
+
+With the variables set, one SDK lock file whose device identity is absent from
+the census registry refuses every SDK acquisition in that lock directory.
+Unknown ownership fails closed. Reconcile the owner and registry before enabling
+admission; deleting an unknown lock is not a census.
+
+This implementation makes no host config change and leaves admission closed.
+Do not copy fixture census, process IDs or grant references into the live fleet.
