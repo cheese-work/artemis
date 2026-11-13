@@ -31,10 +31,11 @@ jobs:
   ci-policy:
     name: ci-policy
     # No `if:` skip: a skipped job is a non-failing check, so a PR editing the policy files would pass without the D-6
-    # approval (CHE-3275). Untrusted heads (fork PR, `upstream-sync/*`, CHE-2887) run on a GitHub-hosted runner instead of X99.
-    # The PR event payload carries the head on both subscribed PR events (`github.head_ref` is empty on a review event).
-    # A queue run has no PR payload and checks out the default branch, so it stays on X99.
-    runs-on: ${{ github.repository_owner == 'cheese-work' && (github.event_name == 'merge_group' || (github.event.pull_request.head.repo.full_name == github.repository && !startsWith(github.event.pull_request.head.ref, 'upstream-sync/'))) && fromJSON('["self-hosted","Linux","X64","cheese-x99-gate"]') || fromJSON('["ubuntu-latest"]') }}
+    # approval (CHE-3275). A private repo never uses a GitHub-hosted runner (no spend, R6), so every event there runs on X99:
+    # the job only runs the BASE checker and reads the head as data. In a public repo an untrusted head (fork PR,
+    # `upstream-sync/*`, CHE-2887) runs on `ubuntu-latest` and keeps X99 isolated. The PR payload carries the head on both
+    # PR events (`github.head_ref` is empty on a review event). A queue run has no PR payload and stays on X99.
+    runs-on: ${{ github.repository_owner == 'cheese-work' && (github.event.repository.private || github.event_name == 'merge_group' || (github.event.pull_request.head.repo.full_name == github.repository && !startsWith(github.event.pull_request.head.ref, 'upstream-sync/'))) && fromJSON('["self-hosted","Linux","X64","cheese-x99-gate"]') || fromJSON('["ubuntu-latest"]') }}
     timeout-minutes: 10
     env:
       GH_TOKEN: ${{ github.token }}
