@@ -201,7 +201,7 @@ def _snapshot(config, name):
     return path, age
 
 
-def _recovery(config, db_path):
+def _recovery(config, db_path, registry):
     from owned_recovery import OwnedRecovery
 
     section = _field(config, "recovery", dict)
@@ -213,7 +213,7 @@ def _recovery(config, db_path):
             raise CompositionError("adapter")
     except CompositionError as exc:
         raise CompositionError("composition incomplete: recovery") from exc
-    return OwnedRecovery(db_path), owner, ops_issue
+    return OwnedRecovery(db_path, registry=registry), owner, ops_issue
 
 
 def compose(config_path, registry, *, db_path=None):
@@ -239,7 +239,7 @@ def compose(config_path, registry, *, db_path=None):
         raise CompositionError("composition incomplete: android_claims")
     guard = FileGuard(_field(config, "guard_path", str))
     # Validate recovery even when db_path is absent; no dynamic import fallback.
-    recovery_io, owner, ops_issue = _recovery(config, db_path or ".")
+    recovery_io, owner, ops_issue = _recovery(config, db_path or ".", registry)
     control = Path(_field(config, "leader_control_socket", str))
     if db_path is None:
         raise CompositionError("composition requires the broker database")
