@@ -1,4 +1,5 @@
 """Claims authority, aliases and two-process exclusion; no device I/O."""
+
 import importlib.util
 import json
 import multiprocessing
@@ -23,32 +24,61 @@ def sdk_lock(root, alias):
     paths.get_temp_dir = lambda name: Path(root) / "locks"
     probe = types.ModuleType("artemis.runtime.process_probe")
     probe.pid_is_alive = lambda *args: True
-    spec = importlib.util.spec_from_file_location("claims_sdk_lock", fixtures.ROOT / "artemis/runtime/device_lock.py")
+    spec = importlib.util.spec_from_file_location(
+        "claims_sdk_lock", fixtures.ROOT / "artemis/runtime/device_lock.py"
+    )
     module = importlib.util.module_from_spec(spec)
-    with patch.dict(sys.modules, {spec.name: module, "artemis.config.paths": paths,
-                                 "artemis.runtime.process_probe": probe}):
+    with patch.dict(
+        sys.modules,
+        {spec.name: module, "artemis.config.paths": paths, "artemis.runtime.process_probe": probe},
+    ):
         spec.loader.exec_module(module)
     return module.DeviceExecutionLock(alias)
 
 
 def race_writer(root, reg, writer, event, output):
     from device_lease.claims import ClaimLedger
-    ledger = ClaimLedger(Path(root) / "leases.sqlite3", compose.FileGuard(Path(root) / "claims.guard"), reg,
-                         Path(root) / "locks", max_age=60)
+
+    ledger = ClaimLedger(
+        Path(root) / "leases.sqlite3",
+        compose.FileGuard(Path(root) / "claims.guard"),
+        reg,
+        Path(root) / "locks",
+        max_age=60,
+    )
     event.wait(5)
     try:
         if writer == "android":
             ledger.claim("usb-rig-1", owner="android", run_id="r", reference="CHE-fixture")
         elif writer == "sdk":
-            with patch.dict(os.environ, {"ARTEMIS_DEVICE_ADMISSION_GUARD": str(Path(root) / "claims.guard"),
-                                        "ARTEMIS_DEVICE_CLAIMS_DB": str(Path(root) / "leases.sqlite3")}):
+            with patch.dict(
+                os.environ,
+                {
+                    "ARTEMIS_DEVICE_ADMISSION_GUARD": str(Path(root) / "claims.guard"),
+                    "ARTEMIS_DEVICE_CLAIMS_DB": str(Path(root) / "leases.sqlite3"),
+                },
+            ):
                 if not sdk_lock(root, "usb-rig-1")._try_acquire_owner_lock():
                     raise ValueError("busy")
         else:
-            broker = Broker(Path(root) / "leases.sqlite3", reg, admitted={"rig-1": "usb-rig-1"},
-                            admission_guard=ledger.guard,
-                            admission_sources={"android": ledger.read, "artemis": compose.artemis_locks_reader(Path(root) / "locks")})
-            broker.acquire(principal="broker", run_id="r", purpose="CHE-race", ttl=300, idempotency_key="race", device_id="rig-1")
+            broker = Broker(
+                Path(root) / "leases.sqlite3",
+                reg,
+                admitted={"rig-1": "usb-rig-1"},
+                admission_guard=ledger.guard,
+                admission_sources={
+                    "android": ledger.read,
+                    "artemis": compose.artemis_locks_reader(Path(root) / "locks"),
+                },
+            )
+            broker.acquire(
+                principal="broker",
+                run_id="r",
+                purpose="CHE-race",
+                ttl=300,
+                idempotency_key="race",
+                device_id="rig-1",
+            )
         output.put((writer, True))
     except (ValueError, Refused):
         output.put((writer, False))
@@ -66,19 +96,46 @@ class ClaimsTests(unittest.TestCase):
         broker, composed = self.composed_broker()
         self.take(broker, device_id="rig-1")
         with self.assertRaises(ValueError):
-            compose.write_claims_snapshot(self.root / "android.json", composed["guard"], ["usb-rig-1"])
+            compose.write_claims_snapshot(
+                self.root / "android.json", composed["guard"], ["usb-rig-1"]
+            )
 
     def live(self, census=True):
         from device_lease.claims import ClaimLedger
-        self.reg = DeviceRegistry([Device("rig-1", ("usb-rig-1", "10.0.0.1:5555"), restricted=False, identity_confirmed=True)])
+
+        self.reg = DeviceRegistry(
+            [
+                Device(
+                    "rig-1",
+                    ("usb-rig-1", "10.0.0.1:5555"),
+                    restricted=False,
+                    identity_confirmed=True,
+                )
+            ]
+        )
         guard = compose.FileGuard(self.root / "claims.guard")
-        self.ledger = ClaimLedger(self.root / "leases.sqlite3", guard, self.reg, self.root / "locks", max_age=60)
-        self.broker = Broker(self.root / "leases.sqlite3", self.reg, admitted={"rig-1": "usb-rig-1"}, admission_guard=guard,
-                             admission_sources={"android": self.ledger.read, "artemis": compose.artemis_locks_reader(self.root / "locks")})
+        self.ledger = ClaimLedger(
+            self.root / "leases.sqlite3", guard, self.reg, self.root / "locks", max_age=60
+        )
+        self.broker = Broker(
+            self.root / "leases.sqlite3",
+            self.reg,
+            admitted={"rig-1": "usb-rig-1"},
+            admission_guard=guard,
+            admission_sources={
+                "android": self.ledger.read,
+                "artemis": compose.artemis_locks_reader(self.root / "locks"),
+            },
+        )
         self.broker.inventory()  # Initialize broker schema, not claim authority.
         if census:
-            self.ledger.census(generation=1, observed_at=time.time(), complete=True,
-                               writers=["android", "artemis"], claims=[])
+            self.ledger.census(
+                generation=1,
+                observed_at=time.time(),
+                complete=True,
+                writers=["android", "artemis"],
+                claims=[],
+            )
         return self.ledger
 
     def test_empty_uninitialised_incomplete_and_stale_census_close_admission(self):
@@ -86,9 +143,21 @@ class ClaimsTests(unittest.TestCase):
         self.assertFalse(self.broker.inventory()["admission_available"])
         for complete, writers in [(False, ["android", "artemis"]), (True, ["android"])]:
             with self.assertRaises(ValueError):
-                ledger.census(generation=1, observed_at=time.time(), complete=complete, writers=writers, claims=[])
+                ledger.census(
+                    generation=1,
+                    observed_at=time.time(),
+                    complete=complete,
+                    writers=writers,
+                    claims=[],
+                )
             self.assertFalse(self.broker.inventory()["admission_available"])
-        ledger.census(generation=1, observed_at=time.time(), complete=True, writers=["android", "artemis"], claims=[])
+        ledger.census(
+            generation=1,
+            observed_at=time.time(),
+            complete=True,
+            writers=["android", "artemis"],
+            claims=[],
+        )
         self.assertTrue(self.broker.inventory()["admission_available"])
         with sqlite3.connect(ledger.db_path) as conn:
             conn.execute("UPDATE android_claim_source SET observed_at=0")
@@ -111,12 +180,20 @@ class ClaimsTests(unittest.TestCase):
         ledger = self.live()
         held = self.take(self.broker, device_id="rig-1")
         try:
-            self.take(self.broker, run_id="next", purpose="CHE-next", idempotency_key="next", device_id="rig-1")
+            self.take(
+                self.broker,
+                run_id="next",
+                purpose="CHE-next",
+                idempotency_key="next",
+                device_id="rig-1",
+            )
         except Refused as exc:
             ticket = exc.details["ticket"]
         with sqlite3.connect(ledger.db_path) as conn:
             conn.execute("UPDATE broker_groups SET state='released'")
-        self.broker.ticket_status(ticket_id=ticket["ticket_id"], principal="agent", agent_id="agent", issue_id="CHE-next")
+        self.broker.ticket_status(
+            ticket_id=ticket["ticket_id"], principal="agent", agent_id="agent", issue_id="CHE-next"
+        )
         with self.assertRaises(ValueError):
             ledger.claim("10.0.0.1:5555", owner="android", run_id="r", reference="CHE-fixture")
         with self.sdk_env():
@@ -124,11 +201,21 @@ class ClaimsTests(unittest.TestCase):
 
     def cancel(self, error):
         ticket = error.details["ticket"]
-        self.broker.cancel_ticket(ticket_id=ticket["ticket_id"], principal="agent", agent_id="agent", issue_id="CHE-fixture")
+        self.broker.cancel_ticket(
+            ticket_id=ticket["ticket_id"],
+            principal="agent",
+            agent_id="agent",
+            issue_id="CHE-fixture",
+        )
 
     def sdk_env(self):
-        return patch.dict(os.environ, {"ARTEMIS_DEVICE_ADMISSION_GUARD": str(self.root / "claims.guard"),
-                                      "ARTEMIS_DEVICE_CLAIMS_DB": str(self.root / "leases.sqlite3")})
+        return patch.dict(
+            os.environ,
+            {
+                "ARTEMIS_DEVICE_ADMISSION_GUARD": str(self.root / "claims.guard"),
+                "ARTEMIS_DEVICE_CLAIMS_DB": str(self.root / "leases.sqlite3"),
+            },
+        )
 
     def test_sdk_both_orders_and_aliases(self):
         ledger = self.live()
@@ -149,10 +236,20 @@ class ClaimsTests(unittest.TestCase):
         ledger = self.live()
         claim = ledger.claim("rig-1", owner="android", run_id="r", reference="CHE-fixture")
         with self.assertRaises(ValueError):
-            ledger.census(generation=2, observed_at=time.time(), complete=True,
-                          writers=["android", "artemis"], claims=[])
+            ledger.census(
+                generation=2,
+                observed_at=time.time(),
+                complete=True,
+                writers=["android", "artemis"],
+                claims=[],
+            )
         self.assertEqual(ledger.read(), ["rig-1"])
-        with self.sdk_env(), patch.dict(os.environ, {"ARTEMIS_DEVICE_ADMISSION_GUARD": str(self.root / "wrong.guard")}):
+        with (
+            self.sdk_env(),
+            patch.dict(
+                os.environ, {"ARTEMIS_DEVICE_ADMISSION_GUARD": str(self.root / "wrong.guard")}
+            ),
+        ):
             self.assertFalse(sdk_lock(self.root, "usb-rig-1")._try_acquire_owner_lock())
         ledger.release(claim, owner="android", run_id="r")
         with self.sdk_env(), patch.dict(os.environ, {"ARTEMIS_DEVICE_CLAIMS_DB": ""}):
@@ -164,8 +261,12 @@ class ClaimsTests(unittest.TestCase):
         for writer in ["android", "sdk"]:
             with self.subTest(writer=writer):
                 event, output = ctx.Event(), ctx.Queue()
-                workers = [ctx.Process(target=race_writer, args=(self.root, self.reg, who, event, output)) for who in [writer, "broker"]]
-                for p in workers: p.start()
+                workers = [
+                    ctx.Process(target=race_writer, args=(self.root, self.reg, who, event, output))
+                    for who in [writer, "broker"]
+                ]
+                for p in workers:
+                    p.start()
                 event.set()
                 for p in workers:
                     p.join(10)
@@ -176,9 +277,11 @@ class ClaimsTests(unittest.TestCase):
                     conn.execute("DELETE FROM android_claims")
                     conn.execute("UPDATE broker_groups SET state='released'")
                     conn.execute("UPDATE broker_tickets SET state='cancelled'")
-                for path in (self.root / "locks").glob("*.lock"): path.unlink()
+                for path in (self.root / "locks").glob("*.lock"):
+                    path.unlink()
                 output.close()
                 output.join_thread()
 
 
-if __name__ == "__main__": unittest.main()
+if __name__ == "__main__":
+    unittest.main()
