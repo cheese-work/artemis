@@ -32,8 +32,9 @@
     "prewatch": "node scripts/validate-whats-new.mjs && node scripts/write-build-info.mjs",
     "watch": "ng build --watch --configuration development",
     "test": "ng test",
-    "pretest": "node scripts/validate-whats-new.mjs && npm run test:whats-new && node scripts/lint-ui-strings.mjs && node scripts/lint-theme.mjs && node scripts/write-build-info.mjs && npm run test:build-info && npm run test:tango-stream-extra && npm run test:keyboard-paste && npm run test:icon-font",
+    "pretest": "node scripts/validate-whats-new.mjs && npm run test:whats-new && node scripts/lint-ui-strings.mjs && node scripts/lint-theme.mjs && node scripts/write-build-info.mjs && npm run test:build-info && npm run test:tango-stream-extra && npm run test:keyboard-paste && npm run test:icon-font && npm run test:bridge-recovery",
     "test:tango-stream-extra": "node --test scripts/tango-stream-extra.test.mjs",
+    "test:bridge-recovery": "node --test scripts/bridge-recovery.test.mjs",
     "postinstall": "node scripts/patch-tango.mjs"
   },
   "private": true,

@@ -127,6 +127,27 @@ def test_every_registered_route_has_a_declared_tier_and_guard():
     _assert_routes_have_declared_tiers(app.routes)
 
 
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [
+        ("POST", "/api/leases/dlp-1"),
+        ("GET", "/api/leases/dlp-1/{lease_id}"),
+        ("POST", "/api/leases/dlp-1/{lease_id}/renew"),
+        ("POST", "/api/leases/dlp-1/{lease_id}/release"),
+        ("GET", "/api/leases/dlp-1/tickets/{ticket_id}"),
+        ("POST", "/api/leases/dlp-1/tickets/{ticket_id}/park"),
+        ("POST", "/api/leases/dlp-1/tickets/{ticket_id}/claim"),
+    ],
+)
+def test_dlp1_routes_require_qa_or_service_and_are_disabled_in_preview(method, path):
+    from apps.admin_console.core import preview_routes
+
+    assert route_tier(path, {method}) == "qa_or_service"
+    key = f"{method} {path}"
+    assert key in preview_routes.DISABLED
+    assert key not in preview_routes.ALLOWED
+
+
 def test_untiered_post_in_nested_included_router_fails_tier_check():
     child_router = APIRouter()
 

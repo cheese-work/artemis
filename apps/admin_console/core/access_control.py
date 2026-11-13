@@ -721,10 +721,19 @@ _ADMIN_GET_PATHS = {
 _SERVICE_READ_GET_PATHS = {"/api/system/failures", "/api/leases"}
 
 # Device leases (CHE-2099): agents call these with a service token, QA users in a browser.
+_LEASE_GET_PATHS = {
+    "/api/leases/dlp-1/{lease_id}",
+    "/api/leases/dlp-1/tickets/{ticket_id}",
+}
 _LEASE_POST_PATHS = {
     "/api/leases",
     "/api/leases/{lease_id}/renew",
     "/api/leases/{lease_id}/release",
+    "/api/leases/dlp-1",
+    "/api/leases/dlp-1/{lease_id}/renew",
+    "/api/leases/dlp-1/{lease_id}/release",
+    "/api/leases/dlp-1/tickets/{ticket_id}/park",
+    "/api/leases/dlp-1/tickets/{ticket_id}/claim",
 }
 
 _ADMIN_MUTATING_PATHS = {
@@ -824,6 +833,8 @@ def route_tier(path: str, methods: set[str], is_websocket: bool = False) -> str 
         return "admin"
     if methods == {"GET"} and path in _SERVICE_READ_GET_PATHS:
         return "admin_or_service"
+    if methods == {"GET"} and path in _LEASE_GET_PATHS:
+        return "qa_or_service"
     if methods == {"POST"} and path in _PUBLIC_MUTATING_PATHS:
         return "public"
     if path == "/api/runs/{session_id}/annotations/{annotation_id}" and methods in (

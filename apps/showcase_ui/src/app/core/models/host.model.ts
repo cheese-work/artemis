@@ -19,10 +19,22 @@ export interface Computer {
   active_run_count: number;
 }
 
+/** Who holds a phone, shown to every QA user; the lease id stays with the holder. */
+export interface DeviceLease {
+  holder: string;
+  purpose: string;
+  /** Epoch seconds. */
+  expires_at: number;
+}
+
 export interface RegistryDevice {
   serial: string;
   /** Canonical id the lease API takes; null until the server has matched the phone. */
   device_id?: string | null;
+  /** The live lease on this phone, whoever holds it; null or absent when free or leases are off. */
+  lease?: DeviceLease | null;
+  /** Live connection kinds a computer's agent reports for this phone; never an address. */
+  connections?: ('usb' | 'wifi')[];
   model: string | null;
   product?: string | null;
   /** Classified from adb properties; absent when the computer's agent did not report it. */
