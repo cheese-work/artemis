@@ -95,36 +95,59 @@ def admitted_reader(path, max_age, registry=None, clock=time.time):
     def read():
         _owner_file(path)
         payload = json.loads(Path(path).read_text(encoding="utf-8"))
-        if (not isinstance(payload, dict) or set(payload) != {"generation", "devices"}
-                or type(payload["generation"]) is not int or payload["generation"] < 1
-                or not isinstance(payload["devices"], list) or registry is None):
+        if (
+            not isinstance(payload, dict)
+            or set(payload) != {"generation", "devices"}
+            or type(payload["generation"]) is not int
+            or payload["generation"] < 1
+            or not isinstance(payload["devices"], list)
+            or registry is None
+        ):
             raise ValueError("invalid readiness source")
         now, result, seen = number(clock()), {}, set()
         for row in payload["devices"]:
-            if (not isinstance(row, dict) or set(row) != {
-                    "device_id", "endpoint", "state", "observed_at", "grant"}):
+            if not isinstance(row, dict) or set(row) != {
+                "device_id",
+                "endpoint",
+                "state",
+                "observed_at",
+                "grant",
+            }:
                 raise ValueError("invalid readiness record")
-            if any(not isinstance(row[k], str) or not row[k].strip()
-                   for k in ("device_id", "endpoint", "state")):
+            if any(
+                not isinstance(row[k], str) or not row[k].strip()
+                for k in ("device_id", "endpoint", "state")
+            ):
                 raise ValueError("invalid readiness identity")
             if row["device_id"] in seen:
                 raise ValueError("duplicate readiness record")
             seen.add(row["device_id"])
             grant = row["grant"]
-            if (not isinstance(grant, dict) or set(grant) != {
-                    "reference", "observed_at", "expires_at"}
-                    or not isinstance(grant["reference"], str) or not grant["reference"].strip()):
+            if (
+                not isinstance(grant, dict)
+                or set(grant) != {"reference", "observed_at", "expires_at"}
+                or not isinstance(grant["reference"], str)
+                or not grant["reference"].strip()
+            ):
                 raise ValueError("invalid grant record")
-            observed, granted, expiry = (number(row["observed_at"]),
-                                        number(grant["observed_at"]), number(grant["expires_at"]))
+            observed, granted, expiry = (
+                number(row["observed_at"]),
+                number(grant["observed_at"]),
+                number(grant["expires_at"]),
+            )
             device = registry.resolve(row["device_id"])
-            if (device is not None and device.device_id == row["device_id"]
-                    and registry.resolve(row["endpoint"]) == device
-                    and device.pool != "spare" and not device.restricted
-                    and registry.eligible(row["endpoint"], row["state"])
-                    and -MAX_SKEW <= now - observed <= max_age
-                    and -MAX_SKEW <= now - granted <= max_age
-                    and granted < expiry and now < expiry):
+            if (
+                device is not None
+                and device.device_id == row["device_id"]
+                and registry.resolve(row["endpoint"]) == device
+                and device.pool != "spare"
+                and not device.restricted
+                and registry.eligible(row["endpoint"], row["state"])
+                and -MAX_SKEW <= now - observed <= max_age
+                and -MAX_SKEW <= now - granted <= max_age
+                and granted < expiry
+                and now < expiry
+            ):
                 result[device.device_id] = row["endpoint"]
         return result
 
