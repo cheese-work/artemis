@@ -30,9 +30,11 @@ concurrency:
 jobs:
   ci-policy:
     name: ci-policy
-    # Same guard as every shared X99 job (CHE-2887): skip upstream-sync heads and fork PRs. A queue run has no head_ref, so it still runs.
-    if: ${{ !startsWith(github.head_ref || github.ref_name, 'upstream-sync/') && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
-    runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99-gate"]') || fromJSON('["ubuntu-latest"]') }}
+    # No `if:` skip: a skipped job is a non-failing check, so a PR editing the policy files would pass without the D-6
+    # approval (CHE-3275). Untrusted heads (fork PR, `upstream-sync/*`, CHE-2887) run on a GitHub-hosted runner instead of X99.
+    # The PR event payload carries the head on both subscribed PR events (`github.head_ref` is empty on a review event).
+    # A queue run has no PR payload and checks out the default branch, so it stays on X99.
+    runs-on: ${{ github.repository_owner == 'cheese-work' && (github.event_name == 'merge_group' || (github.event.pull_request.head.repo.full_name == github.repository && !startsWith(github.event.pull_request.head.ref, 'upstream-sync/'))) && fromJSON('["self-hosted","Linux","X64","cheese-x99-gate"]') || fromJSON('["ubuntu-latest"]') }}
     timeout-minutes: 10
     env:
       GH_TOKEN: ${{ github.token }}
