@@ -186,12 +186,14 @@ class LiveTests(unittest.TestCase):
 
         def exercise(server):
             observed.append(server.broker.inventory()["admission_available"])
-            group = self.take(server.broker, device_id="usb-rig-1")
+            identity = {"mode": "local", "pid": 1234, "process_start": "42", "boot_id": "fixture"}
+            server.broker.run_probe = lambda binding: True
+            group = self.take(server.broker, device_id="usb-rig-1", binding=identity)
             change = {
                 "kind": "work",
                 "device_id": "rig-1",
                 "complete": True,
-                "processes": [],
+                "processes": [identity],
                 "forwards": [],
             }
             with self.assertRaises(Refused):
@@ -224,9 +226,17 @@ class LiveTests(unittest.TestCase):
             from owned_recovery import OwnedRecovery
 
             self.assertIsInstance(adapter, OwnedRecovery)
+            live = {identity["pid"]: identity}
+
+            def stop(identity, timeout):
+                live.pop(identity["pid"])
+                return True
+
             with (
                 patch.object(adapter, "_daemon_pid", return_value=999),
                 patch.object(adapter, "_descendants", return_value=set()),
+                patch.object(adapter, "_identity", side_effect=lambda pid: live.get(pid)),
+                patch.object(adapter, "_stop", side_effect=stop),
                 patch.object(adapter, "_adb", return_value=""),
             ):
                 server.broker.maintain()

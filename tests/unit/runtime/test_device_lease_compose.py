@@ -234,7 +234,9 @@ class ComposeTests(unittest.TestCase):
 
     def test_leader_control_socket_verifies_release_and_holder_socket_cannot(self):
         broker, composed = self.composed_broker()
-        group = self.take(broker, device_id="rig-1")
+        identity = {"mode": "local", "pid": 1234, "process_start": "42", "boot_id": "fixture"}
+        broker.run_probe = lambda binding: True
+        group = self.take(broker, device_id="rig-1", binding=identity)
         broker.record_change(
             lease_id=group["lease_id"],
             principal="agent",
@@ -243,14 +245,22 @@ class ComposeTests(unittest.TestCase):
                 "kind": "work",
                 "device_id": "rig-1",
                 "complete": True,
-                "processes": [],
+                "processes": [identity],
                 "forwards": [],
             },
         )
         broker.release(lease_id=group["lease_id"], principal="agent", run_id="run-1")
+        live = {identity["pid"]: identity}
+
+        def stop(identity, timeout):
+            live.pop(identity["pid"])
+            return True
+
         with (
             patch.object(broker.recovery_io, "_daemon_pid", return_value=999),
             patch.object(broker.recovery_io, "_descendants", return_value=set()),
+            patch.object(broker.recovery_io, "_identity", side_effect=lambda pid: live.get(pid)),
+            patch.object(broker.recovery_io, "_stop", side_effect=stop),
             patch.object(broker.recovery_io, "_adb", return_value=""),
         ):
             broker.maintain()

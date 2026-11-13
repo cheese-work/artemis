@@ -767,5 +767,16 @@ intent through the live broker before execution. It does not perform the mutatio
 
 CHE-5042 owns the real census, installing the merged release, configuring every
 writer and producer, enabling admission, and the live race/renew/reaper smoke.
+Before enabling admission, verify every SDK launcher exports both
+`ARTEMIS_DEVICE_ADMISSION_GUARD` and `ARTEMIS_DEVICE_CLAIMS_DB` with the same guard
+and database as `serve`. Verify the launcher's SDK lock directory matches the
+census. With neither variable set, the SDK keeps standalone locking behavior;
+that launcher must not use the enabled broker's fleet.
+
+With the variables set, one SDK lock file whose device identity is absent from
+the census registry refuses every SDK acquisition in that lock directory.
+Unknown ownership fails closed. Reconcile the owner and registry before enabling
+admission; deleting an unknown lock is not a census.
+
 This implementation makes no host config change and leaves admission closed.
 Do not copy fixture census, process IDs or grant references into the live fleet.
