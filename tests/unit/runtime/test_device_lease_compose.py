@@ -169,9 +169,7 @@ class ComposeTests(unittest.TestCase):
         broker, _ = self.composed_broker()
         lock = self.root / "locks" / "artemis-device-rig-2.lock"
         lock.write_text(json.dumps({"device_id": "rig-2", "pid": 1}))
-        compose.write_claims_snapshot(
-            self.root / "android.json", compose.FileGuard(self.root / "claims.guard"), ["usb-rig-1"]
-        )
+        self.write_json("android.json", {"observed_at": time.time(), "claims": ["usb-rig-1"]})
         rows = {d["device_id"]: d for d in broker.inventory()["devices"]}
         self.assertTrue(rows["rig-1"]["claimed"])
         self.assertTrue(rows["rig-2"]["claimed"])
