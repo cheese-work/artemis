@@ -5,6 +5,7 @@ BEFORE execution. Missing manifests, unknown work or any failed readback quarant
 Raw local ADB has no remotely revocable credential: remote transports must wrap this
 adapter in RemoteRecovery. Neither successful cleanup nor TTL releases a device.
 """
+
 import json
 import os
 from pathlib import Path
@@ -17,21 +18,32 @@ import time
 from broker import process_identity
 from recovery import validate_change
 
-SETTINGS = {"brightness": ("system", "screen_brightness"),
-            "screen_brightness": ("system", "screen_brightness"),
-            "stay_on_while_plugged_in": ("global", "stay_on_while_plugged_in")}
+SETTINGS = {
+    "brightness": ("system", "screen_brightness"),
+    "screen_brightness": ("system", "screen_brightness"),
+    "stay_on_while_plugged_in": ("global", "stay_on_while_plugged_in"),
+}
 
 
 class OwnedRecovery:
     def __init__(self, db_path, *, adb="adb", multica="multica", monotonic=time.monotonic):
-        self.db_path, self.adb, self.multica, self.monotonic = Path(db_path), adb, multica, monotonic
+        self.db_path, self.adb, self.multica, self.monotonic = (
+            Path(db_path),
+            adb,
+            multica,
+            monotonic,
+        )
         self._fenced = set()
 
     def _changes(self, group):
         with sqlite3.connect(self.db_path) as conn:
-            rows = conn.execute("SELECT change FROM broker_changes WHERE lease_id=? ORDER BY seq", (group["lease_id"],)).fetchall()
+            rows = conn.execute(
+                "SELECT change FROM broker_changes WHERE lease_id=? ORDER BY seq",
+                (group["lease_id"],),
+            ).fetchall()
         changes = [json.loads(r[0]) for r in rows]
-        for change in changes: validate_change(change)
+        for change in changes:
+            validate_change(change)
         return changes
 
     @staticmethod
@@ -63,8 +75,13 @@ class OwnedRecovery:
         return found
 
     def _daemon_pid(self, timeout):
-        result = subprocess.run([self.multica, "daemon", "status", "--output", "json"],
-                                capture_output=True, text=True, check=True, timeout=timeout)
+        result = subprocess.run(
+            [self.multica, "daemon", "status", "--output", "json"],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=timeout,
+        )
         payload = json.loads(result.stdout)
         if payload.get("status") != "running" or type(payload.get("pid")) is not int:
             raise ValueError("daemon identity unavailable")
@@ -94,8 +111,13 @@ class OwnedRecovery:
         endpoint = endpoints[device_id]
         if not isinstance(endpoint, str) or not endpoint or endpoint.startswith("-"):
             raise ValueError("invalid recovery endpoint")
-        result = subprocess.run([self.adb, "-s", endpoint, *args], capture_output=True, text=True,
-                                timeout=timeout, check=True)
+        result = subprocess.run(
+            [self.adb, "-s", endpoint, *args],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=True,
+        )
         return result.stdout
 
     def _forwards(self, group, device, direction, timeout):
@@ -115,17 +137,23 @@ class OwnedRecovery:
 
     def fence(self, group, *, timeout):
         deadline = self.monotonic() + timeout
+
         def remaining():
             value = deadline - self.monotonic()
-            if value <= 0: raise TimeoutError()
+            if value <= 0:
+                raise TimeoutError()
             return value
+
         try:
             remaining()
             changes = self._changes(group)
             work = [c for c in changes if c["kind"] == "work"]
             devices = {d["device_id"] for d in group["devices"]}
-            if (group["binding"].get("mode") != "local" or {w["device_id"] for w in work} != devices
-                    or len(work) != len(devices)):
+            if (
+                group["binding"].get("mode") != "local"
+                or {w["device_id"] for w in work} != devices
+                or len(work) != len(devices)
+            ):
                 return False
             identities = {}
             for item in work:
@@ -146,7 +174,10 @@ class OwnedRecovery:
                 if current is not None and self._descendants(identity) - identities.keys():
                     return False
             for identity in identities.values():
-                if self._identity(identity["pid"]) is not None and self._stop(identity, remaining()) is not True:
+                if (
+                    self._identity(identity["pid"]) is not None
+                    and self._stop(identity, remaining()) is not True
+                ):
                     return False
             if any(self._identity(pid) is not None for pid in identities):
                 return False
@@ -155,7 +186,11 @@ class OwnedRecovery:
             for item in work:
                 device = item["device_id"]
                 for direction in ("forward", "reverse"):
-                    allowed = {f["local"]: f["remote"] for f in item["forwards"] if f["direction"] == direction}
+                    allowed = {
+                        f["local"]: f["remote"]
+                        for f in item["forwards"]
+                        if f["direction"] == direction
+                    }
                     actual = self._forwards(group, device, direction, remaining())
                     if any(allowed.get(local) != remote for local, remote in actual.items()):
                         return False
@@ -171,14 +206,20 @@ class OwnedRecovery:
 
     def undo(self, group, change, *, timeout):
         deadline = self.monotonic() + timeout
+
         def adb(args):
             left = deadline - self.monotonic()
-            if left <= 0: raise TimeoutError()
+            if left <= 0:
+                raise TimeoutError()
             return self._adb(group, change["device_id"], args, left).strip()
+
         try:
             validate_change(change)
-            if (timeout <= 0 or change not in self._changes(group)
-                    or change["device_id"] not in {d["device_id"] for d in group["devices"]}):
+            if (
+                timeout <= 0
+                or change not in self._changes(group)
+                or change["device_id"] not in {d["device_id"] for d in group["devices"]}
+            ):
                 return False
             if change["kind"] == "work":
                 return group["lease_id"] in self._fenced  # Only after confirmed fencing.
@@ -196,16 +237,21 @@ class OwnedRecovery:
                     adb(["shell", "settings", "put", namespace, name, before])
                 else:
                     return False
-                return adb(["shell", "settings", "get", namespace, name]) == (before if before is not None else "null")
+                return adb(["shell", "settings", "get", namespace, name]) == (
+                    before if before is not None else "null"
+                )
             if change["kind"] == "app":
                 import re
+
                 package = change["package"]
                 if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)+", package):
                     return False
                 marker = "package:" + package
                 installed = adb(["shell", "pm", "list", "packages", package]).splitlines()
-                if marker not in installed: return True
-                if adb(["uninstall", package]) != "Success": return False
+                if marker not in installed:
+                    return True
+                if adb(["uninstall", package]) != "Success":
+                    return False
                 return marker not in adb(["shell", "pm", "list", "packages", package]).splitlines()
             # A legacy HOME intent lacks comparable state. Never claim a successful no-op.
             return False
