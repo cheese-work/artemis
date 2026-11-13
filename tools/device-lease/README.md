@@ -684,3 +684,25 @@ private fake endpoints with explicit `-H/-P`, and exercises filtered discovery,
 legacy shell and exec-out. The optional feature set remains empty. Sync/package
 wire compatibility and a complete Artemis/uiautomator2 journey are not claimed
 by those three client probes. Live SSH/isolation/device verification is NOT-RUN.
+
+### Authoritative Android claims (CHE-5438)
+
+`device_lease.claims.ClaimLedger` stores claims and their source generation in
+the same `leases.sqlite3` as the broker. `census` requires an explicit complete
+owner census covering `android` and `artemis`, a fresh observation and increasing
+generation for configuration changes. Uninitialized, incomplete or stale census
+data closes admission even when no claims exist. Known claims cannot disappear
+through an empty replacement: their owner/run must call `release` with the claim ID.
+Issue references are audit evidence only; they do not drive admission.
+
+Every Android `claim` checks non-released broker groups, offered reservations,
+and SDK lock files under `guard_path`. The SDK writer uses the same checks when
+`ARTEMIS_DEVICE_ADMISSION_GUARD` and `ARTEMIS_DEVICE_CLAIMS_DB` are set. Setting
+only one refuses acquisition. The census binds the guard, canonical alias map,
+and SDK lock directory; a mismatched writer fails closed. Configure ALL writers
+before the owner attests the census. Standalone SDK use without either variable
+is unchanged; it must not share an enabled broker's fleet.
+
+`write_claims_snapshot` is disabled. Caller-provided lists are not an authority.
+The live serve/owner CLI wiring follows in layer 4; legacy JSON claim readers
+remain only for existing composition fixtures until that wiring replaces them.

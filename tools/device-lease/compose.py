@@ -194,23 +194,8 @@ def artemis_locks_reader(lock_dir):
 
 
 def write_claims_snapshot(path, guard, claims, clock=time.time):
-    """Android claim writer: replace the snapshot atomically inside the shared guard."""
-    if not isinstance(claims, (list, tuple)) or any(
-        not isinstance(c, str) or not c.strip() for c in claims
-    ):
-        raise ValueError("claims must be nonempty strings")
-    path = Path(path)
-    temp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    with guard():
-        fd = os.open(temp, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as stream:
-                json.dump({"observed_at": clock(), "claims": list(claims)}, stream)
-                stream.flush()
-                os.fsync(stream.fileno())
-            os.replace(temp, path)
-        finally:
-            temp.unlink(missing_ok=True)
+    """Removed unsafe snapshot replacement. Use ClaimLedger's owned claim/release."""
+    raise ValueError("unverified claims snapshots are disabled; use the claim ledger")
 
 
 def _owner_file(path):
