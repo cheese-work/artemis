@@ -30,6 +30,8 @@ concurrency:
 jobs:
   ci-policy:
     name: ci-policy
+    # Same guard as every shared X99 job (CHE-2887): skip upstream-sync heads and fork PRs. A queue run has no head_ref, so it still runs.
+    if: ${{ !startsWith(github.head_ref || github.ref_name, 'upstream-sync/') && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
     runs-on: ${{ github.repository_owner == 'cheese-work' && fromJSON('["self-hosted","Linux","X64","cheese-x99-gate"]') || fromJSON('["ubuntu-latest"]') }}
     timeout-minutes: 10
     env:
