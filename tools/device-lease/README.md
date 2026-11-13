@@ -230,10 +230,15 @@ directory, database or socket is created:
 ```
 
 1. **Fresh readiness and grants.** `admitted.path` holds
-   `{"observed_at": EPOCH, "devices": {"CANONICAL_ID": "ENDPOINT_ALIAS"}}`, written
-   by the trusted readiness/grant job. The broker re-reads it on every decision.
-   Older than `max_age_seconds` (or more than 5 s in the future), unreadable or
-   malformed closes admission and admits nothing; no cached snapshot survives.
+   `{"generation": 1, "devices": [{"device_id": "CANONICAL_ID",
+   "endpoint": "ENDPOINT_ALIAS", "state": "device", "observed_at": EPOCH,
+   "grant": {"reference": "CHE-grant", "observed_at": EPOCH, "expires_at": EPOCH}}]}`.
+   The trusted owner writes this private file; registry membership is not a grant.
+   The broker re-reads it on every decision. Each readiness and grant observation
+   must be within `max_age_seconds` (at most 5 s future skew), with an unexpired
+   grant. Stale, offline, restricted, spare, or mismatched devices are excluded.
+   Unreadable or malformed sources close admission; no cached snapshot survives.
+   Legacy plain device maps are rejected.
 2. **Claim readers.** `artemis` reads every `artemis-device-*.lock` (and the legacy
    global lock) in `artemis_locks_dir` without importing the SDK. Every record
    blocks its device, live or not; a partial or unreadable record closes

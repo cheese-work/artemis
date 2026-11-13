@@ -79,16 +79,77 @@ def _fresh(path, key, max_age, clock=time.time):
     return payload[key]
 
 
-def admitted_reader(path, max_age):
-    """Fresh readiness and grants: canonical id -> allowed endpoint alias."""
+def admitted_reader(path, max_age, registry=None, clock=time.time):
+    """Per-device readiness AND explicit grants; inventory is never permission.
+
+    Invalid source records close admission. Valid but stale, revoked or restricted
+    devices are excluded individually. Caller holds the shared admission guard.
+    """
+    import math
+
+    def number(value):
+        if type(value) not in (int, float) or not math.isfinite(value):
+            raise ValueError("invalid readiness time")
+        return value
 
     def read():
-        devices = _fresh(path, "devices", max_age)
-        if not isinstance(devices, dict) or any(
-            not isinstance(k, str) or not isinstance(v, str) for k, v in devices.items()
+        _owner_file(path)
+        payload = json.loads(Path(path).read_text(encoding="utf-8"))
+        if (
+            not isinstance(payload, dict)
+            or set(payload) != {"generation", "devices"}
+            or type(payload["generation"]) is not int
+            or payload["generation"] < 1
+            or not isinstance(payload["devices"], list)
+            or registry is None
         ):
-            raise ValueError("invalid admitted snapshot")
-        return dict(devices)
+            raise ValueError("invalid readiness source")
+        now, result, seen = number(clock()), {}, set()
+        for row in payload["devices"]:
+            if not isinstance(row, dict) or set(row) != {
+                "device_id",
+                "endpoint",
+                "state",
+                "observed_at",
+                "grant",
+            }:
+                raise ValueError("invalid readiness record")
+            if any(
+                not isinstance(row[k], str) or not row[k].strip()
+                for k in ("device_id", "endpoint", "state")
+            ):
+                raise ValueError("invalid readiness identity")
+            if row["device_id"] in seen:
+                raise ValueError("duplicate readiness record")
+            seen.add(row["device_id"])
+            grant = row["grant"]
+            if (
+                not isinstance(grant, dict)
+                or set(grant) != {"reference", "observed_at", "expires_at"}
+                or not isinstance(grant["reference"], str)
+                or not grant["reference"].strip()
+            ):
+                raise ValueError("invalid grant record")
+            observed, granted, expiry = (
+                number(row["observed_at"]),
+                number(grant["observed_at"]),
+                number(grant["expires_at"]),
+            )
+            device = registry.resolve(row["device_id"])
+            if (
+                device is not None
+                and device.device_id == row["device_id"]
+                and registry.resolve(row["endpoint"]) == device
+                and device.pool != "spare"
+                and not device.restricted
+                and registry.eligible(row["endpoint"], row["state"])
+                and -MAX_SKEW <= now - observed <= max_age
+                and -MAX_SKEW <= now - granted <= max_age
+                and granted < expiry
+                and now < expiry
+            ):
+                result[device.device_id] = row["endpoint"]
+        return result
 
     return read
 
@@ -219,7 +280,7 @@ def compose(config_path, registry):
     return {
         "broker": {
             "admitted": {},
-            "admission_snapshot": admitted_reader(admitted_path, admitted_age),
+            "admission_snapshot": admitted_reader(admitted_path, admitted_age, registry),
             "admission_sources": {
                 "artemis": artemis_locks_reader(locks),
                 "android": android_claims_reader(claims_path, claims_age),
