@@ -115,6 +115,7 @@ class Broker:
         recovery_owner=None,
         ops_issue=None,
         admission_guard=nullcontext,
+        admission_snapshot=None,
         authority_name="broker",
         authority_generation=1,
     ):
@@ -138,6 +139,8 @@ class Broker:
         self.ops_issue = ops_issue
         # The owner supplies one guard shared with claim writers; never a client option.
         self.admission_guard = admission_guard
+        # Optional trusted reader of fresh readiness/grants, re-read on every decision.
+        self.admission_snapshot = admission_snapshot
         if recovery_io is not None:
             self._text(recovery_owner, ops_issue)
 
@@ -230,6 +233,56 @@ class Broker:
                     "UPDATE broker_groups SET state='fencing' WHERE lease_id=?", (lease_id,)
                 )
             return self._decide(entry, self._view(conn, lease_id))
+
+    def inventory(self):
+        """Owner fleet readback: every registry device, eligibility reason and lease.
+
+        Eligibility mirrors candidate selection (identity, restriction, fresh
+        admission and endpoint mapping). It grants nothing; `claimed` reports an
+        external Artemis/Android claim and `lease` the current non-released group.
+        """
+        with self.transaction(allow_audit_failure=True) as (conn, now):
+            self._expire(conn, now)
+            occupied = self._occupied(conn)
+            devices = []
+            for device in self.registry.devices():
+                endpoint = self.admitted.get(device.device_id)
+                if device.restricted:
+                    reason = "restricted"
+                elif not device.identity_confirmed:
+                    reason = "identity_unconfirmed"
+                elif endpoint is None:
+                    reason = "not_admitted"
+                elif self._canonical(endpoint) != device.device_id or not self.registry.eligible(
+                    endpoint, "device"
+                ):
+                    reason = "endpoint_mismatch"
+                else:
+                    reason = None
+                lease = None
+                if device.device_id in occupied:
+                    group = self._view(conn, occupied[device.device_id])
+                    lease = {
+                        k: group[k] for k in ("lease_id", "state", "holder", "run_id", "expires_at")
+                    }
+                devices.append(
+                    {
+                        "device_id": device.device_id,
+                        "aliases": list(device.aliases),
+                        "pool": device.pool,
+                        "model": device.model,
+                        "restricted": device.restricted,
+                        "eligible": reason is None,
+                        "reason": reason,
+                        "claimed": device.device_id in self._admission.blocked
+                        and not self._admission.unavailable,
+                        "lease": lease,
+                    }
+                )
+            return {
+                "admission_available": not self._admission.unavailable and self._admission.audit_ok,
+                "devices": devices,
+            }
 
     def recovery(self, lease_id, expected, target, *, recovery_owner=None, ops_issue=None):
         """Trusted recovery-worker CAS, never a holder RPC. No automatic free path.
@@ -428,6 +481,19 @@ class Broker:
                 not {"artemis", "android"} <= self.admission_sources.keys()
                 or self.admission_guard is nullcontext
             )
+            if self.admission_snapshot is not None:
+                # Stale or failed readiness admits nothing; no cached snapshot survives.
+                try:
+                    snapshot = self.admission_snapshot()
+                    if not isinstance(snapshot, dict) or any(
+                        not isinstance(k, str) or not isinstance(v, str)
+                        for k, v in snapshot.items()
+                    ):
+                        raise ValueError("invalid admission snapshot")
+                    self.admitted = dict(snapshot)
+                except Exception:
+                    self.admitted = {}
+                    self._admission.unavailable = True
             try:
                 for reader in self.admission_sources.values():
                     aliases = reader()
@@ -1168,8 +1234,8 @@ class Broker:
         devices,
         binding,
         *,
-        agent_id=None,
-        issue_id=None,
+        agent_id,
+        issue_id,
     ):
         if self._admission.unavailable or not self._admission.audit_ok:
             raise Refused("admission_unavailable")
@@ -1178,10 +1244,7 @@ class Broker:
         self._require_authority(conn)
         started, deadline = self._run_budget(conn, now, principal, run_id, pool)
         lease_id = uuid.uuid4().hex
-        conn.execute(
-            "INSERT INTO broker_context VALUES (?,?,?)",
-            (lease_id, agent_id or principal, issue_id or purpose),
-        )
+        conn.execute("INSERT INTO broker_context VALUES (?,?,?)", (lease_id, agent_id, issue_id))
         conn.execute(
             "INSERT INTO broker_groups VALUES (?,?,?,?,?,?,?,?,?,?,?)",
             (
