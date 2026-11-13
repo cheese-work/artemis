@@ -13,10 +13,34 @@ def validate_change(change):
         "setting": {"kind", "device_id", "name", "before", "after"},
         "app": {"kind", "device_id", "package", "installed_by_run", "allowed_remove"},
         "home": {"kind", "device_id", "allowed"},
+        "work": {"kind", "device_id", "complete", "processes", "forwards"},
     }
     kind = change.get("kind")
     if not isinstance(kind, str) or kind not in fields or set(change) != fields[kind]:
         raise Refused("invalid_change")
+    if kind == "work":
+        import re
+        if (change["complete"] is not True or not isinstance(change["processes"], list)
+                or not isinstance(change["forwards"], list) or len(change["processes"]) > 100
+                or len(change["forwards"]) > 100):
+            raise Refused("invalid_change")
+        seen = set()
+        for identity in change["processes"]:
+            if (not isinstance(identity, dict) or set(identity) != {"mode", "pid", "process_start", "boot_id"}
+                    or identity["mode"] != "local" or type(identity["pid"]) is not int or identity["pid"] < 2
+                    or any(not isinstance(identity[k], str) or not identity[k].strip() for k in ("process_start", "boot_id"))
+                    or identity["pid"] in seen):
+                raise Refused("invalid_change")
+            seen.add(identity["pid"])
+        seen = set()
+        for forward in change["forwards"]:
+            if (not isinstance(forward, dict) or set(forward) != {"direction", "local", "remote"}
+                    or forward["direction"] not in {"forward", "reverse"}
+                    or any(not isinstance(forward[k], str) or not re.fullmatch(r"tcp:[1-9][0-9]{0,4}", forward[k])
+                           or int(forward[k][4:]) > 65535 for k in ("local", "remote"))
+                    or (forward["direction"], forward["local"]) in seen):
+                raise Refused("invalid_change")
+            seen.add((forward["direction"], forward["local"]))
     if kind == "app" and (
         change["installed_by_run"] is not True or change["allowed_remove"] is not True
     ):

@@ -706,3 +706,31 @@ is unchanged; it must not share an enabled broker's fleet.
 `write_claims_snapshot` is disabled. Caller-provided lists are not an authority.
 The live serve/owner CLI wiring follows in layer 4; legacy JSON claim readers
 remain only for existing composition fixtures until that wiring replaces them.
+
+### Concrete local owner recovery (CHE-5438)
+
+`owned_recovery.OwnedRecovery` consumes `broker_changes`. Before allowing work
+to execute, the owner journals one complete `work` manifest per leased device:
+
+```json
+{"kind":"work","device_id":"rig-1","complete":true,"processes":[
+  {"mode":"local","pid":1234,"process_start":"START_TICKS","boot_id":"BOOT_ID"}
+],"forwards":[{"direction":"reverse","local":"tcp:8765","remote":"tcp:8766"}]}
+```
+
+Spawn a worker paused at its own execution barrier, record its exact identity,
+then permit execution. Empty process/forward arrays require an explicit complete
+manifest; absent tracking never proves idle. Unknown descendants or forwards,
+reused PIDs, failed inspection, or deadline exhaustion quarantine. Linux pidfds
+pin each tracked identity before SIGTERM; no process-name kill or SIGKILL fallback.
+The adapter reads `multica daemon status --output json` and excludes that PID,
+itself and PID 1 before signaling. No adapter action is run by these unit tests.
+
+Forward/reverse removal targets recorded local/remote TCP pairs only and confirms
+absence. Setting undo supports the fixed brightness and stay-awake allowlist:
+compare current value to recorded before/after, restore numeric/null before value,
+then read back. App undo requires an explicitly removable run-installed package,
+valid package syntax and exact package absence readback. Unsupported or ambiguous
+changes (including legacy HOME without comparable state) quarantine. Recovery
+never resets a device or restarts ADB. Raw local ADB remains cooperative; remote
+transports must wrap this adapter with `RemoteRecovery` for stream/key fencing.
