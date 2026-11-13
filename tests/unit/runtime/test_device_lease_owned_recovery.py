@@ -1,9 +1,10 @@
-"""Real recovery policy with process/device I/O replaced at the boundary."""
+"""Recovery policy with fixture device I/O and disposable local process checks."""
 
 import json
 import os
 from pathlib import Path
 import sqlite3
+import subprocess
 import sys
 import unittest
 from unittest.mock import patch
@@ -17,7 +18,25 @@ IDENTITY = {"mode": "local", "pid": 1234, "process_start": "42", "boot_id": "fix
 class OwnedRecoveryTests(unittest.TestCase):
     setUp = fixtures.BrokerTests.setUp
     new_broker = fixtures.BrokerTests.new_broker
-    take = fixtures.BrokerTests.take
+
+    def take(self, **changes):
+        if "binding" not in changes:
+            probe = patch.object(self.broker, "run_probe", return_value=True)
+            probe.start()
+            self.addCleanup(probe.stop)
+            changes["binding"] = IDENTITY
+        return fixtures.BrokerTests.take(self, **changes)
+
+    def worker(self):
+        worker = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+
+        def cleanup():
+            if worker.poll() is None:
+                worker.terminate()
+            worker.wait(timeout=5)
+
+        self.addCleanup(cleanup)
+        return worker, fixtures.process_identity(worker.pid)
 
     def work(self, processes=None, forwards=None):
         return {
@@ -118,6 +137,40 @@ class OwnedRecoveryTests(unittest.TestCase):
         self.assertIn(("reverse", "--remove", "tcp:8765"), calls)
         self.assertEqual(sum(c[0] == "stop" for c in calls), 1)
 
+    def test_real_root_stop_reaches_verifying_without_mocking_process_checks(self):
+        worker, identity = self.worker()
+        group = self.take(device_id="a", binding=identity)
+        self.record(group, self.work(processes=[identity]))
+        adapter = self.adapter()
+        self.broker.recovery_io, self.broker.recovery_owner, self.broker.ops_issue = (
+            adapter,
+            "ops",
+            "CHE-fixture",
+        )
+        with (
+            patch.object(adapter, "_daemon_pid", return_value=os.getpid()),
+            patch.object(adapter, "_adb", return_value=""),
+        ):
+            self.broker.release(lease_id=group["lease_id"], principal="agent", run_id="run-1")
+            self.broker.maintain()
+        worker.wait(timeout=5)
+        with sqlite3.connect(self.path) as conn:
+            self.assertEqual(
+                conn.execute("SELECT state FROM broker_groups").fetchone()[0], "verifying"
+            )
+
+    def test_manifest_without_binding_root_refuses_and_leaves_root_alive(self):
+        worker, identity = self.worker()
+        group = self.take(device_id="a", binding=identity)
+        self.record(group, self.work(processes=[]))
+        adapter = self.adapter()
+        with (
+            patch.object(adapter, "_daemon_pid", return_value=os.getpid()),
+            patch.object(adapter, "_adb", return_value=""),
+        ):
+            self.assertFalse(adapter.fence(group, timeout=2))
+        self.assertIsNone(worker.poll())
+
     def test_setting_compare_restore_verify_and_failed_undo_quarantine(self):
         adapter = self.adapter()
         group = self.group()
@@ -190,6 +243,10 @@ class OwnedRecoveryTests(unittest.TestCase):
         with patch.object(adapter, "_identity", return_value=None):
             with self.assertRaises(ValueError):
                 adapter._descendants(IDENTITY)
+            self.assertEqual(adapter._descendants(IDENTITY, allow_missing=True), set())
+        with patch.object(adapter, "_identity", return_value=dict(IDENTITY, process_start="other")):
+            with self.assertRaises(ValueError):
+                adapter._descendants(IDENTITY, allow_missing=True)
 
     def test_deadline_unknown_forward_and_unrecorded_undo_fail_closed(self):
         adapter = self.adapter()

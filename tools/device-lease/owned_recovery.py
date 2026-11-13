@@ -2,8 +2,8 @@
 
 The owner records complete work manifests and undo intents through broker_changes
 BEFORE execution. Missing manifests, unknown work or any failed readback quarantine.
-Raw local ADB has no remotely revocable credential: remote transports must wrap this
-adapter in RemoteRecovery. Neither successful cleanup nor TTL releases a device.
+This adapter accepts local bindings only. Neither successful cleanup nor TTL
+releases a device.
 """
 
 import json
@@ -56,11 +56,13 @@ class OwnedRecovery:
         except (FileNotFoundError, ProcessLookupError):
             return None
 
-    def _descendants(self, identity):
+    def _descendants(self, identity, *, allow_missing=False):
         if not identity or identity.get("mode") != "local":
             raise ValueError("local work binding required")
         expected = {k: identity[k] for k in ("mode", "pid", "process_start", "boot_id")}
         current = self._identity(identity["pid"])
+        if current is None and allow_missing:
+            return set()  # Only after this fence validated and stopped the root.
         if current != expected:
             raise ValueError("old root unavailable; orphaned work cannot be ruled out")
         parents = {}
@@ -171,6 +173,9 @@ class OwnedRecovery:
                     if identity["pid"] in identities and identities[identity["pid"]] != identity:
                         return False
                     identities[identity["pid"]] = identity
+            root = {k: group["binding"][k] for k in ("mode", "pid", "process_start", "boot_id")}
+            if identities.get(root["pid"]) != root:
+                return False
             daemon = self._daemon_pid(remaining())
             if set(identities) & {1, os.getpid(), daemon}:
                 return False
@@ -191,7 +196,7 @@ class OwnedRecovery:
                     return False
             if any(self._identity(pid) is not None for pid in identities):
                 return False
-            if self._descendants(group["binding"]):
+            if self._descendants(group["binding"], allow_missing=True):
                 return False
             for item in work:
                 device = item["device_id"]
