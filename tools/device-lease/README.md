@@ -717,13 +717,16 @@ to execute, the owner journals one complete `work` manifest per leased device:
 ```
 
 Spawn a worker paused at its own execution barrier, record its exact identity,
-then permit execution. Empty process/forward arrays require an explicit complete
-manifest; absent tracking never proves idle. Unknown descendants or forwards,
-reused PIDs, a missing old-run root (orphaned work cannot be ruled out), failed
-inspection, or deadline exhaustion quarantine. Linux pidfds
+then permit execution. The complete manifests must include the binding root's
+exact PID/start/boot identity. An omitted or mismatched root refuses recovery.
+Empty forward arrays are allowed; absent tracking never proves idle.
+Unknown descendants or forwards, reused PIDs, a root missing before fencing,
+failed inspection, or deadline exhaustion quarantine. A root that this fence
+validated and stopped can be absent at the final descendant check. Linux pidfds
 pin each tracked identity before SIGTERM; no process-name kill or SIGKILL fallback.
 The adapter reads `multica daemon status --output json` and excludes that PID,
-itself and PID 1 before signaling. No adapter action is run by these unit tests.
+itself and PID 1 before signaling. Process integration tests signal only disposable
+test-created children. Device commands use fixtures.
 
 Forward/reverse removal targets recorded local/remote TCP pairs only and confirms
 absence. Setting undo supports the fixed brightness and stay-awake allowlist:
