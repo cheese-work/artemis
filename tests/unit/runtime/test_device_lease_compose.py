@@ -77,7 +77,11 @@ class ComposeTests(unittest.TestCase):
         return path
 
     def write_admitted(self, devices, age=0):
-        self.write_json("admitted.json", {"observed_at": time.time() - age, "devices": devices})
+        now = time.time() - age
+        self.write_json("admitted.json", {"generation": 1, "devices": [
+            {"device_id": key, "endpoint": endpoint, "state": "device", "observed_at": now,
+             "grant": {"reference": "CHE-fixture", "observed_at": now, "expires_at": now + 300}}
+            for key, endpoint in devices.items()]})
 
     def config_file(self, config=None):
         return self.write_json("composition.json", self.config if config is None else config)
@@ -158,8 +162,8 @@ class ComposeTests(unittest.TestCase):
         refused = self.assertRaises(Refused)
         with refused:
             self.take(broker, run_id="run-2", idempotency_key="k2", device_id="rig-2")
-        self.assertEqual(refused.exception.code, "admission_unavailable")
-        self.assertFalse(broker.inventory()["admission_available"])
+        self.assertEqual(refused.exception.code, "impossible_batch")
+        self.assertEqual(broker.admitted, {})
 
     def test_artemis_lock_and_android_claim_block_their_devices(self):
         broker, _ = self.composed_broker()
