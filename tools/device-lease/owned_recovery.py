@@ -26,7 +26,9 @@ SETTINGS = {
 
 
 class OwnedRecovery:
-    def __init__(self, db_path, *, adb="adb", multica="multica", monotonic=time.monotonic):
+    def __init__(
+        self, db_path, *, registry=None, adb="adb", multica="multica", monotonic=time.monotonic
+    ):
         self.db_path, self.adb, self.multica, self.monotonic = (
             Path(db_path),
             adb,
@@ -34,6 +36,7 @@ class OwnedRecovery:
             monotonic,
         )
         self._fenced = set()
+        self.registry = registry
 
     def _changes(self, group):
         with sqlite3.connect(self.db_path) as conn:
@@ -129,7 +132,14 @@ class OwnedRecovery:
             if len(fields) != 3:
                 raise ValueError("invalid forward census")
             serial, local, remote = fields
-            if direction == "reverse" or serial in {device, endpoint}:
+            resolved = self.registry.resolve(serial) if self.registry is not None else None
+            if direction == "forward" and resolved is None and serial not in {device, endpoint}:
+                raise ValueError("unknown forward identity")
+            if (
+                direction == "reverse"
+                or serial in {device, endpoint}
+                or (resolved is not None and resolved.device_id == device)
+            ):
                 if local in result:
                     raise ValueError("ambiguous forward")
                 result[local] = remote
@@ -247,12 +257,23 @@ class OwnedRecovery:
                 if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)+", package):
                     return False
                 marker = "package:" + package
-                installed = adb(["shell", "pm", "list", "packages", package]).splitlines()
-                if marker not in installed:
+
+                def packages():
+                    lines = adb(["shell", "pm", "list", "packages", package]).splitlines()
+                    if any(
+                        not re.fullmatch(
+                            r"package:[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)+", line
+                        )
+                        for line in lines
+                    ):
+                        raise ValueError("invalid package census")
+                    return lines
+
+                if marker not in packages():
                     return True
                 if adb(["uninstall", package]) != "Success":
                     return False
-                return marker not in adb(["shell", "pm", "list", "packages", package]).splitlines()
+                return marker not in packages()
             # A legacy HOME intent lacks comparable state. Never claim a successful no-op.
             return False
         except Exception:

@@ -157,6 +157,34 @@ class OwnedRecoveryTests(unittest.TestCase):
                 conn.execute("SELECT state FROM broker_groups").fetchone()[0], "quarantine"
             )
 
+    def test_forward_alias_is_part_of_the_same_device_census(self):
+        adapter = self.adapter()
+        adapter.registry = self.registry
+        group = self.group()
+        with patch.object(adapter, "_adb", return_value="192.0.2.1:5555 tcp:8765 tcp:8766\n"):
+            self.assertEqual(adapter._forwards(group, "a", "forward", 2), {"tcp:8765": "tcp:8766"})
+        with patch.object(adapter, "_adb", return_value="unknown tcp:8765 tcp:8766\n"):
+            with self.assertRaises(ValueError):
+                adapter._forwards(group, "a", "forward", 2)
+
+    def test_app_absence_needs_valid_package_readback(self):
+        adapter = self.adapter()
+        group = self.group()
+        change = {
+            "kind": "app",
+            "device_id": "a",
+            "package": "org.example.fixture",
+            "installed_by_run": True,
+            "allowed_remove": True,
+        }
+        self.record(group, change)
+        with patch.object(adapter, "_adb", return_value="Error: package manager unavailable"):
+            self.assertFalse(adapter.undo(group, change, timeout=2))
+        with patch.object(
+            adapter, "_adb", side_effect=["package:org.example.fixture", "Success", ""]
+        ):
+            self.assertTrue(adapter.undo(group, change, timeout=2))
+
     def test_missing_root_cannot_prove_no_orphaned_work(self):
         adapter = self.adapter()
         with patch.object(adapter, "_identity", return_value=None):
