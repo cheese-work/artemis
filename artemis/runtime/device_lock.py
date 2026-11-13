@@ -24,6 +24,7 @@ import json
 import os
 from pathlib import Path
 import re
+import sqlite3
 import time
 from typing import Any
 import uuid
@@ -588,7 +589,7 @@ class DeviceExecutionLock:
                     check_sdk_available(
                         database, guard, self.device_id, self.path.parent, self.path
                     )
-                except Exception:
+                except (OSError, sqlite3.Error, ValueError, TypeError, KeyError):
                     return False  # Missing/stale census, SQL failure or conflict: no owner file.
             return self._try_acquire_owner_lock_unguarded()
 
