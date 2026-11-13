@@ -436,3 +436,25 @@ def test_queue_head_token_skips_dead_owners_and_other_scopes():
     DeviceExecutionLock.cancel_reservation(first)
     head = DeviceExecutionLock.queue_head_token("d1", "host:a")
     assert head is not None and head != first
+
+
+def test_owner_lock_waits_for_shared_admission_guard(tmp_path, monkeypatch):
+    """CHE-5297: the DLP-1 broker and Artemis lock writers share one exclusion."""
+    import fcntl
+
+    guard = tmp_path / "claims.guard"
+    monkeypatch.setenv("ARTEMIS_DEVICE_ADMISSION_GUARD", str(guard))
+    holder = os.open(guard, os.O_CREAT | os.O_RDWR, 0o600)
+    fcntl.flock(holder, fcntl.LOCK_EX)
+    lock = DeviceExecutionLock("emulator-5554", "guarded task")
+    worker = threading.Thread(target=lock.acquire)
+    worker.start()
+    try:
+        time.sleep(0.3)
+        assert not lock.path.exists()
+    finally:
+        fcntl.flock(holder, fcntl.LOCK_UN)
+        os.close(holder)
+    worker.join(timeout=5)
+    assert lock.path.exists()
+    lock.release()

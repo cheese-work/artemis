@@ -27,10 +27,13 @@ from apps.admin_console.database.repositories.device_repository import (
 )
 from apps.admin_console.database.repositories.run_catalog_repository import run_catalog_repo
 from apps.admin_console.services import device_leases as leases
+from apps.admin_console.routers.lease_extensions import router as extensions_router
 from artemis.config.device_leases import device_leases_enabled
+from device_lease import canonical_ids
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/leases", tags=["leases"])
+router.include_router(extensions_router)
 
 MAX_TTL_SECONDS = 4 * 3600
 
@@ -79,13 +82,13 @@ def _candidates(body: LeaseRequest) -> list[str]:
     repo = DeviceRepository(run_catalog_repo.db_path)
     wanted = [body.device_id] if body.device_id else _pools().get(body.pool or "")
     try:
-        found = [d for d in (repo.resolve(i) for i in wanted or []) if d is not None]
+        found = canonical_ids(wanted or [], repo.resolve)
     except DeviceStoreNotReady as exc:
         raise AdminAPIError(
             503, "Device identity is unavailable.", "device_store_not_ready", "Try again shortly."
         ) from exc
     if found:
-        return list(dict.fromkeys(found))
+        return found
     if body.pool:
         raise AdminAPIError(404, "Unknown pool.", "pool_unknown", "Check the pool name.")
     raise AdminAPIError(404, "Unknown phone.", "device_unknown", "Check the device id.")
