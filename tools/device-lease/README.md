@@ -731,8 +731,8 @@ compare current value to recorded before/after, restore numeric/null before valu
 then read back. App undo requires an explicitly removable run-installed package,
 valid package syntax and exact package absence readback. Unsupported or ambiguous
 changes (including legacy HOME without comparable state) quarantine. Recovery
-never resets a device or restarts ADB. Raw local ADB remains cooperative; remote
-transports must wrap this adapter with `RemoteRecovery` for stream/key fencing.
+never resets a device or restarts ADB. Raw local ADB remains cooperative.
+This adapter accepts local bindings only; remote bindings fail closed.
 
 ### Owner producer operations and activation
 
