@@ -59,7 +59,7 @@ class OwnedRecovery:
         expected = {k: identity[k] for k in ("mode", "pid", "process_start", "boot_id")}
         current = self._identity(identity["pid"])
         if current != expected:
-            return set()  # Old root is gone; never follow a reused root PID.
+            raise ValueError("old root unavailable; orphaned work cannot be ruled out")
         parents = {}
         for path in Path("/proc").glob("[0-9]*/stat"):
             try:

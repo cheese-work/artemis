@@ -157,6 +157,12 @@ class OwnedRecoveryTests(unittest.TestCase):
                 conn.execute("SELECT state FROM broker_groups").fetchone()[0], "quarantine"
             )
 
+    def test_missing_root_cannot_prove_no_orphaned_work(self):
+        adapter = self.adapter()
+        with patch.object(adapter, "_identity", return_value=None):
+            with self.assertRaises(ValueError):
+                adapter._descendants(IDENTITY)
+
     def test_deadline_unknown_forward_and_unrecorded_undo_fail_closed(self):
         adapter = self.adapter()
         group = self.group()
