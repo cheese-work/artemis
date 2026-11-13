@@ -248,6 +248,7 @@ def main(argv=None):
         "claim-android",
         "release-android",
         "list-android-claims",
+        "refresh",
     ):
         owner = sub.add_parser(operation, help="owner-only source operation under the shared guard")
         owner.add_argument("--composition", type=Path, required=True)
@@ -255,6 +256,8 @@ def main(argv=None):
         owner.add_argument("--state-dir", type=Path, default=DEFAULT_STATE)
         if operation in {"write-readiness", "census-android-claims"}:
             owner.add_argument("--input", type=Path, required=True)
+        if operation == "refresh":
+            owner.add_argument("--host-config", type=Path, required=True)
         if operation in {"claim-android", "release-android"}:
             owner.add_argument("--owner", required=True)
             owner.add_argument("--run-id", required=True)
@@ -373,6 +376,7 @@ def main(argv=None):
             "claim-android",
             "release-android",
             "list-android-claims",
+            "refresh",
         }:
             from compose import compose, write_readiness, _owner_file
 
@@ -383,7 +387,11 @@ def main(argv=None):
             # Initialize broker tables. No maintenance worker or device I/O here.
             Broker(state / "leases.sqlite3", registry, **composed["broker"]).inventory()
             ledger = composed["ledger"]
-            if op == "write-readiness":
+            if op == "refresh":
+                from refresh import refresh
+
+                result = refresh(composed, args["host_config"], registry, state / "leases.sqlite3")
+            elif op == "write-readiness":
                 result = write_readiness(composed, args["input"], registry)
             elif op == "census-android-claims":
                 _owner_file(args["input"])

@@ -241,6 +241,7 @@ def compose(config_path, registry, *, db_path=None):
     # Validate recovery even when db_path is absent; no dynamic import fallback.
     recovery_io, owner, ops_issue = _recovery(config, db_path or ".", registry)
     control = Path(_field(config, "leader_control_socket", str))
+    leader_id = _field(config, "leader_id", str)
     if db_path is None:
         raise CompositionError("composition requires the broker database")
     db_path = Path(db_path)
@@ -260,6 +261,7 @@ def compose(config_path, registry, *, db_path=None):
             "recovery_io": recovery_io,
             "recovery_owner": owner,
             "ops_issue": ops_issue,
+            "leader_id": leader_id,
         },
         "guard": guard,
         "ledger": ledger,

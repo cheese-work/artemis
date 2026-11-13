@@ -118,6 +118,7 @@ class Broker:
         admission_snapshot=None,
         authority_name="broker",
         authority_generation=1,
+        leader_id="5cd75ce5-d323-4004-9779-7e2ccf16bde4",
     ):
         self.db_path = Path(db_path)
         self.registry = registry
@@ -137,6 +138,8 @@ class Broker:
         self.recovery_io = recovery_io
         self.recovery_owner = recovery_owner
         self.ops_issue = ops_issue
+        self._text(leader_id)
+        self.leader_id = leader_id
         # The owner supplies one guard shared with claim writers; never a client option.
         self.admission_guard = admission_guard
         # Optional trusted reader of fresh readiness/grants, re-read on every decision.
@@ -655,7 +658,7 @@ class Broker:
     def verify_release(self, lease_id, *, verifier, evidence, passed):
         """Trusted leader entry point, deliberately absent from holder RPC/CLI."""
         self._text(verifier, evidence)
-        if verifier != "5cd75ce5-d323-4004-9779-7e2ccf16bde4":
+        if verifier != self.leader_id:
             raise Refused("leader_required")
         if type(passed) is not bool:
             raise Refused("invalid_request")
