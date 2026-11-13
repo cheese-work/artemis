@@ -157,6 +157,16 @@ class OwnedRecoveryTests(unittest.TestCase):
                 conn.execute("SELECT state FROM broker_groups").fetchone()[0], "quarantine"
             )
 
+    def test_forward_alias_is_part_of_the_same_device_census(self):
+        adapter = self.adapter()
+        adapter.registry = self.registry
+        group = self.group()
+        with patch.object(adapter, "_adb", return_value="192.0.2.1:5555 tcp:8765 tcp:8766\n"):
+            self.assertEqual(adapter._forwards(group, "a", "forward", 2), {"tcp:8765": "tcp:8766"})
+        with patch.object(adapter, "_adb", return_value="unknown tcp:8765 tcp:8766\n"):
+            with self.assertRaises(ValueError):
+                adapter._forwards(group, "a", "forward", 2)
+
     def test_app_absence_needs_valid_package_readback(self):
         adapter = self.adapter()
         group = self.group()
