@@ -585,7 +585,9 @@ class DeviceExecutionLock:
                 from device_lease.claims import check_sdk_available
 
                 try:
-                    check_sdk_available(database, guard, self.device_id, self.path.parent, self.path)
+                    check_sdk_available(
+                        database, guard, self.device_id, self.path.parent, self.path
+                    )
                 except Exception:
                     return False  # Missing/stale census, SQL failure or conflict: no owner file.
             return self._try_acquire_owner_lock_unguarded()
