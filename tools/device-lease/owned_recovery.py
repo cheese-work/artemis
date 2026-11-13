@@ -247,12 +247,23 @@ class OwnedRecovery:
                 if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)+", package):
                     return False
                 marker = "package:" + package
-                installed = adb(["shell", "pm", "list", "packages", package]).splitlines()
-                if marker not in installed:
+
+                def packages():
+                    lines = adb(["shell", "pm", "list", "packages", package]).splitlines()
+                    if any(
+                        not re.fullmatch(
+                            r"package:[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)+", line
+                        )
+                        for line in lines
+                    ):
+                        raise ValueError("invalid package census")
+                    return lines
+
+                if marker not in packages():
                     return True
                 if adb(["uninstall", package]) != "Success":
                     return False
-                return marker not in adb(["shell", "pm", "list", "packages", package]).splitlines()
+                return marker not in packages()
             # A legacy HOME intent lacks comparable state. Never claim a successful no-op.
             return False
         except Exception:
