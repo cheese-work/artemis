@@ -1,0 +1,6 @@
+{
+  "id": "2026-11-02-bridge-recovery-timer",
+  "date": "2026-11-02",
+  "title": "A recovered phone connection stays connected after an earlier retry times out.",
+  "issues": ["CHE-3077"]
+}

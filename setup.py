@@ -138,6 +138,7 @@ setup(
     # Name and version come from pyproject.toml.
     packages=find_namespace_packages(
         include=[
+            "device_lease",
             "artemis",
             "artemis.*",
             "mcp_server",

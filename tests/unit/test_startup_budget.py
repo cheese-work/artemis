@@ -1,5 +1,6 @@
 import os
 import subprocess
+import sys
 from unittest.mock import patch
 
 import pytest
@@ -35,3 +36,13 @@ def test_a_stalled_probe_fails_within_the_probe_limit_and_leaves_no_child(tmp_pa
         module.startup_budget(6.0)
     with pytest.raises(ProcessLookupError):
         os.kill(int(pid_file.read_text()), 0)
+
+
+def test_probe_import_uses_the_child_environment(monkeypatch):
+    monkeypatch.setenv("ARTEMIS_STARTUP_PROBE_SENTINEL", "parent")
+    probe = "import os; assert os.environ['ARTEMIS_STARTUP_PROBE_SENTINEL'] == 'child'"
+    child_env = {"ARTEMIS_STARTUP_PROBE_SENTINEL": "child", "PATH": os.environ["PATH"]}
+    if sys.platform == "win32":
+        child_env["SYSTEMROOT"] = os.environ["SYSTEMROOT"]
+    with patch.object(module, "APP_IMPORT", probe):
+        assert module.startup_budget(0.01, env=child_env) >= 0.01
