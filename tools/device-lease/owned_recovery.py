@@ -130,6 +130,8 @@ class OwnedRecovery:
         endpoint = next(d["endpoint"] for d in group["devices"] if d["device_id"] == device)
         result = {}
         for line in data.splitlines():
+            if not line.strip():
+                continue  # adb prints a newline even when the list is empty.
             fields = line.split()
             if len(fields) != 3:
                 raise ValueError("invalid forward census")
