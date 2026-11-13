@@ -309,6 +309,43 @@ describe('RunChatComponent', () => {
     fixture.destroy();
   }));
 
+  describe('agent results note under the verdict', () => {
+    const verdictWith = (status: string, results_note: object | null): ChatSession => ({
+      ...thread, turns: [{ ...thread.turns[0], status }], timeline: thread.messages,
+      verdict: { status, outcome: null, details: {}, result: { results_note } as never }
+    });
+    const note = { text: '| Mục | Trạng thái | Kết quả | Bằng chứng |\n| Phiên 1 | PASS | 12 server | step 4 |', modified_at: 1793000000, truncated: false };
+
+    it('labels a note from an unfinished run as partial with its ICT time', fakeAsync(() => {
+      const fixture = render();
+      fixture.componentInstance.chat.set(verdictWith('failed', note));
+      fixture.detectChanges();
+      const block = fixture.nativeElement.querySelector('.verdict-card .results-note');
+      expect(block.querySelector('h3').textContent).toContain('Kết quả dở dang — agent ghi lúc 14:33 ICT');
+      expect(block.querySelector('pre').textContent).toContain('Phiên 1 | PASS');
+      fixture.destroy();
+    }));
+
+    it('drops the partial label once the run completed', fakeAsync(() => {
+      const fixture = render();
+      fixture.componentInstance.chat.set(verdictWith('completed', note));
+      fixture.detectChanges();
+      const heading = fixture.nativeElement.querySelector('.results-note h3').textContent;
+      expect(heading).toContain('Kết quả — agent ghi lúc');
+      expect(heading).not.toContain('dở dang');
+      fixture.destroy();
+    }));
+
+    it('says so when the agent wrote no results', fakeAsync(() => {
+      const fixture = render();
+      fixture.componentInstance.chat.set(verdictWith('failed', null));
+      fixture.detectChanges();
+      expect(fixture.nativeElement.querySelector('.verdict-card').textContent).toContain('Agent chưa ghi kết quả nào');
+      expect(fixture.nativeElement.querySelector('.results-note')).toBeNull();
+      fixture.destroy();
+    }));
+  });
+
   it('changes technical visibility without changing stored data and keeps the verdict last', fakeAsync(() => {
     const fixture = render();
     const completed: ChatSession = { ...thread, turns: [{ ...thread.turns[0], status: 'completed' }], timeline: [

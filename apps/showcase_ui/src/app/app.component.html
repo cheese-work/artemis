@@ -25,6 +25,15 @@
   (showWhatsNew)="openWhatsNew()"
 ></app-nav-switcher>
 <app-whats-new></app-whats-new>
+@if (usbRelay.backgroundWarning()) {
+  <aside class="usb-background-warning" role="alert">
+    <span class="material-symbols-outlined" aria-hidden="true">warning</span>
+    <p>Keep this tab visible while using the phone. This tab was hidden; the phone may disconnect when you switch tabs or minimize the browser.</p>
+    <button type="button" aria-label="Dismiss phone connection warning" (click)="usbRelay.backgroundWarning.set(false)">
+      <span class="material-symbols-outlined" aria-hidden="true">close</span>
+    </button>
+  </aside>
+}
 <div class="app-page" [attr.data-active-pane]="shell.activePane()">
   <router-outlet></router-outlet>
 </div>

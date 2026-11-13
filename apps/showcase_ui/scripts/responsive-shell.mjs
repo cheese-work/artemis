@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startMockApi } from './keyboard-walkthrough/mock-api.mjs';
+import { cleanupResponsiveShell } from './responsive-shell-cleanup.mjs';
 
 const dist = process.env.SHELL_DIST || fileURLToPath(new URL('../dist/frontend/browser', import.meta.url));
 assert.ok(existsSync(path.join(dist, 'index.html')), 'Build the development UI first');
@@ -15,7 +16,12 @@ const port = 9222 + Math.floor(Math.random() * 2000);
 const chrome = spawn(process.env.CHROME_BIN || 'google-chrome', [
   '--headless=new', '--no-sandbox', '--disable-gpu', '--password-store=basic', '--no-proxy-server',
   `--remote-debugging-port=${port}`, `--user-data-dir=${profile}`, 'about:blank'
-], { stdio: 'ignore' });
+], { detached: process.platform !== 'win32', stdio: 'ignore' });
+const chromeExit = new Promise(resolve => {
+  chrome.once('exit', (code, signal) => resolve({ code, signal }));
+  chrome.once('error', error => resolve({ error }));
+});
+console.log(`CHROME_GROUP=${chrome.pid ?? 'none'}`);
 const delay = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
 let socket;
 let nextId = 1;
@@ -73,6 +79,7 @@ const assertTargets = boxes => {
 const evidence = [];
 if (process.env.SHOTS) mkdirSync(process.env.SHOTS, { recursive: true });
 
+let smokeError;
 try {
   let tabs;
   for (let attempt = 0; attempt < 100; attempt++) {
@@ -212,12 +219,26 @@ try {
     console.log(`PASS ${width}px: active nav linear-gradient, shell, pane switch, hit boxes, phone picker and account menu${width < 800 ? ', borderless device visual' : ''}`);
   }
   if (process.env.SHOTS) writeFileSync(path.join(process.env.SHOTS, 'assertions.json'), JSON.stringify(evidence, null, 2));
-} finally {
-  const stopped = once(chrome, 'exit');
-  if (socket?.readyState === WebSocket.OPEN) await send('Browser.close');
-  else chrome.kill();
-  await stopped;
-  socket?.close();
-  await new Promise(resolve => server.close(resolve));
-  rmSync(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+} catch (error) {
+  smokeError = error;
 }
+
+const cleanup = await cleanupResponsiveShell({
+  chrome,
+  chromeExit,
+  sendBrowserClose: socket?.readyState === WebSocket.OPEN
+    ? () => process.argv.includes('--test-stall-browser-close') ? new Promise(() => {}) : send('Browser.close')
+    : undefined,
+  closeSocket: () => socket?.close(),
+  server,
+  profile
+});
+console.log(`CLEANUP duration=${cleanup.durationMs}ms chrome-group=${chrome.pid ?? 'none'} forced=${cleanup.forcedTermination}`);
+if (cleanup.forcedTermination && !cleanup.errors.length) console.log('CLEANUP NOTICE: terminated remaining Chrome processes');
+for (const error of cleanup.errors) console.error(`CLEANUP ERROR: ${error.message}`);
+
+if (smokeError && cleanup.errors.length) {
+  throw new AggregateError([smokeError, ...cleanup.errors], 'Responsive shell assertions and cleanup failed');
+}
+if (smokeError) throw smokeError;
+if (cleanup.errors.length) throw new AggregateError(cleanup.errors, 'Responsive shell cleanup failed');

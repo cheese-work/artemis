@@ -95,6 +95,29 @@ func ambiguousGroup(kind string, members []device) bool {
 	return wired > 1
 }
 
+// liveConnections names the kinds of live adb connection a physical phone has: "usb", "wifi".
+// It is the only thing the server learns about transports; never a serial or address.
+func liveConnections(kind string, members []device) []string {
+	kinds := []string{}
+	if kind != "physical" {
+		return kinds
+	}
+	for _, member := range members {
+		if member.State != "device" {
+			continue
+		}
+		name := "usb"
+		if wirelessSerial(member.Serial) {
+			name = "wifi"
+		}
+		if !slices.Contains(kinds, name) {
+			kinds = append(kinds, name)
+		}
+	}
+	slices.Sort(kinds)
+	return kinds
+}
+
 func preferUSB(members []device) {
 	sort.Slice(members, func(first, second int) bool {
 		a, b := members[first], members[second]
@@ -167,6 +190,7 @@ func (registry *registry) resolve() {
 		for _, member := range members {
 			entry.serials = append(entry.serials, member.Serial)
 		}
+		entry.connections = liveConnections(kinds[hwID], members)
 		entry.Label = entry.Model
 		if entry.Kind == "emulator" {
 			entry.Label = entry.Props.AVD

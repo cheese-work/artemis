@@ -1,3 +1,4 @@
+import { StepBlock } from '../core/models/stream.model';
 import { consolidateLogsToBlocks, getSortedStepEvents, isBackendSwitchNote, persistedStreamToSegments } from './stream-aggregator.util';
 
 describe('stream aggregator timeline ordering', () => {
@@ -442,6 +443,47 @@ describe('stream aggregator step ownership', () => {
       jasmine.objectContaining({ trace_id: 'anonymous-trace', status: 'success' })
     ]);
     expect(JSON.stringify(steps)).not.toContain('PRIVATE_ERROR_SENTINEL');
+  });
+
+  it('keeps independent event order for failures with an unrelated anonymous same-number update', () => {
+    const failedTool = { trace_id: 'ta', step_id: 'A', type: 'tool', name: 'failed_A', status: 'failed' };
+    const newerTool = { ...failedTool, trace_id: 'tc', step_id: 'C', name: 'newer_failed_C' };
+    const logs = [
+      { type: 'step_updated', data: { step_id: 'A', step_number: 3, generic_tools: [failedTool] } },
+      { type: 'step_updated', data: { step_id: 'B', step_number: 3, last_execution_result: { status: 'success' } } },
+      { type: 'step_updated', data: { step_id: 'C', step_number: 4, generic_tools: [newerTool] } },
+      {
+        type: 'step_updated',
+        data: { step_number: 3, generic_tools: [{ trace_id: 'anonymous-ok', type: 'tool', name: 'anonymous_ok', status: 'success' }] }
+      }
+    ];
+    const eventOrder = new WeakMap<StepBlock, number>();
+    const steps = consolidateLogsToBlocks(logs, eventOrder).filter(block => block.type === 'step');
+
+    expect(steps.length).toBe(4);
+    for (const [stepId, index] of [['A', 0], ['B', 1], ['C', 2], [undefined, 3]] as const) {
+      const step = steps.find(block => block.data.step_id === stepId)!;
+      expect(eventOrder.get(step)).withContext(`event order for ${stepId ?? 'anonymous'}`).toBe(index);
+    }
+    expect(steps.find(block => block.data.step_id === 'A')!.data.generic_tools).toEqual([failedTool]);
+    expect(steps.find(block => block.data.step_id === 'C')!.data.generic_tools).toEqual([newerTool]);
+  });
+
+  it('preserves event order when checker tools are relocated out of a step', () => {
+    const eventOrder = new WeakMap<StepBlock, number>();
+    const blocks = consolidateLogsToBlocks([
+      { type: 'step_updated', data: { step_id: 'A', step_number: 3 } },
+      { type: 'checker_event', data: { event: 'attempt_started', attempt_id: 'attempt-1', trace_id: 'checker-trace' } },
+      {
+        type: 'step_updated',
+        data: { step_id: 'A', generic_tools: [{ trace_id: 'checker-tool', parent_trace_id: 'checker-trace', type: 'tool' }] }
+      },
+      { type: 'step_updated', data: { step_id: 'C', step_number: 4 } }
+    ], eventOrder);
+
+    expect(eventOrder.get(blocks.find(block => block.data.step_id === 'A')!)).toBe(2);
+    expect(eventOrder.get(blocks.find(block => block.data.step_id === 'C')!)).toBe(3);
+    expect(blocks.find(block => block.data.step_id === 'A')!.data.generic_tools).toEqual([]);
   });
 
   it('does not fold a step without streamed text into an earlier untagged stream block', () => {

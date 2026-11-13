@@ -20,6 +20,7 @@ import { NavSwitcherComponent } from './components/nav-switcher/nav-switcher.com
 import { WhatsNewComponent } from './components/whats-new/whats-new.component';
 import { AgentService } from './services/agent.service';
 import { ShellLayoutService } from './services/shell-layout.service';
+import { UsbDeviceRelayService } from './services/usb-device-relay.service';
 import { previewInfo } from './utils/app-url.util';
 
 @Component({
@@ -34,6 +35,7 @@ export class AppComponent {
   public readonly preview = previewInfo();
   public readonly agentService = inject(AgentService);
   public readonly shell = inject(ShellLayoutService);
+  public readonly usbRelay = inject(UsbDeviceRelayService);
 
   @ViewChild(WhatsNewComponent) private whatsNew?: WhatsNewComponent;
 

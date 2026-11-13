@@ -128,7 +128,9 @@ async def test_outcome_write_failure_does_not_skip_finalize_or_session_end(
     async def finalize(task, *args, **kwargs):
         events.append("finalize")
 
-    context.data_engine.end_session.side_effect = lambda status: events.append(f"end:{status}")
+    context.data_engine.end_session.side_effect = lambda status, error=None: events.append(
+        f"end:{status}"
+    )
     monkeypatch.setattr(Task, "finalize", finalize)
     monkeypatch.setattr("artemis.graph.checkpoints.write_run_outcome", fail_write)
 
@@ -138,3 +140,4 @@ async def test_outcome_write_failure_does_not_skip_finalize_or_session_end(
     assert events[:2] == ["write", "finalize"]
     assert f"end:{session_status}" in events
     assert events.index("finalize") < events.index(f"end:{session_status}")
+    assert "error" in context.data_engine.end_session.call_args.kwargs

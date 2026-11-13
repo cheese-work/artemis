@@ -38,6 +38,8 @@ from artemis.runtime.host_endpoints import HostEndpointRegistry
 from artemis.runtime.host_protocol import CONTRACT
 
 HOST = {"Host": "localhost"}
+# Only stops a stalled wire test from hanging; a tight deadline on loopback I/O measures how busy the host is (CHE-2010).
+STALL_BOUND = 60
 
 
 def test_agent_unenroll_revokes_only_authenticated_identity(admin):
@@ -259,12 +261,20 @@ async def wire_server(monkeypatch):
     server = ReadyServer(config)
     task = asyncio.create_task(server.serve(sockets=[listener]))
     try:
-        await asyncio.wait_for(ready.wait(), 5)
+        ready_wait = asyncio.ensure_future(ready.wait())
+        await asyncio.wait(
+            {ready_wait, task}, timeout=STALL_BOUND, return_when=asyncio.FIRST_COMPLETED
+        )
+        ready_wait.cancel()
+        if not ready.is_set():
+            if task.done():
+                await task  # surface the server's own startup error
+            raise AssertionError("wire server never became ready")
         yield f"localhost:{port}", tunnels, clock, outcomes, lost
     finally:
         server.should_exit = True
         try:
-            await asyncio.wait_for(task, 5)
+            await asyncio.wait_for(task, STALL_BOUND)
         finally:
             await tunnels.close()
             listener.close()
@@ -286,7 +296,7 @@ async def test_real_host_socket_close_enters_grace_and_expires_once(admin, wire_
             await ws.close()
         else:
             ws.transport.abort()
-    await asyncio.wait_for(lost.wait(), 1)
+    await asyncio.wait_for(lost.wait(), STALL_BOUND)
     assert tunnels.reconnecting(host_id) == 130
     assert outcomes == []
     clock["now"] = 130
@@ -325,14 +335,14 @@ async def test_agent_rejects_oversize_host_message_with_bridge_transport_cap(
         assert connected["type"] == "connected", connected
         tunnels.bind_run(host_id, "run")
         await ws.send(payload)
-        assert json.loads(await asyncio.wait_for(ws.recv(), 2)) == {
+        assert json.loads(await asyncio.wait_for(ws.recv(), STALL_BOUND)) == {
             "type": "error",
             "code": "bad_frame",
         }
         with pytest.raises(ConnectionClosedError) as closed:
-            await asyncio.wait_for(ws.recv(), 2)
+            await asyncio.wait_for(ws.recv(), STALL_BOUND)
         assert closed.value.rcvd.code == 4400
-    await asyncio.wait_for(lost.wait(), 1)
+    await asyncio.wait_for(lost.wait(), STALL_BOUND)
     assert decode.call_count == (1 if isinstance(payload, bytes) else 2)
     assert frame_decode.call_count == (1 if isinstance(payload, bytes) else 0)
 
@@ -363,20 +373,24 @@ async def test_host_flag_preserves_maximum_device_bridge_packet(admin, wire_serv
         max_size=MAX_ADB_PACKET_BYTES,
         compression=None,
     ) as ws:
-        leased = json.loads(await asyncio.wait_for(ws.recv(), 2))
+        leased = json.loads(await asyncio.wait_for(ws.recv(), STALL_BOUND))
         assert leased["type"] == "session_leased"
-        assert json.loads(await asyncio.wait_for(ws.recv(), 2))["type"] == "device_attached"
+        assert (
+            json.loads(await asyncio.wait_for(ws.recv(), STALL_BOUND))["type"] == "device_attached"
+        )
         peer_reader, peer_writer = await asyncio.open_connection(
             leased["listener"]["host"], leased["listener"]["port"]
         )
         try:
             await ws.send(packet)
-            assert await asyncio.wait_for(peer_reader.readexactly(len(packet)), 2) == packet
+            assert (
+                await asyncio.wait_for(peer_reader.readexactly(len(packet)), STALL_BOUND) == packet
+            )
             peer_writer.write(packet)
             await peer_writer.drain()
-            assert await asyncio.wait_for(ws.recv(), 2) == packet
+            assert await asyncio.wait_for(ws.recv(), STALL_BOUND) == packet
             await ws.send("close")
-            await asyncio.wait_for(ws.wait_closed(), 2)
+            await asyncio.wait_for(ws.wait_closed(), STALL_BOUND)
         finally:
             await bridge.revoke(leased["session_id"])
             peer_writer.close()
@@ -396,9 +410,9 @@ async def test_uvicorn_bounds_messages_at_the_bridge_limit(admin, wire_server):
         tunnels.bind_run(host_id, "run")
         await ws.send(bytes(MAX_ADB_PACKET_BYTES + 1))
         with pytest.raises(ConnectionClosedError) as closed:
-            await asyncio.wait_for(ws.recv(), 2)
+            await asyncio.wait_for(ws.recv(), STALL_BOUND)
         assert closed.value.rcvd.code == 1009
-    await asyncio.wait_for(lost.wait(), 1)
+    await asyncio.wait_for(lost.wait(), STALL_BOUND)
 
 
 # -- flag ---------------------------------------------------------------
@@ -664,8 +678,39 @@ def test_devices_report_counts_shared_and_unshared_phones(admin):
                 "since": shared[0]["since"],
                 "attention": None,
                 "also_visible_on": [],
+                "device_id": shared[0]["device_id"],
+                "lease": None,
+                "connections": [],
             }
         ]
+        assert shared[0]["device_id"].startswith("dev_")  # the id the lease API takes (CHE-2100)
+    finally:
+        context.__exit__(None, None, None)
+
+
+def test_a_phone_lists_its_usb_and_wifi_connections_and_nothing_else(admin):
+    """CHE-2377: the Phones page groups a phone's endpoints from what the agent reports."""
+    key, host_id = _enrolled(admin)
+    context, ws, _reply = _handshake(admin, key, host_id)
+    try:
+        ws.send_json(
+            {
+                "type": "devices",
+                "devices": [
+                    {
+                        "serial": "sd-00000000000000a1",
+                        "shared": True,
+                        "connections": ["wifi", "usb", "usb", "192.168.1.5:5555", 7],
+                    },
+                    {"serial": "sd-00000000000000a2", "shared": True},
+                ],
+            }
+        )
+        ws.send_json({"type": "ping"})
+        assert ws.receive_json()["type"] == "pong"
+        phones = {d["serial"]: d for d in admin.get("/api/hosts").json()["devices"]}
+        assert phones["sd-00000000000000a1"]["connections"] == ["usb", "wifi"]
+        assert phones["sd-00000000000000a2"]["connections"] == []
     finally:
         context.__exit__(None, None, None)
 

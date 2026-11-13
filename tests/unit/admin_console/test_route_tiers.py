@@ -11,6 +11,7 @@ from apps.admin_console.core.access_control import (
     require_effective_loopback,
     require_lifecycle_token,
     require_qa,
+    require_qa_or_service,
     require_websocket_admin,
     route_tier,
 )
@@ -59,6 +60,8 @@ def _assert_routes_have_declared_tiers(routes):
             assert require_admin_or_service_read in dependency_calls, f"Missing guard: {path}"
         if tier == "qa":
             assert require_qa in dependency_calls, f"Missing QA guard: {path}"
+        if tier == "qa_or_service":
+            assert require_qa_or_service in dependency_calls, f"Missing guard: {path}"
         if tier == "lifecycle":
             assert require_lifecycle_token in dependency_calls, f"Missing lifecycle guard: {path}"
         if tier == "loopback":
@@ -81,9 +84,26 @@ def _assert_routes_have_declared_tiers(routes):
                     "/api/tasks/{session_id}/cancel-queued",
                     "/api/resume",
                 }
-                assert tier in {"admin", "qa", "lifecycle", "loopback", "agent"} or (
-                    tier == "public" and path in public_task_controls
-                ), f"Unprotected mutation: {path}"
+                public_note_controls = {
+                    "/api/runs/{session_id}/annotations",
+                    "/api/runs/{session_id}/annotations/{annotation_id}",
+                }
+                if path in public_note_controls:
+                    from apps.admin_console.core.ownership import evidence_scope
+
+                    assert evidence_scope in dependency_calls, (
+                        f"Missing note visibility guard: {path}"
+                    )
+                assert tier in {
+                    "admin",
+                    "qa",
+                    "qa_or_service",
+                    "lifecycle",
+                    "loopback",
+                    "agent",
+                } or (tier == "public" and path in public_task_controls | public_note_controls), (
+                    f"Unprotected mutation: {path}"
+                )
 
 
 def _dependency_calls(route) -> set[object]:
@@ -105,6 +125,27 @@ def _dependency_calls(route) -> set[object]:
 
 def test_every_registered_route_has_a_declared_tier_and_guard():
     _assert_routes_have_declared_tiers(app.routes)
+
+
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [
+        ("POST", "/api/leases/dlp-1"),
+        ("GET", "/api/leases/dlp-1/{lease_id}"),
+        ("POST", "/api/leases/dlp-1/{lease_id}/renew"),
+        ("POST", "/api/leases/dlp-1/{lease_id}/release"),
+        ("GET", "/api/leases/dlp-1/tickets/{ticket_id}"),
+        ("POST", "/api/leases/dlp-1/tickets/{ticket_id}/park"),
+        ("POST", "/api/leases/dlp-1/tickets/{ticket_id}/claim"),
+    ],
+)
+def test_dlp1_routes_require_qa_or_service_and_are_disabled_in_preview(method, path):
+    from apps.admin_console.core import preview_routes
+
+    assert route_tier(path, {method}) == "qa_or_service"
+    key = f"{method} {path}"
+    assert key in preview_routes.DISABLED
+    assert key not in preview_routes.ALLOWED
 
 
 def test_untiered_post_in_nested_included_router_fails_tier_check():
@@ -155,6 +196,17 @@ def test_deploy_cut_is_loopback_tier_only_for_post():
     for method in ("GET", "DELETE", "PUT", "PATCH", "HEAD", "OPTIONS"):
         assert route_tier("/api/system/drain/cut", {method}) is None
     assert route_tier("/api/system/drain/cut", set(), is_websocket=True) is None
+
+
+@pytest.mark.parametrize(
+    ("path", "method"),
+    [
+        ("/api/system/qa-results/gate-a", "GET"),
+        ("/api/system/qa-results/{turn_id}/relabel", "POST"),
+    ],
+)
+def test_qa_result_admin_routes_require_admin_tier(path, method):
+    assert route_tier(path, {method}) == "admin"
 
 
 HOST_ROUTES = [
