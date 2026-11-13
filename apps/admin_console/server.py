@@ -20,6 +20,7 @@ Modular entrypoint for full trace inspection, step replay, and task execution ma
 import argparse
 import asyncio
 from contextlib import asynccontextmanager
+import importlib
 import logging
 import os
 from pathlib import Path
@@ -101,12 +102,15 @@ from artemis.config import (
 )
 from artemis.resources import get_bundled_showcase_dist
 from artemis.runtime.lifecycle import InterruptReason
-from apps.admin_console.services import failure_ledger, run_retention
+from apps.admin_console.services import failure_ledger, qa_results, run_retention
+from apps.admin_console.services import device_reconciler
+from apps.admin_console.services.device_identity import device_identity
 from apps.admin_console.services.host_registry import host_agent_enabled, host_registry
 from apps.admin_console.services.host_tunnel import host_tunnels
 from apps.admin_console.core.access_control import (
     AdminAPIError,
     CloudflareAccessVerifier,
+    ServicePrincipalMiddleware,
     admin_api_error_handler,
     config_from_environment,
     public_tier,
@@ -131,11 +135,13 @@ try:
         drain,
         failures,
         hosts,
+        leases,
         media,
         preview_synthetic,
         prompt_critiques,
         replay,
         run_admin,
+        run_annotations,
         run_bundle,
         runs,
         sessions,
@@ -159,11 +165,13 @@ except ImportError:
         drain,
         failures,
         hosts,
+        leases,
         media,
         preview_synthetic,
         prompt_critiques,
         replay,
         run_admin,
+        run_annotations,
         run_bundle,
         runs,
         sessions,
@@ -252,6 +260,7 @@ if PREVIEW_PROFILE:
     app.add_middleware(PreviewRouteGuard, route_source=app)
 app.add_middleware(RequestSizeLimitMiddleware)
 app.add_middleware(SameOriginBoundaryMiddleware)
+app.add_middleware(ServicePrincipalMiddleware)
 
 
 class TransportPeerProxyHeadersMiddleware:
@@ -276,7 +285,10 @@ async def on_startup():
     state.shutdown_event.clear()
     if PREVIEW_PROFILE:
         initialize_preview_fixtures(PREVIEW_ROOT, app.state.access_config)
+        await asyncio.to_thread(run_annotations.initialize_notes)
         return
+    qa_results.activate(session_repo.db_path, app.state.access_config.admin_emails)
+    await asyncio.to_thread(run_annotations.initialize_notes)
     from apps.admin_console.services.config_store import ConfigStoreError
     from apps.admin_console.services.provider_settings import get_provider_settings
 
@@ -297,6 +309,11 @@ async def on_startup():
     cleaned_device_locks = DeviceExecutionLock.cleanup_stale_locks()
     if cleaned_device_locks:
         print(f"[ServerStartup] Removed {cleaned_device_locks} stale device lock(s).")
+
+    # Server adb and bridge phones resolve to durable devices (CHE-1473).
+    importlib.import_module(
+        "artemis.runtime.device_pool"
+    ).identity_observer = device_identity.observe_adb
 
     # Warm the adb server and complete one enumeration before requests are
     # served, so submissions in the first seconds never race an adb cold start
@@ -322,6 +339,7 @@ async def on_startup():
     # Announce (and acknowledge) the interruptions committed above or left
     # pending by a previous server that stopped before delivering them.
     task_queue_service._drain_outcome_events()
+    task_queue_service.restore_drained_queue()
     # Workers killed together with a previous daemon never remuxed their
     # recordings; publish whatever raw files they left behind.
     asyncio.create_task(asyncio.to_thread(task_queue_service.recover_orphaned_recordings_on_launch))
@@ -336,6 +354,11 @@ async def on_startup():
     state.retention_task.add_done_callback(run_retention.log_task_failure)
     state.failure_task = asyncio.create_task(failure_ledger.sweep_forever())
     state.failure_task.add_done_callback(run_retention.log_task_failure)
+    # Expires silent hosts and connections to Unknown (CHE-1477).
+    state.reconciler_task = asyncio.create_task(
+        device_reconciler.tick_forever(host_registry.db_path)
+    )
+    state.reconciler_task.add_done_callback(run_retention.log_task_failure)
 
 
 async def on_shutdown():
@@ -373,6 +396,11 @@ async def on_shutdown():
         failure_sweep.cancel()
         await asyncio.gather(failure_sweep, return_exceptions=True)
     state.failure_task = None
+    reconciler_tick = state.reconciler_task
+    if reconciler_tick is not None and not reconciler_tick.done():
+        reconciler_tick.cancel()
+        await asyncio.gather(reconciler_tick, return_exceptions=True)
+    state.reconciler_task = None
 
     # Cancel in-flight run coroutines and wait for their finalizers (DB status,
     # session_ended broadcast, trace sync, recording recovery) to run.
@@ -431,6 +459,7 @@ app.include_router(chats.router)
 app.include_router(runs.router)
 app.include_router(run_bundle.router)
 app.include_router(run_admin.router)
+app.include_router(run_annotations.router)
 app.include_router(prompt_critiques.router)
 app.include_router(failures.router)
 app.include_router(steps.router)
@@ -443,6 +472,7 @@ app.include_router(providers.router)
 app.include_router(drain.router)
 app.include_router(device_bridge.router)
 app.include_router(hosts.router)
+app.include_router(leases.router)
 app.include_router(agent.router)
 
 # Mount cloud gateway router for Frappe / Cloud integration if present

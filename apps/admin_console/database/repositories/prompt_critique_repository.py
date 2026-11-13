@@ -13,6 +13,7 @@ from artemis.data_engine.prompt_critiques import MODULE, REVISIONS, migrate  # n
 
 def _present(row):
     result = dict(row)
+    result.pop("automatic_state", None)
     result["changes"] = json.loads(result.pop("changes_json"))
     result["lessons"] = json.loads(result.pop("lessons_json"))
     return result
@@ -46,7 +47,7 @@ def add(conn, session_id, *, requested_by, model, original_prompt, improvement):
         conn.execute("BEGIN IMMEDIATE")
         session(conn, session_id)
         conn.execute(
-            "INSERT INTO prompt_critiques VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO prompt_critiques(id, session_id, created_at, requested_by, model, original_prompt, improved_prompt, changes_json, lessons_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 data["id"],
                 session_id,
@@ -65,14 +66,14 @@ def add(conn, session_id, *, requested_by, model, original_prompt, improvement):
 def newest(conn, session_id):
     session(conn, session_id)
     row = conn.execute(
-        "SELECT * FROM prompt_critiques WHERE session_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1",
+        "SELECT * FROM prompt_critiques WHERE session_id = ? AND (automatic_state IS NULL OR automatic_state='complete') ORDER BY created_at DESC, rowid DESC LIMIT 1",
         (session_id,),
     ).fetchone()
     return _present(row) if row else None
 
 
 def list_critiques(conn, scope: OwnerScope, *, q: str, limit: int, offset: int):
-    where = ["m.deleted_at IS NULL"]
+    where = ["m.deleted_at IS NULL", "(c.automatic_state IS NULL OR c.automatic_state='complete')"]
     params = []
     if scope.enforced and not scope.include_all:
         owners = scope.owner_emails()

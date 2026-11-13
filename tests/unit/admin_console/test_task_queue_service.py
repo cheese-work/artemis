@@ -104,6 +104,15 @@ def _read_queued_session(session_id):
     }
 
 
+@pytest.fixture
+def mocked_session_repo(tmp_path):
+    from artemis.data_engine.storage import StorageManager
+
+    database = tmp_path / "sessions.db"
+    StorageManager(database, tmp_path)
+    return MagicMock(db_path=database)
+
+
 def test_paused_error_reads_persisted_reason(tmp_path):
     pause_file = tmp_path / ".artemis_paused"
     pause_file.write_text("LLM Error: 503 UNAVAILABLE: model overloaded", encoding="utf-8")
@@ -385,7 +394,7 @@ async def test_stop_tasks_keep_remaining():
 
 
 @pytest.mark.asyncio
-async def test_queue_worker_execution_lifecycle():
+async def test_queue_worker_execution_lifecycle(mocked_session_repo):
     executed_goals = []
 
     async def fake_subprocess_exec(*args, **kwargs):
@@ -399,7 +408,9 @@ async def test_queue_worker_execution_lifecycle():
 
     with (
         patch("asyncio.create_subprocess_exec", side_effect=fake_subprocess_exec),
-        patch("apps.admin_console.services.task_queue_service.session_repo") as mock_repo,
+        patch(
+            "apps.admin_console.services.task_queue_service.session_repo", mocked_session_repo
+        ) as mock_repo,
         patch("apps.admin_console.services.task_queue_service.media_service"),
         patch(
             "artemis.runtime.device_pool.device_pool.select_device_async",
@@ -431,7 +442,7 @@ async def test_queue_worker_execution_lifecycle():
 
 
 @pytest.mark.asyncio
-async def test_queue_worker_cmd_construction():
+async def test_queue_worker_cmd_construction(mocked_session_repo):
     executed_cmds = []
     executed_kwargs = []
 
@@ -446,7 +457,9 @@ async def test_queue_worker_cmd_construction():
 
     with (
         patch("asyncio.create_subprocess_exec", side_effect=fake_subprocess_exec),
-        patch("apps.admin_console.services.task_queue_service.session_repo") as mock_repo,
+        patch(
+            "apps.admin_console.services.task_queue_service.session_repo", mocked_session_repo
+        ) as mock_repo,
         patch("apps.admin_console.services.task_queue_service.media_service"),
         patch(
             "artemis.runtime.device_pool.device_pool.select_device_async",
@@ -518,7 +531,7 @@ async def test_queue_worker_cmd_construction():
 
 
 @pytest.mark.asyncio
-async def test_queue_worker_cmd_forwards_run_id():
+async def test_queue_worker_cmd_forwards_run_id(mocked_session_repo):
     """A daemon-dispatched task carrying a Gate 1 run_id must reach the spawned
     `artemis.main` worker as `--run-id` -- otherwise the daemon path never
     records/reconciles an attempt manifest under that batch key (see
@@ -536,7 +549,9 @@ async def test_queue_worker_cmd_forwards_run_id():
 
     with (
         patch("asyncio.create_subprocess_exec", side_effect=fake_subprocess_exec),
-        patch("apps.admin_console.services.task_queue_service.session_repo") as mock_repo,
+        patch(
+            "apps.admin_console.services.task_queue_service.session_repo", mocked_session_repo
+        ) as mock_repo,
         patch("apps.admin_console.services.task_queue_service.media_service"),
         patch(
             "artemis.runtime.device_pool.device_pool.select_device_async",
@@ -792,7 +807,7 @@ async def test_status_reports_external_global_owner_without_ipc_connection():
 
 
 @pytest.mark.asyncio
-async def test_cancel_task_triggers_next_pending_task():
+async def test_cancel_task_triggers_next_pending_task(mocked_session_repo):
     executed_goals = []
 
     async def fake_subprocess_exec(*args, **kwargs):
@@ -816,7 +831,9 @@ async def test_cancel_task_triggers_next_pending_task():
 
     with (
         patch("asyncio.create_subprocess_exec", side_effect=fake_subprocess_exec),
-        patch("apps.admin_console.services.task_queue_service.session_repo") as mock_repo,
+        patch(
+            "apps.admin_console.services.task_queue_service.session_repo", mocked_session_repo
+        ) as mock_repo,
         patch("apps.admin_console.services.task_queue_service.media_service"),
         patch(
             "artemis.runtime.device_pool.device_pool.select_device_async",
@@ -846,7 +863,7 @@ async def test_cancel_task_triggers_next_pending_task():
 
 
 @pytest.mark.asyncio
-async def test_immediate_cancel_ignores_stale_ipc_and_runs_next_task():
+async def test_immediate_cancel_ignores_stale_ipc_and_runs_next_task(mocked_session_repo):
     executed_goals = []
     task1_session_id = None
 
@@ -868,7 +885,9 @@ async def test_immediate_cancel_ignores_stale_ipc_and_runs_next_task():
 
     with (
         patch("asyncio.create_subprocess_exec", side_effect=fake_subprocess_exec),
-        patch("apps.admin_console.services.task_queue_service.session_repo") as mock_repo,
+        patch(
+            "apps.admin_console.services.task_queue_service.session_repo", mocked_session_repo
+        ) as mock_repo,
         patch("apps.admin_console.services.task_queue_service.media_service"),
         patch(
             "artemis.runtime.device_pool.device_pool.select_device_async",
@@ -998,7 +1017,7 @@ async def test_enqueue_tasks_unified_ingress():
 
 
 @pytest.mark.asyncio
-async def test_queue_worker_notifies_conversation():
+async def test_queue_worker_notifies_conversation(mocked_session_repo):
     """Verify queue_worker calls notify() when conversation_id is attached to task."""
     executed_cmds = []
 
@@ -1014,7 +1033,9 @@ async def test_queue_worker_notifies_conversation():
         patch("asyncio.create_subprocess_exec", side_effect=fake_subprocess_exec),
         patch("apps.admin_console.services.task_queue_service.media_service"),
         patch("mcp_server.notifiers.notify") as mock_notify,
-        patch("apps.admin_console.services.task_queue_service.session_repo") as mock_repo,
+        patch(
+            "apps.admin_console.services.task_queue_service.session_repo", mocked_session_repo
+        ) as mock_repo,
         patch(
             "artemis.runtime.device_pool.device_pool.try_list_devices_async",
             new=AsyncMock(return_value=[]),
@@ -1198,12 +1219,12 @@ def test_stop_tasks_queued_item_by_session_id():
 
 
 @pytest.mark.asyncio
-async def test_enqueue_tasks_deduplicates_by_session_id():
+async def test_enqueue_tasks_deduplicates_by_session_id(mocked_session_repo):
     state.queue_items = []
     state.active_session_id = None
 
     with (
-        patch("apps.admin_console.services.task_queue_service.session_repo"),
+        patch("apps.admin_console.services.task_queue_service.session_repo", mocked_session_repo),
         patch(
             "artemis.runtime.device_pool.device_pool.select_device_async",
             return_value="emulator-5554",
@@ -1329,12 +1350,16 @@ async def test_manual_stop_of_one_run_does_not_pollute_concurrent_run(tmp_path, 
 
 
 @pytest.mark.asyncio
-async def test_enqueue_tasks_debounces_rapid_identical_submissions():
+async def test_enqueue_tasks_debounces_rapid_identical_submissions(
+    tmp_path, monkeypatch, mocked_session_repo
+):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("apps.admin_console.services.task_queue_service.time.time", lambda: 100.0)
     state.queue_items = []
     state.active_session_id = None
 
     with (
-        patch("apps.admin_console.services.task_queue_service.session_repo"),
+        patch("apps.admin_console.services.task_queue_service.session_repo", mocked_session_repo),
         patch(
             "apps.admin_console.services.task_queue_service.DeviceExecutionLock.reserve",
             return_value="ticket-456",
@@ -1350,6 +1375,7 @@ async def test_enqueue_tasks_debounces_rapid_identical_submissions():
         )
         assert len(state.queue_items) == 1
         assert res1["enqueued_count"] == 1
+        assert not (tmp_path / "MagicMock").exists()
 
         # Immediate second submission (within 1s) must debounce
         res2 = await task_queue_service.enqueue_tasks(

@@ -16,6 +16,7 @@
 
 import asyncio
 import base64
+import errno
 import hashlib
 import io
 import json
@@ -29,7 +30,7 @@ import zipfile
 from PIL import Image
 import pytest
 
-from apps.admin_console.services import run_bundle
+from apps.admin_console.services import run_artifacts, run_bundle
 
 SECRET_BEARER = "Bearer sk-live-abcdefghijklmnopqrstuvwx"
 
@@ -528,3 +529,43 @@ async def test_a_prefix_download_leases_the_full_id(library, qa, monkeypatch):
         response = await qa.get("/api/runs/bbbbbbbb/bundle.zip")
 
     assert response.status_code == 200 and seen == [sid]
+
+
+def _handle_path_lookup_fails(monkeypatch):
+    """Windows-like host (no O_NOFOLLOW) where asking the OS for the handle's path fails."""
+
+    def fail(fd):
+        raise OSError(errno.EIO, "GetFinalPathNameByHandleW failed")
+
+    monkeypatch.delattr(os, "O_NOFOLLOW", raising=False)
+    monkeypatch.setattr(run_artifacts, "_handle_path", fail)
+
+
+@pytest.mark.asyncio
+async def test_a_handle_path_lookup_failure_skips_the_artifact_not_the_bundle(
+    library, qa, monkeypatch
+):
+    sid = library.seed("lookup failure")
+    library.write(sid, "notes/finding.md", "INSIDE-NOTE")
+    _handle_path_lookup_fails(monkeypatch)
+
+    async with qa:
+        response = await qa.get(f"/api/runs/{sid}/bundle.zip")
+
+    archive = _zip(response)
+    assert "notes/finding.md" not in archive.namelist()
+    skipped = json.loads(archive.read("manifest.json"))["skipped"]
+    assert "notes/finding.md" in {entry["name"] for entry in skipped}
+
+
+def test_a_handle_path_lookup_failure_is_unsafe_and_closes_the_descriptor(tmp_path, monkeypatch):
+    if not os.path.isdir("/proc/self/fd"):
+        pytest.skip("counts open descriptors through /proc")
+    (tmp_path / "a.txt").write_text("x")
+    _handle_path_lookup_fails(monkeypatch)
+    before = set(os.listdir("/proc/self/fd"))
+
+    with pytest.raises(run_artifacts.UnsafePath):
+        run_artifacts.open_under(tmp_path, tmp_path / "a.txt")
+
+    assert set(os.listdir("/proc/self/fd")) == before

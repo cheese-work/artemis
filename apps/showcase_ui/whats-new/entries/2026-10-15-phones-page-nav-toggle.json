@@ -1,0 +1,7 @@
+{
+  "id": "2026-10-15-phones-page-nav-toggle",
+  "date": "2026-10-15",
+  "title": "Phones has its own page, and the menu mode is one icon button",
+  "body": "Open Phones in the menu to see every phone you can use, who shares it and whether it is in use. Pick a phone to start a new session on it. The phone list is no longer in Setup. The menu mode is now one icon button at the bottom of the menu: each click switches between pinned expanded, pinned icons and expand on hover.",
+  "issues": ["CHE-1657"]
+}

@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SmartQA · B — Hành động tiếp theo</title>
+  <link rel="stylesheet" href="tokens.css">
+  <link rel="stylesheet" href="mock.css">
+</head>
+<body class="direction-b">
+  <header class="appbar">
+    <a class="brand" href="#runs" aria-label="SmartQA · Trang chủ"><span class="brand-mark" aria-hidden="true">✓</span><span>SmartQA</span></a>
+    <nav class="topnav" aria-label="Điều hướng chính"><a href="#workspace" aria-label="Không gian làm việc"><span class="nav-icon" aria-hidden="true">⌂</span><span class="nav-label">Không gian</span></a><a href="#runs" aria-current="page" aria-label="Lượt chạy"><span class="nav-icon" aria-hidden="true">▤</span><span class="nav-label">Lượt chạy</span></a><a href="#stats" aria-label="Thống kê"><span class="nav-icon" aria-hidden="true">▥</span><span class="nav-label">Thống kê</span></a><a href="#setup" aria-label="Cài đặt"><span class="nav-icon" aria-hidden="true">⚙</span><span class="nav-label">Cài đặt</span></a></nav>
+    <button class="user-menu" type="button" aria-label="Tài khoản QA mẫu">Q</button>
+  </header>
+  <div class="main-shell">
+    <nav class="workspace-nav" aria-label="Điều hướng không gian"><a href="#workspace" aria-label="Không gian làm việc" title="Không gian làm việc"><span aria-hidden="true">⌂</span></a><a href="#runs" aria-current="page" aria-label="Lượt chạy" title="Lượt chạy"><span aria-hidden="true">▤</span></a><a href="#stats" aria-label="Thống kê" title="Thống kê"><span aria-hidden="true">▥</span></a><a href="#setup" aria-label="Cài đặt" title="Cài đặt"><span aria-hidden="true">⚙</span></a></nav>
+    <aside class="run-list" id="runs" aria-labelledby="runs-heading">
+      <div class="list-heading"><h2 id="runs-heading">Lượt chạy</h2><button class="icon-button" type="button" aria-label="Tuỳ chọn danh sách">•••</button></div>
+      <div class="list-tools"><label class="search-field"><span aria-hidden="true">⌕</span><input type="search" aria-label="Tìm lượt chạy" placeholder="Tìm lượt chạy"></label><button class="icon-button" type="button" aria-label="Lọc lượt chạy">☷</button></div>
+      <div class="run-cards">
+        <article class="run-card selected" aria-current="page"><div class="run-card-label"><span class="chip fail">● Fail</span><span class="verification">Agent tự báo</span></div><p class="reason">Ứng dụng vẫn hiển thị nút thanh toán sau khi gửi đăng ký.</p><a class="step-link" href="#turn-2-step-7">Bằng chứng · Lượt 2 · Bước 7</a><p class="action-line">Xem bằng chứng rồi báo lỗi cho ứng dụng</p><p class="responsible"><span>Phụ trách</span><strong>Ứng dụng đang kiểm thử</strong></p><p class="turn-result">Kết quả của lượt 2/4</p><div class="run-metadata"><h3><a class="run-card-title" href="#run-detail">Đăng ký gói theo tháng</a></h3><p class="run-time"><time datetime="2026-10-20T10:14:00+07:00">20 thg 10 · 10:14</time> · <span class="mono">7f2c</span></p><p class="run-device">Pixel 6 Pro, USB, your PC</p></div></article>
+        <article class="run-card"><div class="run-card-label"><span class="chip pass">● Pass</span><span class="verification">Agent tự báo</span></div><p class="reason">Agent đã hoàn thành các bước đăng nhập.</p><a class="step-link" href="#state-examples">Ảnh chụp cuối lượt</a><p class="action-line">Xem ảnh chụp cuối lượt</p><p class="responsible"><span>Phụ trách</span><strong>SmartQA-agent</strong></p><p class="turn-result">Kết quả của lượt 1/1</p><div class="run-metadata"><h3><a class="run-card-title" href="#state-examples">Đăng nhập bằng email</a></h3><p class="run-time"><time datetime="2026-10-20T09:48:00+07:00">20 thg 10 · 09:48</time> · <span class="mono">5a91</span></p><p class="run-device">Pixel 3a, AVD, your PC</p></div></article>
+        <article class="run-card"><div class="run-card-label"><span class="chip pass">● Pass</span><span class="verification">Đã kiểm</span></div><p class="reason">Giỏ hàng đã được cập nhật đúng.</p><a class="step-link" href="#state-examples">Kết quả kiểm tra</a><p class="action-line">Tiếp tục quy trình kiểm thử</p><p class="responsible"><span>Phụ trách</span><strong>SmartQA</strong></p><p class="turn-result">Kết quả của lượt 1/1</p><div class="run-metadata"><h3><a class="run-card-title" href="#state-examples">Kiểm tra giỏ hàng</a></h3><p class="run-time"><time datetime="2026-10-20T09:12:00+07:00">20 thg 10 · 09:12</time> · <span class="mono">3c40</span></p><p class="run-device">Android device, Wi-Fi, your PC</p></div></article>
+      </div>
+    </aside>
+    <main class="run-main" id="run-detail">
+      <header class="run-title"><div><a class="mobile-back" href="#runs">← Lịch sử lượt chạy</a><p class="eyebrow">Chi tiết lượt chạy</p><h1>Đăng ký gói theo tháng</h1><p class="mono">demo-run-1649-7f2c · 7 bước · 1 phút 42 giây</p></div></header>
+      <div class="run-layout">
+        <article class="verdict-card" aria-label="Kết quả lượt chạy">
+          <div class="verdict-label" aria-live="polite" aria-atomic="true"><h2 class="verdict-word"><span class="status-mark" aria-hidden="true">!</span>Fail</h2><span class="verification">Agent tự báo</span></div>
+          <p class="reason">Ứng dụng vẫn hiển thị nút thanh toán sau khi gửi đăng ký.</p>
+          <a class="evidence-jump" href="#turn-2-step-7" aria-controls="turn-2-step-7">Bằng chứng quyết định · Lượt 2 · Bước 7</a>
+          <p class="action-line"><span class="action-mark" aria-hidden="true">→</span><span>Xem bằng chứng rồi báo lỗi cho ứng dụng</span></p>
+          <p class="responsible"><span>Phụ trách</span><strong>Ứng dụng đang kiểm thử</strong></p>
+          <p class="turn-result">Kết quả của lượt 2/4</p>
+        </article>
+        <section class="evidence-panel" id="evidence" aria-labelledby="evidence-heading">
+          <header class="panel-head"><div><p class="eyebrow">Bằng chứng</p><h2 id="evidence-heading">Bằng chứng quyết định</h2></div><span>Lượt 2 · Bước 7</span></header>
+          <div class="evidence-body action-evidence">
+            <section class="step-card selected" id="turn-2-step-7" tabindex="-1" aria-labelledby="step-title-b"><header class="step-heading"><h3 id="step-title-b">Lượt 2 · Bước 7 — Gửi đăng ký</h3><span>Đang chọn</span></header><dl class="step-details"><div><dt>Mong đợi</dt><dd>Xác nhận xuất hiện và gói đăng ký được kích hoạt.</dd></div><div><dt>Thực tế</dt><dd>Nút thanh toán vẫn còn; không có xác nhận.</dd></div></dl></section>
+            <button class="screenshot-trigger" type="button" aria-haspopup="dialog" aria-controls="evidence-lightbox" aria-label="Mở ảnh chụp bằng chứng"><span class="phone-frame"><span class="phone-screen"><span class="screen-bar"></span><strong>Gói hàng tháng</strong><span>Gia hạn đăng ký</span><span class="screen-control">Tiếp tục</span></span></span><span class="image-caption">Ảnh chụp · Lượt 2 · Bước 7</span></button>
+          </div>
+        </section>
+      </div>
+      <section class="state-section" id="state-examples" aria-labelledby="state-title"><div class="state-heading"><div><p class="eyebrow">Mẫu trạng thái</p><h2 id="state-title">Các trạng thái kết quả</h2></div><p>Mỗi trạng thái có nhãn rõ ràng và hành động phù hợp.</p></div>
+        <div class="state-grid">
+          <article class="state-card"><h3>Đang tải</h3><p class="loading-label">Đang tải kết quả</p><div class="skeleton" aria-hidden="true"><span></span><span></span></div></article><article class="state-card"><h3>Chưa chọn</h3><p>Chọn một lượt chạy để xem kết quả.</p></article><article class="state-card"><h3>Đang xác định</h3><p><span class="chip pending">● Đã kết thúc · Đang xác định kết quả</span></p></article><article class="state-card"><h3>Lỗi tải</h3><p>Không tải được kết quả · <a class="retry" href="#state-examples">Thử lại</a></p></article><article class="state-card"><h3>Đã huỷ</h3><p><span class="chip neutral">● Đã huỷ</span></p></article><article class="state-card"><h3>Lượt cũ</h3><p>Run cũ — chưa có verdict</p></article>
+          <article class="state-card blocked-card"><div class="verdict-label"><h3 class="verdict-word"><span class="status-mark" aria-hidden="true">!</span>Blocked</h3><span class="verification">Chưa xác minh</span></div><p class="reason">Điện thoại đang khoá.</p><p class="evidence-note">Bằng chứng quyết định · Chưa có bước hợp lệ</p><p class="action-line"><span class="action-mark" aria-hidden="true">→</span><span>Mở khoá điện thoại rồi chạy lại</span></p><p class="responsible"><span>Phụ trách</span><strong>Môi trường QA</strong></p><p class="turn-result">Kết quả của lượt 2/4</p><div class="blocked-actions"><button class="copy-id" type="button" aria-label="Sao chép mã lượt chạy">▢ <span class="mono">demo-run-1649-blocked</span></button><span class="copy-feedback" aria-hidden="true" hidden>Đã sao chép</span><a class="help-link" href="../../../docs/smartqa-verdicts.md#qa_environment" aria-label="Tìm hiểu lý do bị chặn">?</a></div></article>
+          <article class="state-card active-run-state"><header class="active-run-header"><div><p class="eyebrow">Lượt chạy đang hoạt động</p><h3>Kiểm tra giỏ hàng</h3><p class="mono">demo-run-1649-8d10</p></div><p class="active-hint"><span aria-hidden="true">◉</span>Giữ tab mở, không khoá máy</p></header><p class="active-status"><span class="spinner" aria-hidden="true"></span>Đang chạy — chưa có kết quả</p></article>
+        </div>
+      </section>
+    </main>
+  </div>
+  <nav class="bottom-tabs" aria-label="Điều hướng nhanh"><a href="#workspace" aria-label="Không gian làm việc"><span aria-hidden="true">⌂</span><span>Không gian</span></a><a href="#runs" aria-current="page" aria-label="Lượt chạy"><span aria-hidden="true">▤</span><span>Lượt chạy</span></a><a href="#stats" aria-label="Thống kê"><span aria-hidden="true">▥</span><span>Thống kê</span></a><a href="#setup" aria-label="Cài đặt"><span aria-hidden="true">⚙</span><span>Cài đặt</span></a></nav>
+  <dialog class="lightbox" id="evidence-lightbox" aria-labelledby="lightbox-title"><div class="lightbox-content"><h2 id="lightbox-title">Ảnh chụp · Lượt 2 · Bước 7</h2><div class="phone-frame"><div class="phone-screen"><div class="screen-bar"></div><strong>Gói hàng tháng</strong><p>Gia hạn đăng ký</p><span class="screen-control">Tiếp tục</span></div></div><button class="lightbox-close" type="button">Đóng ảnh</button></div></dialog>
+  <script src="mock.js" defer></script>
+</body>
+</html>

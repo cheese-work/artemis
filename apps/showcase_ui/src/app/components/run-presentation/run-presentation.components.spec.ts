@@ -71,7 +71,7 @@ describe('shared run presentation', () => {
     ['127.0.0.1:5555', { serial: '127.0.0.1:5555', model: 'Pixel 9', device_kind: 'phone' }, false, 'Pixel 9'],
     ['emulator-5554', { serial: 'emulator-5554', model: null, device_kind: 'emulator' }, false, 'Emulator'],
     ['127.0.0.1:5555', null, false, 'Phone via a browser'],
-    ['usb-serial', null, false, 'usb-serial'],
+    ['usb-serial', null, false, 'Android phone'],
     ['127.0.0.1:5555', null, true, '127.0.0.1:5555'],
     [null, null, true, 'Unknown phone']
   ] as const) {

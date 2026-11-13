@@ -15,6 +15,7 @@
 """AdbDeviceProbe classifies devices by adb properties, not by serial text."""
 
 import asyncio
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -119,3 +120,41 @@ async def test_failed_property_read_is_retried_not_cached(monkeypatch):
     props[serial] = PHONE_GETPROP
     second = await probe._parse_adb_devices("adb")
     assert second[0].device_kind == "phone"
+
+
+@pytest.mark.asyncio
+async def test_failed_enrichment_is_logged(monkeypatch):
+    from artemis.core.diagnostics.probes import adb_probe
+
+    probe = _make_probe(monkeypatch, "List of devices attached\nphone device\n", {})
+    monkeypatch.setattr(
+        probe, "_run_adb_shell", AsyncMock(side_effect=RuntimeError("enrichment unavailable"))
+    )
+    warning = MagicMock()
+    monkeypatch.setattr(adb_probe.logger, "warning", warning)
+    devices = await probe._parse_adb_devices("adb")
+    assert devices[0].model is None
+    warning.assert_called_once()
+    assert "enrichment" in str(warning.call_args).lower()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("timeout", [False, True])
+async def test_failed_getprop_is_logged_and_child_is_reaped(monkeypatch, timeout):
+    from artemis.core.diagnostics.probes import adb_probe
+
+    proc = MagicMock(returncode=1)
+    proc.communicate = AsyncMock(side_effect=[TimeoutError(), (b"", b"")] if timeout else None)
+    if not timeout:
+        proc.communicate.return_value = (b"", b"device offline")
+    transport = MagicMock()
+    transport.create_subprocess = AsyncMock(return_value=proc)
+    probe = AdbDeviceProbe()
+    monkeypatch.setattr(probe, "_transport", lambda _adb: transport)
+    warning = MagicMock()
+    monkeypatch.setattr(adb_probe.logger, "warning", warning)
+    assert await probe._run_adb_shell("adb", "phone", "getprop") == ""
+    warning.assert_called_once()
+    if timeout:
+        proc.kill.assert_called_once()
+        assert proc.communicate.await_count == 2

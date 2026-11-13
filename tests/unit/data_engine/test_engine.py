@@ -405,6 +405,25 @@ def _foreground_engine(tmp_path):
     return engine
 
 
+def test_record_step_emits_chat_events_without_duplicating_the_snapshot(tmp_path, monkeypatch):
+    from artemis.data_engine.chat_sessions import ChatStore
+
+    engine = _foreground_engine(tmp_path)
+    monkeypatch.setenv("ARTEMIS_CHAT_SESSION_ID", str(engine.current_session_id))
+    step_id = engine.record_step(
+        summary="Open settings",
+        operator_native_thinking="Check screen",
+        action_taken={"action": "click", "x": 42, "y": 88},
+    )
+    for thread in list(engine._pending_threads):
+        thread.join()
+    events = ChatStore(engine.storage.db_path).get(str(engine.current_session_id))["messages"]
+    assert [event["kind"] for event in events] == ["message", "thinking", "step"]
+    assert events[-1]["payload"] == {"step_id": str(step_id)}
+    assert events[-2]["content"] == "Check screen"
+    assert engine.storage.get_steps(engine.current_session_id)[0].action_taken["x"] == 42
+
+
 def test_record_step_persists_explicit_foreground_app(tmp_path):
     """The foreground_app parameter is persisted."""
     engine = _foreground_engine(tmp_path)

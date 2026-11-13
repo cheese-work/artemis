@@ -137,7 +137,7 @@ describe('WorkspaceComponent error lifetime', () => {
         frameDocument.body.appendChild(fixture.nativeElement);
         const list = frameDocument.querySelector<HTMLElement>('.run-list-pane')!;
         const detail = frameDocument.querySelector<HTMLElement>('.detail-pane')!;
-        const navigation = frameDocument.querySelector<HTMLAnchorElement>('.pane-navigation')!;
+        expect(frameDocument.querySelector('.pane-navigation')).toBeNull();
         expect(list.querySelector('app-run-library')).not.toBeNull();
         expect(frameDocument.querySelector('.right-panel, .resizer, app-chat-interface')).toBeNull();
         expect(detail.getBoundingClientRect().height).toBeGreaterThan(0);
@@ -145,13 +145,8 @@ describe('WorkspaceComponent error lifetime', () => {
           expect(list.getBoundingClientRect().width).toBe(360);
           expect(list.getBoundingClientRect().right).toBeCloseTo(detail.getBoundingClientRect().left, 0);
           expect(list.getBoundingClientRect().top).toBe(detail.getBoundingClientRect().top);
-          expect(frame.contentWindow!.getComputedStyle(navigation).display).toBe('none');
         } else {
           expect(frame.contentWindow!.getComputedStyle(list).display).toBe('none');
-          expect(frame.contentWindow!.getComputedStyle(navigation).display).not.toBe('none');
-          expect(navigation.getBoundingClientRect().height).toBeGreaterThanOrEqual(44);
-          expect(navigation.getBoundingClientRect().width).toBeGreaterThanOrEqual(44);
-          expect(navigation.getAttribute('href')).toBe('/runs');
         }
         expect(detail.getBoundingClientRect().right).toBeLessThanOrEqual(width);
       } finally {

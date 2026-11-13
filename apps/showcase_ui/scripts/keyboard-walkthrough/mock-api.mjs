@@ -50,7 +50,7 @@ export const PROMPT_CRITIQUE = {
   ],
   lessons: ['Give the task a clear stopping point.', 'Name the visible result that proves the check passed.']
 };
-export const mock = { chat: null, critiques: [], lessonsError: false, improveCalls: 0, improveError: false, improveDelay: 0, sessions: [], status: null, failSessions: false, failVideo: false, identity: null, readiness: null, config: null, providers: null };
+export const mock = { chat: null, streamState: null, streamImage: null, critiques: [], lessonsError: false, improveCalls: 0, improveError: false, improveDelay: 0, sessions: [], status: null, failSessions: false, failVideo: false, identity: null, readiness: null, config: null, providers: null, hosts: null };
 
 const json = (res, code, body) => {
   res.writeHead(code, { 'content-type': 'application/json' });
@@ -63,6 +63,11 @@ export function startMockApi(distDir) {
   const server = http.createServer((req, res) => {
     const url = new URL(req.url, 'http://x');
     const p = url.pathname;
+    if (p === '/api/stream/device-state') return json(res, 200, mock.streamState ?? { connected: false, serial: null, live_stream_url: null });
+    if (p === '/api/stream/device-live' && mock.streamImage) {
+      res.writeHead(200, { 'content-type': 'image/png' });
+      return res.end(Buffer.from(mock.streamImage, 'base64'));
+    }
     if (p === '/api/prompt-lessons') {
       if (mock.lessonsError) return json(res, 500, { detail: 'Could not load lessons' });
       const q = (url.searchParams.get('q') ?? '').toLowerCase();
@@ -107,9 +112,12 @@ export function startMockApi(distDir) {
     if (m) {
       if (mock.chat?.turns.some(turn => turn.turn_id === m[1])) return json(res, 200, mock.chat);
       const run = [...RUNS, ...OTHERS].find(row => row.session_id === m[1]);
+      const messages = run ? [{ sequence: 1, turn_id: run.session_id, session_id: run.session_id, role: 'human', kind: 'message', content: run.prompt, client_id: 'opening', reply_to: null, acknowledged_at: run.start_time, created_at: run.start_time }] : [];
       return run ? json(res, 200, { session_id: run.session_id, lease_pid: null, idle_until: null,
         turns: [{ turn_id: run.session_id, session_id: run.session_id, number: 1, status: run.status, created_at: run.start_time }],
-        messages: [{ sequence: 1, turn_id: run.session_id, session_id: run.session_id, role: 'human', kind: 'message', content: run.prompt, client_id: 'opening', reply_to: null, acknowledged_at: run.start_time, created_at: run.start_time }]
+        messages,
+        timeline: [...messages, ...STEPS.map((step, index) => ({ sequence: index + 2, turn_id: run.session_id, role: 'agent', kind: 'step', content: `Step ${index + 1}`, created_at: step.timestamp, payload: { ...step, session_id: run.session_id } }))],
+        verdict: { status: run.status, outcome: { phase: 'outcome', tests: { passed: run.status === 'completed' ? 1 : 0, failed: run.status === 'failed' ? 1 : 0, inconclusive: 0, unchecked: 0 }, last_findings: ['Synthetic fixture result'] }, report: 'Synthetic agent report', details: run }
       }) : json(res, 404, { detail: 'Chat not found.' });
     }
     m = p.match(/^\/api\/runs\/([^/]+)$/);
@@ -129,7 +137,7 @@ export function startMockApi(distDir) {
     if (p === '/api/sessions' && mock.failSessions) return json(res, 500, { error: 'boom' });
     if (p === '/api/sessions' && mock.sessions.length) return json(res, 200, mock.sessions);
 
-    if (p === '/api/hosts') return json(res, 200, { enabled: true, hosts: [], devices: [] });
+    if (p === '/api/hosts') return json(res, 200, mock.hosts ?? { enabled: true, hosts: [], devices: [] });
     if (p.startsWith('/images/')) {
       res.writeHead(200, { 'content-type': 'image/svg+xml' });
       return res.end('<svg xmlns="http://www.w3.org/2000/svg" width="90" height="160"><rect width="90" height="160" fill="#dbeafe"/></svg>');

@@ -25,6 +25,7 @@ import time
 from collections.abc import AsyncGenerator, Callable
 
 from artemis.runtime.endpoint_transport import EndpointTransport
+from artemis.runtime.chat_input import private_input_active
 
 logger = logging.getLogger("artemis.stream_service")
 
@@ -67,6 +68,10 @@ class DeviceStreamService:
             try:
                 start_t = time.time()
                 serial = await self.get_device_serial()
+                if private_input_active(serial):
+                    self._latest_frame = None
+                    await asyncio.sleep(0.08)
+                    continue
                 cmd = (
                     ["-s", serial, "exec-out", "screencap", "-p"]
                     if serial
@@ -78,7 +83,7 @@ class DeviceStreamService:
                     stderr=subprocess.PIPE,
                 )
                 stdout, _ = await proc.communicate()
-                if proc.returncode == 0 and len(stdout) > 1000:
+                if proc.returncode == 0 and len(stdout) > 1000 and not private_input_active(serial):
                     self._latest_frame = stdout
                     self._frame_serial = serial
                     self._last_frame_time = time.time()
@@ -126,6 +131,10 @@ class DeviceStreamService:
                 if self._latest_frame and self._last_frame_time > last_sent_time:
                     last_sent_time = self._last_frame_time
                     frame_bytes = self._latest_frame
+                    if private_input_active(self._frame_serial):
+                        self._latest_frame = None
+                        await asyncio.sleep(0.04)
+                        continue
                     if may_use is not None and not (
                         self._frame_serial and may_use(self._frame_serial)
                     ):

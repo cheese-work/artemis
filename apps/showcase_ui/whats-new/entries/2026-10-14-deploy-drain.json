@@ -1,0 +1,7 @@
+{
+  "id": "2026-10-14-deploy-drain",
+  "date": "2026-10-14",
+  "title": "Keep your prompt while SmartQA updates",
+  "body": "When SmartQA is updating, the composer shows the remaining time and keeps your text. Try again after the update. Regular updates wait for running checks instead of stopping them.",
+  "issues": ["CHE-1643"]
+}

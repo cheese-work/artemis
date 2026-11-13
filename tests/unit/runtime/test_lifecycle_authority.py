@@ -2,6 +2,7 @@
 
 from itertools import product
 import sqlite3
+import json
 import threading
 import uuid
 
@@ -58,6 +59,34 @@ def _outbox(db_path, session_id=None) -> list[dict]:
         conn.row_factory = sqlite3.Row
         rows = conn.execute("SELECT * FROM lifecycle_outbox").fetchall()
     return [dict(r) for r in rows if session_id in (None, r["session_id"])]
+
+
+def test_interrupt_evidence_survives_reprojection_and_a_losing_finish(db_path, traces):
+    sid = _add_session(db_path)
+    trace_store.init_trace(sid, "goal", "flash")
+    authority = LifecycleAuthority(db_path)
+    client_close = {"reason": "usb_disconnected", "visibility_state": "hidden"}
+    outcome = authority.interrupt(sid, "bridge_closed", client_close=client_close)
+    assert outcome.committed
+    expected = {
+        "reason": "bridge_closed",
+        "client_close": {"reason": "usb_disconnected"},
+        "visibility_state": "hidden",
+    }
+    assert json.loads(_row(db_path, sid)["interrupt_evidence"]) == expected
+    authority.finish(sid, "failed", error="another outcome")
+    authority.project(sid)
+    assert trace_store.read_status(sid)["interrupt_evidence"] == expected
+
+
+def test_terminal_error_is_durable_without_a_status_file(db_path):
+    sid = _add_session(db_path)
+    authority = LifecycleAuthority(db_path)
+    error = "Android secure keyguard is locked. Unlock the device manually."
+    assert authority.finish(sid, "failed", error=error).committed
+    assert _row(db_path, sid)["terminal_error"] == error
+    authority.finish(sid, "failed", error="later error")
+    assert _row(db_path, sid)["terminal_error"] == error
 
 
 # -- transition table ------------------------------------------------------
@@ -476,6 +505,26 @@ def test_an_outbox_created_before_the_delivery_columns_is_migrated(tmp_path):
     authority.finish(sid, "failed")
 
     assert authority.mark_delivered(f"{sid}:outcome", "broadcast") is True
+
+
+def test_classification_columns_migrate_on_a_production_database_copy(tmp_path):
+    source = tmp_path / "production.db"
+    copy = tmp_path / "production-copy.db"
+    StorageManager(source, tmp_path)
+    sid = _add_session(source)
+    LifecycleAuthority(source).finish(sid, "failed", error="worker failed")
+    with sqlite3.connect(source) as original, sqlite3.connect(copy) as duplicate:
+        original.backup(duplicate)
+
+    events = LifecycleAuthority(copy).pending_events()
+
+    with sqlite3.connect(copy) as connection:
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(lifecycle_outbox)")}
+    assert {"classified_at", "classify_attempts"} <= columns
+    assert len(events) == 1
+    assert events[0]["dedupe_id"] == f"{sid}:outcome"
+    assert events[0]["classified_at"] is None
+    assert events[0]["classify_attempts"] == 0
 
 
 # -- durable event record, persisted attempts, notify context ------------------

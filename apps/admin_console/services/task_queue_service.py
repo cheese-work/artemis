@@ -43,6 +43,15 @@ except ImportError:
 
 from apps.admin_console.core.access_control import AdminAPIError
 from apps.admin_console.services import run_images
+from apps.admin_console.services.deploy_drain import (
+    ServerDraining,
+    admission_lock,
+    drain_file,
+    read_drain,
+    sync_directory,
+    write_drain,
+)
+from apps.admin_console.services.device_reservation import device_reservations
 from artemis.config import (
     PAUSE_FILE,
     TEST_DATA_DIR,
@@ -63,6 +72,7 @@ from artemis.runtime import (
 from artemis.runtime.adb_endpoint import InvalidAdbEndpoint
 from artemis.runtime.host_endpoints import host_endpoints
 from artemis.runtime.lifecycle import TERMINAL_STATUSES
+from artemis.runtime.lifecycle import InterruptReason
 from artemis.runtime.run_device_binding import RunDeviceBinding
 from artemis.utils.redaction import bind_session, goal_metadata, write_goal_file
 
@@ -76,16 +86,6 @@ _VANISHED_WORKER_SWEEP_SECONDS = 15.0
 
 class TaskEndpointUnavailable(RuntimeError):
     """A queued task's adb endpoint snapshot cannot be turned into an endpoint."""
-
-
-class ServerDraining(RuntimeError):
-    """Admission is closed: the server is draining for a deploy."""
-
-    code = "server_draining"
-    retry_after_seconds = 5
-
-    def __init__(self) -> None:
-        super().__init__("Server is draining for a deploy; retry shortly.")
 
 
 class TaskQueueService:
@@ -341,8 +341,10 @@ class TaskQueueService:
         return target
 
     @classmethod
-    def interrupt_device_binding(cls, session_id: str, reason: str) -> None:
-        outcome = session_repo.lifecycle.interrupt(session_id, reason)
+    def interrupt_device_binding(
+        cls, session_id: str, reason: str, *, client_close: dict[str, Any] | None = None
+    ) -> None:
+        outcome = session_repo.lifecycle.interrupt(session_id, reason, client_close=client_close)
         if not outcome.committed:
             return
         for run_key, run in list(state.active_runs.items()):
@@ -356,10 +358,14 @@ class TaskQueueService:
                     pass
 
     @classmethod
-    def interrupt_bridge_binding(cls, bridge_session_id: str) -> None:
+    def interrupt_bridge_binding(
+        cls, bridge_session_id: str, *, client_close: dict[str, Any] | None = None
+    ) -> None:
         for item in list(state.queue_items):
             if item.get("bridge_session_id") == bridge_session_id:
-                cls.interrupt_device_binding(str(item["session_id"]), "bridge_closed")
+                cls.interrupt_device_binding(
+                    str(item["session_id"]), "bridge_closed", client_close=client_close
+                )
 
     @classmethod
     def validate_host_device_inventory(
@@ -431,6 +437,11 @@ class TaskQueueService:
         """Removes a task from queue_items by session_id."""
         if not session_id:
             return
+        if (
+            str(session_id) not in state.executing_run_keys
+            and str(session_id) not in state.active_runs
+        ):
+            device_reservations.release(session_id)
         removed_items = [
             t
             for t in state.queue_items
@@ -498,7 +509,7 @@ class TaskQueueService:
         server (CLI, MCP) that died without finalizing. It also redelivers any
         outcome event left pending by a crash or an earlier delivery failure.
         """
-        cls._drain_outcome_events()
+        cls._deliver_outcome(None)
         try:
             owner_sids = {
                 str(owner.session_id)
@@ -506,6 +517,7 @@ class TaskQueueService:
                 if owner.session_id
             }
         except Exception:
+            cls._classify_owed_outcomes()
             return []  # lock state unknown: never declare a worker dead on a guess
         in_flight = {
             str(i.get("session_id"))
@@ -526,6 +538,7 @@ class TaskQueueService:
         for sid in swept:
             print(f"[QueueWorker] Failed vanished running session {sid}")
             cls._deliver_outcome(sid)
+        cls._classify_owed_outcomes()
         return swept
 
     @classmethod
@@ -576,6 +589,8 @@ class TaskQueueService:
     @classmethod
     def _dispatch_pending_tasks(cls) -> None:
         """Launch every pending task admissible under the current concurrency limit."""
+        if cls.drain_status()["draining"]:
+            return
         limit = cls._concurrency_limit()
         state.prune_finished_runs()
         cls._promote_started_runs()
@@ -1062,12 +1077,16 @@ class TaskQueueService:
     _delivery_lock = threading.Lock()
     _delivered_to: dict[str, set[tuple[int, str]]] = {}  # event_id -> (subscriber, event type)
     _fanout_pending: set[str] = set()  # event ids whose live fanout still needs a retry
+    _classification_owed: dict[str, dict[str, Any]] = {}
+    _classifying: set[str] = set()
 
     @classmethod
     def _forget_delivery_memory(cls) -> None:
         """Drop in-process delivery memory (what a restart does)."""
         cls._delivered_to.clear()
         cls._fanout_pending.clear()
+        cls._classification_owed.clear()
+        cls._classifying.clear()
 
     @classmethod
     def _deliver_outcome(
@@ -1121,11 +1140,17 @@ class TaskQueueService:
                     lifecycle, task_item, event["session_id"], goal, event["status"], event_id
                 ),
             ),
+            ("classify", "classified_at", None),
         )
         pending = False
         for consumer, column, effect in steps:
             if event.get(column) is not None:
                 continue  # delivered earlier, possibly before a restart
+            if consumer == "classify":
+                if column in event:
+                    cls._classification_owed[event_id] = dict(event)
+                    pending = True
+                continue
             try:
                 ok = effect()
             except (OSError, RuntimeError, ValueError, KeyError, TypeError, sqlite3.Error):
@@ -1149,9 +1174,105 @@ class TaskQueueService:
         return not pending
 
     @classmethod
+    def _classify_owed_outcomes(cls) -> None:
+        with cls._delivery_lock:
+            owed = {
+                event_id: event
+                for event_id, event in cls._classification_owed.items()
+                if event_id not in cls._classifying
+            }
+            for event_id in owed:
+                cls._classification_owed.pop(event_id, None)
+                cls._classifying.add(event_id)
+        if not owed:
+            return
+
+        acknowledged = False
+        for event_id, event in owed.items():
+            try:
+                cls._classify_terminal_outcome(event)
+                session_repo.lifecycle.mark_delivered(event_id, "classify")
+                acknowledged = True
+                with cls._delivery_lock:
+                    cls._classification_owed.pop(event_id, None)
+            except Exception:
+                logger.warning("Could not classify outcome %s", event_id, exc_info=True)
+                try:
+                    failures = session_repo.lifecycle.note_failed_attempt(event_id, "classify")
+                    if failures >= cls._MAX_DELIVERY_ATTEMPTS:
+                        session_repo.lifecycle.mark_delivered(event_id, "classify", abandoned=True)
+                        acknowledged = True
+                        logger.error(
+                            "Abandoning classify event=%s turn=%s after %d attempts",
+                            event_id,
+                            event.get("session_id"),
+                            failures,
+                        )
+                        continue
+                except Exception:
+                    logger.warning(
+                        "Could not record classify attempt for %s", event_id, exc_info=True
+                    )
+                with cls._delivery_lock:
+                    cls._classification_owed[event_id] = event
+            finally:
+                with cls._delivery_lock:
+                    cls._classifying.discard(event_id)
+
+        if acknowledged:
+            cls._deliver_outcome(None)
+
+    @staticmethod
+    def _classify_terminal_outcome(event: dict[str, Any]) -> None:
+        from apps.admin_console.database.repositories.run_catalog_repository import run_catalog_repo
+        from apps.admin_console.services import failure_ledger, qa_results
+
+        session_id = str(event["session_id"])
+        db_path = session_repo.lifecycle.db_path
+        snapshot = qa_results.activation(db_path)
+        if (
+            snapshot
+            and event["created_at"] < snapshot["activated_at"]
+            and not event.get("classify_replay_at")
+        ):
+            return
+        failure_ledger.collect(session_id, db_path=db_path)
+        with sqlite3.connect(db_path) as connection:
+            chat_turns = connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='chat_turns'"
+            ).fetchone()
+            turn = (
+                connection.execute(
+                    "SELECT number, session_id FROM chat_turns WHERE turn_id=?", (session_id,)
+                ).fetchone()
+                if chat_turns
+                else None
+            )
+            if turn:
+                turn_index = int(turn[0])
+                turn_count = int(
+                    connection.execute(
+                        "SELECT COUNT(*) FROM chat_turns WHERE session_id=?", (turn[1],)
+                    ).fetchone()[0]
+                )
+            else:
+                turn_index = turn_count = 1
+        result = qa_results.result_for_turn(
+            db_path,
+            run_catalog_repo.traces_dir,
+            session_id,
+            event["status"],
+            turn_index,
+            turn_count,
+        )
+        if result is None:
+            raise RuntimeError(f"No QA result was recorded for terminal turn {session_id}")
+
+    @classmethod
     def _drain_outcome_events(cls) -> None:
         """Deliver every pending outcome event (startup, shutdown and the periodic sweep)."""
         cls._deliver_outcome(None)
+        cls._classify_owed_outcomes()
 
     @staticmethod
     def _queue_item_for(session_id: Any) -> dict[str, Any]:
@@ -1268,11 +1389,14 @@ class TaskQueueService:
     ) -> None:
         """Clean up the finished task and release this run's scheduling slot.
 
-        ``keep_row`` leaves the queue row and its ticket for a requeued start.
+        ``keep_row`` preserves a requeued start's reservation only while its row exists.
         """
         if sess_id and not keep_row:
             cls._remove_task(sess_id)
+            device_reservations.release(sess_id)
             state.cancelled_session_ids.discard(str(sess_id))
+        elif sess_id and not cls._queue_item_for(sess_id):
+            device_reservations.release(sess_id)
         host_admission.release(run_key)
         state.cancelled_session_ids.discard(run_key)
         state.manually_stopped_run_ids.discard(run_key)
@@ -1431,18 +1555,134 @@ class TaskQueueService:
         return len(keys)
 
     @classmethod
-    def set_draining(cls, draining: bool) -> None:
-        """Close or reopen admission; running and pending work is untouched."""
-        state.draining = draining
+    def set_draining(
+        cls, draining: bool, owner: str | None = None, deadline: float | None = None
+    ) -> None:
+        with admission_lock:
+            existing = read_drain()
+            if existing and owner is not None and existing["owner"] != owner:
+                raise AdminAPIError(
+                    409,
+                    "Drain belongs to another deployment.",
+                    "drain_owner_conflict",
+                    "Use the recorded deployment owner.",
+                )
+            if draining:
+                if existing is None:
+                    write_drain(
+                        {
+                            "owner": owner or "loopback",
+                            "deadline": deadline
+                            if deadline is not None
+                            else time.time()
+                            + float(os.getenv("ARTEMIS_DRAIN_TIMEOUT_SECONDS", "600")),
+                            "queued_items": [
+                                dict(item)
+                                for item in state.queue_items
+                                if isinstance(item, dict) and item.get("status") == "pending"
+                            ],
+                        }
+                    )
+            else:
+                cls.restore_drained_queue()
+                path = drain_file()
+                path.unlink(missing_ok=True)
+                if path.parent.exists():
+                    sync_directory(path.parent)
+                state.wake_event.set()
+            state.draining = draining
 
     @classmethod
     def drain_status(cls) -> dict[str, Any]:
-        return {"draining": state.draining, "active_run_count": cls.active_run_count()}
+        record = read_drain()
+        draining = record is not None or state.draining
+        pending = (
+            {
+                str(item.get("session_id") or f"item:{id(item)}")
+                for item in state.queue_items
+                if isinstance(item, dict) and item.get("status") == "pending"
+            }
+            - set(state.active_runs)
+            - state.executing_run_keys
+        )
+        result = {
+            "draining": draining,
+            "active_run_count": cls.active_run_count() - len(pending)
+            if draining
+            else cls.active_run_count(),
+        }
+        if record:
+            result.update(
+                owner=record["owner"], deadline=record["deadline"], queued_run_count=len(pending)
+            )
+        return result
+
+    @classmethod
+    def restore_drained_queue(cls) -> int:
+        record = read_drain()
+        restored = 0
+        existing = {item.get("session_id") for item in state.queue_items if isinstance(item, dict)}
+        for saved in (record or {}).get("queued_items", []):
+            if not isinstance(saved, dict):
+                continue
+            session_id = saved.get("session_id")
+            if (
+                not session_id
+                or session_id in existing
+                or session_repo.get_session_status(session_id) != "queued"
+            ):
+                continue
+            item = dict(saved)
+            target = cls._task_target(item)
+            DeviceExecutionLock.cancel_reservation(item.get("queue_ticket"))
+            item["queue_ticket"] = DeviceExecutionLock.reserve(
+                device_id=item.get("device_serial") or "pending",
+                session_id=session_id,
+                ingress=item.get("ingress"),
+                lock_scope=target.lock_scope,
+            )
+            state.queue_items.append(item)
+            existing.add(session_id)
+            restored += 1
+        return restored
 
     @staticmethod
     def require_admission_open() -> None:
-        if state.draining:
-            raise ServerDraining
+        record = read_drain()
+        if record is not None or state.draining:
+            raise ServerDraining(record)
+
+    @classmethod
+    def cut_for_deploy(cls, owner: str) -> list[str]:
+        with admission_lock:
+            record = read_drain()
+            if record is None or record["owner"] != owner:
+                raise AdminAPIError(
+                    409,
+                    "Drain belongs to another deployment.",
+                    "drain_owner_conflict",
+                    "Use the recorded deployment owner.",
+                )
+            sessions = (
+                set(state.active_runs)
+                | state.executing_run_keys
+                | {
+                    str(item["session_id"])
+                    for item in state.queue_items
+                    if isinstance(item, dict)
+                    and item.get("session_id")
+                    and item.get("status") in IN_FLIGHT_STATUSES
+                }
+            )
+            for session_id in sorted(sessions):
+                session_repo.lifecycle.interrupt(
+                    session_id,
+                    InterruptReason.DEPLOY_CUT,
+                    error="Run interrupted by an explicit deployment cut.",
+                )
+                cls._deliver_outcome(session_id)
+            logger.warning("event=deploy_drain owner=%s cut=%s", owner, sorted(sessions))
+            return sorted(sessions)
 
     @classmethod
     def _find_duplicate_submission(
@@ -1561,6 +1801,7 @@ class TaskQueueService:
         host_id: str | None = None,
         requested_by: str | None = None,
         bridge_session_id: str | None = None,
+        reservation_group: str | None = None,
     ) -> dict[str, Any]:
         """Reserve a device slot and build one pending queue item for a goal."""
         sess_id = single_session_id if single_session_id else str(uuid.uuid4())
@@ -1601,13 +1842,20 @@ class TaskQueueService:
             AdbTarget(endpoint, assigned_serial, host_id), lease.session_id if lease else None
         )
 
-        queue_ticket = DeviceExecutionLock.reserve(
-            description=f"{ingress} task: {goal_metadata(goal)}",
-            device_id=assigned_serial or "pending",
-            session_id=sess_id,
-            ingress=ingress,
-            lock_scope=AdbTarget(endpoint, assigned_serial, host_id).lock_scope,
+        reservation = device_reservations.claim(
+            binding, session_repo.db_path, sess_id, reservation_group
         )
+        try:
+            queue_ticket = DeviceExecutionLock.reserve(
+                description=f"{ingress} task: {goal_metadata(goal)}",
+                device_id=assigned_serial or "pending",
+                session_id=sess_id,
+                ingress=ingress,
+                lock_scope=binding.target.lock_scope,
+            )
+        except (OSError, RuntimeError):
+            device_reservations.release(sess_id)
+            raise
         return {
             "session_id": sess_id,
             "goal": goal,
@@ -1621,6 +1869,7 @@ class TaskQueueService:
             "device_serial": assigned_serial,
             "adb_endpoint": endpoint.to_dict(),
             "device_binding": binding.to_dict(),
+            "connection_id": reservation.connection_id,
             "ingress": ingress,
             "conversation_id": conversation_id,
             "run_id": run_id,
@@ -1633,6 +1882,15 @@ class TaskQueueService:
             "created_at": now + index * 0.001,
             "start_time": now + index * 0.001,
         }
+
+    @classmethod
+    def _fail_queued_batch(cls, tasks: list[dict[str, Any]]) -> None:
+        for task in tasks:
+            session_id = str(task["session_id"])
+            session_repo.update_session_status(
+                session_id, "failed", time.time(), error="Task batch could not be queued."
+            )
+            cls._remove_task(session_id)
 
     @classmethod
     async def enqueue_tasks(
@@ -1739,28 +1997,34 @@ class TaskQueueService:
                 "enqueued_count": 0,
                 "total_queued": len(state.queue_tasks),
             }
+        reservation_group = uuid.uuid4().hex
         for i, goal in enumerate(goals):
-            task_item = cls._create_queue_item(
-                goal,
-                i,
-                now,
-                endpoint,
-                single_session_id,
-                profile,
-                expected_output,
-                enable_outputter,
-                locked_app_package,
-                app_path,
-                device_serial,
-                ingress,
-                conversation_id,
-                verification_level=verification_level,
-                explorer_mode=explorer_mode,
-                run_id=run_id,
-                host_id=host_id,
-                requested_by=requested_by,
-                bridge_session_id=bridge_session_id,
-            )
+            try:
+                task_item = cls._create_queue_item(
+                    goal,
+                    i,
+                    now,
+                    endpoint,
+                    single_session_id,
+                    profile,
+                    expected_output,
+                    enable_outputter,
+                    locked_app_package,
+                    app_path,
+                    device_serial,
+                    ingress,
+                    conversation_id,
+                    verification_level=verification_level,
+                    explorer_mode=explorer_mode,
+                    run_id=run_id,
+                    host_id=host_id,
+                    requested_by=requested_by,
+                    bridge_session_id=bridge_session_id,
+                    reservation_group=reservation_group,
+                )
+            except (AdminAPIError, OSError, RuntimeError):
+                cls._fail_queued_batch(enqueued_tasks)
+                raise
             session_id = str(task_item["session_id"])
             if model:
                 task_item["model"] = dict(model)
@@ -1800,6 +2064,7 @@ class TaskQueueService:
                     notify_context,
                     requested_by,
                     device_binding=task_item["device_binding"],
+                    connection_id=task_item["connection_id"],
                     **({"model": model} if model else {}),
                 ):
                     raise RuntimeError(f"Could not persist queued session {session_id}")
@@ -1832,8 +2097,9 @@ class TaskQueueService:
                 if goal_images:
                     # Synchronous on purpose: nothing may yield before the queue append.
                     task_item["goal_images"] = run_images.store(session_id, goal_images)
-            except (OSError, RuntimeError) as exc:
+            except (OSError, RuntimeError, sqlite3.Error) as exc:
                 DeviceExecutionLock.cancel_reservation(task_item.get("queue_ticket"))
+                device_reservations.release(session_id)
                 if trace_created or (
                     not existing_trace_is_terminal
                     and session_repo.get_session_by_id(session_id) is None
@@ -1844,15 +2110,7 @@ class TaskQueueService:
                         logger.exception(
                             "Could not mark queue setup failure for session %s", session_id
                         )
-                for enqueued_task in enqueued_tasks:
-                    enqueued_session_id = str(enqueued_task["session_id"])
-                    session_repo.update_session_status(
-                        enqueued_session_id,
-                        "failed",
-                        time.time(),
-                        error="Task batch could not be queued.",
-                    )
-                    cls._remove_task(enqueued_session_id)
+                cls._fail_queued_batch(enqueued_tasks)
                 raise
             state.queue_items.append(task_item)
             if host_id:
@@ -1958,6 +2216,7 @@ class TaskQueueService:
         for item in state.queue_items:
             if isinstance(item, dict) and item.get("status") not in IN_FLIGHT_STATUSES:
                 DeviceExecutionLock.cancel_reservation(item.get("queue_ticket"))
+                device_reservations.release(item.get("session_id"))
         state.clear_queue()
 
         # 2. Terminate all active owners across all devices
@@ -2253,6 +2512,11 @@ class TaskQueueService:
         """Drop the stopped session's queue item and cancel its reservation."""
         if not stopped_session_id:
             return
+        if (
+            str(stopped_session_id) not in state.executing_run_keys
+            and str(stopped_session_id) not in state.active_runs
+        ):
+            device_reservations.release(stopped_session_id)
         stopped_item = next(
             (
                 item

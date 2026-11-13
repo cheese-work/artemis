@@ -16,7 +16,7 @@
 
 import { DeviceInfo, DeviceKind } from '../core/models/system.model';
 
-export type LabelableDevice = Pick<DeviceInfo, 'serial' | 'model'> & { device_kind?: DeviceKind };
+export type LabelableDevice = Pick<DeviceInfo, 'serial' | 'model'> & { product?: string | null; device_kind?: DeviceKind };
 
 export const WIRELESS_PHONE = 'Wireless phone';
 
@@ -33,7 +33,7 @@ export function deviceKindLabel(device: LabelableDevice): string {
 
 /** Primary label: the real model name; never the serial or address. */
 export function deviceTitle(device: LabelableDevice): string {
-  return device.model?.trim() || deviceKindLabel(device);
+  return device.model?.trim() || device.product?.trim() || (device.device_kind === 'emulator' ? 'Emulator' : 'Android phone');
 }
 
 const LOOPBACK_ADDRESS = /^(127\.0\.0\.1|localhost|\[::1\]):\d+$/;
@@ -63,14 +63,14 @@ export function unlistedDeviceTitle(serial: string): string {
     case 'network':
       return WIRELESS_PHONE;
     default:
-      return serial;
+      return 'Android phone';
   }
 }
 
 /**
  * Title for a past run whose phone is no longer listed. A loopback address is how a browser
  * relays a phone and any other host:port is a wireless phone, so say that rather than showing
- * the address or "Unknown device"; the address stays in a detail line. A plain serial is kept.
+ * the address or "Unknown device"; the serial stays in a detail line.
  */
 export function unlistedRunDeviceTitle(serial: string, ownBrowser: boolean): string {
   switch (serialShape(serial)) {
@@ -79,13 +79,13 @@ export function unlistedRunDeviceTitle(serial: string, ownBrowser: boolean): str
     case 'network':
       return WIRELESS_PHONE;
     default:
-      return serial;
+      return 'Android phone';
   }
 }
 
 /** True when the record says what the device is: a model name or a classified kind. */
 export function isIdentifiedDevice(device: LabelableDevice): boolean {
-  return !!device.model?.trim() || (!!device.device_kind && device.device_kind !== 'unknown');
+  return !!device.model?.trim() || !!device.product?.trim() || (!!device.device_kind && device.device_kind !== 'unknown');
 }
 
 export function runDeviceLabel(

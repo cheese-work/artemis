@@ -68,6 +68,23 @@ def test_failure_ledger_routes_are_disabled_in_preview(key):
     assert key not in pr.ALLOWED
 
 
+@pytest.mark.parametrize(
+    "key",
+    [
+        "GET /api/system/qa-results/gate-a",
+        "POST /api/system/qa-results/{turn_id}/relabel",
+    ],
+)
+def test_qa_result_admin_routes_are_disabled_in_preview(key):
+    assert key in pr.DISABLED
+    assert key not in pr.ALLOWED
+
+
+def test_deploy_cut_is_disabled_in_preview():
+    assert "POST /api/system/drain/cut" in pr.DISABLED
+    assert "POST /api/system/drain/cut" not in pr.ALLOWED
+
+
 def test_classifications_are_exclusive_and_name_only_registered_routes():
     assert not pr.REAL & pr.SYNTHETIC
     assert not pr.ALLOWED & pr.DISABLED

@@ -12,8 +12,16 @@ export class RunsService {
     return this.http.get<ChatSession>(`/api/chats/${encodeURIComponent(sessionId)}`);
   }
 
+  public renameChat(sessionId: string, title: string): Observable<ChatSession> {
+    return this.http.patch<ChatSession>(`/api/chats/${encodeURIComponent(sessionId)}/title`, { title });
+  }
+
   public sendChat(sessionId: string, content: string, clientId: string): Observable<ChatMessage> {
     return this.http.post<ChatMessage>(`/api/chats/${encodeURIComponent(sessionId)}/messages`, { content, client_id: clientId });
+  }
+
+  public sendInput(sessionId: string, requestId: string, value: string): Observable<{ accepted: boolean }> {
+    return this.http.post<{ accepted: boolean }>(`/api/chats/${encodeURIComponent(sessionId)}/input/${encodeURIComponent(requestId)}`, { value });
   }
 
   public controlChat(sessionId: string, action: 'pause' | 'continue', clientId: string): Observable<ChatMessage> {

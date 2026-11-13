@@ -29,6 +29,16 @@ const input = (over: Partial<WorkspaceChipInput> = {}): WorkspaceChipInput => ({
 });
 
 describe('workspaceChipView', () => {
+  it('uses registry identity when a browser phone is missing from the readiness pool', () => {
+    const serial = '127.0.0.1:35773';
+    const view = workspaceChipView(input({
+      relay: { status: 'connected', serial, sessionId: 'bridge-9', error: null },
+      registry: [{ serial, model: 'Pixel 6 Pro', product: 'raven', device_kind: 'phone', source: 'browser',
+        computer_id: null, computer_name: null, computer_status: 'online', reason: null, since: null }]
+    }));
+    expect(view.text).toContain('Pixel 6 Pro · Phone');
+    expect(view.text).not.toContain('127.0.0.1:35773');
+  });
   it('has no phone to start with and offers no run target', () => {
     const view = workspaceChipView(input());
     expect(view.kind).toBe('none');

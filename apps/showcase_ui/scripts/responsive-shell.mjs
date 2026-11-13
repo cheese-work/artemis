@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startMockApi } from './keyboard-walkthrough/mock-api.mjs';
+import { cleanupResponsiveShell } from './responsive-shell-cleanup.mjs';
 
 const dist = process.env.SHELL_DIST || fileURLToPath(new URL('../dist/frontend/browser', import.meta.url));
 assert.ok(existsSync(path.join(dist, 'index.html')), 'Build the development UI first');
@@ -15,7 +16,12 @@ const port = 9222 + Math.floor(Math.random() * 2000);
 const chrome = spawn(process.env.CHROME_BIN || 'google-chrome', [
   '--headless=new', '--no-sandbox', '--disable-gpu', '--password-store=basic', '--no-proxy-server',
   `--remote-debugging-port=${port}`, `--user-data-dir=${profile}`, 'about:blank'
-], { stdio: 'ignore' });
+], { detached: process.platform !== 'win32', stdio: 'ignore' });
+const chromeExit = new Promise(resolve => {
+  chrome.once('exit', (code, signal) => resolve({ code, signal }));
+  chrome.once('error', error => resolve({ error }));
+});
+console.log(`CHROME_GROUP=${chrome.pid ?? 'none'}`);
 const delay = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
 let socket;
 let nextId = 1;
@@ -73,6 +79,7 @@ const assertTargets = boxes => {
 const evidence = [];
 if (process.env.SHOTS) mkdirSync(process.env.SHOTS, { recursive: true });
 
+let smokeError;
 try {
   let tabs;
   for (let attempt = 0; attempt < 100; attempt++) {
@@ -134,7 +141,7 @@ try {
     assert.equal(layout.labels, true, `${width}: labels stay visible`);
     assert.match(layout.activeBackgroundImage, /linear-gradient/, `${width}: active nav selection bar`);
     if (width >= 800) {
-      assert.equal(layout.nav.width, width < 1200 ? 72 : 224, `${width}: sidebar/rail width`);
+      assert.equal(layout.nav.width, 224, `${width}: pinned expanded sidebar width`);
       assert.equal(layout.page.left, layout.nav.width, `${width}: content clears sidebar/rail`);
       assert.equal(layout.clearance, 0, `${width}: no stale floating-nav clearance`);
     } else {
@@ -194,16 +201,16 @@ try {
     assert.deepEqual(await evaluate(`Array.from(document.querySelectorAll('[data-shell-pane]'))
       .filter(element => getComputedStyle(element).display !== 'none').map(element => element.dataset.shellPane)`),
       width < 1024 ? ['detail'] : ['list', 'detail'], `${width}: single-pane hook`);
-    await click('a[aria-label="Workspace"]');
-    assert.equal(await waitForPath('/workspace'), '/workspace', `${width}: native Workspace navigation`);
+    await click('a[aria-label="Sessions"]');
+    assert.equal(await waitForPath('/sessions'), '/sessions', `${width}: native Sessions navigation`);
     assert.equal(await evaluate(`document.querySelector('.app-page').dataset.activePane`), 'list', `${width}: nav resets pane`);
     await evaluate(`document.querySelectorAll('[data-shell-pane]').forEach(element => element.remove())`);
     await evaluate(`ng.getComponent(document.querySelector('app-root')).shell.activePane.set('detail')`);
-    await click('a[aria-label="Runs"]');
-    assert.equal(await waitForPath('/runs'), '/runs', `${width}: native Runs navigation`);
-    assert.equal(await evaluate(`document.querySelector('.app-page').dataset.activePane`), 'list', `${width}: Runs resets pane`);
-    await click('a[aria-label="Workspace"]');
-    assert.equal(await waitForPath('/workspace'), '/workspace', `${width}: native Workspace navigation`);
+    await click('a[aria-label="Sessions"]');
+    assert.equal(await waitForPath('/sessions'), '/sessions', `${width}: native Sessions navigation`);
+    assert.equal(await evaluate(`document.querySelector('.app-page').dataset.activePane`), 'list', `${width}: Sessions resets pane`);
+    await click('.new-run');
+    assert.equal(await waitForPath('/sessions/new'), '/sessions/new', `${width}: new-session navigation`);
     if (process.env.SHOTS && [1440, 1199, 1024, 800, 799, 390].includes(width)) {
       const { data } = await send('Page.captureScreenshot', { format: 'png' });
       writeFileSync(path.join(process.env.SHOTS, `shell-${width}.png`), Buffer.from(data, 'base64'));
@@ -212,12 +219,26 @@ try {
     console.log(`PASS ${width}px: active nav linear-gradient, shell, pane switch, hit boxes, phone picker and account menu${width < 800 ? ', borderless device visual' : ''}`);
   }
   if (process.env.SHOTS) writeFileSync(path.join(process.env.SHOTS, 'assertions.json'), JSON.stringify(evidence, null, 2));
-} finally {
-  const stopped = once(chrome, 'exit');
-  if (socket?.readyState === WebSocket.OPEN) await send('Browser.close');
-  else chrome.kill();
-  await stopped;
-  socket?.close();
-  await new Promise(resolve => server.close(resolve));
-  rmSync(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+} catch (error) {
+  smokeError = error;
 }
+
+const cleanup = await cleanupResponsiveShell({
+  chrome,
+  chromeExit,
+  sendBrowserClose: socket?.readyState === WebSocket.OPEN
+    ? () => process.argv.includes('--test-stall-browser-close') ? new Promise(() => {}) : send('Browser.close')
+    : undefined,
+  closeSocket: () => socket?.close(),
+  server,
+  profile
+});
+console.log(`CLEANUP duration=${cleanup.durationMs}ms chrome-group=${chrome.pid ?? 'none'} forced=${cleanup.forcedTermination}`);
+if (cleanup.forcedTermination && !cleanup.errors.length) console.log('CLEANUP NOTICE: terminated remaining Chrome processes');
+for (const error of cleanup.errors) console.error(`CLEANUP ERROR: ${error.message}`);
+
+if (smokeError && cleanup.errors.length) {
+  throw new AggregateError([smokeError, ...cleanup.errors], 'Responsive shell assertions and cleanup failed');
+}
+if (smokeError) throw smokeError;
+if (cleanup.errors.length) throw new AggregateError(cleanup.errors, 'Responsive shell cleanup failed');

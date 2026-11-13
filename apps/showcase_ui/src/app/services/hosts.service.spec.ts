@@ -20,6 +20,10 @@ describe('HostsService', () => {
   it('talks to the human /api/hosts routes only', () => {
     service.list().subscribe();
     http.expectOne({ method: 'GET', url: '/api/hosts' }).flush({});
+    service.requestLease('computer-1:serial-1', 3600, 'First-run QA').subscribe();
+    const lease = http.expectOne({ method: 'POST', url: '/api/leases' });
+    expect(lease.request.body).toEqual({ device_id: 'computer-1:serial-1', ttl: 3600, purpose: 'First-run QA' });
+    lease.flush({});
     service.createCode().subscribe();
     http.expectOne({ method: 'POST', url: '/api/hosts/enrollment-codes' }).flush({});
     service.codeStatus('abc').subscribe();

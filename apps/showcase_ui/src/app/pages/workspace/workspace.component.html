@@ -21,8 +21,8 @@ limitations under the License.
     <button type="button" class="skip-link skip-list" (click)="skipToRunList()">Skip to run list</button>
   </div>
 
-  <aside class="run-list-pane" aria-label="Runs">
-    <app-run-library [compact]="true" class="review-run-list" [workspace]="!reviewMode"
+  <aside class="run-list-pane" aria-label="Sessions">
+    <app-run-library [compact]="true" class="review-run-list" [workspace]="false"
       [refreshKey]="historyRevision()" [recordedDevices]="recordedDevices()" [recordedImages]="recordedImages()"
       [sessions]="agentService.sessions()" [liveSessionId]="agentService.runningSessionId()" [liveStatus]="agentService.agentStatus()"
       [selectedRunId]="agentService.currentSessionId()"
@@ -31,19 +31,18 @@ limitations under the License.
   </aside>
 
   <main class="detail-pane">
-    @if (!reviewMode) {
-      <a class="pane-navigation" routerLink="/runs">← Runs</a>
-    }
     <div class="run-surface">
       @if (reviewMode && !reviewRunId()) {
-        <div class="detail-empty" role="status">Select a run to see its steps.</div>
+        <div class="detail-empty" role="status">Select a session or start a new run.</div>
       } @else {
         <app-run-chat [mode]="reviewMode ? 'review' : 'live'" [compose]="!newSessionDraft()"
           [readOnly]="reviewMode && reviewReadOnly()"
-          [runId]="reviewMode ? reviewRunId()! : agentService.currentSessionId() ?? ''"
+          [runId]="reviewMode ? reviewRunId()! : newSessionDraft() ? '' : agentService.currentSessionId() ?? ''"
           [liveSession]="reviewMode ? null : agentService.currentSession()"
           [liveSteps]="reviewMode ? [] : liveSteps()"
           [startupProgress]="reviewMode ? [] : agentService.currentStartupProgress()"
+          (renamed)="sessionRenamed()"
+          (stopRun)="agentService.stopTask($event, false)"
           (newRunPrompt)="startNewRunFrom($event)"></app-run-chat>
       }
     </div>

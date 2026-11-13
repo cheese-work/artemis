@@ -82,6 +82,10 @@ export class UsbDeviceRelayService implements OnDestroy {
 
   /** The USB chooser is done and the bridge has not reported the phone yet. */
   public readonly attaching = signal(false);
+  /** Stays visible after returning to the tab, until dismissed or disconnected. */
+  public readonly backgroundWarning = signal(false);
+  /** The server's ARTEMIS_BRIDGE_FIXES flag, as the last lease reported it; off until a lease says true. */
+  public readonly bridgeFixes = signal(false);
   /** The phone another tab of this browser holds; null when none does. */
   public readonly heldInAnotherTab = this.tabs.heldElsewhere;
 
@@ -102,6 +106,13 @@ export class UsbDeviceRelayService implements OnDestroy {
   private reconnectWaiters: Array<(connected: boolean) => void> = [];
   private unloadWarningRegistered = false;
 
+  private readonly warnWhenHidden = (): void => {
+    if (this.document.visibilityState === 'hidden' &&
+      ['connected', 'reconnecting'].includes(this.state().status)) {
+      this.backgroundWarning.set(true);
+    }
+  };
+
   private readonly warnBeforeUnload = (event: BeforeUnloadEvent): void => {
     const status = this.state().status;
     if (status === 'connecting' || status === 'connected' || status === 'reconnecting') {
@@ -115,6 +126,7 @@ export class UsbDeviceRelayService implements OnDestroy {
   };
 
   constructor() {
+    this.document.addEventListener('visibilitychange', this.warnWhenHidden);
     // Another tab asked for the phone this tab holds: let go and say so.
     this.tabs.onReleaseRequest(() => {
       void this.finishConnection(this.generation, 'This phone is now used in another tab.', 'another_tab');
@@ -122,6 +134,7 @@ export class UsbDeviceRelayService implements OnDestroy {
   }
 
   public ngOnDestroy(): void {
+    this.document.removeEventListener('visibilitychange', this.warnWhenHidden);
     void this.finishConnection(this.generation, null, 'service_destroyed');
   }
 
@@ -135,6 +148,7 @@ export class UsbDeviceRelayService implements OnDestroy {
     this.state.set({ status: 'connecting', serial: null, sessionId: null, error: null });
     this.registerUnloadWarning();
 
+    let usbSetup = false;
     try {
       if (!this.deviceManager) {
         throw namedError('WebUsbUnsupportedError');
@@ -151,7 +165,9 @@ export class UsbDeviceRelayService implements OnDestroy {
 
       this.attaching.set(true);
       this.device = device;
+      usbSetup = true;
       const connection = await device.connect();
+      usbSetup = false;
       if (generation !== this.generation) {
         await device.raw.close().catch((error: unknown) => this.logger.warn('Device close failed:', error));
         return;
@@ -169,7 +185,7 @@ export class UsbDeviceRelayService implements OnDestroy {
       if (generation === this.generation) {
         // Closing the chooser is a choice, not a failure: back to no phone, with no error.
         await this.finishConnection(
-          generation, isChooserCancel(error) ? null : this.toUserMessage(error), 'connect_error',
+          generation, isChooserCancel(error) ? null : this.toUserMessage(error, usbSetup), 'connect_error',
           this.device && !this.socket ? error : null
         );
       }
@@ -311,6 +327,7 @@ export class UsbDeviceRelayService implements OnDestroy {
       return;
     }
 
+    this.clearSocketTimers();
     const current = this.state();
     if (
       (current.status === 'connected' || current.status === 'reconnecting') &&
@@ -554,6 +571,7 @@ export class UsbDeviceRelayService implements OnDestroy {
         }
         this.sessionLeased = true;
         this.leasedSessionId = value.session_id;
+        this.bridgeFixes.set(value.bridge_fixes === true);
         if (typeof value.reconnect_token === 'string') {
           this.reconnectToken = value.reconnect_token;
         }
@@ -575,6 +593,7 @@ export class UsbDeviceRelayService implements OnDestroy {
           sessionId: this.leasedSessionId,
           error: null
         });
+        this.warnWhenHidden();
         this.tabs.announceHeld(value.serial.trim());
         this.resolveReconnectWaiters(true);
         return;
@@ -612,6 +631,7 @@ export class UsbDeviceRelayService implements OnDestroy {
     this.logger.warn('Device bridge closing:', report);
     this.generation += 1;
     const wasConnected = ['connected', 'reconnecting'].includes(this.state().status);
+    this.backgroundWarning.set(false);
     this.state.set(error
       ? { status: wasConnected ? 'dropped' : 'error', serial: null, sessionId: null, error }
       : { status: 'idle', serial: null, sessionId: null, error: null });
@@ -707,7 +727,7 @@ export class UsbDeviceRelayService implements OnDestroy {
     return url.toString();
   }
 
-  private toUserMessage(error: unknown): string {
+  private toUserMessage(error: unknown, usbSetup = false): string {
     const errorObject = typeof error === 'object' && error !== null
       ? error as { name?: unknown; message?: unknown }
       : {};
@@ -719,13 +739,15 @@ export class UsbDeviceRelayService implements OnDestroy {
         : '';
     if (
       error instanceof AdbDaemonWebUsbDevice.DeviceBusyError ||
-      /claim(?:ing)? interface/i.test(message)
+      /claim(?:ing)? interface/i.test(message) ||
+      (usbSetup && /access denied|LIBUSB_ERROR_BUSY/i.test(message))
     ) {
       if (this.tabs.heldElsewhere()) {
         return 'This phone is connected in another tab. Use it there, or choose Use here.';
       }
-      return 'Another program on this computer is using the phone (adb, Android Studio, scrcpy). ' +
-        'Quit it or run adb kill-server, unplug and replug, then retry.';
+      return 'Another program on this computer may be using the phone (adb, Android Studio, scrcpy). ' +
+        'Stop the host ADB server on this computer by running adb kill-server. ' +
+        'Quit other programs using the phone, unplug and replug, then retry.';
     }
 
     switch (name) {
@@ -782,6 +804,7 @@ interface BridgeControlMessage {
   session_id?: unknown;
   expires_in_seconds?: unknown;
   reconnect_token?: unknown;
+  bridge_fixes?: unknown;
   serial?: unknown;
 }
 

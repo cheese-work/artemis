@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import hmac
 import ipaddress
 import json
@@ -20,6 +20,7 @@ from jwt.exceptions import InvalidKeyError, PyJWTError
 from starlette.requests import HTTPConnection
 from starlette.websockets import WebSocket
 from starlette.status import WS_1008_POLICY_VIOLATION, WS_1013_TRY_AGAIN_LATER
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from apps.admin_console.database.repositories.principal_repository import (
     PrincipalStoreNotReady,
@@ -30,6 +31,14 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
+class ServicePrincipal:
+    name: str
+    routes: frozenset[
+        tuple[str, str]
+    ]  # (METHOD, path); a whole `{name}` segment matches any one segment
+
+
+@dataclass(frozen=True)
 class AccessConfig:
     auth_mode: str = "open"
     audience: str | None = None
@@ -37,6 +46,7 @@ class AccessConfig:
     admin_emails: frozenset[str] = frozenset()
     admin_subjects: frozenset[str] = frozenset()
     spaces_enabled: bool = False
+    service_principals: dict[str, ServicePrincipal] = field(default_factory=dict)
 
     def is_admin(self, subject: str | None, email: str | None) -> bool:
         """Global admins are keyed by subject; the email list is legacy, spaces-off only."""
@@ -58,6 +68,8 @@ class AccessIdentity:
     # email match alone still proves ownership (the pre-spaces rule).
     history_emails: frozenset[str] | None = None
     spaces: bool = False
+    service_principal: str | None = None
+    service_routes: frozenset[tuple[str, str]] = frozenset()
 
 
 RETRY_AFTER_SECONDS = 5
@@ -158,7 +170,43 @@ def config_from_environment() -> AccessConfig:
         admin_emails=_csv("ARTEMIS_ADMIN_EMAILS"),
         admin_subjects=admin_subjects,
         spaces_enabled=spaces_enabled,
+        service_principals=_service_principals_from_environment(),
     )
+
+
+def _service_principals_from_environment() -> dict[str, ServicePrincipal]:
+    """Parse ``ARTEMIS_SERVICE_PRINCIPALS``: ``{client_id: {"name": str, "routes": ["GET /path"]}}``."""
+    raw = os.getenv("ARTEMIS_SERVICE_PRINCIPALS", "").strip()
+    if not raw:
+        return {}
+    problem = (
+        "ARTEMIS_SERVICE_PRINCIPALS must be a JSON object mapping a client id to "
+        '{"name": "<principal>", "routes": ["GET /api/path"]}.'
+    )
+    try:
+        mapping = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError(problem) from exc
+    principals: dict[str, ServicePrincipal] = {}
+    if not isinstance(mapping, dict):
+        raise ValueError(problem)
+    for client_id, entry in mapping.items():
+        name = entry.get("name") if isinstance(entry, dict) else None
+        routes = entry.get("routes") if isinstance(entry, dict) else None
+        if not (
+            client_id.strip()
+            and isinstance(name, str)
+            and name.strip()
+            and isinstance(routes, list)
+            and routes
+            and all(isinstance(route, str) and len(route.split()) == 2 for route in routes)
+        ):
+            raise ValueError(problem)
+        principals[client_id.strip()] = ServicePrincipal(
+            name.strip(),
+            frozenset((m.upper(), path) for m, path in (route.split() for route in routes)),
+        )
+    return principals
 
 
 class CloudflareAccessVerifier:
@@ -223,7 +271,7 @@ class CloudflareAccessVerifier:
             audience=config.audience,
             issuer=config.issuer,
             options={
-                "require": ["aud", "email", "exp", "iat", "iss", "nbf", "sub"],
+                "require": ["aud", "exp", "iat", "iss", "sub"],
             },
             leeway=30,
         )
@@ -253,6 +301,27 @@ def _is_loopback_request(request: HTTPConnection) -> bool:
         return bool(host and ipaddress.ip_address(host).is_loopback)
     except ValueError:
         return isinstance(host, str) and host.casefold() == "localhost"
+
+
+def _is_service_token(claims: dict[str, Any]) -> bool:
+    """A Cloudflare Access service token has no email; its client id is `common_name`."""
+    return claims.get("email") is None and "common_name" in claims
+
+
+def _service_identity(claims: dict[str, Any], config: AccessConfig) -> AccessIdentity | None:
+    if not _is_service_token(claims):
+        return None
+    client_id = claims["common_name"]
+    principal = config.service_principals.get(client_id) if isinstance(client_id, str) else None
+    if principal is None:
+        return AccessIdentity(None, False, config.auth_mode, "service_principal_unmapped")
+    return AccessIdentity(
+        None,
+        False,
+        config.auth_mode,
+        service_principal=principal.name,
+        service_routes=principal.routes,
+    )
 
 
 async def authenticate_request(
@@ -292,6 +361,9 @@ async def authenticate_request(
     except (InvalidTokenError, InvalidKeyError, PyJWTError, TypeError, KeyError):
         return AccessIdentity(None, False, config.auth_mode, "jwt_invalid")
 
+    service_identity = _service_identity(claims, config)
+    if service_identity is not None:
+        return service_identity
     email = claims.get("email")
     if not isinstance(email, str) or not email.strip():
         return AccessIdentity(None, False, config.auth_mode, "jwt_invalid")
@@ -328,18 +400,168 @@ async def authenticate_request(
 async def public_tier(request: HTTPConnection) -> AccessIdentity:
     from apps.admin_console.core.preview_identity import resolve_preview_identity
 
+    identity = getattr(request.state, "identity", None)
+    if isinstance(identity, AccessIdentity):
+        return identity
     preview_identity = resolve_preview_identity(request)
     if preview_identity is not None:
         request.state.identity = preview_identity
         return preview_identity
+    config, verifier = _access_context(request)
+    identity = await authenticate_request(request, config, verifier)
+    request.state.identity = identity
+    _enforce_service_principal_routes(request, identity)
+    return identity
+
+
+def _access_context(request: HTTPConnection) -> tuple[AccessConfig, CloudflareAccessVerifier]:
     config = getattr(request.app.state, "access_config", None) or config_from_environment()
     verifier = getattr(request.app.state, "access_verifier", None)
     if verifier is None:
         verifier = CloudflareAccessVerifier()
         request.app.state.access_verifier = verifier
-    identity = await authenticate_request(request, config, verifier)
+    return config, verifier
+
+
+async def _enforce_service_boundary(request: HTTPConnection) -> None:
+    """Resolve only a service-token identity before routing; human callers resolve per route."""
+    from apps.admin_console.core.preview_identity import resolve_preview_identity
+
+    preview_error = None
+    try:
+        if resolve_preview_identity(request) is not None:
+            return
+    except AdminAPIError as error:
+        preview_error = error  # The route's own public_tier reports it, unless a service token.
+    config, verifier = _access_context(request)
+    token = request.headers.get("Cf-Access-Jwt-Assertion")
+    if config.auth_mode != "cloudflare" or not token:
+        return
+    try:
+        # Same payload bytes as the verified claims, so a human token is skipped here and
+        # verified once, by its route.
+        if not _is_service_token(jwt.decode(token, options={"verify_signature": False})):
+            return
+    except PyJWTError:
+        return  # Not a JWT at all; the route's own public_tier reports it.
+    try:
+        claims = await verifier.verify(token, config)
+    except (httpx.HTTPError, OSError, ValueError) as exc:
+        _deny_unverified_service_token(request, "jwks_unavailable")
+        raise AdminAPIError(
+            503,
+            "Cloudflare Access keys are unavailable, so this service credential cannot be verified.",
+            "service_token_unverifiable",
+            "Retry shortly.",
+            RETRY_AFTER_SECONDS,
+        ) from exc
+    except (InvalidTokenError, PyJWTError, TypeError, KeyError) as exc:
+        raise _invalid_service_token(request, "jwt_invalid") from exc
+    except Exception as exc:  # Any other verifier failure still fails closed.
+        raise _invalid_service_token(request, "verification_error") from exc
+    identity = _service_identity(claims, config)
+    if identity is None:
+        return
     request.state.identity = identity
-    return identity
+    if preview_error is not None:
+        logger.warning(
+            "Service token denied: preview identity present principal=%s route=%s",
+            identity.service_principal or "unmapped",
+            _log_safe_route(request),
+        )
+        raise preview_error
+    _enforce_service_principal_routes(request, identity)
+
+
+def _deny_unverified_service_token(request: HTTPConnection, reason: str) -> None:
+    logger.warning(
+        "Service token denied: verification failed reason=%s route=%s",
+        reason,
+        _log_safe_route(request),
+    )
+
+
+def _invalid_service_token(request: HTTPConnection, reason: str) -> AdminAPIError:
+    _deny_unverified_service_token(request, reason)
+    return AdminAPIError(
+        401,
+        "This service credential is not a valid Cloudflare Access token.",
+        "service_token_invalid",
+        "Use a current Cloudflare Access service token for this application.",
+    )
+
+
+class ServicePrincipalMiddleware:
+    def __init__(self, app: ASGIApp):
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] in {"http", "websocket"}:
+            try:
+                await _enforce_service_boundary(HTTPConnection(scope))
+            except AdminAPIError as error:
+                if scope["type"] == "websocket":
+                    await admin_api_error_handler(WebSocket(scope, receive, send), error)
+                else:
+                    await _error_response(error)(scope, receive, send)
+                return
+        await self.app(scope, receive, send)
+
+
+def _log_safe_path(request: HTTPConnection) -> str:
+    """The routed path with control characters escaped, so it cannot split a log line."""
+    return request.scope["path"].encode("unicode_escape").decode("ascii")
+
+
+def _log_safe_route(request: HTTPConnection) -> str:
+    return f"{request.scope.get('method', 'WEBSOCKET')} {_log_safe_path(request)}"
+
+
+def _service_route_allowed(method: str, path: str, routes: frozenset[tuple[str, str]]) -> bool:
+    """Exact match, or a grant whose `{name}` segments each match one non-empty path segment."""
+    if (method, path) in routes:
+        return True
+    segments = path.split("/")
+    for granted_method, granted_path in routes:
+        granted = granted_path.split("/")
+        if (
+            granted_method == method
+            and len(granted) == len(segments)
+            and all(
+                (g.startswith("{") and g.endswith("}") and s and not s.isspace()) or g == s
+                for g, s in zip(granted, segments, strict=True)
+            )
+        ):
+            return True
+    return False
+
+
+def _enforce_service_principal_routes(request: HTTPConnection, identity: AccessIdentity) -> None:
+    """A service token reaches only the routes its principal maps (exact or `{name}` templates); nothing else."""
+    if identity.reason == "service_principal_unmapped":
+        logger.warning("Service token denied: unmapped client id route=%s", _log_safe_path(request))
+        allowed = False
+    elif identity.service_principal is None:
+        return
+    else:
+        method = request.scope.get("method", "WEBSOCKET")
+        # The router matches scope["path"]; request.url.path drops tabs and newlines.
+        allowed = _service_route_allowed(method, request.scope["path"], identity.service_routes)
+        logger.info(
+            "Service principal request principal=%s route=%s %s allowed=%s",
+            identity.service_principal,
+            method,
+            _log_safe_path(request),
+            allowed,
+        )
+    if allowed:
+        return
+    raise AdminAPIError(
+        403,
+        "This service credential cannot call this route.",
+        "service_route_denied",
+        "Use a route listed for the principal in ARTEMIS_SERVICE_PRINCIPALS.",
+    )
 
 
 async def require_admin(identity: AccessIdentity = Depends(public_tier)) -> AccessIdentity:
@@ -360,6 +582,15 @@ async def require_admin(identity: AccessIdentity = Depends(public_tier)) -> Acce
     )
 
 
+async def require_admin_or_service_read(
+    identity: AccessIdentity = Depends(public_tier),
+) -> AccessIdentity:
+    """Admin, or a service principal whose exact route `public_tier` already allowed."""
+    if identity.service_principal is not None:
+        return identity
+    return await require_admin(identity)
+
+
 async def require_qa(identity: AccessIdentity = Depends(public_tier)) -> AccessIdentity:
     if identity.email is not None or identity.admin:
         return identity
@@ -369,6 +600,13 @@ async def require_qa(identity: AccessIdentity = Depends(public_tier)) -> AccessI
         "not_signed_in",
         "Open the protected SmartQA URL and sign in, then retry.",
     )
+
+
+async def require_qa_or_service(identity: AccessIdentity = Depends(public_tier)) -> AccessIdentity:
+    """A signed-in user, an admin, or a service principal whose exact route `public_tier` allowed."""
+    if identity.service_principal is not None:
+        return identity
+    return await require_qa(identity)
 
 
 async def require_websocket_admin(identity: AccessIdentity = Depends(public_tier)) -> None:
@@ -425,6 +663,9 @@ _PUBLIC_GET_PATHS = {
     "/api/runs",
     "/api/runs/{session_id}",
     "/api/runs/{session_id}/bundle.zip",
+    "/api/runs/{session_id}/annotations",
+    "/api/runs/{session_id}/annotations/{annotation_id}",
+    "/api/runs/{session_id}/annotations/{annotation_id}/evidence",
     "/api/system/retention",
     "/api/system/storage",
     "/api/hosts",
@@ -471,11 +712,34 @@ _PUBLIC_GET_PATHS = {
     "/{full_path:path}",
 }
 
-_ADMIN_GET_PATHS = {"/api/system/failures", "/api/system/providers"}
+_ADMIN_GET_PATHS = {
+    "/api/system/providers",
+    "/api/system/qa-results/gate-a",
+}
+
+# Admin reads that a mapped service principal may also call (see require_admin_or_service_read).
+_SERVICE_READ_GET_PATHS = {"/api/system/failures", "/api/leases"}
+
+# Device leases (CHE-2099): agents call these with a service token, QA users in a browser.
+_LEASE_GET_PATHS = {
+    "/api/leases/dlp-1/{lease_id}",
+    "/api/leases/dlp-1/tickets/{ticket_id}",
+}
+_LEASE_POST_PATHS = {
+    "/api/leases",
+    "/api/leases/{lease_id}/renew",
+    "/api/leases/{lease_id}/release",
+    "/api/leases/dlp-1",
+    "/api/leases/dlp-1/{lease_id}/renew",
+    "/api/leases/dlp-1/{lease_id}/release",
+    "/api/leases/dlp-1/tickets/{ticket_id}/park",
+    "/api/leases/dlp-1/tickets/{ticket_id}/claim",
+}
 
 _ADMIN_MUTATING_PATHS = {
     "/api/system/failures/collect",
     "/api/system/failures/digest",
+    "/api/system/qa-results/{turn_id}/relabel",
     "/api/system/devices/select",
     "/api/system/adb/restart",
     "/api/system/adb/connect",
@@ -517,6 +781,7 @@ _AGENT_PATHS = {
 # Owner-or-admin actions: the route guard needs a signed-in user; the handler
 # then checks the caller owns the run (see core/ownership.py).
 _QA_MUTATING_PATHS = {
+    "/api/chats/{session_id}/input/{request_id}",
     "/api/chats/{session_id}/messages",
     "/api/chats/{session_id}/pause",
     "/api/chats/{session_id}/continue",
@@ -533,6 +798,7 @@ _PUBLIC_MUTATING_PATHS = {
     "/api/stop",
     "/api/tasks/{session_id}/cancel-queued",
     "/api/resume",
+    "/api/runs/{session_id}/annotations",
 }
 
 
@@ -555,6 +821,8 @@ def route_tier(path: str, methods: set[str], is_websocket: bool = False) -> str 
         return "lifecycle"
     if path == "/api/system/drain" and methods in ({"GET"}, {"POST"}, {"DELETE"}):
         return "loopback"
+    if path == "/api/system/drain/cut" and methods == {"POST"}:
+        return "loopback"
     if path == "/api/system/service-readiness" and methods == {"GET"}:
         return "loopback"
     if path == "/api/v1" or path.startswith("/api/v1/"):
@@ -563,10 +831,23 @@ def route_tier(path: str, methods: set[str], is_websocket: bool = False) -> str 
         return "public"
     if methods == {"GET"} and path in _ADMIN_GET_PATHS:
         return "admin"
+    if methods == {"GET"} and path in _SERVICE_READ_GET_PATHS:
+        return "admin_or_service"
+    if methods == {"GET"} and path in _LEASE_GET_PATHS:
+        return "qa_or_service"
     if methods == {"POST"} and path in _PUBLIC_MUTATING_PATHS:
         return "public"
+    if path == "/api/runs/{session_id}/annotations/{annotation_id}" and methods in (
+        {"PATCH"},
+        {"DELETE"},
+    ):
+        return "public"
+    if methods == {"PATCH"} and path == "/api/chats/{session_id}/title":
+        return "qa"
     if methods == {"POST"} and path in _QA_MUTATING_PATHS:
         return "qa"
+    if methods == {"POST"} and path in _LEASE_POST_PATHS:
+        return "qa_or_service"
     if methods in ({"POST"}, {"PUT"}) and path in _ADMIN_MUTATING_PATHS:
         return "admin"
     return None
