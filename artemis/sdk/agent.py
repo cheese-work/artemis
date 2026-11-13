@@ -58,7 +58,7 @@ from artemis.controllers.controller_factory import get_controller
 from artemis.controllers.platform_specific_commands_controller import (
     get_first_device,
 )
-from artemis.runtime import DeviceExecutionLock, trace_store
+from artemis.runtime import DeviceExecutionLock, device_policy, trace_store
 from artemis.runtime.adb_endpoint import AdbEndpoint
 from artemis.runtime.endpoint_transport import EndpointTransport
 from artemis.runtime.cancel_requests import watch_for_cancel_request
@@ -70,6 +70,7 @@ from artemis.drivers.types import DeviceDisconnectedError
 from artemis.data_engine.trace import DataEngineCallbackHandler
 from artemis.graph.graph import get_graph
 from artemis.graph.state import State
+from artemis.sdk.run_outcome import attach_test_summary, resolve_trace_suffix
 from artemis.sdk.types.agent import AgentConfig
 from artemis.sdk.types.exceptions import (
     AgentError,
@@ -242,6 +243,8 @@ class Agent(AgentBase):
                 adb_client=self._adb_client,
             )
 
+        if os.environ.get("ARTEMIS_CLOUD_MODE") != "1":  # before the first command to the phone
+            self.activate_device_policy(device_id, run_id=self._session_id or uuid.uuid4().hex)
         self._device_context = await self._get_device_context(
             device_id=device_id, platform=platform
         )
@@ -544,6 +547,8 @@ class Agent(AgentBase):
         if self._ui_adb_client is not None:
             await asyncio.to_thread(self._ui_adb_client.disconnect)
         self._initialized = False
+        device_policy.finish_run(self._device_policy, self._policy_receipt_dir)
+        self._device_policy = None
         logger.info("✅ Artemis agent stopped.")
 
     async def _ensure_device_unlocked(self) -> None:
@@ -858,6 +863,32 @@ class Agent(AgentBase):
         except (OSError, ValueError, RuntimeError) as exc:
             logger.debug(f"Could not record hierarchy backend in status.json: {exc}")
 
+    _device_policy: device_policy.RestrictedDevice | None = None
+    _policy_receipt_dir: Path | None = None
+
+    def activate_device_policy(
+        self, serial: str, *, run_id: str, receipt_dir: Path | None = None
+    ) -> device_policy.RestrictedDevice | None:
+        """Restrict ``serial`` for this run when a live restricted lease (or the env list) says so."""
+        self._device_policy = device_policy.activate_for_run(self._transport, serial, run_id=run_id)
+        self._policy_receipt_dir = receipt_dir or (self._tmp_traces_dir / "device_policy" / run_id)
+        return self._device_policy
+
+    async def _run_task(self, request):
+        device = self._device_policy
+        if device is None:
+            return await super()._run_task(request)
+        if not request.locked_app_package:  # a restricted run stays inside one app
+            raise device_policy.DevicePolicyDenied(f"device_policy_denied: {device.serial}")
+        device.bind_package(request.locked_app_package)
+        try:
+            result = await super()._run_task(request)
+            if device.stopped:  # a LeftTestApp swallowed inside the run still ends it
+                raise device_policy.LeftTestApp(f"left_test_app: {device.serial}")
+            return result
+        finally:
+            await asyncio.to_thread(device.restore_settings)
+
     def _init_clients(
         self,
         device_id: str,
@@ -866,6 +897,7 @@ class Agent(AgentBase):
         transport = EndpointTransport.shared(
             AdbEndpoint.create(self._config.servers.adb_host, self._config.servers.adb_port)
         )
+        self._transport = transport
         self._adb_client = transport.client()
         self._ui_adb_client = create_screen_client(device_id, transport=transport)
 
@@ -929,46 +961,3 @@ def _validate_and_prepare_file(file_path: Path):
         path_obj.touch(exist_ok=True)
     except OSError as e:
         raise AgentTaskRequestError(f"Error creating file '{file_path}': {e}")
-
-
-def attach_test_summary(output, run_outcome: dict | None):
-    """Surfaces the machine-readable test summary in the task's return value.
-
-    Only applies when the run actually had check items (the summary carries at
-    least one counted item) — otherwise the historical return shape is kept
-    untouched. String outputs are wrapped into a dict so that callers such as
-    ``mobile_run_task`` receive the summary without parsing report prose.
-    """
-    if not run_outcome:
-        return output
-    tests = run_outcome.get("tests") or {}
-    total = (
-        int(tests.get("passed", 0))
-        + int(tests.get("failed", 0))
-        + int(tests.get("inconclusive", 0))
-        + int(tests.get("unchecked", 0))
-    )
-    if total <= 0:
-        return output
-    summary = {"task_status": run_outcome.get("task_status"), **tests}
-    if isinstance(output, dict):
-        merged = dict(output)
-        merged.setdefault("test_summary", summary)
-        return merged
-    if output is None:
-        return {"test_summary": summary}
-    if isinstance(output, str):
-        return {"result": output, "test_summary": summary}
-    # Typed/structured outputs keep their shape; the summary stays available in
-    # run_outcome.json and the session state.
-    return output
-
-
-def resolve_trace_suffix(task_status: str, run_outcome: dict | None) -> str:
-    """Trace naming: assertion failures must be distinguishable from _PASS."""
-    if task_status != "completed":
-        return "_FAIL"
-    tests = (run_outcome or {}).get("tests") or {}
-    if int(tests.get("failed", 0)) > 0:
-        return "_TESTFAIL"
-    return "_PASS"

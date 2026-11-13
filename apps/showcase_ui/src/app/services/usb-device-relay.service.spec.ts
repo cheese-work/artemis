@@ -10,6 +10,7 @@ import {
   AdbDaemonWebUsbDeviceManager
 } from '@yume-chan/adb-daemon-webusb';
 import { Consumable } from '@yume-chan/stream-extra';
+import { UsbPhoneConnectionComponent } from '../components/usb-phone-connection/usb-phone-connection.component';
 import { LoggerService } from './logger.service';
 import { PHONE_TAB_CHANNEL, TabChannel } from './phone-tab.service';
 import {
@@ -140,6 +141,7 @@ describe('UsbDeviceRelayService', () => {
     webUsbDeviceManager = manager as unknown as AdbDaemonWebUsbDeviceManager;
 
     TestBed.configureTestingModule({
+      imports: [UsbPhoneConnectionComponent],
       providers: [
         UsbDeviceRelayService,
         {
@@ -201,6 +203,28 @@ describe('UsbDeviceRelayService', () => {
     socket.message(JSON.stringify({ type: 'session_leased', session_id: 'lease-1', expires_in_seconds: 300 }));
     socket.message(JSON.stringify({ type: 'device_attached', serial: 'R58M123' }));
     expect(service.attaching()).toBeFalse();
+  });
+
+  it('reads the server-owned ARTEMIS_BRIDGE_FIXES flag from the lease, off unless it says true (CHE-2098)', async () => {
+    service = TestBed.inject(UsbDeviceRelayService);
+    expect(service.bridgeFixes()).toBeFalse();
+    const connecting = service.connect();
+    await flushMicrotasks();
+    socket.open();
+    await connecting;
+
+    socket.message(JSON.stringify({ type: 'session_leased', session_id: 'lease-1', expires_in_seconds: 300 }));
+    expect(service.bridgeFixes()).toBeFalse();
+
+    socket.message(JSON.stringify({
+      type: 'session_leased', session_id: 'lease-1', expires_in_seconds: 300, bridge_fixes: 'on'
+    }));
+    expect(service.bridgeFixes()).toBeFalse();
+
+    socket.message(JSON.stringify({
+      type: 'session_leased', session_id: 'lease-1', expires_in_seconds: 300, bridge_fixes: true
+    }));
+    expect(service.bridgeFixes()).toBeTrue();
   });
 
   it('tells other tabs which phone it holds, and that it let go (OCR F3)', async () => {
@@ -267,10 +291,76 @@ describe('UsbDeviceRelayService', () => {
     await service.connect();
 
     expect(service.state().error).toBe(
-      'Another program on this computer is using the phone (adb, Android Studio, scrcpy). ' +
-      'Quit it or run adb kill-server, unplug and replug, then retry.'
+      'Another program on this computer may be using the phone (adb, Android Studio, scrcpy). ' +
+      'Stop the host ADB server on this computer by running adb kill-server. ' +
+      'Quit other programs using the phone, unplug and replug, then retry.'
     );
     expect(device.raw.close).toHaveBeenCalled();
+  });
+
+  for (const error of [
+    new DOMException('Access denied.', 'NetworkError'),
+    new DOMException('Access Denied', 'SecurityError'),
+    new Error('LIBUSB_ERROR_BUSY'),
+    'USB open failed: LIBUSB_ERROR_BUSY'
+  ]) {
+    it(`shows stop-host-ADB guidance for USB setup contention: ${String(error)}`, async () => {
+      device.connect.and.rejectWith(error);
+      service = TestBed.inject(UsbDeviceRelayService);
+      const fixture = TestBed.createComponent(UsbPhoneConnectionComponent);
+
+      await service.connect();
+      fixture.detectChanges();
+
+      expect(service.state().status).toBe('error');
+      const alert = fixture.nativeElement.querySelector('[role="alert"]') as HTMLElement;
+      expect(alert.textContent).toContain('Stop the host ADB server on this computer');
+      expect(alert.textContent).toContain('adb kill-server');
+      expect(alert.textContent).not.toContain('Check its cable');
+      expect(fixture.nativeElement.querySelector('button').disabled).toBeFalse();
+      expect(device.raw.close).toHaveBeenCalledTimes(1);
+      expect(service.attaching()).toBeFalse();
+      expect(socketUrl).toBeUndefined();
+    });
+  }
+
+  it('keeps chooser access denial as a permission error', async () => {
+    manager.requestDevice.and.rejectWith(new DOMException('Access denied.', 'NotAllowedError'));
+    service = TestBed.inject(UsbDeviceRelayService);
+
+    await service.connect();
+
+    expect(service.state().error).toContain('USB permission was not granted');
+    expect(service.state().error).not.toContain('adb kill-server');
+    expect(device.connect).not.toHaveBeenCalled();
+  });
+
+  it('does not diagnose every USB setup network error as host ADB contention', async () => {
+    device.connect.and.rejectWith(new DOMException('USB device unavailable.', 'NetworkError'));
+    service = TestBed.inject(UsbDeviceRelayService);
+
+    await service.connect();
+
+    expect(service.state().error).toContain('USB device unavailable');
+    expect(service.state().error).not.toContain('adb kill-server');
+  });
+
+  it('does not diagnose a transfer access denial as host ADB contention', async () => {
+    service = TestBed.inject(UsbDeviceRelayService);
+    const connecting = service.connect();
+    await flushMicrotasks();
+    socket.open();
+    await connecting;
+    socket.message(JSON.stringify({ type: 'session_leased', session_id: 'lease-1', expires_in_seconds: 300 }));
+    socket.message(JSON.stringify({ type: 'device_attached', serial: 'R58M123' }));
+
+    packetController.error(new DOMException('Access denied.', 'NetworkError'));
+    await new Promise<void>(resolve => setTimeout(resolve, 0));
+    await flushMicrotasks();
+
+    expect(service.state().status).toBe('dropped');
+    expect(service.state().error).toContain('Details: NetworkError: Access denied.');
+    expect(service.state().error).not.toContain('adb kill-server');
   });
 
   it('explains a WebUSB network error as a competing USB program', async () => {
@@ -280,8 +370,9 @@ describe('UsbDeviceRelayService', () => {
     await service.connect();
 
     expect(service.state().error).toBe(
-      'Another program on this computer is using the phone (adb, Android Studio, scrcpy). ' +
-      'Quit it or run adb kill-server, unplug and replug, then retry.'
+      'Another program on this computer may be using the phone (adb, Android Studio, scrcpy). ' +
+      'Stop the host ADB server on this computer by running adb kill-server. ' +
+      'Quit other programs using the phone, unplug and replug, then retry.'
     );
   });
 
@@ -291,7 +382,7 @@ describe('UsbDeviceRelayService', () => {
 
     await service.connect();
 
-    expect(service.state().error).toContain('Another program on this computer is using the phone');
+    expect(service.state().error).toContain('Another program on this computer may be using the phone');
   });
 
   it('shows transfer details instead of USB contention for a mid-session network error', async () => {
@@ -767,6 +858,66 @@ describe('UsbDeviceRelayService', () => {
     } finally {
       jasmine.clock().uninstall();
     }
+  });
+
+  it('warns when an attached tab is hidden and keeps the warning on return', async () => {
+    const visibility = spyOnProperty(document, 'visibilityState', 'get').and.returnValue('visible');
+    await openRelay();
+    expect(service!.backgroundWarning()).toBeFalse();
+
+    visibility.and.returnValue('hidden');
+    document.dispatchEvent(new Event('visibilitychange'));
+    expect(service!.backgroundWarning()).toBeTrue();
+    expect(service!.state().status).toBe('connected');
+    expect(socket.readyState).toBe(1);
+
+    visibility.and.returnValue('visible');
+    document.dispatchEvent(new Event('visibilitychange'));
+    expect(service!.backgroundWarning()).toBeTrue();
+
+    await service!.disconnect();
+    expect(service!.backgroundWarning()).toBeFalse();
+  });
+
+  it('warns if attachment finishes while the tab is already hidden', async () => {
+    spyOnProperty(document, 'visibilityState', 'get').and.returnValue('hidden');
+    await openRelay();
+    expect(service!.backgroundWarning()).toBeTrue();
+  });
+
+  it('warns while reconnecting and clears the warning when the bridge drops', async () => {
+    const visibility = spyOnProperty(document, 'visibilityState', 'get').and.returnValue('visible');
+    await openRelay();
+    socket.drop();
+    expect(service!.state().status).toBe('reconnecting');
+    visibility.and.returnValue('hidden');
+    document.dispatchEvent(new Event('visibilitychange'));
+    expect(service!.backgroundWarning()).toBeTrue();
+
+    const closed = new Promise<void>(resolve => {
+      closeLog.and.callFake((message: string) => {
+        if (message === 'Device bridge closing:') resolve();
+      });
+    });
+    packetController.error(new Error('USB connection lost'));
+    await closed;
+    expect(service!.state().status).toBe('dropped');
+    expect(service!.backgroundWarning()).toBeFalse();
+  });
+
+  it('ignores visibility changes without an attached phone and removes the listener on destroy', async () => {
+    const visibility = spyOnProperty(document, 'visibilityState', 'get').and.returnValue('hidden');
+    service = TestBed.inject(UsbDeviceRelayService);
+    document.dispatchEvent(new Event('visibilitychange'));
+    expect(service.backgroundWarning()).toBeFalse();
+    visibility.and.returnValue('visible');
+    await openRelay();
+    const remove = spyOn(document, 'removeEventListener').and.callThrough();
+    service!.ngOnDestroy();
+    expect(remove).toHaveBeenCalledWith('visibilitychange', jasmine.any(Function));
+    visibility.and.returnValue('hidden');
+    document.dispatchEvent(new Event('visibilitychange'));
+    expect(service!.backgroundWarning()).toBeFalse();
   });
 
   it('does not close an attached bridge just because the tab becomes hidden', async () => {

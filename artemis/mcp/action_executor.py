@@ -59,8 +59,11 @@ from artemis.utils.notes import (
     format_list_notes_failure,
     format_list_notes_success,
     format_read_note_failure,
+    is_safe_note_key,
     list_notes_info,
     read_note_content,
+    save_note_content,
+    update_note_content,
 )
 from third_party.mobile_use.utils.logger import get_logger
 
@@ -71,7 +74,10 @@ __all__ = ["McpActionExecutor"]
 
 #: Non-device tools executed agent-side (never behind the action server).
 AGENT_TOOL_NAMES: frozenset[str] = (
-    frozenset({"read_note", "list_notes", "ask_explorer", "video_analyzer"}) | HISTORY_TOOL_NAMES
+    frozenset(
+        {"read_note", "list_notes", "save_note", "update_note", "ask_explorer", "video_analyzer"}
+    )
+    | HISTORY_TOOL_NAMES
 )
 
 #: Actions whose ``target`` is a single point: an element index or an [x, y] pair.
@@ -642,6 +648,12 @@ class McpActionExecutor:
                 )
             elif raw_name == "list_notes":
                 text = await self._list_notes()
+            elif raw_name == "save_note":
+                text = await self._save_note(args.get("key", ""), args.get("content", ""))
+            elif raw_name == "update_note":
+                text = await self._update_note(
+                    args.get("key", ""), args.get("target", ""), args.get("replacement", "")
+                )
             elif raw_name == "video_analyzer":
                 text, ok = await self._video_analyzer(
                     args.get("time_description") or args.get("TimeDescription") or "",
@@ -685,6 +697,37 @@ class McpActionExecutor:
             return read_note_content(base_dir, key, start_line, end_line)
         except Exception as e:
             return format_read_note_failure(key, str(e))
+
+    def _writable_notes_dir(self, key: str) -> Path | str:
+        """The session base directory, or a ``ToolFailure`` when a write must be refused."""
+        base_dir = self.ctx.data_engine.base_dir if self.ctx.data_engine else None
+        if not base_dir:
+            return ToolFailure("Failed to write note: DataEngine not initialized.")
+        if not is_safe_note_key(key):
+            return ToolFailure(
+                f"Failed to write note '{key}': a key is 1-64 letters, digits, '_' or '-'."
+            )
+        return Path(base_dir)
+
+    async def _save_note(self, key: str, content: str) -> str:
+        base_dir = self._writable_notes_dir(key)
+        if isinstance(base_dir, str):
+            return base_dir
+        try:
+            save_note_content(base_dir, key, content)
+        except (OSError, ValueError) as e:
+            return ToolFailure(f"Failed to save note '{key}': {e}")
+        return f"Saved note '{key}'."
+
+    async def _update_note(self, key: str, target: str, replacement: str) -> str:
+        base_dir = self._writable_notes_dir(key)
+        if isinstance(base_dir, str):
+            return base_dir
+        try:
+            warning = update_note_content(base_dir, key, target, replacement)
+        except (OSError, ValueError) as e:
+            return ToolFailure(f"Failed to update note '{key}': {e}")
+        return f"Updated note '{key}'." + (f"\nWARNING: {warning}" if warning else "")
 
     async def _list_notes(self) -> str:
         try:

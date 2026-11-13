@@ -1,0 +1,7 @@
+{
+  "id": "2026-10-29-phones-page-borrow",
+  "date": "2026-10-29",
+  "title": "Phones page shows every phone and lets you borrow one",
+  "body": "The Phones page lists each phone with its status, the computers that share them, and a form to request a phone for a set time. Phone borrowing stays off until an administrator turns it on.",
+  "issues": ["CHE-2100"]
+}

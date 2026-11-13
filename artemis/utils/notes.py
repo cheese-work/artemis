@@ -82,6 +82,14 @@ UPDATE_NOTE_ARG_REPLACEMENT_DESC = (
 # Core Business Logic Filesystem Functions
 
 
+_SAFE_NOTE_KEY = re.compile(r"[A-Za-z0-9_-]{1,64}")
+
+
+def is_safe_note_key(key: str) -> bool:
+    """Whether a model-supplied key names a note directly inside the notes directory."""
+    return isinstance(key, str) and _SAFE_NOTE_KEY.fullmatch(key.removesuffix(".md")) is not None
+
+
 def get_notes_dir(base_dir: str | Path) -> Path:
     """Gets the absolute path to the notes directory inside the session's base directory."""
     return Path(base_dir) / "notes"

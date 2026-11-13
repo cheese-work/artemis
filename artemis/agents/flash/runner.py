@@ -59,9 +59,9 @@ from artemis.agents.operator.prompts import REASONING_REMINDER, UserGuidance, re
 from artemis.agents.validator.tool_declarations import (
     ASK_EXPLORER_TOOL,
     CLICK_SEQUENCE_TOOL,
-    LIST_NOTES_TOOL,
-    READ_NOTE_TOOL,
     REPORT_TASK_STATUS_TOOL,
+    SAVE_NOTE_TOOL,
+    UPDATE_NOTE_TOOL,
     VALIDATOR_TOOLS_DECLARATION,
     capture_screenshot_and_parse_ui,
     prune_intermediate_screenshots,
@@ -200,14 +200,10 @@ class FlashRunner:
         return getattr(setup, "video_recording_tools_enabled", False) is True
 
     def _get_tools(self) -> list:
-        # Flash has no tool that writes notes and its prompt never teaches
-        # them, so the Validator set's note readers are left out here.
-        tools = [
-            t
-            for t in VALIDATOR_TOOLS_DECLARATION
-            if t is not READ_NOTE_TOOL and t is not LIST_NOTES_TOOL
-        ]
+        tools = list(VALIDATOR_TOOLS_DECLARATION)
         tools.insert(1, CLICK_SEQUENCE_TOOL)
+        # The note writers let Flash keep the results.md ledger the chat shows.
+        tools.extend([SAVE_NOTE_TOOL, UPDATE_NOTE_TOOL])
         tools.append(ASK_EXPLORER_TOOL)
         # Helper tools shared with the Pro operator: the history tools are
         # declared from the very same args schemas the LangChain tools bind
