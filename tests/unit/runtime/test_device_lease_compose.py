@@ -78,10 +78,26 @@ class ComposeTests(unittest.TestCase):
 
     def write_admitted(self, devices, age=0):
         now = time.time() - age
-        self.write_json("admitted.json", {"generation": 1, "devices": [
-            {"device_id": key, "endpoint": endpoint, "state": "device", "observed_at": now,
-             "grant": {"reference": "CHE-fixture", "observed_at": now, "expires_at": now + 300}}
-            for key, endpoint in devices.items()]})
+        self.write_json(
+            "admitted.json",
+            {
+                "generation": 1,
+                "devices": [
+                    {
+                        "device_id": key,
+                        "endpoint": endpoint,
+                        "state": "device",
+                        "observed_at": now,
+                        "grant": {
+                            "reference": "CHE-fixture",
+                            "observed_at": now,
+                            "expires_at": now + 300,
+                        },
+                    }
+                    for key, endpoint in devices.items()
+                ],
+            },
+        )
 
     def config_file(self, config=None):
         return self.write_json("composition.json", self.config if config is None else config)
