@@ -16,12 +16,14 @@ import asyncio
 import importlib
 import json
 import os
+from pathlib import Path
 import sqlite3
 import subprocess
 import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
+from apps.admin_console.core.ownership import SYSTEM_PRINCIPAL
 from apps.admin_console.core.state import state
 from apps.admin_console.database.repositories.session_repository import (
     SessionRepository,
@@ -90,6 +92,27 @@ def clean_state(tmp_path, monkeypatch):
     state.worker_task = None
 
 
+def _read_queued_session(session_id):
+    item = next(
+        (item for item in state.queue_items if str(item["session_id"]) == str(session_id)), None
+    )
+    if item is None:
+        return None
+    return {
+        "status": "queued",
+        "device_info": json.dumps({"device_binding": item.get("device_binding")}),
+    }
+
+
+@pytest.fixture
+def mocked_session_repo(tmp_path):
+    from artemis.data_engine.storage import StorageManager
+
+    database = tmp_path / "sessions.db"
+    StorageManager(database, tmp_path)
+    return MagicMock(db_path=database)
+
+
 def test_paused_error_reads_persisted_reason(tmp_path):
     pause_file = tmp_path / ".artemis_paused"
     pause_file.write_text("LLM Error: 503 UNAVAILABLE: model overloaded", encoding="utf-8")
@@ -121,7 +144,7 @@ async def test_enqueued_task_keeps_its_adb_endpoint_snapshot():
             return_value=original,
         ),
         patch(
-            "artemis.runtime.device_pool.device_pool.select_device_async",
+            "artemis.runtime.device_pool.DevicePool.select_device_async",
             return_value="emulator-5554",
         ),
     ):
@@ -213,7 +236,9 @@ async def test_enqueue_marks_existing_running_trace_failed_when_db_admission_fai
     session_id = "mcp-session"
     trace_store.init_trace(session_id, "MCP goal", "flash")
     queue_module = importlib.import_module("apps.admin_console.services.task_queue_service")
-    monkeypatch.setattr(queue_module.session_repo, "create_queued_session", lambda *_args: False)
+    monkeypatch.setattr(
+        queue_module.session_repo, "create_queued_session", lambda *_args, **_kwargs: False
+    )
 
     with (
         patch.object(TaskQueueService, "ensure_worker_running"),
@@ -369,11 +394,11 @@ async def test_stop_tasks_keep_remaining():
 
 
 @pytest.mark.asyncio
-async def test_queue_worker_execution_lifecycle():
+async def test_queue_worker_execution_lifecycle(mocked_session_repo):
     executed_goals = []
 
     async def fake_subprocess_exec(*args, **kwargs):
-        goal_arg = args[3]
+        goal_arg = Path(args[args.index("--goal-file") + 1]).read_text()
         executed_goals.append(goal_arg)
         proc = MagicMock()
         proc.pid = 99999
@@ -383,7 +408,9 @@ async def test_queue_worker_execution_lifecycle():
 
     with (
         patch("asyncio.create_subprocess_exec", side_effect=fake_subprocess_exec),
-        patch("apps.admin_console.services.task_queue_service.session_repo") as mock_repo,
+        patch(
+            "apps.admin_console.services.task_queue_service.session_repo", mocked_session_repo
+        ) as mock_repo,
         patch("apps.admin_console.services.task_queue_service.media_service"),
         patch(
             "artemis.runtime.device_pool.device_pool.select_device_async",
@@ -391,6 +418,7 @@ async def test_queue_worker_execution_lifecycle():
         ),
     ):
         mock_repo.get_running_session_id.return_value = None
+        mock_repo.read_session.side_effect = _read_queued_session
         mock_repo.get_video_recording_for_session.return_value = {"status": "ready"}
         # Enqueue two tasks
         res = await task_queue_service.enqueue_tasks(["First Task", "Second Task"])
@@ -414,7 +442,7 @@ async def test_queue_worker_execution_lifecycle():
 
 
 @pytest.mark.asyncio
-async def test_queue_worker_cmd_construction():
+async def test_queue_worker_cmd_construction(mocked_session_repo):
     executed_cmds = []
     executed_kwargs = []
 
@@ -429,7 +457,9 @@ async def test_queue_worker_cmd_construction():
 
     with (
         patch("asyncio.create_subprocess_exec", side_effect=fake_subprocess_exec),
-        patch("apps.admin_console.services.task_queue_service.session_repo") as mock_repo,
+        patch(
+            "apps.admin_console.services.task_queue_service.session_repo", mocked_session_repo
+        ) as mock_repo,
         patch("apps.admin_console.services.task_queue_service.media_service"),
         patch(
             "artemis.runtime.device_pool.device_pool.select_device_async",
@@ -437,6 +467,7 @@ async def test_queue_worker_cmd_construction():
         ),
     ):
         mock_repo.get_running_session_id.return_value = None
+        mock_repo.read_session.side_effect = _read_queued_session
         mock_repo.get_video_recording_for_session.return_value = {"status": "ready"}
 
         enqueue_result = await task_queue_service.enqueue_tasks(
@@ -500,7 +531,7 @@ async def test_queue_worker_cmd_construction():
 
 
 @pytest.mark.asyncio
-async def test_queue_worker_cmd_forwards_run_id():
+async def test_queue_worker_cmd_forwards_run_id(mocked_session_repo):
     """A daemon-dispatched task carrying a Gate 1 run_id must reach the spawned
     `artemis.main` worker as `--run-id` -- otherwise the daemon path never
     records/reconciles an attempt manifest under that batch key (see
@@ -518,7 +549,9 @@ async def test_queue_worker_cmd_forwards_run_id():
 
     with (
         patch("asyncio.create_subprocess_exec", side_effect=fake_subprocess_exec),
-        patch("apps.admin_console.services.task_queue_service.session_repo") as mock_repo,
+        patch(
+            "apps.admin_console.services.task_queue_service.session_repo", mocked_session_repo
+        ) as mock_repo,
         patch("apps.admin_console.services.task_queue_service.media_service"),
         patch(
             "artemis.runtime.device_pool.device_pool.select_device_async",
@@ -526,6 +559,7 @@ async def test_queue_worker_cmd_forwards_run_id():
         ),
     ):
         mock_repo.get_running_session_id.return_value = None
+        mock_repo.read_session.side_effect = _read_queued_session
         mock_repo.get_video_recording_for_session.return_value = {"status": "ready"}
 
         await task_queue_service.enqueue_tasks(
@@ -764,7 +798,7 @@ async def test_status_reports_external_global_owner_without_ipc_connection():
         repo.get_latest_session.return_value = None
         repo.get_session_by_id.return_value = None
         models.get_active_model_info.return_value = None
-        result = await get_status()
+        result = await get_status(SYSTEM_PRINCIPAL)
 
     assert result["status"] == "running"
     assert result["session_id"] == "cli-session"
@@ -773,11 +807,11 @@ async def test_status_reports_external_global_owner_without_ipc_connection():
 
 
 @pytest.mark.asyncio
-async def test_cancel_task_triggers_next_pending_task():
+async def test_cancel_task_triggers_next_pending_task(mocked_session_repo):
     executed_goals = []
 
     async def fake_subprocess_exec(*args, **kwargs):
-        goal_arg = args[3]
+        goal_arg = Path(args[args.index("--goal-file") + 1]).read_text()
         executed_goals.append(goal_arg)
         proc = MagicMock()
         proc.pid = 77777
@@ -797,7 +831,9 @@ async def test_cancel_task_triggers_next_pending_task():
 
     with (
         patch("asyncio.create_subprocess_exec", side_effect=fake_subprocess_exec),
-        patch("apps.admin_console.services.task_queue_service.session_repo") as mock_repo,
+        patch(
+            "apps.admin_console.services.task_queue_service.session_repo", mocked_session_repo
+        ) as mock_repo,
         patch("apps.admin_console.services.task_queue_service.media_service"),
         patch(
             "artemis.runtime.device_pool.device_pool.select_device_async",
@@ -805,6 +841,7 @@ async def test_cancel_task_triggers_next_pending_task():
         ),
     ):
         mock_repo.get_running_session_id.return_value = None
+        mock_repo.read_session.side_effect = _read_queued_session
         mock_repo.get_video_recording_for_session.return_value = {"status": "ready"}
         await task_queue_service.enqueue_tasks(["Task 1", "Task 2"])
 
@@ -826,12 +863,12 @@ async def test_cancel_task_triggers_next_pending_task():
 
 
 @pytest.mark.asyncio
-async def test_immediate_cancel_ignores_stale_ipc_and_runs_next_task():
+async def test_immediate_cancel_ignores_stale_ipc_and_runs_next_task(mocked_session_repo):
     executed_goals = []
     task1_session_id = None
 
     async def fake_subprocess_exec(*args, **kwargs):
-        goal_arg = args[3]
+        goal_arg = Path(args[args.index("--goal-file") + 1]).read_text()
         executed_goals.append(goal_arg)
         proc = MagicMock()
         proc.pid = 88888
@@ -848,7 +885,9 @@ async def test_immediate_cancel_ignores_stale_ipc_and_runs_next_task():
 
     with (
         patch("asyncio.create_subprocess_exec", side_effect=fake_subprocess_exec),
-        patch("apps.admin_console.services.task_queue_service.session_repo") as mock_repo,
+        patch(
+            "apps.admin_console.services.task_queue_service.session_repo", mocked_session_repo
+        ) as mock_repo,
         patch("apps.admin_console.services.task_queue_service.media_service"),
         patch(
             "artemis.runtime.device_pool.device_pool.select_device_async",
@@ -856,6 +895,7 @@ async def test_immediate_cancel_ignores_stale_ipc_and_runs_next_task():
         ),
     ):
         mock_repo.get_running_session_id.return_value = None
+        mock_repo.read_session.side_effect = _read_queued_session
         mock_repo.get_video_recording_for_session.return_value = {"status": "ready"}
 
         # Enqueue Task 1
@@ -951,6 +991,10 @@ async def test_enqueue_tasks_unified_ingress():
     with (
         patch.object(TaskQueueService, "ensure_worker_running"),
         patch(
+            "artemis.runtime.device_pool.device_pool.select_device_async",
+            return_value="emulator-5554",
+        ),
+        patch(
             "apps.admin_console.services.task_queue_service.DeviceExecutionLock.reserve",
             return_value="mock-ticket-unified",
         ),
@@ -969,10 +1013,11 @@ async def test_enqueue_tasks_unified_ingress():
         assert task["ingress"] == "mcp"
         assert task["conversation_id"] == "conv-456"
         assert task["goal"] == "Test unified goal"
+        assert task["device_serial"] == "emulator-5554"
 
 
 @pytest.mark.asyncio
-async def test_queue_worker_notifies_conversation():
+async def test_queue_worker_notifies_conversation(mocked_session_repo):
     """Verify queue_worker calls notify() when conversation_id is attached to task."""
     executed_cmds = []
 
@@ -988,13 +1033,16 @@ async def test_queue_worker_notifies_conversation():
         patch("asyncio.create_subprocess_exec", side_effect=fake_subprocess_exec),
         patch("apps.admin_console.services.task_queue_service.media_service"),
         patch("mcp_server.notifiers.notify") as mock_notify,
-        patch("apps.admin_console.services.task_queue_service.session_repo") as mock_repo,
+        patch(
+            "apps.admin_console.services.task_queue_service.session_repo", mocked_session_repo
+        ) as mock_repo,
         patch(
             "artemis.runtime.device_pool.device_pool.try_list_devices_async",
             new=AsyncMock(return_value=[]),
         ),
     ):
         mock_repo.get_running_session_id.return_value = None
+        mock_repo.read_session.side_effect = _read_queued_session
         mock_repo.lifecycle.pending_events.side_effect = lambda sid=None: (
             [
                 {
@@ -1025,7 +1073,8 @@ async def test_queue_worker_notifies_conversation():
         mock_notify.assert_called_once()
         kwargs = mock_notify.call_args[1]
         assert kwargs["conversation_id"] == "conv-789"
-        assert "Notify goal" in kwargs["message"]
+        assert "Notify goal" not in kwargs["message"]
+        assert "goal_length=11" in kwargs["message"]
 
         task = state.worker_task
         if task and not task.done():
@@ -1170,12 +1219,16 @@ def test_stop_tasks_queued_item_by_session_id():
 
 
 @pytest.mark.asyncio
-async def test_enqueue_tasks_deduplicates_by_session_id():
+async def test_enqueue_tasks_deduplicates_by_session_id(mocked_session_repo):
     state.queue_items = []
     state.active_session_id = None
 
     with (
-        patch("apps.admin_console.services.task_queue_service.session_repo"),
+        patch("apps.admin_console.services.task_queue_service.session_repo", mocked_session_repo),
+        patch(
+            "artemis.runtime.device_pool.device_pool.select_device_async",
+            return_value="emulator-5554",
+        ),
         patch(
             "apps.admin_console.services.task_queue_service.DeviceExecutionLock.reserve",
             return_value="ticket-123",
@@ -1184,6 +1237,7 @@ async def test_enqueue_tasks_deduplicates_by_session_id():
         res1 = await task_queue_service.enqueue_tasks(["Task goal"], session_id="sid-dedup-1")
         assert len(state.queue_items) == 1
         assert res1["enqueued_count"] == 1
+        assert res1["tasks"][0]["device_serial"] == "emulator-5554"
 
         # Second submission with same session_id must not enqueue a duplicate
         res2 = await task_queue_service.enqueue_tasks(["Task goal again"], session_id="sid-dedup-1")
@@ -1234,7 +1288,7 @@ async def test_manual_stop_of_one_run_does_not_pollute_concurrent_run(tmp_path, 
     procs: dict[str, FakeProc] = {}
 
     async def fake_subprocess_exec(*args, **kwargs):
-        goal = args[3]
+        goal = Path(args[args.index("--goal-file") + 1]).read_text()
         # Use our own pid so the reaped-process watchdog keeps waiting.
         proc = FakeProc(os.getpid())
         procs[goal] = proc
@@ -1296,12 +1350,16 @@ async def test_manual_stop_of_one_run_does_not_pollute_concurrent_run(tmp_path, 
 
 
 @pytest.mark.asyncio
-async def test_enqueue_tasks_debounces_rapid_identical_submissions():
+async def test_enqueue_tasks_debounces_rapid_identical_submissions(
+    tmp_path, monkeypatch, mocked_session_repo
+):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("apps.admin_console.services.task_queue_service.time.time", lambda: 100.0)
     state.queue_items = []
     state.active_session_id = None
 
     with (
-        patch("apps.admin_console.services.task_queue_service.session_repo"),
+        patch("apps.admin_console.services.task_queue_service.session_repo", mocked_session_repo),
         patch(
             "apps.admin_console.services.task_queue_service.DeviceExecutionLock.reserve",
             return_value="ticket-456",
@@ -1317,6 +1375,7 @@ async def test_enqueue_tasks_debounces_rapid_identical_submissions():
         )
         assert len(state.queue_items) == 1
         assert res1["enqueued_count"] == 1
+        assert not (tmp_path / "MagicMock").exists()
 
         # Immediate second submission (within 1s) must debounce
         res2 = await task_queue_service.enqueue_tasks(
@@ -1324,3 +1383,195 @@ async def test_enqueue_tasks_debounces_rapid_identical_submissions():
         )
         assert len(state.queue_items) == 1
         assert res2["enqueued_count"] == 0
+
+
+# -- dispatcher admission, characterised before host admission (CHE-1128) ------
+# These pin today's behavior of _dispatch_pending_tasks, /api/stop and the
+# ticket queue so the host-admission hook cannot change it silently.
+
+
+@pytest.fixture
+def dispatch(monkeypatch):
+    """Run the real dispatcher against fake runs that finish when released."""
+    state.active_runs.clear()
+    state.executing_run_keys.clear()
+    started: list[str] = []
+    gates: dict[str, asyncio.Event] = {}
+
+    async def fake_execute(task_item):
+        sid = task_item["session_id"]
+        started.append(sid)
+        gates[sid] = asyncio.Event()
+        await gates[sid].wait()
+        TaskQueueService._remove_task(sid)
+
+    monkeypatch.setattr(TaskQueueService, "_execute_task_item", fake_execute)
+
+    def limit(value):
+        monkeypatch.setattr(TaskQueueService, "_concurrency_limit", classmethod(lambda cls: value))
+
+    async def tick():
+        TaskQueueService._dispatch_pending_tasks()
+        await asyncio.sleep(0)
+
+    async def finish(sid):
+        gates[sid].set()
+        await asyncio.sleep(0)
+
+    class Harness:
+        pass
+
+    h = Harness()
+    h.started, h.limit, h.tick, h.finish = started, limit, tick, finish
+    yield h
+    for gate in gates.values():
+        gate.set()
+    state.active_runs.clear()
+    state.executing_run_keys.clear()
+    TaskQueueService._run_tasks.clear()
+
+
+def _queued(sid, device="dev-a", ticket=None):
+    return {
+        "session_id": sid,
+        "goal": sid,
+        "profile": "flash",
+        "status": "pending",
+        "device_serial": device,
+        "queue_ticket": ticket,
+    }
+
+
+@pytest.mark.asyncio
+async def test_per_device_mode_runs_one_task_per_device_in_fifo_order(dispatch):
+    dispatch.limit(0)
+    state.queue_items.extend([_queued("a1"), _queued("a2"), _queued("b1", "dev-b")])
+
+    await dispatch.tick()
+    assert dispatch.started == ["a1", "b1"]
+    assert [i["status"] for i in state.queue_items] == ["running", "pending", "running"]
+
+    await dispatch.tick()
+    assert dispatch.started == ["a1", "b1"]  # a2 still waits for dev-a
+
+    await dispatch.finish("a1")
+    await dispatch.tick()
+    assert dispatch.started == ["a1", "b1", "a2"]
+
+
+@pytest.mark.asyncio
+async def test_run_without_device_waits_for_the_whole_scheduler_to_be_idle(dispatch):
+    dispatch.limit(0)
+    state.queue_items.extend([_queued("a1"), _queued("any", device=None)])
+
+    await dispatch.tick()
+    assert dispatch.started == ["a1"]  # the device-less run does not overlap it
+
+    await dispatch.finish("a1")
+    await dispatch.tick()
+    assert dispatch.started == ["a1", "any"]
+
+
+@pytest.mark.asyncio
+async def test_global_limit_one_serialises_runs_across_devices(dispatch):
+    dispatch.limit(1)
+    state.queue_items.extend([_queued("a1"), _queued("b1", "dev-b")])
+    # limit == 1 defers to state.is_running, which sees running queue rows.
+
+    await dispatch.tick()
+    assert dispatch.started == ["a1"]
+    await dispatch.tick()
+    assert dispatch.started == ["a1"]
+
+    await dispatch.finish("a1")
+    await dispatch.tick()
+    assert dispatch.started == ["a1", "b1"]
+
+
+@pytest.mark.asyncio
+async def test_global_limit_n_caps_runs_and_still_keeps_one_run_per_device(dispatch):
+    dispatch.limit(2)
+    state.queue_items.extend(
+        [_queued("a1"), _queued("a2"), _queued("b1", "dev-b"), _queued("c1", "dev-c")]
+    )
+
+    await dispatch.tick()
+    assert dispatch.started == ["a1", "b1"]  # a2 skipped (device busy), c1 over the limit
+
+    await dispatch.finish("b1")
+    await dispatch.tick()
+    assert dispatch.started == ["a1", "b1", "c1"]
+
+
+@pytest.mark.asyncio
+async def test_dispatch_skips_and_removes_cancelled_pending_rows(dispatch):
+    dispatch.limit(0)
+    state.queue_items.extend([_queued("gone"), _queued("kept", "dev-b")])
+    state.cancelled_session_ids.add("gone")
+
+    await dispatch.tick()
+
+    assert dispatch.started == ["kept"]
+    assert [i["session_id"] for i in state.queue_items] == ["kept"]
+
+
+@pytest.mark.asyncio
+async def test_api_stop_by_session_is_unconditional(dispatch):
+    from httpx import ASGITransport, AsyncClient
+    from apps.admin_console.server import app
+
+    state.queue_items.extend([_queued("q1", ticket="t1"), _queued("q2", ticket="t2")])
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://localhost") as client:
+        stopped = await client.post("/api/stop", json={"session_id": "q1"})
+        unknown = await client.post("/api/stop", json={"session_id": "nope"})
+
+    assert stopped.json() == {"status": "stopped", "session_id": "q1"}
+    # Unconditional: an id nobody owns still reports "stopped" (why cancel-queued exists).
+    assert unknown.json() == {"status": "stopped", "session_id": "nope"}
+    assert [i["session_id"] for i in state.queue_items] == ["q2"]
+
+
+def _device_queue(lock_id, scope="s"):
+    from artemis.runtime import DeviceExecutionLock
+    from artemis.runtime import device_lock
+
+    queue_dir = device_lock.get_temp_dir("device-locks") / "artemis-global-device.queue"
+    waits = sorted(queue_dir.glob("*.wait"))
+    queue = DeviceExecutionLock._build_device_queue(
+        waits, target_lock_id=lock_id, target_scope=scope
+    )
+    return [path.name.split("-", 1)[1].removesuffix(".wait") for path in queue]
+
+
+def test_tickets_order_each_device_queue_first_come_first_served():
+    from artemis.runtime import DeviceExecutionLock
+
+    first = DeviceExecutionLock.reserve("t", "dev-a", session_id="a1", lock_scope="s")
+    other = DeviceExecutionLock.reserve("t", "dev-b", session_id="b1", lock_scope="s")
+    second = DeviceExecutionLock.reserve("t", "dev-a", session_id="a2", lock_scope="s")
+
+    assert _device_queue("s__dev-a") == [first, second]
+    assert _device_queue("s__dev-b") == [other]
+
+
+def test_unclaimed_ticket_is_parked_on_one_idle_device_only():
+    from artemis.runtime import DeviceExecutionLock
+
+    DeviceExecutionLock.reserve("t", "dev-a", session_id="a1", lock_scope="s")
+    DeviceExecutionLock.reserve("t", "dev-b", session_id="b1", lock_scope="s")
+    parked = DeviceExecutionLock.reserve("t", "pending", session_id="p1", lock_scope="s")
+
+    assert parked in _device_queue("s__dev-a")
+    assert parked not in _device_queue("s__dev-b")
+
+
+def test_cancelled_ticket_leaves_the_rest_of_the_queue_order_intact():
+    from artemis.runtime import DeviceExecutionLock
+
+    first = DeviceExecutionLock.reserve("t", "dev-a", session_id="a1", lock_scope="s")
+    middle = DeviceExecutionLock.reserve("t", "dev-a", session_id="a2", lock_scope="s")
+    last = DeviceExecutionLock.reserve("t", "dev-a", session_id="a3", lock_scope="s")
+
+    assert DeviceExecutionLock.cancel_reservation(middle) is True
+    assert _device_queue("s__dev-a") == [first, last]

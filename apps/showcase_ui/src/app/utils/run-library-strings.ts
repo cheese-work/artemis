@@ -12,6 +12,7 @@ export const RUN_STRINGS = {
   clearFilters: 'Clear filters',
   emptyTitle: 'No runs yet.',
   emptyAction: 'Start one in Workspace',
+  emptyAllUsers: 'No runs from any user yet.',
   noMatch: 'No matching runs.',
   loadFailed: "Couldn't load runs. Your filters are kept.",
   catalogNotReady: 'The run library is getting ready. Try again in a minute.',
@@ -42,29 +43,18 @@ export const RUN_STRINGS = {
   deleteFailed: "Couldn't delete this run. Try again."
 } as const;
 
+/** Shown on a run the viewer neither owns nor administers: nothing on it can be changed. */
+export function readOnlyText(owner: string | null | undefined): string {
+  const whose = owner ? `This run belongs to ${owner}.` : 'This run has no owner.';
+  return `${whose} You can look at it and download it, but not change it.`;
+}
+
 export const MEDIA_NOTICE =
   'Videos and screenshots are not redacted and may contain sensitive information.';
 export const SHARE_NOTICE = "Anyone who passes this site's Cloudflare Access check can open this run.";
 export const UNPIN_EXPIRED_NOTICE =
   'This run is past its retention date. Unpinning deletes it now.';
 export const DELETE_NOTICE = 'Delete this run for everyone? This cannot be undone.';
-
-export type Tone = 'ok' | 'warn' | 'danger' | 'neutral';
-
-const OUTCOMES: Record<string, { label: string; icon: string; tone: Tone }> = {
-  completed: { label: 'Passed', icon: 'check_circle', tone: 'ok' },
-  success: { label: 'Passed', icon: 'check_circle', tone: 'ok' },
-  failed: { label: 'Failed', icon: 'cancel', tone: 'danger' },
-  interrupted: { label: 'Interrupted', icon: 'warning', tone: 'warn' },
-  cancelled: { label: 'Cancelled', icon: 'block', tone: 'neutral' },
-  running: { label: 'Running', icon: 'play_circle', tone: 'neutral' },
-  paused: { label: 'Paused', icon: 'pause_circle', tone: 'neutral' },
-  pending: { label: 'Queued', icon: 'schedule', tone: 'neutral' }
-};
-
-export function outcomeView(status: string | null | undefined) {
-  return OUTCOMES[(status ?? '').toLowerCase()] ?? { label: 'Unknown', icon: 'help', tone: 'neutral' as Tone };
-}
 
 const INTERRUPT_REASONS: Record<string, string> = {
   host_disconnected: 'Your computer lost its connection to SmartQA.',

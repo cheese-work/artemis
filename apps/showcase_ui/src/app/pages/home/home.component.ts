@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+import { LoggerService } from '../../services/logger.service';
 import { Component, signal, computed, inject, effect, untracked, OnInit, OnDestroy, ChangeDetectionStrategy } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { SystemService } from '../../services/system.service';
@@ -23,7 +24,6 @@ import {
   DeviceInfo,
   ProbeResult
 } from '../../core/models/system.model';
-import { RegistryPhonesComponent } from '../../components/registry-phones/registry-phones.component';
 import { UsbPhoneConnectionComponent } from '../../components/usb-phone-connection/usb-phone-connection.component';
 import { SetupComponent } from '../setup/setup.component';
 import { UsbDeviceRelayService } from '../../services/usb-device-relay.service';
@@ -38,12 +38,13 @@ type AdbGuideTab = 'emulator' | 'usb' | 'wifi' | 'remote';
 @Component({
   selector: 'app-home',
   standalone: true,
-  imports: [FormsModule, UsbPhoneConnectionComponent, RegistryPhonesComponent, SetupComponent],
+  imports: [FormsModule, UsbPhoneConnectionComponent, SetupComponent],
   templateUrl: './home.component.html',
   changeDetection: ChangeDetectionStrategy.Eager,
   styleUrl: './home.component.scss'
 })
 export class HomeComponent implements OnInit, OnDestroy {
+  private readonly logger = inject(LoggerService);
   public systemService = inject(SystemService);
   private readonly usbRelay = inject(UsbDeviceRelayService);
 
@@ -52,7 +53,7 @@ export class HomeComponent implements OnInit, OnDestroy {
   public readonly deviceKindLabel = deviceKindLabel;
   private readonly relaySerial = computed(() => {
     const relay = this.usbRelay.state();
-    return relay.status === 'connected' ? relay.serial : null;
+    return relay.status === 'connected' || relay.status === 'reconnecting' ? relay.serial : null;
   });
   private readonly hostsService = inject(HostsService);
   private readonly registry = signal<HostsResponse | null>(null);
@@ -242,7 +243,7 @@ export class HomeComponent implements OnInit, OnDestroy {
           this.activeAdbGuideTab.set('remote');
         }
       },
-      error: () => {}
+      error: (error) => this.logger.error('Request failed:', error)
     });
 
     window.addEventListener('focus', this.focusListener);

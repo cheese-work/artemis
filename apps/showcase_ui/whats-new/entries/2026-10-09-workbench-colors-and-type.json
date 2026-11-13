@@ -1,0 +1,7 @@
+{
+  "id": "2026-10-09-workbench-colors-and-type",
+  "date": "2026-10-09",
+  "title": "Workspace, Runs and Setup use clearer text and calmer colors",
+  "body": "Inter makes dots in phone addresses and app names easier to read. Indigo marks actions and selections. Screen layouts stay the same.",
+  "issues": ["CHE-1494"]
+}

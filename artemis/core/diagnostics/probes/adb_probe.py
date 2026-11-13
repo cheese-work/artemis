@@ -21,6 +21,7 @@ import re
 import shutil
 import subprocess
 import time
+from collections.abc import Callable
 from typing import Any
 
 from artemis.core.diagnostics.probes.base import BaseProbe
@@ -32,9 +33,12 @@ from artemis.core.diagnostics.schema import (
     ProbeStatus,
 )
 from artemis.platform import OSType, platform
+from artemis.runtime import device_policy
+from artemis.runtime.adb_endpoint import AdbEndpoint, current_adb_endpoint
+from artemis.runtime.endpoint_transport import EndpointTransport
+from artemis.utils.device_kind import DeviceKind, classify_properties, device_title, parse_getprop
 from artemis.toolchain import toolchain
-from artemis.utils.device_kind import DeviceKind, classify_properties, parse_getprop
-from artemis.utils.logger import get_logger
+from third_party.mobile_use.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
@@ -45,8 +49,9 @@ class AdbDeviceProbe(BaseProbe):
     _ENRICHMENT_CACHE_TTL_SECONDS = 60.0
     _LAST_LOCK_STATE_TTL_SECONDS = 15.0
 
-    def __init__(self, target_serial: str | None = None):
+    def __init__(self, target_serial: str | None = None, endpoint: AdbEndpoint | None = None):
         self._target_serial = target_serial
+        self._endpoint = endpoint
         self._device_enrichment_cache: dict[str, tuple[float, dict[str, Any]]] = {}
         self._last_lock_states: dict[str, tuple[float, bool]] = {}
         self._lock_state_sources: dict[str, str] = {}
@@ -73,7 +78,11 @@ class AdbDeviceProbe(BaseProbe):
 
     def _locate_adb(self) -> str | None:
         """Find the adb binary path from ToolchainResolver."""
-        return toolchain.resolve("adb")
+        return EndpointTransport.adb_binary()
+
+    def _transport(self, adb_path: str) -> EndpointTransport:
+        """adb access for the probe's endpoint (the process's, unless one was given)."""
+        return EndpointTransport(self._endpoint or current_adb_endpoint(), adb_path=adb_path)
 
     def _locate_emulator(self) -> str | None:
         """Find the emulator binary path from PATH or standard SDK environments."""
@@ -119,9 +128,8 @@ class AdbDeviceProbe(BaseProbe):
     async def _get_adb_version(self, adb_path: str) -> str:
         """Query ADB version string."""
         try:
-            proc = await asyncio.create_subprocess_exec(
-                adb_path,
-                "version",
+            proc = await self._transport(adb_path).create_subprocess(
+                ["version"],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
             )
@@ -200,16 +208,16 @@ class AdbDeviceProbe(BaseProbe):
         serial: str,
         timeout_seconds: float = 2.0,
     ) -> bool | None:
-        """Query Keyguard state without changing or waking the target device."""
+        """Query Keyguard state without changing or waking the target device.
+
+        ``None`` (unknown) for a restricted phone: no run policy exists yet to gate the query.
+        """
+        if not device_policy.may_describe(serial):
+            return None
 
         async def run_dumpsys(*service_args: str) -> str:
-            proc = await asyncio.create_subprocess_exec(
-                adb_path,
-                "-s",
-                serial,
-                "shell",
-                "dumpsys",
-                *service_args,
+            proc = await self._transport(adb_path).create_subprocess(
+                ["-s", serial, "shell", "dumpsys", *service_args],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
             )
@@ -281,20 +289,16 @@ class AdbDeviceProbe(BaseProbe):
         self._lock_state_sources[serial] = "unknown"
         return None
 
-    @staticmethod
     async def _run_adb_shell(
+        self,
         adb_path: str,
         serial: str,
         *args: str,
         timeout_seconds: float = 2.5,
     ) -> str:
         """Run a bounded ADB shell command and always reap timed-out children."""
-        proc = await asyncio.create_subprocess_exec(
-            adb_path,
-            "-s",
-            serial,
-            "shell",
-            *args,
+        proc = await self._transport(adb_path).create_subprocess(
+            ["-s", serial, "shell", *args],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
@@ -303,10 +307,19 @@ class AdbDeviceProbe(BaseProbe):
         except TimeoutError:
             proc.kill()
             await proc.communicate()
+            if args == ("getprop",):
+                logger.warning(f"Device enrichment getprop timed out for {serial}")
             return ""
         if proc.returncode != 0:
+            if args == ("getprop",):
+                logger.warning(
+                    f"Device enrichment getprop failed for {serial}: exit {proc.returncode}"
+                )
             return ""
-        return stdout.decode(errors="replace").strip()
+        output = stdout.decode(errors="replace").strip()
+        if args == ("getprop",) and not output:
+            logger.warning(f"Device enrichment getprop returned no properties for {serial}")
+        return output
 
     async def _get_device_states(
         self,
@@ -320,10 +333,8 @@ class AdbDeviceProbe(BaseProbe):
         """
         proc = None
         try:
-            proc = await asyncio.create_subprocess_exec(
-                adb_path,
-                "devices",
-                "-l",
+            proc = await self._transport(adb_path).create_subprocess(
+                ["devices", "-l"],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
             )
@@ -352,15 +363,22 @@ class AdbDeviceProbe(BaseProbe):
             logger.debug(f"Failed submission-time ADB device check: {exc}")
             return None
 
-    async def probe_submission_readiness(self, target_serial: str | None = None) -> ProbeResult:
+    async def probe_submission_readiness(
+        self,
+        target_serial: str | None = None,
+        may_use: Callable[[str], bool] | None = None,
+    ) -> ProbeResult:
         """Run the minimal fail-safe device check required before enqueueing.
+
+        ``may_use`` limits every candidate, including the fallback when the
+        preferred device is locked, to the devices the caller may run on.
 
         The full diagnostics probe enriches device metadata, scans packages,
         and discovers emulators. None of that is needed to reject a locked
         device at submission time, so this path only checks ADB connectivity
         and Keyguard state with strict time bounds.
         """
-        adb_path = toolchain.resolve("adb")
+        adb_path = EndpointTransport.adb_binary()
         if not adb_path:
             return ProbeResult(
                 id=self.probe_id,
@@ -388,6 +406,8 @@ class AdbDeviceProbe(BaseProbe):
                 metadata={"installed": True, "submission_probe": True},
             )
 
+        if may_use is not None:
+            device_states = [(serial, state) for serial, state in device_states if may_use(serial)]
         ready_serials = [serial for serial, state in device_states if state == "device"]
         if not ready_serials:
             states = {state for _, state in device_states}
@@ -479,10 +499,8 @@ class AdbDeviceProbe(BaseProbe):
         """Execute `adb devices -l` and extract structured device metadata."""
         devices: list[DeviceInfo] = []
         try:
-            proc = await asyncio.create_subprocess_exec(
-                adb_path,
-                "devices",
-                "-l",
+            proc = await self._transport(adb_path).create_subprocess(
+                ["devices", "-l"],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
             )
@@ -526,7 +544,8 @@ class AdbDeviceProbe(BaseProbe):
         # Lock state stays live, while static device properties and the installed
         # package inventory are cached to keep frequent dashboard probes cheap.
         for dev in devices:
-            if dev.state == "device":
+            # A restricted phone is listed, never asked anything.
+            if dev.state == "device" and device_policy.may_describe(dev.serial):
                 try:
                     lock_state_task = asyncio.create_task(
                         self._get_dashboard_lock_state(adb_path, dev.serial)
@@ -549,10 +568,15 @@ class AdbDeviceProbe(BaseProbe):
                             prop_task, size_task, packages_task
                         )
                         props = parse_getprop(getprop_output)
+                        if getprop_output and not props:
+                            logger.warning(
+                                f"Device enrichment returned unreadable properties for {dev.serial}"
+                            )
                         enrichment = {
                             "android_version": props.get("ro.build.version.release") or None,
                             "device_kind": classify_properties(props),
                             "model": props.get("ro.product.model") or None,
+                            "product": props.get("ro.product.name") or None,
                             "screen_resolution": (
                                 size_str.split("Physical size:")[-1].strip()
                                 if "Physical size:" in size_str
@@ -573,6 +597,7 @@ class AdbDeviceProbe(BaseProbe):
                     dev.device_kind = kind.value
                     dev.is_emulator = kind is DeviceKind.EMULATOR
                     dev.model = enrichment["model"] or dev.model
+                    dev.product = enrichment["product"] or dev.product
                     if dev.is_emulator and not dev.model:
                         dev.model = "Android Emulator"
                     dev.android_version = enrichment["android_version"]
@@ -580,7 +605,7 @@ class AdbDeviceProbe(BaseProbe):
                     dev.installed_packages = list(enrichment["installed_packages"])
                     dev.is_locked = await lock_state_task
                 except Exception as exc:
-                    logger.debug(f"Failed to enrich device {dev.serial}: {exc}")
+                    logger.warning(f"Failed to enrich device {dev.serial}: {exc}")
 
         return devices
 
@@ -830,7 +855,7 @@ class AdbDeviceProbe(BaseProbe):
                 unknown_dev = next((d for d in ready_devices if d.is_locked is None), None)
                 active_dev = preferred_dev or unknown_dev or ready_devices[0]
 
-        display_name = active_dev.model or active_dev.serial
+        display_name = device_title(active_dev.model, active_dev.product)
         if active_dev.screen_resolution:
             display_name = f"{display_name} ({active_dev.screen_resolution})"
 

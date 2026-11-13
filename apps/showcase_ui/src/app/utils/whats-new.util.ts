@@ -3,6 +3,8 @@ export interface WhatsNewEntry {
   date: string;
   title: string;
   body?: string;
+  /** Related issue numbers, shown as plain text, for example `CHE-1334`. */
+  issues?: string[];
 }
 
 function isWhatsNewEntry(value: unknown): value is WhatsNewEntry {
@@ -11,7 +13,9 @@ function isWhatsNewEntry(value: unknown): value is WhatsNewEntry {
   if (typeof candidate['id'] !== 'string' || !candidate['id'].trim()
     || typeof candidate['date'] !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(candidate['date'])
     || typeof candidate['title'] !== 'string' || !candidate['title'].trim()
-    || (candidate['body'] !== undefined && typeof candidate['body'] !== 'string')) {
+    || (candidate['body'] !== undefined && typeof candidate['body'] !== 'string')
+    || (candidate['issues'] !== undefined && (!Array.isArray(candidate['issues'])
+      || !candidate['issues'].every(issue => typeof issue === 'string' && /^CHE-\d+$/.test(issue))))) {
     return false;
   }
 
@@ -29,6 +33,16 @@ export function parseWhatsNewEntries(value: unknown): WhatsNewEntry[] {
   return entries;
 }
 
+/**
+ * What the reader has seen: the ids of every entry on the newest date. Several
+ * PRs can ship entries on one day, and a later one may sort below an earlier
+ * one; this key still changes. With one entry that day it is just its id.
+ */
+export function whatsNewSeenKey(entries: WhatsNewEntry[]): string | null {
+  if (entries.length === 0) return null;
+  return entries.filter(entry => entry.date === entries[0].date).map(entry => entry.id).join(' ');
+}
+
 export function hasUnseenWhatsNewEntries(
   entries: WhatsNewEntry[],
   lastSeenId: string | null
@@ -36,7 +50,7 @@ export function hasUnseenWhatsNewEntries(
   if (entries.length === 0) return false;
   if (!lastSeenId) return true;
 
-  return entries[0].id !== lastSeenId;
+  return whatsNewSeenKey(entries) !== lastSeenId;
 }
 
 export function shouldAutoOpenWhatsNew(

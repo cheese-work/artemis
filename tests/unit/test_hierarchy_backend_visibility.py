@@ -30,11 +30,9 @@ def _composite(helper_version: str = "1.1.2") -> FallbackScreenClient:
     helper = MagicMock()
     helper.session = HelperSession(
         serial="dev",
-        local_port=41000,
         transport_id="1",
         version_code=4,
         version_name=helper_version,
-        owns_forward=True,
     )
     helper.get_hierarchy.return_value = "<h/>"
     client = FallbackScreenClient(
@@ -272,7 +270,6 @@ def _status(**overrides):
         "outdated": False,
         "newer_than_bundled": False,
         "enabled": True,
-        "forward_port": None,
         "tunnel": "probe",
         "reachable": True,
         "reported_version": 4,
@@ -293,7 +290,7 @@ def test_helper_status_explains_probe_tunnel_and_newer_build(monkeypatch):
     )
     result = CliRunner().invoke(helper_cli.helper_app, ["status", "--serial", "dev"])
     assert result.exit_code == 0, result.output
-    assert "temporary forward" in result.output
+    assert "one-off adb stream" in result.output
     assert "newer than the bundled v4" in result.output
 
 

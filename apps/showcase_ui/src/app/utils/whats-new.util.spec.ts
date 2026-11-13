@@ -1,5 +1,5 @@
 import whatsNewData from '../../../public/whats-new.json';
-import { parseWhatsNewEntries, shouldAutoOpenWhatsNew } from './whats-new.util';
+import { parseWhatsNewEntries, shouldAutoOpenWhatsNew, whatsNewSeenKey } from './whats-new.util';
 
 describe('parseWhatsNewEntries', () => {
   it('accepts the shipped update data with schema and newest-first ordering', () => {
@@ -11,6 +11,13 @@ describe('parseWhatsNewEntries', () => {
       { id: 'valid', date: '2026-10-03', title: 'Update' },
       { id: 'invalid', date: '2026-02-30', title: 'Bad date' }
     ])).toEqual([]);
+  });
+
+  it('accepts issue numbers and rejects a malformed issues field', () => {
+    const entry = { id: 'with-issues', date: '2026-10-08', title: 'Update', issues: ['CHE-1334', 'CHE-1050'] };
+    expect(parseWhatsNewEntries([entry])).toEqual([entry]);
+    expect(parseWhatsNewEntries([{ ...entry, issues: 'CHE-1334' }])).toEqual([]);
+    expect(parseWhatsNewEntries([{ ...entry, issues: ['https://example.com'] }])).toEqual([]);
   });
 
   it('rejects entries that are not newest-first or have duplicate ids', () => {
@@ -59,6 +66,20 @@ describe('shouldAutoOpenWhatsNew', () => {
   it('does not open automatically while a prompt draft or error is visible', () => {
     expect(shouldAutoOpenWhatsNew(entries, null, false, true)).toBeFalse();
     expect(shouldAutoOpenWhatsNew(entries, null, false, false, true)).toBeFalse();
+  });
+
+  it('opens when a second entry ships on the same day, even if it sorts below the seen one', () => {
+    const sameDay = [
+      { id: '2026-10-08-alpha', date: '2026-10-08', title: 'Alpha' },
+      { id: '2026-10-08-zeta', date: '2026-10-08', title: 'Zeta' },
+      ...entries
+    ];
+    expect(shouldAutoOpenWhatsNew(sameDay, '2026-10-08-alpha', false)).toBeTrue();
+    expect(shouldAutoOpenWhatsNew(sameDay, whatsNewSeenKey(sameDay), false)).toBeFalse();
+  });
+
+  it('keeps a stored single id valid when the newest day has one entry', () => {
+    expect(whatsNewSeenKey(entries)).toBe('second');
   });
 
   it('treats an unknown last-seen id as unseen content', () => {

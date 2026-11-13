@@ -1,0 +1,7 @@
+{
+  "id": "2026-10-11-check-controls-icons",
+  "date": "2026-10-11",
+  "title": "Check stays readable on small screens",
+  "body": "The Check stream now uses the full screen width on phones. Session, Refresh and disclosure controls have larger click areas. Icons load from SmartQA instead of an external font service.",
+  "issues": ["CHE-1535"]
+}

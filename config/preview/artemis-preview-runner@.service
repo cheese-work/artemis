@@ -1,0 +1,23 @@
+[Unit]
+Description=Single-use Artemis preview controller %i (inactive template)
+ConditionPathExists=/etc/artemis-preview/activation.ready
+
+[Service]
+DynamicUser=true
+User=artemis-prjob-%i
+SupplementaryGroups=artemis-preview-runner
+ExecStart=/usr/local/libexec/artemis-preview/artemis-preview-controller %i
+RuntimeDirectory=artemis-preview-runner/%i
+RuntimeDirectoryMode=0700
+WorkingDirectory=/run/artemis-preview-runner/%i
+UMask=0077
+Restart=no
+KillMode=control-group
+NoNewPrivileges=true
+CapabilityBoundingSet=
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+InaccessiblePaths=/etc/artemis-preview /var/lib/artemis-preview /run/docker.sock

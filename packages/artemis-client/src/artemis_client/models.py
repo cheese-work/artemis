@@ -22,6 +22,7 @@ SUCCESS_TASK_STATUSES = frozenset({"completed", "success"})
 
 
 class InterruptReason(str, Enum):
+    DEPLOY_CUT = "deploy_cut"
     """Why a run ended as ``interrupted``: the run lost its phone or its server."""
 
     HOST_DISCONNECTED = "host_disconnected"

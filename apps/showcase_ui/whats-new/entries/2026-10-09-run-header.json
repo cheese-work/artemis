@@ -1,0 +1,7 @@
+{
+  "id": "2026-10-09-run-header",
+  "date": "2026-10-09",
+  "title": "Run details put status and controls first.",
+  "body": "Copy the run ID, check run facts, stop a running task or run it again. More holds sharing, download, pin and delete.",
+  "issues": ["CHE-1502"]
+}

@@ -3,7 +3,6 @@ import { provideHttpClientTesting } from '@angular/common/http/testing';
 import { CUSTOM_ELEMENTS_SCHEMA } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { EMPTY, of } from 'rxjs';
-import { RegistryPhonesComponent } from '../../components/registry-phones/registry-phones.component';
 import { UsbPhoneConnectionComponent } from '../../components/usb-phone-connection/usb-phone-connection.component';
 import { RegistryDevice } from '../../core/models/host.model';
 import { DeviceInfo, SystemReadinessReport } from '../../core/models/system.model';
@@ -17,7 +16,7 @@ import { HomeComponent } from './home.component';
 describe('HomeComponent phone surface', () => {
   afterEach(() => TestBed.inject(SystemService).stopAutoPolling());
 
-  it('lists phones from computers and this browser with their source, next to the phone connection', async () => {
+  it('no longer lists registry phones: they moved to the Phones page', async () => {
     const device = {
       serial: 'R5CT1',
       model: 'Pixel 8',
@@ -55,10 +54,9 @@ describe('HomeComponent phone surface', () => {
     await fixture.whenStable();
     fixture.detectChanges();
 
-    const chip = (fixture.nativeElement as HTMLElement).querySelector('app-registry-phones app-device-chip');
-    expect(chip).not.toBeNull();
-    expect(chip!.textContent).toContain('Pixel 8');
-    expect(chip!.textContent).toContain('Lab Mac');
+    const root = fixture.nativeElement as HTMLElement;
+    expect(root.querySelector('app-device-chip')).toBeNull();
+    expect(root.textContent).not.toContain('Phones shared with SmartQA');
   });
 });
 
@@ -121,7 +119,7 @@ describe('HomeComponent device card', () => {
       ]
     })
       .overrideComponent(HomeComponent, {
-        remove: { imports: [UsbPhoneConnectionComponent, RegistryPhonesComponent, SetupComponent] },
+        remove: { imports: [UsbPhoneConnectionComponent, SetupComponent] },
         add: { schemas: [CUSTOM_ELEMENTS_SCHEMA] }
       })
       .compileComponents();
@@ -159,9 +157,9 @@ describe('HomeComponent device card', () => {
     expect(text(root, '.device-hero-meta')).toContain('Emulator');
   });
 
-  it('shows an unclassifiable device as Unknown device, not Virtual Device', () => {
+  it('shows an unclassifiable device as Android phone, not Virtual Device', () => {
     const root = render([device({ model: null, device_kind: 'unknown' })]);
-    expect(text(root, '.device-hero-name')).toBe('Unknown device');
+    expect(text(root, '.device-hero-name')).toBe('Android phone');
     expect(text(root, '.device-hero-meta')).not.toContain('Virtual Device');
     expect(text(root, '.device-hero-name')).not.toContain('127.0.0.1');
   });

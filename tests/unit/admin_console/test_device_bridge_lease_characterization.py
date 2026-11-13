@@ -117,7 +117,7 @@ async def test_browser_to_tcp_only_traffic_renews_idle_lease(clock, monkeypatch)
         def __init__(self, session):
             self.session = session
 
-        async def create_session(self):
+        async def create_session(self, owner=None):
             return self.session
 
         async def connect(self, session):

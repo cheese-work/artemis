@@ -35,6 +35,10 @@ class DeviceKind(StrEnum):
     UNKNOWN = "unknown"
 
 
+def device_title(model: str | None, product: str | None) -> str:
+    return (model or "").strip() or (product or "").strip() or "Android phone"
+
+
 def parse_getprop(output: str) -> dict[str, str]:
     """Parse ``adb shell getprop`` output (``[key]: [value]`` lines)."""
     props: dict[str, str] = {}

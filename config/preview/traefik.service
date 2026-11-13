@@ -1,0 +1,21 @@
+[Unit]
+Description=Protected native SmartQA ingress
+After=network.target
+
+[Service]
+User=artemis-preview-ingress
+Group=artemis-preview-ingress
+EnvironmentFile=/etc/artemis-preview/gateway.conf
+ExecStartPre=+/opt/artemis-preview/venv/bin/python -m scripts.preview_routing recover --base=/etc/artemis-preview/routes/base.yaml --state=/etc/artemis-preview/routes --base-sha256=${ARTEMIS_PREVIEW_BASE_SHA256} --traefik=/opt/artemis-preview/traefik-3.6.25
+ExecStart=/opt/artemis-preview/traefik-3.6.25 --configFile=/etc/artemis-preview/traefik.yaml
+Restart=on-failure
+NoNewPrivileges=true
+CapabilityBoundingSet=
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+ReadOnlyPaths=/etc/artemis-preview
+
+[Install]
+WantedBy=multi-user.target

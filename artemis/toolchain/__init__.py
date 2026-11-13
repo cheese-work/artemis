@@ -23,6 +23,8 @@ from artemis.toolchain.resolver import ToolchainResolver, toolchain
 
 def ensure_toolchain_in_path() -> None:
     """Prepend resolved toolchain paths (e.g. adb, scrcpy, ffmpeg) to process PATH."""
+    if os.environ.get("ARTEMIS_PREVIEW_PROFILE", "").strip().lower() in {"1", "true"}:
+        return
     for tool_name in ("adb", "ffmpeg", "scrcpy"):
         tool_path = toolchain.resolve(tool_name)
         if tool_path:

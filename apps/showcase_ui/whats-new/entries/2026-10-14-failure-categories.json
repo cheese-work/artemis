@@ -1,0 +1,7 @@
+{
+  "id": "2026-10-14-failure-categories",
+  "date": "2026-10-14",
+  "title": "Failure reports separate phone setup problems from app defects.",
+  "body": "Locked phones and USB drops while the tab is hidden are marked as QA environment.\nPhone setup problems and app defects are not counted as SmartQA defects.",
+  "issues": ["CHE-1644"]
+}

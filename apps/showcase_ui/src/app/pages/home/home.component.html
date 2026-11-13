@@ -15,16 +15,6 @@
 -->
 
 <div class="home-container" [class.system-ready]="isReady()" [class.system-pending]="!isReady()">
-  <!-- Dynamic Aurora Glow Background -->
-  <div class="aurora-background">
-    <div class="glow glow-1"></div>
-    <div class="glow glow-2"></div>
-    <div class="glow glow-3"></div>
-    <div class="glow glow-pending"></div>
-    <div class="glow glow-ready"></div>
-  </div>
-
-
   <!-- Main Content Layout -->
   <main class="home-content">
     
@@ -295,9 +285,6 @@
           </div>
 
           <div class="guide-card-body">
-
-            <!-- Phones from computers and this browser, each with its source -->
-            <app-registry-phones></app-registry-phones>
 
             <!-- STATE A: CONNECTED & READY -->
             @if (isDeviceReady()) {
@@ -1107,7 +1094,7 @@
                             <div class="remote-device-row">
                               <span class="material-symbols-outlined">phone_android</span>
                               <div class="remote-device-copy">
-                                <strong>{{ device.model || device.serial }}</strong>
+                                <strong>{{ device.model || 'Unknown device' }}</strong>
                                 <span>{{ device.serial }}</span>
                               </div>
                               <span class="remote-device-state" [class.ready]="device.state === 'device'">
@@ -1179,7 +1166,7 @@
                           <span class="material-symbols-outlined chip-icon">
                             phone_android
                           </span>
-                          <span>{{ dev.model || dev.serial }}</span>
+                          <span>{{ deviceTitle(dev) }}</span>
                           @if (dev.serial === activeDevice()?.serial) {
                             <span class="active-check">✓ Active</span>
                           }

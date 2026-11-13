@@ -18,21 +18,33 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
+import secrets
+import json
 import logging
 import os
 import time
 import uuid
 
-from artemis.runtime.adb_endpoint import AdbEndpoint, AdbSession
-from artemis.toolchain import find_adb
+from artemis.runtime.adb_endpoint import AdbEndpoint
+from artemis.runtime.device_lock import DeviceExecutionLock
+from artemis.runtime.endpoint_transport import EndpointTransport
+from artemis.runtime.host_protocol import CONTRACT
+from artemis.utils.redaction import redact_text
 
 DEFAULT_SESSION_TTL_SECONDS = 300
 DEFAULT_SESSION_MAX_LIFETIME_SECONDS = 4 * 60 * 60
+DEFAULT_RECONNECT_GRACE_SECONDS = CONTRACT.grace_seconds
 ADB_COMMAND_TIMEOUT_SECONDS = 15
 STREAM_CLOSE_TIMEOUT_SECONDS = 1
 MAX_ADB_PACKET_BYTES = 1024 * 1024 + 24
+_sleep = asyncio.sleep
 
 logger = logging.getLogger(__name__)
+
+
+def bridge_fixes_enabled() -> bool:
+    """CHE-2098 browser-link fixes ship dark: only the exact value ``on`` enables them."""
+    return os.environ.get("ARTEMIS_BRIDGE_FIXES", "").strip().lower() == "on"
 
 
 def _session_ttl_seconds() -> float:
@@ -58,12 +70,17 @@ def _session_max_lifetime_seconds() -> float:
 
 
 async def _run_adb_command(*arguments: str) -> str:
-    adb_session = AdbSession(AdbEndpoint.local(), adb_path=find_adb())
-    process = await asyncio.create_subprocess_exec(
-        *adb_session.command(arguments),
+    """Run ``adb <arguments>`` against this computer's own adb server, whatever the preference.
+
+    The bridge makes the *local* adb server dial the loopback listener (``adb connect
+    127.0.0.1:<port>``); a run's endpoint, a host agent's tunnel included, is never the
+    right server for that.
+    """
+    transport = EndpointTransport(AdbEndpoint.local())
+    process = await transport.create_subprocess(
+        arguments,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
-        env=adb_session.environment(),
     )
     try:
         stdout, stderr = await asyncio.wait_for(
@@ -103,6 +120,19 @@ class BridgeSession:
     adb_connect_attempted: bool = False
     revoked: bool = False
     close_reason: str | None = None
+    client_close: dict[str, object] | None = None
+    websocket_close_reason: str = ""
+    close_code: int | None = None
+    bytes_browser_to_device: int = 0
+    bytes_device_to_browser: int = 0
+    pending_device_packet: bytes | None = None
+    # Verified email of the person who connected the phone; None when no one was signed in.
+    owner: str | None = None
+    reconnect_token: str = field(default_factory=lambda: secrets.token_urlsafe(32))
+    connection_generation: int = 1
+    websocket_attached: bool = True
+    reconnect_deadline: float | None = None
+    reconnect_task: asyncio.Task[None] | None = None
 
     @property
     def serial(self) -> str:
@@ -137,11 +167,31 @@ class BridgeSessionService:
         """Browser-attached phones, for the computer registry's device list."""
         return [s for s in self._sessions.values() if not s.is_expired]
 
-    async def create_session(self) -> BridgeSession:
+    def owner_of(self, serial: str) -> str | None:
+        """Who connected the browser phone at ``serial``; None when unowned or unknown."""
+        # Admission and device locks match serials in this normalized form, so ownership must too.
+        key = DeviceExecutionLock._normalize_device_id(serial)
+        session = next(
+            (
+                s
+                for s in self._sessions.values()
+                if DeviceExecutionLock._normalize_device_id(s.serial) == key
+            ),
+            None,
+        )
+        return session.owner if session else None
+
+    def newest_serial_of(self, owner: str | None) -> str | None:
+        """The most recently connected live browser phone of ``owner``."""
+        mine = [s for s in self.live_sessions() if owner is not None and s.owner == owner]
+        return max(mine, key=lambda s: s.created_at).serial if mine else None
+
+    async def create_session(self, owner: str | None = None) -> BridgeSession:
         created_at = time.monotonic()
         idle_timeout_seconds = _session_ttl_seconds()
         session = BridgeSession(
             session_id=uuid.uuid4().hex,
+            owner=owner,
             created_at=created_at,
             idle_timeout_seconds=idle_timeout_seconds,
             max_expires_at=created_at + _session_max_lifetime_seconds(),
@@ -167,6 +217,11 @@ class BridgeSessionService:
             async with self._lock:
                 self._sessions[session.session_id] = session
             registered = True
+            logger.info(
+                "event=bridge_lease_created session_id=%s serial=%s",
+                session.session_id,
+                session.serial,
+            )
             return session
         finally:
             if not registered:
@@ -175,10 +230,28 @@ class BridgeSessionService:
 
     async def connect(self, session: BridgeSession) -> str:
         session.adb_connect_attempted = True
-        output = await _run_adb_command("connect", session.serial)
-        success = (f"connected to {session.serial}", f"already connected to {session.serial}")
-        if not output.lower().startswith(tuple(message.lower() for message in success)):
-            raise RuntimeError(f"adb connect failed: {output}")
+        started = time.monotonic()
+        try:
+            output = await _run_adb_command("connect", session.serial)
+            success = (f"connected to {session.serial}", f"already connected to {session.serial}")
+            if not output.lower().startswith(tuple(message.lower() for message in success)):
+                raise RuntimeError("adb connect returned an unsuccessful status")
+        except Exception as error:
+            logger.warning(
+                "event=bridge_adb_connect session_id=%s result=failed serial=%s "
+                "error_type=%s duration_ms=%d",
+                session.session_id,
+                session.serial,
+                type(error).__name__,
+                int((time.monotonic() - started) * 1000),
+            )
+            raise
+        logger.info(
+            "event=bridge_adb_connect session_id=%s result=connected duration_ms=%d serial=%s",
+            session.session_id,
+            int((time.monotonic() - started) * 1000),
+            session.serial,
+        )
         return session.serial
 
     async def revoke(self, session_id: str) -> None:
@@ -190,17 +263,48 @@ class BridgeSessionService:
 
         session.revoked = True
         session.close_reason = session.close_reason or "revoked"
+        reconnect_task = session.reconnect_task
+        session.reconnect_task = None
+        if reconnect_task is not None and reconnect_task is not asyncio.current_task():
+            reconnect_task.cancel()
+        from apps.admin_console.services.task_queue_service import TaskQueueService
+
+        TaskQueueService.interrupt_bridge_binding(
+            session.session_id, client_close=session.client_close
+        )
         logger.info(
-            "event=bridge_close session_id=%s serial=%s reason=%s",
+            "event=bridge_close session_id=%s serial=%s reason=%s close_code=%s close_reason=%s "
+            "client_close=%s bytes_browser_to_device=%d bytes_device_to_browser=%d duration_ms=%d",
             session.session_id,
             session.serial,
             session.close_reason,
+            session.close_code,
+            json.dumps(redact_text(session.websocket_close_reason[:512])),
+            json.dumps(session.client_close),
+            session.bytes_browser_to_device,
+            session.bytes_device_to_browser,
+            int((time.monotonic() - session.created_at) * 1000),
         )
         try:
             if session.adb_connect_attempted:
+                started = time.monotonic()
                 await _run_adb_command("disconnect", session.serial)
-        except Exception:
-            logger.exception("Failed to disconnect device bridge serial %s", session.serial)
+                logger.info(
+                    "event=bridge_adb_disconnect session_id=%s result=disconnected "
+                    "serial=%s duration_ms=%d",
+                    session.session_id,
+                    session.serial,
+                    int((time.monotonic() - started) * 1000),
+                )
+        except Exception as error:
+            logger.warning(
+                "event=bridge_adb_disconnect session_id=%s result=failed serial=%s "
+                "error_type=%s duration_ms=%d",
+                session.session_id,
+                session.serial,
+                type(error).__name__,
+                int((time.monotonic() - started) * 1000),
+            )
         finally:
             if session.listener is not None:
                 session.listener.close()
@@ -211,8 +315,12 @@ class BridgeSessionService:
                         session.writer.wait_closed(),
                         timeout=STREAM_CLOSE_TIMEOUT_SECONDS,
                     )
-                except Exception:
-                    logger.exception("Failed to close device bridge stream %s", session.serial)
+                except Exception as error:
+                    logger.warning(
+                        "Failed to close device bridge stream %s error_type=%s",
+                        session.serial,
+                        type(error).__name__,
+                    )
                     session.writer.transport.abort()
             if session.listener is not None:
                 try:
@@ -220,12 +328,111 @@ class BridgeSessionService:
                         session.listener.wait_closed(),
                         timeout=STREAM_CLOSE_TIMEOUT_SECONDS,
                     )
-                except Exception:
-                    logger.exception("Failed to close device bridge listener %s", session.serial)
+                except Exception as error:
+                    logger.warning(
+                        "Failed to close device bridge listener %s error_type=%s",
+                        session.serial,
+                        type(error).__name__,
+                    )
 
     async def get(self, session_id: str) -> BridgeSession | None:
         async with self._lock:
             return self._sessions.get(session_id)
+
+    async def begin_reconnect(
+        self,
+        session_id: str,
+        generation: int,
+        *,
+        grace_seconds: float = DEFAULT_RECONNECT_GRACE_SECONDS,
+    ) -> bool:
+        async with self._lock:
+            session = self._sessions.get(session_id)
+            if (
+                session is None
+                or session.revoked
+                or not session.connected.is_set()
+                or not session.websocket_attached
+                or session.connection_generation != generation
+            ):
+                return False
+
+            session.websocket_attached = False
+            session.reconnect_deadline = min(
+                time.monotonic() + grace_seconds, session.max_expires_at
+            )
+            session.expires_at = min(
+                max(session.expires_at, session.reconnect_deadline), session.max_expires_at
+            )
+            session.reconnect_task = asyncio.create_task(
+                self._expire_reconnect(session_id, generation, grace_seconds)
+            )
+
+        logger.info(
+            "event=bridge_reconnecting session_id=%s serial=%s grace_s=%s",
+            session_id,
+            session.serial,
+            grace_seconds,
+        )
+        return True
+
+    async def resume(
+        self, session_id: str, reconnect_token: str, owner: str | None
+    ) -> BridgeSession:
+        async with self._lock:
+            session = self._sessions.get(session_id)
+            if (
+                session is None
+                or session.revoked
+                or session.websocket_attached
+                or session.reconnect_deadline is None
+                or time.monotonic() >= session.reconnect_deadline
+                or session.is_expired
+                or session.owner != owner
+                or not secrets.compare_digest(session.reconnect_token, reconnect_token)
+            ):
+                raise ValueError("bridge session unavailable")
+
+            reconnect_task = session.reconnect_task
+            session.reconnect_task = None
+            session.reconnect_deadline = None
+            session.websocket_attached = True
+            session.connection_generation += 1
+            session.close_reason = None
+            session.client_close = None
+            session.websocket_close_reason = ""
+            session.close_code = None
+            if reconnect_task is not None:
+                reconnect_task.cancel()
+            return session
+
+    async def _expire_reconnect(
+        self, session_id: str, generation: int, grace_seconds: float
+    ) -> None:
+        try:
+            await _sleep(grace_seconds)
+        except asyncio.CancelledError:
+            return
+
+        async with self._lock:
+            session = self._sessions.get(session_id)
+            if (
+                session is None
+                or session.websocket_attached
+                or session.connection_generation != generation
+                or session.reconnect_deadline is None
+                or time.monotonic() < session.reconnect_deadline
+            ):
+                return
+            session.reconnect_task = None
+            session.close_reason = "reconnect_timeout"
+
+        logger.info(
+            "event=bridge_reconnect_expired session_id=%s serial=%s",
+            session_id,
+            session.serial,
+        )
+        await self.revoke(session_id)
 
     async def active_session_ids(self) -> set[str]:
         async with self._lock:

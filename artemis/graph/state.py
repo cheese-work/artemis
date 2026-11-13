@@ -12,18 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Annotated
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict
 
-from artemis.utils.logger import get_logger
+from third_party.mobile_use.graph import take_last
+from third_party.mobile_use.utils.logger import get_logger
 
 logger = get_logger(__name__)
-
-
-def take_last(a, b):
-    """Reducer function keeping the latest value."""
-    return b
 
 
 def sticky_or(a, b):
@@ -121,6 +117,9 @@ class State(BaseModel):
         "Native/implicit thinking process of the operator",
         take_last,
     ] = None
+    operator_decision_source: Annotated[
+        Literal["jev", "frontier"], "Source of the current Operator decision", take_last
+    ] = "frontier"
     last_execution_result: Annotated[
         dict | None, "Last execution result from validator", take_last
     ] = None

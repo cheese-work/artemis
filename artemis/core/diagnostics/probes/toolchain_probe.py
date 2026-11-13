@@ -25,7 +25,7 @@ from artemis.core.diagnostics.schema import (
 )
 from artemis.platform import OSType, platform
 from artemis.toolchain import toolchain
-from artemis.utils.video import detect_scrcpy_version, scrcpy_recording_flags
+from artemis.utils.video import SCRCPY_TOO_OLD_REASON, detect_scrcpy_version, scrcpy_recording_flags
 
 
 class ToolchainProbe(BaseProbe):
@@ -139,14 +139,16 @@ class ToolchainProbe(BaseProbe):
             actions.append(
                 ProbeAction(
                     action_type="command",
-                    label="One-Click Install Script",
-                    payload="bash scripts/install_deps.sh",
+                    label="Install compatible portable scrcpy",
+                    payload="bash start.sh",
                 )
             )
 
         if scrcpy_path and not scrcpy_supported and scrcpy_error:
             summary = (
-                f"Unsupported scrcpy version ({scrcpy_version})"
+                f"{SCRCPY_TOO_OLD_REASON} ({scrcpy_version})"
+                if SCRCPY_TOO_OLD_REASON in scrcpy_error
+                else f"Unsupported scrcpy version ({scrcpy_version})"
                 if scrcpy_version is not None
                 else "Could not determine scrcpy version"
             )

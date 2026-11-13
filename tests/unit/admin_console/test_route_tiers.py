@@ -7,9 +7,11 @@ from fastapi.routing import APIRoute, _IncludedRouter
 from apps.admin_console.core.access_control import (
     public_tier,
     require_admin,
+    require_admin_or_service_read,
     require_effective_loopback,
     require_lifecycle_token,
     require_qa,
+    require_qa_or_service,
     require_websocket_admin,
     route_tier,
 )
@@ -54,8 +56,12 @@ def _assert_routes_have_declared_tiers(routes):
         if tier == "admin":
             guard = require_websocket_admin if is_websocket else require_admin
             assert guard in dependency_calls, f"Missing admin guard: {path}"
+        if tier == "admin_or_service":
+            assert require_admin_or_service_read in dependency_calls, f"Missing guard: {path}"
         if tier == "qa":
             assert require_qa in dependency_calls, f"Missing QA guard: {path}"
+        if tier == "qa_or_service":
+            assert require_qa_or_service in dependency_calls, f"Missing guard: {path}"
         if tier == "lifecycle":
             assert require_lifecycle_token in dependency_calls, f"Missing lifecycle guard: {path}"
         if tier == "loopback":
@@ -72,10 +78,32 @@ def _assert_routes_have_declared_tiers(routes):
                     f"Cloud API mutation lacks tenant-token auth: {path}"
                 )
             else:
-                public_task_controls = {"/api/run", "/api/stop", "/api/resume"}
-                assert tier in {"admin", "qa", "lifecycle", "loopback", "agent"} or (
-                    tier == "public" and path in public_task_controls
-                ), f"Unprotected mutation: {path}"
+                public_task_controls = {
+                    "/api/run",
+                    "/api/stop",
+                    "/api/tasks/{session_id}/cancel-queued",
+                    "/api/resume",
+                }
+                public_note_controls = {
+                    "/api/runs/{session_id}/annotations",
+                    "/api/runs/{session_id}/annotations/{annotation_id}",
+                }
+                if path in public_note_controls:
+                    from apps.admin_console.core.ownership import evidence_scope
+
+                    assert evidence_scope in dependency_calls, (
+                        f"Missing note visibility guard: {path}"
+                    )
+                assert tier in {
+                    "admin",
+                    "qa",
+                    "qa_or_service",
+                    "lifecycle",
+                    "loopback",
+                    "agent",
+                } or (tier == "public" and path in public_task_controls | public_note_controls), (
+                    f"Unprotected mutation: {path}"
+                )
 
 
 def _dependency_calls(route) -> set[object]:
@@ -99,6 +127,27 @@ def test_every_registered_route_has_a_declared_tier_and_guard():
     _assert_routes_have_declared_tiers(app.routes)
 
 
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [
+        ("POST", "/api/leases/dlp-1"),
+        ("GET", "/api/leases/dlp-1/{lease_id}"),
+        ("POST", "/api/leases/dlp-1/{lease_id}/renew"),
+        ("POST", "/api/leases/dlp-1/{lease_id}/release"),
+        ("GET", "/api/leases/dlp-1/tickets/{ticket_id}"),
+        ("POST", "/api/leases/dlp-1/tickets/{ticket_id}/park"),
+        ("POST", "/api/leases/dlp-1/tickets/{ticket_id}/claim"),
+    ],
+)
+def test_dlp1_routes_require_qa_or_service_and_are_disabled_in_preview(method, path):
+    from apps.admin_console.core import preview_routes
+
+    assert route_tier(path, {method}) == "qa_or_service"
+    key = f"{method} {path}"
+    assert key in preview_routes.DISABLED
+    assert key not in preview_routes.ALLOWED
+
+
 def test_untiered_post_in_nested_included_router_fails_tier_check():
     child_router = APIRouter()
 
@@ -116,10 +165,16 @@ def test_untiered_post_in_nested_included_router_fails_tier_check():
 
 
 def test_approved_task_controls_and_bridge_keep_public_tier():
-    for path in ("/api/run", "/api/stop", "/api/resume"):
+    for path in (
+        "/api/run",
+        "/api/stop",
+        "/api/tasks/{session_id}/cancel-queued",
+        "/api/resume",
+    ):
         assert route_tier(path, {"POST"}) == "public"
 
     assert route_tier("/api/device-bridge/session", set(), is_websocket=True) == "public"
+    assert route_tier("/api/device-bridge/resume", set(), is_websocket=True) == "public"
     assert route_tier("/api/system/adb/restart", {"POST"}) == "admin"
 
 
@@ -136,6 +191,24 @@ def test_drain_controls_are_loopback_tier_for_every_method():
     assert route_tier("/api/system/drain", {"PUT"}) is None
 
 
+def test_deploy_cut_is_loopback_tier_only_for_post():
+    assert route_tier("/api/system/drain/cut", {"POST"}) == "loopback"
+    for method in ("GET", "DELETE", "PUT", "PATCH", "HEAD", "OPTIONS"):
+        assert route_tier("/api/system/drain/cut", {method}) is None
+    assert route_tier("/api/system/drain/cut", set(), is_websocket=True) is None
+
+
+@pytest.mark.parametrize(
+    ("path", "method"),
+    [
+        ("/api/system/qa-results/gate-a", "GET"),
+        ("/api/system/qa-results/{turn_id}/relabel", "POST"),
+    ],
+)
+def test_qa_result_admin_routes_require_admin_tier(path, method):
+    assert route_tier(path, {method}) == "admin"
+
+
 HOST_ROUTES = [
     ("/api/hosts", {"GET"}, "public"),
     ("/api/hosts/enrollment-codes", {"POST"}, "admin"),
@@ -147,6 +220,7 @@ HOST_ROUTES = [
     ("/api/agent/enroll", {"POST"}, "agent"),
     ("/api/agent/challenge", {"POST"}, "agent"),
     ("/api/agent/renew", {"POST"}, "agent"),
+    ("/api/agent/unenroll", {"POST"}, "agent"),
 ]
 
 

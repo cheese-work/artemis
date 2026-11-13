@@ -18,19 +18,24 @@ import { Component, ChangeDetectionStrategy, inject, ViewChild } from '@angular/
 import { RouterOutlet } from '@angular/router';
 import { NavSwitcherComponent } from './components/nav-switcher/nav-switcher.component';
 import { WhatsNewComponent } from './components/whats-new/whats-new.component';
-import { VersionFooterComponent } from './components/version-footer/version-footer.component';
 import { AgentService } from './services/agent.service';
+import { ShellLayoutService } from './services/shell-layout.service';
+import { UsbDeviceRelayService } from './services/usb-device-relay.service';
+import { previewInfo } from './utils/app-url.util';
 
 @Component({
   selector: 'app-root',
-  imports: [RouterOutlet, NavSwitcherComponent, WhatsNewComponent, VersionFooterComponent],
+  imports: [RouterOutlet, NavSwitcherComponent, WhatsNewComponent],
   templateUrl: './app.component.html',
   changeDetection: ChangeDetectionStrategy.Eager,
   styleUrl: './app.component.scss'
 })
 export class AppComponent {
   public title = 'SmartQA';
+  public readonly preview = previewInfo();
   public readonly agentService = inject(AgentService);
+  public readonly shell = inject(ShellLayoutService);
+  public readonly usbRelay = inject(UsbDeviceRelayService);
 
   @ViewChild(WhatsNewComponent) private whatsNew?: WhatsNewComponent;
 

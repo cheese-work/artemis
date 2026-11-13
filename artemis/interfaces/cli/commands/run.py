@@ -14,28 +14,38 @@
 
 """Task execution command (artemis run)."""
 
+from artemis import Agent, Builders
+from artemis.sdk.types.task import AgentProfile
+from artemis.utils.cli_helpers import display_device_status
 import asyncio
 import os
 import sqlite3
 import uuid
 from pathlib import Path
-from shutil import which
 from typing import Annotated
 
-from adbutils import AdbClient
 from langchain_core.callbacks.base import Callbacks
 from artemis.config import checker_overrides_for_level, initialize_llm_config, settings
+from artemis.runtime.endpoint_transport import EndpointTransport
 from artemis.config.attempt_lifecycle_hooks import (
     record_attempt_manifest,
     reconcile_and_store_verdict,
 )
+from artemis.interfaces.cli.assertion_exit import native_assertion_exit_code, require_native_scope
 from artemis.runtime.lifecycle import finish_trace
 from artemis.utils.startup_progress import publish_startup_progress
-from artemis import Agent, Builders
-from artemis.sdk.types.task import AgentProfile
-from artemis.utils.cli_helpers import display_device_status
-from artemis.utils.logger import get_logger
-from artemis.utils.video import check_ffmpeg_available
+from third_party.mobile_use.main import (
+    GoalArgument,
+    OutputDescriptionOption,
+    TestNameOption,
+    TracesPathOption,
+    VideoRecordingToolsOption,
+    ensure_video_recording_available,
+    new_default_config_builder,
+    run_automation,
+)
+from third_party.mobile_use.utils.cli_helpers import display_local_device_status
+from third_party.mobile_use.utils.logger import get_logger
 import signal
 from rich.console import Console
 from rich.panel import Panel
@@ -67,6 +77,8 @@ async def execute_task(
     explorer_pro_mode: str | None = None,
     verification_level: str | None = None,
     run_id: str | None = None,
+    assertion_exit: bool = False,
+    _chat_turn: bool = False,
 ) -> None:
     """Executes a single mobile automation task end-to-end.
 
@@ -90,7 +102,92 @@ async def execute_task(
         run_id: Gate 1 batch-grouping key for this attempt's manifest (see
             ``artemis.config.attempt_lifecycle_hooks``); defaults to the
             effective session id when omitted.
+        assertion_exit: Opt-in. Map the native test summary to a process exit
+            (``SystemExit``: 1 assertion FAIL, 2 missing/incomplete evidence)
+            and let an ``Agent.clean()`` failure propagate. Requires
+            ``profile='pro'`` and explicit ``device_serial`` and
+            ``locked_app_package``; chat sessions are unsupported.
     """
+    chat_identity = os.getenv("ARTEMIS_CHAT_SESSION_ID")
+    if assertion_exit:
+        require_native_scope(profile, device_serial, locked_app_package)
+    if chat_identity and not _chat_turn:
+        from artemis.config import DB_PATH
+        from artemis.data_engine.chat_sessions import ChatStore
+        from artemis.runtime import DeviceExecutionLock
+        from artemis.runtime.chat_session_worker import follow_up_goal, run_chat_session
+
+        options = locals().copy()
+        options = {
+            key: value
+            for key, value in options.items()
+            if key in execute_task.__annotations__ and key != "return"
+        }
+        serial = device_serial or os.getenv("ADB_DEVICE_SERIAL")
+        if not serial:
+            raise RuntimeError("session_device_unavailable: the session has no pinned phone")
+        store = ChatStore(DB_PATH)
+        root = store.get(chat_identity)["session_id"]
+        lease = DeviceExecutionLock(serial, session_id=root, ingress="frontend")
+        config_snapshot = store.launch_config(root) or {}
+
+        async def execute_turn(turn):
+            from apps.admin_console.database.repositories.session_repository import session_repo
+
+            if session_repo.get_session_by_id(turn["turn_id"]) is None:
+                if not session_repo.create_queued_session(
+                    turn["turn_id"],
+                    turn["goal"],
+                    profile or "flash",
+                    serial,
+                    requested_by=config_snapshot.get("requested_by"),
+                    device_binding=config_snapshot.get("device_binding"),
+                    model=config_snapshot.get("model"),
+                ):
+                    raise RuntimeError("Could not create follow-up evidence record")
+            DeviceExecutionLock.annotate_active_owner(session_id=root)
+            os.environ["ARTEMIS_CHAT_FOLLOW_UP"] = "1" if turn["number"] > 1 else "0"
+            os.environ["ARTEMIS_CHAT_TURN_STARTED"] = "1"
+            try:
+                result = (
+                    await asyncio.gather(
+                        execute_task(
+                            **{
+                                **options,
+                                "goal": follow_up_goal(turn),
+                                "session_id": turn["turn_id"],
+                                "_chat_turn": True,
+                                "run_id": run_id if turn["number"] == 1 else turn["turn_id"],
+                                "app_path": app_path if turn["number"] == 1 else None,
+                                "test_name": test_name
+                                if turn["number"] == 1
+                                else f"{test_name or 'chat'}_turn_{turn['number']}",
+                            }
+                        ),
+                        return_exceptions=True,
+                    )
+                )[0]
+                if isinstance(result, asyncio.CancelledError):
+                    raise result
+                if isinstance(result, Exception):
+                    session_repo.lifecycle.finish(turn["turn_id"], "failed", error=str(result))
+                    raise result
+                session_repo.lifecycle.settle_worker_exit(turn["turn_id"], 0, False)
+            except asyncio.CancelledError:
+                session_repo.lifecycle.finish(turn["turn_id"], "cancelled")
+                raise
+            finally:
+                DeviceExecutionLock.annotate_active_owner(session_id=root)
+
+        await run_chat_session(
+            store,
+            root,
+            lease,
+            execute_turn,
+            idle_seconds=float(os.getenv("ARTEMIS_CHAT_IDLE_SECONDS", "300")),
+        )
+        return
+
     effective_sid = (
         session_id
         or os.getenv("ARTEMIS_SESSION_ID")
@@ -217,7 +314,12 @@ async def execute_task(
             if llm_result_path:
                 task.with_llm_output_saving(path=llm_result_path)
 
-            await agent.run_task(request=task.build())
+            result = await agent.run_task(request=task.build())
+            if assertion_exit:
+                exit_code = native_assertion_exit_code(result)
+                Console().print(f"ARTEMIS_ASSERTION_EXIT={exit_code}")
+                if exit_code:
+                    raise SystemExit(exit_code)
         finally:
             # Reconciliation runs regardless of task outcome (success, failed
             # status, exception, or cancellation) and before cleanup, so an
@@ -232,6 +334,8 @@ async def execute_task(
                     await agent.clean()
                 except Exception as exc:
                     logger.error(f"Error cleaning agent: {exc}")
+                    if assertion_exit:
+                        raise  # a cleanup error after a nominal pass is not a clean PASS
     finally:
         # Restore whatever ARTEMIS_SESSION_ID held before this call so an
         # explicit session_id (or a generated fallback) never bleeds into a
@@ -243,7 +347,7 @@ async def execute_task(
 
 
 def run_command(
-    goal: Annotated[str, typer.Argument(help="The main goal for the agent to achieve.")],
+    goal: GoalArgument,
     profile: Annotated[
         str | None,
         typer.Option(
@@ -260,40 +364,10 @@ def run_command(
             help="Optional Android package name to restrict the agent to.",
         ),
     ] = None,
-    test_name: Annotated[
-        str | None,
-        typer.Option(
-            "--test-name",
-            "-n",
-            help="Name of the test run for trace recording.",
-        ),
-    ] = None,
-    traces_path: Annotated[
-        str | None,
-        typer.Option(
-            "--traces-path",
-            "-t",
-            help="Directory where execution traces are persisted.",
-        ),
-    ] = None,
-    output_description: Annotated[
-        str | None,
-        typer.Option(
-            "--output-description",
-            "-o",
-            help="Natural language or schema description of the expected output.",
-        ),
-    ] = None,
-    with_video_recording_tools: Annotated[
-        bool | None,
-        typer.Option(
-            "--with-video-recording-tools/--without-video-recording-tools",
-            help=(
-                "Enable or disable dynamic video recording and screen analysis "
-                "tools (auto-detected if omitted)."
-            ),
-        ),
-    ] = None,
+    test_name: TestNameOption = None,
+    traces_path: TracesPathOption = None,
+    output_description: OutputDescriptionOption = None,
+    with_video_recording_tools: VideoRecordingToolsOption = None,
     app_path: Annotated[
         str | None,
         typer.Option(
@@ -411,10 +485,19 @@ def run_command(
             help="Run in standalone embedded mode without auto-spawning the Artemis Daemon.",
         ),
     ] = False,
+    assertion_exit: Annotated[
+        bool,
+        typer.Option(
+            "--assertion-exit",
+            help=(
+                "Opt-in: exit 1 on a completed native assertion FAIL, 2 on missing or "
+                "incomplete evidence. Requires --standalone, --profile pro, --device-serial and --locked-app."
+            ),
+        ),
+    ] = False,
 ) -> None:
     """Run an autonomous UI automation task on the connected Android device."""
-    if with_video_recording_tools:
-        check_ffmpeg_available()
+    ensure_video_recording_available(with_video_recording_tools)
 
     console = Console()
 
@@ -423,6 +506,13 @@ def run_command(
         or os.environ.get("ARTEMIS_DEVICE_QUEUE_TICKET") is not None
     )
     is_standalone = standalone or os.environ.get("ARTEMIS_STANDALONE") == "1"
+    if assertion_exit and (not is_standalone or is_worker):
+        raise typer.BadParameter("--assertion-exit requires --standalone, not a daemon worker")
+    if assertion_exit:
+        try:
+            require_native_scope(profile, device_serial, locked_app_package)
+        except ValueError as exc:
+            raise typer.BadParameter(str(exc)) from exc
 
     # All platforms route through unified Artemis Daemon unless specifically configured as standalone
     if not is_worker and not is_standalone:
@@ -512,11 +602,8 @@ def run_command(
 
     adb_client = None
     try:
-        if which("adb"):
-            adb_client = AdbClient(
-                host=settings.ADB_HOST or "localhost",
-                port=settings.ADB_PORT or 5037,
-            )
+        if EndpointTransport.adb_binary():
+            adb_client = EndpointTransport.shared(None).client()
     except Exception as exc:
         # Optional cosmetic device-status display; run continues without it.
         logger.debug(f"Could not create ADB client for device status display: {exc}")
@@ -559,6 +646,7 @@ def run_command(
                 explorer_pro_mode=explorer_pro_mode,
                 verification_level=verification_level,
                 run_id=run_id,
+                assertion_exit=assertion_exit,
             )
         )
     except (KeyboardInterrupt, asyncio.CancelledError):

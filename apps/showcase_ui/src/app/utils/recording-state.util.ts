@@ -120,3 +120,25 @@ export function mapRecording(
         : view('unknown', 'Recording status unknown.', 'Video unknown');
   }
 }
+
+/** Player-area copy for a video that could not be prepared: the fixed sentence plus the reported reason. */
+export function prepareFailedCopy(base: string, message: string | null | undefined): string {
+  return `${base} ${message?.trim() || 'The video service did not report a reason.'}`;
+}
+
+/** Raw recorder output for the collapsed "Technical details" block; null when there is none worth showing. */
+export function technicalDetail(detail: string | null | undefined): string | null {
+  return detail?.trim() || null;
+}
+
+/**
+ * The ribbon over a live run's recording when the run was interrupted: the video stops where
+ * the phone was lost. Null for any other status.
+ */
+export function partialRibbonFor(
+  session: { status?: string; start_time?: number; end_time?: number } | null | undefined
+): string | null {
+  if (session?.status?.toLowerCase() !== 'interrupted') return null;
+  const stoppedAt = session.end_time != null && session.start_time ? session.end_time - session.start_time : null;
+  return mapRecording({ capture: 'partial', transfer: null, playback: 'ready' }, { stoppedAtSeconds: stoppedAt }).ribbon;
+}

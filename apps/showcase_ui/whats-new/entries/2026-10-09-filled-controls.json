@@ -1,0 +1,7 @@
+{
+  "id": "2026-10-09-filled-controls",
+  "date": "2026-10-09",
+  "title": "Buttons and tabs use filled backgrounds instead of outlines",
+  "body": "Workspace, Runs and Setup share calmer controls. Keyboard focus remains visible. Navigation tabs and Setup controls have at least a 44-pixel click area.",
+  "issues": ["CHE-1495"]
+}

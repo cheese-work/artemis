@@ -1,21 +1,48 @@
 import { Injectable, inject, signal } from '@angular/core';
 import { HttpClient, HttpEvent, HttpParams } from '@angular/common/http';
 import { Observable } from 'rxjs';
-import { RunPage, RunSummary, SessionVideo } from '../core/models/run.model';
-import { StepItemData } from '../core/models/stream.model';
+import { ChatMessage, ChatSession, RunPage, RunSummary, SessionVideo } from '../core/models/run.model';
+import { SessionChecks, StepItemData } from '../core/models/stream.model';
 import { RunFilters, apiParams } from '../utils/run-filters.util';
+import { OwnerScopeService } from './owner-scope.service';
 
 @Injectable({ providedIn: 'root' })
 export class RunsService {
+  public chat(sessionId: string): Observable<ChatSession> {
+    return this.http.get<ChatSession>(`/api/chats/${encodeURIComponent(sessionId)}`);
+  }
+
+  public renameChat(sessionId: string, title: string): Observable<ChatSession> {
+    return this.http.patch<ChatSession>(`/api/chats/${encodeURIComponent(sessionId)}/title`, { title });
+  }
+
+  public sendChat(sessionId: string, content: string, clientId: string): Observable<ChatMessage> {
+    return this.http.post<ChatMessage>(`/api/chats/${encodeURIComponent(sessionId)}/messages`, { content, client_id: clientId });
+  }
+
+  public sendInput(sessionId: string, requestId: string, value: string): Observable<{ accepted: boolean }> {
+    return this.http.post<{ accepted: boolean }>(`/api/chats/${encodeURIComponent(sessionId)}/input/${encodeURIComponent(requestId)}`, { value });
+  }
+
+  public controlChat(sessionId: string, action: 'pause' | 'continue', clientId: string): Observable<ChatMessage> {
+    return this.http.post<ChatMessage>(`/api/chats/${encodeURIComponent(sessionId)}/${action}`, { client_id: clientId });
+  }
   private readonly http = inject(HttpClient);
+  private readonly ownerScope = inject(OwnerScopeService);
 
   /** The library's last URL query, so the viewer can link back to the same list. */
   public readonly lastLibraryQuery = signal<Record<string, string>>({});
+  public readonly viewPosition = signal<{
+    sessionId: string; selectedStepId: string | null; scrollTop: number; timelineScrollTop: number;
+  } | null>(null);
 
-  public list(filters: RunFilters, options: { cursor?: string; limit?: number } = {}): Observable<RunPage> {
+  public list(filters: RunFilters, options: { cursor?: string; limit?: number; scope?: 'mine' | 'everyone' } = {}): Observable<RunPage> {
     let params = new HttpParams().set('limit', String(options.limit ?? 50));
-    for (const [key, value] of Object.entries(apiParams(filters))) params = params.set(key, value);
+    for (const [key, value] of Object.entries({ ...apiParams(filters), ...this.ownerScope.queryParams() })) {
+      params = params.set(key, value);
+    }
     if (options.cursor) params = params.set('cursor', options.cursor);
+    if (options.scope) params = params.set('scope', options.scope);
     return this.http.get<RunPage>('/api/runs', { params });
   }
 
@@ -26,6 +53,14 @@ export class RunsService {
 
   public steps(sessionId: string): Observable<StepItemData[]> {
     return this.http.get<StepItemData[]>(`/api/sessions/${encodeURIComponent(sessionId)}/steps`);
+  }
+
+  public checks(sessionId: string): Observable<SessionChecks> {
+    return this.http.get<SessionChecks>(`/api/sessions/${encodeURIComponent(sessionId)}/checks`);
+  }
+
+  public notes(sessionId: string): Observable<{ notes: Record<string, string> }> {
+    return this.http.get<{ notes: Record<string, string> }>(`/api/sessions/${encodeURIComponent(sessionId)}/notes`);
   }
 
   public video(sessionId: string): Observable<SessionVideo> {
@@ -40,7 +75,7 @@ export class RunsService {
     return this.http.delete(`/api/runs/${encodeURIComponent(sessionId)}/pin`);
   }
 
-  /** Admin only on the server. */
+  /** The run's owner or an admin, on the server. */
   public remove(sessionId: string): Observable<unknown> {
     return this.http.post(`/api/sessions/${encodeURIComponent(sessionId)}/delete`, {});
   }

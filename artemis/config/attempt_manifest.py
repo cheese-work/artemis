@@ -65,7 +65,7 @@ TIERS: tuple[Tier, ...] = ("luna", "terra", "sol", "nova")
 
 # Provider/model pairs that identify each tier. This fork's config/artemis.jsonc
 # does not (yet) declare an explicit tier->model table; its "default" node
-# resolves to openai/gpt-5.6-sol today, so "sol" is mapped to that pair as the
+# resolves to openai/gpt-6-sol today, so "sol" is mapped to that pair as the
 # only tier presently exercised end-to-end. "luna"/"terra" are declared for
 # forward compatibility with the escalation controller (Gate 2, out of scope
 # here) and must be updated here (not inferred) if/when config/artemis.jsonc
@@ -74,7 +74,7 @@ TIERS: tuple[Tier, ...] = ("luna", "terra", "sol", "nova")
 TIER_MODELS: dict[Tier, tuple[str, str]] = {
     "luna": ("google", "gemini-3.5-flash-lite"),
     "terra": ("google", "gemini-3.8-flash"),
-    "sol": ("openai", "gpt-5.6-sol"),
+    "sol": ("openai", "gpt-6-sol"),
     "nova": ("anthropic", "claude-sonnet-5"),
 }
 

@@ -21,11 +21,36 @@ import pytest
 import uvicorn
 
 from artemis.runtime.lifecycle import InterruptReason, LifecycleAuthority
+from apps.admin_console.core.ownership import SYSTEM_PRINCIPAL
 from apps.admin_console.core.state import state
 from apps.admin_console.routers.tasks import stream_events
 from apps.admin_console.server import ArtemisUvicornServer, app, on_shutdown
 
 WINDOWS_FORCE_SIGNAL = getattr(signal, "SIGBREAK", signal.SIGTERM)
+
+
+@pytest.mark.parametrize("reload", [False, True])
+@pytest.mark.parametrize("enabled", [False, True])
+def test_server_bounds_websocket_messages_before_asgi(monkeypatch, reload, enabled):
+    from apps.admin_console import server
+
+    monkeypatch.setenv("ARTEMIS_HOST_AGENT", "1" if enabled else "0")
+    monkeypatch.setattr(server, "configure_logging", lambda **kwargs: None)
+    monkeypatch.setattr(server, "write_server_info", lambda **kwargs: None)
+    monkeypatch.setattr(server, "clear_server_info", lambda **kwargs: None)
+    with (
+        patch.object(uvicorn, "run") as run,
+        patch.object(server.ArtemisUvicornServer, "run"),
+        patch.object(uvicorn, "Config", wraps=uvicorn.Config) as config,
+    ):
+        server.run_ui_server("127.0.0.1", 0, reload=reload)
+    options = run.call_args.kwargs if reload else config.call_args.kwargs
+    if enabled:
+        from apps.admin_console.services.bridge_session_service import MAX_ADB_PACKET_BYTES
+
+        assert options["ws_max_size"] == MAX_ADB_PACKET_BYTES
+    else:
+        assert "ws_max_size" not in options
 
 
 def _pending_queue_get_tasks():
@@ -43,7 +68,7 @@ async def test_cancelled_event_stream_reaps_queue_waiter():
     subscribers_before = list(state.ipc_subscribers)
     queue_tasks_before = _pending_queue_get_tasks()
 
-    response = await stream_events("test-session")
+    response = await stream_events("test-session", scope=SYSTEM_PRINCIPAL)
     iterator = response.body_iterator
     first_event = await anext(iterator)
     assert "Subscribed to session test-session" in first_event
@@ -75,7 +100,7 @@ async def test_stream_events_active_session_replay():
         mock_step_repo.get_session_steps.return_value = [
             {"step_number": 1, "description": "Step 1", "status": "completed"}
         ]
-        response = await stream_events()
+        response = await stream_events(scope=SYSTEM_PRINCIPAL)
         iterator = response.body_iterator
         first_event = await anext(iterator)
         assert "Subscribed to session active" in first_event

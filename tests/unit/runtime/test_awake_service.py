@@ -1,4 +1,4 @@
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
 
 from artemis.runtime.awake_service import (
     AWAKE_STRATEGY_HEARTBEAT,
@@ -26,7 +26,7 @@ def test_usb_policy_is_primary_when_android_reports_it_active(mock_run, lease_ty
 
     assert _configure_usb_stay_awake("device-123") == AWAKE_STRATEGY_USB
 
-    lease_type.assert_called_once_with("device-123")
+    lease_type.assert_called_once_with("device-123", None)
     lease_type.return_value.cleanup_unowned_references.assert_called_once_with()
     commands = [call.args[0] for call in mock_run.call_args_list]
     # Commands are endpoint-qualified (adb -H host -P port -s serial ...);
@@ -75,7 +75,7 @@ def test_host_heartbeat_lives_until_host_shutdown(configure, event_type, thread_
     service.ensure_device("device-123")
     service.ensure_device("device-123")
 
-    configure.assert_called_once_with("device-123")
+    configure.assert_called_once_with("device-123", ANY)
     thread.start.assert_called_once_with()
     stop_event.set.assert_not_called()
 
@@ -108,6 +108,7 @@ def test_heartbeat_loop_uses_verified_user_activity_key(
         "device-123",
         ["shell", "input", "keyevent", "KEYCODE_UNKNOWN"],
         "send the host stay-awake heartbeat",
+        ANY,
     )
 
 
@@ -131,7 +132,7 @@ def test_service_monitor_enrolls_a_device_attached_after_start(
     monitor_target = thread_type.call_args.kwargs["target"]
     monitor_target()
 
-    configure.assert_called_once_with("device-late")
+    configure.assert_called_once_with("device-late", ANY)
     assert service.device_ids == ("device-late",)
 
 
@@ -160,11 +161,11 @@ def test_disconnect_reconciliation_stops_heartbeat_and_allows_reenrollment(
 
 
 @patch("artemis.runtime.device_pool.device_pool.get_claimed_serials")
-@patch("artemis.runtime.awake_service.AdbClient")
-def test_discovery_keeps_only_pool_claimed_devices(adb_client, claimed):
+@patch("artemis.runtime.awake_service.EndpointTransport.shared")
+def test_discovery_keeps_only_pool_claimed_devices(shared, claimed):
     """The pool manages two devices while the ADB server lists three: only the
     two claimed devices are kept awake; the unrelated one is left untouched."""
-    adb_client.return_value.device_list.return_value = [
+    shared.return_value.device_list.return_value = [
         MagicMock(serial="device-1"),
         MagicMock(serial="device-2"),
         MagicMock(serial="device-3"),
@@ -178,9 +179,9 @@ def test_discovery_keeps_only_pool_claimed_devices(adb_client, claimed):
     "artemis.runtime.device_pool.device_pool.get_claimed_serials",
     return_value=set(),
 )
-@patch("artemis.runtime.awake_service.AdbClient")
-def test_discovery_returns_nothing_when_pool_claims_no_device(adb_client, _claimed):
-    adb_client.return_value.device_list.return_value = [
+@patch("artemis.runtime.awake_service.EndpointTransport.shared")
+def test_discovery_returns_nothing_when_pool_claims_no_device(shared, _claimed):
+    shared.return_value.device_list.return_value = [
         MagicMock(serial="device-1"),
         MagicMock(serial="device-2"),
     ]

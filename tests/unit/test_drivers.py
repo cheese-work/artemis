@@ -23,6 +23,7 @@ import pytest
 from artemis.drivers.base import KeyCode, ScreenData, SwipeDirection
 from artemis.drivers.mock.mock_driver import MockDeviceDriver
 from artemis.drivers.android.adb_driver import AndroidAdbDriver
+from third_party.mobile_use.controllers.types import ElementQuery
 
 
 _ONE_PIXEL_PNG = base64.b64encode(
@@ -71,6 +72,127 @@ async def test_mock_driver_actions():
     assert await driver.launch_app("com.android.settings") is True
     assert await driver.get_current_package() == "com.android.settings"
     assert await driver.stop_app("com.android.settings") is True
+
+
+@pytest.mark.asyncio
+async def test_private_input_never_uses_clipboard_or_echoes_device_errors(caplog):
+    sentinel = "PRIVATE-INPUT-SENTINEL-4871"
+    device = MagicMock()
+    client = MagicMock()
+    client.device.return_value = device
+    driver = AndroidAdbDriver("fake-device", client, MagicMock())
+    target = {"resource-id": "password", "bounds": "[0,0][100,100]"}
+    driver.get_screen_data = AsyncMock(
+        return_value=ScreenData(
+            screenshot_bytes=b"",
+            screenshot_base64="",
+            ui_elements=[
+                {
+                    **target,
+                    "focused": "true",
+                    "password": "true",
+                    "class": "android.widget.EditText",
+                }
+            ],
+        )
+    )
+    device.shell.return_value = "native-ime"
+    device.shell2.side_effect = lambda command, **kwargs: (
+        (_ for _ in ()).throw(RuntimeError(sentinel))
+        if "input text" in command
+        else SimpleNamespace(returncode=0, output="")
+    )
+    assert not await driver.input_private(sentinel, target=target, secret=True)
+    assert sentinel not in caplog.text
+    assert not driver._ui_adb_client.set_clipboard.called
+    driver.get_screen_data.return_value.ui_elements[0]["password"] = "false"
+    device.shell.reset_mock()
+    assert not await driver.input_private(sentinel, target=target, secret=True)
+    device.shell.assert_not_called()
+    driver.get_screen_data.return_value.ui_elements[0]["password"] = "true"
+    driver.get_screen_data.return_value.ui_elements[0]["bounds"] = "[0,0][50,50]"
+    assert not await driver.input_private(sentinel, target=target, secret=True)
+    device.shell.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_private_input_rejects_a_failed_native_command():
+    device = MagicMock()
+    client = MagicMock()
+    client.device.return_value = device
+    device.shell.return_value = "native-ime"
+    device.shell2.return_value = SimpleNamespace(returncode=1, output="PRIVATE-SENTINEL")
+    driver = AndroidAdbDriver("fake-device", client, MagicMock())
+    target = {"resource-id": "password", "bounds": "[0,0][10,10]"}
+    driver.get_screen_data = AsyncMock(
+        return_value=ScreenData(
+            screenshot_bytes=b"",
+            screenshot_base64="",
+            ui_elements=[{**target, "password": "true", "focused": "true"}],
+        )
+    )
+    assert not await driver.input_private("PRIVATE-SENTINEL", target=target)
+    assert device.shell2.call_count == 1
+
+
+def test_password_observation_masks_text_xml_and_screenshot_without_mutating_input():
+    from io import BytesIO
+    from PIL import Image
+
+    sentinel = "PASSWORD-OBSERVATION-SENTINEL-9513"
+    image = Image.new("RGB", (100, 100), "white")
+    buffer = BytesIO()
+    image.save(buffer, "PNG")
+    elements = [{"password": "true", "text": sentinel, "bounds": "[10,10][90,90]"}]
+    data = ScreenData(
+        screenshot_bytes=buffer.getvalue(),
+        screenshot_base64=base64.b64encode(buffer.getvalue()).decode(),
+        ui_elements=elements,
+        ui_hierarchy_xml=f'<hierarchy><node password="true" text="{sentinel}" bounds="[10,10][90,90]"/></hierarchy>',
+    )
+    assert sentinel not in data.ui_hierarchy_xml
+    assert sentinel not in str(data.ui_elements)
+    assert elements[0]["text"] == sentinel
+    rendered = Image.open(BytesIO(data.screenshot_bytes)).convert("RGB")
+    assert rendered.getpixel((50, 50)) == (0, 0, 0)
+    assert rendered.getpixel((0, 0)) == (255, 255, 255)
+
+
+def test_password_xml_siblings_and_ancillary_text_are_masked():
+    sentinel = "SIBLING-SECRET-SENTINEL"
+    data = ScreenData(
+        screenshot_bytes=b"",
+        screenshot_base64="",
+        ui_hierarchy_xml=f'<hierarchy><node bounds="[0,0][10,10]" text="{sentinel}" tooltip="{sentinel}"><node password="true" bounds="[0,0][10,10]" /></node></hierarchy>',
+        ui_elements=[
+            {
+                "password": "true",
+                "bounds": "[0,0][10,10]",
+                "error": sentinel,
+                "state_description": sentinel,
+                "pane_title": sentinel,
+            }
+        ],
+    )
+    assert sentinel not in data.ui_hierarchy_xml
+    assert sentinel not in str(data.ui_elements)
+
+
+def test_malformed_password_hierarchy_fails_closed():
+    from io import BytesIO
+    from PIL import Image
+
+    buffer = BytesIO()
+    Image.new("RGB", (20, 20), "white").save(buffer, "PNG")
+    data = ScreenData(
+        screenshot_bytes=buffer.getvalue(),
+        screenshot_base64="",
+        ui_hierarchy_xml='<node text="PRIVATE-SENTINEL"',
+        ui_elements=[{"text": "PRIVATE-SENTINEL"}],
+    )
+    assert data.ui_hierarchy_xml is None
+    assert "PRIVATE-SENTINEL" not in str(data.ui_elements)
+    assert Image.open(BytesIO(data.screenshot_bytes)).getpixel((10, 10)) == (0, 0, 0)
 
 
 @pytest.mark.asyncio
@@ -211,7 +333,7 @@ async def test_find_element_prefers_fresh_bounds_over_stale_center():
         )
     )
 
-    _, center, error = await driver.find_element(resource_id="app:id/digit_4")
+    _, center, error = await driver.find_element(ElementQuery(resource_id="app:id/digit_4"))
 
     assert error is None
     assert center == [140, 1820]

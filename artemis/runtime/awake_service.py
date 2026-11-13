@@ -22,11 +22,8 @@ import subprocess
 import threading
 from typing import Iterable
 
-from adbutils import AdbClient
-
-from artemis.config import settings
-from artemis.runtime.adb_endpoint import adb_command
 from artemis.runtime.awake_lease import ScreenAwakeLease
+from artemis.runtime.endpoint_transport import EndpointTransport
 from artemis.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -43,12 +40,15 @@ def _awake_enabled() -> bool:
 
 
 def _run_awake_adb_command(
-    device_id: str, args: list[str], description: str
+    device_id: str,
+    args: list[str],
+    description: str,
+    transport: EndpointTransport | None = None,
 ) -> subprocess.CompletedProcess[str] | None:
     """Run one non-fatal ADB command used by the USB awake policy."""
     try:
-        result = subprocess.run(
-            adb_command(["-s", device_id, *args]),
+        result = (transport or EndpointTransport.shared(None)).run(
+            ["-s", device_id, *args],
             stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
@@ -66,7 +66,7 @@ def _run_awake_adb_command(
         return None
 
 
-def sanitize_device_state(device_id: str) -> None:
+def sanitize_device_state(device_id: str, transport: EndpointTransport | None = None) -> None:
     """Sanitize Android device state by cleaning up orphan screenrecord or modal dialogs."""
     if not device_id:
         return
@@ -75,16 +75,20 @@ def sanitize_device_state(device_id: str) -> None:
         device_id,
         ["shell", "pkill", "-f", "screenrecord"],
         "kill orphan screenrecord processes",
+        transport,
     )
     # 2. Close system modal dialogs (ANR / crash popups)
     _run_awake_adb_command(
         device_id,
         ["shell", "am", "broadcast", "-a", "android.intent.action.CLOSE_SYSTEM_DIALOGS"],
         "dismiss system crash/ANR dialogs",
+        transport,
     )
 
 
-def _configure_usb_stay_awake(device_id: str) -> str | None:
+def _configure_usb_stay_awake(
+    device_id: str, transport: EndpointTransport | None = None
+) -> str | None:
     """Enable USB stay-awake, falling back to an effective host heartbeat.
 
     The policy is intentionally scoped to USB power rather than an Artemis
@@ -97,7 +101,7 @@ def _configure_usb_stay_awake(device_id: str) -> str | None:
 
     # Migration cleanup: previous Artemis versions used a persistent shell
     # wake lock. Drain it only after every live legacy owner has exited.
-    ScreenAwakeLease(device_id).cleanup_unowned_references()
+    ScreenAwakeLease(device_id, transport).cleanup_unowned_references()
 
     commands = (
         (
@@ -108,17 +112,19 @@ def _configure_usb_stay_awake(device_id: str) -> str | None:
         ("dismiss non-secure keyguard", ["shell", "wm", "dismiss-keyguard"]),
     )
     for description, args in commands:
-        _run_awake_adb_command(device_id, args, description)
+        _run_awake_adb_command(device_id, args, description, transport)
 
     configured = _run_awake_adb_command(
         device_id,
         ["shell", "settings", "get", "global", "stay_on_while_plugged_in"],
         "verify USB-scoped stay-awake policy",
+        transport,
     )
     power_state = _run_awake_adb_command(
         device_id,
         ["shell", "dumpsys", "power"],
         "verify active USB stay-awake state",
+        transport,
     )
     try:
         value = int(configured.stdout.strip()) if configured is not None else -1
@@ -144,6 +150,7 @@ def _configure_usb_stay_awake(device_id: str) -> str | None:
         device_id,
         ["shell", "input", "keyevent", "KEYCODE_UNKNOWN"],
         "prime the host stay-awake heartbeat",
+        transport,
     )
     if primed is None or primed.returncode != 0:
         return None
@@ -156,15 +163,8 @@ def _discover_connected_device_ids() -> list[str]:
         return []
 
     target = os.environ.get("ARTEMIS_DEVICE_ID") or os.environ.get("ADB_DEVICE_SERIAL")
-    host = os.environ.get("ADB_HOST") or settings.ADB_HOST or "127.0.0.1"
-    port_text = os.environ.get("ADB_PORT")
     try:
-        port = int(port_text) if port_text else int(settings.ADB_PORT or 5037)
-    except (TypeError, ValueError):
-        port = 5037
-
-    try:
-        devices = AdbClient(host=host, port=port).device_list()
+        devices = EndpointTransport.shared(None).device_list()
         serials = [device.serial for device in devices if device.serial]
     except Exception as exc:
         logger.debug(f"Could not discover a device for the USB awake policy: {exc}")
@@ -191,7 +191,11 @@ class ScreenAwakeService:
 
     def __init__(self):
         self._lock = threading.RLock()
+        #: ``device key -> strategy``. The key is the bare serial on the local default
+        #: server and ``<endpoint identity>/<serial>`` anywhere else, so one serial behind
+        #: two adb servers is two devices.
         self._strategies: dict[str, str] = {}
+        self._targets: dict[str, tuple[str, EndpointTransport]] = {}
         self._heartbeat_stops: dict[str, threading.Event] = {}
         self._heartbeat_threads: dict[str, threading.Thread] = {}
         self._monitor_stop: threading.Event | None = None
@@ -216,7 +220,14 @@ class ScreenAwakeService:
             self._start_device_monitor()
         return results
 
-    def ensure_device(self, device_id: str) -> str | None:
+    @staticmethod
+    def _device_key(transport: EndpointTransport, device_id: str) -> str:
+        endpoint = transport.endpoint
+        return device_id if endpoint.is_local_default else f"{endpoint.identity}/{device_id}"
+
+    def ensure_device(
+        self, device_id: str, transport: EndpointTransport | None = None
+    ) -> str | None:
         """Configure one device once per process; Android owns unplug behavior."""
         if (
             not device_id
@@ -225,19 +236,22 @@ class ScreenAwakeService:
             or self._shutdown_requested
         ):
             return None
+        transport = transport or EndpointTransport.shared(None)
+        key = self._device_key(transport, device_id)
         with self._lock:
-            existing = self._strategies.get(device_id)
+            existing = self._strategies.get(key)
             if existing is not None:
                 return existing
-            strategy = _configure_usb_stay_awake(device_id)
+            strategy = _configure_usb_stay_awake(device_id, transport)
             if strategy is not None:
-                self._strategies[device_id] = strategy
+                self._strategies[key] = strategy
+                self._targets[key] = (device_id, transport)
                 if strategy == AWAKE_STRATEGY_HEARTBEAT:
-                    self._start_heartbeat(device_id)
+                    self._start_heartbeat(key, device_id, transport)
             return strategy
 
-    def _start_heartbeat(self, device_id: str) -> None:
-        if device_id in self._heartbeat_threads:
+    def _start_heartbeat(self, key: str, device_id: str, transport: EndpointTransport) -> None:
+        if key in self._heartbeat_threads:
             return
         stop_event = threading.Event()
 
@@ -247,15 +261,16 @@ class ScreenAwakeService:
                     device_id,
                     ["shell", "input", "keyevent", "KEYCODE_UNKNOWN"],
                     "send the host stay-awake heartbeat",
+                    transport,
                 )
 
         thread = threading.Thread(
             target=heartbeat,
-            name=f"artemis-awake-heartbeat-{device_id}",
+            name=f"artemis-awake-heartbeat-{key}",
             daemon=True,
         )
-        self._heartbeat_stops[device_id] = stop_event
-        self._heartbeat_threads[device_id] = thread
+        self._heartbeat_stops[key] = stop_event
+        self._heartbeat_threads[key] = thread
         thread.start()
 
     def _start_device_monitor(self) -> None:
@@ -281,19 +296,29 @@ class ScreenAwakeService:
             thread.start()
 
     def _reconcile_connected_devices(self, connected: set[str]) -> None:
-        """Stop unplugged heartbeats and enroll newly attached devices."""
+        """Stop unplugged heartbeats and enroll newly attached devices.
+
+        ``connected`` is what the process's own adb server reports, so only devices
+        enrolled through that server can be judged unplugged by it.
+        """
+        process_endpoint = EndpointTransport.shared(None).endpoint
         with self._lock:
-            missing = set(self._strategies) - connected
-        for device_id in missing:
-            self._stop_device(device_id)
+            missing = {
+                key
+                for key, (device_id, transport) in self._targets.items()
+                if transport.endpoint == process_endpoint and device_id not in connected
+            }
+        for key in missing:
+            self._stop_device(key)
         for device_id in connected:
             self.ensure_device(device_id)
 
-    def _stop_device(self, device_id: str) -> None:
+    def _stop_device(self, key: str) -> None:
         with self._lock:
-            stop_event = self._heartbeat_stops.pop(device_id, None)
-            thread = self._heartbeat_threads.pop(device_id, None)
-            self._strategies.pop(device_id, None)
+            stop_event = self._heartbeat_stops.pop(key, None)
+            thread = self._heartbeat_threads.pop(key, None)
+            self._strategies.pop(key, None)
+            self._targets.pop(key, None)
             if stop_event is not None:
                 stop_event.set()
         if thread is not None and thread is not threading.current_thread():
@@ -316,6 +341,7 @@ class ScreenAwakeService:
             self._heartbeat_stops.clear()
             self._heartbeat_threads.clear()
             self._strategies.clear()
+            self._targets.clear()
 
         if monitor_thread is not None:
             monitor_thread.join(timeout=2.0)
@@ -335,8 +361,8 @@ def start_awake_service(device_ids: Iterable[str] | None = None) -> dict[str, st
     return screen_awake_service.start(device_ids)
 
 
-def ensure_device_awake(device_id: str) -> str | None:
-    return screen_awake_service.ensure_device(device_id)
+def ensure_device_awake(device_id: str, transport: EndpointTransport | None = None) -> str | None:
+    return screen_awake_service.ensure_device(device_id, transport)
 
 
 def shutdown_awake_service() -> None:

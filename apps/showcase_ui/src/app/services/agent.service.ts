@@ -14,39 +14,38 @@
  * limitations under the License.
  */
 
-import { Injectable, signal, inject, computed, DestroyRef, NgZone } from '@angular/core';
+import { LoggerService } from './logger.service';
+import { ModelSelection } from './model-catalog.service';
+import { Injectable, signal, inject, computed, DestroyRef, NgZone, effect, untracked } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { Observable, catchError, map, of, switchMap } from 'rxjs';
 
 import { Session, ModelInfo, TaskQueueItem, AgentStatusResponse, SessionUsage } from '../core/models/session.model';
 import { ProTuningDefaults, ProTuningOptions } from '../core/models/pro-tuning.model';
-import { StepItemData, StepReplayFrame, LLMStreamResetEventData, StreamResetNotice, DEFAULT_STREAM_RESET_MESSAGE, PersistedCheckerStream, StreamSegment } from '../core/models/stream.model';
-import { extractStepReplayFrames } from '../utils/action-formatter.util';
-import { persistedStreamToSegments } from '../utils/stream-aggregator.util';
+import { ImageChat } from '../utils/run-image.util';
+import { StepItemData, LLMStreamResetEventData, StreamResetNotice, DEFAULT_STREAM_RESET_MESSAGE, PersistedCheckerStream, StreamSegment } from '../core/models/stream.model';
+import { buildCheckerSnapshotLogs } from '../utils/stream-aggregator.util';
+import { RunTarget } from '../core/models/run-target.model';
+import { AdminIdentity } from './admin-config.service';
+import { OwnerScopeService } from './owner-scope.service';
 import { SELECTED_DEVICE_SERIAL_KEY } from './system.service';
-export type { Session, ModelInfo, TaskQueueItem, AgentStatusResponse, StepItemData, StepReplayFrame, LLMStreamResetEventData, StreamResetNotice };
+import { BrowserStorageService } from './browser-storage.service';
+import { appUrl } from '../utils/app-url.util';
+export type { Session, ModelInfo, TaskQueueItem, AgentStatusResponse, StepItemData, LLMStreamResetEventData, StreamResetNotice };
 
-const SESSION_CACHE_KEY = 'artemis.sessions.v1';
+// v1 held rows with no owner; it may carry other users' runs, so it is dropped, never read.
+const LEGACY_SESSION_CACHE_KEY = 'artemis.sessions.v1';
+const SESSION_CACHE_KEY = 'artemis.sessions.v2';
 
-export interface VideoSegment {
-  url: string;
-  /** Back-to-back playlist timeline start (seconds); gaps between segments are not represented. */
-  start: number;
-  duration: number;
-  width: number;
-  height: number;
-  /** Session-relative first-frame offset in milliseconds (manifest v2). */
-  offset_ms?: number;
-  duration_ms?: number;
+/**
+ * Who a cache entry belongs to: the signed-in email, or null in open mode (no
+ * owner filtering there). Undefined for a signed-out or failed lookup: those
+ * share one "unknown" identity, so they never read or write the cache.
+ */
+function cacheOwnerOf(who: AdminIdentity): string | null | undefined {
+  if (who.email) return who.email;
+  return who.auth_mode === 'open' ? null : undefined;
 }
-
-export type RecordingPlaybackStatus =
-  | 'idle'
-  | 'live'
-  | 'processing'
-  | 'ready'
-  | 'failed'
-  | 'unavailable';
 
 export interface StartupProgressEvent {
   session_id?: string;
@@ -55,22 +54,15 @@ export interface StartupProgressEvent {
   timestamp: number;
 }
 
-interface SessionVideoResponse {
-  session_id: string;
-  status?: 'processing' | 'ready' | 'failed' | 'unavailable';
-  has_video: boolean;
-  video_url: string | null;
-  video_segments?: VideoSegment[];
-  retry_after_ms?: number;
-  message?: string;
-}
-
 @Injectable({
   providedIn: 'root'
 })
 export class AgentService {
+  private readonly browserStorage = inject(BrowserStorageService);
+  private readonly logger = inject(LoggerService);
   private http = inject(HttpClient);
   private zone = inject(NgZone);
+  private ownerScope = inject(OwnerScopeService);
   private activePauseCardKey: string | null = null;
 
   // Signals to expose state to components
@@ -118,7 +110,7 @@ export class AgentService {
       const pendingMatch = pendingById.get(s.session_id);
       const isCurrentActive = ((status === 'running' || status === 'paused') && runId === s.session_id)
         || !!activeMatch;
-      const isTerminal = s.status === 'completed' || s.status === 'success' || s.status === 'failed' || s.status === 'cancelled';
+      const isTerminal = s.status === 'completed' || s.status === 'success' || s.status === 'failed' || s.status === 'cancelled' || s.status === 'interrupted';
       let sStatus = s.status;
       if (!isTerminal) {
         const isPending = !!pendingMatch && !isCurrentActive;
@@ -131,8 +123,8 @@ export class AgentService {
         try {
           const info = typeof s.device_info === 'string' ? JSON.parse(s.device_info) : s.device_info;
           serial = info?.device_id || info?.device_serial || null;
-        } catch {
-          // ignore
+        } catch (error) {
+          this.logger.warn('Invalid session device metadata:', error);
         }
       }
       const finalSession: Session = {
@@ -253,62 +245,7 @@ export class AgentService {
   public selectedNoteKey = signal<string>('task_plan.md');
   public activeTab = signal<'tasks' | 'notes'>('tasks');
 
-  // Video Replay Floating Window States
-  public isVideoWindowOpen = signal<boolean>(false);
-  public isVideoMinimized = signal<boolean>(false);
-  public activeVideoUrl = signal<string | null>(null);
-  public activeVideoSegments = signal<VideoSegment[]>([]);
-  public activeVideoTitle = signal<string>('');
-  public isVideoLoading = signal<boolean>(false);
-  public recordingPlaybackStatus = signal<RecordingPlaybackStatus>('idle');
-  public recordingPlaybackMessage = signal<string>('');
-  public shouldAutoplayVideo = signal<boolean>(false);
-  public videoSeekRequest = signal<{ seconds: number; requestId: number } | null>(null);
-  public stepSeekRequest = signal<{ index: number; requestId: number } | null>(null);
-  public playerMode = signal<'video' | 'steps'>('video');
   public streamResetEvent = signal<LLMStreamResetEventData | null>(null);
-  private activeVideoSessionId: string | null = null;
-  private videoSeekRequestId = 0;
-  private stepSeekRequestId = 0;
-  private videoRequestGeneration = 0;
-  private videoRetryTimer: ReturnType<typeof setTimeout> | null = null;
-  private videoWaitStartedAt = 0;
-
-  /**
-   * Step logs only. Streaming text chunks cannot change replay frames, so the
-   * custom equality keeps downstream frame extraction from re-running on every
-   * llm_stream update of the sessionLogs signal.
-   */
-  private stepLogsForReplay = computed<any[]>(
-    () => this.sessionLogs().filter(
-      (log) => log && (log.type === 'step_updated' || log.type === 'step_recorded')
-    ),
-    { equal: (a, b) => a.length === b.length && a.every((log, i) => log === b[i]) }
-  );
-
-  /**
-   * Computed step replay frames from current session logs
-   */
-  public currentSessionStepFrames = computed<StepReplayFrame[]>(() => {
-    return extractStepReplayFrames(this.stepLogsForReplay());
-  });
-
-  public hasCurrentSessionStepFrames = computed<boolean>(() => {
-    return this.currentSessionStepFrames().length > 0;
-  });
-
-  public setPlayerMode(mode: 'video' | 'steps'): void {
-    this.playerMode.set(mode);
-  }
-
-  public togglePlayerMode(): void {
-    this.playerMode.update((mode) => (mode === 'video' ? 'steps' : 'video'));
-  }
-
-  public requestStepSeek(index: number): void {
-    this.stepSeekRequestId++;
-    this.stepSeekRequest.set({ index, requestId: this.stepSeekRequestId });
-  }
 
   /**
    * Clear user-pinned selection so subsequent runs automatically follow active runner
@@ -361,24 +298,6 @@ export class AgentService {
     return false;
   });
 
-  /**
-   * Computed video URL for the currently viewed session
-   */
-  public currentSessionVideoUrl = computed(() => {
-    const curId = this.currentSessionId();
-    if (!curId) return null;
-    const session = this.sessions().find(s => s.session_id === curId);
-    return session?.video_url || null;
-  });
-
-  public currentSessionRecordingStatus = computed(() => {
-    const session = this.currentSession();
-    const status = session?.recording_status;
-    return status === 'recording' || status === 'finalizing' || status === 'processing'
-      ? 'processing'
-      : status;
-  });
-
   private eventSource: EventSource | null = null;
   private statusInterval: any = null;
   private sessionLoadGeneration = 0;
@@ -393,6 +312,8 @@ export class AgentService {
   private lastQueueSignature: string | null = null;
   private lastActiveTasksSignature: string | null = null;
   private lastPersistedSessionsJson: string | null = null;
+  /** Bumped on every scope change; a sessions answer from an older one is dropped. */
+  private scopeGeneration = 0;
   private onVisibilityChange = () => {
     if (typeof document !== 'undefined' && !document.hidden) {
       this.fetchStatus();
@@ -401,7 +322,29 @@ export class AgentService {
   };
 
   constructor() {
-    this.restoreSessionsCache();
+    let showingAll = false;
+    effect(() => {
+      const all = this.ownerScope.showAll();
+      if (all === showingAll) return;
+      showingAll = all;
+      untracked(() => this.reloadForScope());
+    });
+    this.dropLegacySessionsCache();
+    this.ownerScope.load();
+    let previousIdentity: AdminIdentity | null = null;
+    effect(() => {
+      const who = this.ownerScope.identity();
+      if (who === previousIdentity) return;
+      const previous = previousIdentity;
+      previousIdentity = who;
+      untracked(() => {
+        if (previous) {
+          this.clearSessionsCache(previous);
+          this.reloadForScope();
+        }
+        if (who) this.restoreSessionsCache(who);
+      });
+    });
     this.fetchSessions();
     this.startStatusPolling();
     this.ensureLiveStream();
@@ -440,7 +383,10 @@ export class AgentService {
     profile: string = 'flash',
     expectedOutput?: string,
     enableOutputter?: boolean,
-    proTuning?: ProTuningOptions
+    proTuning?: ProTuningOptions,
+    imageChat?: ImageChat,
+    target?: RunTarget,
+    model?: ModelSelection
   ): Observable<any> {
     return new Observable((obs) => {
       const submittedEvent: StartupProgressEvent = {
@@ -450,6 +396,7 @@ export class AgentService {
       };
       this.pendingStartupProgress.set([submittedEvent]);
       const payload: any = { goal, profile };
+      if (model) payload.model = { provider: model.provider, model: model.model };
       if (expectedOutput && expectedOutput.trim()) {
         payload.expected_output = expectedOutput.trim();
       }
@@ -462,9 +409,22 @@ export class AgentService {
       if (proTuning?.explorerMode) {
         payload.explorer_mode = proTuning.explorerMode;
       }
+      if (imageChat?.images.length) {
+        // The draft's session id makes a retry after a lost response idempotent on the server.
+        payload.images = imageChat.images;
+        payload.session_id = imageChat.sessionId;
+      }
       this.clearUserPinnedSession();
       let submissionSettled = false;
-      const selectedDeviceSerial = this.getSelectedDeviceSerial();
+      // An explicit target is sent as is: it is never checked against, or swapped for, another
+      // phone. Without one (older callers) the browser's remembered phone is tried first.
+      if (target) {
+        payload.device_serial = target.serial;
+        if (target.bridgeSessionId) {
+          payload.bridge_session_id = target.bridgeSessionId;
+        }
+      }
+      const selectedDeviceSerial = target ? null : this.getSelectedDeviceSerial();
       const selectedDevice$ = selectedDeviceSerial
         ? this.http.get<{ devices?: { serial?: string; state?: string }[] }>('/api/devices').pipe(
           map((response) => response.devices?.some((device) =>
@@ -472,7 +432,10 @@ export class AgentService {
           )
             ? selectedDeviceSerial
             : null),
-          catchError(() => of(null))
+          catchError((error) => {
+            this.logger.error('Failed to check the selected device:', error);
+            return of(null);
+          })
         )
         : of(null);
       const submission = selectedDevice$.pipe(
@@ -536,8 +499,9 @@ export class AgentService {
 
   private getSelectedDeviceSerial(): string | null {
     try {
-      return localStorage.getItem(SELECTED_DEVICE_SERIAL_KEY);
-    } catch {
+      return this.browserStorage.getItem(SELECTED_DEVICE_SERIAL_KEY);
+    } catch (error) {
+      this.logger.warn('Unable to restore the selected device:', error);
       return null;
     }
   }
@@ -634,7 +598,7 @@ export class AgentService {
         this.fetchSessions();
       },
       error: (err) => {
-        console.error('Failed to stop task:', err);
+        this.logger.error('Failed to stop task:', err);
         this.fetchSessions();
         this.fetchStatus();
       }
@@ -662,17 +626,48 @@ export class AgentService {
         this.fetchStatus();
       },
       error: (err) => {
-        console.error('Failed to resume task:', err);
+        this.logger.error('Failed to resume task:', err);
       }
     });
+  }
+
+  /**
+   * "All users" was switched on or off: drop the rows of the other scope, then
+   * read the queue, history and live stream again for the new one.
+   */
+  private reloadForScope(): void {
+    this.scopeGeneration++;
+    this.invalidatePendingStatusResponses();
+    this.invalidateStatusSignatures();
+    this.clearSessionsCache();
+    this.rawSessions.set([]);
+    this.pendingQueue.set([]);
+    this.activeTasks.set([]);
+    this.activeSessionTracking.clear();
+    // The merged list synthesizes a row for the running run, so the old scope's
+    // running run must go too, or it comes straight back (and stays in the bridge).
+    this.agentStatus.set('idle');
+    this.runningSessionId.set(null);
+    this.runningGoal.set(null);
+    this.isPaused.set(false);
+    this.pausedError.set(null);
+    if (this.eventSource) {
+      this.eventSource.close();
+      this.eventSource = null;
+    }
+    this.ensureLiveStream();
+    this.fetchSessions();
+    this.fetchStatus();
   }
 
   /**
    * Fetch all past and active sessions from the backend
    */
   public fetchSessions(): void {
-    this.http.get<Session[]>('/api/sessions').subscribe({
+    const generation = this.scopeGeneration;
+    this.http.get<Session[]>('/api/sessions', { params: this.ownerScope.queryParams() }).subscribe({
       next: (data) => {
+        if (generation !== this.scopeGeneration) return; // an answer for a scope the QA already left
         this.rawSessions.set(data);
         this.persistSessionsCache(data);
         // On initial load, if nothing is selected, not pinned, not running, and sessions exist, select latest
@@ -681,7 +676,7 @@ export class AgentService {
         }
       },
       error: (err) => {
-        console.error('Failed to fetch sessions from backend:', err);
+        this.logger.error('Failed to fetch sessions from backend:', err);
       }
     });
   }
@@ -702,9 +697,6 @@ export class AgentService {
 
     if (this.currentSessionId() === sessionId) {
       this.selectSession('', false);
-      if (this.isVideoWindowOpen()) {
-        this.closeVideoPlayer();
-      }
       const runningId = this.runningSessionId();
       if (runningId && this.agentStatus() === 'running') {
         this.selectSession(runningId, false);
@@ -721,7 +713,7 @@ export class AgentService {
           obs.complete();
         },
         error: (err) => {
-          console.error(`Failed to delete session ${sessionId}:`, err);
+          this.logger.error(`Failed to delete session ${sessionId}:`, err);
           this.fetchSessions();
           this.fetchStatus();
           obs.error(err);
@@ -731,9 +723,19 @@ export class AgentService {
   }
 
   /**
-   * Clear all sessions, tasks, and history
+   * How many runs "Clear all" would delete now (pinned and live runs are kept).
+   * The admin types this number to confirm.
    */
-  public clearAllHistory(): Observable<any> {
+  public fetchClearableRunCount(): Observable<number> {
+    return this.http
+      .get<{ clearable_count: number }>('/api/system/storage')
+      .pipe(map((storage) => storage.clearable_count));
+  }
+
+  /**
+   * Clear all sessions, tasks, and history (the server needs the exact count)
+   */
+  public clearAllHistory(confirmCount: number): Observable<any> {
     // 1. Optimistically clear all local session state immediately
     this.invalidateStatusSignatures();
     this.userPinnedSessionId.set(null);
@@ -741,13 +743,10 @@ export class AgentService {
     this.clearSessionsCache();
     this.pendingQueue.set([]);
     this.selectSession('', false);
-    if (this.isVideoWindowOpen()) {
-      this.closeVideoPlayer();
-    }
 
     // 2. Send API request
     return new Observable((obs) => {
-      this.http.post<any>('/api/cleanup', {}).subscribe({
+      this.http.post<any>('/api/cleanup', { confirm_count: confirmCount }).subscribe({
         next: (res) => {
           this.fetchSessions();
           this.fetchStatus();
@@ -755,7 +754,7 @@ export class AgentService {
           obs.complete();
         },
         error: (err) => {
-          console.error('Failed to cleanup history:', err);
+          this.logger.error('Failed to cleanup history:', err);
           this.fetchSessions();
           this.fetchStatus();
           obs.error(err);
@@ -810,12 +809,7 @@ export class AgentService {
     this.fetchNotes(sessionId);
     this.fetchChecks(sessionId);
 
-    // If video window is currently open, dynamically sync/refresh video for new session
-    if (this.isVideoWindowOpen()) {
-      this.openVideoPlayer(sessionId);
-    }
-
-    console.debug(`Selecting session: ${sessionId}`);
+    this.logger.debug(`Selecting session: ${sessionId}`);
     // Start reading the persisted snapshot immediately
     this.backfillSessionSteps(sessionId, loadGeneration);
     this.ensureLiveStream();
@@ -830,12 +824,12 @@ export class AgentService {
       return;
     }
 
-    console.debug('Establishing persistent unified live stream via /api/stream');
+    this.logger.debug('Establishing persistent unified live stream via /api/stream');
     // The stream is registered outside the Angular zone: high-frequency SSE
     // callbacks must not schedule a change-detection pass each. Signal writes
     // still notify the render scheduler, so the UI stays live.
     this.zone.runOutsideAngular(() => {
-    this.eventSource = new EventSource('/api/stream');
+    this.eventSource = new EventSource(appUrl(this.ownerScope.showAll() ? '/api/stream?scope=all' : '/api/stream'));
 
     this.eventSource.addEventListener('info', () => {
       // Reconcile current session if active
@@ -879,27 +873,7 @@ export class AgentService {
             this.flushStreamChunks();
           }
 
-          if (eventType === 'recording_ready' || eventType === 'recording_failed') {
-            if (
-              this.isVideoWindowOpen()
-              && evtSessionId
-              && String(evtSessionId) === String(this.activeVideoSessionId)
-            ) {
-              if (eventType === 'recording_ready') {
-                this.refreshActiveRecording(true);
-              } else {
-                this.cancelVideoRetry();
-                this.isVideoLoading.set(false);
-                this.activeVideoUrl.set(null);
-                this.activeVideoSegments.set([]);
-                this.recordingPlaybackStatus.set('failed');
-                this.recordingPlaybackMessage.set(
-                  parsedData?.error || 'Recording finalization failed.'
-                );
-              }
-            }
-            return;
-          }
+          if (eventType === 'recording_ready' || eventType === 'recording_failed') return;
 
           if (eventType === 'background_tasks_updated') {
             this.fetchStatus();
@@ -957,13 +931,6 @@ export class AgentService {
                 // The exit final review / run outcome may have landed while the
                 // stream was reconnecting: reconcile from the persisted ledger.
                 this.fetchChecks(endedId);
-              }
-              if (
-                this.isVideoWindowOpen()
-                && this.activeVideoSessionId === endedId
-                && this.recordingPlaybackStatus() === 'live'
-              ) {
-                this.beginRecordingFinalization(endedId);
               }
             }
             return;
@@ -1162,7 +1129,7 @@ export class AgentService {
             }
           }
         } catch (e) {
-          console.error(`Failed to parse ${eventType} event data:`, e);
+          this.logger.error(`Failed to parse ${eventType} event data:`, e);
           this.sessionLogs.update((logs) => [
             ...logs,
             {
@@ -1176,7 +1143,7 @@ export class AgentService {
     });
 
     this.eventSource.onerror = (err) => {
-      console.warn('Persistent live stream issue, browser will auto-reconnect:', err);
+      this.logger.warn('Persistent live stream issue, browser will auto-reconnect:', err);
     };
     });
   }
@@ -1316,7 +1283,7 @@ export class AgentService {
       },
       error: (err) => {
         this.pendingSnapshotRequests.delete(requestId);
-        console.error('Failed to backfill session steps:', err);
+        this.logger.error('Failed to backfill session steps:', err);
         if (
           this.currentSessionId() === sessionId
           && loadGeneration === this.sessionLoadGeneration
@@ -1345,41 +1312,61 @@ export class AgentService {
           });
         }
       },
-      error: () => {}
+      error: (error) => this.logger.error('Failed to fetch session events:', error)
     });
   }
 
-  private restoreSessionsCache(): void {
+  private dropLegacySessionsCache(): void {
     try {
-      const cached = localStorage.getItem(SESSION_CACHE_KEY);
-      if (!cached) return;
-      const sessions = JSON.parse(cached);
-      if (Array.isArray(sessions)) {
-        this.lastPersistedSessionsJson = cached;
-        this.rawSessions.set(sessions);
-      }
+      this.browserStorage.removeItem(LEGACY_SESSION_CACHE_KEY);
     } catch {
+      // No-op when browser storage is unavailable.
+    }
+  }
+
+  /** Seeds the list for this identity only; a cache written by another one is ignored. */
+  private restoreSessionsCache(who: AdminIdentity): void {
+    const owner = cacheOwnerOf(who);
+    if (owner === undefined) return;
+    try {
+      const cached = this.browserStorage.getItem(SESSION_CACHE_KEY);
+      if (!cached) return;
+      const entry = JSON.parse(cached);
+      if (!entry || entry.owner !== owner || !Array.isArray(entry.sessions)) return;
+      // A fresh answer, or a scope change, already won the race.
+      if (this.rawSessions().length > 0 || this.ownerScope.showAll()) return;
+      this.lastPersistedSessionsJson = cached;
+      this.rawSessions.set(entry.sessions);
+    } catch (error) {
+      this.logger.warn('Unable to restore cached sessions:', error);
       this.clearSessionsCache();
     }
   }
 
+  /**
+   * The one place rows reach the cache. Only "mine" is cached, under the identity
+   * that owns it: All users rows, or rows before we know who is looking, never are.
+   */
   private persistSessionsCache(sessions: Session[]): void {
+    const who = this.ownerScope.identity();
+    const owner = who ? cacheOwnerOf(who) : undefined;
+    if (owner === undefined || this.ownerScope.showAll()) return;
     try {
-      const serialized = JSON.stringify(sessions);
+      const serialized = JSON.stringify({ owner, sessions });
       if (serialized === this.lastPersistedSessionsJson) return;
       this.lastPersistedSessionsJson = serialized;
-      localStorage.setItem(SESSION_CACHE_KEY, serialized);
-    } catch {
-      // Storage can be unavailable in private browsing or embedded contexts.
+      this.browserStorage.setItem(SESSION_CACHE_KEY, serialized);
+    } catch (error) {
+      this.logger.warn('Unable to cache sessions:', error);
     }
   }
 
-  private clearSessionsCache(): void {
+  private clearSessionsCache(identity?: AdminIdentity | null): void {
     this.lastPersistedSessionsJson = null;
     try {
-      localStorage.removeItem(SESSION_CACHE_KEY);
-    } catch {
-      // No-op when browser storage is unavailable.
+      this.browserStorage.removeItem(SESSION_CACHE_KEY, identity);
+    } catch (error) {
+      this.logger.warn('Unable to clear cached sessions:', error);
     }
   }
 
@@ -1525,8 +1512,8 @@ export class AgentService {
     const reportedStatus = String(data?.status || '').toLowerCase();
     const status: Session['status'] | null = data?.was_stopped_manually || reportedStatus === 'cancelled'
       ? 'cancelled'
-      : reportedStatus === 'failed'
-        ? 'failed'
+      : reportedStatus === 'failed' || reportedStatus === 'interrupted'
+        ? reportedStatus
         : reportedStatus === 'completed' || reportedStatus === 'success'
           ? 'completed'
           : null;
@@ -1579,7 +1566,7 @@ export class AgentService {
    */
   public fetchStatus(): void {
     const requestSequence = ++this.statusRequestSequence;
-    this.http.get<any>('/api/status').subscribe({
+    this.http.get<any>('/api/status', { params: this.ownerScope.queryParams() }).subscribe({
       next: (data) => {
         if (requestSequence <= this.statusAppliedSequence) return;
         if (data && data.status) {
@@ -1623,7 +1610,8 @@ export class AgentService {
                   initial_goal: item.goal || '',
                   start_time: item.start_time || item.created_at || (Date.now() / 1000 + index),
                   status: item.status || 'pending',
-                  device_serial: item.device_serial || item.device_id || null
+                  device_serial: item.device_serial || item.device_id || null,
+                  requested_by: item.requested_by ?? null
                 };
               }
               return {
@@ -1645,17 +1633,6 @@ export class AgentService {
             this.fetchSessions();
           }
 
-          if (
-            !isActive
-            && (oldStatus === 'running' || oldStatus === 'paused')
-            && oldRunningSessionId
-            && this.isVideoWindowOpen()
-            && this.activeVideoSessionId === oldRunningSessionId
-            && this.recordingPlaybackStatus() === 'live'
-          ) {
-            this.beginRecordingFinalization(oldRunningSessionId);
-          }
-
           // Auto-select the active session if user has not explicitly pinned a historical session
           if (isActive && data.session_id) {
             const currentId = this.currentSessionId();
@@ -1670,7 +1647,7 @@ export class AgentService {
       error: (err) => {
         if (requestSequence <= this.statusAppliedSequence) return;
         this.statusAppliedSequence = requestSequence;
-        console.error('Failed to fetch status from backend:', err);
+        this.logger.error('Failed to fetch status from backend:', err);
         this.agentStatus.set('offline');
         this.runningSessionId.set(null);
         this.runningGoal.set(null);
@@ -1708,7 +1685,6 @@ export class AgentService {
     if (typeof document !== 'undefined') {
       document.removeEventListener('visibilitychange', this.onVisibilityChange);
     }
-    this.cancelVideoRetry();
   }
 
   /**
@@ -1735,7 +1711,7 @@ export class AgentService {
         ]);
       },
       error: (err) => {
-        console.error(`Failed to fetch checks for session ${sessionId}:`, err);
+        this.logger.error(`Failed to fetch checks for session ${sessionId}:`, err);
       }
     });
   }
@@ -1747,92 +1723,8 @@ export class AgentService {
    * a reopened session interleaves Thought/Work text with tool rows exactly
    * like the live view did.
    */
-  private buildCheckerSnapshotLogs(
-    sessionId: string,
-    records: any[],
-    runOutcome: any,
-    streams: PersistedCheckerStream[] = []
-  ): any[] {
-    const byAttempt = new Map<string, any>();
-    const segmentsByAttempt = new Map<string, StreamSegment[]>();
-    for (const stream of streams || []) {
-      if (!stream || !stream.attempt_id) continue;
-      const segments = persistedStreamToSegments(stream);
-      if (segments.length > 0) segmentsByAttempt.set(String(stream.attempt_id), segments);
-    }
-    for (const rec of records) {
-      if (!rec || !rec.attempt_id) continue;
-      const attemptId = String(rec.attempt_id);
-      const checkpointId = String(rec.checkpoint_id || '');
-      let attempt = byAttempt.get(attemptId);
-      if (!attempt) {
-        attempt = {
-          event: 'attempt_finished',
-          phase: checkpointId === 'final' ? 'final' : 'checkpoint',
-          attempt_id: attemptId,
-          checkpoint_id: checkpointId,
-          subgoal_text: String(rec.subgoal_text || (checkpointId === 'final'
-            ? "Final review against the user's original goal"
-            : `Subgoal ${checkpointId.slice(0, 8)}`)),
-          anchor_step_id: rec.anchor_step_id ?? null,
-          trace_id: rec.trace_id ?? null,
-          status: 'done',
-          verdicts: [],
-          findings: [],
-          ts: typeof rec.ts === 'number' ? rec.ts : undefined,
-          session_id: sessionId
-        };
-        byAttempt.set(attemptId, attempt);
-      }
-      if (typeof rec.ts === 'number') {
-        attempt.ts = attempt.ts === undefined ? rec.ts : Math.min(attempt.ts, rec.ts);
-      }
-      if (!attempt.trace_id && rec.trace_id) {
-        attempt.trace_id = rec.trace_id;
-      }
-      attempt.verdicts.push({
-        item_text: String(rec.item_text || ''),
-        kind: String(rec.kind || ''),
-        status: String(rec.status || ''),
-        evidence: String(rec.evidence || ''),
-        suggestion: rec.suggestion ? String(rec.suggestion) : '',
-        when: rec.when ? String(rec.when) : undefined
-      });
-    }
-
-    const logs: any[] = [];
-    for (const attempt of byAttempt.values()) {
-      const statuses = new Set(attempt.verdicts.map((v: any) => v.status));
-      if (statuses.size === 1) {
-        const only = [...statuses][0];
-        if (only === 'superseded' || only === 'unchecked') attempt.status = only;
-      }
-      const ts = attempt.ts ?? Date.now() / 1000;
-      attempt.timestamp = ts;
-      const segments = segmentsByAttempt.get(attempt.attempt_id);
-      if (segments) attempt.stream_segments = segments;
-      logs.push({
-        type: 'checker_event',
-        session_id: sessionId,
-        timestamp: new Date(ts * 1000).toISOString(),
-        checks_snapshot: true,
-        data: attempt
-      });
-    }
-    if (runOutcome && typeof runOutcome === 'object') {
-      const lastTs = logs.length > 0
-        ? Math.max(...logs.map((l) => new Date(l.timestamp).getTime() / 1000))
-        : Date.now() / 1000;
-      const ts = lastTs + 0.001;
-      logs.push({
-        type: 'checker_event',
-        session_id: sessionId,
-        timestamp: new Date(ts * 1000).toISOString(),
-        checks_snapshot: true,
-        data: { event: 'run_outcome', phase: 'outcome', ...runOutcome, ts, timestamp: ts, session_id: sessionId }
-      });
-    }
-    return logs;
+  private buildCheckerSnapshotLogs(sessionId: string, records: any[], runOutcome: any, streams: PersistedCheckerStream[] = []): any[] {
+    return buildCheckerSnapshotLogs(sessionId, records, runOutcome, streams);
   }
 
   public fetchNotes(sessionId: string): void {
@@ -1860,68 +1752,9 @@ export class AgentService {
         }
       },
       error: (err) => {
-        console.error(`Failed to fetch notes for session ${sessionId}:`, err);
+        this.logger.error(`Failed to fetch notes for session ${sessionId}:`, err);
       }
     });
-  }
-
-  /**
-   * Open the video player for a given session or the current session
-   */
-  public openVideoPlayer(
-    sessionId?: string,
-    videoUrl?: string,
-    title?: string,
-    seekSeconds?: number,
-    stepIndex?: number
-  ): void {
-    const targetSessionId = sessionId || this.currentSessionId();
-    const session = this.sessions().find(s => s.session_id === targetSessionId);
-    const targetUrl = videoUrl || session?.video_url || null;
-    const goalTitle = title || session?.initial_goal || (targetSessionId ? `Task: ${targetSessionId.slice(0, 8)}...` : 'Screen Recording');
-
-    this.activeVideoTitle.set(goalTitle);
-    this.isVideoWindowOpen.set(true);
-    this.isVideoMinimized.set(false);
-    this.activeVideoSessionId = targetSessionId;
-    this.cancelVideoRetry();
-    this.videoRequestGeneration++;
-    this.shouldAutoplayVideo.set(false);
-    this.recordingPlaybackMessage.set('');
-    this.activeVideoSegments.set([]);
-    if (Number.isFinite(seekSeconds)) this.requestVideoSeek(Number(seekSeconds));
-    if (Number.isFinite(stepIndex)) {
-      this.playerMode?.set('steps');
-      this.requestStepSeek(Number(stepIndex));
-    }
-    if (!targetSessionId) {
-      this.activeVideoUrl.set(null);
-      this.isVideoLoading.set(false);
-      this.recordingPlaybackStatus.set('unavailable');
-      return;
-    }
-
-    if (session?.status === 'running' || session?.status === 'paused') {
-      this.activeVideoUrl.set(null);
-      this.isVideoLoading.set(false);
-      this.recordingPlaybackStatus.set('live');
-      return;
-    }
-
-    this.activeVideoUrl.set(targetUrl);
-    this.shouldAutoplayVideo.set(true);
-    this.videoWaitStartedAt = Date.now();
-    this.isVideoLoading.set(true);
-    this.recordingPlaybackStatus.set('processing');
-    this.recordingPlaybackMessage.set('Loading screen recording...');
-    if (targetUrl) {
-      this.playerMode?.set('video');
-    } else if (this.hasCurrentSessionStepFrames?.()) {
-      this.playerMode?.set('steps');
-    } else {
-      this.playerMode?.set('video');
-    }
-    this.requestSessionVideo(targetSessionId, this.videoRequestGeneration);
   }
 
   private appendStartupProgress(data: any, sessionId: string): void {
@@ -1955,153 +1788,4 @@ export class AgentService {
     });
   }
 
-  private beginRecordingFinalization(sessionId: string): void {
-    if (this.activeVideoSessionId !== sessionId) return;
-    this.cancelVideoRetry();
-    this.videoRequestGeneration++;
-    this.videoWaitStartedAt = Date.now();
-    this.activeVideoUrl.set(null);
-    this.activeVideoSegments.set([]);
-    this.shouldAutoplayVideo.set(true);
-    this.isVideoLoading.set(true);
-    this.recordingPlaybackStatus.set('processing');
-    this.recordingPlaybackMessage.set('Finalizing screen recording...');
-    this.requestSessionVideo(sessionId, this.videoRequestGeneration);
-  }
-
-  private requestSessionVideo(sessionId: string, generation: number): void {
-    this.http.get<SessionVideoResponse>(`/api/sessions/${sessionId}/video`).subscribe({
-      next: (res) => {
-        if (generation !== this.videoRequestGeneration || sessionId !== this.activeVideoSessionId) {
-          return;
-        }
-        const status = res.status || (res.has_video && res.video_url ? 'ready' : 'unavailable');
-        if (status === 'ready' && res.video_url) {
-          this.cancelVideoRetry();
-          this.isVideoLoading.set(false);
-          this.recordingPlaybackStatus.set('ready');
-          this.recordingPlaybackMessage.set('');
-          this.activeVideoUrl.set(res.video_url);
-          this.activeVideoSegments.set(res.video_segments || []);
-          this.playerMode?.set('video');
-          this.rawSessions.update((list) =>
-            list.map((s) => s.session_id === sessionId
-              ? { ...s, video_url: res.video_url || undefined, recording_status: 'ready' }
-              : s)
-          );
-          return;
-        }
-        if (status === 'processing') {
-          this.activeVideoUrl.set(null);
-          this.activeVideoSegments.set([]);
-          this.isVideoLoading.set(true);
-          this.recordingPlaybackStatus.set('processing');
-          this.recordingPlaybackMessage.set('Finalizing screen recording...');
-          this.scheduleVideoRetry(sessionId, generation, res.retry_after_ms);
-          return;
-        }
-
-        this.cancelVideoRetry();
-        this.isVideoLoading.set(false);
-        this.activeVideoUrl.set(null);
-        this.activeVideoSegments.set([]);
-        this.recordingPlaybackStatus.set(status === 'failed' ? 'failed' : 'unavailable');
-        this.recordingPlaybackMessage.set(
-          res.message || (status === 'failed'
-            ? 'Recording finalization failed.'
-            : 'No screen recording is available for this task.')
-        );
-        if (this.hasCurrentSessionStepFrames?.()) {
-          this.playerMode?.set('steps');
-        }
-      },
-      error: () => {
-        if (generation !== this.videoRequestGeneration || sessionId !== this.activeVideoSessionId) {
-          return;
-        }
-        if (this.recordingPlaybackStatus() === 'processing') {
-          this.scheduleVideoRetry(sessionId, generation, 1000);
-          return;
-        }
-        this.isVideoLoading.set(false);
-        this.recordingPlaybackStatus.set('failed');
-        this.recordingPlaybackMessage.set('Unable to load the screen recording.');
-        if (this.hasCurrentSessionStepFrames?.()) {
-          this.playerMode?.set('steps');
-        }
-      }
-    });
-  }
-
-  private scheduleVideoRetry(sessionId: string, generation: number, retryAfterMs = 1000): void {
-    this.cancelVideoRetry();
-    if (Date.now() - this.videoWaitStartedAt > 120_000) {
-      this.isVideoLoading.set(false);
-      this.recordingPlaybackStatus.set('failed');
-      this.recordingPlaybackMessage.set('Recording finalization timed out. You can retry.');
-      return;
-    }
-    const delay = Math.max(500, Math.min(3000, retryAfterMs));
-    this.videoRetryTimer = setTimeout(() => {
-      this.videoRetryTimer = null;
-      this.requestSessionVideo(sessionId, generation);
-    }, delay);
-  }
-
-  private cancelVideoRetry(): void {
-    if (this.videoRetryTimer) {
-      clearTimeout(this.videoRetryTimer);
-      this.videoRetryTimer = null;
-    }
-  }
-
-  private refreshActiveRecording(autoplay: boolean): void {
-    const sessionId = this.activeVideoSessionId;
-    if (!sessionId) return;
-    this.cancelVideoRetry();
-    this.videoRequestGeneration++;
-    if (autoplay) this.shouldAutoplayVideo.set(true);
-    this.requestSessionVideo(sessionId, this.videoRequestGeneration);
-  }
-
-  public retryVideoRecording(): void {
-    const sessionId = this.activeVideoSessionId;
-    if (!sessionId) return;
-    this.beginRecordingFinalization(sessionId);
-  }
-
-  public consumeVideoAutoplay(): boolean {
-    const shouldAutoplay = this.shouldAutoplayVideo();
-    this.shouldAutoplayVideo.set(false);
-    return shouldAutoplay;
-  }
-
-  public requestVideoSeek(seconds: number): void {
-    if (!Number.isFinite(seconds)) return;
-    this.videoSeekRequest.set({
-      seconds: Math.max(0, seconds),
-      requestId: ++this.videoSeekRequestId
-    });
-  }
-
-  /**
-   * Toggle the video player for the current session
-   */
-  public toggleVideoPlayer(): void {
-    if (this.isVideoWindowOpen()) {
-      this.isVideoWindowOpen.set(false);
-    } else {
-      this.openVideoPlayer();
-    }
-  }
-
-  /**
-   * Close the video player
-   */
-  public closeVideoPlayer(): void {
-    this.isVideoWindowOpen.set(false);
-    this.cancelVideoRetry();
-    this.videoRequestGeneration++;
-    this.activeVideoSessionId = null;
-  }
 }

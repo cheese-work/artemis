@@ -1,8 +1,9 @@
 """Lifecycle of the Accessibility Helper: provision, attach, reattach, detach.
 
 Every adb call goes through a scripted fake so the tests assert the exact
-command sequence the manager issues, and the HTTP ping is a stub keyed by host
-port so "the service answers" is a switch the test flips.
+command sequence the manager issues, and the health check is a stub keyed by
+serial so "the service answers" is a switch the test flips. The fake adb has no
+``forward`` handler on purpose: the manager must never issue one.
 """
 
 from __future__ import annotations
@@ -34,8 +35,6 @@ class FakeAdb:
         self.installed: dict[str, int | None] = {SERIAL: None, OTHER: None}
         self.enabled_services: dict[str, str] = {SERIAL: "", OTHER: ""}
         self.transport: dict[str, str] = {SERIAL: "3", OTHER: "4"}
-        self.forwards: list[tuple[str, int, int]] = []  # (serial, local, remote)
-        self.next_port = 40000
         self.install_result = "Success"
         # Number of times the system "prunes" a freshly written service setting.
         self.prune_writes = 0
@@ -57,8 +56,6 @@ class FakeAdb:
             for serial, tid in self.transport.items():
                 lines.append(f"{serial}  device product:p model:m device:d transport_id:{tid}")
             out = "\n".join(lines) + "\n"
-        elif args[:2] == ["forward", "--list"]:
-            out = "".join(f"{s} tcp:{local} tcp:{r}\n" for s, local, r in self.forwards)
         elif args[0] == "-s":
             serial, rest = args[1], args[2:]
             if rest[:3] == ["shell", "dumpsys", "package"]:
@@ -96,14 +93,6 @@ class FakeAdb:
             elif rest[0] == "uninstall":
                 self.installed[serial] = None
                 out = "Success\n"
-            elif rest[:2] == ["forward", "--no-rebind"]:
-                port = self.next_port
-                self.next_port += 1
-                self.forwards.append((serial, port, int(rest[3].split(":")[1])))
-                out = f"{port}\n"
-            elif rest[:2] == ["forward", "--remove"]:
-                port = int(rest[2].split(":")[1])
-                self.forwards = [f for f in self.forwards if not (f[0] == serial and f[1] == port)]
             elif rest[:2] == ["shell", "input"]:
                 pass
             elif rest[:3] == ["shell", "am", "broadcast"]:
@@ -132,37 +121,34 @@ class FakeAdb:
 
 
 class FakePing:
-    """Answers on host ports whose forward targets a device running the service."""
+    """Answers for devices whose helper service is installed, enabled and unsuppressed."""
 
     def __init__(self, adb: FakeAdb):
         self.adb = adb
         self.dead: set[str] = set()  # serials whose service is down
         self.count = 0
 
-    def __call__(self, port: int):
+    def __call__(self, serial: str):
         self.count += 1
-        for serial, local, remote in self.adb.forwards:
-            if local == port and remote == DEVICE_PORT:
-                if serial in self.dead and serial not in self.adb.revived:
-                    return None
-                if any(
-                    not line.split(None, 1)[1].startswith("sh ")
-                    for line in self.adb.holders.get(serial, [])
-                ):
-                    return None  # suppressed by UiAutomation
-                if self.adb.installed.get(serial) is None:
-                    return None
-                if SERVICE_NAME not in (self.adb.enabled_services.get(serial) or ""):
-                    return None
-                return {
-                    "success": True,
-                    "version_code": self.adb.installed[serial],
-                    "version_name": "1.1.0",
-                    "protocol_version": self.adb.protocol.get(serial, 2),
-                    "auth_required": self.adb.protocol.get(serial, 2) >= 2,
-                    "token_set": serial in self.adb.tokens,
-                }
-        return None
+        if serial in self.dead and serial not in self.adb.revived:
+            return None
+        if any(
+            not line.split(None, 1)[1].startswith("sh ")
+            for line in self.adb.holders.get(serial, [])
+        ):
+            return None  # suppressed by UiAutomation
+        if self.adb.installed.get(serial) is None:
+            return None
+        if SERVICE_NAME not in (self.adb.enabled_services.get(serial) or ""):
+            return None
+        return {
+            "success": True,
+            "version_code": self.adb.installed[serial],
+            "version_name": "1.1.0",
+            "protocol_version": self.adb.protocol.get(serial, 2),
+            "auth_required": self.adb.protocol.get(serial, 2) >= 2,
+            "token_set": serial in self.adb.tokens,
+        }
 
 
 @pytest.fixture
@@ -300,41 +286,23 @@ def test_provision_mutex_is_released_and_stale_lock_is_broken(env, tmp_path):
 # --------------------------------------------------------------------------- #
 
 
-def test_attach_provisions_forwards_and_records_transport(env):
+def test_attach_provisions_and_records_transport_without_any_forward(env):
     adb, _, manager = env
     session = manager.attach(SERIAL)
 
-    assert session.local_port == 40000 and session.owns_forward
     assert session.transport_id == "3" and session.version_code == 2
-    assert adb.forwards == [(SERIAL, 40000, DEVICE_PORT)]
-    forward_calls = _calls(adb, ["-s", SERIAL, "forward"])
-    assert forward_calls == [
-        ["-s", SERIAL, "forward", "--no-rebind", "tcp:0", f"tcp:{DEVICE_PORT}"]
-    ]
+    assert session.endpoint.startswith("tcp:")
+    # The fake adb rejects `forward`, and the manager never asks for one.
+    assert not [c for c in adb.calls if "forward" in c]
 
 
-def test_two_devices_get_distinct_host_ports(env):
-    adb, _, manager = env
+def test_two_devices_have_independent_sessions(env):
+    _, _, manager = env
     first = manager.attach(SERIAL)
     second = manager.attach(OTHER)
 
-    assert first.local_port != second.local_port
-    assert {(s, local) for s, local, _ in adb.forwards} == {(SERIAL, 40000), (OTHER, 40001)}
+    assert first is not second
     assert manager.session(SERIAL) is first and manager.session(OTHER) is second
-
-
-def test_attach_reuses_forward_created_by_another_process(env):
-    adb, _, manager = env
-    adb.installed[SERIAL] = 2
-    adb.enabled_services[SERIAL] = SERVICE_NAME
-    adb.forwards.append((SERIAL, 39999, DEVICE_PORT))
-
-    session = manager.attach(SERIAL)
-    assert session.local_port == 39999 and not session.owns_forward
-    assert not _calls(adb, ["-s", SERIAL, "forward", "--no-rebind"])
-
-    manager.detach(SERIAL)
-    assert adb.forwards == [(SERIAL, 39999, DEVICE_PORT)]  # not ours to remove
 
 
 def test_attach_is_idempotent_while_session_is_healthy(env):
@@ -344,7 +312,6 @@ def test_attach_is_idempotent_while_session_is_healthy(env):
     again = manager.attach(SERIAL)
     assert again is first
     assert not _calls(adb, ["-s", SERIAL, "install"])
-    assert not _calls(adb, ["-s", SERIAL, "forward"])
 
 
 def test_lazy_attach_never_installs(env):
@@ -353,8 +320,6 @@ def test_lazy_attach_never_installs(env):
         manager.attach(SERIAL, provision=False)
     assert not _calls(adb, ["-s", SERIAL, "install"])
     assert not _calls(adb, ["-s", SERIAL, "shell", "settings", "put"])
-    # The dead forward it created for the probe is cleaned up again.
-    assert adb.forwards == []
     assert manager.session(SERIAL) is None
 
 
@@ -363,25 +328,21 @@ def test_lazy_attach_connects_to_running_helper(env):
     adb.installed[SERIAL] = 2
     adb.enabled_services[SERIAL] = SERVICE_NAME
     session = manager.attach(SERIAL, provision=False)
-    assert session.local_port == 40000
+    assert session.serial == SERIAL
     assert not _calls(adb, ["-s", SERIAL, "install"])
 
 
-def test_replug_changes_transport_and_rebuilds_tunnel(env):
+def test_replug_changes_transport_and_rebuilds_the_session(env):
     adb, _, manager = env
     first = manager.attach(SERIAL)
 
-    # Unplug: adb drops the forward and assigns a new transport on replug.
-    adb.forwards.clear()
+    # Unplug and replug: adb assigns a new transport id.
     adb.transport[SERIAL] = "9"
     adb.calls.clear()
 
     second = manager.attach(SERIAL)
     assert second is not first
-    assert second.transport_id == "9" and second.local_port == 40001
-    # The vanished forward is not "removed" (adb already dropped it).
-    assert not _calls(adb, ["-s", SERIAL, "forward", "--remove"])
-    assert adb.forwards == [(SERIAL, 40001, DEVICE_PORT)]
+    assert second.transport_id == "9"
 
 
 def test_reattach_after_request_failure_rebuilds_without_install(env):
@@ -390,10 +351,7 @@ def test_reattach_after_request_failure_rebuilds_without_install(env):
     adb.calls.clear()
 
     session = manager.reattach(SERIAL)
-    assert session.local_port != first.local_port
-    assert _calls(adb, ["-s", SERIAL, "forward", "--remove"]) == [
-        ["-s", SERIAL, "forward", "--remove", f"tcp:{first.local_port}"]
-    ]
+    assert session is not first
     assert not _calls(adb, ["-s", SERIAL, "install"])
 
 
@@ -405,7 +363,7 @@ def test_reattach_revives_a_killed_service_without_installing(env):
     adb.calls.clear()
 
     session = manager.reattach(SERIAL)
-    assert session.local_port != first.local_port
+    assert session is not first
     assert not _calls(adb, ["-s", SERIAL, "install"])
     puts = _calls(
         adb, ["-s", SERIAL, "shell", "settings", "put", "secure", "enabled_accessibility_services"]
@@ -437,12 +395,11 @@ def test_lazy_first_attach_does_not_toggle_settings(env):
     assert not _calls(adb, ["-s", SERIAL, "shell", "settings", "put"])
 
 
-def test_detach_removes_only_owned_forward(env):
-    adb, _, manager = env
+def test_detach_forgets_only_that_devices_session(env):
+    _, _, manager = env
     manager.attach(SERIAL)
     manager.attach(OTHER)
     manager.detach(SERIAL)
-    assert adb.forwards == [(OTHER, 40001, DEVICE_PORT)]
     assert manager.session(SERIAL) is None and manager.session(OTHER) is not None
 
 
@@ -455,7 +412,6 @@ def test_status_is_read_only(env):
     assert status["enabled"] is False and status["reachable"] is False
     assert status["transport_id"] == "3"
     assert not _calls(adb, ["-s", SERIAL, "install"])
-    assert not _calls(adb, ["-s", SERIAL, "forward"])
 
 
 def test_uninstall_disables_service_and_removes_package(env):
@@ -464,7 +420,6 @@ def test_uninstall_disables_service_and_removes_package(env):
     assert manager.uninstall(SERIAL)
     assert adb.installed[SERIAL] is None
     assert SERVICE_NAME not in adb.enabled_services[SERIAL]
-    assert adb.forwards == []
 
 
 def test_transport_id_parsing_handles_missing_device():
@@ -529,27 +484,21 @@ def test_attach_forwards_events_to_provision(env):
     assert seen == ["installing"]
 
 
-def test_status_probes_with_a_temporary_forward_when_no_tunnel_exists(env):
+def test_status_probes_with_a_one_off_stream_when_no_session_exists(env):
     adb, _, manager = env
     adb.installed[SERIAL] = 2
     adb.enabled_services[SERIAL] = SERVICE_NAME
     status = manager.status(SERIAL)
     assert status["reachable"] is True and status["tunnel"] == "probe"
-    assert status["forward_port"] is None
-    assert adb.forwards == []  # the probe forward was removed again
-    assert _calls(adb, ["-s", SERIAL, "forward", "--remove"]) == [
-        ["-s", SERIAL, "forward", "--remove", "tcp:40000"]
-    ]
+    assert "forward_port" not in status
 
 
-def test_status_reports_session_and_shared_tunnels(env):
-    adb, _, manager = env
+def test_status_reports_the_session_when_this_process_attached(env):
+    _, _, manager = env
     manager.attach(SERIAL)
     assert manager.status(SERIAL)["tunnel"] == "session"
     manager.detach(SERIAL)
-    adb.forwards.append((SERIAL, 39999, DEVICE_PORT))
-    status = manager.status(SERIAL)
-    assert status["tunnel"] == "shared" and status["forward_port"] == 39999
+    assert manager.status(SERIAL)["tunnel"] == "probe"
 
 
 def test_status_does_not_probe_when_not_installed_or_disabled(env):
@@ -613,7 +562,6 @@ def test_old_protocol_blocks_a_lazy_attach_without_installing(env):
     with pytest.raises(HelperUnavailable, match="protocol 1"):
         manager.attach(SERIAL, provision=False)
     assert not _calls(adb, ["-s", SERIAL, "install"])
-    assert adb.forwards == []
 
 
 def test_auto_install_off_never_installs(env):
@@ -676,7 +624,7 @@ def test_attach_stops_a_running_uiautomator2_server_and_binds(env):
     adb.enabled_services[SERIAL] = SERVICE_NAME
     adb.holders[SERIAL] = list(U2_LINES)
     session = manager.attach(SERIAL)
-    assert session.local_port == 40000
+    assert session.serial == SERIAL
     assert adb.killed == [(SERIAL, 24635)]  # the app_process, not its sh wrapper
     assert ["-s", SERIAL, "shell", "am", "force-stop", "com.github.uiautomator"] in adb.calls
     # No re-bind toggle was needed once UiAutomation released the services
@@ -714,3 +662,65 @@ def test_uiautomation_holders_classifies_processes(env):
     adb.holders[SERIAL] = U2_LINES + ["31000 io.appium.uiautomator2.server.test", "7 sh"]
     holders = manager.uiautomation_holders(SERIAL)
     assert holders == {"uiautomator2": [24635], "appium": [31000]}
+
+
+# --------------------------------------------------------------------------- #
+# Provisioning mutex is scoped by endpoint plus serial
+# --------------------------------------------------------------------------- #
+
+
+def _manager_on(port: int, tmp_path: Path) -> AccessibilityHelperManager:
+    from artemis.runtime.adb_endpoint import AdbEndpoint
+    from artemis.runtime.endpoint_transport import EndpointTransport
+
+    return AccessibilityHelperManager(
+        transport=EndpointTransport(AdbEndpoint.create("127.0.0.1", port)),
+        sleep=lambda _s: None,
+        token_path=tmp_path / f"token-{port}",
+    )
+
+
+def test_the_same_serial_on_two_endpoints_provisions_independently(tmp_path, monkeypatch):
+    monkeypatch.setattr(hm, "get_temp_dir", lambda _name: tmp_path / "mutex")
+    monkeypatch.setattr(hm, "_PROVISION_MUTEX_TIMEOUT_SECONDS", 0.0)
+    first, second = _manager_on(40001, tmp_path), _manager_on(40002, tmp_path)
+
+    with first._provision_mutex(SERIAL):
+        with second._provision_mutex(SERIAL):  # a slow install on one host must not block the other
+            pass
+
+
+def test_the_same_device_on_the_same_endpoint_still_excludes(tmp_path, monkeypatch):
+    monkeypatch.setattr(hm, "get_temp_dir", lambda _name: tmp_path / "mutex")
+    monkeypatch.setattr(hm, "_PROVISION_MUTEX_TIMEOUT_SECONDS", 0.0)
+    first, again = _manager_on(40001, tmp_path), _manager_on(40001, tmp_path)
+
+    with first._provision_mutex(SERIAL):
+        with pytest.raises(TimeoutError):
+            with again._provision_mutex(SERIAL):
+                pass
+
+
+def test_two_serials_on_one_endpoint_do_not_block_each_other(tmp_path, monkeypatch):
+    monkeypatch.setattr(hm, "get_temp_dir", lambda _name: tmp_path / "mutex")
+    monkeypatch.setattr(hm, "_PROVISION_MUTEX_TIMEOUT_SECONDS", 0.0)
+    manager = _manager_on(40001, tmp_path)
+
+    with manager._provision_mutex(SERIAL):
+        with manager._provision_mutex(OTHER):
+            pass
+
+
+def test_the_shared_host_token_mutex_is_not_endpoint_scoped(tmp_path, monkeypatch):
+    """The token file is one per computer: its mutex is deliberately shared across endpoints."""
+    monkeypatch.setattr(hm, "get_temp_dir", lambda _name: tmp_path / "mutex")
+    monkeypatch.setattr(hm, "_PROVISION_MUTEX_TIMEOUT_SECONDS", 0.0)
+    token = tmp_path / "shared-token"
+    first = AccessibilityHelperManager(
+        transport=_manager_on(40001, tmp_path).transport, token_path=token
+    )
+    second = AccessibilityHelperManager(
+        transport=_manager_on(40002, tmp_path).transport, token_path=token
+    )
+
+    assert first.host_token() == second.host_token()

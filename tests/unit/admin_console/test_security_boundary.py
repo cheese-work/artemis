@@ -22,6 +22,7 @@ Covers the invariants the no-auth security model depends on:
 - lifecycle controls stay loopback-only.
 """
 
+from types import SimpleNamespace
 import json
 import secrets as py_secrets
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -100,7 +101,7 @@ async def test_locked_credential_writes_return_403_without_side_effects(monkeypa
         ),
     )
     verifier = MagicMock()
-    verifier.verify = AsyncMock(return_value={"email": "qa@example.com"})
+    verifier.verify = AsyncMock(return_value={"email": "qa@example.com", "sub": "qa-sub"})
     monkeypatch.setattr(app.state, "access_verifier", verifier)
 
     validate_api_key = AsyncMock(return_value=(True, "valid"))
@@ -370,10 +371,15 @@ async def test_nonadmin_can_use_public_task_controls(monkeypatch):
         ),
     )
     verifier = MagicMock()
-    verifier.verify = AsyncMock(return_value={"email": "qa@example.com"})
+    verifier.verify = AsyncMock(return_value={"email": "qa@example.com", "sub": "qa-sub"})
     monkeypatch.setattr(app.state, "access_verifier", verifier)
     enqueue = AsyncMock(return_value={"status": "queued", "tasks": []})
-    readiness_probe = AsyncMock(return_value=None)
+    # A scoped caller's run needs a device they may use: a shared one is ready.
+    readiness_probe = AsyncMock(
+        return_value=SimpleNamespace(
+            summary="Connected", metadata={"active_device": {"serial": "emulator-5554"}}
+        )
+    )
     stop_tasks = MagicMock(return_value=True)
     resume_task = MagicMock(return_value=True)
     monkeypatch.setattr(task_router.task_queue_service, "enqueue_tasks", enqueue)
@@ -420,7 +426,7 @@ async def test_signed_nonadmin_can_use_approved_qa_recovery_actions_without_devi
         ),
     )
     verifier = MagicMock()
-    verifier.verify = AsyncMock(return_value={"email": "qa@example.com"})
+    verifier.verify = AsyncMock(return_value={"email": "qa@example.com", "sub": "qa-sub"})
     monkeypatch.setattr(app.state, "access_verifier", verifier)
     heal = AsyncMock(return_value={"success": True})
     dismiss = MagicMock(return_value={"success": True})
@@ -459,7 +465,7 @@ async def test_anonymous_cannot_use_qa_recovery_actions_without_side_effects(mon
         ),
     )
     verifier = MagicMock()
-    verifier.verify = AsyncMock(return_value={"email": "qa@example.com"})
+    verifier.verify = AsyncMock(return_value={"email": "qa@example.com", "sub": "qa-sub"})
     monkeypatch.setattr(app.state, "access_verifier", verifier)
     heal = AsyncMock()
     dismiss = MagicMock()
@@ -491,7 +497,7 @@ async def test_nonadmin_cannot_restart_shared_adb_server_without_side_effects(mo
         ),
     )
     verifier = MagicMock()
-    verifier.verify = AsyncMock(return_value={"email": "qa@example.com"})
+    verifier.verify = AsyncMock(return_value={"email": "qa@example.com", "sub": "qa-sub"})
     monkeypatch.setattr(app.state, "access_verifier", verifier)
     restart = AsyncMock()
     monkeypatch.setattr(system.readiness_engine, "restart_adb_server", restart)
@@ -701,7 +707,7 @@ async def test_legacy_public_config_response_redacts_inline_secrets(tmp_path, mo
         ),
     )
     verifier = MagicMock()
-    verifier.verify = AsyncMock(return_value={"email": "qa@example.com"})
+    verifier.verify = AsyncMock(return_value={"email": "qa@example.com", "sub": "qa-sub"})
     monkeypatch.setattr(app.state, "access_verifier", verifier)
 
     async with _client() as ac:

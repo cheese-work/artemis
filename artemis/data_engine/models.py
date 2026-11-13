@@ -130,3 +130,4 @@ class VideoRecordingRecord(BaseModel):
     local_video_path: str | None = None
     status: str = "recording"
     error: str | None = None
+    reason: str | None = None

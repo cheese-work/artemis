@@ -46,8 +46,8 @@ from artemis.utils.coordinates import (
     normalize_any_structure,
     normalize_step_actions,
 )
-from artemis.utils.logger import get_logger
 from artemis.utils.text import safe_extract_text
+from third_party.mobile_use.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
@@ -683,6 +683,7 @@ class DataEngine:
         self,
         status: str = "completed",
         interrupt_reason: InterruptReason | str | None = None,
+        error: str | None = None,
     ):
         """End the current session through the lifecycle authority.
 
@@ -697,7 +698,7 @@ class DataEngine:
         session_id = self.current_session_id
         try:
             outcome = LifecycleAuthority(self.storage.db_path).finish(
-                str(session_id), status, reason=interrupt_reason
+                str(session_id), status, reason=interrupt_reason, error=error
             )
         except (OSError, ValueError, sqlite3.Error) as e:
             logger.error(f"Failed to end session in DataEngine: {e}")
@@ -780,8 +781,12 @@ class DataEngine:
         local_video_path: str | Path | None,
         start_time: float,
         error: str,
+        reason: str | None = None,
     ):
-        """Persist and publish a terminal recording failure."""
+        """Persist and publish a terminal recording failure.
+
+        ``error`` is the raw failure text; ``reason`` is its classified code, when known.
+        """
         if not self.storage:
             return
         try:
@@ -794,6 +799,7 @@ class DataEngine:
                 local_video_path=str(local_video_path) if local_video_path else None,
                 status="failed",
                 error=error,
+                reason=reason,
             )
             self.storage.update_video_recording(record)
             self._publish(
@@ -802,6 +808,7 @@ class DataEngine:
                     "session_id": str(self.current_session_id),
                     "video_id": str(video_id),
                     "error": error,
+                    "reason": reason,
                 },
             )
         except Exception as e:
@@ -1023,6 +1030,29 @@ class DataEngine:
 
         step_dict = normalize_step_actions(step_dict)
 
+        if os.getenv("ARTEMIS_CHAT_SESSION_ID") and self.storage:
+            from artemis.data_engine.chat_sessions import ChatStore
+
+            try:
+                store = ChatStore(self.storage.db_path)
+                thinking = operator_native_thinking or operator_raw_thinking
+                if thinking:
+                    store.record_event(
+                        str(self.current_session_id),
+                        "thinking",
+                        thinking[:1000],
+                        event_key=f"thinking:{step_id}",
+                    )
+                store.record_event(
+                    str(self.current_session_id),
+                    "step",
+                    summary or f"Step {step_number}",
+                    payload={"step_id": str(step_id)},
+                    event_key=f"step:{step_id}",
+                )
+            except (KeyError, ValueError, sqlite3.Error):
+                logger.warning("Could not append the session timeline step.")
+
         self._publish("step_recorded", step_dict)
 
         return step_id
@@ -1107,6 +1137,11 @@ class DataEngine:
         with self._pending_threads_lock:
             has_pending_threads = any(thread.is_alive() for thread in self._pending_threads)
         return len(self._pending_tasks) > 0 or has_pending_threads
+
+    async def wait_for_pending_operations(self):
+        """Wait for background storage operations scheduled on the active event loop."""
+        while self._pending_tasks:
+            await asyncio.gather(*tuple(self._pending_tasks), return_exceptions=True)
 
     async def shutdown(self):
         """Wait for all pending background tasks and threads to complete."""

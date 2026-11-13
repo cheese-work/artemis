@@ -1,6 +1,8 @@
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { of, throwError } from 'rxjs';
 import { AdminConfigService, AdminIdentity, ConfigSnapshot } from '../../services/admin-config.service';
+import { FailuresService } from '../../services/failures.service';
+import { StorageService } from '../../services/storage.service';
 import { HostsService } from '../../services/hosts.service';
 import { routes } from '../../app.routes';
 import { HomeComponent } from '../home/home.component';
@@ -109,6 +111,23 @@ describe('SetupComponent', () => {
       providers: [
         { provide: AdminConfigService, useValue: adminConfig },
         {
+          provide: StorageService,
+          useValue: {
+            report: () =>
+              of({
+                usage_bytes: 0,
+                run_count: 0,
+                clearable_count: 0,
+                pinned_count: 0,
+                pinned_bytes: 0,
+                disk: { total_bytes: 100, free_bytes: 90, free_percent: 90 },
+                warnings: [],
+                retention: { enabled: false, days: 30 }
+              })
+          }
+        },
+        { provide: FailuresService, useValue: { report: () => of({ days: 14, counts: [], causes: [] }) } },
+        {
           provide: HostsService,
           useValue: { list: () => of({ enabled: false, hosts: [], devices: [] }) }
         }
@@ -151,7 +170,7 @@ describe('SetupComponent', () => {
     fixture.detectChanges();
     const root = fixture.nativeElement as HTMLElement;
     const tabs = Array.from(root.querySelectorAll('[role="tab"]')) as HTMLButtonElement[];
-    expect(tabs.map((tab) => tab.textContent?.trim())).toEqual(['Models', 'Computers']);
+    expect(tabs.map((tab) => tab.textContent?.trim())).toEqual(['Models', 'Computers', 'Storage', 'Failures']);
     expect(tabs[0].getAttribute('aria-selected')).toBe('true');
     expect(root.querySelector('app-computers')).toBeNull();
 
@@ -160,6 +179,26 @@ describe('SetupComponent', () => {
     expect(tabs[1].getAttribute('aria-selected')).toBe('true');
     expect(root.querySelector('app-computers')).not.toBeNull();
     expect(root.querySelector('[name="default-provider"]')).toBeNull();
+
+    tabs[2].click();
+    fixture.detectChanges();
+    expect(tabs[2].getAttribute('aria-selected')).toBe('true');
+    expect(root.querySelector('app-storage')).not.toBeNull();
+    expect(root.querySelector('app-computers')).toBeNull();
+
+    tabs[3].click();
+    fixture.detectChanges();
+    expect(root.querySelector('app-failures')).not.toBeNull();
+    expect(root.querySelector('app-storage')).toBeNull();
+  });
+
+  it('hides the Failures tab from non-admins', async () => {
+    adminConfig.getIdentity.and.returnValue(of({ ...identity, admin: false }));
+    createComponent();
+    await fixture.whenStable();
+    fixture.detectChanges();
+    const labels = Array.from(fixture.nativeElement.querySelectorAll('[role="tab"]')).map((t) => (t as HTMLElement).textContent?.trim());
+    expect(labels).toEqual(['Models', 'Computers', 'Storage']);
   });
 
   it('replaces Step 2 on the System Setup route without adding a provider-only route', () => {
@@ -361,14 +400,15 @@ describe('SetupComponent', () => {
 
     afterEach(() => fixture.nativeElement.remove());
 
-    it('renders the Step 2 and Credentials cards on a light surface with SmartQA borders', async () => {
+    it('renders the Step 2 and Credentials cards on light surfaces without outlines or shadows', async () => {
       const host = await render(true);
       const panels = Array.from(host.querySelectorAll('.panel')) as HTMLElement[];
 
       expect(panels.length).toBe(2);
       for (const panel of panels) {
         expect(luminance(bg(panel))).toBeGreaterThan(LIGHT_SURFACE);
-        expect(getComputedStyle(panel).borderTopColor).toBe('rgb(226, 232, 240)');
+        expect(getComputedStyle(panel).borderTopWidth).toBe('0px');
+        expect(getComputedStyle(panel).boxShadow).toBe('none');
       }
     });
 
@@ -384,11 +424,28 @@ describe('SetupComponent', () => {
       }
     });
 
-    it('styles the primary action with the SmartQA blue and readable text', async () => {
+    it('uses filled tabs and secondary buttons with their own 44 px hit boxes', async () => {
+      const host = await render(true);
+      const controls = Array.from(host.querySelectorAll('.setup-tabs button, .secondary-button')) as HTMLElement[];
+
+      expect(controls.length).toBeGreaterThan(3);
+      for (const control of controls) {
+        const style = getComputedStyle(control);
+        const bounds = control.getBoundingClientRect();
+        expect(style.borderTopWidth).toBe('0px');
+        expect(style.boxShadow).toBe('none');
+        expect(style.backgroundColor).not.toBe('rgba(0, 0, 0, 0)');
+        expect(bounds.width).toBeGreaterThanOrEqual(44);
+        expect(bounds.height).toBeGreaterThanOrEqual(44);
+        expect(contrast(fg(control), bg(control))).toBeGreaterThanOrEqual(MIN_TEXT_CONTRAST);
+      }
+    });
+
+    it('styles the primary action with the SmartQA indigo and readable text', async () => {
       const host = await render(true);
       const save = host.querySelector('.primary-button') as Element;
 
-      expect(getComputedStyle(save).backgroundColor).toBe('rgb(26, 115, 232)');
+      expect(getComputedStyle(save).backgroundColor).toBe('rgb(79, 70, 229)');
       expect(contrast(fg(save), bg(save))).toBeGreaterThanOrEqual(MIN_TEXT_CONTRAST);
     });
 
@@ -451,8 +508,13 @@ describe('SetupComponent', () => {
         .find((r) => /input(\[[^\]]*\])?:focus/.test(r.selectorText));
 
       expect(rule).withContext('input:focus rule').toBeDefined();
-      expect(rule!.style.outlineStyle).toBe('solid');
-      expect(contrast(parseColor(rule!.style.outlineColor), bg(input))).toBeGreaterThanOrEqual(3);
+      // The ring is the shared focus token: a 3px solid line in --color-focus.
+      expect(rule!.cssText).toMatch(/outline: 3px solid var\(--color-focus\)/);
+      const probe = document.body.appendChild(document.createElement('span'));
+      probe.style.color = 'var(--color-focus)';
+      const ring = getComputedStyle(probe).color;
+      probe.remove();
+      expect(contrast(parseColor(ring), bg(input))).toBeGreaterThanOrEqual(3);
     });
 
     it('keeps the standalone page light too', async () => {

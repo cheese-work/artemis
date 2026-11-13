@@ -43,6 +43,7 @@ from dataclasses import dataclass, field
 import json
 from pathlib import Path
 import re
+import sqlite3
 import uuid
 
 from jinja2 import Template
@@ -58,9 +59,9 @@ from artemis.agents.operator.prompts import REASONING_REMINDER, UserGuidance, re
 from artemis.agents.validator.tool_declarations import (
     ASK_EXPLORER_TOOL,
     CLICK_SEQUENCE_TOOL,
-    LIST_NOTES_TOOL,
-    READ_NOTE_TOOL,
     REPORT_TASK_STATUS_TOOL,
+    SAVE_NOTE_TOOL,
+    UPDATE_NOTE_TOOL,
     VALIDATOR_TOOLS_DECLARATION,
     capture_screenshot_and_parse_ui,
     prune_intermediate_screenshots,
@@ -95,6 +96,7 @@ from artemis.utils.coordinates import (
 from artemis.drivers.types import DeviceDisconnectedError, device_disconnect_reason
 from artemis.runtime.lifecycle import InterruptReason
 from artemis.utils.logger import get_logger
+from artemis.utils.goal_images import goal_image_messages
 
 logger = get_logger(__name__)
 
@@ -198,14 +200,10 @@ class FlashRunner:
         return getattr(setup, "video_recording_tools_enabled", False) is True
 
     def _get_tools(self) -> list:
-        # Flash has no tool that writes notes and its prompt never teaches
-        # them, so the Validator set's note readers are left out here.
-        tools = [
-            t
-            for t in VALIDATOR_TOOLS_DECLARATION
-            if t is not READ_NOTE_TOOL and t is not LIST_NOTES_TOOL
-        ]
+        tools = list(VALIDATOR_TOOLS_DECLARATION)
         tools.insert(1, CLICK_SEQUENCE_TOOL)
+        # The note writers let Flash keep the results.md ledger the chat shows.
+        tools.extend([SAVE_NOTE_TOOL, UPDATE_NOTE_TOOL])
         tools.append(ASK_EXPLORER_TOOL)
         # Helper tools shared with the Pro operator: the history tools are
         # declared from the very same args schemas the LangChain tools bind
@@ -317,6 +315,13 @@ class FlashRunner:
         """
         if not (self.ctx.data_engine and self.ctx.data_engine.base_dir):
             return None, None
+        from artemis.runtime.chat_control import read_chat_guidance
+
+        chat_instruction = await read_chat_guidance(self.ctx, self.goal)
+        if chat_instruction:
+            return chat_instruction, render_user_guidance(
+                chat_instruction, has_plan=False, offset_label=offset_label
+            )
         try:
             injected_payload = await asyncio.to_thread(
                 _check_injected_instruction_file,
@@ -552,12 +557,21 @@ class FlashRunner:
         native_text: str | None = None,
     ) -> dict:
         """Records the final step, acknowledges the tool call, and flushes."""
-        final_report = args
+        final_report = dict(args)
+        final_report.pop("evidence_ref", None)
+        final_step_id = None
+        for field_name, valid_values in (
+            ("status", ("completed", "failed")),
+            ("cause", ("app_defect", "goal_unreachable", "blocked_by_environment")),
+        ):
+            if field_name in final_report and final_report[field_name] not in valid_values:
+                logger.warning(f"event=report_cause_invalid field={field_name}")
+                final_report.pop(field_name)
         if self.ctx.data_engine:
             try:
                 if self.ctx.data_engine.current_step_id is None:
                     self.ctx.data_engine.allocate_step_id()
-                self.ctx.data_engine.record_step(
+                final_step_id = self.ctx.data_engine.record_step(
                     pre_screenshot_bytes=pre_screenshot_bytes,
                     ui_tree=xml_list,
                     action_taken={"action": "report_task_status", "args": args},
@@ -568,6 +582,31 @@ class FlashRunner:
                 )
             except Exception as step_err:
                 logger.warning(f"Error recording final step in FlashRunner: {step_err}")
+        evidence_step = final_report.get("evidence_step")
+        if final_report.get("status") == "completed" and final_step_id is not None:
+            evidence_step = self.ctx.data_engine.get_step_number(final_step_id)
+        if (
+            (final_report.get("cause") == "app_defect" or final_report.get("status") == "completed")
+            and type(evidence_step) is int
+            and evidence_step > 0
+            and self.ctx.data_engine
+        ):
+            try:
+                await self.ctx.data_engine.wait_for_pending_operations()
+                step = self.ctx.data_engine.get_step_record(evidence_step)
+                if step is not None:
+                    for which in ("post", "pre"):
+                        image = self.ctx.data_engine.get_step_image_path(evidence_step, which)
+                        if image is not None and image.is_file():
+                            final_report["evidence_ref"] = {
+                                "step_id": str(step.step_id),
+                                "step_number": evidence_step,
+                                "image_name": getattr(step, f"{which}_image_name"),
+                                "which": which,
+                            }
+                            break
+            except (OSError, ValueError, sqlite3.Error) as evidence_error:
+                logger.warning(f"Could not resolve report evidence: {evidence_error}")
         messages.append(
             ToolMessage(
                 tool_call_id=tc_id,
@@ -953,7 +992,7 @@ class FlashRunner:
             name = tc["name"].split(":")[-1] if ":" in tc["name"] else tc["name"]
             args = tc.get("args") or {}
             tc_id = tc.get("id") or str(uuid.uuid4())
-            logger.info(f"Executing Flash tool: {name}({args})")
+            logger.info(f"event=tool_called tool={name} args_length={len(str(args))}")
 
             if name == "report_task_status":
                 final_report = await self._finalize_task_report(
@@ -1041,7 +1080,10 @@ class FlashRunner:
         """Installs the static prefix and captures the initial device state."""
         ledger = self._build_ledger()
         ledger.set_static_prefix(
-            [SystemMessage(content=self._render_system_prompt(tools_declaration))]
+            [
+                SystemMessage(content=self._render_system_prompt(tools_declaration)),
+                *goal_image_messages(),
+            ]
         )
 
         # Capture Initial State (Screenshot + UI Tree)

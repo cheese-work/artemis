@@ -1,0 +1,7 @@
+{
+  "id": "2026-10-09-workspace-runs-one-look",
+  "date": "2026-10-09",
+  "title": "Workspace and Runs now look and work the same",
+  "body": "The run and the run list sit side by side on wide screens and stack on narrow ones. The new-task box stays under the run. Open a run in Runs and the list stays beside it. Buttons are bigger, and Tab and arrow keys reach the tabs.",
+  "issues": ["CHE-1278"]
+}

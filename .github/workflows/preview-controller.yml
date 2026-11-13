@@ -1,0 +1,31 @@
+name: Preview controller (inactive)
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  preview-controller:
+    if: ${{ false }}
+    runs-on:
+      group: artemis-preview-controller
+      labels: [self-hosted, cheese-x99, cheese-x99-artemis-preview]
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Run only the installed protected controller
+        env:
+          PREVIEW_REPOSITORY_ID: ${{ github.repository_id }}
+          PREVIEW_RUN_ID: ${{ github.run_id }}
+          PREVIEW_RUN_ATTEMPT: ${{ github.run_attempt }}
+          PREVIEW_WORKFLOW_SHA: ${{ github.workflow_sha }}
+        run: >-
+          /usr/local/libexec/artemis-preview/artemis-preview-controller run
+          --repository-id "$PREVIEW_REPOSITORY_ID"
+          --run-id "$PREVIEW_RUN_ID"
+          --run-attempt "$PREVIEW_RUN_ATTEMPT"
+          --workflow-sha "$PREVIEW_WORKFLOW_SHA"
+          --nonce "$ARTEMIS_PREVIEW_NONCE"

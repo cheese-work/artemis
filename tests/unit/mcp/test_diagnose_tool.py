@@ -382,7 +382,6 @@ def _helper_healthy(serial: str = "pixel-1") -> dict:
         "bundled_apk_present": True,
         "outdated": False,
         "enabled": True,
-        "forward_port": 41234,
         "reachable": True,
         "reported_version": 2,
         "transport_id": "7",

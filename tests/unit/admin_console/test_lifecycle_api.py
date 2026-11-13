@@ -21,6 +21,7 @@ from apps.admin_console.server import app
 from apps.admin_console.services.task_queue_service import TaskQueueService
 from artemis.runtime import trace_store
 from artemis.runtime.lifecycle import InterruptReason, LifecycleAuthority
+from tests.support.startup_budget import startup_budget
 
 DEAD_PID = 2**22 + 12345
 
@@ -122,6 +123,19 @@ async def test_interrupted_state_and_typed_reason_are_served(env):
 
 
 # -- restart ---------------------------------------------------------------
+
+
+def test_server_restart_sweep_selects_running_rows_only(env):
+    """Queued rows are untouched today; the queued-row sweep is a later slice."""
+    db_path, _ = env
+    queued = str(uuid.uuid4())
+    assert session_repo.create_queued_session(queued, "goal", "flash", "emulator-5554", None, None)
+    gone = _add_running_session(db_path)
+
+    assert session_repo.cleanup_orphans_on_startup() == 1
+
+    assert session_repo.get_session_by_id(queued)["status"] == "queued"
+    assert session_repo.get_session_by_id(gone)["status"] == "interrupted"
 
 
 def test_server_restart_marks_running_sessions_interrupted(env):
@@ -418,7 +432,7 @@ os._exit(80)
         [sys.executable, "-c", child_code, str(db_path), session_id],
         capture_output=True,
         text=True,
-        timeout=30,
+        timeout=startup_budget(30.0),
     )
     assert child.returncode == 79, child.stderr
     assert events == [] and _outbox_pending(db_path) == 1
@@ -465,9 +479,12 @@ async def test_crash_after_broadcast_before_ack_delivers_exactly_once_across_a_r
 async def test_a_failed_notification_is_retried_and_only_then_acknowledged(env, monkeypatch):
     from unittest.mock import MagicMock
 
+    from apps.admin_console.database import connection
+
     db_path, events = env
     session_id = _add_running_session(db_path)
     _interrupt(db_path, session_id)
+    monkeypatch.setattr(connection, "DB_PATH", db_path)
     notify = MagicMock(side_effect=[False, True])
     monkeypatch.setattr("mcp_server.notifiers.notify", notify)
     task_item = {"session_id": session_id, "conversation_id": "conv-1", "ingress": "mcp"}
@@ -477,10 +494,42 @@ async def test_a_failed_notification_is_retried_and_only_then_acknowledged(env, 
 
     TaskQueueService._deliver_outcome(session_id, task_item, "goal")
 
-    assert notify.call_count == 2 and _outbox_pending(db_path) == 0
+    assert notify.call_count == 2 and _outbox_pending(db_path) == 1
+    TaskQueueService._reap_vanished_workers()
+
+    assert _outbox_pending(db_path) == 0
+    with sqlite3.connect(db_path) as conn:
+        classified_at, attempts = conn.execute(
+            "SELECT classified_at, classify_attempts FROM lifecycle_outbox"
+        ).fetchone()
+    assert classified_at is not None and attempts == 0
     # the UI broadcast already succeeded, so the retry does not repeat it
     assert len(_interrupted(events, session_id)) == 1
     assert len(_ended(events, session_id)) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_failing_broadcast_does_not_delay_the_notification(env, monkeypatch):
+    from unittest.mock import MagicMock
+
+    db_path, events = env
+    session_id = _add_running_session(db_path)
+    _interrupt(db_path, session_id)
+    notify = MagicMock(return_value=True)
+    monkeypatch.setattr("mcp_server.notifiers.notify", notify)
+    task_item = {"session_id": session_id, "conversation_id": "conv-1", "ingress": "mcp"}
+
+    def broken(_event_type, _payload):
+        raise RuntimeError("subscriber down")
+
+    state.ipc_subscribers.append(broken)
+    try:
+        TaskQueueService._deliver_outcome(session_id, task_item, "goal")
+    finally:
+        state.ipc_subscribers.remove(broken)
+
+    notify.assert_called_once()  # broadcast failed below the cap; notify still ran
+    assert _outbox_pending(db_path) == 1  # the broadcast is still owed a retry
 
 
 @pytest.mark.asyncio
@@ -663,8 +712,16 @@ async def test_restart_drain_notifies_from_the_persisted_context_with_no_queue_i
     TaskQueueService._drain_outcome_events()
 
     notify.assert_called_once()
-    assert notify.call_args.kwargs["conversation_id"] == "conv-9"
-    assert "Open X" in notify.call_args.kwargs["message"]
+    notification = notify.call_args.kwargs
+    assert notification["conversation_id"] == "conv-9"
+    assert notification["message"] == (
+        "Artemis autonomous task goal_length=6 goal_sha256=8254eef147a1 "
+        f"finished with status 'interrupted'.\nTrace ID: {session_id}"
+    )
+    assert notification["title"] == f"Task Interrupted: {session_id}"
+    assert notification["payload"]["goal_length"] == 6
+    assert "goal" not in notification["payload"]
+    assert "Open X" not in str(notification)
     assert _outbox_pending(db_path) == 0
 
 

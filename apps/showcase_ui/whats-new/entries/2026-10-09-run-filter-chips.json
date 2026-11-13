@@ -1,0 +1,7 @@
+{
+  "id": "2026-10-09-run-filter-chips",
+  "date": "2026-10-09",
+  "title": "Filter runs with chips",
+  "body": "Use Status and Date chips to narrow your run list. Add Computer, Phone or Requested by filters from + Filter. App filtering needs backend support.",
+  "issues": ["CHE-1500"]
+}

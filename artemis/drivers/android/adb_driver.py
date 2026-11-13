@@ -16,22 +16,27 @@
 
 import asyncio
 import base64
+import shlex
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Literal
 
 from adbutils import AdbClient, AdbDevice, AdbError
-from artemis.clients.ui_automator_client import (
-    UIAutomatorClient,
-    _parse_hierarchy_xml_to_elements,
-)
 from artemis.config.paths import get_temp_dir
 from artemis.drivers.base import BaseDeviceDriver, KeyCode, ScreenData, SwipeDirection
 from artemis.drivers.types import DeviceDisconnectedError, device_disconnect_reason
 from artemis.toolchain import find_ffmpeg, find_scrcpy
-from artemis.utils.video import build_scrcpy_record_command, detect_scrcpy_version
+from artemis.utils.video import (
+    build_scrcpy_record_command,
+    detect_scrcpy_version,
+    recording_unavailable_reason,
+)
 from artemis.utils.ui_filter import filter_ui_hierarchy
-from artemis.utils.logger import get_logger
+from third_party.mobile_use.clients.ui_automator_client import (
+    UIAutomatorClient,
+    parse_hierarchy_xml_to_elements,
+)
+from third_party.mobile_use.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
@@ -183,7 +188,7 @@ class AndroidAdbDriver(BaseDeviceDriver):
                     hierarchy = await res if asyncio.iscoroutine(res) else res
                     if isinstance(hierarchy, str):
                         ui_hierarchy_xml = hierarchy
-                        ui_elements = _parse_hierarchy_xml_to_elements(hierarchy)
+                        ui_elements = parse_hierarchy_xml_to_elements(hierarchy)
                     else:
                         ui_elements = hierarchy
                 elif hasattr(self._ui_adb_client, "get_ui_elements"):
@@ -316,6 +321,56 @@ class AndroidAdbDriver(BaseDeviceDriver):
             )
         return False
 
+    async def input_private(self, text: str, *, target: dict, secret: bool = True) -> bool:
+        result = (
+            await asyncio.gather(self._input_private(text, target, secret), return_exceptions=True)
+        )[0]
+        return result is True
+
+    async def _input_private(self, text: str, target: dict, secret: bool) -> bool:
+        snapshot = await self.get_screen_data()
+        focused = next(
+            (
+                element
+                for element in snapshot.ui_elements
+                if element.get("focused") in (True, "true")
+            ),
+            None,
+        )
+        if not focused or any(focused.get(key) != value for key, value in target.items()):
+            return False
+        if secret and focused.get("password") not in (True, "true"):
+            return False
+        if any(ord(character) < 32 or ord(character) == 127 for character in text):
+            return False
+        ime = await asyncio.to_thread(
+            self.device.shell, "settings get secure default_input_method", timeout=10
+        )
+        if (not text.isascii() or "%s" in text) and "adbkeyboard" not in str(ime).lower():
+            return False
+        if secret:
+            self._private_input_used = True
+        cleared = await asyncio.to_thread(
+            self.device.shell2,
+            "input keyevent 123 && input keyevent --meta 1 122 && input keyevent 67",
+            timeout=10,
+        )
+        if cleared.returncode != 0:
+            return False
+        command = (
+            "am broadcast -a ADB_INPUT_B64 --es msg "
+            + shlex.quote(base64.b64encode(text.encode()).decode())
+            if "adbkeyboard" in str(ime).lower()
+            else "input text " + shlex.quote(text.replace(" ", "%s"))
+        )
+        delivered = await asyncio.to_thread(self.device.shell2, command, timeout=10)
+        if delivered.returncode != 0:
+            return False
+        if "adbkeyboard" in str(ime).lower() and "Broadcast completed:" not in delivered.output:
+            return False
+        blurred = await asyncio.to_thread(self.device.shell2, "input keyevent 61", timeout=10)
+        return blurred.returncode == 0
+
     async def input_text(self, text: str, clear_existing: bool = True) -> bool:
         try:
             if clear_existing:
@@ -383,7 +438,7 @@ class AndroidAdbDriver(BaseDeviceDriver):
             raise
         except Exception as e:
             self._raise_if_disconnected(e)
-            logger.error(f"Input text failed for '{text}': {e}")
+            logger.error(f"Input text failed text_length={len(text)} error_type={type(e).__name__}")
             return False
 
     async def press_key(self, key: KeyCode | str | int) -> bool:
@@ -468,6 +523,12 @@ class AndroidAdbDriver(BaseDeviceDriver):
 
     async def start_video_recording(self, output_dir: Path | None = None) -> None:
         """Starts screen recording via scrcpy in background."""
+        if getattr(self, "_private_input_used", False):
+            return
+        unavailable = recording_unavailable_reason()
+        if unavailable:
+            logger.info(unavailable)
+            return
         out_dir = output_dir or get_temp_dir("recordings")
         out_dir.mkdir(parents=True, exist_ok=True)
         self._recording_mkv_path = out_dir / "recording.mkv"

@@ -20,6 +20,18 @@ from artemis.agents.video_analyzer.video_analyzer import VideoAnalyzer
 from artemis.context import ArtemisContext
 
 
+def test_video_classification_preserves_gateway_model_refusal():
+    error = RuntimeError(
+        "The 'gpt-6.1-sol' model is not supported when using Codex with a ChatGPT account."
+    )
+    error.status_code = 400
+    failure = classify_video_failure(error)
+    assert failure.category.value == "gateway_model_rejected"
+    assert failure.retryable
+    assert not failure.should_split
+    assert not failure.should_fallback
+
+
 def _context() -> MagicMock:
     ctx = MagicMock(spec=ArtemisContext)
     ctx._video_blackboard = None

@@ -20,9 +20,11 @@ Modular entrypoint for full trace inspection, step replay, and task execution ma
 import argparse
 import asyncio
 from contextlib import asynccontextmanager
+import importlib
 import logging
 import os
 from pathlib import Path
+import re
 import secrets
 import signal
 import sqlite3
@@ -47,10 +49,37 @@ for _p in (str(_workspace_root), str(_apps_dir), str(_admin_console_dir), str(_c
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
+# Select the profile before any import below can run an import-time side effect.
+from apps.admin_console.core.preview_profile import (
+    prepare_preview_environment,
+    preview_demo_selected,
+    preview_identity_switch_selected,
+    preview_profile_selected,
+)
+from apps.admin_console.core.preview_routes import PreviewRouteGuard, require_classified
+
+PREVIEW_PROFILE = preview_profile_selected()
+preview_identity_switch_selected(PREVIEW_PROFILE)
+preview_demo_selected(PREVIEW_PROFILE)
+PREVIEW_ROOT = prepare_preview_environment() if PREVIEW_PROFILE else None
+
 from fastapi import Depends, FastAPI
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 import uvicorn
+from copy import deepcopy
+from artemis.utils.redaction import Redactor, configure_logging
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
+
+configure_logging()
+
+REDACTED_UVICORN_LOGGING = deepcopy(uvicorn.config.LOGGING_CONFIG)
+REDACTED_UVICORN_LOGGING["formatters"]["access"]["fmt"] = (
+    '%(levelprefix)s session_id=%(session_id)s %(client_addr)s - "%(request_line)s" %(status_code)s'
+)
+REDACTED_UVICORN_LOGGING["filters"] = {"redaction": {"()": Redactor}}
+for handler_config in REDACTED_UVICORN_LOGGING["handlers"].values():
+    handler_config["filters"] = ["redaction"]
 
 from artemis.runtime import (
     DeviceExecutionLock,
@@ -73,18 +102,29 @@ from artemis.config import (
 )
 from artemis.resources import get_bundled_showcase_dist
 from artemis.runtime.lifecycle import InterruptReason
+from apps.admin_console.services import failure_ledger, qa_results, run_retention
+from apps.admin_console.services import device_reconciler
+from apps.admin_console.services.device_identity import device_identity
 from apps.admin_console.services.host_registry import host_agent_enabled, host_registry
+from apps.admin_console.services.host_tunnel import host_tunnels
 from apps.admin_console.core.access_control import (
     AdminAPIError,
     CloudflareAccessVerifier,
+    ServicePrincipalMiddleware,
     admin_api_error_handler,
     config_from_environment,
     public_tier,
+    require_loopback_bind,
+    require_qa,
 )
+from apps.admin_console.core.preview_access import preview_access_verifier
+from apps.admin_console.core.preview_identity import configure_preview_identities
+from apps.admin_console.core.preview_fixtures import initialize_preview_fixtures
+from apps.admin_console.services.run_images import RequestSizeLimitMiddleware
 
 try:
     from admin_console.core.security import SameOriginBoundaryMiddleware
-    from admin_console.core.state import ServerState, state
+    from admin_console.core.state import IN_FLIGHT_STATUSES, ServerState, state
     from admin_console.database.connection import db_session, get_db
     from admin_console.database.repositories.session_repository import session_repo
     from admin_console.database.repositories.step_repository import step_repo
@@ -93,9 +133,16 @@ try:
         agent,
         device_bridge,
         drain,
+        failures,
         hosts,
+        leases,
         media,
+        preview_synthetic,
+        prompt_critiques,
         replay,
+        run_admin,
+        run_annotations,
+        run_bundle,
         runs,
         sessions,
         steps,
@@ -110,15 +157,22 @@ try:
     from admin_console.services.task_queue_service import task_queue_service
 except ImportError:
     from apps.admin_console.core.security import SameOriginBoundaryMiddleware
-    from apps.admin_console.core.state import state
+    from apps.admin_console.core.state import IN_FLIGHT_STATUSES, state
     from apps.admin_console.database.repositories.session_repository import session_repo
     from apps.admin_console.routers import (
         agent,
         device_bridge,
         drain,
+        failures,
         hosts,
+        leases,
         media,
+        preview_synthetic,
+        prompt_critiques,
         replay,
+        run_admin,
+        run_annotations,
+        run_bundle,
         runs,
         sessions,
         steps,
@@ -132,7 +186,8 @@ except ImportError:
     from apps.admin_console.services.task_queue_service import task_queue_service
 
 # Initialize language server synchronization address
-init_ls_address()
+if not PREVIEW_PROFILE:
+    init_ls_address()
 
 
 @asynccontextmanager
@@ -142,6 +197,7 @@ async def _lifespan(_app: "FastAPI"):
     try:
         yield
     finally:
+        await host_tunnels.close()
         await on_shutdown()
 
 
@@ -149,26 +205,62 @@ async def _lifespan(_app: "FastAPI"):
 app = FastAPI(
     title="Artemis Admin & Trace Console",
     lifespan=_lifespan,
-    dependencies=[Depends(public_tier)],
+    dependencies=[Depends(public_tier), *([Depends(require_qa)] if PREVIEW_PROFILE else [])],
 )
 app.add_exception_handler(AdminAPIError, admin_api_error_handler)
+
+
+async def safe_validation_error(_request, error: RequestValidationError):
+    from artemis.utils.redaction import redact
+
+    details = [
+        {key: value for key, value in entry.items() if key in {"loc", "msg", "type"}}
+        for entry in error.errors()
+    ]
+    return JSONResponse(status_code=422, content={"detail": redact(details)})
+
+
+app.add_exception_handler(RequestValidationError, safe_validation_error)
 app.state.access_config = config_from_environment()
-app.state.access_verifier = CloudflareAccessVerifier()
+app.state.preview_profile = PREVIEW_PROFILE
+app.state.preview_identities = configure_preview_identities(
+    app.state.access_config, preview_profile=PREVIEW_PROFILE
+)
+if app.state.preview_identities:
+    app.state.access_verifier = None
+else:
+    app.state.access_verifier = (
+        preview_access_verifier(app.state.access_config)
+        if PREVIEW_PROFILE
+        else CloudflareAccessVerifier()
+    )
 logging.getLogger(__name__).info(
-    "Admin access configured: mode=%s issuer=%s audience=%s admin_count=%d",
+    "Admin access configured: mode=%s issuer=%s audience=%s admin_count=%d spaces=%s",
     app.state.access_config.auth_mode,
     app.state.access_config.issuer or "none",
     app.state.access_config.audience or "none",
-    len(app.state.access_config.admin_emails),
+    len(app.state.access_config.admin_subjects)
+    + (0 if app.state.access_config.spaces_enabled else len(app.state.access_config.admin_emails)),
+    app.state.access_config.spaces_enabled,
 )
 logger = logging.getLogger(__name__)
-LIFECYCLE_TOKEN = os.environ.get("ARTEMIS_LIFECYCLE_TOKEN") or secrets.token_urlsafe(32)
+# A preview never adopts the live service's token: its own is fresh and container-local.
+LIFECYCLE_TOKEN = (
+    secrets.token_urlsafe(32)
+    if PREVIEW_PROFILE
+    else os.environ.get("ARTEMIS_LIFECYCLE_TOKEN") or secrets.token_urlsafe(32)
+)
 app.state.lifecycle_token = LIFECYCLE_TOKEN
 
 # The console UI is served same-origin from this process, so no CORS grants
 # exist at all; the boundary middleware rejects cross-origin browser traffic
 # and unrecognized Host headers (DNS rebinding) instead.
+if PREVIEW_PROFILE:
+    # Innermost, so the Host/Origin boundary still screens requests before this answers.
+    app.add_middleware(PreviewRouteGuard, route_source=app)
+app.add_middleware(RequestSizeLimitMiddleware)
 app.add_middleware(SameOriginBoundaryMiddleware)
+app.add_middleware(ServicePrincipalMiddleware)
 
 
 class TransportPeerProxyHeadersMiddleware:
@@ -191,6 +283,23 @@ async def on_startup():
     """Startup lifecycle hooks."""
     state.is_shutting_down = False
     state.shutdown_event.clear()
+    if PREVIEW_PROFILE:
+        initialize_preview_fixtures(PREVIEW_ROOT, app.state.access_config)
+        await asyncio.to_thread(run_annotations.initialize_notes)
+        return
+    qa_results.activate(session_repo.db_path, app.state.access_config.admin_emails)
+    await asyncio.to_thread(run_annotations.initialize_notes)
+    from apps.admin_console.services.config_store import ConfigStoreError
+    from apps.admin_console.services.provider_settings import get_provider_settings
+
+    try:
+        provider_settings = get_provider_settings()
+        await provider_settings.read()
+        await provider_settings.activate_runtime()
+    except ConfigStoreError:
+        logging.getLogger(__name__).warning(
+            "Provider settings are unavailable; complete server setup."
+        )
     write_server_info(
         port=getattr(state, "port", 8000),
         host=getattr(state, "host", "127.0.0.1"),
@@ -200,6 +309,11 @@ async def on_startup():
     cleaned_device_locks = DeviceExecutionLock.cleanup_stale_locks()
     if cleaned_device_locks:
         print(f"[ServerStartup] Removed {cleaned_device_locks} stale device lock(s).")
+
+    # Server adb and bridge phones resolve to durable devices (CHE-1473).
+    importlib.import_module(
+        "artemis.runtime.device_pool"
+    ).identity_observer = device_identity.observe_adb
 
     # Warm the adb server and complete one enumeration before requests are
     # served, so submissions in the first seconds never race an adb cold start
@@ -225,6 +339,7 @@ async def on_startup():
     # Announce (and acknowledge) the interruptions committed above or left
     # pending by a previous server that stopped before delivering them.
     task_queue_service._drain_outcome_events()
+    task_queue_service.restore_drained_queue()
     # Workers killed together with a previous daemon never remuxed their
     # recordings; publish whatever raw files they left behind.
     asyncio.create_task(asyncio.to_thread(task_queue_service.recover_orphaned_recordings_on_launch))
@@ -234,17 +349,33 @@ async def on_startup():
 
     await ipc_service.start_server()
     state.worker_task = asyncio.create_task(task_queue_service.queue_worker())
+    # Finishes deferred deletions, and enforces retention only once an admin enabled it.
+    state.retention_task = asyncio.create_task(run_retention.sweep_forever())
+    state.retention_task.add_done_callback(run_retention.log_task_failure)
+    state.failure_task = asyncio.create_task(failure_ledger.sweep_forever())
+    state.failure_task.add_done_callback(run_retention.log_task_failure)
+    # Expires silent hosts and connections to Unknown (CHE-1477).
+    state.reconciler_task = asyncio.create_task(
+        device_reconciler.tick_forever(host_registry.db_path)
+    )
+    state.reconciler_task.add_done_callback(run_retention.log_task_failure)
 
 
 async def on_shutdown():
     """Stop task and IPC children before the UI server exits."""
     state.is_shutting_down = True
     state.shutdown_event.set()
+    if PREVIEW_PROFILE:
+        state.queue_items.clear()
+        state.ipc_subscribers.clear()
+        return
     task_queue_service._broadcast_event("server_shutdown", {"status": "stopping"})
     owned_items = {
         str(item["session_id"]): item
         for item in state.queue_items
-        if isinstance(item, dict) and item.get("status") == "running" and item.get("session_id")
+        if isinstance(item, dict)
+        and item.get("status") in IN_FLIGHT_STATUSES
+        and item.get("session_id")
     }
 
     worker = state.worker_task
@@ -255,6 +386,21 @@ async def on_shutdown():
         except (asyncio.CancelledError, TimeoutError):
             pass
     state.worker_task = None
+    retention = state.retention_task
+    if retention is not None and not retention.done():
+        retention.cancel()
+        await asyncio.gather(retention, return_exceptions=True)
+    state.retention_task = None
+    failure_sweep = state.failure_task
+    if failure_sweep is not None and not failure_sweep.done():
+        failure_sweep.cancel()
+        await asyncio.gather(failure_sweep, return_exceptions=True)
+    state.failure_task = None
+    reconciler_tick = state.reconciler_task
+    if reconciler_tick is not None and not reconciler_tick.done():
+        reconciler_tick.cancel()
+        await asyncio.gather(reconciler_tick, return_exceptions=True)
+    state.reconciler_task = None
 
     # Cancel in-flight run coroutines and wait for their finalizers (DB status,
     # session_ended broadcast, trace sync, recording recovery) to run.
@@ -301,17 +447,32 @@ async def on_shutdown():
 
 
 # Mount modular routers
+if PREVIEW_PROFILE:
+    # Ahead of the real routers: first match wins, so these answer their real twins.
+    app.include_router(preview_synthetic.router)
 app.include_router(stream.router)
 app.include_router(media.router)
 app.include_router(sessions.router)
+from apps.admin_console.routers import chats
+
+app.include_router(chats.router)
 app.include_router(runs.router)
+app.include_router(run_bundle.router)
+app.include_router(run_admin.router)
+app.include_router(run_annotations.router)
+app.include_router(prompt_critiques.router)
+app.include_router(failures.router)
 app.include_router(steps.router)
 app.include_router(tasks.router)
 app.include_router(replay.router)
 app.include_router(system.router)
+from apps.admin_console.routers import providers
+
+app.include_router(providers.router)
 app.include_router(drain.router)
 app.include_router(device_bridge.router)
 app.include_router(hosts.router)
+app.include_router(leases.router)
 app.include_router(agent.router)
 
 # Mount cloud gateway router for Frappe / Cloud integration if present
@@ -384,6 +545,21 @@ async def serve_showcase_spa(full_path: str):
         raise HTTPException(status_code=404, detail="Endpoint not found")
 
     clean_path = full_path.strip("/")
+
+    if not PREVIEW_PROFILE and (
+        preview_path := re.match(r"preview/pr/([0-9]+)(?:/|$)", clean_path)
+    ):
+        return HTMLResponse(
+            f"""<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Preview not available</title></head>
+<body><main><h1>Preview for PR #{preview_path[1]} is not available</h1>
+<p>No live preview is available at this URL.</p></main></body>
+</html>""",
+            status_code=404,
+            headers={"Cache-Control": "no-store"},
+        )
 
     # Admin / Debug Console routes
     if (
@@ -479,6 +655,11 @@ async def serve_showcase_spa(full_path: str):
     return HTMLResponse(fallback_html)
 
 
+if PREVIEW_PROFILE:
+    # Refuse to boot a preview with a route nobody has classified.
+    require_classified(app)
+
+
 # ------------------------------------------------------------------------------
 # Backward compatibility exports
 # ------------------------------------------------------------------------------
@@ -501,7 +682,8 @@ class ArtemisUvicornServer(uvicorn.Server):
         if proc is not None and proc.returncode is None:
             return True
         return any(
-            isinstance(item, dict) and item.get("status") == "running" for item in state.queue_items
+            isinstance(item, dict) and item.get("status") in IN_FLIGHT_STATUSES
+            for item in state.queue_items
         )
 
     @staticmethod
@@ -543,9 +725,16 @@ class ArtemisUvicornServer(uvicorn.Server):
 
 def run_ui_server(host: str, port: int, reload: bool = False) -> None:
     """Run the UI server with bounded, signal-aware graceful shutdown."""
+    from artemis.config.host_agent import host_agent_enabled
+    from apps.admin_console.services.bridge_session_service import MAX_ADB_PACKET_BYTES
+
+    require_loopback_bind(app.state.access_config, host)
+    websocket_options = {"ws_max_size": MAX_ADB_PACKET_BYTES} if host_agent_enabled() else {}
+    configure_logging(streams=True)
     state.host = host
     state.port = port
-    write_server_info(port=port, host=host, lifecycle_token=LIFECYCLE_TOKEN)
+    if not PREVIEW_PROFILE:
+        write_server_info(port=port, host=host, lifecycle_token=LIFECYCLE_TOKEN)
 
     try:
         if reload:
@@ -554,24 +743,30 @@ def run_ui_server(host: str, port: int, reload: bool = False) -> None:
                 host=host,
                 port=port,
                 reload=True,
+                log_config=REDACTED_UVICORN_LOGGING,
                 proxy_headers=False,
                 timeout_graceful_shutdown=5,
+                **websocket_options,
             )
             return
 
         config = uvicorn.Config(
             proxy_aware_app,
+            log_config=REDACTED_UVICORN_LOGGING,
             host=host,
             port=port,
             proxy_headers=False,
             timeout_graceful_shutdown=5,
+            **websocket_options,
         )
+        configure_logging()
         server = ArtemisUvicornServer(config)
         app.state.uvicorn_server = server
         server.run()
     finally:
         app.state.uvicorn_server = None
-        clear_server_info(port=port, lifecycle_token=LIFECYCLE_TOKEN)
+        if not PREVIEW_PROFILE:
+            clear_server_info(port=port, lifecycle_token=LIFECYCLE_TOKEN)
 
 
 def main(argv: list[str] | None = None) -> None:

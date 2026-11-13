@@ -11,17 +11,27 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
 from apps.admin_console.core.access_control import AccessIdentity, AdminAPIError, require_admin
+from apps.admin_console.core.ownership import OwnerScope, actor_scope, require_actor
+from apps.admin_console.database.repositories.device_repository import (
+    DeviceRepository,
+    DeviceStoreNotReady,
+)
+from apps.admin_console.database.repositories.run_catalog_repository import run_catalog_repo
+from apps.admin_console.services import device_leases
 from apps.admin_console.services import host_registry as hr
+from apps.admin_console.services.bridge_session_service import bridge_session_service
+from apps.admin_console.services.device_identity import device_identity
 from apps.admin_console.services.host_hub import CLOSE_REVOKED, host_hub
 from apps.admin_console.services.host_registry import host_registry
+from apps.admin_console.services.host_tunnel import host_tunnels
+from artemis.config.device_leases import device_leases_enabled
 from artemis.runtime import device_pool
+from artemis.runtime.adb_endpoint import AdbEndpoint
 
 try:
     from admin_console.core.state import state
-    from admin_console.services.bridge_session_service import bridge_session_service
 except ImportError:
     from apps.admin_console.core.state import state
-    from apps.admin_console.services.bridge_session_service import bridge_session_service
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/hosts", tags=["hosts"])
@@ -41,24 +51,67 @@ def _active_run_count(host_id: str) -> int:
     return sum(1 for run in state.active_runs.values() if run.get("host_id") == host_id)
 
 
+def _device_id(
+    repo: DeviceRepository, *, source: str, host_id: str | None, serial: str
+) -> str | None:
+    """The canonical device id of a routing key, or None before the identity layer matched it."""
+    try:
+        match = repo.connection(source=source, host_id=host_id, serial=serial)
+    except DeviceStoreNotReady:
+        return None
+    return match.device_id if match else None
+
+
+def _lease_views() -> dict[str, dict]:
+    """Who holds each leased phone, by device id; never the lease id, which is the holder's handle."""
+    if not device_leases_enabled():
+        return {}
+    return {
+        lease.device_id: {
+            "holder": lease.holder,
+            "purpose": lease.purpose,
+            "expires_at": lease.expires_at,
+        }
+        for lease in device_leases.active(run_catalog_repo.db_path)
+    }
+
+
 @router.get("")
-async def list_hosts() -> dict:
-    """Computers, and every phone a person can pick: shared by a computer or plugged into a browser."""
+async def list_hosts(actor: OwnerScope = Depends(actor_scope)) -> dict:
+    """Computers, and every phone the caller can pick: shared by a computer or plugged into their browser."""
+    scope = require_actor(actor)
     if not hr.host_agent_enabled():
         return {"enabled": False, "hosts": [], "devices": []}
     hosts, devices = host_registry.list_hosts()
+    repo = DeviceRepository(host_registry.db_path)
+    for device in devices:
+        device["device_id"] = _device_id(
+            repo, source="host", host_id=device["computer_id"], serial=device["serial"]
+        )
     for host in hosts:
         host["active_run_count"] = _active_run_count(host["id"])
     # The pool classifies phones from adb properties; a browser phone's address
     # (127.0.0.1:<port>) says nothing about what it is.
-    sessions = bridge_session_service.live_sessions()
-    pool = {d.serial: d for d in await device_pool.list_devices_async()} if sessions else {}
+    sessions = [s for s in bridge_session_service.live_sessions() if scope.may_act_on(s.owner)]
+    pool = (
+        {d.serial: d for d in await device_pool.pool_for(AdbEndpoint.local()).list_devices_async()}
+        if sessions
+        else {}
+    )
     browser = [
         {
             "serial": s.serial,
             "model": pool[s.serial].model if s.serial in pool else None,
+            "product": pool[s.serial].product if s.serial in pool else None,
             "device_kind": pool[s.serial].device_kind if s.serial in pool else "unknown",
             "source": "browser",
+            "device_id": _device_id(
+                repo,
+                source="bridge",
+                host_id=None,
+                serial=device_identity.transport_key(AdbEndpoint.local(), s.serial),
+            ),
+            "owner": s.owner,
             "computer_id": None,
             "computer_name": None,
             "computer_status": "online",
@@ -67,7 +120,11 @@ async def list_hosts() -> dict:
         }
         for s in sessions
     ]
-    return {"enabled": True, "hosts": hosts, "devices": [*devices, *browser]}
+    held = _lease_views()
+    everyone = [*devices, *browser]
+    for device in everyone:
+        device["lease"] = held.get(device["device_id"])
+    return {"enabled": True, "hosts": hosts, "devices": everyone}
 
 
 @router.post("/enrollment-codes")
@@ -92,6 +149,7 @@ async def revoke_host(host_id: str, _admin: AccessIdentity = Depends(require_adm
     interrupted = _active_run_count(host_id)
     if not host_registry.revoke(host_id):
         raise AdminAPIError(404, "Unknown computer.", "host_unknown", "Refresh the list.")
+    await host_tunnels.abort_host(host_id, "auth_expired")
     await host_hub.close_host(host_id, CLOSE_REVOKED, "revoked")
     logger.info("event=host_revoked host_id=%s interrupted_runs=%d", host_id, interrupted)
     return {"status": "revoked", "interrupted_runs": interrupted}

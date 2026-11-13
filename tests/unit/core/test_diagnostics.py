@@ -20,6 +20,7 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 from artemis.core.diagnostics.engine import ReadinessEngine
+from artemis.runtime.adb_endpoint import AdbEndpoint
 from artemis.core.diagnostics.probes.adb_probe import AdbDeviceProbe
 from artemis.core.diagnostics.probes.credentials_probe import (
     LLMCredentialsProbe,
@@ -53,8 +54,46 @@ def _clear_credential_inputs(monkeypatch):
         monkeypatch.delenv(env_name, raising=False)
 
 
+@pytest.fixture
+def no_adb_binary(monkeypatch):
+    """Probe as a machine without adb: the probe then never contacts an adb server."""
+    monkeypatch.setattr(AdbDeviceProbe, "_locate_adb", lambda _probe: None)
+
+
 @pytest.mark.asyncio
-async def test_readiness_engine_run_all():
+async def test_submission_endpoint_override_does_not_change_the_shared_probe(monkeypatch):
+    engine = ReadinessEngine()
+    shared = AsyncMock(return_value="preferred-probe")
+    monkeypatch.setattr(engine._adb_probe, "probe_submission_readiness", shared)
+    endpoints = []
+
+    async def probe_submission(probe, target_serial=None, may_use=None):
+        endpoints.append(probe._endpoint)
+        assert target_serial == "browser-phone"
+        assert may_use is allowed
+        return "browser-probe"
+
+    def allowed(serial):
+        return serial == "browser-phone"
+
+    monkeypatch.setattr(AdbDeviceProbe, "probe_submission_readiness", probe_submission)
+
+    result = await engine.run_device_submission_probe(
+        target_serial="browser-phone", may_use=allowed, endpoint=AdbEndpoint.local()
+    )
+
+    assert result == "browser-probe"
+    assert endpoints == [AdbEndpoint.local()]
+    assert engine._adb_probe._endpoint is None
+    shared.assert_not_awaited()
+    assert await engine.run_device_submission_probe(target_serial="preferred-phone") == (
+        "preferred-probe"
+    )
+    shared.assert_awaited_once_with(target_serial="preferred-phone", may_use=None)
+
+
+@pytest.mark.asyncio
+async def test_readiness_engine_run_all(no_adb_binary):
     """Verify that ReadinessEngine aggregates probes and builds structured report."""
     engine = ReadinessEngine()
     report: SystemReadinessReport = await engine.run_all()
@@ -118,7 +157,7 @@ async def test_vision_ocr_probe_structure():
 
 
 @pytest.mark.asyncio
-async def test_adb_probe_structure():
+async def test_adb_probe_structure(no_adb_binary):
     """Verify AdbDeviceProbe returns correct category, blocker status, and schema."""
     probe = AdbDeviceProbe()
     assert probe.probe_id == "android_adb"
@@ -282,7 +321,7 @@ async def test_submission_probe_skips_full_device_enrichment(monkeypatch):
     get_lock_state = AsyncMock(return_value=False)
     full_probe = AsyncMock()
     monkeypatch.setattr(
-        "artemis.core.diagnostics.probes.adb_probe.toolchain.resolve",
+        "artemis.toolchain.toolchain.resolve",
         lambda name: "adb",
     )
     monkeypatch.setattr(probe, "_get_device_states", get_states)
@@ -302,7 +341,7 @@ async def test_submission_probe_skips_full_device_enrichment(monkeypatch):
 async def test_submission_probe_fails_closed_when_lock_state_is_unknown(monkeypatch):
     probe = AdbDeviceProbe()
     monkeypatch.setattr(
-        "artemis.core.diagnostics.probes.adb_probe.toolchain.resolve",
+        "artemis.toolchain.toolchain.resolve",
         lambda name: "adb",
     )
     monkeypatch.setattr(
@@ -320,6 +359,43 @@ async def test_submission_probe_fails_closed_when_lock_state_is_unknown(monkeypa
 
     assert result.summary == "Lock State Unknown"
     assert result.status == ProbeStatus.WARN
+
+
+@pytest.mark.asyncio
+async def test_submission_probe_only_considers_devices_the_caller_may_use(monkeypatch):
+    probe = AdbDeviceProbe()
+    monkeypatch.setattr("artemis.toolchain.toolchain.resolve", lambda name: "adb")
+    monkeypatch.setattr(
+        probe,
+        "_get_device_states",
+        AsyncMock(return_value=[("foreign", "device"), ("mine", "device")]),
+    )
+    checked: list[str] = []
+
+    async def lock_state(adb_path, serial, timeout_seconds=1.0):
+        checked.append(serial)
+        return False
+
+    monkeypatch.setattr(probe, "_get_confirmed_device_lock_state", lock_state)
+
+    result = await probe.probe_submission_readiness(may_use=lambda serial: serial != "foreign")
+
+    assert result.metadata["active_device"]["serial"] == "mine"
+    assert checked == ["mine"]
+
+
+@pytest.mark.asyncio
+async def test_submission_probe_with_no_allowed_device_reports_none_found(monkeypatch):
+    probe = AdbDeviceProbe()
+    monkeypatch.setattr("artemis.toolchain.toolchain.resolve", lambda name: "adb")
+    monkeypatch.setattr(
+        probe, "_get_device_states", AsyncMock(return_value=[("foreign", "device")])
+    )
+
+    result = await probe.probe_submission_readiness(may_use=lambda serial: False)
+
+    assert result.summary == "No Device Found"
+    assert "foreign" not in str(result.model_dump())
 
 
 @pytest.mark.asyncio
@@ -467,8 +543,29 @@ async def test_toolchain_probe_explains_unsupported_scrcpy(monkeypatch):
 
     assert result.status == ProbeStatus.FAIL
     assert result.metadata["scrcpy_supported"] is False
-    assert "Unsupported scrcpy version (1.24)" in result.summary
-    assert "recording requires scrcpy 1.25" in result.description
+    assert "scrcpy too old for this phone's Android version (1.24)" in result.summary
+    assert "recording requires scrcpy 2.4" in result.description
+
+
+@pytest.mark.asyncio
+async def test_toolchain_probe_reports_125_too_old_for_phone(monkeypatch):
+    monkeypatch.setattr(
+        "artemis.core.diagnostics.probes.toolchain_probe.toolchain.resolve",
+        lambda name: f"/usr/bin/{name}",
+    )
+    monkeypatch.setattr(
+        "artemis.core.diagnostics.probes.toolchain_probe.detect_scrcpy_version",
+        lambda executable: "1.25",
+    )
+
+    result = await ToolchainProbe().probe()
+
+    assert result.status == ProbeStatus.FAIL
+    assert result.metadata["scrcpy_supported"] is False
+    assert result.metadata["scrcpy_version"] == "1.25"
+    assert "scrcpy too old for this phone's Android version" in result.summary
+    assert "recording requires scrcpy 2.4 or newer" in result.description
+    assert any("start.sh" in action.payload for action in result.actions)
 
 
 @pytest.mark.asyncio
