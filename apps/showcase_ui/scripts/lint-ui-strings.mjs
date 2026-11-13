@@ -9,7 +9,7 @@ const files = [
   'src/app/components/computers/computers.component.ts',
   'src/app/components/computers/computers.component.html',
   'src/app/components/device-chip/device-chip.component.ts',
-  'src/app/components/registry-phones/registry-phones.component.ts',
+  'src/app/pages/phones/phones.component.ts',
   'src/app/pages/setup/setup.component.html',
   'src/app/utils/run-library-strings.ts',
   'src/app/utils/workspace-chip.util.ts',

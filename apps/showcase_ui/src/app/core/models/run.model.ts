@@ -1,3 +1,5 @@
+import { CheckerBlockData } from './stream.model';
+
 /** One recording's server-side state (`recordings[]` on a catalog run). */
 export interface RunRecording {
   recording_id: string;
@@ -8,6 +10,9 @@ export interface RunRecording {
 /** A run as `GET /api/runs` and `GET /api/runs/{id}` return it. */
 export interface RunSummary {
   session_id: string;
+  chat_session_id?: string;
+  chat_title?: string | null;
+  chat_prompt?: string | null;
   prompt: string | null;
   status: string;
   interrupt_reason: string | null;
@@ -38,7 +43,8 @@ export interface ChatMessage {
   session_id: string;
   turn_id: string;
   role: 'human' | 'agent' | 'system';
-  kind: 'message' | 'pause' | 'continue';
+  kind: 'message' | 'pause' | 'continue' | 'thinking' | 'plan' | 'replan' | 'step' | 'input_request' | 'verdict';
+  payload?: Record<string, any>;
   content: string;
   client_id: string | null;
   reply_to: number | null;
@@ -54,10 +60,19 @@ export interface ChatTurn {
   created_at: number;
 }
 
+export interface ResultsNote {
+  text: string;
+  modified_at: number;
+  truncated: boolean;
+}
+
 export interface ChatSession {
   session_id: string;
+  title?: string | null;
   turns: ChatTurn[];
   messages: ChatMessage[];
+  timeline?: ChatMessage[];
+  verdict?: { status: string; outcome: CheckerBlockData | null; report?: string | null; details: Record<string, any>; tip?: { state: 'generating' | 'complete' | 'failed'; text: string | null } | null; result?: { results_note?: ResultsNote | null } | null };
   idle_until: number | null;
   lease_pid: number | null;
 }

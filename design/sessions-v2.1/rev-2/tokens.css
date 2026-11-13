@@ -1,0 +1,94 @@
+/* Copied from apps/showcase_ui/src/styles.scss @ f74f300 (:root block, base, icon face).
+   Mockups read only these tokens. Inter and JetBrains Mono are not fetched (no network):
+   captures fall back to the system sans and mono. */
+@font-face {
+  font-family: 'Material Symbols Outlined';
+  font-style: normal;
+  font-weight: 300 400;
+  font-display: block;
+  src: url('../../../apps/showcase_ui/public/fonts/material-symbols-outlined.woff2') format('woff2');
+}
+.ms {
+  font-family: 'Material Symbols Outlined';
+  font-weight: normal; font-style: normal; font-size: 20px; line-height: 1;
+  display: inline-block; white-space: nowrap; direction: ltr;
+  font-feature-settings: 'liga';
+  font-variation-settings: 'FILL' 0, 'wght' 300, 'GRAD' 0, 'opsz' 20;
+  -webkit-font-smoothing: antialiased;
+}
+:root {
+  --color-bg: #fafafa;
+  --color-surface: #ffffff;
+  --color-surface-subtle: #f4f4f5;
+  --color-ink: #18181b;
+  --color-text: #27272a;
+  --color-text-muted: #52525b;
+  --color-text-faint: #6b6b73;
+  --color-rule: #e4e4e7;
+  --color-rule-strong: #d4d4d8;
+  --color-border: #8b8b94;
+  --color-primary: #4f46e5;
+  --color-primary-hover: #4338ca;
+  --color-primary-tint: #eef2ff;
+  --color-primary-edge: #c7d2fe;
+  --color-on-primary: #ffffff;
+  --color-focus: #4338ca;
+  --color-success: #166534;
+  --color-success-bg: #dcfce7;
+  --color-warning: #92400e;
+  --color-warning-bg: #fef3c7;
+  --color-error: #991b1b;
+  --color-error-bg: #fee2e2;
+  --color-error-solid: #dc2626;
+  --color-neutral: #3f3f46;
+  --color-neutral-bg: #e4e4e7;
+  --color-device: #0f172a;
+  --color-device-edge: #1e293b;
+  --color-device-text: #e2e8f0;
+  --color-device-muted: #94a3b8;
+
+  --font-ui: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --text-label: 0.75rem;
+  --text-ui: 0.8125rem;
+  --text-body: 0.875rem;
+  --text-section: 1rem;
+  --text-title: 1.125rem;
+  --leading-ui: 1.25rem;
+
+  --space-xs: 3px;
+  --space-sm: 5px;
+  --space-smd: 8px;
+  --space-md: 11px;
+  --space-lg: 16px;
+  --space-xl: 21px;
+  --target: 44px;
+
+  --sidebar-w: 224px;
+  --list-w: 360px;
+  --row-h: 56px;
+  --appbar-h: 48px;
+  --tabbar-h: 56px;
+
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-full: 9999px;
+
+  --shadow-1: 0 2px 6px rgb(15 23 42 / 8%);
+  --shadow-2: 0 4px 12px rgb(15 23 42 / 12%);
+  --shadow-3: 0 12px 32px rgb(15 23 42 / 16%);
+
+  --motion-fast: 120ms;
+  --motion-panel: 180ms;
+}
+*, *::before, *::after { box-sizing: border-box; }
+body {
+  margin: 0; font-family: var(--font-ui); color: var(--color-text); background: var(--color-bg);
+  font-size: var(--text-ui); line-height: var(--leading-ui); -webkit-font-smoothing: antialiased;
+}
+.mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+:where(a, button, input, select, textarea, summary, [tabindex]):focus-visible { outline: 3px solid var(--color-focus); outline-offset: 2px; }
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }
+}

@@ -14,9 +14,10 @@
 
 """Typed data models and geometry representations for device drivers."""
 
+from pydantic import ConfigDict
 import re
 from typing import Literal
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, Field
 
 
 class TapOutput(BaseModel):

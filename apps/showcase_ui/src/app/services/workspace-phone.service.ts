@@ -5,7 +5,7 @@ import { HostsService } from './hosts.service';
 import { PhoneTabService } from './phone-tab.service';
 import { SystemService } from './system.service';
 import { UsbDeviceRelayService } from './usb-device-relay.service';
-import { pickerOptions, WorkspaceChipInput, workspaceChipView } from '../utils/workspace-chip.util';
+import { phoneIdentity, pickerOptions, WorkspaceChipInput, workspaceChipView } from '../utils/workspace-chip.util';
 
 /**
  * The one phone the Workspace runs on: what the chip shows, what the next run binds to, and
@@ -66,6 +66,10 @@ export class WorkspacePhoneService {
   public readonly options = computed(() => pickerOptions(this.input()));
   /** Where the next run goes; null means Run stays blocked. */
   public readonly target = computed(() => this.view().target);
+  public readonly selectedDevice = computed(() => {
+    const serial = this.target()?.serial;
+    return serial ? phoneIdentity(this.input(), serial) : null;
+  });
   /** A live run is on the phone this tab holds, so disconnecting it stops that run. */
   public readonly runUsesBrowserPhone = computed(() => this.runIsOn(this.browserSerial()));
   public readonly canConnectFromBrowser = computed(
@@ -82,6 +86,7 @@ export class WorkspacePhoneService {
     // Source names come from the computers registry; refresh it when the phone list changes.
     effect(() => {
       this.system.connectedDevices();
+      this.browserSerial();
       untracked(() =>
         this.hosts.list().subscribe({
           next: (response) => this.registry.set(response),

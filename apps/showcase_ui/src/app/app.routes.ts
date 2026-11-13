@@ -14,7 +14,6 @@
  * limitations under the License.
  */
 
-import { LessonsComponent } from './pages/lessons/lessons.component';
 import { Routes } from '@angular/router';
 import { HomeComponent } from './pages/home/home.component';
 import { WorkspaceComponent } from './pages/workspace/workspace.component';
@@ -22,16 +21,19 @@ import { LegacyWorkspaceComponent } from './pages/legacy-workspace/legacy-worksp
 import { firstRunGuard } from './guards/first-run.guard';
 import { adminGuard } from './guards/admin.guard';
 import { ProvidersComponent } from './pages/providers/providers.component';
+import { PhonesComponent } from './pages/phones/phones.component';
 
 export const routes: Routes = [
-  { path: '', pathMatch: 'full', redirectTo: 'workspace' },
+  { path: '', pathMatch: 'full', redirectTo: 'sessions/new' },
   { path: 'setup', component: HomeComponent },
+  { path: 'phones', component: PhonesComponent },
   { path: 'providers', component: ProvidersComponent, canActivate: [adminGuard] },
-  { path: 'workspace', component: WorkspaceComponent, canActivate: [firstRunGuard] },
-  // Run library and viewer: the same shell in review mode, so history stays one click from a new run.
-  { path: 'runs', component: WorkspaceComponent, data: { review: true } },
-  { path: 'runs/:id', component: WorkspaceComponent, data: { review: true } },
-  { path: 'lessons', component: LessonsComponent },
+  { path: 'sessions', component: WorkspaceComponent, data: { review: true } },
+  { path: 'sessions/new', component: WorkspaceComponent, data: { newSession: true }, canActivate: [firstRunGuard] },
+  { path: 'sessions/:id', component: WorkspaceComponent, data: { review: true } },
+  { path: 'workspace', pathMatch: 'full', redirectTo: 'sessions/new' },
+  { path: 'runs', pathMatch: 'full', redirectTo: 'sessions' },
+  { path: 'runs/:id', redirectTo: 'sessions/:id' },
   { path: 'check', component: LegacyWorkspaceComponent },
-  { path: '**', redirectTo: 'workspace' }
+  { path: '**', redirectTo: 'sessions' }
 ];

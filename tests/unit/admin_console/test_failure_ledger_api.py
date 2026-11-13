@@ -16,9 +16,11 @@
 
 import asyncio
 import json
+import re
 import sqlite3
 import time
 import uuid
+from pathlib import Path
 
 import pytest
 
@@ -40,6 +42,10 @@ OFFLINE = (
 )
 SERIAL = "127.0.0.1:39129"
 ACTION = {"smartqa": "fix", "provider": "monitor", "user": "no action", "unknown": "review"}
+KEYGUARD = (
+    "[web_turn_1] Error running automation: Android secure keyguard is locked. "
+    "Unlock the device manually before starting automation."
+)
 
 
 def _ok(text):
@@ -139,6 +145,229 @@ def by_session(view, sid):
     return sorted(
         (row for row in view["failures"] if row["session_id"] == sid),
         key=lambda row: row["step_number"],
+    )
+
+
+def test_unwrapped_keyguard_error_is_qa_environment():
+    assert failure_ledger.classify(KEYGUARD) == ("qa_environment", "device_locked")
+
+
+def test_keyguard_classifier_finds_its_rule_by_name(monkeypatch):
+    overlapping_rule = ("earlier_rule", "smartqa_infra", re.compile("keyguard is locked"))
+    device_locked_rule = ("device_locked", "qa_environment", re.compile("different error"))
+    other_rules = tuple(rule for rule in failure_ledger._COMPILED if rule[0] != "device_locked")
+    monkeypatch.setattr(
+        failure_ledger,
+        "_COMPILED",
+        (overlapping_rule, device_locked_rule, *other_rules),
+    )
+
+    assert failure_ledger.classify({"error": KEYGUARD}) == ("smartqa_infra", "earlier_rule")
+
+
+def test_failure_docs_describe_structured_run_cause_sources():
+    docs = Path("docs/smartqa-ops.md").read_text(encoding="utf-8")
+
+    assert (
+        "Run causes use structured per-turn terminal errors and interrupt evidence; the "
+        "`stdout.log` tail is a legacy fallback only when structured evidence is absent."
+    ) in docs
+    assert "else the last error line of the run's `stdout.log`" not in docs
+
+
+@pytest.mark.parametrize(
+    ("evidence", "expected"),
+    [
+        ({"error": KEYGUARD}, ("qa_environment", "device_locked")),
+        (
+            {
+                "reason": "bridge_closed",
+                "client_close": {"reason": "usb_disconnected"},
+                "visibility_state": "hidden",
+            },
+            ("qa_environment", "usb_disconnected_hidden"),
+        ),
+        (
+            {
+                "reason": "bridge_closed",
+                "client_close": {"reason": "usb_disconnected"},
+                "visibility_state": "visible",
+            },
+            ("smartqa_infra", "run_interrupted"),
+        ),
+        (
+            {
+                "reason": "bridge_closed",
+                "client_close": {"reason": "socket_closed"},
+                "visibility_state": "hidden",
+            },
+            ("smartqa_infra", "run_interrupted"),
+        ),
+        ({"reason": "auth_expired"}, ("smartqa_infra", "auth_expired")),
+        ({"reason": "deploy_cut", "close_code": 1012}, ("smartqa_infra", "run_interrupted")),
+        ({"error": "usb_disconnected hidden auth_expired"}, ("unknown", "no_match")),
+        (
+            {"reason": "bridge_closed", "error": "usb_disconnected hidden"},
+            ("smartqa_infra", "run_interrupted"),
+        ),
+    ],
+)
+def test_interrupt_rules_match_fields_not_combined_text(evidence, expected):
+    assert failure_ledger.classify(evidence) == expected
+
+
+@pytest.mark.asyncio
+async def test_each_turn_uses_its_structured_error_before_the_stdout_tail(library, admin):
+    first = seed_run(library, stdout="ons.AgentError: Android\n" + "x" * 70000)
+    second = seed_run(library, stdout=KEYGUARD)
+    library.write(
+        first, "status.json", json.dumps({"trace_id": first, "status": "failed", "error": KEYGUARD})
+    )
+    library.write(
+        second,
+        "status.json",
+        json.dumps({"trace_id": second, "status": "failed", "error": "LLM call timed out"}),
+    )
+    await collect(admin)
+    view = await failures(admin)
+    assert {(row["category"], row["rule"]) for row in by_session(view, first)} == {
+        ("qa_environment", "device_locked")
+    }
+    assert {(row["category"], row["rule"]) for row in by_session(view, second)} == {
+        ("provider", "llm_timeout")
+    }
+
+
+@pytest.mark.asyncio
+async def test_nonempty_unmatched_structured_error_never_borrows_a_log_error(library, admin):
+    sid = seed_run(library, stdout="LLMExhaustedError: Connection error.\n")
+    library.write(
+        sid, "status.json", json.dumps({"trace_id": sid, "error": "Unrecognized runner failure"})
+    )
+    await collect(admin)
+    row = by_session(await failures(admin), sid)[0]
+    assert (row["category"], row["rule"]) == ("unknown", "no_match")
+    assert row["evidence"] == "Unrecognized runner failure"
+
+
+@pytest.mark.asyncio
+async def test_missing_turn_evidence_does_not_use_another_turn_status(library, admin):
+    previous = seed_run(library)
+    current = seed_run(library)
+    library.write(previous, "status.json", json.dumps({"trace_id": previous, "error": KEYGUARD}))
+    library.write(current, "status.json", json.dumps({"trace_id": previous, "error": KEYGUARD}))
+    await collect(admin)
+    row = by_session(await failures(admin), current)[0]
+    assert (row["category"], row["rule"]) == ("unknown", "no_match")
+
+
+@pytest.mark.asyncio
+async def test_targeted_collect_keeps_other_turns_unclassified_and_is_idempotent(library, admin):
+    first = seed_run(library, stdout=KEYGUARD)
+    second = seed_run(library, stdout="LLMExhaustedError: Connection error.\n")
+    assert failure_ledger.collect(session_id=first)["scanned"] == 1
+    view = await failures(admin)
+    assert by_session(view, first)
+    assert not by_session(view, second)
+    assert failure_ledger.collect(session_id=first) == {"scanned": 0, "inserted": 0}
+
+
+@pytest.mark.asyncio
+async def test_qa_and_app_causes_are_not_counted_as_smartqa_defects(library, admin):
+    sid = seed_run(library, stdout=KEYGUARD)
+    await collect(admin)
+    assert all(not cause["smartqa_side"] for cause in (await failures(admin))["causes"])
+    with sqlite3.connect(library.db) as conn:
+        conn.execute("UPDATE failure_ledger SET category='app_defect' WHERE session_id=?", (sid,))
+    assert all(not cause["smartqa_side"] for cause in (await failures(admin))["causes"])
+
+
+@pytest.mark.asyncio
+async def test_bridge_close_persists_the_exact_turn_report_before_revocation(
+    library, admin, monkeypatch
+):
+    from apps.admin_console.services.bridge_session_service import (
+        BridgeSession,
+        BridgeSessionService,
+    )
+    from apps.admin_console.core.state import state
+    from apps.admin_console.database.repositories.session_repository import session_repo
+
+    sid = seed_run(library, status="running")
+    monkeypatch.setattr(session_repo, "db_path", library.db)
+    monkeypatch.setattr(state, "queue_items", [{"session_id": sid, "bridge_session_id": "bridge"}])
+    monkeypatch.setattr(state, "active_runs", {})
+    bridge = BridgeSessionService()
+    session = BridgeSession("bridge", port=41001)
+    session.client_close = {"reason": "usb_disconnected", "visibility_state": "hidden"}
+    bridge._sessions["bridge"] = session
+    await bridge.revoke("bridge")
+    await collect(admin)
+    view = await failures(admin)
+    row = by_session(view, sid)[0]
+    assert (row["category"], row["rule"]) == ("qa_environment", "usb_disconnected_hidden")
+    expected_evidence = "interrupted: bridge_closed (usb_disconnected, hidden)"
+    assert row["evidence"] == expected_evidence
+    cause = next(
+        cause
+        for cause in view["causes"]
+        if cause["rule"] == "usb_disconnected_hidden" and sid in cause["run_ids"]
+    )
+    assert cause["sample"] == expected_evidence
+    with sqlite3.connect(library.db) as conn:
+        stored = conn.execute(
+            "SELECT interrupt_evidence FROM sessions WHERE session_id=?", (sid,)
+        ).fetchone()[0]
+    assert json.loads(stored) == {
+        "reason": "bridge_closed",
+        "client_close": {"reason": "usb_disconnected"},
+        "visibility_state": "hidden",
+    }
+
+
+@pytest.mark.asyncio
+async def test_shared_chat_worker_stdout_is_not_borrowed_by_an_earlier_turn(library, admin):
+    first = seed_run(library, stdout="LLMExhaustedError: Connection error.\n")
+    second = seed_run(library)
+    with sqlite3.connect(library.db) as conn:
+        for number, turn in enumerate((first, second), start=1):
+            conn.execute(
+                "INSERT INTO chat_turns VALUES (?, ?, ?, 'failed', ?)",
+                (turn, first, number, time.time()),
+            )
+    await collect(admin)
+    view = await failures(admin)
+    assert {(row["category"], row["rule"]) for row in by_session(view, first)} == {
+        ("unknown", "no_match")
+    }
+    assert {(row["category"], row["rule"]) for row in by_session(view, second)} == {
+        ("unknown", "no_match")
+    }
+
+
+@pytest.mark.asyncio
+async def test_durable_error_classifies_even_when_the_projection_is_missing(library, admin):
+    from artemis.runtime.lifecycle import LifecycleAuthority
+
+    sid = seed_run(library, status="running", stdout="ons.AgentError: Android\n")
+    LifecycleAuthority(library.db).finish(sid, "failed", error=KEYGUARD)
+    await collect(admin)
+    row = by_session(await failures(admin), sid)[0]
+    assert (row["category"], row["rule"]) == ("qa_environment", "device_locked")
+
+
+@pytest.mark.asyncio
+async def test_stdout_fallback_accepts_an_unwrapped_automation_error(library, admin):
+    sid = seed_run(library, stdout=KEYGUARD)
+    await collect(admin)
+    row = by_session(await failures(admin), sid)[0]
+    assert (row["category"], row["rule"]) == ("qa_environment", "device_locked")
+
+
+def test_malformed_structured_reason_is_not_a_rule_or_a_classifier_crash():
+    assert failure_ledger.classify({"reason": [], "error": "unrecognized"}) == (
+        "unknown",
+        "no_match",
     )
 
 

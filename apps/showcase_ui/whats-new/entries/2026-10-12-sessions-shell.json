@@ -1,0 +1,7 @@
+{
+  "id": "2026-10-12-sessions-shell",
+  "date": "2026-10-12",
+  "title": "Sessions bring chats and device evidence together",
+  "body": "Open Sessions to browse chats, rename a session, and use Live, Details or Stats beside the conversation. Choose pinned expanded, pinned icons or expand-on-hover navigation. New run opens an empty session without reusing the previous conversation.",
+  "issues": ["CHE-1556"]
+}

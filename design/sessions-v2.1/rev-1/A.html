@@ -1,0 +1,305 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>sessions-v2.1 rev-1 · A — Ledger</title>
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="mock.css">
+<style>
+  /* Direction A — Ledger: text-first rows. Action sentence, then the post-action thumbnail on the
+     same row. Click the thumbnail: before/after opens inline under the row. */
+  .main { display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--color-bg); }
+  .head { display: flex; align-items: flex-start; gap: var(--space-md); padding: var(--space-md) var(--space-lg); border-bottom: 1px solid var(--color-rule); background: var(--color-surface); }
+  .head .ttl { flex: 1; min-width: 0; }
+  .head h1 { margin: 0; font-size: var(--text-title); line-height: 28px; color: var(--color-ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .costline { display: flex; flex-wrap: wrap; gap: 4px var(--space-md); color: var(--color-text-muted); font-size: var(--text-label); }
+  .costline b { color: var(--color-ink); font-weight: 500; }
+  .costline .ms { font-size: 16px; vertical-align: -3px; }
+  .tl { flex: 1; overflow: hidden; padding: var(--space-lg) var(--space-xl); }
+  .tl ol { list-style: none; margin: 0; padding: 0; display: grid; gap: 0; }
+  .turn { display: flex; align-items: center; gap: var(--space-smd); color: var(--color-text-muted); font-size: var(--text-label); margin: 0 0 var(--space-md); }
+  .turn::after { content: ''; flex: 1; border-top: 1px solid var(--color-rule); }
+  .bubble { max-width: 70%; padding: var(--space-md); border: 1px solid var(--color-rule-strong); border-radius: var(--radius-lg); background: var(--color-surface); margin-bottom: var(--space-md); }
+  .bubble.you { margin-left: auto; background: var(--color-primary-tint); border-color: var(--color-primary-edge); }
+  .bubble .who { font-size: var(--text-label); font-weight: 600; color: var(--color-text-muted); }
+  .bubble p { margin: 2px 0 0; color: var(--color-text); }
+  .step { display: grid; grid-template-columns: 28px minmax(0, 1fr) auto; gap: var(--space-md); align-items: start; padding: var(--space-smd) 0; border-top: 1px solid var(--color-rule); }
+  .step .n { font-family: var(--font-mono); color: var(--color-text-faint); font-size: var(--text-label); padding-top: 3px; text-align: right; }
+  .act { color: var(--color-ink); font-weight: 500; display: flex; gap: var(--space-smd); align-items: baseline; }
+  .act .ms { font-size: 18px; color: var(--color-text-muted); position: relative; top: 3px; }
+  .act .tgt { color: var(--color-text-muted); font-weight: 400; }
+  .result { color: var(--color-text-muted); font-size: var(--text-label); margin-top: 2px; }
+  .think { margin-top: 2px; }
+  .think summary { list-style: none; cursor: pointer; display: inline-flex; align-items: center; gap: 2px; min-height: 28px; color: var(--color-text-faint); font-size: var(--text-label); }
+  .think summary::-webkit-details-marker { display: none; }
+  .think summary .ms { font-size: 16px; }
+  .think p { margin: 0 0 var(--space-xs); padding-left: var(--space-md); border-left: 2px solid var(--color-rule); color: var(--color-text-faint); font-size: var(--text-label); font-style: italic; }
+  .ev .shot { --w: 36px; }
+  .ev { border: 1px solid var(--color-rule-strong); border-radius: var(--radius-md); background: var(--color-surface); padding: 3px; cursor: zoom-in; display: grid; justify-items: center; }
+  .ev .cap { margin: 0; font-size: 10px; }
+  .ev.on { border-color: var(--color-primary); box-shadow: 0 0 0 2px var(--color-primary-edge); }
+  .cmp { grid-column: 2 / 4; display: grid; grid-template-columns: auto auto minmax(0, 1fr); gap: var(--space-lg); align-items: start; padding: var(--space-md); border: 1px solid var(--color-rule); border-radius: var(--radius-lg); background: var(--color-surface); margin-top: var(--space-xs); }
+  .cmp figure { margin: 0; }
+  .cmp figcaption { font-size: var(--text-label); font-weight: 600; color: var(--color-text-muted); margin-bottom: var(--space-xs); }
+  .cmp .alt { font-size: var(--text-label); color: var(--color-text-muted); }
+  .cmp .alt dt { font-weight: 600; color: var(--color-text); margin-top: var(--space-smd); }
+  .cmp .alt dd { margin: 2px 0 0; }
+  .verdict { margin-top: var(--space-md); padding: var(--space-md); border: 1px solid var(--color-rule-strong); border-radius: var(--radius-md); background: var(--color-surface); display: flex; gap: var(--space-md); align-items: center; }
+  .composer { border-top: 1px solid var(--color-rule); background: var(--color-surface); padding: var(--space-md) var(--space-lg); }
+  .composer label { display: block; font-weight: 600; margin-bottom: var(--space-sm); color: var(--color-ink); }
+  .composer textarea { width: 100%; min-height: 44px; resize: none; border: 1px solid var(--color-border); border-radius: var(--radius-md); padding: var(--space-md); font: inherit; color: var(--color-text); background: var(--color-surface); }
+  .composer textarea:disabled { background: var(--color-surface-subtle); border-color: var(--color-rule-strong); }
+  .crow { display: flex; align-items: center; gap: var(--space-smd); margin-top: var(--space-smd); }
+  .crow .hint { flex: 1; color: var(--color-text-muted); font-size: var(--text-label); }
+  .picker { display: inline-flex; align-items: center; gap: var(--space-smd); min-height: 44px; padding: 0 var(--space-md); border: 1px solid var(--color-rule-strong); border-radius: var(--radius-md); background: var(--color-surface); color: var(--color-ink); font: inherit; cursor: pointer; white-space: nowrap; }
+  .picker.locked { background: var(--color-surface-subtle); color: var(--color-text-muted); cursor: default; }
+  .picker .ms { font-size: 18px; }
+  .picker.locked .ms { color: var(--color-text-faint); }
+  .pop { width: 360px; border: 1px solid var(--color-rule-strong); border-radius: var(--radius-lg); background: var(--color-surface); box-shadow: var(--shadow-2); padding: var(--space-smd); }
+  .pop h3 { margin: var(--space-xs) var(--space-smd) var(--space-smd); font-size: var(--text-label); color: var(--color-text-muted); text-transform: uppercase; letter-spacing: .04em; }
+  .pop .opt { display: flex; align-items: center; gap: var(--space-smd); min-height: 44px; padding: 0 var(--space-smd); border-radius: var(--radius-md); }
+  .pop .opt:hover, .pop .opt.hl { background: var(--color-primary-tint); }
+  .pop .opt .grow { flex: 1; }
+  .pop .opt small { display: block; color: var(--color-text-muted); font-size: var(--text-label); }
+  .pop hr { border: 0; border-top: 1px solid var(--color-rule); margin: var(--space-smd) 0; }
+  .pop .note { font-size: var(--text-label); color: var(--color-text-muted); padding: 0 var(--space-smd) var(--space-xs); }
+  .alert { display: flex; gap: var(--space-smd); align-items: center; padding: var(--space-smd) var(--space-md); border-radius: var(--radius-md); background: var(--color-error-bg); color: var(--color-error); font-weight: 500; margin-bottom: var(--space-smd); }
+  table { width: 100%; border-collapse: collapse; }
+  th { text-align: left; font-size: var(--text-label); color: var(--color-text-muted); background: var(--color-surface-subtle); font-weight: 600; padding: 0 var(--space-md); height: 36px; border-bottom: 1px solid var(--color-rule); }
+  td { padding: 0 var(--space-md); height: 48px; border-bottom: 1px solid var(--color-rule); }
+  td .sub { display: block; font-family: var(--font-mono); font-size: var(--text-label); color: var(--color-text-faint); }
+  .phones-head { display: flex; align-items: center; gap: var(--space-md); padding: var(--space-lg); }
+  .phones-head h2 { flex: 1; }
+  .modes { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--space-md); }
+  .mode { border: 1px solid var(--color-rule); border-radius: var(--radius-md); padding: var(--space-md); display: grid; gap: var(--space-smd); justify-items: start; }
+  .mode b { color: var(--color-ink); }
+  @media (max-width: 800px) {
+    .tl { padding: var(--space-md); }
+    .bubble { max-width: 90%; }
+    .step { grid-template-columns: 20px minmax(0, 1fr) auto; gap: var(--space-smd); }
+    .cmp { grid-column: 1 / 4; grid-template-columns: auto auto; }
+    .cmp .alt { grid-column: 1 / 3; }
+    .head { padding: var(--space-smd) var(--space-md); }
+    .composer { padding: var(--space-smd) var(--space-md); }
+    .crow { flex-wrap: wrap; }
+    .crow .hint { order: 3; flex-basis: 100%; }
+    .picker { flex: 1; min-width: 0; }
+    .picker .lbl { overflow: hidden; text-overflow: ellipsis; }
+    .pop { width: 100%; }
+    .modes { grid-template-columns: 1fr; }
+    .hide-sm { display: none; }
+  }
+</style>
+</head>
+<body>
+<header class="doc-head">
+  <h1>A — Ledger</h1>
+  <p>Text first. Each step reads as one line: what the agent did, then the post-action screenshot on the right of the same row. Thinking is a dimmed one-word toggle. Click a screenshot: before and after open inline under the step. Phone and cost live where you act and read: phone in the composer, cost under the title.</p>
+</header>
+
+<div class="app tall">
+  <nav class="nav" aria-label="Main">
+    <div class="brand"><span class="label">SmartQA</span></div>
+    <a class="active" href="#"><span class="ms">space_dashboard</span><span class="label">Sessions</span></a>
+    <a href="#"><span class="ms">smartphone</span><span class="label">Phones</span></a>
+    <a href="#"><span class="ms">lock</span><span class="label">Providers</span></a>
+    <a href="#"><span class="ms">settings</span><span class="label">Setup</span></a>
+    <a href="#"><span class="ms">campaign</span><span class="label">What's New</span><span class="badge">● New</span></a>
+    <div class="spacer"></div>
+    <div class="foot">
+      <span class="who"><b style="color:var(--color-ink)">Cheese</b><br>Admin</span>
+      <button class="navtoggle" title="Navigation: pinned expanded. Click for pinned icons." aria-label="Navigation mode: pinned expanded. Activate to switch to pinned icons.">
+        <span class="ms flip">keyboard_tab</span><span class="pip"><i class="on"></i><i></i><i></i></span>
+      </button>
+    </div>
+  </nav>
+
+  <aside class="list" aria-label="Sessions">
+    <header><h2>Sessions</h2><button class="btn sm primary"><span class="ms">add_circle</span>New</button></header>
+    <div class="search"><span class="ms">search</span>Search or paste a run ID</div>
+    <ul>
+      <li class="sel"><span class="t">open youtube and play gangnam style at maximum…</span><span class="m"><span class="dot ok"></span>Running · step 9 · <span class="mono">13:58 ICT</span></span></li>
+      <li><span class="t">Scan notifications</span><span class="m"><span class="chip ok"><span class="ms">check_circle</span>Pass</span><span class="mono">11:20 ICT</span></span></li>
+      <li><span class="t">Summarize a video</span><span class="m"><span class="chip err"><span class="ms">cancel</span>Fail</span><span class="mono">10:02 ICT</span></span></li>
+      <li><span class="t">Login with test account qa1</span><span class="m"><span class="chip neutral"><span class="ms">stop_circle</span>Cancelled</span><span class="mono">Yesterday</span></span></li>
+    </ul>
+  </aside>
+
+  <div class="topbar"><button class="navtoggle" aria-label="Back to sessions"><span class="ms flip">keyboard_tab</span></button><span class="t">open youtube and play gangnam style…</span><button class="navtoggle" aria-label="Session details"><span class="ms">info</span></button></div>
+
+  <main class="main">
+    <div class="head">
+      <div class="ttl">
+        <h1>open youtube and play gangnam style at maximum speaker volumn</h1>
+        <div class="costline">
+          <span><b class="mono">9</b> steps</span>
+          <span><b class="mono">1 m 52 s</b></span>
+          <span><b class="mono">48,212</b> tokens (session)</span>
+          <span title="Estimate at list price for gpt-6.1-sol: input $2.50 / 1M, output $10 / 1M"><b class="mono">≈ $0.14</b> est. <span class="ms">info</span></span>
+        </div>
+      </div>
+      <button class="btn sm hide-sm"><span class="ms">tune</span>Details</button>
+    </div>
+
+    <section class="tl" aria-label="Chat history">
+      <div class="turn">Turn 1</div>
+      <div class="bubble you"><div class="who">You</div><p>open youtube and play gangnam style at maximum speaker volumn</p></div>
+      <ol>
+        <li class="step">
+          <span class="n">1</span>
+          <div><div class="act"><span class="ms">touch_app</span><span>Tap <q>YouTube</q> <span class="tgt">on the home screen</span></span></div>
+            <details class="think"><summary><span class="ms">expand_more</span>Thinking</summary><p>YouTube is on the second row of the home screen. Opening it directly is faster than searching the launcher.</p></details></div>
+          <button class="ev" aria-label="Step 1 after: YouTube home feed is open. Compare before and after."><span class="shot yt"></span><span class="cap">After</span></button>
+        </li>
+        <li class="step">
+          <span class="n">2</span>
+          <div><div class="act"><span class="ms">touch_app</span><span>Tap Search <span class="tgt">top right</span></span></div>
+            <details class="think"><summary><span class="ms">expand_more</span>Thinking</summary></details></div>
+          <button class="ev" aria-label="Step 2 after: search field focused, keyboard open"><span class="shot search"></span><span class="cap">After</span></button>
+        </li>
+        <li class="step">
+          <span class="n">3</span>
+          <div><div class="act"><span class="ms">keyboard</span><span>Type <q>gangnam style</q>, press Enter</span></div>
+            <details class="think"><summary><span class="ms">expand_more</span>Thinking</summary></details></div>
+          <button class="ev" aria-label="Step 3 after: results for gangnam style"><span class="shot results"></span><span class="cap">After</span></button>
+        </li>
+        <li class="step">
+          <span class="n">4</span>
+          <div><div class="act"><span class="ms">touch_app</span><span>Tap first result <span class="tgt"><q>PSY - GANGNAM STYLE (강남스타일) M/V</q></span></span></div>
+            <div class="result">Ad started before the video</div>
+            <details class="think"><summary><span class="ms">expand_more</span>Thinking</summary></details></div>
+          <button class="ev on" aria-expanded="true" aria-label="Step 4 after: an ad is playing. Before and after shown below."><span class="shot ad"></span><span class="cap">After</span></button>
+          <div class="cmp" role="region" aria-label="Step 4 before and after">
+            <figure><figcaption>Before</figcaption><span class="shot results" style="--w:120px" role="img" aria-label="Before step 4: search results list, first result PSY - GANGNAM STYLE"></span></figure>
+            <figure><figcaption>After</figcaption><span class="shot ad" style="--w:120px" role="img" aria-label="After step 4: video player shows an ad with Skip ad in 5"></span></figure>
+            <dl class="alt">
+              <dt>Screen text after (OCR)</dt><dd>Ad · 0:05 · Skip ad in 5 · Visit advertiser</dd>
+              <dt>Focused element (UI tree)</dt><dd class="mono">com.google.android.youtube:id/player_view</dd>
+              <dt>Changed</dt><dd>Results list → player with ad</dd>
+            </dl>
+          </div>
+        </li>
+        <li class="step">
+          <span class="n">5</span>
+          <div><div class="act"><span class="ms">touch_app</span><span>Tap <q>Skip ad</q> <span class="tgt">after 5 s</span></span></div>
+            <details class="think"><summary><span class="ms">expand_more</span>Thinking</summary></details></div>
+          <button class="ev" aria-label="Step 5 after: video playing"><span class="shot video"></span><span class="cap">After</span></button>
+        </li>
+        <li class="step">
+          <span class="n">6</span>
+          <div><div class="act"><span class="ms">tune</span><span>Press Volume up ×15</span></div>
+            <details class="think" open><summary><span class="ms">expand_less</span>Thinking</summary><p>Media volume is at 6 of 15. Fifteen presses guarantees the maximum even if a press is dropped.</p></details></div>
+          <button class="ev" aria-label="Step 6 after: volume panel at maximum"><span class="shot vol"></span><span class="cap">After</span></button>
+        </li>
+        <li class="step">
+          <span class="n">7</span>
+          <div><div class="act"><span class="ms">check_circle</span><span>Check the volume panel shows maximum</span></div>
+            <div class="result">Media volume 15 / 15</div></div>
+          <button class="ev" aria-label="Step 7 after: volume slider full"><span class="shot vol"></span><span class="cap">After</span></button>
+        </li>
+      </ol>
+      <div class="verdict"><span class="chip ok"><span class="ms">check_circle</span>Pass</span><span>Video plays with media volume at maximum.</span></div>
+    </section>
+
+    <form class="composer" aria-label="Message the agent">
+      <label for="msg">Message the agent</label>
+      <textarea id="msg" rows="1" placeholder="Correct or steer the next step…"></textarea>
+      <div class="crow">
+        <button type="button" class="picker locked" aria-disabled="true" aria-label="Phone for this session: Pixel 6 Pro, USB, your PC. Connected. Locked after the first run.">
+          <span class="dot ok"></span><span class="lbl">Pixel 6 Pro, USB, your PC</span><span class="ms">lock</span>
+        </button>
+        <span class="hint">Steer by default · a plan change pauses for confirmation</span>
+        <button type="button" class="btn">Pause</button>
+        <button type="button" class="btn">Stop</button>
+        <button type="submit" class="btn primary">Send</button>
+      </div>
+    </form>
+  </main>
+
+  <nav class="tabbar" aria-label="Main"><a class="active" href="#"><span class="ms">space_dashboard</span>Sessions</a><a href="#"><span class="ms">smartphone</span>Phones</a><a href="#"><span class="ms">settings</span>Setup</a><a href="#"><span class="ms">more_horiz</span>More</a></nav>
+</div>
+
+<section class="board" aria-label="States">
+  <h2>Composer phone picker</h2>
+  <div class="grid">
+    <div class="state"><div class="tag"><span class="dot off"></span>Disconnected · picker blinks · composer off</div><div class="body">
+      <div class="alert" role="alert"><span class="ms">devices_off</span><span>Pixel 6 Pro disconnected at <span class="mono">14:02 ICT</span>. Reconnect it to continue.</span></div>
+      <textarea disabled rows="1" style="width:100%;min-height:44px;border:1px solid var(--color-rule-strong);border-radius:var(--radius-md);background:var(--color-surface-subtle);padding:var(--space-md);font:inherit" placeholder="Reconnect the phone to send"></textarea>
+      <div class="crow">
+        <button type="button" class="picker blink" aria-expanded="true" aria-label="Phone disconnected: Pixel 6 Pro, USB, your PC. Open to reconnect or choose another phone."><span class="dot off"></span><span class="lbl">Pixel 6 Pro · Disconnected</span><span class="ms">expand_more</span></button>
+        <span class="hint"></span><button class="btn" disabled>Send</button>
+      </div>
+      <div class="pop" style="margin-top:var(--space-smd)" role="menu">
+        <h3>This session's phone</h3>
+        <div class="opt hl"><span class="dot off"></span><span class="grow">Pixel 6 Pro, USB, your PC<small class="mono">serial 2A091FDH200B2X</small></span><button class="btn sm primary"><span class="ms">usb</span>Reconnect</button></div>
+        <hr>
+        <h3>Run the first prompt on another phone</h3>
+        <div class="note">Starts a new session. This one stays as it is.</div>
+        <div class="opt"><span class="dot ok"></span><span class="grow">Pixel 3a, USB, your PC</span><span class="ms">open_in_new</span></div>
+        <div class="opt"><span class="dot ok"></span><span class="grow">Pixel 3a emulator, AVD, Cloud</span><span class="ms">open_in_new</span></div>
+        <div class="opt"><span class="dot idle"></span><span class="grow faint">Xiaomi 10, USB, Thean's PC (qa1 team) · busy</span></div>
+      </div>
+    </div></div>
+
+    <div class="state"><div class="tag">New session · picker open, not locked yet</div><div class="body">
+      <textarea rows="1" style="width:100%;min-height:44px;border:1px solid var(--color-border);border-radius:var(--radius-md);padding:var(--space-md);font:inherit" placeholder="Describe a task for the phone"></textarea>
+      <div class="crow"><button class="picker" aria-expanded="true"><span class="ms">smartphone</span><span class="lbl">Choose a phone</span><span class="ms">expand_more</span></button><span class="hint">Locks to this session after the first run</span><button class="btn primary">Start</button></div>
+      <div class="pop" style="margin-top:var(--space-smd)">
+        <div class="opt hl"><span class="dot ok"></span><span class="grow">Pixel 6 Pro, USB, your PC</span><span class="ms">check</span></div>
+        <div class="opt"><span class="dot ok"></span><span class="grow">Pixel 3a, USB, your PC browser</span></div>
+        <hr><div class="opt"><span class="ms">add_circle</span><span class="grow">Connect a phone…</span></div>
+      </div>
+    </div></div>
+
+    <div class="state"><div class="tag"><span class="dot ok"></span>Running · locked</div><div class="body">
+      <div class="crow"><button class="picker locked" aria-disabled="true"><span class="dot ok"></span><span class="lbl">Pixel 6 Pro, USB, your PC</span><span class="ms">lock</span></button><span class="hint">Tooltip: “This session runs on Pixel 6 Pro. Start a new session to use another phone.”</span></div>
+    </div></div>
+  </div>
+
+  <h2>Timeline states</h2>
+  <div class="grid">
+    <div class="state"><div class="tag">Loading</div><div class="body">
+      <div class="step" style="border:0"><span class="n">1</span><div><div class="skel-line" style="width:70%"></div><div class="skel-line" style="width:30%"></div></div><span class="shot skel"></span></div>
+      <div class="step"><span class="n">2</span><div><div class="skel-line" style="width:55%"></div><div class="skel-line" style="width:25%"></div></div><span class="shot skel"></span></div>
+      <p class="muted label" role="status">Loading session…</p>
+    </div></div>
+    <div class="state"><div class="tag">Empty</div><div class="body">
+      <p style="margin:0 0 var(--space-smd);color:var(--color-ink);font-weight:600">New session</p>
+      <p class="muted" style="margin:0 0 var(--space-md)">Choose a phone, then describe what the agent should check.</p>
+      <button class="btn sm">Scan notifications</button> <button class="btn sm">Summarize a video</button>
+    </div></div>
+    <div class="state"><div class="tag">Error</div><div class="body">
+      <div class="step" style="border:0"><span class="n">8</span><div><div class="act"><span class="ms">touch_app</span>Tap <q>Like</q></div><div class="result">Screenshot unavailable · <a href="#">Retry</a></div></div><span class="shot missing" aria-label="Screenshot unavailable"><span class="ms">image_not_supported</span></span></div>
+      <div class="alert" role="alert"><span class="ms">error</span>Message not sent. The server did not answer. <a href="#" style="color:inherit">Retry</a></div>
+    </div></div>
+    <div class="state"><div class="tag">Cost line</div><div class="body costline" style="display:grid;gap:var(--space-smd)">
+      <span>Known price: <b class="mono">48,212</b> tokens (session) · <b class="mono">≈ $0.14</b> est.</span>
+      <span>No list price: <b class="mono">48,212</b> tokens (session) · cost —  <span class="faint">(no price for this model)</span></span>
+      <span>Mixed models: <b class="mono">≈ $0.21</b> est. · <span class="faint">2 models, open Details for the split</span></span>
+    </div></div>
+  </div>
+
+  <h2>Phones page (new, out of Setup)</h2>
+  <div class="state"><div class="body" style="padding:0">
+    <div class="phones-head"><h2>Phones</h2><button class="btn"><span class="ms">refresh</span>Refresh</button><button class="btn primary"><span class="ms">add_circle</span>Connect a phone</button></div>
+    <table>
+      <thead><tr><th>Phone</th><th class="hide-sm">Connection</th><th class="hide-sm">Location</th><th>Status</th><th class="hide-sm">In use by</th><th></th></tr></thead>
+      <tbody>
+        <tr><td>Pixel 6 Pro<span class="sub">2A091FDH200B2X</span></td><td class="hide-sm">USB</td><td class="hide-sm">your PC</td><td><span class="chip ok"><span class="ms">check_circle</span>Connected</span></td><td class="hide-sm">open youtube and play… <span class="mono faint">13:58</span></td><td><button class="btn sm">Open session</button></td></tr>
+        <tr><td>Pixel 3a<span class="sub">93AX01X9Q</span></td><td class="hide-sm">USB</td><td class="hide-sm">your PC browser</td><td><span class="chip neutral"><span class="ms">schedule</span>Idle</span></td><td class="hide-sm">—</td><td><button class="btn sm">New session</button></td></tr>
+        <tr><td>Xiaomi 10<span class="sub">f3a1c09e</span></td><td class="hide-sm">USB</td><td class="hide-sm">Thean's PC (qa1 team)</td><td><span class="chip err"><span class="ms">devices_off</span>Disconnected</span></td><td class="hide-sm">—</td><td><button class="btn sm"><span class="ms">usb</span>Reconnect</button></td></tr>
+      </tbody>
+    </table>
+    <p class="muted label" style="padding:var(--space-md) var(--space-lg)">Empty: “No phones yet. Connect one by USB or start a Cloud emulator.” · Error: “Phones could not be loaded. Retry.”</p>
+  </div></div>
+
+  <h2>Nav mode toggle (replaces the select)</h2>
+  <div class="modes">
+    <div class="mode"><button class="navtoggle" aria-label="Pinned expanded"><span class="ms flip">keyboard_tab</span><span class="pip"><i class="on"></i><i></i><i></i></span></button><b>Pinned expanded</b><span class="muted label">Click → pinned icons</span></div>
+    <div class="mode"><button class="navtoggle" aria-label="Pinned icons"><span class="ms">keyboard_tab</span><span class="pip"><i></i><i class="on"></i><i></i></span></button><b>Pinned icons</b><span class="muted label">Click → expand on hover</span></div>
+    <div class="mode"><button class="navtoggle" aria-label="Expand on hover"><span class="ms">ads_click</span><span class="pip"><i></i><i></i><i class="on"></i></span></button><b>Expand on hover</b><span class="muted label">Click → pinned expanded</span></div>
+  </div>
+</section>
+</body>
+</html>

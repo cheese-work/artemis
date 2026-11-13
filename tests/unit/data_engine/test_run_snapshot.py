@@ -82,7 +82,7 @@ def test_upgrade_adds_nullable_columns_after_a_backup_and_records_the_revision(t
     with sqlite3.connect(db) as conn:
         assert conn.execute(
             "SELECT revision FROM schema_revisions WHERE module = 'run_meta_ext'"
-        ).fetchone() == (1,)
+        ).fetchone() == (len(run_snapshot.REVISIONS),)
     snaps = _snapshots(db)
     assert snaps[ids[0]] == ("4.2.0 (420)", None, "Pixel 6 Pro", None)
     assert snaps[ids[1]] == (None, None, "Pixel 3a", None)  # from the device record
@@ -186,7 +186,7 @@ def test_execution_snapshot_records_the_operator_not_the_planner():
 
 def test_snapshot_and_device_modules_keep_separate_revisions_in_one_database(tmp_path):
     from apps.admin_console.database.repositories import prompt_critique_repository
-    from artemis.data_engine import devices
+    from artemis.data_engine import devices, run_connections
     from artemis.data_engine.storage import StorageManager
 
     db = tmp_path / "data_engine.db"
@@ -199,4 +199,5 @@ def test_snapshot_and_device_modules_keep_separate_revisions_in_one_database(tmp
         devices.MODULE: len(devices.REVISIONS),
         run_snapshot.MODULE: len(run_snapshot.REVISIONS),
         prompt_critique_repository.MODULE: len(prompt_critique_repository.REVISIONS),
+        "run_connections": len(run_connections.REVISIONS),
     }

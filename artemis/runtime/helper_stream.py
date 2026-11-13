@@ -35,6 +35,7 @@ import urllib.error
 
 from adbutils.errors import AdbError
 
+from artemis.runtime import device_policy
 from artemis.runtime.endpoint_transport import EndpointTransport
 
 #: Host header the helper sees; it only ever answered on loopback.
@@ -78,7 +79,33 @@ def request(
     ``urllib.error.URLError`` when no stream or answer could be had: the same
     two failures the helper client already distinguishes (a new tunnel can fix
     the second, never the first).
+
+    On a restricted serial the request is gated at this boundary: route allowlist,
+    foreground checks before and after, audit (see ``device_policy``).
     """
+    return device_policy.helper_call(
+        serial,
+        method,
+        path,
+        lambda: _request(
+            transport, serial, port, method, path, body=body, headers=headers, timeout=timeout
+        ),
+        port=port,
+        body=body,
+    )
+
+
+def _request(
+    transport: EndpointTransport,
+    serial: str,
+    port: int,
+    method: str,
+    path: str,
+    *,
+    body: bytes | None,
+    headers: dict[str, str] | None,
+    timeout: float,
+) -> bytes:
     connection = _StreamConnection(transport, serial, port, timeout)
     url = f"adb://{transport.endpoint.identity}/{serial}:{port}{path}"
     try:

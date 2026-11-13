@@ -166,6 +166,7 @@ async def test_preview_shutdown_runs_none_of_the_named_effects(monkeypatch):
 async def test_normal_startup_and_shutdown_still_run_every_effect(monkeypatch):
     calls = _stub_hooks(monkeypatch, forbidden=False)
     monkeypatch.setattr(server, "PREVIEW_PROFILE", False)
+    monkeypatch.setattr(server.device_reconciler, "tick_forever", AsyncMock())
     state.queue_items[:] = [{"queue_ticket": "ticket-1", "status": "queued"}]
 
     await server.on_startup()

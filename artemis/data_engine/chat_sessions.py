@@ -8,6 +8,7 @@ import uuid
 
 ACTIVE = frozenset({"queued", "running", "paused"})
 TERMINAL = frozenset({"completed", "failed", "cancelled", "interrupted"})
+EVENT_KINDS = frozenset({"thinking", "plan", "replan", "step", "input_request", "verdict"})
 TRANSITIONS = {
     "queued": frozenset({"running", *TERMINAL}),
     "running": frozenset({"paused", *TERMINAL}),
@@ -17,6 +18,38 @@ TRANSITIONS = {
 
 
 class ChatStore:
+    def record_event(self, turn_id, kind, content, *, payload=None, event_key=None):
+        if kind not in EVENT_KINDS:
+            raise ValueError("invalid_event_kind")
+        with self.transaction() as connection:
+            turn = connection.execute(
+                "SELECT session_id FROM chat_turns WHERE turn_id=?", (turn_id,)
+            ).fetchone()
+            if turn is None:
+                raise KeyError(turn_id)
+            root = turn["session_id"]
+            if event_key:
+                previous = connection.execute(
+                    "SELECT sequence FROM chat_messages WHERE session_id=? AND event_key=?",
+                    (root, event_key),
+                ).fetchone()
+                if previous:
+                    return previous["sequence"]
+            cursor = connection.execute(
+                "INSERT INTO chat_messages(session_id, turn_id, role, kind, content, payload, event_key, created_at) VALUES (?,?,?,?,?,?,?,?)",
+                (
+                    root,
+                    turn_id,
+                    "agent",
+                    kind,
+                    content,
+                    json.dumps(payload or {}, default=str),
+                    event_key,
+                    time.time(),
+                ),
+            )
+            return cursor.lastrowid
+
     def save_launch_config(self, identity, config):
         with self.transaction() as connection:
             root = self._root(connection, identity)
@@ -25,10 +58,36 @@ class ChatStore:
                 (json.dumps(config), root),
             )
 
-    def fail_admission(self, turn_id, reason):
+    def fail_admission(self, turn_id, reason, *, stuck_after=None):
+        """Fail a queued turn; with ``stuck_after`` only if it never started and is that old."""
+        from artemis.runtime.lifecycle import ensure_lifecycle_schema
+
+        with closing(sqlite3.connect(self.path, timeout=30)) as connection:
+            ensure_lifecycle_schema(connection)
         with self.transaction() as connection:
+            if stuck_after is not None and not self._never_started(
+                connection, turn_id, stuck_after
+            ):
+                return False
             self._transition(connection, turn_id, "failed")
+            connection.execute(
+                "INSERT OR IGNORE INTO lifecycle_outbox "
+                "(dedupe_id, session_id, status, created_at) VALUES (?, ?, ?, ?)",
+                (f"{turn_id}:outcome", str(turn_id), "failed", time.time()),
+            )
             self._acknowledge_pending(connection, turn_id, reason)
+            return True
+
+    @staticmethod
+    def _never_started(connection, turn_id, min_age):
+        return (
+            connection.execute(
+                "SELECT 1 FROM chat_turns t WHERE t.turn_id=? AND t.status='queued' AND t.created_at<=? "
+                "AND NOT EXISTS (SELECT 1 FROM sessions s WHERE s.session_id=t.turn_id)",
+                (turn_id, time.time() - min_age),
+            ).fetchone()
+            is not None
+        )
 
     @staticmethod
     def _acknowledge_pending(connection, turn_id, reason):
@@ -272,6 +331,8 @@ class ChatStore:
             columns = {row[1] for row in connection.execute("PRAGMA table_info(chat_sessions)")}
             if "lease_birth" not in columns:
                 connection.execute("ALTER TABLE chat_sessions ADD COLUMN lease_birth REAL")
+            if "title" not in columns:
+                connection.execute("ALTER TABLE chat_sessions ADD COLUMN title TEXT")
             connection.execute("""CREATE TABLE IF NOT EXISTS chat_turns (
                 turn_id TEXT PRIMARY KEY, session_id TEXT NOT NULL,
                 number INTEGER NOT NULL, status TEXT NOT NULL,
@@ -284,6 +345,16 @@ class ChatStore:
                 client_id TEXT, reply_to INTEGER UNIQUE,
                 acknowledged_at REAL, created_at REAL NOT NULL,
                 UNIQUE(session_id, client_id))""")
+            message_columns = {
+                row[1] for row in connection.execute("PRAGMA table_info(chat_messages)")
+            }
+            if "payload" not in message_columns:
+                connection.execute("ALTER TABLE chat_messages ADD COLUMN payload TEXT")
+            if "event_key" not in message_columns:
+                connection.execute("ALTER TABLE chat_messages ADD COLUMN event_key TEXT")
+            connection.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS chat_message_event ON chat_messages(session_id, event_key)"
+            )
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS chat_turn_session ON chat_turns(session_id, number)"
             )
@@ -330,6 +401,15 @@ class ChatStore:
             raise KeyError(identity)
         return row["session_id"]
 
+    def rename(self, identity, title):
+        title = title.strip()
+        if not title or len(title) > 120:
+            raise ValueError("invalid_title")
+        with self.transaction() as connection:
+            root = self._root(connection, identity)
+            connection.execute("UPDATE chat_sessions SET title=? WHERE session_id=?", (title, root))
+        return root
+
     def get(self, identity):
         with self.transaction() as connection:
             root = self._root(connection, identity)
@@ -352,7 +432,16 @@ class ChatStore:
                     "SELECT * FROM chat_messages WHERE session_id=? ORDER BY sequence", (root,)
                 )
             ]
+            for message in session["messages"]:
+                message["payload"] = json.loads(message["payload"] or "{}")
             return session
+
+    def model_history(self, identity):
+        return [
+            message
+            for message in self.get(identity)["messages"]
+            if message["kind"] in {"message", "pause", "continue"}
+        ]
 
     def new_turn(self, identity, content, client_id):
         with self.transaction() as connection:

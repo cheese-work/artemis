@@ -79,11 +79,7 @@ _DROP = object()
 
 
 def _draining_error(exc: ServerDraining) -> HTTPException:
-    return HTTPException(
-        status_code=503,
-        detail={"code": exc.code, "message": str(exc)},
-        headers={"Retry-After": str(exc.retry_after_seconds)},
-    )
+    return exc.http_error()
 
 
 async def _bind_bridge_session(request: RunRequest) -> None:

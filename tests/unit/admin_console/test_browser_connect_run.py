@@ -9,18 +9,20 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 
 def test_fresh_server_connect_then_run_uses_the_same_bridge_lease(tmp_path):
+    repository = Path(__file__).resolve().parents[3]
     environment = {
         **os.environ,
         "ARTEMIS_APP_DIR": str(tmp_path),
         "ARTEMIS_AUTH_MODE": "open",
         "ARTEMIS_SPACES_ENABLED": "false",
+        "PYTHONPATH": str(repository),
     }
     result = subprocess.run(
         [sys.executable, __file__, str(tmp_path)],
         env=environment,
+        cwd=repository,
         capture_output=True,
         text=True,
-        timeout=30,
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert '"accepted": true' in result.stdout
@@ -28,7 +30,7 @@ def test_fresh_server_connect_then_run_uses_the_same_bridge_lease(tmp_path):
 
 def connect_then_run(root):
     import httpx
-    from fastapi.testclient import TestClient
+    from tests.support.bridge_client import BridgeTestClient
 
     from apps.admin_console import server
     from apps.admin_console.services.config_store import ConfigStore
@@ -70,7 +72,7 @@ def connect_then_run(root):
     trace_store.TRACES_DIR = str(root / "traces")
     queue_module.state.queue_items.clear()
     queue_module.state.draining = False
-    client = TestClient(server.proxy_aware_app, client=("127.0.0.1", 50000))
+    client = BridgeTestClient(server.proxy_aware_app, client=("127.0.0.1", 50000))
     validation = AsyncMock(return_value=None)
     probe = AsyncMock(return_value=None)
     with (

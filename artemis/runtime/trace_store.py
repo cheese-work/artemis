@@ -353,6 +353,7 @@ def publish_outcome(
     result: Any | None = None,
     device_serial: str | None = None,
     interrupt_reason: str | None = None,
+    interrupt_evidence: dict[str, Any] | None = None,
     only_if_not_terminal: bool = False,
 ) -> dict[str, Any] | None:
     """Mirror a run outcome into status.json; the lifecycle authority's projection.
@@ -373,6 +374,8 @@ def publish_outcome(
         data["status"] = status
         data["end_time"] = end_time or time.time()
         data["interrupt_reason"] = interrupt_reason
+        if interrupt_evidence is not None:
+            data["interrupt_evidence"] = interrupt_evidence
         if error is not None:
             data["error"] = error
         if result is not None:

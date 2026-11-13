@@ -1,0 +1,7 @@
+{
+  "id": "2026-10-12-session-tips",
+  "date": "2026-10-12",
+  "title": "Start from examples and finish with a prompt tip",
+  "body": "New sessions offer prompts from the original Artemis SDK examples. Choosing one fills the composer without sending. Completed executions automatically get a default-model tip inside the final verdict, with Copy. Failed, interrupted and cancelled executions make no tip request. Lessons and the stored-critique UI are removed; existing critiques stay in the database.",
+  "issues": ["CHE-1556"]
+}

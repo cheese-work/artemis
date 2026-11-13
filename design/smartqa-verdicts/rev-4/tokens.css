@@ -1,0 +1,85 @@
+:root {
+  --color-bg: #fafafa;
+  --color-surface: #ffffff;
+  --color-surface-subtle: #f4f4f5;
+  --color-ink: #18181b;
+  --color-text: #27272a;
+  --color-text-muted: #52525b;
+  --color-text-faint: #6b6b73;
+  --color-rule: #e4e4e7;
+  --color-rule-strong: #d4d4d8;
+  --color-border: #8b8b94;
+  --color-primary: #4f46e5;
+  --color-primary-hover: #4338ca;
+  --color-primary-tint: #eef2ff;
+  --color-primary-edge: #c7d2fe;
+  --color-on-primary: #ffffff;
+  --color-focus: #4338ca;
+  --color-success: #166534;
+  --color-success-bg: #dcfce7;
+  --color-warning: #92400e;
+  --color-warning-bg: #fef3c7;
+  --color-error: #991b1b;
+  --color-error-bg: #fee2e2;
+  --color-neutral: #3f3f46;
+  --color-neutral-bg: #e4e4e7;
+  --color-device: #0f172a;
+  --color-device-text: #e2e8f0;
+  --font-ui: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --font-display: var(--font-ui);
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --text-label: 0.75rem;
+  --text-ui: 0.8125rem;
+  --text-body: 0.875rem;
+  --text-section: 1rem;
+  --text-title: 1.125rem;
+  --text-display: 2rem;
+  --leading-ui: 1.25rem;
+  --space-xs: 3px;
+  --space-sm: 5px;
+  --space-smd: 8px;
+  --space-md: 11px;
+  --space-lg: 16px;
+  --space-xl: 21px;
+  --target: 44px;
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-full: 9999px;
+  --shadow-1: 0 2px 6px rgb(15 23 42 / 8%);
+  --shadow-2: 0 4px 12px rgb(15 23 42 / 12%);
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  color: var(--color-text);
+  background: var(--color-bg);
+  font: var(--text-ui) / var(--leading-ui) var(--font-ui);
+  -webkit-font-smoothing: antialiased;
+}
+
+.mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+:where(a, button, input, select, textarea, summary, [tabindex]):focus-visible {
+  outline: 3px solid var(--color-focus);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
