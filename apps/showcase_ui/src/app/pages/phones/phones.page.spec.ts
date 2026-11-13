@@ -148,19 +148,22 @@ describe('Phones page (Sessions v2.1 C rev-4)', () => {
     expect(submit()).toContain('Retry the request');
   });
 
-  it('shows the new lease on its phone and reloads the list after a request', async () => {
-    const { fixture, root, fakes } = await create();
+  const leasedBy = (holder: string, secondsLeft: number) => ({ holder, purpose: 'Check onboarding', expires_at: Date.now() / 1000 + secondsLeft });
+  const requestOnPixel3a = (root: HTMLElement, fixture: { detectChanges(): void }) => {
     const purpose = root.querySelector<HTMLInputElement>('#purpose')!;
     purpose.value = 'Check onboarding';
     purpose.dispatchEvent(new Event('input', { bubbles: true }));
-    fakes.hosts.requestLease.and.returnValue(of({
-      lease_id: 'l1', device_id: 'dev_pixel3a', holder: 'qa@example.test', purpose: 'Check onboarding',
-      restricted: false, space_epoch: 1, created_at: 1, expires_at: Date.now() / 1000 + 3600
-    }));
-    const lists = fakes.hosts.list.calls.count();
     root.querySelector<HTMLFormElement>('form[aria-label="Borrow a phone"]')!
       .dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
     fixture.detectChanges();
+  };
+
+  it('shows the new lease on its phone and reloads the list after a request', async () => {
+    const { fixture, root, fakes } = await create();
+    fakes.hosts.requestLease.and.returnValue(of({}));
+    fakes.hosts.list.and.returnValue(of(listing([inUse, { ...idle, lease: leasedBy('qa@example.test', 3600) }, off])));
+    const lists = fakes.hosts.list.calls.count();
+    requestOnPixel3a(root, fixture);
     const card = rows(root).find(row => row.textContent?.includes('Pixel 3a'))!;
     expect(fakes.hosts.list.calls.count()).toBe(lists + 1);
     expect(chipText(card.querySelector('.phone-card-main .status'))).toBe('Held');
@@ -171,20 +174,13 @@ describe('Phones page (Sessions v2.1 C rev-4)', () => {
   });
 
   it('offers the phone again once its lease expires', async () => {
-    const { fixture, root, fakes } = await create();
     jasmine.clock().install();
     try {
       jasmine.clock().mockDate(new Date());
-      const purpose = root.querySelector<HTMLInputElement>('#purpose')!;
-      purpose.value = 'Check onboarding';
-      purpose.dispatchEvent(new Event('input', { bubbles: true }));
-      fakes.hosts.requestLease.and.returnValue(of({
-        lease_id: 'l1', device_id: 'dev_pixel3a', holder: 'qa@example.test', purpose: 'Check onboarding',
-        restricted: false, space_epoch: 1, created_at: 1, expires_at: Date.now() / 1000 + 60
-      }));
-      root.querySelector<HTMLFormElement>('form[aria-label="Borrow a phone"]')!
-        .dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
-      fixture.detectChanges();
+      const { fixture, root, fakes } = await create();
+      fakes.hosts.requestLease.and.returnValue(of({}));
+      fakes.hosts.list.and.returnValue(of(listing([inUse, { ...idle, lease: leasedBy('qa@example.test', 60) }, off])));
+      requestOnPixel3a(root, fixture);
       expect(Array.from(root.querySelector<HTMLSelectElement>('#phone-choice')!.options).map(o => o.textContent?.trim()))
         .toEqual(['No available phones']);
 
@@ -198,6 +194,78 @@ describe('Phones page (Sessions v2.1 C rev-4)', () => {
     } finally {
       jasmine.clock().uninstall();
     }
+  });
+
+  it('shows a lease someone else holds, with holder, purpose and end time (CHE-2377)', async () => {
+    const lease = { holder: 'other@example.test', purpose: 'Nightly regression', expires_at: Date.now() / 1000 + 3600 };
+    const { root } = await create([{ ...idle, lease }]);
+    const card = rows(root)[0];
+    expect(chipText(card.querySelector('.phone-card-main .status'))).toBe('Held');
+    const text = card.querySelector('.lease-details')?.textContent ?? '';
+    expect(text).toContain('other@example.test');
+    expect(text).toContain('Nightly regression');
+    expect(text).toContain(new Date(lease.expires_at * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
+    expect(card.querySelector<HTMLButtonElement>('button')!.disabled).toBeTrue();
+    expect(Array.from(root.querySelector<HTMLSelectElement>('#phone-choice')!.options).map(o => o.textContent?.trim()))
+      .toEqual(['No available phones']);
+  });
+
+  it('ignores a lease that already ended (CHE-2377)', async () => {
+    const { root } = await create([{ ...idle, lease: leasedBy('other@example.test', -5) }]);
+    expect(chipText(rows(root)[0].querySelector('.phone-card-main .status'))).toBe('Available');
+    expect(rows(root)[0].querySelector('.lease-details')).toBeNull();
+  });
+
+  const endpointRows = (card: Element) =>
+    Array.from(card.querySelectorAll('.endpoint')).map(e => e.querySelector('strong')!.textContent);
+
+  it('shows the USB and Wi-Fi connections a computer reports for one phone as one card (CHE-2377)', async () => {
+    const both = device({ serial: 'sd-0000000000000007', model: 'Pixel 7', device_id: 'dev_pixel7', connections: ['usb', 'wifi'] });
+    const { root } = await create([both, idle]);
+    expect(rows(root).length).toBe(2);
+    expect(root.querySelector('.inventory-summary strong')?.textContent).toContain('2 phones');
+    expect(endpointRows(rows(root)[0])).toEqual(['USB', 'Wi-Fi']);
+    expect(Array.from(root.querySelector<HTMLSelectElement>('#phone-choice')!.options).filter(o => o.textContent?.includes('Pixel 7')).length).toBe(1);
+  });
+
+  it('groups a computer connection and a browser connection of one phone into one card (CHE-2377)', async () => {
+    const onComputer = device({ model: 'Pixel 7', device_id: 'dev_pixel7', connections: ['wifi'] });
+    const inBrowser = device({ serial: '127.0.0.1:41001', model: 'Pixel 7', source: 'browser', owner: 'qa@example.test', computer_id: null, computer_name: null, device_id: 'dev_pixel7' });
+    const { root } = await create([onComputer, inBrowser]);
+    expect(rows(root).length).toBe(1);
+    expect(endpointRows(rows(root)[0])).toEqual(['Wi-Fi', 'Browser connection']);
+  });
+
+  it('does not guess a connection kind from a serial (CHE-2377)', async () => {
+    const { root } = await create([device({ serial: '192.168.1.20:5555', device_id: 'dev_pixel7' })]);
+    expect(endpointRows(rows(root)[0])).toEqual(['Lab Mac']);
+  });
+
+  [false, true].forEach(readyFirst => {
+    it(`prefers the Ready connection over one that needs an update, ${readyFirst ? 'Ready' : 'update'} first (CHE-2377)`, async () => {
+      const stale = device({ serial: 'old-host', device_id: 'dev_pixel7', computer_id: 'c3', computer_name: 'Old PC', computer_status: 'update_required' });
+      const ready = device({ serial: 'ready-host', device_id: 'dev_pixel7' });
+      const { fixture, fakes, root } = await create(readyFirst ? [ready, stale] : [stale, ready]);
+      expect(chipText(rows(root)[0].querySelector('.phone-card-main .status'))).toBe('Available');
+      rows(root)[0].querySelector<HTMLButtonElement>('.phone-actions button')!.click();
+      fixture.detectChanges();
+      expect(fakes.system.chooseRunTarget).toHaveBeenCalledOnceWith('ready-host');
+    });
+  });
+
+  it('keeps phones without a device id apart, one card each (CHE-2377)', async () => {
+    const { root } = await create([{ ...idle, device_id: null }, { ...off, device_id: null }]);
+    expect(rows(root).length).toBe(2);
+  });
+
+  it('starts the session on the endpoint that is connected (CHE-2377)', async () => {
+    const dead = device({ serial: 'R58M1234a1b2', device_id: 'dev_pixel7', computer_status: 'offline', computer_id: 'c2' });
+    const live = device({ serial: '192.168.1.20:5555', device_id: 'dev_pixel7' });
+    const { fixture, fakes, root } = await create([dead, live]);
+    expect(chipText(rows(root)[0].querySelector('.phone-card-main .status'))).toBe('Available');
+    rows(root)[0].querySelector<HTMLButtonElement>('.phone-actions button')!.click();
+    fixture.detectChanges();
+    expect(fakes.system.chooseRunTarget).toHaveBeenCalledOnceWith('192.168.1.20:5555');
   });
 
   it('shows the lease holder from a device_busy response', async () => {

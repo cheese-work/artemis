@@ -60,6 +60,8 @@ type serverDevice struct {
 	HardwareID string `json:"hardware_id,omitempty"`
 	// PreviousIDs are the weak ids this phone had before it was authorized.
 	PreviousIDs []string `json:"previous_ids,omitempty"`
+	// Connections are the live connection kinds, "usb" and "wifi"; never an address.
+	Connections []string `json:"connections,omitempty"`
 }
 
 func controlPath(path string) string { return filepath.Join(filepath.Dir(path), "control.sock") }
@@ -197,7 +199,7 @@ func (link *hostLink) publish(ctx context.Context) error {
 		if entry.Shared && entry.State == "device" {
 			shares[entry.ID] = true
 		}
-		view = append(view, serverDevice{entry.ID, entry.State, entry.Model, entry.Kind, entry.Shared, entry.Auto, entry.Attention, hardwareID(link.devices.pepper, entry), previousIDs(link.devices.pepper, entry)})
+		view = append(view, serverDevice{entry.ID, entry.State, entry.Model, entry.Kind, entry.Shared, entry.Auto, entry.Attention, hardwareID(link.devices.pepper, entry), previousIDs(link.devices.pepper, entry), entry.connections})
 	}
 	for serial := range link.shared {
 		if !shares[serial] {

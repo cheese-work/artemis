@@ -23,6 +23,7 @@ import os
 import queue
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from unittest.mock import MagicMock, patch
@@ -71,92 +72,126 @@ def test_mcp_stdio_handshake_immediate_input():
         os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     )
     python_exe = sys.executable
-    budget = startup_budget(6.0)
-
-    p = subprocess.Popen(
-        [python_exe, "-m", "mcp_server"],
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        env={
-            "PYTHONUNBUFFERED": "1",
-            "PATH": os.environ.get("PATH", ""),
-            "PYTHONPATH": project_root,
-            # Windows: the interpreter's socket stack (Winsock/_overlapped),
-            # Path.home(), and tempfile handling need these system variables.
-            **{
-                key: os.environ[key]
-                for key in (
-                    "SYSTEMROOT",
-                    "SYSTEMDRIVE",
-                    "WINDIR",
-                    "TEMP",
-                    "TMP",
-                    "USERPROFILE",
-                    "HOMEDRIVE",
-                    "HOMEPATH",
-                    "APPDATA",
-                    "LOCALAPPDATA",
-                )
-                if key in os.environ
-            },
+    child_env = {
+        "PYTHONUNBUFFERED": "1",
+        "PATH": os.environ.get("PATH", ""),
+        "PYTHONPATH": project_root,
+        # This protocol test must never discover or configure host devices.
+        "ARTEMIS_KEEP_DEVICE_AWAKE": "false",
+        # Windows: the interpreter's socket stack (Winsock/_overlapped),
+        # Path.home(), and tempfile handling need these system variables.
+        **{
+            key: os.environ[key]
+            for key in (
+                "SYSTEMROOT",
+                "SYSTEMDRIVE",
+                "WINDIR",
+                "TEMP",
+                "TMP",
+                "USERPROFILE",
+                "HOMEDRIVE",
+                "HOMEPATH",
+                "APPDATA",
+                "LOCALAPPDATA",
+            )
+            if key in os.environ
         },
-        cwd=project_root,
-    )
+    }
+    budget = startup_budget(6.0, env=child_env)
 
-    try:
-        # Immediately write the JSON-RPC initialize request into stdin
-        init_req = {
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": {
-                "protocolVersion": "2024-11-05",
-                "capabilities": {},
-                "clientInfo": {"name": "test-client", "version": "1.0.0"},
-            },
-        }
-        p.stdin.write(json.dumps(init_req).encode("utf-8") + b"\n")
-        p.stdin.flush()
-
-        # Read initialize response with a strict timeout
-        init_resp_line = _readline_with_timeout(p.stdout, budget)
-
-        assert init_resp_line is not None, (
-            f"MCP server failed to respond to initialize request within {budget:.1f} seconds (deadlock detected)!"
-        )
-        init_data = json.loads(init_resp_line)
-        assert init_data.get("id") == 1
-        assert "result" in init_data
-
-        # Follow up with initialized notification and tools/list request
-        notif = {"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}}
-        tools_req = {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}
-        p.stdin.write(json.dumps(notif).encode("utf-8") + b"\n")
-        p.stdin.write(json.dumps(tools_req).encode("utf-8") + b"\n")
-        p.stdin.flush()
-
-        tools_resp_line = _readline_with_timeout(p.stdout, startup_budget(4.0))
-
-        assert tools_resp_line is not None, "MCP server failed to respond to tools/list request!"
-        tools_data = json.loads(tools_resp_line)
-        assert tools_data.get("id") == 2
-        tools = tools_data.get("result", {}).get("tools", [])
-        tool_names = {t["name"] for t in tools}
-        assert {
-            "mobile_run_task",
-            "mobile_manage_task",
-            "mobile_get_device_state",
-            "mobile_inspect_trace",
-            "mobile_diagnose",
-        }.issubset(tool_names)
-
-    finally:
-        p.terminate()
+    # A file cannot fill a pipe and block the child on startup diagnostics.
+    with (
+        tempfile.TemporaryFile() as stderr,
+        subprocess.Popen(
+            [python_exe, "-m", "mcp_server"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=stderr,
+            env=child_env,
+            cwd=project_root,
+        ) as p,
+    ):
         try:
-            p.wait(timeout=3)
-        except subprocess.TimeoutExpired:
-            p.kill()
+            # Immediately write the JSON-RPC initialize request into stdin
+            init_req = {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {},
+                    "clientInfo": {"name": "test-client", "version": "1.0.0"},
+                },
+            }
+            p.stdin.write(json.dumps(init_req).encode("utf-8") + b"\n")
+            p.stdin.flush()
+
+            # Read initialize response with a strict timeout
+            init_resp_line = _readline_with_timeout(p.stdout, budget)
+
+            if init_resp_line is None:
+                stderr.seek(0)
+                pytest.fail(
+                    f"MCP server did not respond to initialize within {budget:.1f}s; "
+                    f"exit={p.poll()}; stderr={stderr.read(8192).decode('utf-8', errors='replace')}"
+                )
+            init_data = json.loads(init_resp_line)
+            assert init_data.get("id") == 1
+            assert "result" in init_data
+
+            # Follow up with initialized notification and tools/list request
+            notif = {"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}}
+            tools_req = {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}
+            p.stdin.write(json.dumps(notif).encode("utf-8") + b"\n")
+            p.stdin.write(json.dumps(tools_req).encode("utf-8") + b"\n")
+            p.stdin.flush()
+
+            tools_resp_line = _readline_with_timeout(p.stdout, startup_budget(4.0, env=child_env))
+
+            assert tools_resp_line is not None, (
+                "MCP server failed to respond to tools/list request!"
+            )
+            tools_data = json.loads(tools_resp_line)
+            assert tools_data.get("id") == 2
+            tools = tools_data.get("result", {}).get("tools", [])
+            tool_names = {t["name"] for t in tools}
+            assert {
+                "mobile_run_task",
+                "mobile_manage_task",
+                "mobile_get_device_state",
+                "mobile_inspect_trace",
+                "mobile_diagnose",
+            }.issubset(tool_names)
+
+        finally:
+            p.terminate()
+            try:
+                p.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                p.kill()
+                p.wait(timeout=3)
+
+
+def test_mcp_stdio_handshake_with_verbose_startup(monkeypatch):
+    """Startup diagnostics must not block the child before it can read stdin."""
+    real_popen = subprocess.Popen
+
+    class VerbosePopen(real_popen):
+        def __init__(self, args, **kwargs):
+            if args[1:] == ["-m", "mcp_server"]:
+                args = [
+                    args[0],
+                    "-c",
+                    "import runpy, sys; "
+                    "sys.stderr.write('startup diagnostic\\n' * 8192); "
+                    "sys.stderr.flush(); "
+                    "runpy.run_module('mcp_server', run_name='__main__')",
+                ]
+                kwargs["env"]["ARTEMIS_KEEP_DEVICE_AWAKE"] = "false"
+            super().__init__(args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "Popen", VerbosePopen)
+    test_mcp_stdio_handshake_immediate_input()
 
 
 def test_awake_service_adb_command_isolates_stdin():

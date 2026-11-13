@@ -23,6 +23,7 @@ class Step:
     after_png: str
     source: str = "persona"
     text_nodes: tuple[dict[str, Any], ...] = ()
+    flag_secure: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,6 +40,8 @@ class Session:
     themes: dict[str, ThemeRun] = field(default_factory=dict)
     base_dir: Path = Path(".")
     first_run: dict[str, Any] | None = None
+    status_bar_bounds: tuple[int, ...] = ()
+    navigation_bar_bounds: tuple[int, ...] = ()
 
 
 def load_session(directory: Path) -> Session:
@@ -60,4 +63,6 @@ def load_session(directory: Path) -> Session:
         themes=themes,
         base_dir=directory,
         first_run=raw.get("first_run"),
+        status_bar_bounds=tuple(raw.get("status_bar_bounds") or ()),
+        navigation_bar_bounds=tuple(raw.get("navigation_bar_bounds") or ()),
     )
