@@ -822,3 +822,78 @@ The private leader socket remains the release boundary. `leader_id` is an
 explicit cooperative role check, not a credential. The in-process Broker's
 historical default is retained for callers outside live composition; production
 composition always requires a configured identity.
+
+## Managed Multica host binding (CHE-5868)
+
+Producer contract pin: `cheese-work/multica@dd9274b1f5547103e5e8133a982f122f6ba6c403`,
+[draft PR 1643](https://github.com/cheese-work/multica/pull/1643).
+
+A Codex shell can see PID 1 inside its tool namespace. That PID is not a host
+holder identity. The managed local route accepts an opaque launcher reference
+instead of probing the shell's `/proc` or borrowing a daemon PID.
+
+This route is **off by default**. It requires separately deployed Multica launcher
+support and owner configuration on both sides. The owner selects one existing
+0700 directory outside task writable roots with `MULTICA_RUN_BINDINGS_DIR` in
+the Multica daemon environment and `managed_bindings_dir` in the broker's private
+composition JSON. Both services must run as the same owner in the same host PID
+namespace. A bad configured directory fails startup; an absent setting preserves
+the existing local PID route and refuses managed references. This change does
+not edit an installed composition, restart a service or admit a device.
+
+The native launcher allocates a 256-bit random `MULTICA_RUN_BINDING_ID` per launch
+attempt. It publishes `<id>.json` (0600) atomically only after successful start.
+Version 1 has exactly these fields:
+
+```text
+version=1, binding_id, agent_id, principal, task_id, issue_id,
+pid, process_start, boot_id, pid_namespace
+```
+
+`principal` is the trusted task's agent ID. `task_id` is the exact Multica task ID,
+not the issue ID or a caller-invented run label. `pid` is the launcher's actual
+child process root in its host namespace, with Linux start ticks and boot ID.
+Exec wrappers retain this PID. A waiting wrapper counts only while it remains
+alive; detached children cannot extend its binding. The launcher revokes on
+cancellation, failed startup and lifecycle exit. Dead or reused holders fail
+independent broker probes even if a stale file remains.
+
+`acquire` and `claim` accept mutually exclusive `--pid` or `--managed-binding`.
+For an admitted CHE-5792 run, the managed arguments are:
+
+```sh
+--principal "$MULTICA_AGENT_ID" --agent-id "$MULTICA_AGENT_ID" \
+--issue-id CHE-5792 --run-id "$MULTICA_TASK_ID" \
+--managed-binding "$MULTICA_RUN_BINDING_ID"
+```
+
+These are arguments to the existing CLI, not an admission or an instruction to
+acquire now. Pool, purpose, ticket, idempotency key and the device grants still
+follow their existing contracts. Managed mode never calls client-side
+`process_identity`. RPC clients cannot choose the registry path or submit an
+alternate host PID. The broker resolves the reference, checks the entire
+agent/task/principal/issue association, then independently checks namespace,
+boot, start time and process liveness. Missing, malformed, unsafe or replaced
+records fail closed. Concurrent tasks cannot accidentally use each other's
+reference. Maintenance re-resolves the exact persisted record before the writer
+lock, fences active groups and parks queued/offered bindings on revocation.
+
+Owned recovery uses the resolved host root with all existing complete-work
+journal, descendant, PID-reuse, daemon-exclusion and leader-release checks.
+No automatic journal or cleanup permission is inferred from a managed binding.
+Uncertain recovery still quarantines. Same-UID labels and private files remain
+cooperative, not authentication against the host owner. Credential-isolated or
+remote execution uses the separately gated R1 route (CHE-4513); this is not a
+relay or a substitute for R1 activation.
+
+Offline checks use synthetic inventory only:
+
+```sh
+python3 -B tests/unit/runtime/test_device_lease_managed_runs.py -v
+```
+
+For cross-repository proof, Multica's `TestBindingNestedNamespace` accepts
+`ARTEMIS_MANAGED_BINDING_PROBE` pointing to this checkout's
+`tests/unit/runtime/managed_binding_contract_probe.py`. The probe uses only a
+temporary database and fake inventory: publish, resolve, synthetic grant,
+revoke, fence. It does not connect to an installed broker or device.

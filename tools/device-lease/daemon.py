@@ -109,7 +109,11 @@ class BrokerServer(socketserver.UnixStreamServer):
             raise Refused("invalid_request")
         if request["op"] in {"acquire", "claim"}:
             binding = request["args"].get("binding")
-            if not isinstance(binding, dict) or binding.get("mode") != "local":
+            if (
+                not isinstance(binding, dict)
+                or not isinstance(binding.get("mode"), str)
+                or binding["mode"] not in {"local", "managed"}
+            ):
                 raise Refused("invalid_request")
         try:
             inspect.signature(method).bind(**request["args"])
@@ -297,7 +301,11 @@ def main(argv=None):
             if op in {"park", "claim"}:
                 command.add_argument("--run-id", required=True)
             if op == "claim":
-                command.add_argument("--pid", type=int, required=True)
+                holder = command.add_mutually_exclusive_group(required=True)
+                holder.add_argument("--pid", type=int)
+                holder.add_argument(
+                    "--managed-binding", help="launcher-provided MULTICA_RUN_BINDING_ID"
+                )
                 command.add_argument("--idempotency-key", required=True)
             continue
         command.add_argument("--run-id", required=True)
@@ -308,10 +316,13 @@ def main(argv=None):
             command.add_argument("--purpose", required=True)
             command.add_argument("--agent-id", required=True)
             command.add_argument("--issue-id", required=True)
-            command.add_argument(
+            holder = command.add_mutually_exclusive_group(required=True)
+            holder.add_argument(
+                "--managed-binding", help="launcher-provided MULTICA_RUN_BINDING_ID"
+            )
+            holder.add_argument(
                 "--pid",
                 type=int,
-                required=True,
                 help="live agent run PID (not this short-lived CLI process)",
             )
         else:
@@ -454,7 +465,13 @@ def main(argv=None):
             print(json.dumps(response))
             return 0
         if op in {"acquire", "claim"}:
-            args["binding"] = process_identity(args.pop("pid"))
+            managed = args.pop("managed_binding")
+            pid = args.pop("pid")
+            args["binding"] = (
+                {"mode": "managed", "binding_id": managed}
+                if managed is not None
+                else process_identity(pid)
+            )
         response = rpc(socket_path, {"op": op, "args": args})
         print(json.dumps(response))
         return 1 if "code" in response else 0
