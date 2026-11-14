@@ -85,6 +85,61 @@ def test_backfill_rejects_unbounded_or_inverted_requests(library, options):
         qa_results.backfill(library.db, library.traces, **options)
 
 
+def test_backfill_reports_undated_terminal_turns_without_using_batch_slots(library):
+    now = time.time()
+    for name, started, status in [
+        ("undated", now - 100, "failed"),
+        ("too-old", now - 300, "failed"),
+        ("at-until", now, "failed"),
+        ("live", now - 100, "running"),
+        ("labelled", now - 100, "failed"),
+        ("outbox-fallback", now - 100, "running"),
+        ("dated", now - 50, "failed"),
+    ]:
+        _turn(library, name, started, status=status)
+    _result(library, "labelled")
+    LifecycleAuthority(library.db, clock=lambda: now - 60).finish("outbox-fallback", "failed")
+    with sqlite3.connect(library.db) as connection:
+        connection.execute("UPDATE sessions SET end_time=NULL WHERE session_id!='dated'")
+
+    options = {"since": now - 200, "until": now, "limit": 1}
+    first = qa_results.backfill(library.db, library.traces, **options)
+    assert first["skipped_no_end_time"] == 1
+    assert first["turn_ids"] == ["outbox-fallback"]
+    second = qa_results.backfill(library.db, library.traces, **options)
+    assert second["skipped_no_end_time"] == 1
+    assert second["turn_ids"] == ["dated"]
+    assert qa_results.read_result(library.db, "undated") is None
+
+
+def test_backfill_counts_collector_failure_and_continues_batch(library, monkeypatch):
+    from apps.admin_console.services import failure_ledger
+
+    now = time.time()
+    _turn(library, "bad", now - 100)
+    _turn(library, "good", now - 50)
+    collect = failure_ledger.collect
+
+    def fail_one(turn_id, **options):
+        if turn_id == "bad":
+            raise RuntimeError("collector unavailable")
+        return collect(turn_id, **options)
+
+    monkeypatch.setattr(failure_ledger, "collect", fail_one)
+    result = qa_results.backfill(library.db, library.traces, since=now - 200, until=now)
+    assert result["processed"] == 1
+    assert result["turn_ids"] == ["good"]
+    assert result["failed"] == 1
+    assert result["failed_turn_ids"] == ["bad"]
+    assert qa_results.read_result(library.db, "bad") is None
+    assert qa_results.read_result(library.db, "good") is not None
+
+    monkeypatch.setattr(failure_ledger, "collect", collect)
+    retry = qa_results.backfill(library.db, library.traces, since=now - 200, until=now)
+    assert retry["turn_ids"] == ["bad"]
+    assert retry["failed"] == 0
+
+
 def test_replay_rearms_only_abandoned_classifier_and_preserves_other_consumers(library):
     now = time.time()
     lifecycle = LifecycleAuthority(library.db, clock=lambda: now)
@@ -187,8 +242,33 @@ def test_concurrent_relabels_keep_contiguous_versions_and_audit(library):
     assert refreshed["source"] == "admin"
 
 
+def test_updated_marks_only_admin_relabels_after_machine_versions(library):
+    turn_id = _turn(library, "machine-updates", 100)
+    pending = qa_results.result_for_turn(
+        library.db, library.traces, turn_id, "failed", 1, 1, now=101
+    )
+    assert pending["label_state"] == "pending"
+    assert pending["updated"] is False
+
+    legacy = qa_results.result_for_turn(
+        library.db, library.traces, turn_id, "failed", 1, 1, now=200
+    )
+    assert legacy["label_state"] == "legacy"
+    assert qa_results.read_result(library.db, turn_id)["version"] == 2
+    assert legacy["updated"] is False
+
+    qa_results.relabel_result(
+        library.db, turn_id, category="provider", actor="admin@example.com", reason="Reviewed"
+    )
+    relabelled = qa_results.result_for_turn(
+        library.db, library.traces, turn_id, "failed", 1, 1, now=201
+    )
+    assert relabelled["source"] == "admin"
+    assert relabelled["updated"] is True
+
+
 def test_gate_a_counts_turns_latest_machine_labels_and_snapshot_not_translations(library):
-    activated = time.time() - 2 * DAY
+    activated = time.time() - 7 * DAY
     qa_results.activate(library.db, ["admin@example.com"], now=activated)
     for index in range(5):
         turn_id = _turn(library, f"known-{index}", activated + 10)
@@ -237,6 +317,23 @@ def test_gate_a_counts_turns_latest_machine_labels_and_snapshot_not_translations
     )
     assert qa_results.gate_a(library.db)["deploy_killed"] == 1
     assert qa_results.gate_a(library.db)["passed"] is False
+
+
+def test_gate_a_requires_complete_window_even_with_full_coverage(library):
+    activated = time.time()
+    qa_results.activate(library.db, [], now=activated)
+    turn_id = _turn(library, "covered", activated + 1)
+    _result(library, turn_id)
+
+    interim = qa_results.gate_a(library.db, now=activated + 7 * DAY - 1)
+    assert interim["coverage"] == 1.0
+    assert interim["N"] == 1
+    assert interim["window_complete"] is False
+    assert interim["passed"] is False
+
+    complete = qa_results.gate_a(library.db, now=activated + 7 * DAY)
+    assert complete["window_complete"] is True
+    assert complete["passed"] is True
 
 
 @pytest.mark.asyncio

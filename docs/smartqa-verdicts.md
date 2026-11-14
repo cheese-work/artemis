@@ -38,7 +38,7 @@ The shared builder is `tests/support/smartqa_verdict_fixtures.py`. It creates a 
 - `catalog_key`, `verdict`, `verification`, `category`, and Vietnamese `reason`.
 - `action.text` and an optional server-selected `action.href`.
 - `responsible` and `evidence` (`turn_id`, `step`, `screenshot_url`).
-- `turn_index`, `turn_count`, `label_state`, `source`, and `updated` (a version was appended).
+- `turn_index`, `turn_count`, `label_state`, `source`, and `updated` (the latest label is an admin relabel).
 
 The backend owns the label catalog. The API does not use agent-provided action URLs. Result reads keep `require_visible_run`; evidence URLs retain their own run-visibility checks. A caller who is not the owner does not receive the requester's email.
 
@@ -67,6 +67,10 @@ uv run python -m apps.admin_console.services.qa_result_commands replay --until '
 
 Backfill uses terminal end times, includes old rows without an outbox entry, and skips turns that already have a result. Repeat a bounded command until `processed` is zero. Freeze `--until` when processing multiple batches. Backfill uses the same collector and result mapper as the live consumer. It does not alter the activation window.
 
+The result reports successful turns in `processed` and `turn_ids`. A collector exception skips only that turn, increments `failed`, and adds its ID to `failed_turn_ids`; later turns in the batch still run. Failed turns remain eligible for retry. If `processed` is zero but `failed` is nonzero, resolve the collector failure before retrying the same range.
+
+Terminal turns with neither an end time nor an outbox timestamp cannot be classified by end-time range. Backfill reports these unlabelled turns in `skipped_no_end_time`, using their start time to bound this diagnostic count to `[since, until)`. This count covers the whole range on each call and does not consume the processing limit. These turns receive no result until their missing terminal timestamp is repaired.
+
 Replay re-arms only rows whose classifier is abandoned. It clears the classifier's attempts, delivery mark and abandonment token, then lets the regular sweep retry. The durable `classify_replay_at` field records the explicit replay request. Broadcast/notification marks, attempts and abandonment tokens remain unchanged. Repeat until `replayed` is zero. An offline database needs a subsequent server sweep to execute the replay.
 
 For an offline copy, place `--db PATH --traces PATH` before the subcommand. No device or model is required. Do not use maintenance commands to reset the activation snapshot.
@@ -81,7 +85,7 @@ For an offline copy, place `--db PATH --traces PATH` before the subcommand. No d
 
 Relabel appends a final version and a `qa_result_audit` record in one transaction. The audit keeps the actor, timestamp, reason, previous/new versions and previous/new result JSON. SQLite triggers reject audit updates and deletes. Concurrent relabels serialize. An audit-write failure rolls back the result version.
 
-The allowed categories are `smartqa_infra`, `smartqa_agent`, `provider`, `app_defect`, `user_prompt`, `qa_environment` and `unknown`. A category correction produces a Blocked result, except `app_defect`, which produces Fail and requires existing cited evidence. Pending and cancelled results cannot be relabelled. Unknown admin labels remain authoritative until another admin relabel. Automated classification never overwrites an admin label. The QA response sets `updated=true` after an appended version.
+The allowed categories are `smartqa_infra`, `smartqa_agent`, `provider`, `app_defect`, `user_prompt`, `qa_environment` and `unknown`. A category correction produces a Blocked result, except `app_defect`, which produces Fail and requires existing cited evidence. Pending and cancelled results cannot be relabelled. Unknown admin labels remain authoritative until another admin relabel. Automated classification never overwrites an admin label. The QA response sets `updated=true` only when the latest label has `source="admin"`. Machine-only transitions, including pending to legacy, leave `updated=false` even when they append a version.
 
 ## Gate A
 
@@ -93,7 +97,7 @@ The allowed categories are `smartqa_infra`, `smartqa_agent`, `provider`, `app_de
 - `cancelled`, `qa_turns`, `cancel_rate`: cancellations divided by all QA turns in the window, including live turns.
 - `legacy` and `pending`: separate label counts; pending includes live turns and turns awaiting their first result. These are not extra exclusions from N.
 
-`deploy_killed` counts structured `deploy_cut` reasons for all turns in the window, including admin turns. `passed` requires N greater than zero, at least 80% coverage, and zero deploy kills. The endpoint uses machine fields, never translated reason text. `window_complete` distinguishes a completed window from an interim measurement; an interim `passed` value is not deployment or acceptance authorization.
+`deploy_killed` counts structured `deploy_cut` reasons for all turns in the window, including admin turns. `passed` requires a complete 7-day window (`window_complete=true`), N greater than zero, at least 80% coverage, and zero deploy kills. The endpoint uses machine fields, never translated reason text. Interim measurements still report their numbers but always return `passed=false`.
 
 Run the maintenance regressions without a device:
 
