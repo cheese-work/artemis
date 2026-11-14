@@ -24,6 +24,7 @@ import json
 import os
 from pathlib import Path
 import re
+import sqlite3
 import time
 from typing import Any
 import uuid
@@ -577,6 +578,19 @@ class DeviceExecutionLock:
 
     def _try_acquire_owner_lock(self) -> bool:
         with self._admission_guard():
+            guard = os.getenv(self.ADMISSION_GUARD_ENV)
+            database = os.getenv("ARTEMIS_DEVICE_CLAIMS_DB")
+            if guard or database:
+                if not guard or not database:
+                    return False
+                from device_lease.claims import check_sdk_available
+
+                try:
+                    check_sdk_available(
+                        database, guard, self.device_id, self.path.parent, self.path
+                    )
+                except (OSError, sqlite3.Error, ValueError, TypeError, KeyError):
+                    return False  # Missing/stale census, SQL failure or conflict: no owner file.
             return self._try_acquire_owner_lock_unguarded()
 
     def _try_acquire_owner_lock_unguarded(self) -> bool:
