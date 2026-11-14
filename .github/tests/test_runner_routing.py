@@ -5,6 +5,12 @@ import re
 import unittest
 
 
+# CHE-3440: the required `pr-ready` gate jobs must not carry the upstream-sync/fork skip: a skipped
+# required check passes, so a branch named `upstream-sync/...` would bypass the gate. They run from the
+# default branch (pull_request_target / issue_comment), check out only the default branch and use no secret.
+GATE_JOBS = {("pr-ready.yml", "pr-ready"), ("pr-ready-recheck.yml", "recheck")}
+
+
 class RunnerRoutingTest(unittest.TestCase):
     def test_shared_x99_jobs_skip_upstream_sync_heads(self):
         expected = (
@@ -17,7 +23,7 @@ class RunnerRoutingTest(unittest.TestCase):
         for workflow in workflows:
             jobs = re.split(r"(?m)^  ([\w-]+):\n", workflow.read_text().split("\njobs:\n", 1)[1])
             for name, body in zip(jobs[1::2], jobs[2::2]):
-                if "cheese-x99" not in body:
+                if "cheese-x99" not in body or (workflow.name, name) in GATE_JOBS:
                     continue
                 with self.subTest(workflow=workflow.name, job=name):
                     condition = re.search(r"(?m)^    if: (.+)$", body)
