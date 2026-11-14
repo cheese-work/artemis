@@ -825,7 +825,7 @@ composition always requires a configured identity.
 
 ## Managed Multica host binding (CHE-5868)
 
-Producer contract pin: `cheese-work/multica@dd9274b1f5547103e5e8133a982f122f6ba6c403`,
+Producer contract pin: `cheese-work/multica@ca7e66af39dc4b1a06d01f8d80735feb6f2062ff`,
 [draft PR 1643](https://github.com/cheese-work/multica/pull/1643).
 
 A Codex shell can see PID 1 inside its tool namespace. That PID is not a host
