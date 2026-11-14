@@ -25,6 +25,7 @@ from artemis.config.constants import (
 )
 from artemis.config.paths import (
     ROOT_DIR,
+    _use_user_app_dir,
     get_app_dir,
     get_ipc_port_file,
     get_ls_address_file,
@@ -36,17 +37,24 @@ from third_party.mobile_use.utils.logger import get_logger
 logger = get_logger(__name__)
 
 
+def _ipc_port_files() -> list[Path]:
+    """Use only checkout state in source mode, keeping legacy paths for user mode."""
+    port_file = get_ipc_port_file()
+    if not _use_user_app_dir():
+        return [port_file]
+    candidates = [get_temp_dir() / "artemis-ipc-port", get_app_dir() / IPC_PORT_FILENAME]
+    if is_source_checkout():
+        candidates.append(ROOT_DIR / IPC_PORT_FILENAME)
+    return [*candidates, port_file]
+
+
 def read_ipc_port() -> int | None:
-    """Read the active ARTEMIS IPC port from environment, state files, or local server API."""
+    """Read the IPC port without probing other installs in source-checkout mode."""
     env_port = os.getenv(ENV_ARTEMIS_IPC_PORT)
     if env_port and env_port.strip().isdigit():
         return int(env_port.strip())
 
-    candidate_paths = [get_temp_dir() / "artemis-ipc-port", get_app_dir() / IPC_PORT_FILENAME]
-    if is_source_checkout():
-        candidate_paths.append(ROOT_DIR / IPC_PORT_FILENAME)
-    candidate_paths.append(get_ipc_port_file())
-    for p in candidate_paths:
+    for p in _ipc_port_files():
         if p.exists():
             try:
                 content = p.read_text(encoding="utf-8").strip()
@@ -55,7 +63,10 @@ def read_ipc_port() -> int | None:
             except (OSError, ValueError):
                 pass
 
-    # Dynamic fallback: check local admin console status endpoint
+    if not _use_user_app_dir():
+        return None
+
+    # Legacy user-mode fallback: check local admin console status endpoint.
     try:
         import urllib.request
         import json
@@ -77,36 +88,22 @@ def read_ipc_port() -> int | None:
 
 
 def write_ipc_port(port: int) -> Path:
-    """Save active IPC port to environment and temporary synchronization file."""
+    """Save the IPC port to the environment and this mode's synchronization files."""
     os.environ[ENV_ARTEMIS_IPC_PORT] = str(port)
-    port_file = get_ipc_port_file()
-    all_targets = [
-        port_file,
-        get_temp_dir() / "artemis-ipc-port",
-        get_app_dir() / IPC_PORT_FILENAME,
-    ]
-    if is_source_checkout():
-        all_targets.append(ROOT_DIR / IPC_PORT_FILENAME)
+    all_targets = _ipc_port_files()
     for target in all_targets:
         try:
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(str(port), encoding="utf-8")
         except Exception as e:
             logger.debug(f"Could not write IPC port to {target}: {e}")
-    return port_file
+    return all_targets[-1]
 
 
 def clear_ipc_port() -> None:
     """Remove IPC port synchronization state from the process and filesystem."""
     os.environ.pop(ENV_ARTEMIS_IPC_PORT, None)
-    all_targets = [
-        get_ipc_port_file(),
-        get_temp_dir() / "artemis-ipc-port",
-        get_app_dir() / IPC_PORT_FILENAME,
-    ]
-    if is_source_checkout():
-        all_targets.append(ROOT_DIR / IPC_PORT_FILENAME)
-    for target in all_targets:
+    for target in _ipc_port_files():
         if target.exists():
             try:
                 target.unlink(missing_ok=True)
