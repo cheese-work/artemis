@@ -303,7 +303,7 @@ def edit_annotation(
             (
                 body.body if "body" in body.model_fields_set else annotation.body,
                 body.resolved if "resolved" in body.model_fields_set else annotation.resolved,
-                time.time(),
+                time.time() if "body" in body.model_fields_set else annotation.edited_at,
                 annotation_id,
                 session_id,
             ),
