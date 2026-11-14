@@ -109,6 +109,10 @@ class TitleRequest(BaseModel):
         return value.strip() if isinstance(value, str) else value
 
 
+class ChatResultsRequest(BaseModel):
+    session_ids: list[str] = Field(min_length=1, max_length=50)
+
+
 def _session(identity, scope, *, write=False):
     require_actor(scope)
     store = ChatStore(DB_PATH)
@@ -173,11 +177,13 @@ def _results_note(turn_id):
     }
 
 
-def _attach_results(scope, session):
+def _attach_results(scope, session, *, include_notes=True, record_reads=True):
     turns = session["turns"]
     root = session["session_id"]
     # The agent's own notes are for the run's owner and admins, like a redacted shared view.
-    own_run = not scope.enforced or scope.admin or scope.may_act_on(owners_of([root]).get(root))
+    own_run = include_notes and (
+        not scope.enforced or scope.admin or scope.may_act_on(owners_of([root]).get(root))
+    )
     count = len(turns)
     results = []
     for index, turn in enumerate(turns, start=1):
@@ -190,13 +196,33 @@ def _attach_results(scope, session):
             index,
             count,
         )
-        result["results_note"] = _results_note(turn_id) if own_run else None
+        if include_notes:
+            result["results_note"] = _results_note(turn_id) if own_run else None
         results.append(result)
-        record_run_read(scope, turn_id)
+        if record_reads:
+            record_run_read(scope, turn_id)
     session["results"] = results
     if isinstance(session.get("verdict"), dict) and results:
         session["verdict"]["result"] = results[-1]
     return session
+
+
+@router.post("/api/chats/results", dependencies=[Depends(require_qa)])
+async def get_chat_results(request: ChatResultsRequest, scope: OwnerScope = Depends(actor_scope)):
+    sessions = []
+    for identity in dict.fromkeys(request.session_ids):
+        try:
+            store, session = await asyncio.to_thread(_session, identity, scope)
+            session = await asyncio.to_thread(
+                _attach_results, scope, session, include_notes=False, record_reads=False
+            )
+        except AdminAPIError as error:
+            if error.status_code != 404:
+                raise
+            sessions.append({"session_id": identity, "status": "unavailable", "results": []})
+        else:
+            sessions.append({"session_id": session["session_id"], "results": session["results"]})
+    return {"sessions": sessions}
 
 
 @router.patch("/api/chats/{session_id}/title", dependencies=[Depends(require_qa)])

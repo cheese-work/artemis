@@ -844,6 +844,8 @@ def route_tier(path: str, methods: set[str], is_websocket: bool = False) -> str 
         return "public"
     if methods == {"PATCH"} and path == "/api/chats/{session_id}/title":
         return "qa"
+    if methods == {"POST"} and path == "/api/chats/results":
+        return "qa"
     if methods == {"POST"} and path in _QA_MUTATING_PATHS:
         return "qa"
     if methods == {"POST"} and path in _LEASE_POST_PATHS:

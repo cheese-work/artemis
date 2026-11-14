@@ -9,8 +9,8 @@
   </section>
 } @else {
   <div class="chat-session">
-    <header class="chat-header">
-      <div class="session-title">
+    <header class="chat-header" data-testid="run-header-controls">
+      <div class="session-title" data-testid="run-header-facts">
         @if (editingTitle()) {
           <form (ngSubmit)="saveTitle()" class="rename-form">
             <input name="title" aria-label="Session title" [(ngModel)]="titleDraft" maxlength="120" [disabled]="savingTitle()"
@@ -31,32 +31,172 @@
         <span aria-hidden="true">{{ sidebarOpen() ? '×' : '+' }}</span>
       </button>
     </header>
-    <div class="session-layout" [class.sidebar-open]="sidebarOpen()">
+    <div class="session-layout" data-testid="run-detail-content" [class.sidebar-open]="sidebarOpen()">
     <div class="session-main">
-    <section #history class="chat-history" aria-label="Chat history" (scroll)="trackScroll()">
-      <ol class="chat-messages flat-timeline" aria-live="polite" aria-relevant="additions">
+    <section #history class="chat-history" data-testid="run-turn-history" aria-label="Lịch sử trò chuyện" (scroll)="trackScroll()">
+      @if (chat(); as loadedChat) {
+        @if (loadedChat.turns.length > 1) {
+          <nav class="run-turn-selector" data-testid="run-turn-selector" aria-label="Chọn lượt chạy">
+            @for (turn of loadedChat.turns; track turn.turn_id) {
+              <button type="button" data-testid="run-turn-selector" [attr.data-turn-id]="turn.turn_id"
+                [attr.aria-pressed]="selectedTurn()?.turn_id === turn.turn_id"
+                (click)="selectTurn(turn.turn_id)">
+                <span>Lượt {{ turn.number }}</span>
+                <span>{{ resultLabel(resultForTurn(turn.turn_id), turn) }}</span>
+              </button>
+            }
+          </nav>
+        }
+      }
+      @if (resultsUnavailable()) {
+        <section class="verdict-card" data-testid="run-verdict" data-label-state="error" data-event-kind="verdict"
+          [attr.data-turn-id]="selectedTurn()?.turn_id ?? null" aria-live="off">
+          <p class="verdict-state">{{ resultLabel(null) }}</p>
+          <button type="button" class="verdict-retry" (click)="retryResults()">Thử lại</button>
+        </section>
+      } @else if (chat(); as loadedChat) {
+        @if (selectedTurn(); as turn) {
+          @let result = selectedResult();
+          @let lastTurn = turn.turn_id === loadedChat.turns.at(-1)?.turn_id;
+          <section class="verdict-card" data-testid="run-verdict" data-event-kind="verdict"
+            [attr.data-turn-id]="turn.turn_id" [attr.data-catalog-key]="result?.catalog_key ?? null"
+            [attr.data-label-state]="result?.label_state ?? 'legacy'" aria-live="off">
+                @if (result?.label_state === 'final') {
+                  <div class="verdict-layout">
+                    <aside class="verdict-rail" aria-label="Kết quả lượt chạy">
+                      <header class="verdict-heading">
+                        <span class="verdict-chip">{{ resultLabel(result, turn) }}</span>
+                        <span class="verification">Xác minh · {{ verification(result!) }}</span>
+                        @if (result!.category !== null && result!.display_labels?.category; as categoryLabel) {
+                          <span class="category-label">{{ categoryLabel }}</span>
+                        }
+                      </header>
+                      @if (result?.reason) { <p class="verdict-reason">{{ result!.reason }}</p> }
+                      @if (result!.action.text) {
+                        <p class="verdict-action">Hành động · @if (result!.action.href) { <a [href]="result!.action.href">{{ result!.action.text }}</a> } @else { <span>{{ result!.action.text }}</span> }</p>
+                      }
+                      @if (result!.responsible) { <p class="verdict-responsible">Phụ trách · {{ result!.responsible }}</p> }
+                      @if (result!.verdict === 'blocked') {
+                        <div class="blocked-actions" data-testid="run-blocked-actions">
+                          <code>{{ turn.turn_id }}</code>
+                          <button type="button" class="copy-run-id" (click)="copyRunId(turn.turn_id)">Sao chép mã lượt chạy</button>
+                          <a class="verdict-help" [href]="helpHref(result!)" aria-label="Trợ giúp về kết quả">?</a>
+                          @if (copyNoticeFor() === turn.turn_id) { <span class="copy-notice">{{ copyNotice() }}</span> }
+                        </div>
+                      }
+                    </aside>
+                    <section class="verdict-evidence" data-testid="run-decisive-evidence" aria-label="Bằng chứng quyết định">
+                    @if (evidenceStep(result!); as step) {
+                      <div class="selected-step-evidence" data-testid="selected-step-evidence">
+                        <p class="evidence-kicker">Bước lỗi · {{ stepNumber(step) }}</p>
+                        <h3>{{ step.content }}</h3>
+                        @let execution = step.payload?.['last_execution_result'];
+                        @if (execution?.['expected'] !== undefined) {
+                          <p><strong>Mong đợi</strong><span>{{ evidenceText(execution['expected']) }}</span></p>
+                        }
+                        @if (execution?.['actual'] !== undefined) {
+                          <p><strong>Thực tế</strong><span>{{ evidenceText(execution['actual']) }}</span></p>
+                        }
+                        <button type="button" class="evidence-link" data-testid="run-decisive-evidence-link"
+                          (click)="selectEvidence(result!.evidence.turn_id, result!.evidence.step!)">Mở bước trong dòng thời gian</button>
+                      </div>
+                    } @else {
+                      <div class="selected-step-evidence" data-testid="selected-step-evidence">Chưa có chi tiết bước quyết định.</div>
+                    }
+                    @if (result!.evidence.step !== null) {
+                      <nav class="evidence-index step-index" data-testid="evidence-index" [attr.aria-label]="'Các bước của lượt ' + turn.number">
+                        @for (step of evidenceSteps(result!); track step.sequence) {
+                          @let stepIndex = stepNumber(step);
+                          @if (stepIndex !== null) {
+                            <a [href]="'#' + stepElementId(step)" [class.selected]="stepIndex === result!.evidence.step"
+                              [attr.aria-current]="stepIndex === result!.evidence.step ? 'step' : null"
+                            (click)="openEvidenceStep($event, turn.turn_id, stepIndex)">Bước {{ stepIndex }} · {{ step.content }}</a>
+                          }
+                        }
+                      </nav>
+                    }
+                    @if (resultScreenshot(result!); as image) {
+                      <button type="button" class="evidence-image" data-testid="run-evidence-screenshot"
+                        aria-label="Mở ảnh chụp bằng chứng quyết định" (click)="openEvidenceImage(result!, $any($event.currentTarget))">
+                        <img [src]="image" alt="Ảnh chụp bằng chứng quyết định" loading="lazy">
+                      </button>
+                    } @else { <p class="evidence-unavailable">Không có ảnh chụp bằng chứng.</p> }
+                    </section>
+                  </div>
+                  @if (result!.results_note; as note) {
+                    <section class="results-note" aria-label="Kết quả của agent">
+                      <h3>{{ turn.status === 'completed' ? 'Kết quả' : 'Kết quả dở dang' }} — agent ghi lúc {{ note.modified_at * 1000 | date: 'HH:mm' : '+0700' }} ICT</h3>
+                      <pre>{{ note.text }}</pre>
+                      @if (note.truncated) { <p class="results-note-cut">Hiển thị 64 KB đầu tiên.</p> }
+                    </section>
+                  } @else { <p class="results-note-empty">Agent chưa ghi kết quả nào</p> }
+                } @else {
+                  <header class="verdict-heading">
+                    <span class="verdict-chip">{{ resultLabel(result, turn) }}</span>
+                  </header>
+                  @if (result?.label_state === 'error') {
+                    <button type="button" class="verdict-retry" (click)="retryResults()">Thử lại</button>
+                  } @else if (result?.label_state === 'pending' || turn.status === 'queued' || turn.status === 'running' || turn.status === 'paused') {
+                    @if (result?.reason) { <p>{{ result!.reason }}</p> }
+                  } @else if (result?.label_state === 'cancelled' || result?.label_state === 'legacy' || !result) {
+                    @if (result?.reason && result?.label_state === 'legacy') { <p>{{ result!.reason }}</p> }
+                    @if (!result && lastTurn && loadedChat.verdict; as legacyVerdict) {
+                      @for (finding of legacyVerdict.outcome?.last_findings ?? []; track $index) { <p>{{ finding }}</p> }
+                      @if (legacyVerdict.status !== 'completed') { <p>This execution did not complete.</p> }
+                      @if (legacyVerdict.result?.results_note; as note) {
+                        <section class="results-note" aria-label="Agent results">
+                          <h3>{{ legacyVerdict.status === 'completed' ? 'Kết quả' : 'Kết quả dở dang' }} — agent ghi lúc {{ note.modified_at * 1000 | date: 'HH:mm' : '+0700' }} ICT</h3>
+                          <pre>{{ note.text }}</pre>
+                          @if (note.truncated) { <p class="results-note-cut">Hiển thị 64 KB đầu tiên.</p> }
+                        </section>
+                      } @else { <p class="results-note-empty">Agent chưa ghi kết quả nào</p> }
+                      @if (shell.technicalDetails()) {
+                        @if (legacyVerdict.report) { <details><summary>Agent report</summary><pre>{{ legacyVerdict.report }}</pre></details> }
+                        <details><summary>Execution details and error stack</summary><pre>{{ legacyVerdict.details | json }}</pre><pre>{{ legacyVerdict.outcome | json }}</pre></details>
+                      }
+                    }
+                  }
+                }
+                @if (lastTurn && loadedChat.verdict?.status === 'completed' && loadedChat.verdict?.tip; as tip) {
+                  @if (tip.state === 'generating') { <footer class="verdict-tip">Preparing a tip for next time…</footer> }
+                  @else if (tip.state === 'complete' && tip.text) {
+                    <footer class="verdict-tip"><span>Next time</span><p>{{ tip.text }}</p>
+                      <button type="button" class="copy-tip" (click)="copyTip()">Copy</button>
+                      @if (copyNoticeFor() === 'tip') { <span class="copy-notice">{{ copyNotice() }}</span> }
+                    </footer>
+                  }
+                }
+                <p class="turn-result" data-testid="run-turn-result">Kết quả của lượt {{ result?.turn_index ?? turn.number }}/{{ result?.turn_count ?? loadedChat.turns.length }}</p>
+          </section>
+        }
+      }
+      <ol class="chat-messages flat-timeline" data-testid="run-step-timeline" aria-live="polite">
         @for (message of timeline(); track message.turn_id + ':' + message.kind + ':' + message.sequence; let index = $index) {
           @if (index === 0 || timeline()[index - 1].turn_id !== message.turn_id) {
-            <li class="turn-divider" aria-label="Turn boundary"><span>Turn {{ turnNumber(message.turn_id) }}</span>
+            <li class="turn-divider" aria-label="Phân cách lượt"><span>Lượt {{ turnNumber(message.turn_id) }}</span>
               @if (shell.technicalDetails()) { <span>{{ message.turn_id }}</span> }
             </li>
           }
           <li [class.chat-bubble]="['message', 'thinking', 'input_request'].includes(message.kind)"
             [class.human]="message.role === 'human'" [class.system]="message.role === 'system'"
             [class.plan-card]="message.kind === 'plan' || message.kind === 'replan'" [class.step-row]="message.kind === 'step'"
-            [attr.data-event-kind]="message.kind">
+            [id]="stepElementId(message)"
+            [attr.data-event-kind]="message.kind" [attr.data-turn-id]="message.kind === 'step' ? message.turn_id : null"
+            [attr.data-step-number]="message.kind === 'step' ? stepNumber(message) : null">
             @if (message.kind === 'step') {
-              <details>
+              <details [open]="isSelectedStep(message)">
                 <summary><span>{{ message.content }}</span>
                   @if (screenshot(message.payload); as image) { <img class="step-thumbnail" [src]="image" alt="Step thumbnail" loading="lazy" (error)="failScreenshot(message.payload)"> }
                 </summary>
                 @let marker = actionMarker(message.payload);
-                <div class="evidence">
-                  <figure class="evidence-before">
-                    <figcaption>Before</figcaption>
-                    @if (screenshot(message.payload, 'pre_image_name'); as image) {
+                @let beforeImage = screenshot(message.payload, 'pre_image_name');
+                @let afterImage = screenshot(message.payload);
+                <div class="evidence" [class.single-image]="!beforeImage || !afterImage">
+                  @if (beforeImage) {
+                    <figure class="evidence-before">
+                      <figcaption>Before</figcaption>
                       <span class="shot">
-                        <img class="step-before" [src]="image" [alt]="marker ? 'Before screenshot. Agent action: ' + marker.caption : 'Before screenshot'" loading="lazy"
+                        <img class="step-before" [src]="beforeImage" [alt]="marker ? 'Before screenshot. Agent action: ' + marker.caption : 'Before screenshot'" loading="lazy"
                           (load)="scrollToLatest()" (error)="failScreenshot(message.payload, 'pre_image_name')">
                         @if (marker?.line; as line) {
                           <svg class="action-marker swipe" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true" focusable="false">
@@ -72,13 +212,17 @@
                         }
                       </span>
                       @if (marker) { <span class="action-caption">{{ marker.caption }}</span> }
-                    } @else { <p class="receipt">Before screenshot unavailable.</p> }
-                  </figure>
-                  <figure class="evidence-after">
-                    <figcaption>After</figcaption>
-                    @if (screenshot(message.payload); as image) { <img class="step-screenshot" [src]="image" alt="Expanded step screenshot" loading="lazy" (load)="scrollToLatest()" (error)="failScreenshot(message.payload)"> }
-                    @else { <p class="receipt">Screenshot unavailable.</p> }
-                  </figure>
+                      @if (!afterImage) { <p class="receipt after-unavailable" role="status">Screenshot unavailable. After image is missing.</p> }
+                    </figure>
+                  }
+                  @if (afterImage) {
+                    <figure class="evidence-after">
+                      <figcaption>After</figcaption>
+                      @if (!beforeImage) { <p class="receipt before-unavailable" role="status">Before screenshot unavailable.</p> }
+                      <img class="step-screenshot" [src]="afterImage" alt="Expanded step screenshot" loading="lazy" (load)="scrollToLatest()" (error)="failScreenshot(message.payload)">
+                    </figure>
+                  }
+                  @if (!beforeImage && !afterImage) { <p class="receipt evidence-unavailable" role="status">Screenshot unavailable.</p> }
                 </div>
                 @if (shell.technicalDetails()) { <pre class="action-detail">{{ message.payload | json }}</pre> }
               </details>
@@ -92,46 +236,20 @@
             @if (shell.technicalDetails()) { <time>{{ message.created_at * 1000 | date: 'HH:mm:ss' : '+0700' }} ICT</time> }
           </li>
         }
-        @if (chat()?.verdict; as verdict) {
-          <li class="verdict-card" data-event-kind="verdict"><h2>Verdict · {{ verdictTitle() }}</h2>
-            @for (finding of verdict.outcome?.last_findings ?? []; track $index) { <p>{{ finding }}</p> }
-            @if (verdict.status !== 'completed') { <p>This execution did not complete.</p> }
-            @if (verdict.result?.results_note; as note) {
-              <section class="results-note" aria-label="Agent results">
-                <h3>{{ verdict.status === 'completed' ? 'Kết quả' : 'Kết quả dở dang' }} — agent ghi lúc {{ note.modified_at * 1000 | date: 'HH:mm' : '+0700' }} ICT</h3>
-                <pre>{{ note.text }}</pre>
-                @if (note.truncated) { <p class="results-note-cut">Hiển thị 64 KB đầu tiên.</p> }
-              </section>
-            } @else { <p class="results-note-empty">Agent chưa ghi kết quả nào</p> }
-            @if (shell.technicalDetails()) {
-              @if (verdict.report) { <details><summary>Agent report</summary><pre>{{ verdict.report }}</pre></details> }
-              <details><summary>Execution details and error stack</summary><pre>{{ verdict.details | json }}</pre><pre>{{ verdict.outcome | json }}</pre></details>
-            }
-            @if (verdict.status === 'completed') {
-              @if (verdict.tip; as tip) {
-                @if (tip.state === 'generating') { <footer class="verdict-tip" role="status">Preparing a tip for next time…</footer> }
-                @else if (tip.state === 'complete' && tip.text) {
-                  <footer class="verdict-tip"><span>Next time</span><p>{{ tip.text }}</p>
-                    <button type="button" class="copy-tip" (click)="copyTip()">Copy</button>
-                    @if (copyNotice()) { <span role="status">{{ copyNotice() }}</span> }
-                  </footer>
-                }
-              }
-            }
-          </li>
-        }
       </ol>
+      <span class="sr-only" data-testid="run-verdict-announcement" aria-live="polite" aria-atomic="true">{{ latestResultLabel() }}</span>
       @if (!chat() && !error()) {
         <div role="status"><span class="sr-only">Loading chat session…</span>
           @for (row of [1, 2, 3]; track row) { <div class="step-skeleton" aria-hidden="true"></div> }
         </div>
       } @else if (chat() && !stepCount()) { <p class="timeline-empty">{{ emptyMessage() }}</p> }
     </section>
+    @if (active()) { <p class="run-active-hint" data-testid="run-active-hint">Giữ tab mở, không khoá máy</p> }
     @if (error()) { <p class="chat-error" role="alert">{{ error() }}</p> }
     @if (!canWrite()) { <p class="chat-notice">Shared session · read-only</p> }
     @else if (compose()) {
       @if (inputRequest(); as request) {
-      <form class="chat-composer" (ngSubmit)="sendInput()" autocomplete="off">
+      <form class="chat-composer" data-testid="run-chat-composer" (ngSubmit)="sendInput()" autocomplete="off">
         <label for="session-input">{{ request.content }}</label>
         <input id="session-input" name="private-input" type="password" [(ngModel)]="secretDraft" maxlength="4096"
           autocomplete="off" autocapitalize="off" spellcheck="false" [disabled]="sending()" aria-describedby="private-input-notice">
@@ -142,7 +260,7 @@
         </div>
       </form>
       } @else {
-      <form class="chat-composer" (ngSubmit)="send()">
+      <form class="chat-composer" data-testid="run-chat-composer" (ngSubmit)="send()">
         <label class="sr-only" for="session-message">{{ active() ? 'Message the agent' : 'Continue this session with a new turn' }}</label>
         <div class="composer-bar" [class.off]="disconnected()" (keydown.escape)="pickerOpen.set(false)">
           <textarea id="session-message" name="message" [(ngModel)]="draft" rows="2" cdkTextareaAutosize cdkAutosizeMaxRows="8"
@@ -199,5 +317,11 @@
       <app-session-sidebar id="session-sidebar" [runId]="latest()?.turn_id ?? runId()" [turns]="usageTurns()" [technicalDetails]="shell.technicalDetails()" [firstPrompt]="rootRun()?.chat_prompt ?? rootRun()?.prompt ?? null"></app-session-sidebar>
     }
     </div>
+    <dialog #evidenceDialog class="evidence-dialog" aria-label="Decisive screenshot" (close)="onEvidenceDialogClose()">
+      @if (evidenceImage(); as image) {
+        <button type="button" class="evidence-dialog-close" autofocus (click)="evidenceDialog.close()">Close screenshot</button>
+        <img [src]="image.url" [alt]="image.alt">
+      }
+    </dialog>
   </div>
 }

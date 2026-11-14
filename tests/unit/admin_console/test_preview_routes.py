@@ -662,3 +662,86 @@ def test_preview_lets_real_read_routes_through_to_their_real_handlers(preview_pr
         assert got["handled"], (key, got)
         assert not any(h.startswith("preview_synthetic.") for h in got["handled"]), (key, got)
         assert got["effects"] == [], (key, got)
+
+
+def test_preview_reads_only_visible_compact_results_without_real_effects(library, monkeypatch):
+    from apps.admin_console.core.access_control import AccessIdentity, require_qa
+    from apps.admin_console.routers import chats
+    from tests.support.smartqa_verdict_fixtures import build_smartqa_verdict_case
+
+    own = build_smartqa_verdict_case(library, monkeypatch, requested_by="qa1@example.test")
+    hidden = build_smartqa_verdict_case(library, monkeypatch, requested_by="qa2@example.test")
+    require_visible = chats.require_visible_run
+
+    def hide_hidden_session(scope, session_ids, **kwargs):
+        if session_ids == [hidden.chat_id]:
+            raise AdminAPIError(404, "Run not visible.", "run_not_visible", "Open a visible run.")
+        return require_visible(scope, session_ids, **kwargs)
+
+    monkeypatch.setattr(chats, "require_visible_run", hide_hidden_session)
+    effects = []
+
+    def forbid(name):
+        def fail(*_args, **_kwargs):
+            effects.append(name)
+            raise AssertionError(name)
+
+        async def fail_async(*_args, **_kwargs):
+            fail()
+
+        return fail, fail_async
+
+    for owner, name in (
+        (task_queue_service, "ensure_worker_running"),
+        (task_queue_service, "stop_tasks"),
+        (task_queue_service, "resume_task"),
+    ):
+        sync_fail, _ = forbid(name)
+        monkeypatch.setattr(owner, name, sync_fail)
+    for owner, name in (
+        (device_pool, "list_devices_async"),
+        (readiness_engine, "run_all"),
+    ):
+        _, async_fail = forbid(name)
+        monkeypatch.setattr(owner, name, async_fail)
+    for name in ("get_active_owner", "get_active_owners", "get_queued_tasks"):
+        sync_fail, _ = forbid(name)
+        monkeypatch.setattr(
+            DeviceExecutionLock,
+            name,
+            classmethod(lambda cls, *args, _fail=sync_fail, **kwargs: _fail()),
+        )
+    import httpx
+
+    _, provider_fail = forbid("provider_http")
+    monkeypatch.setattr(httpx.AsyncClient, "send", provider_fail)
+
+    app = FastAPI(docs_url=None, openapi_url=None)
+    app.add_exception_handler(AdminAPIError, admin_api_error_handler)
+    app.state.access_config = AccessConfig(auth_mode="cloudflare")
+    app.dependency_overrides[public_tier] = lambda: AccessIdentity(
+        "qa1@example.test", False, "cloudflare"
+    )
+    app.add_api_route(
+        "/api/chats/results",
+        chats.get_chat_results,
+        methods=["POST"],
+        dependencies=[Depends(require_qa)],
+    )
+    app.add_middleware(pr.PreviewRouteGuard, route_source=app)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/chats/results", json={"session_ids": [own.chat_id, hidden.chat_id]}
+        )
+
+    assert response.status_code == 200
+    sessions = {row["session_id"]: row for row in response.json()["sessions"]}
+    assert sessions[own.chat_id]["results"]
+    assert "timeline" not in sessions[own.chat_id]
+    assert sessions[hidden.chat_id] == {
+        "session_id": hidden.chat_id,
+        "status": "unavailable",
+        "results": [],
+    }
+    assert effects == []
