@@ -294,6 +294,7 @@ def test_cli_mcp_install_antigravity(tmp_path, monkeypatch):
 
 def test_cli_mcp_install_all(tmp_path, monkeypatch):
     """Verify 'artemis mcp --install all' installs configs and global rules to all supported IDE locations."""
+    monkeypatch.delenv("CODEX_HOME", raising=False)
     monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
     monkeypatch.setenv("APPDATA", str(tmp_path / "AppData" / "Roaming"))
     monkeypatch.setattr("mcp_server.utils.env_utils.get_project_root", lambda: str(tmp_path))
@@ -423,6 +424,7 @@ def test_cli_mcp_install_claude_refuses_unparseable_claude_json(tmp_path, monkey
 
 def test_cli_mcp_install_codex_preserves_config_and_is_idempotent(tmp_path, monkeypatch):
     """Verify Codex TOML merging preserves other servers and updates only Artemis."""
+    monkeypatch.delenv("CODEX_HOME", raising=False)
     monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
     monkeypatch.setattr("mcp_server.utils.env_utils.get_project_root", lambda: str(tmp_path))
     codex_dir = tmp_path / ".codex"
