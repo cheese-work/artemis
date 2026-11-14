@@ -98,6 +98,52 @@ async def test_body_edits_are_author_only_but_resolved_is_a_shared_toggle(annota
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("role", ["qa", "qa2"])
+@pytest.mark.parametrize("previously_edited", [False, True])
+async def test_resolved_only_patch_preserves_edited_at(annotation_run, role, previously_edited):
+    run, step = annotation_run
+    created = await _add(run, step)
+    assert created.status_code == 201, created.text
+    annotation = created.json()
+    assert annotation["edited_at"] is None
+    suffix = f"/{annotation['annotation_id']}"
+    if previously_edited:
+        edited = await _call("qa", "PATCH", run, suffix, json={"body": "author edit"})
+        assert edited.status_code == 200, edited.text
+        annotation = edited.json()
+        assert annotation["edited_at"] is not None
+    for resolved in (True, False):
+        toggled = await _call(role, "PATCH", run, suffix, json={"resolved": resolved})
+        assert toggled.status_code == 200, toggled.text
+        assert toggled.json()["resolved"] is resolved
+        assert toggled.json()["body"] == annotation["body"]
+        assert toggled.json()["edited_at"] == annotation["edited_at"]
+        fetched = await _call(role, "GET", run, suffix)
+        assert fetched.status_code == 200
+        assert fetched.json() == toggled.json()
+
+
+@pytest.mark.asyncio
+async def test_link_holder_can_edit_and_delete_their_own_note(annotation_run):
+    run, step = annotation_run
+    created = await _add(run, step, "qa2")
+    assert created.status_code == 201, created.text
+    annotation = created.json()
+    assert annotation["author"] == "qa2@example.com"
+    assert annotation["edited_at"] is None
+    suffix = f"/{annotation['annotation_id']}"
+    edited = await _call("qa2", "PATCH", run, suffix, json={"body": "link holder edit"})
+    assert edited.status_code == 200, edited.text
+    assert edited.json()["body"] == "link holder edit"
+    assert edited.json()["edited_at"] is not None
+    fetched = await _call("qa2", "GET", run, suffix)
+    assert fetched.status_code == 200 and fetched.json() == edited.json()
+    deleted = await _call("qa2", "DELETE", run, suffix)
+    assert deleted.status_code == 204, deleted.text
+    assert (await _call("qa2", "GET", run, suffix)).status_code == 404
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("role,expected", [("qa", 204), ("qa2", 403), ("admin", 204)])
 async def test_author_and_admin_can_delete_but_link_holder_cannot(annotation_run, role, expected):
     run, step = annotation_run
