@@ -176,6 +176,7 @@ class ControlServer(socketserver.UnixStreamServer):
         methods = {
             "verify-release": self.broker.verify_release,
             "recover-quarantine": self.broker.recover_quarantine,
+            "record-change": self.broker.record_change,
         }
         if not isinstance(request["op"], str) or request["op"] not in methods:
             raise Refused("invalid_request")
@@ -211,7 +212,7 @@ def rpc(socket_path, request):
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="DLP-1 local broker (no ADB access)")
+    parser = argparse.ArgumentParser(description="DLP-1 local broker and owner recovery")
     parser.add_argument("--socket", type=Path, default=DEFAULT_STATE / "broker.sock")
     parser.add_argument("--control-socket", type=Path, help="leader control plane socket")
     sub = parser.add_subparsers(dest="op", required=True)
@@ -236,9 +237,32 @@ def main(argv=None):
     recover.add_argument("--lease-id", required=True)
     recover.add_argument("--recovery-owner", required=True)
     recover.add_argument("--evidence", required=True)
-    claims = sub.add_parser("write-android-claims", help="Android claim writer, shared guard")
-    claims.add_argument("--composition", type=Path, required=True)
-    claims.add_argument("--claim", action="append", default=[], help="claimed serial or alias")
+    record = sub.add_parser("record-change", help="owner control: journal intent before execution")
+    record.add_argument("--lease-id", required=True)
+    record.add_argument("--principal", required=True)
+    record.add_argument("--run-id", required=True)
+    record.add_argument("--change-file", type=Path, required=True)
+    for operation in (
+        "write-readiness",
+        "census-android-claims",
+        "claim-android",
+        "release-android",
+        "list-android-claims",
+    ):
+        owner = sub.add_parser(operation, help="owner-only source operation under the shared guard")
+        owner.add_argument("--composition", type=Path, required=True)
+        owner.add_argument("--registry", type=Path, required=True)
+        owner.add_argument("--state-dir", type=Path, default=DEFAULT_STATE)
+        if operation in {"write-readiness", "census-android-claims"}:
+            owner.add_argument("--input", type=Path, required=True)
+        if operation in {"claim-android", "release-android"}:
+            owner.add_argument("--owner", required=True)
+            owner.add_argument("--run-id", required=True)
+        if operation == "claim-android":
+            owner.add_argument("--device-id", required=True)
+            owner.add_argument("--reference", required=True)
+        if operation == "release-android":
+            owner.add_argument("--claim-id", required=True)
     wait = sub.add_parser("wait", help="one fallback poll, condition wakeup and final comment")
     for flag in ("principal", "agent-id", "issue-id", "ticket", "offer-property-id"):
         wait.add_argument(
@@ -307,7 +331,9 @@ def main(argv=None):
                 from compose import compose
 
                 # Refuse before creating state or binding any socket.
-                composed = compose(args["composition"], registry)
+                composed = compose(
+                    args["composition"], registry, db_path=args["state_dir"] / "leases.sqlite3"
+                )
             state = args["state_dir"]
             state.mkdir(mode=0o700, parents=True, exist_ok=True)
             # Without --composition the broker stays closed: no readiness, readers,
@@ -326,7 +352,8 @@ def main(argv=None):
                 )
                 try:
                     if control is not None:
-                        threading.Thread(target=control.serve_forever, daemon=True).start()
+                        control_worker = threading.Thread(target=control.serve_forever)
+                        control_worker.start()
                     if args["multica_profile"]:
                         client = MulticaClient(
                             profile=args["multica_profile"],
@@ -337,15 +364,62 @@ def main(argv=None):
                 finally:
                     if control is not None:
                         control.shutdown()
+                        control_worker.join()
                         control.server_close()
             return 0
-        if op == "write-android-claims":
-            from compose import compose, write_claims_snapshot
+        if op in {
+            "write-readiness",
+            "census-android-claims",
+            "claim-android",
+            "release-android",
+            "list-android-claims",
+        }:
+            from compose import compose, write_readiness, _owner_file
 
-            composed = compose(args["composition"], DeviceRegistry())
-            write_claims_snapshot(composed["android_claims_path"], composed["guard"], args["claim"])
+            _owner_file(args["registry"])
+            registry = DeviceRegistry.load(args["registry"])
+            state = args["state_dir"]
+            composed = compose(args["composition"], registry, db_path=state / "leases.sqlite3")
+            # Initialize broker tables. No maintenance worker or device I/O here.
+            Broker(state / "leases.sqlite3", registry, **composed["broker"]).inventory()
+            ledger = composed["ledger"]
+            if op == "write-readiness":
+                result = write_readiness(composed, args["input"], registry)
+            elif op == "census-android-claims":
+                _owner_file(args["input"])
+                payload = json.loads(args["input"].read_text())
+                if not isinstance(payload, dict) or set(payload) != {
+                    "generation",
+                    "observed_at",
+                    "complete",
+                    "writers",
+                    "claims",
+                }:
+                    raise ValueError("invalid census")
+                result = ledger.census(**payload)
+            elif op == "claim-android":
+                result = {
+                    "claim_id": ledger.claim(
+                        args["device_id"],
+                        owner=args["owner"],
+                        run_id=args["run_id"],
+                        reference=args["reference"],
+                    )
+                }
+            elif op == "release-android":
+                ledger.release(args["claim_id"], owner=args["owner"], run_id=args["run_id"])
+                result = {"released": True}
+            else:
+                result = ledger.snapshot()
+            print(json.dumps(result))
             return 0
-        if op in {"verify-release", "recover-quarantine"}:
+        if op == "record-change":
+            from compose import _owner_file
+
+            path = args.pop("change_file")
+            _owner_file(path)
+            args["change"] = json.loads(path.read_text())
+        if op in {"verify-release", "recover-quarantine", "record-change"}:
             if control_socket is None:
                 raise ValueError("leader operations need --control-socket")
             response = rpc(control_socket, {"op": op, "args": args})
