@@ -14,6 +14,7 @@
 
 """Centralized workspace, configuration, temporary files, and directory management."""
 
+import logging
 import os
 from pathlib import Path
 import sys
@@ -39,6 +40,7 @@ from artemis.resources import get_bundled_config_path
 # Project root directory (3 levels up from artemis/config/paths.py)
 ROOT_DIR = Path(__file__).resolve().parent.parent.parent
 CONFIG_DIR = ROOT_DIR / "config"
+logger = logging.getLogger(__name__)
 
 
 def is_frozen_bundle() -> bool:
@@ -122,28 +124,34 @@ def get_data_engine_db_path() -> Path:
     return get_default_traces_path() / DATA_ENGINE_DB_FILENAME
 
 
+def _get_discovery_file(filename: str) -> Path:
+    """Keep source-checkout discovery local even when shared state exists."""
+    app_dir_file = get_app_dir() / filename
+    if _use_user_app_dir():
+        return app_dir_file
+    source_file = ROOT_DIR / filename
+    if app_dir_file != source_file and app_dir_file.exists():
+        logger.warning(
+            "Ignoring shared discovery file %s for source checkout; using %s",
+            app_dir_file,
+            source_file,
+        )
+    return source_file
+
+
 def get_ipc_port_file() -> Path:
     """Returns the location of the IPC port synchronization file."""
-    app_dir_file = get_app_dir() / IPC_PORT_FILENAME
-    if _use_user_app_dir() or app_dir_file.exists():
-        return app_dir_file
-    return ROOT_DIR / IPC_PORT_FILENAME
+    return _get_discovery_file(IPC_PORT_FILENAME)
 
 
 def get_ls_address_file() -> Path:
     """Returns the location of the Language Server address synchronization file."""
-    app_dir_file = get_app_dir() / LS_ADDRESS_FILENAME
-    if _use_user_app_dir() or app_dir_file.exists():
-        return app_dir_file
-    return ROOT_DIR / LS_ADDRESS_FILENAME
+    return _get_discovery_file(LS_ADDRESS_FILENAME)
 
 
 def get_server_info_file() -> Path:
     """Returns the location of the Artemis server metadata file."""
-    app_dir_file = get_app_dir() / SERVER_INFO_FILENAME
-    if _use_user_app_dir() or app_dir_file.exists():
-        return app_dir_file
-    return ROOT_DIR / SERVER_INFO_FILENAME
+    return _get_discovery_file(SERVER_INFO_FILENAME)
 
 
 def get_config_path(filename: str, default_bundled_path: Path | None = None) -> Path:

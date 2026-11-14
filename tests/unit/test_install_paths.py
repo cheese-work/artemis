@@ -14,6 +14,10 @@
 
 """Regression tests for source-checkout versus installed-wheel state paths."""
 
+import logging
+
+import pytest
+
 from artemis.config import paths
 from artemis.config import runtime
 
@@ -83,3 +87,68 @@ def test_installed_ipc_never_writes_site_packages_legacy_file(tmp_path, monkeypa
     assert not (installed_root / ".artemis_ipc_port").exists()
 
     runtime.clear_ipc_port()
+
+
+DISCOVERY_FILES = (
+    (paths.get_ipc_port_file, paths.IPC_PORT_FILENAME),
+    (paths.get_ls_address_file, paths.LS_ADDRESS_FILENAME),
+    (paths.get_server_info_file, paths.SERVER_INFO_FILENAME),
+)
+
+
+@pytest.mark.parametrize("resolver,filename", DISCOVERY_FILES)
+@pytest.mark.parametrize("shared_exists", [False, True])
+def test_source_discovery_ignores_shared_files(
+    tmp_path, monkeypatch, caplog, resolver, filename, shared_exists
+):
+    _clear_path_overrides(monkeypatch)
+    source_root = tmp_path / "checkout"
+    (source_root / "artemis").mkdir(parents=True)
+    (source_root / "pyproject.toml").touch()
+    app_dir = tmp_path / "shared-app"
+    app_dir.mkdir()
+    shared_file = app_dir / filename
+    if shared_exists:
+        shared_file.write_text("other-install", encoding="utf-8")
+
+    monkeypatch.setattr(paths, "ROOT_DIR", source_root)
+    monkeypatch.setattr(paths, "is_frozen_bundle", lambda: False)
+    monkeypatch.setattr(paths.platform.paths, "resolve_app_dir", lambda: app_dir)
+
+    with caplog.at_level(logging.WARNING):
+        assert resolver() == source_root / filename
+
+    warnings = [record for record in caplog.records if record.levelno >= logging.WARNING]
+    assert len(warnings) == int(shared_exists)
+    if shared_exists:
+        assert str(shared_file) in warnings[0].getMessage()
+        assert str(source_root / filename) in warnings[0].getMessage()
+        assert shared_file.read_text(encoding="utf-8") == "other-install"
+
+
+@pytest.mark.parametrize("resolver,filename", DISCOVERY_FILES)
+@pytest.mark.parametrize(
+    "mode", ["wheel", "frozen", "ARTEMIS_APP_DIR", "ANTIGRAVITY_APP_DIR", "ARTEMIS_USE_USER_DIR"]
+)
+def test_user_app_discovery_preserves_paths(
+    tmp_path, monkeypatch, caplog, resolver, filename, mode
+):
+    _clear_path_overrides(monkeypatch)
+    source_root = tmp_path / "install"
+    (source_root / "artemis").mkdir(parents=True)
+    if mode != "wheel":
+        (source_root / "pyproject.toml").touch()
+    app_dir = tmp_path / "user-app"
+    monkeypatch.setattr(paths, "ROOT_DIR", source_root)
+    monkeypatch.setattr(paths, "is_frozen_bundle", lambda: mode == "frozen")
+    monkeypatch.setattr(paths.platform.paths, "resolve_app_dir", lambda: app_dir)
+    if mode.startswith(("ARTEMIS_", "ANTIGRAVITY_")):
+        monkeypatch.setenv(mode, "true" if mode == "ARTEMIS_USE_USER_DIR" else str(app_dir))
+
+    with caplog.at_level(logging.WARNING):
+        assert resolver() == app_dir / filename
+        app_dir.mkdir()
+        (app_dir / filename).write_text("this-install", encoding="utf-8")
+        assert resolver() == app_dir / filename
+
+    assert not caplog.records
