@@ -650,6 +650,7 @@ class Broker:
                 (lease_id, json.dumps(change)),
             )
             self._event(conn, "change", now, group, kind=change["kind"])
+            return {"recorded": True}
 
     def verify_release(self, lease_id, *, verifier, evidence, passed):
         """Trusted leader entry point, deliberately absent from holder RPC/CLI."""
