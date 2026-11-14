@@ -442,8 +442,28 @@ def test_owner_lock_waits_for_shared_admission_guard(tmp_path, monkeypatch):
     """CHE-5297: the DLP-1 broker and Artemis lock writers share one exclusion."""
     import fcntl
 
+    from pathlib import Path
+    import sys
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "tools/device-lease"))
+    from broker import Broker, Device, DeviceRegistry
+    from compose import FileGuard
+    from device_lease.claims import ClaimLedger
+
     guard = tmp_path / "claims.guard"
+    database = tmp_path / "leases.sqlite3"
+    registry = DeviceRegistry([Device("emulator-5554", restricted=False, identity_confirmed=True)])
+    Broker(database, registry).inventory()
+    ledger = ClaimLedger(database, FileGuard(guard), registry, tmp_path)
+    ledger.census(
+        generation=1,
+        observed_at=time.time(),
+        complete=True,
+        writers=["android", "artemis"],
+        claims=[],
+    )
     monkeypatch.setenv("ARTEMIS_DEVICE_ADMISSION_GUARD", str(guard))
+    monkeypatch.setenv("ARTEMIS_DEVICE_CLAIMS_DB", str(database))
     holder = os.open(guard, os.O_CREAT | os.O_RDWR, 0o600)
     fcntl.flock(holder, fcntl.LOCK_EX)
     lock = DeviceExecutionLock("emulator-5554", "guarded task")

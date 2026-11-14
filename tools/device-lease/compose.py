@@ -7,7 +7,6 @@ inside the shared claim guard, as the broker requires.
 """
 
 import fcntl
-import importlib
 import json
 import os
 from pathlib import Path
@@ -68,39 +67,77 @@ class FileGuard:
         return False
 
 
-def _fresh(path, key, max_age, clock=time.time):
-    """Read `{"observed_at": epoch, key: value}`; stale or future snapshots refuse."""
-    payload = json.loads(Path(path).read_text(encoding="utf-8"))
-    if not isinstance(payload, dict) or set(payload) != {"observed_at", key}:
-        raise ValueError("invalid snapshot")
-    observed = payload["observed_at"]
-    if type(observed) not in (int, float) or not -MAX_SKEW <= clock() - observed <= max_age:
-        raise ValueError("stale snapshot")
-    return payload[key]
+def admitted_reader(path, max_age, registry=None, clock=time.time):
+    """Per-device readiness AND explicit grants; inventory is never permission.
 
+    Invalid source records close admission. Valid but stale, revoked or restricted
+    devices are excluded individually. Caller holds the shared admission guard.
+    """
+    import math
 
-def admitted_reader(path, max_age):
-    """Fresh readiness and grants: canonical id -> allowed endpoint alias."""
+    def number(value):
+        if type(value) not in (int, float) or not math.isfinite(value):
+            raise ValueError("invalid readiness time")
+        return value
 
     def read():
-        devices = _fresh(path, "devices", max_age)
-        if not isinstance(devices, dict) or any(
-            not isinstance(k, str) or not isinstance(v, str) for k, v in devices.items()
+        _owner_file(path)
+        payload = json.loads(Path(path).read_text(encoding="utf-8"))
+        if (
+            not isinstance(payload, dict)
+            or set(payload) != {"generation", "devices"}
+            or type(payload["generation"]) is not int
+            or payload["generation"] < 1
+            or not isinstance(payload["devices"], list)
+            or registry is None
         ):
-            raise ValueError("invalid admitted snapshot")
-        return dict(devices)
-
-    return read
-
-
-def android_claims_reader(path, max_age):
-    """Android issue claims mirrored by the claim writer under the shared guard."""
-
-    def read():
-        claims = _fresh(path, "claims", max_age)
-        if not isinstance(claims, list) or any(not isinstance(c, str) for c in claims):
-            raise ValueError("invalid claims snapshot")
-        return claims
+            raise ValueError("invalid readiness source")
+        now, result, seen = number(clock()), {}, set()
+        for row in payload["devices"]:
+            if not isinstance(row, dict) or set(row) != {
+                "device_id",
+                "endpoint",
+                "state",
+                "observed_at",
+                "grant",
+            }:
+                raise ValueError("invalid readiness record")
+            if any(
+                not isinstance(row[k], str) or not row[k].strip()
+                for k in ("device_id", "endpoint", "state")
+            ):
+                raise ValueError("invalid readiness identity")
+            if row["device_id"] in seen:
+                raise ValueError("duplicate readiness record")
+            seen.add(row["device_id"])
+            grant = row["grant"]
+            if (
+                not isinstance(grant, dict)
+                or set(grant) != {"reference", "observed_at", "expires_at"}
+                or not isinstance(grant["reference"], str)
+                or not grant["reference"].strip()
+            ):
+                raise ValueError("invalid grant record")
+            observed, granted, expiry = (
+                number(row["observed_at"]),
+                number(grant["observed_at"]),
+                number(grant["expires_at"]),
+            )
+            device = registry.resolve(row["device_id"])
+            if (
+                device is not None
+                and device.device_id == row["device_id"]
+                and registry.resolve(row["endpoint"]) == device
+                and device.pool != "spare"
+                and not device.restricted
+                and registry.eligible(row["endpoint"], row["state"])
+                and -MAX_SKEW <= now - observed <= max_age
+                and -MAX_SKEW <= now - granted <= max_age
+                and granted < expiry
+                and now < expiry
+            ):
+                result[device.device_id] = row["endpoint"]
+        return result
 
     return read
 
@@ -133,23 +170,8 @@ def artemis_locks_reader(lock_dir):
 
 
 def write_claims_snapshot(path, guard, claims, clock=time.time):
-    """Android claim writer: replace the snapshot atomically inside the shared guard."""
-    if not isinstance(claims, (list, tuple)) or any(
-        not isinstance(c, str) or not c.strip() for c in claims
-    ):
-        raise ValueError("claims must be nonempty strings")
-    path = Path(path)
-    temp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    with guard():
-        fd = os.open(temp, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as stream:
-                json.dump({"observed_at": clock(), "claims": list(claims)}, stream)
-                stream.flush()
-                os.fsync(stream.fileno())
-            os.replace(temp, path)
-        finally:
-            temp.unlink(missing_ok=True)
+    """Removed unsafe snapshot replacement. Use ClaimLedger's owned claim/release."""
+    raise ValueError("unverified claims snapshots are disabled; use the claim ledger")
 
 
 def _owner_file(path):
@@ -179,31 +201,26 @@ def _snapshot(config, name):
     return path, age
 
 
-def _recovery(config):
+def _recovery(config, db_path, registry):
+    from owned_recovery import OwnedRecovery
+
     section = _field(config, "recovery", dict)
     try:
         spec = _field(section, "adapter", str)
         owner = _field(section, "owner", str)
         ops_issue = _field(section, "ops_issue", str)
-        module, _, factory = spec.partition(":")
-        if not module or not factory:
+        if spec != "owned":
             raise CompositionError("adapter")
-        adapter = getattr(importlib.import_module(module), factory)()
-    except (CompositionError, ImportError, AttributeError, TypeError) as exc:
+    except CompositionError as exc:
         raise CompositionError("composition incomplete: recovery") from exc
-    # recover_pending passes the remaining deadline; both callbacks are mandatory.
-    if not callable(getattr(adapter, "fence", None)) or not callable(
-        getattr(adapter, "undo", None)
-    ):
-        raise CompositionError("composition incomplete: recovery")
-    return adapter, owner, ops_issue
+    return OwnedRecovery(db_path, registry=registry), owner, ops_issue
 
 
-def compose(config_path, registry):
-    """Return Broker keyword arguments plus the leader control socket path.
+def compose(config_path, registry, *, db_path=None):
+    """One store for the daemon, claims source and concrete recovery adapter.
 
-    `registry` is accepted so later checks can validate inventory against inputs;
-    identity resolution itself stays in the broker.
+    Validation precedes state creation. Legacy caller-written claims and imported
+    callback factories cannot enable the live path.
     """
     _owner_file(config_path)
     try:
@@ -212,24 +229,66 @@ def compose(config_path, registry):
         raise CompositionError("composition file is not valid JSON") from exc
     admitted_path, admitted_age = _snapshot(config, "admitted")
     locks = _field(config, "artemis_locks_dir", str)
-    claims_path, claims_age = _snapshot(config, "android_claims")
+    claims = _field(config, "android_claims", dict)
+    if (
+        set(claims) != {"source", "max_age_seconds"}
+        or claims.get("source") != "ledger"
+        or type(claims.get("max_age_seconds")) is not int
+        or not 1 <= claims["max_age_seconds"] <= 3600
+    ):
+        raise CompositionError("composition incomplete: android_claims")
     guard = FileGuard(_field(config, "guard_path", str))
-    recovery_io, owner, ops_issue = _recovery(config)
+    # Validate recovery even when db_path is absent; no dynamic import fallback.
+    recovery_io, owner, ops_issue = _recovery(config, db_path or ".", registry)
     control = Path(_field(config, "leader_control_socket", str))
+    if db_path is None:
+        raise CompositionError("composition requires the broker database")
+    db_path = Path(db_path)
+    db_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    info = db_path.parent.lstat()
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+        raise CompositionError("broker state directory must be private and owner-only")
+    from device_lease.claims import ClaimLedger
+
+    ledger = ClaimLedger(db_path, guard, registry, locks, max_age=claims["max_age_seconds"])
     return {
         "broker": {
             "admitted": {},
-            "admission_snapshot": admitted_reader(admitted_path, admitted_age),
-            "admission_sources": {
-                "artemis": artemis_locks_reader(locks),
-                "android": android_claims_reader(claims_path, claims_age),
-            },
+            "admission_snapshot": admitted_reader(admitted_path, admitted_age, registry),
+            "admission_sources": {"artemis": artemis_locks_reader(locks), "android": ledger.read},
             "admission_guard": guard,
             "recovery_io": recovery_io,
             "recovery_owner": owner,
             "ops_issue": ops_issue,
         },
         "guard": guard,
-        "android_claims_path": Path(claims_path),
+        "ledger": ledger,
+        "admitted_path": Path(admitted_path),
+        "admitted_age": admitted_age,
         "leader_control_socket": control,
     }
+
+
+def write_readiness(composed, input_path, registry):
+    """Trusted owner producer. Validate observations and atomically publish a generation."""
+    reader = admitted_reader(input_path, composed["admitted_age"], registry)
+    destination, guard = composed["admitted_path"], composed["guard"]
+    with guard():
+        reader()  # Validates source ownership, schema, grants and timestamps.
+        payload = json.loads(Path(input_path).read_text(encoding="utf-8"))
+        if destination.exists():
+            _owner_file(destination)
+            prior = json.loads(destination.read_text(encoding="utf-8"))
+            if payload["generation"] < prior["generation"]:
+                raise ValueError("stale readiness generation")
+        temp = destination.with_name(f".{destination.name}.{os.getpid()}.tmp")
+        fd = os.open(temp, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                json.dump(payload, stream, allow_nan=False)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temp, destination)
+        finally:
+            temp.unlink(missing_ok=True)
+    return {"generation": payload["generation"]}
