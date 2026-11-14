@@ -68,10 +68,18 @@ def test_only_the_frontend_job_requires_the_browser_runner():
         assert browser == (name == "frontend"), (file, name)
 
 
+def _triggers(workflow):
+    return workflow[True] if True in workflow else workflow["on"]
+
+
+def _skips_pull_request(job):
+    conditions = job.get("if", "").strip("${} ").split(" && ")
+    return "github.event_name != 'pull_request'" in conditions
+
+
 def test_pull_request_jobs_skip_forks_before_a_self_hosted_runner_starts():
     for file, name, workflow, job in _jobs():
-        triggers = workflow[True] if True in workflow else workflow["on"]
-        if "pull_request" in triggers:
+        if "pull_request" in _triggers(workflow) and not _skips_pull_request(job):
             assert FORK_GUARD in job["if"], (file, name)
 
 
@@ -86,7 +94,7 @@ def test_frontend_job_provisions_chrome_without_disabling_its_sandbox():
 
 def test_python_jobs_install_the_opencv_system_libraries():
     workflow = yaml.safe_load((WORKFLOWS / "ci.yml").read_text(encoding="utf-8"))
-    for name in ("python-tests", "package"):
+    for name in ("python-quality", "python-tests", "b2-gate", "package"):
         steps = workflow["jobs"][name]["steps"]
         install = next(
             (i for i, step in enumerate(steps) if "apt-get install" in step.get("run", "")), None
@@ -136,24 +144,90 @@ def test_python_passes_have_independent_budgets_without_extra_runner_contention(
     assert "Fetch CHE-844 receipt sources" in steps
 
 
-def test_required_python_check_fails_unless_both_matrix_passes_succeed():
-    workflow = yaml.safe_load((WORKFLOWS / "ci.yml").read_text(encoding="utf-8"))
-    gate = workflow["jobs"]["python-quality"]
-    assert gate["name"] == "Python 3.12"
-    assert gate["needs"] == "python-tests"
-    assert "always()" in gate["if"]
-    assert gate["timeout-minutes"] == 5
-    assert len(gate["steps"]) == 1
-    step = gate["steps"][0]
-    assert step["env"]["PYTHON_TEST_RESULT"] == "${{ needs.python-tests.result }}"
-    for result in ("success", "failure", "cancelled", "skipped", ""):
-        completed = subprocess.run(
-            ["bash", "-e", "-c", step["run"]],
-            env={**os.environ, "PYTHON_TEST_RESULT": result},
-            capture_output=True,
-            text=True,
-        )
-        assert (completed.returncode == 0) == (result == "success"), result
+def _ci():
+    return yaml.safe_load((WORKFLOWS / "ci.yml").read_text(encoding="utf-8"))
+
+
+def test_pull_request_required_job_set_is_the_fast_lane():
+    """PR feedback within 15 min p90 (CHE-3276): the full suite does not run on a PR."""
+    on_pull_request = {
+        job["name"] for job in _ci()["jobs"].values() if not _skips_pull_request(job)
+    }
+    assert on_pull_request == {
+        "Python 3.12",
+        "B2 ADB allowlist and tunnel fuzz",
+        "Frontend tests and production build",
+        "Build and smoke-test Python packages",
+    }
+
+
+def test_full_python_suite_runs_on_main_nightly_and_dispatch_only():
+    workflow = _ci()
+    tests = workflow["jobs"]["python-tests"]
+    assert _skips_pull_request(tests)
+    triggers = _triggers(workflow)
+    assert triggers["push"] == {"branches": ["main"]}
+    assert len(triggers["schedule"]) == 1 and "cron" in triggers["schedule"][0]
+    assert "workflow_dispatch" in triggers
+
+
+def test_main_runs_queue_instead_of_cancelling_each_other():
+    cancel = _ci()["concurrency"]["cancel-in-progress"]
+    assert cancel == "${{ github.event_name == 'pull_request' }}"
+
+
+def test_python_pull_request_lane_runs_checks_and_the_fast_subset():
+    job = _ci()["jobs"]["python-quality"]
+    assert job["name"] == "Python 3.12"
+    assert "needs" not in job
+    assert job["timeout-minutes"] <= 20
+    runs = "\n".join(step.get("run", "") for step in job["steps"])
+    for command in ("ruff format --check", "ruff check", "quality_ratchet.py", "pyright"):
+        assert command in runs, command
+    assert "--ignore=tests/unit/admin_console" in runs
+    assert "--cov" not in runs
+    assert "sort -zr" not in runs
+    assert "test_host_tunnel" not in runs  # B2 is its own check: see the next test
+
+
+def test_b2_gate_is_its_own_pull_request_check_that_can_be_required():
+    """Branch rules can require a check by name; a step inside `Python 3.12` cannot be required alone."""
+    jobs = _ci()["jobs"]
+    job = jobs["b2-gate"]
+    assert job["name"] == "B2 ADB allowlist and tunnel fuzz"
+    assert not _skips_pull_request(job)
+    assert FORK_GUARD in job["if"]
+    runs = "\n".join(step.get("run", "") for step in job["steps"])
+    assert "tests/unit/runtime/test_host_tunnel.py" in runs
+    assert "tests/unit/admin_console/test_host_tunnel_service.py" in runs
+    assert "|| true" not in runs
+
+
+def test_mapped_test_selection_fails_closed():
+    steps = _ci()["jobs"]["python-quality"]["steps"]
+    run = next(step for step in steps if "ci_mapped_tests.py" in step.get("run", ""))["run"]
+    assert "set -euo pipefail" in run
+    # A selector error must stop the job; only an empty grep result may be tolerated.
+    assert "ci_mapped_tests.py | grep" not in run
+    assert '> "$RUNNER_TEMP/mapped.txt"' in run
+
+
+def test_python_pull_request_lane_runs_tests_mapped_from_the_changed_paths():
+    steps = _ci()["jobs"]["python-quality"]["steps"]
+    mapped = next(step for step in steps if "ci_mapped_tests.py" in step.get("run", ""))
+    assert "git diff --name-only" in mapped["run"]
+    assert "github.base_ref" in mapped["env"]["BASE_REF"]
+    assert "pytest" in mapped["run"]
+    # The mapped tests follow the B2 gate position check: both run before the job ends.
+    names = [step["name"] for step in steps]
+    assert names.index(mapped["name"]) > names.index("Run fast Python tests")
+
+
+def test_host_agent_does_not_run_on_branch_pushes_beside_pull_requests():
+    workflow = yaml.safe_load((WORKFLOWS / "host-agent.yml").read_text(encoding="utf-8"))
+    triggers = _triggers(workflow)
+    assert triggers["push"]["branches"] == ["main"]
+    assert triggers["push"]["paths"] == triggers["pull_request"]["paths"]
 
 
 def test_karma_tolerates_a_browser_stall_on_a_shared_x99_host():
