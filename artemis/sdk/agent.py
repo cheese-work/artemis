@@ -179,6 +179,7 @@ class Agent(AgentBase):
         device_serial: str | None = None,
         retry_count: int = 5,
         retry_wait_seconds: int = 5,
+        prewarm_llm: bool = True,
     ):
         target_dev = device_serial or device_id
         if target_dev:
@@ -190,6 +191,7 @@ class Agent(AgentBase):
             api_key=api_key,
             retry_count=retry_count,
             retry_wait_seconds=retry_wait_seconds,
+            prewarm_llm=prewarm_llm,
         )
 
     async def _init_internal(
@@ -197,6 +199,7 @@ class Agent(AgentBase):
         api_key: str | None = None,
         retry_count: int = 5,
         retry_wait_seconds: int = 5,
+        prewarm_llm: bool = True,
     ):
 
         if os.environ.get("ARTEMIS_CLOUD_MODE") != "1" and not EndpointTransport.adb_binary():
@@ -254,7 +257,8 @@ class Agent(AgentBase):
         )
 
         # Asynchronously pre-warm LLM connection pools in the background
-        asyncio.create_task(self._prewarm_llm_connections(api_key))
+        if prewarm_llm:
+            asyncio.create_task(self._prewarm_llm_connections(api_key))
 
         logger.info("✅ Artemis agent initialized.")
         self._initialized = True
@@ -865,6 +869,7 @@ class Agent(AgentBase):
 
     _device_policy: device_policy.RestrictedDevice | None = None
     _policy_receipt_dir: Path | None = None
+    _transport: EndpointTransport | None = None
 
     def activate_device_policy(
         self, serial: str, *, run_id: str, receipt_dir: Path | None = None
