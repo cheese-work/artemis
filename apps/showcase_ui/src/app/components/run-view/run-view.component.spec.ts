@@ -77,6 +77,7 @@ describe('RunViewComponent', () => {
     resumeTask: jasmine.Spy;
     stopTask: jasmine.Spy;
     getSessionUsage: jasmine.Spy;
+    recordingEvents$: Subject<{ type: 'recording_ready' | 'recording_failed'; session_id: string }>;
   };
 
   const q = <T extends Element>(selector: string) => root.querySelector<T>(selector);
@@ -140,6 +141,7 @@ describe('RunViewComponent', () => {
       runningSessionId: signal<string | null>(ID),
       resumeTask: jasmine.createSpy('resumeTask'),
       stopTask: jasmine.createSpy('stopTask'),
+      recordingEvents$: new Subject(),
       getSessionUsage: jasmine.createSpy('getSessionUsage').and.returnValue(of({
         session_id: ID, llm_calls: 2, prompt_tokens: 100, completion_tokens: 50, total_tokens: 150,
         cached_tokens: 10, operator_context_tokens: 80, operator_context_window_tokens: 1000
@@ -757,6 +759,56 @@ describe('RunViewComponent', () => {
   });
 
   describe('live state and run-information characterization', () => {
+    for (const type of ['recording_ready', 'recording_failed'] as const) {
+      it(`refreshes the viewed recording on ${type} without a session-list update`, async () => {
+        await open({ viewMode: 'live', video: of(ready({ status: 'processing', has_video: false })) });
+        const sessions = agent.sessions();
+        runs.video.calls.reset();
+        runs.video.and.returnValue(of(type === 'recording_ready' ? ready() : ready({
+          status: 'failed', has_video: false, message: 'Encoder failed'
+        })));
+        agent.recordingEvents$.next({ type, session_id: 'another-run' });
+        await settle();
+        expect(runs.video).not.toHaveBeenCalled();
+        agent.recordingEvents$.next({ type, session_id: ID });
+        await settle();
+        expect(runs.video).toHaveBeenCalledOnceWith(ID);
+        expect(fixture.componentInstance.recording().state).toBe(type === 'recording_ready' ? 'ready' : 'prepare_failed');
+        expect(agent.sessions()).toBe(sessions);
+        fixture.destroy();
+        agent.recordingEvents$.next({ type, session_id: ID });
+        expect(runs.video).toHaveBeenCalledTimes(1);
+      });
+    }
+
+    it('preserves usage and its polling schedule on an unrelated live session update', fakeAsync(() => {
+      runs.get.and.returnValue(of(run({ status: 'running' })));
+      runs.steps.and.returnValue(of([]));
+      runs.video.and.returnValue(of(ready()));
+      admin.getIdentity.and.returnValue(of({ email: null, admin: false, auth_mode: 'open', reason: null }));
+      fixture = TestBed.createComponent(RunViewComponent);
+      fixture.componentRef.setInput('mode', 'live');
+      fixture.componentRef.setInput('runId', ID);
+      const session: Session = { session_id: ID, initial_goal: 'Original goal', start_time: START, status: 'running' };
+      fixture.componentRef.setInput('liveSession', session);
+      fixture.detectChanges();
+      fixture.componentInstance.infoOpen.set(true);
+      fixture.detectChanges();
+      tick(0);
+      const usage = fixture.componentInstance.usage();
+      expect(usage?.total_tokens).toBe(150);
+      tick(1000);
+      agent.getSessionUsage.and.returnValue(new Subject<SessionUsage>());
+      fixture.componentRef.setInput('liveSession', { ...session, initial_goal: 'Updated goal' });
+      fixture.detectChanges();
+      expect(fixture.componentInstance.usage()).toBe(usage);
+      tick(0);
+      expect(agent.getSessionUsage).toHaveBeenCalledTimes(1);
+      tick(2000);
+      expect(agent.getSessionUsage).toHaveBeenCalledTimes(2);
+      fixture.destroy();
+    }));
+
     it('shows the current paused run reason beside its Continue control', async () => {
       agent.isPaused.set(true);
       agent.agentStatus.set('paused');
