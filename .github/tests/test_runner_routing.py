@@ -19,6 +19,11 @@ class RunnerRoutingTest(unittest.TestCase):
             for name, body in zip(jobs[1::2], jobs[2::2]):
                 if "cheese-x99" not in body:
                     continue
+                if (workflow.name, name) == ("ci-policy.yml", "ci-policy"):
+                    # Never skipped (a skipped gate is a non-failing check); routing is covered by
+                    # test_ci_policy_caller_guard.py (CHE-3275).
+                    self.assertIsNone(re.search(r"(?m)^    if: ", body))
+                    continue
                 with self.subTest(workflow=workflow.name, job=name):
                     condition = re.search(r"(?m)^    if: (.+)$", body)
                     self.assertIsNotNone(condition, "X99 job needs a job-level guard")
