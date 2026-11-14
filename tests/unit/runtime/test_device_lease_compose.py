@@ -11,6 +11,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest.mock import patch
 from contextlib import redirect_stderr
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -60,10 +61,10 @@ class ComposeTests(unittest.TestCase):
         self.config = {
             "admitted": {"path": str(self.root / "admitted.json"), "max_age_seconds": 60},
             "artemis_locks_dir": str(self.root / "locks"),
-            "android_claims": {"path": str(self.root / "android.json"), "max_age_seconds": 60},
+            "android_claims": {"source": "ledger", "max_age_seconds": 60},
             "guard_path": str(self.root / "claims.guard"),
             "recovery": {
-                "adapter": "test_device_lease_compose:FakeRecovery",
+                "adapter": "owned",
                 "owner": "ops-fixture",
                 "ops_issue": "CHE-fixture-ops",
             },
@@ -77,14 +78,45 @@ class ComposeTests(unittest.TestCase):
         return path
 
     def write_admitted(self, devices, age=0):
-        self.write_json("admitted.json", {"observed_at": time.time() - age, "devices": devices})
+        now = time.time() - age
+        self.write_json(
+            "admitted.json",
+            {
+                "generation": 1,
+                "devices": [
+                    {
+                        "device_id": key,
+                        "endpoint": endpoint,
+                        "state": "device",
+                        "observed_at": now,
+                        "grant": {
+                            "reference": "CHE-fixture",
+                            "observed_at": now,
+                            "expires_at": now + 300,
+                        },
+                    }
+                    for key, endpoint in devices.items()
+                ],
+            },
+        )
 
     def config_file(self, config=None):
         return self.write_json("composition.json", self.config if config is None else config)
 
     def composed_broker(self):
-        composed = compose.compose(self.config_file(), registry())
-        return Broker(self.root / "leases.sqlite3", registry(), **composed["broker"]), composed
+        composed = compose.compose(
+            self.config_file(), registry(), db_path=self.root / "leases.sqlite3"
+        )
+        broker = Broker(self.root / "leases.sqlite3", registry(), **composed["broker"])
+        broker.inventory()
+        composed["ledger"].census(
+            generation=1,
+            observed_at=time.time(),
+            complete=True,
+            writers=["android", "artemis"],
+            claims=[],
+        )
+        return broker, composed
 
     def take(self, broker, **changes):
         request = dict(
@@ -103,7 +135,7 @@ class ComposeTests(unittest.TestCase):
             ("admitted", "max_age_seconds"),
             ("artemis_locks_dir",),
             ("android_claims",),
-            ("android_claims", "path"),
+            ("android_claims", "source"),
             ("guard_path",),
             ("recovery",),
             ("recovery", "adapter"),
@@ -119,7 +151,9 @@ class ComposeTests(unittest.TestCase):
                     parent = parent[key]
                 del parent[path[-1]]
                 with self.assertRaises(CompositionError) as caught:
-                    compose.compose(self.config_file(config), registry())
+                    compose.compose(
+                        self.config_file(config), registry(), db_path=self.root / "leases.sqlite3"
+                    )
                 self.assertIn(path[0], str(caught.exception))
 
     def test_recovery_adapter_without_fence_refuses(self):
@@ -158,16 +192,15 @@ class ComposeTests(unittest.TestCase):
         refused = self.assertRaises(Refused)
         with refused:
             self.take(broker, run_id="run-2", idempotency_key="k2", device_id="rig-2")
-        self.assertEqual(refused.exception.code, "admission_unavailable")
-        self.assertFalse(broker.inventory()["admission_available"])
+        self.assertEqual(refused.exception.code, "impossible_batch")
+        self.assertEqual(broker.admitted, {})
 
     def test_artemis_lock_and_android_claim_block_their_devices(self):
         broker, _ = self.composed_broker()
         lock = self.root / "locks" / "artemis-device-rig-2.lock"
         lock.write_text(json.dumps({"device_id": "rig-2", "pid": 1}))
-        compose.write_claims_snapshot(
-            self.root / "android.json", compose.FileGuard(self.root / "claims.guard"), ["usb-rig-1"]
-        )
+        # The structured source owns the Android claim, not the JSON fixture.
+        _["ledger"].claim("usb-rig-1", owner="android", run_id="r", reference="CHE-fixture")
         rows = {d["device_id"]: d for d in broker.inventory()["devices"]}
         self.assertTrue(rows["rig-1"]["claimed"])
         self.assertTrue(rows["rig-2"]["claimed"])
@@ -201,9 +234,36 @@ class ComposeTests(unittest.TestCase):
 
     def test_leader_control_socket_verifies_release_and_holder_socket_cannot(self):
         broker, composed = self.composed_broker()
-        group = self.take(broker, device_id="rig-1")
+        identity = {"mode": "local", "pid": 1234, "process_start": "42", "boot_id": "fixture"}
+        broker.run_probe = lambda binding: True
+        group = self.take(broker, device_id="rig-1", binding=identity)
+        broker.record_change(
+            lease_id=group["lease_id"],
+            principal="agent",
+            run_id="run-1",
+            change={
+                "kind": "work",
+                "device_id": "rig-1",
+                "complete": True,
+                "processes": [identity],
+                "forwards": [],
+            },
+        )
         broker.release(lease_id=group["lease_id"], principal="agent", run_id="run-1")
-        broker.maintain()
+        live = {identity["pid"]: identity}
+
+        def stop(identity, timeout):
+            live.pop(identity["pid"])
+            return True
+
+        with (
+            patch.object(broker.recovery_io, "_daemon_pid", return_value=999),
+            patch.object(broker.recovery_io, "_descendants", return_value=set()),
+            patch.object(broker.recovery_io, "_identity", side_effect=lambda pid: live.get(pid)),
+            patch.object(broker.recovery_io, "_stop", side_effect=stop),
+            patch.object(broker.recovery_io, "_adb", return_value=""),
+        ):
+            broker.maintain()
         state = self.root / "state"
         holder = daemon.BrokerServer(state, broker)
         control = daemon.ControlServer(composed["leader_control_socket"], broker)
