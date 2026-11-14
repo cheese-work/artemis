@@ -1,0 +1,47 @@
+{
+  "receipt_version": 1,
+  "issue": "CHE-5938",
+  "parent_issue": "CHE-5874",
+  "candidate_kind": "testcase",
+  "status": "provisional_not_reviewed_or_executed",
+  "source_candidate": {
+    "runner_source": {
+      "repository": "https://github.com/cheese-work/artemis",
+      "commit_sha": "581b7589e0e9d50ca7790e9053336ced7d2e0cfe"
+    },
+    "testcase_source": {
+      "path": "qualification/journeys/ap006_che5938_device_proof.md",
+      "digest_sha256": "4f8ba0ca0017bab307820f4c0c55fb975542c0f646d8a8ccb6dbc10cc1616055"
+    },
+    "app_source": {
+      "repository": "https://github.com/tevo-studio/ap006-dramajoy",
+      "commit_sha": "d406c3c17a38d11658724bac760113a0495d7ae1",
+      "base_sha": "4106df6d9b210235293dd7e1767801cd2bef0a7e",
+      "diff_digest_sha256": "7a20608d1f69e80da2a4d58dfe0b31716bb901fe75d235caf2e663668411caea"
+    }
+  },
+  "coverage": [
+    "native test-ad click, external return, one auto-next, unrelated-alias negative control",
+    "displayed-frame three-second close gate, early and late taps",
+    "Explore video screenshot/recording while playing, paused, and transitioning to Home",
+    "Home native-row eligibility and lifecycle; Welcome-back suppression",
+    "cold-start config success, offline/slow fallback, bounded splash"
+  ],
+  "review_contract": {
+    "independent_non_author_reviews_required": 2,
+    "review_same_testcase_digest": true,
+    "admission_owner": "x99-codex-sol",
+    "execution_owner": "x99-codex-luna-2",
+    "device_execution_admitted": false,
+    "che387_ac3_flake_baseline_required_for_acceptance": true
+  },
+  "authoring_limits": {
+    "device_commands_run": false,
+    "adb_run": false,
+    "artemis_execution_run": false,
+    "runtime_ui_selectors_confirmed": false,
+    "firebase_debugview_access_confirmed": false,
+    "admob_outcome_data_observed": false,
+    "all_behavior_checks": "NOT-RUN"
+  }
+}
