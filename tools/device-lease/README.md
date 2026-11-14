@@ -225,7 +225,8 @@ directory, database or socket is created:
   "android_claims": {"source": "ledger", "max_age_seconds": 300},
   "guard_path": "/private/state/claims.guard",
   "recovery": {"adapter": "owned", "owner": "OPS_OWNER", "ops_issue": "CHE-NNNN"},
-  "leader_control_socket": "/private/leader/control.sock"
+  "leader_control_socket": "/private/leader/control.sock",
+  "leader_id": "CURRENT_ANDROID_ADMISSION_LEADER_ID"
 }
 ```
 
@@ -365,7 +366,8 @@ command, ADB server reset or policy change is performed by the hermetic tests.
    `verifying`. Preserve lease id, run binding, audit and cleanup evidence for the
    Android squad leader. Only the trusted leader control plane calls
    `verify_release(lease_id, verifier=LEADER_ID, evidence=REFERENCE, passed=True)`.
-   `LEADER_ID` is `5cd75ce5-d323-4004-9779-7e2ccf16bde4` under the current policy.
+   `LEADER_ID` must match the owner-configured `leader_id`. A role identity change
+   requires an explicit composition update; the retired identity is then refused.
    A failed verdict quarantines. The named recovery owner can supply evidence
    using `recover_quarantine`; this returns only to `verifying`, never directly
    to availability. A successful leader verdict records `released`. No TTL-only
@@ -780,3 +782,43 @@ admission; deleting an unknown lock is not a census.
 
 This implementation makes no host config change and leaves admission closed.
 Do not copy fixture census, process IDs or grant references into the live fleet.
+
+### X99 freshness timer (CHE-5042)
+
+After reconciling existing claims with `census-android-claims`, the trusted owner
+can run `device-lease refresh --composition FILE --registry FILE --state-dir DIR
+--host-config FILE` from a user systemd oneshot timer. The owner-only host file is:
+
+```json
+{
+  "devices": ["CONFIRMED_UNRESTRICTED_RIG_SERIAL"],
+  "reference": "CHE-authorized-per-device-grants",
+  "expires_at": 1794646800,
+  "writers": [{"unit": "artemis-qa.service", "sdk_lock": "/path/to/artemis/runtime/device_lock.py"}],
+  "isolated_writers": [{"unit": "artemis-qa-staging.service", "adb_path": "/path/to/disabled/adb", "sha256": "EXACT_DISABLED_WRAPPER_DIGEST"}]
+}
+```
+
+`isolated_writers` may be empty. The owner attests that these lists cover every
+supported fleet launcher. This does not detect arbitrary same-user Python imports
+or defend against bypassing cooperative launchers. Future user services should
+inherit the same guard/database settings. Direct SDK launchers must set both.
+A guarded writer must use the configured SDK lock directory and contain the SDK
+admission check. Disabled staging must retain both wrapper environment settings
+and the exact owner-approved wrapper digest; this command never enables staging.
+
+Refresh takes the shared flock from observations through both owner commits. It
+checks live service environments, reads only `host:devices-l` from the existing
+loopback ADB server on port 5037, and grants only configured confirmed rig rows.
+It never starts ADB or sends device commands. Grants expire at the fixed owner
+expiry, not a new rolling expiry on every refresh. Removing a serial revokes it
+at the next refresh. Existing ledger claims are carried forward verbatim; initial
+census is mandatory. A failed observation invalidates the census immediately.
+Stopping the timer closes admission when source freshness expires. Run every
+20 seconds with a 60-second readiness age; serialize refreshes with the same
+flock. No lock or lease is held between timer invocations.
+
+The private leader socket remains the release boundary. `leader_id` is an
+explicit cooperative role check, not a credential. The in-process Broker's
+historical default is retained for callers outside live composition; production
+composition always requires a configured identity.

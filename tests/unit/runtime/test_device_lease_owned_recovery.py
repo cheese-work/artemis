@@ -66,6 +66,16 @@ class OwnedRecoveryTests(unittest.TestCase):
 
         return OwnedRecovery(self.path)
 
+    def test_adb_empty_listing_newline_is_empty_but_malformed_row_is_refused(self):
+        adapter, group = self.adapter(), self.take(device_id="a")
+        for direction in ("forward", "reverse"):
+            with self.subTest(direction=direction):
+                with patch.object(adapter, "_adb", return_value="\n"):
+                    self.assertEqual(adapter._forwards(group, "a", direction, 2), {})
+                with patch.object(adapter, "_adb", return_value="malformed\n"):
+                    with self.assertRaises(ValueError):
+                        adapter._forwards(group, "a", direction, 2)
+
     def group(self, tracking=True):
         group = self.take(device_id="a")
         if tracking:
