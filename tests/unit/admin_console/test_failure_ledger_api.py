@@ -15,6 +15,7 @@
 """Failure ledger at the server API seam, using the real messages of the 2026-10-07 runs."""
 
 import asyncio
+from contextlib import contextmanager
 import json
 import re
 import sqlite3
@@ -1305,6 +1306,61 @@ async def test_only_admins_reach_the_failure_endpoints(library, qa, anonymous, m
 
 
 # -- deletion, retention and concurrency -----------------------------------------------------
+
+
+@pytest.mark.parametrize("autocommit", [True, False], ids=["autocommit", "deferred"])
+def test_collect_does_not_reinsert_rows_after_concurrent_purge(library, monkeypatch, autocommit):
+    from apps.admin_console.services import run_purge
+
+    gone = seed_run(library, stdout=f"{OFFLINE}\n", steps=[("click", _bad(EMPTY_LIST))])
+    seed_recording(library, gone, "scrcpy failed")
+    kept = seed_run(library, stdout=f"{OFFLINE}\n")
+    real_db_session = failure_ledger.db_session
+
+    @contextmanager
+    def collector_connection(db_path):
+        with real_db_session(db_path) as conn:
+            # Exercise both SQLite transaction modes with real, separate purge connections.
+            if autocommit:
+                conn.isolation_level = None
+            yield conn
+
+    monkeypatch.setattr(failure_ledger, "db_session", collector_connection)
+    real_evidence = failure_ledger._run_evidence
+    purged = []
+
+    def evidence_then_purge(row, *args, **kwargs):
+        evidence = real_evidence(row, *args, **kwargs)
+        if row["session_id"] == gone:
+            # Candidates and evidence are cached; purge must commit before collection resumes.
+            run_purge.purge_run(library.db, library.traces, gone, vacuum=False)
+            assert library.count("sessions", gone) == 0
+            assert library.count("failure_ledger", gone) == 0
+            purged.append(gone)
+        return evidence
+
+    monkeypatch.setattr(failure_ledger, "_run_evidence", evidence_then_purge)
+
+    result = failure_ledger.collect()
+
+    assert purged == [gone]
+    assert result["scanned"] == 4  # Purged run, step and recording, plus the surviving run.
+    assert library.count("failure_ledger", gone) == 0
+    assert library.count("failure_ledger", kept) == 2
+    assert result["inserted"] == 2
+
+
+def test_collect_after_purge_leaves_no_ledger_rows(library):
+    from apps.admin_console.services import run_purge
+
+    gone = seed_run(library, stdout=f"{OFFLINE}\n", steps=[("click", _bad(EMPTY_LIST))])
+    assert failure_ledger.collect()["inserted"] > 0
+
+    run_purge.purge_run(library.db, library.traces, gone, vacuum=False)
+
+    assert library.count("sessions", gone) == 0
+    assert failure_ledger.collect() == {"scanned": 0, "inserted": 0}
+    assert library.count("failure_ledger", gone) == 0
 
 
 @pytest.mark.asyncio
