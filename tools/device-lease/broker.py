@@ -110,6 +110,7 @@ class Broker:
         conflicting_waiter=lambda conn, ids: False,
         monotonic=time.monotonic,
         run_probe=local_run_alive,
+        managed_runs=None,
         admission_sources=None,
         recovery_io=None,
         recovery_owner=None,
@@ -132,6 +133,7 @@ class Broker:
             raise Refused("invalid_request")
         self.authority_name, self.authority_generation = authority_name, authority_generation
         self.monotonic, self.run_probe = monotonic, run_probe
+        self.managed_runs = managed_runs
         self._last_clock = None
         self.admission_sources = dict(admission_sources or {})
         self._admission = threading.local()
@@ -442,7 +444,7 @@ class Broker:
         for row in conn.execute("SELECT * FROM broker_bindings"):
             binding = json.loads(row["binding"])
             dead = (
-                binding["mode"] == "local"
+                binding["mode"] in {"local", "managed"}
                 and observations.get((row["lease_id"], row["binding"])) is False
             )
             suspect = binding["mode"] == "remote" and self._mono - row["heartbeat_mono"] >= 90
@@ -519,15 +521,15 @@ class Broker:
                 "ON b.lease_id=g.lease_id WHERE g.state='active'"
             ).fetchall():
                 binding = json.loads(row["binding"])
-                if binding["mode"] == "local":
-                    observations[row["lease_id"], row["binding"]] = self.run_probe(binding)
+                if binding["mode"] in {"local", "managed"}:
+                    observations[row["lease_id"], row["binding"]] = self._run_alive(binding)
             for row in conn.execute(
                 "SELECT w.ticket_id, w.binding FROM broker_ticket_wait w JOIN broker_tickets t "
                 "ON w.ticket_id=t.ticket_id WHERE t.state IN ('queued','offered') AND w.binding IS NOT NULL"
             ).fetchall():
                 binding = json.loads(row["binding"])
-                if binding["mode"] == "local":
-                    observations[row["ticket_id"], row["binding"]] = self.run_probe(binding)
+                if binding["mode"] in {"local", "managed"}:
+                    observations[row["ticket_id"], row["binding"]] = self._run_alive(binding)
             try:
                 with write_transaction(conn, self.clock, refusals=(Refused,)) as value:
                     conn.execute(
@@ -831,7 +833,7 @@ class Broker:
         self._text(ticket_id, principal, agent_id, issue_id, run_id, idempotency_key)
         if not isinstance(binding, dict):
             raise Refused("invalid_request")
-        binding = self._binding(binding, run_id)
+        binding = self._binding(binding, run_id, principal, agent_id, issue_id)
         fingerprint = json.dumps(["claim", ticket_id, agent_id, issue_id, binding], sort_keys=True)
         with self.transaction() as (conn, now):
             self._require_authority(conn)
@@ -1071,7 +1073,7 @@ class Broker:
     ):
         agent_id = principal if agent_id is None else agent_id
         issue_id = purpose if issue_id is None else issue_id
-        binding = self._binding(binding, run_id)
+        binding = self._binding(binding, run_id, principal, agent_id, issue_id)
         with self.decision("acquire", locals()) as (conn, now, entry):
             self._require_authority(conn)
             self._text(principal, run_id, purpose, pool, idempotency_key)
@@ -1185,7 +1187,12 @@ class Broker:
         self.boundary("acquire:committed")
         return response
 
-    def _binding(self, binding, run_id):
+    def _run_alive(self, binding):
+        if binding["mode"] == "managed":
+            return self.managed_runs is not None and self.managed_runs.alive(binding)
+        return self.run_probe(binding)
+
+    def _binding(self, binding, run_id, principal, agent_id, issue_id):
         binding = (
             dict(binding)
             if isinstance(binding, dict)
@@ -1193,7 +1200,20 @@ class Broker:
             if binding is None
             else {}
         )
-        if binding.get("mode") == "local":
+        if binding.get("mode") == "managed":
+            if self.managed_runs is None or set(binding) != {"mode", "binding_id"}:
+                raise Refused("invalid_request")
+            try:
+                binding = self.managed_runs.resolve(
+                    binding["binding_id"],
+                    principal=principal,
+                    agent_id=agent_id,
+                    issue_id=issue_id,
+                    run_id=run_id,
+                )
+            except (OSError, ValueError, TypeError, KeyError, IndexError):
+                raise Refused("run_not_live") from None
+        elif binding.get("mode") == "local":
             if (
                 set(binding) != {"mode", "pid", "process_start", "boot_id"}
                 or type(binding["pid"]) is not int
