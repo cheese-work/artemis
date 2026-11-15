@@ -47,7 +47,7 @@ for (const prefix of ['/', '/preview/pr/70/']) {
   });
   const profile = mkdtempSync(path.join(tmpdir(), 'artemis-preview-path-'));
   const chrome = spawn(process.env.CHROME_BIN || 'google-chrome', [
-    '--headless=new', '--no-sandbox', '--disable-gpu', '--disable-background-networking', '--no-proxy-server',
+    '--headless=new', '--no-sandbox', '--password-store=basic', '--disable-gpu', '--disable-background-networking', '--no-proxy-server',
     '--disable-extensions', '--disable-component-extensions-with-background-pages',
     '--host-resolver-rules=MAP *.googleapis.com ~NOTFOUND, MAP *.gstatic.com ~NOTFOUND',
     '--remote-debugging-port=0', `--user-data-dir=${profile}`, 'about:blank'
@@ -121,7 +121,15 @@ for (const prefix of ['/', '/preview/pr/70/']) {
     await evaluate(`document.querySelector('[aria-label="Technical details"]').click()`);
     await waitFor(() => evaluate(`document.querySelector('.verdict-card').textContent.includes('Synthetic agent report')`));
     assert.equal(await evaluate(`document.querySelector('app-run-view') === null`), true);
-    assert.equal(await evaluate(`document.querySelector('.flat-timeline').lastElementChild.className`), 'verdict-card');
+    const verdictOrder = await evaluate(`(() => {
+      const verdict = document.querySelector('.verdict-card');
+      const timeline = document.querySelector('.flat-timeline');
+      return {
+        verdictPageLevel: Boolean(verdict && !verdict.closest('.flat-timeline')),
+        verdictBeforeTimeline: Boolean(verdict && timeline && (verdict.compareDocumentPosition(timeline) & Node.DOCUMENT_POSITION_FOLLOWING))
+      };
+    })()`);
+    assert.deepEqual(verdictOrder, { verdictPageLevel: true, verdictBeforeTimeline: true });
     await waitFor(() => requests.some(request => request === `${prefix}api/stream?scope=all`));
     const images = await evaluate(`Array.from(document.querySelectorAll('.flat-timeline img')).map(image => image.getAttribute('src'))`);
     assert.ok(images.length > 0, 'Run screenshots were rendered');
@@ -129,7 +137,7 @@ for (const prefix of ['/', '/preview/pr/70/']) {
     if (prefix !== '/' && process.argv.includes('--root-api-negative-control')) await evaluate(`fetch('/api/preview-root-leak-control').catch(() => {})`);
     if (prefix !== '/') assert.equal(requests.filter(request => request.startsWith('/api/') || request.startsWith('/images/') || request.startsWith('/videos/') || request.startsWith('/local_file')).length, 0);
     assert.ok(requests.some(request => request.startsWith(`${prefix}api/runs/`)));
-    console.log(`PASS ${prefix}: flat timeline, verdict last, technical details, banner, HTTP, scoped SSE, WebSocket, images; root API escapes=0; requests=${requests.length}`);
+    console.log(`PASS ${prefix}: page-level verdict before timeline, technical details, banner, HTTP, scoped SSE, WebSocket, images; root API escapes=0; requests=${requests.length}`);
   } finally {
     socket?.close();
     if (chrome.exitCode === null) {

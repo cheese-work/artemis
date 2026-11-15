@@ -14,6 +14,7 @@ const formatCost = (usd: number) => usd > 0 && usd < 0.01 ? '< $0.01' : (usd ===
   selector: 'app-session-sidebar',
   standalone: true,
   imports: [DatePipe],
+  host: { '[class.empty-media]': 'emptyMediaPanel()' },
   template: `
     <aside aria-label="Session sidebar">
       <div class="tabs" role="tablist" aria-label="Session evidence">
@@ -70,6 +71,8 @@ const formatCost = (usd: number) => usd > 0 && usd < 0.01 ? '< $0.01' : (usd ===
   `,
   styles: `
     :host { display: block; height: 100%; min-width: 0; border-left: 1px solid var(--color-rule); background: var(--color-surface); }
+    :host(.empty-media) section { flex: 0 0 0; height: 0; overflow: hidden; padding: 0; }
+    :host(.empty-media) section .muted { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
     aside { display: flex; flex-direction: column; height: 100%; }
     .tabs { display: flex; flex: none; border-bottom: 1px solid var(--color-rule); }
     button { flex: 1; min-width: 44px; min-height: 44px; border: 0; border-bottom: 3px solid transparent; background: var(--color-surface); color: var(--color-text-muted); font: inherit; cursor: pointer; }
@@ -140,6 +143,7 @@ export class SessionSidebarComponent {
       ? appUrl(stream.live_stream_url + '?serial=' + encodeURIComponent(serial)) : null;
   });
   public readonly videoUrl = computed(() => !this.videoFailed() ? mediaUrl(this.video()?.video_url ?? this.video()?.video_segments[0]?.url) : null);
+  public readonly emptyMediaPanel = computed(() => !!this.runId() && !this.error() && this.tab() === 'Live' && (this.active() ? !this.liveUrl() && !this.streamFailed() : !this.videoUrl() && !this.videoFailed() && this.video()?.status !== 'processing'));
 
   constructor() {
     effect(onCleanup => {

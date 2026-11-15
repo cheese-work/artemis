@@ -27,7 +27,7 @@ describe('ChatInterface tabs', () => {
           sessions: signal([]), activeTab, agentStatus: signal('idle'), runningSessionId: signal(null), currentSessionId: signal(null),
           currentNotes: signal([]), selectedNoteKey: signal(null), fetchStatus: () => {}
         } },
-        { provide: RunsService, useValue: { lastLibraryQuery: signal({}), list: () => NEVER } },
+        { provide: RunsService, useValue: { lastLibraryQuery: signal({}), list: () => NEVER, chatResults: () => of({ sessions: [] }) } },
         { provide: HostsService, useValue: { list: () => of({ enabled: true, hosts: [], devices: [] }) } },
         { provide: WEBUSB_DEVICE_MANAGER, useValue: undefined }
       ]

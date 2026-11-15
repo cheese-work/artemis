@@ -1,0 +1,80 @@
+issue: CHE-1649
+design: design/smartqa-verdicts/rev-5/C.html @ 775e7e72ce0d6058f697b814b0095f6940a28ce8
+pages:
+  - id: run-history
+    url: /sessions
+    keep:
+      - run-history-navigation
+      - run-history-controls
+      - run-history-list
+      - run-card-identity
+      - run-card-actions
+    change:
+      - run-card-verdict: >-
+          Render the backend result in order: verdict and verification, reason,
+          decisive evidence, action, responsible, then turn result. Preserve
+          title, timestamp and device identity. Render backend labels only;
+          do not build a frontend label catalog.
+      - run-card-result-state: >-
+          Distinguish final, pending, load error with retry, cancelled and legacy
+          results without inventing a verdict. Preserve loading and empty states.
+      - run-card-evidence: >-
+          Open the correct run, turn and step from decisive evidence. Keep
+          history and detail as separate phone views below 800 px.
+    remove: []
+  - id: run-detail
+    url: /sessions/:id
+    keep:
+      - run-header-controls
+      - run-header-facts
+      - run-turn-history
+      - run-step-timeline
+      - run-chat-composer
+    change:
+      - run-verdict: >-
+          Use the approved verdict order and backend labels. Keep the result
+          scoped to its turn, not a stale result on a new active turn. Announce
+          the visible label once through one polite live region. Preserve
+          neutral cancelled and legacy states, bounded pending polling and
+          retryable load errors.
+      - selected-step-evidence: >-
+          F5 binding Change: put the selected failing step first in the evidence
+          panel's real DOM, before the index, screenshot and unrelated steps.
+          Visual order and assistive-technology reading order must agree.
+          CSS order or display: contents alone does not satisfy this requirement.
+          Show expected and actual values when the backend provides them.
+      - run-decisive-evidence-link: >-
+          Select the correct turn and step, expand the step, scroll it into view
+          and move focus. Screenshot evidence opens a keyboard-operable dialog
+          with contained focus, Escape close and focus return.
+      - run-active-hint: >-
+          Show "Đang chạy — chưa có kết quả" for the active turn and
+          "Giữ tab mở, không khoá máy" while the run is active.
+      - run-blocked-actions: >-
+          Use the approved display typography for Blocked. Provide the copyable
+          run ID and category-specific docs/smartqa-verdicts.md help link.
+          Show copy feedback only after success, without a second verdict
+          announcement or an additional polite live region.
+      - run-detail-content: >-
+          Stack below 800 px, wrap labels, keep targets at least 44 by 44 CSS px
+          and provide visible focus. F6 remains an implementation check: fixed
+          bottom navigation must not obscure selected-step text or focused
+          controls, including at 390 by 844 px and 200% browser zoom.
+    remove: []
+element_ids: >-
+  The UI implementation must add data-testid attributes for the element IDs
+  named in Keep and Change. Keep preserves existing behavior, including
+  navigation, search and filters, run actions, metadata, turn history,
+  collapsible steps, recording/evidence access and the composer. No existing
+  element is authorized for removal.
+verification:
+  widths_css_px: [390, 800, 1440]
+  browser_zoom_percent: 200
+  before_capture: NOT-CAPTURED; authenticated live baseline was blocked by Cloudflare Access
+  capture_plan: >-
+    Capture the baseline and exact implementation head on X99 with synthetic
+    fixture data and disclose the environment. Keep the UI PR draft if any
+    required before or after capture is NOT-CAPTURED. Include the manual
+    Keep/Change/Remove check and visual diff status in the UI review pack.
+  visual_diff: NOT-RUN
+  accessibility_waiver: none

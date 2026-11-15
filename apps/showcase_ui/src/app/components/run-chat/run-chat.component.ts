@@ -1,11 +1,13 @@
-import { afterRenderEffect, ChangeDetectionStrategy, Component, computed, effect, ElementRef, inject, input, NgZone, output, signal, viewChild } from '@angular/core';
+import { afterRenderEffect, ChangeDetectionStrategy, Component, computed, DestroyRef, effect, ElementRef, inject, input, NgZone, output, signal, viewChild } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { CdkTextareaAutosize } from '@angular/cdk/text-field';
 import { HttpErrorResponse } from '@angular/common/http';
+import { ActivatedRoute, Router } from '@angular/router';
 import { deployDrainMessage } from '../../utils/deploy-drain.util';
 import { DatePipe, JsonPipe } from '@angular/common';
-import { catchError, distinctUntilChanged, of, switchMap, takeWhile, timer } from 'rxjs';
-import { ChatSession, RunSummary } from '../../core/models/run.model';
+import { catchError, distinctUntilChanged, of, switchMap, takeWhile, tap, timer } from 'rxjs';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
+import { ChatMessage, ChatSession, ChatTurnResult, RunSummary } from '../../core/models/run.model';
 import { Session } from '../../core/models/session.model';
 import { StepItemData } from '../../core/models/stream.model';
 import { StartupProgressEvent } from '../../services/agent.service';
@@ -19,6 +21,7 @@ import { recordedDevice } from '../../utils/session-device.util';
 import { runTitle } from '../../utils/run-title.util';
 import { actionMarker } from '../../utils/step-evidence.util';
 import { SessionSidebarComponent } from '../session-sidebar/session-sidebar.component';
+import smartqaHelpRoute from '../../core/smartqa-help-route.json';
 
 @Component({
   selector: 'app-run-chat',
@@ -31,15 +34,22 @@ import { SessionSidebarComponent } from '../session-sidebar/session-sidebar.comp
 export class RunChatComponent {
   private readonly api = inject(RunsService);
   private readonly zone = inject(NgZone);
+  private readonly route = inject(ActivatedRoute);
+  private readonly router = inject(Router);
+  private readonly destroyRef = inject(DestroyRef);
   private readonly system = inject(SystemService);
   private readonly phones = inject(WorkspacePhoneService);
   public readonly shell = inject(ShellLayoutService);
   private readonly failedImages = signal(new Set<string>());
   private readonly revision = signal(0);
   private readonly historyElement = viewChild<ElementRef<HTMLElement>>('history');
+  private readonly evidenceDialog = viewChild<ElementRef<HTMLDialogElement>>('evidenceDialog');
   private followLatest = true;
   private previousRunId = '';
   private previousInputRequest = '';
+  private focusedEvidenceKey = '';
+  private imageTrigger: HTMLElement | null = null;
+  private copyFeedbackTimer: ReturnType<typeof setTimeout> | null = null;
   public readonly runId = input('');
   public readonly readOnly = input(false);
   public readonly compose = input(true);
@@ -54,6 +64,7 @@ export class RunChatComponent {
   public readonly editingTitle = signal(false);
   public readonly savingTitle = signal(false);
   public readonly copyNotice = signal('');
+  public readonly copyNoticeFor = signal<string | null>(null);
   public readonly samples = [
     { title: 'Scan notifications', source: 'artemis/sdk/examples/smart_notification_assistant.py', prompt: 'Open the notification panel (swipe down from top). Scroll through the first 3 unread notifications. For each notification, identify the app name, title, and content. Tag messages from messaging apps or email as high priority.' },
     { title: 'Summarize a video', source: 'artemis/sdk/examples/video_transcription_example.py', prompt: '1. Open YouTube app\n2. Search for "Python tutorial"\n3. Start recording the screen\n4. Play the first video\n5. Wait for the first 30 seconds of the video to play\n6. Stop recording and tell me what was said in the video' }
@@ -62,8 +73,25 @@ export class RunChatComponent {
   public readonly chat = signal<ChatSession | null>(null);
   public readonly rootRun = signal<RunSummary | null>(null);
   public readonly error = signal<string | null>(null);
+  public readonly resultsUnavailable = signal(false);
+  public readonly selectedEvidence = signal<{ turnId: string; step: number } | null>(null);
+  public readonly selectedTurnId = signal<string | null>(null);
+  public readonly evidenceImage = signal<{ url: string; alt: string } | null>(null);
   public readonly sending = signal(false);
   public readonly latest = computed(() => this.chat()?.turns.at(-1));
+  public readonly selectedTurn = computed(() => {
+    const turns = this.chat()?.turns ?? [];
+    return turns.find(turn => turn.turn_id === this.selectedTurnId()) ?? turns.at(-1) ?? null;
+  });
+  public readonly selectedResult = computed(() => {
+    const turn = this.selectedTurn();
+    return turn ? this.resultForTurn(turn.turn_id) : null;
+  });
+  public readonly latestResultLabel = computed(() => {
+    if (this.resultsUnavailable()) return this.resultLabel(null);
+    const turn = this.selectedTurn();
+    return turn ? this.resultLabel(this.selectedResult(), turn) : '';
+  });
   public readonly usageTurns = computed(() => (this.chat()?.turns ?? []).map(turn => ({ id: turn.turn_id, number: turn.number })));
   public readonly active = computed(() => ['queued', 'running', 'paused'].includes(this.latest()?.status ?? ''));
   public readonly paused = computed(() => this.latest()?.status === 'paused');
@@ -106,6 +134,16 @@ export class RunChatComponent {
   private retry: { content: string; id: string } | null = null;
 
   constructor() {
+    this.destroyRef.onDestroy(() => {
+      if (this.copyFeedbackTimer) clearTimeout(this.copyFeedbackTimer);
+    });
+    this.route.queryParamMap.pipe(takeUntilDestroyed(this.destroyRef)).subscribe(params => {
+      const turnId = params.get('turn');
+      const step = Number(params.get('step'));
+      this.selectedTurnId.set(turnId);
+      this.selectedEvidence.set(turnId && Number.isInteger(step) && step > 0 ? { turnId, step } : null);
+      this.focusedEvidenceKey = '';
+    });
     effect(() => {
       const identity = `${this.runId()}:${this.canWrite()}:${this.inputRequest()?.payload?.['request_id'] ?? ''}`;
       if (identity !== this.previousInputRequest) {
@@ -117,11 +155,17 @@ export class RunChatComponent {
       const id = this.runId();
       this.revision();
       if (id !== this.previousRunId) {
+        if (this.copyFeedbackTimer) clearTimeout(this.copyFeedbackTimer);
+        this.copyFeedbackTimer = null;
+        this.copyNoticeFor.set(null);
+        this.copyNotice.set('');
         this.followLatest = true;
         this.previousRunId = id;
         this.chat.set(null);
         this.rootRun.set(null);
         this.error.set(null);
+        this.resultsUnavailable.set(false);
+        this.focusedEvidenceKey = '';
         this.sending.set(false);
         this.editingTitle.set(false);
         this.savingTitle.set(false);
@@ -130,13 +174,50 @@ export class RunChatComponent {
       const subscription = this.zone.runOutsideAngular(() => this.api.get(id).pipe(
         switchMap((run) => {
           this.rootRun.set(run);
-          return timer(0, 1000).pipe(switchMap(() => this.api.chat(run.session_id).pipe(
-            catchError((error) => { this.reportError(error); return of(null); })
-          )), takeWhile(chat => !chat || ['queued', 'running', 'paused'].includes(chat.turns.at(-1)?.status ?? '') || chat.verdict?.tip?.state === 'generating', true));
+          let pendingTurnId: string | null = null;
+          let pendingPolls = 0;
+          return timer(0, 1000).pipe(
+            switchMap(() => this.api.chat(run.session_id).pipe(
+              catchError((error) => { this.resultsUnavailable.set(true); this.reportError(error); return of(null); })
+            )),
+            tap((chat) => {
+              if (!chat) return;
+              const latestTurn = chat.turns.at(-1);
+              const pending = latestTurn && !['queued', 'running', 'paused'].includes(latestTurn.status)
+                ? chat.results?.find(result => result.evidence.turn_id === latestTurn.turn_id && result.label_state === 'pending')
+                : null;
+              if (!pending) {
+                pendingTurnId = null;
+                pendingPolls = 0;
+                return;
+              }
+              if (pending.evidence.turn_id !== pendingTurnId) {
+                pendingTurnId = pending.evidence.turn_id;
+                pendingPolls = 0;
+              }
+              pendingPolls += 1;
+            }),
+            takeWhile((chat) => {
+              if (!chat) return true;
+              const latestTurn = chat.turns.at(-1);
+              const activeTurn = ['queued', 'running', 'paused'].includes(latestTurn?.status ?? '');
+              const terminalPending = latestTurn && chat.results?.some(result =>
+                result.evidence.turn_id === latestTurn.turn_id && result.label_state === 'pending');
+              return activeTurn
+                || chat.verdict?.tip?.state === 'generating'
+                || !!terminalPending && pendingTurnId === latestTurn?.turn_id && pendingPolls < 30;
+            }, true)
+          );
         }),
         catchError((error) => { this.reportError(error); return of(null); }),
         distinctUntilChanged((previous, current) => JSON.stringify(previous) === JSON.stringify(current))
-      ).subscribe((chat) => this.zone.run(() => { if (chat) this.chat.set(chat); })));
+      ).subscribe((chat) => this.zone.run(() => {
+        if (chat) {
+          this.resultsUnavailable.set(false);
+          this.error.set(null);
+          this.chat.set(chat);
+        }
+      })));
       onCleanup(() => subscription.unsubscribe());
     });
     afterRenderEffect(() => {
@@ -144,6 +225,7 @@ export class RunChatComponent {
       this.liveSteps();
       this.startupProgress();
       this.scrollToLatest();
+      this.focusSelectedEvidence();
     });
   }
 
@@ -168,10 +250,165 @@ export class RunChatComponent {
     if (!text || this.chat()?.verdict?.status !== 'completed') return;
     try {
       await navigator.clipboard.writeText(text);
-      this.copyNotice.set('Tip copied.');
+      this.showCopyNotice('tip', 'Tip copied.');
     } catch {
-      this.copyNotice.set('Could not copy the tip. Select the text and copy it.');
+      this.showCopyNotice('tip', 'Could not copy the tip. Select the text and copy it.');
     }
+  }
+
+  public resultForTurn(turnId: string): ChatTurnResult | null {
+    return this.chat()?.results?.find(result => result.evidence?.turn_id === turnId) ?? null;
+  }
+
+  public resultLabel(result: ChatTurnResult | null, turn?: ChatSession['turns'][number]): string {
+    if (this.resultsUnavailable()) return 'Không tải được kết quả · Thử lại';
+    if (turn && ['queued', 'running', 'paused'].includes(turn.status)) return 'Đang chạy — chưa có kết quả';
+    if (!result) {
+      if (turn?.turn_id === this.latest()?.turn_id && this.chat()?.verdict) return `Kết quả · ${this.verdictTitle()}`;
+      return 'Run cũ — chưa có verdict';
+    }
+    if (result.label_state === 'pending') return 'Đã kết thúc · Đang xác định kết quả';
+    if (result.label_state === 'cancelled') return 'Đã huỷ';
+    if (result.label_state === 'legacy') return 'Run cũ — chưa có verdict';
+    if (result.label_state === 'error') return 'Không tải được kết quả · Thử lại';
+    switch (result.verdict) {
+      case 'pass': return 'Pass';
+      case 'fail': return 'Fail';
+      case 'blocked': return 'Blocked';
+      default: return result.verdict;
+    }
+  }
+
+  public verification(result: ChatTurnResult): string {
+    return result.display_labels?.verification ?? 'Chưa xác minh';
+  }
+
+  public evidenceStep(result: ChatTurnResult): ChatMessage | null {
+    return this.selectedStep(result);
+  }
+
+  public evidenceSteps(result: ChatTurnResult) {
+    return this.timeline().filter(message => message.kind === 'step' && message.turn_id === result.evidence.turn_id);
+  }
+
+  public stepNumber(message: { payload?: Record<string, any> }): number | null {
+    const step = Number(message.payload?.['step_number']);
+    return Number.isInteger(step) && step > 0 ? step : null;
+  }
+
+  public selectedStep(result: ChatTurnResult) {
+    if (result.evidence.step === null) return null;
+    return this.evidenceSteps(result).find(message => this.stepNumber(message) === result.evidence.step) ?? null;
+  }
+
+  public stepElementId(message: ChatMessage): string | null {
+    const step = this.stepNumber(message);
+    return message.kind === 'step' && step !== null ? `step-${message.turn_id}-${step}` : null;
+  }
+
+  public evidenceText(value: unknown): string {
+    if (typeof value === 'string') return value;
+    if (value === null || value === undefined) return '';
+    return typeof value === 'object' ? JSON.stringify(value) : String(value);
+  }
+
+  public selectTurn(turnId: string): void {
+    const result = this.resultForTurn(turnId);
+    this.selectTurnAndStep(turnId, result?.label_state === 'final' ? result.evidence.step : null);
+  }
+
+  public selectEvidence(turnId: string, step: number): void {
+    this.selectTurnAndStep(turnId, step);
+    this.focusSelectedEvidence();
+  }
+
+  public openEvidenceStep(event: MouseEvent, turnId: string, step: number): void {
+    event.preventDefault();
+    this.selectEvidence(turnId, step);
+  }
+
+  private selectTurnAndStep(turnId: string, step: number | null): void {
+    this.selectedTurnId.set(turnId);
+    this.selectedEvidence.set(step === null ? null : { turnId, step });
+    this.focusedEvidenceKey = '';
+    void this.router.navigate([], {
+      relativeTo: this.route,
+      queryParams: { turn: turnId, step },
+      queryParamsHandling: 'merge'
+    });
+  }
+
+  public isSelectedStep(message: { turn_id: string; payload?: Record<string, any> }): boolean {
+    const selected = this.selectedEvidence();
+    if (selected) return selected.turnId === message.turn_id && selected.step === this.stepNumber(message);
+    const result = this.selectedResult();
+    return !!result && result.evidence.turn_id === message.turn_id
+      && result.evidence.step === this.stepNumber(message);
+  }
+
+  public resultScreenshot(result: ChatTurnResult): string | null {
+    return result.evidence.screenshot_url ? mediaUrl(result.evidence.screenshot_url) : null;
+  }
+
+  public openEvidenceImage(result: ChatTurnResult, trigger: HTMLElement): void {
+    const url = this.resultScreenshot(result);
+    if (!url) return;
+    this.imageTrigger = trigger;
+    this.evidenceImage.set({ url, alt: `Decisive screenshot for step ${result.evidence.step ?? ''}`.trim() });
+    const dialog = this.evidenceDialog()?.nativeElement;
+    if (dialog && !dialog.open) dialog.showModal();
+  }
+
+  public onEvidenceDialogClose(): void {
+    this.evidenceImage.set(null);
+    this.imageTrigger?.focus({ preventScroll: true });
+    this.imageTrigger = null;
+  }
+
+  public helpHref(result: ChatTurnResult): string {
+    return `${smartqaHelpRoute.path}#${encodeURIComponent(result.category ?? 'unknown')}`;
+  }
+
+  public retryResults(): void {
+    this.resultsUnavailable.set(false);
+    this.error.set(null);
+    this.revision.update(value => value + 1);
+  }
+
+  public async copyRunId(turnId: string): Promise<void> {
+    try {
+      await navigator.clipboard.writeText(turnId);
+      this.showCopyNotice(turnId, 'Đã sao chép mã lượt chạy.');
+    } catch {
+      this.showCopyNotice(turnId, 'Không thể sao chép mã lượt chạy. Hãy chọn và sao chép mã.');
+    }
+  }
+
+  private showCopyNotice(owner: string, message: string): void {
+    if (this.copyFeedbackTimer) clearTimeout(this.copyFeedbackTimer);
+    this.copyNoticeFor.set(owner);
+    this.copyNotice.set(message);
+    this.copyFeedbackTimer = setTimeout(() => {
+      this.copyNoticeFor.set(null);
+      this.copyNotice.set('');
+      this.copyFeedbackTimer = null;
+    }, 2000);
+  }
+
+  private focusSelectedEvidence(): void {
+    const selected = this.selectedEvidence();
+    const history = this.historyElement()?.nativeElement;
+    if (!selected || !history) return;
+    const key = `${selected.turnId}:${selected.step}`;
+    if (key === this.focusedEvidenceKey) return;
+    const row = Array.from(history.querySelectorAll<HTMLElement>('[data-event-kind="step"]'))
+      .find(element => element.dataset['turnId'] === selected.turnId && Number(element.dataset['stepNumber']) === selected.step);
+    const details = row?.querySelector<HTMLDetailsElement>('details');
+    if (!row || !details) return;
+    details.open = true;
+    row.scrollIntoView({ block: 'center' });
+    details.querySelector<HTMLElement>('summary')?.focus({ preventScroll: true });
+    this.focusedEvidenceKey = key;
   }
 
   public trackScroll(): void {
@@ -181,7 +418,14 @@ export class RunChatComponent {
 
   public scrollToLatest(): void {
     const history = this.historyElement()?.nativeElement;
-    if (history && this.followLatest) history.scrollTop = history.scrollHeight;
+    if (!history || !this.followLatest || !this.active() || this.selectedTurn()?.turn_id !== this.latest()?.turn_id) return;
+    const verdicts = history.querySelectorAll<HTMLElement>('[data-testid="run-verdict"]');
+    const latestVerdict = verdicts.item(verdicts.length - 1);
+    if (window.matchMedia('(max-width: 799px)').matches && latestVerdict?.dataset['labelState'] === 'final') {
+      history.scrollTop += latestVerdict.getBoundingClientRect().top - history.getBoundingClientRect().top;
+      return;
+    }
+    history.scrollTop = history.scrollHeight;
   }
 
   public beginRename(): void {

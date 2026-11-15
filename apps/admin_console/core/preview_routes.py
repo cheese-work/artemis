@@ -36,6 +36,7 @@ WEBSOCKET = "WS"
 REAL = frozenset(
     {
         "GET /api/chats/{session_id}",
+        "POST /api/chats/results",
         "GET /",
         "GET /{full_path:path}",
         "GET /api/images/{image_name}",

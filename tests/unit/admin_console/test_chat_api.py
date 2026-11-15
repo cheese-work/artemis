@@ -279,6 +279,7 @@ async def test_chat_adds_per_turn_results_without_changing_legacy_verdict(
     import json
 
     from tests.support.smartqa_verdict_fixtures import build_smartqa_verdict_case
+    from apps.admin_console.services.qa_results import read_result
 
     case = build_smartqa_verdict_case(
         library,
@@ -314,6 +315,12 @@ async def test_chat_adds_per_turn_results_without_changing_legacy_verdict(
     result = legacy_verdict["result"]
     assert result == owner["results"][-1]
     assert result["catalog_key"] == "fail.app_defect"
+    assert result["verification"] == "self_reported"
+    assert result["display_labels"] == {
+        "verification": "Agent tự báo",
+        "category": "Lỗi ứng dụng",
+    }
+    assert "display_labels" not in read_result(library.db, latest_turn)["result"]
     assert result["evidence"] == {
         "turn_id": latest_turn,
         "step": 1,
@@ -333,6 +340,112 @@ async def test_chat_adds_per_turn_results_without_changing_legacy_verdict(
     assert "qa@example.com" not in shared_turn.text
     evidence = await qa2.get(shared_result["evidence"]["screenshot_url"])
     assert evidence.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_chat_results_returns_compact_batch_without_timeline(qa, library, monkeypatch):
+    from tests.support.smartqa_verdict_fixtures import build_smartqa_verdict_case
+
+    case = build_smartqa_verdict_case(library, monkeypatch)
+    response = await qa.post("/api/chats/results", json={"session_ids": [case.chat_id]})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body["sessions"]) == 1
+    session = body["sessions"][0]
+    assert session["session_id"] == case.chat_id
+    assert len(session["results"]) == 1
+    assert "messages" not in session
+    assert "timeline" not in session
+    assert "verdict" not in session
+
+
+@pytest.mark.asyncio
+async def test_chat_results_batch_does_not_share_nonowner_run(qa2, library, monkeypatch):
+    import json
+
+    from tests.support.smartqa_verdict_fixtures import build_smartqa_verdict_case
+
+    case = build_smartqa_verdict_case(
+        library, monkeypatch, status="failed", screenshot_name="batch-evidence"
+    )
+    turn_id = case.turn_ids[-1]
+    library.write(
+        turn_id,
+        "run_outcome.json",
+        json.dumps(
+            {
+                "task_status": "failed",
+                "cause": "app_defect",
+                "evidence_step": 1,
+                "evidence_ref": {
+                    "step_id": case.evidence_step_id,
+                    "step_number": 1,
+                    "image_name": case.evidence_image_name,
+                    "which": "post",
+                },
+            }
+        ),
+    )
+    response = await qa2.post("/api/chats/results", json={"session_ids": [case.chat_id]})
+
+    assert response.status_code == 200
+    session = response.json()["sessions"][0]
+    assert session["session_id"] == case.chat_id
+    assert session["results"]
+    screenshot_url = session["results"][-1]["evidence"]["screenshot_url"]
+    assert screenshot_url
+    with sqlite3.connect(library.db) as connection:
+        shares = connection.execute(
+            "SELECT count(*) FROM run_link_shares WHERE email=? AND session_id=?",
+            ("qa2@example.com", case.chat_id),
+        ).fetchone()[0]
+    assert shares == 0
+
+    available = await qa2.get("/api/runs", params={"scope": "available"})
+    assert available.status_code == 200
+    assert case.chat_id not in {run["session_id"] for run in available.json()["runs"]}
+    assert (await qa2.get(screenshot_url)).status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_chat_results_keeps_sibling_when_one_session_is_unavailable(qa, library, monkeypatch):
+    from tests.support.smartqa_verdict_fixtures import build_smartqa_verdict_case
+
+    case = build_smartqa_verdict_case(library, monkeypatch)
+    unavailable_id = "not-visible-session"
+    response = await qa.post(
+        "/api/chats/results", json={"session_ids": [case.chat_id, unavailable_id]}
+    )
+
+    assert response.status_code == 200
+    sessions = {session["session_id"]: session for session in response.json()["sessions"]}
+    assert sessions[case.chat_id]["results"]
+    assert sessions[unavailable_id] == {
+        "session_id": unavailable_id,
+        "status": "unavailable",
+        "results": [],
+    }
+
+
+@pytest.mark.asyncio
+async def test_chat_results_does_not_disclose_a_hidden_session(qa, chat, monkeypatch):
+    from apps.admin_console.core.access_control import AdminAPIError
+
+    require_visible_run = chats.require_visible_run
+
+    def hide_session(scope, session_ids, **kwargs):
+        if session_ids == [chat]:
+            raise AdminAPIError(404, "Run not visible.", "run_not_visible", "Open a visible run.")
+        return require_visible_run(scope, session_ids, **kwargs)
+
+    monkeypatch.setattr(chats, "require_visible_run", hide_session)
+    response = await qa.post("/api/chats/results", json={"session_ids": [chat]})
+
+    assert response.status_code == 200
+    assert response.json()["sessions"] == [
+        {"session_id": chat, "status": "unavailable", "results": []}
+    ]
 
 
 @pytest.mark.asyncio

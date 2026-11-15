@@ -35,7 +35,7 @@ describe('Workspace review mode', () => {
     sessions = signal<Session[]>([]);
     target = signal<RunTarget | null>(null);
     reconnect = jasmine.createSpy('connectFromBrowser').and.resolveTo(undefined);
-    runs = jasmine.createSpyObj<RunsService>('RunsService', ['list', 'get', 'steps', 'video', 'checks', 'notes'], {
+    runs = jasmine.createSpyObj<RunsService>('RunsService', ['list', 'get', 'steps', 'video', 'checks', 'notes', 'chatResults'], {
       lastLibraryQuery: signal<Record<string, string>>({}), viewPosition: signal(null)
     });
     runs.list.and.returnValue(NEVER);
@@ -44,6 +44,7 @@ describe('Workspace review mode', () => {
     runs.video.and.returnValue(NEVER);
     runs.checks.and.returnValue(of({ records: [], streams: [], run_outcome: null }));
     runs.notes.and.returnValue(of({ notes: {} }));
+    runs.chatResults.and.returnValue(of({ sessions: [] }));
     const hosts = jasmine.createSpyObj<HostsService>('HostsService', ['list']);
     hosts.list.and.returnValue(NEVER);
     const admin = jasmine.createSpyObj<AdminConfigService>('AdminConfigService', ['getIdentity']);
