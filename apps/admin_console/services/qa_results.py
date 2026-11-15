@@ -1,5 +1,6 @@
 from datetime import datetime
 import json
+import logging
 import math
 import os
 from pathlib import Path
@@ -8,8 +9,11 @@ import sqlite3
 import time
 from urllib.parse import quote
 
+from apps.admin_console.core.redaction import redact_text
 from apps.admin_console.database.connection import db_session
 from apps.admin_console.database.repositories.step_repository import StepRepository
+
+logger = logging.getLogger(__name__)
 
 PENDING_CAP_SECONDS = 30.0
 _KNOWN_CATEGORIES = frozenset(
@@ -565,7 +569,7 @@ def _with_turn_metadata(record, turn_id, turn_index, turn_count):
     result["turn_count"] = turn_count
     result["label_state"] = record["label_state"]
     result["source"] = record["source"]
-    result["updated"] = record["version"] > 1
+    result["updated"] = record["source"] == "admin"
     return result
 
 
@@ -718,6 +722,13 @@ def backfill(db_path, traces_dir, *, since=DEFAULT_BACKFILL_SINCE, until=None, l
         ensure_schema(connection)
         ensure_lifecycle_schema(connection)
         connection.commit()
+        skipped_no_end_time = connection.execute(
+            _turns_query(connection) + "SELECT count(*) FROM turns WHERE ended_at IS NULL "
+            "AND started_at>=? AND started_at<? "
+            "AND status IN ('completed','failed','interrupted','cancelled') "
+            "AND NOT EXISTS (SELECT 1 FROM qa_results q WHERE q.turn_id=turns.turn_id)",
+            (since, until),
+        ).fetchone()[0]
         rows = connection.execute(
             _turns_query(connection) + "SELECT * FROM turns WHERE ended_at>=? AND ended_at<? "
             "AND status IN ('completed','failed','interrupted','cancelled') "
@@ -726,13 +737,39 @@ def backfill(db_path, traces_dir, *, since=DEFAULT_BACKFILL_SINCE, until=None, l
             (since, until, limit),
         ).fetchall()
     processed = []
+    failed = []
     for row in rows:
-        failure_ledger.collect(row["turn_id"], db_path=db_path, traces_dir=traces_dir)
+        try:
+            failure_ledger.collect(row["turn_id"], db_path=db_path, traces_dir=traces_dir)
+        except (
+            sqlite3.Error,
+            OSError,
+            ValueError,
+            TypeError,
+            AttributeError,
+            RuntimeError,
+            ImportError,
+        ) as error:
+            logger.warning(
+                "Backfill collector failed for turn %s: %s",
+                row["turn_id"],
+                redact_text(str(error)),
+            )
+            failed.append(row["turn_id"])
+            continue
         result_for_turn(
             db_path, traces_dir, row["turn_id"], row["status"], row["turn_index"], row["turn_count"]
         )
         processed.append(row["turn_id"])
-    return {"processed": len(processed), "turn_ids": processed, "since": since, "until": until}
+    return {
+        "processed": len(processed),
+        "turn_ids": processed,
+        "failed": len(failed),
+        "failed_turn_ids": failed,
+        "skipped_no_end_time": skipped_no_end_time,
+        "since": since,
+        "until": until,
+    }
 
 
 def replay_abandoned(db_path, *, since=DEFAULT_BACKFILL_SINCE, until=None, limit=100):
@@ -868,5 +905,8 @@ def gate_a(db_path, *, now=None):
             for row in qa_turns
         ),
         "deploy_killed": deploy_killed,
-        "passed": total > 0 and numerator * 5 >= total * 4 and deploy_killed == 0,
+        "passed": current_time >= end
+        and total > 0
+        and numerator * 5 >= total * 4
+        and deploy_killed == 0,
     }

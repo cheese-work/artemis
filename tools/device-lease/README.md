@@ -225,7 +225,8 @@ directory, database or socket is created:
   "android_claims": {"source": "ledger", "max_age_seconds": 300},
   "guard_path": "/private/state/claims.guard",
   "recovery": {"adapter": "owned", "owner": "OPS_OWNER", "ops_issue": "CHE-NNNN"},
-  "leader_control_socket": "/private/leader/control.sock"
+  "leader_control_socket": "/private/leader/control.sock",
+  "leader_id": "CURRENT_ANDROID_ADMISSION_LEADER_ID"
 }
 ```
 
@@ -365,7 +366,8 @@ command, ADB server reset or policy change is performed by the hermetic tests.
    `verifying`. Preserve lease id, run binding, audit and cleanup evidence for the
    Android squad leader. Only the trusted leader control plane calls
    `verify_release(lease_id, verifier=LEADER_ID, evidence=REFERENCE, passed=True)`.
-   `LEADER_ID` is `5cd75ce5-d323-4004-9779-7e2ccf16bde4` under the current policy.
+   `LEADER_ID` must match the owner-configured `leader_id`. A role identity change
+   requires an explicit composition update; the retired identity is then refused.
    A failed verdict quarantines. The named recovery owner can supply evidence
    using `recover_quarantine`; this returns only to `verifying`, never directly
    to availability. A successful leader verdict records `released`. No TTL-only
@@ -780,3 +782,118 @@ admission; deleting an unknown lock is not a census.
 
 This implementation makes no host config change and leaves admission closed.
 Do not copy fixture census, process IDs or grant references into the live fleet.
+
+### X99 freshness timer (CHE-5042)
+
+After reconciling existing claims with `census-android-claims`, the trusted owner
+can run `device-lease refresh --composition FILE --registry FILE --state-dir DIR
+--host-config FILE` from a user systemd oneshot timer. The owner-only host file is:
+
+```json
+{
+  "devices": ["CONFIRMED_UNRESTRICTED_RIG_SERIAL"],
+  "reference": "CHE-authorized-per-device-grants",
+  "expires_at": 1794646800,
+  "writers": [{"unit": "artemis-qa.service", "sdk_lock": "/path/to/artemis/runtime/device_lock.py"}],
+  "isolated_writers": [{"unit": "artemis-qa-staging.service", "adb_path": "/path/to/disabled/adb", "sha256": "EXACT_DISABLED_WRAPPER_DIGEST"}]
+}
+```
+
+`isolated_writers` may be empty. The owner attests that these lists cover every
+supported fleet launcher. This does not detect arbitrary same-user Python imports
+or defend against bypassing cooperative launchers. Future user services should
+inherit the same guard/database settings. Direct SDK launchers must set both.
+A guarded writer must use the configured SDK lock directory and contain the SDK
+admission check. Disabled staging must retain both wrapper environment settings
+and the exact owner-approved wrapper digest; this command never enables staging.
+
+Refresh takes the shared flock from observations through both owner commits. It
+checks live service environments, reads only `host:devices-l` from the existing
+loopback ADB server on port 5037, and grants only configured confirmed rig rows.
+It never starts ADB or sends device commands. Grants expire at the fixed owner
+expiry, not a new rolling expiry on every refresh. Removing a serial revokes it
+at the next refresh. Existing ledger claims are carried forward verbatim; initial
+census is mandatory. A failed observation invalidates the census immediately.
+Stopping the timer closes admission when source freshness expires. Run every
+20 seconds with a 60-second readiness age; serialize refreshes with the same
+flock. No lock or lease is held between timer invocations.
+
+The private leader socket remains the release boundary. `leader_id` is an
+explicit cooperative role check, not a credential. The in-process Broker's
+historical default is retained for callers outside live composition; production
+composition always requires a configured identity.
+
+## Managed Multica host binding (CHE-5868)
+
+Producer contract pin: `cheese-work/multica@6d95bc618617c20baa7e1e2d9ccf9991d9e7d3cc`,
+[draft PR 1643](https://github.com/cheese-work/multica/pull/1643).
+
+A Codex shell can see PID 1 inside its tool namespace. That PID is not a host
+holder identity. The managed local route accepts an opaque launcher reference
+instead of probing the shell's `/proc` or borrowing a daemon PID.
+
+This route is **off by default**. It requires separately deployed Multica launcher
+support and owner configuration on both sides. The owner selects one existing
+0700 directory outside task writable roots with `MULTICA_RUN_BINDINGS_DIR` in
+the Multica daemon environment and `managed_bindings_dir` in the broker's private
+composition JSON. Both services must run as the same owner in the same host PID
+namespace. A bad configured directory fails startup; an absent setting preserves
+the existing local PID route and refuses managed references. This change does
+not edit an installed composition, restart a service or admit a device.
+
+The native launcher allocates a 256-bit random `MULTICA_RUN_BINDING_ID` per launch
+attempt. It publishes `<id>.json` (0600) atomically only after successful start.
+Version 1 has exactly these fields:
+
+```text
+version=1, binding_id, agent_id, principal, task_id, issue_id,
+pid, process_start, boot_id, pid_namespace
+```
+
+`principal` is the trusted task's agent ID. `task_id` is the exact Multica task ID,
+not the issue ID or a caller-invented run label. `pid` is the launcher's actual
+child process root in its host namespace, with Linux start ticks and boot ID.
+Exec wrappers retain this PID. A waiting wrapper counts only while it remains
+alive; detached children cannot extend its binding. The launcher revokes on
+cancellation, failed startup and lifecycle exit. Dead or reused holders fail
+independent broker probes even if a stale file remains.
+
+`acquire` and `claim` accept mutually exclusive `--pid` or `--managed-binding`.
+For an admitted CHE-5792 run, the managed arguments are:
+
+```sh
+--principal "$MULTICA_AGENT_ID" --agent-id "$MULTICA_AGENT_ID" \
+--issue-id CHE-5792 --run-id "$MULTICA_TASK_ID" \
+--managed-binding "$MULTICA_RUN_BINDING_ID"
+```
+
+These are arguments to the existing CLI, not an admission or an instruction to
+acquire now. Pool, purpose, ticket, idempotency key and the device grants still
+follow their existing contracts. Managed mode never calls client-side
+`process_identity`. RPC clients cannot choose the registry path or submit an
+alternate host PID. The broker resolves the reference, checks the entire
+agent/task/principal/issue association, then independently checks namespace,
+boot, start time and process liveness. Missing, malformed, unsafe or replaced
+records fail closed. Concurrent tasks cannot accidentally use each other's
+reference. Maintenance re-resolves the exact persisted record before the writer
+lock, fences active groups and parks queued/offered bindings on revocation.
+
+Owned recovery uses the resolved host root with all existing complete-work
+journal, descendant, PID-reuse, daemon-exclusion and leader-release checks.
+No automatic journal or cleanup permission is inferred from a managed binding.
+Uncertain recovery still quarantines. Same-UID labels and private files remain
+cooperative, not authentication against the host owner. Credential-isolated or
+remote execution uses the separately gated R1 route (CHE-4513); this is not a
+relay or a substitute for R1 activation.
+
+Offline checks use synthetic inventory only:
+
+```sh
+python3 -B tests/unit/runtime/test_device_lease_managed_runs.py -v
+```
+
+For cross-repository proof, Multica's `TestBindingNestedNamespace` accepts
+`ARTEMIS_MANAGED_BINDING_PROBE` pointing to this checkout's
+`tests/unit/runtime/managed_binding_contract_probe.py`. The probe uses only a
+temporary database and fake inventory: publish, resolve, synthetic grant,
+revoke, fence. It does not connect to an installed broker or device.

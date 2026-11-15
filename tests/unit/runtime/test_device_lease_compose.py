@@ -23,7 +23,7 @@ import compose
 from compose import CompositionError
 import daemon
 
-LEADER = "5cd75ce5-d323-4004-9779-7e2ccf16bde4"
+LEADER = "8b5fe946-257a-460d-b5ea-53d9b85ad96f"
 
 
 class FakeRecovery:
@@ -69,6 +69,7 @@ class ComposeTests(unittest.TestCase):
                 "ops_issue": "CHE-fixture-ops",
             },
             "leader_control_socket": str(self.root / "leader" / "control.sock"),
+            "leader_id": LEADER,
         }
 
     def write_json(self, name, payload):
@@ -142,6 +143,7 @@ class ComposeTests(unittest.TestCase):
             ("recovery", "owner"),
             ("recovery", "ops_issue"),
             ("leader_control_socket",),
+            ("leader_id",),
         ]
         for path in paths:
             with self.subTest(missing=".".join(path)):
@@ -155,6 +157,19 @@ class ComposeTests(unittest.TestCase):
                         self.config_file(config), registry(), db_path=self.root / "leases.sqlite3"
                     )
                 self.assertIn(path[0], str(caught.exception))
+
+    def test_managed_registry_is_owner_configured_and_optional(self):
+        broker, _ = self.composed_broker()
+        self.assertIsNone(broker.managed_runs)
+        directory = self.root / "managed-runs"
+        directory.mkdir(mode=0o700)
+        self.config["managed_bindings_dir"] = str(directory)
+        broker, _ = self.composed_broker()
+        self.assertIsNotNone(broker.managed_runs)
+        for value in ("relative", "", 123, str(self.root / "missing")):
+            self.config["managed_bindings_dir"] = value
+            with self.subTest(value=value), self.assertRaises(CompositionError):
+                self.composed_broker()
 
     def test_recovery_adapter_without_fence_refuses(self):
         self.config["recovery"]["adapter"] = "test_device_lease_compose:NoFence"
@@ -272,6 +287,13 @@ class ComposeTests(unittest.TestCase):
         try:
             with self.assertRaises(Refused):
                 holder.dispatch({"op": "verify-release", "args": {"lease_id": group["lease_id"]}})
+            with self.assertRaisesRegex(Refused, "leader_required"):
+                broker.verify_release(
+                    group["lease_id"],
+                    verifier="5cd75ce5-d323-4004-9779-7e2ccf16bde4",
+                    evidence="retired identity",
+                    passed=True,
+                )
             self.assertEqual((self.root / "leader").stat().st_mode & 0o777, 0o700)
             done = subprocess.run(
                 [

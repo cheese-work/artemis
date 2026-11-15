@@ -1,3 +1,4 @@
+# ci-policy: class=pr-validation
 name: Host agent core
 
 on:

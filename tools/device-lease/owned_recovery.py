@@ -130,6 +130,8 @@ class OwnedRecovery:
         endpoint = next(d["endpoint"] for d in group["devices"] if d["device_id"] == device)
         result = {}
         for line in data.splitlines():
+            if not line.strip():
+                continue  # adb prints a newline even when the list is empty.
             fields = line.split()
             if len(fields) != 3:
                 raise ValueError("invalid forward census")
@@ -162,7 +164,7 @@ class OwnedRecovery:
             work = [c for c in changes if c["kind"] == "work"]
             devices = {d["device_id"] for d in group["devices"]}
             if (
-                group["binding"].get("mode") != "local"
+                group["binding"].get("mode") not in {"local", "managed"}
                 or {w["device_id"] for w in work} != devices
                 or len(work) != len(devices)
             ):
@@ -173,13 +175,16 @@ class OwnedRecovery:
                     if identity["pid"] in identities and identities[identity["pid"]] != identity:
                         return False
                     identities[identity["pid"]] = identity
-            root = {k: group["binding"][k] for k in ("mode", "pid", "process_start", "boot_id")}
+            root = {
+                "mode": "local",
+                **{k: group["binding"][k] for k in ("pid", "process_start", "boot_id")},
+            }
             if identities.get(root["pid"]) != root:
                 return False
             daemon = self._daemon_pid(remaining())
             if set(identities) & {1, os.getpid(), daemon}:
                 return False
-            if self._descendants(group["binding"]) - identities.keys():
+            if self._descendants(root) - identities.keys():
                 return False
             # Validate EVERY identity and descendant before the first signal.
             for pid, identity in identities.items():
@@ -196,7 +201,7 @@ class OwnedRecovery:
                     return False
             if any(self._identity(pid) is not None for pid in identities):
                 return False
-            if self._descendants(group["binding"], allow_missing=True):
+            if self._descendants(root, allow_missing=True):
                 return False
             for item in work:
                 device = item["device_id"]

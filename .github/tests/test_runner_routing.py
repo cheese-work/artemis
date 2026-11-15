@@ -25,6 +25,11 @@ class RunnerRoutingTest(unittest.TestCase):
             for name, body in zip(jobs[1::2], jobs[2::2]):
                 if "cheese-x99" not in body:
                     continue
+                if (workflow.name, name) == ("ci-policy.yml", "ci-policy"):
+                    # Never skipped (a skipped gate is a non-failing check); routing is covered by
+                    # test_ci_policy_caller_guard.py (CHE-3275).
+                    self.assertIsNone(re.search(r"(?m)^    if: ", body))
+                    continue
                 with self.subTest(workflow=workflow.name, job=name):
                     condition = re.search(r"(?m)^    if: (.+)$", body)
                     self.assertIsNotNone(condition, "X99 job needs a job-level guard")
@@ -41,7 +46,10 @@ class RunnerRoutingTest(unittest.TestCase):
 
     def test_main_push_ci_keeps_python_matrix_and_result_gate(self):
         ci = Path(".github/workflows/ci.yml").read_text()
-        self.assertIn("\non:\n  push:\n    branches: [main]\n  pull_request:\n  schedule:\n", ci)
+        self.assertIn(
+            "\non:\n  push:\n    branches: [main]\n  pull_request:\n  merge_group:\n  schedule:\n",
+            ci,
+        )
         jobs = re.split(r"(?m)^  ([\w-]+):\n", ci.split("\njobs:\n", 1)[1])
         self.assertEqual(
             jobs[1::2], ["python-tests", "python-quality", "b2-gate", "frontend", "package"]

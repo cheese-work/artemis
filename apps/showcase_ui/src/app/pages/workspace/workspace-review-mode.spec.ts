@@ -49,6 +49,7 @@ describe('Workspace review mode', () => {
     const admin = jasmine.createSpyObj<AdminConfigService>('AdminConfigService', ['getIdentity']);
     admin.getIdentity.and.returnValue(of({ email: null, admin: false, auth_mode: 'open', reason: null }));
     const agentService = {
+      recordingEvents$: NEVER,
       whatsNewPromptDraft: signal(false),
       updateWhatsNewErrorVisibility: () => undefined,
       isCurrentSessionRunning: () => false,

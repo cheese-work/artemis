@@ -12,13 +12,13 @@ assert.ok(existsSync(path.join(dist, 'index.html')), 'Build the development UI f
 const html = readFileSync(path.join(dist, 'index.html'), 'utf8');
 const fixtureSha = '1234567890abcdef1234567890abcdef12345678';
 const pause = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
-const waitFor = async operation => {
+const waitFor = async (operation, description = 'Fixture readiness') => {
   for (let attempt = 0; attempt < 100; attempt++) {
     const result = await operation();
     if (result) return result;
     await pause(100);
   }
-  throw new Error('Fixture readiness timed out');
+  throw new Error(`${description} timed out`);
 };
 
 for (const prefix of ['/', '/preview/pr/70/']) {
@@ -39,6 +39,9 @@ for (const prefix of ['/', '/preview/pr/70/']) {
       return response.end(html.replace(/<base href="[^"]*">/, `<base href="${prefix}">`)
         .replace('</head>', `<meta name="artemis-preview-sha" content="${fixtureSha}"></head>`));
     }
+    // Keep the title visible before timeline steps arrive to exercise click readiness.
+    // 500 ms spans readiness checks but stays below the 1 s chat refresh interval.
+    if (pathname.startsWith('/api/chats/')) return setTimeout(() => handler(request, response), 500);
     handler(request, response);
   });
   server.on('upgrade', (request, socket) => {
@@ -100,6 +103,7 @@ for (const prefix of ['/', '/preview/pr/70/']) {
     }
     try {
       await waitFor(() => evaluate(`!!window.ng && document.querySelector('app-run-chat')?.innerText.includes('Log in and open settings')`).catch(() => false));
+      await waitFor(() => evaluate(`!!document.querySelector('.step-row summary')`).catch(() => false), 'Selector .step-row summary');
       await evaluate(`document.querySelector('.step-row summary').click()`);
       await waitFor(() => evaluate(`!!document.querySelector('.step-row details[open] .step-screenshot')`).catch(() => false));
     } catch (error) {
@@ -118,6 +122,7 @@ for (const prefix of ['/', '/preview/pr/70/']) {
       return target;
     })()`);
     assert.equal(bridge, url.replace('http:', 'ws:') + prefix + 'api/device-bridge/session');
+    await waitFor(() => evaluate(`!!document.querySelector('[aria-label="Technical details"]')`).catch(() => false), 'Selector [aria-label="Technical details"]');
     await evaluate(`document.querySelector('[aria-label="Technical details"]').click()`);
     await waitFor(() => evaluate(`document.querySelector('.verdict-card').textContent.includes('Synthetic agent report')`));
     assert.equal(await evaluate(`document.querySelector('app-run-view') === null`), true);
