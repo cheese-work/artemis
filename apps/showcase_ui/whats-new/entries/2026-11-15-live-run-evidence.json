@@ -1,0 +1,7 @@
+{
+  "id": "2026-11-15-live-run-evidence",
+  "date": "2026-11-15",
+  "title": "Run recordings update when preparation finishes",
+  "body": "The open run shows its recording or preparation error automatically. Token usage stays visible during other run updates.",
+  "issues": ["CHE-1301"]
+}

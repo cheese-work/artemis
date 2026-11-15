@@ -17,6 +17,7 @@ import {
   viewChild
 } from '@angular/core';
 import { HttpErrorResponse, HttpEvent, HttpEventType } from '@angular/common/http';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { DatePipe, JsonPipe, NgTemplateOutlet } from '@angular/common';
 import { Router, RouterLink } from '@angular/router';
 import { Title } from '@angular/platform-browser';
@@ -204,6 +205,8 @@ export class RunViewComponent {
       ? session.model_info : this.viewingLiveSession() ? this.agentService.viewedModel() : null;
   });
   public readonly active = computed(() => runStatusView(this.run()?.status).active);
+  private readonly usageSessionId = computed(() =>
+    this.viewingLiveSession() && this.infoOpen() ? this.run()?.session_id : null);
   private readonly clock = signal(Date.now() / 1000);
   public readonly duration = computed(() => {
     const run = this.run();
@@ -413,6 +416,9 @@ export class RunViewComponent {
 
   constructor() {
     this.ownerScope.load();
+    this.agentService.recordingEvents$.pipe(takeUntilDestroyed(this.destroyRef)).subscribe(event => {
+      if (event.session_id === this.run()?.session_id) this.loadVideo(event.session_id);
+    });
     const previousTitle = this.pageTitle.getTitle();
     effect(() => this.pageTitle.setTitle(this.state() === 'ready'
       ? `${this.title()} · SmartQA` : previousTitle));
@@ -438,8 +444,8 @@ export class RunViewComponent {
       untracked(() => this.load(id));
     });
     effect((onCleanup) => {
-      const id = this.viewingLiveSession() && this.infoOpen() ? this.run()?.session_id : null;
-      const active = runStatusView(this.run()?.status).active;
+      const id = this.usageSessionId();
+      const active = this.active();
       this.usage.set(null);
       this.usageFailed.set(false);
       if (!id) return;

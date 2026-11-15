@@ -158,6 +158,19 @@ class ComposeTests(unittest.TestCase):
                     )
                 self.assertIn(path[0], str(caught.exception))
 
+    def test_managed_registry_is_owner_configured_and_optional(self):
+        broker, _ = self.composed_broker()
+        self.assertIsNone(broker.managed_runs)
+        directory = self.root / "managed-runs"
+        directory.mkdir(mode=0o700)
+        self.config["managed_bindings_dir"] = str(directory)
+        broker, _ = self.composed_broker()
+        self.assertIsNotNone(broker.managed_runs)
+        for value in ("relative", "", 123, str(self.root / "missing")):
+            self.config["managed_bindings_dir"] = value
+            with self.subTest(value=value), self.assertRaises(CompositionError):
+                self.composed_broker()
+
     def test_recovery_adapter_without_fence_refuses(self):
         self.config["recovery"]["adapter"] = "test_device_lease_compose:NoFence"
         with self.assertRaises(CompositionError):
