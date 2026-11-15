@@ -1,4 +1,4 @@
-# ci-policy: class=pr-validation
+# ci-policy: class=gate
 name: What's New
 
 # Separate from CI so adding or removing the no-whats-new label re-runs only
@@ -9,10 +9,6 @@ on:
 
 permissions:
   contents: read
-
-concurrency:
-  group: whats-new-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
 
 jobs:
   entry:
