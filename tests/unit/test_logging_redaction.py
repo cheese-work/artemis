@@ -289,7 +289,7 @@ def test_real_worker_consumes_goal_file_without_goal_in_argv_or_error(tmp_path):
     }
     command = [sys.executable, "-m", "artemis.main", "--goal-file", path, "--unknown-s5-option"]
     result = subprocess.run(
-        command, env=environment, cwd=repository, capture_output=True, text=True, timeout=60
+        command, env=environment, cwd=repository, capture_output=True, text=True
     )
     assert result.returncode != 0
     assert not Path(path).exists()

@@ -9,17 +9,24 @@ APP_IMPORT = "import apps.admin_console.server, mcp_server"
 PROBE_TIMEOUT = 300.0
 
 
-def startup_budget(floor: float, *, factor: float = 4.0) -> float:
+def startup_budget(
+    floor: float, *, factor: float = 4.0, env: dict[str, str] | None = None
+) -> float:
     """Return ``max(floor, factor * T)``, where ``T`` is the time a no-op child takes to import the app.
 
     A fixed deadline on a child's first answer measures how busy the host is: the import alone costs
     seconds of CPU and stretches with CPU contention. Timing the same import in a probe child, right
-    before the real one, scales the deadline with that contention. A child that never answers still
-    exceeds ``factor`` times its own import time. A probe that never finishes raises
+    before the real one, with the same environment when supplied, scales the deadline with that
+    contention. A child that never answers still exceeds ``factor`` times its own import time.
+    A probe that never finishes raises
     ``subprocess.TimeoutExpired`` after ``PROBE_TIMEOUT`` instead of blocking before any deadline starts.
     """
     started = time.monotonic()
     subprocess.run(
-        [sys.executable, "-c", APP_IMPORT], check=True, capture_output=True, timeout=PROBE_TIMEOUT
+        [sys.executable, "-c", APP_IMPORT],
+        check=True,
+        capture_output=True,
+        timeout=PROBE_TIMEOUT,
+        env=env,
     )
     return max(floor, factor * (time.monotonic() - started))

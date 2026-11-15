@@ -1,0 +1,7 @@
+{
+  "id": "2026-11-02-host-adb-contention",
+  "date": "2026-11-02",
+  "title": "USB connection errors explain how to stop competing ADB programs",
+  "body": "If USB setup reports Access Denied or LIBUSB_ERROR_BUSY, the phone connection alert now suggests stopping the host ADB server with adb kill-server on your computer. Close other programs using the phone, reconnect the USB cable, and retry.",
+  "issues": ["CHE-3075"]
+}

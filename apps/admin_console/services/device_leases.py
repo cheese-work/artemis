@@ -22,6 +22,7 @@ import uuid
 
 from apps.admin_console.core.access_control import AdminAPIError
 from apps.admin_console.database.connection import db_session
+from device_lease import write_transaction
 
 clock = time.time
 
@@ -73,20 +74,10 @@ def _transaction(db_path):
     Committed on success or refusal, rolled back on any other error or interruption.
     """
     with db_session(db_path) as conn:
-        conn.isolation_level = None  # explicit BEGIN/COMMIT below, no implicit ones
         for statement in _DDL:
             conn.execute(statement)
-        conn.execute("BEGIN IMMEDIATE")
-        commit = False
-        try:
-            try:
-                yield conn, clock()
-                commit = True
-            except (DeviceBusy, LeaseError):
-                commit = True  # a refusal still keeps the purge of expired rows
-                raise
-        finally:
-            conn.execute("COMMIT" if commit else "ROLLBACK")
+        with write_transaction(conn, clock, refusals=(DeviceBusy, LeaseError)) as transaction:
+            yield transaction
 
 
 def _purge(conn: sqlite3.Connection, now: float) -> None:

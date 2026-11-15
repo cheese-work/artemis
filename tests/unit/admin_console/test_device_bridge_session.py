@@ -30,6 +30,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
+from tests.support.bridge_client import BridgeTestClient
 
 from apps.admin_console.routers import device_bridge
 import apps.admin_console.services.bridge_session_service as bridge_session_service_module
@@ -79,12 +80,44 @@ def _mock_adb(monkeypatch):
 
 @pytest.fixture
 def loopback_client():
-    return TestClient(proxy_aware_app, client=("127.0.0.1", 50000))
+    return BridgeTestClient(proxy_aware_app, client=("127.0.0.1", 50000))
 
 
 @pytest.fixture
 def remote_client():
     return TestClient(proxy_aware_app, client=("203.0.113.5", 50000))
+
+
+def test_loopback_disconnect_finishes_before_testclient_cancellation(
+    loopback_client, monkeypatch, _mock_adb
+):
+    """Force teardown to start while the handler still awaits a disconnect."""
+    from starlette.testclient import WebSocketTestSession
+
+    finished = threading.Event()
+    finish = device_bridge._finish_bridge_connection
+    exit_session = WebSocketTestSession.__exit__
+
+    async def observe_finish(session, generation):
+        await finish(session, generation)
+        finished.set()
+
+    def assert_finished_before_cancellation(websocket, *args):
+        try:
+            assert finished.is_set(), "TestClient cancelled before bridge cleanup finished"
+        finally:
+            exit_session(websocket, *args)
+
+    monkeypatch.setattr(device_bridge, "_finish_bridge_connection", observe_finish)
+    monkeypatch.setattr(WebSocketTestSession, "__exit__", assert_finished_before_cancellation)
+    with loopback_client.websocket_connect(PATH, headers=_HOST_HEADER) as ws:
+        leased = ws.receive_json()
+        assert ws.receive_json()["type"] == "device_attached"
+        # No close message: the context manager must deliver the disconnect
+        # and join the handler before TestClient's cancellation starts.
+
+    assert asyncio.run(bridge_session_service.get(leased["session_id"])) is None
+    _assert_listener_closed(leased["listener"]["port"])
 
 
 def test_loopback_session_does_not_require_lifecycle_bearer(loopback_client, _mock_adb, caplog):

@@ -148,6 +148,7 @@ export class UsbDeviceRelayService implements OnDestroy {
     this.state.set({ status: 'connecting', serial: null, sessionId: null, error: null });
     this.registerUnloadWarning();
 
+    let usbSetup = false;
     try {
       if (!this.deviceManager) {
         throw namedError('WebUsbUnsupportedError');
@@ -164,7 +165,9 @@ export class UsbDeviceRelayService implements OnDestroy {
 
       this.attaching.set(true);
       this.device = device;
+      usbSetup = true;
       const connection = await device.connect();
+      usbSetup = false;
       if (generation !== this.generation) {
         await device.raw.close().catch((error: unknown) => this.logger.warn('Device close failed:', error));
         return;
@@ -182,7 +185,7 @@ export class UsbDeviceRelayService implements OnDestroy {
       if (generation === this.generation) {
         // Closing the chooser is a choice, not a failure: back to no phone, with no error.
         await this.finishConnection(
-          generation, isChooserCancel(error) ? null : this.toUserMessage(error), 'connect_error',
+          generation, isChooserCancel(error) ? null : this.toUserMessage(error, usbSetup), 'connect_error',
           this.device && !this.socket ? error : null
         );
       }
@@ -724,7 +727,7 @@ export class UsbDeviceRelayService implements OnDestroy {
     return url.toString();
   }
 
-  private toUserMessage(error: unknown): string {
+  private toUserMessage(error: unknown, usbSetup = false): string {
     const errorObject = typeof error === 'object' && error !== null
       ? error as { name?: unknown; message?: unknown }
       : {};
@@ -736,13 +739,15 @@ export class UsbDeviceRelayService implements OnDestroy {
         : '';
     if (
       error instanceof AdbDaemonWebUsbDevice.DeviceBusyError ||
-      /claim(?:ing)? interface/i.test(message)
+      /claim(?:ing)? interface/i.test(message) ||
+      (usbSetup && /access denied|LIBUSB_ERROR_BUSY/i.test(message))
     ) {
       if (this.tabs.heldElsewhere()) {
         return 'This phone is connected in another tab. Use it there, or choose Use here.';
       }
-      return 'Another program on this computer is using the phone (adb, Android Studio, scrcpy). ' +
-        'Quit it or run adb kill-server, unplug and replug, then retry.';
+      return 'Another program on this computer may be using the phone (adb, Android Studio, scrcpy). ' +
+        'Stop the host ADB server on this computer by running adb kill-server. ' +
+        'Quit other programs using the phone, unplug and replug, then retry.';
     }
 
     switch (name) {
