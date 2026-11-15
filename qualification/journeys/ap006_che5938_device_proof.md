@@ -86,19 +86,29 @@ Record fetch completion, view binding, and the first frame that visibly
 contains the real ad. The timer oracle starts at that first displayed frame,
 not at the loading skeleton or fetch success.
 
-**Steps:** Make one tap before 3.000 seconds from the displayed frame, then
-observe the ad and underlying screen. Reset the case. Wait until at least
-3.000 seconds from the displayed frame and tap the visible close control once.
+**Steps:** Use separate reset attempts for the early and late taps. In the
+early attempt, tap once at 2.900 seconds after the first displayed frame.
+Observe the screen immediately, then confirm that the ad remains displayed
+without another tap at 3.100 seconds after that frame. Reset the case. In the
+late attempt, tap the visible close control once at 3.100 seconds or later
+after the first displayed frame.
 
-**Assertions:** The early tap neither closes the ad nor opens the underlying
-screen. The late tap closes the ad. Record measured display-to-close timing and
-compare it with fetch and binding events; report any timer/display mismatch.
-Do not change or assert native-full layout, UI, or UX beyond this close gate.
+**Assertions:** At 2.900 seconds, the early tap neither closes the ad nor
+opens the advertiser or underlying AP006 screen. In the early attempt, the ad
+remains displayed at 3.100 seconds without another tap. In the late attempt,
+the late tap closes the ad and returns to AP006. Use the activity/package
+transition and visible screen to distinguish an advertiser launch from AP006.
+Measure both tap times
+from the first displayed frame, compare them with fetch and binding events, and
+report any timer/display mismatch. Do not change or assert native-full layout,
+UI, or UX beyond this close gate.
 
-**Evidence:** Timestamped video or frame sequence showing first displayed
-frame and both taps, hierarchy snapshots for the close control, and native
-timeline. If a genuine ad or a stable close selector is unavailable, mark the
-affected assertion NOT-RUN.
+**Evidence:** Timestamped video or frame sequence showing the first displayed
+frame, observations around 2.900 and 3.100 seconds, both taps, and the resulting
+screen; activity/package transitions; hierarchy snapshots for the close
+control; and native timeline. If a genuine ad, stable close selector, or
+distinguishable advertiser activity is unavailable, mark the affected
+assertion NOT-RUN.
 
 ## Case 3: Explore video screenshot and recording protection
 
@@ -131,22 +141,34 @@ premium status, placement enabled state, ad ID, and lifecycle/fullscreen
 conditions. Record each actual value and how it was set. Identify the Home
 native row using its confirmed hierarchy resource ID and placement alias.
 
-**Steps:** With the row loaded, revoke eligibility and verify removal. Restore
-eligibility and observe whether loading retries. Repeat with Home offscreen and
-through pause/resume or view recreation. For Welcome-back, attempt the actual
-placement once with ineligible state, then with invalid lifecycle/fullscreen
-state, each from a clean app-created state.
+**Steps:** With the row loaded, revoke eligibility and verify removal. Record
+this loaded-row case separately. Restore eligibility and observe whether
+loading retries. For the pending-request race, use a supported test
+configuration that holds the Home native request open. Prove the request is
+pending and associate it with the Home row. Revoke eligibility before
+releasing or completing the request. Observe the row, then release the request
+and observe its completion. Repeat with Home offscreen and through pause/resume
+or view recreation. For Welcome-back, attempt the actual placement once with
+ineligible state, then with invalid lifecycle/fullscreen state, each from a
+clean app-created state.
 
-**Assertions:** A stale or pending Home row disappears after eligibility loss;
-restoration can retry; an offscreen Home does not load. Welcome-back is
-suppressed for an ineligible actual placement and for invalid lifecycle or
-fullscreen state. Do not claim a branch was covered unless the configuration
-was observably applied. Mark each unexposed configuration NOT-RUN.
+**Assertions:** The loaded Home row disappears after eligibility loss, and
+restoration can retry. For the distinct pending-request race, observed event
+order is request started and still pending, eligibility revoked, row removed,
+then request completed; the completed request must not restore or attach a
+row. An offscreen Home does not load. Welcome-back is suppressed for an
+ineligible actual placement and for invalid lifecycle or fullscreen state. Do
+not count loaded-row removal as pending-row coverage. If a controllable pending
+request is unavailable or its pending state cannot be proved, mark only the
+pending-request branch NOT-RUN and name the missing control. Do not claim a
+branch was covered unless its configuration was observably applied.
 
 **Evidence:** Configuration snapshot, alias, row presence/absence screenshots,
-load/request events when exposed, lifecycle/activity timeline, and Artemis
-assertion ledger. If the test build exposes no control for a required branch,
-record that branch as NOT-RUN with the missing control named.
+request start, pending, eligibility-revocation, row-removal and completion
+events with ICT timestamps, lifecycle/activity timeline, and Artemis
+assertion ledger. Keep loaded-row evidence separate from the pending-request
+race. If the test build exposes no control for a required branch, record that
+branch as NOT-RUN with the missing control named.
 
 ## Case 5: cold-start Remote Config success and fallback
 
@@ -177,10 +199,36 @@ successful network fetch.
 
 After both independent non-author testcase reviews accept this exact digest
 and Sol grants admission, qualification for each device class requires one
-clean positive pass, a clean rerun, and one intended assertion failure that
-produces a failing exit with preserved artifacts. Keep those three results
-separate. A class not used here does not gate this class. CHE-387 AC3 flake
-baseline remains a separate required-acceptance prerequisite.
+clean positive pass, a clean rerun, and one separate negative-control attempt.
+Keep those three results separate. A class not used here does not gate this
+class. CHE-387 AC3 flake baseline remains a separate required-acceptance
+prerequisite.
+
+For the negative control, start the pinned app on the exact admitted serial and
+ask Artemis to assert the deliberately false statement that the foreground
+application package is
+`com.dramajoy.shortdrama.watch.earn.qualification_false_control`; the locked
+candidate package is `com.dramajoy.shortdrama.watch.earn`. Use the native
+Artemis CLI assertion-exit path, Pro profile, standalone invocation, and a
+unique explicit session ID. Bind the command, its complete stdout/stderr,
+native result, and artifacts to that session ID, the admitted serial, and the
+locked package. The control qualifies only when the native result is completed,
+contains the failed assert/verify item for that exact false package assertion
+with nonempty evidence, and the CLI prints `ARTEMIS_ASSERTION_EXIT=1` and exits
+1. Exit 0, exit 2, a CLI usage error, missing or incomplete native evidence,
+or any infrastructure/device failure does not qualify the control. Do not use
+a verdict adapter or model-authored report in place of the native result.
+
+Use this invocation shape with the serial and session ID granted/generated for
+that attempt:
+
+```bash
+artemis run --standalone --assertion-exit --profile pro \
+  --device-serial <admitted-serial> \
+  --locked-app com.dramajoy.shortdrama.watch.earn \
+  --session-id <unique-session-id> \
+  "Assert that the foreground application package is com.dramajoy.shortdrama.watch.earn.qualification_false_control."
+```
 
 After every attempt, stop only processes and tasks owned by that run, restore
 only run-created app state and settings, verify the target is back to its

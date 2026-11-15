@@ -11,7 +11,7 @@
     },
     "testcase_source": {
       "path": "qualification/journeys/ap006_che5938_device_proof.md",
-      "digest_sha256": "4f8ba0ca0017bab307820f4c0c55fb975542c0f646d8a8ccb6dbc10cc1616055"
+      "digest_sha256": "57383e4f3e92db3d763d7ec45f9775e0b287e73882ec39b77c5c95a797c029cc"
     },
     "app_source": {
       "repository": "https://github.com/tevo-studio/ap006-dramajoy",
@@ -24,14 +24,16 @@
     "native test-ad click, external return, one auto-next, unrelated-alias negative control",
     "displayed-frame three-second close gate, early and late taps",
     "Explore video screenshot/recording while playing, paused, and transitioning to Home",
-    "Home native-row eligibility and lifecycle; Welcome-back suppression",
-    "cold-start config success, offline/slow fallback, bounded splash"
+    "Home loaded-row eligibility and a separate pending-request race; lifecycle; Welcome-back suppression",
+    "cold-start config success, offline/slow fallback, bounded splash",
+    "qualification negative control using native Artemis assertion-exit contract"
   ],
   "review_contract": {
     "independent_non_author_reviews_required": 2,
     "review_same_testcase_digest": true,
     "admission_owner": "x99-codex-sol",
-    "execution_owner": "x99-codex-luna-2",
+    "execution_owner": "x99-codex-luna-avd",
+    "execution_owner_agent_id": "ebedff12-c7f7-4ca5-b6f6-1eb7443576df",
     "device_execution_admitted": false,
     "che387_ac3_flake_baseline_required_for_acceptance": true
   },
