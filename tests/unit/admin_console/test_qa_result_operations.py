@@ -112,7 +112,21 @@ def test_backfill_reports_undated_terminal_turns_without_using_batch_slots(libra
     assert qa_results.read_result(library.db, "undated") is None
 
 
-def test_backfill_counts_collector_failure_and_continues_batch(library, monkeypatch):
+@pytest.mark.parametrize(
+    "error_type",
+    [
+        sqlite3.OperationalError,
+        OSError,
+        ValueError,
+        TypeError,
+        AttributeError,
+        RuntimeError,
+        ImportError,
+    ],
+)
+def test_backfill_counts_collector_failure_and_continues_batch(
+    library, monkeypatch, caplog, error_type
+):
     from apps.admin_console.services import failure_ledger
 
     now = time.time()
@@ -122,7 +136,7 @@ def test_backfill_counts_collector_failure_and_continues_batch(library, monkeypa
 
     def fail_one(turn_id, **options):
         if turn_id == "bad":
-            raise RuntimeError("collector unavailable")
+            raise error_type("collector unavailable token=fixture-secret")
         return collect(turn_id, **options)
 
     monkeypatch.setattr(failure_ledger, "collect", fail_one)
@@ -131,6 +145,9 @@ def test_backfill_counts_collector_failure_and_continues_batch(library, monkeypa
     assert result["turn_ids"] == ["good"]
     assert result["failed"] == 1
     assert result["failed_turn_ids"] == ["bad"]
+    assert "collector unavailable" in caplog.text
+    assert "bad" in caplog.text
+    assert "fixture-secret" not in caplog.text
     assert qa_results.read_result(library.db, "bad") is None
     assert qa_results.read_result(library.db, "good") is not None
 

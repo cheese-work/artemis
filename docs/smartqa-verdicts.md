@@ -67,7 +67,7 @@ uv run python -m apps.admin_console.services.qa_result_commands replay --until '
 
 Backfill uses terminal end times, includes old rows without an outbox entry, and skips turns that already have a result. Repeat a bounded command until `processed` is zero. Freeze `--until` when processing multiple batches. Backfill uses the same collector and result mapper as the live consumer. It does not alter the activation window.
 
-The result reports successful turns in `processed` and `turn_ids`. A collector exception skips only that turn, increments `failed`, and adds its ID to `failed_turn_ids`; later turns in the batch still run. Failed turns remain eligible for retry. If `processed` is zero but `failed` is nonzero, resolve the collector failure before retrying the same range.
+The result reports successful turns in `processed` and `turn_ids`. Collector database, file, decoding, data-shape, runtime and import errors (`sqlite3.Error`, `OSError`, `ValueError`, `TypeError`, `AttributeError`, `RuntimeError`, `ImportError`) skip only that turn, increment `failed`, and add its ID to `failed_turn_ids`; later turns in the batch still run. A warning records the turn ID and redacted error text. Failed turns remain eligible for retry. If `processed` is zero but `failed` is nonzero, resolve the collector failure before retrying the same range.
 
 Terminal turns with neither an end time nor an outbox timestamp cannot be classified by end-time range. Backfill reports these unlabelled turns in `skipped_no_end_time`, using their start time to bound this diagnostic count to `[since, until)`. This count covers the whole range on each call and does not consume the processing limit. These turns receive no result until their missing terminal timestamp is repaired.
 

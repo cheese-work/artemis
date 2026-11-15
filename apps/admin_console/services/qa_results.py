@@ -1,5 +1,6 @@
 from datetime import datetime
 import json
+import logging
 import math
 import os
 from pathlib import Path
@@ -8,8 +9,11 @@ import sqlite3
 import time
 from urllib.parse import quote
 
+from apps.admin_console.core.redaction import redact_text
 from apps.admin_console.database.connection import db_session
 from apps.admin_console.database.repositories.step_repository import StepRepository
+
+logger = logging.getLogger(__name__)
 
 PENDING_CAP_SECONDS = 30.0
 _KNOWN_CATEGORIES = frozenset(
@@ -737,7 +741,20 @@ def backfill(db_path, traces_dir, *, since=DEFAULT_BACKFILL_SINCE, until=None, l
     for row in rows:
         try:
             failure_ledger.collect(row["turn_id"], db_path=db_path, traces_dir=traces_dir)
-        except Exception:
+        except (
+            sqlite3.Error,
+            OSError,
+            ValueError,
+            TypeError,
+            AttributeError,
+            RuntimeError,
+            ImportError,
+        ) as error:
+            logger.warning(
+                "Backfill collector failed for turn %s: %s",
+                row["turn_id"],
+                redact_text(str(error)),
+            )
             failed.append(row["turn_id"])
             continue
         result_for_turn(
