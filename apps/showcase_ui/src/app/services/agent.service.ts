@@ -18,7 +18,7 @@ import { LoggerService } from './logger.service';
 import { ModelSelection } from './model-catalog.service';
 import { Injectable, signal, inject, computed, DestroyRef, NgZone, effect, untracked } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
-import { Observable, catchError, map, of, switchMap } from 'rxjs';
+import { Observable, Subject, catchError, map, of, switchMap } from 'rxjs';
 
 import { Session, ModelInfo, TaskQueueItem, AgentStatusResponse, SessionUsage } from '../core/models/session.model';
 import { ProTuningDefaults, ProTuningOptions } from '../core/models/pro-tuning.model';
@@ -54,6 +54,11 @@ export interface StartupProgressEvent {
   timestamp: number;
 }
 
+export interface RecordingEvent {
+  type: 'recording_ready' | 'recording_failed';
+  session_id: string;
+}
+
 @Injectable({
   providedIn: 'root'
 })
@@ -64,6 +69,8 @@ export class AgentService {
   private zone = inject(NgZone);
   private ownerScope = inject(OwnerScopeService);
   private activePauseCardKey: string | null = null;
+  private readonly recordingEvents = new Subject<RecordingEvent>();
+  public readonly recordingEvents$ = this.recordingEvents.asObservable();
 
   // Signals to expose state to components
   private rawSessions = signal<Session[]>([]);
@@ -873,7 +880,12 @@ export class AgentService {
             this.flushStreamChunks();
           }
 
-          if (eventType === 'recording_ready' || eventType === 'recording_failed') return;
+          if (eventType === 'recording_ready' || eventType === 'recording_failed') {
+            if (typeof evtSessionId === 'string' && evtSessionId.trim()) {
+              this.recordingEvents.next({ type: eventType, session_id: evtSessionId });
+            }
+            return;
+          }
 
           if (eventType === 'background_tasks_updated') {
             this.fetchStatus();

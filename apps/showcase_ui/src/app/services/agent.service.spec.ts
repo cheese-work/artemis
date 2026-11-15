@@ -18,6 +18,9 @@ describe('AgentService live LLM retry timeline', () => {
     (service as any).logger = TestBed.inject(LoggerService);
     (service as any).browserStorage = TestBed.inject(BrowserStorageService);
     service.sessionLogs = signal<any[]>([]);
+    const recordingEvents = new Subject();
+    (service as any).recordingEvents = recordingEvents;
+    (service as any).recordingEvents$ = recordingEvents.asObservable();
     service.isSessionContentLoading = signal(false);
     service.startupProgressBySession = signal({});
     service.whatsNewAcceptedRunHandoffs = signal(0);
@@ -445,6 +448,30 @@ describe('AgentService live LLM retry timeline', () => {
         delete (window as any).EventSource;
       }
     }
+  });
+
+  it('publishes recording completion events without changing the session list', () => {
+    const { service } = createStatusService();
+    const events: unknown[] = [];
+    const subscription = (service as any).recordingEvents$?.subscribe((event: unknown) => events.push(event));
+    const source = new EventTarget();
+    spyOn(window, 'EventSource').and.returnValue(source as EventSource);
+    const sessions = service.sessions();
+    service.ensureLiveStream();
+    for (const type of ['recording_ready', 'recording_failed']) {
+      source.dispatchEvent(new MessageEvent(type, { data: JSON.stringify({ session_id: 'session-1' }) }));
+    }
+    // An unscoped or malformed event cannot refresh whichever run happens to be open.
+    for (const session_id of [undefined, '', 42]) {
+      source.dispatchEvent(new MessageEvent('recording_ready', { data: JSON.stringify({ session_id }) }));
+    }
+    expect(events).toEqual([
+      { type: 'recording_ready', session_id: 'session-1' },
+      { type: 'recording_failed', session_id: 'session-1' }
+    ]);
+    expect(service.sessions()).toBe(sessions);
+    expect(service.fetchSessions).not.toHaveBeenCalled();
+    subscription?.unsubscribe();
   });
 
   it('keeps a later native trace recovery after a repeated step snapshot', () => {
