@@ -3,6 +3,7 @@
 A merge queue waits for the required checks on the queue commit. A required
 workflow without the trigger never starts there, and the queue stalls.
 """
+
 from pathlib import Path
 import re
 import unittest
@@ -21,7 +22,9 @@ class MergeGroupTriggerTest(unittest.TestCase):
         for name in REQUIRED:
             with self.subTest(workflow=name):
                 text = Path(".github/workflows", name).read_text()
-                self.assertRegex(trigger_block(text), r"(?m)^  merge_group:", f"{name}: no merge_group trigger")
+                self.assertRegex(
+                    trigger_block(text), r"(?m)^  merge_group:", f"{name}: no merge_group trigger"
+                )
 
 
 if __name__ == "__main__":
