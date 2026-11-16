@@ -192,6 +192,9 @@ class RemoteAccess:
         self.tunnels = {}
         self.dead = set()
         self.unconfirmed = set()
+        # Ops this instance started for a binding that is not yet active. Another
+        # owner may close the row before they land, so its cleanup cannot cover them.
+        self.inflight = {}
         self.closed = False
         self.monitor = None
         self.ready = False
@@ -305,16 +308,25 @@ class RemoteAccess:
                             self.incarnation,
                         ),
                     )
+                self.inflight[binding] = {"port": None, "published": False}
                 # All ops/listener I/O is outside the SQLite writer transaction.
                 port = await self.ops.reserve(binding)
                 if type(port) is not int or not 1024 <= port <= 65535 or port == 5037:
                     raise ValueError("Invalid reserved destination")
+                self.inflight[binding]["port"] = port
                 with self.db() as conn:
                     if conn.execute(
                         "SELECT 1 FROM r1_keys WHERE port=? AND phase!='closed'", (port,)
                     ).fetchone():
                         raise ValueError("Destination still owned")
-                    conn.execute("UPDATE r1_keys SET port=? WHERE id=?", (port, binding))
+                    if (
+                        conn.execute(
+                            "UPDATE r1_keys SET port=? WHERE id=? AND phase='preparing'",
+                            (port, binding),
+                        ).rowcount
+                        != 1
+                    ):
+                        raise ValueError("Binding fenced during reservation")
                 tunnel = LeaseTunnel(self, binding, current)
                 self.tunnels[binding] = tunnel
                 tunnel.listener = await self.listen(
@@ -323,6 +335,7 @@ class RemoteAccess:
                     port,
                 )
                 line = f'restrict,port-forwarding,permitopen="127.0.0.1:{port}" {key}'
+                self.inflight[binding]["published"] = True  # before the call: it may land
                 if await self.ops.publish(binding, line) is not True:
                     raise ValueError("SSH publication unconfirmed")
                 if self.current(identity) != current:
@@ -330,7 +343,16 @@ class RemoteAccess:
                 with self.db() as conn:
                     if not self.owns_store(conn):
                         raise ValueError("Ownership lost")
-                    conn.execute("UPDATE r1_keys SET phase='active' WHERE id=?", (binding,))
+                    if (
+                        conn.execute(
+                            "UPDATE r1_keys SET phase='active' WHERE id=? AND phase='preparing'",
+                            (binding,),
+                        ).rowcount
+                        != 1
+                    ):
+                        raise ValueError("Binding fenced during publication")
+                # Active: any later fence by any owner revokes and retires after these ops.
+                self.inflight.pop(binding, None)
                 tunnel.arm()
                 if self.monitor is None:
                     self.monitor = asyncio.create_task(self._monitor())
@@ -404,13 +426,15 @@ class RemoteAccess:
     async def _fence(self, binding):
         self.dead.add(binding)  # event-loop dispatch barrier, BEFORE any await
         tunnel = self.tunnels.get(binding)
+        inflight = self.inflight.get(binding, {})
         row, sessions, durable, retired = None, [], True, False
         try:
             row = self.row(binding)
             if row is None:
                 raise ValueError("Missing session inventory")
             # A closed row was already revoked, stopped and retired; a re-fence only
-            # closes local resources and never reopens it or repeats ops calls.
+            # closes local resources and never reopens it or repeats those ops calls.
+            # Ops this instance started after that closure are still undone below.
             retired = row["phase"] == "closed"
             with self.db() as conn:
                 conn.execute(
@@ -434,13 +458,18 @@ class RemoteAccess:
                 durable = False
         ok = durable
         try:
-            if not retired:
+            if not retired or inflight.get("published"):
+                # A key published after another owner's revoke needs a revoke of its own.
                 ok = (await asyncio.wait_for(self.ops.revoke(binding), 5) is True) and ok
+            if not retired:
                 for session in sessions:
                     # Adapter validates pid/start/boot before stopping; no executable-name kill.
                     ok = (await asyncio.wait_for(self.ops.stop(session), 5) is True) and ok
-            if ok and not retired and row is not None and row["port"] is not None:
-                ok = await self._retire(binding, row["port"])
+            recorded = row["port"] if row is not None else None
+            # The closer retired a recorded port; an unrecorded reservation is ours.
+            port = None if retired and recorded is not None else recorded or inflight.get("port")
+            if ok and port is not None:
+                ok = await self._retire(binding, port)
         except Exception:
             ok = False
         if ok:
@@ -449,6 +478,7 @@ class RemoteAccess:
                     conn.execute("DELETE FROM r1_sessions WHERE binding=?", (binding,))
                     conn.execute("UPDATE r1_keys SET phase='closed' WHERE id=?", (binding,))
                 self.unconfirmed.discard(binding)
+                self.inflight.pop(binding, None)
             except Exception:
                 self.ready, ok = False, False
         if not ok:
@@ -475,19 +505,15 @@ class RemoteAccess:
         owner may have closed this row and reused its port for a live binding.
         """
         with self.db() as conn:
-            if self.row_phase(conn, binding) == "closed":
-                return True  # already retired by an earlier fence
+            row = conn.execute("SELECT phase, port FROM r1_keys WHERE id=?", (binding,)).fetchone()
+            if row is not None and row[0] == "closed" and row[1] == port:
+                return True  # the fence that closed the row retired this recorded port
             if conn.execute(
                 "SELECT 1 FROM r1_keys WHERE port=? AND id!=? AND phase!='closed'",
                 (port, binding),
             ).fetchone():
                 return False  # another binding owns it: never retire, fail closed
         return await asyncio.wait_for(self.ops.retire(binding, port), 5) is True
-
-    @staticmethod
-    def row_phase(conn, binding):
-        row = conn.execute("SELECT phase FROM r1_keys WHERE id=?", (binding,)).fetchone()
-        return None if row is None else row[0]
 
     def fenceable(self, conn, rows):
         """Return (owns_store, ids) this instance may fence (CHE-6406 F2).
