@@ -422,6 +422,7 @@ def collect(session_id: str | None = None, *, db_path=None, traces_dir=None) -> 
     traces_dir = run_catalog_repo.traces_dir if traces_dir is None else Path(traces_dir)
     with db_session(run_catalog_repo.db_path if db_path is None else db_path) as conn:
         _ensure(conn)
+        conn.commit()  # Release schema/migration writes before reading trace files.
         candidates = []
         for query, params in (
             (_RUNS_SQL, (now,)),
@@ -525,11 +526,13 @@ def collect(session_id: str | None = None, *, db_path=None, traces_dir=None) -> 
                     )
                 )
         before = conn.total_changes
+        # Purge may commit while evidence is read; check existence inside the write statement.
         conn.executemany(
             "INSERT OR IGNORE INTO failure_ledger (session_id, step_number, signal, scope, category, "
             "rule, cause, evidence, device, source, owner, occurred_at, classified_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            rows,
+            "SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? "
+            "WHERE EXISTS (SELECT 1 FROM sessions WHERE session_id = ?)",
+            ((*row, row[0]) for row in rows),
         )
         conn.commit()
         return {"scanned": len(candidates), "inserted": conn.total_changes - before}
