@@ -593,7 +593,7 @@ class AccessTests(unittest.IsolatedAsyncioTestCase):
         owners, calls = {}, []
 
         async def publish(binding, line):
-            owners[binding] = line.split('127.0.0.1:')[1].split('"')[0]
+            owners[binding] = line.split("127.0.0.1:")[1].split('"')[0]
             self.ops.keys[binding] = line
             return True
 

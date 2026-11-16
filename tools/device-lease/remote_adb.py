@@ -399,13 +399,19 @@ class RemoteAccess:
     async def _fence(self, binding):
         self.dead.add(binding)  # event-loop dispatch barrier, BEFORE any await
         tunnel = self.tunnels.get(binding)
-        row, sessions, durable = None, [], True
+        row, sessions, durable, retired = None, [], True, False
         try:
             row = self.row(binding)
             if row is None:
                 raise ValueError("Missing session inventory")
+            # A closed row was already revoked, stopped and retired; a re-fence only
+            # closes local resources and never reopens it or repeats ops calls.
+            retired = row["phase"] == "closed"
             with self.db() as conn:
-                conn.execute("UPDATE r1_keys SET phase='revoked' WHERE id=?", (binding,))
+                conn.execute(
+                    "UPDATE r1_keys SET phase='revoked' WHERE id=? AND phase!='closed'",
+                    (binding,),
+                )
                 sessions = [
                     json.loads(r[0])
                     for r in conn.execute(
@@ -423,12 +429,13 @@ class RemoteAccess:
                 durable = False
         ok = durable
         try:
-            ok = (await asyncio.wait_for(self.ops.revoke(binding), 5) is True) and ok
-            for session in sessions:
-                # Adapter validates pid/start/boot before stopping; no executable-name kill.
-                ok = (await asyncio.wait_for(self.ops.stop(session), 5) is True) and ok
-            if ok and row is not None and row["port"] is not None:
-                ok = await asyncio.wait_for(self.ops.retire(binding, row["port"]), 5) is True
+            if not retired:
+                ok = (await asyncio.wait_for(self.ops.revoke(binding), 5) is True) and ok
+                for session in sessions:
+                    # Adapter validates pid/start/boot before stopping; no executable-name kill.
+                    ok = (await asyncio.wait_for(self.ops.stop(session), 5) is True) and ok
+            if ok and not retired and row is not None and row["port"] is not None:
+                ok = await self._retire(binding, row["port"])
         except Exception:
             ok = False
         if ok:
@@ -456,15 +463,47 @@ class RemoteAccess:
                 self.unconfirmed.add(binding)
         return ok
 
+    async def _retire(self, binding, port):
+        """Retire only this binding's own destination, at most once (CHE-6406 F1).
+
+        Re-read just before the adapter call: across the awaits above, another
+        owner may have closed this row and reused its port for a live binding.
+        """
+        with self.db() as conn:
+            if self.row_phase(conn, binding) == "closed":
+                return True  # already retired by an earlier fence
+            if conn.execute(
+                "SELECT 1 FROM r1_keys WHERE port=? AND id!=? AND phase!='closed'",
+                (port, binding),
+            ).fetchone():
+                return False  # another binding owns it: never retire, fail closed
+        return await asyncio.wait_for(self.ops.retire(binding, port), 5) is True
+
+    @staticmethod
+    def row_phase(conn, binding):
+        row = conn.execute("SELECT phase FROM r1_keys WHERE id=?", (binding,)).fetchone()
+        return None if row is None else row[0]
+
+    def fenceable(self, conn, rows):
+        """Return (owns_store, ids) this instance may fence (CHE-6406 F2).
+
+        `rows` are (id, incarnation) pairs. The store owner fences all of them,
+        including old incarnations. A stale owner fences only its own
+        incarnation, never a replacement owner's live binding.
+        """
+        owner = conn.execute("SELECT incarnation FROM r1_owner").fetchone()[0]
+        owns = owner == self.incarnation
+        return owns, [r[0] for r in rows if owns or r[1] == self.incarnation]
+
     async def maintain(self):
         try:
             with self.db() as conn:
-                active = [
-                    r[0]
-                    for r in conn.execute(
-                        "SELECT id FROM r1_keys WHERE phase IN ('active','revoked')"
-                    )
-                ]
+                _, active = self.fenceable(
+                    conn,
+                    conn.execute(
+                        "SELECT id, incarnation FROM r1_keys WHERE phase IN ('active','revoked')"
+                    ),
+                )
         except Exception:
             self.ready = False
             active = list(self.tunnels)
@@ -500,11 +539,13 @@ class RemoteAccess:
         async with self.lock:
             self.ready = False
             with self.db() as conn:
-                pending = [
-                    r[0] for r in conn.execute("SELECT id FROM r1_keys WHERE phase!='closed'")
-                ]
+                owns, pending = self.fenceable(
+                    conn,
+                    conn.execute("SELECT id, incarnation FROM r1_keys WHERE phase!='closed'"),
+                )
             outcomes = [await self._fence(binding) for binding in pending]
-            self.ready = all(outcomes)
+            # A stale owner cleans up its own rows but never reopens admission.
+            self.ready = owns and all(outcomes)
             return self.ready
 
     async def close(self):
