@@ -1,0 +1,98 @@
+{
+  "receipt_version": 1,
+  "issue": "CHE-5967",
+  "parent_issue": "CHE-5960",
+  "candidate_kind": "testcase",
+  "status": "provisional",
+  "runner_source": {
+    "repository": "https://github.com/cheese-work/artemis",
+    "commit_sha": "676320699514778d7b589783cb5590ada8d4048f",
+    "source_files": [
+      {
+        "path": "artemis/interfaces/cli/assertion_exit.py",
+        "digest_sha256": "abdce4e82f136d3c93fda5e8c80eef088ce8d25bce4f71e5063fb66c24cfbbab"
+      },
+      {
+        "path": "artemis/interfaces/cli/commands/run.py",
+        "digest_sha256": "5018d11539e01006ebfeb4e37a82c3f9135d3235ba4ef4b641cedd1f6e602d4a"
+      }
+    ],
+    "assertion_exit_contract": {
+      "requires_standalone": true,
+      "requires_profile": "pro",
+      "requires_explicit_device_serial": true,
+      "requires_locked_app_package": true,
+      "completed_assertion_failure_exit": 1,
+      "incomplete_evidence_exit": 2,
+      "cleanup_error_invalidates_pass": true
+    }
+  },
+  "testcase_source": {
+    "commit_sha": "afd9d81feba1f1ac6d4a5f401c6c6080a4bd0abb",
+    "path": "qualification/journeys/che5967_x99_avd.v1.md",
+    "digest_sha256": "b61e920978c851750e35263202872a8cc520ca82b2340062afc0131610f468f8",
+    "status": "provisional"
+  },
+  "target": {
+    "device_class": "x99_api35_medium_phone",
+    "system_image": "google_apis",
+    "api": 35,
+    "abi": "x86_64",
+    "image_revision": 9,
+    "serial": "assigned_at_execution"
+  },
+  "app_build": {
+    "repository": "https://github.com/tevo-studio/mMonetize-sample",
+    "commit_sha": "649ae000ab7527105b6be5351f2bc536f9980bac",
+    "sdk_commit_sha": "39816628d82358e23eb62cf94ef4e3047409d4d7",
+    "build_id": "CHE-2705-649ae000ab",
+    "variant": "adsTestDebug",
+    "package_name": "io.mmonetize.sample",
+    "version_code": 1,
+    "version_name": "CHE-2705-649ae000ab",
+    "apk_size_bytes": 50004266,
+    "apk_sha256": "38a9b0c53917c5cbf24f78625ac06d6e4a08e1bb1a8c0ac688c663884909f082",
+    "supported_abis": ["arm64-v8a", "armeabi-v7a", "x86", "x86_64"]
+  },
+  "qualification": {
+    "execution_status": "NOT-RUN",
+    "positive_run_count": 2,
+    "negative_control": {
+      "required": true,
+      "expected_native_verdict": "fail_assertion",
+      "expected_process_exit": 1,
+      "required_exit_marker": "ARTEMIS_ASSERTION_EXIT=1",
+      "incomplete_evidence_is_not_success": true
+    },
+    "review_contract": {
+      "independent_non_author_reviewers_required": 2,
+      "same_candidate_digests_required": true,
+      "reviews_must_precede_execution": true
+    },
+    "admission_contract": {
+      "exclusive_capacity": 1,
+      "exact_serial_from_android_authority_required": true,
+      "run_bound_lease_required_before_adb": true
+    },
+    "required_artifacts": [
+      "native test summary and process exit status for each run",
+      "Artemis trace bundle for each run",
+      "screenshots or accessibility hierarchy for each asserted screen",
+      "device identity and APK SHA-256 verification",
+      "cleanup and lease release evidence"
+    ],
+    "cleanup_contract": {
+      "preserve_evidence_before_cleanup": true,
+      "stop_only_run_owned_processes": true,
+      "verify_app_stopped": true,
+      "verified_release_required": true,
+      "uncertain_release": "keep target unavailable and name recovery owner"
+    }
+  },
+  "authoring_boundary": {
+    "device_or_adb_commands": false,
+    "avd_boot_or_install": false,
+    "artemis_execution": false,
+    "accepted_execution_evidence": false
+  }
+}
