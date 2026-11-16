@@ -8,6 +8,8 @@ inside the shared claim guard, as the broker requires.
 
 import fcntl
 import json
+import math
+from dataclasses import asdict
 import os
 from pathlib import Path
 import stat
@@ -169,6 +171,76 @@ def artemis_locks_reader(lock_dir):
     return read
 
 
+def startup_reader(path, max_age, registry, leader_id, clock=time.time):
+    """Owner-only scoped grant and independent release; never ordinary readiness.
+
+    The complete writer census is separately required through ClaimLedger.read.
+    The pinned inventory identity must agree in full; a serial alone proves nothing.
+    """
+
+    def number(value):
+        if type(value) not in (int, float) or not math.isfinite(value):
+            raise ValueError("invalid startup grant time")
+        return value
+
+    def read():
+        _owner_file(path)
+        row = json.loads(Path(path).read_text(encoding="utf-8"))
+        if not isinstance(row, dict) or set(row) != {
+            "generation",
+            "device",
+            "principal",
+            "agent_id",
+            "issue_id",
+            "run_id",
+            "grant",
+            "release",
+        }:
+            raise ValueError("invalid startup evidence")
+        if type(row["generation"]) is not int or row["generation"] < 1:
+            raise ValueError("invalid startup generation")
+        if any(
+            not isinstance(row[k], str) or not row[k].strip()
+            for k in ("principal", "agent_id", "issue_id", "run_id")
+        ):
+            raise ValueError("invalid startup owner")
+        device = registry.resolve(row["device"].get("device_id"))
+        if (
+            device is None
+            or device.kind != "avd"
+            or device.restricted
+            or json.loads(json.dumps(asdict(device))) != row["device"]
+        ):
+            raise ValueError("startup identity mismatch")
+        release, grant = row["release"], row["grant"]
+        if (
+            not isinstance(release, dict)
+            or set(release) != {"verifier", "holder", "evidence", "passed"}
+            or release["verifier"] != leader_id
+            or release["verifier"] in {release["holder"], row["principal"], row["agent_id"]}
+            or release["passed"] is not True
+            or any(
+                not isinstance(release[k], str) or not release[k].strip()
+                for k in ("holder", "evidence")
+            )
+            or not isinstance(grant, dict)
+            or set(grant) != {"reference", "observed_at", "expires_at"}
+            or not isinstance(grant["reference"], str)
+            or not grant["reference"].strip()
+        ):
+            raise ValueError("startup release or grant unavailable")
+        observed, expiry, now = (
+            number(grant["observed_at"]),
+            number(grant["expires_at"]),
+            number(clock()),
+        )
+        if not (-MAX_SKEW <= now - observed <= max_age and observed < expiry and now < expiry):
+            raise ValueError("startup grant expired or stale")
+        return row
+
+    return read
+
+
 def write_claims_snapshot(path, guard, claims, clock=time.time):
     """Removed unsafe snapshot replacement. Use ClaimLedger's owned claim/release."""
     raise ValueError("unverified claims snapshots are disabled; use the claim ledger")
@@ -250,6 +322,12 @@ def compose(config_path, registry, *, db_path=None):
     recovery_io, owner, ops_issue = _recovery(config, db_path or ".", registry)
     control = Path(_field(config, "leader_control_socket", str))
     leader_id = _field(config, "leader_id", str)
+    startup_snapshot = None
+    if "startup" in config:
+        startup_path, startup_age = _snapshot(config, "startup")
+        if managed_runs is None:
+            raise CompositionError("startup requires managed_bindings_dir")
+        startup_snapshot = startup_reader(startup_path, startup_age, registry, leader_id)
     if db_path is None:
         raise CompositionError("composition requires the broker database")
     db_path = Path(db_path)
@@ -263,6 +341,7 @@ def compose(config_path, registry, *, db_path=None):
     return {
         "broker": {
             "managed_runs": managed_runs,
+            "startup_snapshot": startup_snapshot,
             "admitted": {},
             "admission_snapshot": admitted_reader(admitted_path, admitted_age, registry),
             "admission_sources": {"artemis": artemis_locks_reader(locks), "android": ledger.read},

@@ -68,6 +68,8 @@ _DDL = (
     "CREATE TABLE IF NOT EXISTS broker_verifications (lease_id TEXT PRIMARY KEY, verifier TEXT NOT NULL, evidence TEXT NOT NULL)",
     "CREATE TABLE IF NOT EXISTS broker_recovery_deadlines (lease_id TEXT PRIMARY KEY, deadline_mono REAL NOT NULL)",
     "CREATE TABLE IF NOT EXISTS broker_ticket_origins (ticket_id TEXT PRIMARY KEY, run_id TEXT NOT NULL)",
+    "CREATE TABLE IF NOT EXISTS broker_access (lease_id TEXT PRIMARY KEY, phase TEXT NOT NULL, startup TEXT)",
+    "CREATE TABLE IF NOT EXISTS broker_startup_tickets (ticket_id TEXT PRIMARY KEY)",
 )
 
 
@@ -117,6 +119,7 @@ class Broker:
         ops_issue=None,
         admission_guard=nullcontext,
         admission_snapshot=None,
+        startup_snapshot=None,
         authority_name="broker",
         authority_generation=1,
         leader_id="5cd75ce5-d323-4004-9779-7e2ccf16bde4",
@@ -146,6 +149,7 @@ class Broker:
         self.admission_guard = admission_guard
         # Optional trusted reader of fresh readiness/grants, re-read on every decision.
         self.admission_snapshot = admission_snapshot
+        self.startup_snapshot = startup_snapshot
         if recovery_io is not None:
             self._text(recovery_owner, ops_issue)
 
@@ -183,6 +187,8 @@ class Broker:
             fingerprint = json.dumps(["renew", lease_id, ttl])
             self._expire(conn, now)
             group = self._owned(conn, lease_id, principal, run_id)
+            if group["access_phase"] != "work":
+                raise Refused("access_phase_denied")
             replay = self._replay(conn, principal, run_id, idempotency_key, fingerprint)
             if replay is not None:
                 return self._decide(entry, replay)
@@ -204,8 +210,7 @@ class Broker:
             entry["snapshot"]["conflicting_waiter"] = bool(
                 self.conflicting_waiter(conn, frozenset(ids))
                 or any(
-                    set(ids) & set(self._candidates(t["pool"], t["device_id"]))
-                    for t in self._tickets(conn)
+                    set(ids) & set(self._ticket_candidates(conn, t)) for t in self._tickets(conn)
                 )
             )
             if entry["snapshot"]["conflicting_waiter"]:
@@ -514,6 +519,12 @@ class Broker:
             if self._admission.unavailable:
                 blocked = set(self.admitted)
             self._admission.blocked = blocked
+            self._admission.startup = None
+            if self.startup_snapshot is not None:
+                try:
+                    self._admission.startup = self.startup_snapshot()
+                except Exception:
+                    pass  # Startup closes independently of physical-device readiness.
             # Process and boot-id reads happen before BEGIN IMMEDIATE, never under its lock.
             observations = {}
             for row in conn.execute(
@@ -631,8 +642,7 @@ class Broker:
                     agent=row["agent_id"],
                     run_id=origin[0] if origin else "legacy-unknown",
                     issue=row["issue_id"],
-                    devices=json.loads(row["reserved"])
-                    or self._candidates(row["pool"], row["device_id"]),
+                    devices=json.loads(row["reserved"]) or self._ticket_candidates(conn, row),
                     ticket_id=key,
                     state=row["state"],
                     sequence=row["offer_sequence"],
@@ -648,6 +658,8 @@ class Broker:
             group = self._owned(conn, lease_id, principal, run_id)
             if group["state"] != "active":
                 raise Refused("lease_not_active")
+            if group["access_phase"] != "work":
+                raise Refused("access_phase_denied")
             if change["device_id"] not in {d["device_id"] for d in group["devices"]}:
                 raise Refused("device_not_yours")
             conn.execute(
@@ -746,7 +758,26 @@ class Broker:
         )
         self._schedule(conn, now)
 
-    def _candidates(self, pool, target=None):
+    def _candidates(self, pool, target=None, *, starting=False):
+        if starting:
+            proof = self._admission.startup
+            device = (
+                self.registry.resolve(target)
+                if target
+                else next((d for d in self.registry.devices() if d.kind == "avd"), None)
+            )
+            return (
+                [device.device_id]
+                if (
+                    pool == "avd"
+                    and device is not None
+                    and device.kind == "avd"
+                    and not device.restricted
+                    and proof is not None
+                    and json.loads(json.dumps(asdict(device))) == proof.get("device")
+                )
+                else []
+            )
         ids = canonical_ids([target] if target else self.admitted, self._canonical)
         return [
             canonical
@@ -830,11 +861,65 @@ class Broker:
             return self._ticket_view(conn, ticket_id)
 
     def claim(self, *, ticket_id, principal, agent_id, issue_id, run_id, binding, idempotency_key):
+        return self._claim(
+            ticket_id=ticket_id,
+            principal=principal,
+            agent_id=agent_id,
+            issue_id=issue_id,
+            run_id=run_id,
+            binding=binding,
+            idempotency_key=idempotency_key,
+        )
+
+    def claim_startup(
+        self, *, ticket_id, principal, agent_id, issue_id, run_id, binding, idempotency_key
+    ):
+        with self.admission_guard():
+            return self._claim(
+                ticket_id=ticket_id,
+                principal=principal,
+                agent_id=agent_id,
+                issue_id=issue_id,
+                run_id=run_id,
+                binding=binding,
+                idempotency_key=idempotency_key,
+                starting=True,
+            )
+
+    @staticmethod
+    def _starting_ticket(conn, ticket):
+        return (
+            conn.execute(
+                "SELECT 1 FROM broker_startup_tickets WHERE ticket_id=?", (ticket["ticket_id"],)
+            ).fetchone()
+            is not None
+        )
+
+    def _ticket_candidates(self, conn, ticket):
+        return self._candidates(
+            ticket["pool"], ticket["device_id"], starting=self._starting_ticket(conn, ticket)
+        )
+
+    def _claim(
+        self,
+        *,
+        ticket_id,
+        principal,
+        agent_id,
+        issue_id,
+        run_id,
+        binding,
+        idempotency_key,
+        starting=False,
+    ):
         self._text(ticket_id, principal, agent_id, issue_id, run_id, idempotency_key)
         if not isinstance(binding, dict):
             raise Refused("invalid_request")
         binding = self._binding(binding, run_id, principal, agent_id, issue_id)
-        fingerprint = json.dumps(["claim", ticket_id, agent_id, issue_id, binding], sort_keys=True)
+        fingerprint = json.dumps(
+            ["claim-startup" if starting else "claim", ticket_id, agent_id, issue_id, binding],
+            sort_keys=True,
+        )
         with self.transaction() as (conn, now):
             self._require_authority(conn)
             self._expire(conn, now)
@@ -842,6 +927,12 @@ class Broker:
             if replay is not None:
                 return replay
             ticket = self._ticket_owned(conn, ticket_id, principal, agent_id, issue_id)
+            if starting != self._starting_ticket(conn, ticket):
+                raise Refused("access_phase_denied")
+            if starting:
+                self._startup_proof(
+                    conn, now, principal, agent_id, issue_id, run_id, binding, ticket["device_id"]
+                )
             if conn.execute(
                 "SELECT 1 FROM broker_parked_runs WHERE ticket_id=? AND run_id=?",
                 (ticket_id, run_id),
@@ -870,6 +961,7 @@ class Broker:
                 binding,
                 agent_id=agent_id,
                 issue_id=issue_id,
+                starting=starting,
             )
             conn.execute(
                 "UPDATE broker_tickets SET state='claimed', reserved='[]' WHERE ticket_id=?",
@@ -894,7 +986,7 @@ class Broker:
                 )
             self._record(conn, principal, run_id, idempotency_key, fingerprint, response)
             self._schedule(conn, now)
-        self.boundary("claim:committed")
+        self.boundary("startup:committed" if starting else "claim:committed")
         return response
 
     def pending_offers(self):
@@ -983,7 +1075,7 @@ class Broker:
         blocked = set()
         # ponytail: linear queue scan; index conflict sets if measured queue size requires it.
         for ticket in self._tickets(conn):
-            candidates = self._candidates(ticket["pool"], ticket["device_id"])
+            candidates = self._ticket_candidates(conn, ticket)
             conflict = bool(blocked.intersection(candidates))
             blocked.update(candidates)
             free = (
@@ -1034,6 +1126,11 @@ class Broker:
             "SELECT binding FROM broker_bindings WHERE lease_id=?", (lease_id,)
         ).fetchone()
         group["binding"] = json.loads(binding[0]) if binding else None
+        access = conn.execute(
+            "SELECT phase,startup FROM broker_access WHERE lease_id=?", (lease_id,)
+        ).fetchone()
+        group["access_phase"] = access[0] if access else "work"
+        group["startup"] = json.loads(access[1]) if access and access[1] else None
         return group
 
     @staticmethod
@@ -1071,10 +1168,97 @@ class Broker:
         issue_id=None,
         binding=None,
     ):
+        return self._acquire(
+            principal=principal,
+            run_id=run_id,
+            purpose=purpose,
+            pool=pool,
+            device_id=device_id,
+            count=count,
+            ttl=ttl,
+            idempotency_key=idempotency_key,
+            agent_id=agent_id,
+            issue_id=issue_id,
+            binding=binding,
+        )
+
+    def start(
+        self,
+        *,
+        principal,
+        agent_id,
+        issue_id,
+        run_id,
+        purpose,
+        device_id,
+        binding,
+        idempotency_key,
+        ttl=1800,
+        count=1,
+    ):
+        """Owner control only. Commit admission; no process or device operation here."""
+        with self.admission_guard():
+            return self._acquire(
+                principal=principal,
+                run_id=run_id,
+                purpose=purpose,
+                pool="avd",
+                device_id=device_id,
+                count=count,
+                ttl=ttl,
+                idempotency_key=idempotency_key,
+                agent_id=agent_id,
+                issue_id=issue_id,
+                binding=binding,
+                starting=True,
+            )
+
+    def launch_startup(self, *, lease_id, principal, run_id):
+        """Denied seam. Journalled worker and identity checks belong to the next stage."""
+        raise Refused("startup_launch_unavailable")
+
+    def _startup_proof(self, conn, now, principal, agent_id, issue_id, run_id, binding, target):
+        proof = self._admission.startup
+        if binding["mode"] != "managed":
+            raise Refused("run_not_live")
+        if (
+            not isinstance(proof, dict)
+            or proof.get("generation") != self._authority(conn)["generation"]
+            or any(
+                proof.get(k) != v
+                for k, v in (
+                    ("principal", principal),
+                    ("agent_id", agent_id),
+                    ("issue_id", issue_id),
+                    ("run_id", run_id),
+                )
+            )
+            or target not in self._candidates("avd", target, starting=True)
+            or not now < proof["grant"]["expires_at"]
+        ):
+            raise Refused("startup_not_admitted")
+        return proof
+
+    def _acquire(
+        self,
+        *,
+        principal,
+        run_id,
+        purpose,
+        pool="rig",
+        device_id=None,
+        count=1,
+        ttl=1800,
+        idempotency_key,
+        agent_id=None,
+        issue_id=None,
+        binding=None,
+        starting=False,
+    ):
         agent_id = principal if agent_id is None else agent_id
         issue_id = purpose if issue_id is None else issue_id
         binding = self._binding(binding, run_id, principal, agent_id, issue_id)
-        with self.decision("acquire", locals()) as (conn, now, entry):
+        with self.decision("start" if starting else "acquire", locals()) as (conn, now, entry):
             self._require_authority(conn)
             self._text(principal, run_id, purpose, pool, idempotency_key)
             self._text(agent_id, issue_id)
@@ -1086,7 +1270,7 @@ class Broker:
             target = self._canonical(device_id) if device_id else None
             fingerprint = json.dumps(
                 [
-                    "acquire",
+                    "start" if starting else "acquire",
                     pool,
                     target or device_id,
                     count,
@@ -1108,6 +1292,12 @@ class Broker:
                 raise Refused("admission_unavailable")
             if conn.execute("SELECT 1 FROM broker_reconcile LIMIT 1").fetchone():
                 raise Refused("restart_reconcile")
+            if starting:
+                self._startup_proof(
+                    conn, now, principal, agent_id, issue_id, run_id, binding, target
+                )
+                if count != 1:
+                    raise Refused("impossible_batch")
             existing = conn.execute(
                 "SELECT ticket_id FROM broker_tickets WHERE issue_id=? "
                 "AND state IN ('queued','offered')",
@@ -1118,7 +1308,7 @@ class Broker:
                 occupied = self._occupied(conn)
                 holders = [
                     self._view(conn, occupied[d])
-                    for d in self._candidates(ticket["pool"], ticket["device_id"])
+                    for d in self._ticket_candidates(conn, ticket)
                     if d in occupied
                 ]
                 raise Refused(
@@ -1126,15 +1316,14 @@ class Broker:
                     ticket=ticket,
                     holder=min(holders, key=lambda g: g["expires_at"]) if holders else None,
                 )
-            candidates = self._candidates(pool, target or device_id)
+            candidates = self._candidates(pool, target or device_id, starting=starting)
             if count > len(candidates):
                 raise Refused("impossible_batch")
             self._run_budget(conn, now, principal, run_id, pool)
             occupied = self._occupied(conn)
             free = [d for d in candidates if d not in occupied and d not in self._admission.blocked]
             conflict = any(
-                set(candidates) & set(self._candidates(t["pool"], t["device_id"]))
-                for t in self._tickets(conn)
+                set(candidates) & set(self._ticket_candidates(conn, t)) for t in self._tickets(conn)
             )
             if len(free) < count or conflict:
                 ticket_id = uuid.uuid4().hex
@@ -1162,6 +1351,8 @@ class Broker:
                     "INSERT INTO broker_ticket_wait VALUES (?,?,?,?)",
                     (ticket_id, purpose, now, json.dumps(binding, sort_keys=True)),
                 )
+                if starting:
+                    conn.execute("INSERT INTO broker_startup_tickets VALUES (?)", (ticket_id,))
                 self._schedule(conn, now)
                 holders = [self._view(conn, occupied[d]) for d in candidates if d in occupied]
                 raise Refused(
@@ -1181,10 +1372,11 @@ class Broker:
                 binding,
                 agent_id=agent_id,
                 issue_id=issue_id,
+                starting=starting,
             )
             self._record(conn, principal, run_id, idempotency_key, fingerprint, response)
             self._decide(entry, response)
-        self.boundary("acquire:committed")
+        self.boundary("startup:committed" if starting else "acquire:committed")
         return response
 
     def _run_alive(self, binding):
@@ -1260,12 +1452,20 @@ class Broker:
         *,
         agent_id,
         issue_id,
+        starting=False,
     ):
         if self._admission.unavailable or not self._admission.audit_ok:
             raise Refused("admission_unavailable")
         if set(devices) & self._admission.blocked:
             raise Refused("admission_unavailable")
         self._require_authority(conn)
+        proof = (
+            self._startup_proof(
+                conn, now, principal, agent_id, issue_id, run_id, binding, devices[0]
+            )
+            if starting
+            else None
+        )
         started, deadline = self._run_budget(conn, now, principal, run_id, pool)
         lease_id = uuid.uuid4().hex
         conn.execute("INSERT INTO broker_context VALUES (?,?,?)", (lease_id, agent_id, issue_id))
@@ -1289,7 +1489,13 @@ class Broker:
             device = self.registry.resolve(device_id)
             conn.execute(
                 "INSERT INTO broker_devices VALUES (?,?,?,?,?)",
-                (lease_id, device_id, self.admitted[device_id], int(device.restricted), None),
+                (
+                    lease_id,
+                    device_id,
+                    f"emulator-{device.console_port}" if starting else self.admitted[device_id],
+                    int(device.restricted),
+                    None,
+                ),
             )
             self.boundary("acquire:device")
         conn.execute(
@@ -1305,6 +1511,10 @@ class Broker:
                 self._mono,
                 self._mono + min(ttl, deadline - now),
             ),
+        )
+        conn.execute(
+            "INSERT INTO broker_access VALUES (?,?,?)",
+            (lease_id, "starting" if starting else "work", json.dumps(proof) if proof else None),
         )
         response = self._view(conn, lease_id)
         return response
