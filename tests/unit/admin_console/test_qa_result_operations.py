@@ -122,6 +122,8 @@ def test_backfill_reports_undated_terminal_turns_without_using_batch_slots(libra
         AttributeError,
         RuntimeError,
         ImportError,
+        KeyError,
+        IndexError,
     ],
 )
 def test_backfill_counts_collector_failure_and_continues_batch(

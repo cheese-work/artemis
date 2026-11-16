@@ -749,6 +749,7 @@ def backfill(db_path, traces_dir, *, since=DEFAULT_BACKFILL_SINCE, until=None, l
             AttributeError,
             RuntimeError,
             ImportError,
+            LookupError,
         ) as error:
             logger.warning(
                 "Backfill collector failed for turn %s: %s",
