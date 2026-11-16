@@ -280,6 +280,9 @@ class RemoteAccess:
                 serialized = json.dumps(identity, sort_keys=True)
                 with self.db() as conn:
                     conn.execute("BEGIN IMMEDIATE")
+                    if not self.owns_store(conn):
+                        self.ready = False  # a replaced owner never grants again
+                        return None
                     old = conn.execute(
                         "SELECT * FROM r1_keys WHERE fingerprint=?", (fingerprint,)
                     ).fetchone()
@@ -325,6 +328,8 @@ class RemoteAccess:
                 if self.current(identity) != current:
                     raise ValueError("Admission changed")
                 with self.db() as conn:
+                    if not self.owns_store(conn):
+                        raise ValueError("Ownership lost")
                     conn.execute("UPDATE r1_keys SET phase='active' WHERE id=?", (binding,))
                 tunnel.arm()
                 if self.monitor is None:
@@ -491,9 +496,12 @@ class RemoteAccess:
         including old incarnations. A stale owner fences only its own
         incarnation, never a replacement owner's live binding.
         """
-        owner = conn.execute("SELECT incarnation FROM r1_owner").fetchone()[0]
-        owns = owner == self.incarnation
+        owns = self.owns_store(conn)
         return owns, [r[0] for r in rows if owns or r[1] == self.incarnation]
+
+    def owns_store(self, conn):
+        owner = conn.execute("SELECT incarnation FROM r1_owner").fetchone()[0]
+        return owner == self.incarnation
 
     async def maintain(self):
         try:
@@ -545,6 +553,12 @@ class RemoteAccess:
                 )
             outcomes = [await self._fence(binding) for binding in pending]
             # A stale owner cleans up its own rows but never reopens admission.
+            # Re-read ownership: a replacement may take over during the awaits.
+            try:
+                with self.db() as conn:
+                    owns = self.owns_store(conn)
+            except Exception:
+                owns = False
             self.ready = owns and all(outcomes)
             return self.ready
 
