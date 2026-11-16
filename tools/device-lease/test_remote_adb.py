@@ -3,6 +3,7 @@
 import asyncio
 import base64
 import dataclasses
+import json
 import os
 from pathlib import Path
 import sqlite3
@@ -586,6 +587,142 @@ class AccessTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(await self.access.fence(binding["id"]))
         self.assertIn("lease-1", self.quarantined)
         self.assertNotIn(binding["port"], self.ops.retired)
+
+    def strict_retire(self):
+        """A binding-scoped adapter that rejects a repeat or a foreign destination."""
+        owners, calls = {}, []
+
+        async def publish(binding, line):
+            owners[binding] = line.split('127.0.0.1:')[1].split('"')[0]
+            self.ops.keys[binding] = line
+            return True
+
+        async def retire(binding, port):
+            calls.append((binding, port))
+            if owners.get(binding) != str(port):
+                return False  # already retired, or the port belongs to another binding
+            del owners[binding]
+            self.ops.retired.append(port)
+            return True
+
+        self.ops.publish, self.ops.retire = publish, retire
+        return owners, calls
+
+    def replacement(self):
+        async def listen(callback, host, port, **kwargs):
+            return Listener()
+
+        async def connect():
+            return Remote()
+
+        return RemoteAccess(
+            self.path,
+            resolve=lambda identity: dict(self.snapshot),
+            ops=self.ops,
+            quarantine=lambda lease: self.quarantined.append(lease),
+            clock=lambda: self.now,
+            listen=listen,
+            connect=connect,
+        )
+
+    async def test_repeated_retirement_is_idempotent_and_never_quarantines(self):
+        _, calls = self.strict_retire()
+        binding, _ = await self.session()
+        self.assertIs(await self.access.fence(binding["id"]), True)
+        self.assertIs(await self.access.fence(binding["id"]), True, "re-fence of a closed binding")
+        self.assertIs(await self.access.reconcile(), True)
+        self.assertEqual(calls, [(binding["id"], binding["port"])], "retire runs exactly once")
+        self.assertEqual(self.quarantined, [])
+        with self.access.db() as conn:
+            phase = conn.execute("SELECT phase FROM r1_keys WHERE id=?", (binding["id"],))
+            self.assertEqual(phase.fetchone()[0], "closed", "a re-fence never reopens a row")
+
+    async def test_refence_never_retires_a_reused_destination_of_another_binding(self):
+        owners, calls = self.strict_retire()
+        old, _ = await self.session()
+        self.assertIs(await self.access.fence(old["id"]), True)
+        self.snapshot["lease"] = self.identity["lease"] = "lease-2"
+        self.ops.port = old["port"] - 1  # the closed destination is legitimately reused
+        new, new_session = await self.session(2)
+        self.assertEqual(new["port"], old["port"])
+        self.assertIs(await self.access.fence(old["id"]), True)
+        self.assertEqual(calls, [(old["id"], old["port"])])
+        self.assertIn(new["id"], owners, "the new binding keeps its destination")
+        self.assertIn(new["id"], self.ops.keys)
+        self.assertNotIn(new_session, self.ops.stopped)
+        self.assertTrue(self.access.valid(new["id"]))
+        self.assertEqual(self.quarantined, [])
+
+    async def test_destination_reused_during_fence_is_not_retired(self):
+        owners, calls = self.strict_retire()
+        old, _ = await self.session()
+        stop = self.ops.stop
+
+        async def replacement_takes_port(session):
+            # Another owner closes the row and binds the destination while we await.
+            with self.access.db() as conn:
+                conn.execute("UPDATE r1_keys SET phase='closed' WHERE id=?", (old["id"],))
+                conn.execute(
+                    "INSERT INTO r1_keys VALUES ('other','fp',?,'{}','x',?,'active')",
+                    (json.dumps(dict(self.identity, run="other-run")), old["port"]),
+                )
+            owners.pop(old["id"])
+            owners["other"] = str(old["port"])
+            return await stop(session)
+
+        self.ops.stop = replacement_takes_port
+        self.assertIs(await self.access.fence(old["id"]), True)
+        self.assertEqual(calls, [], "a destination owned by another binding is never retired")
+        self.assertEqual(owners, {"other": str(old["port"])})
+        self.assertEqual(self.quarantined, [])
+        with self.access.db() as conn:
+            conn.execute("UPDATE r1_keys SET phase='closed' WHERE id='other'")
+
+    async def test_stale_owner_close_and_reconcile_keep_replacement_binding_live(self):
+        owners, calls = self.strict_retire()
+        old, old_session = await self.session()
+        other = self.replacement()
+        try:
+            self.assertIs(await other.reconcile(), True)
+            self.assertIn(old_session, self.ops.stopped)
+            self.snapshot["lease"] = self.identity["lease"] = "lease-2"
+            new = await other.issue(self.identity, key(2))
+            self.assertIsNotNone(new)
+            new_session = dict(pid=500, start="start-2", boot="boot-1", binding=new["id"])
+            self.assertTrue(await other.authenticate(self.identity, key(2), new_session))
+            await self.access.maintain()
+            self.assertTrue(other.valid(new["id"]), "stale maintain kept replacement live")
+            await self.access.close()
+            await asyncio.sleep(0.12)  # the stale monitor, if any, gets its chance
+            self.assertTrue(other.valid(new["id"]), "stale close kept replacement live")
+            self.assertIn(new["id"], self.ops.keys)
+            self.assertIn(new["id"], owners)
+            self.assertNotIn(new_session, self.ops.stopped)
+            self.assertNotIn((new["id"], new["port"]), calls)
+            self.assertEqual(self.quarantined, [])
+            self.assertFalse(self.access.valid(old["id"]))
+            self.assertIs(await self.access.reconcile(), False, "a stale owner never reopens")
+        finally:
+            await other.close()
+
+    async def test_stale_owner_close_alone_keeps_replacement_binding_live(self):
+        owners, calls = self.strict_retire()
+        await self.session()
+        self.access.monitor.cancel()  # isolate the close() -> reconcile() path
+        other = self.replacement()
+        try:
+            self.assertIs(await other.reconcile(), True)
+            self.snapshot["lease"] = self.identity["lease"] = "lease-2"
+            new = await other.issue(self.identity, key(2))
+            new_session = dict(pid=500, start="start-2", boot="boot-1", binding=new["id"])
+            self.assertTrue(await other.authenticate(self.identity, key(2), new_session))
+            await self.access.close()
+            self.assertTrue(other.valid(new["id"]), "stale close kept replacement live")
+            self.assertNotIn(new_session, self.ops.stopped)
+            self.assertNotIn((new["id"], new["port"]), calls)
+            self.assertIn(new["id"], owners)
+        finally:
+            await other.close()
 
     async def test_monitor_survives_quarantine_failure_and_fences_another_lease(self):
         first, session1 = await self.session()
