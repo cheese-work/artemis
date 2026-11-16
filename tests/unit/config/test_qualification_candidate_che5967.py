@@ -8,7 +8,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[3]
 CANDIDATE_PATH = REPO_ROOT / "qualification/candidates/che5967_x99_avd.v1.json"
 RUNNER_SHA = "676320699514778d7b589783cb5590ada8d4048f"
-JOURNEY_SHA = "afd9d81feba1f1ac6d4a5f401c6c6080a4bd0abb"
+JOURNEY_SHA = "514c6bfade25a5a5eaa1e20385f18674703d14d2"
 SAMPLE_SHA = "649ae000ab7527105b6be5351f2bc536f9980bac"
 APK_SHA256 = "38a9b0c53917c5cbf24f78625ac06d6e4a08e1bb1a8c0ac688c663884909f082"
 
