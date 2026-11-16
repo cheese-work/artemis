@@ -76,6 +76,52 @@ python3 tests/unit/runtime/test_device_registry.py -v
 
 The same tests are discovered by the repository's normal pytest unit suite.
 
+## AVD lifecycle metadata (source schema only)
+
+`kind` defaults to `physical` for existing records. Physical records cannot use
+pool `avd` or carry AVD lifecycle fields. A snapshot may additionally contain
+**one** record with `kind="avd"` and `pool="avd"`. It uses the same canonical
+registry, queue and SQLite occupancy as physical devices; aliases add no slots.
+This schema change does not edit the live ten-device fleet or release an old AVD.
+
+The synthetic complete example is
+[`tests/fixtures/device_lease/avd.json`](../../tests/fixtures/device_lease/avd.json).
+Its paths, names, digests and ports are fixtures, not verified target bindings.
+Required AVD fields are:
+
+| Fields | Validation / meaning |
+| --- | --- |
+| `avd_name` | Literal AVD name: leading alphanumeric, then alphanumeric, `_`, `.` or `-`; never a path or command. |
+| `avd_data_path` | Absolute canonical real data-directory path, with no symlink alias, traversal or trailing separator. |
+| `avd_definition_path` | Absolute canonical path of the trusted AVD definition (`.ini`). |
+| `console_port`, `adb_port` | Fixed integer pair: even console port 5554–5682 and ADB port equal to console + 1. Booleans and strings are invalid. |
+| `aliases` | Must contain `emulator-<console_port>`; may also contain `127.0.0.1:<adb_port>`. No duplicates or other endpoints. The canonical ID must differ from both endpoints. |
+| `api`, `abi` | Positive integer API and nonempty trimmed ABI; no inferred guest identity. |
+| `emulator_path`, `emulator_sha256` | Canonical absolute emulator executable path and pinned lowercase SHA-256. |
+| `config_sha256`, `image_sha256` | Pinned lowercase SHA-256 of `config.ini` and the immutable system-image manifest (binding the image files and their digests). |
+
+All three paths must equal their resolved spelling on the loading host; existing
+symlink prefixes are rejected. Paths may be absent: loading metadata does not
+verify file existence, contents, open userdata, process ownership or port state.
+Hashes are expected identities, not evidence that a binary or image was checked.
+The trusted lifecycle worker must independently verify those bindings before use
+and revalidate them to prevent path/process replacement. Missing or malformed
+metadata rejects the complete snapshot. Different names, paths or port pairs
+cannot create a second AVD record.
+
+AVD records default to restricted and identity-unconfirmed, just like physical
+records. `eligible()` currently refuses **every AVD**, including a record with
+`identity_confirmed=true` paired with a `device` observation or an injected
+ordinary admission map. Metadata can describe a powered-off slot without
+fabricating an actual device or admitting work. Startup-only admission, launch,
+identity evidence, scoped qualification/work promotion and recovery are subsequent
+layers; this source change exposes no boot command or startup grant. Shared ADB
+remains `127.0.0.1:5037`; neither fixed endpoint is an ADB server control address.
+
+```sh
+python3 tests/unit/runtime/test_device_registry_avd.py -v
+```
+
 ## Broker core
 
 `broker.py` owns a SQLite lease-group domain. `device_lease` is the small shared
