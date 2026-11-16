@@ -705,6 +705,52 @@ class AccessTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await other.close()
 
+    async def test_takeover_during_reconcile_keeps_admission_closed(self):
+        await self.session()
+        self.access.monitor.cancel()
+        await asyncio.gather(self.access.monitor, return_exceptions=True)
+        entered, resume = asyncio.Event(), asyncio.Event()
+        stop = self.ops.stop
+
+        async def pause_first_stop(session):
+            if not entered.is_set():
+                entered.set()
+                await resume.wait()
+            return await stop(session)
+
+        self.ops.stop = pause_first_stop
+        task = asyncio.create_task(self.access.reconcile())
+        other = None
+        try:
+            await asyncio.wait_for(entered.wait(), 2)
+            other = self.replacement()  # takes over while the stale cleanup awaits
+            self.assertIs(await other.reconcile(), True)
+            resume.set()
+            self.assertIs(await asyncio.wait_for(task, 2), False, "ownership lost mid-reconcile")
+            self.assertFalse(self.access.ready)
+            self.snapshot["lease"] = self.identity["lease"] = "lease-2"
+            keys = dict(self.ops.keys)
+            self.assertIsNone(await self.access.issue(self.identity, key(2)))
+            self.assertEqual(self.ops.keys, keys, "a stale owner publishes no key")
+        finally:
+            resume.set()
+            await asyncio.gather(task, return_exceptions=True)
+            self.ops.stop = stop
+            if other is not None:
+                await other.close()
+
+    async def test_stale_owner_with_open_admission_never_publishes_a_key(self):
+        self.assertTrue(self.access.ready)
+        other = self.replacement()  # takes over; this owner never reconciled
+        try:
+            reserved = self.ops.port
+            self.assertIsNone(await self.access.issue(self.identity, key(1)))
+            self.assertEqual(self.ops.keys, {})
+            self.assertEqual(self.ops.port, reserved, "no destination reserved")
+            self.assertIsNotNone(await other.issue(self.identity, key(2)))
+        finally:
+            await other.close()
+
     async def test_stale_owner_close_alone_keeps_replacement_binding_live(self):
         owners, calls = self.strict_retire()
         await self.session()
