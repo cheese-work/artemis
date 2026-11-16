@@ -82,6 +82,27 @@ class OwnedRecoveryTests(unittest.TestCase):
             self.record(group, self.work())
         return group
 
+    def test_managed_binding_reuses_local_host_fence_checks(self):
+        group = self.group()
+        group["binding"] = {**IDENTITY, "mode": "managed", "binding_id": "a" * 64}
+        adapter = self.adapter()
+        live = {IDENTITY["pid"]: IDENTITY}
+
+        def stop(identity, timeout):
+            self.assertEqual(identity, IDENTITY)
+            live.pop(identity["pid"])
+            return True
+
+        with (
+            patch.object(adapter, "_daemon_pid", return_value=999),
+            patch.object(adapter, "_identity", side_effect=lambda pid: live.get(pid)),
+            patch.object(adapter, "_descendants", return_value=set()),
+            patch.object(adapter, "_stop", side_effect=stop) as stopped,
+            patch.object(adapter, "_forwards", return_value={}),
+        ):
+            self.assertTrue(adapter.fence(group, timeout=2))
+            stopped.assert_called_once()
+
     def test_missing_tracking_unknown_work_pid_reuse_and_daemon_never_signal(self):
         adapter = self.adapter()
         group = self.group(False)

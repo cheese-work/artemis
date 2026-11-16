@@ -1,3 +1,4 @@
+# ci-policy: class=gate
 name: What's New
 
 # Separate from CI so adding or removing the no-whats-new label re-runs only

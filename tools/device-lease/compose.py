@@ -227,6 +227,14 @@ def compose(config_path, registry, *, db_path=None):
         config = json.loads(Path(config_path).read_text(encoding="utf-8"))
     except ValueError as exc:
         raise CompositionError("composition file is not valid JSON") from exc
+    managed_runs = None
+    if "managed_bindings_dir" in config:
+        from managed_runs import ManagedRuns
+
+        try:
+            managed_runs = ManagedRuns(_field(config, "managed_bindings_dir", str))
+        except (OSError, ValueError, TypeError) as exc:
+            raise CompositionError("composition incomplete: managed_bindings_dir") from exc
     admitted_path, admitted_age = _snapshot(config, "admitted")
     locks = _field(config, "artemis_locks_dir", str)
     claims = _field(config, "android_claims", dict)
@@ -254,6 +262,7 @@ def compose(config_path, registry, *, db_path=None):
     ledger = ClaimLedger(db_path, guard, registry, locks, max_age=claims["max_age_seconds"])
     return {
         "broker": {
+            "managed_runs": managed_runs,
             "admitted": {},
             "admission_snapshot": admitted_reader(admitted_path, admitted_age, registry),
             "admission_sources": {"artemis": artemis_locks_reader(locks), "android": ledger.read},
