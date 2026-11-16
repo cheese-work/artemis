@@ -8,6 +8,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 import json
 from pathlib import Path
+import re
 
 
 @dataclass(frozen=True)
@@ -21,6 +22,16 @@ class Device:
     restricted: bool = True
     identity_confirmed: bool = False
     restricted_policy: str | None = None
+    kind: str = "physical"
+    avd_name: str | None = None
+    avd_data_path: str | None = None
+    avd_definition_path: str | None = None
+    console_port: int | None = None
+    adb_port: int | None = None
+    emulator_path: str | None = None
+    emulator_sha256: str | None = None
+    config_sha256: str | None = None
+    image_sha256: str | None = None
 
     def __post_init__(self):
         for name in ("device_id", "pool"):
@@ -44,12 +55,84 @@ class Device:
         # CHE-2082/G5: renaming the canonical id must not bypass the serial restriction.
         if "500c592" in (self.device_id, *self.aliases):
             object.__setattr__(self, "restricted", True)
+        if self.kind not in ("physical", "avd"):
+            raise ValueError("kind must be physical or avd")
+        lifecycle = (
+            self.avd_name,
+            self.avd_data_path,
+            self.avd_definition_path,
+            self.console_port,
+            self.adb_port,
+            self.emulator_path,
+            self.emulator_sha256,
+            self.config_sha256,
+            self.image_sha256,
+        )
+        if self.kind == "physical":
+            if self.pool == "avd" or any(value is not None for value in lifecycle):
+                raise ValueError("physical devices cannot carry AVD lifecycle metadata or pool")
+            return
+        if self.pool != "avd":
+            raise ValueError("AVD requires the dedicated avd pool")
+        if not isinstance(self.avd_name, str) or not re.fullmatch(
+            r"[A-Za-z0-9][A-Za-z0-9_.-]*", self.avd_name
+        ):
+            raise ValueError("avd_name must be a literal AVD name")
+        if (
+            self.api is None
+            or not isinstance(self.abi, str)
+            or not self.abi.strip()
+            or self.abi != self.abi.strip()
+        ):
+            raise ValueError("AVD requires a pinned API and ABI")
+        for name in ("avd_data_path", "avd_definition_path", "emulator_path"):
+            value = getattr(self, name)
+            if (
+                not isinstance(value, str)
+                or not value.strip()
+                or value != value.strip()
+                or "\x00" in value
+            ):
+                raise ValueError(f"{name} must be an absolute canonical path")
+            try:
+                path = Path(value)
+                canonical = str(path.resolve())
+            except (OSError, RuntimeError, ValueError) as exc:
+                raise ValueError(f"{name} cannot be resolved") from exc
+            if not path.is_absolute() or value != canonical or value == path.anchor:
+                raise ValueError(f"{name} must be an absolute canonical path")
+        if (
+            type(self.console_port) is not int
+            or not 5554 <= self.console_port <= 5682
+            or self.console_port % 2
+            or type(self.adb_port) is not int
+            or self.adb_port != self.console_port + 1
+        ):
+            raise ValueError("AVD requires an even console port (5554..5682) and adjacent ADB port")
+        serial = f"emulator-{self.console_port}"
+        endpoints = {serial, f"127.0.0.1:{self.adb_port}"}
+        if (
+            serial not in self.aliases
+            or not set(self.aliases) <= endpoints
+            or len(set(self.aliases)) != len(self.aliases)
+            or self.device_id in endpoints
+        ):
+            raise ValueError("AVD aliases must be distinct endpoints for its fixed port pair")
+        for name in ("emulator_sha256", "config_sha256", "image_sha256"):
+            value = getattr(self, name)
+            if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value):
+                raise ValueError(f"{name} must be a lowercase SHA-256 digest")
 
 
 class DeviceRegistry:
     def __init__(self, devices: Iterable[Device] = ()):
         self._aliases: dict[str, Device] = {}
+        avd_seen = False
         for device in devices:
+            if device.kind == "avd":
+                if avd_seen:
+                    raise ValueError("only one canonical AVD slot is supported")
+                avd_seen = True
             keys = set((device.device_id, *device.aliases))
             if keys.intersection(self._aliases):
                 raise ValueError("duplicate device id or ambiguous alias")
@@ -58,7 +141,7 @@ class DeviceRegistry:
             self._aliases["500c592"] = Device(device_id="500c592", pool="root")
 
     def devices(self) -> list[Device]:
-        """Every registered physical device once, ordered by canonical id."""
+        """Every registered device once, ordered by canonical id."""
         unique = {device.device_id: device for device in self._aliases.values()}
         return [unique[key] for key in sorted(unique)]
 
@@ -73,7 +156,14 @@ class DeviceRegistry:
         The consumer still enforces grants, claims, lease ownership and command policy.
         """
         device = self.resolve(alias)
-        if device is None or state != "device" or not device.identity_confirmed:
+        # Lifecycle metadata is not a verified startup/work lease. Until that
+        # route is implemented, even an ordinary admitted-map entry must refuse.
+        if (
+            device is None
+            or device.kind == "avd"
+            or state != "device"
+            or not device.identity_confirmed
+        ):
             return False
         if device.restricted:
             return route == "che-2129" and device.restricted_policy == "che-2129"
