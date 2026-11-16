@@ -751,6 +751,56 @@ class AccessTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await other.close()
 
+    async def test_takeover_during_reserve_publishes_nothing_and_retires_own_port(self):
+        reserve, state = self.ops.reserve, {}
+
+        async def takeover_during_reserve(binding):
+            self.ops.reserve = reserve
+            state["stale"] = binding
+            state["other"] = other = self.replacement()
+            self.assertIs(await other.reconcile(), True)  # closes the preparing row
+            state["new"] = await other.issue(self.identity, key(2))
+            self.assertIsNotNone(state["new"])
+            state["port"] = await reserve(binding)
+            return state["port"]
+
+        self.ops.reserve = takeover_during_reserve
+        try:
+            self.assertIsNone(await self.access.issue(self.identity, key(1)))
+            other, new = state["other"], state["new"]
+            self.assertNotIn(state["stale"], self.ops.keys, "no stale key is published")
+            self.assertIn(state["port"], self.ops.retired, "the unrecorded reservation is retired")
+            self.assertNotIn(new["port"], self.ops.retired)
+            self.assertTrue(other.valid(new["id"]), "replacement binding stays live")
+            self.assertEqual(self.quarantined, [])
+        finally:
+            self.ops.reserve = reserve
+            if "other" in state:
+                await state["other"].close()
+
+    async def test_takeover_during_publish_revokes_the_late_key(self):
+        publish, state = self.ops.publish, {}
+
+        async def takeover_during_publish(binding, line):
+            self.ops.publish = publish
+            state["stale"] = binding
+            state["other"] = other = self.replacement()
+            self.assertIs(await other.reconcile(), True)  # revokes and retires first
+            self.assertEqual(self.access.row(binding)["phase"], "closed")
+            return await publish(binding, line)  # this key lands after the revoke
+
+        self.ops.publish = takeover_during_publish
+        try:
+            self.assertIsNone(await self.access.issue(self.identity, key(1)))
+            port = self.access.row(state["stale"])["port"]
+            self.assertNotIn(state["stale"], self.ops.keys, "the late key is revoked")
+            self.assertEqual(self.ops.retired, [port], "the recorded port is retired once")
+            self.assertEqual(self.quarantined, [])
+        finally:
+            self.ops.publish = publish
+            if "other" in state:
+                await state["other"].close()
+
     async def test_stale_owner_close_alone_keeps_replacement_binding_live(self):
         owners, calls = self.strict_retire()
         await self.session()
