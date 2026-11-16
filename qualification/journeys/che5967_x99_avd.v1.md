@@ -56,23 +56,31 @@ test -n "$SERIAL"
 test "$SESSION_ID" != "$RUN_ID"
 ```
 
-Before every invocation, clear only `io.mmonetize.sample` on the admitted
-serial. Do not clear shared data, other packages, or another run's evidence.
+Before every invocation, check whether `io.mmonetize.sample` is installed on
+the admitted serial. If it is installed, clear only that package; if it is
+absent, continue without treating `pm clear`'s not-installed error as a run
+failure. Do not clear shared data, other packages, or another run's evidence.
 Install only the verified APK through Artemis `--app-path`. Run from the pinned
 Artemis commit in standalone Pro mode with native assertion exit enabled,
-explicit serial, locked package, unique IDs, a run-specific trace path, and a
-run-specific test name. Do not use fake mode or substitute a daemon worker.
+`--verification-level final`, explicit serial, locked package, unique IDs, a
+run-specific trace path, and a run-specific test name. Do not use fake mode or
+substitute a daemon worker. After install, record
+`dumpsys package io.mmonetize.sample` output proving
+`versionName=CHE-2705-649ae000ab`.
 
 ## Positive pass and clean rerun
 
-Run the following scenario twice, with a fresh app-data clear, clean evidence
-directory, and new UUIDv4 pair before each invocation. The first is the clean
-positive pass; the second is the clean positive rerun.
+Run the following scenario twice, with the package clear when installed, a
+clean evidence directory, and a new UUIDv4 pair before each invocation. The
+first is the clean positive pass; the second is the clean positive rerun. Pass
+the exact text inside this fenced block as the positional Artemis goal for
+both invocations:
 
-> Launch the app. Verify that the catalog title reads exactly `mMonetize
-> Sample`. Scroll the catalog to `XML / View System`. Verify that the
-> `XML — Ad Type Showcase` entry is visible. Do not open the entry. Report the
-> exact observed title and labels.
+```text
+Launch the app. Verify that the catalog title reads exactly "mMonetize Sample". Verify that the catalog label "XML / View System" is visible. Scroll the catalog until "XML — Ad Type Showcase" is visible. Verify that the catalog label "XML — Ad Type Showcase" is visible. Do not open either entry. Report the exact observed title and labels.
+```
+
+If a full-screen app-open ad appears, dismiss it with Back and never tap it.
 
 Use the public CLI flags `--standalone --profile pro --assertion-exit
 --device-serial "$SERIAL" --locked-app io.mmonetize.sample --app-path
@@ -82,29 +90,42 @@ Set `ARTEMIS_TRACES_DIR` and `DATA_ENGINE_DB_PATH` to paths inside that run's
 evidence directory so the native checker ledger and data-engine records are
 retained with the trace bundle.
 
-Each positive run passes only when all three exact text labels are observed in
-the target app, the native test summary is complete with at least one passed
-assertion and no failed, inconclusive, unchecked, or retired assertions, and
-the process exits 0. A launch, install, completed orchestration status,
+Each positive run passes only when `test_summary.passed == 3`,
+`test_summary.failed == 0`, and there are no inconclusive, unchecked, or
+retired assertions. In `run_outcome.json` `checker_items`, map each of the
+three expected labels (`mMonetize Sample`, `XML / View System`, and
+`XML — Ad Type Showcase`) to its own item with status `passed`. The process
+must exit 0. A launch, install, completed orchestration status,
 model-reported success, or screenshot without matching native assertion
 evidence is insufficient. The second positive run is the clean rerun; it must
 pass independently with its own reset, IDs, evidence directory, and exit 0.
 
 ## Deliberately false assertion
 
-After the two positive runs, reset only the same admitted package and run one
+After the two positive runs, clear only the same installed package and run one
 negative control with fresh IDs and a separate evidence directory. Use the
-same pinned APK and exact positive observations, then add this final assertion:
+same pinned APK and this exact positional Artemis goal:
 
-> The catalog title must read exactly `mMonetize Sample — NOT PRESENT`.
+```text
+Launch the app. Verify that the catalog title reads exactly "mMonetize Sample". Verify that the catalog label "XML / View System" is visible. Scroll the catalog until "XML — Ad Type Showcase" is visible. Verify that the catalog label "XML — Ad Type Showcase" is visible. Do not open either entry. Report the exact observed title and labels. The catalog title must read exactly "mMonetize Sample — NOT PRESENT".
+```
 
-The visible title proves the assertion false. The native test summary must be
-complete and record that assertion as failed with evidence of the observed
-title. `--assertion-exit` must print `ARTEMIS_ASSERTION_EXIT=1`, and the
-process exit must equal exactly `1`. Exit `0` means the negative control did
-not detect the false assertion. Exit `2`, a missing marker, incomplete
-evidence, an infrastructure error, or an unrelated assertion failure makes
-the negative control invalid; it is not a successful deliberate failure.
+Use `--test-name che5967-negative`. The native test summary must be complete
+with `test_summary.passed == 3` and `test_summary.failed == 1`. The one
+`failed_items[].item_text` must equal:
+
+```text
+The catalog title must read exactly "mMonetize Sample — NOT PRESENT".
+```
+
+The visible title proves the assertion false. `--assertion-exit` must print
+`ARTEMIS_ASSERTION_EXIT=1`, and the process exit must equal exactly `1`. The
+last `ARTEMIS_ASSERTION_EXIT=` line in stdout must be `1`; stderr must not
+contain `Task execution failed`, `Error cleaning agent`, or a traceback. Exit
+`0` means the negative control did not detect the false assertion. Exit `2`,
+a missing marker, incomplete evidence, an infrastructure error, or an unrelated
+assertion failure makes the negative control invalid; it is not a successful
+deliberate failure.
 
 ## Retained evidence and cleanup
 

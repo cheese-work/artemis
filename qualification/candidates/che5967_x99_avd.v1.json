@@ -28,9 +28,9 @@
     }
   },
   "testcase_source": {
-    "commit_sha": "afd9d81feba1f1ac6d4a5f401c6c6080a4bd0abb",
+    "commit_sha": "514c6bfade25a5a5eaa1e20385f18674703d14d2",
     "path": "qualification/journeys/che5967_x99_avd.v1.md",
-    "digest_sha256": "b61e920978c851750e35263202872a8cc520ca82b2340062afc0131610f468f8",
+    "digest_sha256": "023f3fd15423dbb28fd03c7242081df96d46ef238e177e1968837e0ae8dcf4de",
     "status": "provisional"
   },
   "target": {
