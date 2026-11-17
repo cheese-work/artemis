@@ -171,6 +171,57 @@ the original response; a changed operation or arguments raises
 historical response, never a new access grant: use `status` to read current state.
 Checks at the eventual gateway must use current state, expiry and authority.
 
+### Startup admission (CHE-6325, source only)
+
+The private leader control socket accepts `start` and `claim-startup`. The holder
+socket exposes neither operation and `acquire` accepts no access-phase flag.
+`start` takes the ordinary holder/context fields, a required canonical AVD or
+endpoint alias, and a managed binding reference. Local shell and remote labels
+cannot authorize startup. `count` must be one.
+
+The existing group remains `active` with persisted `access_phase: starting`.
+`startup` in its readback stores the complete pinned registry device, authority
+generation, scoped grant and independently verified prior release. Managed
+principal, agent, issue, task, PID, process start and boot identity remain in the
+existing binding and context records. The first grant starts the usual TTL and
+hard cap. Startup renewal and work mutations refuse `access_phase_denied`.
+General R1/ADB access also requires `access_phase: work`; registry readiness
+continues to reject every offline, starting or unconfirmed AVD.
+
+Owner composition may add `startup: {"path": "/owner/startup.json",
+"max_age_seconds": 60}` together with `managed_bindings_dir`. The private owner
+file has exactly these fields:
+
+```json
+{
+  "generation": 1,
+  "device": "the complete registry Device object, not an endpoint string",
+  "principal": "executor-agent",
+  "agent_id": "executor-agent",
+  "issue_id": "execution-issue",
+  "run_id": "live-task",
+  "grant": {"reference": "scoped-startup-grant", "observed_at": 100000, "expires_at": 100900},
+  "release": {"verifier": "configured-leader", "holder": "prior-holder", "evidence": "independent-release-reference", "passed": true}
+}
+```
+
+Numeric times above are synthetic epoch values. The verifier must be the
+configured leader and differ from both the former holder and current executor.
+The generation must match the broker authority. Missing, malformed, stale or
+expired evidence closes startup. A separate fresh complete ClaimLedger census,
+both writer sources, the shared claims guard, canonical occupancy, FIFO conflicts
+and restart reconciliation are still required. All owner-file and process reads
+occur before the SQLite writer transaction.
+
+Startup tickets share the existing queue. A ticket or offer grants no access.
+After parking, a new managed run needs a fresh scoped owner grant to use
+`claim-startup`; ordinary `claim` refuses startup tickets. Idempotent retries
+return the same lease and deadlines and do not repeat the `startup:committed`
+boundary. This boundary is a test hook after commit, not a launch implementation.
+`launch_startup` always refuses `startup_launch_unavailable`. The next stage must
+provide a journalled worker and identity checks before any emulator can execute.
+No promotion to work, launch, live configuration change or activation is included.
+
 Release or observed expiry changes `active` to `fencing`; it never deletes
 ownership. The trusted recovery worker can compare-and-set `fencing` -> `cleaning`
 -> `verifying`, or move a recovery state to `quarantine` with a named recovery
