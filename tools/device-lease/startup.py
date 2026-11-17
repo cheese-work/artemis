@@ -21,6 +21,19 @@ from broker import Refused, process_identity
 from refresh import devices
 
 
+# Hashing pinned images under the guard can outlast a short process handshake.
+# EOF still aborts immediately if the broker exits before releasing the gate.
+PAUSE_TIMEOUT_SECONDS = 120
+
+
+class StartupMismatch(ValueError):
+    """Positive evidence that the owned process or guest identity disagrees."""
+
+
+class StartupNotReady(ValueError):
+    """The same launch may be observed again without consuming another grant."""
+
+
 def _group(broker, conn, now, lease_id, principal, run_id):
     broker._require_authority(conn)
     broker._expire(conn, now)
@@ -182,9 +195,14 @@ def verify(broker, *, lease_id, principal, run_id):
                 device_state="device",
                 boot_complete="1",
             )
-            if identity != expected:
-                raise ValueError("process/guest binding mismatch")
-        except Exception as exc:
+            readiness = {"device_state", "boot_complete"}
+            if {k: v for k, v in identity.items() if k not in readiness} != {
+                k: v for k, v in expected.items() if k not in readiness
+            }:
+                raise StartupMismatch("process/guest binding mismatch")
+            if identity.get("device_state") != "device" or identity.get("boot_complete") != "1":
+                raise StartupNotReady("guest boot not complete")
+        except StartupMismatch as exc:
             with broker.transaction() as (conn, now):
                 broker._owned(conn, lease_id, principal, run_id)
                 conn.execute(
@@ -192,6 +210,12 @@ def verify(broker, *, lease_id, principal, run_id):
                     (lease_id,),
                 )
             raise Refused("startup_identity_mismatch") from exc
+        except StartupNotReady as exc:
+            raise Refused("startup_not_ready") from exc
+        except Exception as exc:
+            # Unknown/failed observations grant no access, but are not positive
+            # mismatch evidence. Preserve occupancy and the original deadlines.
+            raise Refused("startup_observation_unavailable") from exc
         with broker.transaction() as (conn, now):
             _group(broker, conn, now, lease_id, principal, run_id)
             conn.execute(
@@ -266,6 +290,10 @@ class LinuxStartupIO:
         for protocol in ("tcp", "tcp6"):
             for line in Path(f"/proc/net/{protocol}").read_text().splitlines()[1:]:
                 fields = line.split()
+                # Kernel TIME_WAIT records have no live socket or owning fd.
+                # Keep bound/listening sockets with an unseen owner as -1 below.
+                if fields[9] == "0":
+                    continue
                 # Include bound non-listeners, too: any occupant blocks launch.
                 port = int(fields[1].rsplit(":", 1)[1], 16)
                 inodes.setdefault(fields[9], set()).add(port)
@@ -278,6 +306,8 @@ class LinuxStartupIO:
                         inode_pids.setdefault(target[8:-1], set()).add(int(directory.name))
             except (FileNotFoundError, ProcessLookupError):
                 continue
+            except PermissionError as exc:
+                raise ValueError("startup requires full host /proc visibility") from exc
         # Unattributed sockets still occupy the port; never treat them as free.
         result = {}
         for inode, ports in inodes.items():
@@ -305,19 +335,21 @@ class LinuxStartupIO:
                         found.add(int(directory.name))
             except (FileNotFoundError, ProcessLookupError):
                 continue
+            except PermissionError as exc:
+                raise ValueError("startup requires full host /proc visibility") from exc
         return found
 
     @staticmethod
     def pins(device):
         data = Path(device.avd_data_path)
         if str(data.resolve(strict=True)) != str(data) or not data.is_dir():
-            raise ValueError("AVD directory replaced")
+            raise StartupMismatch("AVD directory replaced")
         if _ini(device.avd_definition_path).get("path") != str(data):
-            raise ValueError("AVD definition mismatch")
+            raise StartupMismatch("AVD definition mismatch")
         config = data / "config.ini"
         image_path = _ini(config).get("image.sysdir.1")
         if not image_path:
-            raise ValueError("system image path missing")
+            raise StartupMismatch("system image path missing")
         image_dir = Path(image_path)
         if not image_dir.is_absolute():
             image_dir = Path(device.emulator_path).parents[1] / image_dir
@@ -328,10 +360,10 @@ class LinuxStartupIO:
         ):
             with path.open("rb") as stream:
                 if hashlib.file_digest(stream, "sha256").hexdigest() != digest:
-                    raise ValueError("pinned launch artifact changed")
+                    raise StartupMismatch("pinned launch artifact changed")
         userdata = data / "userdata-qemu.img"
         if str(userdata.resolve(strict=True)) != str(userdata) or not userdata.is_file():
-            raise ValueError("existing canonical userdata required")
+            raise StartupMismatch("existing canonical userdata required")
 
     def listener(self):
         expected = self.host_preflight()
@@ -422,8 +454,11 @@ class LinuxStartupIO:
     def process_evidence(self, device, journal):
         self.listener()
         self.pins(device)
-        if any(process_identity(row["pid"]) != row for row in journal.values()):
-            raise ValueError("owned process replaced")
+        try:
+            if any(process_identity(row["pid"]) != row for row in journal.values()):
+                raise StartupMismatch("owned process replaced")
+        except (FileNotFoundError, ProcessLookupError) as exc:
+            raise StartupMismatch("owned process exited") from exc
         child = Path(f"/proc/{journal['child']['pid']}")
         parent = int((child / "stat").read_text().rsplit(")", 1)[1].split()[1])
         args = (child / "cmdline").read_bytes().split(b"\0")
@@ -436,17 +471,23 @@ class LinuxStartupIO:
             if not any(
                 args[n : n + 2] == [flag.encode(), value.encode()] for n in range(len(args))
             ):
-                raise ValueError("emulator command line mismatch")
+                raise StartupMismatch("emulator command line mismatch")
         owners = self.socket_owners()
         expected = {journal["child"]["pid"]}
         users = self.resource_users(device, userdata_only=True)
+        all_users = self.resource_users(device)
+        ports = [owners.get(port, set()) for port in (device.console_port, device.adb_port)]
         if (
             parent != journal["worker"]["pid"]
-            or users != expected
-            or any(owners.get(port) != expected for port in (device.console_port, device.adb_port))
-            or self.resource_users(device) - (expected | {journal["worker"]["pid"]})
+            or users - expected
+            or any(pids - expected - {-1} for pids in ports)
+            or all_users - (expected | {journal["worker"]["pid"]})
         ):
-            raise ValueError("emulator data/socket ownership mismatch")
+            raise StartupMismatch("emulator data/socket ownership mismatch")
+        if any(-1 in pids for pids in ports):
+            raise ValueError("emulator socket ownership uncertain")
+        if users != expected or any(pids != expected for pids in ports):
+            raise StartupNotReady("emulator has not opened userdata or fixed sockets")
         return dict(
             **journal,
             parent_pid=parent,
@@ -462,11 +503,11 @@ class LinuxStartupIO:
         evidence = self.process_evidence(device, journal)
         serial = f"emulator-{device.console_port}"
         if devices().get(serial) != "device":
-            raise ValueError("exact serial not observed as device")
+            raise StartupNotReady("exact serial not observed as device")
         guest = guest_identity(serial)
         # Recheck after probes, too, so a replacement during I/O cannot be cached.
         if self.process_evidence(device, journal) != evidence:
-            raise ValueError("process changed during identity probes")
+            raise StartupMismatch("process changed during identity probes")
         return dict(**evidence, **guest, serial=serial, device_state="device")
 
 
@@ -477,9 +518,18 @@ def _worker(args):
     if pid == 0:
         os.close(write_fd)
         os.close(0)  # Only the worker may consume the broker's gate.
-        if select.select([read_fd], [], [], 10)[0] and os.read(read_fd, 1) == b"G":
+        if (
+            select.select([read_fd], [], [], PAUSE_TIMEOUT_SECONDS)[0]
+            and os.read(read_fd, 1) == b"G"
+        ):
             os.close(read_fd)
-            os.dup2(os.open(os.devnull, os.O_WRONLY), 1)
+            null_fd = os.open(os.devnull, os.O_RDWR)
+            os.dup2(null_fd, 0)
+            # open() may return fd 0 with CLOEXEC; dup2(0, 0) keeps that flag.
+            os.set_inheritable(0, True)
+            os.dup2(null_fd, 1)
+            if null_fd > 2:
+                os.close(null_fd)
             env = dict(
                 os.environ, ANDROID_ADB_SERVER_PORT="5037", ADB_SERVER_SOCKET="tcp:127.0.0.1:5037"
             )
@@ -491,7 +541,7 @@ def _worker(args):
             json.dumps(dict(worker=process_identity(os.getpid()), child=process_identity(pid))),
             flush=True,
         )
-        if select.select([sys.stdin], [], [], 5)[0] and os.read(0, 1) == b"G":
+        if select.select([sys.stdin], [], [], PAUSE_TIMEOUT_SECONDS)[0] and os.read(0, 1) == b"G":
             os.write(write_fd, b"G")
     finally:
         os.close(write_fd)

@@ -247,6 +247,16 @@ outside SQLite writer transactions:
    read AVD name, API, ABI and boot completion. Recheck process ownership after
    probes. A mismatch fences the group and retains occupancy.
 
+Only positive identity disagreements fence the group. Missing sockets during
+boot, an absent/offline serial and incomplete boot return `startup_not_ready`.
+Failed ADB probes, timeouts, unreadable process evidence and other uncertain
+observations return `startup_observation_unavailable`. Both refusals retain the
+active starting lease, its launch journal and its original deadlines. A retry
+must perform the complete observation again; it never spawns another child.
+Wrong guest name/API/ABI, replaced process identity, changed pinned artifacts,
+wrong command-line paths/ports and positively attributed competing owners still
+return `startup_identity_mismatch` and fence occupancy.
+
 `(generation, grant_ref)` is consumed once when the planned attempt commits.
 Duplicate calls after `executing` return the journal without another gate release.
 A crash, journal failure or uncertain attempt before execution returns
@@ -261,10 +271,24 @@ It preserves existing userdata, requires the configured emulator/config digests
 and the `system.img` digest from `image.sysdir.1`, and refuses uncertain `/proc`
 visibility. It never adopts an old process or changes ports. Its raw loopback
 smart sockets cannot start ADB and expose no server-control or global-disconnect
-operation. Full artifact hashing and bounded handshakes can refuse a slow host;
+operation. Kernel TIME_WAIT rows (inode 0) have no live socket and are excluded
+from ownership. Live bound/listening sockets with an unseen owner still block.
+The worker and child both allow 120 seconds for journalling and artifact rechecks
+before the gate expires. EOF aborts immediately. Child stdin/stdout use read/write
+`/dev/null` without an extra descriptor.
+Full artifact hashing and bounded handshakes can refuse a slow host;
 this adapter still needs separate live qualification before activation.
 
 Opt-in owner composition extends the existing `startup` section:
+
+`linux-paused` requires effective UID 0 with full host PID and `/proc` visibility.
+Composition rejects this worker for a non-root process before serving requests.
+Even root must be able to inspect every relevant process descriptor; unreadable
+entries refuse observation rather than being skipped. The existing user-service
+deployment cannot enable this adapter as configured. A separately admitted
+privileged deployment is required before activation; this source change grants
+no privilege, changes no unit and enables no live worker. Without the worker
+setting, user-service composition continues to expose no launch capability.
 
 ```json
 {

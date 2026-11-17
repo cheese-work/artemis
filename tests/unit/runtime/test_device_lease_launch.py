@@ -7,11 +7,13 @@ from pathlib import Path
 import sqlite3
 import sys
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import test_device_lease_startup as fixtures
 from broker import Refused
 from daemon import BrokerServer, ControlServer
+import startup
 
 
 class FakeLifecycle:
@@ -235,6 +237,73 @@ class LaunchTests(unittest.TestCase):
         self.refused(
             "invalid_request", lambda: server.dispatch({"op": "launch-startup", "args": {}})
         )
+
+    def assert_retry_keeps_starting_lease(self):
+        with sqlite3.connect(self.path) as conn:
+            self.assertEqual(
+                conn.execute(
+                    "SELECT state,phase,expires_at,hard_deadline FROM broker_groups "
+                    "JOIN broker_access USING (lease_id)"
+                ).fetchone(),
+                ("active", "starting", self.group["expires_at"], self.group["hard_deadline"]),
+            )
+            self.assertIsNone(conn.execute("SELECT identity FROM broker_launches").fetchone()[0])
+
+    def test_offline_serial_then_device_retries_same_journal_without_fencing(self):
+        self.group = self.start()
+        self.launch()
+        evidence = {
+            key: value
+            for key, value in self.io.observation.items()
+            if key not in {"avd_name", "api", "abi", "boot_complete", "serial", "device_state"}
+        }
+        adapter = startup.LinuxStartupIO(lambda: None)
+        self.broker.startup_io = adapter
+        guest = {
+            key: self.io.observation[key] for key in ("avd_name", "api", "abi", "boot_complete")
+        }
+        with (
+            patch.object(adapter, "process_evidence", return_value=evidence),
+            patch(
+                "startup.devices",
+                side_effect=[
+                    {self.device.aliases[0]: "offline"},
+                    {self.device.aliases[0]: "device"},
+                ],
+            ),
+            patch("startup.guest_identity", return_value=guest) as probe,
+        ):
+            self.refused("startup_not_ready", self.verify)
+            probe.assert_not_called()
+            self.assert_retry_keeps_starting_lease()
+            self.assertEqual(self.verify()["identity"], self.io.observation)
+        self.assertEqual(self.io.calls.count("prepare"), 1)
+
+    def test_boot_incomplete_and_observation_errors_are_retryable(self):
+        self.group = self.start()
+        self.launch()
+        original = copy.deepcopy(self.io.observation)
+        for field, value in (
+            ("boot_complete", ""),
+            ("boot_complete", "0"),
+            ("device_state", "offline"),
+        ):
+            with self.subTest(field=field, value=value):
+                self.io.observation = dict(original, **{field: value})
+                self.refused("startup_not_ready", self.verify)
+                self.assert_retry_keeps_starting_lease()
+        for error in (
+            TimeoutError("ADB timeout"),
+            ConnectionError("ADB lost"),
+            PermissionError("proc unavailable"),
+            ValueError("malformed ADB reply"),
+        ):
+            with self.subTest(error=error), patch.object(self.io, "observe", side_effect=error):
+                self.refused("startup_observation_unavailable", self.verify)
+                self.assert_retry_keeps_starting_lease()
+        self.io.observation = original
+        self.assertEqual(self.verify()["identity"], original)
+        self.assertEqual(self.io.calls.count("prepare"), 1)
 
     def test_foreign_run_proof_cannot_offer_startup_ticket(self):
         self.group = self.start()

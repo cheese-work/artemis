@@ -138,7 +138,13 @@ class ComposeTests(unittest.TestCase):
             "host_preflight": {"path": str(self.root / "shared-adb.json"), "max_age_seconds": 60},
         }
         self.config["startup"]["worker"] = worker
-        got = compose.compose(self.config_file(), registry(), db_path=path)
+        with patch("compose.os", wraps=os) as host_os:
+            host_os.geteuid.return_value = 1000
+            with self.assertRaisesRegex(CompositionError, "requires root.*full host /proc"):
+                compose.compose(self.config_file(), registry(), db_path=path)
+        with patch("compose.os", wraps=os) as host_os:
+            host_os.geteuid.return_value = 0
+            got = compose.compose(self.config_file(), registry(), db_path=path)
         self.assertIsInstance(got["broker"]["startup_io"], LinuxStartupIO)
         worker["adapter"] = "arbitrary"
         with self.assertRaises(CompositionError):

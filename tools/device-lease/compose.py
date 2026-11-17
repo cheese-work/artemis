@@ -367,6 +367,8 @@ def compose(config_path, registry, *, db_path=None):
             worker = _field(config["startup"], "worker", dict)
             if worker.get("adapter") != "linux-paused":
                 raise CompositionError("startup worker adapter must be linux-paused")
+            if os.geteuid() != 0:
+                raise CompositionError("linux-paused requires root with full host /proc visibility")
             host_path, host_age = _snapshot(worker, "host_preflight")
             from startup import LinuxStartupIO
 
