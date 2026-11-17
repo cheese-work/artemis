@@ -47,13 +47,47 @@ EXPECTED_REMOVALS = [
     ["splash_bootstrap_started", "splash_bootstrap_completed", "splash_bootstrap_failed"],
     ["navigation_route_changed", "screen_view"],
     ["language_selected", "onboarding_started", "onboarding_next_tapped", "onboarding_completed"],
-    ["permission_request_tapped", "permission_result", "account_notifications_enable_tapped", "account_notification_permission_result"],
-    ["login_google_start", "login_google_success", "login_google_cancelled", "login_google_failed", "login_backend_failed", "login_google_error", "logout_tapped", "logout_success"],
-    ["home_tab_selected", "practice_tab_selected", "redeem_tab_selected", "rank_tab_selected", "account_tab_selected"],
-    ["account_language_opened", "account_language_changed", "account_rate_app_tapped", "account_contact_us_tapped", "account_share_app_tapped"],
+    [
+        "permission_request_tapped",
+        "permission_result",
+        "account_notifications_enable_tapped",
+        "account_notification_permission_result",
+    ],
+    [
+        "login_google_start",
+        "login_google_success",
+        "login_google_cancelled",
+        "login_google_failed",
+        "login_backend_failed",
+        "login_google_error",
+        "logout_tapped",
+        "logout_success",
+    ],
+    [
+        "home_tab_selected",
+        "practice_tab_selected",
+        "redeem_tab_selected",
+        "rank_tab_selected",
+        "account_tab_selected",
+    ],
+    [
+        "account_language_opened",
+        "account_language_changed",
+        "account_rate_app_tapped",
+        "account_contact_us_tapped",
+        "account_share_app_tapped",
+    ],
     ["lesson_selected", "lesson_start", "lesson_end", "lesson_complete"],
     ["interstitial_show", "interstitial_failed"],
-    ["premium_purchase_attempt", "premium_purchase_success", "premium_purchase_cancelled", "premium_purchase_failed", "premium_restore_attempt", "premium_restore_success", "premium_restore_failed"],
+    [
+        "premium_purchase_attempt",
+        "premium_purchase_success",
+        "premium_purchase_cancelled",
+        "premium_purchase_failed",
+        "premium_restore_attempt",
+        "premium_restore_success",
+        "premium_restore_failed",
+    ],
     ["api_call_failed", "api_call_timeout"],
 ]
 
@@ -68,9 +102,7 @@ def test_receipt_pins_runner_app_inputs_and_no_spend_boundary():
 
     assert receipt["issue"] == "CHE-6852"
     assert receipt["parent_issue"] == "CHE-6843"
-    assert sources["runner_source"]["commit_sha"] == (
-        "676320699514778d7b589783cb5590ada8d4048f"
-    )
+    assert sources["runner_source"]["commit_sha"] == ("676320699514778d7b589783cb5590ada8d4048f")
     assert sources["app_input_source"] == {
         "repository": "https://github.com/tevo-studio/st008-palios",
         "pull_request": 36,
@@ -112,8 +144,7 @@ def test_receipt_pins_runner_app_inputs_and_no_spend_boundary():
 def test_each_event_and_removal_label_binds_one_fail_closed_journey_assertion():
     receipt = _read_candidate()
     journey = (
-        REPO_ROOT
-        / receipt["source_candidate"]["testcase_source"]["journey_path"]
+        REPO_ROOT / receipt["source_candidate"]["testcase_source"]["journey_path"]
     ).read_text(encoding="utf-8")
     coverage = receipt["coverage"]
     event_assertions = coverage["event_assertions"]
@@ -151,8 +182,7 @@ def test_each_event_and_removal_label_binds_one_fail_closed_journey_assertion():
 def test_journey_carries_fixture_privacy_qualification_and_review_guards():
     receipt = _read_candidate()
     journey = (
-        REPO_ROOT
-        / receipt["source_candidate"]["testcase_source"]["journey_path"]
+        REPO_ROOT / receipt["source_candidate"]["testcase_source"]["journey_path"]
     ).read_text(encoding="utf-8")
     for required in (
         "assigned_at_execution",
