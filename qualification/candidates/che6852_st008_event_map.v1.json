@@ -1,0 +1,226 @@
+{
+  "receipt_version": 1,
+  "issue": "CHE-6852",
+  "parent_issue": "CHE-6843",
+  "candidate_kind": "testcase",
+  "source_candidate": {
+    "runner_source": {
+      "repository": "https://github.com/cheese-work/artemis",
+      "commit_sha": "676320699514778d7b589783cb5590ada8d4048f"
+    },
+    "app_input_source": {
+      "repository": "https://github.com/tevo-studio/st008-palios",
+      "pull_request": 36,
+      "commit_sha": "aeb9879c06ece7998aa5c85012e6fe750b15bbb9"
+    },
+    "map_source": {
+      "source": "CHE-6839 frozen event map",
+      "sha256": "e362eaf1564501a1986934508bce53d5fcd6e68300d464cbca5cef2e151d99c8"
+    },
+    "input_digests": {
+      "admission_packet_sha256": "2375eb8a27e4d853f6209d908e01f87fbb77b7cc9f6dc20ccb31194cd563d56b",
+      "event_matrix_sha256": "f660dc7b32ba9c8f3e17f3f9395d67f93f3ab332d1c5c41a67fa3d5624f65097",
+      "removal_matrix_sha256": "1b652f6eece9b1ce8fe06023a8f8d436dd336c329e0d596c6bd7ecf0e5559156",
+      "preparation_receipt_sha256": "75e0e39f1d6738f63f7d767fc479b34dbe898e83eff59599f8ed12d17bdd694f",
+      "test_guide_sha256": "b689b4f5a2bb59a4c7b6d748580e6d23f0ac08bb8ecdbb7e9df73b1f51f7afbc"
+    },
+    "effective_lock": {
+      "source": "CHE-6839 attachment 01a1e8a0-ddc5-71e8-918e-c524fd697ef9",
+      "sha256": "14f129e59028406dc1f77687c6c01ac83360926c91ea53c61a8f3a5b73dac080"
+    },
+    "tevo_ads_override": {
+      "package": "tevo_ads",
+      "version": "0.3.2",
+      "commit_sha": "65e2050d61683151559580802de9697171788aa3",
+      "hosted_archive_parity": "unverified"
+    },
+    "testcase_source": {
+      "journey_path": "qualification/journeys/che6852_st008_event_map.v1.md",
+      "journey_digest_sha256": "b57a2c06931b0ae04e05a69fb93decf5743dc5069f6712cf33a25feae1b308ee",
+      "revision_policy": "A change to journey, receipt, runner, app source, effective lock, override, fixture contract or pinned goal requires a new candidate revision and fresh independent reviews."
+    }
+  },
+  "target": {
+    "class": "x99_api35_qual",
+    "api": 35,
+    "abi": "x86_64",
+    "serial": "assigned_at_execution",
+    "admission_owner": "Android device squad leader",
+    "admission_and_class_creation_issue": "CHE-6297 / CHE-6843",
+    "capacity": 1
+  },
+  "build": {
+    "host": "X99",
+    "source_sha": "aeb9879c06ece7998aa5c85012e6fe750b15bbb9",
+    "lock_sha256": "14f129e59028406dc1f77687c6c01ac83360926c91ea53c61a8f3a5b73dac080",
+    "tevo_ads_override_sha": "65e2050d61683151559580802de9697171788aa3",
+    "package": "com.palio.ai",
+    "variant": "debug",
+    "abi": "x86_64",
+    "apk_sha256": "recorded_at_execution",
+    "verification": "Record exact build command/toolchain and verify package, debug variant, version, ABI and APK digest before install. The digest is per-run evidence; source/lock/override/runner/testcase pins keep this testcase revision valid."
+  },
+  "execution": {
+    "status": "NOT-RUN",
+    "target_serial": "assigned_at_execution",
+    "device_claim": "NOT-ISSUED",
+    "device_lease": "NOT-ISSUED",
+    "provider_call_made": false,
+    "model": {
+      "provider": "openai",
+      "model": "gpt-6-sol",
+      "configured_default": true,
+      "credential_env": "OPENAI_API_KEY",
+      "metered_spend_possible": true,
+      "provider_call_made": false,
+      "spend_decision_owner": "Android device squad leader",
+      "open_point": "CHE-6839 permits no spend. A provider call can incur metered spend; the Android device squad leader must resolve this before any provider call."
+    },
+    "firebase_debugview": {
+      "status": "NOT-RUN",
+      "prerequisite": "Independent authorized Firebase DebugView fixture and access, recorded by the Android device squad leader."
+    },
+    "store_sandbox_purchase": {
+      "status": "NOT-RUN",
+      "prerequisite": "Independent store-sandbox fixture and access, recorded by the Android device squad leader. No purchase is fabricated and no money is spent."
+    },
+    "obd_full_8_scr_view": "DEFERRED",
+    "sdk_publication_or_substitution": false
+  },
+  "fixture": {
+    "onboarding": "Approved clean first-run app fixture; capture visible UI state at every mapped step. Preserve pre-existing device data.",
+    "permission": "Separate notification and microphone granted, denied, unavailable, suppressed and overlap scenarios; observe real OS dialog visibility. Do not issue a second request for telemetry.",
+    "speaking": "Use an admitted deterministic session fixture; record accepted starts, ready results, terminal errors, recoveries, cancellations and retries as distinct outcomes.",
+    "flash_cards": "Use a deterministic nonempty deck, empty deck and load-failure fixture; distinguish direct deck entry from shared intro-to-deck session.",
+    "ads": "Use controlled display callbacks and confirm actual impression. Preload, failure, suppression and hidden route are not impressions.",
+    "paywall": "Use loaded real weekly/yearly store offers and preserve source. No fabricated product IDs or purchase.",
+    "reset": "Use only the approved app-level clean fixture for first-run cases. Return to each focused scenario through visible UI and record entry state. Do not broad-reset shared device state.",
+    "synchronization": "Visible UI plus timestamped FA/FA-SVC capture. Event assertion requires exact event, allowed parameters, count and ordering in the complete observation window."
+  },
+  "evidence_contract": {
+    "capture": [
+      "exact command and exit code",
+      "device class, API, ABI and assigned serial",
+      "runner, testcase, app source, lock and override revisions",
+      "runtime APK SHA-256",
+      "fresh fixture/reset and visible entry state",
+      "native assertion summary and ledger",
+      "privacy-safe screenshots or hierarchy",
+      "timestamped redacted FA and FA-SVC logs",
+      "per-event and per-removal result with exact count and parameters",
+      "real base/head Diff-Digest",
+      "first-run, clean-rerun and negative-control result when class qualification applies",
+      "cleanup and independent release verification"
+    ],
+    "privacy": "Never retain names, account identifiers, tokens, transcripts, audio, lesson/session IDs, URLs, purchase identifiers or credential values. Keep raw logs private; retain minimum redacted evidence.",
+    "exit_codes": {
+      "0": "All required native assertions complete and pass.",
+      "1": "Completed native assertion failure, including the deliberate qualification control.",
+      "2": "Incomplete, malformed, unchecked or inconclusive evidence; never PASS."
+    },
+    "execution_status_values": ["OBSERVED", "FAILED", "NOT-RUN", "DEFERRED"],
+    "unobserved_count": "unknown; never infer zero from missing evidence"
+  },
+  "qualification": {
+    "required_if_class_unqualified": true,
+    "positive_pass": "Clean representative testcase pass with complete artifacts.",
+    "clean_rerun": "Repeat from the clean reset contract; preserve independent result and artifacts.",
+    "negative_control": "Deliberately fail one assertion; native completed assertion exit must be 1 with the failure evidence retained.",
+    "cleanup_release": "Preserve evidence, stop only run-owned processes, restore only changed settings, and obtain Android leader verification of device/lease release.",
+    "missing_or_uncertain_evidence": "NOT-RUN or inconclusive; never qualify. Uncertain cleanup keeps target unavailable with named recovery owner."
+  },
+  "goals": [
+    {
+      "id": "goal_01",
+      "text": "Run the CHE-6852 reviewed ST008 analytics testcase exactly as pinned. Use the clean first-run fixture, observe each visible onboarding step and Home, verify locale on entry, and classify fullscreen native only as deferred. Capture privacy-safe timestamped FA/FA-SVC evidence and fail closed on missing screens, wrong event names, parameters, counts, ordering or incomplete logs.",
+      "sha256": "9a10a9af32933aef934baa7406b72c812403599c5c1aa5a287efdf813dc0dd38"
+    },
+    {
+      "id": "goal_02",
+      "text": "Exercise notification and microphone permissions in isolated scenarios and overlapping notification/microphone requests. Distinguish an actually displayed OS dialog from focus loss, pending native calls, bridge errors, existing grants, unsupported OS, suppressed requests and unavailable status. Verify safe speaking failure, no false notification telemetry and no extra prompt. Capture privacy-safe UI and complete timestamped FA/FA-SVC logs; fail closed on ambiguity.",
+      "sha256": "63e60a862febe4f3254706d370f20660ee767fc34c1beb1c08c15c13686b46ce"
+    },
+    {
+      "id": "goal_03",
+      "text": "Exercise speaking and flash-card accepted starts, real result-ready returns, terminal failures, recovery, empty/load failure, completion and explicit retry. Reconcile counts to real accepted attempts and real returns. Do not count cancellation, timers alone, empty decks, stale callbacks, recovered interruptions or duplicate callbacks as completion. Preserve assertion ledger and privacy-safe evidence; fail closed on count mismatch.",
+      "sha256": "6f11582353b14f3e852928f45beb8bf1d311edb87a7712334b04528625f9d265"
+    },
+    {
+      "id": "goal_04",
+      "text": "Exercise only deterministic ad and paywall paths. Confirm actual impressions, original source, real loaded store product IDs, accepted clicks and actual transitive SDK emissions. Keep Firebase DebugView and store-sandbox purchase NOT-RUN until their own authorized fixtures and access exist. Never fabricate an impression or purchase and never spend money.",
+      "sha256": "da6fc291bd1d2700e24d1483730efa0b4e1f3a6e4f7d05975ed564f507e6e9c9"
+    },
+    {
+      "id": "goal_05",
+      "text": "Check every exact removed custom event family against complete actual SDK emission windows while preserving automatic Firebase collection. If the AVD class is unqualified, execute a clean representative pass, a clean rerun and a deliberate failed assertion with native exit 1. Preserve artifacts and have the Android leader verify cleanup and release. Missing logs or incomplete evidence are not an absence pass.",
+      "sha256": "9f624b5fad20cfb99e68023c9705d7b1de60741e2b330abdace3ca9647771ab8"
+    }
+  ],
+  "coverage": {
+    "event_assertions": [
+      {"assertion_id":"event_01","event":"splash_scr_view","expected_trigger":"Splash first visible before Get Started/bootstrap work","expected_params":{},"execution_status":"NOT-RUN","observed_count":"unknown","evidence":null},
+      {"assertion_id":"event_02","event":"obd_1_scr_view","expected_trigger":"Welcome screen visible","expected_params":{},"execution_status":"NOT-RUN","observed_count":"unknown","evidence":null},
+      {"assertion_id":"event_03","event":"obd_2_scr_view","expected_trigger":"Questions introduction visible","expected_params":{},"execution_status":"NOT-RUN","observed_count":"unknown","evidence":null},
+      {"assertion_id":"event_04","event":"obd_3_scr_view","expected_trigger":"Name form visible; never retain entered name","expected_params":{},"execution_status":"NOT-RUN","observed_count":"unknown","evidence":null},
+      {"assertion_id":"event_05","event":"lfo_1_scr_view","expected_trigger":"First onboarding learning-language screen visible","expected_params":{},"execution_status":"NOT-RUN","observed_count":"unknown","evidence":null},
+      {"assertion_id":"event_06","event":"lfo_2_scr_view","expected_trigger":"Distinct native-language screen visible; locale on entry, including preselection","expected_params":{"language":"selected locale tag on entry"},"execution_status":"NOT-RUN","observed_count":"unknown","evidence":null},
+      {"assertion_id":"event_07","event":"obd_6_scr_view","expected_trigger":"Goal step visible with original slide ordinal preserved","expected_params":{},"execution_status":"NOT-RUN","observed_count":"unknown","evidence":null},
+      {"assertion_id":"event_08","event":"obd_7_scr_view","expected_trigger":"Level step visible","expected_params":{},"execution_status":"NOT-RUN","observed_count":"unknown","evidence":null},
+      {"assertion_id":"event_09","event":"obd_8_scr_view","expected_trigger":"Talk-style step visible","expected_params":{},"execution_status":"NOT-RUN","observed_count":"unknown","evidence":null},
+      {"assertion_id":"event_10","event":"obd_full_8_scr_view","expected_trigger":"Deferred until supported native impression","expected_params":{},"execution_status":"DEFERRED","observed_count":"unknown","evidence":null},
+      {"assertion_id":"event_11","event":"home_scr_view","expected_trigger":"Home visible after redirects/covering welcome screen and on real return","expected_params":{},"execution_status":"NOT-RUN","observed_count":"unknown","evidence":null},
+      {"assertion_id":"event_12","event":"noti_permission_view","expected_trigger":"OS notification request dialog actually displayed","expected_params":{"source":["app_entry","account"]},"execution_status":"NOT-RUN","observed_count":"unknown","evidence":null},
+      {"assertion_id":"event_13","event":"noti_permission_allow","expected_trigger":"Displayed notification request receives OS grant","expected_params":{},"execution_status":"NOT-RUN","observed_count":"unknown","evidence":null},
+      {"assertion_id":"event_14","event":"microphone_permission_view","expected_trigger":"OS microphone dialog actually displayed for speaking","expected_params":{"source":"speaking"},"execution_status":"NOT-RUN","observed_count":"unknown","evidence":null},
+      {"assertion_id":"event_15","event":"microphone_permission_allow","expected_trigger":"Displayed microphone request receives OS grant","expected_params":{},"execution_status":"NOT-RUN","observed_count":"unknown","evidence":null},
+      {"assertion_id":"event_16","event":"microphone_permission_denied","expected_trigger":"Displayed microphone request receives OS denial","expected_params":{},"execution_status":"NOT-RUN","observed_count":"unknown","evidence":null},
+      {"assertion_id":"event_17","event":"inter_splash_scr_view","expected_trigger":"Real splash interstitial impression via existing callback","expected_params":{},"execution_status":"NOT-RUN","observed_count":"unknown","evidence":null},
+      {"assertion_id":"event_18","event":"inter_home_scr_view","expected_trigger":"One real shared Home/lesson/tab interstitial impression","expected_params":{},"execution_status":"NOT-RUN","observed_count":"unknown","evidence":null},
+      {"assertion_id":"event_19","event":"app_open_scr_view","expected_trigger":"Confirmed app-open impression after resumed Welcome Back Continue","expected_params":{"placement":"open_resume"},"execution_status":"NOT-RUN","observed_count":"unknown","evidence":null},
+      {"assertion_id":"event_20","event":"feature_speaking_scr_view","expected_trigger":"Speaking entry actually visible from Mini Test or Home","expected_params":{},"execution_status":"NOT-RUN","observed_count":"unknown","evidence":null},
+      {"assertion_id":"event_21","event":"feature_speaking_start","expected_trigger":"Accepted transition to starting before permission/network work, once per run","expected_params":{},"execution_status":"NOT-RUN","observed_count":"unknown","evidence":null},
+      {"assertion_id":"event_22","event":"feature_speaking_finish","expected_trigger":"Normal result exists and canShowResult is ready, once per run","expected_params":{},"execution_status":"NOT-RUN","observed_count":"unknown","evidence":null},
+      {"assertion_id":"event_23","event":"feature_speaking_fail","expected_trigger":"Accepted run ends in terminal error, not recovered interruption","expected_params":{"error_code":["microphone_denied","start_failed","connection_failed","invalid_token","timeout","unknown"]},"execution_status":"NOT-RUN","observed_count":"unknown","evidence":null},
+      {"assertion_id":"event_24","event":"feature_flash_card_scr_view","expected_trigger":"Direct deck or shared intro/deck first visible; one entry per session","expected_params":{},"execution_status":"NOT-RUN","observed_count":"unknown","evidence":null},
+      {"assertion_id":"event_25","event":"feature_flash_card_start","expected_trigger":"Accepted generation/load; explicit retry/restart is a new attempt","expected_params":{},"execution_status":"NOT-RUN","observed_count":"unknown","evidence":null},
+      {"assertion_id":"event_26","event":"feature_flash_card_success","expected_trigger":"Last real word classified; nonempty deck first completion transition","expected_params":{},"execution_status":"NOT-RUN","observed_count":"unknown","evidence":null},
+      {"assertion_id":"event_27","event":"feature_flash_card_fail","expected_trigger":"Terminal generation/load failure including empty deck","expected_params":{"error_code":["load_failed","empty_deck","timeout","unknown"]},"execution_status":"NOT-RUN","observed_count":"unknown","evidence":null},
+      {"assertion_id":"event_28","event":"paywall_scr_view","expected_trigger":"Weekly or exit-discount paywall surface actually visible","expected_params":{"source":["home","speaking","direct"],"paywall_id":["premium_weekly_trial","premium_yearly_exit"]},"execution_status":"NOT-RUN","observed_count":"unknown","evidence":null},
+      {"assertion_id":"event_29","event":"paywall_scr_view","expected_trigger":"Other paywall surface actually visible once, preserving original source","expected_params":{"source":["home","speaking","direct"],"paywall_id":["premium_weekly_trial","premium_yearly_exit"]},"execution_status":"NOT-RUN","observed_count":"unknown","evidence":null},
+      {"assertion_id":"event_30","event":"paywall_btn_click","expected_trigger":"Accepted weekly UI purchase/restore/terms/privacy/close action","expected_params":{"button":["purchase","restore","terms_of_use","privacy_policy","close"],"product_id":"real weekly store product ID or none","source":["home","speaking","direct"]},"execution_status":"NOT-RUN","observed_count":"unknown","evidence":null},
+      {"assertion_id":"event_31","event":"paywall_btn_click","expected_trigger":"Yearly purchase or exit-sheet dismissal","expected_params":{"button":["purchase","close"],"product_id":"real yearly store product ID or none","source":["home","speaking","direct"]},"execution_status":"NOT-RUN","observed_count":"unknown","evidence":null},
+      {"assertion_id":"event_32","event":"in_app_purchase","expected_trigger":"Firebase/Google Play automatic collection only in store sandbox","expected_params":{"schema":"automatic"},"execution_status":"NOT-RUN","observed_count":"unknown","evidence":null}
+    ],
+    "removal_assertions": [
+      {"assertion_id":"removal_01","label":"lifecycle custom events","removed_names":["app_open","app_foreground","app_background"],"execution_status":"NOT-RUN","observed_count":"unknown","evidence":null},
+      {"assertion_id":"removal_02","label":"splash bootstrap events","removed_names":["splash_bootstrap_started","splash_bootstrap_completed","splash_bootstrap_failed"],"execution_status":"NOT-RUN","observed_count":"unknown","evidence":null},
+      {"assertion_id":"removal_03","label":"generic route events","removed_names":["navigation_route_changed","screen_view"],"execution_status":"NOT-RUN","observed_count":"unknown","evidence":null},
+      {"assertion_id":"removal_04","label":"onboarding funnel events","removed_names":["language_selected","onboarding_started","onboarding_next_tapped","onboarding_completed"],"execution_status":"NOT-RUN","observed_count":"unknown","evidence":null},
+      {"assertion_id":"removal_05","label":"permission tap/result events","removed_names":["permission_request_tapped","permission_result","account_notifications_enable_tapped","account_notification_permission_result"],"execution_status":"NOT-RUN","observed_count":"unknown","evidence":null},
+      {"assertion_id":"removal_06","label":"authentication events","removed_names":["login_google_start","login_google_success","login_google_cancelled","login_google_failed","login_backend_failed","login_google_error","logout_tapped","logout_success"],"execution_status":"NOT-RUN","observed_count":"unknown","evidence":null},
+      {"assertion_id":"removal_07","label":"tab-selection events","removed_names":["home_tab_selected","practice_tab_selected","redeem_tab_selected","rank_tab_selected","account_tab_selected"],"execution_status":"NOT-RUN","observed_count":"unknown","evidence":null},
+      {"assertion_id":"removal_08","label":"account settings events","removed_names":["account_language_opened","account_language_changed","account_rate_app_tapped","account_contact_us_tapped","account_share_app_tapped"],"execution_status":"NOT-RUN","observed_count":"unknown","evidence":null},
+      {"assertion_id":"removal_09","label":"lesson lifecycle events","removed_names":["lesson_selected","lesson_start","lesson_end","lesson_complete"],"execution_status":"NOT-RUN","observed_count":"unknown","evidence":null},
+      {"assertion_id":"removal_10","label":"generic interstitial events","removed_names":["interstitial_show","interstitial_failed"],"execution_status":"NOT-RUN","observed_count":"unknown","evidence":null},
+      {"assertion_id":"removal_11","label":"purchase outcome events","removed_names":["premium_purchase_attempt","premium_purchase_success","premium_purchase_cancelled","premium_purchase_failed","premium_restore_attempt","premium_restore_success","premium_restore_failed"],"execution_status":"NOT-RUN","observed_count":"unknown","evidence":null},
+      {"assertion_id":"removal_12","label":"generic API failure events","removed_names":["api_call_failed","api_call_timeout"],"execution_status":"NOT-RUN","observed_count":"unknown","evidence":null}
+    ]
+  },
+  "logic_review_findings": [
+    {"id":"logic_01","requirement":"Focus loss during a pending native permission request does not count as a displayed prompt; observe the actual OS dialog.","failure_behavior":"Fail the assertion or mark NOT-RUN if dialog visibility cannot be proven."},
+    {"id":"logic_02","requirement":"Overlapping notification/microphone requests and native bridge errors preserve safe speaking failure behavior and do not create false prompt events.","failure_behavior":"Fail on unsafe speaking continuation, duplicate prompt event or ambiguous request result."},
+    {"id":"logic_03","requirement":"Notification status unavailable creates no false telemetry and no extra prompt.","failure_behavior":"Fail on notification custom event or any additional OS prompt."},
+    {"id":"logic_04","requirement":"Speaking and flash-card real-return counts match the contract, including recovery, cancellation, retries, empty deck and duplicate callback cases.","failure_behavior":"Fail on any count mismatch or false success/finish."},
+    {"id":"logic_05","requirement":"Inspect actual transitive SDK emissions because Git-source/hosted parity is unverified.","failure_behavior":"Source-only review or app adapter logs cannot pass SDK emission coverage."}
+  ],
+  "review_contract": {
+    "independent_non_author_reviewers": 2,
+    "reviewer_selection_owner": "Android device squad leader",
+    "same_revision_required": true,
+    "must_precede_execution": true,
+    "material_change_requires_fresh_reviews": true,
+    "author_approves_own_testcase": false,
+    "signing_reviewer_lab": "different from OpenAI author per RGS-1",
+    "review_scope": ["selectors and visible-state oracles","assertion-to-label binding","fixture/reset and synchronization","false-pass guards","event/removal coverage","privacy-safe evidence","qualification controls","provider and spend boundary"]
+  }
+}
