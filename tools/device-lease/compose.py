@@ -241,6 +241,40 @@ def startup_reader(path, max_age, registry, leader_id, clock=time.time):
     return read
 
 
+def shared_adb_reader(path, max_age, clock=time.time):
+    """Fresh ops-owned host preflight; the launch adapter rechecks actual ownership."""
+
+    def read():
+        _owner_file(path)
+        row = json.loads(Path(path).read_text(encoding="utf-8"))
+        if not isinstance(row, dict) or set(row) != {
+            "observed_at",
+            "host",
+            "port",
+            "listener",
+            "evidence",
+        }:
+            raise ValueError("invalid shared ADB host preflight")
+        observed = row["observed_at"]
+        if (
+            type(observed) not in (int, float)
+            or not math.isfinite(observed)
+            or not -MAX_SKEW <= clock() - observed <= max_age
+            or row["host"] != "127.0.0.1"
+            or type(row["port"]) is not int
+            or row["port"] != 5037
+            or not isinstance(row["evidence"], str)
+            or not row["evidence"].strip()
+        ):
+            raise ValueError("shared ADB preflight stale or unavailable")
+        from startup import process_record
+
+        listener = row["listener"]
+        return process_record(listener)
+
+    return read
+
+
 def write_claims_snapshot(path, guard, claims, clock=time.time):
     """Removed unsafe snapshot replacement. Use ClaimLedger's owned claim/release."""
     raise ValueError("unverified claims snapshots are disabled; use the claim ledger")
@@ -323,11 +357,20 @@ def compose(config_path, registry, *, db_path=None):
     control = Path(_field(config, "leader_control_socket", str))
     leader_id = _field(config, "leader_id", str)
     startup_snapshot = None
+    startup_io = None
     if "startup" in config:
         startup_path, startup_age = _snapshot(config, "startup")
         if managed_runs is None:
             raise CompositionError("startup requires managed_bindings_dir")
         startup_snapshot = startup_reader(startup_path, startup_age, registry, leader_id)
+        if "worker" in config["startup"]:
+            worker = _field(config["startup"], "worker", dict)
+            if worker.get("adapter") != "linux-paused":
+                raise CompositionError("startup worker adapter must be linux-paused")
+            host_path, host_age = _snapshot(worker, "host_preflight")
+            from startup import LinuxStartupIO
+
+            startup_io = LinuxStartupIO(shared_adb_reader(host_path, host_age))
     if db_path is None:
         raise CompositionError("composition requires the broker database")
     db_path = Path(db_path)
@@ -342,6 +385,7 @@ def compose(config_path, registry, *, db_path=None):
         "broker": {
             "managed_runs": managed_runs,
             "startup_snapshot": startup_snapshot,
+            "startup_io": startup_io,
             "admitted": {},
             "admission_snapshot": admitted_reader(admitted_path, admitted_age, registry),
             "admission_sources": {"artemis": artemis_locks_reader(locks), "android": ledger.read},

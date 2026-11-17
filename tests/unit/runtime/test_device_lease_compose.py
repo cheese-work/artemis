@@ -119,6 +119,31 @@ class ComposeTests(unittest.TestCase):
         )
         return broker, composed
 
+    def test_startup_worker_is_explicit_owner_composition_and_unknown_adapter_refuses(self):
+        from startup import LinuxStartupIO
+
+        path = self.root / "leases.sqlite3"
+        self.assertIsNone(
+            compose.compose(self.config_file(), registry(), db_path=path)["broker"]["startup_io"]
+        )
+        bindings = self.root / "bindings"
+        bindings.mkdir(mode=0o700)
+        self.config["managed_bindings_dir"] = str(bindings)
+        self.config["startup"] = {"path": str(self.root / "startup.json"), "max_age_seconds": 60}
+        self.assertIsNone(
+            compose.compose(self.config_file(), registry(), db_path=path)["broker"]["startup_io"]
+        )
+        worker = {
+            "adapter": "linux-paused",
+            "host_preflight": {"path": str(self.root / "shared-adb.json"), "max_age_seconds": 60},
+        }
+        self.config["startup"]["worker"] = worker
+        got = compose.compose(self.config_file(), registry(), db_path=path)
+        self.assertIsInstance(got["broker"]["startup_io"], LinuxStartupIO)
+        worker["adapter"] = "arbitrary"
+        with self.assertRaises(CompositionError):
+            compose.compose(self.config_file(), registry(), db_path=path)
+
     def take(self, broker, **changes):
         request = dict(
             principal="agent",
